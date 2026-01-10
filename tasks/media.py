@@ -345,7 +345,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
     - 重量级的元数据缓存填充任务 (类型安全版)。
     - 修复：彻底解决 TMDb ID 在电影和剧集间冲突的问题。
     - 修复：完善离线检测逻辑，确保消失的电影/剧集能被正确标记为离线。
-    - 优化：增加详细的跳过统计，解释数量差异。
+    - 优化：移除无用的中间数据缓存，大幅降低内存占用。
     """
     task_name = "同步媒体元数据"
     sync_mode = "深度同步 (全量)" if force_full_update else "快速同步 (增量)"
@@ -362,7 +362,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             raise ValueError("未在配置中指定要处理的媒体库。")
 
         # --- 1. 准备基础数据 ---
-        known_emby_status = {}      # {emby_id: is_online}
+        # ★★★ 内存优化 1: 改用 Set 只存 ID，不存 True/False，节省一半内存 ★★★
+        known_online_emby_ids = set() 
         emby_sid_to_tmdb_id = {}    # {emby_series_id: tmdb_id}
         tmdb_key_to_emby_ids = defaultdict(set) 
         
@@ -384,11 +385,14 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
             # B. 获取在线状态
             if not force_full_update:
+                # ★★★ 内存优化 1: 只查询在线的 ID ★★★
                 cursor.execute("""
-                    SELECT jsonb_array_elements_text(emby_item_ids_json) AS emby_id, in_library
+                    SELECT jsonb_array_elements_text(emby_item_ids_json) AS emby_id
                     FROM media_metadata 
+                    WHERE in_library = TRUE
                 """)
-                known_emby_status = {row['emby_id']: row['in_library'] for row in cursor.fetchall()}
+                for row in cursor.fetchall():
+                    known_online_emby_ids.add(row['emby_id'])
                 
                 cursor.execute("""
                     SELECT COUNT(*) as total, SUM(CASE WHEN in_library THEN 1 ELSE 0 END) as online 
@@ -398,7 +402,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 total_items = stat_row['total'] if stat_row else 0
                 online_items = stat_row['online'] if stat_row and stat_row['online'] is not None else 0
                 
-                logger.info(f"  ➜ 本地数据库共存储 {total_items} 个媒体项 (其中在线: {online_items}, 离线: {total_items - online_items})。")
+                logger.info(f"  ➜ 本地数据库共存储 {total_items} 个媒体项 (其中在线: {online_items})。")
 
         logger.info("  ➜ 正在预加载 Emby 文件夹路径映射...")
         folder_map = emby.get_all_folder_mappings(processor.emby_url, processor.emby_api_key)
@@ -407,9 +411,9 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         # --- 2. 扫描 Emby (流式处理) ---
         task_manager.update_status_from_thread(10, f"阶段2/3: 扫描 Emby 并计算差异...")
         
-        top_level_items_map = defaultdict(list)       
-        series_to_seasons_map = defaultdict(list)     
-        series_to_episode_map = defaultdict(list)     
+        # ★★★ 内存优化 2: 彻底移除无用的累积字典 (top_level_items_map 等) ★★★
+        # 这些字典之前只存不取，是导致爆内存的元凶
+        
         emby_id_to_lib_id = {}
         id_to_parent_map = {}
         lib_id_to_guid_map = {}
@@ -464,12 +468,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
 
             # 1. 记录所有扫描到的 ID (用于反向检测离线)
-            # 注意：只有我们关心的类型才记录，否则会误判离线
             if item_type in ["Movie", "Series", "Season", "Episode"]:
                 current_scan_emby_ids.add(item_id)
             else:
                 skipped_other_type += 1
-                continue # 跳过非媒体类型 (Folder, BoxSet等)
+                continue 
 
             # 实时更新映射
             if item_type == "Series" and tmdb_id:
@@ -481,33 +484,32 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
             # 跳过判断 (已存在且在线)
             is_clean = False
             if not force_full_update:
-                if known_emby_status.get(item_id) is True:
+                # ★★★ 内存优化 1: 使用 Set 查找 ★★★
+                if item_id in known_online_emby_ids:
                     is_clean = True
             
             if is_clean:
                 skipped_clean += 1
                 continue 
 
-            # ★★★ 脏数据处理 ★★★
+            # ★★★ 脏数据处理 (内存优化版) ★★★
+            # 不再存储 item 对象，只记录 ID 关系
             
             # A. 顶层媒体
             if item_type in ["Movie", "Series"]:
                 if tmdb_id:
                     composite_key = (str(tmdb_id), item_type)
-                    top_level_items_map[composite_key].append(item)
+                    # top_level_items_map[composite_key].append(item) # <--- 删除这行
                     dirty_keys.add(composite_key)
                 else:
-                    skipped_no_tmdb += 1 # 记录无 TMDb ID 的项目
+                    skipped_no_tmdb += 1 
 
             # B. 子集媒体
             elif item_type in ['Season', 'Episode']:
                 s_id = str(item.get('SeriesId') or item.get('ParentId')) if item_type == 'Season' else str(item.get('SeriesId'))
                 
-                if item_type == 'Season':
-                    if s_id: series_to_seasons_map[s_id].append(item)
-                else:
-                    if s_id: series_to_episode_map[s_id].append(item)
-
+                # series_to_seasons_map/series_to_episode_map 也不需要了，因为后面会重新 fetch
+                
                 if s_id and s_id in emby_sid_to_tmdb_id:
                     dirty_keys.add((emby_sid_to_tmdb_id[s_id], 'Series'))
                 elif s_id:
@@ -522,15 +524,15 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
         # --- 3. 反向差异检测 (删除) ---
         if not force_full_update:
-            active_db_ids = {k for k, v in known_emby_status.items() if v is True}
-            missing_emby_ids = active_db_ids - current_scan_emby_ids
+            # known_online_emby_ids 本身就是 active_db_ids
+            missing_emby_ids = known_online_emby_ids - current_scan_emby_ids
             
-            del known_emby_status
-            del active_db_ids
+            del known_online_emby_ids # 释放内存
             del current_scan_emby_ids
             gc.collect()
 
             if missing_emby_ids:
+                # ... (保留原有的离线处理逻辑) ...
                 logger.info(f"  ➜ 检测到 {len(missing_emby_ids)} 个 Emby ID 已消失，正在处理离线标记...")
                 missing_ids_list = list(missing_emby_ids)
                 
