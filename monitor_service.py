@@ -67,16 +67,23 @@ class MediaFileHandler(FileSystemEventHandler):
         """新增/移动文件入队"""
         global DEBOUNCE_TIMER
         with QUEUE_LOCK:
+            if file_path not in FILE_EVENT_QUEUE:
+                logger.debug(f"  🔍 [实时监控] 文件加入队列: {os.path.basename(file_path)}")
+            
             FILE_EVENT_QUEUE.add(file_path)
-            logger.debug(f"  🔍 [实时监控] 文件加入队列: {os.path.basename(file_path)}")
+            
             if DEBOUNCE_TIMER: DEBOUNCE_TIMER.kill()
             DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_batch_queue)
 
     def _enqueue_delete(self, file_path: str):
+        """删除文件入队"""
         global DELETE_DEBOUNCE_TIMER
         with DELETE_QUEUE_LOCK:
+            if file_path not in DELETE_EVENT_QUEUE:
+                logger.debug(f"  🗑️ [实时监控] 删除事件入队: {os.path.basename(file_path)}")
+            
             DELETE_EVENT_QUEUE.add(file_path)
-            logger.debug(f"  🗑️ [实时监控] 删除事件入队: {os.path.basename(file_path)}")
+            
             if DELETE_DEBOUNCE_TIMER: DELETE_DEBOUNCE_TIMER.kill()
             DELETE_DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_delete_batch_queue)
 
