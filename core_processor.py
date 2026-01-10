@@ -3805,7 +3805,14 @@ class MediaProcessor:
                     if not credits_node.get('cast'):
                         credits_node['cast'] = cast_list
 
-                # ★★★ 步骤 E: 更新 Emby 实时元数据 ★★★
+                # 应用主演员表的翻译成果 
+                if credits_node.get('cast'):
+                    patch_actor_list(credits_node['cast'])
+                
+                if credits_node.get('guest_stars'):
+                    patch_actor_list(credits_node['guest_stars'])
+
+                # 步骤 E: 更新 Emby 实时元数据 
                 file_key = os.path.splitext(filename)[0]
                 fresh_emby_data = child_data_map.get(file_key)
                 if fresh_emby_data:
