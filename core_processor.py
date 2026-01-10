@@ -3,6 +3,8 @@
 import os
 import json
 import time
+import re
+import random
 from typing import Dict, List, Optional, Any, Tuple
 from collections import defaultdict
 import threading
@@ -10,6 +12,10 @@ from datetime import datetime, timezone
 import time as time_module
 import psycopg2
 # 确保所有依赖都已正确导入
+from handler.custom_collection import RecommendationEngine
+import config_manager
+from database.connection import get_db_connection
+from database import media_db, maintenance_db
 import handler.emby as emby
 import handler.tmdb as tmdb
 from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids, apply_rating_logic
@@ -170,12 +176,6 @@ class MediaProcessor:
         8. 通知 Emby 刷新该文件所属的媒体库。
         """
         try:
-            import re
-            import time
-            import random
-            from database.connection import get_db_connection
-            from database import media_db 
-            
             # 随机延时 0.5~2 秒，缓解并发压力
             time.sleep(random.uniform(0.5, 2.0))
             
@@ -521,19 +521,62 @@ class MediaProcessor:
     def process_file_deletion(self, file_path: str):
         """
         实时监控：处理文件删除事件。
-        策略：直接通知 Emby 刷新该文件所在的父目录。
-        Emby 扫描后会发现文件丢失，自动移除条目并触发 'library.deleted' Webhook，
-        从而由 Webhook 模块闭环处理数据库清理。
+        策略：
+        1. 根据文件名精确反查数据库，获取该文件对应的特定 Emby ID (target_emby_id)。
+        2. 调用 maintenance_db 清理该特定 ID。
+        3. 刷新向量缓存 & 通知 Emby。
         """
         try:
-            # 获取父目录路径
-            folder_path = os.path.dirname(file_path)
             filename = os.path.basename(file_path)
+            folder_path = os.path.dirname(file_path)
             
             logger.info(f"  🗑️ [文件删除] 检测到文件移除: {filename}")
-            logger.info(f"  ➜ [文件删除] 通知 Emby 刷新父目录以同步状态: {folder_path}")
             
-            # 调用 Emby 刷新接口
+            # 1. 精确反查 (获取 target_emby_id)
+            media_info = media_db.get_media_info_by_filename(filename)
+            
+            if media_info:
+                tmdb_id = media_info.get('tmdb_id')
+                item_type = media_info.get('item_type')
+                item_name = media_info.get('title', filename)
+                
+                # ★★★ 关键：这是该文件专属的 Emby ID ★★★
+                target_emby_id = media_info.get('target_emby_id')
+                
+                # 兜底：如果资产里没记 ID (旧数据)，尝试取 emby_item_ids_json 的第一个
+                if not target_emby_id:
+                    all_ids = media_info.get('emby_item_ids_json')
+                    if all_ids and len(all_ids) > 0:
+                        target_emby_id = all_ids[0]
+                        logger.warning(f"  ⚠️ [文件删除] 资产详情中未找到绑定ID，回退使用主ID: {target_emby_id}")
+
+                if target_emby_id:
+                    logger.info(f"  ➜ [文件删除] 数据库命中: '{item_name}' (TMDB:{tmdb_id}) -> 对应 EmbyID: {target_emby_id}")
+                    logger.info(f"  ➜ 正在执行精准清理...")
+                    
+                    # 2. 清理数据库 (只清理这个 target_emby_id)
+                    maintenance_db.cleanup_deleted_media_item(
+                        item_id=target_emby_id,
+                        item_name=item_name,
+                        item_type=item_type,
+                        series_id_from_webhook=None 
+                    )
+                    
+                    # 3. 刷新向量缓存
+                    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+                        if item_type in ['Movie', 'Series']:
+                            try:
+                                threading.Thread(target=RecommendationEngine.refresh_cache).start()
+                                logger.debug(f"  ➜ [智能推荐] 已触发向量缓存刷新。")
+                            except Exception as e:
+                                logger.warning(f"  ➜ [智能推荐] 触发缓存刷新失败: {e}")
+                else:
+                    logger.warning(f"  ➜ [文件删除] 数据库记录存在但无法定位 Emby ID，跳过本地清理。")
+            else:
+                logger.debug(f"  ➜ [文件删除] 数据库未找到对应文件记录，可能是未入库文件或已清理。")
+
+            # 4. 通知 Emby 刷新
+            logger.info(f"  ➜ [文件删除] 通知 Emby 刷新父目录以同步状态: {folder_path}")
             emby.refresh_library_by_path(
                 folder_path, 
                 self.emby_url, 
@@ -541,7 +584,7 @@ class MediaProcessor:
             )
 
         except Exception as e:
-            logger.error(f"  🚫 [文件删除] 通知 Emby 刷新失败: {e}", exc_info=True)
+            logger.error(f"  🚫 [文件删除] 处理失败: {e}", exc_info=True)
 
     def _refresh_lib_guid_map(self):
         """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""

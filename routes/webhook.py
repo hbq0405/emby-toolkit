@@ -742,6 +742,9 @@ def emby_webhook():
             return jsonify({"status": "collection_removal_check_started"}), 202
 
     if event_type == "library.deleted":
+            if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_ENABLED):
+                logger.debug(f"  ➜ Webhook: 忽略 'library.deleted' 事件 (实时监控已启用，由监控模块接管清理)。")
+                return jsonify({"status": "ignored_monitor_active"}), 200
             try:
                 series_id_from_webhook = item_from_webhook.get("SeriesId") if original_item_type == "Episode" else None
                 # 直接调用新的、干净的数据库函数

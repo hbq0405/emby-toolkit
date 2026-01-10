@@ -971,3 +971,55 @@ def get_known_filenames_by_tmdb_id(tmdb_id: str) -> set:
     except Exception as e:
         logger.error(f"DB: 获取已知文件名集合失败 (ID: {tmdb_id}): {e}")
         return set()
+    
+def get_media_info_by_filename(filename: str) -> Optional[Dict[str, Any]]:
+    """
+    【监控专用 - 多版本精确版】
+    根据文件名反查媒体元数据。
+    
+    核心逻辑：
+    1. 数据库里一个 TMDb ID 可能对应多个文件 (多版本)。
+    2. 我们把 asset_details_json 数组展开 (Unnest)。
+    3. 找到路径匹配被删除文件的那个具体资产对象。
+    4. 提取该对象绑定的 'emby_item_id'。
+    
+    这样能确保：删的是哪个文件，就只清理那个文件对应的 Emby ID，
+    绝不会误伤同一个 TMDb ID 下的其他版本。
+    """
+    if not filename:
+        return None
+        
+    # SQL 解析：
+    # 1. FROM ... jsonb_array_elements(m.asset_details_json) as elem
+    #    这步操作把数组里的每个 {} 拆成单独的一行临时数据。
+    # 2. WHERE elem->>'path' LIKE %s
+    #    只筛选路径包含文件名的那一行。
+    # 3. SELECT elem->>'emby_item_id'
+    #    只取这一行里记录的 Emby ID。
+    sql = """
+        SELECT 
+            m.tmdb_id, 
+            m.item_type, 
+            m.title, 
+            m.parent_series_tmdb_id,
+            m.emby_item_ids_json,
+            elem->>'emby_item_id' as target_emby_id
+        FROM media_metadata m,
+             jsonb_array_elements(m.asset_details_json) as elem
+        WHERE elem->>'path' LIKE %s
+        LIMIT 1
+    """
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 使用 %filename 进行后缀匹配，适配 Docker 路径映射差异
+                cursor.execute(sql, (f"%{filename}",))
+                row = cursor.fetchone()
+                
+                if row:
+                    return dict(row)
+                return None
+    except Exception as e:
+        logger.error(f"DB: 根据文件名反查精确媒体信息失败 ({filename}): {e}")
+        return None
