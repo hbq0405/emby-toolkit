@@ -1876,19 +1876,40 @@ class MediaProcessor:
                 if item_type in ['Movie', 'Episode']:
                     has_valid_video = False
                     media_sources = item_details_from_emby.get("MediaSources", [])
-                    if media_sources:
-                        for source in media_sources:
-                            for stream in source.get("MediaStreams", []):
-                                # 只要发现一个类型为 Video 的流，就认为通过
-                                if stream.get("Type") == "Video":
-                                    has_valid_video = True
-                                    break
-                            if has_valid_video: break
                     
+                    if not media_sources:
+                        stream_fail_reason = "Emby未返回任何媒体源 (MediaSources为空)"
+                    else:
+                        for source in media_sources:
+                            # 检查 Container 是否存在 (防止完全空的占位符)
+                            if not source.get("Container") and not source.get("Path", "").endswith(".strm"):
+                                continue
+
+                            for stream in source.get("MediaStreams", []):
+                                if stream.get("Type") == "Video":
+                                    # --- 增强检测：必须有分辨率或明确的编码格式 ---
+                                    width = stream.get("Width")
+                                    height = stream.get("Height")
+                                    codec = stream.get("Codec")
+                                    
+                                    # 判定标准：(宽或高大于0) 或者 (有明确的编码信息且不是unknown)
+                                    is_resolution_valid = (width and width > 0) or (height and height > 0)
+                                    is_codec_valid = (codec and str(codec).lower() not in ['unknown', 'und', '', 'none'])
+                                    
+                                    if is_resolution_valid or is_codec_valid:
+                                        has_valid_video = True
+                                        break
+                            if has_valid_video: break
+                        
+                        if not has_valid_video and not stream_fail_reason:
+                            stream_fail_reason = "检测到视频流但数据严重缺失 (无分辨率/无编码信息)"
+
                     if not has_valid_video:
                         stream_check_passed = False
-                        stream_fail_reason = "缺失视频流数据 (可能是strm文件未提取或分析未完成)"
-                        logger.warning(f"  ➜ [质检失败] 《{item_name_for_log}》未检测到视频流。")
+                        # 如果没有具体原因，给一个默认原因
+                        if not stream_fail_reason: stream_fail_reason = "缺失有效的视频流数据"
+                        
+                        logger.warning(f"  ➜ [质检失败] 《{item_name_for_log}》{stream_fail_reason}。")
 
                 # 演员处理质量评分
                 genres = item_details_from_emby.get("Genres", [])
