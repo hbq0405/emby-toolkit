@@ -343,6 +343,15 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
     if not parent_tmdb_id:
         return
 
+    # 获取剧集标题用于日志展示 
+    series_title = parent_tmdb_id
+    try:
+        t = get_series_title_by_tmdb_id(parent_tmdb_id)
+        if t:
+            series_title = t
+    except Exception:
+        pass
+
     records_to_upsert = []
 
     # 1. 准备所有季的记录
@@ -438,10 +447,10 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
                     })
 
                 execute_batch(cursor, sql, data_for_batch)
-                logger.info(f"  ➜ [追剧联动] 成功为剧集 {parent_tmdb_id} 智能同步了 {len(data_for_batch)} 个子项目的元数据(含集数)和在库状态。")
+                logger.info(f"  ➜ [追剧联动] 成功为剧集 {series_title} 智能同步了 {len(data_for_batch)} 个子项目的元数据(含集数)和在库状态。")
 
     except Exception as e:
-        logger.error(f"  ➜ [追剧联动] 在同步剧集 {parent_tmdb_id} 的子项目时发生错误: {e}", exc_info=True)
+        logger.error(f"  ➜ [追剧联动] 在同步剧集 {series_title} 的子项目时发生错误: {e}", exc_info=True)
 
 def get_series_title_by_tmdb_id(tmdb_id: str) -> Optional[str]:
     """根据 TMDB ID 精确查询剧集的标题。"""
