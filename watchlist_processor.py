@@ -359,11 +359,11 @@ class WatchlistProcessor:
                                     media_info_list=[media_info]
                                 )
                                 updates = {
-                                    "is_airing": True,
-                                    "force_ended": False,
-                                    "tmdb_status": "Returning Series",
-                                    "status": STATUS_WATCHING,
-                                    "paused_until": None
+                                    "watchlist_is_airing": True,        
+                                    "force_ended": False,               
+                                    "watchlist_tmdb_status": "Returning Series", 
+                                    "watching_status": STATUS_WATCHING, 
+                                    "paused_until": None                
                                 }
                                 self._update_watchlist_entry(tmdb_id, series_name, updates)
                                 watchlist_db.sync_seasons_watching_status(tmdb_id, [new_season_num], updates["status"])

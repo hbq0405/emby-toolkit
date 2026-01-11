@@ -335,30 +335,6 @@ def get_airing_series_tmdb_ids() -> set:
         logger.error(f"  ➜ 从数据库获取“连载中”剧集ID时出错: {e}", exc_info=True)
         return set()
     
-def get_watchlist_item_details(tmdb_id: str) -> Optional[Dict[str, Any]]:
-    """根据 tmdb_id 获取单个追剧项目的完整字典信息。"""
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = """
-                SELECT 
-                    tmdb_id, item_type, title as item_name, release_year,
-                    watching_status as status,
-                    paused_until, force_ended, watchlist_last_checked_at as last_checked_at,
-                    watchlist_tmdb_status as tmdb_status,
-                    watchlist_next_episode_json as next_episode_to_air_json,
-                    watchlist_missing_info_json as missing_info_json,
-                    watchlist_is_airing as is_airing
-                FROM media_metadata
-                WHERE tmdb_id = %s AND item_type = 'Series';
-            """
-            cursor.execute(sql, (tmdb_id,))
-            row = cursor.fetchone()
-            return dict(row) if row else None
-    except Exception as e:
-        logger.error(f"  ➜ 获取项目 {tmdb_id} 详情时出错: {e}", exc_info=True)
-        return None
-
 def remove_seasons_from_gaps_list(tmdb_id: str, seasons_to_remove: List[int]):
     """从指定项目的 watchlist_missing_info_json['seasons_with_gaps'] 列表中移除指定的季号。"""
     if not seasons_to_remove:
