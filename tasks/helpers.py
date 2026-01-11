@@ -1332,50 +1332,19 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
         try:
             raw_genres = db_row['genres_json']
             # 兼容 list 和 str
-            genres_list = json.loads(raw_genres) if isinstance(raw_genres, str) else raw_genres
+            genres_data = json.loads(raw_genres) if isinstance(raw_genres, str) else raw_genres
             
-            if genres_list:
-                # ★★★ 新增：TMDb 类型 ID 静态映射表 (含电影和剧集) ★★★
-                # 既然数据库丢了ID，我们就查表补回来
-                tmdb_genre_map = {
-                    # --- 电影 & 通用 ---
-                    "动作": 28, "Action": 28,
-                    "冒险": 12, "Adventure": 12,
-                    "动画": 16, "Animation": 16,
-                    "喜剧": 35, "Comedy": 35,
-                    "犯罪": 80, "Crime": 80,
-                    "纪录": 99, "纪录片": 99, "Documentary": 99,
-                    "剧情": 18, "Drama": 18,
-                    "家庭": 10751, "Family": 10751,
-                    "奇幻": 14, "Fantasy": 14,
-                    "历史": 36, "History": 36,
-                    "恐怖": 27, "Horror": 27,
-                    "音乐": 10402, "Music": 10402,
-                    "悬疑": 9648, "Mystery": 9648,
-                    "爱情": 10749, "Romance": 10749,
-                    "科幻": 878, "Science Fiction": 878,
-                    "电视电影": 10770, "TV Movie": 10770,
-                    "惊悚": 53, "Thriller": 53,
-                    "战争": 10752, "War": 10752,
-                    "西部": 37, "Western": 37,
+            if genres_data:
+                # ★★★ 核心修改：智能识别数据格式 ★★★
+                if isinstance(genres_data[0], str):
+                    # 旧数据 (字符串列表 ["Action", "Drama"])
+                    # 既然你不想打补丁，那就直接 ID=0，或者等待下次刮削更新 DB
+                    payload['genres'] = [{"id": 0, "name": g} for g in genres_data]
+                else:
+                    # 新数据 (对象列表 [{"id": 28, "name": "Action"}])
+                    # 直接使用，完美！
+                    payload['genres'] = genres_data
                     
-                    # --- 剧集特有 ---
-                    "动作冒险": 10759, "Action & Adventure": 10759,
-                    "儿童": 10762, "Kids": 10762,
-                    "新闻": 10763, "News": 10763,
-                    "真人秀": 10764, "Reality": 10764,
-                    "科幻与奇幻": 10765, "Sci-Fi & Fantasy": 10765,
-                    "肥皂剧": 10766, "Soap": 10766,
-                    "脱口秀": 10767, "Talk": 10767,
-                    "战争与政治": 10768, "War & Politics": 10768
-                }
-
-                # 数据库存的是 ["Action", "Drama"]
-                # 修复：查表获取 ID，查不到则默认为 0
-                payload['genres'] = [
-                    {"id": tmdb_genre_map.get(g, 0), "name": g} 
-                    for g in genres_list
-                ]
         except Exception as e:
             logger.warning(f"还原 Genres 失败: {e}")
 

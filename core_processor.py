@@ -790,9 +790,14 @@ class MediaProcessor:
             genres_raw = details.get('genres', [])
             genres_list = []
             for g in genres_raw:
-                if isinstance(g, dict): genres_list.append(g.get('name'))
-                elif isinstance(g, str): genres_list.append(g)
-            genres_json = json.dumps([n for n in genres_list if n], ensure_ascii=False)
+                if isinstance(g, dict): 
+                    # TMDb 数据，有 ID
+                    genres_list.append({"id": g.get('id', 0), "name": g.get('name')})
+                elif isinstance(g, str): 
+                    # Emby 数据，无 ID，默认为 0
+                    genres_list.append({"id": 0, "name": g})
+            
+            genres_json = json.dumps(genres_list, ensure_ascii=False)
 
             # 2. Studios (工作室/制作公司/电视网)
             # 剧集只取 networks，电影只取 production_companies 

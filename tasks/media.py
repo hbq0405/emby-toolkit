@@ -751,6 +751,18 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 raw_ratings_map = _extract_and_map_tmdb_ratings(tmdb_details, item_type)
                 # 序列化为 JSON 字符串，准备存入数据库
                 rating_json_str = json.dumps(raw_ratings_map, ensure_ascii=False)
+                # 构建 Genres 数据 
+                # 默认使用 Emby 数据 (格式化为对象列表)
+                final_genres_list = [{"id": 0, "name": g} for g in item.get('Genres', [])]
+                
+                # 如果有 TMDb 详情，优先使用 TMDb 的 Genres (带 ID)
+                if tmdb_details and tmdb_details.get('genres'):
+                    final_genres_list = []
+                    for g in tmdb_details.get('genres', []):
+                        if isinstance(g, dict):
+                            final_genres_list.append({"id": g.get('id', 0), "name": g.get('name')})
+                        elif isinstance(g, str):
+                            final_genres_list.append({"id": 0, "name": g})
                 top_record = {
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
@@ -762,7 +774,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     "rating": item.get('CommunityRating'),
                     "date_added": item.get('DateCreated') or None,
                     "release_date": final_release_date,
-                    "genres_json": json.dumps(item.get('Genres', []), ensure_ascii=False),
+                    "genres_json": json.dumps(final_genres_list, ensure_ascii=False),
                     "tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
                     "official_rating_json": rating_json_str,
                     "runtime_minutes": emby_runtime if (item_type == 'Movie' and emby_runtime) else tmdb_details.get('runtime') if (item_type == 'Movie' and tmdb_details) else None

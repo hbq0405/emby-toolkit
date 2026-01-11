@@ -347,7 +347,7 @@ def query_virtual_library_items(
         
         # --- 1. 基础 JSONB 数组类型 (Genres, Tags, Countries) ---
         # ★★★ 修改：移除 studios，因为它需要特殊处理 ★★★
-        jsonb_array_fields = ['genres', 'tags', 'countries']
+        jsonb_array_fields = ['tags', 'countries']
         if field in jsonb_array_fields:
             column = f"COALESCE(m.{field}_json, '[]'::jsonb)"
             if op in ['contains', 'eq']:
@@ -362,6 +362,45 @@ def query_virtual_library_items(
             elif op == 'is_primary':
                 clause = f"{column}->>0 = %s"
                 params.append(str(value))
+
+        # --- 2.类型 (Genres) - 对象列表处理 ---
+        elif field == 'genres':
+            # 目标值可能是单个字符串，也可能是列表
+            target_names = list(value) if isinstance(value, list) else [value]
+            # 转为小写以便模糊匹配 (虽然数据库存的是原样，但为了稳健)
+            # target_names = [str(n).strip() for n in target_names] # 暂时不转小写，因为前端传来的通常是标准值
+            
+            if not target_names: continue
+            
+            column = "COALESCE(m.genres_json, '[]'::jsonb)"
+            
+            # 逻辑：匹配 name 字段
+            # g->>'name' 取出来是文本
+            
+            if op in ['contains', 'is_one_of', 'eq']:
+                # 只要有一个匹配即可
+                clause = f"""
+                EXISTS (
+                    SELECT 1 FROM jsonb_array_elements({column}) g 
+                    WHERE g->>'name' = ANY(%s)
+                )
+                """
+                params.append(target_names)
+                
+            elif op == 'is_none_of':
+                # 一个都不能匹配
+                clause = f"""
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements({column}) g 
+                    WHERE g->>'name' = ANY(%s)
+                )
+                """
+                params.append(target_names)
+                
+            elif op == 'is_primary':
+                # 主类型是数组第0个
+                clause = f"({column}->0->>'name') = ANY(%s)"
+                params.append(target_names)
 
         # --- 2. 关键词 (Keywords) ---
         elif field == 'keywords':

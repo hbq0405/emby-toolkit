@@ -359,8 +359,11 @@ def get_movie_genres() -> List[str]:
                 if genres:
                     try:
                         for genre in genres:
-                            if genre:
-                                unique_genres.add(genre.strip())
+                            if isinstance(genre, dict):
+                                name = genre.get('name')
+                                if name: unique_genres.add(name.strip())
+                            elif isinstance(genre, str):
+                                if genre: unique_genres.add(genre.strip())
                     except TypeError:
                         logger.warning(f"  ➜ 处理 genres_json 时遇到意外的类型错误，内容: {genres}")
                         continue
@@ -388,8 +391,11 @@ def get_tv_genres() -> List[str]:
                 if genres:
                     try:
                         for genre in genres:
-                            if genre:
-                                unique_genres.add(genre.strip())
+                            if isinstance(genre, dict):
+                                name = genre.get('name')
+                                if name: unique_genres.add(name.strip())
+                            elif isinstance(genre, str):
+                                if genre: unique_genres.add(genre.strip())
                     except TypeError:
                         logger.warning(f"  ➜ 处理 genres_json 时遇到意外的类型错误，内容: {genres}")
                         continue
