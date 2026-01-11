@@ -380,7 +380,6 @@ SERIES_SKELETON_TEMPLATE = {
   "overview": "",
   "popularity": 0.0,
   "poster_path": "",
-  "production_companies": [], # [ { "id": 0, "name": "", "origin_country": "", "logo_path": "" } ]
   "status": "",
   "tagline": "",
   "type": "",
