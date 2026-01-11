@@ -240,6 +240,8 @@ DEFAULT_STUDIO_MAPPING = [
     {"label": "央视", "en": ["CCTV-8", "CCTV-1"], "ids": [521, 1363]}, 
     {"label": "浙江卫视", "en": ["Zhejiang Television"], "ids": [989]},
     {"label": "江苏卫视", "en": ["Jiangsu Television"], "ids": [1055]},
+    {"label": "北京卫视", "en": ["Beijing Television"], "ids": [455]},
+    {"label": "东方卫视", "en": ["Dragon Television"], "ids": [1056]},
     {"label": "TVB", "en": ["TVB Jade", "Television Broadcasts Limited"], "ids": [48, 79261]},
     # --- 传统制作公司 (Company IDs) ---
     # 这些通常用于电影，或者作为电视剧的制作方（非播出平台）
