@@ -13,7 +13,7 @@ import task_manager
 from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_translation, 
                      task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
-from .media import task_role_translation, task_populate_metadata_cache, task_sync_ratings_to_emby, task_execute_auto_tagging_rules, task_scan_monitor_folders 
+from .media import task_role_translation, task_populate_metadata_cache, task_sync_ratings_to_emby, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_restore_local_cache_from_db 
 from .watchlist import task_process_watchlist, task_refresh_completed_series, task_scan_library_gaps, task_scan_old_seasons_backfill
 from .custom_collections import task_process_all_custom_collections, process_single_custom_collection
 from .tmdb_collections import task_refresh_collections
@@ -201,6 +201,7 @@ def get_task_registry(context: str = 'all'):
         'refresh_completed_series': (task_refresh_completed_series, "全量刷新剧集", 'watchlist', True),
         'execute-auto-tagging-rules': (task_execute_auto_tagging_rules, "自动打标规则", 'media', True),
         'scan-monitor-folders': (task_scan_monitor_folders, "扫描监控目录", 'media', True),
+        'restore-cache-from-db': (task_restore_local_cache_from_db, "恢复覆盖缓存", 'media', False),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
