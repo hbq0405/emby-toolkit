@@ -1821,13 +1821,9 @@ class MediaProcessor:
                         if item_type == "Movie":
                             fresh_data = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
                             if fresh_data:
-                                if 'production_companies' in fresh_data:
-                                    fresh_data['production_companies'] = translate_studio_names(fresh_data['production_companies'])
-                                
-                                # 1. 覆盖骨架
+                                # 1. 覆盖骨架 (导演、分级、工作室、简介等)
                                 tmdb_details_for_extra.update(fresh_data)
-                                
-                                # 2. 更新演员源
+                                # 2. 更新演员源 (确保是 TMDb 原版顺序)
                                 if fresh_data.get("credits", {}).get("cast"):
                                     authoritative_cast_source = fresh_data["credits"]["cast"]
                                 logger.info(f"  ➜ 电影元数据补全成功。")
@@ -1836,13 +1832,6 @@ class MediaProcessor:
                             aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
                             if aggregated_tmdb_data:
                                 series_details = aggregated_tmdb_data.get("series_details", {})
-                                
-                                if 'networks' in series_details:
-                                    # 1. 翻译 Networks
-                                    clean_networks = translate_studio_names(series_details['networks'])
-                                    series_details['networks'] = clean_networks
-                                    # 2. 强制覆盖 production_companies (保持与 construct_metadata_payload 逻辑一致)
-                                    series_details['production_companies'] = clean_networks
                                 # 1. 覆盖骨架
                                 tmdb_details_for_extra.update(series_details)
                                 # 2. 更新演员源
