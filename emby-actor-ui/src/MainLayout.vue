@@ -451,22 +451,23 @@ const setRandomTheme = () => {
 html.dark .n-menu .n-menu-item-group-title { color: #828287; }
 /* ★★★ 新增样式：Header 中的任务状态条 ★★★ */
 .header-task-status {
-  flex: 1;
+  flex: 2;
   display: flex;
   justify-content: center; /* 居中显示 */
   align-items: center;
   margin: 0 20px;
   overflow: hidden;
+  min-width: 0;
 }
 
 .status-content {
   display: flex;
   align-items: center;
-  background-color: rgba(0, 0, 0, 0.03); /* 轻微背景色区分 */
+  background-color: rgba(0, 0, 0, 0.03);
   padding: 4px 12px;
   border-radius: 20px;
   border: 1px solid rgba(0, 0, 0, 0.05);
-  max-width: 100%;
+  max-width: 100%; /* 允许撑满父容器 */
 }
 
 /* 暗色模式适配 */
@@ -482,16 +483,20 @@ html.dark .status-content {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1; /* 让文字区域自动填充剩余空间 */
+  min-width: 0; /* 关键：允许文字截断 */
 }
 
 .status-divider {
-  margin: 0 6px;
+  margin: 0 8px;
   opacity: 0.5;
+  flex-shrink: 0; /* 防止分隔符被挤压 */
 }
 
 .status-message {
   opacity: 0.8;
-  max-width: 200px; /* 限制消息最大宽度，防止挤压 */
+  /* ★★★ 核心修改：大幅增加最大宽度，或者直接设为 auto 配合 flex ★★★ */
+  max-width: 600px; 
   overflow: hidden;
   text-overflow: ellipsis;
   display: inline-block;
@@ -500,11 +505,12 @@ html.dark .status-content {
 
 /* 移动端适配：屏幕太窄时隐藏消息详情，只留动作和进度条 */
 @media (max-width: 768px) {
-  .status-message, .status-divider {
-    display: none;
+  .status-message {
+    max-width: 150px; /* 移动端还是限制一下 */
   }
   .header-task-status {
     margin: 0 8px;
+    flex: 1;
   }
 }
 </style>
