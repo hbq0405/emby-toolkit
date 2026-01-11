@@ -90,7 +90,7 @@ def task_add_all_series_to_watchlist(processor):
             try:
                 # ★★★ 修改：调用 task_refresh_completed_series ★★★
                 # 因为新导入的剧集状态都是 Completed，正好归它管
-                task_refresh_completed_series(processor)
+                task_refresh_completed_series(extensions.watchlist_processor_instance)
                 
                 final_message = "自动化流程完成：存量导入与全量刷新均已结束。"
                 task_manager.update_status_from_thread(100, final_message)
