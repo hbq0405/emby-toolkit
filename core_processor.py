@@ -593,6 +593,21 @@ class MediaProcessor:
                     item_type=item_type,
                     series_id_from_webhook=None 
                 )
+                # 3. 同时清理已处理记录 (processed_log) 和 内存缓存 
+                try:
+                    # A. 清理内存缓存
+                    if target_emby_id in self.processed_items_cache:
+                        del self.processed_items_cache[target_emby_id]
+                    
+                    # B. 清理数据库记录
+                    with get_central_db_connection() as conn:
+                        cursor = conn.cursor()
+                        self.log_db_manager.remove_from_processed_log(cursor, target_emby_id)
+                        conn.commit()
+                    
+                    logger.info(f"  ➜ [文件删除] 已同步清除 '{item_name}' 的已处理记录 (ID: {target_emby_id})。")
+                except Exception as e:
+                    logger.warning(f"  ➜ [文件删除] 清除已处理记录时遇到轻微错误: {e}")
                 return True
             else:
                 logger.warning(f"  ➜ [文件删除] 数据库记录存在但无法定位 Emby ID，跳过本地清理: {filename}")
