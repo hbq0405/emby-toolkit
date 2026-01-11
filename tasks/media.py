@@ -19,7 +19,7 @@ import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.telegram as telegram
 from database import connection, settings_db, media_db, queries_db
-from .helpers import parse_full_asset_details, reconstruct_metadata_from_db
+from .helpers import parse_full_asset_details, reconstruct_metadata_from_db, translate_studio_names
 from extensions import UPDATING_METADATA
 
 logger = logging.getLogger(__name__)
@@ -787,14 +787,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     # 1. 获取基础制作公司
                     raw_studios = []
                     if item_type == 'Series':
-                        # 剧集：只要播出平台 (Networks)，不要制作公司
                         raw_studios = tmdb_details.get('networks') or []
                     else:
-                        # 电影：保留制作公司
                         raw_studios = tmdb_details.get('production_companies') or []
                     
-                    # 确保是列表
-                    if not isinstance(raw_studios, list):
+                    if isinstance(raw_studios, list):
+                        raw_studios = translate_studio_names(list(raw_studios))
+                    else:
                         raw_studios = []
 
                     # 2. 去重 (使用字典以 ID 为键进行去重) 并格式化

@@ -1218,14 +1218,16 @@ def construct_metadata_payload(item_type: str, tmdb_data: Dict[str, Any],
         # 手动处理 Studios 字段
         if item_type == 'Series':
             # 剧集：强制将 networks 赋值给 production_companies 和 networks
-            # 这样 Emby 的 "工作室" 栏位显示的就是播出平台
             if 'networks' in tmdb_data:
-                payload['production_companies'] = tmdb_data['networks']
-                payload['networks'] = tmdb_data['networks']
+                clean_networks = translate_studio_names(tmdb_data['networks'])
+                payload['production_companies'] = clean_networks
+                payload['networks'] = clean_networks
         else:
             # 电影：照常使用 production_companies
             if 'production_companies' in tmdb_data:
-                payload['production_companies'] = tmdb_data['production_companies']
+                # ★★★ 修改：调用翻译函数 ★★★
+                clean_companies = translate_studio_names(tmdb_data['production_companies'])
+                payload['production_companies'] = clean_companies
 
         # 4. 类型特定处理
         if item_type == "Movie":
@@ -1425,3 +1427,54 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
             logger.warning(f"还原 Rating 失败: {e}")
 
     return payload
+
+# --- 工作室名称翻译辅助函数 ---
+def translate_studio_names(studios_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    根据配置的映射表，将工作室的英文名转换为中文名。
+    保留 ID 不变，仅修改 name 字段。
+    """
+    if not studios_list:
+        return []
+
+    # 1. 获取映射配置 (优先读库，失败读默认)
+    mapping_data = settings_db.get_setting('studio_mapping') or utils.DEFAULT_STUDIO_MAPPING
+    
+    # 2. 构建查找字典 (ID -> 中文名, 英文名 -> 中文名)
+    id_map = {}
+    name_map = {}
+    
+    # 兼容 List 格式 (新版配置)
+    if isinstance(mapping_data, list):
+        for item in mapping_data:
+            label = item.get('label')
+            if not label: continue
+            
+            # 映射 ID
+            for sid in item.get('ids', []):
+                try: id_map[int(sid)] = label
+                except: pass
+            
+            # 映射 英文名
+            for en_name in item.get('en', []):
+                if en_name: name_map[en_name.lower().strip()] = label
+
+    # 3. 执行翻译
+    translated_list = []
+    for studio in studios_list:
+        # 复制一份，不修改原数据
+        new_studio = studio.copy()
+        
+        s_id = studio.get('id')
+        s_name = studio.get('name')
+        
+        # 优先匹配 ID
+        if s_id and int(s_id) in id_map:
+            new_studio['name'] = id_map[int(s_id)]
+        # 其次匹配 英文名
+        elif s_name and s_name.lower().strip() in name_map:
+            new_studio['name'] = name_map[s_name.lower().strip()]
+            
+        translated_list.append(new_studio)
+        
+    return translated_list

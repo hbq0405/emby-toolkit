@@ -18,7 +18,7 @@ from database.connection import get_db_connection
 from database import media_db, maintenance_db
 import handler.emby as emby
 import handler.tmdb as tmdb
-from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids, construct_metadata_payload, reconstruct_metadata_from_db
+from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids, construct_metadata_payload, translate_studio_names
 import utils
 import constants
 import logging
@@ -803,14 +803,16 @@ class MediaProcessor:
             # 剧集只取 networks，电影只取 production_companies 
             raw_studios = []
             if m_type == 'Series':
-                # 剧集：只要播出平台 (Networks)，不要制作公司
+                # 剧集：只要播出平台 (Networks)
                 raw_studios = details.get('networks') or []
             else:
                 # 电影：保留制作公司
                 raw_studios = details.get('production_companies') or []
             
             if isinstance(raw_studios, list): 
-                raw_studios = list(raw_studios)
+                # ★★★ 修改：调用翻译函数 ★★★
+                # 注意：这里传入的是原始 TMDb 数据，translate_studio_names 会处理它
+                raw_studios = translate_studio_names(list(raw_studios))
             else: 
                 raw_studios = []
             
