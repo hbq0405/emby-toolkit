@@ -1177,7 +1177,8 @@ def construct_metadata_payload(item_type: str, tmdb_data: Dict[str, Any],
         exclude_keys = [
             'casts', 'releases', 'release_dates', 'keywords', 'trailers', 
             'content_ratings', 'videos', 'credits', 'genres', 
-            'episodes_details', 'seasons_details', 'created_by', 'networks'
+            'episodes_details', 'seasons_details', 'created_by', 'networks',
+            'production_companies'
         ]
         for key in payload.keys():
             if key in tmdb_data and key not in exclude_keys:

@@ -773,20 +773,25 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     if tmdb_details.get('vote_average') is not None:
                         top_record['rating'] = tmdb_details.get('vote_average')
                     # 1. 获取基础制作公司
-                    raw_studios = tmdb_details.get('production_companies', []) or []
-
-                    # 2. 如果是电视剧，追加 Networks (电视台/流媒体平台)
+                    raw_studios = []
                     if item_type == 'Series':
-                        networks = tmdb_details.get('networks', []) or []
-                        raw_studios.extend(networks)
+                        # 剧集：只要播出平台 (Networks)，不要制作公司
+                        raw_studios = tmdb_details.get('networks') or []
+                    else:
+                        # 电影：保留制作公司
+                        raw_studios = tmdb_details.get('production_companies') or []
+                    
+                    # 确保是列表
+                    if not isinstance(raw_studios, list):
+                        raw_studios = []
 
-                    # 3. 去重 (使用字典以 ID 为键进行去重) 并格式化
+                    # 2. 去重 (使用字典以 ID 为键进行去重) 并格式化
                     unique_studios_map = {}
                     for s in raw_studios:
                         s_id = s.get('id')
                         s_name = s.get('name')
                         if s_name:
-                            # 如果 ID 冲突，后来的覆盖前面的（通常 Networks 在后，保留 Networks 更合理）
+                            # 如果 ID 冲突，后来的覆盖前面的
                             unique_studios_map[s_id] = {'id': s_id, 'name': s_name}
 
                     top_record['studios_json'] = json.dumps(list(unique_studios_map.values()), ensure_ascii=False)

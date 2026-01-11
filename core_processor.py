@@ -795,13 +795,19 @@ class MediaProcessor:
             genres_json = json.dumps([n for n in genres_list if n], ensure_ascii=False)
 
             # 2. Studios (工作室/制作公司/电视网)
-            raw_studios = details.get('production_companies') or []
-            if isinstance(raw_studios, list): raw_studios = list(raw_studios)
-            else: raw_studios = []
-
+            # 剧集只取 networks，电影只取 production_companies 
+            raw_studios = []
             if m_type == 'Series':
-                networks = details.get('networks') or []
-                if isinstance(networks, list): raw_studios.extend(networks)
+                # 剧集：只要播出平台 (Networks)，不要制作公司
+                raw_studios = details.get('networks') or []
+            else:
+                # 电影：保留制作公司
+                raw_studios = details.get('production_companies') or []
+            
+            if isinstance(raw_studios, list): 
+                raw_studios = list(raw_studios)
+            else: 
+                raw_studios = []
             
             unique_studios_map = {}
             for s in raw_studios:
