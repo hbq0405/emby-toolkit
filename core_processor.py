@@ -3438,7 +3438,7 @@ class MediaProcessor:
 
         # 如果有元数据覆盖，先写入元数据 
         if metadata_override:
-            logger.info(f"  ➜ {log_prefix} 检测到元数据修正，正在写入主文件...")
+            logger.trace(f"  ➜ {log_prefix} 检测到元数据修正，正在写入主文件...")
             
             #  在删除前，先把分集数据提取出来！ 
             if 'episodes_details' in metadata_override:

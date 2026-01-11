@@ -1589,6 +1589,9 @@ def task_restore_local_cache_from_db(processor):
                 logger.warning("  🚫 任务被中止。")
                 break
 
+            # 每处理一个文件，暂停 0.05 秒，防止 IO/CPU 100% 卡死系统
+            time.sleep(0.05)
+
             tmdb_id = item['tmdb_id']
             item_type = item['item_type']
             title = item.get('title', tmdb_id)
