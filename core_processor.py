@@ -1335,6 +1335,11 @@ class MediaProcessor:
                 return cast, rating_float
             else:
                 logger.warning(f"本地豆瓣缓存文件 '{local_json_path}' 无效，将回退到在线API。")
+
+        # 检查是否启用了在线API 
+        if not self.config.get(constants.CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API, True):
+            logger.info("  ➜ 未找到本地豆瓣缓存，且在线豆瓣API已禁用，跳过豆瓣数据获取。")
+            return [], None
         
         # 3. 如果本地未找到，回退到功能完整的在线API路径
         logger.info("  ➜ 未找到本地豆瓣缓存，将通过在线API获取演员信息。")

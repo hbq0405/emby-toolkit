@@ -99,6 +99,7 @@ CONFIG_SECTION_API_DOUBAN = "DoubanAPI"
 DOUBAN_API_AVAILABLE = True # 一个硬编码的开关，表示豆瓣API功能是可用的
 CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN = "api_douban_default_cooldown_seconds" # 调用豆瓣API的冷却时间
 CONFIG_OPTION_DOUBAN_COOKIE = "douban_cookie" # 用于身份验证的豆瓣登录Cookie
+CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API = "douban_enable_online_api" # 是否启用豆瓣在线API
 
 # --- 本地数据源 (神医模式) ---
 CONFIG_SECTION_LOCAL_DATA = "LocalDataSource"

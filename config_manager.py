@@ -86,6 +86,7 @@ DYNAMIC_CONFIG_DEF = {
     # [DoubanAPI]
     constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN: (constants.CONFIG_SECTION_API_DOUBAN, 'float', 1.0),
     constants.CONFIG_OPTION_DOUBAN_COOKIE: (constants.CONFIG_SECTION_API_DOUBAN, 'string', ""),
+    constants.CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API: (constants.CONFIG_SECTION_API_DOUBAN, 'boolean', True),
 
     # [MoviePilot]
     constants.CONFIG_OPTION_MOVIEPILOT_URL: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
