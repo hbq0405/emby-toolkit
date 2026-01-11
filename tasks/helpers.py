@@ -1081,6 +1081,7 @@ def apply_rating_logic(metadata_skeleton: Dict[str, Any], tmdb_data: Dict[str, A
     
     # 1. 成人强制修正
     if tmdb_data.get('adult') is True:
+        logger.warning(f"  ⚠️ 发现成人内容，忽略任何国家分级强制设为 'XXX'.")
         target_us_code = 'XXX'
     # 2. 只有当不是成人内容时，才走常规映射逻辑
     elif 'US' in available_ratings:
