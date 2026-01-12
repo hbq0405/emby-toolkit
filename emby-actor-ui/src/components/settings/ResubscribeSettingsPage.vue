@@ -12,7 +12,7 @@
           </n-button>
         </template>
         <p style="margin-top: 0; color: #888;">
-          规则不仅用于洗版，也可以用于自动化清理低质量或低评分的媒体。
+          规则不仅用于洗版，也可以用于自动化清理低质量或低评分的媒体。如果同一个媒体项符合多个规则，则以排在上面的规则为准。
         </p>
       </n-card>
 
@@ -75,7 +75,7 @@
                   <n-gi :span="2">
                     <n-grid :cols="2" :x-gap="24">
                       <n-gi>
-                        <n-form-item label="应用范围类型" path="scope_type">
+                        <n-form-item label="应用范围" path="scope_type">
                           <n-select 
                             v-model:value="currentRule.scope_type" 
                             :options="scopeTypeOptions" 
