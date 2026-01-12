@@ -71,7 +71,7 @@ def _fetch_candidates_for_rule(rule: dict) -> List[Dict[str, Any]]:
     target_genres = rule.get('target_genres')
     target_countries = rule.get('target_countries')
 
-    # 如果三个条件都为空，为了安全起见，不返回任何东西（防止误操作全库洗版）
+    # 如果三个条件都为空，默认全库扫描 (或者你可以取消注释下面两行来禁止)
     # if not target_libs and not target_genres and not target_countries:
     #     return []
 
@@ -82,7 +82,7 @@ def _fetch_candidates_for_rule(rule: dict) -> List[Dict[str, Any]]:
     if target_genres:
         filter_rules.append({
             'field': 'genres',
-            'operator': 'is_one_of', # 包含选中类型中的任意一个
+            'operator': 'is_one_of',
             'value': target_genres
         })
 
@@ -90,7 +90,7 @@ def _fetch_candidates_for_rule(rule: dict) -> List[Dict[str, Any]]:
     if target_countries:
         filter_rules.append({
             'field': 'countries',
-            'operator': 'is_one_of', # 包含选中国家中的任意一个
+            'operator': 'is_one_of',
             'value': target_countries
         })
 
@@ -174,8 +174,14 @@ def task_update_resubscribe_cache(processor):
             if processor.is_stop_requested(): break
             
             rule_name = rule.get('name', '未命名')
-            scope_type = rule.get('scope_type', 'library')
+            active_scopes = []
+            if rule.get('target_library_ids'): active_scopes.append("媒体库")
+            if rule.get('target_countries'): active_scopes.append("国家")
+            if rule.get('target_genres'): active_scopes.append("类型")
             
+            # 拼接描述，例如 "媒体库+国家"
+            scope_desc = "+".join(active_scopes) if active_scopes else "全库"
+
             task_manager.update_status_from_thread(
                 int(10 + (rule_idx / total_rules) * 80), 
                 f"正在执行规则 ({rule_idx+1}/{total_rules}): {rule_name}"
@@ -186,7 +192,7 @@ def task_update_resubscribe_cache(processor):
             if not candidates:
                 continue
             
-            logger.info(f"  ➜ 规则 '{rule_name}' (范围: {scope_type}) 圈定了 {len(candidates)} 个媒体项。")
+            logger.info(f"  ➜ 规则 '{rule_name}' (范围: {scope_desc}) 圈定了 {len(candidates)} 个媒体项。")
 
             # 分离电影和剧集
             candidate_movie_ids = []
