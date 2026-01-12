@@ -1510,8 +1510,21 @@ def task_scan_monitor_folders(processor):
                     continue 
 
                 scan_count += 1
-                if scan_count % 500 == 0:
-                    task_manager.update_status_from_thread(50, f"扫描中... (已扫 {scan_count}, 跳过旧文件 {skipped_old_count}, 跳过已存 {skipped_exists_count})")
+                scan_count += 1
+                if scan_count % 300 == 0:
+                    # ★★★ 核心优化：主动休眠 0.05 秒 ★★★
+                    # 这会释放 GIL 锁，让 Web 服务器有时间把进度推送到前端，防止界面假死
+                    time.sleep(0.05)
+                    
+                    # 计算一个动态进度值 (50% ~ 90%)，让进度条看起来在动
+                    # 假设大概有 30000 个文件，动态计算一下视觉效果更好
+                    # 如果不知道总数，就固定 50 也可以，或者让它在 50-80 之间循环
+                    dynamic_progress = 50 + int((scan_count % 10000) / 10000 * 30)
+                    
+                    task_manager.update_status_from_thread(
+                        dynamic_progress, 
+                        f"扫描中... (已扫 {scan_count}, 跳过旧文件 {skipped_old_count}, 跳过已存 {skipped_exists_count})"
+                    )
 
                 # --- ID 提取 ---
                 target_id = folder_tmdb_id
