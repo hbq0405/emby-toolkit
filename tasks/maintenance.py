@@ -37,7 +37,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         'resubscribe_rules': {
             'target_library_ids', 'resubscribe_audio_missing_languages',
             'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
-            'resubscribe_effect_include', 'resubscribe_codec_include'
+            'resubscribe_effect_include', 'resubscribe_codec_include', 'scope_value'
         },
         'media_cleanup_tasks': {'versions_info_json'},
         'user_templates': {'emby_policy_json', 'emby_configuration_json'}
