@@ -30,8 +30,8 @@
                   <n-tag v-else type="primary" size="small" round>洗版</n-tag>
                 </div>
                 <n-space size="small" style="margin-top: 4px;">
-                  <n-tag :type="getLibraryTagType(rule.target_library_ids)" size="small" :bordered="false">
-                    {{ getLibraryCountText(rule.target_library_ids) }}
+                  <n-tag :type="getLibraryTagType(rule)" size="small" :bordered="false">
+                    {{ getLibraryCountText(rule) }}
                   </n-tag>
                   <n-tag v-if="rule.rule_type !== 'delete' && rule.auto_resubscribe" type="info" size="small" bordered>自动洗版</n-tag>
                   <n-tag v-if="rule.filter_rating_enabled" type="warning" size="small" bordered>评分&lt;{{ rule.filter_rating_min }}</n-tag>
@@ -72,14 +72,55 @@
                       <n-input v-model:value="currentRule.name" placeholder="例如：清理低分烂片 / 4K洗版" />
                     </n-form-item>
                   </n-gi>
-                  <n-gi>
-                    <n-form-item path="target_library_ids" label="应用媒体库">
-                      <n-select
-                        v-model:value="currentRule.target_library_ids"
-                        multiple filterable :options="availableLibraryOptions"
-                        placeholder="选择媒体库"
-                      />
-                    </n-form-item>
+                  <n-gi :span="2">
+                    <n-grid :cols="2" :x-gap="24">
+                      <n-gi>
+                        <n-form-item label="应用范围类型" path="scope_type">
+                          <n-select 
+                            v-model:value="currentRule.scope_type" 
+                            :options="scopeTypeOptions" 
+                            @update:value="handleScopeTypeChange"
+                            placeholder="选择筛选维度"
+                          />
+                        </n-form-item>
+                      </n-gi>
+                      
+                      <n-gi>
+                        <n-form-item label="选择范围内容" path="scope_value">
+                          <!-- 1. 媒体库选择 -->
+                          <n-select 
+                            v-if="currentRule.scope_type === 'library'"
+                            v-model:value="currentRule.scope_value" 
+                            :options="allEmbyLibraries" 
+                            multiple
+                            placeholder="请选择媒体库"
+                          />
+                          
+                          <!-- 2. 国家/地区选择 -->
+                          <n-select 
+                            v-else-if="currentRule.scope_type === 'country'"
+                            v-model:value="currentRule.scope_value" 
+                            :options="countryOptions" 
+                            multiple 
+                            filterable
+                            placeholder="请选择国家/地区 (如: 中国大陆, 日本)"
+                          />
+                          
+                          <!-- 3. 类型选择 -->
+                          <n-select 
+                            v-else-if="currentRule.scope_type === 'genre'"
+                            v-model:value="currentRule.scope_value" 
+                            :options="genreOptions" 
+                            multiple 
+                            filterable
+                            placeholder="请选择类型 (如: 动画, 动作)"
+                          />
+                          
+                          <!-- 兜底 -->
+                          <n-input v-else v-model:value="currentRule.scope_value" placeholder="请输入值" />
+                        </n-form-item>
+                      </n-gi>
+                    </n-grid>
                   </n-gi>
                   <n-gi :span="2">
                     <n-form-item label="规则模式">
@@ -408,6 +449,12 @@ const formRules = {
 };
 
 // 选项定义
+const scopeTypeOptions = [
+  { label: '媒体库', value: 'library' },
+  { label: '国家/地区', value: 'country' },
+  { label: '电影/剧集类型', value: 'genre' },
+];
+
 const filesizeOperatorOptions = ref([
   { label: '小于', value: 'lt' },
   { label: '大于', value: 'gt' },
@@ -455,16 +502,26 @@ const subtitleLanguageOptions = ref([
     { label: '韩文 (kor)', value: 'kor' }, 
 ]);
 
+const countryOptions = ref([]);
+const genreOptions = ref([]);
+
+// 修改 loadData 函数，增加加载国家和类型的逻辑
 const loadData = async () => {
   loading.value = true;
   try {
-    const [rulesRes, configRes] = await Promise.all([
+    const [rulesRes, configRes, libsRes] = await Promise.all([
       axios.get('/api/resubscribe/rules'),
-      axios.get('/api/config')
+      axios.get('/api/config'),
+      axios.get('/api/config/cover_generator/libraries') // 提前加载媒体库
     ]);
     rules.value = rulesRes.data;
     embyAdminUser.value = configRes.data.emby_admin_user;
     embyAdminPass.value = configRes.data.emby_admin_pass;
+    allEmbyLibraries.value = libsRes.data;
+
+    // ★★★ 新增：加载国家和类型数据 ★★★
+    loadExtraOptions();
+
   } catch (error) {
     message.error('加载数据失败');
   } finally {
@@ -472,20 +529,45 @@ const loadData = async () => {
   }
 };
 
-const openRuleModal = async (rule = null) => {
-  // 加载媒体库列表
+// 新增辅助函数：加载额外选项
+const loadExtraOptions = async () => {
   try {
-    const libsRes = await axios.get('/api/config/cover_generator/libraries');
-    allEmbyLibraries.value = libsRes.data;
-  } catch (e) {}
+    // 1. 加载国家
+    const countryRes = await axios.get('/api/custom_collections/config/tmdb_countries');
+    countryOptions.value = countryRes.data;
 
+    // 2. 加载类型 (合并电影和电视)
+    const [movieG, tvG] = await Promise.all([
+        axios.get('/api/custom_collections/config/movie_genres'),
+        axios.get('/api/custom_collections/config/tv_genres')
+    ]);
+    const genreMap = new Map();
+    [...movieG.data, ...tvG.data].forEach(g => genreMap.set(g.name, g.name));
+    genreOptions.value = Array.from(genreMap.keys()).map(name => ({ label: name, value: name }));
+  } catch (e) {
+    console.error("加载额外选项失败", e);
+  }
+};
+
+const openRuleModal = async (rule = null) => {
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
+    
+    // ★★★ 兼容旧数据 ★★★
+    if (!currentRule.value.scope_type) {
+      currentRule.value.scope_type = 'library';
+      // 如果旧数据存在 target_library_ids 且 scope_value 为空，则迁移过来显示
+      if (!currentRule.value.scope_value && currentRule.value.target_library_ids) {
+        currentRule.value.scope_value = currentRule.value.target_library_ids;
+      }
+    }
     // 兼容旧数据
     if (!currentRule.value.rule_type) currentRule.value.rule_type = 'resubscribe';
   } else {
     currentRule.value = {
-      name: '', enabled: true, target_library_ids: [],
+      name: '', enabled: true, 
+      scope_type: 'library', scope_value: [], // 新增默认值
+      target_library_ids: [], // 保留旧字段以防万一
       rule_type: 'resubscribe', // 默认为洗版
       
       // 筛选条件
@@ -507,6 +589,10 @@ const openRuleModal = async (rule = null) => {
     };
   }
   showModal.value = true;
+};
+
+const handleScopeTypeChange = () => {
+  currentRule.value.scope_value = []; 
 };
 
 const availableLibraryOptions = computed(() => {
@@ -558,8 +644,23 @@ const onDragEnd = async () => {
   } catch (e) {}
 };
 
-const getLibraryCountText = (libs) => (!libs || libs.length === 0) ? '未指定' : `${libs.length} 个库`;
-const getLibraryTagType = (libs) => (!libs || libs.length === 0) ? 'error' : 'default';
+const getLibraryCountText = (rule) => {
+  const type = rule.scope_type || 'library';
+  const val = rule.scope_value || rule.target_library_ids;
+  
+  if (!val || val.length === 0) return '未指定';
+  
+  if (type === 'library') return `${val.length} 个库`;
+  if (type === 'country') return `国家: ${val.length} 个`;
+  if (type === 'genre') return `类型: ${val.length} 个`;
+  return `${val.length} 项`;
+};
+
+// 修改 getLibraryTagType
+const getLibraryTagType = (rule) => {
+  const val = rule.scope_value || rule.target_library_ids;
+  return (!val || val.length === 0) ? 'error' : 'default';
+};
 
 onMounted(loadData);
 </script>

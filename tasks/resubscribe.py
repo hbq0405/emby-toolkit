@@ -1,10 +1,11 @@
 # tasks/resubscribe.py
-# 媒体整理任务模块
+# 媒体整理任务模块 (V4 - 范围筛选增强版)
 
 import re 
 import time
 import logging
-from typing import List, Dict, Optional, Any
+import json
+from typing import List, Dict, Optional, Any, Set
 from concurrent.futures import ThreadPoolExecutor, as_completed 
 from collections import defaultdict
 
@@ -13,7 +14,7 @@ import task_manager
 import handler.emby as emby
 import handler.moviepilot as moviepilot
 import constants  
-from database import resubscribe_db, settings_db, maintenance_db, request_db
+from database import resubscribe_db, settings_db, maintenance_db, request_db, queries_db, media_db
 
 # 从 helpers 导入的辅助函数和常量
 from .helpers import (
@@ -60,12 +61,73 @@ def _evaluate_rating_rule(rule: dict, rating_value: Any, item_name: str) -> tupl
 
     return False, False, ""
 
+def _fetch_candidates_for_rule(rule: dict) -> List[Dict[str, Any]]:
+    """
+    【核心升级】根据规则定义的范围（媒体库/国家/类型等），利用虚拟库查询引擎获取候选媒体项。
+    返回: [{'tmdb_id': 'xxx', 'emby_id': 'xxx'}, ...]
+    """
+    scope_type = rule.get('scope_type', 'library')
+    scope_value = rule.get('scope_value')
+    
+    # 兼容旧数据：如果 scope_value 为空，尝试取 target_library_ids
+    if scope_type == 'library' and not scope_value:
+        scope_value = rule.get('target_library_ids')
+
+    if not scope_value:
+        return []
+
+    # 构造筛选条件 (Filter Rules)
+    filter_rules = []
+    target_library_ids = None
+
+    # 1. 媒体库模式
+    if scope_type == 'library':
+        # 媒体库筛选直接传给 query_virtual_library_items 的 target_library_ids 参数
+        target_library_ids = scope_value if isinstance(scope_value, list) else [scope_value]
+
+    # 2. 国家/地区模式
+    elif scope_type == 'country':
+        filter_rules.append({
+            'field': 'countries',
+            'operator': 'is_one_of',
+            'value': scope_value # e.g. ['CN', 'HK']
+        })
+
+    # 3. 类型/流派模式
+    elif scope_type == 'genre':
+        filter_rules.append({
+            'field': 'genres',
+            'operator': 'is_one_of',
+            'value': scope_value # e.g. ['Animation', 'Action']
+        })
+        
+    # 4. 演员模式 (预留扩展)
+    elif scope_type == 'actor':
+        filter_rules.append({
+            'field': 'actors',
+            'operator': 'contains', 
+            'value': scope_value 
+        })
+
+    # 调用虚拟库查询核心
+    # user_id=None 表示无视用户权限，全库扫描
+    items_simple, _ = queries_db.query_virtual_library_items(
+        rules=filter_rules,
+        logic='AND', 
+        user_id=None,
+        limit=999999, # 全量获取
+        offset=0,
+        target_library_ids=target_library_ids
+    )
+    
+    return items_simple
+
 # ======================================================================
 # 核心任务：刷新媒体整理
 # ======================================================================
 def task_update_resubscribe_cache(processor): 
     """
-    - 刷新媒体整理主任务
+    - 刷新媒体整理主任务 (V4 - 范围筛选增强版)
     """
     task_name = "刷新媒体整理"
     logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -75,18 +137,11 @@ def task_update_resubscribe_cache(processor):
         task_manager.update_status_from_thread(0, "正在加载规则...")
         time.sleep(0.5) 
         
+        # 获取所有启用的规则，按 sort_order 排序 (优先级高的在前)
         all_enabled_rules = [rule for rule in resubscribe_db.get_all_resubscribe_rules() if rule.get('enabled')]
         
-        library_to_rule_map = {}
-        all_target_lib_ids = set()
-        for rule in reversed(all_enabled_rules):
-            if target_libs := rule.get('target_library_ids'):
-                all_target_lib_ids.update(target_libs)
-                for lib_id in target_libs:
-                    library_to_rule_map[lib_id] = rule
-        
         # 如果没有规则，清空所有索引
-        if not all_target_lib_ids:
+        if not all_enabled_rules:
             logger.info("  ➜ 未检测到启用规则，将清理所有洗版索引...")
             all_keys = resubscribe_db.get_all_resubscribe_index_keys()
             if all_keys:
@@ -94,304 +149,268 @@ def task_update_resubscribe_cache(processor):
             task_manager.update_status_from_thread(100, "任务完成：规则为空，已清理所有索引。")
             return
 
-        # --- 步骤 2: 从本地数据库获取全量媒体数据 ---
-        task_manager.update_status_from_thread(5, "正在加载媒体索引...")
+        # --- 步骤 2: 预加载全量媒体数据 (内存缓存) ---
+        # 为了避免在循环中反复查库，我们先一次性把所有 Movie 和 Series 的基础信息加载到内存
+        task_manager.update_status_from_thread(5, "正在预加载媒体库索引...")
         
-        all_movies = resubscribe_db.fetch_all_active_movies_for_analysis()
-        all_series = resubscribe_db.fetch_all_active_series_for_analysis()
+        # 2.1 加载电影 Map
+        all_movies_list = resubscribe_db.fetch_all_active_movies_for_analysis()
+        movies_map = {str(m['tmdb_id']): m for m in all_movies_list}
+        
+        # 2.2 加载剧集 Map
+        all_series_list = resubscribe_db.fetch_all_active_series_for_analysis()
+        series_map = {str(s['tmdb_id']): s for s in all_series_list}
 
-        if not all_movies and not all_series:
+        if not movies_map and not series_map:
             task_manager.update_status_from_thread(100, "任务完成：本地数据库为空。")
             return
 
-        # 只有 needed, ignored, subscribed, auto_subscribed 的项目会被加入此集合
-        # 凡是不在此集合中的（即已达标 ok 的），最后都会被清理掉
+        # 用于记录本次运行中需要保留在数据库的索引 Key
         keys_to_keep_in_db = set()
-
-        # --- 步骤 3: 全量处理流程 ---
-        total = len(all_movies) + len(all_series)
-        logger.info(f"  ➜ 将对 {len(all_movies)} 部电影和 {len(all_series)} 部剧集进行计算...")
         
+        # 用于记录本次运行中已经处理过的 TMDb ID (防止多条规则重复处理同一个项目)
+        # 规则按优先级排序，一旦被高优先级规则处理，后续规则跳过
+        processed_tmdb_ids = set()
+
         index_update_batch = []
-        processed_count = 0
         current_statuses = resubscribe_db.get_current_index_statuses()
-        update_interval = max(50, min(500, total // 20))
-
-        # ====== 3a. 处理所有电影 ======
-        for movie in all_movies:
+        
+        # --- 步骤 3: 按规则遍历处理 ---
+        total_rules = len(all_enabled_rules)
+        
+        for rule_idx, rule in enumerate(all_enabled_rules):
             if processor.is_stop_requested(): break
-            processed_count += 1
             
-            if processed_count % update_interval == 0:
-                progress = int(10 + (processed_count / total) * 85)
-                task_manager.update_status_from_thread(progress, f"正在分析: {movie['title']}")
-
-            # 跳过多版本
-            emby_ids = movie.get('emby_item_ids_json')
-            if emby_ids and len(emby_ids) > 1:
-                continue
+            rule_name = rule.get('name', '未命名')
+            scope_type = rule.get('scope_type', 'library')
             
-            assets = movie.get('asset_details_json')
-            if not assets: continue
-            
-            source_lib_id = assets[0].get('source_library_id')
-            if not source_lib_id: continue 
-
-            rule = library_to_rule_map.get(source_lib_id)
-            if not rule: continue 
-
-            # ==================== 1. 评分预检查 (调用辅助函数) ====================
-            should_skip, rating_needed, rating_reason = _evaluate_rating_rule(
-                rule, 
-                movie.get('rating'), 
-                movie.get('title', '未知电影')
+            task_manager.update_status_from_thread(
+                int(10 + (rule_idx / total_rules) * 80), 
+                f"正在执行规则 ({rule_idx+1}/{total_rules}): {rule_name}"
             )
-            
-            if should_skip:
-                # 洗版模式下低分，直接忽略
+
+            # 3.1 获取该规则圈定的候选名单
+            candidates = _fetch_candidates_for_rule(rule)
+            if not candidates:
                 continue
             
-            # 计算物理状态 (True=需要洗版, False=已达标)
-            needs, reason = _item_needs_resubscribe(assets[0], rule, movie)
-            # 如果评分导致需要删除，强制覆盖状态
-            if rating_needed:
-                needs = True
-                reason = rating_reason
-            # 获取数据库中的当前状态
-            item_key_tuple = (str(movie['tmdb_id']), "Movie", -1)
-            existing_status = current_statuses.get(item_key_tuple)
+            logger.info(f"  ➜ 规则 '{rule_name}' (范围: {scope_type}) 圈定了 {len(candidates)} 个媒体项。")
 
-            # ★★★ 核心逻辑优化 ★★★
-            if not needs:
-                # 物理文件已达标 (OK)
-                # 策略：不加入 keys_to_keep_in_db，也不加入 update_batch。
-                # 结果：如果数据库里有它，最后会被 cleanup 逻辑删除；如果没它，就不添加。
-                continue
-
-            # 物理文件依然不达标 (Needed)
-            final_status = 'needed' # 默认值
-
-            if existing_status in ['subscribed', 'auto_subscribed']:
-                # 场景 A: 已经在洗版流程中 (等待下载或入库)
-                # 策略：保持原状态，防止重复提交或重置
-                final_status = existing_status
+            # 分离电影和剧集
+            candidate_movie_ids = []
+            candidate_series_ids = []
             
-            elif existing_status == 'ignored':
-                # 场景 B: 用户已手动忽略
-                # 策略：保持忽略
-                final_status = 'ignored'
-            
-            else:
-                # 场景 C: 新发现的不达标项目，或者之前是 needed
-                logger.info(f"  ➜ 《{movie['title']}》需要处理。原因: {reason}")
-                if rule.get('auto_resubscribe'):
-                    final_status = 'auto_subscribed'
-                    # 只有当状态发生变化（从 None/needed -> auto_subscribed）时，才触发 webhook
-                    if existing_status != 'auto_subscribed':
-                        _handle_auto_resubscribe_trigger(
-                            item_details={
-                                'tmdb_id': movie['tmdb_id'],
-                                'item_type': 'Movie',
-                                'item_name': movie['title'],
-                                'season_number': None,
-                                'release_group_raw': assets[0].get('release_group_raw', [])
-                            },
-                            rule=rule,
-                            reason=reason
-                        )
-                else:
-                    final_status = 'needed'
-
-            # 只要还需要洗版（或正在洗版），就保留在数据库中
-            keys_to_keep_in_db.add(item_key_tuple[0])
-            index_update_batch.append({
-                "tmdb_id": movie['tmdb_id'], "item_type": "Movie", "season_number": -1,
-                "status": final_status, "reason": reason, "matched_rule_id": rule.get('id')
-            })
-
-        # ====== 3b. 处理所有剧集 ======
-        if all_series:
-            series_tmdb_ids = [str(s['tmdb_id']) for s in all_series]
-            all_episodes_simple = resubscribe_db.fetch_episodes_simple_batch(series_tmdb_ids)
-            
-            episodes_map = defaultdict(list)
-            for ep in all_episodes_simple:
-                episodes_map[ep['parent_series_tmdb_id']].append(ep)
-            
-            for series in all_series:
-                if processor.is_stop_requested(): break
-                processed_count += 1
+            for c in candidates:
+                tid = str(c.get('tmdb_id'))
+                if not tid: continue
                 
-                if processed_count % update_interval == 0:
-                    progress = int(10 + (processed_count / total) * 85)
-                    task_manager.update_status_from_thread(progress, f"正在分析: {series['title']}")
+                # 如果已经处理过，跳过 (高优先级规则优先)
+                if tid in processed_tmdb_ids:
+                    continue
+                
+                # 根据内存 Map 判断类型 (queries_db 返回的 item_type 可能不准，以 media_metadata 为准)
+                if tid in movies_map:
+                    candidate_movie_ids.append(tid)
+                elif tid in series_map:
+                    candidate_series_ids.append(tid)
 
-                # 追更保护
-                watching_status = series.get('watching_status', 'NONE')
-                if watching_status in ['Watching', 'Paused', 'Pending']:
+            # ====== 3a. 处理电影 ======
+            for tmdb_id in candidate_movie_ids:
+                movie = movies_map[tmdb_id]
+                processed_tmdb_ids.add(tmdb_id) # 标记已处理
+
+                # 跳过多版本
+                emby_ids = movie.get('emby_item_ids_json')
+                if emby_ids and len(emby_ids) > 1:
+                    continue
+                
+                assets = movie.get('asset_details_json')
+                if not assets: continue
+                
+                # ==================== 1. 评分预检查 ====================
+                should_skip, rating_needed, rating_reason = _evaluate_rating_rule(
+                    rule, 
+                    movie.get('rating'), 
+                    movie.get('title', '未知电影')
+                )
+                
+                if should_skip: continue
+                
+                # 计算物理状态
+                needs, reason = _item_needs_resubscribe(assets[0], rule, movie)
+                if rating_needed:
+                    needs = True
+                    reason = rating_reason
+                
+                item_key_tuple = (tmdb_id, "Movie", -1)
+                existing_status = current_statuses.get(item_key_tuple)
+
+                if not needs:
                     continue
 
-                tmdb_id = str(series['tmdb_id'])
-                episodes = episodes_map.get(tmdb_id)
-                if not episodes: continue
-
-                source_lib_id = None
-                for ep in episodes:
-                    assets = ep.get('asset_details_json')
-                    if assets and assets[0].get('source_library_id'):
-                        source_lib_id = assets[0].get('source_library_id')
-                        break
-                
-                if not source_lib_id: continue
-                rule = library_to_rule_map.get(source_lib_id)
-                if not rule: continue
-
-                episodes_by_season = defaultdict(list)
-                for ep in episodes:
-                    episodes_by_season[ep.get('season_number')].append(ep)
-
-                series_meta_wrapper = {
-                    'title': series['title'],
-                    'tmdb_id': tmdb_id,
-                    'item_type': 'Series',
-                    'original_language': series.get('original_language'),
-                    'rating': series.get('rating')
-                }
-
-                for season_num, eps_in_season in episodes_by_season.items():
-                    if season_num is None: continue
-                    # 排除第0季 (通常不计算缺集)
-                    if int(season_num) == 0:
-                        continue
-
-                    # ==========================================================
-                    # ★★★ 新增：内存中计算是否缺集 (复用 watchlist 的逻辑) ★★★
-                    # ==========================================================
-                    has_gaps = False
-                    # 1. 筛选出有实体文件的集 (排除只有元数据但没文件的)
-                    valid_eps = [
-                        e for e in eps_in_season 
-                        if e.get('episode_number') and e.get('asset_details_json')
-                    ]
-                    
-                    if valid_eps:
-                        # 2. 获取当前有的最大集号
-                        max_ep = max(e['episode_number'] for e in valid_eps)
-                        # 3. 获取当前有的总集数
-                        count_ep = len(valid_eps)
-                        # 4. 核心逻辑：如果 最大集号 > 总集数，说明中间肯定缺了
-                        #    (例如：有1, 3集。max=3, count=2。3 > 2，缺集成立)
-                        if max_ep > count_ep:
-                            has_gaps = True
-                    # ==========================================================
-                    # 跳过多版本
-                    has_multi_version_episode = False
-                    for ep in eps_in_season:
-                        ep_ids = ep.get('emby_item_ids_json')
-                        if ep_ids and len(ep_ids) > 1:
-                            has_multi_version_episode = True
-                            break
-                    
-                    if has_multi_version_episode:
-                        continue
-                    
-                    eps_in_season.sort(key=lambda x: x.get('episode_number', 0))
-                    rep_ep = eps_in_season[0]
-                    season_tmdb_id = rep_ep.get('season_tmdb_id')
-                    assets = rep_ep.get('asset_details_json')
-                    if not assets: continue
-
-                    # 构建一个专用的 context 对象传进去
-                    current_season_wrapper = series_meta_wrapper.copy()
-                    current_season_wrapper.update({
-                        'item_type': 'Season',
-                        'season_number': int(season_num),
-                        'has_gaps': has_gaps  # <--- 传入计算结果
-                    })
-
-                    # --- 初始化计算状态 ---
-                    status_calculated = 'ok'
-                    reason_calculated = ""
-
-                    # ==================== 1. 评分预检查 (调用辅助函数) ====================
-                    season_display_name = f"{series['title']} - 第{season_num}季"
-
-                    should_skip, rating_needed, rating_reason = _evaluate_rating_rule(
-                        rule, 
-                        current_season_wrapper.get('rating'), 
-                        season_display_name
-                    )
-
-                    if should_skip:
-                        # 洗版模式下低分，直接忽略本季
-                        continue
-
-                    if rating_needed:
-                        # 删除模式下低分，标记为需要处理
-                        status_calculated = 'needed'
-                        reason_calculated = rating_reason
-
-                    # ==================== 2. 常规洗版检查 ====================
-                    # 只有当前状态还是 ok 时才检查 (即评分没问题)
-                    if status_calculated == 'ok':
-                        needs_upgrade, upgrade_reason = _item_needs_resubscribe(assets[0], rule, current_season_wrapper)
-                        if needs_upgrade:
-                            status_calculated = 'needed'
-                            reason_calculated = upgrade_reason
-
-                    # ==================== 3. 一致性检查 ====================
-                    # 只有当前状态还是 ok 且开启了一致性检查时才执行
-                    if status_calculated == 'ok' and rule.get('consistency_check_enabled'):
-                        needs_fix, fix_reason = _check_season_consistency(eps_in_season, rule)
-                        if needs_fix:
-                            status_calculated = 'needed'
-                            reason_calculated = fix_reason
-
-                    # --- ★★★ 核心逻辑优化 ★★★ ---
-                    item_key_tuple = (tmdb_id, "Season", int(season_num))
-                    existing_status = current_statuses.get(item_key_tuple)
-                    
-                    if status_calculated == 'ok':
-                        # 物理文件已达标，跳过（后续会被清理）
-                        continue
-
-                    # 物理文件不达标
-                    final_status = 'needed'
-
-                    if existing_status in ['subscribed', 'auto_subscribed']:
-                        # 保护进行中状态
-                        final_status = existing_status
-                    
-                    elif existing_status == 'ignored':
-                        final_status = 'ignored'
-                    
+                final_status = 'needed'
+                if existing_status in ['subscribed', 'auto_subscribed']:
+                    final_status = existing_status
+                elif existing_status == 'ignored':
+                    final_status = 'ignored'
+                else:
+                    logger.info(f"  ➜ 《{movie['title']}》命中规则 '{rule_name}'。原因: {reason}")
+                    if rule.get('auto_resubscribe'):
+                        final_status = 'auto_subscribed'
+                        if existing_status != 'auto_subscribed':
+                            _handle_auto_resubscribe_trigger(
+                                item_details={
+                                    'tmdb_id': tmdb_id,
+                                    'item_type': 'Movie',
+                                    'item_name': movie['title'],
+                                    'season_number': None,
+                                    'release_group_raw': assets[0].get('release_group_raw', [])
+                                },
+                                rule=rule,
+                                reason=reason
+                            )
                     else:
-                        # 新增或 needed
-                        logger.info(f"  ➜ 《{series['title']} - 第{season_num}季》需要处理。原因: {reason_calculated}")
-                        if rule.get('auto_resubscribe'):
-                            final_status = 'auto_subscribed'
-                            if existing_status != 'auto_subscribed':
-                                _handle_auto_resubscribe_trigger(
-                                    item_details={
-                                        'tmdb_id': tmdb_id,
-                                        'season_tmdb_id': season_tmdb_id,
-                                        'item_type': 'Season',
-                                        'item_name': f"{series['title']} - 第{season_num}季",
-                                        'season_number': season_num,
-                                        'release_group_raw': assets[0].get('release_group_raw', [])
-                                    },
-                                    rule=rule,
-                                    reason=reason_calculated
-                                )
-                        else:
-                            final_status = 'needed'
+                        final_status = 'needed'
 
-                    # 保留并更新
-                    keys_to_keep_in_db.add(f"{tmdb_id}-S{season_num}")
-                    index_update_batch.append({
-                        "tmdb_id": tmdb_id, "item_type": "Season", "season_number": season_num,
-                        "status": final_status, "reason": reason_calculated, "matched_rule_id": rule.get('id')
-                    })
+                keys_to_keep_in_db.add(item_key_tuple[0])
+                index_update_batch.append({
+                    "tmdb_id": tmdb_id, "item_type": "Movie", "season_number": -1,
+                    "status": final_status, "reason": reason, "matched_rule_id": rule.get('id')
+                })
+
+            # ====== 3b. 处理剧集 ======
+            if candidate_series_ids:
+                # 批量获取这些剧集的分集信息
+                all_episodes_simple = resubscribe_db.fetch_episodes_simple_batch(candidate_series_ids)
+                
+                episodes_map = defaultdict(list)
+                for ep in all_episodes_simple:
+                    episodes_map[str(ep['parent_series_tmdb_id'])].append(ep)
+                
+                for tmdb_id in candidate_series_ids:
+                    series = series_map[tmdb_id]
+                    processed_tmdb_ids.add(tmdb_id) # 标记已处理
+
+                    # 追更保护
+                    watching_status = series.get('watching_status', 'NONE')
+                    if watching_status in ['Watching', 'Paused', 'Pending']:
+                        continue
+
+                    episodes = episodes_map.get(tmdb_id)
+                    if not episodes: continue
+
+                    episodes_by_season = defaultdict(list)
+                    for ep in episodes:
+                        episodes_by_season[ep.get('season_number')].append(ep)
+
+                    series_meta_wrapper = {
+                        'title': series['title'],
+                        'tmdb_id': tmdb_id,
+                        'item_type': 'Series',
+                        'original_language': series.get('original_language'),
+                        'rating': series.get('rating')
+                    }
+
+                    for season_num, eps_in_season in episodes_by_season.items():
+                        if season_num is None: continue
+                        if int(season_num) == 0: continue
+
+                        # 缺集计算
+                        has_gaps = False
+                        valid_eps = [e for e in eps_in_season if e.get('episode_number') and e.get('asset_details_json')]
+                        if valid_eps:
+                            max_ep = max(e['episode_number'] for e in valid_eps)
+                            count_ep = len(valid_eps)
+                            if max_ep > count_ep: has_gaps = True
+
+                        # 跳过多版本
+                        has_multi_version = False
+                        for ep in eps_in_season:
+                            ep_ids = ep.get('emby_item_ids_json')
+                            if ep_ids and len(ep_ids) > 1:
+                                has_multi_version = True
+                                break
+                        if has_multi_version: continue
+                        
+                        eps_in_season.sort(key=lambda x: x.get('episode_number', 0))
+                        rep_ep = eps_in_season[0]
+                        season_tmdb_id = rep_ep.get('season_tmdb_id')
+                        assets = rep_ep.get('asset_details_json')
+                        if not assets: continue
+
+                        current_season_wrapper = series_meta_wrapper.copy()
+                        current_season_wrapper.update({
+                            'item_type': 'Season',
+                            'season_number': int(season_num),
+                            'has_gaps': has_gaps
+                        })
+
+                        # --- 初始化计算状态 ---
+                        status_calculated = 'ok'
+                        reason_calculated = ""
+
+                        # 1. 评分检查
+                        season_display_name = f"{series['title']} - 第{season_num}季"
+                        should_skip, rating_needed, rating_reason = _evaluate_rating_rule(
+                            rule, 
+                            current_season_wrapper.get('rating'), 
+                            season_display_name
+                        )
+
+                        if should_skip: continue
+                        if rating_needed:
+                            status_calculated = 'needed'
+                            reason_calculated = rating_reason
+
+                        # 2. 常规洗版检查
+                        if status_calculated == 'ok':
+                            needs_upgrade, upgrade_reason = _item_needs_resubscribe(assets[0], rule, current_season_wrapper)
+                            if needs_upgrade:
+                                status_calculated = 'needed'
+                                reason_calculated = upgrade_reason
+
+                        # 3. 一致性检查
+                        if status_calculated == 'ok' and rule.get('consistency_check_enabled'):
+                            needs_fix, fix_reason = _check_season_consistency(eps_in_season, rule)
+                            if needs_fix:
+                                status_calculated = 'needed'
+                                reason_calculated = fix_reason
+
+                        item_key_tuple = (tmdb_id, "Season", int(season_num))
+                        existing_status = current_statuses.get(item_key_tuple)
+                        
+                        if status_calculated == 'ok': continue
+
+                        final_status = 'needed'
+                        if existing_status in ['subscribed', 'auto_subscribed']:
+                            final_status = existing_status
+                        elif existing_status == 'ignored':
+                            final_status = 'ignored'
+                        else:
+                            logger.info(f"  ➜ 《{series['title']} - 第{season_num}季》命中规则 '{rule_name}'。原因: {reason_calculated}")
+                            if rule.get('auto_resubscribe'):
+                                final_status = 'auto_subscribed'
+                                if existing_status != 'auto_subscribed':
+                                    _handle_auto_resubscribe_trigger(
+                                        item_details={
+                                            'tmdb_id': tmdb_id,
+                                            'season_tmdb_id': season_tmdb_id,
+                                            'item_type': 'Season',
+                                            'item_name': f"{series['title']} - 第{season_num}季",
+                                            'season_number': season_num,
+                                            'release_group_raw': assets[0].get('release_group_raw', [])
+                                        },
+                                        rule=rule,
+                                        reason=reason_calculated
+                                    )
+                            else:
+                                final_status = 'needed'
+
+                        keys_to_keep_in_db.add(f"{tmdb_id}-S{season_num}")
+                        index_update_batch.append({
+                            "tmdb_id": tmdb_id, "item_type": "Season", "season_number": season_num,
+                            "status": final_status, "reason": reason_calculated, "matched_rule_id": rule.get('id')
+                        })
 
         # --- 步骤 4: 执行数据库更新与清理 ---
         
@@ -400,10 +419,8 @@ def task_update_resubscribe_cache(processor):
             task_manager.update_status_from_thread(95, f"正在保存 {len(index_update_batch)} 条结果...")
             resubscribe_db.upsert_resubscribe_index_batch(index_update_batch)
         
-        # 4.2 清理陈旧记录 (ok 的，或者已删除的)
+        # 4.2 清理陈旧记录 (ok 的，或者已删除的，或者不再命中任何规则的)
         all_db_keys = resubscribe_db.get_all_resubscribe_index_keys()
-        
-        # 差集：数据库里有，但本次不需要保留的 (即：变成了 ok 的，或者源文件没了的)
         keys_to_purge = all_db_keys - keys_to_keep_in_db
         
         if keys_to_purge:

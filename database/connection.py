@@ -299,7 +299,9 @@ def init_db():
                         delete_mode TEXT DEFAULT 'episode',          
                         delete_delay_seconds INTEGER DEFAULT 0,
                         filter_rating_ignore_zero BOOLEAN DEFAULT FALSE,
-                        filter_missing_episodes_enabled BOOLEAN DEFAULT FALSE         
+                        filter_missing_episodes_enabled BOOLEAN DEFAULT FALSE,
+                        scope_type TEXT DEFAULT library,  
+                        scope_value JSONB          
                     )
                 """)
 
@@ -485,7 +487,9 @@ def init_db():
                             "delete_mode": "TEXT DEFAULT 'episode'",             
                             "delete_delay_seconds": "INTEGER DEFAULT 0",  
                             "filter_rating_ignore_zero": "BOOLEAN DEFAULT FALSE",
-                            "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE"
+                            "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE",
+                            "scope_type": "TEXT DEFAULT 'library'",  
+                            "scope_value": "JSONB" 
                         },
                         'collections_info': {
                             "poster_path": "TEXT",

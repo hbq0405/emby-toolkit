@@ -35,7 +35,8 @@ def _prepare_rule_data_for_db(rule_data: Dict[str, Any]) -> Dict[str, Any]:
         'target_library_ids', 'resubscribe_audio_missing_languages',
         'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
         'resubscribe_effect_include',
-        'resubscribe_codec_include'
+        'resubscribe_codec_include',
+        'scope_value'
     ]
     for field in jsonb_fields:
         if field in data_to_save and data_to_save[field] is not None:
