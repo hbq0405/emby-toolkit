@@ -72,56 +72,51 @@
                       <n-input v-model:value="currentRule.name" placeholder="例如：清理低分烂片 / 4K洗版" />
                     </n-form-item>
                   </n-gi>
-                  <n-gi :span="2">
-                    <n-grid :cols="2" :x-gap="24">
+                  <n-card title="应用范围 (复合筛选)" size="small" style="margin-bottom: 24px;">
+                    <template #header-extra>
+                      <n-tag type="info" size="small" :bordered="false">条件之间为“与”关系 (AND)</n-tag>
+                    </template>
+                    
+                    <n-grid :cols="1" :y-gap="12">
                       <n-gi>
-                        <n-form-item label="应用范围" path="scope_type">
+                        <n-form-item label="应用媒体库" path="target_library_ids">
                           <n-select 
-                            v-model:value="currentRule.scope_type" 
-                            :options="scopeTypeOptions" 
-                            @update:value="handleScopeTypeChange"
-                            placeholder="选择筛选维度"
+                            v-model:value="currentRule.target_library_ids" 
+                            :options="allEmbyLibraries" 
+                            multiple
+                            placeholder="留空则不限制媒体库"
                           />
                         </n-form-item>
                       </n-gi>
                       
                       <n-gi>
-                        <n-form-item label="选择范围内容" path="scope_value">
-                          <!-- 1. 媒体库选择 -->
-                          <n-select 
-                            v-if="currentRule.scope_type === 'library'"
-                            v-model:value="currentRule.scope_value" 
-                            :options="allEmbyLibraries" 
-                            multiple
-                            placeholder="请选择媒体库"
-                          />
-                          
-                          <!-- 2. 国家/地区选择 -->
-                          <n-select 
-                            v-else-if="currentRule.scope_type === 'country'"
-                            v-model:value="currentRule.scope_value" 
-                            :options="countryOptions" 
-                            multiple 
-                            filterable
-                            placeholder="请选择国家/地区 (如: 中国大陆, 日本)"
-                          />
-                          
-                          <!-- 3. 类型选择 -->
-                          <n-select 
-                            v-else-if="currentRule.scope_type === 'genre'"
-                            v-model:value="currentRule.scope_value" 
-                            :options="genreOptions" 
-                            multiple 
-                            filterable
-                            placeholder="请选择类型 (如: 动画, 动作)"
-                          />
-                          
-                          <!-- 兜底 -->
-                          <n-input v-else v-model:value="currentRule.scope_value" placeholder="请输入值" />
-                        </n-form-item>
+                        <n-grid :cols="2" :x-gap="24">
+                          <n-gi>
+                            <n-form-item label="限定国家/地区" path="target_countries">
+                              <n-select 
+                                v-model:value="currentRule.target_countries" 
+                                :options="countryOptions" 
+                                multiple 
+                                filterable
+                                placeholder="留空则不限制"
+                              />
+                            </n-form-item>
+                          </n-gi>
+                          <n-gi>
+                            <n-form-item label="限定类型" path="target_genres">
+                              <n-select 
+                                v-model:value="currentRule.target_genres" 
+                                :options="genreOptions" 
+                                multiple 
+                                filterable
+                                placeholder="留空则不限制"
+                              />
+                            </n-form-item>
+                          </n-gi>
+                        </n-grid>
                       </n-gi>
                     </n-grid>
-                  </n-gi>
+                  </n-card>
                   <n-gi :span="2">
                     <n-form-item label="规则模式">
                       <n-radio-group v-model:value="currentRule.rule_type" name="ruleTypeGroup" size="large">
@@ -579,22 +574,18 @@ const openRuleModal = async (rule = null) => {
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
     
-    // ★★★ 兼容旧数据 ★★★
-    if (!currentRule.value.scope_type) {
-      currentRule.value.scope_type = 'library';
-      // 如果旧数据存在 target_library_ids 且 scope_value 为空，则迁移过来显示
-      if (!currentRule.value.scope_value && currentRule.value.target_library_ids) {
-        currentRule.value.scope_value = currentRule.value.target_library_ids;
-      }
-    }
+    if (!currentRule.value.target_library_ids) currentRule.value.target_library_ids = [];
+    if (!currentRule.value.target_countries) currentRule.value.target_countries = [];
+    if (!currentRule.value.target_genres) currentRule.value.target_genres = [];
     // 兼容旧数据
     if (!currentRule.value.rule_type) currentRule.value.rule_type = 'resubscribe';
   } else {
     currentRule.value = {
       name: '', enabled: true, 
-      scope_type: 'library', scope_value: [], // 新增默认值
-      target_library_ids: [], // 保留旧字段以防万一
-      rule_type: 'resubscribe', // 默认为洗版
+      target_library_ids: [], 
+      target_countries: [], // 新增
+      target_genres: [],    // 新增
+      rule_type: 'resubscribe',
       
       // 筛选条件
       filter_rating_enabled: false, filter_rating_min: 0, filter_rating_ignore_zero: false,
@@ -671,15 +662,17 @@ const onDragEnd = async () => {
 };
 
 const getLibraryCountText = (rule) => {
-  const type = rule.scope_type || 'library';
-  const val = rule.scope_value || rule.target_library_ids;
-  
-  if (!val || val.length === 0) return '未指定';
-  
-  if (type === 'library') return `${val.length} 个库`;
-  if (type === 'country') return `国家: ${val.length} 个`;
-  if (type === 'genre') return `类型: ${val.length} 个`;
-  return `${val.length} 项`;
+    const libs = rule.target_library_ids?.length || 0;
+    const countries = rule.target_countries?.length || 0;
+    const genres = rule.target_genres?.length || 0;
+    
+    const parts = [];
+    if (libs > 0) parts.push(`${libs}库`);
+    if (countries > 0) parts.push(`${countries}国`);
+    if (genres > 0) parts.push(`${genres}类`);
+    
+    if (parts.length === 0) return '未指定范围';
+    return parts.join(' + ');
 };
 
 // 修改 getLibraryTagType

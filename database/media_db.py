@@ -1032,3 +1032,37 @@ def get_media_info_by_filename(filename: str) -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 根据文件名反查精确媒体信息失败 ({filename}): {e}")
         return None
+    
+def get_full_metadata_by_tmdb_ids(tmdb_ids: List[str]) -> List[Dict[str, Any]]:
+    """
+    【洗版专用】根据 TMDb ID 列表，批量获取完整的媒体元数据。
+    返回: List[Dict] (包含 asset_details_json, rating 等所有字段)
+    """
+    if not tmdb_ids:
+        return []
+
+    # 去重并转为字符串
+    unique_ids = list(set(str(tid) for tid in tmdb_ids if tid))
+    
+    if not unique_ids:
+        return []
+
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 直接查全表字段
+            # 注意：这里只查 Movie 和 Series，因为洗版逻辑主要针对顶层项目
+            # 如果你的洗版逻辑需要处理 Season/Episode，这里可能需要调整
+            # 但目前的洗版逻辑是基于 Series 查子集的，所以查顶层就够了
+            sql = """
+                SELECT * 
+                FROM media_metadata 
+                WHERE tmdb_id = ANY(%s) 
+                  AND item_type IN ('Movie', 'Series')
+            """
+            cursor.execute(sql, (unique_ids,))
+            return [dict(row) for row in cursor.fetchall()]
+            
+    except Exception as e:
+        logger.error(f"批量获取完整元数据失败: {e}", exc_info=True)
+        return []

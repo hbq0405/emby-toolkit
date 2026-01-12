@@ -63,64 +63,57 @@ def _evaluate_rating_rule(rule: dict, rating_value: Any, item_name: str) -> tupl
 
 def _fetch_candidates_for_rule(rule: dict) -> List[Dict[str, Any]]:
     """
-    【核心升级】根据规则定义的范围（媒体库/国家/类型等），利用虚拟库查询引擎获取候选媒体项。
-    返回: [{'tmdb_id': 'xxx', 'emby_id': 'xxx'}, ...]
+    【核心升级 - V5 复合筛选版】
+    支持 媒体库 AND 国家 AND 类型 的组合筛选。
     """
-    scope_type = rule.get('scope_type', 'library')
-    scope_value = rule.get('scope_value')
-    
-    # 兼容旧数据：如果 scope_value 为空，尝试取 target_library_ids
-    if scope_type == 'library' and not scope_value:
-        scope_value = rule.get('target_library_ids')
+    # 1. 提取筛选条件
+    target_libs = rule.get('target_library_ids')
+    target_genres = rule.get('target_genres')
+    target_countries = rule.get('target_countries')
 
-    if not scope_value:
+    # 如果三个条件都为空，为了安全起见，不返回任何东西（防止误操作全库洗版）
+    # 或者你可以决定是否允许全库扫描
+    if not target_libs and not target_genres and not target_countries:
         return []
 
-    # 构造筛选条件 (Filter Rules)
+    # 2. 构造筛选规则 (Filter Rules)
     filter_rules = []
-    target_library_ids = None
 
-    # 1. 媒体库模式
-    if scope_type == 'library':
-        # 媒体库筛选直接传给 query_virtual_library_items 的 target_library_ids 参数
-        target_library_ids = scope_value if isinstance(scope_value, list) else [scope_value]
-
-    # 2. 国家/地区模式
-    elif scope_type == 'country':
-        filter_rules.append({
-            'field': 'countries',
-            'operator': 'is_one_of',
-            'value': scope_value # e.g. ['CN', 'HK']
-        })
-
-    # 3. 类型/流派模式
-    elif scope_type == 'genre':
+    # 类型筛选
+    if target_genres:
         filter_rules.append({
             'field': 'genres',
-            'operator': 'is_one_of',
-            'value': scope_value # e.g. ['Animation', 'Action']
-        })
-        
-    # 4. 演员模式 (预留扩展)
-    elif scope_type == 'actor':
-        filter_rules.append({
-            'field': 'actors',
-            'operator': 'contains', 
-            'value': scope_value 
+            'operator': 'is_one_of', # 包含选中类型中的任意一个
+            'value': target_genres
         })
 
-    # 调用虚拟库查询核心
-    # user_id=None 表示无视用户权限，全库扫描
+    # 国家筛选
+    if target_countries:
+        filter_rules.append({
+            'field': 'countries',
+            'operator': 'is_one_of', # 包含选中国家中的任意一个
+            'value': target_countries
+        })
+
+    # 3. 调用虚拟库查询核心
+    # logic='AND' 意味着：(必须在指定库) AND (必须符合类型) AND (必须符合国家)
     items_simple, _ = queries_db.query_virtual_library_items(
         rules=filter_rules,
         logic='AND', 
         user_id=None,
-        limit=999999, # 全量获取
+        limit=999999,
         offset=0,
-        target_library_ids=target_library_ids
+        target_library_ids=target_libs # 媒体库筛选直接传参
     )
     
-    return items_simple
+    if not items_simple:
+        return []
+
+    # 4. 获取完整元数据
+    tmdb_ids = [i['tmdb_id'] for i in items_simple if i.get('tmdb_id')]
+    candidates = media_db.get_full_metadata_by_tmdb_ids(tmdb_ids)
+    
+    return candidates
 
 # ======================================================================
 # 核心任务：刷新媒体整理

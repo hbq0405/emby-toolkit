@@ -32,11 +32,13 @@ def _parse_item_id(item_id: str) -> Optional[Tuple[str, str, int]]:
 def _prepare_rule_data_for_db(rule_data: Dict[str, Any]) -> Dict[str, Any]:
     data_to_save = rule_data.copy()
     jsonb_fields = [
-        'target_library_ids', 'resubscribe_audio_missing_languages',
+        'target_library_ids', 
+        'target_genres', 
+        'target_countries',
+        'resubscribe_audio_missing_languages',
         'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
         'resubscribe_effect_include',
-        'resubscribe_codec_include',
-        'scope_value'
+        'resubscribe_codec_include'
     ]
     for field in jsonb_fields:
         if field in data_to_save and data_to_save[field] is not None:
