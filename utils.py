@@ -113,8 +113,8 @@ def normalize_name_for_matching(name: Optional[str]) -> str:
 
 # 类型映射
 GENRE_TRANSLATION_PATCH = {
-    "Sci-Fi & Fantasy": "科幻&奇幻",
-    "War & Politics": "战争&政治",
+    "Sci-Fi & Fantasy": "科幻奇幻",
+    "War & Politics": "战争政治",
     # 以后如果发现其他未翻译的，也可以加在这里
 }
 
