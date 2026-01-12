@@ -19,19 +19,14 @@ from utils import (
     DEFAULT_COUNTRY_MAPPING, 
     DEFAULT_LANGUAGE_MAPPING,
     DEFAULT_RATING_MAPPING, 
-    DEFAULT_RATING_PRIORITY 
+    DEFAULT_RATING_PRIORITY,
+    GENRE_TRANSLATION_PATCH 
 )
 from handler.tmdb import get_movie_genres_tmdb, get_tv_genres_tmdb, search_companies_tmdb, search_person_tmdb, search_tv_tmdb, get_tv_details
 # 1. 创建自定义合集蓝图
 custom_collections_bp = Blueprint('custom_collections', __name__, url_prefix='/api/custom_collections')
 
 logger = logging.getLogger(__name__)
-
-GENRE_TRANSLATION_PATCH = {
-    "Sci-Fi & Fantasy": "科幻&奇幻",
-    "War & Politics": "战争&政治",
-    # 以后如果发现其他未翻译的，也可以加在这里
-}
 
 # 辅助函数：确保数据是列表格式 (用于兼容旧数据)
 def ensure_list_format(data, default_list):

@@ -111,6 +111,13 @@ def normalize_name_for_matching(name: Optional[str]) -> str:
     # 转小写并只保留字母和数字
     return ''.join(filter(str.isalnum, ascii_name.lower()))
 
+# 类型映射
+GENRE_TRANSLATION_PATCH = {
+    "Sci-Fi & Fantasy": "科幻&奇幻",
+    "War & Politics": "战争&政治",
+    # 以后如果发现其他未翻译的，也可以加在这里
+}
+
 # --- ★★★ 统一分级映射功能 (V2 - 健壮版) ★★★ ---
 # 1. 统一的分级选项 (前端下拉框用)
 UNIFIED_RATING_CATEGORIES = [

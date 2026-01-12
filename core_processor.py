@@ -793,10 +793,16 @@ class MediaProcessor:
             for g in genres_raw:
                 if isinstance(g, dict): 
                     # TMDb 数据，有 ID
-                    genres_list.append({"id": g.get('id', 0), "name": g.get('name')})
+                    name = g.get('name')
+                    if name in utils.GENRE_TRANSLATION_PATCH:
+                        name = utils.GENRE_TRANSLATION_PATCH[name]
+                    genres_list.append({"id": g.get('id', 0), "name": name})
                 elif isinstance(g, str): 
                     # Emby 数据，无 ID，默认为 0
-                    genres_list.append({"id": 0, "name": g})
+                    name = g
+                    if name in utils.GENRE_TRANSLATION_PATCH:
+                        name = utils.GENRE_TRANSLATION_PATCH[name]
+                    genres_list.append({"id": 0, "name": name})
             
             genres_json = json.dumps(genres_list, ensure_ascii=False)
 

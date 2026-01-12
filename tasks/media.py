@@ -753,16 +753,27 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 rating_json_str = json.dumps(raw_ratings_map, ensure_ascii=False)
                 # 构建 Genres 数据 
                 # 默认使用 Emby 数据 (格式化为对象列表)
-                final_genres_list = [{"id": 0, "name": g} for g in item.get('Genres', [])]
+                final_genres_list = []
+                for g in item.get('Genres', []):
+                    name = g
+                    if name in utils.GENRE_TRANSLATION_PATCH:
+                        name = utils.GENRE_TRANSLATION_PATCH[name]
+                    final_genres_list.append({"id": 0, "name": name})
                 
                 # 如果有 TMDb 详情，优先使用 TMDb 的 Genres (带 ID)
                 if tmdb_details and tmdb_details.get('genres'):
                     final_genres_list = []
                     for g in tmdb_details.get('genres', []):
                         if isinstance(g, dict):
-                            final_genres_list.append({"id": g.get('id', 0), "name": g.get('name')})
+                            name = g.get('name')
+                            if name in utils.GENRE_TRANSLATION_PATCH:
+                                name = utils.GENRE_TRANSLATION_PATCH[name]
+                            final_genres_list.append({"id": g.get('id', 0), "name": name})
                         elif isinstance(g, str):
-                            final_genres_list.append({"id": 0, "name": g})
+                            name = g
+                            if name in utils.GENRE_TRANSLATION_PATCH:
+                                name = utils.GENRE_TRANSLATION_PATCH[name]
+                            final_genres_list.append({"id": 0, "name": name})
                 top_record = {
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
