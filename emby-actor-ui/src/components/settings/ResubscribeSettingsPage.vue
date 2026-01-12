@@ -537,15 +537,37 @@ const loadExtraOptions = async () => {
     countryOptions.value = countryRes.data;
 
     // 2. 加载类型 (合并电影和电视)
-    const [movieG, tvG] = await Promise.all([
-        axios.get('/api/custom_collections/config/movie_genres'),
-        axios.get('/api/custom_collections/config/tv_genres')
-    ]);
+    let movieGenres = [];
+    let tvGenres = [];
+
+    try {
+      const res = await axios.get('/api/custom_collections/config/movie_genres');
+      movieGenres = res.data || [];
+    } catch (e) {
+      console.warn("加载电影类型失败", e);
+    }
+
+    try {
+      const res = await axios.get('/api/custom_collections/config/tv_genres');
+      tvGenres = res.data || [];
+    } catch (e) {
+      console.warn("加载电视剧类型失败", e);
+    }
+
+    // 合并去重
     const genreMap = new Map();
-    [...movieG.data, ...tvG.data].forEach(g => genreMap.set(g.name, g.name));
-    genreOptions.value = Array.from(genreMap.keys()).map(name => ({ label: name, value: name }));
+    [...movieGenres, ...tvGenres].forEach(g => {
+      if (g && g.name) {
+        genreMap.set(g.name, g.name);
+      }
+    });
+    
+    genreOptions.value = Array.from(genreMap.keys())
+      .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN')) // 顺便加个排序，体验更好
+      .map(name => ({ label: name, value: name }));
+      
   } catch (e) {
-    console.error("加载额外选项失败", e);
+    console.error("加载额外选项主流程失败", e);
   }
 };
 
