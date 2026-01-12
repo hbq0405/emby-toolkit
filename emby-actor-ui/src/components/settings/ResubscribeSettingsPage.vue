@@ -77,19 +77,19 @@
                   
                   <!-- ★★★ 核心修改区域：复合筛选 ★★★ -->
                   <n-gi :span="2">
-                    <n-card title="应用范围 (复合筛选)" size="small" style="margin-bottom: 24px;">
+                    <n-card title="限定范围 (复合筛选)" size="small" style="margin-bottom: 24px;">
                       <template #header-extra>
-                        <n-tag type="info" size="small" :bordered="false">条件之间为“与”关系 (AND)</n-tag>
+                        <n-tag type="info" size="small" :bordered="false">条件之间为“且”的关系 (AND)</n-tag>
                       </template>
                       
                       <n-grid :cols="1" :y-gap="12">
                         <n-gi>
-                          <n-form-item label="应用媒体库" path="target_library_ids">
+                          <n-form-item label="限定媒体库" path="target_library_ids">
                             <n-select 
                               v-model:value="currentRule.target_library_ids" 
                               :options="allEmbyLibraries" 
                               multiple
-                              placeholder="留空则不限制媒体库"
+                              placeholder="留空则不限制"
                             />
                           </n-form-item>
                         </n-gi>

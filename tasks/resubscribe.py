@@ -72,9 +72,8 @@ def _fetch_candidates_for_rule(rule: dict) -> List[Dict[str, Any]]:
     target_countries = rule.get('target_countries')
 
     # 如果三个条件都为空，为了安全起见，不返回任何东西（防止误操作全库洗版）
-    # 或者你可以决定是否允许全库扫描
-    if not target_libs and not target_genres and not target_countries:
-        return []
+    # if not target_libs and not target_genres and not target_countries:
+    #     return []
 
     # 2. 构造筛选规则 (Filter Rules)
     filter_rules = []
