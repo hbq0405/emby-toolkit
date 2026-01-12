@@ -41,7 +41,18 @@ INFO "→ 生成 Nginx 配置文件..."
 python3 /app/web_app.py generate-nginx-config
 INFO "→ Nginx 配置文件生成完毕。"
 
-# 3. 启动 Nginx 服务 (修改了这里)
+# 3. 检查是否存在 docker.sock
+if [ -S "/var/run/docker.sock" ]; then
+    INFO "→ 检测到 Docker Socket，正在调整权限以允许非 Root 用户访问..."
+    # 方法 A (推荐): 修改 Socket 组为当前 PGID (更安全)
+    # chown root:${PGID} /var/run/docker.sock
+    
+    # 方法 B (暴力但最有效): 允许所有人读写 Socket (模拟 MP 的兼容性)
+    # 因为这是在容器内部，只影响容器内映射的那个文件句柄，风险可控
+    chmod 666 /var/run/docker.sock
+fi
+
+# 4. 启动 Nginx 服务 (修改了这里)
 # 检查生成的配置文件，如果包含禁用标记，则不启动 Nginx
 if grep -q "# Proxy disabled" /etc/nginx/conf.d/default.conf; then
     INFO "→ 检测到反向代理未启用，跳过启动 Nginx 服务。"
@@ -50,7 +61,7 @@ else
     nginx -g "daemon off;" &
 fi
 
-# 4. 启动主应用
+# 5. 启动主应用
 # 在这里，我们才使用 gosu 将权限降级为普通用户，以保证应用运行时的安全
 INFO "→ 启动 Emby Toolkit 主应用服务..."
 if [ "${PUID}" -eq 0 ]; then
