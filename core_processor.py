@@ -1961,8 +1961,15 @@ class MediaProcessor:
                         logger.warning(f"  ➜ [质检失败] 《{item_name_for_log}》{stream_fail_reason}。")
 
                 # 演员处理质量评分
-                genres = item_details_from_emby.get("Genres", [])
-                is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+                raw_genres = item_details_from_emby.get("Genres", [])
+
+                # 如果数据本身就是字符串列表（兼容旧数据），则保持不变
+                if raw_genres and isinstance(raw_genres[0], dict):
+                    genres = [g.get('name') for g in raw_genres if g.get('name')]
+                else:
+                    genres = raw_genres
+
+                is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres or "记录" in genres
                 
                 # 无论数据来自 API 还是 本地缓存，都必须接受评分算法的检验。
                 processing_score = actor_utils.evaluate_cast_processing_quality(
@@ -2502,8 +2509,16 @@ class MediaProcessor:
             str(actor.get('id')): actor.get('emby_person_id')
             for actor in current_cast_list if actor.get('id') and actor.get('emby_person_id')
         }
-        genres = item_details_from_emby.get("Genres", [])
-        is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+        # 获取原始数据
+        raw_genres = item_details_from_emby.get("Genres", [])
+
+        # 如果数据本身就是字符串列表（兼容旧数据），则保持不变
+        if raw_genres and isinstance(raw_genres[0], dict):
+            genres = [g.get('name') for g in raw_genres if g.get('name')]
+        else:
+            genres = raw_genres
+
+        is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres or "记录" in genres
         final_cast_perfect = actor_utils.format_and_complete_cast_list(
             current_cast_list, is_animation, self.config, mode='auto'
         )
