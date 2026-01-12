@@ -76,49 +76,51 @@
                   </n-gi>
                   
                   <!-- ★★★ 核心修改区域：复合筛选 ★★★ -->
-                  <n-card title="应用范围 (复合筛选)" size="small" style="margin-bottom: 24px;">
-                    <template #header-extra>
-                      <n-tag type="info" size="small" :bordered="false">条件之间为“与”关系 (AND)</n-tag>
-                    </template>
-                    
-                    <!-- ★★★ 修改：改为 3 列布局 ★★★ -->
-                    <n-grid :cols="3" :x-gap="12">
-                      <n-gi>
-                        <n-form-item label="应用媒体库" path="target_library_ids">
-                          <n-select 
-                            v-model:value="currentRule.target_library_ids" 
-                            :options="allEmbyLibraries" 
-                            multiple
-                            placeholder="留空则不限制"
-                          />
-                        </n-form-item>
-                      </n-gi>
+                  <n-gi :span="2">
+                    <n-card title="限定范围 (复合筛选)" size="small" style="margin-bottom: 24px;">
+                      <template #header-extra>
+                        <n-tag type="info" size="small" :bordered="false">条件之间为“与”关系 (AND)</n-tag>
+                      </template>
                       
-                      <n-gi>
-                        <n-form-item label="限定国家/地区" path="target_countries">
-                          <n-select 
-                            v-model:value="currentRule.target_countries" 
-                            :options="countryOptions" 
-                            multiple 
-                            filterable
-                            placeholder="留空则不限制"
-                          />
-                        </n-form-item>
-                      </n-gi>
-                      
-                      <n-gi>
-                        <n-form-item label="限定类型" path="target_genres">
-                          <n-select 
-                            v-model:value="currentRule.target_genres" 
-                            :options="genreOptions" 
-                            multiple 
-                            filterable
-                            placeholder="留空则不限制"
-                          />
-                        </n-form-item>
-                      </n-gi>
-                    </n-grid>
-                  </n-card>
+                      <!-- ★★★ 修改：改为 3 列布局 ★★★ -->
+                      <n-grid :cols="3" :x-gap="12">
+                        <n-gi>
+                          <n-form-item label="限定媒体库" path="target_library_ids">
+                            <n-select 
+                              v-model:value="currentRule.target_library_ids" 
+                              :options="allEmbyLibraries" 
+                              multiple
+                              placeholder="留空则不限制"
+                            />
+                          </n-form-item>
+                        </n-gi>
+                        
+                        <n-gi>
+                          <n-form-item label="限定国家/地区" path="target_countries">
+                            <n-select 
+                              v-model:value="currentRule.target_countries" 
+                              :options="countryOptions" 
+                              multiple 
+                              filterable
+                              placeholder="留空则不限制"
+                            />
+                          </n-form-item>
+                        </n-gi>
+                        
+                        <n-gi>
+                          <n-form-item label="限定类型" path="target_genres">
+                            <n-select 
+                              v-model:value="currentRule.target_genres" 
+                              :options="genreOptions" 
+                              multiple 
+                              filterable
+                              placeholder="留空则不限制"
+                            />
+                          </n-form-item>
+                        </n-gi>
+                      </n-grid>
+                    </n-card>
+                  </n-gi>
 
                   <n-gi :span="2">
                     <n-form-item label="规则模式">
