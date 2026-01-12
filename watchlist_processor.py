@@ -366,7 +366,7 @@ class WatchlistProcessor:
                                     "paused_until": None                
                                 }
                                 self._update_watchlist_entry(tmdb_id, series_name, updates)
-                                watchlist_db.sync_seasons_watching_status(tmdb_id, [new_season_num], updates["status"])
+                                watchlist_db.sync_seasons_watching_status(tmdb_id, [new_season_num], updates["watching_status"])
                                 logger.info(f"  ➜ 已成功复活《{series_name}》：状态更新为 '追剧中'。")
                                 break 
                         except ValueError: pass
