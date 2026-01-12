@@ -1961,8 +1961,9 @@ class MediaProcessor:
                         logger.warning(f"  ➜ [质检失败] 《{item_name_for_log}》{stream_fail_reason}。")
 
                 # 演员处理质量评分
-                genres = item_details_from_emby.get("Genres", [])
-                is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+                raw_genres = item_details_from_emby.get("Genres", [])
+                genre_names = [g.get('Name') or g.get('name') for g in raw_genres if isinstance(g, dict)]
+                is_animation = "Animation" in genre_names or "动画" in genre_names or "Documentary" in genre_names or "纪录" in genre_names
                 
                 # 无论数据来自 API 还是 本地缓存，都必须接受评分算法的检验。
                 processing_score = actor_utils.evaluate_cast_processing_quality(
@@ -2502,8 +2503,9 @@ class MediaProcessor:
             str(actor.get('id')): actor.get('emby_person_id')
             for actor in current_cast_list if actor.get('id') and actor.get('emby_person_id')
         }
-        genres = item_details_from_emby.get("Genres", [])
-        is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+        raw_genres = item_details_from_emby.get("Genres", [])
+        genre_names = [g.get('Name') or g.get('name') for g in raw_genres if isinstance(g, dict)]
+        is_animation = "Animation" in genre_names or "动画" in genre_names or "Documentary" in genre_names or "纪录" in genre_names
         final_cast_perfect = actor_utils.format_and_complete_cast_list(
             current_cast_list, is_animation, self.config, mode='auto'
         )
@@ -2892,8 +2894,9 @@ class MediaProcessor:
             # 步骤 5: 最终格式化并写入文件 (逻辑不变)
             # ======================================================================
             logger.info(f"  ➜ 手动处理：步骤 5/6: 重建演员列表并执行最终格式化...")
-            genres = item_details.get("Genres", [])
-            is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres
+            raw_genres = item_details.get("Genres", [])
+            genre_names = [g.get('Name') or g.get('name') for g in raw_genres if isinstance(g, dict)]
+            is_animation = "Animation" in genre_names or "动画" in genre_names or "Documentary" in genre_names or "纪录" in genre_names
             final_formatted_cast = actor_utils.format_and_complete_cast_list(
                 new_cast_built, is_animation, self.config, mode='manual'
             )
