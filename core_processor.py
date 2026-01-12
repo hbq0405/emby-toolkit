@@ -481,7 +481,8 @@ class MediaProcessor:
                         "Id": "pending",
                         "Name": details.get('title') or details.get('name'),
                         "OriginalTitle": details.get('original_title') or details.get('original_name'),
-                        "People": []
+                        "People": [],
+                        "Genres": details.get('genres', [])
                     }
                     logger.info(f"  ➜ [实时监控] 启动演员表核心处理 (AI翻译/去重/头像检查)...")
                     final_processed_cast = self._process_cast_list(
@@ -1670,6 +1671,11 @@ class MediaProcessor:
                     emby_data_fallback=item_details_from_emby
                 )
                 
+                #  如果 Emby 尚未有类型数据，使用 TMDb 数据补全，确保后续动画判断准确 
+                if not item_details_from_emby.get("Genres") and fresh_data.get("genres"):
+                    item_details_from_emby["Genres"] = fresh_data.get("genres")
+                    logger.debug(f"  ➜ 检测到 Emby 缺少类型数据，已使用 TMDb 数据补全 Genres: {len(fresh_data.get('genres'))} 个")
+
                 # --- 重新提取 authoritative_cast_source (为了后续流程) ---
                 if item_type == "Movie":
                     credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
