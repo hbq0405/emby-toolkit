@@ -557,13 +557,17 @@ const loadExtraOptions = async () => {
     // 合并去重
     const genreMap = new Map();
     [...movieGenres, ...tvGenres].forEach(g => {
-      if (g && g.name) {
-        genreMap.set(g.name, g.name);
+      // ★★★ 核心修复：兼容字符串和对象两种格式 ★★★
+      // 如果 g 是对象(来自TMDb)，取 g.name；如果 g 是字符串(来自数据库)，直接用 g
+      const name = (typeof g === 'object' && g !== null) ? g.name : g;
+      
+      if (name) {
+        genreMap.set(name, name);
       }
     });
     
     genreOptions.value = Array.from(genreMap.keys())
-      .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN')) // 顺便加个排序，体验更好
+      .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
       .map(name => ({ label: name, value: name }));
       
   } catch (e) {
