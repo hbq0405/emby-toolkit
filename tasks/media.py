@@ -1503,7 +1503,7 @@ def task_scan_monitor_folders(processor):
                     stat = os.stat(file_path)
                     file_time = max(stat.st_mtime, stat.st_ctime)
                     
-                    if file_time < cutoff_time:
+                    if lookback_days > 0 and file_time < cutoff_time:
                         skipped_old_count += 1
                         continue 
                 except OSError:

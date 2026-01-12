@@ -78,7 +78,7 @@
                       <n-input-number v-model:value="configModel.monitor_scan_lookback_days" :min="1" :max="365" placeholder="默认 1 天" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          每日定时扫描监控目录时，仅检查最近 N 天内创建或修改过的文件。
+                          每日定时扫描监控目录时，仅检查最近 N 天内创建或修改过的文件，配置为0则全量扫描监控目录
                         </n-text>
                       </template>
                     </n-form-item>
