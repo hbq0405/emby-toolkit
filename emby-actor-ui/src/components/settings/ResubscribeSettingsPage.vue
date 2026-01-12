@@ -1,3 +1,4 @@
+<!-- src/components/settings/ResubscribeSettingsPage.vue -->
 <template>
   <n-spin :show="loading">
     <n-space vertical :size="24">
@@ -30,6 +31,7 @@
                   <n-tag v-else type="primary" size="small" round>洗版</n-tag>
                 </div>
                 <n-space size="small" style="margin-top: 4px;">
+                  <!-- ★★★ 修改：显示复合筛选信息 ★★★ -->
                   <n-tag :type="getLibraryTagType(rule)" size="small" :bordered="false">
                     {{ getLibraryCountText(rule) }}
                   </n-tag>
@@ -72,51 +74,57 @@
                       <n-input v-model:value="currentRule.name" placeholder="例如：清理低分烂片 / 4K洗版" />
                     </n-form-item>
                   </n-gi>
-                  <n-card title="应用范围 (复合筛选)" size="small" style="margin-bottom: 24px;">
-                    <template #header-extra>
-                      <n-tag type="info" size="small" :bordered="false">条件之间为“与”关系 (AND)</n-tag>
-                    </template>
-                    
-                    <n-grid :cols="1" :y-gap="12">
-                      <n-gi>
-                        <n-form-item label="应用媒体库" path="target_library_ids">
-                          <n-select 
-                            v-model:value="currentRule.target_library_ids" 
-                            :options="allEmbyLibraries" 
-                            multiple
-                            placeholder="留空则不限制媒体库"
-                          />
-                        </n-form-item>
-                      </n-gi>
+                  
+                  <!-- ★★★ 核心修改区域：复合筛选 ★★★ -->
+                  <n-gi :span="2">
+                    <n-card title="应用范围 (复合筛选)" size="small" style="margin-bottom: 24px;">
+                      <template #header-extra>
+                        <n-tag type="info" size="small" :bordered="false">条件之间为“与”关系 (AND)</n-tag>
+                      </template>
                       
-                      <n-gi>
-                        <n-grid :cols="2" :x-gap="24">
-                          <n-gi>
-                            <n-form-item label="限定国家/地区" path="target_countries">
-                              <n-select 
-                                v-model:value="currentRule.target_countries" 
-                                :options="countryOptions" 
-                                multiple 
-                                filterable
-                                placeholder="留空则不限制"
-                              />
-                            </n-form-item>
-                          </n-gi>
-                          <n-gi>
-                            <n-form-item label="限定类型" path="target_genres">
-                              <n-select 
-                                v-model:value="currentRule.target_genres" 
-                                :options="genreOptions" 
-                                multiple 
-                                filterable
-                                placeholder="留空则不限制"
-                              />
-                            </n-form-item>
-                          </n-gi>
-                        </n-grid>
-                      </n-gi>
-                    </n-grid>
-                  </n-card>
+                      <n-grid :cols="1" :y-gap="12">
+                        <n-gi>
+                          <n-form-item label="应用媒体库" path="target_library_ids">
+                            <n-select 
+                              v-model:value="currentRule.target_library_ids" 
+                              :options="allEmbyLibraries" 
+                              multiple
+                              placeholder="留空则不限制媒体库"
+                            />
+                          </n-form-item>
+                        </n-gi>
+                        
+                        <n-gi>
+                          <n-grid :cols="2" :x-gap="24">
+                            <n-gi>
+                              <n-form-item label="限定国家/地区" path="target_countries">
+                                <n-select 
+                                  v-model:value="currentRule.target_countries" 
+                                  :options="countryOptions" 
+                                  multiple 
+                                  filterable
+                                  placeholder="留空则不限制"
+                                />
+                              </n-form-item>
+                            </n-gi>
+                            <n-gi>
+                              <n-form-item label="限定类型" path="target_genres">
+                                <n-select 
+                                  v-model:value="currentRule.target_genres" 
+                                  :options="genreOptions" 
+                                  multiple 
+                                  filterable
+                                  placeholder="留空则不限制"
+                                />
+                              </n-form-item>
+                            </n-gi>
+                          </n-grid>
+                        </n-gi>
+                      </n-grid>
+                    </n-card>
+                  </n-gi>
+                  <!-- ★★★ 修改结束 ★★★ -->
+
                   <n-gi :span="2">
                     <n-form-item label="规则模式">
                       <n-radio-group v-model:value="currentRule.rule_type" name="ruleTypeGroup" size="large">
@@ -440,16 +448,10 @@ const modalTitle = computed(() => isEditing.value ? '编辑规则' : '新增规�
 
 const formRules = {
   name: { required: true, message: '请输入规则名称', trigger: 'blur' },
-  target_library_ids: { type: 'array', required: true, message: '请至少选择一个媒体库', trigger: 'change' },
+  // target_library_ids: { type: 'array', required: true, message: '请至少选择一个媒体库', trigger: 'change' }, // 移除必填校验，因为现在是可选的
 };
 
 // 选项定义
-const scopeTypeOptions = [
-  { label: '媒体库', value: 'library' },
-  { label: '国家/地区', value: 'country' },
-  { label: '电影/剧集类型', value: 'genre' },
-];
-
 const filesizeOperatorOptions = ref([
   { label: '小于', value: 'lt' },
   { label: '大于', value: 'gt' },
@@ -528,8 +530,12 @@ const loadData = async () => {
 const loadExtraOptions = async () => {
   try {
     // 1. 加载国家
-    const countryRes = await axios.get('/api/custom_collections/config/tmdb_countries');
-    countryOptions.value = countryRes.data;
+    try {
+      const countryRes = await axios.get('/api/custom_collections/config/tmdb_countries');
+      countryOptions.value = countryRes.data;
+    } catch (e) {
+      console.warn("加载国家列表失败", e);
+    }
 
     // 2. 加载类型 (合并电影和电视)
     let movieGenres = [];
@@ -553,9 +559,7 @@ const loadExtraOptions = async () => {
     const genreMap = new Map();
     [...movieGenres, ...tvGenres].forEach(g => {
       // ★★★ 核心修复：兼容字符串和对象两种格式 ★★★
-      // 如果 g 是对象(来自TMDb)，取 g.name；如果 g 是字符串(来自数据库)，直接用 g
       const name = (typeof g === 'object' && g !== null) ? g.name : g;
-      
       if (name) {
         genreMap.set(name, name);
       }
@@ -574,10 +578,11 @@ const openRuleModal = async (rule = null) => {
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
     
+    // 确保数组初始化
     if (!currentRule.value.target_library_ids) currentRule.value.target_library_ids = [];
     if (!currentRule.value.target_countries) currentRule.value.target_countries = [];
     if (!currentRule.value.target_genres) currentRule.value.target_genres = [];
-    // 兼容旧数据
+    
     if (!currentRule.value.rule_type) currentRule.value.rule_type = 'resubscribe';
   } else {
     currentRule.value = {
@@ -607,16 +612,6 @@ const openRuleModal = async (rule = null) => {
   }
   showModal.value = true;
 };
-
-const handleScopeTypeChange = () => {
-  currentRule.value.scope_value = []; 
-};
-
-const availableLibraryOptions = computed(() => {
-  if (!rules.value || !allEmbyLibraries.value) return [];
-  const assignedIds = new Set(rules.value.filter(r => r.id !== currentRule.value.id).flatMap(r => r.target_library_ids || []));
-  return allEmbyLibraries.value.filter(lib => !assignedIds.has(lib.value));
-});
 
 const saveRule = async () => {
   formRef.value?.validate(async (errors) => {
@@ -675,10 +670,12 @@ const getLibraryCountText = (rule) => {
     return parts.join(' + ');
 };
 
-// 修改 getLibraryTagType
 const getLibraryTagType = (rule) => {
-  const val = rule.scope_value || rule.target_library_ids;
-  return (!val || val.length === 0) ? 'error' : 'default';
+  // 只要有一个条件不为空，就是有效的
+  const hasCondition = (rule.target_library_ids?.length > 0) || 
+                       (rule.target_countries?.length > 0) || 
+                       (rule.target_genres?.length > 0);
+  return hasCondition ? 'default' : 'error';
 };
 
 onMounted(loadData);
