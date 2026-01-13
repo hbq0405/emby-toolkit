@@ -570,7 +570,7 @@ class WatchlistProcessor:
                     name = utils.GENRE_TRANSLATION_PATCH[name]
                 genres_list.append({"id": 0, "name": name})
 
-        genres_json = json.dumps(genres_list, ensure_ascii=False) if genres_list else None
+        genres_json = genres_list if genres_list else None
         keywords = latest_series_data.get("keywords", {}).get("results", [])
         keywords_json = [{"id": k["id"], "name": k["name"]} for k in keywords]
         studios = latest_series_data.get("production_companies", [])
