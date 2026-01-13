@@ -231,46 +231,46 @@ DEFAULT_KEYWORD_MAPPING = [
 
 # --- 工作室预设表 ---
 DEFAULT_STUDIO_MAPPING = [
-    # --- 国内平台 (Network IDs) ---
-    {"label": "CCTV-1", "en": ["CCTV-1"], "ids": [1363]}, 
+    # --- 国内平台 (纯 Network) ---
+    {"label": "CCTV-1", "en": ["CCTV-1"], "network_ids": [1363]}, 
     {"label": "CCTV-8", "en": ["CCTV-8"], "network_ids": [521]},
-    {"label": "湖南卫视", "en": ["Hunan TV"], "ids": [952]},
-    {"label": "浙江卫视", "en": ["Zhejiang Television"], "ids": [989]},
-    {"label": "江苏卫视", "en": ["Jiangsu Television"], "ids": [1055]},
-    {"label": "北京卫视", "en": ["Beijing Television"], "ids": [455]},
-    {"label": "东方卫视", "en": ["Dragon Television"], "ids": [1056]},
-    {"label": "腾讯视频", "en": ["Tencent Video"], "ids": [2007]},
-    {"label": "爱奇艺", "en": ["iQiyi"], "ids": [1330]},
-    {"label": "优酷", "en": ["Youku"], "ids": [1419]},
-    {"label": "芒果TV", "en": ["Mango TV"], "ids": [1631]},
-    {"label": "TVB", "en": ["TVB Jade", "Television Broadcasts Limited"], "ids": [48, 79261]},
+    {"label": "湖南卫视", "en": ["Hunan TV"], "network_ids": [952]},
+    {"label": "浙江卫视", "en": ["Zhejiang Television"], "network_ids": [989]},
+    {"label": "江苏卫视", "en": ["Jiangsu Television"], "network_ids": [1055]},
+    {"label": "北京卫视", "en": ["Beijing Television"], "network_ids": [455]},
+    {"label": "东方卫视", "en": ["Dragon Television"], "network_ids": [1056]},
+    {"label": "腾讯视频", "en": ["Tencent Video"], "network_ids": [2007]},
+    {"label": "爱奇艺", "en": ["iQiyi"], "network_ids": [1330]},
+    {"label": "优酷", "en": ["Youku"], "network_ids": [1419]},
+    {"label": "芒果TV", "en": ["Mango TV"], "network_ids": [1631]},
+    {"label": "TVB", "en": ["TVB Jade", "Television Broadcasts Limited"], "network_ids": [48, 79261]},
 
-    # --- 全球流媒体 (Network IDs) ---
-    {"label": "网飞", "en": ["Netflix"], "ids": [213]},
-    {"label": "HBO", "en": ["HBO"], "ids": [49, 3268]},
-    {"label": "迪士尼", "en": ["Disney+"], "ids": [2739]},
-    {"label": "苹果TV", "en": ["Apple TV+"], "ids": [2552]},
-    {"label": "亚马逊", "en": ["Amazon Prime Video"], "ids": [1024]},
-    {"label": "Hulu", "en": ["Hulu"], "ids": [453]},
+    # --- 全球流媒体/电视网 (Network + Company) ---
+    # 这些巨头通常既作为播出平台(Network)，也作为制作公司(Company)存在
+    {"label": "网飞", "en": ["Netflix"], "network_ids": [213], "company_ids": [20580]},
+    {"label": "HBO", "en": ["HBO"], "network_ids": [49], "company_ids": [3268]},
+    {"label": "迪士尼", "en": ["Disney+", "Walt Disney Pictures"], "network_ids": [2739], "company_ids": [2]},
+    {"label": "苹果TV", "en": ["Apple TV+"], "network_ids": [2552], "company_ids": [108568]},
+    {"label": "亚马逊", "en": ["Amazon Prime Video"], "network_ids": [1024], "company_ids": [20555]},
+    {"label": "Hulu", "en": ["Hulu"], "network_ids": [453], "company_ids": [15365]},
 
-    # --- 传统制作公司 (Company IDs) ---
-    # 这些通常用于电影，或者作为电视剧的制作方（非播出平台）
-    {"label": "二十世纪影业", "en": ["20th century fox"], "ids": [25]},
-    {"label": "康斯坦丁影业", "en": ["Constantin Film"], "ids": [47]},
-    {"label": "派拉蒙", "en": ["Paramount Pictures"], "ids": [4]},
-    {"label": "华纳兄弟", "en": ["Warner Bros. Pictures"], "ids": [174]},
-    {"label": "环球影业", "en": ["Universal Pictures"], "ids": [33]},
-    {"label": "哥伦比亚影业", "en": ["Columbia Pictures"], "ids": [5]},
-    {"label": "米高梅", "en": ["Metro-Goldwyn-Mayer"], "ids": [21]},
-    {"label": "狮门影业", "en": ["Lionsgate"], "ids": [1632]}, 
-    {"label": "传奇影业", "en": ["Legendary Pictures", "Legendary Entertainment"], "ids": [923]},
-    {"label": "漫威", "en": ["Marvel Studios, Marvel Entertainment"], "ids": [420, 7505]},
-    {"label": "DC", "en": ["DC"], "ids": [128064, 9993]},
-    {"label": "皮克斯", "en": ["Pixar"], "ids": [3]},
+    # --- 传统制作公司 (纯 Company) ---
+    {"label": "二十世纪影业", "en": ["20th century fox"], "company_ids": [25]},
+    {"label": "康斯坦丁影业", "en": ["Constantin Film"], "company_ids": [47]},
+    {"label": "派拉蒙", "en": ["Paramount Pictures"], "company_ids": [4]},
+    {"label": "华纳兄弟", "en": ["Warner Bros. Pictures"], "company_ids": [174]},
+    {"label": "环球影业", "en": ["Universal Pictures"], "company_ids": [33]},
+    {"label": "哥伦比亚影业", "en": ["Columbia Pictures"], "company_ids": [5]},
+    {"label": "米高梅", "en": ["Metro-Goldwyn-Mayer"], "company_ids": [21]},
+    {"label": "狮门影业", "en": ["Lionsgate"], "company_ids": [1632]}, 
+    {"label": "传奇影业", "en": ["Legendary Pictures", "Legendary Entertainment"], "company_ids": [923]},
+    {"label": "漫威", "en": ["Marvel Studios", "Marvel Entertainment"], "company_ids": [420, 7505]},
+    {"label": "DC", "en": ["DC"], "company_ids": [128064, 9993]},
+    {"label": "皮克斯", "en": ["Pixar"], "company_ids": [3]},
     {"label": "梦工厂", "en": ["DreamWorks Animation", "DreamWorks"], "company_ids": [521]},
-    {"label": "吉卜力", "en": ["Studio Ghibli"], "ids": [10342]},
-    {"label": "正午阳光", "en": ["Daylight Entertainment"], "ids": [74209]},
-    {"label": "A24", "en": ["A24"], "ids": [41077]},
+    {"label": "吉卜力", "en": ["Studio Ghibli"], "company_ids": [10342]},
+    {"label": "正午阳光", "en": ["Daylight Entertainment"], "company_ids": [74209]},
+    {"label": "A24", "en": ["A24"], "company_ids": [41077]},
 ]
 
 # --- 国家预设表 ---

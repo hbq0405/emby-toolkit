@@ -48,6 +48,7 @@ def _expand_keyword_labels(value) -> Dict[str, List]:
 def _expand_studio_labels(value) -> Dict[str, List]:
     """
     将中文工作室展开为 { 'ids': [...], 'names': [...] }
+    兼容 network_ids 和 company_ids
     """
     mapping_data = settings_db.get_setting('studio_mapping') or utils.DEFAULT_STUDIO_MAPPING
     
@@ -67,8 +68,16 @@ def _expand_studio_labels(value) -> Dict[str, List]:
     for label in labels:
         if label in mapping:
             item = mapping[label]
+            
+            # ★★★ 核心修改：同时收集三种可能的 ID 字段 ★★★
+            # 这样本地筛选时，无论 Emby 存的是哪种 ID，都能命中
             if item.get('ids'):
                 target_ids.extend([str(i) for i in item['ids']])
+            if item.get('network_ids'):
+                target_ids.extend([str(i) for i in item['network_ids']])
+            if item.get('company_ids'):
+                target_ids.extend([str(i) for i in item['company_ids']])
+                
             if item.get('en'):
                 target_names.extend(item['en'])
         else:

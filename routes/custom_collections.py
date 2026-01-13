@@ -761,19 +761,45 @@ def api_get_studio_defaults():
 @custom_collections_bp.route('/config/studios', methods=['GET'])
 @any_login_required
 def api_get_studios_for_filter():
-    """返回工作室映射的 Label 列表，供筛选下拉框使用"""
+    """
+    返回工作室列表，带类型标记。
+    前端可根据当前选择的媒体类型(Movie/TV)来过滤此列表。
+    """
     try:
         from database import settings_db
-        # 获取完整配置
         data = settings_db.get_setting('studio_mapping')
-        # 使用之前的辅助函数确保是列表
         mapping_list = ensure_list_format(data, DEFAULT_STUDIO_MAPPING)
         
-        # 转换为前端下拉框格式
-        studio_options = [
-            {"label": item['label'], "value": item['label']}
-            for item in mapping_list
-        ]
+        studio_options = []
+        for item in mapping_list:
+            # 1. 确定该条目支持的媒体类型
+            supported_types = []
+            tmdb_params = {}
+
+            # 如果有 company_ids，支持电影
+            if item.get('company_ids') or item.get('ids'): # 兼容旧的 ids
+                supported_types.append('movie')
+                # 优先取 company_ids，没有则取 ids
+                c_ids = item.get('company_ids') or item.get('ids')
+                if c_ids:
+                    tmdb_params['with_companies'] = ",".join([str(i) for i in c_ids])
+
+            # 如果有 network_ids，支持电视剧
+            if item.get('network_ids'):
+                supported_types.append('tv')
+                n_ids = item.get('network_ids')
+                if n_ids:
+                    tmdb_params['with_networks'] = ",".join([str(i) for i in n_ids])
+
+            studio_options.append({
+                "label": item['label'],
+                "value": item['label'],
+                # ★★★ 新增字段：告诉前端这个选项属于哪一类 ★★★
+                "types": supported_types, 
+                # ★★★ 新增字段：告诉前端去 TMDb 查什么参数 ★★★
+                "tmdb_params": tmdb_params
+            })
+            
         return jsonify(studio_options)
     except Exception as e:
         logger.error(f"获取工作室列表失败: {e}")

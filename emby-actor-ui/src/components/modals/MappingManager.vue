@@ -32,13 +32,15 @@
       <!-- Tab 2: 工作室 -->
       <n-tab-pane name="studios" tab="工作室">
         <n-alert type="info" :bordered="false" class="mb-4">
-          配置出品公司或播出平台。
+          配置出品公司或播出平台。<b>请区分电影制作公司和电视播出平台 ID。</b>
         </n-alert>
         <div class="list-header">
           <div class="col-handle"></div>
           <div class="col-label">中文简称</div>
           <div class="col-en">英文原名</div>
-          <div class="col-ids">TMDb IDs</div>
+          <!-- ★★★ 修改：拆分为两列 ★★★ -->
+          <div class="col-ids">制作公司 IDs (Movie)</div>
+          <div class="col-ids">播出平台 IDs (TV)</div>
           <div class="col-action">操作</div>
         </div>
         <div ref="studioListRef" class="sortable-list">
@@ -46,7 +48,15 @@
             <div class="col-handle drag-handle"><n-icon :component="DragIcon" /></div>
             <div class="col-label"><n-input v-model:value="item.label" placeholder="例如：爱奇艺" /></div>
             <div class="col-en"><n-input v-model:value="item.en" placeholder="iQIYI" /></div>
-            <div class="col-ids"><n-input v-model:value="item.ids" placeholder="12345" /></div>
+            
+            <!-- ★★★ 修改：两个输入框 ★★★ -->
+            <div class="col-ids">
+              <n-input v-model:value="item.company_ids" placeholder="Company ID" />
+            </div>
+            <div class="col-ids">
+              <n-input v-model:value="item.network_ids" placeholder="Network ID" />
+            </div>
+
             <div class="col-action">
               <n-button circle text type="error" @click="removeItem(studioList, index)"><n-icon :component="DeleteIcon" /></n-button>
             </div>
@@ -320,7 +330,6 @@ const dynamicRatingOptions = computed(() => {
 const processBackendData = (data, type) => {
   let list = Array.isArray(data) ? data : [];
   
-  // 兼容旧的字符串列表格式
   if (list.length > 0 && typeof list[0] === 'string') {
     list = list.map(s => ({ label: s }));
   }
@@ -334,8 +343,30 @@ const processBackendData = (data, type) => {
     } else if (type === 'language') {
       base.value = item.value || '';
     } else if (type === 'simple') {
-      // 仅需要 label，已在 base 中处理
+      // simple logic
+    } else if (type === 'studio') {
+      // ★★★ 修改：工作室特殊处理，读取分离的 IDs ★★★
+      base.en = Array.isArray(item.en) ? item.en.join(', ') : (item.en || '');
+      
+      // 读取 company_ids
+      base.company_ids = Array.isArray(item.company_ids) 
+        ? item.company_ids.join(', ') 
+        : (item.company_ids || '');
+        
+      // 读取 network_ids
+      base.network_ids = Array.isArray(item.network_ids) 
+        ? item.network_ids.join(', ') 
+        : (item.network_ids || '');
+
+      // 兼容旧数据：如果只有 ids 且上面两个都空，暂时填入 company_ids (或者你可以选择留空让用户自己分)
+      if (!base.company_ids && !base.network_ids && item.ids) {
+         const oldIds = Array.isArray(item.ids) ? item.ids.join(', ') : item.ids;
+         // 这里为了安全，可以不自动填充，或者默认填入 company_ids
+         // base.company_ids = oldIds; 
+      }
+
     } else {
+      // 关键词等其他类型保持原样
       base.en = Array.isArray(item.en) ? item.en.join(', ') : (item.en || '');
       base.ids = Array.isArray(item.ids) ? item.ids.join(', ') : (item.ids || '');
     }
@@ -355,8 +386,25 @@ const processFrontendData = (list, type) => {
     } else if (type === 'language') {
       base.value = item.value ? item.value.trim() : '';
     } else if (type === 'simple') {
-      // 仅需要 label
+      // simple logic
+    } else if (type === 'studio') {
+      // ★★★ 修改：工作室特殊处理，保存分离的 IDs ★★★
+      base.en = item.en ? item.en.split(',').map(s => s.trim()).filter(s => s) : [];
+      
+      // 处理 Company IDs
+      base.company_ids = item.company_ids 
+        ? item.company_ids.toString().split(',').map(s => s.trim()).filter(s => s).map(Number) 
+        : [];
+        
+      // 处理 Network IDs
+      base.network_ids = item.network_ids 
+        ? item.network_ids.toString().split(',').map(s => s.trim()).filter(s => s).map(Number) 
+        : [];
+        
+      // 不再保存通用的 'ids' 字段，强制分离
+
     } else {
+      // 关键词等其他类型
       base.en = item.en ? item.en.split(',').map(s => s.trim()).filter(s => s) : [];
       base.ids = item.ids ? item.ids.toString().split(',').map(s => s.trim()).filter(s => s).map(Number) : [];
     }
@@ -456,6 +504,11 @@ const addItem = (list, type = 'normal') => {
     item.value = '';
   } else if (type === 'simple') {
     // 仅需要 label
+  } else if (list === studioList) { 
+    // 注意：这里判断 list === studioList 或者传 type='studio' 都可以
+    item.en = ''; 
+    item.company_ids = ''; 
+    item.network_ids = '';
   } else {
     item.en = ''; item.ids = '';
   }
@@ -657,8 +710,8 @@ onUnmounted(() => {
 /* 列宽定义 */
 .col-handle { width: 30px; display: flex; align-items: center; cursor: grab; color: var(--n-text-color-3); }
 .col-handle:active { cursor: grabbing; }
-.col-label { width: 140px; }
-.col-en { flex: 2; }
+.col-label { width: 120px; }
+.col-en { flex: 1.5; }
 .col-ids { flex: 1; }
 .col-extra { flex: 2; } /* 用于国家别名 */
 .col-empty { flex: 2; } /* 用于语言占位 */
