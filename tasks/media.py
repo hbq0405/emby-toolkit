@@ -613,6 +613,32 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
         for i in range(0, total_to_process, batch_size):
             if processor.is_stop_requested(): break
             batch_tasks = items_to_process[i:i + batch_size]
+
+            series_tmdb_ids_to_fetch = []
+            for task in batch_tasks:
+                if task['type'] == 'Series' and task.get('tmdb_id'):
+                    series_tmdb_ids_to_fetch.append(str(task['tmdb_id']))
+
+            aggregated_series_data_map = {}
+            
+            if series_tmdb_ids_to_fetch:
+                # 定义一个简单的包装函数，方便线程池调用
+                def _fetch_one_series(tid):
+                    # 调用 tmdb.py 中的聚合函数，并发数设为 5
+                    return tid, tmdb.aggregate_full_series_data_from_tmdb(tid, processor.tmdb_api_key, max_workers=5)
+
+                # 使用线程池并发请求多部剧集
+                # 注意：这里是“并发请求多部剧”，每部剧内部又是“并发请求多个季”
+                # 为了避免线程爆炸，外层并发数可以设小一点，比如 3
+                with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+                    future_to_tid = {executor.submit(_fetch_one_series, tid): tid for tid in series_tmdb_ids_to_fetch}
+                    for future in concurrent.futures.as_completed(future_to_tid):
+                        try:
+                            tid, data = future.result()
+                            if data:
+                                aggregated_series_data_map[tid] = data
+                        except Exception as e:
+                            logger.error(f"获取剧集 {future_to_tid[future]} 详情失败: {e}")
             
             batch_item_groups = []
 
@@ -684,27 +710,26 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 except Exception as e:
                     logger.error(f"处理项目 {task.get('tmdb_id')} 失败: {e}")
 
-            # --- 以下逻辑保持不变 (并发获取 TMDB 和 写入 DB) ---
-            
             tmdb_details_map = {}
-            def fetch_tmdb_details(item_group):
+            def fetch_movie_details(item_group):
                 if not item_group: return None, None
                 item = item_group[0]
                 t_id = item.get("ProviderIds", {}).get("Tmdb")
                 i_type = item.get("Type")
-                if not t_id: return None, None
-                details = None
-                try:
-                    if i_type == 'Movie': details = tmdb.get_movie_details(t_id, processor.tmdb_api_key)
-                    elif i_type == 'Series': details = tmdb.get_tv_details(t_id, processor.tmdb_api_key)
-                except Exception: pass
-                return str(t_id), details
+                # 只处理电影
+                if i_type == 'Movie' and t_id:
+                    try:
+                        return str(t_id), tmdb.get_movie_details(t_id, processor.tmdb_api_key)
+                    except: pass
+                return None, None
 
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                futures = {executor.submit(fetch_tmdb_details, grp): grp for grp in batch_item_groups}
+                # 过滤出电影类型的组
+                movie_groups = [grp for grp in batch_item_groups if grp[0].get('Type') == 'Movie']
+                futures = {executor.submit(fetch_movie_details, grp): grp for grp in movie_groups}
                 for future in concurrent.futures.as_completed(futures):
-                    t_id_str, details = future.result()
-                    if t_id_str and details: tmdb_details_map[t_id_str] = details
+                    res = future.result()
+                    if res and res[0]: tmdb_details_map[res[0]] = res[1]
 
             metadata_batch = []
             series_ids_processed_in_batch = set()
@@ -714,7 +739,14 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 item = item_group[0]
                 tmdb_id_str = str(item.get("ProviderIds", {}).get("Tmdb"))
                 item_type = item.get("Type")
-                tmdb_details = tmdb_details_map.get(tmdb_id_str)
+                tmdb_details = None
+                if item_type == 'Movie':
+                    tmdb_details = tmdb_details_map.get(tmdb_id_str)
+                elif item_type == 'Series':
+                    # 从之前聚合的数据中取 series_details
+                    agg_data = aggregated_series_data_map.get(tmdb_id_str)
+                    if agg_data:
+                        tmdb_details = agg_data.get('series_details')
                 
                 # --- 1. 构建顶层记录 ---
                 asset_details_list = []
@@ -845,10 +877,22 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
                 metadata_batch.append(top_record)
 
-                # --- 2. 处理 Series 的子集 ---
+                # --- 2. 处理 Series 的子集 (使用聚合数据) ---
                 if item_type == "Series":
                     series_ids_processed_in_batch.add(tmdb_id_str)
                     
+                    # 获取聚合数据
+                    agg_data = aggregated_series_data_map.get(tmdb_id_str)
+                    
+                    # 如果没有 TMDb 数据，跳过子集处理 (保留顶层记录)
+                    if not agg_data:
+                        continue
+
+                    # 提取聚合数据中的列表
+                    tmdb_seasons_list = agg_data.get('seasons_details', [])
+                    
+                    # --- 构建 Emby 本地索引 (用于判断 in_library) ---
+                    # 这里的 series_to_seasons_map 是之前从 Emby 拉取的
                     series_emby_ids = [str(v.get('Id')) for v in item_group if v.get('Id')]
                     my_seasons = []
                     my_episodes = []
@@ -856,163 +900,79 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                         my_seasons.extend(series_to_seasons_map.get(s_id, []))
                         my_episodes.extend(series_to_episode_map.get(s_id, []))
                     
-                    tmdb_children_map = {}
-                    processed_season_numbers = set()
-                    
-                    if tmdb_details and 'seasons' in tmdb_details:
-                        for s_info in tmdb_details.get('seasons', []):
-                            try:
-                                s_num = int(s_info.get('season_number'))
-                            except (ValueError, TypeError):
-                                continue
-                            
-                            matched_emby_seasons = []
-                            for s in my_seasons:
-                                try:
-                                    if int(s.get('IndexNumber')) == s_num:
-                                        matched_emby_seasons.append(s)
-                                except (ValueError, TypeError):
-                                    continue
-                            
-                            if matched_emby_seasons:
-                                processed_season_numbers.add(s_num)
-                                real_season_tmdb_id = str(s_info.get('id'))
-                                season_poster = s_info.get('poster_path')
-                                if not season_poster and tmdb_details:
-                                    season_poster = tmdb_details.get('poster_path')
-
-                                # 提取季发行日期
-                                s_release_date = s_info.get('air_date') or None
-                                
-                                if not s_release_date and matched_emby_seasons:
-                                    s_release_date = matched_emby_seasons[0].get('PremiereDate') or None
-                                
-                                # 核心逻辑：如果还没找到，遍历该季下的分集找最早的
-                                if not s_release_date:
-                                    # 筛选出属于当前季(s_num)且有日期的分集
-                                    ep_dates = [
-                                        e.get('PremiereDate') for e in my_episodes 
-                                        if e.get('ParentIndexNumber') == s_num and e.get('PremiereDate')
-                                    ]
-                                    if ep_dates:
-                                        # 取最早的日期作为季的发行日期
-                                        s_release_date = min(ep_dates)
-                                season_record = {
-                                    "tmdb_id": real_season_tmdb_id,
-                                    "item_type": "Season",
-                                    "parent_series_tmdb_id": tmdb_id_str,
-                                    "season_number": s_num,
-                                    "title": s_info.get('name'),
-                                    "overview": s_info.get('overview'),
-                                    "poster_path": season_poster,
-                                    "rating": s_info.get('vote_average'),
-                                    "in_library": True,
-                                    "release_date": s_release_date,
-                                    "subscription_status": "NONE",
-                                    "emby_item_ids_json": json.dumps([s.get('Id') for s in matched_emby_seasons]),
-                                    "tags_json": json.dumps(extract_tag_names(matched_emby_seasons[0]) if matched_emby_seasons else [], ensure_ascii=False),
-                                    "ignore_reason": None
-                                }
-                                metadata_batch.append(season_record)
-                                tmdb_children_map[f"S{s_num}"] = s_info
-
-                                has_eps = any(e.get('ParentIndexNumber') == s_num for e in my_episodes)
-                                if has_eps:
-                                    try:
-                                        s_details = tmdb.get_tv_season_details(tmdb_id_str, s_num, processor.tmdb_api_key)
-                                        if s_details and 'episodes' in s_details:
-                                            for ep in s_details['episodes']:
-                                                if ep.get('episode_number') is not None:
-                                                    tmdb_children_map[f"S{s_num}E{ep.get('episode_number')}"] = ep
-                                    except: pass
-
-                    # B. 兜底处理
+                    # 建立索引: { season_num: [emby_season_obj] }
+                    emby_season_index = defaultdict(list)
                     for s in my_seasons:
-                        try:
-                            s_num = int(s.get('IndexNumber'))
-                        except (ValueError, TypeError):
-                            continue
+                        try: emby_season_index[int(s.get('IndexNumber'))].append(s)
+                        except: pass
+                    
+                    # 建立索引: { (s_num, e_num): [emby_episode_obj] }
+                    emby_episode_index = defaultdict(list)
+                    for e in my_episodes:
+                        try: emby_episode_index[(int(e.get('ParentIndexNumber')), int(e.get('IndexNumber')))].append(e)
+                        except: pass
 
-                        if s_num not in processed_season_numbers:
-                            # 兜底逻辑也加上分集日期推断 
-                            s_release_date = s.get('PremiereDate') or None
-                            if not s_release_date:
-                                ep_dates = [
-                                    e.get('PremiereDate') for e in my_episodes 
-                                    if e.get('ParentIndexNumber') == s_num and e.get('PremiereDate')
-                                ]
-                                if ep_dates:
-                                    s_release_date = min(ep_dates)
-                            fallback_season_tmdb_id = f"{tmdb_id_str}-S{s_num}"
-                            season_record = {
-                                "tmdb_id": fallback_season_tmdb_id,
-                                "item_type": "Season",
+                    # --- A. 处理季 (遍历 TMDb 数据) ---
+                    for s_info in tmdb_seasons_list:
+                        s_num = s_info.get('season_number')
+                        if s_num is None: continue
+                        
+                        # 判断是否在库：有对应的 Emby 季对象，或者该季下有任何一集在库
+                        matched_emby_seasons = emby_season_index.get(s_num, [])
+                        is_in_library = bool(matched_emby_seasons) or any(k[0] == s_num for k in emby_episode_index.keys())
+                        
+                        season_record = {
+                            "tmdb_id": str(s_info.get('id')),
+                            "item_type": "Season",
+                            "parent_series_tmdb_id": tmdb_id_str,
+                            "season_number": s_num,
+                            "title": s_info.get('name'),
+                            "overview": s_info.get('overview'),
+                            "poster_path": s_info.get('poster_path'),
+                            "rating": s_info.get('vote_average'),
+                            "in_library": is_in_library, 
+                            "release_date": s_info.get('air_date'),
+                            "subscription_status": "NONE",
+                            "emby_item_ids_json": json.dumps([s.get('Id') for s in matched_emby_seasons]),
+                            "tags_json": json.dumps(extract_tag_names(matched_emby_seasons[0]) if matched_emby_seasons else [], ensure_ascii=False),
+                            "total_episodes": s_info.get('episode_count', 0)
+                        }
+                        metadata_batch.append(season_record)
+
+                        # --- B. 处理该季下的集 ---
+                        # aggregate_full_series_data_from_tmdb 返回的季详情里包含了 episodes 列表
+                        for ep_info in s_info.get('episodes', []):
+                            e_num = ep_info.get('episode_number')
+                            if e_num is None: continue
+                            
+                            matched_emby_eps = emby_episode_index.get((s_num, e_num), [])
+                            is_ep_in_library = bool(matched_emby_eps)
+                            
+                            # 构建资产信息 (文件路径等)
+                            ep_asset_details_list = []
+                            for v in matched_emby_eps:
+                                details = parse_full_asset_details(v) 
+                                ep_asset_details_list.append(details)
+
+                            child_record = {
+                                "tmdb_id": str(ep_info.get('id')),
+                                "item_type": "Episode",
                                 "parent_series_tmdb_id": tmdb_id_str,
                                 "season_number": s_num,
-                                "title": s.get('Name') or f"Season {s_num}",
-                                "overview": None,
-                                "poster_path": tmdb_details.get('poster_path') if tmdb_details else None,
-                                "in_library": True,
-                                "release_date": s_release_date,
-                                "subscription_status": "NONE",
-                                "emby_item_ids_json": json.dumps([s.get('Id')]),
-                                "tags_json": json.dumps(extract_tag_names(s), ensure_ascii=False),
-                                "ignore_reason": "Local Season Only"
+                                "episode_number": e_num,
+                                "title": ep_info.get('name'),
+                                "overview": ep_info.get('overview'),
+                                "poster_path": ep_info.get('still_path'),
+                                "rating": ep_info.get('vote_average'),
+                                "release_date": ep_info.get('air_date'),
+                                "runtime_minutes": ep_info.get('runtime'),
+                                "in_library": is_ep_in_library,
+                                "emby_item_ids_json": json.dumps([v.get('Id') for v in matched_emby_eps]),
+                                "asset_details_json": json.dumps(ep_asset_details_list, ensure_ascii=False),
+                                "tags_json": json.dumps(extract_tag_names(matched_emby_eps[0]) if matched_emby_eps else [], ensure_ascii=False),
+                                "total_episodes": 0
                             }
-                            metadata_batch.append(season_record)
-                            processed_season_numbers.add(s_num)
-
-                    # C. 处理分集
-                    ep_grouped = defaultdict(list)
-                    for ep in my_episodes:
-                        s_n, e_n = ep.get('ParentIndexNumber'), ep.get('IndexNumber')
-                        if s_n is not None and e_n is not None:
-                            ep_grouped[(s_n, e_n)].append(ep)
-                    
-                    for (s_n, e_n), versions in ep_grouped.items():
-                        emby_ep = versions[0]
-                        emby_ep_runtime = round(emby_ep['RunTimeTicks'] / 600000000) if emby_ep.get('RunTimeTicks') else None
-                        lookup_key = f"S{s_n}E{e_n}"
-                        tmdb_ep_info = tmdb_children_map.get(lookup_key)
-                        
-                        ep_asset_details_list = []
-                        for v in versions:
-                            details = parse_full_asset_details(v) 
-                            ep_asset_details_list.append(details)
-
-                        # 提取分集发行日期 
-                        ep_release_date = emby_ep.get('PremiereDate')
-                        if not ep_release_date and tmdb_ep_info:
-                            ep_release_date = tmdb_ep_info.get('air_date') or None
-                        child_record = {
-                            "item_type": "Episode",
-                            "parent_series_tmdb_id": tmdb_id_str,
-                            "season_number": s_n,
-                            "episode_number": e_n,
-                            "in_library": True,
-                            "release_date": ep_release_date,
-                            "rating": emby_ep.get('CommunityRating'),
-                            "emby_item_ids_json": json.dumps([v.get('Id') for v in versions]),
-                            "asset_details_json": json.dumps(ep_asset_details_list, ensure_ascii=False),
-                            "tags_json": json.dumps(extract_tag_names(versions[0]), ensure_ascii=False),
-                            "ignore_reason": None
-                        }
-
-                        if tmdb_ep_info and tmdb_ep_info.get('id'):
-                            child_record['tmdb_id'] = str(tmdb_ep_info.get('id'))
-                            child_record['title'] = tmdb_ep_info.get('name')
-                            child_record['overview'] = tmdb_ep_info.get('overview')
-                            child_record['poster_path'] = tmdb_ep_info.get('still_path')
-                            child_record['runtime_minutes'] = emby_ep_runtime if emby_ep_runtime else tmdb_ep_info.get('runtime')
-                            if tmdb_ep_info.get('vote_average') is not None:
-                                child_record['rating'] = tmdb_ep_info.get('vote_average')
-                        else:
-                            child_record['tmdb_id'] = f"{tmdb_id_str}-S{s_n}E{e_n}"
-                            child_record['title'] = versions[0].get('Name')
-                            child_record['overview'] = versions[0].get('Overview')
-                            child_record['runtime_minutes'] = emby_ep_runtime
-                        
-                        metadata_batch.append(child_record)
+                            metadata_batch.append(child_record)
 
             # 7. 写入数据库 & 子集离线对账
             if metadata_batch:
