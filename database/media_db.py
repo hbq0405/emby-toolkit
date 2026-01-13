@@ -1132,7 +1132,12 @@ def batch_upsert_media_metadata(metadata_list: List[Dict[str, Any]]) -> int:
                 for item in metadata_list:
                     clean_item = {}
                     for col in all_columns:
-                        clean_item[col] = item.get(col)
+                        val = item.get(col)
+                        
+                        if col == 'subscription_status' and val is None:
+                            val = 'NONE'
+                            
+                        clean_item[col] = val
                     clean_batch_data.append(clean_item)
                 
                 # 4. 执行批量写入
