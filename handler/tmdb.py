@@ -66,7 +66,13 @@ def requests_retry_session(
         status_forcelist=status_forcelist,
         allowed_methods=frozenset(['HEAD', 'GET', 'PUT', 'DELETE', 'OPTIONS', 'TRACE', 'POST']),
     )
-    adapter = HTTPAdapter(max_retries=retry)
+    
+    # ★★★ 核心修改：增加 pool_connections 和 pool_maxsize 参数 ★★★
+    # pool_connections: 要缓存的 urllib3 连接池个数 (对应不同的 host)
+    # pool_maxsize: 每个连接池中保存的最大连接数 (对应并发数)
+    # 我们设为 50，足以应付 3*5=15 的并发需求
+    adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
+    
     session.mount('http://', adapter)
     session.mount('https://', adapter)
     return session
