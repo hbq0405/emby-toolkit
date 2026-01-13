@@ -682,6 +682,17 @@ def task_auto_subscribe(processor):
                         is_explicit_resub = any(source.get('type') == 'resubscribe' for source in sources)
                         is_gap_scan = any(source.get('type') == 'gap_scan' for source in sources)
                         
+                        # --- 预先检查是否满足自动待定条件 ---
+                        is_pending_logic = False
+                        fake_total_episodes = 0
+                        # 只有非洗版、非缺集扫描的普通订阅才检查待定逻辑
+                        if not is_explicit_resub and not is_gap_scan:
+                            is_pending_logic, fake_total_episodes = should_mark_as_pending(
+                                int(parent_tmdb_id), season_num, tmdb_api_key
+                            )
+                            if is_pending_logic:
+                                logger.info(f"  ⏳ 季《{series_name}》S{season_num} 满足自动待定条件，将执行 [订阅 -> 转待定] 流程。")
+
                         # 2. 应用订阅策略
                         if is_explicit_resub:
                             # 情况 A: 明确的洗版规则触发 -> 强制 best_version=1
@@ -697,11 +708,33 @@ def task_auto_subscribe(processor):
                                 logger.info(f"  ➜ 触发缺集扫描 (配置未开启洗版)，为《{series_name}》S{season_num} 执行普通订阅。")
                                 
                         elif "best_version" not in mp_payload:
-                            # 情况 C: 普通订阅 -> 检查是否完结，完结则洗版
-                            if check_series_completion(int(parent_tmdb_id), tmdb_api_key, season_number=season_num, series_name=series_name):
+                            # 情况 C: 普通订阅
+                            
+                            # --- 如果是待定逻辑，则不检查完结，保持 best_version=0 ---
+                            if is_pending_logic:
+                                logger.info(f"  ➜ S{season_num} 处于待定模式，使用追更模式订阅。")
+                            # 否则才检查是否完结
+                            elif check_series_completion(int(parent_tmdb_id), tmdb_api_key, season_number=season_num, series_name=series_name):
                                 mp_payload["best_version"] = 1
+                                logger.info(f"  ➜ S{season_num} 已完结，启用洗版模式。")
                         
                         success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
+
+                        # --- [新增] 订阅成功后的后置处理：修改状态为待定 ---
+                        if success and is_pending_logic:
+                            logger.info(f"  ➜ [后置操作] 正在将 S{season_num} 的状态修改为 'P' (待定)，并将总集数修正为 {fake_total_episodes}...")
+                            mp_update_success = moviepilot.update_subscription_status(
+                                tmdb_id=int(parent_tmdb_id),
+                                season=season_num,
+                                status='P', 
+                                config=config,
+                                total_episodes=fake_total_episodes
+                            )
+                            if mp_update_success:
+                                logger.info(f"  ✅ S{season_num} 已成功转为待定状态。")
+                            else:
+                                logger.warning(f"  ⚠️ S{season_num} 订阅成功，但转待定状态失败。")
+
                     else:
                         success = False
 
