@@ -583,15 +583,6 @@ def init_db():
                     # 11. 【跟播系统】加速“正在连载”剧集的筛选
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_watchlist_airing ON media_metadata (watchlist_is_airing) WHERE item_type = 'Series';")
 
-                    # 12. 【离线对账优化】
-                    # 场景：UPDATE ... WHERE parent_series_tmdb_id = ANY(...) AND item_type IN (...) AND in_library = TRUE
-                    # 这是一个复合索引，专门为了加速那个巨慢的 UPDATE 语句
-                    cursor.execute("""
-                        CREATE INDEX IF NOT EXISTS idx_mm_offline_check 
-                        ON media_metadata (parent_series_tmdb_id, item_type, in_library)
-                        WHERE item_type IN ('Season', 'Episode') AND in_library = TRUE;
-                    """)
-
                 except Exception as e_index:
                     logger.error(f"  ➜ 创建索引时出错: {e_index}", exc_info=True)
                 logger.trace("  ➜ 数据库升级检查完成。")
