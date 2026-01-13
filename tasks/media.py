@@ -340,7 +340,7 @@ def _extract_and_map_tmdb_ratings(tmdb_details, item_type):
     return ratings_map
 
 # ★★★ 重量级的元数据缓存填充任务 (内存优化版) ★★★
-def task_populate_metadata_cache(processor, batch_size: int = 200, force_full_update: bool = False):
+def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_update: bool = False):
     """
     - 重量级的元数据缓存填充任务 (类型安全版)。
     - 修复：彻底解决 TMDb ID 在电影和剧集间冲突的问题。
