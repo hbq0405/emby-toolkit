@@ -317,7 +317,21 @@ const renderPersonLabel = (option) => {
 
 // 下拉框选项
 const keywordOptions = computed(() => Object.keys(keywordMapping.value).map(k => ({ label: k, value: k })));
-const studioOptions = computed(() => Object.keys(studioMapping.value).map(k => ({ label: k, value: k })));
+const studioOptions = computed(() => {
+  const type = params.value.type; // 'movie' or 'tv'
+  
+  return Object.entries(studioMapping.value)
+    .filter(([label, data]) => {
+      if (type === 'movie') {
+        // 电影模式：只显示有 company_ids 的
+        return data.company_ids && data.company_ids.length > 0;
+      } else {
+        // 电视模式：只显示有 network_ids 的
+        return data.network_ids && data.network_ids.length > 0;
+      }
+    })
+    .map(([label, data]) => ({ label: label, value: label }));
+});
 
 const currentGenreOptions = computed(() => {
   const list = params.value.type === 'movie' ? movieGenres.value : tvGenres.value;
@@ -416,13 +430,20 @@ const generatedUrl = computed(() => {
     if (ids.size) query.append('with_keywords', Array.from(ids).join(',')); 
   }
 
-  // ★★★ 核心修改：工作室/平台逻辑 ★★★
-  // 如果是 TV，使用 with_networks；如果是 Movie，使用 with_companies
+  // 工作室/平台逻辑 
   if (p.with_companies_labels.length) {
     const ids = new Set();
+    
     p.with_companies_labels.forEach(label => {
-      const mappedIds = studioMapping.value[label];
-      if (mappedIds) mappedIds.forEach(id => ids.add(id));
+      const data = studioMapping.value[label];
+      if (data) {
+        // 根据当前模式取对应的 ID 列表
+        const targetIds = p.type === 'tv' ? data.network_ids : data.company_ids;
+        
+        if (targetIds && targetIds.length > 0) {
+          targetIds.forEach(id => ids.add(id));
+        }
+      }
     });
     
     if (ids.size) {
@@ -508,19 +529,47 @@ const fetchMappings = async () => {
       axios.get('/api/custom_collections/config/keyword_mapping'),
       axios.get('/api/custom_collections/config/studio_mapping')
     ]);
-    const process = (data) => {
+
+    // 处理关键词 (保持不变)
+    const processKeywords = (data) => {
       const map = {};
       const list = Array.isArray(data) ? data : Object.entries(data).map(([k, v]) => ({ label: k, ...v }));
       list.forEach(item => {
         if (item.label && item.ids) {
-          const ids = Array.isArray(item.ids) ? item.ids : [item.ids];
-          map[item.label] = ids;
+          map[item.label] = Array.isArray(item.ids) ? item.ids : [item.ids];
         }
       });
       return map;
     };
-    keywordMapping.value = process(kwRes.data);
-    studioMapping.value = process(stRes.data);
+    keywordMapping.value = processKeywords(kwRes.data);
+
+    // ★★★ 修改：处理工作室 (支持分离 ID) ★★★
+    const processStudios = (data) => {
+      const map = {};
+      const list = Array.isArray(data) ? data : Object.entries(data).map(([k, v]) => ({ label: k, ...v }));
+      
+      list.forEach(item => {
+        if (!item.label) return;
+        
+        // 提取 company_ids
+        let c_ids = [];
+        if (item.company_ids) c_ids = Array.isArray(item.company_ids) ? item.company_ids : [item.company_ids];
+        // 兼容旧数据：如果没有 company_ids 但有 ids，且没有 network_ids，暂且认为是 company
+        else if (item.ids && !item.network_ids) c_ids = Array.isArray(item.ids) ? item.ids : [item.ids];
+
+        // 提取 network_ids
+        let n_ids = [];
+        if (item.network_ids) n_ids = Array.isArray(item.network_ids) ? item.network_ids : [item.network_ids];
+        
+        map[item.label] = {
+          company_ids: c_ids,
+          network_ids: n_ids
+        };
+      });
+      return map;
+    };
+    studioMapping.value = processStudios(stRes.data);
+
   } finally {
     loading.value.mappings = false;
   }
@@ -542,7 +591,9 @@ const searchPerson = (query, targetRef, loadingKey) => {
 };
 const handleActorSearch = (q) => searchPerson(q, actorOptions, 'actors');
 const handleDirectorSearch = (q) => searchPerson(q, directorOptions, 'directors');
-
+watch(() => params.value.type, () => {
+  params.value.with_companies_labels = [];
+});
 watch(() => props.show, (val) => {
   if (val) {
     fetchMappings();
