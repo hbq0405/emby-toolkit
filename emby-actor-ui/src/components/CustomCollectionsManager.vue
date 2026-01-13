@@ -389,7 +389,7 @@
                         multiple
                         filterable
                         placeholder="选择已配置的工作室"
-                        :options="studioMappingOptions"
+                        :options="computedStudioOptions" 
                         :disabled="!rule.operator"
                       />
                       <n-select
@@ -397,7 +397,7 @@
                         v-model:value="rule.value"
                         filterable
                         placeholder="选择已配置的工作室"
-                        :options="studioMappingOptions"
+                        :options="computedStudioOptions"
                         :disabled="!rule.operator"
                         clearable
                       />
@@ -1386,6 +1386,36 @@ const fetchStudioMappingOptions = async () => {
     console.error('获取工作室映射失败:', error);
   }
 };
+
+const computedStudioOptions = computed(() => {
+  const rawOptions = studioMappingOptions.value || [];
+  // 获取当前合集勾选的类型，例如 ['Movie', 'Series']
+  const currentItemTypes = currentCollection.value.definition?.item_type || [];
+
+  // 将 Emby 类型映射为后端 Studio 类型
+  const targetTypes = [];
+  if (currentItemTypes.includes('Movie')) targetTypes.push('movie');
+  if (currentItemTypes.includes('Series')) targetTypes.push('tv');
+
+  // 如果没选类型，或者原始数据为空，返回空
+  if (targetTypes.length === 0 || rawOptions.length === 0) return [];
+
+  return rawOptions.filter(opt => {
+    // 兼容旧数据：如果没有 types 字段，默认显示
+    if (!opt.types || !Array.isArray(opt.types)) return true;
+
+    // ★★★ 核心逻辑：取交集 ★★★
+    // 只要工作室支持的类型 (opt.types) 与 合集包含的类型 (targetTypes) 有任何重叠，就显示。
+    // 例如：
+    // 1. 合集是混合库 (movie, tv)。CCTV(tv) 与 (movie, tv) 有重叠 -> 显示。
+    // 2. 合集是电影库 (movie)。CCTV(tv) 与 (movie) 无重叠 -> 隐藏。
+    // 3. 合集是电影库 (movie)。HBO(movie, tv) 与 (movie) 有重叠 -> 显示。
+    return opt.types.some(t => targetTypes.includes(t));
+  }).map(opt => ({
+    label: opt.label,
+    value: opt.value // 绑定 Label 给后端
+  }));
+});
 
 const staticFieldOptions = computed(() => 
   Object.keys(ruleConfig)
