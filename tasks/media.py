@@ -340,7 +340,7 @@ def _extract_and_map_tmdb_ratings(tmdb_details, item_type):
     return ratings_map
 
 # ★★★ 重量级的元数据缓存填充任务 (内存优化版) ★★★
-def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_update: bool = False):
+def task_populate_metadata_cache(processor, batch_size: int = 200, force_full_update: bool = False):
     """
     - 重量级的元数据缓存填充任务 (类型安全版)。
     - 修复：彻底解决 TMDb ID 在电影和剧集间冲突的问题。
@@ -976,81 +976,25 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
 
             # 7. 写入数据库 & 子集离线对账
             if metadata_batch:
-                total_updated_count += len(metadata_batch)
+                # --- A. 调用 DB 模块进行批量写入 ---
+                inserted_count = media_db.batch_upsert_media_metadata(metadata_batch)
+                total_updated_count += inserted_count
 
-                with connection.get_db_connection() as conn:
-                    cursor = conn.cursor()
+                # --- B. 调用 DB 模块进行子集离线对账 ---
+                if series_ids_processed_in_batch:
+                    # 提取本批次中所有活跃的子集 ID (Season/Episode)
+                    active_child_ids = {
+                        m['tmdb_id'] for m in metadata_batch 
+                        if m['item_type'] in ('Season', 'Episode')
+                    }
                     
-                    # --- A. 执行写入 ---
-                    for idx, metadata in enumerate(metadata_batch):
-                        savepoint_name = f"sp_{idx}"
-                        try:
-                            cursor.execute(f"SAVEPOINT {savepoint_name};")
-                            columns = [k for k, v in metadata.items() if v is not None]
-                            values = [v for v in metadata.values() if v is not None]
-                            cols_str = ', '.join(columns)
-                            vals_str = ', '.join(['%s'] * len(values))
-                            
-                            update_clauses = []
-                            current_type = metadata.get('item_type')
-                        
-                            for col in columns:
-                                # ★★★ 2. 定义基础排除列表 ★★★
-                                # 这些字段永远不更新
-                                exclude_cols = {'tmdb_id', 'item_type', 'subscription_sources_json', 'subscription_status'}
-                                
-                                # ★★★ 3. 动态判断是否排除标题 ★★★
-                                # 只有当类型是 电影(Movie) 或 剧集(Series) 时，才排除 title
-                                # 这样 季(Season) 和 集(Episode) 的标题依然可以正常同步更新
-                                if current_type in ['Movie', 'Series']:
-                                    exclude_cols.add('title')
-
-                                if col in exclude_cols: 
-                                    continue
-                                
-                                update_clauses.append(f"{col} = EXCLUDED.{col}")
-                            
-                            sql = f"""
-                                INSERT INTO media_metadata ({cols_str}, last_synced_at) 
-                                VALUES ({vals_str}, NOW()) 
-                                ON CONFLICT (tmdb_id, item_type) 
-                                DO UPDATE SET {', '.join(update_clauses)}, last_synced_at = NOW()
-                            """
-                            cursor.execute(sql, tuple(values))
-                        except Exception as e:
-                            cursor.execute(f"ROLLBACK TO SAVEPOINT {savepoint_name};")
-                            logger.error(f"写入失败 {metadata.get('tmdb_id')}: {e}")
-                    
-                    # --- B. 执行子集离线对账 ---
-                    if series_ids_processed_in_batch:
-                        active_child_ids = {
-                            m['tmdb_id'] for m in metadata_batch 
-                            if m['item_type'] in ('Season', 'Episode')
-                        }
-                        active_child_ids_list = list(active_child_ids)
-                        
-                        if active_child_ids_list:
-                            cursor.execute("""
-                                UPDATE media_metadata
-                                SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
-                                WHERE parent_series_tmdb_id = ANY(%s)
-                                  AND item_type IN ('Season', 'Episode')
-                                  AND in_library = TRUE
-                                  AND tmdb_id != ALL(%s)
-                            """, (list(series_ids_processed_in_batch), active_child_ids_list))
-                            total_offline_count += cursor.rowcount
-                        else:
-                            cursor.execute("""
-                                UPDATE media_metadata
-                                SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
-                                WHERE parent_series_tmdb_id = ANY(%s)
-                                  AND item_type IN ('Season', 'Episode')
-                                  AND in_library = TRUE
-                            """, (list(series_ids_processed_in_batch),))
-                            total_offline_count += cursor.rowcount
-
-                    conn.commit()
+                    offline_count = media_db.batch_mark_children_offline(
+                        parent_tmdb_ids=list(series_ids_processed_in_batch),
+                        active_child_tmdb_ids=list(active_child_ids)
+                    )
+                    total_offline_count += offline_count
             
+            # 内存清理
             del batch_item_groups
             del tmdb_details_map
             del metadata_batch

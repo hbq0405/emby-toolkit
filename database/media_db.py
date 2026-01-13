@@ -1072,3 +1072,116 @@ def get_full_metadata_by_tmdb_ids(tmdb_ids: List[str]) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"批量获取完整元数据失败: {e}", exc_info=True)
         return []
+    
+def batch_upsert_media_metadata(metadata_list: List[Dict[str, Any]]) -> int:
+    """
+    【高性能批量写入】将清洗好的元数据列表批量写入数据库。
+    包含智能字段保护逻辑（如不覆盖用户修改的标题、锁定的集数等）。
+    """
+    if not metadata_list:
+        return 0
+
+    # 1. 定义数据库表的所有列 (Schema)
+    all_columns = [
+        'tmdb_id', 'item_type', 'title', 'original_title', 'overview', 
+        'release_date', 'release_year', 'poster_path', 'rating', 
+        'original_language', 'in_library', 'subscription_status',
+        'emby_item_ids_json', 'asset_details_json', 
+        'genres_json', 'tags_json', 'studios_json', 'keywords_json',
+        'directors_json', 'countries_json', 'official_rating_json',
+        'parent_series_tmdb_id', 'season_number', 'episode_number',
+        'runtime_minutes', 'date_added', 'total_episodes'
+    ]
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                from psycopg2.extras import execute_batch
+                
+                # 2. 构建 SQL 语句
+                cols_str = ', '.join(all_columns)
+                vals_str = ', '.join([f"%({col})s" for col in all_columns])
+                
+                update_clauses = []
+                for col in all_columns:
+                    # 永远不更新的字段
+                    if col in ['tmdb_id', 'item_type', 'subscription_sources_json', 'subscription_status']:
+                        continue
+                    
+                    # 智能保护逻辑
+                    if col == 'title':
+                        # Movie/Series 不覆盖标题，Season/Episode 覆盖
+                        update_clauses.append(f"{col} = CASE WHEN media_metadata.item_type IN ('Movie', 'Series') THEN media_metadata.title ELSE EXCLUDED.title END")
+                    elif col == 'total_episodes':
+                        # 保护锁定字段
+                        update_clauses.append(f"{col} = CASE WHEN media_metadata.total_episodes_locked = TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END")
+                    else:
+                        update_clauses.append(f"{col} = EXCLUDED.{col}")
+                
+                update_clauses.append("last_synced_at = NOW()")
+                
+                sql = f"""
+                    INSERT INTO media_metadata ({cols_str}, last_synced_at) 
+                    VALUES ({vals_str}, NOW()) 
+                    ON CONFLICT (tmdb_id, item_type) 
+                    DO UPDATE SET {', '.join(update_clauses)}
+                """
+                
+                # 3. 数据清洗与对齐 (确保每条数据都有所有列，缺少的补 None)
+                clean_batch_data = []
+                for item in metadata_list:
+                    clean_item = {}
+                    for col in all_columns:
+                        clean_item[col] = item.get(col)
+                    clean_batch_data.append(clean_item)
+                
+                # 4. 执行批量写入
+                execute_batch(cursor, sql, clean_batch_data)
+                conn.commit()
+                
+                return len(clean_batch_data)
+
+    except Exception as e:
+        logger.error(f"DB: 批量写入元数据失败: {e}", exc_info=True)
+        return 0
+
+def batch_mark_children_offline(parent_tmdb_ids: List[str], active_child_tmdb_ids: List[str]) -> int:
+    """
+    【批量离线对账】
+    对于指定的父剧集列表，将其下属的所有子集（Season/Episode）标记为离线，
+    除非该子集的 TMDb ID 在 active_child_tmdb_ids 列表中。
+    """
+    if not parent_tmdb_ids:
+        return 0
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                if active_child_tmdb_ids:
+                    sql = """
+                        UPDATE media_metadata
+                        SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
+                        WHERE parent_series_tmdb_id = ANY(%s)
+                          AND item_type IN ('Season', 'Episode')
+                          AND in_library = TRUE
+                          AND tmdb_id != ALL(%s)
+                    """
+                    cursor.execute(sql, (parent_tmdb_ids, active_child_tmdb_ids))
+                else:
+                    # 如果没有活跃子集，说明这些父剧集下的所有子集都离线了
+                    sql = """
+                        UPDATE media_metadata
+                        SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
+                        WHERE parent_series_tmdb_id = ANY(%s)
+                          AND item_type IN ('Season', 'Episode')
+                          AND in_library = TRUE
+                    """
+                    cursor.execute(sql, (parent_tmdb_ids,))
+                
+                updated_count = cursor.rowcount
+                conn.commit()
+                return updated_count
+
+    except Exception as e:
+        logger.error(f"DB: 批量标记子集离线失败: {e}", exc_info=True)
+        return 0
