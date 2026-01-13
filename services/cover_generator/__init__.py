@@ -186,10 +186,13 @@ class CoverGeneratorService:
 
     def __generate_from_server(self, server_id: str, library: Dict[str, Any], title: Tuple[str, str], item_count: Optional[int] = None, content_types: Optional[List[str]] = None, custom_collection_data: Optional[Dict] = None) -> bytes:
         required_items_count = 1 if self._cover_style.startswith('single') else 9
-        items = self.__get_valid_items_from_library(server_id, library, required_items_count, content_types, custom_collection_data)
+        items, db_count = self.__get_valid_items_from_library(server_id, library, required_items_count, content_types, custom_collection_data)
         if not items:
             logger.warning(f"  ➜ 在媒体库 '{library['Name']}' 中找不到任何带有可用图片的媒体项。")
             return None
+        if db_count > 0:
+            logger.info(f"  ➜ 媒体库 '{library['Name']}' 修正计数: {item_count} -> {db_count} (基于分级过滤)")
+            item_count = db_count
         if self._cover_style.startswith('single'):
             image_url = self.__get_image_url(items[0])
             if not image_url: return None
@@ -209,7 +212,7 @@ class CoverGeneratorService:
                 return None
             return self.__generate_image_from_path(library['Name'], title, image_paths, item_count)
 
-    def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int, content_types: Optional[List[str]] = None, custom_collection_data: Optional[Dict] = None) -> List[Dict]:
+    def __get_valid_items_from_library(self, server_id: str, library: Dict[str, Any], limit: int, content_types: Optional[List[str]] = None, custom_collection_data: Optional[Dict] = None) -> Tuple[List[Dict], int]:
         library_id = library.get("Id") or library.get("ItemId")
         library_name = library.get("Name")
         base_url = config_manager.APP_CONFIG.get('emby_server_url')
@@ -252,7 +255,7 @@ class CoverGeneratorService:
 
                 db_sort_by = 'Random' if self._sort_by == 'Random' else 'DateCreated'
                 
-                items_from_db, _ = queries_db.query_virtual_library_items(
+                items_from_db, total_count = queries_db.query_virtual_library_items(
                     rules=rules,
                     logic=definition.get('logic', 'AND'),
                     user_id=user_id,
@@ -261,10 +264,10 @@ class CoverGeneratorService:
                     sort_by=db_sort_by,
                     item_types=definition.get('item_type', ['Movie']),
                     target_library_ids=definition.get('target_library_ids'),
-                    max_rating_override=current_limit # ★ 传入限制
+                    max_rating_override=current_limit 
                 )
                 
-                return self.__fetch_emby_items_by_ids(items_from_db, base_url, api_key, user_id, limit)
+                return self.__fetch_emby_items_by_ids(items_from_db, base_url, api_key, user_id, limit), total_count
 
             except Exception as e:
                 logger.error(f"  ➜ 处理实时合集 '{library_name}' 出错: {e}", exc_info=True)
@@ -298,7 +301,7 @@ class CoverGeneratorService:
                     if self._sort_by == "Random": random.shuffle(valid_emby_ids)
                     # 构造伪对象传给 fetcher
                     items_payload = [{'Id': i} for i in valid_emby_ids[:limit*2]]
-                    return self.__fetch_emby_items_by_ids(items_payload, base_url, api_key, user_id, limit)
+                    return self.__fetch_emby_items_by_ids(items_payload, base_url, api_key, user_id, limit), len(valid_emby_ids)
                 
                 # Fallback: 现有成员
                 fallback_items = emby.get_emby_library_items(
@@ -308,7 +311,7 @@ class CoverGeneratorService:
                     fields="Id,Name,Type,ImageTags,BackdropImageTags,PrimaryImageTag,PrimaryImageItemId",
                     limit=limit
                 )
-                return [item for item in fallback_items if self.__get_image_url(item)][:limit]
+                return [item for item in fallback_items if self.__get_image_url(item)][:limit], 0
 
             except Exception as e:
                 logger.error(f"  ➜ 处理自定义合集 '{library_name}' 出错: {e}", exc_info=True)
@@ -340,21 +343,21 @@ class CoverGeneratorService:
         # 3. ★★★ 尝试从数据库查询 (这是堵住漏洞的关键) ★★★
         # 利用 query_virtual_library_items 的 target_library_ids 功能
         try:
-            items_from_db, _ = queries_db.query_virtual_library_items(
-                rules=[], # 无额外规则
+            items_from_db, total_count = queries_db.query_virtual_library_items(
+                rules=[], 
                 logic='AND',
-                user_id=None, # 使用管理员视角，但通过 override 限制分级
+                user_id=None, 
                 limit=limit,
                 offset=0,
                 sort_by=db_sort_by,
                 item_types=media_type_to_fetch,
-                target_library_ids=[library_id], # ★ 指定原生库 ID
-                max_rating_override=safe_rating_limit # ★ 应用分级限制
+                target_library_ids=[library_id], 
+                max_rating_override=safe_rating_limit 
             )
 
             if items_from_db:
                 logger.trace(f"  ➜ 原生库 '{library_name}' 通过数据库查询命中 {len(items_from_db)} 个项目 (已过滤分级)。")
-                return self.__fetch_emby_items_by_ids(items_from_db, base_url, api_key, user_id, limit)
+                return self.__fetch_emby_items_by_ids(items_from_db, base_url, api_key, user_id, limit), total_count
             else:
                 logger.debug(f"  ➜ 原生库 '{library_name}' 数据库查询为空 (可能是新库未同步)，回退到 API 直接调用。")
 
