@@ -41,14 +41,13 @@ def _expand_keyword_labels_to_ids(labels: list) -> str:
     # 不同标签组之间用逗号连接，实现 AND 逻辑
     return ",".join(label_groups)
 
-def _expand_studio_labels_to_ids(labels: list) -> str:
+def _expand_studio_labels_to_ids(labels: list, mode: str = 'movie') -> str:
     """
-    【OR 逻辑版】将中文工作室标签展开为 TMDb 公司 ID
-    工作室筛选通常是“或者”关系（例如：想看 漫威 OR DC 的电影），所以用 '|' 连接
+    【OR 逻辑版】将中文工作室标签展开为 TMDb 公司/电视网 ID
+    mode: 'movie' (取 company_ids) 或 'tv' (取 network_ids)
     """
     mapping_data = settings_db.get_setting('studio_mapping') or DEFAULT_STUDIO_MAPPING
     
-    # 兼容处理：如果 mapping 是列表（新版），转为字典
     mapping_dict = {}
     if isinstance(mapping_data, list):
         for item in mapping_data:
@@ -60,13 +59,26 @@ def _expand_studio_labels_to_ids(labels: list) -> str:
     all_ids = []
     for label in labels:
         if label in mapping_dict:
-            ids = mapping_dict[label].get('ids', [])
+            item = mapping_dict[label]
+            ids = []
+            
+            # ★★★ 核心修改：根据模式取不同字段 ★★★
+            if mode == 'movie':
+                # 搜电影：优先取 company_ids
+                ids = item.get('company_ids')
+                # 兼容旧数据：如果没有 company_ids 但有 ids，勉强用 ids
+                if not ids: ids = item.get('ids')
+            elif mode == 'tv':
+                # 搜剧集：优先取 network_ids
+                ids = item.get('network_ids')
+                # 兼容旧数据
+                if not ids: ids = item.get('ids')
+            
             if ids:
                 all_ids.extend([str(_id) for _id in ids])
         elif str(label).isdigit():
             all_ids.append(str(label))
     
-    # 使用 '|' (OR) 连接所有 ID
     return "|".join(list(set(all_ids)))
 
 def _get_tmdb_rating_params(label: str, item_type: str) -> dict:
@@ -172,7 +184,7 @@ def discover_movies():
         # 3. 工作室标签 -> IDs
         studio_labels = data.get('with_companies', [])
         if isinstance(studio_labels, str): studio_labels = studio_labels.split(',')
-        c_ids_str = _expand_studio_labels_to_ids(studio_labels)
+        c_ids_str = _expand_studio_labels_to_ids(studio_labels, mode='movie')
 
         # 4. 构建基础参数字典
         tmdb_params = {
@@ -315,7 +327,7 @@ def discover_tv_shows():
         # 2. 工作室/平台
         studio_labels = data.get('with_companies', [])
         if isinstance(studio_labels, str): studio_labels = studio_labels.split(',')
-        c_ids_str = _expand_studio_labels_to_ids(studio_labels)
+        c_ids_str = _expand_studio_labels_to_ids(studio_labels, mode='tv')
 
         # 3. 构建基础参数
         tmdb_params = {
@@ -525,14 +537,37 @@ def api_get_discover_studios():
     try:
         mapping_data = settings_db.get_setting('studio_mapping') or DEFAULT_STUDIO_MAPPING
         
-        if isinstance(mapping_data, list):
-            # 如果是列表，直接按列表顺序返回
-            options = [{"label": item['label'], "value": item['label']} for item in mapping_data]
-            return jsonify(options)
+        # 统一转为列表
+        if isinstance(mapping_data, dict):
+            mapping_list = [{"label": k, **v} for k, v in mapping_data.items()]
+            mapping_list.sort(key=lambda x: x['label'])
         else:
-            # 如果是旧版字典，按标签名排序
-            options = [{"label": k, "value": k} for k in mapping_data.keys()]
-            return jsonify(sorted(options, key=lambda x: x['label']))
+            mapping_list = mapping_data
+
+        options = []
+        for item in mapping_list:
+            # ★★★ 核心修改：计算 types 字段传给前端 ★★★
+            supported_types = []
+            
+            # 有 company_ids -> 支持电影
+            if item.get('company_ids'): 
+                supported_types.append('movie')
+            
+            # 有 network_ids -> 支持电视剧
+            if item.get('network_ids'): 
+                supported_types.append('tv')
+            
+            # 兼容旧数据：如果只有 ids，默认两者都支持
+            if not supported_types and item.get('ids'):
+                supported_types = ['movie', 'tv']
+            
+            options.append({
+                "label": item['label'],
+                "value": item['label'],
+                "types": supported_types # 前端根据这个字段进行过滤
+            })
+            
+        return jsonify(options)
     except Exception as e:
         logger.error(f"获取 Discover 工作室列表失败: {e}")
         return jsonify([]), 500
