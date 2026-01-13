@@ -24,7 +24,7 @@ from tasks.media import task_sync_all_metadata, task_sync_images
 from handler.custom_collection import RecommendationEngine
 from handler import tmdb_collections as collections_handler
 from services.cover_generator import CoverGeneratorService
-from database import custom_collection_db, tmdb_collection_db, settings_db, user_db, maintenance_db, media_db, queries_db
+from database import custom_collection_db, tmdb_collection_db, settings_db, user_db, maintenance_db, media_db, queries_db, watchlist_db
 from database.log_db import LogDBManager
 from handler.tmdb import get_movie_details, get_tv_details
 import logging
@@ -246,6 +246,15 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     if item_type == "Series" and tmdb_id:
         def _async_trigger_watchlist():
             try:
+                # =======================================================
+                # [修改] 增加判断：只有在追剧列表(Watching)中才触发刷新
+                # =======================================================
+                watching_ids = watchlist_db.get_watching_tmdb_ids()
+                if str(tmdb_id) not in watching_ids:
+                    logger.debug(f"  ➜ [智能追剧] 剧集 {tmdb_id} 当前不在追剧列表中 (状态非 Watching)，跳过刷新。")
+                    return
+                # =======================================================
+
                 logger.info(f"  ➜ [智能追剧] 触发单项刷新...")
                 task_manager.submit_task(
                     task_process_watchlist,
