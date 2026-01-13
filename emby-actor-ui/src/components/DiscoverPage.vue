@@ -345,8 +345,26 @@ const languageOptions = ref([]);
 const selectedLanguage = ref(null);
 const keywordOptions = ref([]); 
 const selectedKeywords = ref([]); 
-const studioOptions = ref([]);
+const allStudios = ref([]); // 存储后端返回的原始完整列表
 const selectedStudios = ref([]);
+const studioOptions = computed(() => {
+  if (!allStudios.value || allStudios.value.length === 0) return [];
+
+  return allStudios.value
+    .filter(item => {
+      // 如果后端返回了 types 字段，则根据当前媒体类型过滤
+      // types: ['movie', 'tv']
+      if (item.types && Array.isArray(item.types)) {
+        return item.types.includes(mediaType.value);
+      }
+      // 兼容旧数据：如果没有 types 字段，默认全部显示
+      return true;
+    })
+    .map(item => ({
+      label: item.label,
+      value: item.value // 这里的值是中文 Label，后端会根据 Label 查 ID
+    }));
+});
 const genreFilterMode = ref('include'); 
 const yearFrom = ref(null);
 const yearTo = ref(null);
@@ -433,7 +451,8 @@ const fetchKeywords = async () => {
 const fetchStudios = async () => {
   try {
     const response = await axios.get('/api/discover/config/studios');
-    studioOptions.value = response.data;
+    // ★★★ 修改 2: 将数据存入 allStudios，而不是直接给 studioOptions ★★★
+    allStudios.value = response.data;
   } catch (error) {
     message.error('加载工作室列表失败');
   }
@@ -697,6 +716,7 @@ const resetAndFetch = () => {
 };
 watch(mediaType, () => {
   selectedGenres.value = [];
+  selectedStudios.value = []; 
   filters['sort_by'] = 'popularity.desc';
   fetchGenres();
   resetAndFetch();
