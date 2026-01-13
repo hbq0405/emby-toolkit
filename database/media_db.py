@@ -551,7 +551,13 @@ def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 # 动态构建 SET 子句
-                set_clauses = [f"{key} = %s" for key in safe_updates.keys()]
+                set_clauses = []
+                for key in safe_updates.keys():
+                    # ★★★ 核心修复：如果是 JSON 字段，显式转换类型 ★★★
+                    if key.endswith('_json'):
+                        set_clauses.append(f"{key} = %s::jsonb")
+                    else:
+                        set_clauses.append(f"{key} = %s")
                 # 总是更新时间戳
                 set_clauses.append("last_updated_at = NOW()")
                 
