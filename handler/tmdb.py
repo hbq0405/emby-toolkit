@@ -357,7 +357,7 @@ def aggregate_full_series_data_from_tmdb(
         logger.warning("  ➜ 未找到任何有效季信息，聚合结束。")
         return {"series_details": series_details, "seasons_details": [], "episodes_details": {}}
 
-    logger.info(f"  ➜ 优化策略：将按季获取数据，共 {len(tasks)} 个请求 (原策略需 {series_details.get('number_of_episodes', '???')} 个请求)。")
+    logger.info(f"  ➜ 将按季获取数据，共 {len(tasks)} 个请求。")
 
     # --- 步骤 3: 并发执行 ---
     results = {}
