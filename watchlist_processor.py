@@ -11,6 +11,7 @@ import threading
 # 导入我们需要的辅助模块
 from database import connection, media_db, request_db, watchlist_db, user_db, settings_db
 import constants
+import utils
 import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.moviepilot as moviepilot
@@ -501,9 +502,9 @@ class WatchlistProcessor:
     def _refresh_series_metadata(self, tmdb_id: str, item_name: str, item_id: Optional[str]) -> Optional[tuple]:
         """
         通用辅助函数：
-        1. 获取 TMDb 最新剧集详情
+        1. ★★★ 调用 TMDb 聚合器并发获取所有数据 (Series + Seasons + Episodes) ★★★
         2. 更新本地 JSON 缓存
-        3. 更新数据库基础字段 (Series) ★★★ 增强版 ★★★
+        3. 更新数据库基础字段 (Series)
         4. 通知 Emby 刷新元数据
         5. 同步所有季和集的元数据到数据库 (Seasons & Episodes)
         
@@ -513,25 +514,32 @@ class WatchlistProcessor:
             logger.warning("  ➜ 未配置TMDb API Key，跳过元数据刷新。")
             return None
 
-        # 1. 从TMDb获取最新元数据
-        # 注意：get_tv_details 内部应该已经包含了 content_ratings (分级) 的获取逻辑
-        latest_series_data = tmdb.get_tv_details(tmdb_id, self.tmdb_api_key)
-        if not latest_series_data:
-            logger.error(f"  🚫 无法获取 '{item_name}' 的TMDb详情，元数据刷新中止。")
+        # ==============================================================================
+        # ★★★ 核心优化：直接调用 tmdb.py 中的并发聚合函数 ★★★
+        # 这个函数内部已经实现了：
+        # 1. 并发请求 (默认5线程)
+        # 2. 按季获取 (一次请求拿一整季的集数据，不再一集一集请求)
+        # 3. 自动重试和错误处理
+        # ==============================================================================
+        aggregated_data = tmdb.aggregate_full_series_data_from_tmdb(tmdb_id, self.tmdb_api_key, max_workers=5)
+
+        if not aggregated_data:
+            logger.error(f"  🚫 无法聚合 '{item_name}' 的TMDb详情，元数据刷新中止。")
             return None
+
+        # 解包数据
+        latest_series_data = aggregated_data['series_details']
+        seasons_list = aggregated_data['seasons_details'] # 这是一个包含完整集信息的季列表
         
         # 2. 将 TMDb 最新数据合并写入本地 JSON (series.json) 
         self._save_local_json(f"override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
 
-        # 3. ★★★ 增强：将 TMDb 最新数据全量写入数据库 (Series 层级) ★★★
-        # 提取分级信息 (Content Ratings)
+        # 3. 更新数据库 (Series 层级) - 代码保持不变
         content_ratings = latest_series_data.get("content_ratings", {}).get("results", [])
         official_rating_json = {}
         if latest_series_data.get('adult') is True:
-            # 如果是成人内容，强制锁定 US 分级，无视其他
             official_rating_json['US'] = 'XXX' 
         else:
-            # 只有不是成人内容时，才提取常规分级
             content_ratings = latest_series_data.get("content_ratings", {}).get("results", [])
             for r in content_ratings:
                 iso = r.get("iso_3166_1")
@@ -539,25 +547,38 @@ class WatchlistProcessor:
                 if iso and rating:
                     official_rating_json[iso] = rating
 
-        # ★★★ 修改：提取类型 (Genres) 为纯字符串列表 ★★★
-        # 目的：保持与 tags, countries 一致，简化 SQL 查询逻辑
-        genres = latest_series_data.get("genres", [])
-        genres_json = [g["name"] for g in genres if g.get("name")]
+        genres_raw = latest_series_data.get("genres", [])
+        genres_list = []
+        
+        for g in genres_raw:
+            # TMDb 返回的是字典 {"id": 18, "name": "Drama"}
+            if isinstance(g, dict):
+                name = g.get('name')
+                if name:
+                    # 应用汉化补丁
+                    if name in utils.GENRE_TRANSLATION_PATCH:
+                        name = utils.GENRE_TRANSLATION_PATCH[name]
+                    
+                    genres_list.append({
+                        "id": g.get('id', 0), 
+                        "name": name
+                    })
+            # 防御性编程：如果 TMDb 返回了字符串 (虽然不太可能)
+            elif isinstance(g, str):
+                name = g
+                if name in utils.GENRE_TRANSLATION_PATCH:
+                    name = utils.GENRE_TRANSLATION_PATCH[name]
+                genres_list.append({"id": 0, "name": name})
 
-        # 提取关键字 (Keywords) - 保持对象结构，因为关键字重名率高，ID 匹配更准
+        genres_json = json.dumps(genres_list, ensure_ascii=False) if genres_list else None
         keywords = latest_series_data.get("keywords", {}).get("results", [])
         keywords_json = [{"id": k["id"], "name": k["name"]} for k in keywords]
-        
-        # 提取制片公司 (Studios) - 保持对象结构
         studios = latest_series_data.get("production_companies", [])
         studios_json = [{"id": s["id"], "name": s["name"]} for s in studios]
-        
-        # 提取产地 (Countries) - TMDb TV 接口返回的就是纯字符串列表 ["CN", "US"]
         countries = latest_series_data.get("origin_country", [])
         countries_json = countries if isinstance(countries, list) else [countries]
 
         series_updates = {
-            # --- 基础信息 ---
             "original_title": latest_series_data.get("original_name"),
             "overview": latest_series_data.get("overview"),
             "poster_path": latest_series_data.get("poster_path"),
@@ -566,42 +587,41 @@ class WatchlistProcessor:
             "original_language": latest_series_data.get("original_language"),
             "watchlist_tmdb_status": latest_series_data.get("status"),
             "total_episodes": latest_series_data.get("number_of_episodes", 0),
-            "rating": latest_series_data.get("vote_average"), # TMDb 评分
-            "official_rating_json": json.dumps(official_rating_json) if official_rating_json else None, # 分级信息
-            "genres_json": json.dumps(genres_json) if genres_json else None, # 类型
-            "keywords_json": json.dumps(keywords_json) if keywords_json else None, # 关键字
-            "studios_json": json.dumps(studios_json) if studios_json else None, # 制作公司
-            "countries_json": json.dumps(countries_json) if countries_json else None # 产地
+            "rating": latest_series_data.get("vote_average"),
+            "official_rating_json": json.dumps(official_rating_json) if official_rating_json else None,
+            "genres_json": json.dumps(genres_json) if genres_json else None,
+            "keywords_json": json.dumps(keywords_json) if keywords_json else None,
+            "studios_json": json.dumps(studios_json) if studios_json else None,
+            "countries_json": json.dumps(countries_json) if countries_json else None
         }
         
-        # 调用 DB 更新 (注意：这里使用 update_media_metadata_fields，它会处理 JSON 序列化)
         media_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
-        logger.debug(f"  ➜ 已全量刷新 '{item_name}' 的 Series 元数据 (含分级/评分/类型)。")
+        logger.debug(f"  ➜ 已全量刷新 '{item_name}' 的 Series 元数据。")
 
-        # 4. 获取所有季和集的数据 
+        # 4. 处理季和集的数据 (保存 JSON + 收集列表)
+        # 这里不需要再发网络请求了，直接从 aggregated_data 里拿
         all_tmdb_episodes = []
-        tmdb_seasons = latest_series_data.get("seasons", [])
         
-        for season_summary in tmdb_seasons:
-            season_num = season_summary.get("season_number")
-            if season_num is None or season_num == 0: continue
+        for season_details in seasons_list:
+            season_num = season_details.get("season_number")
+            if season_num is None: continue
             
-            season_details = tmdb.get_season_details_tmdb(tmdb_id, season_num, self.tmdb_api_key)
-            
-            if season_details:
-                self._save_local_json(f"override/tmdb-tv/{tmdb_id}/season-{season_num}.json", season_details)
+            # 保存 season-X.json
+            self._save_local_json(f"override/tmdb-tv/{tmdb_id}/season-{season_num}.json", season_details)
 
-                if season_details.get("episodes"):
-                    all_tmdb_episodes.extend(season_details.get("episodes", []))
-                    
-                    for ep in season_details["episodes"]:
-                        ep_num = ep.get("episode_number")
-                        if ep_num is not None:
-                            self._save_local_json(
-                                f"override/tmdb-tv/{tmdb_id}/season-{season_num}-episode-{ep_num}.json", 
-                                ep
-                            )
-            time.sleep(0.1)
+            # 提取集信息
+            episodes = season_details.get("episodes", [])
+            if episodes:
+                all_tmdb_episodes.extend(episodes)
+                
+                # 保存 season-X-episode-Y.json
+                for ep in episodes:
+                    ep_num = ep.get("episode_number")
+                    if ep_num is not None:
+                        self._save_local_json(
+                            f"override/tmdb-tv/{tmdb_id}/season-{season_num}-episode-{ep_num}.json", 
+                            ep
+                        )
 
         # 5. 通知 Emby 刷新元数据 
         if item_id:
@@ -618,9 +638,13 @@ class WatchlistProcessor:
         emby_seasons_state = media_db.get_series_local_children_info(tmdb_id)
         
         try:
+            # 注意：这里传入的 tmdb_seasons 应该是包含基础信息的列表
+            # aggregated_data['series_details']['seasons'] 包含了季的基础信息（集数、海报等）
+            # 而 seasons_list 包含了完整的集信息
+            # sync_series_children_metadata 需要的是基础季列表和完整集列表
             media_db.sync_series_children_metadata(
                 parent_tmdb_id=tmdb_id,
-                seasons=tmdb_seasons,
+                seasons=latest_series_data.get("seasons", []), 
                 episodes=all_tmdb_episodes,
                 local_in_library_info=emby_seasons_state
             )
