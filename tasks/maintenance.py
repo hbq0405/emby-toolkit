@@ -35,9 +35,9 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         },
         'actor_subscriptions': {'config_genres_include_json', 'config_genres_exclude_json', 'last_scanned_tmdb_ids_json'},
         'resubscribe_rules': {
-            'target_library_ids', 'resubscribe_audio_missing_languages',
+            'scope_rules', 'resubscribe_audio_missing_languages',
             'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
-            'resubscribe_effect_include', 'resubscribe_codec_include', 'target_genres', 'target_countries'
+            'resubscribe_effect_include', 'resubscribe_codec_include'
         },
         'media_cleanup_tasks': {'versions_info_json'},
         'user_templates': {'emby_policy_json', 'emby_configuration_json'}
