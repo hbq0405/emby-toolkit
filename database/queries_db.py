@@ -682,6 +682,35 @@ def query_virtual_library_items(
         if clause:
             rule_clauses.append(clause)
 
+        # --- 13. 媒体库筛选 (Library) ---
+        elif field == 'library': 
+            # 逻辑：检查 asset_details_json 中的 source_library_id
+            safe_assets = "COALESCE(m.asset_details_json, '[]'::jsonb)"
+            
+            # 确保 value 是列表
+            val_list = list(value) if isinstance(value, list) else [value]
+            
+            if op in ['is_one_of', 'eq', 'contains']: # 包含于
+                clause = f"""
+                EXISTS (
+                    SELECT 1 FROM jsonb_array_elements({safe_assets}) a 
+                    WHERE a->>'source_library_id' = ANY(%s)
+                )
+                """
+                params.append(val_list)
+                
+            elif op == 'is_none_of': # 不包含于
+                clause = f"""
+                NOT EXISTS (
+                    SELECT 1 FROM jsonb_array_elements({safe_assets}) a 
+                    WHERE a->>'source_library_id' = ANY(%s)
+                )
+                """
+                params.append(val_list)
+
+        if clause:
+            rule_clauses.append(clause)
+
     # 6. 组合规则逻辑 (AND / OR)
     if rule_clauses:
         join_op = " AND " if logic.upper() == 'AND' else " OR "

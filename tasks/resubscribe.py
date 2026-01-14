@@ -63,56 +63,37 @@ def _evaluate_rating_rule(rule: dict, rating_value: Any, item_name: str) -> tupl
 
 def _fetch_candidates_for_rule(rule: dict) -> List[Dict[str, Any]]:
     """
-    【核心升级 - V5 复合筛选版】
-    支持 媒体库 AND 国家 AND 类型 的组合筛选。
+    【核心升级 - V6 通用规则版】
+    直接使用 scope_rules 驱动查询引擎。
     """
-    # 1. 提取筛选条件
-    target_libs = rule.get('target_library_ids')
-    target_genres = rule.get('target_genres')
-    target_countries = rule.get('target_countries')
+    # 1. 获取通用规则
+    scope_rules = rule.get('scope_rules') or []
+    
+    # 如果没有任何限制，为了安全起见，建议不要全库扫描，或者你可以允许。
+    # 这里我们假设如果没规则就跳过，防止误操作。
+    if not scope_rules:
+        return []
 
-    # 如果三个条件都为空，默认全库扫描 (或者你可以取消注释下面两行来禁止)
-    # if not target_libs and not target_genres and not target_countries:
-    #     return []
-
-    # 2. 构造筛选规则 (Filter Rules)
-    filter_rules = []
-
-    # 类型筛选
-    if target_genres:
-        filter_rules.append({
-            'field': 'genres',
-            'operator': 'is_one_of',
-            'value': target_genres
-        })
-
-    # 国家筛选
-    if target_countries:
-        filter_rules.append({
-            'field': 'countries',
-            'operator': 'is_one_of',
-            'value': target_countries
-        })
-
-    # 3. 调用虚拟库查询核心
-    # logic='AND' 意味着：(必须在指定库) AND (必须符合类型) AND (必须符合国家)
+    # 2. 调用虚拟库查询核心
+    # logic='AND' 意味着所有限定条件必须同时满足
+    # 注意：target_library_ids 参数已移除，现在通过 rules 里的 {'field': 'library'} 传递
     items_simple, _ = queries_db.query_virtual_library_items(
-        rules=filter_rules,
+        rules=scope_rules,
         logic='AND', 
         user_id=None,
         limit=999999,
-        offset=0,
-        target_library_ids=target_libs # 媒体库筛选直接传参
+        offset=0
     )
     
     if not items_simple:
         return []
 
-    # 4. 获取完整元数据
+    # 3. 返回 ID 列表供主循环使用
+    # 主循环会根据这些 ID 去内存缓存(movies_map/series_map)里拿完整数据
     tmdb_ids = [i['tmdb_id'] for i in items_simple if i.get('tmdb_id')]
-    candidates = media_db.get_full_metadata_by_tmdb_ids(tmdb_ids)
     
-    return candidates
+    # 去重并返回
+    return [{'tmdb_id': tid} for tid in set(tmdb_ids)]
 
 # ======================================================================
 # 核心任务：刷新媒体整理

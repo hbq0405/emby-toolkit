@@ -75,74 +75,73 @@
                     </n-form-item>
                   </n-gi>
                   
-                  <!-- ★★★ 核心修改区域：复合筛选 ★★★ -->
+                  <n-gi>
+                    <n-form-item label="规则模式">
+                      <n-radio-group v-model:value="currentRule.rule_type" name="ruleTypeGroup">
+                        <n-radio-button value="resubscribe">洗版模式</n-radio-button>
+                        <n-radio-button value="delete">删除模式</n-radio-button>
+                      </n-radio-group>
+                    </n-form-item>
+                  </n-gi>
+
+                  <!-- ★★★ 核心修改：通用筛选构建器 ★★★ -->
                   <n-gi :span="2">
-                    <n-card title="限定范围 (复合筛选)" size="small" style="margin-bottom: 24px;">
+                    <n-card title="限定范围 (通用筛选)" size="small" style="margin-bottom: 12px; margin-top: 12px;">
                       <template #header-extra>
                         <n-tag type="info" size="small" :bordered="false">条件之间为“与”关系 (AND)</n-tag>
                       </template>
                       
-                      <!-- ★★★ 修改：改为 3 列布局 ★★★ -->
-                      <n-grid :cols="3" :x-gap="12">
-                        <n-gi>
-                          <n-form-item label="限定媒体库" path="target_library_ids">
-                            <n-select 
-                              v-model:value="currentRule.target_library_ids" 
-                              :options="allEmbyLibraries" 
-                              multiple
-                              placeholder="留空则不限制"
-                            />
-                          </n-form-item>
-                        </n-gi>
-                        
-                        <n-gi>
-                          <n-form-item label="限定国家/地区" path="target_countries">
-                            <n-select 
-                              v-model:value="currentRule.target_countries" 
-                              :options="countryOptions" 
-                              multiple 
-                              filterable
-                              placeholder="留空则不限制"
-                            />
-                          </n-form-item>
-                        </n-gi>
-                        
-                        <n-gi>
-                          <n-form-item label="限定类型" path="target_genres">
-                            <n-select 
-                              v-model:value="currentRule.target_genres" 
-                              :options="genreOptions" 
-                              multiple 
-                              filterable
-                              placeholder="留空则不限制"
-                            />
-                          </n-form-item>
-                        </n-gi>
-                      </n-grid>
-                    </n-card>
-                  </n-gi>
+                      <div class="rules-container">
+                        <div v-for="(rule, index) in currentRule.scope_rules" :key="index" class="rule-row">
+                          <!-- 1. 字段 -->
+                          <n-select 
+                            v-model:value="rule.field" 
+                            :options="scopeFieldOptions" 
+                            placeholder="条件" 
+                            class="rule-field" 
+                            @update:value="handleFieldChange(rule)"
+                          />
+                          
+                          <!-- 2. 操作符 -->
+                          <n-select 
+                            v-model:value="rule.operator" 
+                            :options="getOperatorOptionsForRow(rule)" 
+                            placeholder="操作" 
+                            :disabled="!rule.field" 
+                            class="rule-op" 
+                          />
+                          
+                          <!-- 3. 值 (动态组件) -->
+                          <div class="rule-value">
+                            <!-- 媒体库 -->
+                            <n-select v-if="rule.field === 'library'" v-model:value="rule.value" multiple filterable :options="allEmbyLibraries" placeholder="选择媒体库" />
+                            <!-- 类型 -->
+                            <n-select v-else-if="rule.field === 'genres'" v-model:value="rule.value" multiple filterable :options="genreOptions" placeholder="选择类型" />
+                            <!-- 国家 -->
+                            <n-select v-else-if="rule.field === 'countries'" v-model:value="rule.value" multiple filterable :options="countryOptions" placeholder="选择国家" />
+                            <!-- 工作室 -->
+                            <n-select v-else-if="rule.field === 'studios'" v-model:value="rule.value" multiple filterable :options="studioOptions" placeholder="选择工作室" />
+                            <!-- 关键词 -->
+                            <n-select v-else-if="rule.field === 'keywords'" v-model:value="rule.value" multiple filterable :options="keywordOptions" placeholder="选择关键词" />
+                            <!-- 年份 -->
+                            <n-input-number v-else-if="rule.field === 'release_year'" v-model:value="rule.value" placeholder="年份" :show-button="false" />
+                            <!-- 评分 -->
+                            <n-input-number v-else-if="rule.field === 'rating'" v-model:value="rule.value" placeholder="评分" :step="0.1" />
+                            <!-- 默认 -->
+                            <n-input v-else v-model:value="rule.value" placeholder="输入值" />
+                          </div>
 
-                  <n-gi :span="2">
-                    <n-form-item label="规则模式">
-                      <n-radio-group v-model:value="currentRule.rule_type" name="ruleTypeGroup" size="large">
-                        <n-radio-button value="resubscribe">
-                          <n-icon :component="SyncIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
-                          洗版模式
-                        </n-radio-button>
-                        <n-radio-button value="delete">
-                          <n-icon :component="TrashIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
-                          删除模式
-                        </n-radio-button>
-                      </n-radio-group>
-                      <template #feedback>
-                        <span v-if="currentRule.rule_type === 'resubscribe'" style="color: var(--n-text-color-3);">
-                          检测到不达标时，自动或手动触发 MoviePilot 订阅以获取更好版本。
-                        </span>
-                        <span v-else style="color: var(--n-error-color);">
-                          检测到符合条件（如低分、低画质）时，直接执行删除操作，<b>不进行订阅</b>。
-                        </span>
-                      </template>
-                    </n-form-item>
+                          <n-button text type="error" class="rule-delete" @click="removeScopeRule(index)">
+                            <n-icon :component="DeleteIcon" size="18" />
+                          </n-button>
+                        </div>
+                        
+                        <n-button dashed block class="add-rule-btn" @click="addScopeRule">
+                          <template #icon><n-icon :component="AddIcon" /></template>
+                          添加限定条件
+                        </n-button>
+                      </div>
+                    </n-card>
                   </n-gi>
                 </n-grid>
               </n-card>
@@ -506,7 +505,16 @@ const subtitleLanguageOptions = ref([
     { label: '日文 (jpn)', value: 'jpn' }, 
     { label: '韩文 (kor)', value: 'kor' }, 
 ]);
-
+const scopeFieldOptions = [
+  { label: '媒体库', value: 'library' },
+  { label: '类型', value: 'genres' },
+  { label: '国家/地区', value: 'countries' },
+  { label: '年份', value: 'release_year' },
+  { label: '评分', value: 'rating' },
+  { label: '工作室', value: 'studios' },
+  { label: '关键词', value: 'keywords' },
+  // 你还可以加：tags, actors, directors, original_language 等等
+];
 const countryOptions = ref([]);
 const genreOptions = ref([]);
 
@@ -533,7 +541,8 @@ const loadData = async () => {
     loading.value = false;
   }
 };
-
+const studioOptions = ref([]);
+const keywordOptions = ref([]);
 // 新增辅助函数：加载额外选项
 const loadExtraOptions = async () => {
   try {
@@ -548,7 +557,12 @@ const loadExtraOptions = async () => {
     // 2. 加载类型 (合并电影和电视)
     let movieGenres = [];
     let tvGenres = [];
-
+    try {
+        const studioRes = await axios.get('/api/custom_collections/config/studios');
+        studioOptions.value = studioRes.data;
+        const kwRes = await axios.get('/api/custom_collections/config/keywords');
+        keywordOptions.value = kwRes.data;
+    } catch (e) {}
     try {
       const res = await axios.get('/api/custom_collections/config/movie_genres');
       movieGenres = res.data || [];
@@ -617,10 +631,67 @@ const openRuleModal = async (rule = null) => {
       // 删除动作
       delete_mode: 'episode', delete_delay_seconds: 5
     };
+    addScopeRule();
   }
   showModal.value = true;
 };
+const addScopeRule = () => {
+  currentRule.value.scope_rules.push({ field: 'library', operator: 'is_one_of', value: [] });
+};
+const removeScopeRule = (index) => {
+  currentRule.value.scope_rules.splice(index, 1);
+};
+const handleFieldChange = (rule) => {
+    rule.value = null; // 切换字段时清空值
+    // 自动设置默认操作符
+    const ops = getOperatorOptionsForRow(rule);
+    if (ops.length > 0) rule.operator = ops[0].value;
+};
 
+const getOperatorOptionsForRow = (rule) => {
+  const listOps = [
+      { label: '包含任意', value: 'is_one_of' },
+      { label: '不包含', value: 'is_none_of' }
+  ];
+  const numOps = [
+      { label: '大于等于', value: 'gte' },
+      { label: '小于等于', value: 'lte' },
+      { label: '等于', value: 'eq' }
+  ];
+  
+  if (['library', 'genres', 'countries', 'studios', 'keywords'].includes(rule.field)) {
+      return listOps;
+  }
+  if (['release_year', 'rating'].includes(rule.field)) {
+      return numOps;
+  }
+  return [{ label: '等于', value: 'eq' }];
+};
+
+// 4. 列表展示优化 (getLibraryCountText)
+const getLibraryCountText = (rule) => {
+    if (!rule.scope_rules || rule.scope_rules.length === 0) return '无限制';
+    
+    const parts = [];
+    rule.scope_rules.forEach(r => {
+        const fieldMap = {
+            'library': '库', 'genres': '类', 'countries': '国',
+            'release_year': '年', 'rating': '分', 'studios': '厂'
+        };
+        const suffix = fieldMap[r.field] || r.field;
+        
+        if (Array.isArray(r.value)) {
+            parts.push(`${r.value.length}${suffix}`);
+        } else {
+            parts.push(`${suffix}:${r.value}`);
+        }
+    });
+    return parts.join(' + ');
+};
+
+const getLibraryTagType = (rule) => {
+  return (rule.scope_rules && rule.scope_rules.length > 0) ? 'default' : 'warning';
+};
 const saveRule = async () => {
   formRef.value?.validate(async (errors) => {
     if (!errors) {
@@ -664,28 +735,6 @@ const onDragEnd = async () => {
   } catch (e) {}
 };
 
-const getLibraryCountText = (rule) => {
-    const libs = rule.target_library_ids?.length || 0;
-    const countries = rule.target_countries?.length || 0;
-    const genres = rule.target_genres?.length || 0;
-    
-    const parts = [];
-    if (libs > 0) parts.push(`${libs}库`);
-    if (countries > 0) parts.push(`${countries}国`);
-    if (genres > 0) parts.push(`${genres}类`);
-    
-    if (parts.length === 0) return '未指定范围';
-    return parts.join(' + ');
-};
-
-const getLibraryTagType = (rule) => {
-  // 只要有一个条件不为空，就是有效的
-  const hasCondition = (rule.target_library_ids?.length > 0) || 
-                       (rule.target_countries?.length > 0) || 
-                       (rule.target_genres?.length > 0);
-  return hasCondition ? 'default' : 'error';
-};
-
 onMounted(loadData);
 </script>
 
@@ -703,4 +752,10 @@ onMounted(loadData);
 .filter-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 .filter-content { margin-top: 8px; margin-left: 24px; }
 .tip { font-size: 12px; color: #999; margin-top: 4px; }
+.rules-container { display: flex; flex-direction: column; gap: 8px; }
+.rule-row { display: flex; gap: 8px; align-items: center; }
+.rule-field { width: 120px !important; flex-shrink: 0; }
+.rule-op { width: 110px !important; flex-shrink: 0; }
+.rule-value { flex: 1; min-width: 0; } /* min-width: 0 防止 flex 子项溢出 */
+.rule-value > .n-select, .rule-value > .n-input-number, .rule-value > .n-input { width: 100% !important; }
 </style>

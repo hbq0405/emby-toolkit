@@ -268,7 +268,7 @@ def init_db():
                         id SERIAL PRIMARY KEY,
                         name TEXT NOT NULL UNIQUE,
                         enabled BOOLEAN DEFAULT TRUE,
-                        target_library_ids JSONB, 
+                        scope_rules JSONB DEFAULT '[]'::jsonb,
                         delete_after_resubscribe BOOLEAN DEFAULT FALSE,
                         sort_order INTEGER DEFAULT 0,
                         resubscribe_resolution_enabled BOOLEAN DEFAULT FALSE,
@@ -299,9 +299,7 @@ def init_db():
                         delete_mode TEXT DEFAULT 'episode',          
                         delete_delay_seconds INTEGER DEFAULT 0,
                         filter_rating_ignore_zero BOOLEAN DEFAULT FALSE,
-                        filter_missing_episodes_enabled BOOLEAN DEFAULT FALSE,
-                        target_genres JSONB,      
-                        target_countries JSONB          
+                        filter_missing_episodes_enabled BOOLEAN DEFAULT FALSE
                     )
                 """)
 
@@ -468,6 +466,7 @@ def init_db():
                             "total_episodes_locked": "BOOLEAN DEFAULT FALSE"
                         },
                         'resubscribe_rules': {
+                            "scope_rules": "JSONB DEFAULT '[]'::jsonb",
                             "resubscribe_subtitle_effect_only": "BOOLEAN DEFAULT FALSE",
                             "resubscribe_filesize_enabled": "BOOLEAN DEFAULT FALSE",
                             "resubscribe_filesize_operator": "TEXT DEFAULT 'lt'",
@@ -488,8 +487,6 @@ def init_db():
                             "delete_delay_seconds": "INTEGER DEFAULT 0",  
                             "filter_rating_ignore_zero": "BOOLEAN DEFAULT FALSE",
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE",
-                            "target_genres": "JSONB",      
-                            "target_countries": "JSONB"
                         },
                         'collections_info': {
                             "poster_path": "TEXT",
@@ -635,6 +632,11 @@ def init_db():
                             'has_missing', 
                             'missing_movies_json', 
                             'in_library_count'
+                        ],
+                        'resubscribe_rules': [
+                            'target_library_ids',
+                            'target_genres',
+                            'target_countries'
                         ],
                         'custom_collections': [
                             'missing_count',
