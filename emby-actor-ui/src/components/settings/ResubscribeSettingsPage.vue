@@ -135,32 +135,6 @@
                                 :options="allEmbyLibraries"
                                 placeholder="选择媒体库"
                              />
-                             <!-- 演员 (远程搜索 + 头像) -->
-                              <n-select
-                                v-else-if="rule.field === 'actors'"
-                                v-model:value="rule.value"
-                                multiple
-                                filterable
-                                remote
-                                placeholder="搜索演员姓名"
-                                :options="actorOptions"
-                                :loading="isSearchingActors"
-                                @search="handlePersonSearch"
-                                label-field="name"
-                                :render-option="renderPersonOption"
-                                :render-tag="renderPersonTag"
-                                @focus="() => {
-                                  if (Array.isArray(rule.value)) {
-                                      // 把已选的对象合并到选项列表中，防止回显空白
-                                      const existingIds = new Set(actorOptions.value.map(o => o.id));
-                                      rule.value.forEach(v => {
-                                          if (v && v.id && !existingIds.has(v.id)) {
-                                              actorOptions.value.push(v);
-                                          }
-                                      });
-                                  }
-                                }"
-                              />
                              <!-- 类型 -->
                              <n-select
                                 v-else-if="rule.field === 'genres'"
@@ -193,15 +167,6 @@
                                 :options="keywordOptions"
                                 placeholder="选择关键词"
                              />
-                             <!-- 入库时间 -->
-                              <n-input-number
-                                v-else-if="rule.field === 'date_added'"
-                                v-model:value="rule.value"
-                                placeholder="天数"
-                                :min="1"
-                              >
-                                <template #suffix>天</template>
-                              </n-input-number>
                              <!-- 年份 -->
                              <n-input-number
                                 v-else-if="rule.field === 'release_year'"
@@ -518,7 +483,7 @@ import { ref, onMounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   useMessage, NTag, NIcon, NGrid, NGi, NRadioGroup, NRadioButton, NRadio, NInputGroup, NCheckbox, NAlert,
-  NCard, NSpace, NButton, NSwitch, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect, NInputNumber, NAvatar, NText
+  NCard, NSpace, NButton, NSwitch, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect, NInputNumber
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
@@ -605,14 +570,12 @@ const keywordOptions = ref([]);
 // 字段定义
 const scopeFieldOptions = [
   { label: '媒体库', value: 'library' },
-  { label: '演员', value: 'actors' },
   { label: '类型', value: 'genres' },
   { label: '国家/地区', value: 'countries' },
   { label: '年份', value: 'release_year' },
   { label: '评分', value: 'rating' },
   { label: '工作室', value: 'studios' },
   { label: '关键词', value: 'keywords' },
-  { label: '入库时间', value: 'date_added' },
 ];
 
 const loadData = async () => {
@@ -668,21 +631,6 @@ const openRuleModal = async (rule = null) => {
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
     if (!currentRule.value.scope_rules) currentRule.value.scope_rules = [];
-    if (currentRule.value.scope_rules) {
-        currentRule.value.scope_rules.forEach(r => {
-            if (r.field === 'actors' && Array.isArray(r.value)) {
-                // 把保存的对象塞回 actorOptions，这样 Select 就能显示名字和头像了
-                r.value.forEach(actor => {
-                    if (actor && actor.id) {
-                        // 简单去重
-                        if (!actorOptions.value.find(o => o.id === actor.id)) {
-                            actorOptions.value.push(actor);
-                        }
-                    }
-                });
-            }
-        });
-    }
   } else {
     currentRule.value = {
       name: '', enabled: true, rule_type: 'resubscribe',
@@ -771,23 +719,7 @@ const getOperatorOptionsForRow = (rule) => {
       { label: '小于等于', value: 'lte' },
       { label: '等于', value: 'eq' }
   ];
-  // 入库时间操作符
-  if (['date_added'].includes(rule.field)) {
-      return [
-          { label: '最近N天内', value: 'in_last_days' },
-          { label: 'N天以前', value: 'not_in_last_days' }
-      ];
-  }
   
-  // 演员操作符
-  if (['actors'].includes(rule.field)) {
-      return [
-          { label: '包含任意', value: 'is_one_of' },
-          { label: '不包含', value: 'is_none_of' },
-          { label: '主要是(前3)', value: 'is_primary' }
-      ];
-  }
-
   if (['library', 'genres', 'countries', 'studios', 'keywords'].includes(rule.field)) {
       return listOps;
   }
@@ -795,79 +727,6 @@ const getOperatorOptionsForRow = (rule) => {
       return numOps;
   }
   return [{ label: '等于', value: 'eq' }];
-};
-
-// 3. 演员搜索逻辑 (复用自建合集)
-const actorOptions = ref([]);
-const isSearchingActors = ref(false);
-let personSearchTimeout = null;
-
-const handlePersonSearch = (query) => {
-  if (!query) {
-    actorOptions.value = [];
-    return;
-  }
-  isSearchingActors.value = true;
-  if (personSearchTimeout) clearTimeout(personSearchTimeout);
-  
-  personSearchTimeout = setTimeout(async () => {
-    try {
-      // 调用后端 TMDb 搜索接口
-      const response = await axios.get(`/api/custom_collections/config/tmdb_search_persons?q=${query}`);
-      actorOptions.value = response.data || [];
-    } catch (error) {
-      console.error('搜索人物失败:', error);
-      actorOptions.value = [];
-    } finally {
-      isSearchingActors.value = false;
-    }
-  }, 300);
-};
-
-// 辅助函数：生成 TMDb 图片 URL
-const getTmdbImageUrl = (path) => {
-  return path ? `https://image.tmdb.org/t/p/w92${path}` : null;
-};
-
-// 自定义渲染函数：下拉选项 (带头像)
-const renderPersonOption = ({ node, option }) => {
-  return h('div', { style: 'display: flex; align-items: center;' }, [
-    h(NAvatar, {
-      src: getTmdbImageUrl(option.profile_path),
-      size: 'small',
-      round: true,
-      style: 'margin-right: 8px; flex-shrink: 0;'
-    }),
-    h('div', [
-      h('div', option.name),
-      h(NText, { depth: 3, style: 'font-size: 12px;' }, { default: () => option.known_for || '暂无代表作' })
-    ])
-  ]);
-};
-
-// 自定义渲染函数：选中标签 (带头像)
-const renderPersonTag = ({ option, handleClose }) => {
-  return h(
-    NTag,
-    {
-      type: 'info',
-      closable: true,
-      onClose: (e) => { e.stopPropagation(); handleClose(); },
-      round: true,
-      style: 'padding: 0 6px 0 2px; display: flex; align-items: center;'
-    },
-    {
-      default: () => [
-        h(NAvatar, {
-          src: getTmdbImageUrl(option.profile_path),
-          size: 18,
-          round: true,
-          style: 'margin-right: 4px;'
-        }),
-        option.name
-      ]
-    }
-  );
 };
 
 const getLibraryCountText = (rule) => {
