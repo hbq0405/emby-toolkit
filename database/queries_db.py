@@ -679,9 +679,6 @@ def query_virtual_library_items(
                 if sub_clauses:
                     clause = f"EXISTS (SELECT 1 FROM jsonb_array_elements({safe_assets}) a WHERE ({' OR '.join(sub_clauses)}))"
 
-        if clause:
-            rule_clauses.append(clause)
-
         # --- 13. 媒体库筛选 (Library) ---
         elif field == 'library': 
             # 逻辑：检查 asset_details_json 中的 source_library_id
