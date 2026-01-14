@@ -742,6 +742,8 @@ def query_virtual_library_items(
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 final_count_sql = f"{base_count} WHERE {full_where}"
+                logger.info(f"DEBUG SQL: {final_count_sql}")
+                logger.info(f"DEBUG PARAMS: {params}")
                 cursor.execute(final_count_sql, tuple(params))
                 row = cursor.fetchone()
                 total_count = row['count'] if row else 0
