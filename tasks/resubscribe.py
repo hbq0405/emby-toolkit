@@ -898,6 +898,11 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
 
     if not rule:
         return payload
+    
+    if rule.get('custom_resubscribe_enabled'):
+        if 'best_version' in payload:
+            del payload['best_version']
+            logger.debug(f"  ➜ [自定义洗版] 已移除 best_version 参数，将完全依赖正则匹配。")
 
     rule_name = rule.get('name', '未知规则')
     final_include_lookaheads = []
@@ -1131,8 +1136,17 @@ def _execute_resubscribe(processor, task_name: str, target):
             continue # 删除模式结束，跳过后续逻辑
         
         # --- 分支 2: 洗版模式 ---
-        payload = build_resubscribe_payload(item, rule)
+        
+        # =======================================================
+        # [修改] 修复开关逻辑：检查“自定义洗版”开关
+        # =======================================================
+        # 如果开启了“自定义洗版”，则传入 rule，生成包含分辨率、特效、字幕等限制的 Payload
+        # 如果关闭了“自定义洗版”，则传入 None，只生成基础 Payload (仅含 ID 和 Name，由 MP 自动决定版本)
+        rule_for_payload = rule if rule.get('custom_resubscribe_enabled') else None
+        
+        payload = build_resubscribe_payload(item, rule_for_payload)
         if not payload: continue
+        # =======================================================
 
         # ======================================================================
         # ★★★ 先尝试取消旧订阅，确保洗版参数生效 ★★★
