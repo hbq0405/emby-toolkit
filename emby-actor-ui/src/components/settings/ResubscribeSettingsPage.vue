@@ -340,9 +340,24 @@
                     </n-space>
                   </n-form-item>
                   <n-form-item label="自定义洗版">
-                    <n-space align="center">
-                      <n-switch v-model:value="currentRule.custom_resubscribe_enabled" />
-                      <span class="tip">开启后，将根据规则生成订阅参数。</span>
+                    <n-space vertical>
+                      <n-space align="center">
+                        <n-switch 
+                          v-model:value="currentRule.custom_resubscribe_enabled" 
+                          @update:value="handleCustomResubscribeChange"
+                        />
+                        <span class="tip">开启后，将根据规则生成订阅参数（绕过 MP 质量判定）。</span>
+                      </n-space>
+                      
+                      <!-- 子选项：特效字幕 (仅在自定义洗版开启时显示) -->
+                      <div v-if="currentRule.custom_resubscribe_enabled" style="margin-left: 34px; margin-top: 4px; padding: 8px; background: var(--n-color-embedded); border-radius: 4px;">
+                        <n-checkbox v-model:checked="currentRule.resubscribe_subtitle_effect_only">
+                          要求包含特效字幕 (正则匹配)
+                        </n-checkbox>
+                        <div class="tip" style="margin-top: 4px;">
+                          勾选后，生成的订阅请求将强制包含“特效”关键词。
+                        </div>
+                      </div>
                     </n-space>
                   </n-form-item>
                   
@@ -352,10 +367,6 @@
                       <span class="tip">仅手动洗版生效。</span>
                       <span class="tip" v-if="!isEmbyAdminConfigured" style="color: var(--n-warning-color);">需配置 Emby 管理员账号</span>
                     </n-space>
-                  </n-form-item>
-
-                  <n-form-item label="特效字幕">
-                    <n-checkbox v-model:checked="currentRule.resubscribe_subtitle_effect_only">订阅时要求包含特效字幕</n-checkbox>
                   </n-form-item>
                 </div>
 
