@@ -922,11 +922,13 @@ class WatchlistProcessor:
                         
                 except Exception as e:
                     logger.error(f"  ❌ [自动清理] 执行删除逻辑时出错: {e}")
+            # 4. 删除整理记录
+            moviepilot.delete_transfer_history(tmdb_id, season_number, series_name, self.config)
 
-            # 3. 取消旧订阅
+            # 5. 取消旧订阅
             moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=season_number)
             
-            # 4. 发起新订阅 (洗版)
+            # 6. 发起新订阅 (洗版)
             payload = {
                 "name": series_name,
                 "tmdbid": int(tmdb_id),

@@ -308,3 +308,108 @@ def update_subscription_status(tmdb_id: int, season: Optional[int], status: str,
     except Exception as e:
         logger.error(f"  ➜ 调用 MoviePilot 更新接口出错: {e}")
         return False
+    
+def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[str, Any]) -> bool:
+    """
+    【清理整理记录】根据 TMDb ID 和 季号，搜索并删除 MP 中的整理记录。
+    采用循环分页获取，确保获取该剧集的所有记录。
+    """
+    try:
+        moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token:
+            return False
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        search_url = f"{moviepilot_url}/api/v1/history/transfer"
+        
+        # 1. 循环获取所有相关记录
+        all_records = []
+        page = 1
+        page_size = 500  # 单页获取500条，不够再翻页，直到取完为止
+        
+        logger.info(f"  🔍 [MP清理] 正在全量搜索《{title}》的整理记录...")
+        
+        while True:
+            params = {
+                "title": title,
+                "page": page,
+                "count": page_size
+            }
+            
+            try:
+                res = requests.get(search_url, headers=headers, params=params, timeout=30)
+                if res.status_code != 200:
+                    logger.warning(f"  ⚠️ [MP清理] 获取第 {page} 页记录失败: {res.status_code}")
+                    break
+                
+                data = res.json()
+                if not data:
+                    break
+                
+                all_records.extend(data)
+                
+                # 如果返回的数量少于页大小，说明已经是最后一页了
+                if len(data) < page_size:
+                    break
+                
+                page += 1
+                
+            except Exception as e:
+                logger.error(f"  ⚠️ [MP清理] 分页请求异常: {e}")
+                break
+
+        if not all_records:
+            logger.info(f"  ✅ [MP清理] 未找到《{title}》的任何整理记录。")
+            return True
+
+        # 2. 内存筛选：精确匹配 TMDb ID 和 季号
+        ids_to_delete = []
+        target_tmdb = int(tmdb_id)
+        target_season = int(season)
+        
+        for record in all_records:
+            # 校验 TMDb ID
+            rec_tmdb = record.get('tmdbid')
+            if rec_tmdb != target_tmdb:
+                continue
+            
+            # 校验 季号
+            rec_seasons = record.get('seasons', '')
+            try:
+                # MP的seasons可能是 "1" 也可能是 "01" 或其他格式，转int对比最稳
+                if int(rec_seasons) == target_season:
+                    ids_to_delete.append(record)
+            except:
+                continue
+
+        if not ids_to_delete:
+            logger.info(f"  ✅ [MP清理] 搜索到 {len(all_records)} 条记录，但没有 S{season} 的记录。")
+            return True
+
+        logger.info(f"  🗑️ [MP清理] 筛选出 {len(ids_to_delete)} 条 S{season} 的整理记录，开始执行删除...")
+
+        # 3. 逐条删除
+        # API: DELETE /api/v1/history/transfer
+        delete_url = f"{moviepilot_url}/api/v1/history/transfer"
+        del_params = {
+            "deletesrc": False,  # 仅删记录，不删源文件
+            "deletedest": False  # 仅删记录，不删目标文件(由Emby侧逻辑处理)
+        }
+        
+        deleted_count = 0
+        for rec in ids_to_delete:
+            try:
+                # MP 的删除接口需要传回整个对象作为 Body
+                del_res = requests.delete(delete_url, headers=headers, params=del_params, json=rec, timeout=10)
+                if del_res.status_code == 200:
+                    deleted_count += 1
+            except Exception as e:
+                logger.debug(f"  ⚠️ 删除单条记录失败: {e}")
+
+        logger.info(f"  ✅ [MP清理] 清理完成，共删除 {deleted_count} 条记录。")
+        return True
+
+    except Exception as e:
+        logger.error(f"  ❌ [MP清理] 执行出错: {e}")
+        return False
