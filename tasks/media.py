@@ -695,8 +695,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 if not t_id: return None, None
                 details = None
                 try:
-                    if i_type == 'Movie': details = tmdb.get_movie_details(t_id, processor.tmdb_api_key)
-                    elif i_type == 'Series': details = tmdb.get_tv_details(t_id, processor.tmdb_api_key)
+                    if i_type == 'Movie': 
+                        details = tmdb.get_movie_details(t_id, processor.tmdb_api_key)
+                    elif i_type == 'Series': 
+                        # 使用聚合函数，并发获取所有季信息
+                        # 注意：外层已经是并发了，这里 max_workers 设小一点（如 3），防止瞬间请求过多触发 429
+                        details = tmdb.aggregate_full_series_data_from_tmdb(t_id, processor.tmdb_api_key, max_workers=3)
                 except Exception: pass
                 return str(t_id), details
 
@@ -714,7 +718,18 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                 item = item_group[0]
                 tmdb_id_str = str(item.get("ProviderIds", {}).get("Tmdb"))
                 item_type = item.get("Type")
-                tmdb_details = tmdb_details_map.get(tmdb_id_str)
+
+                full_aggregated_data = tmdb_details_map.get(tmdb_id_str)
+                tmdb_details = None
+                pre_fetched_episodes = {} # 用于存储预获取的分集信息
+
+                if item_type == 'Series' and full_aggregated_data:
+                    # 如果是 Series，full_aggregated_data 是一个包含 series_details, seasons_details, episodes_details 的字典
+                    tmdb_details = full_aggregated_data.get('series_details')
+                    pre_fetched_episodes = full_aggregated_data.get('episodes_details', {})
+                else:
+                    # Movie 或其他情况，保持原样
+                    tmdb_details = full_aggregated_data
                 
                 # --- 1. 构建顶层记录 ---
                 asset_details_list = []
@@ -916,15 +931,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                                 metadata_batch.append(season_record)
                                 tmdb_children_map[f"S{s_num}"] = s_info
 
-                                has_eps = any(e.get('ParentIndexNumber') == s_num for e in my_episodes)
-                                if has_eps:
-                                    try:
-                                        s_details = tmdb.get_tv_season_details(tmdb_id_str, s_num, processor.tmdb_api_key)
-                                        if s_details and 'episodes' in s_details:
-                                            for ep in s_details['episodes']:
-                                                if ep.get('episode_number') is not None:
-                                                    tmdb_children_map[f"S{s_num}E{ep.get('episode_number')}"] = ep
-                                    except: pass
+                                for key, ep_data in pre_fetched_episodes.items():
+                                    # key 格式为 S1E1
+                                    if key.startswith(f"S{s_num}E"):
+                                        tmdb_children_map[key] = ep_data
 
                     # B. 兜底处理
                     for s in my_seasons:
