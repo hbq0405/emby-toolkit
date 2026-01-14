@@ -346,7 +346,7 @@
                           v-model:value="currentRule.custom_resubscribe_enabled" 
                           @update:value="handleCustomResubscribeChange"
                         />
-                        <span class="tip">开启后，将根据规则生成订阅参数（绕过 MP 质量判定）。</span>
+                        <span class="tip">开启后，将根据规则生成订阅参数，关闭则采用MP洗版规则处理订阅。</span>
                       </n-space>
                       
                       <!-- 子选项：特效字幕 (仅在自定义洗版开启时显示) -->
