@@ -31,7 +31,7 @@
                   <n-tag v-else type="primary" size="small" round>洗版</n-tag>
                 </div>
                 <n-space size="small" style="margin-top: 4px;">
-                  <!-- ★★★ 修改：显示复合筛选信息 ★★★ -->
+                  <!-- 显示复合筛选摘要 -->
                   <n-tag :type="getLibraryTagType(rule)" size="small" :bordered="false">
                     {{ getLibraryCountText(rule) }}
                   </n-tag>
@@ -77,14 +77,28 @@
                   
                   <n-gi>
                     <n-form-item label="规则模式">
-                      <n-radio-group v-model:value="currentRule.rule_type" name="ruleTypeGroup">
-                        <n-radio-button value="resubscribe">洗版模式</n-radio-button>
-                        <n-radio-button value="delete">删除模式</n-radio-button>
+                      <n-radio-group v-model:value="currentRule.rule_type" name="ruleTypeGroup" size="large">
+                        <n-radio-button value="resubscribe">
+                          <n-icon :component="SyncIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
+                          洗版模式
+                        </n-radio-button>
+                        <n-radio-button value="delete">
+                          <n-icon :component="TrashIcon" style="vertical-align: text-bottom; margin-right: 4px;" />
+                          删除模式
+                        </n-radio-button>
                       </n-radio-group>
+                      <template #feedback>
+                        <span v-if="currentRule.rule_type === 'resubscribe'" style="color: var(--n-text-color-3);">
+                          检测到不达标时，自动或手动触发 MoviePilot 订阅以获取更好版本。
+                        </span>
+                        <span v-else style="color: var(--n-error-color);">
+                          检测到符合条件（如低分、低画质）时，直接执行删除操作，<b>不进行订阅</b>。
+                        </span>
+                      </template>
                     </n-form-item>
                   </n-gi>
 
-                  <!-- ★★★ 核心修改：通用筛选构建器 ★★★ -->
+                  <!-- ★★★ 核心修改区域：通用筛选构建器 ★★★ -->
                   <n-gi :span="2">
                     <n-card title="限定范围 (通用筛选)" size="small" style="margin-bottom: 12px; margin-top: 12px;">
                       <template #header-extra>
@@ -93,11 +107,11 @@
                       
                       <div class="rules-container">
                         <div v-for="(rule, index) in currentRule.scope_rules" :key="index" class="rule-row">
-                          <!-- 1. 字段 -->
+                          <!-- 1. 字段选择 -->
                           <n-select 
                             v-model:value="rule.field" 
                             :options="scopeFieldOptions" 
-                            placeholder="条件" 
+                            placeholder="选择条件" 
                             class="rule-field" 
                             @update:value="handleFieldChange(rule)"
                           />
@@ -111,24 +125,68 @@
                             class="rule-op" 
                           />
                           
-                          <!-- 3. 值 (动态组件) -->
+                          <!-- 3. 值选择 (动态组件) -->
                           <div class="rule-value">
-                            <!-- 媒体库 -->
-                            <n-select v-if="rule.field === 'library'" v-model:value="rule.value" multiple filterable :options="allEmbyLibraries" placeholder="选择媒体库" />
-                            <!-- 类型 -->
-                            <n-select v-else-if="rule.field === 'genres'" v-model:value="rule.value" multiple filterable :options="genreOptions" placeholder="选择类型" />
-                            <!-- 国家 -->
-                            <n-select v-else-if="rule.field === 'countries'" v-model:value="rule.value" multiple filterable :options="countryOptions" placeholder="选择国家" />
-                            <!-- 工作室 -->
-                            <n-select v-else-if="rule.field === 'studios'" v-model:value="rule.value" multiple filterable :options="studioOptions" placeholder="选择工作室" />
-                            <!-- 关键词 -->
-                            <n-select v-else-if="rule.field === 'keywords'" v-model:value="rule.value" multiple filterable :options="keywordOptions" placeholder="选择关键词" />
-                            <!-- 年份 -->
-                            <n-input-number v-else-if="rule.field === 'release_year'" v-model:value="rule.value" placeholder="年份" :show-button="false" />
-                            <!-- 评分 -->
-                            <n-input-number v-else-if="rule.field === 'rating'" v-model:value="rule.value" placeholder="评分" :step="0.1" />
-                            <!-- 默认 -->
-                            <n-input v-else v-model:value="rule.value" placeholder="输入值" />
+                             <!-- 媒体库 -->
+                             <n-select
+                                v-if="rule.field === 'library'"
+                                v-model:value="rule.value"
+                                multiple filterable
+                                :options="allEmbyLibraries"
+                                placeholder="选择媒体库"
+                             />
+                             <!-- 类型 -->
+                             <n-select
+                                v-else-if="rule.field === 'genres'"
+                                v-model:value="rule.value"
+                                multiple filterable
+                                :options="genreOptions"
+                                placeholder="选择类型"
+                             />
+                             <!-- 国家 -->
+                             <n-select
+                                v-else-if="rule.field === 'countries'"
+                                v-model:value="rule.value"
+                                multiple filterable
+                                :options="countryOptions"
+                                placeholder="选择国家"
+                             />
+                             <!-- 工作室 -->
+                             <n-select
+                                v-else-if="rule.field === 'studios'"
+                                v-model:value="rule.value"
+                                multiple filterable
+                                :options="studioOptions"
+                                placeholder="选择工作室"
+                             />
+                             <!-- 关键词 -->
+                             <n-select
+                                v-else-if="rule.field === 'keywords'"
+                                v-model:value="rule.value"
+                                multiple filterable
+                                :options="keywordOptions"
+                                placeholder="选择关键词"
+                             />
+                             <!-- 年份 -->
+                             <n-input-number
+                                v-else-if="rule.field === 'release_year'"
+                                v-model:value="rule.value"
+                                placeholder="输入年份"
+                                :show-button="false"
+                             />
+                             <!-- 评分 -->
+                             <n-input-number
+                                v-else-if="rule.field === 'rating'"
+                                v-model:value="rule.value"
+                                placeholder="输入评分"
+                                :step="0.1"
+                             />
+                             <!-- 默认文本框 -->
+                             <n-input 
+                                v-else 
+                                v-model:value="rule.value" 
+                                placeholder="输入值" 
+                             />
                           </div>
 
                           <n-button text type="error" class="rule-delete" @click="removeScopeRule(index)">
@@ -343,7 +401,6 @@
                       <n-space align="center">
                         <n-switch 
                           v-model:value="currentRule.custom_resubscribe_enabled" 
-                          @update:value="handleCustomResubscribeChange"
                         />
                         <span class="tip">开启后，将根据规则生成订阅参数，关闭则采用MP洗版规则处理订阅。</span>
                       </n-space>
@@ -425,15 +482,14 @@
 import { ref, onMounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
-  useMessage, NTag, NIcon, NGrid, NGi, NRadioGroup, NRadioButton, NRadio, NInputGroup, NCheckbox, NAlert
+  useMessage, NTag, NIcon, NGrid, NGi, NRadioGroup, NRadioButton, NRadio, NInputGroup, NCheckbox, NAlert,
+  NCard, NSpace, NButton, NSwitch, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect, NInputNumber
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
   Add as AddIcon, Pencil as EditIcon, Trash as DeleteIcon, Move as DragHandleIcon, 
   Sync as SyncIcon, TrashBin as TrashIcon
 } from '@vicons/ionicons5';
-
-// ... (引入其他必要的组件)
 
 const message = useMessage();
 const emit = defineEmits(['saved']);
@@ -455,7 +511,6 @@ const modalTitle = computed(() => isEditing.value ? '编辑规则' : '新增规�
 
 const formRules = {
   name: { required: true, message: '请输入规则名称', trigger: 'blur' },
-  // target_library_ids: { type: 'array', required: true, message: '请至少选择一个媒体库', trigger: 'change' }, // 移除必填校验，因为现在是可选的
 };
 
 // 选项定义
@@ -505,6 +560,14 @@ const subtitleLanguageOptions = ref([
     { label: '日文 (jpn)', value: 'jpn' }, 
     { label: '韩文 (kor)', value: 'kor' }, 
 ]);
+
+// 动态选项
+const countryOptions = ref([]);
+const genreOptions = ref([]);
+const studioOptions = ref([]);
+const keywordOptions = ref([]);
+
+// 字段定义
 const scopeFieldOptions = [
   { label: '媒体库', value: 'library' },
   { label: '类型', value: 'genres' },
@@ -513,26 +576,21 @@ const scopeFieldOptions = [
   { label: '评分', value: 'rating' },
   { label: '工作室', value: 'studios' },
   { label: '关键词', value: 'keywords' },
-  // 你还可以加：tags, actors, directors, original_language 等等
 ];
-const countryOptions = ref([]);
-const genreOptions = ref([]);
 
-// 修改 loadData 函数，增加加载国家和类型的逻辑
 const loadData = async () => {
   loading.value = true;
   try {
     const [rulesRes, configRes, libsRes] = await Promise.all([
       axios.get('/api/resubscribe/rules'),
       axios.get('/api/config'),
-      axios.get('/api/config/cover_generator/libraries') // 提前加载媒体库
+      axios.get('/api/config/cover_generator/libraries')
     ]);
     rules.value = rulesRes.data;
     embyAdminUser.value = configRes.data.emby_admin_user;
     embyAdminPass.value = configRes.data.emby_admin_pass;
     allEmbyLibraries.value = libsRes.data;
 
-    // ★★★ 新增：加载国家和类型数据 ★★★
     loadExtraOptions();
 
   } catch (error) {
@@ -541,80 +599,42 @@ const loadData = async () => {
     loading.value = false;
   }
 };
-const studioOptions = ref([]);
-const keywordOptions = ref([]);
-// 新增辅助函数：加载额外选项
+
 const loadExtraOptions = async () => {
   try {
-    // 1. 加载国家
-    try {
-      const countryRes = await axios.get('/api/custom_collections/config/tmdb_countries');
-      countryOptions.value = countryRes.data;
-    } catch (e) {
-      console.warn("加载国家列表失败", e);
-    }
+    const countryRes = await axios.get('/api/custom_collections/config/tmdb_countries');
+    countryOptions.value = countryRes.data;
+  } catch (e) {}
 
-    // 2. 加载类型 (合并电影和电视)
-    let movieGenres = [];
-    let tvGenres = [];
-    try {
-        const studioRes = await axios.get('/api/custom_collections/config/studios');
-        studioOptions.value = studioRes.data;
-        const kwRes = await axios.get('/api/custom_collections/config/keywords');
-        keywordOptions.value = kwRes.data;
-    } catch (e) {}
-    try {
-      const res = await axios.get('/api/custom_collections/config/movie_genres');
-      movieGenres = res.data || [];
-    } catch (e) {
-      console.warn("加载电影类型失败", e);
-    }
-
-    try {
-      const res = await axios.get('/api/custom_collections/config/tv_genres');
-      tvGenres = res.data || [];
-    } catch (e) {
-      console.warn("加载电视剧类型失败", e);
-    }
-
-    // 合并去重
+  try {
+    const resM = await axios.get('/api/custom_collections/config/movie_genres');
+    const resT = await axios.get('/api/custom_collections/config/tv_genres');
     const genreMap = new Map();
-    [...movieGenres, ...tvGenres].forEach(g => {
-      // ★★★ 核心修复：兼容字符串和对象两种格式 ★★★
+    [...(resM.data||[]), ...(resT.data||[])].forEach(g => {
       const name = (typeof g === 'object' && g !== null) ? g.name : g;
-      if (name) {
-        genreMap.set(name, name);
-      }
+      if (name) genreMap.set(name, name);
     });
-    
     genreOptions.value = Array.from(genreMap.keys())
       .sort((a, b) => a.localeCompare(b, 'zh-Hans-CN'))
       .map(name => ({ label: name, value: name }));
-      
-  } catch (e) {
-    console.error("加载额外选项主流程失败", e);
-  }
+  } catch (e) {}
+
+  try {
+      const studioRes = await axios.get('/api/custom_collections/config/studios');
+      studioOptions.value = studioRes.data;
+      const kwRes = await axios.get('/api/custom_collections/config/keywords');
+      keywordOptions.value = kwRes.data;
+  } catch (e) {}
 };
 
 const openRuleModal = async (rule = null) => {
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
-    
-    // 确保数组初始化
-    if (!currentRule.value.target_library_ids) currentRule.value.target_library_ids = [];
-    if (!currentRule.value.target_countries) currentRule.value.target_countries = [];
-    if (!currentRule.value.target_genres) currentRule.value.target_genres = [];
-    
-    if (!currentRule.value.rule_type) currentRule.value.rule_type = 'resubscribe';
+    if (!currentRule.value.scope_rules) currentRule.value.scope_rules = [];
   } else {
     currentRule.value = {
-      name: '', enabled: true, 
-      target_library_ids: [], 
-      target_countries: [], // 新增
-      target_genres: [],    // 新增
-      rule_type: 'resubscribe',
-      
-      // 筛选条件
+      name: '', enabled: true, rule_type: 'resubscribe',
+      scope_rules: [],
       filter_rating_enabled: false, filter_rating_min: 0, filter_rating_ignore_zero: false,
       resubscribe_resolution_enabled: false, resubscribe_resolution_threshold: 1920,
       resubscribe_quality_enabled: false, resubscribe_quality_include: [],
@@ -622,76 +642,16 @@ const openRuleModal = async (rule = null) => {
       resubscribe_effect_enabled: false, resubscribe_effect_include: [],
       resubscribe_filesize_enabled: false, resubscribe_filesize_operator: 'lt', resubscribe_filesize_threshold_gb: null,
       filter_missing_episodes_enabled: false,
-      
-      // 洗版动作
       auto_resubscribe: false, custom_resubscribe_enabled: false, delete_after_resubscribe: false,
       resubscribe_subtitle_effect_only: false,
       consistency_check_enabled: false, consistency_must_match_resolution: false, consistency_must_match_group: false,
-
-      // 删除动作
       delete_mode: 'episode', delete_delay_seconds: 5
     };
     addScopeRule();
   }
   showModal.value = true;
 };
-const addScopeRule = () => {
-  currentRule.value.scope_rules.push({ field: 'library', operator: 'is_one_of', value: [] });
-};
-const removeScopeRule = (index) => {
-  currentRule.value.scope_rules.splice(index, 1);
-};
-const handleFieldChange = (rule) => {
-    rule.value = null; // 切换字段时清空值
-    // 自动设置默认操作符
-    const ops = getOperatorOptionsForRow(rule);
-    if (ops.length > 0) rule.operator = ops[0].value;
-};
 
-const getOperatorOptionsForRow = (rule) => {
-  const listOps = [
-      { label: '包含任意', value: 'is_one_of' },
-      { label: '不包含', value: 'is_none_of' }
-  ];
-  const numOps = [
-      { label: '大于等于', value: 'gte' },
-      { label: '小于等于', value: 'lte' },
-      { label: '等于', value: 'eq' }
-  ];
-  
-  if (['library', 'genres', 'countries', 'studios', 'keywords'].includes(rule.field)) {
-      return listOps;
-  }
-  if (['release_year', 'rating'].includes(rule.field)) {
-      return numOps;
-  }
-  return [{ label: '等于', value: 'eq' }];
-};
-
-// 4. 列表展示优化 (getLibraryCountText)
-const getLibraryCountText = (rule) => {
-    if (!rule.scope_rules || rule.scope_rules.length === 0) return '无限制';
-    
-    const parts = [];
-    rule.scope_rules.forEach(r => {
-        const fieldMap = {
-            'library': '库', 'genres': '类', 'countries': '国',
-            'release_year': '年', 'rating': '分', 'studios': '厂'
-        };
-        const suffix = fieldMap[r.field] || r.field;
-        
-        if (Array.isArray(r.value)) {
-            parts.push(`${r.value.length}${suffix}`);
-        } else {
-            parts.push(`${suffix}:${r.value}`);
-        }
-    });
-    return parts.join(' + ');
-};
-
-const getLibraryTagType = (rule) => {
-  return (rule.scope_rules && rule.scope_rules.length > 0) ? 'default' : 'warning';
-};
 const saveRule = async () => {
   formRef.value?.validate(async (errors) => {
     if (!errors) {
@@ -735,6 +695,64 @@ const onDragEnd = async () => {
   } catch (e) {}
 };
 
+const addScopeRule = () => {
+  currentRule.value.scope_rules.push({ field: 'library', operator: 'is_one_of', value: [] });
+};
+
+const removeScopeRule = (index) => {
+  currentRule.value.scope_rules.splice(index, 1);
+};
+
+const handleFieldChange = (rule) => {
+    rule.value = null;
+    const ops = getOperatorOptionsForRow(rule);
+    if (ops.length > 0) rule.operator = ops[0].value;
+};
+
+const getOperatorOptionsForRow = (rule) => {
+  const listOps = [
+      { label: '包含任意', value: 'is_one_of' },
+      { label: '不包含', value: 'is_none_of' }
+  ];
+  const numOps = [
+      { label: '大于等于', value: 'gte' },
+      { label: '小于等于', value: 'lte' },
+      { label: '等于', value: 'eq' }
+  ];
+  
+  if (['library', 'genres', 'countries', 'studios', 'keywords'].includes(rule.field)) {
+      return listOps;
+  }
+  if (['release_year', 'rating'].includes(rule.field)) {
+      return numOps;
+  }
+  return [{ label: '等于', value: 'eq' }];
+};
+
+const getLibraryCountText = (rule) => {
+    if (!rule.scope_rules || rule.scope_rules.length === 0) return '无限制';
+    
+    const parts = [];
+    rule.scope_rules.forEach(r => {
+        const fieldMap = {
+            'library': '库', 'genres': '类', 'countries': '国',
+            'release_year': '年', 'rating': '分', 'studios': '厂', 'keywords': '词'
+        };
+        const suffix = fieldMap[r.field] || r.field;
+        
+        if (Array.isArray(r.value)) {
+            parts.push(`${r.value.length}${suffix}`);
+        } else {
+            parts.push(`${suffix}:${r.value}`);
+        }
+    });
+    return parts.join(' + ');
+};
+
+const getLibraryTagType = (rule) => {
+  return (rule.scope_rules && rule.scope_rules.length > 0) ? 'default' : 'warning';
+};
+
 onMounted(loadData);
 </script>
 
@@ -752,10 +770,12 @@ onMounted(loadData);
 .filter-item:last-child { border-bottom: none; margin-bottom: 0; padding-bottom: 0; }
 .filter-content { margin-top: 8px; margin-left: 24px; }
 .tip { font-size: 12px; color: #999; margin-top: 4px; }
+
+/* Scope Rules */
 .rules-container { display: flex; flex-direction: column; gap: 8px; }
 .rule-row { display: flex; gap: 8px; align-items: center; }
 .rule-field { width: 120px !important; flex-shrink: 0; }
 .rule-op { width: 110px !important; flex-shrink: 0; }
-.rule-value { flex: 1; min-width: 0; } /* min-width: 0 防止 flex 子项溢出 */
+.rule-value { flex: 1; min-width: 0; }
 .rule-value > .n-select, .rule-value > .n-input-number, .rule-value > .n-input { width: 100% !important; }
 </style>
