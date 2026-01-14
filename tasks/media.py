@@ -340,7 +340,7 @@ def _extract_and_map_tmdb_ratings(tmdb_details, item_type):
     return ratings_map
 
 # ★★★ 重量级的元数据缓存填充任务 (内存优化版) ★★★
-def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_update: bool = False):
+def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_update: bool = False):
     """
     - 重量级的元数据缓存填充任务 (类型安全版)。
     - 修复：彻底解决 TMDb ID 在电影和剧集间冲突的问题。
@@ -700,11 +700,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 50, force_full_upd
                     elif i_type == 'Series': 
                         # 使用聚合函数，并发获取所有季信息
                         # 注意：外层已经是并发了，这里 max_workers 设小一点（如 3），防止瞬间请求过多触发 429
-                        details = tmdb.aggregate_full_series_data_from_tmdb(t_id, processor.tmdb_api_key, max_workers=3)
+                        details = tmdb.aggregate_full_series_data_from_tmdb(t_id, processor.tmdb_api_key, max_workers=2)
                 except Exception: pass
                 return str(t_id), details
 
-            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
                 futures = {executor.submit(fetch_tmdb_details, grp): grp for grp in batch_item_groups}
                 for future in concurrent.futures.as_completed(futures):
                     t_id_str, details = future.result()
