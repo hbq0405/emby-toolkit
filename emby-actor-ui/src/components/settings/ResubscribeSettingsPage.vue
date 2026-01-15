@@ -139,7 +139,9 @@
                              <n-select
                                 v-else-if="['actors', 'directors'].includes(rule.field)"
                                 v-model:value="rule.value"
-                                multiple filterable remote
+                                multiple 
+                                filterable 
+                                remote
                                 placeholder="输入姓名搜索 (支持中文/英文)"
                                 :options="actorOptions"
                                 :loading="isSearchingActors"
@@ -147,6 +149,7 @@
                                 :render-option="renderPersonOption"
                                 value-field="name" 
                                 label-field="name"
+                                :fallback-option="(value) => ({ label: value, value: value })"
                              />
                              <!-- 类型 -->
                              <n-select
@@ -701,6 +704,11 @@ const openRuleModal = async (rule = null) => {
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
     if (!currentRule.value.scope_rules) currentRule.value.scope_rules = [];
+    currentRule.value.scope_rules.forEach(r => {
+        if (['actors', 'directors'].includes(r.field) && !Array.isArray(r.value)) {
+            r.value = []; // 强制修正为数组
+        }
+    });
   } else {
     currentRule.value = {
       name: '', enabled: true, rule_type: 'resubscribe',
@@ -774,7 +782,14 @@ const removeScopeRule = (index) => {
 };
 
 const handleFieldChange = (rule) => {
-    rule.value = null;
+    // ★★★ 核心修复：对于多选字段，必须初始化为数组 []，否则无法选中 ★★★
+    if (['actors', 'directors', 'genres', 'countries', 'studios', 'keywords', 'library'].includes(rule.field)) {
+        rule.value = []; 
+    } else {
+        rule.value = null;
+    }
+
+    // 自动设置默认操作符
     const ops = getOperatorOptionsForRow(rule);
     if (ops.length > 0) rule.operator = ops[0].value;
 };
@@ -790,7 +805,8 @@ const getOperatorOptionsForRow = (rule) => {
       { label: '等于', value: 'eq' }
   ];
   
-  if (['library', 'genres', 'countries', 'studios', 'keywords'].includes(rule.field)) {
+  // ★★★ 核心修复：把 actors 和 directors 加入到列表操作符组中 ★★★
+  if (['library', 'genres', 'countries', 'studios', 'keywords', 'actors', 'directors'].includes(rule.field)) {
       return listOps;
   }
   if (['release_year', 'rating'].includes(rule.field)) {
