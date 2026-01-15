@@ -135,22 +135,6 @@
                                 :options="allEmbyLibraries"
                                 placeholder="选择媒体库"
                              />
-                             <!-- 人物 -->
-                             <n-select
-                                v-else-if="['actors', 'directors'].includes(rule.field)"
-                                v-model:value="rule.value"
-                                multiple 
-                                filterable 
-                                remote
-                                placeholder="输入姓名搜索 (支持中文/英文)"
-                                :options="actorOptions"
-                                :loading="isSearchingActors"
-                                @search="handlePersonSearch"
-                                :render-option="renderPersonOption"
-                                value-field="name" 
-                                label-field="name"
-                                :fallback-option="(value) => ({ label: value, value: value })"
-                             />
                              <!-- 类型 -->
                              <n-select
                                 v-else-if="rule.field === 'genres'"
@@ -495,12 +479,11 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, nextTick, h } from 'vue';
+import { ref, onMounted, computed, nextTick } from 'vue';
 import axios from 'axios';
 import { 
   useMessage, NTag, NIcon, NGrid, NGi, NRadioGroup, NRadioButton, NRadio, NInputGroup, NCheckbox, NAlert,
-  NCard, NSpace, NButton, NSwitch, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect, NInputNumber,
-  NAvatar, NText
+  NCard, NSpace, NButton, NSwitch, NPopconfirm, NModal, NForm, NFormItem, NInput, NSelect, NInputNumber
 } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { 
@@ -522,10 +505,6 @@ const rules = ref([]);
 const currentRule = ref({});
 const formRef = ref(null);
 const allEmbyLibraries = ref([]);
-
-const actorOptions = ref([]);
-const isSearchingActors = ref(false);
-let personSearchTimeout = null;
 
 const isEditing = computed(() => currentRule.value && currentRule.value.id);
 const modalTitle = computed(() => isEditing.value ? '编辑规则' : '新增规则');
@@ -591,8 +570,6 @@ const keywordOptions = ref([]);
 // 字段定义
 const scopeFieldOptions = [
   { label: '媒体库', value: 'library' },
-  { label: '演员', value: 'actors' },      // <--- 新增
-  { label: '导演', value: 'directors' },
   { label: '类型', value: 'genres' },
   { label: '国家/地区', value: 'countries' },
   { label: '年份', value: 'release_year' },
@@ -621,56 +598,6 @@ const loadData = async () => {
   } finally {
     loading.value = false;
   }
-};
-
-// ★★★ 新增：TMDb 图片获取辅助函数 (用于头像) ★★★
-const getTmdbImageUrl = (path) => {
-  return path ? `https://image.tmdb.org/t/p/w92${path}` : null;
-};
-
-// ★★★ 新增：处理人员搜索 (防抖 + API调用) ★★★
-const handlePersonSearch = (query) => {
-  if (!query) {
-    // 如果清空搜索，保留当前已选的值在选项中，防止回显消失（可选优化）
-    return;
-  }
-  
-  isSearchingActors.value = true;
-  if (personSearchTimeout) clearTimeout(personSearchTimeout);
-  
-  personSearchTimeout = setTimeout(async () => {
-    try {
-      // 复用 CustomCollectionsManager 的搜索接口
-      const response = await axios.get(`/api/custom_collections/config/tmdb_search_persons?q=${encodeURIComponent(query)}`);
-      // 接口返回的是对象数组 [{id, name, profile_path, ...}]
-      actorOptions.value = response.data;
-    } catch (error) {
-      console.error('搜索人物失败:', error);
-    } finally {
-      isSearchingActors.value = false;
-    }
-  }, 500); // 500ms 防抖
-};
-
-// ★★★ 新增：自定义渲染下拉选项 (显示头像) ★★★
-const renderPersonOption = ({ node, option }) => {
-  return h(
-    'div',
-    { style: 'display: flex; align-items: center; padding: 4px 0;' },
-    [
-      h(NAvatar, {
-        src: getTmdbImageUrl(option.profile_path),
-        round: true,
-        size: 'small',
-        style: 'margin-right: 12px; flex-shrink: 0;'
-      }),
-      h('div', { style: 'display: flex; flex-direction: column;' }, [
-        h(NText, { depth: 1 }, { default: () => option.name }),
-        // 如果有代表作或其他信息，也可以显示
-        option.known_for ? h(NText, { depth: 3, style: 'font-size: 12px;' }, { default: () => option.known_for }) : null
-      ])
-    ]
-  );
 };
 
 const loadExtraOptions = async () => {
@@ -704,11 +631,6 @@ const openRuleModal = async (rule = null) => {
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
     if (!currentRule.value.scope_rules) currentRule.value.scope_rules = [];
-    currentRule.value.scope_rules.forEach(r => {
-        if (['actors', 'directors'].includes(r.field) && !Array.isArray(r.value)) {
-            r.value = []; // 强制修正为数组
-        }
-    });
   } else {
     currentRule.value = {
       name: '', enabled: true, rule_type: 'resubscribe',
@@ -782,14 +704,7 @@ const removeScopeRule = (index) => {
 };
 
 const handleFieldChange = (rule) => {
-    // ★★★ 核心修复：对于多选字段，必须初始化为数组 []，否则无法选中 ★★★
-    if (['actors', 'directors', 'genres', 'countries', 'studios', 'keywords', 'library'].includes(rule.field)) {
-        rule.value = []; 
-    } else {
-        rule.value = null;
-    }
-
-    // 自动设置默认操作符
+    rule.value = null;
     const ops = getOperatorOptionsForRow(rule);
     if (ops.length > 0) rule.operator = ops[0].value;
 };
@@ -805,8 +720,7 @@ const getOperatorOptionsForRow = (rule) => {
       { label: '等于', value: 'eq' }
   ];
   
-  // ★★★ 核心修复：把 actors 和 directors 加入到列表操作符组中 ★★★
-  if (['library', 'genres', 'countries', 'studios', 'keywords', 'actors', 'directors'].includes(rule.field)) {
+  if (['library', 'genres', 'countries', 'studios', 'keywords'].includes(rule.field)) {
       return listOps;
   }
   if (['release_year', 'rating'].includes(rule.field)) {
