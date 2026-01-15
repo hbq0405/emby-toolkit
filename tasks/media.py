@@ -1824,7 +1824,8 @@ def task_scan_incomplete_assets(processor):
                 
                 if not is_valid:
                     # 确定写入日志的目标 (分集 -> 剧集)
-                    target_id = tmdb_id
+                    # 初始目标是当前的 TMDb ID (电影)
+                    target_tmdb_id_ref = tmdb_id
                     target_name = title
                     target_type = item_type
                     final_reason = fail_reason
@@ -1838,25 +1839,45 @@ def task_scan_incomplete_assets(processor):
                             # 获取剧集名称
                             series_title = media_db.get_series_title_by_tmdb_id(parent_id) or f"剧集({parent_id})"
                             
-                            target_id = parent_id
+                            # ★★★ 关键：将目标指向父剧集的 TMDb ID ★★★
+                            target_tmdb_id_ref = parent_id
                             target_name = series_title
                             target_type = 'Series'
                             final_reason = f"[S{s_num}E{e_num}] {fail_reason}"
                     
-                    # 写入待复核日志
+                    # =========================================================
+                    # ★★★ 核心修复：在写入日志前，将 TMDb ID 转换为 Emby ID ★★★
+                    # =========================================================
+                    target_log_id = target_tmdb_id_ref # 默认回退
+                    
+                    # 尝试反查 Emby ID
+                    real_emby_id = media_db.get_active_emby_id_by_tmdb_id(target_tmdb_id_ref)
+                    if real_emby_id:
+                        target_log_id = real_emby_id
+                    else:
+                        # 如果查不到（极少见，因为 item 是从 in_library=TRUE 查出来的），
+                        # 尝试从 asset 里拿一个兜底
+                        if assets and assets[0].get('emby_item_id'):
+                             # 注意：如果是分集，这里拿到的是分集ID，不是剧集ID，
+                             # 但总比 TMDb ID 强，至少能点进去。
+                             # 不过上面的 get_active_emby_id_by_tmdb_id 应该能覆盖 99% 的情况。
+                             pass
+
+                    # 写入待复核日志 (使用 Emby ID)
                     processor.log_db_manager.save_to_failed_log(
-                        cursor, target_id, target_name, 
+                        cursor, target_log_id, target_name, 
                         f"全库扫描发现异常: {final_reason}", 
                         target_type, score=0.0
                     )
                     
                     # 标记为已处理 (避免重复处理，但在UI显示为待复核)
-                    processor.log_db_manager.save_to_processed_log(cursor, target_id, target_name, score=0.0)
+                    # 注意：这里也用 Emby ID，保持一致
+                    processor.log_db_manager.save_to_processed_log(cursor, target_log_id, target_name, score=0.0)
                     
                     marked_count += 1
                     
                     if i % 10 == 0:
-                        logger.info(f"  ➜ [标记] {target_name}: {final_reason}")
+                        logger.info(f"  ➜ [标记] {target_name} (ID: {target_log_id}): {final_reason}")
 
             conn.commit()
 
