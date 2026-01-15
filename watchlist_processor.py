@@ -1381,25 +1381,40 @@ class WatchlistProcessor:
     def _calculate_real_next_episode(self, all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Optional[Dict]:
         """
         通过对比本地和TMDb全量数据，计算用户真正缺失的第一集。
+        【修复版】忽略本地最大季号之前的“整季缺失”，只关注当前季或未来季。
         """
-        # 1. 获取TMDb上所有非特别季的剧集，并严格按季号、集号排序
+        # 1. 获取本地已有的最大季号 (用于判断什么是"旧季")
+        valid_local_seasons = [s for s in emby_seasons.keys() if s > 0]
+        max_local_season = max(valid_local_seasons) if valid_local_seasons else 0
+
+        # 2. 获取TMDb上所有非特别季的剧集，并严格按季号、集号排序
         all_episodes_sorted = sorted([
             ep for ep in all_tmdb_episodes 
             if ep.get('season_number') is not None and ep.get('season_number') != 0
         ], key=lambda x: (x.get('season_number', 0), x.get('episode_number', 0)))
         
-        # 2. 遍历这个完整列表，找到第一个本地没有的剧集
+        # 3. 遍历这个完整列表
         for episode in all_episodes_sorted:
             s_num = episode.get('season_number')
             e_num = episode.get('episode_number')
             
+            # ======================= ★★★ 核心修复逻辑 ★★★ =======================
+            # 如果这一集所属的季号 < 本地已有的最大季号
+            # 并且本地完全没有这一季 (emby_seasons中没有这个key)
+            # 说明这是用户故意跳过的“旧季” (例如只追S2，不想要S1)
+            # 此时直接 continue 跳过，不要把它当成“待播集”
+            if max_local_season > 0 and s_num < max_local_season and s_num not in emby_seasons:
+                continue
+            # ===================================================================
+
             if s_num not in emby_seasons or e_num not in emby_seasons.get(s_num, set()):
-                # 找到了！这无论是否播出，都是用户最关心的下一集
-                logger.info(f"  ➜ 找到本地缺失的第一集: S{s_num}E{e_num} ('{episode.get('name')}'), 将其设为待播集。")
+                # 找到了！这才是基于用户当前进度的“下一集”
+                # 可能是当前季的下一集，也可能是新的一季的第一集
+                logger.info(f"  ➜ 找到本地缺失的下一集: S{s_num}E{e_num} ('{episode.get('name')}'), 已忽略旧季缺失。")
                 return episode
         
-        # 3. 如果循环完成，说明本地拥有TMDb上所有的剧集
-        logger.info("  ➜ 本地媒体库已拥有TMDb上所有剧集，无待播信息。")
+        # 4. 如果循环完成，说明本地拥有TMDb上所有的剧集 (或者只缺了未来的)
+        logger.info("  ➜ 本地媒体库已拥有当前进度所有剧集，无待播信息。")
         return None
     # --- 计算缺失的季和集 ---
     def _calculate_missing_info(self, tmdb_seasons: List[Dict], all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Dict:
