@@ -1216,39 +1216,42 @@ def cleanup_offline_internal_ids() -> int:
     
 def get_items_with_potentially_bad_assets() -> List[Dict[str, Any]]:
     """
-    【质检专用】查询所有已入库但资产数据可能不完整的项目。
-    利用 SQL JSONB 查询直接过滤，性能极高。
+    【质检专用 - 优化版】查询所有已入库但资产数据可能不完整的项目。
     
-    筛选条件：
-    1. 已入库 (in_library = TRUE)
-    2. 类型为 Movie 或 Episode (Series 本身无资产)
-    3. asset_details_json 不为空
-    4. 资产数组中存在任意一个元素满足：width <= 0 或 height <= 0 或 codec 为空/unknown
+    优化点：
+    1. 增加 LEFT JOIN 自关联，一次性获取父剧集的信息（Emby ID, 标题）。
+    2. 直接返回当前项的 Emby ID。
     """
     sql = """
         SELECT 
-            tmdb_id, 
-            item_type, 
-            title, 
-            parent_series_tmdb_id, 
-            season_number, 
-            episode_number,
-            asset_details_json
+            m.tmdb_id, 
+            m.item_type, 
+            m.title, 
+            m.parent_series_tmdb_id, 
+            m.season_number, 
+            m.episode_number,
+            m.asset_details_json,
+            -- ★★★ 新增：直接获取当前项的 Emby ID (用于电影) ★★★
+            m.emby_item_ids_json,
+            -- ★★★ 新增：直接获取父剧集的 Emby ID (用于分集归类) ★★★
+            p.emby_item_ids_json AS parent_emby_ids_json,
+            -- ★★★ 新增：直接获取父剧集的标题 (用于日志展示) ★★★
+            p.title AS parent_title
         FROM media_metadata m
-        WHERE in_library = TRUE 
-          AND item_type IN ('Movie', 'Episode')
-          AND asset_details_json IS NOT NULL 
-          AND jsonb_array_length(asset_details_json) > 0
+        -- 自关联：如果 m 是分集，尝试找到它的父剧集 p
+        LEFT JOIN media_metadata p ON m.parent_series_tmdb_id = p.tmdb_id AND p.item_type = 'Series'
+        WHERE m.in_library = TRUE 
+          AND m.item_type IN ('Movie', 'Episode')
+          AND m.asset_details_json IS NOT NULL 
+          AND jsonb_array_length(m.asset_details_json) > 0
           AND EXISTS (
               SELECT 1 
-              FROM jsonb_array_elements(asset_details_json) AS elem
+              FROM jsonb_array_elements(m.asset_details_json) AS elem
               WHERE 
-                 -- 检查分辨率 (转为数字比较)
                  COALESCE((elem->>'width')::numeric, 0) <= 0 
                  OR 
                  COALESCE((elem->>'height')::numeric, 0) <= 0
                  OR 
-                 -- 检查编码 (转为小写比较)
                  LOWER(COALESCE(elem->>'video_codec', '')) IN ('', 'null', 'none', 'unknown', 'und')
           )
     """

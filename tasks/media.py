@@ -1773,42 +1773,34 @@ def task_restore_local_cache_from_db(processor):
 
 def task_scan_incomplete_assets(processor):
     """
-    全库扫描资产数据不完整的项目。
-    直接从数据库筛选出分辨率或编码无效的项目，并将其加入待复核列表。
+    【新任务 - 优化版】全库扫描资产数据不完整的项目。
+    直接利用 SQL Join 获取所需的 Emby ID，无需二次查询。
     """
-    logger.info("--- 开始执行全库媒体信息扫描 ---")
+    logger.info("--- 开始执行全库资产完整性扫描 ---")
     
     try:
-        # 1. 从数据库获取“嫌疑人”
+        # 1. 从数据库获取“嫌疑人” (已包含父级信息)
         bad_items = media_db.get_items_with_potentially_bad_assets()
         total = len(bad_items)
         
         if total == 0:
             logger.info("  ✅ 未发现媒体信息异常的项目。")
-            task_manager.update_status_from_thread(100, "媒体信息完成：无异常")
+            task_manager.update_status_from_thread(100, "媒体信息扫描完成：无异常")
             return
 
         logger.info(f"  ⚠️ 发现 {total} 个项目的媒体信息可能不完整，正在复核并标记...")
         
         marked_count = 0
         
-        # 2. 遍历处理
-        # 这里的 bad_items 已经是通过 SQL 筛选出来的，所以大概率都是有问题的
-        # 但我们还是用 utils 再校验一次，确保万无一失
-        
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
             for i, item in enumerate(bad_items):
-                tmdb_id = item['tmdb_id']
-                item_type = item['item_type']
-                title = item['title']
-                raw_assets = item['asset_details_json']
-                
                 # 解析资产
+                raw_assets = item['asset_details_json']
                 assets = json.loads(raw_assets) if isinstance(raw_assets, str) else (raw_assets if isinstance(raw_assets, list) else [])
                 
-                # 复核
+                # 复核 (虽然 SQL 已经筛过，但 Python 再确认一次更稳妥)
                 is_valid = False
                 fail_reason = "未知原因"
                 
@@ -1820,58 +1812,47 @@ def task_scan_incomplete_assets(processor):
                     if valid:
                         is_valid = True
                         break
-                    fail_reason = reason # 记录原因
+                    fail_reason = reason
                 
                 if not is_valid:
-                    # 确定写入日志的目标 (分集 -> 剧集)
-                    # 初始目标是当前的 TMDb ID (电影)
-                    target_tmdb_id_ref = tmdb_id
-                    target_name = title
-                    target_type = item_type
+                    # =========================================================
+                    # ★★★ 核心优化：直接从 item 字典中提取 Emby ID ★★★
+                    # =========================================================
+                    target_log_id = None
+                    target_name = item['title']
+                    target_type = item['item_type']
                     final_reason = fail_reason
                     
-                    if item_type == 'Episode':
-                        parent_id = item.get('parent_series_tmdb_id')
-                        s_num = item.get('season_number')
-                        e_num = item.get('episode_number')
-                        
-                        if parent_id:
-                            # 获取剧集名称
-                            series_title = media_db.get_series_title_by_tmdb_id(parent_id) or f"剧集({parent_id})"
+                    if item['item_type'] == 'Movie':
+                        # 电影：取自己的 Emby ID
+                        e_ids = item.get('emby_item_ids_json')
+                        if e_ids and len(e_ids) > 0:
+                            target_log_id = e_ids[0]
                             
-                            # ★★★ 关键：将目标指向父剧集的 TMDb ID ★★★
-                            target_tmdb_id_ref = parent_id
-                            target_name = series_title
-                            target_type = 'Series'
-                            final_reason = f"[S{s_num}E{e_num}] {fail_reason}"
-                    
-                    # =========================================================
-                    # ★★★ 核心修复：在写入日志前，将 TMDb ID 转换为 Emby ID ★★★
-                    # =========================================================
-                    target_log_id = target_tmdb_id_ref # 默认回退
-                    
-                    # 尝试反查 Emby ID
-                    real_emby_id = media_db.get_active_emby_id_by_tmdb_id(target_tmdb_id_ref)
-                    if real_emby_id:
-                        target_log_id = real_emby_id
-                    else:
-                        # 如果查不到（极少见，因为 item 是从 in_library=TRUE 查出来的），
-                        # 尝试从 asset 里拿一个兜底
-                        if assets and assets[0].get('emby_item_id'):
-                             # 注意：如果是分集，这里拿到的是分集ID，不是剧集ID，
-                             # 但总比 TMDb ID 强，至少能点进去。
-                             # 不过上面的 get_active_emby_id_by_tmdb_id 应该能覆盖 99% 的情况。
-                             pass
+                    elif item['item_type'] == 'Episode':
+                        # 分集：取父剧集的 Emby ID (SQL 已经 Join 好了)
+                        p_ids = item.get('parent_emby_ids_json')
+                        if p_ids and len(p_ids) > 0:
+                            target_log_id = p_ids[0]
+                        
+                        # 优先使用父剧集标题
+                        if item.get('parent_title'):
+                            target_name = item['parent_title']
+                            
+                        target_type = 'Series'
+                        final_reason = f"[S{item['season_number']}E{item['episode_number']}] {fail_reason}"
 
-                    # 写入待复核日志 (使用 Emby ID)
+                    # 兜底：如果实在没有 Emby ID (极少见)，回退到 TMDb ID
+                    if not target_log_id:
+                        target_log_id = item['parent_series_tmdb_id'] if item['item_type'] == 'Episode' else item['tmdb_id']
+
+                    # 写入日志
                     processor.log_db_manager.save_to_failed_log(
                         cursor, target_log_id, target_name, 
                         f"全库扫描发现异常: {final_reason}", 
                         target_type, score=0.0
                     )
                     
-                    # 标记为已处理 (避免重复处理，但在UI显示为待复核)
-                    # 注意：这里也用 Emby ID，保持一致
                     processor.log_db_manager.save_to_processed_log(cursor, target_log_id, target_name, score=0.0)
                     
                     marked_count += 1
