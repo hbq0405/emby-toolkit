@@ -1109,6 +1109,12 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
             processed_count += len(batch_tasks)
             task_manager.update_status_from_thread(20 + int((processed_count / total_to_process) * 80), f"处理进度 {processed_count}/{total_to_process}...")
 
+        # 8. 执行大扫除：物理删除废弃的内部 ID 条目
+        logger.info("  ➜ [自动维护] 正在清理废弃的内部ID兜底记录...")
+        cleaned_zombies = media_db.cleanup_offline_internal_ids()
+        if cleaned_zombies > 0:
+            logger.info(f"  🧹 [大扫除] 成功物理删除了 {cleaned_zombies} 条已废弃的内部ID记录 (如 xxx-S1E1)。")
+            
         final_msg = f"同步完成！新增/更新: {total_updated_count} 个媒体项, 标记离线: {total_offline_count} 个媒体项。"
         logger.info(f"  ✅ {final_msg}")
         # 自动触发分级同步 

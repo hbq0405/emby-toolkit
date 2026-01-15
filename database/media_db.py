@@ -1190,3 +1190,26 @@ def batch_mark_children_offline(parent_tmdb_ids: List[str], active_child_tmdb_id
     except Exception as e:
         logger.error(f"DB: 批量标记子集离线失败: {e}", exc_info=True)
         return 0
+    
+def cleanup_offline_internal_ids() -> int:
+    """
+    【大扫除】物理删除所有处于离线状态(in_library=False)且使用内部生成ID(非纯数字)的僵尸条目。
+    这些条目通常是 TMDb 数据缺失时生成的兜底数据，一旦获取到真实数据，它们就会被标记为离线并废弃。
+    """
+    # 正则表达式解释：!~ '^[0-9]+$' 表示 "不匹配纯数字字符串"
+    # 这样可以精准命中 "12345-S1E1" 这种格式，而避开正常的 TMDb ID "654321"
+    sql = """
+        DELETE FROM media_metadata 
+        WHERE in_library = FALSE 
+          AND tmdb_id !~ '^[0-9]+$'
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                deleted_count = cursor.rowcount
+                conn.commit()
+                return deleted_count
+    except Exception as e:
+        logger.error(f"DB: 执行内部ID大扫除失败: {e}", exc_info=True)
+        return 0
