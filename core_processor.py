@@ -1996,10 +1996,15 @@ class MediaProcessor:
                             for db_ep in db_episodes:
                                 s_idx = db_ep['season_number']
                                 e_idx = db_ep['episode_number']
-                                assets_json = db_ep['asset_details_json']
+                                raw_assets = db_ep['asset_details_json']
                                 
-                                # 解析资产 (数据库里存的是 JSON 字符串)
-                                assets = json.loads(assets_json) if assets_json else []
+                                # 解析资产 
+                                if isinstance(raw_assets, str):
+                                    assets = json.loads(raw_assets)
+                                elif isinstance(raw_assets, list):
+                                    assets = raw_assets
+                                else:
+                                    assets = []
                                 
                                 if not assets:
                                     # 标记为入库了但没资产？这绝对是数据异常
