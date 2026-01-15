@@ -1135,6 +1135,7 @@ def apply_rating_logic(metadata_skeleton: Dict[str, Any], tmdb_data: Dict[str, A
                         for rule in rating_mapping['US']:
                             r_code = rule.get('code', '')
                             if item_type == "Movie" and r_code.startswith('TV-'): continue
+                            if item_type == "Series" and r_code in ['G', 'PG', 'PG-13', 'R', 'NC-17']: continue
                             valid_us_rules.append(rule)
                         
                         # 精确匹配
