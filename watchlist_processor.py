@@ -15,7 +15,7 @@ import utils
 import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.moviepilot as moviepilot
-import handler.telegram as telegram
+import tasks.helpers as helpers
 import logging
 
 logger = logging.getLogger(__name__)
@@ -530,6 +530,16 @@ class WatchlistProcessor:
         # 解包数据
         latest_series_data = aggregated_data['series_details']
         seasons_list = aggregated_data['seasons_details'] # 这是一个包含完整集信息的季列表
+
+        # 在保存 JSON 和写入数据库之前，强制应用分级映射逻辑
+        # 这会原地修改 latest_series_data，注入映射后的 'US' 分级
+        try:
+            helpers.apply_rating_logic(latest_series_data, latest_series_data, 'Series')
+            # 顺便把映射后的分级打印出来看看
+            mapped_rating = latest_series_data.get('mpaa') or latest_series_data.get('certification')
+            logger.debug(f"  ➜ 已对 '{item_name}' 应用分级映射，结果: {mapped_rating}")
+        except Exception as e:
+            logger.warning(f"  ⚠️ 应用分级映射逻辑时出错: {e}")
         
         # 2. 将 TMDb 最新数据合并写入本地 JSON (series.json) 
         self._save_local_json(f"override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
