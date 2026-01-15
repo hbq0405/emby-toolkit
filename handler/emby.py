@@ -2834,11 +2834,11 @@ def trigger_media_info_refresh(item_id: str, base_url: str, api_key: str, user_i
         response = requests.post(url, params=params, json={}, timeout=10)
         
         if response.status_code == 200:
-            logger.info(f"  💉 [神医联动] 已对 ID:{item_id} 触发媒体信息提取请求。")
+            logger.info(f"  💉 已对 ID:{item_id} 触发媒体信息提取请求。")
             return True
         else:
-            logger.warning(f"  ⚠️ [神医联动] 触发失败 ID:{item_id}, HTTP {response.status_code}: {response.text}")
+            logger.warning(f"  ⚠️ 触发失败 ID:{item_id}, HTTP {response.status_code}: {response.text}")
             return False
     except Exception as e:
-        logger.error(f"  🚫 [神医联动] 请求异常 ID:{item_id}: {e}")
+        logger.error(f"  🚫 请求异常 ID:{item_id}: {e}")
         return False

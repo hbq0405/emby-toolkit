@@ -172,7 +172,7 @@ def _wait_for_items_recovery(processor, item_ids: list, max_retries=60, interval
                 pass # 网络错误暂时忽略，下次重试
         
         if not pending_ids:
-            logger.info(f"  ✅ 所有目标项目均已修复完成 (耗时 {i*interval}秒)！")
+            logger.info(f"  ✅ 所有目标项目媒体信息均已提取完成 (耗时 {i*interval}秒)！")
             return True
             
         if i % 2 == 0: # 每20秒打印一次进度
