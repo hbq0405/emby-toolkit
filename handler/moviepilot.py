@@ -469,3 +469,64 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
     except Exception as e:
         logger.error(f"  ❌ [MP清理] 执行出错: {e}")
         return False
+    
+def delete_download_tasks(keyword: str, config: Dict[str, Any]) -> bool:
+    """
+    【清理下载任务】根据关键词搜索正在下载的任务，并将其删除。
+    用于洗版前清理旧的“拆包”任务，确保新任务能全量下载。
+    """
+    try:
+        moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token:
+            return False
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        
+        # 1. 查询正在下载的任务
+        # API: GET /api/v1/download/?name={keyword}
+        list_url = f"{moviepilot_url}/api/v1/download/"
+        params = {"name": keyword}
+        
+        res = requests.get(list_url, headers=headers, params=params, timeout=15)
+        if res.status_code != 200:
+            logger.warning(f"  ⚠️ [下载器清理] 查询任务失败: {res.status_code}")
+            return False
+            
+        tasks = res.json()
+        if not tasks:
+            logger.info(f"  ✅ [下载器清理] 未找到关键词 '{keyword}' 的活跃任务。")
+            return True
+            
+        # 2. 遍历并删除
+        deleted_count = 0
+        for task in tasks:
+            task_hash = task.get('hash')
+            task_title = task.get('title', '未知任务')
+            
+            if not task_hash: continue
+            
+            # API: DELETE /api/v1/download/{hash}
+            del_url = f"{moviepilot_url}/api/v1/download/{task_hash}"
+            
+            try:
+                del_res = requests.delete(del_url, headers=headers, timeout=10)
+                if del_res.status_code == 200:
+                    logger.info(f"  🗑️ [下载器清理] 已删除旧任务: {task_title}")
+                    deleted_count += 1
+                else:
+                    logger.warning(f"  ⚠️ [下载器清理] 删除任务失败: {task_title} ({del_res.status_code})")
+            except Exception as e:
+                logger.error(f"  ❌ [下载器清理] 删除请求异常: {e}")
+
+        if deleted_count > 0:
+            logger.info(f"  ✅ [下载器清理] 共清理了 {deleted_count} 个旧任务。")
+            # 稍微等待一下，让下载器有时间处理
+            import time
+            time.sleep(2)
+            
+        return True
+
+    except Exception as e:
+        logger.error(f"  ❌ [下载器清理] 执行出错: {e}")
+        return False

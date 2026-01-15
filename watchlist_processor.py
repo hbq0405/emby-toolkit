@@ -925,10 +925,15 @@ class WatchlistProcessor:
             # 4. 删除整理记录
             moviepilot.delete_transfer_history(tmdb_id, season_number, series_name, self.config)
 
-            # 5. 取消旧订阅
+            # 5. 清理下载器中的旧任务
+            logger.info(f"  🧹 [下载器清理] 正在尝试清理《{series_name}》在下载器中的旧任务，以确保洗版能全量下载...")
+            # 调用新编写的清理函数 (需要我们在 moviepilot.py 中实现)
+            moviepilot.delete_download_tasks(series_name, self.config)
+
+            # 6. 取消旧订阅
             moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=season_number)
             
-            # 6. 发起新订阅 (洗版)
+            # 7. 发起新订阅 (洗版)
             payload = {
                 "name": series_name,
                 "tmdbid": int(tmdb_id),
