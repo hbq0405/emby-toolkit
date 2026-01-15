@@ -378,10 +378,10 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
                 except: continue
 
         if not ids_to_delete:
-            logger.info(f"  ✅ [MP清理] 搜索到 {len(all_records)} 条记录，但没有 S{season} 的记录。")
+            logger.info(f"  ✅ [MP清理] 搜索到 {len(all_records)} 条记录，但没有 《{title}》 - 第 {season} 季 的记录。")
             return []
 
-        logger.info(f"  🗑️ [MP清理] 筛选出 {len(ids_to_delete)} 条 S{season} 的整理记录，开始执行删除...")
+        logger.info(f"  🗑️ [MP清理] 筛选出 {len(ids_to_delete)} 条《{title}》 - 第 {season} 季 的整理记录，开始执行删除...")
 
         # 3. 逐条删除并收集 Hash
         delete_url = f"{moviepilot_url}/api/v1/history/transfer"
