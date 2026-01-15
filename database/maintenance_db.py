@@ -671,13 +671,63 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         target_item_type_for_full_cleanup = 'Series'
 
                 elif db_item_type == 'Episode':
-                    # 分集删除了 -> 检查父剧集
-                    logger.info(f"  ➜ 分集已完全删除，正在检查父剧集 (TMDB: {parent_tmdb_id})...")
+                    # --- 1. 检查该季是否还有剩余集数 ---
                     cursor.execute(
-                        "SELECT COUNT(*) as count FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND in_library = TRUE",
+                        """
+                        SELECT 1 
+                        FROM media_metadata 
+                        WHERE parent_series_tmdb_id = %s 
+                          AND season_number = %s 
+                          AND item_type = 'Episode' 
+                          AND in_library = TRUE
+                        LIMIT 1
+                        """,
+                        (parent_tmdb_id, season_num)
+                    )
+                    has_episodes_in_season = cursor.fetchone()
+
+                    if not has_episodes_in_season:
+                        logger.info(f"  ➜ 第 {season_num} 季已无任何在库分集，标记该季为离线。")
+                        
+                        # A. 标记季为离线 (清空 asset_details_json)
+                        cursor.execute(
+                            """
+                            UPDATE media_metadata 
+                            SET in_library = FALSE, asset_details_json = NULL 
+                            WHERE parent_series_tmdb_id = %s 
+                              AND season_number = %s 
+                              AND item_type = 'Season'
+                            """,
+                            (parent_tmdb_id, season_num)
+                        )
+                        
+                        # B. 清理该季的洗版规则 (如果有)
+                        cursor.execute(
+                            """
+                            DELETE FROM resubscribe_index 
+                            WHERE tmdb_id = %s 
+                              AND item_type = 'Season' 
+                              AND season_number = %s
+                            """,
+                            (parent_tmdb_id, season_num)
+                        )
+
+                    # --- 2. 检查整部剧是否还有剩余集数 (原有逻辑) ---
+                    logger.info(f"  ➜ 正在检查父剧集 (TMDB: {parent_tmdb_id}) 是否已空...")
+                    cursor.execute(
+                        """
+                        SELECT 1 
+                        FROM media_metadata 
+                        WHERE parent_series_tmdb_id = %s 
+                          AND item_type = 'Episode' 
+                          AND in_library = TRUE
+                        LIMIT 1
+                        """,
                         (parent_tmdb_id,)
                     )
-                    if cursor.fetchone()['count'] == 0:
+                    has_episodes_in_series = cursor.fetchone()
+
+                    if not has_episodes_in_series:
                         logger.warning(f"  ➜ 父剧集已无任何在库分集，将触发整剧清理。")
                         target_tmdb_id_for_full_cleanup = parent_tmdb_id
                         target_item_type_for_full_cleanup = 'Series'
