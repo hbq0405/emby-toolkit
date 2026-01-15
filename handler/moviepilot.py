@@ -399,7 +399,7 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
         target_season = int(season)
         
         for record in all_records:
-            # ★★★ 增加类型检查，防止 'str' object has no attribute 'get' 错误 ★★★
+            # ★★★ 增加类型检查 ★★★
             if not isinstance(record, dict):
                 continue
 
@@ -408,13 +408,22 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
             if rec_tmdb != target_tmdb:
                 continue
             
-            # 校验 季号
-            rec_seasons = record.get('seasons', '')
-            try:
-                # MP的seasons可能是 "1" 也可能是 "01" 或其他格式，转int对比最稳
-                if int(rec_seasons) == target_season:
-                    ids_to_delete.append(record)
-            except:
+            # 校验 季号 (增强版)
+            rec_seasons = str(record.get('seasons', '')).strip().upper()
+            
+            # 尝试提取数字：支持 "1", "01", "S1", "S01", "Season 1" 等格式
+            import re
+            match = re.search(r'(\d+)', rec_seasons)
+            
+            if match:
+                try:
+                    extracted_season = int(match.group(1))
+                    if extracted_season == target_season:
+                        ids_to_delete.append(record)
+                except:
+                    continue
+            else:
+                # 如果完全没有数字，可能是特别篇或其他情况，跳过
                 continue
 
         if not ids_to_delete:
