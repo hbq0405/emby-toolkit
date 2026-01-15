@@ -194,19 +194,10 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
     try:
         task_manager.update_status_from_thread(0, f"正在处理: {item_name_for_ui}")
 
-        # 1. ID 智能转换 (TMDb ID -> Emby ID)
-        real_emby_id = str(item_id)
-        if real_emby_id.isdigit():
-            found_emby_id = media_db.get_active_emby_id_by_tmdb_id(real_emby_id)
-            if found_emby_id:
-                if found_emby_id != real_emby_id:
-                    logger.info(f"  ➜ [智能纠错] 识别到输入ID {real_emby_id} 为 TMDb ID，已自动映射为 Emby ID: {found_emby_id}")
-                real_emby_id = found_emby_id
-
         # 2. 神医插件联动流程
         try:
             item_basic = emby.get_emby_item_details(
-                real_emby_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
+                item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
                 fields="Type,ProviderIds"
             )
             
@@ -218,7 +209,7 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
                 
                 # A. 确定需要治疗的目标 ID 列表
                 if item_type == 'Movie':
-                    ids_to_heal.append(real_emby_id)
+                    ids_to_heal.append(item_id)
                 elif item_type == 'Series' and tmdb_id:
                     logger.info(f"  ➜ [神医联动] 正在扫描剧集 '{item_name_for_ui}' 下的异常分集...")
                     bad_episode_ids = media_db.get_bad_episode_emby_ids(str(tmdb_id))
@@ -249,7 +240,7 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
         task_manager.update_status_from_thread(50, f"正在重新刮削元数据: {item_name_for_ui}")
         
         processor.process_single_item(
-            real_emby_id, 
+            item_id, 
             force_full_update=True
         )
         
