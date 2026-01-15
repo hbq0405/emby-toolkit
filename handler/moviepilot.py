@@ -347,10 +347,27 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
                 if not data:
                     break
                 
-                all_records.extend(data)
+                # ★★★ 兼容性修复：处理分页包装或非列表返回 ★★★
+                records_list = []
+                if isinstance(data, list):
+                    records_list = data
+                elif isinstance(data, dict):
+                    # 尝试常见的字段名
+                    if 'data' in data and isinstance(data['data'], list):
+                        records_list = data['data']
+                    elif 'list' in data and isinstance(data['list'], list):
+                        records_list = data['list']
+                    elif 'items' in data and isinstance(data['items'], list):
+                        records_list = data['items']
+                    # 如果是其他字典结构，可能不是我们想要的数据，跳过
+                
+                if not records_list:
+                    break
+
+                all_records.extend(records_list)
                 
                 # 如果返回的数量少于页大小，说明已经是最后一页了
-                if len(data) < page_size:
+                if len(records_list) < page_size:
                     break
                 
                 page += 1
@@ -369,6 +386,10 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
         target_season = int(season)
         
         for record in all_records:
+            # ★★★ 增加类型检查，防止 'str' object has no attribute 'get' 错误 ★★★
+            if not isinstance(record, dict):
+                continue
+
             # 校验 TMDb ID
             rec_tmdb = record.get('tmdbid')
             if rec_tmdb != target_tmdb:
