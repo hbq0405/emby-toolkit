@@ -1943,33 +1943,45 @@ class MediaProcessor:
                     else:
                         for source in media_sources:
                             # 检查 Container 是否存在 (防止完全空的占位符)
+                            # 注意：.strm 文件在未分析前 Container 可能为空，这正是我们要拦截的
                             if not source.get("Container") and not source.get("Path", "").endswith(".strm"):
+                                stream_fail_reason = "媒体源缺失容器格式 (Container)"
                                 continue
 
                             for stream in source.get("MediaStreams", []):
                                 if stream.get("Type") == "Video":
-                                    # --- 增强检测：必须有分辨率或明确的编码格式 ---
+                                    # --- 严格增强检测：必须是 Emby 分析后的真实数据 ---
                                     width = stream.get("Width")
                                     height = stream.get("Height")
                                     codec = stream.get("Codec")
                                     
-                                    # 判定标准：(宽或高大于0) 或者 (有明确的编码信息且不是unknown)
-                                    is_resolution_valid = (width and width > 0) or (height and height > 0)
-                                    is_codec_valid = (codec and str(codec).lower() not in ['unknown', 'und', '', 'none'])
+                                    # 1. 分辨率检查：必须存在且大于0 (文件名猜测的数据通常没有 Width/Height)
+                                    has_resolution = (width and isinstance(width, (int, float)) and width > 0) and \
+                                                     (height and isinstance(height, (int, float)) and height > 0)
                                     
-                                    if is_resolution_valid or is_codec_valid:
+                                    # 2. 编码检查：必须存在且不是未知
+                                    has_codec = (codec and str(codec).lower() not in ['unknown', 'und', '', 'none'])
+                                    
+                                    # ★★★ 核心修改：从 OR 改为 AND，且强制要求分辨率 ★★★
+                                    if has_resolution and has_codec:
                                         has_valid_video = True
+                                        stream_fail_reason = "" # 通过后清空错误信息
                                         break
+                                    else:
+                                        # 记录具体的失败原因 (如果所有流都失败，将保留最后一个原因)
+                                        if not has_resolution:
+                                            stream_fail_reason = f"视频流未分析或分辨率无效 (W:{width} H:{height})"
+                                        elif not has_codec:
+                                            stream_fail_reason = f"视频流编码无效 ({codec})"
+                            
                             if has_valid_video: break
                         
+                        # 如果循环结束还是没有有效视频，且没有具体原因，给一个默认原因
                         if not has_valid_video and not stream_fail_reason:
-                            stream_fail_reason = "检测到视频流但数据严重缺失 (无分辨率/无编码信息)"
+                            stream_fail_reason = "未检测到包含有效分辨率和编码的视频流"
 
                     if not has_valid_video:
                         stream_check_passed = False
-                        # 如果没有具体原因，给一个默认原因
-                        if not stream_fail_reason: stream_fail_reason = "缺失有效的视频流数据"
-                        
                         logger.warning(f"  ➜ [质检失败] 《{item_name_for_log}》{stream_fail_reason}。")
 
                 # 演员处理质量评分
@@ -1997,32 +2009,53 @@ class MediaProcessor:
                 min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
                 
                 # 最终判定与日志写入 ---
+                # 确定要记录到数据库的目标 ID 和 名称
+                # 如果当前处理的是分集，必须向上追溯到剧集 ID
+                target_log_id = item_id
+                target_log_name = item_name_for_log
+                target_log_type = item_type
+
+                if item_type == 'Episode':
+                    series_id = item_details_from_emby.get('SeriesId')
+                    series_name = item_details_from_emby.get('SeriesName')
+                    if series_id:
+                        target_log_id = str(series_id)
+                        target_log_name = series_name or f"剧集(ID:{series_id})"
+                        target_log_type = 'Series'
+                        # 如果是分集失败，在日志名字里带上分集信息，方便排查
+                        if not stream_check_passed:
+                            s_idx = item_details_from_emby.get('ParentIndexNumber')
+                            e_idx = item_details_from_emby.get('IndexNumber')
+                            stream_fail_reason = f"[S{s_idx}E{e_idx}] {stream_fail_reason}"
+
+                # 最终判定与日志写入 ---
                 # 优先级：视频流缺失 > 评分过低
                 if not stream_check_passed:
                     # 情况 A: 视频流缺失 -> 强制待复核
                     logger.warning(f"  ➜ [质检]《{item_name_for_log}》因缺失视频流数据，需重新处理。")
-                    self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, stream_fail_reason, item_type, score=0.0)
-                    # 标记为已处理，防止重复循环，但在UI中会显示在“待复核”列表
-                    self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=0.0)
+                    # 记录到 Series ID
+                    self.log_db_manager.save_to_failed_log(cursor, target_log_id, target_log_name, stream_fail_reason, target_log_type, score=0.0)
+                    # 标记为已处理 (防止死循环)，但在UI中会显示在“待复核”
+                    self._mark_item_as_processed(cursor, target_log_id, target_log_name, score=0.0)
                     
                 elif processing_score < min_score_for_review:
                     # 情况 B: 评分过低 -> 待复核
                     reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
                     
-                    # ★★★ 优化日志：如果是快速模式下评分低，提示用户可能缓存有问题 ★★★
                     if cache_row:
                         logger.warning(f"  ➜ [质检]《{item_name_for_log}》本地缓存数据质量不佳 (评分: {processing_score:.2f})，已重新标记为【待复核】。")
                     else:
                         logger.warning(f"  ➜ [质检]《{item_name_for_log}》处理质量不佳，已标记为【待复核】。原因: {reason}")
                         
-                    self.log_db_manager.save_to_failed_log(cursor, item_id, item_name_for_log, reason, item_type, score=processing_score)
-                    self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=processing_score)
+                    self.log_db_manager.save_to_failed_log(cursor, target_log_id, target_log_name, reason, target_log_type, score=processing_score)
+                    self._mark_item_as_processed(cursor, target_log_id, target_log_name, score=processing_score)
                     
                 else:
                     # 情况 C: 一切正常 -> 移除待复核标记（如果之前有）
                     logger.info(f"  ➜ 《{item_name_for_log}》质检通过 (评分: {processing_score:.2f})，标记为已处理。")
-                    self._mark_item_as_processed(cursor, item_id, item_name_for_log, score=processing_score)
-                    self.log_db_manager.remove_from_failed_log(cursor, item_id)
+                    # 只有当分集也通过时，才更新剧集的记录为成功
+                    self._mark_item_as_processed(cursor, target_log_id, target_log_name, score=processing_score)
+                    self.log_db_manager.remove_from_failed_log(cursor, target_log_id)
                 
                 conn.commit()
 
