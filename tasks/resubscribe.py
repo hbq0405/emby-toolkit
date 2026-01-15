@@ -150,17 +150,37 @@ def task_update_resubscribe_cache(processor):
         
         # --- 步骤 3: 按规则遍历处理 ---
         total_rules = len(all_enabled_rules)
+
+        # 字段名称映射，用于日志显示
+        FIELD_DISPLAY_MAP = {
+            'library': '媒体库',
+            'countries': '国家',
+            'genres': '类型',
+            'rating': '评分',
+            'year': '年份',
+            'path': '路径',
+            'tags': '标签',
+            'studio': '制片厂'
+        }
         
         for rule_idx, rule in enumerate(all_enabled_rules):
             if processor.is_stop_requested(): break
             
             rule_name = rule.get('name', '未命名')
+            scope_rules = rule.get('scope_rules') or []
             active_scopes = []
-            if rule.get('target_library_ids'): active_scopes.append("媒体库")
-            if rule.get('target_countries'): active_scopes.append("国家")
-            if rule.get('target_genres'): active_scopes.append("类型")
             
-            # 拼接描述，例如 "媒体库+国家"
+            # 遍历 scope_rules 提取涉及的字段
+            if scope_rules:
+                seen_fields = set()
+                for r in scope_rules:
+                    field = r.get('field')
+                    if field and field not in seen_fields:
+                        display_name = FIELD_DISPLAY_MAP.get(field, field)
+                        active_scopes.append(display_name)
+                        seen_fields.add(field)
+            
+            # 拼接描述，例如 "媒体库+国家+评分"
             scope_desc = "+".join(active_scopes) if active_scopes else "全库"
 
             task_manager.update_status_from_thread(
