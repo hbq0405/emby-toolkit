@@ -233,7 +233,13 @@ class MediaProcessor:
             if not tmdb_id: return
 
             # 确定类型
-            is_series = bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
+            season_episode_match = re.search(r'[sS](\d{1,2})[eE](\d{1,2})', filename, re.IGNORECASE)
+            
+            # 定义变量，供后续兜底逻辑使用
+            current_s_num = int(season_episode_match.group(1)) if season_episode_match else None
+            current_e_num = int(season_episode_match.group(2)) if season_episode_match else None
+
+            is_series = bool(season_episode_match)
             item_type = "Series" if is_series else "Movie"
 
             # =========================================================
@@ -456,6 +462,29 @@ class MediaProcessor:
                     details = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key)
                 else:
                     aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                    # 兜底逻辑：如果 TMDb 返回的数据里没有当前这一集，手动注入一条“本地兜底数据”
+                    # 前提：文件名里必须成功解析出了 current_s_num 和 current_e_num
+                    if aggregated_tmdb_data and current_s_num is not None and current_e_num is not None:
+                        episodes_map = aggregated_tmdb_data.get("episodes_details", {})
+                        target_key = f"S{current_s_num}E{current_e_num}"
+                        
+                        if target_key not in episodes_map:
+                            logger.info(f"  ➜ [实时监控] TMDb 缺少 S{current_s_num}E{current_e_num} 数据，正在生成本地兜底记录...")
+                            # 构造自定义 ID，格式必须与 task_populate_metadata_cache 保持一致
+                            fallback_id = f"{tmdb_id}-S{current_s_num}E{current_e_num}"
+                            
+                            # 注入伪造的分集数据
+                            aggregated_tmdb_data["episodes_details"][target_key] = {
+                                "id": fallback_id,  # 关键：使用自定义字符串 ID
+                                "season_number": current_s_num,
+                                "episode_number": current_e_num,
+                                "name": f"第 {current_e_num} 集 (待刮削)",
+                                "overview": "TMDb 暂无此集数据，等待后续自动更新。",
+                                "air_date": datetime.now().strftime("%Y-%m-%d"),
+                                "still_path": None,
+                                "vote_average": 0,
+                                "runtime": 0
+                            }
                     details = aggregated_tmdb_data.get('series_details') if aggregated_tmdb_data else None
                     
                 if not details:
@@ -1089,7 +1118,7 @@ class MediaProcessor:
                     
                     # 2. ID 必须是数字字符串，且不能是 '0'
                     e_tmdb_id_str = str(e_tmdb_id)
-                    if e_tmdb_id_str in ['0', 'None', ''] or not e_tmdb_id_str.isdigit():
+                    if e_tmdb_id_str in ['0', 'None', '']:
                         continue
 
                     # 3. 必须有季号和集号
