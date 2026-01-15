@@ -186,15 +186,12 @@ def _wait_for_items_recovery(processor, item_ids: list, max_retries=60, interval
 # --- 重新处理单个项目 ---
 def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
     """
-    【最终版 - 神医联动 & 智能轮询】后台任务。
-    流程：ID纠错 -> 查找坏分集 -> 触发神医 -> 轮询等待(最长10分钟) -> 核心处理(入库)。
+    重新处理单个项目的后台任务。
     """
     logger.trace(f"  ➜ 后台任务开始执行 ({item_name_for_ui})")
     
     try:
         task_manager.update_status_from_thread(0, f"正在处理: {item_name_for_ui}")
-
-        # 2. 神医插件联动流程
         try:
             item_basic = emby.get_emby_item_details(
                 item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
@@ -211,18 +208,18 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
                 if item_type == 'Movie':
                     ids_to_heal.append(item_id)
                 elif item_type == 'Series' and tmdb_id:
-                    logger.info(f"  ➜ [神医联动] 正在扫描剧集 '{item_name_for_ui}' 下的异常分集...")
+                    logger.info(f"  ➜ 正在检查剧集 '{item_name_for_ui}' 下的异常分集...")
                     bad_episode_ids = media_db.get_bad_episode_emby_ids(str(tmdb_id))
                     if bad_episode_ids:
-                        logger.info(f"  ➜ [神医联动] 发现 {len(bad_episode_ids)} 个分集缺失媒体信息。")
+                        logger.info(f"  ➜ 发现 {len(bad_episode_ids)} 个分集缺失媒体信息。")
                         ids_to_heal.extend(bad_episode_ids)
                     else:
-                        logger.info(f"  ➜ [神医联动] 未发现明显的坏分集，将跳过触发步骤。")
+                        logger.trace(f"  ➜ 未发现明显的坏分集，将跳过触发步骤。")
 
                 # B. 执行治疗与等待
                 if ids_to_heal:
                     # 1. 触发
-                    task_manager.update_status_from_thread(10, f"正在触发神医插件修复 {len(ids_to_heal)} 个文件...")
+                    task_manager.update_status_from_thread(10, f"正在触发神医插件重新提取 {len(ids_to_heal)} 个文件的媒体信息...")
                     for eid in ids_to_heal:
                         emby.trigger_media_info_refresh(
                             eid, processor.emby_url, processor.emby_api_key, processor.emby_user_id
@@ -234,7 +231,7 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
                     _wait_for_items_recovery(processor, ids_to_heal, max_retries=60, interval=10)
                     
         except Exception as e_heal:
-            logger.warning(f"  ⚠️ [神医联动] 流程出现小插曲 (不影响后续重扫): {e_heal}")
+            logger.warning(f"  ⚠️ 流程出现小插曲 (不影响后续重扫): {e_heal}")
 
         # 3. 执行标准处理流程 (验收成果)
         task_manager.update_status_from_thread(50, f"正在重新刮削元数据: {item_name_for_ui}")
