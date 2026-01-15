@@ -435,20 +435,33 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
         # 3. 逐条删除
         # API: DELETE /api/v1/history/transfer
         delete_url = f"{moviepilot_url}/api/v1/history/transfer"
+        
+        # ★★★ 修改点：显式转换布尔值为字符串，防止某些 requests 版本或服务端兼容问题 ★★★
         del_params = {
-            "deletesrc": False,  # 仅删记录，不删源文件
-            "deletedest": False  # 仅删记录，不删目标文件(由Emby侧逻辑处理)
+            "deletesrc": "false", 
+            "deletedest": "false"
         }
         
         deleted_count = 0
         for rec in ids_to_delete:
             try:
                 # MP 的删除接口需要传回整个对象作为 Body
-                del_res = requests.delete(delete_url, headers=headers, params=del_params, json=rec, timeout=10)
+                # ★★★ 增加超时时间 ★★★
+                del_res = requests.delete(delete_url, headers=headers, params=del_params, json=rec, timeout=15)
+                
                 if del_res.status_code == 200:
-                    deleted_count += 1
+                    # ★★★ 增加对响应体 success 字段的检查 ★★★
+                    res_json = del_res.json()
+                    if res_json.get('success'):
+                        deleted_count += 1
+                    else:
+                        logger.warning(f"  ⚠️ [MP清理] 删除失败 (API返回False): ID={rec.get('id')} - {res_json.get('message')}")
+                else:
+                    # ★★★ 增加错误状态码日志 ★★★
+                    logger.warning(f"  ⚠️ [MP清理] 删除请求失败: ID={rec.get('id')} - Status={del_res.status_code} - Msg={del_res.text}")
+            
             except Exception as e:
-                logger.debug(f"  ⚠️ 删除单条记录失败: {e}")
+                logger.error(f"  ❌ [MP清理] 请求异常: {e}")
 
         logger.info(f"  ✅ [MP清理] 清理完成，共删除 {deleted_count} 条记录。")
         return True
