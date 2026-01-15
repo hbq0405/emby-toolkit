@@ -117,31 +117,149 @@ def task_sync_all_metadata(processor, item_id: str, item_name: str):
         logger.error(f"  ➜ 任务失败：{log_prefix} 时发生错误: {e}", exc_info=True)
         raise
 
-# ★★★ 重新处理单个项目 ★★★
+def _wait_for_items_recovery(processor, item_ids: list, max_retries=60, interval=10) -> bool:
+    """
+    轮询检查指定的一组 Emby ID 是否都已具备有效的视频流数据。
+    用于等待神医插件处理网盘文件。
+    """
+    if not item_ids:
+        return True
+
+    logger.info(f"  ⏳ 开始轮询监控 {len(item_ids)} 个项目的修复进度 (最大等待 {max_retries*interval}秒)...")
+    
+    # 使用集合来管理还需要等待的ID，修复一个移除一个
+    pending_ids = set(item_ids)
+    
+    for i in range(max_retries):
+        if processor.is_stop_requested(): return False
+        
+        # 复制一份当前待处理列表进行遍历
+        current_check_list = list(pending_ids)
+        
+        for eid in current_check_list:
+            try:
+                # 获取详情 (只查 MediaSources 即可)
+                item_details = emby.get_emby_item_details(
+                    eid, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
+                    fields="MediaSources"
+                )
+                
+                is_healed = False
+                if item_details:
+                    media_sources = item_details.get("MediaSources", [])
+                    for source in media_sources:
+                        # 排除未分析的 strm
+                        if not source.get("Container") and not source.get("Path", "").endswith(".strm"):
+                            continue
+                            
+                        for stream in source.get("MediaStreams", []):
+                            if stream.get("Type") == "Video":
+                                w = stream.get("Width")
+                                h = stream.get("Height")
+                                c = stream.get("Codec")
+                                # 使用严格标准检查
+                                valid, _ = utils.check_stream_validity(w, h, c)
+                                if valid:
+                                    is_healed = True
+                                    break
+                        if is_healed: break
+                
+                if is_healed:
+                    logger.debug(f"    ✔ 项目 {eid} 已检测到完整媒体信息，移除监控队列。")
+                    pending_ids.remove(eid)
+                    
+            except Exception:
+                pass # 网络错误暂时忽略，下次重试
+        
+        if not pending_ids:
+            logger.info(f"  ✅ 所有目标项目均已修复完成 (耗时 {i*interval}秒)！")
+            return True
+            
+        if i % 2 == 0: # 每20秒打印一次进度
+            logger.info(f"  ⏳ 等待神医提取媒体信息中... 剩余 {len(pending_ids)}/{len(item_ids)} 个项目 (轮询 {i+1}/{max_retries})")
+            
+        time.sleep(interval)
+
+    logger.warning(f"  ⚠️ 等待超时！仍有 {len(pending_ids)} 个项目未获取到完整信息，将强制继续处理。")
+    return False
+
+# --- 重新处理单个项目 ---
 def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
     """
-    【最终版 - 职责分离】后台任务。
-    此版本负责在任务开始时设置“正在处理”的状态，并执行核心逻辑。
+    【最终版 - 神医联动 & 智能轮询】后台任务。
+    流程：ID纠错 -> 查找坏分集 -> 触发神医 -> 轮询等待(最长10分钟) -> 核心处理(入库)。
     """
     logger.trace(f"  ➜ 后台任务开始执行 ({item_name_for_ui})")
     
     try:
-        # ✨ 关键修改：任务一开始，就用“正在处理”的状态覆盖掉旧状态
         task_manager.update_status_from_thread(0, f"正在处理: {item_name_for_ui}")
 
-        # 现在才开始真正的工作
+        # 1. ID 智能转换 (TMDb ID -> Emby ID)
+        real_emby_id = str(item_id)
+        if real_emby_id.isdigit():
+            found_emby_id = media_db.get_active_emby_id_by_tmdb_id(real_emby_id)
+            if found_emby_id:
+                if found_emby_id != real_emby_id:
+                    logger.info(f"  ➜ [智能纠错] 识别到输入ID {real_emby_id} 为 TMDb ID，已自动映射为 Emby ID: {found_emby_id}")
+                real_emby_id = found_emby_id
+
+        # 2. 神医插件联动流程
+        try:
+            item_basic = emby.get_emby_item_details(
+                real_emby_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
+                fields="Type,ProviderIds"
+            )
+            
+            if item_basic:
+                item_type = item_basic.get('Type')
+                tmdb_id = item_basic.get('ProviderIds', {}).get('Tmdb')
+                
+                ids_to_heal = []
+                
+                # A. 确定需要治疗的目标 ID 列表
+                if item_type == 'Movie':
+                    ids_to_heal.append(real_emby_id)
+                elif item_type == 'Series' and tmdb_id:
+                    logger.info(f"  ➜ [神医联动] 正在扫描剧集 '{item_name_for_ui}' 下的异常分集...")
+                    bad_episode_ids = media_db.get_bad_episode_emby_ids(str(tmdb_id))
+                    if bad_episode_ids:
+                        logger.info(f"  ➜ [神医联动] 发现 {len(bad_episode_ids)} 个分集缺失媒体信息。")
+                        ids_to_heal.extend(bad_episode_ids)
+                    else:
+                        logger.info(f"  ➜ [神医联动] 未发现明显的坏分集，将跳过触发步骤。")
+
+                # B. 执行治疗与等待
+                if ids_to_heal:
+                    # 1. 触发
+                    task_manager.update_status_from_thread(10, f"正在触发神医插件修复 {len(ids_to_heal)} 个文件...")
+                    for eid in ids_to_heal:
+                        emby.trigger_media_info_refresh(
+                            eid, processor.emby_url, processor.emby_api_key, processor.emby_user_id
+                        )
+                        time.sleep(0.2) # 稍微间隔
+                    
+                    # 2. 轮询等待 (关键修改)
+                    task_manager.update_status_from_thread(20, f"等待媒体信息提取 (最长10分钟)...")
+                    _wait_for_items_recovery(processor, ids_to_heal, max_retries=60, interval=10)
+                    
+        except Exception as e_heal:
+            logger.warning(f"  ⚠️ [神医联动] 流程出现小插曲 (不影响后续重扫): {e_heal}")
+
+        # 3. 执行标准处理流程 (验收成果)
+        task_manager.update_status_from_thread(50, f"正在重新刮削元数据: {item_name_for_ui}")
+        
         processor.process_single_item(
-            item_id, 
+            real_emby_id, 
             force_full_update=True
         )
-        # 任务成功完成后的状态更新会自动由任务队列处理，我们无需关心
+        
         logger.trace(f"  ➜ 后台任务完成 ({item_name_for_ui})")
 
     except Exception as e:
         logger.error(f"后台任务处理 '{item_name_for_ui}' 时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"处理失败: {item_name_for_ui}")
 
-# ★★★ 重新处理所有待复核项 ★★★
+# --- 重新处理所有待复核项 ---
 def task_reprocess_all_review_items(processor):
     """
     【已升级】后台任务：遍历所有待复核项并逐一以“强制在线获取”模式重新处理。

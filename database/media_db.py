@@ -1263,3 +1263,46 @@ def get_items_with_potentially_bad_assets() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 查询异常资产失败: {e}", exc_info=True)
         return []
+    
+def get_bad_episode_emby_ids(parent_tmdb_id: str) -> List[str]:
+    """
+    【精准治疗】查询指定剧集下，所有资产数据不完整的分集的 Emby ID。
+    用于在重新处理剧集时，只对坏分集触发神医插件。
+    """
+    if not parent_tmdb_id:
+        return []
+
+    sql = """
+        SELECT emby_item_ids_json
+        FROM media_metadata
+        WHERE parent_series_tmdb_id = %s
+          AND item_type = 'Episode'
+          AND in_library = TRUE
+          AND asset_details_json IS NOT NULL
+          AND EXISTS (
+              SELECT 1 
+              FROM jsonb_array_elements(asset_details_json) AS elem
+              WHERE 
+                 COALESCE((elem->>'width')::numeric, 0) <= 0 
+                 OR 
+                 COALESCE((elem->>'height')::numeric, 0) <= 0
+                 OR 
+                 LOWER(COALESCE(elem->>'video_codec', '')) IN ('', 'null', 'none', 'unknown', 'und')
+          )
+    """
+    bad_emby_ids = []
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (str(parent_tmdb_id),))
+            rows = cursor.fetchall()
+            
+            for row in rows:
+                ids = row['emby_item_ids_json']
+                if ids and isinstance(ids, list) and len(ids) > 0:
+                    bad_emby_ids.append(ids[0])
+                    
+        return bad_emby_ids
+    except Exception as e:
+        logger.error(f"DB: 查询坏分集ID失败: {e}")
+        return []
