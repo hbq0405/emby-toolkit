@@ -923,12 +923,10 @@ class WatchlistProcessor:
                 except Exception as e:
                     logger.error(f"  ❌ [自动清理] 执行删除逻辑时出错: {e}")
             # 4. 删除整理记录
-            moviepilot.delete_transfer_history(tmdb_id, season_number, series_name, self.config)
+            related_hashes = moviepilot.delete_transfer_history(tmdb_id, season_number, series_name, self.config)
 
             # 5. 清理下载器中的旧任务
-            logger.info(f"  🧹 [下载器清理] 正在尝试清理《{series_name}》在下载器中的旧任务，以确保洗版能全量下载...")
-            # 调用新编写的清理函数 (需要我们在 moviepilot.py 中实现)
-            moviepilot.delete_download_tasks(series_name, self.config)
+            moviepilot.delete_download_tasks(series_name, self.config, hashes=related_hashes)
 
             # 6. 取消旧订阅
             moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=season_number)

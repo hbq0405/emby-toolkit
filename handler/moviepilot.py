@@ -309,16 +309,19 @@ def update_subscription_status(tmdb_id: int, season: Optional[int], status: str,
         logger.error(f"  ➜ 调用 MoviePilot 更新接口出错: {e}")
         return False
     
-def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[str, Any]) -> bool:
+def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[str, Any]) -> list:
     """
-    【清理整理记录】根据 TMDb ID 和 季号，搜索并删除 MP 中的整理记录。
-    采用循环分页获取，确保获取该剧集的所有记录。
+    【清理整理记录】
+    修改返回值：返回一个包含被删除记录 download_hash 的列表。
+    如果失败或无记录，返回空列表 []。
     """
+    collected_hashes = [] # 用于收集 Hash
+    
     try:
         moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
         access_token = _get_access_token(config)
         if not access_token:
-            return False
+            return []
 
         headers = {"Authorization": f"Bearer {access_token}"}
         search_url = f"{moviepilot_url}/api/v1/history/transfer"
@@ -326,202 +329,150 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
         # 1. 循环获取所有相关记录
         all_records = []
         page = 1
-        page_size = 500  # 单页获取500条，不够再翻页，直到取完为止
+        page_size = 500
         
         logger.info(f"  🔍 [MP清理] 正在全量搜索《{title}》的整理记录...")
         
         while True:
-            params = {
-                "title": title,
-                "page": page,
-                "count": page_size
-            }
-            
+            params = {"title": title, "page": page, "count": page_size}
             try:
                 res = requests.get(search_url, headers=headers, params=params, timeout=30)
-                if res.status_code != 200:
-                    logger.warning(f"  ⚠️ [MP清理] 获取第 {page} 页记录失败: {res.status_code}")
-                    break
-                
+                if res.status_code != 200: break
                 data = res.json()
-                if not data:
-                    break
+                if not data: break
                 
-                # 检查 success 字段
-                if isinstance(data, dict) and not data.get('success', True):
-                    logger.warning(f"  ⚠️ [MP清理] API返回失败: {data.get('message')}")
-                    break
-
-                # ★★★ 兼容性修复：处理分页包装或非列表返回 ★★★
                 records_list = []
-                
-                # 1. 优先检查 data 字段 (标准 MP 响应)
                 if isinstance(data, dict):
                     inner_data = data.get('data')
-                    if isinstance(inner_data, list):
-                        records_list = inner_data
-                    elif isinstance(inner_data, dict):
-                        # 分页结构 data: { list: [], total: 0 }
-                        if 'list' in inner_data and isinstance(inner_data['list'], list):
-                            records_list = inner_data['list']
-                        elif 'items' in inner_data and isinstance(inner_data['items'], list):
-                            records_list = inner_data['items']
+                    if isinstance(inner_data, list): records_list = inner_data
+                    elif isinstance(inner_data, dict) and 'list' in inner_data: records_list = inner_data['list']
+                elif isinstance(data, list): records_list = data
                 
-                # 2. 兜底：直接检查根对象 (非标准响应)
-                if not records_list and isinstance(data, list):
-                    records_list = data
-                
-                if not records_list:
-                    # 如果第一页且没数据，记录一下响应结构方便调试
-                    if page == 1 and data:
-                         logger.debug(f"  ⚠️ [MP清理] 响应解析未找到列表数据。Data keys: {list(data.get('data', {}).keys()) if isinstance(data.get('data'), dict) else type(data.get('data'))}")
-                    break
-
+                if not records_list: break
                 all_records.extend(records_list)
-                
-                # 如果返回的数量少于页大小，说明已经是最后一页了
-                if len(records_list) < page_size:
-                    break
-                
+                if len(records_list) < page_size: break
                 page += 1
-                
-            except Exception as e:
-                logger.error(f"  ⚠️ [MP清理] 分页请求异常: {e}")
-                break
+            except: break
 
         if not all_records:
             logger.info(f"  ✅ [MP清理] 未找到《{title}》的任何整理记录。")
-            return True
+            return []
 
-        # 2. 内存筛选：精确匹配 TMDb ID 和 季号
+        # 2. 内存筛选
         ids_to_delete = []
         target_tmdb = int(tmdb_id)
         target_season = int(season)
         
         for record in all_records:
-            # ★★★ 增加类型检查 ★★★
-            if not isinstance(record, dict):
-                continue
-
-            # 校验 TMDb ID
+            if not isinstance(record, dict): continue
             rec_tmdb = record.get('tmdbid')
-            if rec_tmdb != target_tmdb:
-                continue
+            if rec_tmdb != target_tmdb: continue
             
-            # 校验 季号 (增强版)
             rec_seasons = str(record.get('seasons', '')).strip().upper()
-            
-            # 尝试提取数字：支持 "1", "01", "S1", "S01", "Season 1" 等格式
             import re
             match = re.search(r'(\d+)', rec_seasons)
-            
             if match:
                 try:
-                    extracted_season = int(match.group(1))
-                    if extracted_season == target_season:
+                    if int(match.group(1)) == target_season:
                         ids_to_delete.append(record)
-                except:
-                    continue
-            else:
-                # 如果完全没有数字，可能是特别篇或其他情况，跳过
-                continue
+                except: continue
 
         if not ids_to_delete:
             logger.info(f"  ✅ [MP清理] 搜索到 {len(all_records)} 条记录，但没有 S{season} 的记录。")
-            return True
+            return []
 
         logger.info(f"  🗑️ [MP清理] 筛选出 {len(ids_to_delete)} 条 S{season} 的整理记录，开始执行删除...")
 
-        # 3. 逐条删除
-        # API: DELETE /api/v1/history/transfer
+        # 3. 逐条删除并收集 Hash
         delete_url = f"{moviepilot_url}/api/v1/history/transfer"
-        
-        # ★★★ 修改点：显式转换布尔值为字符串，防止某些 requests 版本或服务端兼容问题 ★★★
-        del_params = {
-            "deletesrc": "false", 
-            "deletedest": "false"
-        }
+        del_params = {"deletesrc": "false", "deletedest": "false"}
         
         deleted_count = 0
         for rec in ids_to_delete:
             try:
-                # MP 的删除接口需要传回整个对象作为 Body
-                # ★★★ 增加超时时间 ★★★
-                del_res = requests.delete(delete_url, headers=headers, params=del_params, json=rec, timeout=15)
-                
-                if del_res.status_code == 200:
-                    # ★★★ 增加对响应体 success 字段的检查 ★★★
-                    res_json = del_res.json()
-                    if res_json.get('success'):
-                        deleted_count += 1
-                    else:
-                        logger.warning(f"  ⚠️ [MP清理] 删除失败 (API返回False): ID={rec.get('id')} - {res_json.get('message')}")
-                else:
-                    # ★★★ 增加错误状态码日志 ★★★
-                    logger.warning(f"  ⚠️ [MP清理] 删除请求失败: ID={rec.get('id')} - Status={del_res.status_code} - Msg={del_res.text}")
-            
-            except Exception as e:
-                logger.error(f"  ❌ [MP清理] 请求异常: {e}")
+                # ★★★ 顺手牵羊：收集 Hash ★★★
+                rec_hash = rec.get('download_hash')
+                if rec_hash:
+                    collected_hashes.append(rec_hash)
 
-        logger.info(f"  ✅ [MP清理] 清理完成，共删除 {deleted_count} 条记录。")
-        return True
+                del_res = requests.delete(delete_url, headers=headers, params=del_params, json=rec, timeout=15)
+                if del_res.status_code == 200:
+                    deleted_count += 1
+            except: pass
+
+        # 去重 Hash
+        collected_hashes = list(set(collected_hashes))
+        logger.info(f"  ✅ [MP清理] 清理完成，共删除 {deleted_count} 条记录，提取到 {len(collected_hashes)} 个关联种子Hash。")
+        
+        return collected_hashes
 
     except Exception as e:
         logger.error(f"  ❌ [MP清理] 执行出错: {e}")
-        return False
-    
-def delete_download_tasks(keyword: str, config: Dict[str, Any]) -> bool:
+        return []
+
+def delete_download_tasks(keyword: str, config: Dict[str, Any], hashes: list = None) -> bool:
     """
-    【清理下载任务】根据关键词搜索正在下载的任务，并将其删除。
-    用于洗版前清理旧的“拆包”任务，确保新任务能全量下载。
+    【清理下载任务】
+    优先使用 hashes 列表进行精确删除。
+    如果 hashes 为空，则回退到使用 keyword 搜索删除（兜底）。
     """
     try:
         moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
         access_token = _get_access_token(config)
-        if not access_token:
-            return False
+        if not access_token: return False
 
         headers = {"Authorization": f"Bearer {access_token}"}
-        
-        # 1. 查询正在下载的任务
-        # API: GET /api/v1/download/?name={keyword}
+        deleted_count = 0
+
+        # --- 策略 A: 精确打击 (使用 Hash) ---
+        if hashes:
+            logger.info(f"  🎯 [下载器清理] 正在根据 Hash 精确删除 {len(hashes)} 个任务...")
+            for task_hash in hashes:
+                if not task_hash: continue
+                del_url = f"{moviepilot_url}/api/v1/download/{task_hash}"
+                try:
+                    del_res = requests.delete(del_url, headers=headers, timeout=10)
+                    if del_res.status_code == 200:
+                        logger.info(f"  🗑️ [下载器清理] 已精确删除任务 Hash: {task_hash[:8]}...")
+                        deleted_count += 1
+                except: pass
+            
+            if deleted_count > 0:
+                logger.info(f"  ✅ [下载器清理] Hash 精确清理完成，共删除 {deleted_count} 个任务。")
+                import time
+                time.sleep(2)
+                return True
+            else:
+                logger.warning(f"  ⚠️ [下载器清理] Hash 清理未成功 (可能任务早已不存在)，尝试关键词搜索兜底...")
+
+        # --- 策略 B: 地毯式轰炸 (使用关键词搜索) ---
+        # 只有当没传 Hash，或者 Hash 删除没效果时，才走这一步
         list_url = f"{moviepilot_url}/api/v1/download/"
         params = {"name": keyword}
         
         res = requests.get(list_url, headers=headers, params=params, timeout=15)
-        if res.status_code != 200:
-            logger.warning(f"  ⚠️ [下载器清理] 查询任务失败: {res.status_code}")
-            return False
+        if res.status_code != 200: return False
             
         tasks = res.json()
         if not tasks:
             logger.info(f"  ✅ [下载器清理] 未找到关键词 '{keyword}' 的活跃任务。")
             return True
             
-        # 2. 遍历并删除
-        deleted_count = 0
         for task in tasks:
             task_hash = task.get('hash')
             task_title = task.get('title', '未知任务')
-            
             if not task_hash: continue
             
-            # API: DELETE /api/v1/download/{hash}
             del_url = f"{moviepilot_url}/api/v1/download/{task_hash}"
-            
             try:
                 del_res = requests.delete(del_url, headers=headers, timeout=10)
                 if del_res.status_code == 200:
                     logger.info(f"  🗑️ [下载器清理] 已删除旧任务: {task_title}")
                     deleted_count += 1
-                else:
-                    logger.warning(f"  ⚠️ [下载器清理] 删除任务失败: {task_title} ({del_res.status_code})")
-            except Exception as e:
-                logger.error(f"  ❌ [下载器清理] 删除请求异常: {e}")
+            except: pass
 
         if deleted_count > 0:
-            logger.info(f"  ✅ [下载器清理] 共清理了 {deleted_count} 个旧任务。")
-            # 稍微等待一下，让下载器有时间处理
+            logger.info(f"  ✅ [下载器清理] 关键词清理完成，共删除 {deleted_count} 个旧任务。")
             import time
             time.sleep(2)
             
