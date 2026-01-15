@@ -14,6 +14,7 @@ import task_manager
 import handler.emby as emby
 import config_manager
 import constants
+import utils
 import handler.telegram as telegram
 import extensions
 from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW, DELETING_COLLECTIONS, UPDATING_IMAGES, UPDATING_METADATA
@@ -501,7 +502,14 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
                     media_streams = source.get("MediaStreams", [])
                     for stream in media_streams:
                         if stream.get("Type") == "Video":
-                            if stream.get("Codec") or stream.get("Width"):
+                            w = stream.get("Width")
+                            h = stream.get("Height")
+                            c = stream.get("Codec")
+                            
+                            # 调用 utils.check_stream_validity (必须 Width>0 AND Codec有效)
+                            is_valid, _ = utils.check_stream_validity(w, h, c)
+                            
+                            if is_valid:
                                 has_valid_video_stream = True
                                 break
                     if has_valid_video_stream:
