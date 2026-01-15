@@ -10,6 +10,56 @@ import constants
 
 logger = logging.getLogger(__name__)
 
+def _format_episode_ranges(episode_list: list) -> str:
+    """
+    辅助函数：将 [(season, episode), ...] 转换为易读的范围字符串。
+    输入: [(1, 1), (1, 2), (1, 3), (1, 5)]
+    输出: "S01E01-E03, S01E05"
+    """
+    if not episode_list:
+        return ""
+    
+    # 1. 按季分组
+    season_map = {}
+    for s, e in episode_list:
+        season_map.setdefault(s, []).append(e)
+    
+    final_parts = []
+    
+    # 2. 按季排序处理
+    for season in sorted(season_map.keys()):
+        episodes = sorted(list(set(season_map[season]))) # 去重并排序
+        if not episodes: continue
+        
+        # 3. 查找连续区间
+        ranges = []
+        start = episodes[0]
+        prev = episodes[0]
+        
+        for ep in episodes[1:]:
+            if ep == prev + 1:
+                prev = ep
+            else:
+                # 结算上一段
+                if start == prev:
+                    ranges.append(f"E{start:02d}")
+                else:
+                    ranges.append(f"E{start:02d}-E{prev:02d}")
+                start = ep
+                prev = ep
+        
+        # 结算最后一段
+        if start == prev:
+            ranges.append(f"E{start:02d}")
+        else:
+            ranges.append(f"E{start:02d}-E{prev:02d}")
+        
+        # 4. 组装当前季的字符串
+        for r in ranges:
+            final_parts.append(f"S{season:02d}{r}")
+            
+    return ", ".join(final_parts)
+
 def escape_markdown(text: str) -> str:
     """
     Helper function to escape characters for Telegram's MarkdownV2.
@@ -120,15 +170,20 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             api_key = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_KEY)
             user_id = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_USER_ID)
 
-            episode_details = []
+            # ★★★ 修改开始：收集原始数据而不是直接格式化字符串 ★★★
+            raw_episodes = [] 
             for ep_id in new_episode_ids:
                 detail = get_emby_item_details(ep_id, emby_url, api_key, user_id, fields="IndexNumber,ParentIndexNumber")
                 if detail:
                     season_num = detail.get("ParentIndexNumber", 0)
                     episode_num = detail.get("IndexNumber", 0)
-                    episode_details.append(f"S{season_num:02d}E{episode_num:02d}")
-            if episode_details:
-                episode_info_text = f"🎞️ *集数*: `{', '.join(sorted(episode_details))}`\n"
+                    # 收集元组 (季号, 集号)
+                    raw_episodes.append((season_num, episode_num))
+            
+            # 调用辅助函数生成合并后的字符串
+            if raw_episodes:
+                formatted_episodes = _format_episode_ranges(raw_episodes)
+                episode_info_text = f"🎞️ *集数*: `{formatted_episodes}`\n"
 
         # --- 3. 调用 tmdb_handler 获取图片路径 ---
         photo_url = None
