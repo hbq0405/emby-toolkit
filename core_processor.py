@@ -1930,115 +1930,87 @@ class MediaProcessor:
                 # 综合质检 (视频流检查 + 演员匹配度评分)
                 logger.info(f"  ➜ 正在评估《{item_name_for_log}》的处理质量...")
                 
-                # --- 1. 视频流数据完整性检查 (覆盖 Movie, Episode 和 Series 内的所有分集) ---
+                # --- 1. 视频流数据完整性检查 (重构版) ---
                 stream_check_passed = True
                 stream_fail_reason = ""
                 
-                # 定义一个内部函数来检查单个项目的流 (复用逻辑)
-                def _check_streams_strict(item_data, item_label):
-                    media_sources = item_data.get("MediaSources", [])
-                    if not media_sources:
-                        return False, f"{item_label} Emby未返回任何媒体源"
+                # 内部辅助：检查单个资产列表
+                def _check_assets_list(assets_list, label_prefix=""):
+                    if not assets_list:
+                        return False, f"{label_prefix} 无资产数据"
                     
-                    for source in media_sources:
-                        # 排除未分析的 strm 文件
-                        if not source.get("Container") and not source.get("Path", "").endswith(".strm"):
-                            return False, f"{item_label} 媒体源缺失容器格式 (Container)"
+                    # 只要有一个版本是好的，就算通过 (多版本情况)
+                    for asset in assets_list:
+                        # 适配 Emby API 结构 (MediaStreams) 和 DB 结构 (asset_details_json) 的差异
+                        # DB结构: 直接是 dict
+                        # Emby结构: 需要从 MediaStreams 提取
+                        
+                        w, h, c = 0, 0, ""
+                        
+                        # 情况 A: DB 结构 (asset_details_json)
+                        if 'video_codec' in asset or 'width' in asset:
+                            w = asset.get('width')
+                            h = asset.get('height')
+                            c = asset.get('video_codec')
+                        
+                        # 情况 B: Emby API 结构 (MediaSource)
+                        elif 'MediaStreams' in asset:
+                            # 需遍历流找到 Video
+                            found_video = False
+                            for stream in asset.get('MediaStreams', []):
+                                if stream.get('Type') == 'Video':
+                                    w = stream.get('Width')
+                                    h = stream.get('Height')
+                                    c = stream.get('Codec')
+                                    found_video = True
+                                    break
+                            if not found_video: continue # 这个 Source 没视频流，看下一个
+                        
+                        # 调用通用质检函数
+                        valid, reason = utils.check_stream_validity(w, h, c)
+                        if valid:
+                            return True, ""
+                        
+                        # 记录最后一个失败原因
+                        last_fail = reason
 
-                        for stream in source.get("MediaStreams", []):
-                            if stream.get("Type") == "Video":
-                                width = stream.get("Width")
-                                height = stream.get("Height")
-                                codec = stream.get("Codec")
-                                
-                                # 严格检查：必须有分辨率 AND 必须有编码
-                                has_resolution = (width and isinstance(width, (int, float)) and width > 0) and \
-                                                 (height and isinstance(height, (int, float)) and height > 0)
-                                has_codec = (codec and str(codec).lower() not in ['unknown', 'und', '', 'none'])
-                                
-                                if has_resolution and has_codec:
-                                    return True, "" # 通过
-                                else:
-                                    if not has_resolution:
-                                        return False, f"{item_label} 视频流未分析或分辨率无效 (W:{width} H:{height})"
-                                    elif not has_codec:
-                                        return False, f"{item_label} 视频流编码无效 ({codec})"
-                    
-                    return False, f"{item_label} 未检测到有效视频流"
+                    return False, f"{label_prefix} {last_fail}"
 
                 # --- 分类处理 ---
-                if item_type == 'Movie' or item_type == 'Episode':
-                    # 直接检查当前项
-                    passed, reason = _check_streams_strict(item_details_from_emby, "")
+                if item_type in ['Movie', 'Episode']:
+                    # Emby API 返回的是 MediaSources 列表
+                    passed, reason = _check_assets_list(item_details_from_emby.get("MediaSources", []), "")
                     if not passed:
                         stream_check_passed = False
                         stream_fail_reason = reason
 
                 elif item_type == 'Series':
-                    # ★★★ 针对剧集：直接查刚刚更新的数据库，无需再次拉取 API ★★★
-                    # 逻辑：既然 _upsert_media_metadata 刚刚跑完，数据库里就是最新的状态。
-                    # 我们只检查标记为 "in_library=True" (已入库) 的分集。
+                    # 剧集：查库递归检查
                     try:
-                        # 1. 查询该剧集下所有“已入库”的分集资产信息
-                        # 注意：这里使用当前事务的 cursor，可以直接读取到刚刚 upsert 但尚未 commit 的数据
+                        # 使用刚刚写入的最新数据
                         cursor.execute("""
                             SELECT season_number, episode_number, asset_details_json 
                             FROM media_metadata 
                             WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND in_library = TRUE
+                            ORDER BY season_number ASC, episode_number ASC
                         """, (tmdb_id,))
                         
                         db_episodes = cursor.fetchall()
-                        
-                        if not db_episodes:
-                            # 如果没有入库的分集，可能是空壳剧集，暂不报错
-                            pass
-                        else:
-                            for db_ep in db_episodes:
-                                s_idx = db_ep['season_number']
-                                e_idx = db_ep['episode_number']
-                                raw_assets = db_ep['asset_details_json']
-                                
-                                # 解析资产 
-                                if isinstance(raw_assets, str):
-                                    assets = json.loads(raw_assets)
-                                elif isinstance(raw_assets, list):
-                                    assets = raw_assets
-                                else:
-                                    assets = []
-                                
-                                if not assets:
-                                    # 标记为入库了但没资产？这绝对是数据异常
-                                    stream_check_passed = False
-                                    stream_fail_reason = f"[S{s_idx}E{e_idx}] 标记为入库但无资产数据"
-                                    break
-
-                                # 检查每一个资产版本 (通常只有一个)
-                                has_valid_asset = False
-                                for asset in assets:
-                                    # 根据你提供的 JSON 结构，width/height 是顶层字段
-                                    # 你的 Example 1 (坏) 中没有 width 字段，get 返回 None
-                                    # 你的 Example 2 (好) 中 width 为 1920
-                                    width = asset.get('width')
-                                    height = asset.get('height')
-                                    codec = asset.get('video_codec')
-                                    
-                                    # 严格检查：必须有分辨率 AND 必须有编码
-                                    has_res = (width and isinstance(width, (int, float)) and width > 0) and \
-                                              (height and isinstance(height, (int, float)) and height > 0)
-                                    # 编码检查：排除 null, unknown, none
-                                    has_cod = (codec and str(codec).lower() not in ['unknown', 'und', '', 'none', 'null'])
-                                    
-                                    if has_res and has_cod:
-                                        has_valid_asset = True
-                                        break # 只要有一个版本是好的就行
-                                
-                                if not has_valid_asset:
-                                    stream_check_passed = False
-                                    # 取第一个资产的信息做错误展示
-                                    bad_asset = assets[0] if assets else {}
-                                    stream_fail_reason = f"[S{s_idx}E{e_idx}] 视频流无效 (W:{bad_asset.get('width')} H:{bad_asset.get('height')} Codec:{bad_asset.get('video_codec')})"
-                                    logger.warning(f"  ➜ [质检] 剧集《{item_name_for_log}》检测到坏分集: {stream_fail_reason}")
-                                    break # 只要有一集坏了，整部剧就标记为失败，停止检查
+                        for db_ep in db_episodes:
+                            s_idx = db_ep['season_number']
+                            e_idx = db_ep['episode_number']
+                            raw_assets = db_ep['asset_details_json']
+                            
+                            assets = json.loads(raw_assets) if isinstance(raw_assets, str) else (raw_assets if isinstance(raw_assets, list) else [])
+                            
+                            # 调用辅助函数检查
+                            passed, reason = _check_assets_list(assets, f"[S{s_idx}E{e_idx}]")
+                            
+                            if not passed:
+                                stream_check_passed = False
+                                stream_fail_reason = reason
+                                logger.warning(f"  ➜ [质检] 剧集《{item_name_for_log}》检测到坏分集: {reason}")
+                                break 
 
                     except Exception as e_db_check:
                         logger.warning(f"  ➜ [质检] 数据库验证分集流信息时出错: {e_db_check}")

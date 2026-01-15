@@ -176,7 +176,7 @@
         <template #header-extra>
           <n-text depth="3">用于需要立即手动执行的场景</n-text>
         </template>
-        <n-grid cols="1 m:2 l:4" :x-gap="24" :y-gap="16" responsive="screen">
+        <n-grid cols="1 m:2 l:5" :x-gap="24" :y-gap="16" responsive="screen">
           <n-gi v-for="task in availableTasksForManualRun" :key="task.key">
             <div class="temp-task-item">
               <n-text>{{ task.name }}</n-text>

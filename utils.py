@@ -1,7 +1,7 @@
 # utils.py (最终智能匹配版)
 
 import re
-from typing import Optional
+from typing import Optional, Tuple, Any
 from urllib.parse import quote_plus
 import unicodedata
 import logging
@@ -15,6 +15,35 @@ except ImportError:
     def pinyin(*args, **kwargs):
         # 如果库不存在，这个模拟函数将导致中文名无法转换为拼音进行匹配
         return []
+
+def check_stream_validity(width: Any, height: Any, codec: Any) -> Tuple[bool, str]:
+    """
+    检查视频流数据是否完整。
+    返回: (是否通过, 失败原因)
+    """
+    # 1. 分辨率检查：必须存在且大于0
+    # 兼容 int, float, str('1920')
+    try:
+        w = float(width) if width is not None else 0
+        h = float(height) if height is not None else 0
+    except (ValueError, TypeError):
+        w, h = 0, 0
+
+    has_resolution = (w > 0) and (h > 0)
+    
+    # 2. 编码检查：必须存在且不是未知
+    # 排除 null, unknown, none, und
+    c_str = str(codec).lower().strip() if codec else ""
+    has_codec = c_str and c_str not in ['unknown', 'und', '', 'none', 'null']
+    
+    if has_resolution and has_codec:
+        return True, ""
+    else:
+        if not has_resolution:
+            return False, f"分辨率无效 (W:{width} H:{height})"
+        elif not has_codec:
+            return False, f"编码无效 ({codec})"
+        return False, "未知视频流错误"
 
 def contains_chinese(text: Optional[str]) -> bool:
     """检查字符串是否包含中文字符。"""

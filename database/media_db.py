@@ -1213,3 +1213,50 @@ def cleanup_offline_internal_ids() -> int:
     except Exception as e:
         logger.error(f"DB: 执行内部ID大扫除失败: {e}", exc_info=True)
         return 0
+    
+def get_items_with_potentially_bad_assets() -> List[Dict[str, Any]]:
+    """
+    【质检专用】查询所有已入库但资产数据可能不完整的项目。
+    利用 SQL JSONB 查询直接过滤，性能极高。
+    
+    筛选条件：
+    1. 已入库 (in_library = TRUE)
+    2. 类型为 Movie 或 Episode (Series 本身无资产)
+    3. asset_details_json 不为空
+    4. 资产数组中存在任意一个元素满足：width <= 0 或 height <= 0 或 codec 为空/unknown
+    """
+    sql = """
+        SELECT 
+            tmdb_id, 
+            item_type, 
+            title, 
+            parent_series_tmdb_id, 
+            season_number, 
+            episode_number,
+            asset_details_json
+        FROM media_metadata m
+        WHERE in_library = TRUE 
+          AND item_type IN ('Movie', 'Episode')
+          AND asset_details_json IS NOT NULL 
+          AND jsonb_array_length(asset_details_json) > 0
+          AND EXISTS (
+              SELECT 1 
+              FROM jsonb_array_elements(asset_details_json) AS elem
+              WHERE 
+                 -- 检查分辨率 (转为数字比较)
+                 COALESCE((elem->>'width')::numeric, 0) <= 0 
+                 OR 
+                 COALESCE((elem->>'height')::numeric, 0) <= 0
+                 OR 
+                 -- 检查编码 (转为小写比较)
+                 LOWER(COALESCE(elem->>'video_codec', '')) IN ('', 'null', 'none', 'unknown', 'und')
+          )
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 查询异常资产失败: {e}", exc_info=True)
+        return []

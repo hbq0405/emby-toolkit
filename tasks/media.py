@@ -1770,3 +1770,100 @@ def task_restore_local_cache_from_db(processor):
     except Exception as e:
         logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
+def task_scan_incomplete_assets(processor):
+    """
+    全库扫描资产数据不完整的项目。
+    直接从数据库筛选出分辨率或编码无效的项目，并将其加入待复核列表。
+    """
+    logger.info("--- 开始执行全库媒体信息扫描 ---")
+    
+    try:
+        # 1. 从数据库获取“嫌疑人”
+        bad_items = media_db.get_items_with_potentially_bad_assets()
+        total = len(bad_items)
+        
+        if total == 0:
+            logger.info("  ✅ 未发现媒体信息异常的项目。")
+            task_manager.update_status_from_thread(100, "媒体信息完成：无异常")
+            return
+
+        logger.info(f"  ⚠️ 发现 {total} 个项目的媒体信息可能不完整，正在复核并标记...")
+        
+        marked_count = 0
+        
+        # 2. 遍历处理
+        # 这里的 bad_items 已经是通过 SQL 筛选出来的，所以大概率都是有问题的
+        # 但我们还是用 utils 再校验一次，确保万无一失
+        
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            for i, item in enumerate(bad_items):
+                tmdb_id = item['tmdb_id']
+                item_type = item['item_type']
+                title = item['title']
+                raw_assets = item['asset_details_json']
+                
+                # 解析资产
+                assets = json.loads(raw_assets) if isinstance(raw_assets, str) else (raw_assets if isinstance(raw_assets, list) else [])
+                
+                # 复核
+                is_valid = False
+                fail_reason = "未知原因"
+                
+                for asset in assets:
+                    w = asset.get('width')
+                    h = asset.get('height')
+                    c = asset.get('video_codec')
+                    valid, reason = utils.check_stream_validity(w, h, c)
+                    if valid:
+                        is_valid = True
+                        break
+                    fail_reason = reason # 记录原因
+                
+                if not is_valid:
+                    # 确定写入日志的目标 (分集 -> 剧集)
+                    target_id = tmdb_id
+                    target_name = title
+                    target_type = item_type
+                    final_reason = fail_reason
+                    
+                    if item_type == 'Episode':
+                        parent_id = item.get('parent_series_tmdb_id')
+                        s_num = item.get('season_number')
+                        e_num = item.get('episode_number')
+                        
+                        if parent_id:
+                            # 获取剧集名称
+                            series_title = media_db.get_series_title_by_tmdb_id(parent_id) or f"剧集({parent_id})"
+                            
+                            target_id = parent_id
+                            target_name = series_title
+                            target_type = 'Series'
+                            final_reason = f"[S{s_num}E{e_num}] {fail_reason}"
+                    
+                    # 写入待复核日志
+                    processor.log_db_manager.save_to_failed_log(
+                        cursor, target_id, target_name, 
+                        f"全库扫描发现异常: {final_reason}", 
+                        target_type, score=0.0
+                    )
+                    
+                    # 标记为已处理 (避免重复处理，但在UI显示为待复核)
+                    processor.log_db_manager.save_to_processed_log(cursor, target_id, target_name, score=0.0)
+                    
+                    marked_count += 1
+                    
+                    if i % 10 == 0:
+                        logger.info(f"  ➜ [标记] {target_name}: {final_reason}")
+
+            conn.commit()
+
+        msg = f"扫描完成。共发现 {total} 个异常项，已将 {marked_count} 个(归并后)加入待复核列表。"
+        logger.info(f"  ✅ {msg}")
+        task_manager.update_status_from_thread(100, msg)
+
+    except Exception as e:
+        logger.error(f"执行资产扫描任务失败: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, "任务失败")
