@@ -386,7 +386,10 @@ def analyze_media_asset(item_details: dict) -> dict:
     }
 
 def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, library_guid: str = None) -> dict:
-    """视频流分析主函数"""
+    """
+    视频流分析主函数 (修复版)
+    优先从 MediaSources 获取真实的媒体信息，解决 .strm 文件数据为空的问题。
+    """
     # 提取并计算时长 (分钟)
     runtime_ticks = item_details.get('RunTimeTicks')
     runtime_min = round(runtime_ticks / 600000000) if runtime_ticks else None
@@ -396,7 +399,27 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
     if id_to_parent_map and item_id:
         ancestors = calculate_ancestor_ids(item_id, id_to_parent_map, library_guid)
 
-    if not item_details or "MediaStreams" not in item_details:
+    # ★★★ 核心修复开始 ★★★
+    # 1. 尝试获取 MediaSources
+    media_sources = item_details.get("MediaSources", [])
+    primary_source = None
+    
+    # 2. 确定主要数据源
+    # 如果有 MediaSources，取第一个作为主数据源（通常包含真实路径、流信息、容器格式）
+    if media_sources and len(media_sources) > 0:
+        primary_source = media_sources[0]
+    
+    # 3. 提取关键字段 (优先用 Source 的，没有则回退到 Item 顶层)
+    # 注意：.strm 的顶层 Container 通常为 null，但 Source 里会有 'mkv' 等
+    container = (primary_source.get("Container") if primary_source else None) or item_details.get("Container")
+    size_bytes = (primary_source.get("Size") if primary_source else None) or item_details.get("Size")
+    
+    # 4. 提取流信息
+    # .strm 的流信息通常只在 Source 里
+    media_streams = (primary_source.get("MediaStreams") if primary_source else None) or item_details.get("MediaStreams", [])
+    # ★★★ 核心修复结束 ★★★
+
+    if not item_details:
         return {
             "emby_item_id": item_details.get("Id"), "path": item_details.get("Path", ""),
             "size_bytes": None, "container": None, "video_codec": None,
@@ -414,25 +437,20 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
     asset = {
         "emby_item_id": item_details.get("Id"), 
         "path": item_details.get("Path", ""),
-        "size_bytes": item_details.get("Size"), 
-        "container": item_details.get("Container"),
+        "size_bytes": size_bytes,   # 使用修复后的变量
+        "container": container,     # 使用修复后的变量
         "video_codec": None, 
-        "video_bitrate_mbps": None, # 视频码率 (Mbps)
-        "bit_depth": None,          # 色深 (8/10/12)
-        "frame_rate": None,         # 帧率
+        "video_bitrate_mbps": None, 
+        "bit_depth": None,          
+        "frame_rate": None,         
         "audio_tracks": [], 
         "subtitles": [],
         "date_added_to_library": date_added_to_library,
         "ancestor_ids": ancestors,
         "runtime_minutes": runtime_min 
     }
-    item_id = str(item_details.get("Id"))
-    if id_to_parent_map and item_id:
-        # 调用下面定义的 calculate_ancestor_ids
-        asset["ancestor_ids"] = calculate_ancestor_ids(item_id, id_to_parent_map, library_guid)
-    else:
-        asset["ancestor_ids"] = []
-    media_streams = item_details.get("MediaStreams", [])
+    
+    # 遍历修复后的 media_streams
     for stream in media_streams:
         stream_type = stream.get("Type")
         if stream_type == "Video":
@@ -459,8 +477,17 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
                 "format": stream.get("Codec") 
             })
             
-
-    display_tags = analyze_media_asset(item_details)
+    # analyze_media_asset 也需要使用正确的流数据，但该函数内部逻辑较复杂
+    # 我们可以稍微修改 analyze_media_asset 或者在这里把提取好的流传进去
+    # 为了最小化改动，我们保持 analyze_media_asset 不变，
+    # 但注意：analyze_media_asset 内部也使用了 item_details.get('MediaStreams')
+    # 如果要彻底修复 display 字段，建议把 analyze_media_asset 也改一下，
+    # 或者简单点，构造一个伪造的 item_details 传给它：
+    
+    fake_details_for_analysis = item_details.copy()
+    fake_details_for_analysis['MediaStreams'] = media_streams # 注入正确的流
+    
+    display_tags = analyze_media_asset(fake_details_for_analysis)
     asset.update(display_tags)
     
     return asset
