@@ -916,6 +916,9 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     top_record['overview'] = tmdb_details.get('overview')
                     if tmdb_details.get('vote_average') is not None:
                         top_record['rating'] = tmdb_details.get('vote_average')
+                    # 采集总集数
+                    if item_type == 'Series':
+                        top_record['total_episodes'] = tmdb_details.get('number_of_episodes', 0)
                     # 1. 获取基础制作公司
                     raw_studios = []
                     if item_type == 'Series':
@@ -1027,6 +1030,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                                     "overview": s_info.get('overview'),
                                     "poster_path": season_poster,
                                     "rating": s_info.get('vote_average'),
+                                    "total_episodes": s_info.get('episode_count', 0),
                                     "in_library": True,
                                     "release_date": s_release_date,
                                     "subscription_status": "NONE",
@@ -1164,7 +1168,15 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                                 if col in exclude_cols: 
                                     continue
                                 
-                                update_clauses.append(f"{col} = EXCLUDED.{col}")
+                                # 针对 total_episodes 字段，检查锁定状态
+                                # 逻辑：如果 total_episodes_locked 为 TRUE，则保持原值；否则使用新值 (EXCLUDED.total_episodes)
+                                if col == 'total_episodes':
+                                    update_clauses.append(
+                                        "total_episodes = CASE WHEN media_metadata.total_episodes_locked IS TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END"
+                                    )
+                                else:
+                                    # 其他字段正常更新
+                                    update_clauses.append(f"{col} = EXCLUDED.{col}")
                             
                             sql = f"""
                                 INSERT INTO media_metadata ({cols_str}, last_synced_at) 
