@@ -347,21 +347,34 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
                 if not data:
                     break
                 
+                # 检查 success 字段
+                if isinstance(data, dict) and not data.get('success', True):
+                    logger.warning(f"  ⚠️ [MP清理] API返回失败: {data.get('message')}")
+                    break
+
                 # ★★★ 兼容性修复：处理分页包装或非列表返回 ★★★
                 records_list = []
-                if isinstance(data, list):
+                
+                # 1. 优先检查 data 字段 (标准 MP 响应)
+                if isinstance(data, dict):
+                    inner_data = data.get('data')
+                    if isinstance(inner_data, list):
+                        records_list = inner_data
+                    elif isinstance(inner_data, dict):
+                        # 分页结构 data: { list: [], total: 0 }
+                        if 'list' in inner_data and isinstance(inner_data['list'], list):
+                            records_list = inner_data['list']
+                        elif 'items' in inner_data and isinstance(inner_data['items'], list):
+                            records_list = inner_data['items']
+                
+                # 2. 兜底：直接检查根对象 (非标准响应)
+                if not records_list and isinstance(data, list):
                     records_list = data
-                elif isinstance(data, dict):
-                    # 尝试常见的字段名
-                    if 'data' in data and isinstance(data['data'], list):
-                        records_list = data['data']
-                    elif 'list' in data and isinstance(data['list'], list):
-                        records_list = data['list']
-                    elif 'items' in data and isinstance(data['items'], list):
-                        records_list = data['items']
-                    # 如果是其他字典结构，可能不是我们想要的数据，跳过
                 
                 if not records_list:
+                    # 如果第一页且没数据，记录一下响应结构方便调试
+                    if page == 1 and data:
+                         logger.debug(f"  ⚠️ [MP清理] 响应解析未找到列表数据。Data keys: {list(data.get('data', {}).keys()) if isinstance(data.get('data'), dict) else type(data.get('data'))}")
                     break
 
                 all_records.extend(records_list)
