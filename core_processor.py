@@ -1184,7 +1184,18 @@ class MediaProcessor:
             for col in cols_to_protect:
                 if col in cols_to_update: cols_to_update.remove(col)
 
-            update_clauses = [f"{col} = EXCLUDED.{col}" for col in cols_to_update]
+            update_clauses = []
+            for col in cols_to_update:
+                # 针对 total_episodes 字段，检查锁定状态
+                # 逻辑：如果 total_episodes_locked 为 TRUE，则保持原值；否则使用新值 (EXCLUDED.total_episodes)
+                if col == 'total_episodes':
+                    update_clauses.append(
+                        "total_episodes = CASE WHEN media_metadata.total_episodes_locked IS TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END"
+                    )
+                else:
+                    # 其他字段正常更新
+                    update_clauses.append(f"{col} = EXCLUDED.{col}")
+
             update_clauses.append(f"{timestamp_field} = NOW()")
 
             sql = f"""
