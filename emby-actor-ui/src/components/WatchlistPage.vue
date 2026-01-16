@@ -478,10 +478,19 @@
                     </n-switch>
                   </div>
 
-                  <!-- 选项 3: 删除下载器任务 -->
-                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0;">
-                    <span style="font-size: 13px; font-weight: 500;">删除下载器任务</span>
-                    <n-switch v-model:value="watchlistConfig.auto_delete_download_tasks" size="small">
+                  <!-- 选项 3: 删除下载器任务 (增加 padding-left 做缩进) -->
+                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0 8px 16px;">
+                    <div style="display: flex; flex-direction: column;">
+                      <span style="font-size: 13px; font-weight: 500;">删除下载器任务</span>
+                      <span style="font-size: 12px; color: var(--n-text-color-3); transform: scale(0.9); transform-origin: left;">
+                        * 依赖整理记录中的 Hash 进行精确删除
+                      </span>
+                    </div>
+                    <n-switch 
+                      v-model:value="watchlistConfig.auto_delete_download_tasks" 
+                      size="small"
+                      :disabled="!watchlistConfig.auto_delete_mp_history" 
+                    >
                       <template #checked>开启</template>
                       <template #unchecked>关闭</template>
                     </n-switch>
@@ -1384,6 +1393,25 @@ onMounted(() => {
 onBeforeUnmount(() => {
   if (observer) {
     observer.disconnect();
+  }
+});
+
+// 1. 开启“删除下载器任务” -> 必须开启“删除 MP 整理记录” (因为要靠它拿 Hash)
+watch(() => watchlistConfig.value.auto_delete_download_tasks, (newVal) => {
+  if (newVal) {
+    if (!watchlistConfig.value.auto_delete_mp_history) {
+      watchlistConfig.value.auto_delete_mp_history = true;
+      message.info('已自动开启“删除 MP 整理记录”，以便获取种子 Hash 进行精确删除。');
+    }
+  }
+});
+
+// 2. 关闭“删除 MP 整理记录” -> 必须关闭“删除下载器任务” (否则只能按名字删，不安全)
+watch(() => watchlistConfig.value.auto_delete_mp_history, (newVal) => {
+  if (!newVal) {
+    if (watchlistConfig.value.auto_delete_download_tasks) {
+      watchlistConfig.value.auto_delete_download_tasks = false;
+    }
   }
 });
 
