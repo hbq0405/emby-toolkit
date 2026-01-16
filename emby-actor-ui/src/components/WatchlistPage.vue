@@ -458,20 +458,35 @@
               </div>
               <!-- 子选项展开区域 -->
               <n-collapse-transition :show="watchlistConfig.auto_resub_ended">
-                <div class="setting-sub-panel" style="margin-top: 8px; padding: 8px 12px; background-color: rgba(255,0,0,0.05);">
-                  <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <div style="font-size: 13px;">
-                      <span style="font-weight: 500;">洗版自动删除旧文件</span>
-                      <div style="font-size: 12px; color: var(--n-text-color-3); margin-top: 2px;">
-                        <n-icon :component="TrashIcon" style="vertical-align: text-bottom; margin-right: 2px;" />
-                        危险操作：在提交洗版订阅前，直接从 Emby 删除该季的现有文件。
-                      </div>
-                    </div>
+                <div class="setting-sub-panel" style="margin-top: 8px; padding: 4px 12px; background-color: rgba(0,0,0,0.03);">
+                  
+                  <!-- 选项 1: 删除 Emby 旧文件 -->
+                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
+                    <span style="font-size: 13px; font-weight: 500;">删除 Emby 旧文件</span>
                     <n-switch v-model:value="watchlistConfig.auto_delete_old_files" size="small">
-                      <template #checked>删除</template>
-                      <template #unchecked>保留</template>
+                      <template #checked>开启</template>
+                      <template #unchecked>关闭</template>
                     </n-switch>
                   </div>
+
+                  <!-- 选项 2: 删除 MP 整理记录 -->
+                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
+                    <span style="font-size: 13px; font-weight: 500;">删除 MP 整理记录</span>
+                    <n-switch v-model:value="watchlistConfig.auto_delete_mp_history" size="small">
+                      <template #checked>开启</template>
+                      <template #unchecked>关闭</template>
+                    </n-switch>
+                  </div>
+
+                  <!-- 选项 3: 删除下载器任务 -->
+                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0;">
+                    <span style="font-size: 13px; font-weight: 500;">删除下载器任务</span>
+                    <n-switch v-model:value="watchlistConfig.auto_delete_download_tasks" size="small">
+                      <template #checked>开启</template>
+                      <template #unchecked>关闭</template>
+                    </n-switch>
+                  </div>
+
                 </div>
               </n-collapse-transition>
             </div>
@@ -617,6 +632,8 @@ const watchlistConfig = ref({
   auto_pause: false,
   auto_resub_ended: false,
   auto_delete_old_files: false,
+  auto_delete_mp_history: false,     
+  auto_delete_download_tasks: false,
   gap_fill_resubscribe: false,
   sync_mp_subscription: false,
   revival_check_days: 365
@@ -637,6 +654,8 @@ const openConfigModal = async () => {
          auto_pause: data.auto_pause ?? false,
          auto_resub_ended: data.auto_resub_ended ?? false,
          auto_delete_old_files: data.auto_delete_old_files ?? false,
+         auto_delete_mp_history: data.auto_delete_mp_history ?? false,
+         auto_delete_download_tasks: data.auto_delete_download_tasks ?? false,
          gap_fill_resubscribe: data.gap_fill_resubscribe ?? false,
          enable_backfill: data.enable_backfill ?? false,
          sync_mp_subscription: data.sync_mp_subscription ?? false,
