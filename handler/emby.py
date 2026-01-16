@@ -119,84 +119,113 @@ def get_running_tasks(base_url: str, api_key: str) -> List[Dict[str, Any]]:
         logger.error(f"获取后台任务状态失败: {e}")
         return []
 
+def get_active_transcoding_sessions(base_url: str, api_key: str) -> List[str]:
+    """
+    获取当前正在【转码】的会话列表。
+    转码非常消耗 CPU，应视为服务器忙碌。
+    """
+    api_url = f"{base_url.rstrip('/')}/Sessions"
+    params = {"api_key": api_key}
+    
+    try:
+        response = emby_client.get(api_url, params=params)
+        response.raise_for_status()
+        sessions = response.json()
+        
+        transcoding_sessions = []
+        for s in sessions:
+            # 检查 TranscodingInfo 字段是否存在且不为空
+            if s.get("TranscodingInfo") and s.get("PlayState", {}).get("IsPaused") is False:
+                user = s.get("UserName", "未知用户")
+                item = s.get("NowPlayingItem", {}).get("Name", "未知视频")
+                transcoding_sessions.append(f"{user} 正在转码观看 [{item}]")
+                
+        return transcoding_sessions
+    except Exception as e:
+        logger.error(f"获取会话状态失败: {e}")
+        return []
+
 def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 300):
     """
-    【队列机制核心】
-    如果 Emby 正在进行繁重的后台任务，则阻塞等待。
+    【队列机制核心 - 增强版】
+    阻塞等待，直到没有【非忽略】的后台任务在运行。
     """
-    # 1. 触发等待的关键词（包含英文和中文，用于检测）
-    HEAVY_TASKS = [
-        "Scan media library", "扫描媒体库",
-        "Refresh people", "刷新", 
-        "Refresh metadata", 
-        "Generate video preview thumbnails", "提取视频", "缩略图",
-        "Chapter image extraction", "章节图片",
-        "Convert media", "转换",
-        # --- 神医助手专用关键词 ---
-        "Extract MediaInfo",          # 提取媒体信息 
-        "Extract Intro Fingerprint",  # 提取片头指纹 (非常耗CPU)
-        "Extract Video Thumbnail",    # 提取缩略图
-        "Build Douban Cache"          # 构建豆瓣缓存
-    ]
-
-    # 2. 显示名称翻译字典（用于日志美化）
+    # 1. 任务名称翻译 (用于日志显示)
     TASK_TRANSLATIONS = {
         "Scan media library": "扫描媒体库",
         "Refresh people": "刷新人物信息",
         "Refresh metadata": "刷新元数据",
         "Generate video preview thumbnails": "生成视频缩略图",
         "Chapter image extraction": "提取章节图片",
-        "Clean up collections": "清理合集",
         "Convert media": "转换媒体",
         "Extract MediaInfo": "神医-提取媒体信息",
         "Extract Intro Fingerprint": "神医-提取片头指纹",
         "Extract Video Thumbnail": "神医-提取视频缩略图",
-        "Build Douban Cache": "神医-构建豆瓣缓存",
-        "Merge Multi Versions": "神医-合并多版本",
-        "Persist MediaInfo": "神医-持久化媒体信息"
+        "Build Douban Cache": "神医-构建豆瓣缓存"
     }
+
+    # 2. ★★★ 忽略列表 (白名单) ★★★
+    # 只要任务名称包含以下任意关键词(不区分大小写)，脚本就会无视它，直接继续执行
+    IGNORED_TASKS = [
+        "Rotate log file",               # 日志轮转 (通常极快)
+        "Check for application updates", # 检查更新 (不占资源)
+        "Refresh Guide",                 # 刷新直播指南 (IPTV相关，通常只占网络)
+        "Clean up collections",          # 清理合集 (通常很快)
+        "Build Douban Cache",            # 神医-构建豆瓣缓存 (通常很快)
+        # "Scan media library",          # <--- 如果你想一边扫库一边硬跑，可以把这个注释解开
+    ]
     
     start_time = time.time()
     
     while True:
+        # --- 检查 1: 后台计划任务 ---
         running_tasks = get_running_tasks(base_url, api_key)
         
-        # --- 调试日志 ---
-        if running_tasks:
-            # 这里也顺便翻译一下，方便调试看
-            debug_names = []
-            for t in running_tasks:
-                name = TASK_TRANSLATIONS.get(t['Name'], t['Name'])
-                debug_names.append(f"{name}({t['Progress']:.1f}%)")
-            logger.debug(f"  [队列检测] 当前运行的任务: {debug_names}")
-        # ----------------
+        # --- 检查 2: 活跃转码会话 ---
+        transcoding_sessions = get_active_transcoding_sessions(base_url, api_key)
         
-        is_busy = False
-        busy_task_name = ""
-        
+        busy_reasons = []
+
+        # A. 判定任务忙碌
         for task in running_tasks:
-            # 检查是否有繁重任务在跑
-            for heavy_keyword in HEAVY_TASKS:
-                if heavy_keyword.lower() in task['Name'].lower():
-                    is_busy = True
-                    
-                    # ★★★ 核心修改：尝试翻译任务名称 ★★★
-                    raw_name = task['Name']
-                    display_name = TASK_TRANSLATIONS.get(raw_name, raw_name)
-                    
-                    busy_task_name = f"{display_name} (进度: {task['Progress']:.1f}%)"
+            raw_name = task['Name']
+            
+            # --- ★★★ 检查是否在忽略列表中 ★★★ ---
+            is_ignored = False
+            for ignore_kw in IGNORED_TASKS:
+                if ignore_kw.lower() in raw_name.lower():
+                    is_ignored = True
                     break
-            if is_busy: break
-        
-        if not is_busy:
-            return
+            
+            if is_ignored:
+                # 如果是忽略的任务，仅在调试日志里记录一下，不加入 busy_reasons
+                logger.debug(f"  [队列忽略] 跳过任务: {raw_name} (在忽略列表中)")
+                continue
+            # ---------------------------------------
+
+            display_name = TASK_TRANSLATIONS.get(raw_name, raw_name)
+            progress = task.get('Progress', 0)
+            busy_reasons.append(f"任务: {display_name}({progress:.1f}%)")
+
+        # B. 判定转码忙碌
+        if transcoding_sessions:
+            busy_reasons.extend(transcoding_sessions)
+
+        # --- 决策 ---
+        if not busy_reasons:
+            return # 服务器空闲 (或者只有被忽略的任务)，放行
             
         elapsed = time.time() - start_time
         if elapsed > max_wait_seconds:
-            logger.warning(f"  ⚠️ 等待 Emby 空闲超时 ({max_wait_seconds}s)，强制继续执行。当前阻塞任务: {busy_task_name}")
+            logger.warning(f"  ⚠️ 等待 Emby 空闲超时 ({max_wait_seconds}s)，强制继续执行。")
             return
             
-        logger.info(f"  ⏳ Emby 正在忙碌 [{busy_task_name}]，暂停等待中... (已等待 {int(elapsed)}s)")
+        # 取第一个忙碌原因显示在日志里
+        reason_str = busy_reasons[0]
+        if len(busy_reasons) > 1:
+            reason_str += f" 等{len(busy_reasons)}项"
+            
+        logger.info(f"  ⏳ Emby 负载高 [{reason_str}]，暂停等待中... (已等待 {int(elapsed)}s)")
         time.sleep(10)
 
 # 获取管理员令牌
