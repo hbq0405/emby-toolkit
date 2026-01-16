@@ -358,7 +358,7 @@
       v-model:show="showConfigModal" 
       preset="card" 
       title="智能追剧策略" 
-      style="width: 600px" 
+      style="width: 950px; max-width: 95vw;" 
       :bordered="false"
       size="huge"
     >
@@ -366,206 +366,215 @@
         <n-icon size="20" :component="SettingsIcon" />
       </template>
 
-      <div class="settings-container">
+      <!-- ★★★ 修改：引入 grid 布局容器 ★★★ -->
+      <div class="settings-layout">
         
-        <!-- 第一组：状态自动化 -->
-        <div class="settings-group-title">状态自动化</div>
-        <div class="settings-card">
+        <!-- === 左侧列：状态 + 跟踪 === -->
+        <div class="settings-col">
           
-          <!-- 1. 自动待定 (复杂项) -->
-          <div class="setting-item">
-            <div class="setting-icon"><n-icon :component="TimerIcon" /></div>
-            <div class="setting-content">
-              <div class="setting-header">
-                <div class="setting-label">新剧保护 (自动待定)</div>
-                <n-switch v-model:value="watchlistConfig.auto_pending.enabled" size="small">
-                  <template #checked>开启</template>
-                  <template #unchecked>关闭</template>
-                </n-switch>
-              </div>
-              <div class="setting-desc">
-                对于刚开播或集数很少的新剧，将其状态设为“待定”，防止因集数不足被误判为完结。
-              </div>
-              
-              <!-- 展开的详细配置 -->
-              <n-collapse-transition :show="watchlistConfig.auto_pending.enabled">
-                <div class="setting-sub-panel">
-                  <n-grid :x-gap="12" :y-gap="12" :cols="3">
-                    <n-grid-item>
-                      <div class="sub-label">保护期 (天)</div>
-                      <n-input-number v-model:value="watchlistConfig.auto_pending.days" size="small" placeholder="天数">
-                        <template #suffix>天</template>
-                      </n-input-number>
-                    </n-grid-item>
-                    <n-grid-item>
-                      <div class="sub-label">保护集数</div>
-                      <n-input-number v-model:value="watchlistConfig.auto_pending.episodes" size="small" placeholder="集数">
-                        <template #suffix>集</template>
-                      </n-input-number>
-                    </n-grid-item>
-                    <n-grid-item>
-                      <div class="sub-label">
-                        待定状态虚标集数 
-                        <n-tooltip trigger="hover"><template #trigger><n-icon size="14" :component="PendingIcon" /></template>防止 MP 提前完成订阅</n-tooltip>
-                      </div>
-                      <n-input-number v-model:value="watchlistConfig.auto_pending.default_total_episodes" size="small">
-                        <template #suffix>集</template>
-                      </n-input-number>
-                    </n-grid-item>
-                  </n-grid>
+          <!-- 第一组：状态自动化 -->
+          <div class="settings-group-title">状态自动化</div>
+          <div class="settings-card">
+            
+            <!-- 1. 自动待定 -->
+            <div class="setting-item">
+              <div class="setting-icon"><n-icon :component="TimerIcon" /></div>
+              <div class="setting-content">
+                <div class="setting-header">
+                  <div class="setting-label">新剧保护 (自动待定)</div>
+                  <n-switch v-model:value="watchlistConfig.auto_pending.enabled" size="small">
+                    <template #checked>开启</template>
+                    <template #unchecked>关闭</template>
+                  </n-switch>
                 </div>
-              </n-collapse-transition>
+                <div class="setting-desc">
+                  对于刚开播或集数很少的新剧，将其状态设为“待定”，防止因集数不足被误判为完结。
+                </div>
+                
+                <n-collapse-transition :show="watchlistConfig.auto_pending.enabled">
+                  <div class="setting-sub-panel">
+                    <n-grid :x-gap="12" :y-gap="12" :cols="3">
+                      <n-grid-item>
+                        <div class="sub-label">保护期 (天)</div>
+                        <n-input-number v-model:value="watchlistConfig.auto_pending.days" size="small" placeholder="天数">
+                          <template #suffix>天</template>
+                        </n-input-number>
+                      </n-grid-item>
+                      <n-grid-item>
+                        <div class="sub-label">保护集数</div>
+                        <n-input-number v-model:value="watchlistConfig.auto_pending.episodes" size="small" placeholder="集数">
+                          <template #suffix>集</template>
+                        </n-input-number>
+                      </n-grid-item>
+                      <n-grid-item>
+                        <div class="sub-label">
+                          待定状态虚标集数 
+                          <n-tooltip trigger="hover"><template #trigger><n-icon size="14" :component="PendingIcon" /></template>防止 MP 提前完成订阅</n-tooltip>
+                        </div>
+                        <n-input-number v-model:value="watchlistConfig.auto_pending.default_total_episodes" size="small">
+                          <template #suffix>集</template>
+                        </n-input-number>
+                      </n-grid-item>
+                    </n-grid>
+                  </div>
+                </n-collapse-transition>
+              </div>
+            </div>
+
+            <n-divider style="margin: 0" />
+
+            <!-- 2. 自动暂停 -->
+            <div class="setting-item">
+              <div class="setting-icon"><n-icon :component="PausedIcon" /></div>
+              <div class="setting-content">
+                <div class="setting-header">
+                  <div class="setting-label">自动暂停</div>
+                  <n-switch v-model:value="watchlistConfig.auto_pause" size="small">
+                    <template #checked>开启</template>
+                    <template #unchecked>关闭</template>
+                  </n-switch>
+                </div>
+                <div class="setting-desc">
+                  当下一集播出时间在 3 天以后时，自动将状态设为“暂停”，减少无效的搜索请求。
+                </div>
+              </div>
             </div>
           </div>
 
-          <n-divider style="margin: 0" />
-
-          <!-- 2. 自动暂停 -->
-          <div class="setting-item">
-            <div class="setting-icon"><n-icon :component="PausedIcon" /></div>
-            <div class="setting-content">
-              <div class="setting-header">
-                <div class="setting-label">自动暂停</div>
-                <n-switch v-model:value="watchlistConfig.auto_pause" size="small">
-                  <template #checked>开启</template>
-                  <template #unchecked>关闭</template>
-                </n-switch>
-              </div>
-              <div class="setting-desc">
-                当下一集播出时间在 3 天以后时，自动将状态设为“暂停”，减少无效的搜索请求。
+          <!-- 第三组：跟踪与维护 (移到左列下方) -->
+          <div class="settings-group-title" style="margin-top: 24px;">跟踪与维护</div>
+          <div class="settings-card">
+            
+            <!-- 6. 全量刷新回溯期 -->
+            <div class="setting-item">
+              <div class="setting-icon"><n-icon :component="TimeIcon" /></div>
+              <div class="setting-content">
+                <div class="setting-header">
+                  <div class="setting-label">全量刷新回溯期</div>
+                  <n-input-number 
+                    v-model:value="watchlistConfig.revival_check_days" 
+                    size="small" 
+                    style="width: 160px" 
+                    placeholder="天数"
+                    :min="1"
+                  >
+                    <template #suffix>天</template>
+                  </n-input-number>
+                </div>
+                <div class="setting-desc">
+                  对于已完结超过此天数的剧集，仅进行轻量级检查（只看有没有新季），不再全量刷新元数据，以提高效率。
+                </div>
               </div>
             </div>
           </div>
+
         </div>
 
-        <!-- 第二组：订阅与洗版 -->
-        <div class="settings-group-title" style="margin-top: 24px;">订阅与洗版</div>
-        <div class="settings-card">
+        <!-- === 右侧列：订阅与洗版 === -->
+        <div class="settings-col">
           
-          <!-- 3. 完结自动洗版 -->
-          <div class="setting-item">
-            <div class="setting-icon"><n-icon :component="RefreshIcon" /></div>
-            <div class="setting-content">
-              <div class="setting-header">
-                <div class="setting-label">完结自动洗版</div>
-                <n-switch v-model:value="watchlistConfig.auto_resub_ended" size="small">
-                  <template #checked>开启</template>
-                  <template #unchecked>关闭</template>
-                </n-switch>
-              </div>
-              <div class="setting-desc">
-                剧集完结后，自动删除旧订阅并提交“洗版订阅”，以获取整季合集。
-              </div>
-              <!-- 子选项展开区域 -->
-              <n-collapse-transition :show="watchlistConfig.auto_resub_ended">
-                <div class="setting-sub-panel" style="margin-top: 8px; padding: 4px 12px; background-color: rgba(0,0,0,0.03);">
-                  
-                  <!-- 选项 1: 删除 Emby 旧文件 -->
-                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
-                    <span style="font-size: 13px; font-weight: 500;">删除 Emby 旧文件</span>
-                    <n-switch v-model:value="watchlistConfig.auto_delete_old_files" size="small">
-                      <template #checked>开启</template>
-                      <template #unchecked>关闭</template>
-                    </n-switch>
-                  </div>
-
-                  <!-- 选项 2: 删除 MP 整理记录 -->
-                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
-                    <span style="font-size: 13px; font-weight: 500;">删除 MP 整理记录</span>
-                    <n-switch v-model:value="watchlistConfig.auto_delete_mp_history" size="small">
-                      <template #checked>开启</template>
-                      <template #unchecked>关闭</template>
-                    </n-switch>
-                  </div>
-
-                  <!-- 选项 3: 删除下载器任务 (增加 padding-left 做缩进) -->
-                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0 8px 16px;">
-                    <div style="display: flex; flex-direction: column;">
-                      <span style="font-size: 13px; font-weight: 500;">删除下载器任务</span>
-                      <span style="font-size: 12px; color: var(--n-text-color-3); transform: scale(0.9); transform-origin: left;">
-                        * 依赖整理记录中的 Hash 进行精确删除
-                      </span>
+          <!-- 第二组：订阅与洗版 -->
+          <div class="settings-group-title">订阅与洗版</div>
+          <div class="settings-card">
+            
+            <!-- 3. 完结自动洗版 -->
+            <div class="setting-item">
+              <div class="setting-icon"><n-icon :component="RefreshIcon" /></div>
+              <div class="setting-content">
+                <div class="setting-header">
+                  <div class="setting-label">完结自动洗版</div>
+                  <n-switch v-model:value="watchlistConfig.auto_resub_ended" size="small">
+                    <template #checked>开启</template>
+                    <template #unchecked>关闭</template>
+                  </n-switch>
+                </div>
+                <div class="setting-desc">
+                  剧集完结后，自动删除旧订阅并提交“洗版订阅”，以获取整季合集。
+                </div>
+                <!-- 子选项展开区域 -->
+                <n-collapse-transition :show="watchlistConfig.auto_resub_ended">
+                  <div class="setting-sub-panel" style="margin-top: 8px; padding: 4px 12px; background-color: rgba(0,0,0,0.03);">
+                    
+                    <!-- 选项 1: 删除 Emby 旧文件 -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
+                      <span style="font-size: 13px; font-weight: 500;">删除 Emby 旧文件</span>
+                      <n-switch v-model:value="watchlistConfig.auto_delete_old_files" size="small">
+                        <template #checked>开启</template>
+                        <template #unchecked>关闭</template>
+                      </n-switch>
                     </div>
-                    <n-switch 
-                      v-model:value="watchlistConfig.auto_delete_download_tasks" 
-                      size="small"
-                      :disabled="!watchlistConfig.auto_delete_mp_history" 
-                    >
-                      <template #checked>开启</template>
-                      <template #unchecked>关闭</template>
-                    </n-switch>
+
+                    <!-- 选项 2: 删除 MP 整理记录 -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
+                      <span style="font-size: 13px; font-weight: 500;">删除 MP 整理记录</span>
+                      <n-switch v-model:value="watchlistConfig.auto_delete_mp_history" size="small">
+                        <template #checked>开启</template>
+                        <template #unchecked>关闭</template>
+                      </n-switch>
+                    </div>
+
+                    <!-- 选项 3: 删除下载器任务 -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0 8px 16px;">
+                      <div style="display: flex; flex-direction: column;">
+                        <span style="font-size: 13px; font-weight: 500;">删除下载器任务</span>
+                        <span style="font-size: 12px; color: var(--n-text-color-3); transform: scale(0.9); transform-origin: left;">
+                          * 依赖整理记录中的 Hash 进行精确删除
+                        </span>
+                      </div>
+                      <n-switch 
+                        v-model:value="watchlistConfig.auto_delete_download_tasks" 
+                        size="small"
+                        :disabled="!watchlistConfig.auto_delete_mp_history" 
+                      >
+                        <template #checked>开启</template>
+                        <template #unchecked>关闭</template>
+                      </n-switch>
+                    </div>
+
                   </div>
+                </n-collapse-transition>
+              </div>
+            </div>
 
+            <n-divider style="margin: 0" />
+
+            <!-- 4 MoviePilot 自动补订 -->
+            <div class="setting-item">
+              <div class="setting-icon"><n-icon :component="MPSyncIcon" /></div>
+              <div class="setting-content">
+                <div class="setting-header">
+                  <div class="setting-label">MoviePilot 自动补订</div>
+                  <n-switch v-model:value="watchlistConfig.sync_mp_subscription" size="small">
+                    <template #checked>开启</template>
+                    <template #unchecked>关闭</template>
+                  </n-switch>
                 </div>
-              </n-collapse-transition>
-            </div>
-          </div>
-
-          <n-divider style="margin: 0" />
-
-          <!-- 4 MoviePilot 自动补订 -->
-          <div class="setting-item">
-            <div class="setting-icon"><n-icon :component="MPSyncIcon" /></div>
-            <div class="setting-content">
-              <div class="setting-header">
-                <div class="setting-label">MoviePilot 自动补订</div>
-                <n-switch v-model:value="watchlistConfig.sync_mp_subscription" size="small">
-                  <template #checked>开启</template>
-                  <template #unchecked>关闭</template>
-                </n-switch>
-              </div>
-              <div class="setting-desc">
-                当发现 MoviePilot 中缺失活跃订阅时自动补订。
+                <div class="setting-desc">
+                  当发现 MoviePilot 中缺失活跃订阅时自动补订。
+                </div>
               </div>
             </div>
-          </div>
 
-          <n-divider style="margin: 0" />
+            <n-divider style="margin: 0" />
 
-          <!-- 5. 缺集自动洗版 -->
-          <div class="setting-item">
-            <div class="setting-icon"><n-icon :component="GapIcon" /></div>
-            <div class="setting-content">
-              <div class="setting-header">
-                <div class="setting-label">缺集优先洗版</div>
-                <n-switch v-model:value="watchlistConfig.gap_fill_resubscribe" size="small">
-                  <template #checked>开启</template>
-                  <template #unchecked>关闭</template>
-                </n-switch>
-              </div>
-              <div class="setting-desc">
-                发现中间有缺集时，洗版整季。关闭则采用普通订阅模式，仅下载缺失的单集。
+            <!-- 5. 缺集自动洗版 -->
+            <div class="setting-item">
+              <div class="setting-icon"><n-icon :component="GapIcon" /></div>
+              <div class="setting-content">
+                <div class="setting-header">
+                  <div class="setting-label">缺集优先洗版</div>
+                  <n-switch v-model:value="watchlistConfig.gap_fill_resubscribe" size="small">
+                    <template #checked>开启</template>
+                    <template #unchecked>关闭</template>
+                  </n-switch>
+                </div>
+                <div class="setting-desc">
+                  发现中间有缺集时，洗版整季。关闭则采用普通订阅模式，仅下载缺失的单集。
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </div>
 
-      <!-- 第三组：跟踪与维护 -->
-      <div class="settings-group-title" style="margin-top: 24px;">跟踪与维护</div>
-      <div class="settings-card">
-        
-        <!-- 6. 全量刷新回溯期 -->
-        <div class="setting-item">
-          <div class="setting-icon"><n-icon :component="TimeIcon" /></div>
-          <div class="setting-content">
-            <div class="setting-header">
-              <div class="setting-label">全量刷新回溯期</div>
-              <!-- ★★★ 修改：加宽输入框 (100px -> 160px) ★★★ -->
-              <n-input-number 
-                v-model:value="watchlistConfig.revival_check_days" 
-                size="small" 
-                style="width: 160px" 
-                placeholder="天数"
-                :min="1"
-              >
-                <template #suffix>天</template>
-              </n-input-number>
-            </div>
-            <div class="setting-desc">
-              对于已完结超过此天数的剧集，仅进行轻量级检查（只看有没有新季），不再全量刷新元数据，以提高效率。
-            </div>
-          </div>
         </div>
       </div>
 
@@ -1773,9 +1782,17 @@ html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
   margin-bottom: 4px;
 }
 
+.settings-layout {
+  display: grid;
+  grid-template-columns: 1fr 1fr; /* 两列等宽 */
+  gap: 24px; /* 列间距 */
+  align-items: start; /* 顶部对齐 */
+}
+
 /* 手机端适配 */
-@media (max-width: 600px) {
-  .responsive-grid { grid-template-columns: 1fr !important; }
-  .card-poster-container { width: 100px; min-height: 150px; }
+@media (max-width: 768px) {
+  .settings-layout {
+    grid-template-columns: 1fr;
+  }
 }
 </style>
