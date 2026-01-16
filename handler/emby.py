@@ -492,7 +492,7 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
 
     api_url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items/{person_id}"
     params = {"api_key": emby_api_key}
-    
+    wait_for_server_idle(emby_server_url, emby_api_key)
     try:
         logger.trace(f"准备获取 Person 详情 (ID: {person_id}, UserID: {user_id}) at {api_url}")
         response_get = emby_client.get(api_url, params=params)
@@ -1575,6 +1575,7 @@ def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: s
     if not item_ids: return True
     api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
     params = {'api_key': api_key, 'Ids': ",".join(item_ids)}
+    wait_for_server_idle(base_url, api_key)
     try:
         response = emby_client.post(api_url, params=params)
         response.raise_for_status()
@@ -1586,10 +1587,9 @@ def remove_items_from_collection(collection_id: str, item_ids: List[str], base_u
     if not item_ids: return True
     api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
     params = {'api_key': api_key, 'Ids': ",".join(item_ids)}
+    wait_for_server_idle(base_url, api_key)
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.delete(api_url, params=params, timeout=api_timeout)
+        response = emby_client.delete(api_url, params=params)
         response.raise_for_status()
         return True
     except requests.RequestException:
@@ -1624,6 +1624,7 @@ def delete_collection_by_name(collection_name: str, base_url: str, api_key: str,
     策略：先调用 empty_collection_in_emby 清空内容 (触发Emby自动清理)，
     如果合集依然存在 (例如原本就是空的)，则强制调用删除接口。
     """
+    wait_for_server_idle(base_url, api_key)
     try:
         # 1. 查找合集
         collection = get_collection_by_name(collection_name, base_url, api_key, user_id)
@@ -1667,7 +1668,7 @@ def create_or_update_collection_with_emby_ids(
     allow_empty: bool = False
 ) -> Optional[str]:
     logger.info(f"  ➜ 开始在Emby中处理名为 '{collection_name}' 的合集...")
-    
+    wait_for_server_idle(base_url, api_key)
     try:
         # ==============================================================================
         # ★★★ 核心修复：将“特洛伊木马”逻辑提权到最顶层 ★★★
@@ -1968,7 +1969,7 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
 def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     if not all([item_id, new_data, emby_server_url, emby_api_key, user_id]):
         return False
-
+    wait_for_server_idle(emby_server_url, emby_api_key)
     try:
         # 1. 获取当前完整详情
         current_item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id)
@@ -2019,6 +2020,7 @@ def delete_item_sy(item_id: str, emby_server_url: str, emby_api_key: str, user_i
     逻辑：优先尝试神医专用接口 /DeleteVersion，如果失败（如未安装插件或报错），
     则自动降级调用官方接口 /Delete 进行重试。
     """
+    wait_for_server_idle(emby_server_url, emby_api_key)
     logger.warning(f"  ➜ 检测到删除请求，优先尝试使用 [神医Pro接口] 执行...")
 
     # 1. 登录获取临时令牌
@@ -2100,6 +2102,7 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
     通过模拟管理员登录获取临时 AccessToken 来删除演员。
     这个接口只在神医Pro版插件中存在。
     """
+    wait_for_server_idle(base_url, api_key)
     logger.trace(f"检测到删除演员请求，将尝试使用 [自动登录模式] 执行...")
 
     # 1. 登录获取临时令牌
@@ -2881,7 +2884,7 @@ def get_item_ancestors(item_id: str, base_url: str, api_key: str, user_id: str) 
 def add_tags_to_item(item_id: str, tags_to_add: List[str], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     if not tags_to_add:
         return True
-        
+    wait_for_server_idle(emby_server_url, emby_api_key)    
     try:
         # 1. 显式请求 Tags 和 TagItems
         item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="Tags,TagItems,LockedFields")
@@ -2935,7 +2938,7 @@ def remove_tags_from_item(item_id: str, tags_to_remove: List[str], emby_server_u
     """
     if not tags_to_remove:
         return True
-        
+    wait_for_server_idle(emby_server_url, emby_api_key)    
     try:
         # 1. 获取当前标签
         item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="Tags,TagItems")
