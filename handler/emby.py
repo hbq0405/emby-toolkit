@@ -182,7 +182,7 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
         running_tasks = get_running_tasks(base_url, api_key)
         
         # --- 检查 2: 活跃转码会话 ---
-        transcoding_sessions = get_active_transcoding_sessions(base_url, api_key)
+        # transcoding_sessions = get_active_transcoding_sessions(base_url, api_key)
         
         busy_reasons = []
 
@@ -208,8 +208,8 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
             busy_reasons.append(f"任务: {display_name}({progress:.1f}%)")
 
         # B. 判定转码忙碌
-        if transcoding_sessions:
-            busy_reasons.extend(transcoding_sessions)
+        # if transcoding_sessions:
+        #     busy_reasons.extend(transcoding_sessions)
 
         # --- 决策 ---
         if not busy_reasons:
