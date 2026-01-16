@@ -196,7 +196,7 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
             logger.warning(f"  ⚠️ 等待 Emby 空闲超时 ({max_wait_seconds}s)，强制继续执行。当前阻塞任务: {busy_task_name}")
             return
             
-        logger.info(f"  ⏳ Emby 正在忙碌 [{busy_task_name}]，脚本暂停等待中... (已等待 {int(elapsed)}s)")
+        logger.info(f"  ⏳ Emby 正在忙碌 [{busy_task_name}]，暂停等待中... (已等待 {int(elapsed)}s)")
         time.sleep(10)
 
 # 获取管理员令牌
@@ -2950,7 +2950,7 @@ def trigger_media_info_refresh(item_id: str, base_url: str, api_key: str, user_i
         "api_key": api_key,
         "UserId": user_id
     }
-    
+    wait_for_server_idle(base_url, api_key)
     try:
         # 这是一个伪造的播放请求，不需要 body，或者传个空的
         response = emby_client.post(url, params=params, json={})
