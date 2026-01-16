@@ -122,21 +122,27 @@ def get_running_tasks(base_url: str, api_key: str) -> List[Dict[str, Any]]:
 def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 300):
     """
     【队列机制核心】
-    如果 Emby 正在进行繁重的后台任务（如扫描媒体库），则阻塞等待，
-    直到任务完成或超时。防止在 Emby 忙碌时发送请求导致卡死。
+    如果 Emby 正在进行繁重的后台任务，则阻塞等待。
     """
-    # 定义哪些任务被认为是“繁重”的，需要避让
+    # ★★★ 核心修改：增加中文关键词 ★★★
     HEAVY_TASKS = [
-        "Scan media library",       # 扫描媒体库
-        "Refresh people",           # 刷新人物
-        "Refresh metadata",         # 刷新元数据
-        "Generate video preview thumbnails" # 生成缩略图
+        "Scan media library", "扫描媒体库",
+        "Refresh people", "刷新", # 覆盖 "刷新人物", "刷新元数据"
+        "Refresh metadata", 
+        "Generate video preview thumbnails", "提取视频", "缩略图",
+        "Chapter image extraction", "章节图片"
     ]
     
     start_time = time.time()
     
     while True:
         running_tasks = get_running_tasks(base_url, api_key)
+        
+        # --- 调试日志：打印当前所有正在运行的任务，方便排查 ---
+        if running_tasks:
+            task_names = [f"{t['Name']}({t['Progress']}%)" for t in running_tasks]
+            logger.debug(f"  [队列检测] 当前运行的任务: {task_names}")
+        # ------------------------------------------------
         
         is_busy = False
         busy_task_name = ""
@@ -146,20 +152,19 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
             for heavy_keyword in HEAVY_TASKS:
                 if heavy_keyword.lower() in task['Name'].lower():
                     is_busy = True
-                    busy_task_name = f"{task['Name']} ({task['Progress']}%)"
+                    busy_task_name = f"{task['Name']} (进度: {task['Progress']}%)"
                     break
             if is_busy: break
         
         if not is_busy:
-            # 服务器空闲，可以通过
             return
             
         elapsed = time.time() - start_time
         if elapsed > max_wait_seconds:
-            logger.warning(f"等待 Emby 空闲超时 ({max_wait_seconds}s)，强制继续执行。当前任务: {busy_task_name}")
+            logger.warning(f"  ⚠️ 等待 Emby 空闲超时 ({max_wait_seconds}s)，强制继续执行。当前阻塞任务: {busy_task_name}")
             return
             
-        logger.info(f"Emby 正在执行后台任务 [{busy_task_name}]，排队等待中... (已等待 {int(elapsed)}s)")
+        logger.info(f"  ⏳ Emby 正在忙碌 [{busy_task_name}]，脚本暂停等待中... (已等待 {int(elapsed)}s)")
         time.sleep(10) # 每10秒轮询一次
 
 # 获取管理员令牌
@@ -807,7 +812,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     if not all([item_emby_id, emby_server_url, emby_api_key, user_id_for_ops]):
         logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return False
-    
+    wait_for_server_idle(emby_server_url, emby_api_key)
     log_identifier = f"'{item_name_for_log}'" if item_name_for_log else f"ItemID: {item_emby_id}"
     
     try:
@@ -872,6 +877,8 @@ def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool
     """
     if not all([file_path, base_url, api_key]):
         return False
+    
+    wait_for_server_idle(base_url, api_key)
 
     try:
         # 1. 获取所有媒体库及其物理路径
