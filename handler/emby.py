@@ -10,12 +10,157 @@ import shutil
 import time
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
+from threading import BoundedSemaphore
 
 import config_manager
 import constants
 from typing import Optional, List, Dict, Any, Generator, Tuple, Set, Callable
 import logging
 logger = logging.getLogger(__name__)
+
+class EmbyAPIClient:
+    """
+    Emby API 客户端封装
+    功能：
+    1. 自动重试：遇到 500, 502, 503, 504 错误时自动重试。
+    2. 并发控制：限制最大并发请求数，防止冲垮服务器。
+    3. 会话复用：使用 Session 保持长连接。
+    """
+    _instance = None
+    _lock = threading.Lock()
+
+    def __new__(cls):
+        if cls._instance is None:
+            with cls._lock:
+                if cls._instance is None:
+                    cls._instance = super(EmbyAPIClient, cls).__new__(cls)
+                    cls._instance._init_session()
+        return cls._instance
+
+    def _init_session(self):
+        self.session = requests.Session()
+        
+        # --- 配置重试策略 ---
+        # total=5: 最多重试5次
+        # backoff_factor=1: 重试间隔 (1s, 2s, 4s, 8s...)
+        # status_forcelist: 遇到这些状态码时重试
+        retries = Retry(
+            total=5,
+            backoff_factor=1,
+            status_forcelist=[500, 502, 503, 504],
+            allowed_methods=["HEAD", "GET", "POST", "PUT", "DELETE", "OPTIONS", "TRACE"]
+        )
+        
+        adapter = HTTPAdapter(max_retries=retries, pool_connections=20, pool_maxsize=20)
+        self.session.mount("http://", adapter)
+        self.session.mount("https://", adapter)
+
+        # --- 并发限制 ---
+        # 限制同时只有 10 个请求能打到 Emby，多余的会在本地排队等待
+        self.semaphore = BoundedSemaphore(10)
+
+    def request(self, method, url, **kwargs):
+        """
+        统一请求入口，带并发锁
+        """
+        # 自动注入超时，如果未指定
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
+
+        with self.semaphore:
+            try:
+                response = self.session.request(method, url, **kwargs)
+                return response
+            except requests.exceptions.RetryError:
+                logger.error(f"Emby API 请求重试多次后失败: {url}")
+                raise
+            except Exception as e:
+                logger.error(f"Emby API 请求异常: {e} | URL: {url}")
+                raise
+
+    def get(self, url, **kwargs):
+        return self.request("GET", url, **kwargs)
+
+    def post(self, url, **kwargs):
+        return self.request("POST", url, **kwargs)
+
+    def delete(self, url, **kwargs):
+        return self.request("DELETE", url, **kwargs)
+
+# 初始化全局客户端实例
+emby_client = EmbyAPIClient()
+
+def get_running_tasks(base_url: str, api_key: str) -> List[Dict[str, Any]]:
+    """
+    获取当前正在运行的 Emby 后台任务
+    """
+    api_url = f"{base_url.rstrip('/')}/ScheduledTasks"
+    params = {"api_key": api_key}
+    
+    try:
+        # 使用新的客户端发送请求
+        response = emby_client.get(api_url, params=params)
+        response.raise_for_status()
+        tasks = response.json()
+        
+        # 筛选出状态为 Running 的任务
+        running = [
+            {
+                "Name": t.get("Name"),
+                "Progress": t.get("CurrentProgressPercentage", 0),
+                "Id": t.get("Id")
+            }
+            for t in tasks if t.get("State") == "Running"
+        ]
+        return running
+    except Exception as e:
+        logger.error(f"获取后台任务状态失败: {e}")
+        return []
+
+def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 300):
+    """
+    【队列机制核心】
+    如果 Emby 正在进行繁重的后台任务（如扫描媒体库），则阻塞等待，
+    直到任务完成或超时。防止在 Emby 忙碌时发送请求导致卡死。
+    """
+    # 定义哪些任务被认为是“繁重”的，需要避让
+    HEAVY_TASKS = [
+        "Scan media library",       # 扫描媒体库
+        "Refresh people",           # 刷新人物
+        "Refresh metadata",         # 刷新元数据
+        "Generate video preview thumbnails" # 生成缩略图
+    ]
+    
+    start_time = time.time()
+    
+    while True:
+        running_tasks = get_running_tasks(base_url, api_key)
+        
+        is_busy = False
+        busy_task_name = ""
+        
+        for task in running_tasks:
+            # 检查是否有繁重任务在跑
+            for heavy_keyword in HEAVY_TASKS:
+                if heavy_keyword.lower() in task['Name'].lower():
+                    is_busy = True
+                    busy_task_name = f"{task['Name']} ({task['Progress']}%)"
+                    break
+            if is_busy: break
+        
+        if not is_busy:
+            # 服务器空闲，可以通过
+            return
+            
+        elapsed = time.time() - start_time
+        if elapsed > max_wait_seconds:
+            logger.warning(f"等待 Emby 空闲超时 ({max_wait_seconds}s)，强制继续执行。当前任务: {busy_task_name}")
+            return
+            
+        logger.info(f"Emby 正在执行后台任务 [{busy_task_name}]，排队等待中... (已等待 {int(elapsed)}s)")
+        time.sleep(10) # 每10秒轮询一次
 
 # 获取管理员令牌
 _admin_token_cache = {}
@@ -54,7 +199,7 @@ def _login_and_get_token() -> tuple[Optional[str], Optional[str]]:
     payload = {"Username": admin_user, "Pw": admin_pass}
     
     try:
-        response = requests.post(auth_url, headers=headers, json=payload, timeout=15)
+        response = emby_client.post(auth_url, headers=headers, json=payload)
         response.raise_for_status()
         data = response.json()
         access_token = data.get("AccessToken")
@@ -111,9 +256,7 @@ def get_item_count(base_url: str, api_key: str, user_id: Optional[str], item_typ
         logger.debug(f"正在获取所有 {item_type} 的总数...")
             
     try:
-        # ★★★ 核心修改 3/3: 在所有 requests 调用中动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response = emby_client.get(api_url, params=params)
         response.raise_for_status()
         data = response.json()
         
@@ -149,9 +292,7 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
     params["PersonFields"] = "ImageTags,ProviderIds"
     
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(url, params=params, timeout=api_timeout)
+        response = emby_client.get(url, params=params)
 
         if response.status_code != 200:
             logger.trace(f"响应头部: {response.headers}")
@@ -225,8 +366,7 @@ def find_emby_item_by_provider_id(provider_name: str, provider_id: str, base_url
     }
 
     try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(url, headers=headers, params=params, timeout=api_timeout)
+        response = emby_client.get(url, headers=headers, params=params)
         response.raise_for_status()
         
         data = response.json()
@@ -288,10 +428,8 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
     params = {"api_key": emby_api_key}
     
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
         logger.trace(f"准备获取 Person 详情 (ID: {person_id}, UserID: {user_id}) at {api_url}")
-        response_get = requests.get(api_url, params=params, timeout=api_timeout)
+        response_get = emby_client.get(api_url, params=params)
         response_get.raise_for_status()
         person_to_update = response_get.json()
     except requests.exceptions.RequestException as e:
@@ -306,9 +444,7 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
 
     logger.trace(f"  ➜ 准备更新 Person (ID: {person_id}) 的信息，新数据: {new_data}")
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response_post = requests.post(update_url, json=person_to_update, headers=headers, params=params, timeout=api_timeout)
+        response_post = emby_client.post(update_url, json=person_to_update, headers=headers, params=params)
         response_post.raise_for_status()
         logger.trace(f"  ➜ 成功更新 Person (ID: {person_id}) 的信息。")
         return True
@@ -325,10 +461,8 @@ def get_emby_libraries(emby_server_url, emby_api_key, user_id):
     params = {'api_key': emby_api_key}
     
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
         logger.trace(f"  ➜ 正在从 {target_url} 获取媒体库和合集...")
-        response = requests.get(target_url, params=params, timeout=api_timeout)
+        response = emby_client.get(target_url, params=params)
         response.raise_for_status()
         data = response.json()
         
@@ -358,8 +492,6 @@ def get_all_library_versions(
     - 支持扫描指定媒体库列表 (library_ids) 或指定父对象 (parent_id)。
     """
     all_items = []
-    session = requests.Session()
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
     target_ids = []
     if parent_id:
@@ -382,7 +514,7 @@ def get_all_library_versions(
                 "api_key": api_key, "ParentId": target_id, "IncludeItemTypes": media_type_filter,
                 "Recursive": "true", "Limit": 0 
             }
-            response = session.get(count_url, params=count_params, timeout=api_timeout)
+            response = emby_client.get(count_url, params=count_params)
             response.raise_for_status()
             count = response.json().get("TotalRecordCount", 0)
             total_items_to_fetch += count
@@ -403,7 +535,7 @@ def get_all_library_versions(
                 "Recursive": "true", "Fields": fields, "StartIndex": start_index, "Limit": limit
             }
             try:
-                response = session.get(api_url, params=params, timeout=api_timeout)
+                response = emby_client.get(api_url, params=params)
                 response.raise_for_status()
                 items_in_batch = response.json().get("Items", [])
                 if not items_in_batch: break
@@ -443,7 +575,6 @@ def fetch_all_emby_items_generator(base_url: str, api_key: str, library_ids: lis
         'Content-Type': 'application/json'
     }
     url = f"{base_url.rstrip('/')}/Items"
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     # 确保 library_ids 是列表
     target_libs = library_ids if library_ids else [None]
 
@@ -462,13 +593,13 @@ def fetch_all_emby_items_generator(base_url: str, api_key: str, library_ids: lis
 
             try:
                 # 增加超时时间
-                response = requests.get(url, params=params, headers=headers, timeout=api_timeout)
+                response = emby_client.get(url, params=params, headers=headers)
                 
                 # 简单的 500 错误重试逻辑
                 if response.status_code == 500:
                     time.sleep(2)
                     params['Limit'] = 500
-                    response = requests.get(url, params=params, headers=headers, timeout=api_timeout)
+                    response = emby_client.get(url, params=params, headers=headers)
 
                 response.raise_for_status()
                 data = response.json()
@@ -519,8 +650,6 @@ def get_emby_library_items(
         logger.error("get_emby_library_items: base_url 或 api_key 未提供。")
         return None
 
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-
     if search_term and search_term.strip():
         # ... (搜索逻辑保持不变) ...
         logger.info(f"进入搜索模式，关键词: '{search_term}'")
@@ -534,7 +663,7 @@ def get_emby_library_items(
             "Limit": 100
         }
         try:
-            response = requests.get(api_url, params=params, timeout=api_timeout)
+            response = emby_client.get(api_url, params=params)
             response.raise_for_status()
             items = response.json().get("Items", [])
             logger.info(f"搜索到 {len(items)} 个匹配项。")
@@ -580,7 +709,7 @@ def get_emby_library_items(
 
             logger.trace(f"Requesting items from library '{library_name}' (ID: {lib_id}) using URL: {api_url}.")
             
-            response = requests.get(api_url, params=params, timeout=api_timeout)
+            response = emby_client.get(api_url, params=params)
             response.raise_for_status()
             items_in_lib = response.json().get("Items", [])
             
@@ -627,7 +756,6 @@ def get_library_items_for_cleanup(
     if not library_ids:
         return []
 
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     all_items = []
     
     # 循环遍历每个媒体库ID，而不是用逗号拼接，以提高稳定性
@@ -652,7 +780,7 @@ def get_library_items_for_cleanup(
 
             logger.trace(f"正在从媒体库 ID: {lib_id} 获取项目...")
             
-            response = requests.get(api_url, params=params, timeout=api_timeout)
+            response = emby_client.get(api_url, params=params)
             response.raise_for_status()
             items_in_lib = response.json().get("Items", [])
             
@@ -682,9 +810,6 @@ def refresh_emby_item_metadata(item_emby_id: str,
     
     log_identifier = f"'{item_name_for_log}'" if item_name_for_log else f"ItemID: {item_emby_id}"
     
-    # ★★★ 核心修改: 在函数开头一次性获取超时时间 ★★★
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-
     try:
         logger.trace(f"  ➜ 正在为 {log_identifier} 获取当前详情...")
         item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
@@ -708,7 +833,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
             update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
             update_params = {"api_key": emby_api_key}
             headers = {'Content-Type': 'application/json'}
-            update_response = requests.post(update_url, json=item_data, headers=headers, params=update_params, timeout=api_timeout)
+            update_response = emby_client.post(update_url, json=item_data, headers=headers, params=update_params)
             update_response.raise_for_status()
             logger.trace(f"  ➜ 成功更新 {log_identifier} 的锁状态。")
         else:
@@ -729,7 +854,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     }
     
     try:
-        response = requests.post(refresh_url, params=params, timeout=api_timeout)
+        response = emby_client.post(refresh_url, params=params)
         if response.status_code == 204:
             logger.info(f"  ➜ 已成功为 {log_identifier} 刷新元数据。")
             return True
@@ -802,8 +927,7 @@ def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool
                 "ReplaceAllImages": "false"
             }
             
-            api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-            response = requests.post(refresh_url, params=params, timeout=api_timeout)
+            response = emby_client.post(refresh_url, params=params)
             
             if response.status_code == 204:
                 logger.info(f"  ✅ 已成功发送刷新命令给媒体库: {target_lib_name}")
@@ -900,8 +1024,7 @@ def get_all_persons_from_emby(
         # ★★★ 核心修正: 切换到 /Items 端点且不使用 UserId 获取总数 ★★★
         count_url = f"{base_url.rstrip('/')}/Items"
         count_params = {"api_key": api_key, "IncludeItemTypes": "Person", "Recursive": "true", "Limit": 0}
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(count_url, params=count_params, timeout=api_timeout)
+        response = emby_client.get(count_url, params=count_params)
         response.raise_for_status()
         total_count = response.json().get("TotalRecordCount", 0)
         logger.info(f"  ➜ Emby 演员 总数: {total_count}")
@@ -918,7 +1041,6 @@ def get_all_persons_from_emby(
         # ★★★ 核心修正: 不再传递 UserId。演员是全局对象。 ★★★
     }
     start_index = 0
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
     while True:
         if stop_event and stop_event.is_set():
@@ -930,7 +1052,7 @@ def get_all_persons_from_emby(
         request_params["Limit"] = batch_size
         
         try:
-            response = requests.get(api_url, headers=headers, params=request_params, timeout=api_timeout)
+            response = emby_client.get(api_url, headers=headers, params=request_params)
             response.raise_for_status()
             items = response.json().get("Items", [])
             
@@ -975,9 +1097,7 @@ def get_series_children(
     
     logger.debug(f"  ➜ 准备获取剧集 {log_identifier} 的子项目 (类型: {include_item_types})...")
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response = emby_client.get(api_url, params=params)
         response.raise_for_status()
         data = response.json()
         children = data.get("Items", [])
@@ -1037,8 +1157,7 @@ def get_season_children(
     
     logger.debug(f"  ➜ 准备获取季 {season_id} 的子项目...")
     try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response = emby_client.get(api_url, params=params)
         response.raise_for_status()
         data = response.json()
         children = data.get("Items", [])
@@ -1120,9 +1239,7 @@ def download_emby_image(
     logger.trace(f"准备下载图片: 类型='{image_type}', 从 URL: {image_url}")
     
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        with requests.get(image_url, params=params, stream=True, timeout=api_timeout) as r:
+        with emby_client.get(image_url, params=params, stream=True) as r:
             r.raise_for_status()
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             with open(save_path, 'wb') as f:
@@ -1153,9 +1270,7 @@ def get_all_collections_from_emby_generic(base_url: str, api_key: str, user_id: 
     }
     
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response = emby_client.get(api_url, params=params)
         response.raise_for_status()
         all_collections = response.json().get("Items", [])
         logger.debug(f"  ➜ 成功从 Emby 获取到 {len(all_collections)} 个合集。")
@@ -1179,11 +1294,8 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
         "Fields": "ProviderIds,Name,ImageTags"
     }
     
-    # ★★★ 核心修改: 在函数开头一次性获取超时时间 ★★★
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-
     try:
-        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response = emby_client.get(api_url, params=params)
         response.raise_for_status()
         all_collections_from_emby = response.json().get("Items", [])
         
@@ -1210,7 +1322,7 @@ def get_all_collections_with_items(base_url: str, api_key: str, user_id: str) ->
                 "Fields": "ProviderIds"
             }
             try:
-                children_response = requests.get(children_url, params=children_params, timeout=api_timeout)
+                children_response = emby_client.get(children_url, params=children_params)
                 children_response.raise_for_status()
                 media_in_collection = children_response.json().get("Items", [])
                 
@@ -1257,7 +1369,7 @@ def get_all_native_collections_from_emby(base_url: str, api_key: str, user_id: s
         # 步骤 1: 获取服务器上所有的媒体库 (过滤掉顶层合集文件夹)
         libraries_url = f"{base_url}/Library/VirtualFolders"
         lib_params = {"api_key": api_key}
-        lib_response = requests.get(libraries_url, params=lib_params, timeout=30)
+        lib_response = emby_client.get(libraries_url, params=lib_params)
         lib_response.raise_for_status()
         all_libraries_raw = lib_response.json()
         
@@ -1279,7 +1391,7 @@ def get_all_native_collections_from_emby(base_url: str, api_key: str, user_id: s
             params = { "ParentId": library_id, "IncludeItemTypes": "BoxSet", "Recursive": "true", "fields": "ProviderIds,Name,Id,ImageTags", "api_key": api_key }
             
             try:
-                response = requests.get(collections_url, params=params, timeout=60)
+                response = emby_client.get(collections_url, params=params)
                 response.raise_for_status()
                 collections_in_library = response.json().get("Items", [])
                 
@@ -1342,8 +1454,7 @@ def get_collections_containing_item(item_id: str, base_url: str, api_key: str, u
     }
 
     try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response = emby_client.get(api_url, params=params)
         response.raise_for_status()
         return response.json().get("Items", [])
     except Exception as e:
@@ -1359,9 +1470,7 @@ def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]
     
     logger.debug("正在获取 Emby 服务器信息...")
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response = emby_client.get(api_url, params=params)
         response.raise_for_status()
         data = response.json()
         return data
@@ -1386,9 +1495,7 @@ def get_collection_members(collection_id: str, base_url: str, api_key: str, user
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
     params = {'api_key': api_key, 'ParentId': collection_id, 'Fields': 'Id'}
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response = emby_client.get(api_url, params=params)
         response.raise_for_status()
         items = response.json().get("Items", [])
         return [item['Id'] for item in items]
@@ -1401,9 +1508,7 @@ def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: s
     api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
     params = {'api_key': api_key, 'Ids': ",".join(item_ids)}
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.post(api_url, params=params, timeout=api_timeout)
+        response = emby_client.post(api_url, params=params)
         response.raise_for_status()
         return True
     except requests.RequestException:
@@ -1507,7 +1612,6 @@ def create_or_update_collection_with_emby_ids(
             logger.info(f"  ➜ 合集 '{collection_name}' 内容为空，正在抓取 {PLACEHOLDER_COUNT} 个随机媒体项作为占位...")
             
             try:
-                api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
                 target_lib_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
                 search_scopes = target_lib_ids if target_lib_ids else [None]
                 
@@ -1527,7 +1631,7 @@ def create_or_update_collection_with_emby_ids(
                     if parent_id: params['ParentId'] = parent_id
                     
                     try:
-                        temp_resp = requests.get(f"{base_url.rstrip('/')}/Items", params=params, timeout=api_timeout)
+                        temp_resp = emby_client.get(f"{base_url.rstrip('/')}/Items", params=params)
                         if temp_resp.status_code == 200:
                             items = temp_resp.json().get('Items', [])
                             if items:
@@ -1549,7 +1653,7 @@ def create_or_update_collection_with_emby_ids(
                             'ParentId': parent_id
                         }
                         try:
-                            temp_resp = requests.get(f"{base_url.rstrip('/')}/Items", params=params, timeout=api_timeout)
+                            temp_resp = emby_client.get(f"{base_url.rstrip('/')}/Items", params=params)
                             items = temp_resp.json().get('Items', [])
                             if items:
                                 found_items_batch = items # ★ 保留所有结果
@@ -1625,8 +1729,7 @@ def create_or_update_collection_with_emby_ids(
             params = {'api_key': api_key}
             payload = {'Name': collection_name, 'Ids': ",".join(final_emby_ids)} # ★ 使用处理后的列表
             
-            api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-            response = requests.post(api_url, params=params, data=payload, timeout=api_timeout)
+            response = emby_client.post(api_url, params=params, json=payload)
             response.raise_for_status()
             new_collection_info = response.json()
             emby_collection_id = new_collection_info.get('Id')
@@ -1677,11 +1780,10 @@ def get_emby_items_by_id(
         }
 
         try:
-            api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
             
             if len(id_chunks) > 1:
                 logger.trace(f"  ➜ 正在请求批次 {i+1}/{len(id_chunks)} (包含 {len(batch_ids)} 个ID)...")
-            response = requests.get(api_url, params=params, timeout=api_timeout)
+            response = emby_client.get(api_url, params=params)
             response.raise_for_status()
             
             data = response.json()
@@ -1707,9 +1809,7 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
     }
     
     try:
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.post(api_url, params=params, timeout=api_timeout)
+        response = emby_client.post(api_url, params=params)
         response.raise_for_status()
         
         logger.trace(f"成功发送追加请求：将项目 {item_emby_id} 添加到合集 {collection_id}。")
@@ -1730,9 +1830,7 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
     try:
         folders_url = f"{base_url.rstrip('/')}/Library/VirtualFolders"
         params = {"api_key": api_key}
-        # ★★★ 核心修改: 动态获取超时时间 ★★★
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(folders_url, params=params, timeout=api_timeout)
+        response = emby_client.get(folders_url, params=params)
         response.raise_for_status()
         virtual_folders_data = response.json()
 
@@ -1838,8 +1936,7 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
         params = {"api_key": emby_api_key}
         headers = {'Content-Type': 'application/json'}
 
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response_post = requests.post(update_url, json=item_to_update, headers=headers, params=params, timeout=api_timeout)
+        response_post = emby_client.post(update_url, json=item_to_update, headers=headers, params=params)
         response_post.raise_for_status()
         
         return True
@@ -1875,10 +1972,8 @@ def delete_item_sy(item_id: str, emby_server_url: str, emby_api_key: str, user_i
         'UserId': logged_in_user_id # ★ 使用登录后返回的 UserId
     }
     
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-    
     try:
-        response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
+        response = emby_client.post(api_url, headers=headers, params=params)
         response.raise_for_status()
         logger.info(f"  ✅ [神医接口] 成功删除 Emby 媒体项 ID: {item_id}。")
         return True
@@ -1919,10 +2014,8 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
         'UserId': logged_in_user_id # ★ 使用登录后返回的 UserId
     }
     
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-    
     try:
-        response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
+        response = emby_client.post(api_url, headers=headers, params=params)
         response.raise_for_status()
         logger.info(f"  ✅ 成功删除 Emby 媒体项 ID: {item_id}。")
         return True
@@ -1962,11 +2055,9 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
         'UserId': logged_in_user_id # ★ 使用登录后返回的 UserId
     }
     
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-    
     try:
         # 这个接口是 POST 请求
-        response = requests.post(api_url, headers=headers, params=params, timeout=api_timeout)
+        response = emby_client.post(api_url, headers=headers, params=params)
         response.raise_for_status()
         logger.info(f"  ✅ 成功删除演员 ID: {person_id}。")
         return True
@@ -1996,8 +2087,7 @@ def get_all_emby_users_from_server(base_url: str, api_key: str) -> Optional[List
     
     logger.debug("正在从 Emby 服务器获取所有用户列表...")
     try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.get(api_url, params=params, timeout=api_timeout)
+        response = emby_client.get(api_url, params=params)
         response.raise_for_status()
         users = response.json()
         logger.info(f"  ➜ 成功从 Emby 获取到 {len(users)} 个用户。")
@@ -2031,7 +2121,6 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
     
     start_index = 0
     batch_size = 2000
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 120)
 
     # ★★★ 2. 设置一个计数器，我们不需要打印所有日志，有几个样本就够了 ★★★
     log_counter = 0
@@ -2043,8 +2132,8 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
             request_params = params.copy()
             request_params["StartIndex"] = start_index
             request_params["Limit"] = batch_size
-            
-            response = requests.get(api_url, params=request_params, timeout=api_timeout)
+
+            response = emby_client.get(api_url, params=request_params)
             response.raise_for_status()
             data = response.json()
             items = data.get("Items", [])
@@ -2104,7 +2193,6 @@ def get_all_accessible_item_ids_for_user_optimized(base_url: str, api_key: str, 
     
     start_index = 0
     batch_size = 5000 # 可以适当调大批次大小，因为数据量很小
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 120)
 
     logger.debug(f"开始为用户 {user_id} 高效获取所有可访问媒体的ID...")
     while True:
@@ -2112,8 +2200,8 @@ def get_all_accessible_item_ids_for_user_optimized(base_url: str, api_key: str, 
             request_params = params.copy()
             request_params["StartIndex"] = start_index
             request_params["Limit"] = batch_size
-            
-            response = requests.get(api_url, params=request_params, timeout=api_timeout)
+
+            response = emby_client.get(api_url, params=request_params)
             response.raise_for_status()
             data = response.json()
             items = data.get("Items", [])
@@ -2170,10 +2258,9 @@ def get_user_ids_with_access_to_item(item_id: str, base_url: str, api_key: str) 
             "Limit": 1,
             "Fields": "Id"  # 只请求最少的数据以提高效率
         }
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 30)
 
         try:
-            response = requests.get(api_url, params=params, timeout=api_timeout)
+            response = emby_client.get(api_url, params=params)
             # 只要成功返回200，就说明在用户视图内
             if response.status_code == 200:
                 data = response.json()
@@ -2222,7 +2309,7 @@ def create_user_with_policy(
     
     try:
         # ★★★ 3. 请求体不再包含 Policy ★★★
-        response = requests.post(create_url, headers=headers, json=create_payload, timeout=15)
+        response = emby_client.post(create_url, headers=headers, json=create_payload)
         
         if response.status_code == 200:
             new_user_data = response.json()
@@ -2240,7 +2327,7 @@ def create_user_with_policy(
                 "NewPw": password
             }
             
-            pw_response = requests.post(password_url, headers=headers, json=password_payload, timeout=15)
+            pw_response = emby_client.post(password_url, headers=headers, json=password_payload)
             
             if pw_response.status_code == 204:
                 logger.info(f"  ✅ 成功为用户 '{username}' 设置密码。")
@@ -2290,9 +2377,9 @@ def set_user_disabled_status(
             "X-Emby-Token": api_key,
             "Content-Type": "application/json"
         }
-        
-        response = requests.post(policy_update_url, headers=headers, json=current_policy, timeout=15)
-        
+
+        response = emby_client.post(policy_update_url, headers=headers, json=current_policy)
+
         if response.status_code == 204:
             logger.info(f"✅ 成功{action_text}用户 '{user_name_for_log}'。")
             return True
@@ -2318,7 +2405,7 @@ def get_user_details(user_id: str, base_url: str, api_key: str) -> Optional[Dict
     # 1. 总是先调用基础的用户信息接口
     user_info_url = f"{base_url}/Users/{user_id}"
     try:
-        response = requests.get(user_info_url, headers=headers, timeout=10)
+        response = emby_client.get(user_info_url, headers=headers)
         response.raise_for_status()
         user_data = response.json()
         details.update(user_data)
@@ -2336,7 +2423,7 @@ def get_user_details(user_id: str, base_url: str, api_key: str) -> Optional[Dict
     logger.trace(f"  ➜ 主用户接口未返回 Configuration，尝试请求专用接口 (新版 Emby 模式)...")
     config_url = f"{base_url}/Users/{user_id}/Configuration"
     try:
-        response = requests.get(config_url, headers=headers, timeout=10)
+        response = emby_client.get(config_url, headers=headers)
         response.raise_for_status()
         details['Configuration'] = response.json()
     except requests.RequestException as e:
@@ -2358,7 +2445,7 @@ def force_set_user_configuration(user_id: str, configuration_dict: Dict[str, Any
     url = f"{base_url}/Users/{user_id}/Configuration"
     headers = {"X-Emby-Token": api_key, "Content-Type": "application/json"}
     try:
-        response = requests.post(url, headers=headers, json=configuration_dict, timeout=15)
+        response = emby_client.post(url, headers=headers, json=configuration_dict)
         response.raise_for_status()
         logger.info(f"  ➜ 成功为用户 {user_id} 应用了个性化配置 (新版接口)。")
         return True
@@ -2379,7 +2466,7 @@ def force_set_user_configuration(user_id: str, configuration_dict: Dict[str, Any
             
             # c. 提交这个完整的对象进行更新
             update_url = f"{base_url}/Users/{user_id}"
-            update_response = requests.post(update_url, headers=headers, json=full_user_object, timeout=15)
+            update_response = emby_client.post(update_url, headers=headers, json=full_user_object)
             
             try:
                 update_response.raise_for_status()
@@ -2433,7 +2520,7 @@ def force_set_user_policy(user_id: str, policy: Dict[str, Any], base_url: str, a
     }
     
     try:
-        response = requests.post(policy_update_url, headers=headers, json=policy, timeout=15)
+        response = emby_client.post(policy_update_url, headers=headers, json=policy)
         
         if response.status_code == 204: # 204 No Content 表示成功
             logger.info(f"  ✅ 成功为用户 '{user_name_for_log}' 应用了新的权限策略。")
@@ -2477,10 +2564,9 @@ def delete_emby_user(user_id: str) -> bool:
     api_url = f"{base_url.rstrip('/')}/Users/{user_id}"
     
     headers = { 'X-Emby-Token': access_token }
-    api_timeout = config.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
     
     try:
-        response = requests.delete(api_url, headers=headers, timeout=api_timeout)
+        response = emby_client.delete(api_url, headers=headers)
         response.raise_for_status()
         logger.info(f"  ✅ 成功删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
         return True
@@ -2531,8 +2617,7 @@ def authenticate_emby_user(username: str, password: str) -> Optional[Dict[str, A
     logger.debug(f"  ➜ 准备向 {auth_url} 发送认证请求，Payload: {{'Username': '{username}', 'Pw': '***'}}")
     
     try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
-        response = requests.post(auth_url, headers=headers, json=payload, timeout=api_timeout)
+        response = emby_client.post(auth_url, headers=headers, json=payload)
         
         logger.debug(f"  ➜ Emby 服务器响应状态码: {response.status_code}")
 
@@ -2573,7 +2658,7 @@ def test_connection(url: str, api_key: str) -> dict:
     
     try:
         # 设置较短的超时时间，避免前端长时间等待
-        resp = requests.get(endpoint, params=params, timeout=10)
+        resp = emby_client.get(endpoint, params=params)
         
         if resp.status_code == 200:
             return {'success': True}
@@ -2613,14 +2698,14 @@ def upload_user_image(base_url, api_key, user_id, image_data, content_type):
     
     # 3. (可选) 先尝试删除旧头像，防止覆盖失败
     try:
-        requests.delete(url, headers=headers, timeout=10)
+        emby_client.delete(url, headers=headers, timeout=10)
     except Exception:
         pass # 删除失败也不影响，可能是本来就没有头像
 
     # 4. 发送上传请求
     try:
         # 增加超时时间
-        response = requests.post(url, headers=headers, data=b64_data, timeout=60)
+        response = emby_client.post(url, headers=headers, data=b64_data, timeout=60)
         response.raise_for_status()
         return True
     except Exception as e:
@@ -2637,7 +2722,7 @@ def get_user_info_from_server(base_url, api_key, user_id):
     url = f"{base_url}/Users/{user_id}"
     headers = {'X-Emby-Token': api_key}
     try:
-        response = requests.get(url, headers=headers, timeout=10)
+        response = emby_client.get(url, headers=headers)
         if response.status_code == 200:
             return response.json()
     except Exception as e:
@@ -2649,12 +2734,11 @@ def get_all_folder_mappings(base_url: str, api_key: str) -> dict:
         return {}
 
     folder_map = {}
-    api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 60)
 
     # --- 阶段 1: 顶层媒体库 (VirtualFolders) ---
     try:
         lib_url = f"{base_url.rstrip('/')}/Library/VirtualFolders"
-        response = requests.get(lib_url, params={"api_key": api_key}, timeout=api_timeout)
+        response = emby_client.get(lib_url, params={"api_key": api_key})
         libs = response.json()
         for lib in libs:
             guid = lib.get('Guid') or lib.get('ItemId')
@@ -2669,7 +2753,7 @@ def get_all_folder_mappings(base_url: str, api_key: str) -> dict:
     # 这是抓取 294461 这种权限 ID 的核心逻辑
     try:
         sel_url = f"{base_url.rstrip('/')}/Library/SelectableMediaFolders"
-        response = requests.get(sel_url, params={"api_key": api_key}, timeout=api_timeout)
+        response = emby_client.get(sel_url, params={"api_key": api_key})
         selectable_folders = response.json()
         for folder in selectable_folders:
             path = folder.get('Path')
@@ -2692,7 +2776,7 @@ def get_all_folder_mappings(base_url: str, api_key: str) -> dict:
     try:
         items_url = f"{base_url.rstrip('/')}/Items"
         items_params = {"api_key": api_key, "Recursive": "true", "IsFolder": "true", "Fields": "Path,Id,Guid", "Limit": 10000}
-        response = requests.get(items_url, params=items_params, timeout=api_timeout)
+        response = emby_client.get(items_url, params=items_params)
         items = response.json().get("Items", [])
         for item in items:
             path = item.get('Path')
@@ -2719,8 +2803,7 @@ def get_item_ancestors(item_id: str, base_url: str, api_key: str, user_id: str) 
     }
     
     try:
-        api_timeout = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_TIMEOUT, 20)
-        response = requests.get(url, params=params, timeout=api_timeout)
+        response = emby_client.get(url, params=params)
         response.raise_for_status()
         return response.json()
     except Exception as e:
@@ -2831,7 +2914,7 @@ def trigger_media_info_refresh(item_id: str, base_url: str, api_key: str, user_i
     
     try:
         # 这是一个伪造的播放请求，不需要 body，或者传个空的
-        response = requests.post(url, params=params, json={}, timeout=10)
+        response = emby_client.post(url, params=params, json={})
         
         if response.status_code == 200:
             logger.info(f"  💉 已对 ID:{item_id} 触发媒体信息提取请求。")
