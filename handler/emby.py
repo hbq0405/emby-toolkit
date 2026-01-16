@@ -124,25 +124,52 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
     【队列机制核心】
     如果 Emby 正在进行繁重的后台任务，则阻塞等待。
     """
-    # ★★★ 核心修改：增加中文关键词 ★★★
+    # 1. 触发等待的关键词（包含英文和中文，用于检测）
     HEAVY_TASKS = [
         "Scan media library", "扫描媒体库",
-        "Refresh people", "刷新", # 覆盖 "刷新人物", "刷新元数据"
+        "Refresh people", "刷新", 
         "Refresh metadata", 
         "Generate video preview thumbnails", "提取视频", "缩略图",
-        "Chapter image extraction", "章节图片"
+        "Chapter image extraction", "章节图片",
+        "Convert media", "转换",
+        # --- 神医助手专用关键词 ---
+        "Extract MediaInfo",          # 提取媒体信息 
+        "Extract Intro Fingerprint",  # 提取片头指纹 (非常耗CPU)
+        "Extract Video Thumbnail",    # 提取缩略图
+        "Build Douban Cache"          # 构建豆瓣缓存
     ]
+
+    # 2. 显示名称翻译字典（用于日志美化）
+    TASK_TRANSLATIONS = {
+        "Scan media library": "扫描媒体库",
+        "Refresh people": "刷新人物信息",
+        "Refresh metadata": "刷新元数据",
+        "Generate video preview thumbnails": "生成视频缩略图",
+        "Chapter image extraction": "提取章节图片",
+        "Clean up collections": "清理合集",
+        "Convert media": "转换媒体",
+        "Extract MediaInfo": "神医-提取媒体信息",
+        "Extract Intro Fingerprint": "神医-提取片头指纹",
+        "Extract Video Thumbnail": "神医-提取视频缩略图",
+        "Build Douban Cache": "神医-构建豆瓣缓存",
+        "Merge Multi Versions": "神医-合并多版本",
+        "Persist MediaInfo": "神医-持久化媒体信息"
+    }
     
     start_time = time.time()
     
     while True:
         running_tasks = get_running_tasks(base_url, api_key)
         
-        # --- 调试日志：打印当前所有正在运行的任务，方便排查 ---
+        # --- 调试日志 ---
         if running_tasks:
-            task_names = [f"{t['Name']}({t['Progress']}%)" for t in running_tasks]
-            logger.debug(f"  [队列检测] 当前运行的任务: {task_names}")
-        # ------------------------------------------------
+            # 这里也顺便翻译一下，方便调试看
+            debug_names = []
+            for t in running_tasks:
+                name = TASK_TRANSLATIONS.get(t['Name'], t['Name'])
+                debug_names.append(f"{name}({t['Progress']:.1f}%)")
+            logger.debug(f"  [队列检测] 当前运行的任务: {debug_names}")
+        # ----------------
         
         is_busy = False
         busy_task_name = ""
@@ -152,7 +179,12 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
             for heavy_keyword in HEAVY_TASKS:
                 if heavy_keyword.lower() in task['Name'].lower():
                     is_busy = True
-                    busy_task_name = f"{task['Name']} (进度: {task['Progress']}%)"
+                    
+                    # ★★★ 核心修改：尝试翻译任务名称 ★★★
+                    raw_name = task['Name']
+                    display_name = TASK_TRANSLATIONS.get(raw_name, raw_name)
+                    
+                    busy_task_name = f"{display_name} (进度: {task['Progress']:.1f}%)"
                     break
             if is_busy: break
         
@@ -165,7 +197,7 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
             return
             
         logger.info(f"  ⏳ Emby 正在忙碌 [{busy_task_name}]，脚本暂停等待中... (已等待 {int(elapsed)}s)")
-        time.sleep(10) # 每10秒轮询一次
+        time.sleep(10)
 
 # 获取管理员令牌
 _admin_token_cache = {}
