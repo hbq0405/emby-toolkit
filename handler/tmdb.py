@@ -332,9 +332,9 @@ def aggregate_full_series_data_from_tmdb(
     max_workers: int = 5
 ) -> Optional[Dict[str, Any]]:
     """
-    【V2 - 高效聚合版】
-    通过并发请求获取每一季的详情（包含该季所有集），从而聚合完整元数据。
-    ★ 修复了旧版对每一集单独发起请求导致 404 和触发限流的问题。
+    【V3 - 结构修正与全量聚合版】
+    通过并发请求获取每一季的详情，并进行数据清洗，确保分集演员表结构与 core_processor 预期一致。
+    同时尝试获取 aggregate_credits 以补充主演员表。
     """
     if not tv_id or not api_key:
         return None
@@ -342,21 +342,42 @@ def aggregate_full_series_data_from_tmdb(
     logger.info(f"  ➜ 开始为剧集 ID {tv_id} 并发聚合 TMDB 数据 (并发数: {max_workers})...")
     
     # --- 步骤 1: 获取顶层剧集详情 ---
-    series_details = get_tv_details(tv_id, api_key)
+    # 增加 aggregate_credits 到 append_to_response，这是获取全剧演员（含集数统计）的最佳方式
+    series_details = get_tv_details(tv_id, api_key, append_to_response="credits,aggregate_credits,keywords,external_ids,content_ratings")
+    
     if not series_details:
         logger.error(f"  ➜ 聚合失败：无法获取顶层剧集 {tv_id} 的详情。")
         return None
     
+    # ★★★ 补全主演员表逻辑 ★★★
+    # 如果有 aggregate_credits，它的数据比 credits 更全（包含所有季的常驻演员）
+    # 我们将其映射回 credits 结构，以便 core_processor 能读取到更全的主演列表
+    if series_details.get('aggregate_credits'):
+        agg_cast = series_details['aggregate_credits'].get('cast', [])
+        # aggregate_credits 的结构里是 'roles' 列表，而 credits 是 'character' 字符串
+        # 我们做一个简单的转换，取第一个角色名，确保兼容性
+        mapped_cast = []
+        for actor in agg_cast:
+            new_actor = actor.copy()
+            roles = actor.get('roles', [])
+            if roles and 'character' in roles[0]:
+                new_actor['character'] = roles[0]['character']
+            mapped_cast.append(new_actor)
+        
+        # 如果原始 credits 比较少，或者我们想强制使用更全的列表，可以覆盖或合并
+        # 这里选择：如果 aggregate_credits 存在，优先使用它作为 cast
+        if mapped_cast:
+            if 'credits' not in series_details: series_details['credits'] = {}
+            series_details['credits']['cast'] = mapped_cast
+            logger.debug(f"  ➜ 已使用 aggregate_credits 补全主演员表，共 {len(mapped_cast)} 人。")
+
     logger.info(f"  ➜ 成功获取剧集 '{series_details.get('name')}' 的顶层信息，共 {len(series_details.get('seasons', []))} 季。")
 
-    # --- 步骤 2: 构建任务 (只构建“季”任务，不构建“集”任务) ---
+    # --- 步骤 2: 构建任务 ---
     tasks = []
     for season in series_details.get("seasons", []):
         season_number = season.get("season_number")
-        # 跳过第 0 季 (特别篇)，除非你需要它。通常刮削主要关注正片。
-        # 如果需要特别篇，去掉 season_number > 0 的判断即可。
         if season_number is not None and season_number > 0:
-            # (任务类型, tv_id, season_number)
             tasks.append(("season", tv_id, season_number))
 
     if not tasks:
@@ -370,9 +391,7 @@ def aggregate_full_series_data_from_tmdb(
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_task = {}
         for task in tasks:
-            # task: ("season", tv_id, season_number)
             _, tvid, s_num = task
-            # 调用 get_season_details_tmdb，它会返回该季详情，其中包含 'episodes' 列表
             future = executor.submit(get_season_details_tmdb, tvid, s_num, api_key)
             future_to_task[future] = f"S{s_num}"
 
@@ -382,43 +401,49 @@ def aggregate_full_series_data_from_tmdb(
                 result_data = future.result()
                 if result_data:
                     results[task_key] = result_data
-                # 稍微降低日志级别，避免刷屏
                 logger.trace(f"    ({i+1}/{len(tasks)}) 季数据 {task_key} 获取完成。")
             except Exception as exc:
                 logger.error(f"    任务 {task_key} 执行时产生错误: {exc}")
 
-    # --- 步骤 4: 聚合数据 ---
+    # --- 步骤 4: 聚合数据与结构清洗 ---
     final_aggregated_data = {
         "series_details": series_details,
         "seasons_details": [], 
-        "episodes_details": {} # key 是 "S1E1", "S1E2"...
+        "episodes_details": {} 
     }
 
-    # 临时列表，用于排序
     temp_seasons = []
 
     for key, season_data in results.items():
         if not season_data: continue
         
-        # 1. 保存季详情
         temp_seasons.append(season_data)
         
-        # 2. ★★★ 核心修改：直接从季详情中提取集详情 ★★★
-        # TMDb 的季详情接口直接返回了 'episodes' 列表，无需再次请求
         episodes_list = season_data.get("episodes", [])
         season_num = season_data.get("season_number")
         
         for ep in episodes_list:
             ep_num = ep.get("episode_number")
             if season_num is not None and ep_num is not None:
+                
+                # ★★★ 核心修复：数据结构清洗 (Shim) ★★★
+                # TMDb 季接口返回的 guest_stars 在根目录，而 core_processor 里的 _aggregate_series_cast_from_tmdb_data
+                # 期望的是 episode_data.get("credits", {}).get("guest_stars")
+                # 因此我们在这里手动构造 credits 结构。
+                if 'credits' not in ep:
+                    ep['credits'] = {
+                        'cast': ep.get('cast', []),          # 季接口偶尔也会返回 cast
+                        'guest_stars': ep.get('guest_stars', []), # 这是重点，分集客串演员都在这
+                        'crew': ep.get('crew', [])
+                    }
+                
                 ep_key = f"S{season_num}E{ep_num}"
                 final_aggregated_data["episodes_details"][ep_key] = ep
 
-    # 按季号排序
     temp_seasons.sort(key=lambda x: x.get("season_number", 0))
     final_aggregated_data["seasons_details"] = temp_seasons
             
-    logger.info(f"  ➜ 聚合完成。获取了 {len(temp_seasons)} 个季详情，提取了 {len(final_aggregated_data['episodes_details'])} 个集详情。")
+    logger.info(f"  ➜ 聚合完成。获取了 {len(temp_seasons)} 个季详情，提取并清洗了 {len(final_aggregated_data['episodes_details'])} 个集详情。")
     
     return final_aggregated_data
 # +++ 获取集详情 +++
