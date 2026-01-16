@@ -580,19 +580,27 @@ const parseUrlToParams = (urlStr) => {
 
     // 3. 还原日期 / 动态占位符
     const dateField = params.value.type === 'movie' ? 'primary_release_date' : 'first_air_date';
-    const gteVal = decodeURIComponent(sp.get(`${dateField}.gte`) || '');
-    const lteVal = decodeURIComponent(sp.get(`${dateField}.lte`) || '');
+    
+    // URLSearchParams.get() 会自动解码，但有个坑：它通常会把 URL 里的 '+' 解析为空格 ' '
+    // 例如：{tomorrow+7} 解析后可能会变成 {tomorrow 7}
+    const gteVal = sp.get(`${dateField}.gte`) || '';
+    const lteVal = sp.get(`${dateField}.lte`) || '';
 
-    // 检查是否是动态占位符 {tomorrow}
-    if (gteVal.includes('{tomorrow}')) {
-      // 解析 {tomorrow+7} 中的数字
-      const match = lteVal.match(/tomorrow\+(\d+)/);
+    // 宽松判断：只要包含 'tomorrow' 关键字就认为是动态日期
+    if (gteVal.includes('tomorrow')) {
+      // ★★★ 核心修复 ★★★
+      // 正则改为：/tomorrow[\+\s](\d+)/
+      // [\+\s] 表示匹配 "+" 或者 "空格"
+      const match = lteVal.match(/tomorrow[\+\s](\d+)/);
+      
       if (match && match[1]) {
         params.value.next_days = parseInt(match[1]);
       } else {
-        params.value.next_days = 0; // 异常情况
+        // 如果没匹配到数字，可能是解析异常或只有 {tomorrow}，归零
+        params.value.next_days = 0; 
       }
-      // 清空年份，避免冲突
+      
+      // 清空静态年份，避免 UI 冲突
       params.value.year_gte = null;
       params.value.year_lte = null;
     } else {
