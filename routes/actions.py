@@ -21,6 +21,10 @@ def api_reprocess_item(item_id):
     from tasks.media import task_reprocess_single_item # 延迟导入
     import handler.emby as emby
 
+    # 获取前端传递的 failure_reason (可选)
+    data = request.get_json() or {}
+    failure_reason = data.get('reason')
+
     item_details = emby.get_emby_item_details(
         item_id,
         extensions.media_processor_instance.emby_url,
@@ -34,8 +38,8 @@ def api_reprocess_item(item_id):
         f"任务已提交: {item_name_for_ui}",
         processor_type='media',
         item_id=item_id,
-        item_name_for_ui=item_name_for_ui
-        
+        item_name_for_ui=item_name_for_ui,
+        failure_reason=failure_reason # ★★★ 传递 failure_reason 参数 ★★★
     )
     if success:
         return jsonify({"message": f"重新处理项目 '{item_name_for_ui}' 的任务已提交。"}), 202

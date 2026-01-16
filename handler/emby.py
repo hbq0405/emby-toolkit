@@ -171,7 +171,7 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
         "Check for application updates", # 检查更新 (不占资源)
         "Refresh Guide",                 # 刷新直播指南 (IPTV相关，通常只占网络)
         "Clean up collections",          # 清理合集 (通常很快)
-        "Build Douban Cache",            # 神医-构建豆瓣缓存 (通常很快)
+        "Build Douban Cache",            # 神医-构建豆瓣缓存 (不影响可以忽略)
         # "Scan media library",          # <--- 如果你想一边扫库一边硬跑，可以把这个注释解开
     ]
     

@@ -184,54 +184,70 @@ def _wait_for_items_recovery(processor, item_ids: list, max_retries=60, interval
     return False
 
 # --- 重新处理单个项目 ---
-def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str):
+def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, failure_reason: Optional[str] = None):
     """
     重新处理单个项目的后台任务。
+    新增 failure_reason 参数：用于判断是否需要触发神医插件。
     """
     logger.trace(f"  ➜ 后台任务开始执行 ({item_name_for_ui})")
     
     try:
         task_manager.update_status_from_thread(0, f"正在处理: {item_name_for_ui}")
-        try:
-            item_basic = emby.get_emby_item_details(
-                item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
-                fields="Type,ProviderIds"
-            )
-            
-            if item_basic:
-                item_type = item_basic.get('Type')
-                tmdb_id = item_basic.get('ProviderIds', {}).get('Tmdb')
-                
-                ids_to_heal = []
-                
-                # A. 确定需要治疗的目标 ID 列表
-                if item_type == 'Movie':
-                    ids_to_heal.append(item_id)
-                elif item_type == 'Series' and tmdb_id:
-                    logger.info(f"  ➜ 正在检查剧集 '{item_name_for_ui}' 下的异常分集...")
-                    bad_episode_ids = media_db.get_bad_episode_emby_ids(str(tmdb_id))
-                    if bad_episode_ids:
-                        logger.info(f"  ➜ 发现 {len(bad_episode_ids)} 个分集缺失媒体信息。")
-                        ids_to_heal.extend(bad_episode_ids)
-                    else:
-                        logger.trace(f"  ➜ 未发现明显的坏分集，将跳过触发步骤。")
+        
+        # ★★★ 新增逻辑：判断是否需要执行神医修复流程 ★★★
+        # 默认需要修复(True)，除非明确提供了原因且原因不是"缺失媒体信息"
+        need_media_info_healing = True
+        
+        if failure_reason:
+            if "缺失媒体信息" not in failure_reason:
+                need_media_info_healing = False
+                logger.info(f"  ➜ 失败原因('{failure_reason}')与媒体信息无关，跳过神医提取步骤。")
+            else:
+                logger.info(f"  ➜ 检测到媒体信息缺失，准备触发神医提取流程。")
 
-                # B. 执行治疗与等待
-                if ids_to_heal:
-                    # 1. 触发
-                    task_manager.update_status_from_thread(10, f"正在触发神医插件重新提取 {len(ids_to_heal)} 个文件的媒体信息...")
-                    for eid in ids_to_heal:
-                        emby.trigger_media_info_refresh(
-                            eid, processor.emby_url, processor.emby_api_key, processor.emby_user_id
-                        )
-                        time.sleep(0.2) # 稍微间隔
+        if need_media_info_healing:
+            try:
+                item_basic = emby.get_emby_item_details(
+                    item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
+                    fields="Type,ProviderIds"
+                )
+                
+                if item_basic:
+                    item_type = item_basic.get('Type')
+                    tmdb_id = item_basic.get('ProviderIds', {}).get('Tmdb')
                     
-                    # 2. 轮询等待 (关键修改)
-                    task_manager.update_status_from_thread(20, f"等待媒体信息提取 (最长10分钟)...")
-                    _wait_for_items_recovery(processor, ids_to_heal, max_retries=60, interval=10)
+                    ids_to_heal = []
                     
-        except Exception as e_heal:
-            logger.warning(f"  ⚠️ 流程出现小插曲 (不影响后续重扫): {e_heal}")
+                    # A. 确定需要治疗的目标 ID 列表
+                    if item_type == 'Movie':
+                        ids_to_heal.append(item_id)
+                    elif item_type == 'Series' and tmdb_id:
+                        logger.info(f"  ➜ 正在检查剧集 '{item_name_for_ui}' 下的异常分集...")
+                        bad_episode_ids = media_db.get_bad_episode_emby_ids(str(tmdb_id))
+                        if bad_episode_ids:
+                            logger.info(f"  ➜ 发现 {len(bad_episode_ids)} 个分集缺失媒体信息。")
+                            ids_to_heal.extend(bad_episode_ids)
+                        else:
+                            logger.trace(f"  ➜ 未发现明显的坏分集，将跳过触发步骤。")
+
+                    # B. 执行治疗与等待
+                    if ids_to_heal:
+                        # 1. 触发
+                        task_manager.update_status_from_thread(10, f"正在触发神医插件重新提取 {len(ids_to_heal)} 个文件的媒体信息...")
+                        for eid in ids_to_heal:
+                            emby.trigger_media_info_refresh(
+                                eid, processor.emby_url, processor.emby_api_key, processor.emby_user_id
+                            )
+                            time.sleep(0.2) # 稍微间隔
+                        
+                        # 2. 轮询等待 (关键修改)
+                        task_manager.update_status_from_thread(20, f"等待媒体信息提取 (最长10分钟)...")
+                        _wait_for_items_recovery(processor, ids_to_heal, max_retries=60, interval=10)
+                        
+            except Exception as e_heal:
+                logger.warning(f"  ⚠️ 流程出现小插曲 (不影响后续重扫): {e_heal}")
+        else:
+            task_manager.update_status_from_thread(10, "跳过媒体信息提取，直接开始刮削...")
 
         # 3. 执行标准处理流程 (验收成果)
         task_manager.update_status_from_thread(50, f"正在重新刮削元数据: {item_name_for_ui}")
@@ -254,13 +270,13 @@ def task_reprocess_all_review_items(processor):
     """
     logger.trace("--- 开始执行“重新处理所有待复核项”任务 [强制在线获取模式] ---")
     try:
-        # +++ 核心修改 1：同时查询 item_id 和 item_name +++
+        # +++ 核心修改 1：同时查询 item_id, item_name 和 reason +++
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            # 从 failed_log 中同时获取 ID 和 Name
-            cursor.execute("SELECT item_id, item_name FROM failed_log")
+            # 从 failed_log 中获取 ID, Name 和 Reason
+            cursor.execute("SELECT item_id, item_name, reason FROM failed_log")
             # 将结果保存为一个字典列表，方便后续使用
-            all_items = [{'id': row['item_id'], 'name': row['item_name']} for row in cursor.fetchall()]
+            all_items = [{'id': row['item_id'], 'name': row['item_name'], 'reason': row['reason']} for row in cursor.fetchall()]
         
         total = len(all_items)
         if total == 0:
@@ -270,7 +286,7 @@ def task_reprocess_all_review_items(processor):
 
         logger.info(f"共找到 {total} 个待复核项需要以“强制在线获取”模式重新处理。")
 
-        # +++ 核心修改 2：在循环中解包 item_id 和 item_name +++
+        # +++ 核心修改 2：在循环中解包 item_id, item_name 和 reason +++
         for i, item in enumerate(all_items):
             if processor.is_stop_requested():
                 logger.info("  🚫 任务被中止。")
@@ -278,11 +294,12 @@ def task_reprocess_all_review_items(processor):
             
             item_id = item['id']
             item_name = item['name'] or f"ItemID: {item_id}" # 如果名字为空，提供一个备用名
+            failure_reason = item['reason'] # 获取失败原因
 
             task_manager.update_status_from_thread(int((i/total)*100), f"正在重新处理 {i+1}/{total}: {item_name}")
             
-            # +++ 核心修改 3：传递所有必需的参数 +++
-            task_reprocess_single_item(processor, item_id, item_name)
+            # +++ 核心修改 3：传递 failure_reason 参数 +++
+            task_reprocess_single_item(processor, item_id, item_name, failure_reason=failure_reason)
             
             # 每个项目之间稍作停顿
             time.sleep(2) 

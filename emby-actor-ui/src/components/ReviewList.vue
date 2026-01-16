@@ -380,7 +380,10 @@ const handleReprocessItem = async (row) => {
   currentRowId.value = row.item_id;
   loadingAction.value[row.item_id] = true;
   try {
-    const response = await axios.post(`/api/actions/reprocess_item/${row.item_id}`);
+    // ★★★ 修改：在请求体中传递 reason ★★★
+    const response = await axios.post(`/api/actions/reprocess_item/${row.item_id}`, {
+        reason: row.reason // 将当前行的失败原因传给后端
+    });
     message.success(response.data.message || `项目 "${row.item_name}" 的重新处理任务已提交。`);
     // 如果是在待复核列表操作，则刷新列表
     if (!isShowingSearchResults.value) {

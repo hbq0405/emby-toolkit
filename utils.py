@@ -39,11 +39,8 @@ def check_stream_validity(width: Any, height: Any, codec: Any) -> Tuple[bool, st
     if has_resolution and has_codec:
         return True, ""
     else:
-        if not has_resolution:
-            return False, f"分辨率无效 (W:{width} H:{height})"
-        elif not has_codec:
-            return False, f"编码无效 ({codec})"
-        return False, "未知视频流错误"
+        # ★★★ 修改：统一返回标准错误信息，方便上层逻辑判断 ★★★
+        return False, "缺失媒体信息"
 
 def contains_chinese(text: Optional[str]) -> bool:
     """检查字符串是否包含中文字符。"""
