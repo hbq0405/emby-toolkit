@@ -1053,7 +1053,7 @@ class MediaProcessor:
                         "title": season.get('name'), "overview": season.get('overview'), 
                         "release_date": season.get('air_date'), "poster_path": season_poster, 
                         "season_number": s_num,
-                        # ★ 只有非 Pending 且找到了 Emby 对应项，才标记为 True
+                        "total_episodes": season.get('episode_count', 0),
                         "in_library": bool(matched_emby_seasons) if not is_pending else False,
                         "emby_item_ids_json": json.dumps([s['Id'] for s in matched_emby_seasons]) if matched_emby_seasons else '[]'
                     })
