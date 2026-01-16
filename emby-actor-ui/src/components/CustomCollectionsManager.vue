@@ -995,6 +995,7 @@
     </n-modal>
     <TmdbDiscoveryHelper
       v-model:show="showDiscoverHelper"
+      :initial-url="currentEditingUrl"
       @confirm="handleDiscoverConfirm"
     />
 
@@ -1079,9 +1080,14 @@ const unidentifiedMediaInModal = computed(() => filterMediaByStatus('unidentifie
 const { configModel } = useConfig();
 const showMappingModal = ref(false);
 const studioMappingOptions = ref([]);
-// ★★★ 1. 探索助手控制状态
+// 探索助手控制状态
 const showDiscoverHelper = ref(false);
-const editingUrlIndex = ref(0); // 记录当前正在编辑哪一行 URL
+const editingUrlIndex = ref(0); 
+// 计算当前正在编辑的 URL，传给子组件做回显 ★★★
+const currentEditingUrl = computed(() => {
+  const item = customUrlList.value[editingUrlIndex.value];
+  return item ? item.value : '';
+});
 
 // ★★★ 2. 打开助手
 const openDiscoverHelper = (index = 0) => {

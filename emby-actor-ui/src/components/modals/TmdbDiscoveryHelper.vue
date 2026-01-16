@@ -1,3 +1,4 @@
+<!-- src/components/modals/TmdbDiscoveryHelper.vue -->
 <template>
   <n-modal
     :show="show"
@@ -228,16 +229,36 @@
 </template>
 
 <script setup>
-import { ref, computed, watch, h, onMounted } from 'vue';
+import { ref, computed, watch, h, nextTick } from 'vue';
 import { NAvatar, NText } from 'naive-ui';
 import axios from 'axios';
 import { CheckmarkCircleOutline as CheckIcon } from '@vicons/ionicons5';
 
 const props = defineProps({
-  show: Boolean
+  show: Boolean,
+  initialUrl: String
 });
 
 const emit = defineEmits(['update:show', 'confirm']);
+
+// 定义默认参数，方便重置
+const defaultParams = {
+  type: 'tv',
+  sort_by: 'popularity.desc',
+  year_gte: null,
+  year_lte: null,
+  next_days: 0,
+  with_genres: [],
+  without_genres: [],
+  with_companies_labels: [], 
+  with_keywords_labels: [],  
+  with_cast: [],             
+  with_crew: [],             
+  region: null,
+  language: null,
+  vote_average: 0,
+  vote_count: 0
+};
 
 // --- 状态定义 ---
 const params = ref({
@@ -522,6 +543,121 @@ const fetchBasicConfigs = async () => {
   }
 };
 
+// 辅助：从 URL 参数中提取数组 (支持逗号或竖线分隔)
+const extractArray = (val) => {
+  if (!val) return [];
+  // 解码，处理可能存在的 | 或 ,
+  const decoded = decodeURIComponent(val);
+  return decoded.split(/[,|]/).map(item => item.trim());
+};
+
+// 核心：将 URL 解析回 params
+const parseUrlToParams = (urlStr) => {
+  if (!urlStr) return;
+
+  try {
+    // 1. 处理基础 URL 和 类型
+    // 这里的 urlStr 可能是完整的 https://... 或者是相对路径
+    // 为了方便解析，如果是相对路径，补全一个 dummy host
+    const fullUrl = urlStr.startsWith('http') ? urlStr : `https://www.themoviedb.org${urlStr}`;
+    const urlObj = new URL(fullUrl);
+    
+    // 还原类型
+    if (urlObj.pathname.includes('/movie')) {
+      params.value.type = 'movie';
+    } else {
+      params.value.type = 'tv';
+    }
+
+    const sp = urlObj.searchParams;
+
+    // 2. 还原基础字段
+    if (sp.get('sort_by')) params.value.sort_by = sp.get('sort_by');
+    if (sp.get('with_origin_country')) params.value.region = sp.get('with_origin_country');
+    if (sp.get('with_original_language')) params.value.language = sp.get('with_original_language');
+    if (sp.get('vote_average.gte')) params.value.vote_average = parseFloat(sp.get('vote_average.gte'));
+    if (sp.get('vote_count.gte')) params.value.vote_count = parseInt(sp.get('vote_count.gte'));
+
+    // 3. 还原日期 / 动态占位符
+    const dateField = params.value.type === 'movie' ? 'primary_release_date' : 'first_air_date';
+    const gteVal = decodeURIComponent(sp.get(`${dateField}.gte`) || '');
+    const lteVal = decodeURIComponent(sp.get(`${dateField}.lte`) || '');
+
+    // 检查是否是动态占位符 {tomorrow}
+    if (gteVal.includes('{tomorrow}')) {
+      // 解析 {tomorrow+7} 中的数字
+      const match = lteVal.match(/tomorrow\+(\d+)/);
+      if (match && match[1]) {
+        params.value.next_days = parseInt(match[1]);
+      } else {
+        params.value.next_days = 0; // 异常情况
+      }
+      // 清空年份，避免冲突
+      params.value.year_gte = null;
+      params.value.year_lte = null;
+    } else {
+      // 静态年份还原 (假设格式为 YYYY-01-01)
+      params.value.next_days = 0;
+      if (gteVal && gteVal.length >= 4) params.value.year_gte = parseInt(gteVal.substring(0, 4));
+      if (lteVal && lteVal.length >= 4) params.value.year_lte = parseInt(lteVal.substring(0, 4));
+    }
+
+    // 4. 还原类型 (Genres) - ID 转数字
+    const withGenres = extractArray(sp.get('with_genres'));
+    params.value.with_genres = withGenres.map(Number);
+    
+    const withoutGenres = extractArray(sp.get('without_genres'));
+    params.value.without_genres = withoutGenres.map(Number);
+
+    // 5. 还原人员 (Cast/Crew) - 保持 ID
+    // 注意：这里只能还原 ID，无法还原名字显示在 UI 上，除非调用 API 反查
+    // 为了体验，UI 会显示 ID，用户可以删除重搜。
+    params.value.with_cast = extractArray(sp.get('with_cast')).map(Number); // 尝试转数字
+    params.value.with_crew = extractArray(sp.get('with_crew')).map(Number);
+
+    // 6. ★★★ 反向映射：关键词 (ID -> Label) ★★★
+    const keywordIds = extractArray(sp.get('with_keywords'));
+    if (keywordIds.length > 0 && Object.keys(keywordMapping.value).length > 0) {
+      const foundLabels = [];
+      // 遍历映射表寻找 ID
+      for (const [label, ids] of Object.entries(keywordMapping.value)) {
+        // 如果映射表里的 ID 存在于 URL 参数中
+        // 注意：映射表里的 ids 是数组，URL 里的也是数组，取交集
+        const mapIds = Array.isArray(ids) ? ids.map(String) : [String(ids)];
+        // 只要有一个 ID 匹配，就认为选中了这个 Label
+        if (mapIds.some(id => keywordIds.includes(id))) {
+          foundLabels.push(label);
+        }
+      }
+      params.value.with_keywords_labels = foundLabels;
+    }
+
+    // 7. ★★★ 反向映射：工作室/平台 (ID -> Label) ★★★
+    // 电影用 with_companies, 电视用 with_networks
+    const companyIds = extractArray(sp.get('with_companies'));
+    const networkIds = extractArray(sp.get('with_networks'));
+    const allStudioIds = [...companyIds, ...networkIds];
+
+    if (allStudioIds.length > 0 && Object.keys(studioMapping.value).length > 0) {
+      const foundLabels = [];
+      for (const [label, data] of Object.entries(studioMapping.value)) {
+        const cIds = data.company_ids ? data.company_ids.map(String) : [];
+        const nIds = data.network_ids ? data.network_ids.map(String) : [];
+        const targetIds = [...cIds, ...nIds];
+
+        if (targetIds.some(id => allStudioIds.includes(id))) {
+          foundLabels.push(label);
+        }
+      }
+      params.value.with_companies_labels = foundLabels;
+    }
+
+  } catch (e) {
+    console.error("解析 URL 失败:", e);
+    // 解析失败则保持默认或部分状态
+  }
+};
+
 const fetchMappings = async () => {
   loading.value.mappings = true;
   try {
@@ -594,12 +730,22 @@ const handleDirectorSearch = (q) => searchPerson(q, directorOptions, 'directors'
 watch(() => params.value.type, () => {
   params.value.with_companies_labels = [];
 });
-watch(() => props.show, (val) => {
+watch(() => props.show, async (val) => {
   if (val) {
-    fetchMappings();
-    // 每次打开都检查一下，如果没有数据就拉取
+    // 1. 先重置参数
+    params.value = JSON.parse(JSON.stringify(defaultParams));
+    
+    // 2. 并行加载配置和映射
+    const promises = [fetchMappings()];
     if (movieGenres.value.length === 0 || languageOptions.value.length === 0) {
-        fetchBasicConfigs();
+      promises.push(fetchBasicConfigs());
+    }
+    await Promise.all(promises);
+
+    // 3. ★★★ 如果有 initialUrl，执行解析 ★★★
+    if (props.initialUrl) {
+      console.log("检测到初始 URL，开始解析...", props.initialUrl);
+      parseUrlToParams(props.initialUrl);
     }
   }
 });
