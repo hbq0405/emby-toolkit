@@ -52,6 +52,7 @@ class MediaFileHandler(FileSystemEventHandler):
         if not event.is_directory and self._is_valid_media_file(event.dest_path):
             self._enqueue_file(event.dest_path)
 
+    # ★★★ 修改：删除事件走专用入队逻辑 ★★★
     def on_deleted(self, event):
         if event.is_directory:
             return
@@ -87,9 +88,7 @@ class MediaFileHandler(FileSystemEventHandler):
             DELETE_DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_delete_batch_queue)
 
 def process_batch_queue():
-    """
-    处理新增/修改队列 (分组优化版)
-    """
+    """处理新增/修改队列"""
     global DEBOUNCE_TIMER
     with QUEUE_LOCK:
         files_to_process = list(FILE_EVENT_QUEUE)
@@ -101,37 +100,30 @@ def process_batch_queue():
     processor = MonitorService.processor_instance
     if not processor: return
 
-    # 1. 按父目录分组
     grouped_files = {}
     for file_path in files_to_process:
         parent_dir = os.path.dirname(file_path)
-        if parent_dir not in grouped_files: 
-            grouped_files[parent_dir] = []
+        if parent_dir not in grouped_files: grouped_files[parent_dir] = []
         grouped_files[parent_dir].append(file_path)
 
-    # 2. 提取代表文件 (每个目录只取一个)
-    representative_files = []
-    
-    logger.info(f"  🚀 [实时监控] 防抖结束，共检测到 {len(files_to_process)} 个文件，聚合为 {len(grouped_files)} 个任务组。")
-
     for parent_dir, files in grouped_files.items():
-        # 取第一个文件作为代表
-        rep_file = files[0]
-        representative_files.append(rep_file)
-        
-        # 打印日志方便调试
+        representative_file = files[0]
         folder_name = os.path.basename(parent_dir)
-        if len(files) > 1:
-            logger.info(f"    ├─ 目录 '{folder_name}' 含 {len(files)} 个文件，选取 '{os.path.basename(rep_file)}' 为代表。")
-        else:
-            logger.info(f"    ├─ 目录 '{folder_name}' 单文件: '{os.path.basename(rep_file)}'")
-
-    # 3. 将代表文件列表传给批量处理线程
-    threading.Thread(target=_handle_batch_file_task, args=(processor, representative_files)).start()
+        display_name = folder_name
+        
+        if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
+            grandparent_dir = os.path.dirname(parent_dir)
+            series_name = os.path.basename(grandparent_dir)
+            display_name = f"{series_name} ({folder_name})"
+        
+        logger.info(f"  🚀 [实时监控] 聚合处理新增: {display_name} (包含 {len(files)} 个文件)")
+        
+        threading.Thread(target=_handle_single_file_task, args=(processor, representative_file)).start()
 
 def process_delete_batch_queue():
     """
-    处理删除队列 (批量版)
+    处理删除队列。
+    【修复】不再按目录去重只处理一个文件，而是将所有文件传给 processor 进行批量清理。
     """
     global DELETE_DEBOUNCE_TIMER
     with DELETE_QUEUE_LOCK:
@@ -146,64 +138,30 @@ def process_delete_batch_queue():
 
     logger.info(f"  🗑️ [实时监控] 防抖结束，聚合处理删除事件: 共 {len(files)} 个文件")
 
-    # 调用处理器的批量删除接口
+    # ★★★ 核心修复：调用批量处理接口，确保所有文件的数据库记录都被清理 ★★★
+    # processor.process_file_deletion_batch 内部会负责：
+    # 1. 遍历 files 列表，逐个清理数据库。
+    # 2. 统计涉及的父目录，统一通知 Emby 刷新。
     threading.Thread(target=processor.process_file_deletion_batch, args=(files,)).start()
 
-def _handle_batch_file_task(processor, file_paths: List[str]):
-    """
-    批量处理新增文件任务：
-    1. 逐个检查代表文件的稳定性（等待拷贝完成）。
-    2. 将所有有效的代表文件传给核心处理器的批量入口。
-    """
-    valid_files = []
-    
-    # 1. 检查文件稳定性 (Wait for copy to finish)
-    for file_path in file_paths:
-        if not os.path.exists(file_path):
-            continue
-            
-        stable_count = 0
-        last_size = -1
-        is_stable = False
+def _handle_single_file_task(processor, file_path):
+    # ... (保持不变) ...
+    stable_count = 0
+    last_size = -1
+    for _ in range(60): 
+        try:
+            if not os.path.exists(file_path): return
+            size = os.path.getsize(file_path)
+            if size > 0 and size == last_size:
+                stable_count += 1
+            else:
+                stable_count = 0
+            last_size = size
+            if stable_count >= 3: break
+            time.sleep(1)
+        except: pass
         
-        # 最多等待 60秒
-        for _ in range(60): 
-            try:
-                if not os.path.exists(file_path): 
-                    break # 文件中途消失
-                
-                size = os.path.getsize(file_path)
-                if size > 0 and size == last_size:
-                    stable_count += 1
-                else:
-                    stable_count = 0
-                
-                last_size = size
-                
-                # 连续 3秒 大小不变，认为拷贝完成
-                if stable_count >= 3: 
-                    is_stable = True
-                    break
-                
-                time.sleep(1)
-            except: 
-                pass
-        
-        if is_stable:
-            valid_files.append(file_path)
-        else:
-            logger.warning(f"  ⚠️ [实时监控] 文件不稳定或超时，跳过处理: {os.path.basename(file_path)}")
-
-    if not valid_files:
-        return
-
-    # 2. ★★★ 调用核心处理器的批量入口 ★★★
-    # 这个方法会：
-    # A. 遍历 valid_files (代表文件)，逐个生成覆盖缓存 (不刷新 Emby)。
-    # B. 收集所有涉及的父目录。
-    # C. 统一刷新这些父目录。
-    # 这样既保证了效率（不重复刮削同目录文件），又保证了安全（缓存就绪后再刷新）。
-    processor.process_file_actively_batch(valid_files)
+    processor.process_file_actively(file_path)
 
 class MonitorService:
     # ... (保持不变) ...
