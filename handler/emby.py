@@ -914,7 +914,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
         "api_key": emby_api_key,
         "Recursive": str(item_data.get("Type") == "Series").lower(),
         "MetadataRefreshMode": "Default",
-        "ImageRefreshMode": "ValidationOnly",
+        "ImageRefreshMode": "Default",
         "ReplaceAllMetadata": str(replace_all_metadata_param).lower(),
         "ReplaceAllImages": str(replace_all_images_param).lower()
     }
@@ -980,7 +980,7 @@ def refresh_item_by_id(item_id: str, base_url: str, api_key: str) -> bool:
     refresh_params = {
         "api_key": api_key,
         "Recursive": "true", 
-        "ImageRefreshMode": "ValidationOnly", # 仅验证图片，不请求缺失图片
+        "ImageRefreshMode": "Default",
         "MetadataRefreshMode": "Default",
         "ReplaceAllMetadata": "false",
         "ReplaceAllImages": "false"
