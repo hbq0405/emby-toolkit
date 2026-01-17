@@ -1,159 +1,256 @@
 # monitor_service.py
 
 import os
+import re
 import time
 import logging
 import threading
-from typing import Optional, Any
+from typing import List, Optional, Any, Set
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 from gevent import spawn_later
 
 import constants
+import config_manager
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from core_processor import MediaProcessor
 
 logger = logging.getLogger(__name__)
 
-# --- ★★★ 全局账本 (核心机制) ★★★ ---
-# 记录所有“已检测到但尚未完成处理”的文件路径
-PENDING_FILES = set()
-PENDING_LOCK = threading.Lock()
+# --- 全局队列和锁 ---
+FILE_EVENT_QUEUE = set() 
+QUEUE_LOCK = threading.Lock()
+DEBOUNCE_TIMER = None
+DELETE_EVENT_QUEUE = set()
+DELETE_QUEUE_LOCK = threading.Lock()
+DELETE_DEBOUNCE_TIMER = None
+
+DEBOUNCE_DELAY = 5 # 防抖延迟秒数
 
 class MediaFileHandler(FileSystemEventHandler):
-    def __init__(self, extensions, processor):
+    """
+    文件系统事件处理器
+    """
+    def __init__(self, extensions: List[str]):
         self.extensions = [ext.lower() for ext in extensions]
-        self.processor = processor
 
     def _is_valid_media_file(self, file_path: str) -> bool:
-        if os.path.isdir(file_path): return False
+        if os.path.exists(file_path) and os.path.isdir(file_path): return False
         _, ext = os.path.splitext(file_path)
         if ext.lower() not in self.extensions: return False
         filename = os.path.basename(file_path)
         if filename.startswith('.'): return False
+        if filename.endswith(('.part', '.crdownload', '.tmp', '.aria2')): return False
         return True
 
     def on_created(self, event):
         if not event.is_directory and self._is_valid_media_file(event.src_path):
-            self._start_task(event.src_path)
+            self._enqueue_file(event.src_path)
 
     def on_moved(self, event):
         if not event.is_directory and self._is_valid_media_file(event.dest_path):
-            self._start_task(event.dest_path)
+            self._enqueue_file(event.dest_path)
 
     def on_deleted(self, event):
-        # 删除事件不需要复杂的添油逻辑，直接处理即可
-        if not event.is_directory:
-            _, ext = os.path.splitext(event.src_path)
-            if ext.lower() in self.extensions:
-                logger.info(f"  🗑️ [实时监控] 检测到删除: {os.path.basename(event.src_path)}")
-                threading.Thread(target=self.processor.process_file_deletion, args=(event.src_path,)).start()
-
-    def _start_task(self, file_path):
-        """
-        文件入库入口：
-        1. 立即在账本上挂号。
-        2. 启动独立线程处理该文件。
-        """
-        with PENDING_LOCK:
-            if file_path in PENDING_FILES:
-                return # 防止重复触发
-            PENDING_FILES.add(file_path)
-            logger.info(f"  🔍 [实时监控] 发现新文件 (挂号中): {os.path.basename(file_path)}")
+        if event.is_directory:
+            return
         
-        # 启动独立线程处理，互不阻塞
-        threading.Thread(target=_worker_logic, args=(self.processor, file_path)).start()
+        _, ext = os.path.splitext(event.src_path)
+        if ext.lower() not in self.extensions:
+            return
 
-def _worker_logic(processor, file_path):
-    """
-    独立工作线程逻辑：
-    1. 等待文件拷贝完成 (稳定性检查)。
-    2. 生成缓存 (不刷新)。
-    3. 销号。
-    4. 检查是否还有同目录的“战友”。
-    5. 决定是否刷新。
-    """
-    # --- 1. 稳定性检查 ---
-    stable_count = 0
-    last_size = -1
-    for _ in range(60): # 最多等60秒
-        try:
-            if not os.path.exists(file_path):
-                # 文件中途消失，直接销号退出
-                with PENDING_LOCK:
-                    if file_path in PENDING_FILES: PENDING_FILES.remove(file_path)
-                return
+        self._enqueue_delete(event.src_path)
+
+    def _enqueue_file(self, file_path: str):
+        """新增/移动文件入队"""
+        global DEBOUNCE_TIMER
+        with QUEUE_LOCK:
+            if file_path not in FILE_EVENT_QUEUE:
+                logger.info(f"  🔍 [实时监控] 文件加入队列: {os.path.basename(file_path)}")
             
-            size = os.path.getsize(file_path)
-            if size > 0 and size == last_size:
-                stable_count += 1
-            else:
-                stable_count = 0
-            last_size = size
+            FILE_EVENT_QUEUE.add(file_path)
             
-            if stable_count >= 3: break # 连续3秒大小不变，认为拷贝完成
-            time.sleep(1)
-        except: pass
+            if DEBOUNCE_TIMER: DEBOUNCE_TIMER.kill()
+            DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_batch_queue)
 
-    # --- 2. 生成缓存 (Skip Refresh = True) ---
-    # 我们只让处理器生成数据，不要它去刷新，刷新权在我们手里
-    refresh_path = processor.process_file_actively(file_path, skip_refresh=True)
+    def _enqueue_delete(self, file_path: str):
+        """删除文件入队"""
+        global DELETE_DEBOUNCE_TIMER
+        with DELETE_QUEUE_LOCK:
+            if file_path not in DELETE_EVENT_QUEUE:
+                logger.info(f"  🗑️ [实时监控] 删除事件入队: {os.path.basename(file_path)}")
+            
+            DELETE_EVENT_QUEUE.add(file_path)
+            
+            if DELETE_DEBOUNCE_TIMER: DELETE_DEBOUNCE_TIMER.kill()
+            DELETE_DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_delete_batch_queue)
 
-    # --- 3. 销号与决策 (核心) ---
-    should_refresh = False
+def process_batch_queue():
+    """
+    处理新增/修改队列 (分组优化版)
+    """
+    global DEBOUNCE_TIMER
+    with QUEUE_LOCK:
+        files_to_process = list(FILE_EVENT_QUEUE)
+        FILE_EVENT_QUEUE.clear()
+        DEBOUNCE_TIMER = None
     
-    with PENDING_LOCK:
-        # A. 销号：我处理完了
-        if file_path in PENDING_FILES:
-            PENDING_FILES.remove(file_path)
-        
-        # B. 决策：还有没有同目录的兄弟在账本里？
-        if refresh_path:
-            # 检查 PENDING_FILES 里是否还有任何文件属于 refresh_path 这个目录
-            # 注意：refresh_path 可能是父目录 (电影) 或 爷目录 (剧集)
-            # 我们需要判断 pending_file 是否 startswith refresh_path
-            
-            has_siblings = False
-            for pending_file in PENDING_FILES:
-                # 规范化路径比较
-                if os.path.commonpath([pending_file, refresh_path]) == os.path.normpath(refresh_path):
-                    has_siblings = True
-                    break
-            
-            if not has_siblings:
-                # 账本里没有同目录的文件了，我是最后一个！
-                should_refresh = True
-            else:
-                logger.info(f"  ⛽ 检测到目录 '{os.path.basename(refresh_path)}' 仍有文件在处理中，推迟刷新...")
+    if not files_to_process: return
+    
+    processor = MonitorService.processor_instance
+    if not processor: return
 
-    # --- 4. 执行刷新 ---
-    if should_refresh and refresh_path:
-        # 导入 emby 模块进行刷新 (或者在 processor 里加一个专门的刷新方法，这里直接调 emby 模块也行)
-        import handler.emby as emby
-        logger.info(f"  🚀 [批量完成] 所有任务结束，统一刷新目录: {refresh_path}")
-        emby.refresh_library_by_path(refresh_path, processor.emby_url, processor.emby_api_key)
+    # 1. 按父目录分组
+    grouped_files = {}
+    for file_path in files_to_process:
+        parent_dir = os.path.dirname(file_path)
+        if parent_dir not in grouped_files: 
+            grouped_files[parent_dir] = []
+        grouped_files[parent_dir].append(file_path)
+
+    # 2. 提取代表文件 (每个目录只取一个)
+    representative_files = []
+    
+    logger.info(f"  🚀 [实时监控] 防抖结束，共检测到 {len(files_to_process)} 个文件，聚合为 {len(grouped_files)} 个任务组。")
+
+    for parent_dir, files in grouped_files.items():
+        # 取第一个文件作为代表
+        rep_file = files[0]
+        representative_files.append(rep_file)
+        
+        # 打印日志方便调试
+        folder_name = os.path.basename(parent_dir)
+        if len(files) > 1:
+            logger.info(f"    ├─ 目录 '{folder_name}' 含 {len(files)} 个文件，选取 '{os.path.basename(rep_file)}' 为代表。")
+        else:
+            logger.info(f"    ├─ 目录 '{folder_name}' 单文件: '{os.path.basename(rep_file)}'")
+
+    # 3. 将代表文件列表传给批量处理线程
+    threading.Thread(target=_handle_batch_file_task, args=(processor, representative_files)).start()
+
+def process_delete_batch_queue():
+    """
+    处理删除队列 (批量版)
+    """
+    global DELETE_DEBOUNCE_TIMER
+    with DELETE_QUEUE_LOCK:
+        files = list(DELETE_EVENT_QUEUE)
+        DELETE_EVENT_QUEUE.clear()
+        DELETE_DEBOUNCE_TIMER = None
+    
+    if not files: return
+    
+    processor = MonitorService.processor_instance
+    if not processor: return
+
+    logger.info(f"  🗑️ [实时监控] 防抖结束，聚合处理删除事件: 共 {len(files)} 个文件")
+
+    # 调用处理器的批量删除接口
+    threading.Thread(target=processor.process_file_deletion_batch, args=(files,)).start()
+
+def _handle_batch_file_task(processor, file_paths: List[str]):
+    """
+    批量处理新增文件任务：
+    1. 逐个检查代表文件的稳定性（等待拷贝完成）。
+    2. 将所有有效的代表文件传给核心处理器的批量入口。
+    """
+    valid_files = []
+    
+    # 1. 检查文件稳定性 (Wait for copy to finish)
+    for file_path in file_paths:
+        if not os.path.exists(file_path):
+            continue
+            
+        stable_count = 0
+        last_size = -1
+        is_stable = False
+        
+        # 最多等待 60秒
+        for _ in range(60): 
+            try:
+                if not os.path.exists(file_path): 
+                    break # 文件中途消失
+                
+                size = os.path.getsize(file_path)
+                if size > 0 and size == last_size:
+                    stable_count += 1
+                else:
+                    stable_count = 0
+                
+                last_size = size
+                
+                # 连续 3秒 大小不变，认为拷贝完成
+                if stable_count >= 3: 
+                    is_stable = True
+                    break
+                
+                time.sleep(1)
+            except: 
+                pass
+        
+        if is_stable:
+            valid_files.append(file_path)
+        else:
+            logger.warning(f"  ⚠️ [实时监控] 文件不稳定或超时，跳过处理: {os.path.basename(file_path)}")
+
+    if not valid_files:
+        return
+
+    # 2. ★★★ 调用核心处理器的批量入口 ★★★
+    # 这个方法会：
+    # A. 遍历 valid_files (代表文件)，逐个生成覆盖缓存 (不刷新 Emby)。
+    # B. 收集所有涉及的父目录。
+    # C. 统一刷新这些父目录。
+    # 这样既保证了效率（不重复刮削同目录文件），又保证了安全（缓存就绪后再刷新）。
+    processor.process_file_actively_batch(valid_files)
 
 class MonitorService:
+    # ... (保持不变) ...
+    processor_instance = None
+
     def __init__(self, config: dict, processor: 'MediaProcessor'):
         self.config = config
         self.processor = processor
-        self.observer = None
+        MonitorService.processor_instance = processor 
+        
+        self.observer: Optional[Any] = None
         self.enabled = self.config.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False)
         self.paths = self.config.get(constants.CONFIG_OPTION_MONITOR_PATHS, [])
         self.extensions = self.config.get(constants.CONFIG_OPTION_MONITOR_EXTENSIONS, constants.DEFAULT_MONITOR_EXTENSIONS)
 
     def start(self):
-        if not self.enabled or not self.paths: return
+        if not self.enabled:
+            logger.info("  ➜ 实时监控功能未启用。")
+            return
+
+        if not self.paths:
+            logger.warning("  ➜ 实时监控已启用，但未配置监控目录列表。")
+            return
+
         self.observer = Observer()
-        handler = MediaFileHandler(self.extensions, self.processor)
+        event_handler = MediaFileHandler(self.extensions)
+
+        started_paths = []
         for path in self.paths:
-            if os.path.isdir(path):
-                self.observer.schedule(handler, path, recursive=True)
-        self.observer.start()
-        logger.info(f"  👀 实时监控已启动，监听 {len(self.paths)} 个目录。")
+            if os.path.exists(path) and os.path.isdir(path):
+                try:
+                    self.observer.schedule(event_handler, path, recursive=True)
+                    started_paths.append(path)
+                except Exception as e:
+                    logger.error(f"  ➜ 无法监控目录 '{path}': {e}")
+            else:
+                logger.warning(f"  ➜ 监控目录不存在或无效，已跳过: {path}")
+
+        if started_paths:
+            self.observer.start()
+            logger.info(f"  👀 实时监控服务已启动，正在监听 {len(started_paths)} 个目录: {started_paths}")
+        else:
+            logger.warning("  ➜ 没有有效的监控目录，实时监控服务未启动。")
 
     def stop(self):
         if self.observer:
+            logger.info("  ➜ 正在停止实时监控服务...")
             self.observer.stop()
             self.observer.join()
+            logger.info("  ➜ 实时监控服务已停止。")

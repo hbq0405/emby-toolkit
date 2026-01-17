@@ -170,14 +170,20 @@ class MediaProcessor:
         2. 双向检查数据库和本地缓存，互补缺失数据。
         3. 生成本地覆盖缓存文件 (Override Cache)。
         4. (可选) 通知 Emby 刷新。
+        
+        Args:
+            file_path: 文件路径
+            skip_refresh: 是否跳过 Emby 刷新步骤 (用于批量处理时最后统一刷新)
+            
+        Returns:
+            str: 该文件所属的父目录路径 (如果处理成功)，否则返回 None
         """
-        path_to_refresh = None
+        folder_path = os.path.dirname(file_path)
         try:
-            # 随机延时 0.5~2 秒，缓解并发压力
+            # 随机延时 0.5~2 秒，缓解并发压力 (批量处理时可能需要考虑是否保留此延时，为了防封禁建议保留)
             time.sleep(random.uniform(0.5, 2.0))
             
             filename = os.path.basename(file_path)
-            folder_path = os.path.dirname(file_path)
             folder_name = os.path.basename(folder_path)
             grandparent_path = os.path.dirname(folder_path)
             grandparent_name = os.path.basename(grandparent_path)
@@ -555,41 +561,69 @@ class MediaProcessor:
             # =========================================================
             
             # ★★★ 智能计算需要刷新的根路径 ★★★
-            if item_type == "Movie":
-                # 电影：刷新【分类文件夹】 (grandparent_path)
-                # 例如: /电影/华语电影/战狼/战狼.mkv -> 刷新 /电影/华语电影/
-                # 这样可以把同一分类下的多部新电影合并为一次刷新
-                path_to_refresh = grandparent_path
-                
-            elif item_type == "Series":
-                # 剧集：刷新【剧集根目录】
-                # 情况A (标准): /剧集/华语剧/繁花/Season 1/E01.mkv -> 刷新 /剧集/华语剧/繁花/
-                # 情况B (平铺): /剧集/华语剧/繁花/E01.mkv -> 刷新 /剧集/华语剧/繁花/
-                
-                folder_name = os.path.basename(folder_path)
-                # 如果父目录是季目录，说明上一级是剧集根
-                if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
-                    path_to_refresh = grandparent_path
-                else:
-                    # 如果父目录不是季目录，假设它就是剧集根目录
-                    path_to_refresh = folder_path
+            # 默认刷新当前文件所在的父目录 (适用于电影 / 平铺的剧集)
+            path_to_refresh = folder_path
             
-            else:
-                # 其他类型 (如音乐)，默认刷新父目录
-                path_to_refresh = folder_path
+            # 如果是剧集，且父目录看起来像 "Season X"，则向上取一级，刷新剧集根目录
+            # 这样可以合并同一部剧不同季的刷新请求
+            if item_type == "Series":
+                folder_name = os.path.basename(folder_path)
+                # 匹配 Season 1, S01, Specials 等常见季目录名
+                if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
+                    path_to_refresh = os.path.dirname(folder_path)
+                    logger.debug(f"  ➜ [实时监控] 识别为剧集季目录，将刷新范围扩大至剧集根目录: {os.path.basename(path_to_refresh)}")
 
             if not skip_refresh:
                 logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {path_to_refresh}")
                 emby.refresh_library_by_path(path_to_refresh, self.emby_url, self.emby_api_key)
                 logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
             else:
-                logger.info(f"  ➜ [实时监控] 预处理完成 (缓存已生成)，Emby 刷新已推迟 (等待添油结束)。")
+                logger.info(f"  ➜ [实时监控] 预处理完成 (缓存已生成)，等待统一刷新...")
             
+            # 返回计算出的最优刷新路径
             return path_to_refresh
 
         except Exception as e:
             logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
             return None
+
+    # --- [新增] 批量实时监控处理 ---
+    def process_file_actively_batch(self, file_paths: List[str]):
+        """
+        实时监控（批量版）：
+        针对短时间内涌入的多个文件，先逐个生成覆盖缓存，最后统一刷新 Emby。
+        这能确保 Emby 扫描时，所有新文件的缓存都已就绪，从而被神医插件正确劫持。
+        """
+        if not file_paths:
+            return
+
+        logger.info(f"  📥 [实时监控] 收到 {len(file_paths)} 个新文件，开始批量预处理...")
+        
+        folders_to_refresh = set()
+        
+        # 1. 循环处理每个文件 (只生成缓存，不刷新)
+        for i, file_path in enumerate(file_paths):
+            try:
+                logger.info(f"  ➜ [实时监控] ({i+1}/{len(file_paths)}) 正在处理: {os.path.basename(file_path)}")
+                folder = self.process_file_actively(file_path, skip_refresh=True)
+                if folder:
+                    folders_to_refresh.add(folder)
+            except Exception as e:
+                logger.error(f"  🚫 [实时监控] 处理文件 '{file_path}' 失败: {e}")
+
+        # 2. 统一刷新涉及的父目录
+        if folders_to_refresh:
+            logger.info(f"  🚀 [实时监控] 所有文件预处理完成。正在通知 Emby 刷新 {len(folders_to_refresh)} 个父目录...")
+            for folder_path in folders_to_refresh:
+                try:
+                    emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
+                    # 稍微间隔一下，避免瞬间并发请求过高
+                    time.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"  🚫 [实时监控] 刷新目录 '{folder_path}' 失败: {e}")
+            logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
+        else:
+            logger.warning(f"  ⚠️ [实时监控] 未收集到有效的刷新目录，任务结束。")
 
     # --- 内部私有方法：单文件数据库清理逻辑 ---
     def _cleanup_local_db_for_deleted_file(self, filename: str) -> bool:
