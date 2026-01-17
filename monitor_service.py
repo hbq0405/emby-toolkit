@@ -135,50 +135,25 @@ def _worker_logic(processor, file_path):
         emby.refresh_library_by_path(refresh_path, processor.emby_url, processor.emby_api_key)
 
 class MonitorService:
-    processor_instance = None
-
     def __init__(self, config: dict, processor: 'MediaProcessor'):
         self.config = config
         self.processor = processor
-        MonitorService.processor_instance = processor 
-        
-        self.observer: Optional[Any] = None
+        self.observer = None
         self.enabled = self.config.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False)
         self.paths = self.config.get(constants.CONFIG_OPTION_MONITOR_PATHS, [])
         self.extensions = self.config.get(constants.CONFIG_OPTION_MONITOR_EXTENSIONS, constants.DEFAULT_MONITOR_EXTENSIONS)
 
     def start(self):
-        if not self.enabled:
-            logger.info("  ➜ 实时监控功能未启用。")
-            return
-
-        if not self.paths:
-            logger.warning("  ➜ 实时监控已启用，但未配置监控目录列表。")
-            return
-
+        if not self.enabled or not self.paths: return
         self.observer = Observer()
-        event_handler = MediaFileHandler(self.extensions)
-
-        started_paths = []
+        handler = MediaFileHandler(self.extensions, self.processor)
         for path in self.paths:
-            if os.path.exists(path) and os.path.isdir(path):
-                try:
-                    self.observer.schedule(event_handler, path, recursive=True)
-                    started_paths.append(path)
-                except Exception as e:
-                    logger.error(f"  ➜ 无法监控目录 '{path}': {e}")
-            else:
-                logger.warning(f"  ➜ 监控目录不存在或无效，已跳过: {path}")
-
-        if started_paths:
-            self.observer.start()
-            logger.info(f"  👀 实时监控服务已启动，正在监听 {len(started_paths)} 个目录: {started_paths}")
-        else:
-            logger.warning("  ➜ 没有有效的监控目录，实时监控服务未启动。")
+            if os.path.isdir(path):
+                self.observer.schedule(handler, path, recursive=True)
+        self.observer.start()
+        logger.info(f"  👀 实时监控已启动，监听 {len(self.paths)} 个目录。")
 
     def stop(self):
         if self.observer:
-            logger.info("  ➜ 正在停止实时监控服务...")
             self.observer.stop()
             self.observer.join()
-            logger.info("  ➜ 实时监控服务已停止。")
