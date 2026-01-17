@@ -971,7 +971,7 @@ def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool
         response = emby_client.post(api_url, params=params, json=payload)
         
         if response.status_code == 204:
-            logger.info(f"  ✅ Emby 已接收路径刷新请求 (毫秒级响应)。")
+            logger.info(f"  ✅ Emby 已接收刷新请求。")
             return True
         else:
             logger.error(f"  ❌ 路径刷新请求失败: HTTP {response.status_code} - {response.text}")

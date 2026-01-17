@@ -578,7 +578,7 @@ class MediaProcessor:
                 emby.refresh_library_by_path(path_to_refresh, self.emby_url, self.emby_api_key)
                 logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
             else:
-                logger.info(f"  ➜ [实时监控] 预处理完成 (缓存已生成)，Emby 刷新已推迟。")
+                logger.info(f"  ➜ [实时监控] 预处理完成 (缓存已生成)，等待统一刷新...")
             
             # 返回计算出的最优刷新路径
             return path_to_refresh
