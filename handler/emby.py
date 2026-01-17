@@ -933,33 +933,58 @@ def refresh_emby_item_metadata(item_emby_id: str,
 # ✨✨✨ 根据文件路径刷新对应的媒体库 ✨✨✨
 def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool:
     """
-    【V2 - 高效增量版】
-    不再查找媒体库ID并刷新整个库，而是直接调用 Emby 的系统级通知接口。
-    告诉 Emby："这个物理路径的文件更新了，请只扫描这里"。
-    这是 Sonarr/Radarr 使用的标准接口，效率极高，不会触发全库扫描。
+    【V3 - 智能防错版】
+    调用 Emby 的系统级通知接口 /Library/Media/Updated。
+    
+    关键改进：
+    在发送请求前，检查路径是否存在。
+    - 如果是新增文件：路径存在，直接刷新该路径。
+    - 如果是删除文件：路径不存在，自动向上递归寻找存在的父目录进行刷新。
+      这避免了 Emby 因为找不到已被删除的路径而报错。
     """
     if not all([file_path, base_url, api_key]):
         return False
     
-    # 这里的 wait_for_server_idle 可以保留，也可以去掉。
-    # 因为这个接口是轻量级的，通常不需要等待服务器完全空闲。
-    # 为了保险起见，如果服务器正在高负载转码，还是等一下比较好。
-    wait_for_server_idle(base_url, api_key)
+    # wait_for_server_idle(base_url, api_key) # 这个接口很轻量，通常不需要等待
 
-    # 规范化路径，确保分隔符正确
+    # 1. 规范化路径
     norm_path = os.path.normpath(file_path)
+    original_path = norm_path # 记录原始路径用于日志
+
+    # 2. ★★★ 智能回溯逻辑 ★★★
+    # 如果当前路径不存在（说明是删除操作），则向上寻找存在的父目录
+    # 最多向上找 5 层，防止死循环或回溯到根目录
+    max_levels = 5
+    current_level = 0
     
-    # Emby 的 API 端点：通知媒体更新
+    while not os.path.exists(norm_path) and current_level < max_levels:
+        parent = os.path.dirname(norm_path)
+        # 如果父目录和当前目录一样（到达根目录），停止
+        if parent == norm_path:
+            break
+        norm_path = parent
+        current_level += 1
+
+    # 如果回溯后路径依然不存在（极少见），则无法刷新
+    if not os.path.exists(norm_path):
+        logger.warning(f"  ⚠️ 无法刷新路径 '{original_path}'：文件及父目录均不存在。")
+        return False
+
+    # 如果路径发生了变化（说明进行了回溯），记录一下
+    if norm_path != original_path:
+        logger.info(f"  🗑️ [智能刷新] 原路径不存在(已删除)，自动回溯刷新父目录: {norm_path}")
+    else:
+        logger.info(f"  ➜ [增量刷新] 通知 Emby 扫描指定路径: {norm_path}")
+
+    # 3. 发送请求
     api_url = f"{base_url.rstrip('/')}/Library/Media/Updated"
     
-    # 构造 Payload
-    # UpdateType 可以是 "Created", "Modified", "Deleted"
-    # 对于入库来说，"Created" 或 "Modified" 都可以，Emby 会重新扫描该路径
+    # UpdateType 统一用 "Modified" 或 "Created" 即可，Emby 会自动处理差异
     payload = {
         "Updates": [
             {
                 "Path": norm_path,
-                "UpdateType": "Created" 
+                "UpdateType": "Modified" 
             }
         ]
     }
@@ -967,11 +992,10 @@ def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool
     params = {"api_key": api_key}
     
     try:
-        logger.info(f"  ➜ [增量刷新] 通知 Emby 扫描指定路径: {norm_path}")
         response = emby_client.post(api_url, params=params, json=payload)
         
         if response.status_code == 204:
-            logger.info(f"  ✅ Emby 已接收刷新请求。")
+            # logger.info(f"  ✅ Emby 已接收路径刷新请求。") 
             return True
         else:
             logger.error(f"  ❌ 路径刷新请求失败: HTTP {response.status_code} - {response.text}")
