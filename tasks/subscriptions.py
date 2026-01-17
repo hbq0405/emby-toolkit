@@ -411,6 +411,7 @@ def task_auto_subscribe(processor):
     movie_protection_days = int(strategy_config.get('movie_protection_days', 180))    # 默认半年新片保护
     movie_search_window = int(strategy_config.get('movie_search_window_days', 1))     # 默认搜索1天
     movie_pause_days = int(strategy_config.get('movie_pause_days', 7))                # 默认暂停7天
+    timeout_revive_days = int(strategy_config.get('timeout_revive_days', 0))          # 默认不复活超时订阅
     
     # 兼容旧的全局开关 (如果用户还没配置过策略，可以回退读取 config.ini，或者直接用默认值)
     if not config.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
@@ -557,6 +558,34 @@ def task_auto_subscribe(processor):
                 if paused_ids:
                     request_db.update_movie_status_paused(paused_ids, pause_days=movie_pause_days)
                     logger.info(f"  💤 成功暂停 {len(paused_ids)} 部暂无资源的新片 (MP状态->S)。")
+        
+        # ======================================================================
+        # 阶段 3 - 超时订阅复活 (轮回机制)
+        # ======================================================================
+        if timeout_revive_days > 0:
+            logger.info(f"  ➜ [策略] 检查是否有被'订阅超时'清理的项目满足复活条件 (>{timeout_revive_days}天)...")
+            
+            items_to_revive = media_db.get_timed_out_items_to_revive(timeout_revive_days)
+            
+            if items_to_revive:
+                logger.info(f"  🧟 发现 {len(items_to_revive)} 个超时项目满足复活条件，正在重置为 '待订阅'...")
+                
+                revived_count = 0
+                for item in items_to_revive:
+                    # 将状态重置为 WANTED，且 force_unignore=True 以允许从 IGNORED 状态流转
+                    # source 设为 auto_revive 以便追踪
+                    request_db.set_media_status_wanted(
+                        tmdb_ids=[item['tmdb_id']],
+                        item_type=item['item_type'],
+                        source={"type": "manual_add", "reason": "auto_revive_from_timeout"}, # 使用 manual_add 类型确保能被 set_media_status_wanted 处理
+                        force_unignore=True
+                    )
+                    revived_count += 1
+                    logger.debug(f"    - 《{item['title']}》已复活。")
+                
+                logger.info(f"  ✅ 成功复活了 {revived_count} 个项目，它们将在本次或下次任务中被重新处理。")
+            else:
+                logger.debug("  ➜ 没有满足复活条件的项目。")
         
         # ======================================================================
         # 阶段 3 - 执行常规订阅 

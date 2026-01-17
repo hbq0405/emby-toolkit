@@ -1306,3 +1306,32 @@ def get_bad_episode_emby_ids(parent_tmdb_id: str) -> List[str]:
     except Exception as e:
         logger.error(f"DB: 查询坏分集ID失败: {e}")
         return []
+    
+def get_timed_out_items_to_revive(revive_days: int) -> List[Dict[str, Any]]:
+    """
+    【新增】获取需要复活的超时订阅。
+    条件：
+    1. 状态为 IGNORED
+    2. 原因必须是 '订阅超时' (由系统自动清理产生的，而非人工忽略)
+    3. 忽略时间 (last_synced_at) 超过 revive_days
+    4. 未入库
+    """
+    if revive_days <= 0:
+        return []
+
+    sql = f"""
+        SELECT tmdb_id, item_type, title
+        FROM media_metadata
+        WHERE subscription_status = 'IGNORED'
+          AND ignore_reason = '订阅超时'
+          AND in_library = FALSE
+          AND last_synced_at < NOW() - INTERVAL '{revive_days} days';
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql)
+                return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取待复活的超时订阅失败: {e}")
+        return []

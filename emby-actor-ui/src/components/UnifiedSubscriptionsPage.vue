@@ -238,6 +238,14 @@
           <n-input-number v-model:value="strategyConfig.delay_subscription_days" :min="0" />
           <template #feedback>电影上映后 N 天才允许订阅 (0 表示不延迟)。</template>
         </n-form-item>
+
+        <n-form-item label="超时复活 (天)">
+          <n-input-number v-model:value="strategyConfig.timeout_revive_days" :min="0" />
+          <template #feedback>
+            因“订阅超时”被移除的项目，在 N 天后自动复活并重新尝试订阅。<br/>
+            <b>0 表示不复活 (默认)</b>。适用于给老片或冷门资源第二次机会。
+          </template>
+        </n-form-item>
       </n-form>
       
       <template #footer>
@@ -291,6 +299,7 @@ const strategyConfig = ref({
   movie_search_window_days: 1,
   movie_pause_days: 7,
   delay_subscription_days: 0,
+  timeout_revive_days: 0,
 });
 
 // 加载配置
