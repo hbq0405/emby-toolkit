@@ -578,7 +578,7 @@ class MediaProcessor:
                 emby.refresh_library_by_path(path_to_refresh, self.emby_url, self.emby_api_key)
                 logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
             else:
-                logger.info(f"  ➜ [实时监控] 预处理完成 (缓存已生成)，等待统一刷新...")
+                logger.info(f"  ➜ [实时监控] 缓存已生成，等待统一刷新...")
             
             # 返回计算出的最优刷新路径
             return path_to_refresh
@@ -597,7 +597,7 @@ class MediaProcessor:
         if not file_paths:
             return
 
-        logger.info(f"  📥 [实时监控] 收到 {len(file_paths)} 个新文件，开始批量预处理...")
+        logger.info(f"  📥 [实时监控] 收到 {len(file_paths)} 个新任务，开始批量预处理...")
         
         folders_to_check = set()
         
@@ -643,7 +643,7 @@ class MediaProcessor:
                 for path in fallback_paths:
                     emby.refresh_library_by_path(path, self.emby_url, self.emby_api_key)
 
-            logger.info(f"  ✅ [实时监控] 批量任务全部完成。")
+            logger.info(f"  ✅ [实时监控] 批量预处理完成，等待Emby入库更新媒体资产数据...")
         else:
             logger.warning(f"  ⚠️ [实时监控] 未收集到有效的刷新目录，任务结束。")
 
