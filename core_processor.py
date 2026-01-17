@@ -597,33 +597,33 @@ class MediaProcessor:
         if not file_paths:
             return
 
-        logger.info(f"  📥 [批量监控] 收到 {len(file_paths)} 个新文件，开始批量预处理...")
+        logger.info(f"  📥 [实时监控] 收到 {len(file_paths)} 个新文件，开始批量预处理...")
         
         folders_to_refresh = set()
         
         # 1. 循环处理每个文件 (只生成缓存，不刷新)
         for i, file_path in enumerate(file_paths):
             try:
-                logger.info(f"  ➜ [批量监控] ({i+1}/{len(file_paths)}) 正在处理: {os.path.basename(file_path)}")
+                logger.info(f"  ➜ [实时监控] ({i+1}/{len(file_paths)}) 正在处理: {os.path.basename(file_path)}")
                 folder = self.process_file_actively(file_path, skip_refresh=True)
                 if folder:
                     folders_to_refresh.add(folder)
             except Exception as e:
-                logger.error(f"  🚫 [批量监控] 处理文件 '{file_path}' 失败: {e}")
+                logger.error(f"  🚫 [实时监控] 处理文件 '{file_path}' 失败: {e}")
 
         # 2. 统一刷新涉及的父目录
         if folders_to_refresh:
-            logger.info(f"  🚀 [批量监控] 所有文件预处理完成。正在通知 Emby 刷新 {len(folders_to_refresh)} 个父目录...")
+            logger.info(f"  🚀 [实时监控] 所有文件预处理完成。正在通知 Emby 刷新 {len(folders_to_refresh)} 个父目录...")
             for folder_path in folders_to_refresh:
                 try:
                     emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
                     # 稍微间隔一下，避免瞬间并发请求过高
                     time.sleep(0.5)
                 except Exception as e:
-                    logger.error(f"  🚫 [批量监控] 刷新目录 '{folder_path}' 失败: {e}")
-            logger.info(f"  ✅ [批量监控] 批量任务全部完成。")
+                    logger.error(f"  🚫 [实时监控] 刷新目录 '{folder_path}' 失败: {e}")
+            logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
         else:
-            logger.warning(f"  ⚠️ [批量监控] 未收集到有效的刷新目录，任务结束。")
+            logger.warning(f"  ⚠️ [实时监控] 未收集到有效的刷新目录，任务结束。")
 
     # --- 内部私有方法：单文件数据库清理逻辑 ---
     def _cleanup_local_db_for_deleted_file(self, filename: str) -> bool:
