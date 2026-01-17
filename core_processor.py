@@ -1477,7 +1477,7 @@ class MediaProcessor:
         )
 
         if match_info_result.get("error") or not match_info_result.get("id"):
-            logger.warning(f"在线匹配豆瓣ID失败 for '{item_name}': {match_info_result.get('message', '未找到ID')}")
+            logger.warning(f"  ❌ 在线匹配豆瓣ID失败 for '{item_name}': {match_info_result.get('message', '未找到ID')}")
             return [], None
 
         douban_id = match_info_result["id"]
@@ -1485,7 +1485,7 @@ class MediaProcessor:
         douban_type = match_info_result.get("type")
 
         if not douban_type:
-            logger.error(f"从豆瓣匹配结果中未能获取到媒体类型 for ID {douban_id}。处理中止。")
+            logger.error(f"  🚫 从豆瓣匹配结果中未能获取到媒体类型 for ID {douban_id}。处理中止。")
             return [], None
 
         # 3.2 获取演职员 (使用完全可信的类型)
