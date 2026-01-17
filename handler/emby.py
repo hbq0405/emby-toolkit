@@ -930,42 +930,27 @@ def refresh_emby_item_metadata(item_emby_id: str,
     except requests.exceptions.RequestException as e:
         logger.error(f"  - 刷新请求时发生网络错误: {e}")
         return False
-# ✨✨✨ 根据文件路径刷新对应的媒体库 ✨✨✨
-def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool:
+# --- 仅查找路径对应的最近 Emby 锚点 ID，不刷新 ---
+def find_nearest_library_anchor(file_path: str, base_url: str, api_key: str) -> tuple[Optional[str], Optional[str]]:
     """
-    【V4 - 最近祖先强制刷新版】
-    不再依赖软性的 /Library/Media/Updated 通知接口。
-    而是向上递归查找路径中“最近的一个已存在于 Emby 数据库的文件夹”，
-    并调用 /Items/{Id}/Refresh 接口强制刷新该文件夹。
-    
-    效果：
-    1. 对于新电影：会自动找到其父目录（如“华语电影”或“电影”库根目录）并刷新。
-    2. 对于新剧集：会自动找到“剧集”库根目录并刷新。
-    3. 速度极快，且 100% 保证触发扫描。
+    向上递归查找路径中“最近的一个已存在于 Emby 数据库的文件夹”。
+    返回: (Item Id, Item Name) 或 (None, None)
     """
     if not all([file_path, base_url, api_key]):
-        return False
+        return None, None
     
-    # 1. 规范化路径
     norm_path = os.path.normpath(file_path)
-    
-    # 2. 向上递归查找最近的在库祖先
-    # 我们尝试最多向上找 10 层，避免死循环
     current_path = norm_path
-    found_id = None
-    found_name = None
     
-    logger.info(f"  🔍 [智能刷新] 正在为路径寻找最近的 Emby 锚点: {norm_path}")
-
+    # 尝试最多向上找 10 层
     for _ in range(10):
-        # 检查当前路径是否存在于 Emby 中
         # 使用 /Items 接口按 Path 精确查询
         query_url = f"{base_url.rstrip('/')}/Items"
         params = {
             "api_key": api_key,
             "Path": current_path,
             "Limit": 1,
-            "Recursive": "false", # 只查当前层级，快
+            "Recursive": "false",
             "Fields": "Id,Name"
         }
         
@@ -974,46 +959,58 @@ def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool
             if response.status_code == 200:
                 data = response.json()
                 if data.get("Items"):
-                    # 找到了！
                     item = data["Items"][0]
-                    found_id = item["Id"]
-                    found_name = item["Name"]
-                    break
+                    return item["Id"], item["Name"]
         except Exception:
-            pass # 查询出错则继续向上找
+            pass 
             
-        # 没找到，向上取父目录
         parent = os.path.dirname(current_path)
         if parent == current_path: # 到达根目录
             break
         current_path = parent
+        
+    return None, None
 
-    # 3. 执行刷新
+# --- 仅根据 ID 强制刷新 ---
+def refresh_item_by_id(item_id: str, base_url: str, api_key: str) -> bool:
+    """
+    对指定 ID 执行强制递归刷新
+    """
+    refresh_url = f"{base_url.rstrip('/')}/Items/{item_id}/Refresh"
+    refresh_params = {
+        "api_key": api_key,
+        "Recursive": "true", 
+        "ImageRefreshMode": "Default",
+        "MetadataRefreshMode": "Default",
+        "ReplaceAllMetadata": "false",
+        "ReplaceAllImages": "false"
+    }
+    
+    try:
+        emby_client.post(refresh_url, params=refresh_params)
+        return True
+    except Exception as e:
+        logger.error(f"  ❌ 刷新请求失败 (ID: {item_id}): {e}")
+        return False
+
+# --- 最近锚点强制刷新版 ---
+def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool:
+    """
+    最近锚点强制刷新版
+    """
+    # 1. 查找锚点
+    logger.info(f"  🔍 [智能刷新] 正在为路径寻找最近的 Emby 锚点: {file_path}")
+    found_id, found_name = find_nearest_library_anchor(file_path, base_url, api_key)
+
+    # 2. 执行刷新
     if found_id:
         logger.info(f"  🚀 [智能刷新] 命中最近锚点: '{found_name}' (ID: {found_id})，执行强制刷新...")
-        
-        refresh_url = f"{base_url.rstrip('/')}/Items/{found_id}/Refresh"
-        refresh_params = {
-            "api_key": api_key,
-            "Recursive": "true", # 必须递归，否则扫不到新加的子文件夹
-            "ImageRefreshMode": "Default",
-            "MetadataRefreshMode": "Default",
-            "ReplaceAllMetadata": "false",
-            "ReplaceAllImages": "false"
-        }
-        
-        try:
-            emby_client.post(refresh_url, params=refresh_params)
-            logger.info(f"  ✅ 刷新指令已发送。")
-            return True
-        except Exception as e:
-            logger.error(f"  ❌ 刷新请求失败: {e}")
-            return False
+        return refresh_item_by_id(found_id, base_url, api_key)
     else:
-        # 如果连根目录都没找到（极少见），回退到旧的通知接口试一下
+        # 回退逻辑
         logger.warning(f"  ⚠️ 未找到任何在库的父级目录，回退到系统通知接口...")
         api_url = f"{base_url.rstrip('/')}/Library/Media/Updated"
-        payload = {"Updates": [{"Path": norm_path, "UpdateType": "Modified"}]}
+        payload = {"Updates": [{"Path": file_path, "UpdateType": "Modified"}]}
         try:
             emby_client.post(api_url, params={"api_key": api_key}, json=payload)
             return True

@@ -587,41 +587,63 @@ class MediaProcessor:
             logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
             return None
 
-    # --- [新增] 批量实时监控处理 ---
+    # --- 批量实时监控处理 ---
     def process_file_actively_batch(self, file_paths: List[str]):
         """
         实时监控（批量版）：
         针对短时间内涌入的多个文件，先逐个生成覆盖缓存，最后统一刷新 Emby。
-        这能确保 Emby 扫描时，所有新文件的缓存都已就绪，从而被神医插件正确劫持。
+        ★ 优化：将所有路径解析为 Emby 锚点 ID 后再去重刷新，避免同一库重复刷新。
         """
         if not file_paths:
             return
 
         logger.info(f"  📥 [实时监控] 收到 {len(file_paths)} 个新文件，开始批量预处理...")
         
-        folders_to_refresh = set()
+        folders_to_check = set()
         
         # 1. 循环处理每个文件 (只生成缓存，不刷新)
         for i, file_path in enumerate(file_paths):
             try:
                 logger.info(f"  ➜ [实时监控] ({i+1}/{len(file_paths)}) 正在处理: {os.path.basename(file_path)}")
+                # process_file_actively 返回的是建议刷新的父目录路径
                 folder = self.process_file_actively(file_path, skip_refresh=True)
                 if folder:
-                    folders_to_refresh.add(folder)
+                    folders_to_check.add(folder)
             except Exception as e:
                 logger.error(f"  🚫 [实时监控] 处理文件 '{file_path}' 失败: {e}")
 
-        # 2. 统一刷新涉及的父目录
-        if folders_to_refresh:
-            logger.info(f"  🚀 [实时监控] 所有文件预处理完成。正在通知 Emby 刷新 {len(folders_to_refresh)} 个父目录...")
-            for folder_path in folders_to_refresh:
-                try:
-                    emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
-                    # 稍微间隔一下，避免瞬间并发请求过高
-                    time.sleep(0.5)
-                except Exception as e:
-                    logger.error(f"  🚫 [实时监控] 刷新目录 '{folder_path}' 失败: {e}")
-            logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
+        # 2. ★★★ ID 级别去重与刷新 ★★★
+        if folders_to_check:
+            logger.info(f"  🔍 [实时监控] 预处理完成。正在解析 {len(folders_to_check)} 个路径对应的 Emby 锚点...")
+            
+            unique_anchor_map = {} # ID -> Name
+            fallback_paths = []
+
+            # A. 解析路径到 ID
+            for folder_path in folders_to_check:
+                anchor_id, anchor_name = emby.find_nearest_library_anchor(folder_path, self.emby_url, self.emby_api_key)
+                if anchor_id:
+                    if anchor_id not in unique_anchor_map:
+                        unique_anchor_map[anchor_id] = anchor_name
+                        logger.debug(f"    ├─ 路径 '{os.path.basename(folder_path)}' -> 锚点 '{anchor_name}' (ID: {anchor_id})")
+                else:
+                    fallback_paths.append(folder_path)
+
+            # B. 刷新唯一的 ID
+            if unique_anchor_map:
+                logger.info(f"  🚀 [实时监控] 聚合完成，正在刷新 {len(unique_anchor_map)} 个 Emby 锚点...")
+                for anchor_id, anchor_name in unique_anchor_map.items():
+                    logger.info(f"    ➜ 正在刷新: '{anchor_name}' (ID: {anchor_id})")
+                    emby.refresh_item_by_id(anchor_id, self.emby_url, self.emby_api_key)
+                    time.sleep(0.2) # 稍微间隔
+
+            # C. 处理无法解析 ID 的路径 (回退到旧方法)
+            if fallback_paths:
+                logger.warning(f"  ⚠️ [实时监控] 有 {len(fallback_paths)} 个路径无法解析锚点，使用回退刷新...")
+                for path in fallback_paths:
+                    emby.refresh_library_by_path(path, self.emby_url, self.emby_api_key)
+
+            logger.info(f"  ✅ [实时监控] 批量任务全部完成。")
         else:
             logger.warning(f"  ⚠️ [实时监控] 未收集到有效的刷新目录，任务结束。")
 
@@ -708,14 +730,14 @@ class MediaProcessor:
     def process_file_deletion_batch(self, file_paths: List[str]):
         """
         实时监控：批量处理文件删除事件。
-        针对防抖聚合后的事件，逐个清理数据库，最后统一刷新目录。
+        ★ 优化：ID 级别去重刷新。
         """
         if not file_paths:
             return
 
         logger.info(f"  🗑️ [批量删除] 开始处理 {len(file_paths)} 个文件的删除事件...")
         
-        folders_to_refresh = set()
+        folders_to_check = set()
         cleaned_count = 0
         
         # 1. 循环清理数据库
@@ -723,28 +745,42 @@ class MediaProcessor:
             try:
                 filename = os.path.basename(file_path)
                 folder_path = os.path.dirname(file_path)
-                folders_to_refresh.add(folder_path)
+                folders_to_check.add(folder_path)
                 
                 if self._cleanup_local_db_for_deleted_file(filename):
                     cleaned_count += 1
             except Exception as e:
                 logger.error(f"  🚫 [批量删除] 处理文件 '{file_path}' 时出错: {e}")
 
-        # 2. 刷新向量缓存 (只刷一次)
+        # 2. 刷新向量缓存
         if cleaned_count > 0 and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
             try:
                 threading.Thread(target=RecommendationEngine.refresh_cache).start()
-                logger.debug(f"  ➜ [智能推荐] 批量清理完成，已触发向量缓存刷新。")
             except: pass
 
-        # 3. 统一刷新 Emby 目录 (去重后)
-        logger.info(f"  ➜ [批量删除] 数据库清理完成 ({cleaned_count}/{len(file_paths)})，正在通知 Emby 刷新 {len(folders_to_refresh)} 个父目录...")
+        # 3. ★★★ ID 级别去重与刷新 ★★★
+        logger.info(f"  🔍 [批量删除] 数据库清理完成 ({cleaned_count}/{len(file_paths)})，正在解析 {len(folders_to_check)} 个路径对应的 Emby 锚点...")
         
-        for folder_path in folders_to_refresh:
-            try:
-                emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
-            except Exception as e:
-                logger.error(f"  🚫 [批量删除] 刷新目录 '{folder_path}' 失败: {e}")
+        unique_anchor_map = {}
+        fallback_paths = []
+
+        for folder_path in folders_to_check:
+            anchor_id, anchor_name = emby.find_nearest_library_anchor(folder_path, self.emby_url, self.emby_api_key)
+            if anchor_id:
+                unique_anchor_map[anchor_id] = anchor_name
+            else:
+                fallback_paths.append(folder_path)
+
+        if unique_anchor_map:
+            logger.info(f"  🚀 [批量删除] 聚合完成，正在刷新 {len(unique_anchor_map)} 个 Emby 锚点...")
+            for anchor_id, anchor_name in unique_anchor_map.items():
+                logger.info(f"    ➜ 正在刷新: '{anchor_name}' (ID: {anchor_id})")
+                emby.refresh_item_by_id(anchor_id, self.emby_url, self.emby_api_key)
+                time.sleep(0.2)
+
+        if fallback_paths:
+            for path in fallback_paths:
+                emby.refresh_library_by_path(path, self.emby_url, self.emby_api_key)
 
     def _refresh_lib_guid_map(self):
         """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""
