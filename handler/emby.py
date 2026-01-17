@@ -967,7 +967,7 @@ def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool
     params = {"api_key": api_key}
     
     try:
-        logger.info(f"  ➜ [增量刷新] 通知 Emby 扫描特定路径: {norm_path}")
+        logger.info(f"  ➜ [增量刷新] 通知 Emby 扫描指定路径: {norm_path}")
         response = emby_client.post(api_url, params=params, json=payload)
         
         if response.status_code == 204:

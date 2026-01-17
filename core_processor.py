@@ -568,7 +568,6 @@ class MediaProcessor:
                     path_to_refresh = os.path.dirname(folder_path)
                     logger.debug(f"  ➜ [实时监控] 识别为剧集季目录，将刷新剧集根目录: {os.path.basename(path_to_refresh)}")
 
-            logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {path_to_refresh}")
             emby.refresh_library_by_path(path_to_refresh, self.emby_url, self.emby_api_key)
             logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
 
