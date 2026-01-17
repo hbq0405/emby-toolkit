@@ -990,7 +990,7 @@ def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool
 
     # 3. 执行刷新
     if found_id:
-        logger.info(f"  🚀 [智能刷新] 命中最近祖先: '{found_name}' (ID: {found_id})，执行强制刷新...")
+        logger.info(f"  🚀 [智能刷新] 命中最近锚点: '{found_name}' (ID: {found_id})，执行强制刷新...")
         
         refresh_url = f"{base_url.rstrip('/')}/Items/{found_id}/Refresh"
         refresh_params = {
