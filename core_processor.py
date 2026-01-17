@@ -162,21 +162,28 @@ class MediaProcessor:
         self._last_lib_map_update = 0
         logger.trace("核心处理器初始化完成。")
 
-    # --- [优化版] 实时监控文件逻辑 (增加缓存跳过) ---
-    def process_file_actively(self, file_path: str):
+    # --- [优化版] 实时监控文件逻辑 (增加缓存跳过 & 支持批量延迟刷新) ---
+    def process_file_actively(self, file_path: str, skip_refresh: bool = False) -> Optional[str]:
         """
         实时监控（优化版）：
         1. 识别 TMDb ID。
-        2. 【升级】双向检查数据库和本地缓存，互补缺失数据。
-        3. 如果任一数据源存在，则生成/恢复另一方，并跳过在线刮削。
-        4. 仅当两方都缺失时，才进行 TMDb 在线获取。
+        2. 双向检查数据库和本地缓存，互补缺失数据。
+        3. 生成本地覆盖缓存文件 (Override Cache)。
+        4. (可选) 通知 Emby 刷新。
+        
+        Args:
+            file_path: 文件路径
+            skip_refresh: 是否跳过 Emby 刷新步骤 (用于批量处理时最后统一刷新)
+            
+        Returns:
+            str: 该文件所属的父目录路径 (如果处理成功)，否则返回 None
         """
+        folder_path = os.path.dirname(file_path)
         try:
-            # 随机延时 0.5~2 秒，缓解并发压力
+            # 随机延时 0.5~2 秒，缓解并发压力 (批量处理时可能需要考虑是否保留此延时，为了防封禁建议保留)
             time.sleep(random.uniform(0.5, 2.0))
             
             filename = os.path.basename(file_path)
-            folder_path = os.path.dirname(file_path)
             folder_name = os.path.basename(folder_path)
             grandparent_path = os.path.dirname(folder_path)
             grandparent_name = os.path.basename(grandparent_path)
@@ -228,9 +235,9 @@ class MediaProcessor:
                     logger.info(f"  ➜ [实时监控] 搜索匹配成功: {results[0].get('title') or results[0].get('name')} (ID: {tmdb_id})")
                 else:
                     logger.warning(f"  ➜ [实时监控] 搜索失败，无法处理: {search_query}")
-                    return
+                    return None
 
-            if not tmdb_id: return
+            if not tmdb_id: return None
 
             # 确定类型
             is_series = bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
@@ -246,7 +253,7 @@ class MediaProcessor:
                 
                 if current_filename in known_files:
                     logger.info(f"  ➜ [实时监控] 文件已完美入库 ({current_filename})，直接跳过。")
-                    return
+                    return folder_path # 即使跳过处理，也返回路径以便后续刷新检查
             except Exception as e:
                 logger.warning(f"  ➜ [实时监控] 查重失败，将继续常规流程: {e}")
 
@@ -333,7 +340,6 @@ class MediaProcessor:
                             seasons_rows = cursor.fetchall()
                             seasons_data = []
                             for s_row in seasons_rows:
-                                # 构造简化的 season 对象
                                 s_data = {
                                     "id": int(s_row['tmdb_id']),
                                     "name": s_row['title'],
@@ -353,8 +359,6 @@ class MediaProcessor:
                                 s_num = e_row['season_number']
                                 e_num = e_row['episode_number']
                                 key = f"S{s_num}E{e_num}"
-                                
-                                # 构造简化的 episode 对象
                                 e_data = {
                                     "id": int(e_row['tmdb_id']),
                                     "name": e_row['title'],
@@ -460,7 +464,7 @@ class MediaProcessor:
                     
                 if not details:
                     logger.error("  ➜ [实时监控] 无法获取 TMDb 详情，中止处理。")
-                    return
+                    return None
 
                 # 准备演员源数据
                 authoritative_cast_source = []
@@ -553,15 +557,73 @@ class MediaProcessor:
                 logger.info(f"  ➜ [实时监控] 已跳过在线刮削和元数据写入 (数据已通过缓存恢复)。")
 
             # =========================================================
-            # 步骤 6: 通知 Emby 刷新
+            # 步骤 6: 通知 Emby 刷新 (可选)
             # =========================================================
-            logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {folder_path}")
-            emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
             
-            logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
+            # ★★★ 智能计算需要刷新的根路径 ★★★
+            # 默认刷新当前文件所在的父目录 (适用于电影 / 平铺的剧集)
+            path_to_refresh = folder_path
+            
+            # 如果是剧集，且父目录看起来像 "Season X"，则向上取一级，刷新剧集根目录
+            # 这样可以合并同一部剧不同季的刷新请求
+            if item_type == "Series":
+                folder_name = os.path.basename(folder_path)
+                # 匹配 Season 1, S01, Specials 等常见季目录名
+                if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
+                    path_to_refresh = os.path.dirname(folder_path)
+                    logger.debug(f"  ➜ [实时监控] 识别为剧集季目录，将刷新范围扩大至剧集根目录: {os.path.basename(path_to_refresh)}")
+
+            if not skip_refresh:
+                logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {path_to_refresh}")
+                emby.refresh_library_by_path(path_to_refresh, self.emby_url, self.emby_api_key)
+                logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
+            else:
+                logger.info(f"  ➜ [实时监控] 预处理完成 (缓存已生成)，Emby 刷新已推迟。")
+            
+            # 返回计算出的最优刷新路径
+            return path_to_refresh
 
         except Exception as e:
             logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
+            return None
+
+    # --- [新增] 批量实时监控处理 ---
+    def process_file_actively_batch(self, file_paths: List[str]):
+        """
+        实时监控（批量版）：
+        针对短时间内涌入的多个文件，先逐个生成覆盖缓存，最后统一刷新 Emby。
+        这能确保 Emby 扫描时，所有新文件的缓存都已就绪，从而被神医插件正确劫持。
+        """
+        if not file_paths:
+            return
+
+        logger.info(f"  📥 [批量监控] 收到 {len(file_paths)} 个新文件，开始批量预处理...")
+        
+        folders_to_refresh = set()
+        
+        # 1. 循环处理每个文件 (只生成缓存，不刷新)
+        for i, file_path in enumerate(file_paths):
+            try:
+                logger.info(f"  ➜ [批量监控] ({i+1}/{len(file_paths)}) 正在处理: {os.path.basename(file_path)}")
+                folder = self.process_file_actively(file_path, skip_refresh=True)
+                if folder:
+                    folders_to_refresh.add(folder)
+            except Exception as e:
+                logger.error(f"  🚫 [批量监控] 处理文件 '{file_path}' 失败: {e}")
+
+        # 2. 统一刷新涉及的父目录
+        if folders_to_refresh:
+            logger.info(f"  🚀 [批量监控] 所有文件预处理完成。正在通知 Emby 刷新 {len(folders_to_refresh)} 个父目录...")
+            for folder_path in folders_to_refresh:
+                try:
+                    emby.refresh_library_by_path(folder_path, self.emby_url, self.emby_api_key)
+                    # 稍微间隔一下，避免瞬间并发请求过高
+                    time.sleep(0.5)
+                except Exception as e:
+                    logger.error(f"  🚫 [批量监控] 刷新目录 '{folder_path}' 失败: {e}")
+            logger.info(f"  ✅ [批量监控] 批量任务全部完成。")
+        else:
+            logger.warning(f"  ⚠️ [批量监控] 未收集到有效的刷新目录，任务结束。")
 
     # --- 内部私有方法：单文件数据库清理逻辑 ---
     def _cleanup_local_db_for_deleted_file(self, filename: str) -> bool:
