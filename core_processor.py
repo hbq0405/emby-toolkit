@@ -2014,7 +2014,7 @@ class MediaProcessor:
                     )
 
                     # 通过 API 实时更新 Emby 演员库中的名字
-                    # self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
+                    self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
 
                     # 通知 Emby 刷新
                     logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
