@@ -2005,13 +2005,13 @@ class MediaProcessor:
                     # 写入 override 文件
                     # 注意：sync_single_item_assets 内部已经有针对 episode_ids_to_sync 的优化，
                     # 它只会下载新分集的图片，并复制新分集的 JSON，不会重新下载全套图片。
-                    # self.sync_single_item_assets(
-                    #     item_id=item_id,
-                    #     update_description="主流程处理完成" if not specific_episode_ids else f"追更: {len(specific_episode_ids)}个分集",
-                    #     final_cast_override=final_processed_cast,
-                    #     episode_ids_to_sync=specific_episode_ids,
-                    #     metadata_override=tmdb_details_for_extra 
-                    # )
+                    self.sync_single_item_assets(
+                        item_id=item_id,
+                        update_description="主流程处理完成" if not specific_episode_ids else f"追更: {len(specific_episode_ids)}个分集",
+                        final_cast_override=final_processed_cast,
+                        episode_ids_to_sync=specific_episode_ids,
+                        metadata_override=tmdb_details_for_extra 
+                    )
 
                     # 通过 API 实时更新 Emby 演员库中的名字
                     # self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
