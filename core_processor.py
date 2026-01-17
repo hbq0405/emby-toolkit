@@ -555,13 +555,28 @@ class MediaProcessor:
             # =========================================================
             
             # ★★★ 智能计算需要刷新的根路径 ★★★
-            path_to_refresh = folder_path
-            
-            if item_type == "Series":
+            if item_type == "Movie":
+                # 电影：刷新【分类文件夹】 (grandparent_path)
+                # 例如: /电影/华语电影/战狼/战狼.mkv -> 刷新 /电影/华语电影/
+                # 这样可以把同一分类下的多部新电影合并为一次刷新
+                path_to_refresh = grandparent_path
+                
+            elif item_type == "Series":
+                # 剧集：刷新【剧集根目录】
+                # 情况A (标准): /剧集/华语剧/繁花/Season 1/E01.mkv -> 刷新 /剧集/华语剧/繁花/
+                # 情况B (平铺): /剧集/华语剧/繁花/E01.mkv -> 刷新 /剧集/华语剧/繁花/
+                
                 folder_name = os.path.basename(folder_path)
+                # 如果父目录是季目录，说明上一级是剧集根
                 if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
-                    path_to_refresh = os.path.dirname(folder_path)
-                    logger.debug(f"  ➜ [实时监控] 识别为剧集季目录，将刷新剧集根目录: {os.path.basename(path_to_refresh)}")
+                    path_to_refresh = grandparent_path
+                else:
+                    # 如果父目录不是季目录，假设它就是剧集根目录
+                    path_to_refresh = folder_path
+            
+            else:
+                # 其他类型 (如音乐)，默认刷新父目录
+                path_to_refresh = folder_path
 
             if not skip_refresh:
                 logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {path_to_refresh}")
