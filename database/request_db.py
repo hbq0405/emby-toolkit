@@ -293,11 +293,22 @@ def set_media_status_ignored(
                     ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                         subscription_status = 'IGNORED',
                         subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
-                        ignore_reason = EXCLUDED.ignore_reason, last_synced_at = NOW(), parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
-                    WHERE (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
+                        ignore_reason = EXCLUDED.ignore_reason, 
+                        last_synced_at = NOW(), 
+                        parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
+                    WHERE 
+                        (
+                            -- 1. 正常逻辑：只有当来源不仅在或者是空时才更新（防止日志刷屏）
+                            (
+                                EXCLUDED.subscription_sources_json = '[]'::jsonb 
+                                OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json)
+                            )
+                            -- 2. ★★★ 修复逻辑：如果当前状态不是 IGNORED (例如是从 SUBSCRIBED 转入)，则强制更新 ★★★
+                            OR media_metadata.subscription_status != 'IGNORED'
+                        );
                 """
                 execute_batch(cursor, sql, data_to_upsert)
-                if cursor.rowcount <= 0: logger.debug(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为不满足前置条件）。")
+                if cursor.rowcount <= 0: logger.debug(f"  ➜ [状态执行] 操作完成，但没有行受到影响（可能因为已是 IGNORED 且来源重复）。")
     except Exception as e:
         logger.error(f"  ➜ [状态执行] 更新媒体状态为 'IGNORED' 时发生错误: {e}", exc_info=True)
         raise
