@@ -26,7 +26,7 @@ DELETE_EVENT_QUEUE = set()
 DELETE_QUEUE_LOCK = threading.Lock()
 DELETE_DEBOUNCE_TIMER = None
 
-DEBOUNCE_DELAY = 2 # 防抖延迟秒数
+DEBOUNCE_DELAY = 3 # 防抖延迟秒数
 
 class MediaFileHandler(FileSystemEventHandler):
     """
