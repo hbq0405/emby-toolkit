@@ -5,7 +5,6 @@ import logging
 import json
 import re
 import requests
-import os
 import docker
 # 导入底层模块
 import task_manager
@@ -14,8 +13,8 @@ import config_manager
 import handler.emby as emby
 # 导入共享模块
 import extensions
-from database import custom_collection_db
 from extensions import admin_required, task_lock_required
+from tasks.system_update import _update_process_generator
 import constants
 import handler.github as github
 # 1. 创建蓝图
@@ -390,87 +389,14 @@ def stream_update_progress():
             # 确保发送的是 JSON 格式的字符串
             yield f"data: {json.dumps(data)}\n\n"
 
-        client = None
-        proxies_config = config_manager.get_proxies_for_requests()
-        old_env = os.environ.copy()
-        try:
-            # 设置代理
-            if proxies_config and proxies_config.get('https'):
-                proxy_url = proxies_config['https']
-                os.environ['HTTPS_PROXY'] = proxy_url
-                os.environ['HTTP_PROXY'] = proxy_url
-                yield from send_event({"status": f"检测到代理配置，将通过 {proxy_url} 拉取镜像..."})
-            
-            client = docker.from_env()
-            container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
-            image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
+        container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
+        image_name_tag = config_manager.APP_CONFIG.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
 
-            yield from send_event({"status": f"正在检查并拉取最新镜像: {image_name_tag}..."})
-            
-            # 使用流式 API 以保持连接并提供基本反馈
-            stream = client.api.pull(image_name_tag, stream=True, decode=True)
-            
-            last_line = {}
-            for line in stream:
-                # 保持循环以防止超时，但我们不再向前端发送每一层的细节
-                last_line = line
-
-            # 检查最终状态
-            final_status = last_line.get('status', '')
-            if 'Status: Image is up to date' in final_status:
-                 yield from send_event({"status": "当前已是最新版本。"})
-                 yield from send_event({"event": "DONE", "message": "无需更新。"})
-                 return
-            
-            # 如果没有明确的“up to date”消息，并且没有错误，我们假设拉取成功
-            if 'errorDetail' in last_line:
-                error_msg = f"拉取镜像失败: {last_line['errorDetail']['message']}"
-                logger.error(error_msg)
-                yield from send_event({"status": error_msg, "event": "ERROR"})
-                return
-
-            # --- 核心：召唤并启动“更新器容器” ---
-            yield from send_event({"status": "镜像拉取完成，准备应用更新..."})
-
-            try:
-                updater_image = "containrrr/watchtower"
-                
-                # 确保 watchtower 镜像存在，如果不存在则拉取
-                try:
-                    client.images.get(updater_image)
-                except docker.errors.ImageNotFound:
-                    yield from send_event({"status": f"正在拉取更新器工具: {updater_image}..."})
-                    client.images.pull(updater_image)
-
-                command = ["--cleanup", "--run-once", container_name]
-
-                logger.info(f"正在应用更新 '{container_name}'...")
-                client.containers.run(
-                    image=updater_image,
-                    command=command,
-                    remove=True,
-                    detach=True,
-                    volumes={'/var/run/docker.sock': {'bind': '/var/run/docker.sock', 'mode': 'rw'}}
-                )
-                
-                yield from send_event({"status": "更新任务已成功交接给临时更新器！本容器将在后台被重启。"})
-                yield from send_event({"status": "稍后手动刷新页面以访问新版本。", "event": "DONE"})
-
-            except docker.errors.NotFound:
-                yield from send_event({"status": f"错误：找不到名为 '{container_name}' 的容器来更新。", "event": "ERROR"})
-            except Exception as e_updater:
-                error_msg = f"错误：启动临时更新器时失败: {e_updater}"
-                logger.error(error_msg, exc_info=True)
-                yield from send_event({"status": error_msg, "event": "ERROR"})
-
-        except Exception as e:
-            error_message = f"更新过程中发生未知错误: {str(e)}"
-            logger.error(f"[Update Stream]: {error_message}", exc_info=True)
-            yield from send_event({"status": error_message, "event": "ERROR"})
-        finally:
-            os.environ.clear()
-            os.environ.update(old_env)
-            logger.debug("已恢复原始环境变量。")
+        # 调用共享的生成器
+        generator = _update_process_generator(container_name, image_name_tag)
+        
+        for event in generator:
+            yield from send_event(event)
 
     return Response(stream_with_context(generate_progress()), mimetype='text/event-stream')
 

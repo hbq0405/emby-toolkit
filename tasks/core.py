@@ -24,6 +24,7 @@ from .users import task_sync_all_user_data, task_check_expired_users
 from .discover import task_update_daily_theme
 from .resubscribe import task_update_resubscribe_cache, task_resubscribe_library
 from .vector_tasks import task_generate_embeddings
+from .system_update import task_check_and_update_container
 
 logger = logging.getLogger(__name__)
 
@@ -191,7 +192,6 @@ def get_task_registry(context: str = 'all'):
         'auto-subscribe': (task_auto_subscribe, "统一订阅处理", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
-        'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', True),
         'purge-unregistered-actors': (task_purge_unregistered_actors, "删除黑户演员", 'media', True),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
@@ -203,6 +203,7 @@ def get_task_registry(context: str = 'all'):
         'scan-monitor-folders': (task_scan_monitor_folders, "扫描监控目录", 'media', True),
         'restore-cache-from-db': (task_restore_local_cache_from_db, "恢复覆盖缓存", 'media', True),
         'scan-incomplete-assets': (task_scan_incomplete_assets, "检查媒体信息", 'media', True),
+        'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
@@ -213,6 +214,7 @@ def get_task_registry(context: str = 'all'):
         'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),
         'scan-library-gaps': (task_scan_library_gaps, "扫描缺集的季", 'watchlist', False),
         'scan_old_seasons_backfill': (task_scan_old_seasons_backfill, "扫描缺季的剧", 'watchlist', False),
+        'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', False),
     }
 
     if context == 'chain':
