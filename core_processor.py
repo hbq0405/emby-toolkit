@@ -1910,6 +1910,41 @@ class MediaProcessor:
                     else:
                         logger.info(f"  ➜ [简介优化] 未能获取到有效的英文简介，跳过翻译。")
 
+                # 获取当前标题 (电影用 title, 剧集用 name)
+                current_title = fresh_data.get("title") if item_type == "Movie" else fresh_data.get("name")
+                
+                # 如果标题存在且不包含中文，则尝试翻译
+                if current_title and not utils.contains_chinese(current_title):
+                    logger.info(f"  ➜ [核心处理] 检测到标题为纯外文 ('{current_title}')，准备进行 AI 翻译...")
+                    
+                    # 获取年份辅助翻译
+                    release_date = fresh_data.get("release_date") if item_type == "Movie" else fresh_data.get("first_air_date")
+                    year_str = release_date[:4] if release_date else ""
+                    
+                    translated_title = self.ai_translator.translate_title(
+                        current_title, 
+                        media_type=item_type, 
+                        year=year_str
+                    )
+                    
+                    if translated_title:
+                        # 只有当翻译结果包含中文时才采纳
+                        if utils.contains_chinese(translated_title):
+                            logger.info(f"  ➜ [核心处理] 标题翻译成功: '{current_title}' -> '{translated_title}'")
+                            
+                            # 更新内存数据
+                            if item_type == "Movie":
+                                fresh_data["title"] = translated_title
+                            else:
+                                fresh_data["name"] = translated_title
+                                # 如果是剧集，同步更新聚合数据对象
+                                if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                    aggregated_tmdb_data["series_details"]["name"] = translated_title
+                        else:
+                            logger.warning(f"  ➜ [核心处理] 标题翻译结果仍为外文，丢弃: {translated_title}")
+                    else:
+                        logger.warning(f"  ➜ [核心处理] 标题 AI 翻译未返回结果。")
+
             # 4. 填充骨架 (Data Mapping)
             if fresh_data:
                 # --- A. 基础字段直接覆盖 (通用) ---
