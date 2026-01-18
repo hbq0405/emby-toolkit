@@ -12,7 +12,6 @@ from gevent import spawn_later
 
 import constants
 import config_manager
-import handler.emby as emby
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from core_processor import MediaProcessor
@@ -27,88 +26,7 @@ DELETE_EVENT_QUEUE = set()
 DELETE_QUEUE_LOCK = threading.Lock()
 DELETE_DEBOUNCE_TIMER = None
 
-DEBOUNCE_DELAY = 3 # 防抖延迟秒数
-
-class EmbyRefreshManager:
-    """
-    全局刷新蓄水池：
-    驻留在 MonitorService 中，负责接收 CoreProcessor 处理完的路径，
-    进行二次防抖，直到静默期结束才通知 Emby 刷新。
-    """
-    def __init__(self, processor, cooldown=5.0):
-        self.processor = processor # 需要用到 processor 里的 emby_url 等配置
-        self.cooldown = cooldown
-        self.pending_paths = set()
-        self.timer = None
-        self.lock = threading.Lock()
-
-    def add_paths(self, paths: Set[str]):
-        """接收一批待刷新路径"""
-        if not paths: return
-        
-        with self.lock:
-            count_before = len(self.pending_paths)
-            self.pending_paths.update(paths)
-            count_after = len(self.pending_paths)
-            
-            if count_after > count_before:
-                logger.info(f"  🌊 [刷新蓄水池] 新增 {count_after - count_before} 个路径，当前积压: {count_after}。倒计时重置为 {self.cooldown}s...")
-            else:
-                # 路径已存在，但也重置倒计时，因为说明还在写入
-                logger.debug(f"  🌊 [刷新蓄水池] 路径已在队列中，重置倒计时...")
-
-            if self.timer:
-                self.timer.cancel()
-            self.timer = threading.Timer(self.cooldown, self._flush_and_execute)
-            self.timer.start()
-
-    def _flush_and_execute(self):
-        """执行刷新"""
-        paths_to_process = []
-        with self.lock:
-            paths_to_process = list(self.pending_paths)
-            self.pending_paths.clear()
-            self.timer = None
-        
-        if not paths_to_process: return
-
-        logger.info(f"  🚀 [全局刷新] 静默期结束，开始统一刷新 {len(paths_to_process)} 个累积路径...")
-        
-        # 使用 processor 中的配置
-        url = self.processor.emby_url
-        key = self.processor.emby_api_key
-
-        unique_anchor_map = {}
-        fallback_paths = []
-
-        # 解析 ID (利用 processor 中引用的 emby 模块)
-        for folder_path in paths_to_process:
-            anchor_id, anchor_name = emby.find_nearest_library_anchor(folder_path, url, key)
-            if anchor_id:
-                unique_anchor_map[anchor_id] = anchor_name
-            else:
-                fallback_paths.append(folder_path)
-
-        # 刷新 ID
-        if unique_anchor_map:
-            logger.info(f"    ➜ 聚合为 {len(unique_anchor_map)} 个 Emby 锚点进行刷新: {list(unique_anchor_map.values())}")
-            for anchor_id, anchor_name in unique_anchor_map.items():
-                try:
-                    emby.refresh_item_by_id(anchor_id, url, key)
-                    time.sleep(0.2)
-                except Exception as e:
-                    logger.error(f"刷新 Emby ID {anchor_id} 失败: {e}")
-
-        # 刷新 路径
-        if fallback_paths:
-            logger.info(f"    ➜ 对 {len(fallback_paths)} 个无法解析ID的路径执行普通刷新...")
-            for path in fallback_paths:
-                try:
-                    emby.refresh_library_by_path(path, url, key)
-                except Exception as e:
-                    logger.error(f"刷新路径 {path} 失败: {e}")
-        
-        logger.info(f"  ✅ [全局刷新] 完成。")
+DEBOUNCE_DELAY = 2 # 防抖延迟秒数
 
 class MediaFileHandler(FileSystemEventHandler):
     """
@@ -279,21 +197,23 @@ def _handle_batch_file_task(processor, file_paths: List[str]):
     if not valid_files:
         return
 
-    # 1. 调用 Processor 处理元数据，并获取返回值
-    refresh_paths = processor.process_file_actively_batch(valid_files)
-
-    if refresh_paths and hasattr(processor, 'refresh_manager_ref'):
-         processor.refresh_manager_ref.add_paths(refresh_paths)
+    # 2. ★★★ 调用核心处理器的批量入口 ★★★
+    # 这个方法会：
+    # A. 遍历 valid_files (代表文件)，逐个生成覆盖缓存 (不刷新 Emby)。
+    # B. 收集所有涉及的父目录。
+    # C. 统一刷新这些父目录。
+    # 这样既保证了效率（不重复刮削同目录文件），又保证了安全（缓存就绪后再刷新）。
+    processor.process_file_actively_batch(valid_files)
 
 class MonitorService:
+    # ... (保持不变) ...
     processor_instance = None
 
     def __init__(self, config: dict, processor: 'MediaProcessor'):
         self.config = config
         self.processor = processor
         MonitorService.processor_instance = processor 
-        self.refresh_manager = EmbyRefreshManager(processor, cooldown=5.0)
-        self.processor.refresh_manager_ref = self.refresh_manager
+        
         self.observer: Optional[Any] = None
         self.enabled = self.config.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False)
         self.paths = self.config.get(constants.CONFIG_OPTION_MONITOR_PATHS, [])
