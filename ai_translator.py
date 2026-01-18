@@ -156,6 +156,29 @@ Overview: {overview}
 }}
 """
 
+# ★★★ 说明书五：给“标题命名大师”看的（标题模式） ★★★
+TITLE_TRANSLATION_PROMPT = """
+You are a movie/TV database editor.
+Your task is to translate the provided Title into **Simplified Chinese (简体中文)** for a Mainland China audience.
+
+**Rules:**
+1.  **Official Name First:** If there is an existing official Mainland China translation, USE IT.
+2.  **Common Transliteration:** If it's a name (like "Frankenstein" or "Oppenheimer"), use the standard Mainland Chinese transliteration (e.g., "弗兰肯斯坦", "奥本海默").
+3.  **Classic IP:** If it is a well-known IP, use the most widely accepted Chinese title (e.g., "科学怪人" might be acceptable for Frankenstein, but "弗兰肯斯坦" is more neutral/modern. Choose the most standard one).
+4.  **No Extra Text:** Do not include the year or explanations.
+5.  **Output:** Return a valid JSON object.
+
+**Input:**
+Type: {media_type}
+Original Title: {title}
+Year: {year}
+
+**Output Format:**
+{{
+  "translation": "..."
+}}
+"""
+
 class AITranslator:
     def __init__(self, config: Dict[str, Any]):
         self.provider = config.get("ai_provider", "openai").lower()
@@ -284,6 +307,53 @@ class AITranslator:
 
         except Exception as e:
             logger.error(f"  ➜ [简介翻译] 翻译失败: {e}")
+            return None
+
+    def translate_title(self, title_text: str, media_type: str = "Movie", year: str = "") -> Optional[str]:
+        """
+        专门用于翻译标题。
+        """
+        if not title_text or not title_text.strip():
+            return None
+
+        system_prompt = TITLE_TRANSLATION_PROMPT.format(media_type=media_type, title=title_text, year=year)
+        user_prompt = "Translate this title."
+
+        try:
+            response_content = ""
+            # ... (这里复用之前的调用逻辑，为了节省篇幅，只写核心部分) ...
+            
+            # 适配 OpenAI
+            if self.provider == 'openai' and self.client:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    response_format={"type": "json_object"}, temperature=0.1 # 标题需要准确，温度调低
+                )
+                response_content = resp.choices[0].message.content
+            
+            # 适配 智谱AI
+            elif self.provider == 'zhipuai' and self.client:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    response_format={"type": "json_object"}, temperature=0.1
+                )
+                response_content = resp.choices[0].message.content
+
+            # 适配 Gemini
+            elif self.provider == 'gemini' and self.client:
+                config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1, system_instruction=system_prompt)
+                resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
+                response_content = resp.text
+
+            result = _safe_json_loads(response_content)
+            if result and "translation" in result:
+                return result["translation"]
+            return None
+
+        except Exception as e:
+            logger.error(f"  ➜ [标题翻译] 翻译失败: {e}")
             return None
 
     def _translate_fast_mode(self, texts: List[str]) -> Dict[str, str]:

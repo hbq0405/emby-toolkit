@@ -467,6 +467,7 @@ class MediaProcessor:
                     return None
 
                 if self.ai_translator and self.config.get("ai_translation_enabled", False):
+                    # --- 1. 简介翻译 ---
                     current_overview = details.get("overview", "")
                     item_title = details.get("title") or details.get("name")
                     
@@ -511,6 +512,42 @@ class MediaProcessor:
                                 logger.warning(f"  ➜ [实时监控] AI 翻译未返回结果。")
                         else:
                             logger.info(f"  ➜ [实时监控] 未能获取到有效的英文简介，跳过翻译。")
+
+                    # --- 2. 标题翻译 ---
+                    # 获取当前标题 (电影用 title, 剧集用 name)
+                    current_title = details.get("title") if item_type == "Movie" else details.get("name")
+                    
+                    # 如果标题存在且不包含中文，则尝试翻译
+                    if current_title and not utils.contains_chinese(current_title):
+                        logger.info(f"  ➜ [实时监控] 检测到标题为纯外文 ('{current_title}')，准备进行 AI 翻译...")
+                        
+                        # 获取年份辅助翻译 (避免重名电影翻译错)
+                        release_date = details.get("release_date") if item_type == "Movie" else details.get("first_air_date")
+                        year_str = release_date[:4] if release_date else ""
+                        
+                        translated_title = self.ai_translator.translate_title(
+                            current_title, 
+                            media_type=item_type, 
+                            year=year_str
+                        )
+                        
+                        if translated_title:
+                            # 只有当翻译结果包含中文时才采纳 (防止AI发疯返回英文)
+                            if utils.contains_chinese(translated_title):
+                                logger.info(f"  ➜ [实时监控] 标题翻译成功: '{current_title}' -> '{translated_title}'")
+                                
+                                # 更新内存数据
+                                if item_type == "Movie":
+                                    details["title"] = translated_title
+                                else:
+                                    details["name"] = translated_title
+                                    # 如果是剧集，还要更新聚合数据里的顶层名字
+                                    if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                        aggregated_tmdb_data["series_details"]["name"] = translated_title
+                            else:
+                                logger.warning(f"  ➜ [实时监控] 标题翻译结果仍为外文，丢弃: {translated_title}")
+                        else:
+                            logger.warning(f"  ➜ [实时监控] 标题 AI 翻译未返回结果。")
 
                 # 准备演员源数据
                 authoritative_cast_source = []
