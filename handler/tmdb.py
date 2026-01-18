@@ -131,13 +131,14 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
         logger.error(f"  ➜ TMDb API JSON 解码错误: {e}. URL: {full_url}. Response: {response.text[:200] if response else 'N/A'}", exc_info=False)
         return None
 # --- 获取电影的详细信息 ---
-def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,release_dates") -> Optional[Dict[str, Any]]:
+def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,release_dates", language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     【新增】获取电影的详细信息。
     """
     endpoint = f"/movie/{movie_id}"
+    # ★★★ 修改点：优先使用传入的 language，否则使用默认值 ★★★
     params = {
-        "language": DEFAULT_LANGUAGE,
+        "language": language or DEFAULT_LANGUAGE, 
         "append_to_response": append_to_response or "",
         "include_image_language": "zh,en,null,ja,ko"
     }
@@ -166,14 +167,14 @@ def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[
 
     return details
 # --- 获取电视剧的详细信息 ---
-def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings") -> Optional[Dict[str, Any]]:
+def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings", language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     【已升级】获取电视剧的详细信息。
     """
     endpoint = f"/tv/{tv_id}"
+    # ★★★ 修改点：优先使用传入的 language，否则使用默认值 ★★★
     params = {
-        "language": DEFAULT_LANGUAGE,
-        # ★★★ 确保 append_to_response 不为空，即使外部没传 ★★★
+        "language": language or DEFAULT_LANGUAGE,
         "append_to_response": append_to_response or "",
         "include_image_language": "zh,en,null,ja,ko"
     }
