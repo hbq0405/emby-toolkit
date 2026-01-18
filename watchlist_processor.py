@@ -1424,7 +1424,7 @@ class WatchlistProcessor:
             if s_num not in emby_seasons or e_num not in emby_seasons.get(s_num, set()):
                 # 找到了！这才是基于用户当前进度的“下一集”
                 # 可能是当前季的下一集，也可能是新的一季的第一集
-                logger.info(f"  ➜ 找到本地缺失的下一集: S{s_num}E{e_num} ('{episode.get('name')}'), 已忽略旧季缺失。")
+                logger.info(f"  ➜ 找到本季缺失的下一集: S{s_num}E{e_num} ('{episode.get('name')}')。")
                 return episode
         
         # 4. 如果循环完成，说明本地拥有TMDb上所有的剧集 (或者只缺了未来的)
