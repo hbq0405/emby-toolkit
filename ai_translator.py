@@ -151,9 +151,9 @@ Title: {title}
 Overview: {overview}
 
 **Output Format:**
-{
+{{
   "translation": "..."
-}
+}}
 """
 
 class AITranslator:
