@@ -223,7 +223,6 @@ def set_media_status_subscribed(
 ):
     """
     将媒体状态设置为 'SUBSCRIBED'。
-    允许洗版和缺集扫描更新已入库项目的状态。
     """
     data_to_upsert = _prepare_media_data_for_upsert(tmdb_ids, item_type, source, media_info_list)
     if not data_to_upsert: return
@@ -231,12 +230,21 @@ def set_media_status_subscribed(
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 from psycopg2.extras import execute_batch
+                
                 sql = """
                     INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, last_subscribed_at, title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview)
                     VALUES (%(tmdb_id)s, %(item_type)s, 'SUBSCRIBED', %(source)s::jsonb, NOW(), NOW(), %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
                     ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                         subscription_status = 'SUBSCRIBED',
-                        subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
+                        
+                        -- 【防爆库逻辑】只有当现有数组里【没有】这个源时，才执行追加
+                        subscription_sources_json = CASE 
+                            WHEN media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json THEN
+                                media_metadata.subscription_sources_json -- 已存在，保持原样
+                            ELSE 
+                                media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json -- 不存在，追加
+                        END,
+
                         first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                         last_subscribed_at = NOW(), 
                         last_synced_at = NOW(), 
@@ -287,23 +295,32 @@ def set_media_status_ignored(
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 from psycopg2.extras import execute_batch
+                
                 sql = """
                     INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, ignore_reason, title, original_title, release_date, poster_path, season_number, parent_series_tmdb_id, overview)
                     VALUES (%(tmdb_id)s, %(item_type)s, 'IGNORED', %(source)s::jsonb, %(reason)s, %(title)s, %(original_title)s, %(release_date)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
                     ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                         subscription_status = 'IGNORED',
-                        subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
+                        
+                        -- 【防爆库逻辑】只有当现有数组里【没有】这个源时，才执行追加
+                        subscription_sources_json = CASE 
+                            WHEN media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json THEN 
+                                media_metadata.subscription_sources_json -- 已存在，保持原样
+                            ELSE 
+                                media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json -- 不存在，追加
+                        END,
+                        
                         ignore_reason = EXCLUDED.ignore_reason, 
                         last_synced_at = NOW(), 
                         parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
                     WHERE 
                         (
-                            -- 1. 正常逻辑：只有当来源不仅在或者是空时才更新（防止日志刷屏）
+                            -- 1. 正常追加逻辑
                             (
                                 EXCLUDED.subscription_sources_json = '[]'::jsonb 
                                 OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json)
                             )
-                            -- 2. ★★★ 修复逻辑：如果当前状态不是 IGNORED (例如是从 SUBSCRIBED 转入)，则强制更新 ★★★
+                            -- 2. 状态切换逻辑：允许从 SUBSCRIBED/WANTED 变成 IGNORED，即使源已经存在
                             OR media_metadata.subscription_status != 'IGNORED'
                         );
                 """
