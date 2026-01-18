@@ -134,6 +134,28 @@ You will receive a JSON object with `context` (containing `title` and `year`) an
 **Output Format (MANDATORY):**
 You MUST return a single, valid JSON object mapping each original term to its Chinese translation. NO other text or markdown.
 """
+
+# ★★★ 说明书四：给“剧情翻译官”看的（简介模式） ★★★
+OVERVIEW_TRANSLATION_PROMPT = """
+You are a professional translator specializing in movie and TV show synopses.
+Your task is to translate the provided English overview into **fluent, engaging Simplified Chinese (简体中文)**.
+
+**Guidelines:**
+1.  **Tone:** Professional, engaging, and suitable for a media library description. Avoid machine-translation stiffness.
+2.  **Accuracy:** Preserve the original meaning, plot points, and tone (e.g., comedy vs. horror).
+3.  **Names:** If the overview contains names of actors or characters, translate them to their standard Chinese equivalents if known, or keep them in English if unsure.
+4.  **Output:** Return a valid JSON object with a single key "translation" containing the translated text.
+
+**Input:**
+Title: {title}
+Overview: {overview}
+
+**Output Format:**
+{
+  "translation": "..."
+}
+"""
+
 class AITranslator:
     def __init__(self, config: Dict[str, Any]):
         self.provider = config.get("ai_provider", "openai").lower()
@@ -195,6 +217,74 @@ class AITranslator:
             return self._translate_transliterate_mode(unique_texts)
         else:
             return self._translate_fast_mode(unique_texts)
+
+    def translate_overview(self, overview_text: str, title: str = "") -> Optional[str]:
+        """
+        专门用于翻译剧情简介。
+        """
+        if not overview_text or not overview_text.strip():
+            return None
+
+        # 如果已经是中文（简单判断），则直接返回
+        # 这里假设调用方已经做过判断，但为了保险再次检查
+        # (需要在文件头部 import utils 或使用简单的正则判断，这里为了解耦，我们假设传入的就是需要翻译的英文)
+        
+        system_prompt = OVERVIEW_TRANSLATION_PROMPT.format(title=title, overview=overview_text)
+        user_prompt = "Please translate the overview."
+
+        try:
+            response_content = ""
+            
+            if self.provider == 'openai':
+                if not self.client: return None
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.3 # 稍微增加一点创造性，让语句更通顺
+                )
+                response_content = resp.choices[0].message.content
+
+            elif self.provider == 'zhipuai':
+                if not self.client: return None
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt}
+                    ],
+                    response_format={"type": "json_object"},
+                    temperature=0.3
+                )
+                response_content = resp.choices[0].message.content
+
+            elif self.provider == 'gemini':
+                if not self.client: return None
+                config = types.GenerateContentConfig(
+                    response_mime_type="application/json",
+                    temperature=0.3,
+                    system_instruction=system_prompt
+                )
+                resp = self.client.models.generate_content(
+                    model=self.model,
+                    contents=user_prompt,
+                    config=config
+                )
+                response_content = resp.text
+
+            # 解析结果
+            result = _safe_json_loads(response_content)
+            if result and "translation" in result:
+                return result["translation"]
+            
+            return None
+
+        except Exception as e:
+            logger.error(f"  ➜ [简介翻译] 翻译失败: {e}")
+            return None
 
     def _translate_fast_mode(self, texts: List[str]) -> Dict[str, str]:
         CHUNK_SIZE = 50

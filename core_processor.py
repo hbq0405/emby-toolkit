@@ -466,6 +466,52 @@ class MediaProcessor:
                     logger.error("  ➜ [实时监控] 无法获取 TMDb 详情，中止处理。")
                     return None
 
+                if self.ai_translator and self.config.get("ai_translation_enabled", False):
+                    current_overview = details.get("overview", "")
+                    item_title = details.get("title") or details.get("name")
+                    
+                    # 判断是否需要翻译：简介为空 或 不包含中文
+                    needs_translation = False
+                    if not current_overview:
+                        needs_translation = True
+                    elif not utils.contains_chinese(current_overview):
+                        needs_translation = True
+                    
+                    if needs_translation:
+                        logger.info(f"  ➜ [实时监控] 检测到简介缺失或非中文，准备进行 AI 翻译...")
+                        english_overview = ""
+                        
+                        # 1. 尝试使用现有的英文简介
+                        if current_overview and len(current_overview) > 10:
+                            english_overview = current_overview
+                        
+                        # 2. 如果现有简介为空，尝试请求英文版数据
+                        else:
+                            try:
+                                if item_type == "Movie":
+                                    en_data = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, language="en-US")
+                                    english_overview = en_data.get("overview")
+                                elif item_type == "Series":
+                                    # 剧集只取基础信息即可
+                                    en_data = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, language="en-US")
+                                    english_overview = en_data.get("overview")
+                            except Exception as e_en:
+                                logger.warning(f"  ➜ [实时监控] 获取英文源数据失败: {e_en}")
+
+                        # 3. 调用 AI 翻译
+                        if english_overview:
+                            translated_overview = self.ai_translator.translate_overview(english_overview, title=item_title)
+                            if translated_overview:
+                                details["overview"] = translated_overview
+                                logger.info(f"  ➜ [实时监控] 简介翻译成功，已更新内存数据。")
+                                # 如果是剧集，同步更新聚合数据对象
+                                if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                    aggregated_tmdb_data["series_details"]["overview"] = translated_overview
+                            else:
+                                logger.warning(f"  ➜ [实时监控] AI 翻译未返回结果。")
+                        else:
+                            logger.info(f"  ➜ [实时监控] 未能获取到有效的英文简介，跳过翻译。")
+
                 # 准备演员源数据
                 authoritative_cast_source = []
                 if item_type == "Movie":
@@ -1776,7 +1822,58 @@ class MediaProcessor:
                 except Exception as e:
                     logger.warning(f"  ➜ 从 TMDb API 获取数据失败: {e}")
 
-            # 3. 填充骨架 (Data Mapping)
+            # 3. 简介缺失检查与 AI 翻译
+            if fresh_data and self.ai_translator and self.config.get("ai_translation_enabled", False):
+                current_overview = fresh_data.get("overview", "")
+                item_title = fresh_data.get("title") or fresh_data.get("name") or item_name_for_log
+                
+                # 判断条件：简介为空，或者简介不包含中文字符
+                needs_translation = False
+                if not current_overview:
+                    needs_translation = True
+                    logger.info(f"  ➜ [简介优化] 检测到 TMDb 中文简介为空。")
+                elif not utils.contains_chinese(current_overview):
+                    needs_translation = True
+                    logger.info(f"  ➜ [简介优化] 检测到 TMDb 简介非中文。")
+
+                if needs_translation:
+                    english_overview = ""
+                    
+                    # 1. 如果当前简介虽然不是中文但有内容（即英文），直接用
+                    if current_overview and len(current_overview) > 10:
+                        english_overview = current_overview
+                    
+                    # 2. 如果当前简介是空的，尝试请求英文版 TMDb 数据
+                    else:
+                        logger.info(f"  ➜ [简介优化] 正在尝试获取 TMDb 英文源数据以进行翻译...")
+                        try:
+                            if item_type == "Movie":
+                                en_data = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key, language="en-US")
+                                english_overview = en_data.get("overview")
+                            elif item_type == "Series":
+                                # 剧集只取基础信息即可，不用聚合
+                                en_data = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, language="en-US")
+                                english_overview = en_data.get("overview")
+                        except Exception as e_en:
+                            logger.warning(f"  ➜ 获取英文源数据失败: {e_en}")
+
+                    # 3. 执行 AI 翻译
+                    if english_overview:
+                        logger.info(f"  ➜ [简介优化] 获取到英文简介 (长度: {len(english_overview)})，正在调用 AI 翻译...")
+                        translated_overview = self.ai_translator.translate_overview(english_overview, title=item_title)
+                        
+                        if translated_overview:
+                            fresh_data["overview"] = translated_overview
+                            logger.info(f"  ➜ [简介优化] 翻译成功，已替换简介。")
+                            # 如果是剧集，也要更新聚合数据里的引用
+                            if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                aggregated_tmdb_data["series_details"]["overview"] = translated_overview
+                        else:
+                            logger.warning(f"  ➜ [简介优化] AI 翻译未返回结果。")
+                    else:
+                        logger.info(f"  ➜ [简介优化] 未能获取到有效的英文简介，跳过翻译。")
+
+            # 4. 填充骨架 (Data Mapping)
             if fresh_data:
                 # --- A. 基础字段直接覆盖 (通用) ---
                 tmdb_details_for_extra = construct_metadata_payload(
@@ -1981,7 +2078,7 @@ class MediaProcessor:
                     )
 
             # =========================================================
-            # ★★★ 步骤 4: 统一的收尾流程 ★★★
+            # ★★★ 步骤 5: 统一的收尾流程 ★★★
             # =========================================================
             if final_processed_cast is None:
                 raise ValueError("未能生成有效的最终演员列表。")
