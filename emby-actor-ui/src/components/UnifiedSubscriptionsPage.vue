@@ -346,6 +346,7 @@ const SOURCE_TYPE_MAP = {
   'custom_collection': '自建合集',
   'native_collection': '原生合集',
   'manual_add': '手动添加',
+  'revive_from_timeout': '超时复活',
   'watchlist': '智能追剧',
   'resubscribe': '自动洗版',
   'manual_ignore': '手动忽略',

@@ -577,7 +577,7 @@ def task_auto_subscribe(processor):
                     request_db.set_media_status_wanted(
                         tmdb_ids=[item['tmdb_id']],
                         item_type=item['item_type'],
-                        source={"type": "manual_add", "reason": "auto_revive_from_timeout"}, # 使用 manual_add 类型确保能被 set_media_status_wanted 处理
+                        source={"type": "revive_from_timeout", "reason": "auto_revive_from_timeout"}, # 使用 manual_add 类型确保能被 set_media_status_wanted 处理
                         force_unignore=True
                     )
                     revived_count += 1
