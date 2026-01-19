@@ -13,6 +13,21 @@ logger = logging.getLogger(__name__)
 NULLBR_APP_ID = "7DqRtfNX3"
 NULLBR_API_BASE = "https://api.nullbr.online"
 
+def get_config():
+    return settings_db.get_setting('nullbr_config') or {}
+
+def _get_headers():
+    config = get_config()
+    api_key = config.get('api_key')
+    headers = {
+        "Content-Type": "application/json",
+        "X-APP-ID": NULLBR_APP_ID,
+        "User-Agent": f"EmbyToolkit/{constants.APP_VERSION}"
+    }
+    if api_key:
+        headers["X-API-KEY"] = api_key
+    return headers
+
 def get_preset_lists():
     """获取片单列表"""
     custom_presets = settings_db.get_setting('nullbr_presets')
@@ -33,21 +48,6 @@ def fetch_list_items(list_id, page=1):
     except Exception as e:
         logger.error(f"获取片单失败: {e}")
         raise e
-
-def get_config():
-    return settings_db.get_setting('nullbr_config') or {}
-
-def _get_headers():
-    config = get_config()
-    api_key = config.get('api_key')
-    headers = {
-        "Content-Type": "application/json",
-        "X-APP-ID": NULLBR_APP_ID,
-        "User-Agent": f"EmbyToolkit/{constants.APP_VERSION}"
-    }
-    if api_key:
-        headers["X-API-KEY"] = api_key
-    return headers
 
 def search_media(keyword, page=1):
     url = f"{NULLBR_API_BASE}/search"
@@ -119,59 +119,45 @@ def fetch_resource_list(tmdb_id, media_type='movie'):
 
 def push_to_cms(resource_link, title):
     """
-    推送到 CMS 下载器 (Token 版 - 增强兼容性)
+    推送到 CMS  (使用 Token 接口)
     """
     config = get_config()
     cms_url = config.get('cms_url')
     cms_token = config.get('cms_token')
 
     if not cms_url or not cms_token:
-        raise ValueError("未配置 CMS 地址或 Token")
+        raise ValueError("未配置 CMS 地址或 Token，请在配置页填写")
 
-    # 去除 URL 末尾斜杠
-    base_url = cms_url.rstrip('/')
+    # 去除 URL 末尾可能的斜杠
+    cms_url = cms_url.rstrip('/')
     
-    # ★★★ 修改点：同时在 URL 参数和 Body 中携带 Token ★★★
-    # 这样无论接口是取 query param 还是 json body 都能拿到
-    api_url = f"{base_url}/api/cloud/add_share_down_by_token"
+    # 构造接口地址
+    api_url = f"{cms_url}/api/cloud/add_share_down_by_token"
     
-    # URL 参数
-    params = {
-        "token": cms_token
-    }
-    
-    # Body 参数
+    # 构造 Payload
     payload = {
         "url": resource_link,
         "token": cms_token
     }
 
     try:
-        # 打印调试日志，方便看有没有空格
-        logger.info(f"正在推送 CMS: {api_url}")
-        logger.info(f"Token长度: {len(cms_token)} | Token内容: [{cms_token}]") 
-
-        # 发送请求
-        response = requests.post(
-            api_url, 
-            params=params, # URL 参数
-            json=payload,  # Body 参数
-            timeout=10
-        )
+        logger.info(f"正在推送任务到 CMS: {api_url}")
         
-        # 打印原始响应，方便调试
-        logger.info(f"CMS 响应状态码: {response.status_code}")
-        # logger.info(f"CMS 响应内容: {response.text}")
-
+        # ★ 注意：CMS 通常在局域网，一般不需要走代理。
+        # 如果你的 CMS 在外网且必须走代理，请取消下面 proxies 的注释
+        # proxies = config_manager.get_proxies_for_requests()
+        
+        response = requests.post(api_url, json=payload, timeout=10) # , proxies=proxies)
         response.raise_for_status()
+        
         res_json = response.json()
         
+        # 根据截图，成功通常返回 code 200
         if res_json.get('code') == 200:
             logger.info(f"CMS 推送成功: {res_json.get('msg', 'OK')}")
             return True
         else:
-            # 抛出详细错误
-            raise Exception(f"CMS 拒绝: {res_json.get('message')} (Code: {res_json.get('code')})")
+            raise Exception(f"CMS 返回错误: {res_json}")
 
     except Exception as e:
         logger.error(f"CMS 推送异常: {e}")
