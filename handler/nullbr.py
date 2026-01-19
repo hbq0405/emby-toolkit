@@ -146,13 +146,13 @@ def fetch_list_items(list_id, page=1):
     url = f"{NULLBR_API_BASE}/list/{list_id}"
     params = {"page": page}
     try:
-        logger.info(f"正在获取片单列表: {list_id} (Page {page})")
+        logger.info(f"  ➜ 正在获取片单列表: {list_id} (Page {page})")
         response = requests.get(url, params=params, headers=_get_headers(), timeout=15)
         response.raise_for_status()
         data = response.json()
         return {"code": 200, "data": {"list": data.get('items', []), "total": data.get('total_results', 0)}}
     except Exception as e:
-        logger.error(f"获取片单失败: {e}")
+        logger.error(f"  ➜ 获取片单失败: {e}")
         raise e
 
 def search_media(keyword, page=1):
@@ -166,7 +166,7 @@ def search_media(keyword, page=1):
         data = response.json()
         return { "code": 200, "data": { "list": data.get('items', []), "total": data.get('total_results', 0) } }
     except Exception as e:
-        logger.error(f"NULLBR 搜索失败: {e}")
+        logger.error(f"  ➜ NULLBR 搜索失败: {e}")
         raise e
 
 def _fetch_single_source(tmdb_id, media_type, source_type):
@@ -212,7 +212,7 @@ def _fetch_single_source(tmdb_id, media_type, source_type):
                 cleaned_list.append(resource_obj)
         return cleaned_list
     except Exception as e:
-        logger.warning(f"获取 {source_type} 资源失败: {e}")
+        logger.warning(f"  ➜ 获取 {source_type} 资源失败: {e}")
         return []
 
 def fetch_resource_list(tmdb_id, media_type='movie'):
@@ -235,7 +235,7 @@ def fetch_resource_list(tmdb_id, media_type='movie'):
         
     filtered_list = [res for res in all_resources if _is_resource_valid(res, filters)]
     
-    logger.info(f"资源过滤: 原始 {len(all_resources)} -> 过滤后 {len(filtered_list)}")
+    logger.info(f"  ➜ 资源过滤: 原始 {len(all_resources)} -> 过滤后 {len(filtered_list)}")
     return filtered_list
 
 # ==============================================================================
@@ -279,7 +279,7 @@ def push_to_cms(resource_link, title):
         
         # 根据截图，成功通常返回 code 200
         if res_json.get('code') == 200:
-            logger.info(f"CMS 推送成功: {res_json.get('msg', 'OK')}")
+            logger.info(f"  ✅ CMS 推送成功: {res_json.get('msg', 'OK')}")
             return True
         else:
             raise Exception(f"CMS 返回错误: {res_json}")
