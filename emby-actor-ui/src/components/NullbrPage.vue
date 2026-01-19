@@ -2,16 +2,15 @@
 <template>
   <n-layout content-style="padding: 24px;">
     <n-page-header title="NULLBR 资源库" subtitle="连接 115 专属资源网络 (Beta)">
-      <!-- 头部右侧放配置按钮 -->
       <template #extra>
         <n-button @click="showConfig = !showConfig" size="small" secondary>
           <template #icon><n-icon :component="SettingsIcon" /></template>
-          配置 Key
+          配置
         </n-button>
       </template>
     </n-page-header>
 
-    <!-- 配置面板 (默认折叠) -->
+    <!-- 配置面板 -->
     <n-collapse-transition :show="showConfig">
       <n-card title="接入配置" :bordered="false" class="dashboard-card" style="margin-top: 16px; margin-bottom: 16px;">
         <n-alert type="info" style="margin-bottom: 16px;">
@@ -19,14 +18,13 @@
         </n-alert>
 
         <n-form label-placement="top">
-          <!-- ★★★ 修改点1：使用 Grid 将配置分为左右两栏 ★★★ -->
-          <n-grid cols="1 900:2" :x-gap="24">
+          <!-- ★★★ 修改点：改为三列并排布局 (响应式：小屏1列，中屏2列，大屏3列) ★★★ -->
+          <n-grid cols="1 850:2 1300:3" :x-gap="32" :y-gap="24">
             
-            <!-- 左侧：基础配置 & TG 配置 -->
+            <!-- 第一列：基础与推送设置 -->
             <n-gi>
               <n-divider title-placement="left" style="margin-top: 0; font-size: 14px;">基础与推送设置</n-divider>
               
-              <!-- NULLBR API Key -->
               <n-form-item label="NULLBR API Key">
                 <n-input 
                   v-model:value="config.api_key" 
@@ -48,26 +46,91 @@
               </n-form-item>
             </n-gi>
 
-            <!-- 右侧：自定义片单 -->
+            <!-- 第二列：资源过滤设置 (移至中间) -->
+            <n-gi>
+               <n-divider title-placement="left" style="margin-top: 0; font-size: 14px;">资源过滤设置</n-divider>
+               <!-- 使用垂直布局适应列宽 -->
+               <n-space vertical size="medium">
+                  
+                  <!-- 分辨率 -->
+                  <n-form-item label="分辨率" :show-feedback="false">
+                    <n-checkbox-group v-model:value="config.filters.resolutions">
+                      <n-space>
+                        <n-checkbox value="2160p" label="4K" />
+                        <n-checkbox value="1080p" label="1080p" />
+                        <n-checkbox value="720p" label="720p" />
+                      </n-space>
+                    </n-checkbox-group>
+                  </n-form-item>
+
+                  <!-- 质量 -->
+                  <n-form-item label="质量/版本" :show-feedback="false">
+                    <n-checkbox-group v-model:value="config.filters.qualities">
+                      <n-space>
+                        <n-checkbox value="Remux" label="Remux" />
+                        <n-checkbox value="HDR10" label="HDR" />
+                        <n-checkbox value="Dolby Vision" label="DoVi" />
+                        <n-checkbox value="BluRay" label="BluRay" />
+                        <n-checkbox value="WEB-DL" label="WEB-DL" />
+                      </n-space>
+                    </n-checkbox-group>
+                  </n-form-item>
+
+                  <!-- 容器 & 字幕 -->
+                  <n-form-item label="容器" :show-feedback="false">
+                    <n-space vertical>
+                        <n-checkbox-group v-model:value="config.filters.containers">
+                            <n-space>
+                                <n-checkbox value="mkv" label="MKV" />
+                                <n-checkbox value="mp4" label="MP4" />
+                                <n-checkbox value="ts" label="TS" />
+                                <n-checkbox value="iso" label="ISO" />
+                            </n-space>
+                        </n-checkbox-group>
+                        <n-switch v-model:value="config.filters.require_zh">
+                          <template #checked>中文字幕</template>
+                          <template #unchecked>不限制字幕</template>
+                        </n-switch>
+                    </n-space>
+                  </n-form-item>
+
+                  <!-- 大小限制 -->
+                  <n-form-item label="文件大小 (GB)">
+                    <n-input-group>
+                      <n-input-number v-model:value="config.filters.min_size" :min="0" placeholder="Min" :show-button="false" style="width: 50%" />
+                      <n-input-group-label>-</n-input-group-label>
+                      <n-input-number v-model:value="config.filters.max_size" :min="0" placeholder="Max" :show-button="false" style="width: 50%" />
+                    </n-input-group>
+                    <template #feedback><span style="font-size: 12px; color: #999;">0 表示不限制</span></template>
+                  </n-form-item>
+
+               </n-space>
+            </n-gi>
+
+            <!-- 第三列：自定义精选片单 -->
             <n-gi>
               <n-divider title-placement="left" style="margin-top: 0; font-size: 14px;">自定义精选片单</n-divider>
               <n-alert type="info" style="margin-bottom: 12px;" :show-icon="false">
-                添加您喜欢的 NULLBR 片单 ID (可在 NULLBR 网站 URL 中找到)。
+                添加您喜欢的 NULLBR 片单 ID。
               </n-alert>
 
-              <n-dynamic-input v-model:value="config.presets" :on-create="onCreatePreset">
-                <template #default="{ value }">
-                  <div style="display: flex; align-items: center; width: 100%; gap: 10px;">
-                    <n-input v-model:value="value.name" placeholder="名称 (如: 豆瓣Top250)" />
-                    <n-input v-model:value="value.id" placeholder="ID (如: 123456)" style="width: 120px;" />
-                  </div>
-                </template>
-              </n-dynamic-input>
+              <!-- 增加最大高度和滚动条，防止列表过长破坏三列平衡 -->
+              <div style="max-height: 450px; overflow-y: auto; padding-right: 4px;">
+                  <n-dynamic-input v-model:value="config.presets" :on-create="onCreatePreset">
+                    <template #default="{ value }">
+                      <div style="display: flex; align-items: center; width: 100%; gap: 8px;">
+                        <n-input v-model:value="value.name" placeholder="名称" style="flex: 1; min-width: 0;" />
+                        <n-input v-model:value="value.id" placeholder="ID" style="width: 110px; flex-shrink: 0;" />
+                      </div>
+                    </template>
+                  </n-dynamic-input>
+              </div>
 
               <n-space justify="end" style="margin-top: 10px;">
                 <n-button size="tiny" @click="resetPresets">恢复默认片单</n-button>
               </n-space>
             </n-gi>
+
           </n-grid>
 
           <!-- 底部按钮 -->
@@ -84,10 +147,9 @@
       </n-card>
     </n-collapse-transition>
 
-    <!-- Tabs 切换搜索和片单 -->
+    <!-- Tabs 切换搜索和片单 (保持不变) -->
     <n-tabs type="line" animated style="margin-top: 16px;">
-      
-      <!-- Tab 1: 搜索 -->
+      <!-- ... (后续代码保持不变) ... -->
       <n-tab-pane name="search" tab="🔍 资源搜索">
         <n-card :bordered="false" class="dashboard-card">
           <n-input-group>
@@ -98,11 +160,9 @@
             </n-button>
           </n-input-group>
           
-          <!-- 搜索结果列表 -->
           <div style="margin-top: 20px;">
              <n-spin :show="searching">
                 <n-empty v-if="!searchResults.length && !searching" description="暂无数据" />
-                <!-- ★★★ 修改点2：增加列数 (cols)，使卡片变小 ★★★ -->
                 <n-grid cols="3 520:4 800:5 1000:6 1400:8" :x-gap="12" :y-gap="12">
                    <n-gi v-for="item in searchResults" :key="item.id">
                       <MediaCard :item="item" @click="openResourceModal(item)" />
@@ -113,11 +173,8 @@
         </n-card>
       </n-tab-pane>
 
-      <!-- Tab 2: 精选片单 -->
       <n-tab-pane name="lists" tab="✨ 精选片单">
         <n-layout has-sider style="min-height: 600px; background: none;">
-          
-          <!-- 左侧：片单导航 -->
           <n-layout-sider width="260" content-style="padding-right: 16px; background: none;" :native-scrollbar="false">
             <n-menu
               :options="presetMenuOptions"
@@ -126,18 +183,15 @@
             />
           </n-layout-sider>
 
-          <!-- 右侧：海报墙 -->
           <n-layout-content content-style="padding-left: 4px; background: none;">
             <n-spin :show="loadingList">
               <div v-if="listItems.length > 0">
-                <!-- ★★★ 修改点2：增加列数 (cols)，使卡片变小 ★★★ -->
                 <n-grid cols="3 520:4 800:5 1000:6 1400:8" :x-gap="12" :y-gap="12">
                   <n-gi v-for="item in listItems" :key="item.id">
                     <MediaCard :item="item" @click="openResourceModal(item)" />
                   </n-gi>
                 </n-grid>
                 
-                <!-- 加载更多 -->
                 <div style="display: flex; justify-content: center; margin-top: 20px; margin-bottom: 20px;">
                    <n-button v-if="hasMore" @click="loadMoreList" :loading="loadingMore" size="small">加载更多</n-button>
                    <n-text v-else depth="3" style="font-size: 12px;">没有更多了</n-text>
@@ -150,7 +204,7 @@
       </n-tab-pane>
     </n-tabs>
 
-    <!-- 资源选择弹窗 -->
+    <!-- 资源选择弹窗 (保持不变) -->
     <n-modal
       v-model:show="showModal"
       preset="card"
@@ -158,7 +212,7 @@
       style="width: 800px; max-width: 90%;"
     >
       <n-spin :show="pushing">
-        <n-empty v-if="currentResources.length === 0" description="该条目暂无资源" />
+        <n-empty v-if="currentResources.length === 0" description="该条目暂无资源 (或被过滤)" />
         
         <n-list v-else hoverable clickable>
           <n-list-item v-for="(res, index) in currentResources" :key="index">
@@ -190,10 +244,6 @@
             
             <template #suffix>
               <n-space>
-                <n-button size="small" secondary @click="handleCopy(res.link)">
-                  <template #icon><n-icon :component="CopyIcon" /></template>
-                  复制
-                </n-button>
                 <n-button size="small" type="primary" @click="confirmPush(res)">
                   <template #icon><n-icon :component="SendIcon" /></template>
                   推送
@@ -204,22 +254,20 @@
         </n-list>
       </n-spin>
     </n-modal>
-
   </n-layout>
 </template>
 
 <script setup>
+// ... (Script 部分保持不变，请确保包含上一步中增加的 filters 逻辑) ...
 import { ref, reactive, onMounted, h, defineComponent } from 'vue';
 import axios from 'axios';
-import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip } from 'naive-ui';
+import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip, NCheckbox, NCheckboxGroup, NInputNumber, NSwitch } from 'naive-ui';
 import { useClipboard } from '@vueuse/core';
 import { 
   SettingsOutline as SettingsIcon, 
   Search as SearchIcon, 
   ListOutline as ListIcon,
-  CloudDownloadOutline as CloudIcon,
-  PaperPlaneOutline as SendIcon,
-  CopyOutline as CopyIcon
+  PaperPlaneOutline as SendIcon
 } from '@vicons/ionicons5';
 
 const message = useMessage();
@@ -231,33 +279,21 @@ const config = reactive({
   api_key: '',
   cms_url: '',    
   cms_token: '',
-  presets: []
+  presets: [],
+  filters: {
+      resolutions: [],
+      qualities: [],
+      containers: [],
+      require_zh: false,
+      min_size: 0,
+      max_size: 0
+  }
 });
 const saving = ref(false);
 
-// --- 搜索相关 ---
-const searchKeyword = ref('');
-const searching = ref(false);
-const searchResults = ref([]);
+// ... (其余 Script 代码保持不变) ...
+// ... (loadConfig, saveConfig, onCreatePreset, resetPresets, handleSearch, loadPresets, handleListChange, loadMoreList, fetchListContent, mapApiItemToUi, openResourceModal, confirmPush, MediaCard) ...
 
-// --- 片单相关 ---
-const presetLists = ref([]);
-const currentListId = ref(null);
-const listItems = ref([]);
-const loadingList = ref(false);
-const listPage = ref(1);
-const hasMore = ref(true);
-const loadingMore = ref(false);
-const presetMenuOptions = ref([]);
-
-// --- 弹窗相关 ---
-const showModal = ref(false);
-const currentResources = ref([]);
-const loadingResourcesId = ref(null);
-const pushing = ref(false);
-const currentItemTitle = ref('');
-
-// --- 1. 配置加载与保存 ---
 const loadConfig = async () => {
   try {
     const res = await axios.get('/api/nullbr/config');
@@ -265,6 +301,14 @@ const loadConfig = async () => {
       config.api_key = res.data.api_key || '';
       config.cms_url = res.data.cms_url || '';       
       config.cms_token = res.data.cms_token || '';
+      
+      const f = res.data.filters || {};
+      config.filters.resolutions = f.resolutions || [];
+      config.filters.qualities = f.qualities || [];
+      config.filters.containers = f.containers || [];
+      config.filters.require_zh = !!f.require_zh;
+      config.filters.min_size = f.min_size || 0;
+      config.filters.max_size = f.max_size || 0;
     }
     const resPresets = await axios.get('/api/nullbr/presets');
     if (resPresets.data) {
@@ -279,7 +323,8 @@ const saveConfig = async () => {
     await axios.post('/api/nullbr/config', {
         api_key: config.api_key,
         cms_url: config.cms_url,       
-        cms_token: config.cms_token
+        cms_token: config.cms_token,
+        filters: config.filters
     });
     await axios.post('/api/nullbr/presets', { presets: config.presets });
     message.success('全部配置已保存');
@@ -314,7 +359,24 @@ const resetPresets = async () => {
   }
 };
 
-// --- 2. 搜索逻辑 ---
+// ... (其余搜索、片单、弹窗逻辑保持不变) ...
+const searchKeyword = ref('');
+const searching = ref(false);
+const searchResults = ref([]);
+const presetLists = ref([]);
+const currentListId = ref(null);
+const listItems = ref([]);
+const loadingList = ref(false);
+const listPage = ref(1);
+const hasMore = ref(true);
+const loadingMore = ref(false);
+const presetMenuOptions = ref([]);
+const showModal = ref(false);
+const currentResources = ref([]);
+const loadingResourcesId = ref(null);
+const pushing = ref(false);
+const currentItemTitle = ref('');
+
 const handleSearch = async () => {
   if (!searchKeyword.value) return;
   searching.value = true;
@@ -335,7 +397,6 @@ const handleSearch = async () => {
   }
 };
 
-// --- 3. 片单逻辑 ---
 const loadPresets = async () => {
   try {
     const res = await axios.get('/api/nullbr/presets');
@@ -408,7 +469,6 @@ const mapApiItemToUi = (item) => ({
   year: item.release_date ? item.release_date.substring(0, 4) : ''
 });
 
-// --- 4. 弹窗与推送逻辑 ---
 const openResourceModal = async (item) => {
   loadingResourcesId.value = item.id;
   currentItemTitle.value = item.title;
@@ -446,16 +506,6 @@ const confirmPush = async (resource) => {
   }
 };
 
-const handleCopy = async (text) => {
-  try {
-    await copy(text);
-    message.success('链接已复制');
-  } catch (err) {
-    message.error('复制失败');
-  }
-};
-
-// --- 5. 海报卡片组件 ---
 const MediaCard = defineComponent({
   props: ['item'],
   components: { NImage, NEllipsis, NSpace, NTag, NText },
@@ -468,7 +518,6 @@ const MediaCard = defineComponent({
         style="width: 100%; aspect-ratio: 2/3; border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.1);" 
       />
       <div style="margin-top: 4px;">
-        <!-- 标题字号进一步调小 -->
         <n-ellipsis style="font-weight: 600; font-size: 12px; line-height: 1.3;">{{ item.title }}</n-ellipsis>
         <n-space justify="space-between" align="center" style="margin-top: 1px;">
            <n-text depth="3" style="font-size: 11px;">{{ item.year }}</n-text>

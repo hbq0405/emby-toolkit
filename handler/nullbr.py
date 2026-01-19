@@ -1,7 +1,7 @@
 # handler/nullbr.py
 import logging
 import requests
-import json
+import re
 from database import settings_db
 import config_manager
 
@@ -27,6 +27,112 @@ def _get_headers():
     if api_key:
         headers["X-API-KEY"] = api_key
     return headers
+
+def _parse_size_to_gb(size_str):
+    """将大小字符串 (如 '83.03 GB', '500 MB') 转换为 GB (float)"""
+    if not size_str:
+        return 0.0
+    
+    size_str = size_str.upper().replace(',', '')
+    match = re.search(r'([\d\.]+)\s*(TB|GB|MB|KB)', size_str)
+    if not match:
+        return 0.0
+    
+    num = float(match.group(1))
+    unit = match.group(2)
+    
+    if unit == 'TB':
+        return num * 1024
+    elif unit == 'GB':
+        return num
+    elif unit == 'MB':
+        return num / 1024
+    elif unit == 'KB':
+        return num / 1024 / 1024
+    return 0.0
+
+def _is_resource_valid(item, filters):
+    """根据配置过滤资源"""
+    if not filters:
+        return True
+
+    # 1. 分辨率过滤 (如果配置了列表，则必须在列表中)
+    allowed_resolutions = filters.get('resolutions', [])
+    if allowed_resolutions:
+        res = item.get('resolution')
+        # 如果资源没标分辨率，或者分辨率不在允许列表中，则过滤
+        if not res or res not in allowed_resolutions:
+            return False
+
+    # 2. 质量过滤 (只要包含其中一个关键词即可)
+    allowed_qualities = filters.get('qualities', [])
+    if allowed_qualities:
+        item_quality = item.get('quality')
+        # item_quality 可能是字符串也可能是列表
+        if not item_quality:
+            return False
+        
+        if isinstance(item_quality, str):
+            q_list = [item_quality]
+        else:
+            q_list = item_quality
+            
+        # 检查是否有交集
+        has_match = any(q in q_list for q in allowed_qualities)
+        if not has_match:
+            return False
+
+    # 3. 大小过滤 (GB)
+    min_size = float(filters.get('min_size') or 0)
+    max_size = float(filters.get('max_size') or 0)
+    
+    if min_size > 0 or max_size > 0:
+        size_gb = _parse_size_to_gb(item.get('size'))
+        if min_size > 0 and size_gb < min_size:
+            return False
+        if max_size > 0 and size_gb > max_size:
+            return False
+
+    # 4. 中字过滤
+    if filters.get('require_zh'):
+        # 1. 优先看 API 返回的硬指标 (zh_sub: 1)
+        if item.get('is_zh_sub'):
+            return True
+            
+        # 2. API 没标记，尝试从标题猜测
+        title = item.get('title', '').upper()
+        
+        # 常见的中字/国语标识
+        zh_keywords = [
+            '中字', '中英', '字幕', 
+            'CHS', 'CHT', 'CN', 
+            'DIY', '国语', '国粤'
+        ]
+        
+        # 只要包含任意一个关键词即可
+        is_zh_guess = any(k in title for k in zh_keywords)
+        
+        if not is_zh_guess:
+            return False
+
+    # 5. 封装容器过滤 (后缀名)
+    allowed_containers = filters.get('containers', [])
+    if allowed_containers:
+        title = item.get('title', '').lower()
+        # 检查标题结尾或链接结尾
+        link = item.get('link', '').lower()
+        
+        # 提取扩展名逻辑简单版
+        ext = None
+        if 'mkv' in title or link.endswith('.mkv'): ext = 'mkv'
+        elif 'mp4' in title or link.endswith('.mp4'): ext = 'mp4'
+        elif 'iso' in title or link.endswith('.iso'): ext = 'iso'
+        elif 'ts' in title or link.endswith('.ts'): ext = 'ts'
+        
+        if not ext or ext not in allowed_containers:
+            return False
+
+    return True
 
 def get_preset_lists():
     """获取片单列表"""
@@ -92,26 +198,45 @@ def _fetch_single_source(tmdb_id, media_type, source_type):
             if link and title:
                 if media_type == 'tv' and source_type == 'magnet':
                     title = f"[S1] {title}"
-                cleaned_list.append({
+                
+                # 构造对象
+                resource_obj = {
                     "title": title,
                     "size": item.get('size', '未知'),
                     "resolution": item.get('resolution'),
                     "quality": item.get('quality'),
                     "link": link,
-                    "source_type": source_type.upper()
-                })
+                    "source_type": source_type.upper(),
+                    "is_zh_sub": item.get('zh_sub') == 1
+                }
+                cleaned_list.append(resource_obj)
         return cleaned_list
     except Exception as e:
         logger.warning(f"获取 {source_type} 资源失败: {e}")
         return []
 
 def fetch_resource_list(tmdb_id, media_type='movie'):
+    # 1. 获取所有资源
     all_resources = []
     all_resources.extend(_fetch_single_source(tmdb_id, media_type, '115'))
     all_resources.extend(_fetch_single_source(tmdb_id, media_type, 'magnet'))
     if media_type == 'movie':
         all_resources.extend(_fetch_single_source(tmdb_id, media_type, 'ed2k'))
-    return all_resources
+    
+    # 2. 获取过滤配置
+    config = get_config()
+    filters = config.get('filters', {})
+    
+    # 3. 执行过滤
+    # 如果 filters 全为空值，则不过滤
+    has_filter = any(filters.values())
+    if not has_filter:
+        return all_resources
+        
+    filtered_list = [res for res in all_resources if _is_resource_valid(res, filters)]
+    
+    logger.info(f"资源过滤: 原始 {len(all_resources)} -> 过滤后 {len(filtered_list)}")
+    return filtered_list
 
 # ==============================================================================
 # ★★★ CMS 推送逻辑 (Token 版) ★★★

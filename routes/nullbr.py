@@ -13,15 +13,25 @@ logger = logging.getLogger(__name__)
 def handle_config():
     if request.method == 'GET':
         config = settings_db.get_setting('nullbr_config') or {}
+        # 确保返回 filters 默认结构，防止前端报错
+        if 'filters' not in config:
+            config['filters'] = {
+                "resolutions": [],
+                "qualities": [],
+                "min_size": 0,
+                "max_size": 0,
+                "require_zh": False,
+                "containers": []
+            }
         return jsonify(config)
     
     if request.method == 'POST':
         data = request.json
-        # 获取所有字段
         new_config = {
             "api_key": data.get('api_key', '').strip(),
             "cms_url": data.get('cms_url', '').strip(),     
-            "cms_token": data.get('cms_token', '').strip(), 
+            "cms_token": data.get('cms_token', '').strip(),
+            "filters": data.get('filters', {}),
             "updated_at": "now"
         }
         settings_db.save_setting('nullbr_config', new_config)
