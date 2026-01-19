@@ -436,8 +436,9 @@ def task_auto_subscribe(processor):
             
             if stale_items:
                 logger.warning(f"  ➜ 发现 {len(stale_items)} 个超时订阅，准备处理。")
-                cancelled_ids_map = {} # 用于批量更新数据库状态 { 'Movie': [...], 'Series': [...], ... }
+                cancelled_ids_map = {} 
                 cancelled_for_report = []
+                fallback_success_report = [] # ★★★ 新增：用于记录兜底成功的项目
 
                 for item in stale_items:
                     tmdb_id_to_cancel = item['tmdb_id']
@@ -445,7 +446,6 @@ def task_auto_subscribe(processor):
                     title = item['title']
                     season_to_cancel = None
 
-                    # 特殊处理季：取消时需要使用父剧集的ID
                     if item_type == 'Season':
                         if item['parent_series_tmdb_id']:
                             tmdb_id_to_cancel = item['parent_series_tmdb_id']
@@ -454,10 +454,9 @@ def task_auto_subscribe(processor):
                             logger.error(f"  ➜ 无法取消季《{item['title']}》，因为它缺少父剧集ID。")
                             continue
                     
-                    # 标记是否通过了兜底 (如果通过，本地状态不置为 IGNORED)
                     is_fallback_success = False
 
-                    # 仅针对电影 (根据需求 "仅老片采用这个方案")
+                    # ★★★ NULLBR 兜底逻辑 ★★★
                     if enable_nullbr_fallback and item_type == 'Movie':
                         logger.info(f"  🚑 尝试对老片《{title}》执行 NULLBR 兜底搜索...")
                         if nullbr_handler.auto_download_best_resource(tmdb_id_to_cancel, 'movie', title):
@@ -466,7 +465,7 @@ def task_auto_subscribe(processor):
                         else:
                             logger.info(f"  ❌ 《{title}》NULLBR 未找到合适资源。")
 
-                    # 无论兜底是否成功，MP 里的订阅都应该取消（因为它超时了且没搜到）
+                    # --- 取消 MP 订阅 ---
                     success = moviepilot.cancel_subscription(
                         tmdb_id=tmdb_id_to_cancel,
                         item_type=item_type,
@@ -475,16 +474,16 @@ def task_auto_subscribe(processor):
                     )
                     
                     if success:
-                        # ★★★ 关键修改：如果兜底成功，则跳过本地状态更新 ★★★
-                        # 这样本地状态依然是 SUBSCRIBED，等待 Emby 入库 Webhook 来更新状态
+                        # ★★★ 如果兜底成功 ★★★
                         if is_fallback_success:
-                            logger.info(f"  ➜ 《{title}》MP订阅已取消，但已通过兜底下载。本地状态保持 SUBSCRIBED，等待入库。")
-                            continue
+                            logger.info(f"  ➜ 《{title}》MP订阅已取消，但已通过NULLBR兜底下载。")
+                            fallback_success_report.append(f"《{title}》") # 加入成功报告
+                            continue # 跳过后续的 IGNORED 更新
 
-                        # 如果取消成功且没兜底（或兜底失败），记录下来以便稍后批量更新数据库为 IGNORED
+                        # ★★★ 如果兜底失败或未启用 ★★★
                         if item_type not in cancelled_ids_map:
                             cancelled_ids_map[item_type] = []
-                        cancelled_ids_map[item_type].append(item['tmdb_id']) # ★ 注意：这里用原始的 tmdb_id
+                        cancelled_ids_map[item_type].append(item['tmdb_id'])
                         
                         display_title = title
                         if item_type == 'Season':
@@ -497,10 +496,9 @@ def task_auto_subscribe(processor):
                         
                         cancelled_for_report.append(f"《{display_title}》")
 
-                # 批量更新数据库状态 (仅针对未兜底成功的项目)
+                # 1. 批量更新数据库状态 (仅针对未兜底成功的项目)
                 for item_type, tmdb_ids in cancelled_ids_map.items():
                     if tmdb_ids:
-                        # 设置忽略状态
                         request_db.set_media_status_ignored(
                             tmdb_ids=tmdb_ids, 
                             item_type=item_type,
@@ -508,7 +506,7 @@ def task_auto_subscribe(processor):
                             ignore_reason="订阅超时"
                         )
                 
-                # 如果有成功取消的，给管理员发个通知
+                # 2. 发送取消通知 (原有逻辑)
                 if cancelled_for_report:
                     admin_chat_ids = user_db.get_admin_telegram_chat_ids()
                     if admin_chat_ids:
@@ -517,6 +515,17 @@ def task_auto_subscribe(processor):
                                         f"下列项目因超过 {movie_search_window} 天未入库而被自动取消：\n{items_list_str}")
                         for admin_id in admin_chat_ids:
                             telegram.send_telegram_message(admin_id, message_text, disable_notification=True)
+
+                # 3. ★★★ 发送兜底成功通知 (新增逻辑) ★★★
+                if fallback_success_report:
+                    admin_chat_ids = user_db.get_admin_telegram_chat_ids()
+                    if admin_chat_ids:
+                        items_list_str = "\n".join([f"· `{item}`" for item in fallback_success_report])
+                        message_text = (f"🚑 *NULLBR 兜底成功通知*\n\n"
+                                        f"下列老片因订阅超时被取消，但成功通过 NULLBR 找到资源并推送下载：\n{items_list_str}")
+                        for admin_id in admin_chat_ids:
+                            telegram.send_telegram_message(admin_id, message_text, disable_notification=True)
+
             else:
                 logger.info("  ➜ 未发现超时订阅。")
 

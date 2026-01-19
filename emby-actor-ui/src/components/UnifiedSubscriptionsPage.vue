@@ -216,7 +216,7 @@
         <n-divider title-placement="left">电影订阅策略 (剧集由智能追剧策略管理)</n-divider>
         <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
           <li>新片，采用“搜索 N 天 -> 暂停 M 天”的循环机制，大幅降低 MoviePilot 搜索压力。</li>
-          <li>老片，采用“搜索 N 天 -> 取消订阅”</li>
+          <li>老片，采用“搜索 N 天 -> NULLBR -> 取消订阅”</li>
         </n-alert>
         
         <n-form-item label="新片保护期 (天)">
