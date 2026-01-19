@@ -11,6 +11,7 @@ import config_manager
 import constants
 import handler.tmdb as tmdb
 import handler.moviepilot as moviepilot
+import handler.nullbr as nullbr_handler
 import task_manager
 from handler import telegram
 from database import settings_db, request_db, user_db, media_db, watchlist_db
@@ -412,6 +413,7 @@ def task_auto_subscribe(processor):
     movie_search_window = int(strategy_config.get('movie_search_window_days', 1))     # 默认搜索1天
     movie_pause_days = int(strategy_config.get('movie_pause_days', 7))                # 默认暂停7天
     timeout_revive_days = int(strategy_config.get('timeout_revive_days', 0))          # 默认不复活超时订阅
+    enable_nullbr_fallback = strategy_config.get('enable_nullbr_fallback', False)     # 默认不启用 NULLBR 兜底
     
     # 兼容旧的全局开关 (如果用户还没配置过策略，可以回退读取 config.ini，或者直接用默认值)
     if not config.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
@@ -433,13 +435,14 @@ def task_auto_subscribe(processor):
             stale_items = request_db.get_stale_subscribed_media(movie_search_window, movie_protection_days)
             
             if stale_items:
-                logger.warning(f"  ➜ 发现 {len(stale_items)} 个超时订阅，将尝试取消它们。")
+                logger.warning(f"  ➜ 发现 {len(stale_items)} 个超时订阅，准备处理。")
                 cancelled_ids_map = {} # 用于批量更新数据库状态 { 'Movie': [...], 'Series': [...], ... }
                 cancelled_for_report = []
 
                 for item in stale_items:
                     tmdb_id_to_cancel = item['tmdb_id']
                     item_type = item['item_type']
+                    title = item['title']
                     season_to_cancel = None
 
                     # 特殊处理季：取消时需要使用父剧集的ID
@@ -451,7 +454,19 @@ def task_auto_subscribe(processor):
                             logger.error(f"  ➜ 无法取消季《{item['title']}》，因为它缺少父剧集ID。")
                             continue
                     
-                    # 调用 MoviePilot 取消接口
+                    # 标记是否通过了兜底 (如果通过，本地状态不置为 IGNORED)
+                    is_fallback_success = False
+
+                    # 仅针对电影 (根据需求 "仅老片采用这个方案")
+                    if enable_nullbr_fallback and item_type == 'Movie':
+                        logger.info(f"  🚑 尝试对老片《{title}》执行 NULLBR 兜底搜索...")
+                        if nullbr_handler.auto_download_best_resource(tmdb_id_to_cancel, 'movie', title):
+                            logger.info(f"  ✅ 《{title}》NULLBR 兜底推送成功！")
+                            is_fallback_success = True
+                        else:
+                            logger.info(f"  ❌ 《{title}》NULLBR 未找到合适资源。")
+
+                    # 无论兜底是否成功，MP 里的订阅都应该取消（因为它超时了且没搜到）
                     success = moviepilot.cancel_subscription(
                         tmdb_id=tmdb_id_to_cancel,
                         item_type=item_type,
@@ -460,11 +475,18 @@ def task_auto_subscribe(processor):
                     )
                     
                     if success:
-                        # 如果取消成功，记录下来以便稍后批量更新数据库
+                        # ★★★ 关键修改：如果兜底成功，则跳过本地状态更新 ★★★
+                        # 这样本地状态依然是 SUBSCRIBED，等待 Emby 入库 Webhook 来更新状态
+                        if is_fallback_success:
+                            logger.info(f"  ➜ 《{title}》MP订阅已取消，但已通过兜底下载。本地状态保持 SUBSCRIBED，等待入库。")
+                            continue
+
+                        # 如果取消成功且没兜底（或兜底失败），记录下来以便稍后批量更新数据库为 IGNORED
                         if item_type not in cancelled_ids_map:
                             cancelled_ids_map[item_type] = []
                         cancelled_ids_map[item_type].append(item['tmdb_id']) # ★ 注意：这里用原始的 tmdb_id
-                        display_title = item['title']
+                        
+                        display_title = title
                         if item_type == 'Season':
                             parent_id = item.get('parent_series_tmdb_id')
                             s_num = item.get('season_number')
@@ -475,7 +497,7 @@ def task_auto_subscribe(processor):
                         
                         cancelled_for_report.append(f"《{display_title}》")
 
-                # 批量更新数据库状态
+                # 批量更新数据库状态 (仅针对未兜底成功的项目)
                 for item_type, tmdb_ids in cancelled_ids_map.items():
                     if tmdb_ids:
                         # 设置忽略状态

@@ -242,42 +242,48 @@ def fetch_resource_list(tmdb_id, media_type='movie'):
 # ★★★ CMS 推送逻辑 (Token 版) ★★★
 # ==============================================================================
 
+def _clean_link(link):
+    """清洗链接的脏尾巴 (&#, &)"""
+    if not link:
+        return ""
+    link = link.strip()
+    # 循环去除结尾的特殊字符
+    while link.endswith('&#') or link.endswith('&') or link.endswith('#'):
+        if link.endswith('&#'):
+            link = link[:-2]
+        elif link.endswith('&') or link.endswith('#'):
+            link = link[:-1]
+    return link
+
 def push_to_cms(resource_link, title):
     """
-    推送到 CMS  (使用 Token 接口)
+    推送到 CMS (使用 Token 接口)
     """
     config = get_config()
     cms_url = config.get('cms_url')
     cms_token = config.get('cms_token')
 
     if not cms_url or not cms_token:
-        raise ValueError("未配置 CMS 地址或 Token，请在配置页填写")
+        raise ValueError("未配置 CMS 地址或 Token")
 
-    # 去除 URL 末尾可能的斜杠
-    cms_url = cms_url.rstrip('/')
+    # ★★★ 核心修复：在此处统一清洗链接 ★★★
+    clean_url = _clean_link(resource_link)
     
-    # 构造接口地址
+    cms_url = cms_url.rstrip('/')
     api_url = f"{cms_url}/api/cloud/add_share_down_by_token"
     
-    # 构造 Payload
     payload = {
-        "url": resource_link,
+        "url": clean_url,
         "token": cms_token
     }
 
     try:
-        logger.info(f"正在推送任务到 CMS: {api_url}")
-        
-        # ★ 注意：CMS 通常在局域网，一般不需要走代理。
-        # 如果你的 CMS 在外网且必须走代理，请取消下面 proxies 的注释
-        # proxies = config_manager.get_proxies_for_requests()
-        
-        response = requests.post(api_url, json=payload, timeout=10) # , proxies=proxies)
+        logger.info(f"  ➜ 正在推送任务到 CMS: {title}")
+        # CMS 通常在内网，不走代理
+        response = requests.post(api_url, json=payload, timeout=10)
         response.raise_for_status()
         
         res_json = response.json()
-        
-        # 根据截图，成功通常返回 code 200
         if res_json.get('code') == 200:
             logger.info(f"  ✅ CMS 推送成功: {res_json.get('msg', 'OK')}")
             return True
@@ -285,5 +291,39 @@ def push_to_cms(resource_link, title):
             raise Exception(f"CMS 返回错误: {res_json}")
 
     except Exception as e:
-        logger.error(f"CMS 推送异常: {e}")
+        logger.error(f"  ➜ CMS 推送异常: {e}")
         raise e
+
+def auto_download_best_resource(tmdb_id, media_type, title):
+    """
+    [自动任务专用] 搜索并下载最佳资源
+    1. 获取资源列表 (已应用过滤器)
+    2. 取第一个资源
+    3. 推送到 CMS
+    """
+    try:
+        # 1. 检查配置是否可用
+        config = get_config()
+        if not config.get('api_key') or not config.get('cms_url'):
+            logger.warning("NULLBR 未配置 API Key 或 CMS URL，无法执行自动兜底。")
+            return False
+
+        # 2. 获取资源 (fetch_resource_list 内部已经调用了 _is_resource_valid 进行过滤)
+        logger.info(f"  ➜ 正在通过 NULLBR 搜索兜底资源: {title} (ID: {tmdb_id})")
+        resources = fetch_resource_list(tmdb_id, media_type)
+        
+        if not resources:
+            logger.info(f"  ➜ NULLBR 未找到符合过滤条件的资源: {title}")
+            return False
+            
+        # 3. 选取最佳资源 (默认取过滤后的第一个)
+        best_resource = resources[0]
+        logger.info(f"  ➜ 命中资源: [{best_resource['source_type']}] {best_resource['title']} ({best_resource['size']})")
+        
+        # 4. 推送
+        push_to_cms(best_resource['link'], title)
+        return True
+
+    except Exception as e:
+        logger.error(f"  ➜ NULLBR 自动兜底失败: {e}")
+        return False

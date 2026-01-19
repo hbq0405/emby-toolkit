@@ -234,6 +234,18 @@
           <template #feedback>搜索无果后，暂停搜索的天数 (建议 7 天)。</template>
         </n-form-item>
 
+        <n-form-item label="NULLBR 兜底">
+          <n-space vertical>
+             <n-switch v-model:value="strategyConfig.enable_nullbr_fallback">
+                <template #checked>已启用</template>
+                <template #unchecked>未启用</template>
+             </n-switch>
+             <n-text depth="3" style="font-size: 12px;">
+               仅针对<b>老片</b> (超过保护期)。在取消订阅前，尝试通过 NULLBR 搜索并推送第一个符合过滤条件的资源到CMS。
+             </n-text>
+          </n-space>
+        </n-form-item>
+
         <n-form-item label="延迟订阅 (天)">
           <n-input-number v-model:value="strategyConfig.delay_subscription_days" :min="0" />
           <template #feedback>电影上映后 N 天才允许订阅 (0 表示不延迟)。</template>
@@ -300,6 +312,7 @@ const strategyConfig = ref({
   movie_pause_days: 7,
   delay_subscription_days: 0,
   timeout_revive_days: 0,
+  enable_nullbr_fallback: false
 });
 
 // 加载配置
