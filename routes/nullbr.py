@@ -20,8 +20,8 @@ def handle_config():
         # 获取所有字段
         new_config = {
             "api_key": data.get('api_key', '').strip(),
-            "tg_bot_token": data.get('tg_bot_token', '').strip(),
-            "tg_chat_id": data.get('tg_chat_id', '').strip(),
+            "cms_url": data.get('cms_url', '').strip(),     
+            "cms_token": data.get('cms_token', '').strip(), 
             "updated_at": "now"
         }
         settings_db.save_setting('nullbr_config', new_config)
@@ -101,9 +101,9 @@ def push_resource():
         logger.info(f"清洗后的链接: {link}")
 
         # 推送清洗后的链接
-        nullbr_handler.push_to_telegram(link, title)
+        nullbr_handler.push_to_cms(link, title)
         
-        return jsonify({"status": "success", "message": "已推送到 Telegram"})
+        return jsonify({"status": "success", "message": "已推送到 CMS"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     

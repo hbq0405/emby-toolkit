@@ -36,26 +36,14 @@
                 />
               </n-form-item>
               
-              <!-- TG Bot Token -->
-              <n-form-item label="Telegram Bot Token">
-                <n-input 
-                  v-model:value="config.tg_bot_token" 
-                  type="password" 
-                  show-password-on="click"
-                  placeholder="例如: 123456:ABC-DEF..." 
-                />
+              <n-form-item label="CMS 地址">
+                <n-input v-model:value="config.cms_url" placeholder="例如: http://192.168.1.5:9527" />
               </n-form-item>
 
-              <!-- TG Chat ID -->
-              <n-form-item label="Telegram Chat ID">
-                <n-input 
-                  v-model:value="config.tg_chat_id" 
-                  placeholder="例如: -100123456789" 
-                />
+              <n-form-item label="CMS Token">
+                <n-input v-model:value="config.cms_token" type="password" show-password-on="click" placeholder="cloud_media_sync" />
                 <template #feedback>
-                  <span style="font-size: 12px; color: #888;">
-                    提示：需将机器人拉进群组/频道或直接私聊。
-                  </span>
+                    <span style="font-size: 12px; color: #888;">CMS token</span>
                 </template>
               </n-form-item>
             </n-gi>
@@ -241,8 +229,8 @@ const { copy } = useClipboard();
 const showConfig = ref(false);
 const config = reactive({
   api_key: '',
-  tg_bot_token: '',
-  tg_chat_id: '',
+  cms_url: '',    
+  cms_token: '',
   presets: []
 });
 const saving = ref(false);
@@ -275,8 +263,8 @@ const loadConfig = async () => {
     const res = await axios.get('/api/nullbr/config');
     if (res.data) {
       config.api_key = res.data.api_key || '';
-      config.tg_bot_token = res.data.tg_bot_token || '';
-      config.tg_chat_id = res.data.tg_chat_id || '';
+      config.cms_url = res.data.cms_url || '';       
+      config.cms_token = res.data.cms_token || '';
     }
     const resPresets = await axios.get('/api/nullbr/presets');
     if (resPresets.data) {
@@ -290,8 +278,8 @@ const saveConfig = async () => {
   try {
     await axios.post('/api/nullbr/config', {
         api_key: config.api_key,
-        tg_bot_token: config.tg_bot_token,
-        tg_chat_id: config.tg_chat_id
+        cms_url: config.cms_url,       
+        cms_token: config.cms_token
     });
     await axios.post('/api/nullbr/presets', { presets: config.presets });
     message.success('全部配置已保存');
