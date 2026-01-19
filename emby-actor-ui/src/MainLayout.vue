@@ -225,6 +225,7 @@ import {
   FilmOutline as DiscoverIcon,
   ArchiveOutline as UnifiedSubIcon,
   PricetagOutline as TagIcon,
+  CloudDownloadOutline as NullbrIcon,
   CompassOutline,
   ReaderOutline,
   LibraryOutline, 
@@ -372,12 +373,18 @@ const menuOptions = computed(() => {
   }
 
   // 规则2: 只要是登录用户，都应该能看到“用户中心”和“影视探索”
-  // (即使是管理员，也是 Emby 用户，也应该能用这些功能)
   if (authStore.isLoggedIn) {
     discoveryGroup.children.push(
       { label: '用户中心', key: 'UserCenter', icon: renderIcon(UserCenterIcon) },
       { label: '影视探索', key: 'Discover', icon: renderIcon(DiscoverIcon) }
     );
+    
+    // ★★★ 修改：将 NULLBR 移出通用列表，单独判断管理员权限 ★★★
+    if (authStore.isAdmin) {
+        discoveryGroup.children.push(
+            { label: 'NULLBR', key: 'Nullbr', icon: renderIcon(NullbrIcon) }
+        );
+    }
   }
 
   // 3. 构建最终的菜单列表

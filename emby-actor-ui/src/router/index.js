@@ -19,6 +19,7 @@ import UserManagementPage from '../components/UserManagementPage.vue';
 import DiscoverPage from '../components/DiscoverPage.vue';
 import UserCenterPage from '../components/UserCenterPage.vue'
 import SetupPage from '../components/Setup.vue';
+import NullbrPage from '../components/NullbrPage.vue';
 
 // --- 2. 定义路由规则 (带 meta.public 标签) ---
 const routes = [
@@ -165,6 +166,15 @@ const routes = [
     name: 'Discover',
     component: DiscoverPage,
     meta: { requiresAuth: true }, // 必须登录才能访问
+  },
+  {
+    path: '/nullbr',
+    name: 'Nullbr',
+    component: NullbrPage,
+    meta: { 
+      requiresAuth: true,
+      adminOnly: true 
+    },
   },
 ];
 

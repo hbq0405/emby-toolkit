@@ -2216,7 +2216,7 @@ class MediaProcessor:
                 def _check_assets_list(assets_list, label_prefix=""):
                     if not assets_list:
                         return False, f"{label_prefix} 无资产数据"
-                    
+                    last_fail = "未找到包含视频流的有效资产"
                     # 只要有一个版本是好的，就算通过 (多版本情况)
                     for asset in assets_list:
                         # 适配 Emby API 结构 (MediaStreams) 和 DB 结构 (asset_details_json) 的差异

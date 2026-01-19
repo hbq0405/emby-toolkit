@@ -48,6 +48,7 @@ from routes.webhook import webhook_bp
 from routes.unified_auth import unified_auth_bp
 from routes.user_portal import user_portal_bp
 from routes.discover import discover_bp
+from routes.nullbr import nullbr_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 import logging
@@ -361,6 +362,7 @@ app.register_blueprint(webhook_bp)
 app.register_blueprint(unified_auth_bp)
 app.register_blueprint(user_portal_bp)
 app.register_blueprint(discover_bp)
+app.register_blueprint(nullbr_bp)
 
 def main_app_start():
     """将主应用启动逻辑封装成一个函数"""
