@@ -118,7 +118,7 @@
         <n-layout has-sider style="min-height: 600px; background: none;">
           
           <!-- 左侧：片单导航 -->
-          <n-layout-sider width="200" content-style="padding-right: 16px; background: none;" :native-scrollbar="false">
+          <n-layout-sider width="260" content-style="padding-right: 16px; background: none;" :native-scrollbar="false">
             <n-menu
               :options="presetMenuOptions"
               :value="currentListId"
@@ -211,7 +211,7 @@
 <script setup>
 import { ref, reactive, onMounted, h, defineComponent } from 'vue';
 import axios from 'axios';
-import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput } from 'naive-ui';
+import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip } from 'naive-ui';
 import { useClipboard } from '@vueuse/core';
 import { 
   SettingsOutline as SettingsIcon, 
@@ -341,9 +341,16 @@ const loadPresets = async () => {
     const res = await axios.get('/api/nullbr/presets');
     presetLists.value = res.data;
     presetMenuOptions.value = res.data.map(list => ({
-      label: list.name,
-      key: list.id,
-      icon: () => h(NIcon, null, { default: () => h(ListIcon) })
+    label: () => h(
+        NTooltip,
+        { placement: 'right', keepAliveOnHover: false },
+        {
+        trigger: () => h('span', null, list.name),
+        default: () => list.name
+        }
+    ),
+    key: list.id,
+    icon: () => h(NIcon, null, { default: () => h(ListIcon) })
     }));
     if (presetLists.value.length > 0) {
       handleListChange(presetLists.value[0].id);
