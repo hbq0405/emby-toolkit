@@ -14,7 +14,7 @@
     <n-collapse-transition :show="showConfig">
       <n-card title="接入配置" :bordered="false" class="dashboard-card" style="margin-top: 16px; margin-bottom: 16px;">
         <n-alert type="info" style="margin-bottom: 16px;">
-          NULLBR 是一个第三方资源索引服务，您需要先注册账号获取 API Key。
+          NULLBR 是一个第三方资源索引服务，您需要先<n-button tag="a" href="https://nullbr.online/manage" target="_blank" secondary size="small">注册账号</n-button>获取 API Key。
         </n-alert>
 
         <n-form label-placement="top">
