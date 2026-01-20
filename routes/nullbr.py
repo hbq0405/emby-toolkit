@@ -1,5 +1,6 @@
 # routes/nullbr.py
 import logging
+from datetime import datetime
 from flask import Blueprint, jsonify, request
 from extensions import admin_required
 from database import settings_db
@@ -13,16 +14,18 @@ logger = logging.getLogger(__name__)
 def handle_config():
     if request.method == 'GET':
         config = settings_db.get_setting('nullbr_config') or {}
-        # 确保返回 filters 默认结构，防止前端报错
-        if 'filters' not in config:
-            config['filters'] = {
-                "resolutions": [],
-                "qualities": [],
-                "min_size": 0,
-                "max_size": 0,
-                "require_zh": False,
-                "containers": []
-            }
+        # ... (其他默认值保持不变) ...
+        
+        # ★ 默认开启所有源
+        if 'enabled_sources' not in config:
+            config['enabled_sources'] = ['115', 'magnet', 'ed2k']
+            
+        # ... (统计逻辑保持不变) ...
+        stats = settings_db.get_setting('nullbr_usage_stats') or {}
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        current_usage = stats.get('count', 0) if stats.get('date') == today_str else 0
+        config['current_usage'] = current_usage
+            
         return jsonify(config)
     
     if request.method == 'POST':
@@ -32,6 +35,9 @@ def handle_config():
             "cms_url": data.get('cms_url', '').strip(),     
             "cms_token": data.get('cms_token', '').strip(),
             "filters": data.get('filters', {}),
+            "daily_limit": int(data.get('daily_limit', 100)),
+            "request_interval": float(data.get('request_interval', 5)),
+            "enabled_sources": data.get('enabled_sources', ['115', 'magnet', 'ed2k']),
             "updated_at": "now"
         }
         settings_db.save_setting('nullbr_config', new_config)

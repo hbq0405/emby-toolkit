@@ -3,6 +3,17 @@
   <n-layout content-style="padding: 24px;">
     <n-page-header title="NULLBR 资源库" subtitle="连接 115 专属资源网络 (Beta)">
       <template #extra>
+        <n-tooltip trigger="hover">
+            <template #trigger>
+              <n-tag :type="quotaColor" round :bordered="false" style="margin-right: 8px; cursor: help;">
+                <template #icon>
+                  <n-icon :component="PulseIcon" />
+                </template>
+                今日剩余: {{ remainingQuota }} / {{ config.daily_limit }}
+              </n-tag>
+            </template>
+            API 调用配额 (仅获取下载链接时消耗)
+          </n-tooltip>
         <n-button @click="showConfig = !showConfig" size="small" secondary>
           <template #icon><n-icon :component="SettingsIcon" /></template>
           配置
@@ -33,7 +44,34 @@
                   placeholder="请输入 NULLBR API Key" 
                 />
               </n-form-item>
-              
+
+              <n-form-item label="启用数据源 (节省配额)">
+                <n-checkbox-group v-model:value="config.enabled_sources">
+                  <n-space>
+                    <n-checkbox value="115" label="115网盘" />
+                    <n-checkbox value="magnet" label="磁力链" />
+                    <n-checkbox value="ed2k" label="电驴(Ed2k)" />
+                  </n-space>
+                </n-checkbox-group>
+                <template #feedback>
+                    <span style="font-size: 12px; color: #999;">每开启一个源，点击资源时消耗 1 次配额。只选 115 可最省配额。</span>
+                </template>
+              </n-form-item>
+
+              <!-- API 限制设置  -->
+              <n-grid :cols="2" :x-gap="12">
+                <n-gi>
+                    <n-form-item label="每日调用上限">
+                        <n-input-number v-model:value="config.daily_limit" :min="10" placeholder="默认100" />
+                    </n-form-item>
+                </n-gi>
+                <n-gi>
+                    <n-form-item label="请求间隔 (秒)">
+                        <n-input-number v-model:value="config.request_interval" :min="1" :step="0.5" placeholder="默认5" />
+                    </n-form-item>
+                </n-gi>
+              </n-grid>
+
               <n-form-item label="CMS 地址">
                 <n-input v-model:value="config.cms_url" placeholder="例如: http://192.168.1.5:9527" />
               </n-form-item>
@@ -267,7 +305,7 @@
 
 <script setup>
 // ... (Script 部分保持不变，请确保包含上一步中增加的 filters 逻辑) ...
-import { ref, reactive, onMounted, h, defineComponent } from 'vue';
+import { ref, reactive, onMounted, h, defineComponent, computed } from 'vue';
 import axios from 'axios';
 import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip, NCheckbox, NCheckboxGroup, NInputNumber, NSwitch, NSpin } from 'naive-ui';
 import { useClipboard } from '@vueuse/core';
@@ -275,7 +313,8 @@ import {
   SettingsOutline as SettingsIcon, 
   Search as SearchIcon, 
   ListOutline as ListIcon,
-  PaperPlaneOutline as SendIcon
+  PaperPlaneOutline as SendIcon,
+  PulseOutline as PulseIcon
 } from '@vicons/ionicons5';
 
 const message = useMessage();
@@ -283,10 +322,14 @@ const { copy } = useClipboard();
 
 // --- 配置相关 ---
 const showConfig = ref(false);
+const currentUsage = ref(0);
 const config = reactive({
   api_key: '',
   cms_url: '',    
   cms_token: '',
+  daily_limit: 100, 
+  request_interval: 5,
+  enabled_sources: ['115', 'magnet', 'ed2k'], 
   presets: [],
   filters: {
       resolutions: [],
@@ -297,6 +340,18 @@ const config = reactive({
       max_size: 0
   }
 });
+// 计算属性 
+const remainingQuota = computed(() => {
+  const left = config.daily_limit - currentUsage.value;
+  return left < 0 ? 0 : left;
+});
+
+const quotaColor = computed(() => {
+  const ratio = remainingQuota.value / config.daily_limit;
+  if (ratio <= 0) return 'error';
+  if (ratio < 0.2) return 'warning';
+  return 'success';
+});
 const saving = ref(false);
 
 const loadConfig = async () => {
@@ -306,6 +361,10 @@ const loadConfig = async () => {
       config.api_key = res.data.api_key || '';
       config.cms_url = res.data.cms_url || '';       
       config.cms_token = res.data.cms_token || '';
+      config.daily_limit = res.data.daily_limit || 100; 
+      config.request_interval = res.data.request_interval || 5;
+      currentUsage.value = res.data.current_usage || 0;
+      config.enabled_sources = res.data.enabled_sources || ['115', 'magnet', 'ed2k'];
       
       const f = res.data.filters || {};
       config.filters.resolutions = f.resolutions || [];
@@ -329,6 +388,9 @@ const saveConfig = async () => {
         api_key: config.api_key,
         cms_url: config.cms_url,       
         cms_token: config.cms_token,
+        daily_limit: config.daily_limit, 
+        request_interval: config.request_interval,
+        enabled_sources: config.enabled_sources,
         filters: config.filters
     });
     await axios.post('/api/nullbr/presets', { presets: config.presets });
@@ -483,6 +545,9 @@ const openResourceModal = async (item) => {
       tmdb_id: item.tmdb_id,
       media_type: item.media_type
     });
+    
+    loadConfig(); 
+
     if (res.data && res.data.data) {
       currentResources.value = res.data.data;
       showModal.value = true;
@@ -491,6 +556,7 @@ const openResourceModal = async (item) => {
     }
   } catch (error) {
     message.error('获取资源列表失败: ' + (error.response?.data?.message || error.message));
+    loadConfig();
   } finally {
     loadingResourcesId.value = null;
   }

@@ -2,6 +2,9 @@
 import logging
 import requests
 import re
+import time  
+import threading 
+from datetime import datetime
 from database import settings_db
 import config_manager
 
@@ -12,6 +15,9 @@ logger = logging.getLogger(__name__)
 # ★★★ 硬编码配置：Nullbr ★★★
 NULLBR_APP_ID = "7DqRtfNX3"
 NULLBR_API_BASE = "https://api.nullbr.com"
+
+# 线程锁，防止并发请求导致计数器错乱
+_rate_limit_lock = threading.Lock()
 
 def get_config():
     return settings_db.get_setting('nullbr_config') or {}
@@ -134,6 +140,53 @@ def _is_resource_valid(item, filters):
 
     return True
 
+def _check_and_update_rate_limit():
+    """
+    检查 API 调用限制：
+    1. 每日限额检查
+    2. 请求间隔强制睡眠
+    """
+    with _rate_limit_lock:
+        config = get_config()
+        # 获取配置，默认限制 100 次，间隔 5 秒
+        daily_limit = int(config.get('daily_limit', 100))
+        interval = float(config.get('request_interval', 5.0))
+        
+        # 获取统计数据
+        stats = settings_db.get_setting('nullbr_usage_stats') or {}
+        today_str = datetime.now().strftime('%Y-%m-%d')
+        
+        # 1. 检查日期，如果是新的一天则重置
+        if stats.get('date') != today_str:
+            stats = {
+                'date': today_str,
+                'count': 0,
+                'last_request_ts': 0
+            }
+        
+        # 2. 检查每日限额
+        current_count = stats.get('count', 0)
+        if current_count >= daily_limit:
+            logger.warning(f"NULLBR API 今日调用次数已达上限 ({current_count}/{daily_limit})")
+            raise Exception(f"今日 API 调用次数已达上限 ({daily_limit}次)，请明日再试或增加配额。")
+            
+        # 3. 检查请求间隔 (强制睡眠)
+        last_ts = stats.get('last_request_ts', 0)
+        now_ts = time.time()
+        elapsed = now_ts - last_ts
+        
+        if elapsed < interval:
+            sleep_time = interval - elapsed
+            logger.info(f"  ⏳ 触发流控，强制等待 {sleep_time:.2f} 秒...")
+            time.sleep(sleep_time)
+            
+        # 4. 更新统计
+        stats['count'] = current_count + 1
+        stats['last_request_ts'] = time.time()
+        settings_db.save_setting('nullbr_usage_stats', stats)
+        
+        logger.debug(f"NULLBR API 调用统计: {stats['count']}/{daily_limit}")
+
 def get_preset_lists():
     """获取片单列表"""
     custom_presets = settings_db.get_setting('nullbr_presets')
@@ -156,10 +209,10 @@ def fetch_list_items(list_id, page=1):
         raise e
 
 def search_media(keyword, page=1):
+    """搜索资源 """
     url = f"{NULLBR_API_BASE}/search"
     params = { "query": keyword, "page": page }
     try:
-        # 搜索走代理（如果是外网）
         proxies = config_manager.get_proxies_for_requests()
         response = requests.get(url, params=params, headers=_get_headers(), timeout=15, proxies=proxies)
         response.raise_for_status()
@@ -170,6 +223,16 @@ def search_media(keyword, page=1):
         raise e
 
 def _fetch_single_source(tmdb_id, media_type, source_type):
+    # ★ 插入流控检查
+    # 注意：获取一个电影的资源可能会调用 2-3 次这个函数，意味着会触发 2-3 次间隔等待
+    # 这是为了安全起见必须的
+    try:
+        _check_and_update_rate_limit()
+    except Exception as e:
+        # 如果是获取资源详情时超限，记录日志并返回空列表，不中断整个流程（尽量返回已获取的）
+        logger.warning(f"  ⚠️ {e}")
+        return []
+
     if media_type == 'movie':
         url = f"{NULLBR_API_BASE}/movie/{tmdb_id}/{source_type}"
     elif media_type == 'tv':
@@ -199,7 +262,6 @@ def _fetch_single_source(tmdb_id, media_type, source_type):
                 if media_type == 'tv' and source_type == 'magnet':
                     title = f"[S1] {title}"
                 
-                # 构造对象
                 resource_obj = {
                     "title": title,
                     "size": item.get('size', '未知'),
@@ -216,18 +278,43 @@ def _fetch_single_source(tmdb_id, media_type, source_type):
         return []
 
 def fetch_resource_list(tmdb_id, media_type='movie'):
-    # 1. 获取所有资源
-    all_resources = []
-    all_resources.extend(_fetch_single_source(tmdb_id, media_type, '115'))
-    all_resources.extend(_fetch_single_source(tmdb_id, media_type, 'magnet'))
-    if media_type == 'movie':
-        all_resources.extend(_fetch_single_source(tmdb_id, media_type, 'ed2k'))
+    config = get_config()
     
-    # 2. 获取过滤配置
+    # 获取启用的数据源，默认全开
+    # 格式: ['115', 'magnet', 'ed2k']
+    enabled_sources = config.get('enabled_sources', ['115', 'magnet', 'ed2k'])
+    
+    all_resources = []
+    
+    # 1. 获取 115 资源 (消耗 1 次配额)
+    if '115' in enabled_sources:
+        try:
+            res_115 = _fetch_single_source(tmdb_id, media_type, '115')
+            all_resources.extend(res_115)
+        except Exception:
+            pass # 单个源失败不影响其他
+
+    # 2. 获取 Magnet 资源 (消耗 1 次配额)
+    if 'magnet' in enabled_sources:
+        try:
+            res_mag = _fetch_single_source(tmdb_id, media_type, 'magnet')
+            all_resources.extend(res_mag)
+        except Exception:
+            pass
+
+    # 3. 获取 Ed2k 资源 (仅电影, 消耗 1 次配额)
+    if media_type == 'movie' and 'ed2k' in enabled_sources:
+        try:
+            res_ed2k = _fetch_single_source(tmdb_id, media_type, 'ed2k')
+            all_resources.extend(res_ed2k)
+        except Exception:
+            pass
+    
+    # 4. 获取过滤配置
     config = get_config()
     filters = config.get('filters', {})
     
-    # 3. 执行过滤
+    # 5. 执行过滤
     # 如果 filters 全为空值，则不过滤
     has_filter = any(filters.values())
     if not has_filter:
