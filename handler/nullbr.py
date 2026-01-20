@@ -5,7 +5,7 @@ import re
 import time  
 import threading 
 from datetime import datetime
-from database import settings_db
+from database import settings_db, media_db, request_db
 import config_manager
 
 import constants
@@ -187,6 +187,62 @@ def _check_and_update_rate_limit():
         
         logger.debug(f"NULLBR API 调用统计: {stats['count']}/{daily_limit}")
 
+def _enrich_items_with_status(items):
+    """
+    批量查询本地数据库，为 NULLBR 的结果注入 in_library 和 subscription_status 状态
+    """
+    if not items:
+        return items
+
+    # 1. 提取 ID 列表
+    # NULLBR 返回的 ID 可能是 'id' 或 'tmdbid'
+    tmdb_ids = []
+    for item in items:
+        tid = item.get('tmdbid') or item.get('id')
+        if tid:
+            tmdb_ids.append(str(tid))
+    
+    if not tmdb_ids:
+        return items
+
+    # 2. 批量查询数据库
+    # 假设大部分是电影，混合查询比较麻烦，这里简单处理：
+    # 分别查 Movie 和 Series，或者根据 item 自身的 media_type 判断
+    # 为了效率，我们一次性查出来，在内存里匹配
+    
+    # 获取所有相关 ID 的库内状态 (Movie 和 Series 都查)
+    library_map_movie = media_db.check_tmdb_ids_in_library(tmdb_ids, 'Movie')
+    library_map_series = media_db.check_tmdb_ids_in_library(tmdb_ids, 'Series')
+    
+    # 获取订阅状态
+    sub_status_movie = request_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids, 'Movie')
+    sub_status_series = request_db.get_global_subscription_statuses_by_tmdb_ids(tmdb_ids, 'Series')
+
+    # 3. 注入状态
+    for item in items:
+        tid = str(item.get('tmdbid') or item.get('id') or '')
+        mtype = item.get('media_type', 'movie') # 默认为 movie
+        
+        if not tid:
+            continue
+
+        in_lib = False
+        sub_stat = None
+
+        if mtype == 'tv':
+            if f"{tid}_Series" in library_map_series:
+                in_lib = True
+            sub_stat = sub_status_series.get(tid)
+        else:
+            if f"{tid}_Movie" in library_map_movie:
+                in_lib = True
+            sub_stat = sub_status_movie.get(tid)
+            
+        item['in_library'] = in_lib
+        item['subscription_status'] = sub_stat
+
+    return items
+
 def get_preset_lists():
     """获取片单列表"""
     custom_presets = settings_db.get_setting('nullbr_presets')
@@ -203,7 +259,9 @@ def fetch_list_items(list_id, page=1):
         response = requests.get(url, params=params, headers=_get_headers(), timeout=15)
         response.raise_for_status()
         data = response.json()
-        return {"code": 200, "data": {"list": data.get('items', []), "total": data.get('total_results', 0)}}
+        items = data.get('items', [])
+        enriched_items = _enrich_items_with_status(items)
+        return {"code": 200, "data": {"list": enriched_items, "total": data.get('total_results', 0)}}
     except Exception as e:
         logger.error(f"  ➜ 获取片单失败: {e}")
         raise e
@@ -217,7 +275,9 @@ def search_media(keyword, page=1):
         response = requests.get(url, params=params, headers=_get_headers(), timeout=15, proxies=proxies)
         response.raise_for_status()
         data = response.json()
-        return { "code": 200, "data": { "list": data.get('items', []), "total": data.get('total_results', 0) } }
+        items = data.get('items', [])
+        enriched_items = _enrich_items_with_status(items)
+        return { "code": 200, "data": { "list": enriched_items, "total": data.get('total_results', 0) } }
     except Exception as e:
         logger.error(f"  ➜ NULLBR 搜索失败: {e}")
         raise e

@@ -201,15 +201,15 @@
           <div style="margin-top: 20px;">
              <n-spin :show="searching">
                 <n-empty v-if="!searchResults.length && !searching" description="暂无数据" />
-                <n-grid cols="3 520:4 800:5 1000:6 1400:8" :x-gap="12" :y-gap="12">
-                   <n-gi v-for="item in searchResults" :key="item.id">
+                <div class="responsive-grid">
+                  <div v-for="item in searchResults" :key="item.id" class="grid-item">
                       <MediaCard 
                         :item="item" 
                         :loading="loadingResourcesId === item.id" 
                         @click="openResourceModal(item)" 
                       />
-                   </n-gi>
-                </n-grid>
+                  </div>
+                </div>
              </n-spin>
           </div>
         </n-card>
@@ -228,15 +228,15 @@
           <n-layout-content content-style="padding-left: 4px; background: none;">
             <n-spin :show="loadingList">
               <div v-if="listItems.length > 0">
-                <n-grid cols="3 520:4 800:5 1000:6 1400:8" :x-gap="12" :y-gap="12">
-                  <n-gi v-for="item in listItems" :key="item.id">
+                <div class="responsive-grid">
+                  <div v-for="item in listItems" :key="item.id" class="grid-item">
                     <MediaCard 
                       :item="item" 
                       :loading="loadingResourcesId === item.id" 
                       @click="openResourceModal(item)" 
                     />
-                  </n-gi>
-                </n-grid>
+                  </div>
+                </div>
                 
                 <div style="display: flex; justify-content: center; margin-top: 20px; margin-bottom: 20px;">
                    <n-button v-if="hasMore" @click="loadMoreList" :loading="loadingMore" size="small">加载更多</n-button>
@@ -533,7 +533,9 @@ const mapApiItemToUi = (item) => ({
   media_type: item.media_type || 'movie',
   overview: item.overview,
   vote: item.vote || item.vote_average,
-  year: item.release_date ? item.release_date.substring(0, 4) : ''
+  year: item.release_date ? item.release_date.substring(0, 4) : '',
+  in_library: item.in_library,
+  subscription_status: item.subscription_status
 });
 
 const openResourceModal = async (item) => {
@@ -578,36 +580,54 @@ const confirmPush = async (resource) => {
 };
 
 const MediaCard = defineComponent({
-  props: ['item', 'loading'], // 1. 新增 loading 属性
-  components: { NImage, NEllipsis, NSpace, NTag, NText, NSpin }, // 2. 注册 NSpin 组件
+  props: ['item', 'loading'],
+  components: { NImage, NEllipsis, NSpace, NTag, NText, NSpin, NIcon },
+  // 引入需要的图标
+  setup() {
+      return { 
+          CloudDownloadOutline:  h(NIcon, null, { default: () => h(import('@vicons/ionicons5').then(m => m.CloudDownloadOutline)) }) 
+      }
+  },
   template: `
-    <div class="media-card" style="cursor: pointer; position: relative; transition: transform 0.2s;" @mouseenter="hover=true" @mouseleave="hover=false" :style="{ transform: hover ? 'translateY(-3px)' : 'none' }">
+    <div class="media-card" @mouseenter="hover=true" @mouseleave="hover=false">
       
-      <!-- 3. 新增加载遮罩层 -->
-      <div v-if="loading" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 10; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; border-radius: 4px;">
+      <!-- Loading 遮罩 -->
+      <div v-if="loading" class="loading-overlay">
         <n-spin size="medium" stroke="#ffffff" />
       </div>
 
-      <n-image 
-        preview-disabled 
-        :src="item.poster ? 'https://image.tmdb.org/t/p/w300' + item.poster : '/default-poster.png'" 
-        object-fit="cover"
-        style="width: 100%; aspect-ratio: 2/3; border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,0.1);" 
-      />
-      <div style="margin-top: 4px;">
-        <n-ellipsis style="font-weight: 600; font-size: 12px; line-height: 1.3;">{{ item.title }}</n-ellipsis>
-        <n-space justify="space-between" align="center" style="margin-top: 1px;">
-           <n-text depth="3" style="font-size: 11px;">{{ item.year }}</n-text>
-           <n-tag v-if="item.vote" type="warning" size="tiny" round :bordered="false" style="font-size: 9px; height: 16px; padding: 0 4px;">{{ Number(item.vote).toFixed(1) }}</n-tag>
-        </n-space>
+      <!-- 海报容器 -->
+      <div class="poster-wrapper">
+        <img 
+            :src="item.poster ? 'https://image.tmdb.org/t/p/w300' + item.poster : '/default-poster.png'" 
+            class="media-poster"
+            loading="lazy"
+        />
+        
+        <!-- ★★★ 状态缎带 ★★★ -->
+        <div v-if="item.in_library" class="ribbon ribbon-green"><span>已入库</span></div>
+        <div v-else-if="item.subscription_status === 'SUBSCRIBED'" class="ribbon ribbon-blue"><span>已订阅</span></div>
+        <div v-else-if="item.subscription_status === 'PAUSED'" class="ribbon ribbon-blue"><span>已暂停</span></div>
+        <div v-else-if="item.subscription_status === 'WANTED'" class="ribbon ribbon-purple"><span>待订阅</span></div>
+        <div v-else-if="item.subscription_status === 'REQUESTED'" class="ribbon ribbon-orange"><span>待审核</span></div>
+        
+        <!-- 评分角标 -->
+        <div v-if="item.vote" class="rating-badge">
+          {{ Number(item.vote).toFixed(1) }}
+        </div>
+
+        <!-- 底部遮罩信息区 -->
+        <div class="overlay-info">
+          <div class="text-content">
+            <div class="media-title" :title="item.title">{{ item.title }}</div>
+            <div class="media-meta-row">
+              <span class="media-year">{{ item.year }}</span>
+              <span class="media-dot">·</span>
+              <span class="media-type">{{ item.media_type === 'tv' ? '剧集' : '电影' }}</span>
+            </div>
+          </div>
+        </div>
       </div>
-      <n-tag 
-        style="position: absolute; top: 3px; right: 3px; opacity: 0.9; font-size: 9px; height: 16px; padding: 0 3px;" 
-        size="tiny" 
-        :type="item.media_type === 'tv' ? 'success' : 'info'"
-      >
-        {{ item.media_type === 'tv' ? '剧' : '影' }}
-      </n-tag>
     </div>
   `,
   data() { return { hover: false } }
@@ -623,4 +643,155 @@ onMounted(() => {
 .dashboard-card {
   height: 100%;
 }
+
+/* Grid 容器在父组件模板中，不需要 deep */
+.responsive-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+}
+
+.grid-item {
+  min-width: 0;
+  height: 100%;
+}
+
+/* ★★★ 关键修复：给所有 MediaCard 内部样式加上 :deep() ★★★ */
+
+:deep(.media-card) {
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  border-radius: 8px;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  overflow: hidden;
+  height: 100%;
+  background-color: #222;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+:deep(.media-card:hover) {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 16px rgba(0,0,0,0.3);
+  z-index: 10;
+}
+
+:deep(.poster-wrapper) {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 2 / 3;
+  overflow: hidden;
+}
+
+:deep(.media-poster) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transition: transform 0.3s ease;
+}
+
+:deep(.media-card:hover .media-poster) {
+  transform: scale(1.05);
+}
+
+:deep(.loading-overlay) {
+  position: absolute; 
+  top: 0; left: 0; right: 0; bottom: 0; 
+  z-index: 20; 
+  background: rgba(0,0,0,0.4); 
+  display: flex; 
+  align-items: center; 
+  justify-content: center; 
+  border-radius: 4px;
+}
+
+:deep(.overlay-info) {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.6) 50%, transparent 100%);
+  padding: 40px 8px 8px 8px; 
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  pointer-events: none;
+}
+
+:deep(.text-content) {
+  flex: 1;
+  min-width: 0;
+}
+
+:deep(.media-title) {
+  color: #fff;
+  font-weight: bold;
+  font-size: 0.9em;
+  line-height: 1.2;
+  margin-bottom: 2px;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:deep(.media-meta-row) {
+  display: flex;
+  align-items: center;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.75em;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.8);
+}
+
+:deep(.media-dot) {
+  margin: 0 4px;
+}
+
+:deep(.rating-badge) {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background-color: rgba(0, 0, 0, 0.65);
+  color: #f7b824;
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: bold;
+  backdrop-filter: blur(2px);
+  box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+  z-index: 5;
+}
+
+:deep(.ribbon) {
+  position: absolute;
+  top: -3px;
+  left: -3px;
+  width: 60px;
+  height: 60px;
+  overflow: hidden;
+  z-index: 5;
+}
+:deep(.ribbon span) {
+  position: absolute;
+  display: block;
+  width: 85px;
+  padding: 3px 0;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+  color: #fff;
+  font-size: 10px;
+  font-weight: bold;
+  text-shadow: 0 1px 1px rgba(0,0,0,0.3);
+  text-transform: uppercase;
+  text-align: center;
+  left: -16px;
+  top: 10px;
+  transform: rotate(-45deg);
+}
+
+:deep(.ribbon-green span) { background-color: #67c23a; }
+:deep(.ribbon-blue span) { background-color: #409eff; }
+:deep(.ribbon-purple span) { background-color: #722ed1; }
+:deep(.ribbon-orange span) { background-color: #e6a23c; }
 </style>
