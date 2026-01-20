@@ -111,6 +111,6 @@ def clear_pending_cleanup_tasks():
             with conn.cursor() as cursor:
                 cursor.execute("DELETE FROM cleanup_index WHERE status = 'pending';")
                 conn.commit()
-                logger.info("已清空所有待处理的媒体清理索引。")
+                logger.info("  ➜ 已清空所有待处理的媒体清理索引。")
     except Exception as e:
         logger.error(f"清空待处理的媒体清理索引时失败: {e}", exc_info=True)
