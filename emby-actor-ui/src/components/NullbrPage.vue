@@ -115,7 +115,7 @@
                   </n-form-item>
 
                   <!-- 容器 & 字幕 -->
-                  <n-form-item label="容器" :show-feedback="false">
+                  <n-form-item label="容器（仅电影）" :show-feedback="false">
                     <n-space vertical>
                         <n-checkbox-group v-model:value="config.filters.containers">
                             <n-space>
