@@ -43,4 +43,3 @@ lxml
 
 # ---115 网盘支持 ---
 p115client
-qrcode
