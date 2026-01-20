@@ -8,7 +8,7 @@ COPY emby-actor-ui/ ./
 RUN npm run build
 
 # --- 阶段 2: 构建最终的生产镜像 (★ 优化后 ★) ---
-FROM python:3.11-slim
+FROM python:3.12-slim
 
 ENV LANG="C.UTF-8" \
     TZ="Asia/Shanghai" \

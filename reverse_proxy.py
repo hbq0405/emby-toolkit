@@ -296,7 +296,7 @@ def handle_get_mimicked_library_image(path):
         return "Internal Proxy Error", 500
 
 UNSUPPORTED_METADATA_ENDPOINTS = [
-        '/Items/Prefixes', 
+        # '/Items/Prefixes', # Emby 不支持按前缀过滤虚拟库
         '/Genres',         
         '/Studios',        
         '/Tags',           

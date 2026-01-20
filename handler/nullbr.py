@@ -10,6 +10,14 @@ import config_manager
 
 import constants
 import utils
+try:
+    # 只导入主类，不导入工具类，防止报错
+    from p115client import P115Client
+except ImportError:
+    P115Client = None
+get_qrcode_token = None
+get_qrcode_status = None
+
 logger = logging.getLogger(__name__)
 
 # ★★★ 硬编码配置：Nullbr ★★★
@@ -408,16 +416,21 @@ def fetch_resource_list(tmdb_id, media_type='movie'):
 # ==============================================================================
 
 def _clean_link(link):
-    """清洗链接的脏尾巴 (&#, &)"""
+    """
+    清洗链接：去除首尾空格，并安全去除末尾的 HTML 脏字符 (&#)
+    """
     if not link:
         return ""
     link = link.strip()
-    # 循环去除结尾的特殊字符
+    
+    # 循环去除结尾的特殊字符，直到干净为止
+    # 这样可以把 password=1234&# 变成 password=1234
     while link.endswith('&#') or link.endswith('&') or link.endswith('#'):
         if link.endswith('&#'):
             link = link[:-2]
         elif link.endswith('&') or link.endswith('#'):
             link = link[:-1]
+            
     return link
 
 def push_to_cms(resource_link, title):
@@ -459,6 +472,179 @@ def push_to_cms(resource_link, title):
         logger.error(f"  ➜ CMS 推送异常: {e}")
         raise e
 
+def _format_size(size):
+    """辅助函数：格式化字节大小"""
+    if size < 1024:
+        return f"{size} B"
+    elif size < 1024**2:
+        return f"{size/1024:.2f} KB"
+    elif size < 1024**3:
+        return f"{size/1024**2:.2f} MB"
+    elif size < 1024**4:
+        return f"{size/1024**3:.2f} GB"
+    else:
+        return f"{size/1024**4:.2f} TB"
+
+def push_to_115(resource_link, title):
+    """
+    智能推送：支持 115/115cdn/anxia 转存 和 磁力离线 (修复变量作用域报错)
+    """
+    if P115Client is None:
+        raise ImportError("未安装 p115 库")
+
+    config = get_config()
+    cookies = config.get('p115_cookies')
+    
+    try:
+        cid_val = config.get('p115_save_path_cid', 0)
+        save_path_cid = int(cid_val) if cid_val else 0
+    except:
+        save_path_cid = 0
+
+    if not cookies:
+        raise ValueError("未配置 115 Cookies")
+
+    clean_url = _clean_link(resource_link)
+    logger.info(f"  ➜ [DEBUG] 待处理链接: {clean_url}")
+    
+    client = P115Client(cookies)
+    
+    try:
+        # 支持 115.com, 115cdn.com, anxia.com
+        target_domains = ['115.com', '115cdn.com', 'anxia.com']
+        is_115_share = any(d in clean_url for d in target_domains) and ('magnet' not in clean_url)
+        
+        if is_115_share:
+            logger.info(f"  ➜ [模式] 识别为 115 转存任务 -> CID: {save_path_cid}")
+            
+            # 1. 提取 share_code
+            share_code = None
+            match = re.search(r'/s/([a-z0-9]+)', clean_url)
+            if match:
+                share_code = match.group(1)
+            
+            if not share_code:
+                raise Exception("无法从链接中提取分享码 (share_code)")
+            
+            # 2. 提取 receive_code (密码)
+            receive_code = ''
+            pwd_match = re.search(r'password=([a-z0-9]+)', clean_url)
+            if pwd_match:
+                receive_code = pwd_match.group(1)
+            
+            logger.info(f"  ➜ [参数] ShareCode: {share_code}, Pwd: {receive_code}")
+            
+            # 3. 调用转存
+            # ★★★ 修复点：初始化 resp，防止报错 ★★★
+            resp = {} 
+            
+            try:
+                if hasattr(client, 'fs_share_import_to_dir'):
+                     resp = client.fs_share_import_to_dir(share_code, receive_code, save_path_cid)
+                elif hasattr(client, 'fs_share_import'):
+                    resp = client.fs_share_import(share_code, receive_code, save_path_cid)
+                elif hasattr(client, 'share_import'):
+                    resp = client.share_import(share_code, receive_code, save_path_cid)
+                else:
+                    # 底层构造请求
+                    api_url = "https://webapi.115.com/share/receive"
+                    payload = {
+                        'share_code': share_code,
+                        'receive_code': receive_code,
+                        'cid': save_path_cid
+                    }
+                    # 直接获取响应对象
+                    r = client.request(api_url, method='POST', data=payload)
+                    # 兼容处理：如果是 Response 对象则转 json，如果是 dict 则直接用
+                    if hasattr(r, 'json'):
+                        resp = r.json()
+                    else:
+                        resp = r
+                        
+            except Exception as e:
+                raise Exception(f"调用转存接口失败: {e}")
+
+            # ★★★ 修复点：将判断逻辑放在 try 块内部，确保 resp 已定义 ★★★
+            if resp and resp.get('state'):
+                logger.info(f"  ✅ 115 转存成功: {title}")
+                return True
+            else:
+                err = resp.get('error_msg') if resp else '无响应'
+                err = err or resp.get('msg') or str(resp)
+                raise Exception(f"转存失败: {err}")
+
+        else:
+            # 磁力/Ed2k 离线下载
+            logger.info(f"  ➜ [模式] 识别为磁力/离线任务 -> CID: {save_path_cid}")
+            
+            # 构造 payload 字典
+            payload = {
+                'url[0]': clean_url,
+                'wp_path_id': save_path_cid
+            }
+            
+            resp = client.offline_add_urls(payload)
+            
+            if resp.get('state'):
+                logger.info(f"  ✅ 115 离线添加成功: {title}")
+                return True
+            else:
+                err = resp.get('error_msg') or resp.get('msg') or '未知错误'
+                if '已存在' in str(err):
+                    logger.info(f"  ✅ 任务已存在: {title}")
+                    return True
+                raise Exception(f"离线失败: {err}")
+
+    except Exception as e:
+        logger.error(f"  ➜ 115 推送异常: {e}")
+        if "Login" in str(e) or "cookie" in str(e).lower():
+            raise Exception("115 Cookie 无效")
+        raise e
+
+def get_115_account_info():
+    """
+    极简状态检查：只验证 Cookie 是否有效，不获取任何详情
+    """
+    if P115Client is None:
+        raise Exception("未安装 p115client")
+        
+    config = get_config()
+    cookies = config.get('p115_cookies')
+    
+    if not cookies:
+        raise Exception("未配置 Cookies")
+        
+    try:
+        client = P115Client(cookies)
+        
+        # 尝试列出 1 个文件，这是验证 Cookie 最快最准的方法
+        resp = client.fs_files({'limit': 1})
+        
+        if not resp.get('state'):
+            raise Exception("Cookie 已失效")
+            
+        # 只要没报错，就是有效
+        return {
+            "valid": True,
+            "msg": "Cookie 状态正常，可正常推送"
+        }
+
+    except Exception as e:
+        # logger.error(f"115 状态检查失败: {e}") # 嫌烦可以注释掉日志
+        raise Exception("Cookie 无效或网络不通")
+
+def handle_push_request(link, title):
+    """
+    统一推送入口，根据配置决定去向
+    """
+    config = get_config()
+    mode = config.get('push_mode', 'cms') # 默认 cms, 可选 '115'
+    
+    if mode == '115':
+        return push_to_115(link, title)
+    else:
+        return push_to_cms(link, title)
+
 def auto_download_best_resource(tmdb_id, media_type, title):
     """
     [自动任务专用] 搜索并下载最佳资源
@@ -486,7 +672,7 @@ def auto_download_best_resource(tmdb_id, media_type, title):
         logger.info(f"  ➜ 命中资源: [{best_resource['source_type']}] {best_resource['title']} ({best_resource['size']})")
         
         # 4. 推送
-        push_to_cms(best_resource['link'], title)
+        handle_push_request(best_resource['link'], title)
         return True
 
     except Exception as e:

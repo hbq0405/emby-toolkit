@@ -72,16 +72,77 @@
                 </n-gi>
               </n-grid>
 
-              <n-form-item label="CMS 地址">
-                <n-input v-model:value="config.cms_url" placeholder="例如: http://192.168.1.5:9527" />
+              <n-form-item label="推送方式">
+                <n-radio-group v-model:value="config.push_mode" name="pushmode">
+                  <n-radio-button value="cms">CMS</n-radio-button>
+                  <n-radio-button value="115">115</n-radio-button>
+                </n-radio-group>
               </n-form-item>
 
-              <n-form-item label="CMS Token">
-                <n-input v-model:value="config.cms_token" type="password" show-password-on="click" placeholder="cloud_media_sync" />
-                <template #feedback>
-                    <span style="font-size: 12px; color: #888;">CMS token</span>
-                </template>
-              </n-form-item>
+              <!-- ★★★ 115 配置区域 (仅当选中 115 时显示) ★★★ -->
+              <!-- ★★★ 115 配置区域 (极简版) ★★★ -->
+              <n-collapse-transition :show="config.push_mode === '115'">
+                <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 18px;">
+                    
+                    <!-- 状态栏：只显示有效/无效 -->
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <n-text depth="3" style="font-size: 12px;">账号状态</n-text>
+                        <n-button size="tiny" secondary @click="check115Status" :loading="loading115Info">
+                            <template #icon><n-icon><RefreshIcon /></n-icon></template>
+                            检查连通性
+                        </n-button>
+                    </div>
+
+                    <n-collapse-transition :show="!!p115Info">
+                        <n-alert type="success" :show-icon="true" style="margin-bottom: 12px;">
+                            <span style="font-weight: bold;">{{ p115Info?.msg || 'Cookie 有效' }}</span>
+                        </n-alert>
+                    </n-collapse-transition>
+                    
+                    <n-collapse-transition :show="!p115Info && config.p115_cookies && !loading115Info">
+                         <n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;">
+                            <span style="font-size: 12px;">状态未知或 Cookie 无效，请检查。</span>
+                        </n-alert>
+                    </n-collapse-transition>
+
+                    <!-- Cookies 输入框 (移除扫码按钮) -->
+                    <n-form-item label="115 Cookies">
+                        <n-input 
+                            v-model:value="config.p115_cookies" 
+                            type="textarea" 
+                            placeholder="UID=...; CID=...; SEID=..." 
+                            :rows="3"
+                        />
+                        <template #feedback>
+                            <span style="font-size: 12px; color: #999;">请在本地浏览器登录 115 后抓取 Cookie 填入。</span>
+                        </template>
+                    </n-form-item>
+
+                    <!-- 保存目录 -->
+                    <n-form-item label="保存目录 CID">
+                        <n-input 
+                            v-model:value="config.p115_save_path_cid" 
+                            placeholder="0 为根目录，请直接粘贴长数字" 
+                            style="width: 100%" 
+                        />
+                        <template #feedback>
+                            <span style="font-size: 12px; color: #999;">文件夹 ID (打开网页版文件夹，URL 最后那串数字)</span>
+                        </template>
+                    </n-form-item>
+                </div>
+              </n-collapse-transition>
+              <!-- CMS 配置区域-->
+              <n-collapse-transition :show="config.push_mode === 'cms'">
+                  <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 18px;">
+                      <n-form-item label="CMS 地址">
+                        <n-input v-model:value="config.cms_url" placeholder="例如: http://192.168.1.5:9527" />
+                      </n-form-item>
+
+                      <n-form-item label="CMS Token">
+                        <n-input v-model:value="config.cms_token" type="password" show-password-on="click" placeholder="cloud_media_sync" />
+                      </n-form-item>
+                  </div>
+              </n-collapse-transition>
             </n-gi>
 
             <!-- 第二列：资源过滤设置 (移至中间) -->
@@ -316,14 +377,18 @@
 // ... (Script 部分保持不变，请确保包含上一步中增加的 filters 逻辑) ...
 import { ref, reactive, onMounted, h, defineComponent, computed } from 'vue';
 import axios from 'axios';
-import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip, NCheckbox, NCheckboxGroup, NInputNumber, NSwitch, NSpin } from 'naive-ui';
+import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip, NCheckbox, NCheckboxGroup, NInputNumber, NSwitch, NSpin, NRadioGroup, NRadioButton, NCollapseTransition, NSelect } from 'naive-ui';
 import { useClipboard } from '@vueuse/core';
 import { 
   SettingsOutline as SettingsIcon, 
   Search as SearchIcon, 
   ListOutline as ListIcon,
   PaperPlaneOutline as SendIcon,
-  PulseOutline as PulseIcon
+  PulseOutline as PulseIcon,
+  QrCodeOutline as QrCodeIcon, 
+  CheckmarkCircleOutline as CheckmarkCircleIcon,
+  RefreshOutline as RefreshIcon,
+  PersonCircleOutline as UserIcon
 } from '@vicons/ionicons5';
 
 const message = useMessage();
@@ -334,6 +399,9 @@ const showConfig = ref(false);
 const currentUsage = ref(0);
 const config = reactive({
   api_key: '',
+  push_mode: 'cms', 
+  p115_cookies: '',
+  p115_save_path_cid: '',
   cms_url: '',    
   cms_token: '',
   daily_limit: 100, 
@@ -363,11 +431,35 @@ const quotaColor = computed(() => {
 });
 const saving = ref(false);
 
+const p115Info = ref(null);
+const loading115Info = ref(false);
+
+// 添加获取状态的方法
+const check115Status = async () => {
+    if (!config.p115_cookies) return;
+    loading115Info.value = true;
+    try {
+        const res = await axios.get('/api/nullbr/115/status');
+        if (res.data && res.data.data) {
+            p115Info.value = res.data.data;
+        }
+    } catch (e) {
+        p115Info.value = null;
+        // 不弹窗报错了，以免打扰，只在控制台记录
+        console.error('获取115状态失败', e);
+    } finally {
+        loading115Info.value = false;
+    }
+};
+
 const loadConfig = async () => {
   try {
     const res = await axios.get('/api/nullbr/config');
     if (res.data) {
       config.api_key = res.data.api_key || '';
+      config.push_mode = res.data.push_mode || 'cms';
+      config.p115_cookies = res.data.p115_cookies || '';
+      config.p115_save_path_cid = res.data.p115_save_path_cid || 0;
       config.cms_url = res.data.cms_url || '';       
       config.cms_token = res.data.cms_token || '';
       config.daily_limit = res.data.daily_limit || 100; 
@@ -390,6 +482,9 @@ const loadConfig = async () => {
       config.presets = resPresets.data;
     }
   } catch (error) {}
+    if (config.p115_cookies) {
+        check115Status();
+    }
 };
 
 const saveConfig = async () => {
@@ -397,6 +492,9 @@ const saveConfig = async () => {
   try {
     await axios.post('/api/nullbr/config', {
         api_key: config.api_key,
+        push_mode: config.push_mode,
+        p115_cookies: config.p115_cookies,
+        p115_save_path_cid: config.p115_save_path_cid,
         cms_url: config.cms_url,       
         cms_token: config.cms_token,
         daily_limit: config.daily_limit, 
@@ -413,6 +511,9 @@ const saveConfig = async () => {
   } finally {
     saving.value = false;
   }
+  if (config.push_mode === '115') {
+        check115Status();
+    }
 };
 
 const onCreatePreset = () => {
@@ -800,7 +901,17 @@ onMounted(() => {
   top: 10px;
   transform: rotate(-45deg);
 }
-
+.qr-overlay {
+    position: absolute;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(255,255,255,0.9);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: #333;
+    border-radius: 8px;
+}
 :deep(.ribbon-green span) { background-color: #67c23a; }
 :deep(.ribbon-blue span) { background-color: #409eff; }
 :deep(.ribbon-purple span) { background-color: #722ed1; }
