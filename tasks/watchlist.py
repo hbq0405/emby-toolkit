@@ -60,7 +60,7 @@ def task_add_all_series_to_watchlist(processor):
     - 导入完成后，触发 '全量刷新剧集' 任务，以校准状态并发现新季。
     """
     task_name = "一键扫描库内剧集"
-    logger.info(f"--- 开始执行 '{task_name}' (存量导入模式) ---")
+    logger.trace(f"--- 开始执行 '{task_name}' (存量导入模式) ---")
     
     try:
         # 1. 读取配置
@@ -115,7 +115,7 @@ def task_scan_library_gaps(processor):
       不再获取全量数据后在 Python 中过滤。
     """
     task_name = "媒体库缺集扫描"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (高效模式) ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 (高效模式) ---")
     
     def progress_updater(progress, message):
         task_manager.update_status_from_thread(progress, message)
@@ -224,7 +224,7 @@ def task_scan_old_seasons_backfill(processor):
         task_manager.update_status_from_thread(progress, message)
 
     try:
-        logger.info(f"--- 开始执行 '{task_name}' ---")
+        logger.trace(f"--- 开始执行 '{task_name}' ---")
         progress_updater(10, "正在分析数据库中的缺失旧季...")
 
         # 1. 直接从数据库获取列表

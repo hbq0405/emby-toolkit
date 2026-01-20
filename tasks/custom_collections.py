@@ -109,7 +109,7 @@ def task_process_all_custom_collections(processor):
     - 跳过 Filter (筛选) 和 AI Recommendation (个人AI)，因为它们是实时计算的，无需后台刷新。
     """
     task_name = "生成所有自建合集"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
 
     try:
         # 1. 获取合集定义
@@ -376,7 +376,7 @@ def process_single_custom_collection(processor, custom_collection_id: int):
     处理单个自定义合集 (逻辑与批量任务一致，已适配轻量化架构)。
     """
     task_name = f"生成单个自建合集 (ID: {custom_collection_id})"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         # 1. 读取合集定义

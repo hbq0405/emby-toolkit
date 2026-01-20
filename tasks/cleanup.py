@@ -250,7 +250,7 @@ def task_scan_for_cleanup_issues(processor):
     扫描数据库，生成精简的清理索引。
     """
     task_name = "扫描媒体库重复项"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     task_manager.update_status_from_thread(0, "正在准备扫描...")
     time.sleep(0.5) # 减速齿轮
 
@@ -414,7 +414,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
         return
 
     task_name = "执行媒体去重"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         tasks_to_execute = cleanup_db.get_cleanup_index_by_ids(task_ids)

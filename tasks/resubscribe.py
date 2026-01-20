@@ -103,7 +103,7 @@ def task_update_resubscribe_cache(processor):
     - 刷新媒体整理主任务 (V4 - 范围筛选增强版)
     """
     task_name = "刷新媒体整理"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         # --- 步骤 1: 加载规则 ---
@@ -1014,7 +1014,7 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
 
 def _execute_resubscribe(processor, task_name: str, target):
     """执行媒体整理的通用函数。"""
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     if isinstance(target, str) and target == "needed":
         items_to_subscribe = resubscribe_db.get_all_needed_resubscribe_items()

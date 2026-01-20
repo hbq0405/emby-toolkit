@@ -21,7 +21,7 @@ def sync_and_subscribe_native_collections(progress_callback=None):
     if progress_callback:
         progress_callback(0, "正在连接 Emby 获取合集列表...")
 
-    logger.info("--- 开始执行原生合集扫描任务 ---")
+    logger.trace("--- 开始执行原生合集扫描任务 ---")
     
     config = config_manager.APP_CONFIG
     tmdb_api_key = config.get("tmdb_api_key")
@@ -133,7 +133,7 @@ def subscribe_all_missing_in_native_collections():
     把所有原生合集中缺失的电影加入待订阅列表。
     (修复版：按合集名称分组提交，确保来源标记正确)
     """
-    logger.info("--- 开始执行原生合集缺失电影批量待订阅 ---")
+    logger.trace("--- 开始执行原生合集缺失电影批量待订阅 ---")
     
     # 1. 一次性拿到所有缺失的电影
     missing_movies = tmdb_collection_db.get_all_missing_movies_in_collections()

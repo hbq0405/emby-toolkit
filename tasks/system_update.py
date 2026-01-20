@@ -104,7 +104,7 @@ def task_check_and_update_container(processor):
     """
     container_name = processor.config.get('container_name', 'emby-toolkit')
     image_name_tag = processor.config.get('docker_image_name', 'hbq0405/emby-toolkit:latest')
-    logger.info(f"--- 开始执行系统更新检查 (容器: {container_name}) ---")
+    logger.trace(f"--- 开始执行系统更新检查 (容器: {container_name}) ---")
     task_manager.update_status_from_thread(0, "准备检查更新...")
 
     # 调用生成器，消费消息并转换为日志

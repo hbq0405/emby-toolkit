@@ -419,7 +419,7 @@ def enrich_all_actor_aliases_task(
     - 保持了原有的三阶段处理（TMDb元数据、豆瓣IMDb、豆瓣头像）。
     """
     task_mode = "(全量)" if force_full_update else "(增量)"
-    logger.info(f"--- 开始执行“演员数据补充”计划任务 [{task_mode}] ---")
+    logger.trace(f"--- 开始执行“演员数据补充”计划任务 [{task_mode}] ---")
 
     if update_status_callback:
         update_status_callback(0, "演员数据补充任务开始")

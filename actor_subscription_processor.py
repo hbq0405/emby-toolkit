@@ -63,7 +63,7 @@ class ActorSubscriptionProcessor:
                 safe_progress = max(0, min(100, int(progress)))
                 update_status_callback(safe_progress, message)
 
-        logger.info("--- 开始执行演员订阅任务 ---")
+        logger.trace("--- 开始执行演员订阅任务 ---")
         _update_status(0, "正在获取所有已启用的订阅...")
 
         # --- 步骤 1: 获取所有需要处理的订阅 ---

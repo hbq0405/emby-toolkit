@@ -1361,7 +1361,7 @@ class WatchlistProcessor:
     # --- 统一的、公开的追剧处理入口 ★★★
     def process_watching_list(self, item_id: Optional[str] = None):
         if item_id:
-            logger.info(f"--- 开始执行单项追剧更新任务 (ItemID: {item_id}) ---")
+            logger.trace(f"--- 开始执行单项追剧更新任务 (ItemID: {item_id}) ---")
         else:
             logger.trace("--- 开始执行全量追剧列表更新任务 ---")
         

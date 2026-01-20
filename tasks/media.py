@@ -1470,7 +1470,7 @@ def task_sync_ratings_to_emby(processor):
     1. CustomRating: 双向互补 (以DB为准)。
     2. OfficialRating: 单向强制 (DB US -> Emby)。
     """
-    logger.info(f"--- 开始执行分级同步任务 (全量比对) ---")
+    logger.trace(f"--- 开始执行分级同步任务 (全量比对) ---")
     
     # 1. 从数据库获取所有在库项目
     with connection.get_db_connection() as conn:
@@ -1602,7 +1602,7 @@ def task_scan_monitor_folders(processor):
     monitor_extensions = processor.config.get(constants.CONFIG_OPTION_MONITOR_EXTENSIONS, constants.DEFAULT_MONITOR_EXTENSIONS)
     lookback_days = processor.config.get(constants.CONFIG_OPTION_MONITOR_SCAN_LOOKBACK_DAYS, constants.DEFAULT_MONITOR_SCAN_LOOKBACK_DAYS)
     
-    logger.info(f"--- 开始执行监控目录查漏扫描 (回溯 {lookback_days} 天) ---")
+    logger.trace(f"--- 开始执行监控目录查漏扫描 (回溯 {lookback_days} 天) ---")
 
     if not monitor_enabled or not monitor_paths:
         logger.info("  ➜ 实时监控未启用或未配置路径，跳过扫描。")
@@ -1750,7 +1750,7 @@ def task_restore_local_cache_from_db(processor):
     用于误删 cache 目录或迁移环境后的数据恢复。
     """
     task_name = "恢复覆盖缓存"
-    logger.info(f"--- 开始执行 '{task_name}' ---")
+    logger.trace(f"--- 开始执行 '{task_name}' ---")
     
     try:
         # 1. 获取所有顶层项目 (Movie, Series)
@@ -1911,7 +1911,7 @@ def task_scan_incomplete_assets(processor):
     【新任务 - 优化版】全库扫描资产数据不完整的项目。
     直接利用 SQL Join 获取所需的 Emby ID，无需二次查询。
     """
-    logger.info("--- 开始执行全库资产完整性扫描 ---")
+    logger.trace("--- 开始执行全库资产完整性扫描 ---")
     
     try:
         # 1. 从数据库获取“嫌疑人” (已包含父级信息)

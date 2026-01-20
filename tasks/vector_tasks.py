@@ -15,7 +15,7 @@ def task_generate_embeddings(processor):
     条件：in_library = TRUE 且 item_type 为 Movie/Series
     """
     task_name = "生成媒体向量 (Embedding)"
-    logger.info(f"--- 开始执行 '{task_name}' ---")
+    logger.trace(f"--- 开始执行 '{task_name}' ---")
     
     try:
         # 1. 初始化 AI (使用全局配置)

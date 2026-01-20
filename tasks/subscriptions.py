@@ -246,7 +246,7 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
     """
     total_items = len(subscribe_requests)
     task_name = f"手动订阅 {total_items} 个项目"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     task_manager.update_status_from_thread(0, "正在准备手动订阅任务...")
 
@@ -400,7 +400,7 @@ def task_auto_subscribe(processor):
     【V2 - 统一订阅处理器】
     """
     task_name = "统一订阅处理"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     task_manager.update_status_from_thread(0, "正在加载订阅策略...")
     config = config_manager.APP_CONFIG

@@ -13,7 +13,7 @@ def task_refresh_collections(processor):
     职责：只负责调用 handler 层的总指挥函数。
     """
     task_name = "刷新 TMDb 合集"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 (独立任务模块) ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 (独立任务模块) ---")
     try:
         def progress_callback(percent, message):
             task_manager.update_status_from_thread(percent, message)

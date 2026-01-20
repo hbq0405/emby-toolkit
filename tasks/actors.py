@@ -169,7 +169,7 @@ def task_actor_translation(processor):
     - 整个过程无新增API调用，性能卓越。
     """
     task_name = "中文化演员名 (智能版)"
-    logger.info(f"--- 开始执行 '{task_name}' 任务 ---")
+    logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
         # ======================================================================
