@@ -165,7 +165,11 @@
                 <n-empty v-if="!searchResults.length && !searching" description="暂无数据" />
                 <n-grid cols="3 520:4 800:5 1000:6 1400:8" :x-gap="12" :y-gap="12">
                    <n-gi v-for="item in searchResults" :key="item.id">
-                      <MediaCard :item="item" @click="openResourceModal(item)" />
+                      <MediaCard 
+                        :item="item" 
+                        :loading="loadingResourcesId === item.id" 
+                        @click="openResourceModal(item)" 
+                      />
                    </n-gi>
                 </n-grid>
              </n-spin>
@@ -188,7 +192,11 @@
               <div v-if="listItems.length > 0">
                 <n-grid cols="3 520:4 800:5 1000:6 1400:8" :x-gap="12" :y-gap="12">
                   <n-gi v-for="item in listItems" :key="item.id">
-                    <MediaCard :item="item" @click="openResourceModal(item)" />
+                    <MediaCard 
+                      :item="item" 
+                      :loading="loadingResourcesId === item.id" 
+                      @click="openResourceModal(item)" 
+                    />
                   </n-gi>
                 </n-grid>
                 
@@ -261,7 +269,7 @@
 // ... (Script 部分保持不变，请确保包含上一步中增加的 filters 逻辑) ...
 import { ref, reactive, onMounted, h, defineComponent } from 'vue';
 import axios from 'axios';
-import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip, NCheckbox, NCheckboxGroup, NInputNumber, NSwitch } from 'naive-ui';
+import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip, NCheckbox, NCheckboxGroup, NInputNumber, NSwitch, NSpin } from 'naive-ui';
 import { useClipboard } from '@vueuse/core';
 import { 
   SettingsOutline as SettingsIcon, 
@@ -290,9 +298,6 @@ const config = reactive({
   }
 });
 const saving = ref(false);
-
-// ... (其余 Script 代码保持不变) ...
-// ... (loadConfig, saveConfig, onCreatePreset, resetPresets, handleSearch, loadPresets, handleListChange, loadMoreList, fetchListContent, mapApiItemToUi, openResourceModal, confirmPush, MediaCard) ...
 
 const loadConfig = async () => {
   try {
@@ -507,10 +512,16 @@ const confirmPush = async (resource) => {
 };
 
 const MediaCard = defineComponent({
-  props: ['item'],
-  components: { NImage, NEllipsis, NSpace, NTag, NText },
+  props: ['item', 'loading'], // 1. 新增 loading 属性
+  components: { NImage, NEllipsis, NSpace, NTag, NText, NSpin }, // 2. 注册 NSpin 组件
   template: `
     <div class="media-card" style="cursor: pointer; position: relative; transition: transform 0.2s;" @mouseenter="hover=true" @mouseleave="hover=false" :style="{ transform: hover ? 'translateY(-3px)' : 'none' }">
+      
+      <!-- 3. 新增加载遮罩层 -->
+      <div v-if="loading" style="position: absolute; top: 0; left: 0; right: 0; bottom: 0; z-index: 10; background: rgba(0,0,0,0.4); display: flex; align-items: center; justify-content: center; border-radius: 4px;">
+        <n-spin size="medium" stroke="#ffffff" />
+      </div>
+
       <n-image 
         preview-disabled 
         :src="item.poster ? 'https://image.tmdb.org/t/p/w300' + item.poster : '/default-poster.png'" 

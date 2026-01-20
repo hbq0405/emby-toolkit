@@ -11,7 +11,7 @@ logger = logging.getLogger(__name__)
 
 # ★★★ 硬编码配置：Nullbr ★★★
 NULLBR_APP_ID = "7DqRtfNX3"
-NULLBR_API_BASE = "https://api.nullbr.online"
+NULLBR_API_BASE = "https://api.nullbr.com"
 
 def get_config():
     return settings_db.get_setting('nullbr_config') or {}
