@@ -1740,7 +1740,7 @@ def task_scan_monitor_folders(processor):
                     except Exception as e:
                         logger.error(f"  🚫 处理文件失败: {e}")
 
-    logger.info(f"--- 监控目录扫描完成。扫描: {scan_count}, 跳过旧文件: {skipped_old_count}, 跳过已入库: {skipped_exists_count}, 触发处理: {trigger_count} ---")
+    logger.info(f"  ➜ 监控目录扫描完成。扫描: {scan_count}, 跳过旧文件: {skipped_old_count}, 跳过已入库: {skipped_exists_count}, 触发处理: {trigger_count}")
     task_manager.update_status_from_thread(100, f"扫描完成，处理了 {trigger_count} 个新项目")
 
 # --- 从数据库恢复本地覆盖缓存 ---
