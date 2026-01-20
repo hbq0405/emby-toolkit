@@ -963,7 +963,7 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
                 "dovi_p7": ("(?=.*(dovi|dolby|dv))(?=.*(p7|profile.?7))", "dovi"),
                 "dovi_p5": ("(?=.*(dovi|dolby|dv))", "dovi"),
                 "dovi_other": ("(?=.*(dovi|dolby|dv))", "dovi"),
-                "hdr10+": ("(?=.*(hdr10\+|hdr10plus))", "hdr10+"),
+                "hdr10+": ("(?=.*(hdr10\\+|hdr10plus))", "hdr10+"),
                 "hdr": ("(?=.*hdr)", "hdr")
             }
             OLD_EFFECT_MAP = {"杜比视界": "dovi_other", "HDR": "hdr"}
