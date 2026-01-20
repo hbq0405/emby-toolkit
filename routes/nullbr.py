@@ -14,13 +14,21 @@ logger = logging.getLogger(__name__)
 def handle_config():
     if request.method == 'GET':
         config = settings_db.get_setting('nullbr_config') or {}
-        # ... (其他默认值保持不变) ...
-        
+        if 'filters' not in config:
+            config['filters'] = {
+                "resolutions": [],
+                "qualities": [],
+                "min_size": 0, "max_size": 0,
+                "movie_min_size": 0, "movie_max_size": 0,
+                "tv_min_size": 0, "tv_max_size": 0,
+                "require_zh": False,
+                "containers": []
+            }
         # ★ 默认开启所有源
         if 'enabled_sources' not in config:
             config['enabled_sources'] = ['115', 'magnet', 'ed2k']
             
-        # ... (统计逻辑保持不变) ...
+        # ... (统计逻辑) ...
         stats = settings_db.get_setting('nullbr_usage_stats') or {}
         today_str = datetime.now().strftime('%Y-%m-%d')
         current_usage = stats.get('count', 0) if stats.get('date') == today_str else 0

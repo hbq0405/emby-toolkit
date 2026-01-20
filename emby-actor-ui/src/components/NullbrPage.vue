@@ -133,13 +133,21 @@
                   </n-form-item>
 
                   <!-- 大小限制 -->
-                  <n-form-item label="文件大小 (GB)">
+                  <n-form-item label="电影大小限制 (GB)">
                     <n-input-group>
-                      <n-input-number v-model:value="config.filters.min_size" :min="0" placeholder="Min" :show-button="false" style="width: 50%" />
+                      <n-input-number v-model:value="config.filters.movie_min_size" :min="0" placeholder="Min" :show-button="false" style="width: 50%" />
                       <n-input-group-label>-</n-input-group-label>
-                      <n-input-number v-model:value="config.filters.max_size" :min="0" placeholder="Max" :show-button="false" style="width: 50%" />
+                      <n-input-number v-model:value="config.filters.movie_max_size" :min="0" placeholder="Max" :show-button="false" style="width: 50%" />
                     </n-input-group>
-                    <template #feedback><span style="font-size: 12px; color: #999;">0 表示不限制</span></template>
+                  </n-form-item>
+
+                  <n-form-item label="剧集大小限制 (GB)">
+                    <n-input-group>
+                      <n-input-number v-model:value="config.filters.tv_min_size" :min="0" placeholder="Min" :show-button="false" style="width: 50%" />
+                      <n-input-group-label>-</n-input-group-label>
+                      <n-input-number v-model:value="config.filters.tv_max_size" :min="0" placeholder="Max" :show-button="false" style="width: 50%" />
+                    </n-input-group>
+                    <template #feedback><span style="font-size: 12px; color: #999;">0 表示不限制。剧集通常指单集或单季包大小。</span></template>
                   </n-form-item>
 
                </n-space>
@@ -336,8 +344,8 @@ const config = reactive({
       qualities: [],
       containers: [],
       require_zh: false,
-      min_size: 0,
-      max_size: 0
+      movie_min_size: 0, movie_max_size: 0,
+      tv_min_size: 0, tv_max_size: 0
   }
 });
 // 计算属性 
@@ -371,8 +379,10 @@ const loadConfig = async () => {
       config.filters.qualities = f.qualities || [];
       config.filters.containers = f.containers || [];
       config.filters.require_zh = !!f.require_zh;
-      config.filters.min_size = f.min_size || 0;
-      config.filters.max_size = f.max_size || 0;
+      config.filters.movie_min_size = f.movie_min_size || f.min_size || 0;
+      config.filters.movie_max_size = f.movie_max_size || f.max_size || 0;
+      config.filters.tv_min_size = f.tv_min_size || f.min_size || 0;
+      config.filters.tv_max_size = f.tv_max_size || f.max_size || 0;
     }
     const resPresets = await axios.get('/api/nullbr/presets');
     if (resPresets.data) {

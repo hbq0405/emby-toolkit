@@ -315,7 +315,7 @@ class ActorSubscriptionProcessor:
         """
         # --- 筛选 1: 上映日期年份 ---
         # 检查作品的发行年份是否晚于用户在订阅规则中设置的“起始年份”。
-        config_start_year = sub_config['config_start_year']
+        config_start_year = sub_config.get('config_start_year') or 0
         release_date_str = work.get('release_date') or work.get('first_air_date', '')
         try:
             # 只取年份部分进行比较

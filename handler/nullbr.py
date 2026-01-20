@@ -57,7 +57,7 @@ def _parse_size_to_gb(size_str):
         return num / 1024 / 1024
     return 0.0
 
-def _is_resource_valid(item, filters):
+def _is_resource_valid(item, filters, media_type='movie'):
     """根据配置过滤资源"""
     if not filters:
         return True
@@ -89,8 +89,14 @@ def _is_resource_valid(item, filters):
             return False
 
     # 3. 大小过滤 (GB)
-    min_size = float(filters.get('min_size') or 0)
-    max_size = float(filters.get('max_size') or 0)
+    if media_type == 'tv':
+        # 如果配置了 tv_min_size，优先使用，否则回退到旧的 min_size (兼容旧配置)
+        min_size = float(filters.get('tv_min_size') or filters.get('min_size') or 0)
+        max_size = float(filters.get('tv_max_size') or filters.get('max_size') or 0)
+    else:
+        # 默认为电影
+        min_size = float(filters.get('movie_min_size') or filters.get('min_size') or 0)
+        max_size = float(filters.get('movie_max_size') or filters.get('max_size') or 0)
     
     if min_size > 0 or max_size > 0:
         size_gb = _parse_size_to_gb(item.get('size'))
@@ -124,6 +130,11 @@ def _is_resource_valid(item, filters):
     # 5. 封装容器过滤 (后缀名)
     allowed_containers = filters.get('containers', [])
     if allowed_containers:
+        # ★★★ 核心修复：如果是剧集 (TV)，通常是目录或合集，无法从标题判断容器，直接放行 ★★★
+        # 否则会导致文件夹形式的资源被误杀
+        if media_type == 'tv':
+            return True
+
         title = item.get('title', '').lower()
         # 检查标题结尾或链接结尾
         link = item.get('link', '').lower()
@@ -380,7 +391,7 @@ def fetch_resource_list(tmdb_id, media_type='movie'):
     if not has_filter:
         return all_resources
         
-    filtered_list = [res for res in all_resources if _is_resource_valid(res, filters)]
+    filtered_list = [res for res in all_resources if _is_resource_valid(res, filters, media_type)]
     
     logger.info(f"  ➜ 资源过滤: 原始 {len(all_resources)} -> 过滤后 {len(filtered_list)}")
     return filtered_list
