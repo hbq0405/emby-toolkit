@@ -333,6 +333,13 @@ def _fetch_single_source(tmdb_id, media_type, source_type):
                 if media_type == 'tv' and source_type == 'magnet':
                     title = f"[S1] {title}"
                 
+                is_zh = item.get('zh_sub') == 1
+                if not is_zh:
+                    t_upper = title.upper()
+                    zh_keywords = ['中字', '中英', '字幕', 'CHS', 'CHT', 'CN', 'DIY', '国语', '国粤']
+                    if any(k in t_upper for k in zh_keywords):
+                        is_zh = True
+                
                 resource_obj = {
                     "title": title,
                     "size": item.get('size', '未知'),
@@ -340,7 +347,7 @@ def _fetch_single_source(tmdb_id, media_type, source_type):
                     "quality": item.get('quality'),
                     "link": link,
                     "source_type": source_type.upper(),
-                    "is_zh_sub": item.get('zh_sub') == 1
+                    "is_zh_sub": is_zh
                 }
                 cleaned_list.append(resource_obj)
         return cleaned_list

@@ -292,6 +292,7 @@
                     <n-tag v-for="q in res.quality" :key="q" size="small" :bordered="false" style="opacity: 0.8;">{{ q }}</n-tag>
                   </template>
                   <n-tag v-else-if="res.quality" size="small" :bordered="false" style="opacity: 0.8;">{{ res.quality }}</n-tag>
+                  <n-tag v-if="res.is_zh_sub" type="success" size="small" :bordered="false">中字</n-tag>
                 </n-space>
               </template>
             </n-thing>
