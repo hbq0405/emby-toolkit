@@ -1602,7 +1602,7 @@ def task_scan_monitor_folders(processor):
     monitor_extensions = processor.config.get(constants.CONFIG_OPTION_MONITOR_EXTENSIONS, constants.DEFAULT_MONITOR_EXTENSIONS)
     lookback_days = processor.config.get(constants.CONFIG_OPTION_MONITOR_SCAN_LOOKBACK_DAYS, constants.DEFAULT_MONITOR_SCAN_LOOKBACK_DAYS)
     
-    logger.trace(f"--- 开始执行监控目录查漏扫描 (回溯 {lookback_days} 天) ---")
+    logger.info(f"  ➜ 开始执行监控目录查漏扫描 (回溯 {lookback_days} 天)")
 
     if not monitor_enabled or not monitor_paths:
         logger.info("  ➜ 实时监控未启用或未配置路径，跳过扫描。")
