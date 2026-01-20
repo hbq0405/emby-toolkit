@@ -122,7 +122,7 @@ def push_resource():
                     link = link[:-1]
         
         # 打印一下清洗后的链接，方便调试
-        logger.info(f"清洗后的链接: {link}")
+        logger.info(f"  ➜ 清洗后的链接: {link}")
 
         # 推送清洗后的链接
         nullbr_handler.push_to_cms(link, title)
