@@ -75,22 +75,34 @@ const apiKeyCheck = async () => {
 // ★★★ 暴露给父组件的方法 ★★★
 const open = async (item) => {
     // 1. 检查配置 (可选)
-    // const hasKey = await apiKeyCheck(); 
-    // if (!hasKey) return;
+    const hasKey = await apiKeyCheck(); 
+    if (!hasKey) return;
 
     // 2. 初始化
-    currentItemTitle.value = item.title;
-    // 兼容 UnifiedSubscriptionsPage 的 item 结构 (item_type) 和 NullbrPage 的结构 (media_type)
-    currentItemType.value = item.item_type === 'Season' ? 'tv' : (item.media_type || 'movie');
-    currentItemType.value = currentItemType.value === 'Season' ? 'tv' : currentItemType.value; // 再次确保
-    
+    currentItemTitle.value = item.title || item.name; // 兼容 title 和 name
     currentItemId.value = item.tmdb_id || item.id;
 
-    // 3. 重置数据
+    // ★★★ 核心修复：统一类型转换逻辑 ★★★
+    // 目标：转换为 'movie' 或 'tv'
+    
+    let type = item.media_type || item.item_type || 'movie'; // 获取原始类型
+    
+    // 统一转小写处理
+    type = type.toLowerCase();
+
+    if (type === 'season' || type === 'series' || type === 'tv' || type === 'episode') {
+        currentItemType.value = 'tv';
+    } else {
+        currentItemType.value = 'movie';
+    }
+    
+    // 打印日志方便调试 (F12 Console)
+    console.log(`[NullbrSearch] 打开模态框: ${currentItemTitle.value}, 原始类型: ${item.media_type || item.item_type}, 转换后: ${currentItemType.value}, ID: ${currentItemId.value}`);
+
+    // ... (重置数据和 fetchResources 逻辑) ...
     resourcesMap['115'] = []; resourcesMap['magnet'] = []; resourcesMap['ed2k'] = [];
     loadedSources['115'] = false; loadedSources['magnet'] = false; loadedSources['ed2k'] = false;
     
-    // 4. 打开并加载
     activeResourceTab.value = '115';
     showModal.value = true;
     fetchResources('115', true);
