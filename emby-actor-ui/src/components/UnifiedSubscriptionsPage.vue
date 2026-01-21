@@ -64,7 +64,15 @@
       </n-page-header>
       <n-divider />
 
-      <n-space :wrap="true" :size="[20, 12]" style="margin-bottom: 20px;">
+      <n-space :wrap="true" :size="[20, 12]" style="margin-bottom: 20px; align-items: center;">
+        <n-checkbox 
+          :checked="isAllSelected" 
+          :indeterminate="isIndeterminate"
+          @update:checked="handleSelectAll"
+          style="margin-right: 8px;"
+        >
+          全选 ({{ filteredItems.length }})
+        </n-checkbox>
         <n-input v-model:value="searchQuery" placeholder="按名称搜索..." clearable style="min-width: 200px;" />
         <n-select v-model:value="filterType" :options="typeFilterOptions" style="min-width: 140px;" />
         <n-select v-model:value="filterSource" :options="sourceFilterOptions" style="min-width: 160px;" clearable placeholder="按来源筛选" />
@@ -221,6 +229,63 @@
       </div>
       <div v-else class="center-container"><n-empty :description="emptyStateDescription" size="huge" /></div>
     </div>
+    <!-- ★★★ 新增：底部悬浮批量操作栏 ★★★ -->
+    <transition name="slide-up">
+      <div v-if="selectedItems.length > 0" class="floating-action-bar">
+        <div class="fab-content">
+          <div class="fab-left">
+            <n-button circle size="small" secondary @click="clearSelection">
+              <template #icon><n-icon :component="CloseIcon" /></template>
+            </n-button>
+            <span class="fab-text">已选择 <b>{{ selectedItems.length }}</b> 项</span>
+          </div>
+          
+          <div class="fab-right">
+            <!-- 直接复用之前的批量操作逻辑，这里把 Dropdown 拆解成按钮组，或者继续用 Dropdown 也可以 -->
+            <!-- 方案 A: 直接显示常用按钮 (推荐) -->
+            <n-space>
+               <!-- 根据当前 filterStatus 显示不同的按钮 -->
+               <template v-if="filterStatus === 'REQUESTED' || filterStatus === 'WANTED'">
+                  <n-button type="primary" @click="handleBatchAction('subscribe')">
+                    批量订阅
+                  </n-button>
+                  <n-button type="error" ghost @click="handleBatchAction('ignore')">
+                    批量忽略
+                  </n-button>
+               </template>
+
+               <template v-else-if="filterStatus === 'SUBSCRIBED' || filterStatus === 'PENDING_RELEASE'">
+                  <n-button type="error" ghost @click="handleBatchAction('ignore')">
+                    取消订阅
+                  </n-button>
+               </template>
+               
+               <template v-else-if="filterStatus === 'PAUSED'">
+                  <n-button type="primary" @click="handleBatchAction('resume')">
+                    恢复搜索
+                  </n-button>
+                  <n-button type="error" ghost @click="handleBatchAction('ignore')">
+                    取消订阅
+                  </n-button>
+               </template>
+
+               <template v-else-if="filterStatus === 'IGNORED'">
+                  <n-button type="primary" ghost @click="handleBatchAction('unignore')">
+                    取消忽略
+                  </n-button>
+                  <!-- 物理删除选中项 -->
+                  <n-popconfirm @positive-click="handleBatchDelete">
+                    <template #trigger>
+                      <n-button type="error">物理删除选中</n-button>
+                    </template>
+                    确定要从数据库中物理删除选中的 {{ selectedItems.length }} 条记录吗？
+                  </n-popconfirm>
+               </template>
+            </n-space>
+          </div>
+        </div>
+      </div>
+    </transition>
     <n-modal v-model:show="showStrategyModal" preset="card" title="订阅策略配置" style="width: 600px;">
       <n-form label-placement="left" label-width="auto" require-mark-placement="right-hanging">
         
@@ -287,7 +352,7 @@ import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
 import NullbrSearchModal from './NullbrSearchModal.vue';
-import { FilmOutline as FilmIcon, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon, CloudDownloadOutline as CloudDownloadIcon } from '@vicons/ionicons5';
+import { FilmOutline as FilmIcon, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon, CloudDownloadOutline as CloudDownloadIcon, CloseOutline as CloseIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
 // 图标定义
@@ -761,6 +826,46 @@ const handleClearAllIgnored = async () => {
   }
 };
 
+const handleBatchDelete = async () => {
+  // 1. 从 rawItems 中找到所有被选中的完整对象
+  const itemsToDelete = rawItems.value.filter(item => 
+    selectedItems.value.some(sel => sel.tmdb_id === item.tmdb_id && sel.item_type === item.item_type)
+  );
+  
+  if (itemsToDelete.length === 0) return;
+
+  try {
+    isLoading.value = true; // 显示加载转圈
+    
+    // 2. 发送请求给后端
+    const response = await axios.post('/api/media/batch_delete', {
+      items: itemsToDelete.map(item => ({
+        tmdb_id: item.tmdb_id,
+        item_type: item.item_type
+      }))
+    });
+
+    message.success(response.data.message || `成功删除 ${itemsToDelete.length} 条记录`);
+
+    // 3. 更新本地数据 (无需刷新页面)
+    // 创建一个 Set 方便快速查找
+    const deletedKeys = new Set(itemsToDelete.map(i => `${i.tmdb_id}-${i.item_type}`));
+    
+    // 从原始列表中移除已删除的项
+    rawItems.value = rawItems.value.filter(item => 
+      !deletedKeys.has(`${item.tmdb_id}-${item.item_type}`)
+    );
+    
+    // 4. 清空选择状态
+    selectedItems.value = [];
+
+  } catch (err) {
+    message.error(err.response?.data?.error || '批量删除失败');
+  } finally {
+    isLoading.value = false; // 隐藏加载转圈
+  }
+};
+
 const formatAirDate = (dateString) => {
   if (!dateString) return 'N/A';
   try {
@@ -809,6 +914,36 @@ const fetchData = async (autoSwitchTab = false) => {
   } finally {
     isLoading.value = false;
   }
+};
+
+const isAllSelected = computed(() => {
+  return filteredItems.value.length > 0 && selectedItems.value.length === filteredItems.value.length;
+});
+
+// 判断是否半选 (选中了一些但没全选)
+const isIndeterminate = computed(() => {
+  return selectedItems.value.length > 0 && selectedItems.value.length < filteredItems.value.length;
+});
+
+// 处理全选/取消全选
+const handleSelectAll = () => {
+  if (isAllSelected.value) {
+    // 如果已全选，则清空
+    selectedItems.value = [];
+  } else {
+    // 否则，将当前筛选出的所有项加入选择
+    // 注意：只选择当前 filteredItems (即符合搜索和筛选条件的)，而不是 rawItems
+    selectedItems.value = filteredItems.value.map(item => ({
+      tmdb_id: item.tmdb_id,
+      item_type: item.item_type
+    }));
+    message.info(`已选中当前列表全部 ${filteredItems.value.length} 项`);
+  }
+};
+
+// 清空选择
+const clearSelection = () => {
+  selectedItems.value = [];
 };
 
 onMounted(() => {
@@ -1110,7 +1245,59 @@ watch(loaderRef, (newEl, oldEl) => {
   justify-content: center;
   align-items: center;
 }
+/* ★★★ 底部悬浮操作栏样式 ★★★ */
+.floating-action-bar {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  width: auto;
+  min-width: 400px;
+  max-width: 90%;
+}
 
+.fab-content {
+  background-color: rgba(30, 30, 30, 0.95); /* 深色背景 */
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 50px; /* 圆角胶囊形状 */
+  padding: 12px 24px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+  gap: 24px;
+}
+
+.fab-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.fab-text {
+  color: #fff;
+  font-size: 14px;
+}
+
+.fab-text b {
+  color: var(--n-primary-color);
+  font-size: 16px;
+  margin: 0 4px;
+}
+
+/* 动画效果 */
+.slide-up-enter-active,
+.slide-up-leave-active {
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.slide-up-enter-from,
+.slide-up-leave-to {
+  opacity: 0;
+  transform: translate(-50%, 20px); /* 从下方滑入 */
+}
 /* 手机端适配 */
 @media (max-width: 600px) {
   .responsive-grid { grid-template-columns: 1fr !important; }
