@@ -203,15 +203,15 @@ def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
 
 def get_all_subscriptions() -> List[Dict[str, Any]]:
     """
-    获取所有有订阅状态的媒体项，用于前端统一管理。
-    当项目类型为 Season 时，会自动查询并拼接父剧集的标题，并额外提供父剧集的TMDb ID用于生成正确的链接。
-    ★ 修改：不再粗暴排除 'Series'。只有当 Series 下存在有订阅状态的 Season 时，才隐藏 Series 条目，
-    避免“父子同屏”造成冗余；否则保留 Series 条目（适用于整剧订阅或季信息尚未生成的场景）。
+    获取所有有订阅状态的媒体项...
     """
     sql = """
         SELECT 
             m1.tmdb_id, 
             m1.item_type, 
+            -- ★★★ 核心修复：显式查询 season_number 字段 ★★★
+            m1.season_number, 
+            
             CASE 
                 WHEN m1.item_type = 'Season' THEN COALESCE(m2.title, '未知剧集') || ' 第 ' || m1.season_number || ' 季 '
                 ELSE m1.title 
@@ -237,7 +237,6 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
             m1.parent_series_tmdb_id = m2.tmdb_id AND m2.item_type = 'Series'
         WHERE 
             m1.subscription_status IN ('REQUESTED', 'WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED', 'PAUSED')
-            -- ★★★ 核心修改：智能排除父剧集 (Series) ★★★
             AND (
                 m1.item_type != 'Series'
                 OR NOT EXISTS (

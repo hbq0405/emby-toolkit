@@ -300,42 +300,42 @@ def search_media(keyword, page=1):
         raise e
 
 def _fetch_single_source(tmdb_id, media_type, source_type, season_number=None):
-    # ★ 插入流控检查
-    # 注意：获取一个电影的资源可能会调用 2-3 次这个函数，意味着会触发 2-3 次间隔等待
-    # 这是为了安全起见必须的
+    # 1. 流控检查
     try:
         _check_and_update_rate_limit()
     except Exception as e:
-        # 如果是获取资源详情时超限，记录日志并返回空列表，不中断整个流程（尽量返回已获取的）
         logger.warning(f"  ⚠️ {e}")
         return []
 
+    # 2. 构造 URL
+    url = ""
     if media_type == 'movie':
         url = f"{NULLBR_API_BASE}/movie/{tmdb_id}/{source_type}"
     elif media_type == 'tv':
-        # ★★★ 剧集 URL 构造逻辑优化 ★★★
         if season_number:
-            # 如果有季号，直接请求单季接口
-            # 例如: /tv/12345/season/2/115 或 /tv/12345/season/2/magnet
+            # ★ 关键：如果有季号，请求单季接口
             url = f"{NULLBR_API_BASE}/tv/{tmdb_id}/season/{season_number}/{source_type}"
         else:
-            # 如果没有季号 (比如搜整部剧)，保持原有逻辑
+            # 没有季号，请求整剧接口 (115) 或 S1 (Magnet)
             if source_type == '115':
                 url = f"{NULLBR_API_BASE}/tv/{tmdb_id}/115"
             elif source_type == 'magnet':
-                # 旧逻辑默认只搜第一季，或者你可以改成搜整剧(如果API支持)
-                # 这里为了稳妥，如果没有季号，还是默认 S1，或者你可以根据需求调整
                 url = f"{NULLBR_API_BASE}/tv/{tmdb_id}/season/1/magnet"
             else:
                 return []
     else:
         return []
 
+    # ★ 打印日志，方便你在后台看是否真的带上了季号
+    logger.info(f"  ➜ [DEBUG] NULLBR请求: {url} (Season: {season_number})")
+
     try:
         proxies = config_manager.get_proxies_for_requests()
         response = requests.get(url, headers=_get_headers(), timeout=10, proxies=proxies)
+        
         if response.status_code == 404:
             return []
+        
         response.raise_for_status()
         data = response.json()
         raw_list = data.get(source_type, [])
@@ -344,10 +344,13 @@ def _fetch_single_source(tmdb_id, media_type, source_type, season_number=None):
         for item in raw_list:
             link = item.get('share_link') or item.get('magnet') or item.get('ed2k')
             title = item.get('title') or item.get('name')
+            
             if link and title:
-                if media_type == 'tv' and source_type == 'magnet':
+                # 磁力链如果没有季号，默认标记为 S1 (仅显示用)
+                if media_type == 'tv' and source_type == 'magnet' and not season_number:
                     title = f"[S1] {title}"
                 
+                # 中字判断
                 is_zh = item.get('zh_sub') == 1
                 if not is_zh:
                     t_upper = title.upper()
@@ -355,6 +358,33 @@ def _fetch_single_source(tmdb_id, media_type, source_type, season_number=None):
                     if any(k in t_upper for k in zh_keywords):
                         is_zh = True
                 
+                # -------------------------------------------------
+                # ★★★ 强力清洗：再次核对季号，防止 API 返回脏数据 ★★★
+                # -------------------------------------------------
+                if media_type == 'tv' and season_number:
+                    try:
+                        target_season = int(season_number)
+                        title_upper = title.upper()
+                        
+                        # 1. 匹配 Sxx 格式 (如 S04, .S04., [S04])
+                        # 排除 S01-S05 这种合集范围，只匹配单独的季号标识
+                        match = re.search(r'(?:^|\.|\[|\s|-)S(\d{1,2})(?:\.|\]|\s|E|-|$)', title_upper)
+                        if match:
+                            found_season = int(match.group(1))
+                            if found_season != target_season:
+                                # 季号不匹配，跳过
+                                continue
+                        
+                        # 2. 匹配中文 "第x季"
+                        match_zh = re.search(r'第(\d{1,2})季', title)
+                        if match_zh:
+                            found_season_zh = int(match_zh.group(1))
+                            if found_season_zh != target_season:
+                                continue
+                    except Exception:
+                        pass # 正则出错不影响主流程
+                # -------------------------------------------------
+
                 resource_obj = {
                     "title": title,
                     "size": item.get('size', '未知'),
@@ -371,41 +401,42 @@ def _fetch_single_source(tmdb_id, media_type, source_type, season_number=None):
         return []
 
 def fetch_resource_list(tmdb_id, media_type='movie', specific_source=None, season_number=None):
+    """
+    获取资源列表
+    """
     config = get_config()
     
-    # ★ 修改点：确定要获取的源
     if specific_source:
-        # 如果指定了源 (如 '115')，只请求这一个
-        enabled_sources = [specific_source]
+        sources_to_fetch = [specific_source]
     else:
-        # 否则获取所有启用的源 (兼容旧逻辑)
-        enabled_sources = config.get('enabled_sources', ['115', 'magnet', 'ed2k'])
+        sources_to_fetch = config.get('enabled_sources', ['115', 'magnet', 'ed2k'])
     
     all_resources = []
     
-    # 1. 获取 115 资源 (消耗 1 次配额)
-    if '115' in enabled_sources:
+    # 1. 115
+    if '115' in sources_to_fetch:
         try:
             res_115 = _fetch_single_source(tmdb_id, media_type, '115', season_number)
             all_resources.extend(res_115)
-        except Exception:
-            pass # 单个源失败不影响其他
+        except Exception as e:
+            # 可以临时加个日志看报错
+            logger.error(f"115 fetch error: {e}")
+            pass
 
-    # 2. 获取 Magnet 资源 (消耗 1 次配额)
-    if 'magnet' in enabled_sources:
+    # 2. Magnet
+    if 'magnet' in sources_to_fetch:
         try:
             res_mag = _fetch_single_source(tmdb_id, media_type, 'magnet', season_number)
             all_resources.extend(res_mag)
-        except Exception:
-            pass
+        except Exception: pass
 
-    # 3. 获取 Ed2k 资源 (仅电影, 消耗 1 次配额)
-    if media_type == 'movie' and 'ed2k' in enabled_sources:
+    # 3. Ed2k (仅电影)
+    if media_type == 'movie' and 'ed2k' in sources_to_fetch:
         try:
+            # 电影不需要季号，保持原样即可，或者传 None
             res_ed2k = _fetch_single_source(tmdb_id, media_type, 'ed2k')
             all_resources.extend(res_ed2k)
-        except Exception:
-            pass
+        except Exception: pass
     
     # 4. 获取过滤配置
     config = get_config()

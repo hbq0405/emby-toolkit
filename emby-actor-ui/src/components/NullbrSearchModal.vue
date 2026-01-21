@@ -75,44 +75,54 @@ const apiKeyCheck = async () => {
 
 // ★★★ 暴露给父组件的方法 ★★★
 const open = async (item) => {
-    // 1. 标题
-    currentItemTitle.value = item.title || item.name;
+    // 1. 打印原始数据，方便排查 (请按 F12 看控制台)
+    console.log('[NullbrSearch] 接收到的原始 Item:', item);
 
-    // 2. 统一类型转换 (Season/Series -> tv)
-    let type = item.media_type || item.item_type || 'movie';
-    type = type.toLowerCase();
+    // 2. 初始化基础信息
+    currentItemTitle.value = item.title || item.name;
     
+    // ★★★ 关键修复 1：必须先重置季号！防止残留上次的值 ★★★
+    currentSeasonNumber.value = null;
+
+    // 3. 统一类型转换
+    let type = (item.media_type || item.item_type || 'movie').toLowerCase();
     if (['season', 'series', 'tv', 'episode'].includes(type)) {
         currentItemType.value = 'tv';
     } else {
         currentItemType.value = 'movie';
     }
 
-    // ★★★ 核心修复：ID 取值逻辑 ★★★
-    // 如果存在 series_tmdb_id (说明是季或集)，必须用它作为 ID 去搜
-    // 否则 Nullbr 会把 季ID 当成 剧集ID，搜出牛头不对马嘴的东西
+    // 4. 智能识别 ID 和 季号
+    // 优先检查是否有 series_tmdb_id (这通常意味着它是季或集)
     if (item.series_tmdb_id) {
-        // 是季或集
         currentItemId.value = item.series_tmdb_id;
-        // 提取季号 (UnifiedSubscriptionsPage 里的 item 有 season_number)
-        if (item.season_number) {
-            currentSeasonNumber.value = item.season_number;
-            console.log(`[Nullbr] 锁定第 ${item.season_number} 季`);
+        
+        // ★★★ 关键修复 2：更严谨的季号判断 (防止 0 被当成 false) ★★★
+        if (item.season_number !== undefined && item.season_number !== null) {
+            currentSeasonNumber.value = parseInt(item.season_number);
+            console.log(`[Nullbr] 识别到季号: ${currentSeasonNumber.value}`);
         } else {
-            currentSeasonNumber.value = null;
+            console.warn('[Nullbr] 有 series_id 但缺少 season_number');
         }
     } else {
-        // 电影或本身就是剧集主体
+        // 电影或剧集主体
         currentItemId.value = item.tmdb_id || item.id;
+        
+        // ★★★ 兜底逻辑：如果是季类型，但没 series_id，尝试用 tmdb_id 搜 (虽然可能不准)
+        // 但如果此时有 season_number，还是带上比较好
+        if (type === 'season' && item.season_number !== undefined) {
+             console.warn('[Nullbr] 警告: 季类型缺少 series_tmdb_id，搜索结果可能不准确');
+             currentSeasonNumber.value = parseInt(item.season_number);
+        }
     }
     
-    console.log(`[NullbrSearch] 搜索: ${currentItemTitle.value}, 类型: ${currentItemType.value}, ID: ${currentItemId.value}`);
+    console.log(`[NullbrSearch] 最终参数 -> ID: ${currentItemId.value}, Type: ${currentItemType.value}, Season: ${currentSeasonNumber.value}`);
 
-    // 3. 重置数据
+    // 5. 重置列表状态
     resourcesMap['115'] = []; resourcesMap['magnet'] = []; resourcesMap['ed2k'] = [];
     loadedSources['115'] = false; loadedSources['magnet'] = false; loadedSources['ed2k'] = false;
     
-    // 4. 打开并加载
+    // 6. 打开并加载
     activeResourceTab.value = '115';
     showModal.value = true;
     fetchResources('115', true);
