@@ -53,6 +53,7 @@ const pushing = ref(false);
 const currentItemTitle = ref('');
 const currentItemType = ref('movie');
 const currentItemId = ref('');
+const currentSeasonNumber = ref(null);
 const activeResourceTab = ref('115');
 const resourcesMap = reactive({ '115': [], 'magnet': [], 'ed2k': [] });
 const loadedSources = reactive({ '115': false, 'magnet': false, 'ed2k': false });
@@ -74,35 +75,44 @@ const apiKeyCheck = async () => {
 
 // ★★★ 暴露给父组件的方法 ★★★
 const open = async (item) => {
-    // 1. 检查配置 (可选)
-    const hasKey = await apiKeyCheck(); 
-    if (!hasKey) return;
+    // 1. 标题
+    currentItemTitle.value = item.title || item.name;
 
-    // 2. 初始化
-    currentItemTitle.value = item.title || item.name; // 兼容 title 和 name
-    currentItemId.value = item.tmdb_id || item.id;
-
-    // ★★★ 核心修复：统一类型转换逻辑 ★★★
-    // 目标：转换为 'movie' 或 'tv'
-    
-    let type = item.media_type || item.item_type || 'movie'; // 获取原始类型
-    
-    // 统一转小写处理
+    // 2. 统一类型转换 (Season/Series -> tv)
+    let type = item.media_type || item.item_type || 'movie';
     type = type.toLowerCase();
-
-    if (type === 'season' || type === 'series' || type === 'tv' || type === 'episode') {
+    
+    if (['season', 'series', 'tv', 'episode'].includes(type)) {
         currentItemType.value = 'tv';
     } else {
         currentItemType.value = 'movie';
     }
-    
-    // 打印日志方便调试 (F12 Console)
-    console.log(`[NullbrSearch] 打开模态框: ${currentItemTitle.value}, 原始类型: ${item.media_type || item.item_type}, 转换后: ${currentItemType.value}, ID: ${currentItemId.value}`);
 
-    // ... (重置数据和 fetchResources 逻辑) ...
+    // ★★★ 核心修复：ID 取值逻辑 ★★★
+    // 如果存在 series_tmdb_id (说明是季或集)，必须用它作为 ID 去搜
+    // 否则 Nullbr 会把 季ID 当成 剧集ID，搜出牛头不对马嘴的东西
+    if (item.series_tmdb_id) {
+        // 是季或集
+        currentItemId.value = item.series_tmdb_id;
+        // 提取季号 (UnifiedSubscriptionsPage 里的 item 有 season_number)
+        if (item.season_number) {
+            currentSeasonNumber.value = item.season_number;
+            console.log(`[Nullbr] 锁定第 ${item.season_number} 季`);
+        } else {
+            currentSeasonNumber.value = null;
+        }
+    } else {
+        // 电影或本身就是剧集主体
+        currentItemId.value = item.tmdb_id || item.id;
+    }
+    
+    console.log(`[NullbrSearch] 搜索: ${currentItemTitle.value}, 类型: ${currentItemType.value}, ID: ${currentItemId.value}`);
+
+    // 3. 重置数据
     resourcesMap['115'] = []; resourcesMap['magnet'] = []; resourcesMap['ed2k'] = [];
     loadedSources['115'] = false; loadedSources['magnet'] = false; loadedSources['ed2k'] = false;
     
+    // 4. 打开并加载
     activeResourceTab.value = '115';
     showModal.value = true;
     fetchResources('115', true);
@@ -117,7 +127,8 @@ const fetchResources = async (sourceType, autoCascade = false) => {
         const res = await axios.post('/api/nullbr/resources', {
             tmdb_id: currentItemId.value,
             media_type: currentItemType.value,
-            source_type: sourceType
+            source_type: sourceType,
+            season_number: currentSeasonNumber.value
         });
         
         const list = res.data.data || [];

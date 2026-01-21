@@ -91,14 +91,19 @@ def get_resources():
     data = request.json
     tmdb_id = data.get('tmdb_id') or data.get('id')
     media_type = data.get('media_type', 'movie')
-    source_type = data.get('source_type') # ★ 修改点2：接收前端传来的源类型
+    source_type = data.get('source_type')
+    season_number = data.get('season_number')
     
     if not tmdb_id:
         return jsonify({"status": "error", "message": "缺少 TMDB ID"}), 400
 
     try:
-        # ★ 修改点3：将 source_type 传给 handler
-        resource_list = nullbr_handler.fetch_resource_list(tmdb_id, media_type, specific_source=source_type)
+        resource_list = nullbr_handler.fetch_resource_list(
+            tmdb_id, 
+            media_type, 
+            specific_source=source_type, 
+            season_number=season_number
+        )
         return jsonify({
             "status": "success", 
             "data": resource_list,

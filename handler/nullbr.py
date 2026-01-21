@@ -299,7 +299,7 @@ def search_media(keyword, page=1):
         logger.error(f"  ➜ NULLBR 搜索失败: {e}")
         raise e
 
-def _fetch_single_source(tmdb_id, media_type, source_type):
+def _fetch_single_source(tmdb_id, media_type, source_type, season_number=None):
     # ★ 插入流控检查
     # 注意：获取一个电影的资源可能会调用 2-3 次这个函数，意味着会触发 2-3 次间隔等待
     # 这是为了安全起见必须的
@@ -313,12 +313,21 @@ def _fetch_single_source(tmdb_id, media_type, source_type):
     if media_type == 'movie':
         url = f"{NULLBR_API_BASE}/movie/{tmdb_id}/{source_type}"
     elif media_type == 'tv':
-        if source_type == '115':
-            url = f"{NULLBR_API_BASE}/tv/{tmdb_id}/115"
-        elif source_type == 'magnet':
-            url = f"{NULLBR_API_BASE}/tv/{tmdb_id}/season/1/magnet"
+        # ★★★ 剧集 URL 构造逻辑优化 ★★★
+        if season_number:
+            # 如果有季号，直接请求单季接口
+            # 例如: /tv/12345/season/2/115 或 /tv/12345/season/2/magnet
+            url = f"{NULLBR_API_BASE}/tv/{tmdb_id}/season/{season_number}/{source_type}"
         else:
-            return []
+            # 如果没有季号 (比如搜整部剧)，保持原有逻辑
+            if source_type == '115':
+                url = f"{NULLBR_API_BASE}/tv/{tmdb_id}/115"
+            elif source_type == 'magnet':
+                # 旧逻辑默认只搜第一季，或者你可以改成搜整剧(如果API支持)
+                # 这里为了稳妥，如果没有季号，还是默认 S1，或者你可以根据需求调整
+                url = f"{NULLBR_API_BASE}/tv/{tmdb_id}/season/1/magnet"
+            else:
+                return []
     else:
         return []
 
@@ -361,7 +370,7 @@ def _fetch_single_source(tmdb_id, media_type, source_type):
         logger.warning(f"  ➜ 获取 {source_type} 资源失败: {e}")
         return []
 
-def fetch_resource_list(tmdb_id, media_type='movie', specific_source=None):
+def fetch_resource_list(tmdb_id, media_type='movie', specific_source=None, season_number=None):
     config = get_config()
     
     # ★ 修改点：确定要获取的源
@@ -377,7 +386,7 @@ def fetch_resource_list(tmdb_id, media_type='movie', specific_source=None):
     # 1. 获取 115 资源 (消耗 1 次配额)
     if '115' in enabled_sources:
         try:
-            res_115 = _fetch_single_source(tmdb_id, media_type, '115')
+            res_115 = _fetch_single_source(tmdb_id, media_type, '115', season_number)
             all_resources.extend(res_115)
         except Exception:
             pass # 单个源失败不影响其他
@@ -385,7 +394,7 @@ def fetch_resource_list(tmdb_id, media_type='movie', specific_source=None):
     # 2. 获取 Magnet 资源 (消耗 1 次配额)
     if 'magnet' in enabled_sources:
         try:
-            res_mag = _fetch_single_source(tmdb_id, media_type, 'magnet')
+            res_mag = _fetch_single_source(tmdb_id, media_type, 'magnet', season_number)
             all_resources.extend(res_mag)
         except Exception:
             pass
