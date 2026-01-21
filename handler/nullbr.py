@@ -15,8 +15,6 @@ try:
     from p115client import P115Client
 except ImportError:
     P115Client = None
-get_qrcode_token = None
-get_qrcode_status = None
 
 logger = logging.getLogger(__name__)
 
@@ -363,12 +361,16 @@ def _fetch_single_source(tmdb_id, media_type, source_type):
         logger.warning(f"  ➜ 获取 {source_type} 资源失败: {e}")
         return []
 
-def fetch_resource_list(tmdb_id, media_type='movie'):
+def fetch_resource_list(tmdb_id, media_type='movie', specific_source=None):
     config = get_config()
     
-    # 获取启用的数据源，默认全开
-    # 格式: ['115', 'magnet', 'ed2k']
-    enabled_sources = config.get('enabled_sources', ['115', 'magnet', 'ed2k'])
+    # ★ 修改点：确定要获取的源
+    if specific_source:
+        # 如果指定了源 (如 '115')，只请求这一个
+        enabled_sources = [specific_source]
+    else:
+        # 否则获取所有启用的源 (兼容旧逻辑)
+        enabled_sources = config.get('enabled_sources', ['115', 'magnet', 'ed2k'])
     
     all_resources = []
     
@@ -650,30 +652,38 @@ def auto_download_best_resource(tmdb_id, media_type, title):
     [自动任务专用] 搜索并下载最佳资源
     1. 获取资源列表 (已应用过滤器)
     2. 取第一个资源
-    3. 推送到 CMS
+    3. 推送到 CMS 或 115
     """
     try:
-        # 1. 检查配置是否可用
         config = get_config()
-        if not config.get('api_key') or not config.get('cms_url'):
-            logger.warning("NULLBR 未配置 API Key 或 CMS URL，无法执行自动兜底。")
+        if not config.get('api_key'):
+            logger.warning("NULLBR 未配置 API Key，无法执行自动兜底。")
             return False
 
-        # 2. 获取资源 (fetch_resource_list 内部已经调用了 _is_resource_valid 进行过滤)
-        logger.info(f"  ➜ 正在通过 NULLBR 搜索兜底资源: {title} (ID: {tmdb_id})")
-        resources = fetch_resource_list(tmdb_id, media_type)
+        # ★ 修改点：按优先级循环，命中即停
+        priority_sources = ['115', 'magnet', 'ed2k']
+        user_enabled = config.get('enabled_sources', priority_sources)
         
-        if not resources:
-            logger.info(f"  ➜ NULLBR 未找到符合过滤条件的资源: {title}")
-            return False
+        logger.info(f"  ➜ [自动任务] 开始搜索资源: {title} (ID: {tmdb_id})")
+
+        for source in priority_sources:
+            # 如果用户没启用该源，跳过
+            if source not in user_enabled: continue
+            # 剧集跳过 ed2k
+            if media_type == 'tv' and source == 'ed2k': continue
+
+            # 只请求当前这一个源
+            resources = fetch_resource_list(tmdb_id, media_type, specific_source=source)
             
-        # 3. 选取最佳资源 (默认取过滤后的第一个)
-        best_resource = resources[0]
-        logger.info(f"  ➜ 命中资源: [{best_resource['source_type']}] {best_resource['title']} ({best_resource['size']})")
-        
-        # 4. 推送
-        handle_push_request(best_resource['link'], title)
-        return True
+            if resources:
+                best_resource = resources[0]
+                logger.info(f"  ✅ 命中资源 [{source.upper()}]: {best_resource['title']}")
+                # 找到后立即推送并返回，不再请求后面的源
+                handle_push_request(best_resource['link'], title)
+                return True
+            
+        logger.info(f"  ❌ 所有源均未找到符合过滤条件的资源: {title}")
+        return False
 
     except Exception as e:
         logger.error(f"  ➜ NULLBR 自动兜底失败: {e}")

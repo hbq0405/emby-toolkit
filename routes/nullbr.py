@@ -82,17 +82,23 @@ def search_resources():
 @admin_required
 def get_resources():
     """
-    新接口：获取资源列表供前端选择
+    获取资源列表供前端选择
     """
+    config = settings_db.get_setting('nullbr_config') or {}
+    if not config.get('api_key'):
+        return jsonify({"status": "error", "message": "未配置 API Key，请先在配置中填写。"}), 400
+
     data = request.json
     tmdb_id = data.get('tmdb_id') or data.get('id')
     media_type = data.get('media_type', 'movie')
+    source_type = data.get('source_type') # ★ 修改点2：接收前端传来的源类型
     
     if not tmdb_id:
         return jsonify({"status": "error", "message": "缺少 TMDB ID"}), 400
 
     try:
-        resource_list = nullbr_handler.fetch_resource_list(tmdb_id, media_type)
+        # ★ 修改点3：将 source_type 传给 handler
+        resource_list = nullbr_handler.fetch_resource_list(tmdb_id, media_type, specific_source=source_type)
         return jsonify({
             "status": "success", 
             "data": resource_list,
