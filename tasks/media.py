@@ -1594,7 +1594,8 @@ def task_scan_monitor_folders(processor):
     优化：
     1. 回溯时间可配置。
     2. 优先检查时间戳，极速过滤旧文件。
-    3. 【新增】查库比对文件名，确保只处理真正未入库的文件。
+    3. 查库比对文件名，确保只处理真正未入库的文件。
+    4. 【新增】支持排除目录配置，与实时监控逻辑保持一致。
     """
     # 1. 获取配置
     monitor_enabled = processor.config.get(constants.CONFIG_OPTION_MONITOR_ENABLED)
@@ -1602,6 +1603,11 @@ def task_scan_monitor_folders(processor):
     monitor_extensions = processor.config.get(constants.CONFIG_OPTION_MONITOR_EXTENSIONS, constants.DEFAULT_MONITOR_EXTENSIONS)
     lookback_days = processor.config.get(constants.CONFIG_OPTION_MONITOR_SCAN_LOOKBACK_DAYS, constants.DEFAULT_MONITOR_SCAN_LOOKBACK_DAYS)
     
+    # ★★★ 新增：获取排除目录配置 ★★★
+    monitor_exclude_dirs = processor.config.get(constants.CONFIG_OPTION_MONITOR_EXCLUDE_DIRS, constants.DEFAULT_MONITOR_EXCLUDE_DIRS)
+    # 转为集合并小写，用于快速匹配
+    exclude_dirs_set = set(d.lower() for d in (monitor_exclude_dirs or []))
+
     logger.info(f"  ➜ 开始执行监控目录查漏扫描 (回溯 {lookback_days} 天)")
 
     if not monitor_enabled or not monitor_paths:
@@ -1611,7 +1617,6 @@ def task_scan_monitor_folders(processor):
     valid_exts = set(ext.lower() for ext in monitor_extensions)
 
     # 2. 获取已知 TMDb ID (白名单)
-    # ... (保留原有白名单逻辑，虽然有了新逻辑，这个白名单依然可以用于快速判断是否是完全陌生的剧) ...
     known_tmdb_ids = set()
     try:
         with connection.get_db_connection() as conn:
@@ -1627,14 +1632,13 @@ def task_scan_monitor_folders(processor):
     tmdb_regex = r'(?:tmdb|tmdbid)[-_=\s]*(\d+)'
     processed_in_this_run = set()
     
-    # ★★★ 新增：本次运行的资产缓存，避免重复查库 ★★★
     # Key: tmdb_id, Value: Set[filenames]
     db_assets_cache = {}
 
     scan_count = 0
     trigger_count = 0
     skipped_old_count = 0
-    skipped_exists_count = 0 # 新增统计
+    skipped_exists_count = 0 
     
     now = time.time()
     cutoff_time = now - (lookback_days * 24 * 3600)
@@ -1647,6 +1651,19 @@ def task_scan_monitor_folders(processor):
         logger.info(f"  ➜ 正在扫描目录: {root_path}")
         
         for dirpath, dirnames, filenames in os.walk(root_path):
+            # ★★★ 新增：排除目录检查逻辑 ★★★
+            # 检查当前路径的每一级目录名是否在排除列表中
+            # os.path.normpath 用于规范化路径分隔符
+            path_parts = os.path.normpath(dirpath).split(os.sep)
+            
+            # 如果路径中任何一部分在排除列表中 (不区分大小写)
+            if any(part.lower() in exclude_dirs_set for part in path_parts):
+                # 1. 清空 dirnames 列表：这会告诉 os.walk 不要继续进入这个目录的子目录
+                dirnames[:] = []
+                # 2. 跳过当前循环：不处理当前目录下的 filenames
+                # logger.debug(f"  🚫 [扫描跳过] 命中排除目录: {dirpath}")
+                continue
+
             folder_name = os.path.basename(dirpath)
             match_folder = re.search(tmdb_regex, folder_name, re.IGNORECASE)
             
@@ -1672,15 +1689,10 @@ def task_scan_monitor_folders(processor):
                     continue 
 
                 scan_count += 1
-                scan_count += 1
                 if scan_count % 300 == 0:
-                    # ★★★ 核心优化：主动休眠 0.05 秒 ★★★
-                    # 这会释放 GIL 锁，让 Web 服务器有时间把进度推送到前端，防止界面假死
+                    # 主动休眠释放 GIL
                     time.sleep(0.05)
                     
-                    # 计算一个动态进度值 (50% ~ 90%)，让进度条看起来在动
-                    # 假设大概有 30000 个文件，动态计算一下视觉效果更好
-                    # 如果不知道总数，就固定 50 也可以，或者让它在 50-80 之间循环
                     dynamic_progress = 50 + int((scan_count % 10000) / 10000 * 30)
                     
                     task_manager.update_status_from_thread(
@@ -1712,15 +1724,11 @@ def task_scan_monitor_folders(processor):
                         continue
 
                     # 2. ★★★ 第二道防线：查库比对文件名 ★★★
-                    # 如果 ID 在缓存里没有，先去数据库查一次并缓存
                     if target_id not in db_assets_cache:
-                        # 调用 media_db 新增的函数
                         db_assets_cache[target_id] = media_db.get_known_filenames_by_tmdb_id(target_id)
                     
-                    # 检查当前文件名是否已在数据库记录中
                     if filename in db_assets_cache[target_id]:
                         skipped_exists_count += 1
-                        # logger.trace(f"  ➜ [跳过] 文件已入库: {filename}")
                         continue
 
                     # 3. 确实是新文件，触发处理
@@ -1728,10 +1736,8 @@ def task_scan_monitor_folders(processor):
                     try:
                         processor.process_file_actively(file_path)
                         
-                        # 标记该 ID 本次已触发
                         processed_in_this_run.add(target_id)
                         
-                        # 乐观更新缓存：假设处理成功，将该文件名加入缓存，防止同一次扫描重复触发
                         if target_id in db_assets_cache:
                             db_assets_cache[target_id].add(filename)
 

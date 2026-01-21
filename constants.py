@@ -36,6 +36,8 @@ CONFIG_OPTION_MONITOR_EXTENSIONS = "monitor_extensions" # 监控扩展名列表
 DEFAULT_MONITOR_EXTENSIONS = [".mp4", ".mkv", ".avi", ".mov", ".iso", ".ts", ".strm"] # 默认监控的文件扩展名
 CONFIG_OPTION_MONITOR_SCAN_LOOKBACK_DAYS = "monitor_scan_lookback_days" # 定时扫描回溯天数
 DEFAULT_MONITOR_SCAN_LOOKBACK_DAYS = 1  # 默认回溯扫描天数
+CONFIG_OPTION_MONITOR_EXCLUDE_DIRS = "monitor_exclude_dirs" 
+DEFAULT_MONITOR_EXCLUDE_DIRS = [".@__thumb", ".@__desc", "小姐姐"] # 默认排除一些常见非媒体目录
 
 # ==============================================================================
 # ✨ 通知服务 (Notification Services)

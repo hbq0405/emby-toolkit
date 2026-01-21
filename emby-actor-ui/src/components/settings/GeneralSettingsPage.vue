@@ -50,7 +50,7 @@
                     </n-form-item-grid-item>
                   </n-card>
                 </n-gi>
-                <!-- 第二列：实时监控 (★★★ 新增 ★★★) -->
+                <!-- 第二列：实时监控 -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header>
@@ -66,11 +66,26 @@
                       </n-switch>
                     </n-form-item>
 
-                    <n-form-item label="监控目录列表" path="monitor_paths">
+                    <n-form-item label="监控目录路径" path="monitor_paths">
                       <n-dynamic-input v-model:value="configModel.monitor_paths" placeholder="输入Emby媒体库路径" :min="0" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
                           保持和 Emby 媒体库路径一致，否则刷新不到。
+                        </n-text>
+                      </template>
+                    </n-form-item>
+                    <n-form-item label="排除目录名" path="monitor_exclude_dirs">
+                      <n-select
+                        v-model:value="configModel.monitor_exclude_dirs"
+                        multiple
+                        filterable
+                        tag
+                        placeholder="输入目录名并回车 (如: extras)"
+                        :options="[]" 
+                      />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          只要文件路径中包含这些目录名（精确匹配），该文件就会被忽略。例如输入 "extras"，则 "/movie/extras/a.mp4" 会被忽略。
                         </n-text>
                       </template>
                     </n-form-item>

@@ -32,16 +32,33 @@ class MediaFileHandler(FileSystemEventHandler):
     """
     文件系统事件处理器
     """
-    def __init__(self, extensions: List[str]):
+    def __init__(self, extensions: List[str], exclude_dirs: List[str] = None):
         self.extensions = [ext.lower() for ext in extensions]
+        # 将排除目录转为集合，方便快速查找，并统一转小写以进行不区分大小写的匹配（可选，视系统而定，这里建议转小写）
+        self.exclude_dirs = set(d.lower() for d in (exclude_dirs or []))
 
     def _is_valid_media_file(self, file_path: str) -> bool:
         if os.path.exists(file_path) and os.path.isdir(file_path): return False
+        
+        # 1. 检查扩展名
         _, ext = os.path.splitext(file_path)
         if ext.lower() not in self.extensions: return False
+        
         filename = os.path.basename(file_path)
         if filename.startswith('.'): return False
         if filename.endswith(('.part', '.crdownload', '.tmp', '.aria2')): return False
+
+        # ★★★ 新增：检查路径中的目录名是否在排除列表中 ★★★
+        if self.exclude_dirs:
+            # 将路径规范化并拆分为各个部分 (例如 /mnt/movie/extras/a.mp4 -> ['/', 'mnt', 'movie', 'extras', 'a.mp4'])
+            path_parts = os.path.normpath(file_path).split(os.sep)
+            # 遍历路径的每一部分
+            for part in path_parts:
+                # 如果某一级目录名（转小写后）在排除列表中，则视为无效文件
+                if part.lower() in self.exclude_dirs:
+                    # logger.debug(f"  🚫 [实时监控] 文件被排除 (命中目录 '{part}'): {filename}")
+                    return False
+
         return True
 
     def on_created(self, event):
@@ -206,7 +223,6 @@ def _handle_batch_file_task(processor, file_paths: List[str]):
     processor.process_file_actively_batch(valid_files)
 
 class MonitorService:
-    # ... (保持不变) ...
     processor_instance = None
 
     def __init__(self, config: dict, processor: 'MediaProcessor'):
@@ -218,6 +234,7 @@ class MonitorService:
         self.enabled = self.config.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False)
         self.paths = self.config.get(constants.CONFIG_OPTION_MONITOR_PATHS, [])
         self.extensions = self.config.get(constants.CONFIG_OPTION_MONITOR_EXTENSIONS, constants.DEFAULT_MONITOR_EXTENSIONS)
+        self.exclude_dirs = self.config.get(constants.CONFIG_OPTION_MONITOR_EXCLUDE_DIRS, constants.DEFAULT_MONITOR_EXCLUDE_DIRS)
 
     def start(self):
         if not self.enabled:
@@ -229,7 +246,7 @@ class MonitorService:
             return
 
         self.observer = Observer()
-        event_handler = MediaFileHandler(self.extensions)
+        event_handler = MediaFileHandler(self.extensions, self.exclude_dirs)
 
         started_paths = []
         for path in self.paths:
