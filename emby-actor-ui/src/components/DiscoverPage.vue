@@ -274,18 +274,36 @@
                   </div>
                 </div>
 
-                <!-- 4. 交互图标 -->
-                <div 
-                  v-if="!media.in_library && ((isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE'))"
-                  class="action-btn"
-                  @click.stop="handleSubscribe(media)"
-                >
-                  <n-spin :show="subscribingId === media.id" size="small">
+                <!-- 4. 交互图标区域 (修改为 Flex 布局以容纳两个按钮) -->
+                <div class="actions-container">
+                  
+                  <!-- ★★★ 新增：NULLBR 搜索按钮 (仅未入库显示) ★★★ -->
+                  <div 
+                    v-if="!media.in_library"
+                    class="action-btn"
+                    @click.stop="handleNullbrSearch(media)"
+                    title="NULLBR 搜资源"
+                  >
                     <n-icon size="18" color="#fff" class="shadow-icon">
-                      <LightningIcon v-if="isPrivilegedUser && media.subscription_status === 'REQUESTED'" color="#f0a020" />
-                      <HeartOutline v-else />
+                      <CloudDownloadIcon />
                     </n-icon>
-                  </n-spin>
+                  </div>
+
+                  <!-- 原有的订阅/想看按钮 -->
+                  <div 
+                    v-if="!media.in_library && ((isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE'))"
+                    class="action-btn"
+                    @click.stop="handleSubscribe(media)"
+                    :title="isPrivilegedUser ? '订阅' : '想看'"
+                  >
+                    <n-spin :show="subscribingId === media.id" size="small">
+                      <n-icon size="18" color="#fff" class="shadow-icon">
+                        <LightningIcon v-if="isPrivilegedUser && media.subscription_status === 'REQUESTED'" color="#f0a020" />
+                        <HeartOutline v-else />
+                      </n-icon>
+                    </n-spin>
+                  </div>
+
                 </div>
               </div>
 
@@ -305,7 +323,7 @@
 
     <!-- ★★★ 核心改造 1: 添加 IntersectionObserver 的“哨兵”元素 ★★★ -->
     <div ref="sentinel" style="height: 50px;"></div>
-
+    <NullbrSearchModal ref="nullbrModalRef" />
   </div>
   </n-layout>
 </template>
@@ -320,7 +338,8 @@ import {
   NInputNumber, NSpin, NGrid, NGi, NButton, NThing, useMessage, NIcon, 
   NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4, NH3, NTooltip
 } from 'naive-ui';
-import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon } from '@vicons/ionicons5';
+import NullbrSearchModal from './NullbrSearchModal.vue';
+import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon, CloudDownloadOutline as CloudDownloadIcon } from '@vicons/ionicons5';
 
 // ... (所有顶部的 import 和 ref 定义保持不变) ...
 const authStore = useAuthStore();
@@ -385,7 +404,21 @@ const isLoadingMore = ref(false);
 const searchQuery = ref('');
 const isSearchMode = computed(() => searchQuery.value.trim() !== '');
 const sentinel = ref(null);
+const nullbrModalRef = ref(null);
 
+const handleNullbrSearch = (media) => {
+  if (nullbrModalRef.value) {
+    // 构造符合 NullbrSearchModal 要求的对象
+    // DiscoverPage 的 media 对象通常有 id, title/name, media_type
+    const item = {
+      tmdb_id: media.id,
+      title: media.title || media.name,
+      // 这里的 media_type 可能是 'movie' 或 'tv'，直接传即可，组件内部会处理
+      media_type: media.media_type || mediaType.value 
+    };
+    nullbrModalRef.value.open(item);
+  }
+};
 const studioLabel = computed(() => {
   return mediaType.value === 'movie' ? '出品公司' : '播出平台';
 });
@@ -874,17 +907,19 @@ onUnmounted(() => { if (observer) { observer.disconnect(); } });
   box-shadow: 0 1px 2px rgba(0,0,0,0.3);
   z-index: 5;
 }
-
+.actions-container {
+  display: flex;
+  gap: 8px; /* 按钮之间的间距 */
+  align-items: center;
+}
 /* 交互按钮 (无背景纯图标版) */
 .action-btn {
   pointer-events: auto;
   width: 30px;
   height: 30px;
-  /* 移除背景色和圆角边框视觉 */
   background-color: transparent; 
   backdrop-filter: none;
-  border-radius: 50%; /* 保留圆角是为了点击热区是圆的，虽然看不见 */
-  
+  border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;

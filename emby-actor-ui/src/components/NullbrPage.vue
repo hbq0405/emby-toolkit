@@ -151,54 +151,8 @@
         </n-layout>
       </n-tab-pane>
     </n-tabs>
-
     <!-- 资源选择弹窗 -->
-    <n-modal
-      v-model:show="showModal"
-      preset="card"
-      :title="currentItemTitle || '选择资源'"
-      style="width: 800px; max-width: 90%;"
-    >
-      <n-spin :show="pushing">
-        <n-tabs type="segment" v-model:value="activeResourceTab" @update:value="handleTabChange">
-            <!-- 115 Tab -->
-            <n-tab-pane name="115" tab="115网盘">
-                <div v-if="loadingSource === '115'" style="padding: 40px; text-align: center;">
-                    <n-spin size="medium" />
-                    <div style="margin-top: 10px; color: #999;">正在搜索 115 资源...</div>
-                </div>
-                <div v-else>
-                    <n-empty v-if="!resourcesMap['115'] || resourcesMap['115'].length === 0" description="未找到 115 资源" style="margin: 40px 0;" />
-                    <ResourceList v-else :list="resourcesMap['115']" @push="confirmPush" />
-                </div>
-            </n-tab-pane>
-
-            <!-- Magnet Tab -->
-            <n-tab-pane name="magnet" tab="磁力链">
-                <div v-if="loadingSource === 'magnet'" style="padding: 40px; text-align: center;">
-                    <n-spin size="medium" />
-                    <div style="margin-top: 10px; color: #999;">正在搜索磁力资源...</div>
-                </div>
-                <div v-else>
-                    <n-empty v-if="!resourcesMap['magnet'] || resourcesMap['magnet'].length === 0" description="未找到磁力资源" style="margin: 40px 0;" />
-                    <ResourceList v-else :list="resourcesMap['magnet']" @push="confirmPush" />
-                </div>
-            </n-tab-pane>
-
-            <!-- Ed2k Tab -->
-            <n-tab-pane name="ed2k" tab="电驴(Ed2k)" :disabled="currentItemType === 'tv'">
-                <div v-if="loadingSource === 'ed2k'" style="padding: 40px; text-align: center;">
-                    <n-spin size="medium" />
-                    <div style="margin-top: 10px; color: #999;">正在搜索 Ed2k 资源...</div>
-                </div>
-                <div v-else>
-                    <n-empty v-if="!resourcesMap['ed2k'] || resourcesMap['ed2k'].length === 0" description="未找到 Ed2k 资源" style="margin: 40px 0;" />
-                    <ResourceList v-else :list="resourcesMap['ed2k']" @push="confirmPush" />
-                </div>
-            </n-tab-pane>
-        </n-tabs>
-      </n-spin>
-    </n-modal>
+    <NullbrSearchModal ref="nullbrModalRef" />
   </n-layout>
 </template>
 
@@ -207,6 +161,7 @@ import { ref, reactive, onMounted, h, defineComponent, computed } from 'vue';
 import axios from 'axios';
 import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip, NCheckbox, NCheckboxGroup, NInputNumber, NSwitch, NSpin, NRadioGroup, NRadioButton, NCollapseTransition, NSelect, NTabs, NTabPane, NList, NListItem, NThing, NModal } from 'naive-ui';
 import { useClipboard } from '@vueuse/core';
+import NullbrSearchModal from './NullbrSearchModal.vue';
 import { 
   SettingsOutline as SettingsIcon, 
   Search as SearchIcon, 
@@ -376,152 +331,18 @@ const mapApiItemToUi = (item) => ({
   subscription_status: item.subscription_status
 });
 
-// --- 资源模态框逻辑 (重构) ---
-const showModal = ref(false);
-const loadingResourcesId = ref(null);
-const pushing = ref(false);
-const currentItemTitle = ref('');
-const currentItemType = ref('movie');
-const currentItemId = ref('');
+const nullbrModalRef = ref(null);
+const loadingResourcesId = ref(null); // 保留这个是为了点击卡片时有个短暂的加载反馈(可选)
 
-// 新增状态
-const activeResourceTab = ref('115');
-const resourcesMap = reactive({ '115': [], 'magnet': [], 'ed2k': [] });
-const loadedSources = reactive({ '115': false, 'magnet': false, 'ed2k': false });
-const loadingSource = ref(null); // 当前正在加载哪个源
-
-const openResourceModal = async (item) => {
-  // ★ 1. 检查 API Key
-  if (!config.api_key) {
-      message.error("请先在配置中填写 NULLBR API Key，否则无法获取资源。");
-      showConfig.value = true; // 自动打开配置面板
-      return;
-  }
-
-  loadingResourcesId.value = item.id;
-  currentItemTitle.value = item.title;
-  currentItemType.value = item.media_type;
-  currentItemId.value = item.tmdb_id;
-  
-  // 重置状态
-  resourcesMap['115'] = [];
-  resourcesMap['magnet'] = [];
-  resourcesMap['ed2k'] = [];
-  loadedSources['115'] = false;
-  loadedSources['magnet'] = false;
-  loadedSources['ed2k'] = false;
-  
-  // 默认选中 115
-  activeResourceTab.value = '115';
-  showModal.value = true;
-  loadingResourcesId.value = null;
-
-  // 立即加载 115，并开启自动级联
-  await fetchResources('115', true);
-};
-
-// 获取特定源的资源
-// autoCascade: 是否在当前源为空时自动尝试下一个源
-const fetchResources = async (sourceType, autoCascade = false) => {
-    if (loadedSources[sourceType]) return; // 已加载过就不重复加载
-    
-    loadingSource.value = sourceType;
-    try {
-        const res = await axios.post('/api/nullbr/resources', {
-            tmdb_id: currentItemId.value,
-            media_type: currentItemType.value,
-            source_type: sourceType
-        });
-        
-        // 更新配额显示
-        loadConfig();
-
-        const list = res.data.data || [];
-        resourcesMap[sourceType] = list;
-        loadedSources[sourceType] = true;
-
-        // ★ 级联逻辑：如果当前源为空，且开启了自动级联，则切换到下一个
-        if (list.length === 0 && autoCascade) {
-            if (sourceType === '115') {
-                activeResourceTab.value = 'magnet';
-                await fetchResources('magnet', true);
-            } else if (sourceType === 'magnet') {
-                // 只有电影才搜 ed2k
-                if (currentItemType.value === 'movie') {
-                    activeResourceTab.value = 'ed2k';
-                    await fetchResources('ed2k', false); // 最后一个了，不用再级联
-                }
-            }
-        }
-    } catch (error) {
-        message.error(`获取 ${sourceType} 资源失败: ` + (error.response?.data?.message || error.message));
-    } finally {
-        loadingSource.value = null;
-    }
-};
-
-const handleTabChange = (value) => {
-    activeResourceTab.value = value;
-    fetchResources(value, false); // 手动切换不级联
-};
-
-const confirmPush = async (resource) => {
-  pushing.value = true;
-  try {
-    await axios.post('/api/nullbr/push', {
-      link: resource.link,
-      title: resource.title || currentItemTitle.value
-    });
-    message.success('已推送');
-  } catch (error) {
-    message.error('推送失败: ' + (error.response?.data?.message || error.message));
-  } finally {
-    pushing.value = false;
+// ★★★ 2. 重写打开模态框的方法 ★★★
+const openResourceModal = (item) => {
+  // 简单处理：直接调用子组件的 open 方法
+  if (nullbrModalRef.value) {
+    // 构造子组件需要的 item 格式
+    // NullbrSearchModal 兼容 media_type 和 item_type
+    nullbrModalRef.value.open(item);
   }
 };
-
-// 提取列表组件
-const ResourceList = defineComponent({
-    props: ['list'],
-    emits: ['push'],
-    components: { NList, NListItem, NThing, NSpace, NTag, NEllipsis, NButton, NIcon },
-    setup(props, { emit }) {
-        return { 
-            SendIcon,
-            handlePush: (res) => emit('push', res)
-        }
-    },
-    template: `
-        <n-list hoverable clickable>
-          <n-list-item v-for="(res, index) in list" :key="index">
-            <n-thing>
-              <template #header>
-                <n-space align="center">
-                  <n-ellipsis style="max-width: 450px">{{ res.title }}</n-ellipsis>
-                </n-space>
-              </template>
-              <template #description>
-                <n-space size="small" align="center" style="margin-top: 4px;">
-                  <n-tag type="warning" size="small" :bordered="false">{{ res.size }}</n-tag>
-                  <n-tag v-if="res.resolution" size="small" :bordered="false">{{ res.resolution }}</n-tag>
-                  <template v-if="Array.isArray(res.quality)">
-                    <n-tag v-for="q in res.quality" :key="q" size="small" :bordered="false" style="opacity: 0.8;">{{ q }}</n-tag>
-                  </template>
-                  <n-tag v-else-if="res.quality" size="small" :bordered="false" style="opacity: 0.8;">{{ res.quality }}</n-tag>
-                  <n-tag v-if="res.is_zh_sub" type="success" size="small" :bordered="false">中字</n-tag>
-                </n-space>
-              </template>
-            </n-thing>
-            <template #suffix>
-              <n-button size="small" type="primary" @click="handlePush(res)">
-                <template #icon><n-icon :component="SendIcon" /></template>
-                推送
-              </n-button>
-            </template>
-          </n-list-item>
-        </n-list>
-    `
-});
 
 // MediaCard 组件 (保持不变)
 const MediaCard = defineComponent({

@@ -192,6 +192,17 @@
                       </template>
                     </n-button-group>
                     <n-tooltip>
+                      <template #trigger>
+                        <n-button text @click="handleNullbrSearch(item)">
+                          <template #icon>
+                            <!-- 使用 CloudDownloadIcon 或 SearchIcon 都可以 -->
+                            <n-icon :component="CloudDownloadIcon" size="18" />
+                          </template>
+                        </n-button>
+                      </template>
+                      NULLBR 搜资源
+                    </n-tooltip>
+                    <n-tooltip>
                       <template #trigger><n-button text tag="a" :href="getTMDbLink(item)" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
                       在 TMDb 中打开
                     </n-tooltip>
@@ -267,6 +278,7 @@
         </n-space>
       </template>
     </n-modal>
+    <NullbrSearchModal ref="nullbrModalRef" />
   </n-layout>
 </template>
 
@@ -274,7 +286,8 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup } from 'naive-ui';
-import { FilmOutline as FilmIcon, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon } from '@vicons/ionicons5';
+import NullbrSearchModal from './NullbrSearchModal.vue';
+import { FilmOutline as FilmIcon, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon, CloudDownloadOutline as CloudDownloadIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
 // 图标定义
@@ -314,6 +327,14 @@ const strategyConfig = ref({
   timeout_revive_days: 0,
   enable_nullbr_fallback: false
 });
+
+const nullbrModalRef = ref(null);
+
+const handleNullbrSearch = (item) => {
+  if (nullbrModalRef.value) {
+    nullbrModalRef.value.open(item);
+  }
+};
 
 // 加载配置
 const loadStrategyConfig = async () => {
