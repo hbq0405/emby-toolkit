@@ -162,6 +162,57 @@ class MediaProcessor:
         self._last_lib_map_update = 0
         logger.trace("核心处理器初始化完成。")
 
+    # --- 递归翻译剧集的季和集简介 ---
+    def _translate_series_children_recursively(self, aggregated_data: Dict[str, Any], series_name: str):
+        """
+        辅助方法：检查并翻译聚合数据中的分季和分集简介。
+        仅当简介存在且不包含中文时才触发翻译。
+        """
+        if not aggregated_data or not self.ai_translator:
+            return
+
+        logger.info(f"  ➜ [简介优化] 开始检查 '{series_name}' 的分季和分集简介是否需要翻译...")
+        translated_count = 0
+
+        # 1. 处理分季 (Seasons)
+        seasons = aggregated_data.get("seasons_details", [])
+        for season in seasons:
+            overview = season.get("overview", "")
+            # 只有当简介存在(非空) 且 不包含中文时，才翻译
+            # (注：如果简介为空，通常意味着TMDb也没数据，暂不请求英文兜底以节省API)
+            if overview and not utils.contains_chinese(overview):
+                s_num = season.get("season_number", "?")
+                logger.debug(f"    ├─ 正在翻译第 {s_num} 季简介...")
+                trans = self.ai_translator.translate_overview(
+                    overview, 
+                    title=f"{series_name} Season {s_num}"
+                )
+                if trans:
+                    season['overview'] = trans
+                    translated_count += 1
+
+        # 2. 处理分集 (Episodes)
+        episodes_container = aggregated_data.get("episodes_details", {})
+        # 兼容字典(S1E1: data)和列表两种格式
+        episodes_list = episodes_container.values() if isinstance(episodes_container, dict) else episodes_container
+        
+        for ep in episodes_list:
+            overview = ep.get("overview", "")
+            if overview and not utils.contains_chinese(overview):
+                s_num = ep.get("season_number")
+                e_num = ep.get("episode_number")
+                logger.debug(f"    ├─ 正在翻译 S{s_num}E{e_num} 简介...")
+                trans = self.ai_translator.translate_overview(
+                    overview, 
+                    title=f"{series_name} S{s_num}E{e_num}"
+                )
+                if trans:
+                    ep['overview'] = trans
+                    translated_count += 1
+        
+        if translated_count > 0:
+            logger.info(f"  ➜ [简介优化] 已完成 {translated_count} 条分季/分集简介的 AI 翻译。")
+
     # --- [优化版] 实时监控文件逻辑 (增加缓存跳过 & 支持批量延迟刷新) ---
     def process_file_actively(self, file_path: str, skip_refresh: bool = False) -> Optional[str]:
         """
@@ -547,6 +598,12 @@ class MediaProcessor:
                         else:
                             logger.warning(f"  ➜ [实时监控] 标题 AI 翻译未返回结果。")
 
+                # 剧集分季/分集翻译入口
+                if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get("ai_translation_enabled", False):
+                    # 使用当前最新的标题（可能是翻译过的）
+                    current_series_name = details.get("name") or details.get("title")
+                    self._translate_series_children_recursively(aggregated_tmdb_data, current_series_name)
+                
                 # 准备演员源数据
                 authoritative_cast_source = []
                 if item_type == "Movie":
@@ -1943,6 +2000,12 @@ class MediaProcessor:
                     else:
                         logger.warning(f"  ➜ [核心处理] 标题 AI 翻译未返回结果。")
 
+            # 剧集分季/分集翻译入口 
+            if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get("ai_translation_enabled", False):
+                # 此时 fresh_data 已经被更新过（可能包含翻译后的简介和标题）
+                current_series_name = fresh_data.get("name") or fresh_data.get("title") or item_name_for_log
+                self._translate_series_children_recursively(aggregated_tmdb_data, current_series_name)
+            
             # 4. 填充骨架 (Data Mapping)
             if fresh_data:
                 # --- A. 基础字段直接覆盖 (通用) ---

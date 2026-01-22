@@ -226,18 +226,24 @@ def get_person_details_tmdb(person_id: int, api_key: str, append_to_response: Op
 
     return details
 # --- 获取电视剧某一季的详细信息 ---
-def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append_to_response: Optional[str] = "credits", item_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append_to_response: Optional[str] = "credits", item_name: Optional[str] = None, language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     【已升级】获取电视剧某一季的详细信息，并支持 item_name 用于日志。
+    ★ 修复：支持自定义 language 参数，用于获取英文兜底数据。
     """
     endpoint = f"/tv/{tv_id}/season/{season_number}"
+    # ★★★ 修改点：优先使用传入的 language，否则使用默认值 ★★★
     params = {
-        "language": DEFAULT_LANGUAGE,
+        "language": language or DEFAULT_LANGUAGE,
         "append_to_response": append_to_response
     }
     
     item_name_for_log = f"'{item_name}' " if item_name else ""
-    logger.debug(f"  ➜ TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
+    # 只有当不是默认语言时才打印详细日志，避免刷屏
+    if language and language != DEFAULT_LANGUAGE:
+        logger.debug(f"  ➜ TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情 (语言: {language})...")
+    else:
+        logger.debug(f"  ➜ TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
     
     return _tmdb_request(endpoint, api_key, params)
 # --- 获取电视剧某一季的详细信息，简化调用版 ---
@@ -333,9 +339,10 @@ def aggregate_full_series_data_from_tmdb(
     max_workers: int = 5
 ) -> Optional[Dict[str, Any]]:
     """
-    【V3 - 结构修正与全量聚合版】
-    通过并发请求获取每一季的详情，并进行数据清洗，确保分集演员表结构与 core_processor 预期一致。
-    同时尝试获取 aggregate_credits 以补充主演员表。
+    【V4 - 智能补全版】
+    通过并发请求获取每一季的详情。
+    ★ 新增特性：如果检测到分集简介为空（TMDb未返回中文），会自动请求英文版数据进行补全，
+    确保 core_processor 的 AI 翻译功能有源文本可译。
     """
     if not tv_id or not api_key:
         return None
@@ -343,20 +350,15 @@ def aggregate_full_series_data_from_tmdb(
     logger.info(f"  ➜ 开始为剧集 ID {tv_id} 并发聚合 TMDB 数据 (并发数: {max_workers})...")
     
     # --- 步骤 1: 获取顶层剧集详情 ---
-    # 增加 aggregate_credits 到 append_to_response，这是获取全剧演员（含集数统计）的最佳方式
     series_details = get_tv_details(tv_id, api_key, append_to_response="credits,aggregate_credits,keywords,external_ids,content_ratings")
     
     if not series_details:
         logger.error(f"  ➜ 聚合失败：无法获取顶层剧集 {tv_id} 的详情。")
         return None
     
-    # ★★★ 补全主演员表逻辑 ★★★
-    # 如果有 aggregate_credits，它的数据比 credits 更全（包含所有季的常驻演员）
-    # 我们将其映射回 credits 结构，以便 core_processor 能读取到更全的主演列表
+    # (此处省略补全主演员表的代码，保持原样即可)
     if series_details.get('aggregate_credits'):
         agg_cast = series_details['aggregate_credits'].get('cast', [])
-        # aggregate_credits 的结构里是 'roles' 列表，而 credits 是 'character' 字符串
-        # 我们做一个简单的转换，取第一个角色名，确保兼容性
         mapped_cast = []
         for actor in agg_cast:
             new_actor = actor.copy()
@@ -364,17 +366,60 @@ def aggregate_full_series_data_from_tmdb(
             if roles and 'character' in roles[0]:
                 new_actor['character'] = roles[0]['character']
             mapped_cast.append(new_actor)
-        
-        # 如果原始 credits 比较少，或者我们想强制使用更全的列表，可以覆盖或合并
-        # 这里选择：如果 aggregate_credits 存在，优先使用它作为 cast
         if mapped_cast:
             if 'credits' not in series_details: series_details['credits'] = {}
             series_details['credits']['cast'] = mapped_cast
-            logger.debug(f"  ➜ 已使用 aggregate_credits 补全主演员表，共 {len(mapped_cast)} 人。")
 
     logger.info(f"  ➜ 成功获取剧集 '{series_details.get('name')}' 的顶层信息，共 {len(series_details.get('seasons', []))} 季。")
 
-    # --- 步骤 2: 构建任务 ---
+    # --- 步骤 2: 定义智能获取函数 ---
+    def _fetch_season_smart(tvid, s_num):
+        """内部函数：获取季数据，如果简介缺失则自动获取英文版补全"""
+        # 1. 获取默认语言 (通常是中文)
+        data_zh = get_season_details_tmdb(tvid, s_num, api_key)
+        if not data_zh: 
+            return None
+        
+        # 2. 检查是否有空简介
+        # 只有当默认语言是中文时才检查，如果是英文就没必要再请求一遍英文了
+        if DEFAULT_LANGUAGE.startswith("zh"):
+            episodes = data_zh.get("episodes", [])
+            missing_overview_indices = []
+            
+            for i, ep in enumerate(episodes):
+                # 如果简介为空，或者简介太短（比如"暂无"），记录下来
+                if not ep.get("overview") or len(ep.get("overview")) < 2:
+                    missing_overview_indices.append(i)
+            
+            # 3. 如果有缺失，请求英文版补全
+            if missing_overview_indices:
+                logger.debug(f"    ➜ 第 {s_num} 季有 {len(missing_overview_indices)} 集缺失中文简介，正在请求英文版补全...")
+                try:
+                    data_en = get_season_details_tmdb(tvid, s_num, api_key, language="en-US")
+                    if data_en:
+                        episodes_en = data_en.get("episodes", [])
+                        # 建立集号到英文数据的映射，防止顺序不一致
+                        en_ep_map = {e.get("episode_number"): e for e in episodes_en}
+                        
+                        filled_count = 0
+                        for idx in missing_overview_indices:
+                            target_ep = episodes[idx]
+                            ep_num = target_ep.get("episode_number")
+                            
+                            if ep_num in en_ep_map:
+                                en_overview = en_ep_map[ep_num].get("overview")
+                                if en_overview:
+                                    target_ep["overview"] = en_overview
+                                    filled_count += 1
+                        
+                        if filled_count > 0:
+                            logger.debug(f"    ➜ 第 {s_num} 季成功补全了 {filled_count} 条英文简介。")
+                except Exception as e:
+                    logger.warning(f"    ➜ 补全英文简介失败: {e}")
+
+        return data_zh
+
+    # --- 步骤 3: 构建任务 ---
     tasks = []
     for season in series_details.get("seasons", []):
         season_number = season.get("season_number")
@@ -382,18 +427,16 @@ def aggregate_full_series_data_from_tmdb(
             tasks.append(("season", tv_id, season_number))
 
     if not tasks:
-        logger.warning("  ➜ 未找到任何有效季信息，聚合结束。")
         return {"series_details": series_details, "seasons_details": [], "episodes_details": {}}
 
-    logger.info(f"  ➜ 将按季获取数据，共 {len(tasks)} 个请求。")
-
-    # --- 步骤 3: 并发执行 ---
+    # --- 步骤 4: 并发执行 (使用 _fetch_season_smart) ---
     results = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_task = {}
         for task in tasks:
             _, tvid, s_num = task
-            future = executor.submit(get_season_details_tmdb, tvid, s_num, api_key)
+            # ★★★ 这里提交的是 _fetch_season_smart ★★★
+            future = executor.submit(_fetch_season_smart, tvid, s_num)
             future_to_task[future] = f"S{s_num}"
 
         for i, future in enumerate(concurrent.futures.as_completed(future_to_task)):
@@ -406,7 +449,7 @@ def aggregate_full_series_data_from_tmdb(
             except Exception as exc:
                 logger.error(f"    任务 {task_key} 执行时产生错误: {exc}")
 
-    # --- 步骤 4: 聚合数据与结构清洗 ---
+    # --- 步骤 5: 聚合数据与结构清洗 (保持不变) ---
     final_aggregated_data = {
         "series_details": series_details,
         "seasons_details": [], 
@@ -426,15 +469,10 @@ def aggregate_full_series_data_from_tmdb(
         for ep in episodes_list:
             ep_num = ep.get("episode_number")
             if season_num is not None and ep_num is not None:
-                
-                # ★★★ 核心修复：数据结构清洗 (Shim) ★★★
-                # TMDb 季接口返回的 guest_stars 在根目录，而 core_processor 里的 _aggregate_series_cast_from_tmdb_data
-                # 期望的是 episode_data.get("credits", {}).get("guest_stars")
-                # 因此我们在这里手动构造 credits 结构。
                 if 'credits' not in ep:
                     ep['credits'] = {
-                        'cast': ep.get('cast', []),          # 季接口偶尔也会返回 cast
-                        'guest_stars': ep.get('guest_stars', []), # 这是重点，分集客串演员都在这
+                        'cast': ep.get('cast', []),
+                        'guest_stars': ep.get('guest_stars', []),
                         'crew': ep.get('crew', [])
                     }
                 
