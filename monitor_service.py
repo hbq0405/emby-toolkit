@@ -36,21 +36,27 @@ class MediaFileHandler(FileSystemEventHandler):
     """
     def __init__(self, extensions: List[str], exclude_dirs: List[str] = None):
         self.extensions = [ext.lower() for ext in extensions]
-        # exclude_dirs 现在作为 exclude_paths 使用，但在 Handler 层不直接过滤，
-        # 而是让所有符合扩展名的文件入队，在处理队列时再分流。
-        self.exclude_paths = [os.path.normpath(d).lower() for d in (exclude_dirs or [])]
+        # 注意：exclude_dirs 参数在这里不再用于过滤，过滤逻辑已移至 process_batch_queue
+        # 这里保留参数是为了兼容调用签名
 
     def _is_valid_media_file(self, file_path: str) -> bool:
-        if os.path.exists(file_path) and os.path.isdir(file_path): return False
+        # 1. 忽略文件夹
+        if os.path.exists(file_path) and os.path.isdir(file_path): 
+            return False
         
-        # 1. 检查扩展名
+        # 2. 检查扩展名
         _, ext = os.path.splitext(file_path)
-        if ext.lower() not in self.extensions: return False
+        if ext.lower() not in self.extensions: 
+            # 调试日志：如果扩展名不匹配，记录一下（仅在调试模式下）
+            # logger.trace(f"  [监控忽略] 扩展名不匹配: {os.path.basename(file_path)}")
+            return False
         
         filename = os.path.basename(file_path)
         if filename.startswith('.'): return False
         if filename.endswith(('.part', '.crdownload', '.tmp', '.aria2')): return False
 
+        # ★★★ 关键：此处不再进行任何排除目录的检查 ★★★
+        # 只要是媒体文件，全部放行进入队列，由后续逻辑决定是“刮削”还是“仅刷新”
         return True
 
     def on_created(self, event):
@@ -97,16 +103,22 @@ class MediaFileHandler(FileSystemEventHandler):
 
 def _is_path_excluded(file_path: str, exclude_paths: List[str]) -> bool:
     """
-    检查文件路径是否命中排除规则（前缀匹配）
+    检查文件路径是否命中排除规则（严谨的路径匹配）
     """
     if not exclude_paths:
         return False
         
-    norm_file_path = os.path.normpath(file_path).lower()
+    norm_file = os.path.normpath(file_path).lower()
     
-    for exclude_path in exclude_paths:
-        norm_exclude = os.path.normpath(exclude_path).lower()
-        if norm_file_path.startswith(norm_exclude):
+    for exc in exclude_paths:
+        norm_exc = os.path.normpath(exc).lower()
+        
+        # ★★★ 修复：确保是目录层级的匹配，防止 /foo 匹配到 /foobar ★★★
+        # 1. 完全相等
+        if norm_file == norm_exc:
+            return True
+        # 2. 是子目录 (以 排除路径 + 分隔符 开头)
+        if norm_file.startswith(norm_exc + os.sep):
             return True
             
     return False
@@ -181,7 +193,6 @@ def process_delete_batch_queue():
     processor = MonitorService.processor_instance
     if not processor: return
 
-    # ★★★ 新增：删除事件也要分流 ★★★
     exclude_paths = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_EXCLUDE_DIRS, [])
     
     files_to_delete_logic = []
@@ -245,7 +256,6 @@ def _refresh_parent_dirs(parent_dirs: Set[str], action_type: str):
     for folder_path in parent_dirs:
         try:
             # 使用 emby 模块的智能刷新函数
-            # 注意：如果整个目录被删了，refresh_library_by_path 内部有向上查找锚点的逻辑，所以是安全的
             emby.refresh_library_by_path(folder_path, base_url, api_key)
             logger.info(f"    └─ 已通知刷新: {folder_path}")
         except Exception as e:
