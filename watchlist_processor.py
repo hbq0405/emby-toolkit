@@ -1173,32 +1173,40 @@ class WatchlistProcessor:
                 paused_until_date = None
                 logger.info(f"  🏁 [判定-规则2] 本季大结局 (S{last_s_num}E{last_e_num}) 已播出，判定为“已完结”。")
 
-        # 规则 4: 连载中逻辑 (保持原有逻辑)
+        # 规则 4: 连载中逻辑
         else:
             # 情况 A: 下一集有明确播出日期
             if effective_next_episode:
+                season_number = effective_next_episode.get('season_number')
+                episode_number = effective_next_episode.get('episode_number')
                 air_date = effective_next_episode_air_date
                 days_until_air = (air_date - today).days
-                episode_number = effective_next_episode.get('episode_number')
-                season_number = effective_next_episode.get('season_number')
 
-                # 子规则 A: 下一集是新季第一集 且 日期在一个月(30天)以后 -> 判定当前季完结
-                if episode_number == 1 and days_until_air > 30:
+                # ==============================================================================
+                # ★★★ 核心逻辑：不见兔子不撒鹰 ★★★
+                # 只有当下一集所属的季在本地至少有一集时，才允许进入 Watching/Paused 状态。
+                # 否则一律视为 Completed (等待新季入库)。
+                # ==============================================================================
+                has_local_season = season_number in emby_seasons
+
+                if not has_local_season:
                     final_status = STATUS_COMPLETED
                     paused_until_date = None
-                    logger.info(f"  🔄 [判定-连载中] 下一集 (S{season_number}E{episode_number}) 是新季首播且在 {days_until_air} 天后 (>30天) 播出，判定当前季已完结。")
+                    logger.info(f"  zzz [判定-未入库] 下一集 (S{season_number}E{episode_number}) 虽有排期，但本地无该季任何文件，判定为“已完结”。")
                 
-                # 子规则 B: 3天内就要播出 (或已播出但未下载) -> 设为“追剧中”
-                elif days_until_air <= 3:
-                    final_status = STATUS_WATCHING
-                    paused_until_date = None
-                    logger.info(f"  👀 [判定-连载中] 下一集 (S{season_number}E{episode_number}) 即将在 {days_until_air} 天内播出 (或已播出)，保持“追剧中”。")
-
-                # 子规则 C: 还有很久才播出 -> 暂停至播出日期
+                # --- 只有本地有该季文件，才根据时间判断是追剧还是暂停 ---
                 else:
-                    final_status = STATUS_PAUSED
-                    paused_until_date = air_date 
-                    logger.info(f"  ⏸️ [判定-连载中] 下一集 (S{season_number}E{episode_number}) 将在 {days_until_air} 天后 ({air_date}) 播出，暂停至该日期。")
+                    # 子规则 A: 3天内就要播出 (或已播出但未下载) -> 设为“追剧中”
+                    if days_until_air <= 3:
+                        final_status = STATUS_WATCHING
+                        paused_until_date = None
+                        logger.info(f"  👀 [判定-连载中] S{season_number} 本地已入库，且下一集 (E{episode_number}) 即将在 {days_until_air} 天内播出 (或已播出)，保持“追剧中”。")
+
+                    # 子规则 B: 还有很久才播出 -> 暂停至播出日期
+                    else:
+                        final_status = STATUS_PAUSED
+                        paused_until_date = air_date 
+                        logger.info(f"  ⏸️ [判定-连载中] S{season_number} 本地已入库，但下一集 (E{episode_number}) 将在 {days_until_air} 天后 ({air_date}) 播出，暂停至该日期。")
 
             # 情况 B: 无下一集信息 (或信息不全)
             else:
