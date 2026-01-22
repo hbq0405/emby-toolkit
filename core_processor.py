@@ -180,9 +180,6 @@ class MediaProcessor:
         """
         folder_path = os.path.dirname(file_path)
         try:
-            # 随机延时 0.5~2 秒，缓解并发压力 (批量处理时可能需要考虑是否保留此延时，为了防封禁建议保留)
-            time.sleep(random.uniform(0.5, 2.0))
-            
             filename = os.path.basename(file_path)
             folder_name = os.path.basename(folder_path)
             grandparent_path = os.path.dirname(folder_path)
@@ -454,6 +451,7 @@ class MediaProcessor:
             final_processed_cast = None
 
             if not should_skip_full_processing:
+                time.sleep(random.uniform(0.5, 2.0))
                 logger.info(f"  ➜ [实时监控] 正在获取 TMDb 详情并执行核心处理 (ID: {tmdb_id})...")
                 
                 if item_type == "Movie":
