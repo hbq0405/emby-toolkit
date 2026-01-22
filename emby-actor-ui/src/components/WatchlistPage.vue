@@ -1137,7 +1137,7 @@ const handleBatchAction = (key) => {
 const addAllSeriesToWatchlist = async () => {
   isAddingAll.value = true;
   try {
-    const response = await axios.post('/api/actions/add_all_series_to_watchlist');
+    const response = await axios.post('/api/tasks/run', { task_name: 'add-all-series-to-watchlist' });
     message.success(response.data.message || '任务已成功提交！');
   } catch (err) {
     message.error(err.response?.data?.error || '启动扫描任务失败。');
