@@ -58,21 +58,3 @@ def api_reprocess_all_review_items():
         return jsonify({"message": "重新处理所有待复核项的任务已提交。"}), 202
     else:
         return jsonify({"error": "提交任务失败，已有任务在运行。"}), 409
-
-# +++ 一键添加所有剧集到追剧列表的 API +++
-@actions_bp.route('/actions/add_all_series_to_watchlist', methods=['POST'])
-@admin_required
-@processor_ready_required
-def api_add_all_series_to_watchlist():
-    from tasks.watchlist import task_add_all_series_to_watchlist # 延迟导入
-    
-    success = task_manager.submit_task(
-        task_add_all_series_to_watchlist, 
-        "一键扫描全库剧集",
-        processor_type='media'
-    )
-    
-    if success:
-        return jsonify({"message": "一键扫描全库剧集的任务已提交。"}), 202
-    else:
-        return jsonify({"error": "提交任务失败，已有任务在运行。"}), 409

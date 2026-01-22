@@ -916,6 +916,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
                     "original_language": tmdb_details.get('original_language') if tmdb_details else None,
+                    "watchlist_tmdb_status": tmdb_details.get('status') if tmdb_details else None,
                     "in_library": True, 
                     "subscription_status": "NONE",
                     "emby_item_ids_json": json.dumps(list(set(v.get('Id') for v in item_group if v.get('Id') and v.get('Type') == item_type)), ensure_ascii=False),

@@ -607,7 +607,7 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
     except Exception as e:
         logger.error(f"  ➜ 同步剧集 {parent_tmdb_id} 的季状态时出错: {e}", exc_info=True)
 
-def batch_import_series_as_completed(library_ids: Optional[List[str]] = None) -> int:
+def batch_import_series_as_completed(library_ids: Optional[List[str]] = None) -> List[str]:
     """
     【存量导入模式】批量将剧集导入为“已完结”。
     
@@ -616,6 +616,9 @@ def batch_import_series_as_completed(library_ids: Optional[List[str]] = None) ->
     2. Series -> 'Completed' (默认存量剧集已看完)
     3. Season -> 'Completed' (让前端显示为完结状态)
     4. Episode -> 'NONE' (集不参与状态管理)
+    
+    Returns:
+        List[str]: 返回成功导入的 TMDb ID 列表。
     """
     try:
         with get_db_connection() as conn:
@@ -652,10 +655,10 @@ def batch_import_series_as_completed(library_ids: Optional[List[str]] = None) ->
             
             cursor.execute(candidate_sql, tuple(params))
             rows = cursor.fetchall()
-            ids_to_update = [row['tmdb_id'] for row in rows]
+            ids_to_update = [str(row['tmdb_id']) for row in rows]
             
             if not ids_to_update:
-                return 0
+                return []
             
             # --- 第二步：执行导入更新 ---
             
@@ -689,7 +692,8 @@ def batch_import_series_as_completed(library_ids: Optional[List[str]] = None) ->
             cursor.execute(sql_episodes, (ids_to_update,))
             
             conn.commit()
-            return len(ids_to_update)
+            # ★★★ 修改返回值：返回 ID 列表 ★★★
+            return ids_to_update
 
     except Exception as e:
         logger.error(f"  ➜ 批量导入剧集时出错: {e}", exc_info=True)
@@ -836,15 +840,16 @@ def find_missing_old_seasons(library_ids: Optional[List[str]] = None) -> List[Di
         logger.error(f"  ➜ 查找缺失旧季时出错: {e}", exc_info=True)
         return []
 
-def get_series_by_dynamic_condition(condition_sql: str = None, library_ids: Optional[List[str]] = None, tmdb_id: Optional[str] = None) -> List[Dict[str, Any]]:
+def get_series_by_dynamic_condition(condition_sql: str = None, library_ids: Optional[List[str]] = None, tmdb_id: Optional[str] = None, include_all_series: bool = False) -> List[Dict[str, Any]]:
     """
     根据动态条件获取剧集列表（用于 WatchlistProcessor）。
     
-    :param condition_sql: SQL 条件片段，例如 "watching_status = 'Watching'"
+    :param condition_sql: SQL 条件片段
     :param library_ids: 可选的媒体库 ID 列表
-    :param tmdb_id: 可选，指定单个 TMDb ID (如果指定，通常会忽略其他过滤条件)
+    :param tmdb_id: 可选，指定单个 TMDb ID
+    :param include_all_series: 是否包含所有状态的剧集 (默认只查 watching_status != 'NONE')
     """
-    # 基础查询字段 (已包含 total_episodes 和 total_episodes_locked)
+    # 基础查询字段
     base_sql = """
         SELECT 
             tmdb_id,
@@ -871,6 +876,11 @@ def get_series_by_dynamic_condition(condition_sql: str = None, library_ids: Opti
         params.append(tmdb_id)
     else:
         # 2. 只有在非单项查询时，才应用状态过滤和库过滤
+        
+        # ★★★ 新增：控制是否过滤掉未追踪剧集 ★★★
+        if not include_all_series:
+             base_sql += " AND watching_status != 'NONE'"
+
         # 拼接动态条件
         if condition_sql:
             base_sql += f" AND ({condition_sql})"
@@ -882,7 +892,6 @@ def get_series_by_dynamic_condition(condition_sql: str = None, library_ids: Opti
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 使用参数化查询执行
             cursor.execute(base_sql, tuple(params))
             return [dict(row) for row in cursor.fetchall()]
     except Exception as e:
