@@ -12,6 +12,7 @@ from gevent import spawn_later
 
 import constants
 import config_manager
+import handler.emby as emby
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from core_processor import MediaProcessor
@@ -34,8 +35,9 @@ class MediaFileHandler(FileSystemEventHandler):
     """
     def __init__(self, extensions: List[str], exclude_dirs: List[str] = None):
         self.extensions = [ext.lower() for ext in extensions]
-        # 将排除目录转为集合，方便快速查找，并统一转小写以进行不区分大小写的匹配（可选，视系统而定，这里建议转小写）
-        self.exclude_dirs = set(d.lower() for d in (exclude_dirs or []))
+        # ★★★ 这里的 exclude_dirs 现在代表 exclude_paths，但在 Handler 层我们不再直接过滤 ★★★
+        # 我们让所有符合扩展名的文件都入队，在处理队列时再决定是“刮削”还是“仅刷新”
+        self.exclude_paths = [os.path.normpath(d).lower() for d in (exclude_dirs or [])]
 
     def _is_valid_media_file(self, file_path: str) -> bool:
         if os.path.exists(file_path) and os.path.isdir(file_path): return False
@@ -48,17 +50,8 @@ class MediaFileHandler(FileSystemEventHandler):
         if filename.startswith('.'): return False
         if filename.endswith(('.part', '.crdownload', '.tmp', '.aria2')): return False
 
-        # ★★★ 新增：检查路径中的目录名是否在排除列表中 ★★★
-        if self.exclude_dirs:
-            # 将路径规范化并拆分为各个部分 (例如 /mnt/movie/extras/a.mp4 -> ['/', 'mnt', 'movie', 'extras', 'a.mp4'])
-            path_parts = os.path.normpath(file_path).split(os.sep)
-            # 遍历路径的每一部分
-            for part in path_parts:
-                # 如果某一级目录名（转小写后）在排除列表中，则视为无效文件
-                if part.lower() in self.exclude_dirs:
-                    # logger.debug(f"  🚫 [实时监控] 文件被排除 (命中目录 '{part}'): {filename}")
-                    return False
-
+        # ★★★ 修改：移除此处的排除逻辑 ★★★
+        # 只要是媒体文件，我们都接收。后续逻辑决定怎么处理。
         return True
 
     def on_created(self, event):
@@ -103,9 +96,27 @@ class MediaFileHandler(FileSystemEventHandler):
             if DELETE_DEBOUNCE_TIMER: DELETE_DEBOUNCE_TIMER.kill()
             DELETE_DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_delete_batch_queue)
 
+def _is_path_excluded(file_path: str, exclude_paths: List[str]) -> bool:
+    """
+    检查文件路径是否命中排除规则（前缀匹配）
+    """
+    if not exclude_paths:
+        return False
+        
+    norm_file_path = os.path.normpath(file_path).lower()
+    
+    for exclude_path in exclude_paths:
+        # 确保排除路径也是规范化的
+        norm_exclude = os.path.normpath(exclude_path).lower()
+        # 使用 startswith 进行路径前缀匹配
+        if norm_file_path.startswith(norm_exclude):
+            return True
+            
+    return False
+
 def process_batch_queue():
     """
-    处理新增/修改队列 (分组优化版)
+    处理新增/修改队列 (分组优化 + 排除路径分流版)
     """
     global DEBOUNCE_TIMER
     with QUEUE_LOCK:
@@ -118,33 +129,50 @@ def process_batch_queue():
     processor = MonitorService.processor_instance
     if not processor: return
 
-    # 1. 按父目录分组
-    grouped_files = {}
+    # 获取当前的排除配置
+    exclude_paths = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_EXCLUDE_DIRS, [])
+
+    # ★★★ 分流逻辑：将文件分为“正常刮削”和“仅刷新”两类 ★★★
+    files_to_scrape = []
+    files_to_refresh_only = []
+
     for file_path in files_to_process:
-        parent_dir = os.path.dirname(file_path)
-        if parent_dir not in grouped_files: 
-            grouped_files[parent_dir] = []
-        grouped_files[parent_dir].append(file_path)
-
-    # 2. 提取代表文件 (每个目录只取一个)
-    representative_files = []
-    
-    logger.info(f"  🚀 [实时监控] 防抖结束，共检测到 {len(files_to_process)} 个文件，聚合为 {len(grouped_files)} 个任务组。")
-
-    for parent_dir, files in grouped_files.items():
-        # 取第一个文件作为代表
-        rep_file = files[0]
-        representative_files.append(rep_file)
-        
-        # 打印日志方便调试
-        folder_name = os.path.basename(parent_dir)
-        if len(files) > 1:
-            logger.info(f"    ├─ 目录 '{folder_name}' 含 {len(files)} 个文件，选取 '{os.path.basename(rep_file)}' 为代表。")
+        if _is_path_excluded(file_path, exclude_paths):
+            files_to_refresh_only.append(file_path)
         else:
-            logger.info(f"    ├─ 目录 '{folder_name}' 单文件: '{os.path.basename(rep_file)}'")
+            files_to_scrape.append(file_path)
 
-    # 3. 将代表文件列表传给批量处理线程
-    threading.Thread(target=_handle_batch_file_task, args=(processor, representative_files)).start()
+    # --- 分支 1: 处理需要刮削的文件 (原有逻辑) ---
+    if files_to_scrape:
+        # 1. 按父目录分组
+        grouped_files = {}
+        for file_path in files_to_scrape:
+            parent_dir = os.path.dirname(file_path)
+            if parent_dir not in grouped_files: 
+                grouped_files[parent_dir] = []
+            grouped_files[parent_dir].append(file_path)
+
+        # 2. 提取代表文件
+        representative_files = []
+        logger.info(f"  🚀 [实时监控] 准备刮削 {len(files_to_scrape)} 个文件，聚合为 {len(grouped_files)} 个任务组。")
+
+        for parent_dir, files in grouped_files.items():
+            rep_file = files[0]
+            representative_files.append(rep_file)
+            folder_name = os.path.basename(parent_dir)
+            if len(files) > 1:
+                logger.info(f"    ├─ [刮削] 目录 '{folder_name}' 含 {len(files)} 个文件，选取代表: {os.path.basename(rep_file)}")
+            else:
+                logger.info(f"    ├─ [刮削] 目录 '{folder_name}' 单文件: {os.path.basename(rep_file)}")
+
+        # 3. 启动刮削线程
+        threading.Thread(target=_handle_batch_file_task, args=(processor, representative_files)).start()
+
+    # --- 分支 2: 处理仅刷新的文件 (新增逻辑) ---
+    if files_to_refresh_only:
+        logger.info(f"  🚀 [实时监控] 发现 {len(files_to_refresh_only)} 个文件命中排除路径，将跳过刮削直接刷新 Emby。")
+        # 启动仅刷新线程
+        threading.Thread(target=_handle_batch_refresh_only_task, args=(files_to_refresh_only,)).start()
 
 def process_delete_batch_queue():
     """
@@ -168,13 +196,59 @@ def process_delete_batch_queue():
 
 def _handle_batch_file_task(processor, file_paths: List[str]):
     """
-    批量处理新增文件任务：
+    批量处理新增文件任务 (刮削模式)：
     1. 逐个检查代表文件的稳定性（等待拷贝完成）。
     2. 将所有有效的代表文件传给核心处理器的批量入口。
     """
-    valid_files = []
+    valid_files = _wait_for_files_stability(file_paths)
+
+    if not valid_files:
+        return
+
+    # 调用核心处理器的批量入口 (刮削 + 刷新)
+    processor.process_file_actively_batch(valid_files)
+
+def _handle_batch_refresh_only_task(file_paths: List[str]):
+    """
+    批量处理仅刷新任务：
+    1. 同样需要检查文件稳定性（防止文件还没拷完就通知Emby刷新，导致Emby识别到坏文件）。
+    2. 直接调用 Emby 刷新接口。
+    """
+    # 1. 等待文件拷贝完成
+    valid_files = _wait_for_files_stability(file_paths)
     
-    # 1. 检查文件稳定性 (Wait for copy to finish)
+    if not valid_files:
+        return
+
+    # 2. 提取所有涉及的父目录，去重
+    parent_dirs = set()
+    for f in valid_files:
+        parent_dirs.add(os.path.dirname(f))
+    
+    # 3. 获取 Emby 配置
+    config = config_manager.APP_CONFIG
+    base_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+    api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+
+    if not base_url or not api_key:
+        logger.error("  ❌ [实时监控] 无法执行刷新：Emby 配置缺失。")
+        return
+
+    # 4. 逐个刷新目录
+    logger.info(f"  🔄 [实时监控] 正在通知 Emby 刷新 {len(parent_dirs)} 个排除目录...")
+    for folder_path in parent_dirs:
+        try:
+            # 使用 emby 模块的智能刷新函数
+            emby.refresh_library_by_path(folder_path, base_url, api_key)
+            logger.info(f"    └─ 已通知刷新: {folder_path}")
+        except Exception as e:
+            logger.error(f"    ❌ 刷新目录失败 {folder_path}: {e}")
+
+def _wait_for_files_stability(file_paths: List[str]) -> List[str]:
+    """
+    辅助函数：等待文件列表中的文件大小不再变化（拷贝完成）
+    """
+    valid_files = []
     for file_path in file_paths:
         if not os.path.exists(file_path):
             continue
@@ -210,17 +284,8 @@ def _handle_batch_file_task(processor, file_paths: List[str]):
             valid_files.append(file_path)
         else:
             logger.warning(f"  ⚠️ [实时监控] 文件不稳定或超时，跳过处理: {os.path.basename(file_path)}")
-
-    if not valid_files:
-        return
-
-    # 2. ★★★ 调用核心处理器的批量入口 ★★★
-    # 这个方法会：
-    # A. 遍历 valid_files (代表文件)，逐个生成覆盖缓存 (不刷新 Emby)。
-    # B. 收集所有涉及的父目录。
-    # C. 统一刷新这些父目录。
-    # 这样既保证了效率（不重复刮削同目录文件），又保证了安全（缓存就绪后再刷新）。
-    processor.process_file_actively_batch(valid_files)
+    
+    return valid_files
 
 class MonitorService:
     processor_instance = None

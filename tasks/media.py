@@ -1595,7 +1595,7 @@ def task_scan_monitor_folders(processor):
     1. 回溯时间可配置。
     2. 优先检查时间戳，极速过滤旧文件。
     3. 查库比对文件名，确保只处理真正未入库的文件。
-    4. 【新增】支持排除目录配置，与实时监控逻辑保持一致。
+    4. 【新增】支持排除路径配置，命中排除路径时跳过刮削但触发Emby刷新。
     """
     # 1. 获取配置
     monitor_enabled = processor.config.get(constants.CONFIG_OPTION_MONITOR_ENABLED)
@@ -1603,10 +1603,14 @@ def task_scan_monitor_folders(processor):
     monitor_extensions = processor.config.get(constants.CONFIG_OPTION_MONITOR_EXTENSIONS, constants.DEFAULT_MONITOR_EXTENSIONS)
     lookback_days = processor.config.get(constants.CONFIG_OPTION_MONITOR_SCAN_LOOKBACK_DAYS, constants.DEFAULT_MONITOR_SCAN_LOOKBACK_DAYS)
     
-    # ★★★ 新增：获取排除目录配置 ★★★
+    # Emby 连接信息 (用于刷新排除目录)
+    emby_base_url = processor.config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+    emby_api_key = processor.config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+
+    # ★★★ 修改：获取排除路径配置并规范化 ★★★
     monitor_exclude_dirs = processor.config.get(constants.CONFIG_OPTION_MONITOR_EXCLUDE_DIRS, constants.DEFAULT_MONITOR_EXCLUDE_DIRS)
-    # 转为集合并小写，用于快速匹配
-    exclude_dirs_set = set(d.lower() for d in (monitor_exclude_dirs or []))
+    # 转为列表并规范化路径、转小写，用于前缀匹配
+    exclude_paths = [os.path.normpath(d).lower() for d in (monitor_exclude_dirs or [])]
 
     logger.info(f"  ➜ 开始执行监控目录查漏扫描 (回溯 {lookback_days} 天)")
 
@@ -1639,6 +1643,7 @@ def task_scan_monitor_folders(processor):
     trigger_count = 0
     skipped_old_count = 0
     skipped_exists_count = 0 
+    refresh_exclude_count = 0
     
     now = time.time()
     cutoff_time = now - (lookback_days * 24 * 3600)
@@ -1651,17 +1656,32 @@ def task_scan_monitor_folders(processor):
         logger.info(f"  ➜ 正在扫描目录: {root_path}")
         
         for dirpath, dirnames, filenames in os.walk(root_path):
-            # ★★★ 新增：排除目录检查逻辑 ★★★
-            # 检查当前路径的每一级目录名是否在排除列表中
-            # os.path.normpath 用于规范化路径分隔符
-            path_parts = os.path.normpath(dirpath).split(os.sep)
+            # ★★★ 修改：排除路径检查逻辑 (前缀匹配 + 刷新) ★★★
+            norm_dirpath = os.path.normpath(dirpath).lower()
+            hit_exclude = False
             
-            # 如果路径中任何一部分在排除列表中 (不区分大小写)
-            if any(part.lower() in exclude_dirs_set for part in path_parts):
-                # 1. 清空 dirnames 列表：这会告诉 os.walk 不要继续进入这个目录的子目录
+            for exc_path in exclude_paths:
+                if norm_dirpath.startswith(exc_path):
+                    hit_exclude = True
+                    break
+            
+            if hit_exclude:
+                # 1. 记录日志
+                # logger.info(f"  🔄 [扫描] 目录命中排除规则: {os.path.basename(dirpath)}，跳过刮削并触发Emby刷新。")
+                
+                # 2. 触发 Emby 刷新 (仅刷新该目录)
+                try:
+                    if emby_base_url and emby_api_key:
+                        emby.refresh_library_by_path(dirpath, emby_base_url, emby_api_key)
+                        refresh_exclude_count += 1
+                except Exception as e:
+                    logger.error(f"    ❌ 刷新排除目录失败: {e}")
+
+                # 3. 停止递归：清空 dirnames 列表，os.walk 不会进入子目录
+                # (假设 Emby 刷新是递归的，或者我们只关心顶层排除目录的刷新)
                 dirnames[:] = []
-                # 2. 跳过当前循环：不处理当前目录下的 filenames
-                # logger.debug(f"  🚫 [扫描跳过] 命中排除目录: {dirpath}")
+                
+                # 4. 跳过当前目录的文件处理
                 continue
 
             folder_name = os.path.basename(dirpath)
@@ -1697,7 +1717,7 @@ def task_scan_monitor_folders(processor):
                     
                     task_manager.update_status_from_thread(
                         dynamic_progress, 
-                        f"扫描中... (已扫 {scan_count}, 跳过旧文件 {skipped_old_count}, 跳过已存 {skipped_exists_count})"
+                        f"扫描中... (已扫 {scan_count}, 排除刷新 {refresh_exclude_count}, 触发处理 {trigger_count})"
                     )
 
                 # --- ID 提取 ---
@@ -1746,8 +1766,8 @@ def task_scan_monitor_folders(processor):
                     except Exception as e:
                         logger.error(f"  🚫 处理文件失败: {e}")
 
-    logger.info(f"  ➜ 监控目录扫描完成。扫描: {scan_count}, 跳过旧文件: {skipped_old_count}, 跳过已入库: {skipped_exists_count}, 触发处理: {trigger_count}")
-    task_manager.update_status_from_thread(100, f"扫描完成，处理了 {trigger_count} 个新项目")
+    logger.info(f"  ➜ 监控目录扫描完成。扫描: {scan_count}, 排除并刷新: {refresh_exclude_count}, 触发处理: {trigger_count}")
+    task_manager.update_status_from_thread(100, f"扫描完成，处理 {trigger_count} 个新项目，刷新 {refresh_exclude_count} 个排除目录")
 
 # --- 从数据库恢复本地覆盖缓存 ---
 def task_restore_local_cache_from_db(processor):

@@ -74,18 +74,19 @@
                         </n-text>
                       </template>
                     </n-form-item>
-                    <n-form-item label="排除目录名" path="monitor_exclude_dirs">
+                    <n-form-item label="排除路径 (跳过刮削但刷新)" path="monitor_exclude_dirs">
                       <n-select
                         v-model:value="configModel.monitor_exclude_dirs"
                         multiple
                         filterable
                         tag
-                        placeholder="输入目录名并回车 (如: extras)"
+                        placeholder="输入完整路径或前缀并回车 (如: /mnt/media/extras)"
                         :options="[]" 
                       />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          只要文件路径中包含这些目录名（精确匹配），该文件就会被忽略。例如输入 "extras"，则 "/movie/extras/a.mp4" 会被忽略。
+                          命中这些路径的文件将<b>跳过刮削流程</b>，但会直接通知 Emby 刷新该文件夹。<br/>
+                          支持输入绝对路径或路径前缀。例如输入 "/mnt/media/AV"，则该目录下所有新文件都不会被刮削。
                         </n-text>
                       </template>
                     </n-form-item>
