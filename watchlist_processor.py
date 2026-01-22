@@ -336,12 +336,12 @@ class WatchlistProcessor:
                             air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
                             days_diff = (air_date - today).days
                             
-                            if -30 <= days_diff <= 3:
+                            if -30 <= days_diff <= 7:
                                 revived_count += 1
                                 status_desc = "已开播" if days_diff <= 0 else f"{days_diff}天后开播"
-                                logger.info(f"  ➜ 发现《{series_name}》的新季 (S{new_season_num}) {status_desc}，触发复活流程！")
+                                logger.info(f"  ➜ 发现《{series_name}》的新季 (S{new_season_num}) {status_desc}，触发复活订阅流程！")
                                 
-                                # ... (复活逻辑保持不变: 提交请求、更新状态) ...
+                                # 1. 构造媒体信息
                                 season_tmdb_id = str(season_info.get('id'))
                                 media_info = {
                                     'tmdb_id': season_tmdb_id,
@@ -353,22 +353,22 @@ class WatchlistProcessor:
                                     'parent_series_tmdb_id': tmdb_id,
                                     'overview': season_info.get('overview')
                                 }
+
+                                # 2. 提交订阅请求 (只做这一件事)
                                 request_db.set_media_status_pending_release(
                                     tmdb_ids=season_tmdb_id,
                                     item_type='Season',
                                     source={"type": "watchlist", "reason": "revived_season", "item_id": tmdb_id},
                                     media_info_list=[media_info]
                                 )
-                                updates = {
-                                    "watchlist_is_airing": True,        
-                                    "force_ended": False,               
-                                    "watchlist_tmdb_status": "Returning Series", 
-                                    "watching_status": STATUS_WATCHING, 
-                                    "paused_until": None                
-                                }
-                                self._update_watchlist_entry(tmdb_id, series_name, updates)
-                                watchlist_db.sync_seasons_watching_status(tmdb_id, [new_season_num], updates["watching_status"])
-                                logger.info(f"  ➜ 已成功复活《{series_name}》：状态更新为 '追剧中'。")
+
+                                
+                                # 仅更新 TMDb 状态元数据，保持数据新鲜度 (可选，不影响逻辑)
+                                self._update_watchlist_entry(tmdb_id, series_name, {
+                                    "watchlist_tmdb_status": "Returning Series"
+                                })
+
+                                logger.info(f"  ➜ 已为《{series_name}》S{new_season_num} 提交订阅请求。")
                                 break 
                         except ValueError: pass
                 
