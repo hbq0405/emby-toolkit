@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 from handler.tmdb import get_movie_details, get_tv_details, get_tv_season_details, search_tv_shows, get_tv_season_details
 from database import settings_db, connection, request_db
+from ai_translator import AITranslator
 import utils
 
 logger = logging.getLogger(__name__)
@@ -1453,3 +1454,71 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
             logger.warning(f"还原 Rating 失败: {e}")
 
     return payload
+
+def translate_tmdb_metadata_recursively(
+    item_type: str, 
+    tmdb_data: Dict[str, Any], 
+    ai_translator: Any, 
+    item_name: str = ""
+):
+    """
+    通用辅助函数：递归翻译 TMDb 数据的简介 (Overview)。
+    支持 Movie (单层) 和 Series (聚合层级: Show -> Season -> Episode)。
+    
+    :param item_type: 'Movie' or 'Series'
+    :param tmdb_data: TMDb 返回的数据对象 (电影是详情dict，剧集是聚合dict)
+    :param ai_translator: AITranslator 实例
+    :param item_name: 用于日志和AI上下文的名称
+    """
+    if not ai_translator or not tmdb_data:
+        return
+
+    # 内部辅助：翻译单个字典的 overview
+    def _translate_one(data_dict, context_title):
+        overview = data_dict.get('overview')
+        # 只有当简介存在且不包含中文时才翻译
+        if overview and not utils.contains_chinese(overview):
+            logger.debug(f"    ├─ [AI翻译] 正在翻译简介: {context_title}...")
+            trans = ai_translator.translate_overview(overview, title=context_title)
+            if trans:
+                data_dict['overview'] = trans
+                return True
+        return False
+
+    translated_count = 0
+
+    # --- 1. 处理电影 ---
+    if item_type == 'Movie':
+        if _translate_one(tmdb_data, item_name):
+            translated_count += 1
+
+    # --- 2. 处理剧集 (聚合数据结构) ---
+    elif item_type == 'Series':
+        # A. 剧集本身
+        series_details = tmdb_data.get('series_details', tmdb_data) # 兼容不同结构
+        # 尝试获取最新标题
+        current_name = series_details.get('name') or series_details.get('title') or item_name
+        
+        if _translate_one(series_details, current_name):
+            translated_count += 1
+
+        # B. 分季 (Seasons)
+        seasons = tmdb_data.get("seasons_details", [])
+        for season in seasons:
+            s_num = season.get("season_number", "?")
+            if _translate_one(season, f"{current_name} Season {s_num}"):
+                translated_count += 1
+
+        # C. 分集 (Episodes)
+        episodes_container = tmdb_data.get("episodes_details", {})
+        # 兼容字典(S1E1: data)和列表两种格式
+        episodes_list = episodes_container.values() if isinstance(episodes_container, dict) else episodes_container
+        
+        for ep in episodes_list:
+            s_num = ep.get("season_number")
+            e_num = ep.get("episode_number")
+            if _translate_one(ep, f"{current_name} S{s_num}E{e_num}"):
+                translated_count += 1
+
+    if translated_count > 0:
+        logger.info(f"  ➜ [AI翻译] 已完成 {translated_count} 条简介的翻译 ({item_name})。")

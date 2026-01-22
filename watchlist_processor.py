@@ -12,6 +12,7 @@ import threading
 from database import connection, media_db, request_db, watchlist_db, user_db, settings_db
 import constants
 import utils
+from ai_translator import AITranslator
 import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.moviepilot as moviepilot
@@ -62,6 +63,8 @@ class WatchlistProcessor:
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
         self.local_data_path = self.config.get("local_data_path", "")
+        self.ai_enabled = self.config.get("ai_translation_enabled", False)
+        self.ai_translator = AITranslator(self.config) if self.ai_enabled else None
         self._stop_event = threading.Event()
         self.progress_callback = None
         logger.trace("WatchlistProcessor 初始化完成。")
@@ -526,6 +529,15 @@ class WatchlistProcessor:
         if not aggregated_data:
             logger.error(f"  🚫 无法聚合 '{item_name}' 的TMDb详情，元数据刷新中止。")
             return None
+
+        # 翻译简介
+        if self.ai_translator:
+            helpers.translate_tmdb_metadata_recursively(
+                item_type='Series',
+                tmdb_data=aggregated_data,
+                ai_translator=self.ai_translator,
+                item_name=item_name
+            )
 
         # 解包数据
         latest_series_data = aggregated_data['series_details']

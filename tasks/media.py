@@ -19,7 +19,7 @@ import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.telegram as telegram
 from database import connection, settings_db, media_db, queries_db
-from .helpers import parse_full_asset_details, reconstruct_metadata_from_db
+from .helpers import parse_full_asset_details, reconstruct_metadata_from_db, translate_tmdb_metadata_recursively
 from extensions import UPDATING_METADATA
 
 logger = logging.getLogger(__name__)
@@ -832,6 +832,25 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 for future in concurrent.futures.as_completed(futures):
                     t_id_str, details = future.result()
                     if t_id_str and details: tmdb_details_map[t_id_str] = details
+
+            # 在写入数据库之前，对获取到的 TMDb 数据进行翻译
+            if processor.ai_translator and processor.config.get("ai_translation_enabled", False):
+                for item_group in batch_item_groups:
+                    if not item_group: continue
+                    item = item_group[0]
+                    t_id = str(item.get("ProviderIds", {}).get("Tmdb"))
+                    i_type = item.get("Type")
+                    
+                    # 获取刚才下载的数据
+                    data_to_translate = tmdb_details_map.get(t_id)
+                    if data_to_translate:
+                        # 调用 helper 进行原地修改
+                        translate_tmdb_metadata_recursively(
+                            item_type=i_type,
+                            tmdb_data=data_to_translate,
+                            ai_translator=processor.ai_translator,
+                            item_name=item.get('Name', '')
+                        )
 
             metadata_batch = []
             series_ids_processed_in_batch = set()
