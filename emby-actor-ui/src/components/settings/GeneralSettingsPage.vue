@@ -66,27 +66,37 @@
                       </n-switch>
                     </n-form-item>
 
-                    <n-form-item label="监控目录路径" path="monitor_paths">
-                      <n-dynamic-input v-model:value="configModel.monitor_paths" placeholder="输入Emby媒体库路径" :min="0" />
+                    <n-form-item label="监控路径" path="monitor_paths">
+                      <n-select
+                        v-model:value="configModel.monitor_paths"
+                        multiple
+                        filterable
+                        tag
+                        :show-arrow="false"
+                        placeholder="输入路径并回车"
+                        :options="[]" 
+                      />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          保持和 Emby 媒体库路径一致，否则刷新不到。
+                          输入路径后<b>按回车</b>添加。请保持和 Emby 媒体库路径一致，否则刷新不到。
                         </n-text>
                       </template>
                     </n-form-item>
-                    <n-form-item label="排除路径 (跳过刮削但刷新)" path="monitor_exclude_dirs">
+
+                    <!-- 排除路径 -->
+                    <n-form-item label="排除路径" path="monitor_exclude_dirs">
                       <n-select
                         v-model:value="configModel.monitor_exclude_dirs"
                         multiple
                         filterable
                         tag
-                        placeholder="输入完整路径或前缀并回车 (如: /mnt/media/extras)"
+                        :show-arrow="false"
+                        placeholder="输入路径并回车"
                         :options="[]" 
                       />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
                           命中这些路径的文件将<b>跳过刮削流程</b>，但会直接通知 Emby 刷新该文件夹。<br/>
-                          支持输入绝对路径或路径前缀。例如输入 "/mnt/media/AV"，则该目录下所有新文件都不会被刮削。
                         </n-text>
                       </template>
                     </n-form-item>
