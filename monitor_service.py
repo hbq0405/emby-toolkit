@@ -48,12 +48,12 @@ class MediaFileHandler(FileSystemEventHandler):
         _, ext = os.path.splitext(file_path)
         if ext.lower() not in self.extensions: 
             # 调试日志：如果扩展名不匹配，记录一下（仅在调试模式下）
-            # logger.trace(f"  [监控忽略] 扩展名不匹配: {os.path.basename(file_path)}")
+            logger.trace(f"  [监控忽略] 扩展名不匹配: {os.path.basename(file_path)}")
             return False
         
         filename = os.path.basename(file_path)
         if filename.startswith('.'): return False
-        if filename.endswith(('.part', '.crdownload', '.tmp', '.aria2')): return False
+        if filename.endswith(('.part', '.!qB', '.crdownload', '.tmp', '.aria2')): return False
 
         # ★★★ 关键：此处不再进行任何排除目录的检查 ★★★
         # 只要是媒体文件，全部放行进入队列，由后续逻辑决定是“刮削”还是“仅刷新”
