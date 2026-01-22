@@ -78,7 +78,7 @@
                       />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          输入路径后<b>按回车</b>添加。请保持和 Emby 媒体库路径一致，否则刷新不到。
+                          输入路径后<b>按回车</b>添加。请保持和 Emby 媒体库路径映射一致。
                         </n-text>
                       </template>
                     </n-form-item>
@@ -96,7 +96,7 @@
                       />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          命中这些路径的文件将<b>跳过刮削流程</b>，但会直接通知 Emby 刷新该文件夹。<br/>
+                          命中这些路径的文件将<b>跳过刮削流程</b>，仅刷新。<br/>
                         </n-text>
                       </template>
                     </n-form-item>
