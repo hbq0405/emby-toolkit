@@ -43,7 +43,7 @@
 import { ref, reactive, defineExpose, h, defineComponent } from 'vue';
 import axios from 'axios';
 import { useMessage, NModal, NSpin, NTabs, NTabPane, NEmpty, NList, NListItem, NThing, NSpace, NEllipsis, NTag, NButton, NIcon } from 'naive-ui';
-import { PaperPlaneOutline as SendIcon } from '@vicons/ionicons5';
+import { PaperPlaneOutline as SendIcon, CopyOutline } from '@vicons/ionicons5';
 
 const message = useMessage();
 
@@ -189,9 +189,28 @@ const confirmPush = async (resource) => {
 const ResourceList = defineComponent({
     props: ['list'],
     emits: ['push'],
+    // 记得在 components 里加上 CopyOutline 如果你是用非 setup 语法，但在 setup 返回里直接用就行
     components: { NList, NListItem, NThing, NSpace, NTag, NEllipsis, NButton, NIcon },
     setup(props, { emit }) {
-        return { SendIcon, handlePush: (res) => emit('push', res) }
+        // 在子组件内重新获取 message 实例，确保弹窗能显示
+        const message = useMessage();
+
+        const handleCopy = async (link) => {
+            try {
+                await navigator.clipboard.writeText(link);
+                message.success('链接已复制到剪贴板');
+            } catch (err) {
+                console.error(err);
+                message.error('复制失败，请手动复制');
+            }
+        };
+
+        return { 
+            SendIcon, 
+            CopyOutline, // 返回图标
+            handlePush: (res) => emit('push', res),
+            handleCopy   // 返回复制方法
+        }
     },
     template: `
         <n-list hoverable clickable>
@@ -199,7 +218,7 @@ const ResourceList = defineComponent({
             <n-thing>
               <template #header>
                 <n-space align="center">
-                  <n-ellipsis style="max-width: 450px">{{ res.title }}</n-ellipsis>
+                  <n-ellipsis style="max-width: 400px">{{ res.title }}</n-ellipsis>
                 </n-space>
               </template>
               <template #description>
@@ -215,10 +234,18 @@ const ResourceList = defineComponent({
               </template>
             </n-thing>
             <template #suffix>
-              <n-button size="small" type="primary" @click="handlePush(res)">
-                <template #icon><n-icon :component="SendIcon" /></template>
-                推送
-              </n-button>
+              <n-space size="small">
+                <!-- 新增：复制按钮 -->
+                <n-button size="small" secondary type="info" @click.stop="handleCopy(res.link)">
+                    <template #icon><n-icon :component="CopyOutline" /></template>
+                    复制
+                </n-button>
+                <!-- 原有：推送按钮 -->
+                <n-button size="small" type="primary" @click.stop="handlePush(res)">
+                    <template #icon><n-icon :component="SendIcon" /></template>
+                    推送
+                </n-button>
+              </n-space>
             </template>
           </n-list-item>
         </n-list>
