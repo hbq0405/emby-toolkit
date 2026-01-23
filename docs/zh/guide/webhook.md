@@ -1,6 +1,6 @@
 # Webhook 接入
 
-Webhook 用于接收 Emby 事件并触发增量处理。路由定义在 `routes/webhook.py`。
+Webhook 用于接收 Emby 事件并触发对应处理。
 
 ## 配置地址
 

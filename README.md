@@ -1,6 +1,6 @@
 # Emby ToolKit (Emby 增强管理工具)
 
-[![GitHub stars](https://img.shields.io/github/stars/hbq0405/emby-toolkit.svg%sstyle=social&label=Star)](https://github.com/hbq0405/emby-toolkit)
+[![中文文档](https://img.shields.io/badge/docs-read%20now-blue)](https://hbq0405.github.io/emby-toolkit/)
 [![GitHub license](https://img.shields.io/github/license/hbq0405/emby-toolkit.svg)](https://github.com/hbq0405/emby-toolkit/blob/main/LICENSE)
 <!-- 你可以添加更多的徽章，例如构建状态、Docker Hub 拉取次数等 -->
 
