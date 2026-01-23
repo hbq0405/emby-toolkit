@@ -1,0 +1,26 @@
+{
+  "name": "emby-toolkit-wiki",
+  "version": "1.0.0",
+  "description": "Emby Toolkit Wiki - Documentation site",
+  "type": "module",
+  "scripts": {
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/hbq0405/emby-toolkit.git"
+  },
+  "keywords": ["emby", "wiki", "documentation"],
+  "author": "Emby Toolkit",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/hbq0405/emby-toolkit/issues"
+  },
+  "homepage": "https://github.com/hbq0405/emby-toolkit#readme",
+  "devDependencies": {
+    "vitepress": "^1.6.4",
+    "vue": "^3.5.26"
+  }
+}
