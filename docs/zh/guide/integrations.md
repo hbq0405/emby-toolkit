@@ -15,6 +15,11 @@
 - 用途：订阅缺失季/集、统一订阅与自动补全。
 - 相关配置：`moviepilot_url`、`moviepilot_username`、`moviepilot_password`。
 
+## NULLBR
+
+- 用途：从115分享、磁力链、ED2K获取链接云下载至115网盘
+- 相关配置：CMS URL、CMS TOKEN；115cookie
+
 ## Telegram
 
 - 用途：新入库/追更通知。

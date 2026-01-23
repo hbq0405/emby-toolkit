@@ -152,7 +152,18 @@ def initialize_processors():
     emby_key = current_config.get("emby_api_key")
     
     if emby_url and emby_key:
-        server_info = handler.emby.get_emby_server_info(emby_url, emby_key)
+        # --- 优化启动逻辑：优先检查缓存，决定超时策略 ---
+        cached_id = settings_db.get_setting("emby_server_id_cache")
+        
+        # 如果有缓存，我们只给 5 秒钟尝试连接 Emby (快速失败策略)
+        # 如果没缓存，我们给 20 秒 (必须获取策略)
+        startup_timeout = 5 if cached_id else 20
+        
+        logger.info(f"正在尝试连接 Emby 获取 Server ID (超时设定: {startup_timeout}s)...")
+        
+        # 尝试获取在线信息
+        server_info = handler.emby.get_emby_server_info(emby_url, emby_key, timeout=startup_timeout)
+        
         if server_info and server_info.get("Id"):
             server_id_local = server_info.get("Id")
             logger.trace(f"成功获取到 Emby Server ID: {server_id_local}")
@@ -162,14 +173,12 @@ def initialize_processors():
             except Exception as e:
                 logger.warning(f"缓存 Emby Server ID 失败: {e}")
         else:
-            logger.warning("未能通过 API 获取 Emby Server ID，尝试读取缓存...")
-            # --- 尝试读取缓存 ---
-            cached_id = settings_db.get_setting("emby_server_id_cache")
+            # --- 网络获取失败，回退到缓存 ---
             if cached_id:
                 server_id_local = cached_id
-                logger.info(f"已使用缓存的 Emby Server ID: {server_id_local}")
+                logger.warning(f"⚠️ 无法连接 Emby 服务器 (或超时)，已使用缓存的 Server ID: {server_id_local} 继续启动。")
             else:
-                logger.warning("缓存中未找到 Emby Server ID，跳转链接可能不完整。")
+                logger.error("❌ 无法连接 Emby 且本地无缓存 Server ID，部分功能可能受限。")
 
     # 初始化 media_processor_instance_local
     try:

@@ -1535,7 +1535,7 @@ def get_collections_containing_item(item_id: str, base_url: str, api_key: str, u
         logger.error(f"反查项目 {item_id} 所属合集失败: {e}")
         return []
 # ✨✨✨ 获取 Emby 服务器信息 (如 Server ID) ✨✨✨
-def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
+def get_emby_server_info(base_url: str, api_key: str, **kwargs) -> Optional[Dict[str, Any]]:
     if not base_url or not api_key:
         return None
     
@@ -1544,12 +1544,15 @@ def get_emby_server_info(base_url: str, api_key: str) -> Optional[Dict[str, Any]
     
     logger.debug("正在获取 Emby 服务器信息...")
     try:
-        response = emby_client.get(api_url, params=params)
+        # 修改点：将 kwargs 传递给 emby_client.get
+        # 这样就可以支持 timeout=5 这种参数了
+        response = emby_client.get(api_url, params=params, **kwargs)
         response.raise_for_status()
         data = response.json()
         return data
     except Exception as e:
-        logger.error(f"获取 Emby 服务器信息失败: {e}")
+        # 修改日志级别为 warning，因为在离线启动时这是预期内的错误
+        logger.warning(f"获取 Emby 服务器信息失败 (可能是服务器离线): {e}")
         return None
 # --- 根据名称查找一个特定的电影合集 ---
 def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
