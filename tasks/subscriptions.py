@@ -1,6 +1,6 @@
 # tasks/subscriptions.py
 # 智能订阅模块
-import json
+import time
 from datetime import datetime
 import logging
 from typing import List, Dict
@@ -414,6 +414,12 @@ def task_auto_subscribe(processor):
     movie_pause_days = int(strategy_config.get('movie_pause_days', 7))                # 默认暂停7天
     timeout_revive_days = int(strategy_config.get('timeout_revive_days', 0))          # 默认不复活超时订阅
     enable_nullbr_fallback = strategy_config.get('enable_nullbr_fallback', False)     # 默认不启用 NULLBR 兜底
+    
+    # 2. 读取请求延迟配置
+    try:
+        request_delay = int(config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 0))
+    except:
+        request_delay = 0
     
     # 兼容旧的全局开关 (如果用户还没配置过策略，可以回退读取 config.ini，或者直接用默认值)
     if not config.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
@@ -858,6 +864,11 @@ def task_auto_subscribe(processor):
 
             else:
                 logger.error(f"  ➜ 订阅《{item['title']}》失败，请检查 MoviePilot 连接或日志。")
+
+            # 如果配置了延时，且不是列表中的最后一个项目，则进行休眠
+            if request_delay > 0 and i < len(wanted_items) - 1:
+                logger.debug(f"  zzz 根据配置暂停 {request_delay} 秒...")
+                time.sleep(request_delay)
         
         # 3. 发送用户通知
         logger.info(f"  ➜ 准备为 {len(notifications_to_send)} 位用户发送合并的成功通知...")
