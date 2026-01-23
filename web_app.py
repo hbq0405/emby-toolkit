@@ -11,7 +11,7 @@ from flask import Flask, render_template, request, redirect, url_for, jsonify, f
 from werkzeug.utils import safe_join, secure_filename
 from watchlist_processor import WatchlistProcessor
 from datetime import datetime
-import handler
+from handler.emby import get_emby_server_info 
 import task_manager
 from tasks.core import get_task_registry 
 from typing import Dict, Any
@@ -162,7 +162,7 @@ def initialize_processors():
         logger.info(f"正在尝试连接 Emby 获取 Server ID (超时设定: {startup_timeout}s)...")
         
         # 尝试获取在线信息
-        server_info = handler.emby.get_emby_server_info(emby_url, emby_key, timeout=startup_timeout)
+        server_info = get_emby_server_info(emby_url, emby_key, timeout=startup_timeout)
         
         if server_info and server_info.get("Id"):
             server_id_local = server_info.get("Id")
