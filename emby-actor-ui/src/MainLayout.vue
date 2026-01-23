@@ -231,7 +231,8 @@ import {
   LibraryOutline, 
   BookmarksOutline, 
   SettingsOutline,
-  ArchiveOutline
+  ArchiveOutline,
+  BookOutline as HelpIcon // 引入帮助图标
 } from '@vicons/ionicons5';
 import axios from 'axios';
 import { useMessage, useDialog } from 'naive-ui';
@@ -306,6 +307,13 @@ const userOptions = computed(() => {
     });
   }
 
+  // <--- 新增：帮助文档 --->
+  options.push({
+    label: '帮助文档',
+    key: 'help-docs',
+    icon: renderIcon(HelpIcon)
+  });
+
   // 如果有任何管理项，就加一个分割线
   if (options.length > 0) {
     options.push({ type: 'divider', key: 'd1' });
@@ -344,6 +352,9 @@ const handleUserSelect = async (key) => {
       negativeText: '取消',
       onPositiveClick: triggerRestart, 
     });
+  } else if (key === 'help-docs') {
+    // <--- 新增：跳转到帮助文档 --->
+    window.open('https://hbq0405.github.io/emby-toolkit/zh/', '_blank');
   } else if (key === 'logout') {
     await authStore.logout();
     router.push({ name: 'Login' }); 
