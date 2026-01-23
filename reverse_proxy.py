@@ -339,7 +339,7 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
-    【V8 - 实时架构 + 占位海报适配版】
+    【V8 - 实时架构 + 占位海报适配版 + 排序修复】
     支持：实时权限过滤、原生排序、榜单占位符、数量限制
     """
     try:
@@ -356,7 +356,7 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
 
         collection_type = collection_info.get('type')
         
-        # 2. 获取分页和排序参数
+        # 2. 获取分页和排序参数 (变量定义必须在此处)
         emby_limit = int(params.get('Limit', 50))
         offset = int(params.get('StartIndex', 0))
         
@@ -364,17 +364,32 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
         if defined_limit:
             defined_limit = int(defined_limit)
         
-        defined_sort_by = definition.get('default_sort_by', 'DateCreated')
-        defined_sort_order = definition.get('default_sort_order', 'Descending')
+        # --- 排序优先级逻辑 ---
+        req_sort_by = params.get('SortBy')
+        req_sort_order = params.get('SortOrder')
         
-        # 确定最终排序字段
-        sort_by = defined_sort_by if defined_sort_by and defined_sort_by != 'none' else params.get('SortBy', 'DateCreated')
-        sort_order = defined_sort_order if defined_sort_by and defined_sort_by != 'none' else params.get('SortOrder', 'Descending')
+        defined_sort_by = definition.get('default_sort_by')
+        defined_sort_order = definition.get('default_sort_order')
+
+        # 逻辑：如果DB定义了且不是none，强制劫持；否则使用客户端请求
+        if defined_sort_by and defined_sort_by != 'none':
+            # 强制劫持模式
+            sort_by = defined_sort_by
+            sort_order = defined_sort_order or 'Descending'
+            is_native_mode = False
+        else:
+            # 原生/客户端模式 (设置为 NONE 时)
+            sort_by = req_sort_by or 'DateCreated'
+            sort_order = req_sort_order or 'Descending'
+            is_native_mode = True
 
         # 核心判断：是否需要 Emby 原生排序
+        # 当使用原生排序(is_native_mode=True)时，如果排序字段不是数据库能完美处理的(如DateCreated)，
+        # 必须强制走 Emby 代理排序。
         is_emby_proxy_sort_required = (
             collection_type in ['ai_recommendation', 'ai_recommendation_global'] or 
-            'DateLastContentAdded' in sort_by
+            'DateLastContentAdded' in sort_by or
+            (is_native_mode and sort_by not in ['DateCreated', 'Random'])
         )
 
         # 3. 准备基础查询参数
@@ -406,7 +421,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                 )
                 
                 # 3. 【全局视图】获取Emby中实际存在的项目（忽略用户权限，传入 user_id=None）
-                #    ★ 修复：queries_db.py 现已支持 user_id=None，正确返回全局存在的项目
                 global_existing_items, _ = queries_db.query_virtual_library_items(
                     rules=rules, logic=logic, user_id=None, 
                     limit=2000, offset=0,
@@ -440,7 +454,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                          full_view_list.append({"is_missing": False, "id": eid, "tmdb_id": tid})
 
                     # 分支 3: 项目存在于全局库，但用户无权查看 -> 【跳过，不显示占位符】
-                    # ★ 修复：由于 global_tmdb_set 现在正确包含了所有存在的项目，此判断将生效
                     elif (tid != "None" and tid in global_tmdb_set) or (eid != "None" and eid in global_emby_id_set):
                         continue 
 
@@ -470,11 +483,8 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                         eid = entry['id']
                         if eid in emby_map:
                             final_items.append(emby_map[eid])
-                        # ★ 注意：如果 Emby 过滤掉了（例如权限变动），这里不添加，也不会显示灰块（因为列表变短了）
-                        # 但如果列表变短导致与 reported_total_count 不符，客户端可能会显示灰块。
-                        # 对于榜单模式，由于我们手动构建列表，通常误差较小。
                     else:
-                        # 占位符构造逻辑 (保持不变)
+                        # 占位符构造逻辑
                         tid = entry['tmdb_id']
                         meta = status_map.get(tid, {})
                         status = meta.get('subscription_status', 'WANTED')
@@ -545,11 +555,13 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
             full_fields = "PrimaryImageAspectRatio,ImageTags,HasPrimaryImage,ProviderIds,UserData,Name,ProductionYear,CommunityRating,DateCreated,PremiereDate,Type,RecursiveItemCount,SortName,ChildCount,BasicSyncInfo"
 
             if is_emby_proxy_sort_required:
+                # 代理排序模式：将所有 ID 交给 Emby (或内存) 进行排序和分页
                 sorted_data = _fetch_sorted_items_via_emby_proxy(
                     user_id, final_emby_ids, sort_by, sort_order, emby_limit, offset, full_fields, reported_total_count
                 )
                 return Response(json.dumps(sorted_data), mimetype='application/json')
             else:
+                # SQL 排序模式：直接获取详情
                 base_url, api_key = _get_real_emby_url_and_key()
                 items_from_emby = _fetch_items_in_chunks(base_url, api_key, user_id, final_emby_ids, full_fields)
                 items_map = {item['Id']: item for item in items_from_emby}
@@ -568,8 +580,6 @@ def handle_get_mimicked_library_items(user_id, mimicked_id, params):
                     logger.debug(f"检测到权限过滤导致的数量差异: SQL={expected_count}, Emby={actual_count}. 初步修正 TotalRecordCount 为 {reported_total_count}")
 
                     # 2. 【新增】封底保险逻辑
-                    # 如果修正后的总数 <= 请求的限制 (emby_limit)，说明逻辑上不应该存在“下一页”
-                    # 此时必须强制 总数 = 实际数量，否则客户端会渲染出 (总数 - 实际数量) 个灰块
                     if reported_total_count <= emby_limit:
                         reported_total_count = actual_count
                         logger.debug(f"修正后的总数小于分页限制，强制对齐 TotalRecordCount = {actual_count} 以消除灰块")

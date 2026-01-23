@@ -10,7 +10,7 @@
 - Docker：`/config/config.ini`（由 `APP_DATA_DIR` 指定）
 - 本地开发：`<项目>/local_data/config.ini`
 
-## Database
+## 数据库
 
 | Key | 说明 |
 | --- | --- |
@@ -20,12 +20,6 @@
 | `db_password` | 密码 |
 | `db_name` | 数据库名 |
 
-## Authentication
-
-| Key | 说明 |
-| --- | --- |
-| `auth_enabled` | 是否启用认证（首次运行默认开启） |
-| `username` | 管理员用户名 |
 
 ## Emby
 
