@@ -482,9 +482,15 @@ def task_auto_subscribe(processor):
                     if success:
                         # ★★★ 如果兜底成功 ★★★
                         if is_fallback_success:
-                            logger.info(f"  ➜ 《{title}》MP订阅已取消，但已通过NULLBR兜底下载。")
+                            logger.info(f"  ➜ 《{title}》MP订阅已取消，尝试通过NULLBR兜底下载。")
                             fallback_success_report.append(f"《{title}》") # 加入成功报告
-                            continue # 跳过后续的 IGNORED 更新
+                            
+                            # 即使兜底成功，也必须更新数据库状态为 IGNORED，
+                            if item_type not in cancelled_ids_map:
+                                cancelled_ids_map[item_type] = []
+                            cancelled_ids_map[item_type].append(item['tmdb_id'])
+
+                            continue # 跳过后续的普通取消报告 (cancelled_for_report)
 
                         # ★★★ 如果兜底失败或未启用 ★★★
                         if item_type not in cancelled_ids_map:
