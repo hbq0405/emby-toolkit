@@ -100,6 +100,22 @@
                         </n-text>
                       </template>
                     </n-form-item>
+                    <n-form-item label="排除路径刷新延迟 (秒)" path="monitor_exclude_refresh_delay">
+                      <n-input-number 
+                        v-model:value="configModel.monitor_exclude_refresh_delay" 
+                        :min="0" 
+                        :step="10"
+                        placeholder="0" 
+                      >
+                        <template #suffix>秒</template>
+                      </n-input-number>
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          仅对<b>排除路径</b>生效。延迟通知 Emby 刷新，给其他工具（如小姐姐刮削器）留出处理时间。<br/>
+                          建议设置 30-60 秒。设为 0 则立即刷新。
+                        </n-text>
+                      </template>
+                    </n-form-item>
                     <n-form-item label="定时扫描回溯天数" path="monitor_scan_lookback_days">
                       <n-input-number v-model:value="configModel.monitor_scan_lookback_days" :min="0" :max="365" placeholder="默认 1 天" />
                       <template #feedback>

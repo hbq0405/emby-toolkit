@@ -38,6 +38,8 @@ CONFIG_OPTION_MONITOR_SCAN_LOOKBACK_DAYS = "monitor_scan_lookback_days" # 定时
 DEFAULT_MONITOR_SCAN_LOOKBACK_DAYS = 1  # 默认回溯扫描天数
 CONFIG_OPTION_MONITOR_EXCLUDE_DIRS = "monitor_exclude_dirs" 
 DEFAULT_MONITOR_EXCLUDE_DIRS = [] # 默认排除路径列表
+CONFIG_OPTION_MONITOR_EXCLUDE_REFRESH_DELAY = "monitor_exclude_refresh_delay"
+DEFAULT_MONITOR_EXCLUDE_REFRESH_DELAY = 0 # 默认不延迟
 
 # ==============================================================================
 # ✨ 通知服务 (Notification Services)

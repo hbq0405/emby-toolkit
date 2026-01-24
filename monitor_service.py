@@ -127,6 +127,10 @@ def process_batch_queue():
     """
     处理新增/修改队列 (分组优化 + 排除路径分流版)
     """
+    if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+        with QUEUE_LOCK:
+            FILE_EVENT_QUEUE.clear()
+        return
     global DEBOUNCE_TIMER
     with QUEUE_LOCK:
         files_to_process = list(FILE_EVENT_QUEUE)
@@ -182,6 +186,11 @@ def process_delete_batch_queue():
     """
     处理删除队列 (批量版 + 排除路径分流版)
     """
+    if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+        with DELETE_QUEUE_LOCK:
+            DELETE_EVENT_QUEUE.clear()
+        return
+    
     global DELETE_DEBOUNCE_TIMER
     with DELETE_QUEUE_LOCK:
         files = list(DELETE_EVENT_QUEUE)
@@ -243,19 +252,39 @@ def _handle_batch_delete_refresh_only(file_paths: List[str]):
     _refresh_parent_dirs(parent_dirs, "删除")
 
 def _refresh_parent_dirs(parent_dirs: Set[str], action_type: str):
-    """辅助函数：执行目录刷新"""
+    """
+    辅助函数：执行目录刷新
+    ★★★ 新增：支持延迟刷新逻辑 ★★★
+    """
     config = config_manager.APP_CONFIG
+    
+    # 再次检查开关，防止在延迟等待期间用户关闭了监控
+    if not config.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+        return
+
     base_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
     api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+    
+    # 获取延迟时间配置
+    delay_seconds = config.get(constants.CONFIG_OPTION_MONITOR_EXCLUDE_REFRESH_DELAY, 0)
 
     if not base_url or not api_key:
         logger.error(f"  ❌ [实时监控-{action_type}] 无法执行刷新：Emby 配置缺失。")
         return
 
+    # ★★★ 延迟逻辑 ★★★
+    if delay_seconds > 0:
+        logger.info(f"  ⏳ [实时监控-{action_type}] 命中排除路径，等待 {delay_seconds} 秒后通知 Emby 刷新 (等待其他工具处理)...")
+        time.sleep(delay_seconds)
+        
+        # 等待结束后再次检查开关，如果用户中途关闭了监控，则取消刷新
+        if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+            logger.info(f"  🛑 [实时监控] 监控已关闭，取消挂起的刷新任务。")
+            return
+
     logger.info(f"  🔄 [实时监控-{action_type}] 正在通知 Emby 刷新 {len(parent_dirs)} 个排除目录...")
     for folder_path in parent_dirs:
         try:
-            # 使用 emby 模块的智能刷新函数
             emby.refresh_library_by_path(folder_path, base_url, api_key)
             logger.info(f"    └─ 已通知刷新: {folder_path}")
         except Exception as e:
