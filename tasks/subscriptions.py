@@ -414,6 +414,7 @@ def task_auto_subscribe(processor):
     movie_pause_days = int(strategy_config.get('movie_pause_days', 7))                # 默认暂停7天
     timeout_revive_days = int(strategy_config.get('timeout_revive_days', 0))          # 默认不复活超时订阅
     enable_nullbr_fallback = strategy_config.get('enable_nullbr_fallback', False)     # 默认不启用 NULLBR 兜底
+    nullbr_priority = strategy_config.get('nullbr_priority', 'mp')                    # 默认 MP 优先
     
     # 2. 读取请求延迟配置
     try:
@@ -667,13 +668,7 @@ def task_auto_subscribe(processor):
                 f"({i+1}/{len(wanted_items)}) 正在处理: {item['title']}"
             )
 
-            # 2.1 检查配额
-            if settings_db.get_subscription_quota() <= 0:
-                quota_exhausted = True
-                logger.warning("  ➜ 每日订阅配额已用尽，任务提前结束。")
-                break
-
-            # 2.2 检查发行日期 (只对电影检查，剧集由 smart_subscribe 处理)
+            # 2.1 检查发行日期 (只对电影检查，剧集由 smart_subscribe 处理)
             if item['item_type'] == 'Movie' and not is_movie_subscribable(int(item['tmdb_id']), tmdb_api_key, config):
                 logger.info(f"  ➜ 电影《{item['title']}》未到发行日期，本次跳过。")
                 rejected_details.append({'item': f"电影《{item['title']}》", 'reason': '未发行'})
@@ -686,7 +681,63 @@ def task_auto_subscribe(processor):
                         failed_notifications_to_send[user_id].append(f"《{item['title']}》(原因: 不满足发行日期延迟订阅)")
                 continue
 
-            # 2.3 执行订阅
+            # 2.2启用NULLBR + 优先级为NULLBR + 是老片
+            nullbr_handled = False
+            
+            if enable_nullbr_fallback and nullbr_priority == 'nullbr':
+                
+                if item['item_type'] != 'Movie':
+                    logger.debug(f"  ➜ 《{item['title']}》是剧集，跳过 NULLBR 优先模式，交由 MP 处理。")
+                else:
+                    is_old_item = False
+                    release_date_value = item.get('release_date')
+
+                    if not release_date_value:
+                        logger.warning(f"《{item['title']}》无发行日期，无法判定是否为老片")
+                        is_old_item = False
+                    else:
+                        try:
+                            days_since_release = (datetime.now().date() - release_date_value).days
+                            logger.debug(f"《{item['title']}》距离发行天数: {days_since_release}")
+                            is_old_item = days_since_release > movie_protection_days
+                        except Exception as e:
+                            logger.error(f"计算发行日期天数失败: {e}, 值: {release_date_value}")
+                            is_old_item = False
+                    
+                    if is_old_item:
+                        logger.info(f"  ➜ 检测到电影《{item['title']}》为老片且策略为 NULLBR 优先，尝试直接搜索资源...")
+                    
+                        # 执行下载
+                        if nullbr_handler.auto_download_best_resource(item['tmdb_id'], 'movie', item['title']):
+                            logger.info(f"  ✅ 《{item['title']}》NULLBR 直下成功，跳过 MP 订阅。")
+                            
+                            # 1. 标记为 IGNORED (原因: NULLBR直下)
+                            # 使用 IGNORED 而不是 SUBSCRIBED，是为了避免 MP 状态同步逻辑去检查它
+                            request_db.set_media_status_ignored(
+                                tmdb_ids=[item['tmdb_id']],
+                                item_type=item['item_type'],
+                                source={"type": "nullbr_priority", "reason": "downloaded_by_nullbr"},
+                                ignore_reason="NULLBR直下"
+                            )
+                            
+                            # 3. 记录通知
+                            subscription_details.append({'source': 'NULLBR优先', 'item': f"{item['title']} (直下)"})
+                            
+                            # 4. 标记已处理，跳过后续 MP 逻辑
+                            nullbr_handled = True
+                        else:
+                            logger.info(f"  ❌ NULLBR 未找到合适资源，回退到 MP 订阅流程。")
+
+            if nullbr_handled:
+                continue
+
+            # 2.3 检查配额
+            if settings_db.get_subscription_quota() <= 0:
+                quota_exhausted = True
+                logger.warning("  ➜ 每日订阅配额已用尽，任务提前结束。")
+                break
+
+            # 2.4 执行订阅
             success = False
             item_type = item['item_type']
             series_name = ""

@@ -310,15 +310,46 @@
           <template #feedback>搜索无果后，暂停搜索的天数 (建议 7 天)。</template>
         </n-form-item>
 
-        <n-form-item label="NULLBR 兜底">
-          <n-space vertical>
-             <n-switch v-model:value="strategyConfig.enable_nullbr_fallback">
-                <template #checked>已启用</template>
-                <template #unchecked>未启用</template>
-             </n-switch>
-             <n-text depth="3" style="font-size: 12px;">
-               仅针对<b>老片</b> (超过保护期)。在取消订阅前，尝试通过 NULLBR 搜索并推送第一个符合过滤条件的资源到CMS。
-             </n-text>
+        <n-form-item label="NULLBR">
+          <n-space vertical style="width: 100%">
+             <n-space align="center">
+               <n-switch v-model:value="strategyConfig.enable_nullbr_fallback">
+                  <template #checked>已启用</template>
+                  <template #unchecked>未启用</template>
+               </n-switch>
+               <n-text depth="3" style="font-size: 12px;">
+                 仅适用<b>电影</b> (超过保护期)。
+               </n-text>
+             </n-space>
+             
+             <n-card 
+               v-if="strategyConfig.enable_nullbr_fallback" 
+               size="small" 
+               embedded 
+               :bordered="false" 
+               style="background: rgba(128,128,128,0.05); margin-top: 8px;"
+             >
+                <!-- 使用 Flex 布局替代 n-form-item，强制左对齐 -->
+                <div style="display: flex; align-items: center;">
+                   <span style="margin-right: 12px; font-weight: 500; flex-shrink: 0;">优先模式</span>
+                   <n-radio-group v-model:value="strategyConfig.nullbr_priority" name="nullbr_priority_group">
+                      <n-space>
+                         <n-radio value="mp">MP 优先 (默认)</n-radio>
+                         <n-radio value="nullbr">NULLBR 优先</n-radio>
+                      </n-space>
+                   </n-radio-group>
+                </div>
+
+                <div style="margin-top: 8px; font-size: 12px; color: var(--n-text-color-3);">
+                   <template v-if="strategyConfig.nullbr_priority === 'mp'">
+                      <b>逻辑:</b> 先提交 MP 订阅 -> 若 N 天后未入库(超时) -> 尝试 NULLBR 下载 -> 成功则取消 MP。
+                   </template>
+                   <template v-else>
+                      <b>逻辑:</b> 先尝试 NULLBR 下载 -> 若成功则<b>跳过</b> MP 订阅 -> 若失败则回退提交 MP 订阅。<br/>
+                      (适用于希望老资源直接离线下载，不占用 MP 搜索队列的场景)
+                   </template>
+                </div>
+             </n-card>
           </n-space>
         </n-form-item>
 
@@ -390,7 +421,8 @@ const strategyConfig = ref({
   movie_pause_days: 7,
   delay_subscription_days: 0,
   timeout_revive_days: 0,
-  enable_nullbr_fallback: false
+  enable_nullbr_fallback: false,
+  nullbr_priority: 'mp',
 });
 
 const nullbrModalRef = ref(null);
@@ -405,7 +437,18 @@ const handleNullbrSearch = (item) => {
 const loadStrategyConfig = async () => {
   try {
     const res = await axios.get('/api/subscription/strategy');
-    strategyConfig.value = res.data;
+    
+    strategyConfig.value = {
+      movie_protection_days: 180,
+      movie_search_window_days: 1,
+      movie_pause_days: 7,
+      delay_subscription_days: 0,
+      timeout_revive_days: 0,
+      enable_nullbr_fallback: false,
+      nullbr_priority: 'mp', 
+      ...res.data 
+    };
+    
   } catch (e) {
     message.error('加载策略配置失败');
   }

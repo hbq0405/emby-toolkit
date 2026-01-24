@@ -707,9 +707,6 @@ def get_115_account_info():
 def handle_push_request(link, title):
     """
     统一推送入口
-    逻辑变更：
-    1. 强制推送到 115 (包含死链验证)
-    2. 如果 115 推送成功，且配置了 CMS 信息，则通知 CMS 扫库
     """
     # 1. 推送到 115 (如果失败或死链，这里会直接抛出异常，中断流程)
     push_to_115(link, title)
@@ -720,9 +717,10 @@ def handle_push_request(link, title):
     
     return True
 
-def auto_download_best_resource(tmdb_id, media_type, title):
+def auto_download_best_resource(tmdb_id, media_type, title, season_number=None):
     """
     [自动任务专用] 搜索并下载最佳资源
+    :param season_number: 季号 (仅 media_type='tv' 时有效)
     """
     try:
         config = get_config()
@@ -733,13 +731,19 @@ def auto_download_best_resource(tmdb_id, media_type, title):
         priority_sources = ['115', 'magnet', 'ed2k']
         user_enabled = config.get('enabled_sources', priority_sources)
         
-        logger.info(f"  ➜ [自动任务] 开始搜索资源: {title} (ID: {tmdb_id})")
+        # 构造日志标题
+        log_title = title
+        if media_type == 'tv' and season_number:
+            log_title = f"{title} S{season_number}"
+
+        logger.info(f"  ➜ [自动任务] 开始搜索资源: {log_title} (ID: {tmdb_id})")
 
         for source in priority_sources:
             if source not in user_enabled: continue
             if media_type == 'tv' and source == 'ed2k': continue
 
-            resources = fetch_resource_list(tmdb_id, media_type, specific_source=source)
+            # ★★★ 修改：透传 season_number ★★★
+            resources = fetch_resource_list(tmdb_id, media_type, specific_source=source, season_number=season_number)
             
             if not resources:
                 continue
@@ -763,7 +767,7 @@ def auto_download_best_resource(tmdb_id, media_type, title):
             
             logger.info(f"  ⚠️ [{source.upper()}] 所有资源均尝试失败，切换下一源...")
 
-        logger.info(f"  ❌ 所有源的所有资源均尝试失败: {title}")
+        logger.info(f"  ❌ 所有源的所有资源均尝试失败: {log_title}")
         return False
 
     except Exception as e:
