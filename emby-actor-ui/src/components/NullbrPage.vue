@@ -1,20 +1,20 @@
 <!-- src/components/NullbrPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
-    <!-- ... (Page Header 保持不变) ... -->
+    <!-- 顶部标题栏 -->
     <n-page-header title="NULLBR 资源库" subtitle="连接 115 专属资源网络">
       <template #extra>
         <n-tooltip trigger="hover">
-            <template #trigger>
-              <n-tag :type="quotaColor" round :bordered="false" style="margin-right: 8px; cursor: help;">
-                <template #icon>
-                  <n-icon :component="PulseIcon" />
-                </template>
-                今日剩余: {{ remainingQuota }} / {{ config.daily_limit }}
-              </n-tag>
-            </template>
-            API 调用配额 (仅获取下载链接时消耗)
-          </n-tooltip>
+          <template #trigger>
+            <n-tag :type="quotaColor" round :bordered="false" style="margin-right: 8px; cursor: help;">
+              <template #icon>
+                <n-icon :component="PulseIcon" />
+              </template>
+              今日剩余: {{ remainingQuota }} / {{ config.daily_limit }}
+            </n-tag>
+          </template>
+          API 调用配额 (仅获取下载链接时消耗)
+        </n-tooltip>
         <n-button @click="showConfig = !showConfig" size="small" secondary>
           <template #icon><n-icon :component="SettingsIcon" /></template>
           配置
@@ -22,89 +22,224 @@
       </template>
     </n-page-header>
 
-    <!-- 配置面板 -->
+    <!-- 配置面板 (移除多余的 template 标签) -->
     <n-collapse-transition :show="showConfig">
-      <n-card title="接入配置" :bordered="false" class="dashboard-card" style="margin-top: 16px; margin-bottom: 16px;">
-        <n-alert type="info" style="margin-bottom: 16px;">
-          NULLBR 是一个第三方资源索引服务，您需要先<n-button tag="a" href="https://nullbr.online/manage" target="_blank" secondary size="small">注册账号</n-button>获取 API Key。
+      <n-card :bordered="false" class="dashboard-card" style="margin-top: 16px; margin-bottom: 16px;">
+        <!-- 顶部提示 -->
+        <template #header>
+          <n-space align="center" justify="space-between">
+            <span>接入配置</span>
+            <n-button tag="a" href="https://nullbr.online/manage" target="_blank" secondary type="primary" size="small">
+              <template #icon><n-icon><LinkIcon /></n-icon></template>
+              获取 NULLBR Key
+            </n-button>
+          </n-space>
+        </template>
+        
+        <n-alert type="info" style="margin-bottom: 20px;" :show-icon="true">
+          NULLBR 是一个第三方资源索引服务，配置下方信息后可自动拉取片单并推送到下载器。
         </n-alert>
-        <n-form label-placement="top">
-          <n-grid cols="1 850:2 1300:3" :x-gap="32" :y-gap="24">
-             <n-gi>
-                <n-divider title-placement="left" style="margin-top: 0; font-size: 14px;">基础设置</n-divider>
-                <n-form-item label="NULLBR API Key">
-                    <n-input v-model:value="config.api_key" type="password" show-password-on="click" placeholder="请输入 NULLBR API Key" />
-                </n-form-item>
-                <n-form-item label="启用数据源 (节省配额)">
-                    <n-checkbox-group v-model:value="config.enabled_sources">
-                        <n-space>
-                            <n-checkbox value="115" label="115网盘" />
-                            <n-checkbox value="magnet" label="磁力链" />
-                            <n-checkbox value="ed2k" label="电驴(Ed2k)" />
-                        </n-space>
-                    </n-checkbox-group>
-                    <template #feedback><span style="font-size: 12px; color: #999;">每开启一个源，点击资源时消耗 1 次配额。只选 115 可最省配额。</span></template>
+
+        <n-form label-placement="top" :model="config" label-width="auto">
+          <!-- 改为两列布局：左侧基础设施，右侧业务规则 -->
+          <n-grid cols="1 1000:2" :x-gap="40" :y-gap="24">
+            
+            <!-- ================= 左侧：连接与账号设置 ================= -->
+            <n-gi>
+              <div class="section-title">
+                <n-icon><ServerIcon /></n-icon> 基础连接
+              </div>
+              
+              <n-form-item label="NULLBR API Key">
+                <n-input v-model:value="config.api_key" type="password" show-password-on="click" placeholder="请输入您的 API Key" />
+              </n-form-item>
+
+              <n-grid :cols="2" :x-gap="12">
+                <n-gi>
+                  <n-form-item label="每日调用上限">
+                    <n-input-number v-model:value="config.daily_limit" :min="10" placeholder="100" style="width: 100%" />
+                  </n-form-item>
+                </n-gi>
+                <n-gi>
+                  <n-form-item label="请求间隔 (秒)">
+                    <n-input-number v-model:value="config.request_interval" :min="1" :step="0.5" placeholder="5" style="width: 100%">
+                      <template #suffix>秒</template>
+                    </n-input-number>
+                  </n-form-item>
+                </n-gi>
+              </n-grid>
+
+              <n-form-item label="启用数据源 (多选)">
+                <n-checkbox-group v-model:value="config.enabled_sources">
+                  <n-space item-style="display: flex;">
+                    <n-checkbox value="115" label="115网盘" />
+                    <n-checkbox value="magnet" label="磁力链" />
+                    <n-checkbox value="ed2k" label="电驴(Ed2k)" />
+                  </n-space>
+                </n-checkbox-group>
+                <template #feedback>程序自动从前往后搜索资源。</template>
+              </n-form-item>
+
+              <!-- 115 模块 -->
+              <div class="sub-module">
+                <div class="sub-module-header">
+                  <span class="title">115 网盘设置</span>
+                  <n-button size="tiny" secondary type="success" @click="check115Status" :loading="loading115Info">
+                    检查连通性
+                  </n-button>
+                </div>
+                
+                <n-collapse-transition :show="!!p115Info">
+                  <n-alert type="success" :show-icon="true" style="margin-bottom: 12px; padding: 8px 12px;">
+                    {{ p115Info?.msg || 'Cookie 有效' }}
+                  </n-alert>
+                </n-collapse-transition>
+                
+                <n-form-item label="Cookies" :show-feedback="false" style="margin-bottom: 12px;">
+                  <n-input v-model:value="config.p115_cookies" type="textarea" placeholder="UID=...; CID=...; SEID=..." :rows="3" size="small"/>
                 </n-form-item>
                 
+                <n-form-item label="保存目录 CID">
+                  <n-input v-model:value="config.p115_save_path_cid" placeholder="0 为根目录" />
+                  <template #feedback>网页版文件夹 URL 最后那串数字</template>
+                </n-form-item>
+              </div>
+
+              <!-- CMS 模块 -->
+              <div class="sub-module">
+                <div class="sub-module-header">
+                  <span class="title">CMS 通知 (可选)</span>
+                  <n-tag size="small" :bordered="false">自动整理</n-tag>
+                </div>
+                <n-text depth="3" style="font-size: 12px; display: block; margin-bottom: 10px;">
+                  任务添加成功后，通知 CMS 生成 strm 文件。
+                </n-text>
                 <n-grid :cols="2" :x-gap="12">
-                    <n-gi><n-form-item label="每日调用上限"><n-input-number v-model:value="config.daily_limit" :min="10" placeholder="默认100" /></n-form-item></n-gi>
-                    <n-gi><n-form-item label="请求间隔 (秒)"><n-input-number v-model:value="config.request_interval" :min="1" :step="0.5" placeholder="默认5" /></n-form-item></n-gi>
+                  <n-gi>
+                    <n-form-item label="CMS 地址" :show-feedback="false">
+                      <n-input v-model:value="config.cms_url" placeholder="http://ip:port" />
+                    </n-form-item>
+                  </n-gi>
+                  <n-gi>
+                    <n-form-item label="CMS Token" :show-feedback="false">
+                      <n-input v-model:value="config.cms_token" type="password" show-password-on="click" placeholder="Token" />
+                    </n-form-item>
+                  </n-gi>
                 </n-grid>
+              </div>
+            </n-gi>
 
-                <!-- ★★★ 115 配置 (常驻显示) ★★★ -->
-                <n-divider title-placement="left" style="font-size: 14px;">115 下载设置 (必填)</n-divider>
-                <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 18px;">
-                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                        <n-text depth="3" style="font-size: 12px;">账号状态</n-text>
-                        <n-button size="tiny" secondary @click="check115Status" :loading="loading115Info"><template #icon><n-icon><RefreshIcon /></n-icon></template>检查连通性</n-button>
+            <!-- ================= 右侧：过滤与片单 ================= -->
+            <n-gi>
+              <div class="section-title">
+                <n-icon><FilterIcon /></n-icon> 资源过滤规则
+              </div>
+
+              <div class="filter-box">
+                <n-grid :cols="2" :x-gap="24">
+                  <n-gi>
+                    <n-form-item label="分辨率偏好">
+                        <n-checkbox-group v-model:value="config.filters.resolutions">
+                          <n-space vertical :size="4">
+                            <n-checkbox value="2160p" label="4K (2160p)" />
+                            <n-checkbox value="1080p" label="1080p" />
+                            <n-checkbox value="720p" label="720p" />
+                          </n-space>
+                        </n-checkbox-group>
+                    </n-form-item>
+                  </n-gi>
+                  <n-gi>
+                    <n-form-item label="质量/版本">
+                        <n-checkbox-group v-model:value="config.filters.qualities">
+                          <n-space vertical :size="4">
+                            <n-checkbox value="Remux" label="Remux (原盘)" />
+                            <n-checkbox value="HDR10" label="HDR" />
+                            <n-checkbox value="Dolby Vision" label="Dolby Vision" />
+                            <n-checkbox value="WEB-DL" label="WEB-DL" />
+                          </n-space>
+                        </n-checkbox-group>
+                    </n-form-item>
+                  </n-gi>
+                </n-grid>
+                
+                <n-divider style="margin: 12px 0" />
+
+                <n-form-item label="容器格式 (仅电影)">
+                  <n-space align="center">
+                      <n-checkbox-group v-model:value="config.filters.containers">
+                        <n-space>
+                          <n-checkbox value="mkv" label="MKV" />
+                          <n-checkbox value="mp4" label="MP4" />
+                          <n-checkbox value="iso" label="ISO" />
+                        </n-space>
+                      </n-checkbox-group>
+                      <n-divider vertical />
+                      <n-switch v-model:value="config.filters.require_zh" size="small">
+                        <template #checked>必须含中文字幕</template>
+                        <template #unchecked>不限字幕</template>
+                      </n-switch>
+                  </n-space>
+                </n-form-item>
+
+                <n-grid :cols="2" :x-gap="12">
+                  <n-gi>
+                    <n-form-item label="电影大小 (GB)">
+                      <n-input-group>
+                        <n-input-number v-model:value="config.filters.movie_min_size" :min="0" placeholder="0" :show-button="false" />
+                        <n-input-group-label style="background: transparent; border-left: 0; border-right: 0;">-</n-input-group-label>
+                        <n-input-number v-model:value="config.filters.movie_max_size" :min="0" placeholder="∞" :show-button="false" />
+                      </n-input-group>
+                    </n-form-item>
+                  </n-gi>
+                  <n-gi>
+                    <n-form-item label="剧集大小 (GB/集)">
+                      <n-input-group>
+                        <n-input-number v-model:value="config.filters.tv_min_size" :min="0" placeholder="0" :show-button="false" />
+                        <n-input-group-label style="background: transparent; border-left: 0; border-right: 0;">-</n-input-group-label>
+                        <n-input-number v-model:value="config.filters.tv_max_size" :min="0" placeholder="∞" :show-button="false" />
+                      </n-input-group>
+                    </n-form-item>
+                  </n-gi>
+                </n-grid>
+              </div>
+
+              <div class="section-title" style="margin-top: 24px;">
+                <n-icon><ListIcon /></n-icon> 自定义精选片单
+              </div>
+              
+              <div class="preset-container">
+                <n-dynamic-input v-model:value="config.presets" :on-create="onCreatePreset">
+                  <template #default="{ value }">
+                    <div class="preset-item">
+                      <n-input v-model:value="value.name" placeholder="片单名称" style="flex: 1;" />
+                      <n-input v-model:value="value.id" placeholder="ID" style="width: 100px; text-align: center;" />
                     </div>
-                    <n-collapse-transition :show="!!p115Info"><n-alert type="success" :show-icon="true" style="margin-bottom: 12px;"><span style="font-weight: bold;">{{ p115Info?.msg || 'Cookie 有效' }}</span></n-alert></n-collapse-transition>
-                    <n-collapse-transition :show="!p115Info && config.p115_cookies && !loading115Info"><n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;"><span style="font-size: 12px;">状态未知或 Cookie 无效，请检查。</span></n-alert></n-collapse-transition>
-                    <n-form-item label="115 Cookies"><n-input v-model:value="config.p115_cookies" type="textarea" placeholder="UID=...; CID=...; SEID=..." :rows="3"/><template #feedback><span style="font-size: 12px; color: #999;">请在本地浏览器登录 115 后抓取 Cookie 填入。</span></template></n-form-item>
-                    <n-form-item label="保存目录 CID"><n-input v-model:value="config.p115_save_path_cid" placeholder="0 为根目录，请直接粘贴长数字" style="width: 100%" /><template #feedback><span style="font-size: 12px; color: #999;">文件夹 ID (打开网页版文件夹，URL 最后那串数字)</span></template></n-form-item>
+                  </template>
+                </n-dynamic-input>
+                <div v-if="!config.presets || config.presets.length === 0" style="text-align: center; color: #666; padding: 20px;">
+                  暂无片单，请点击下方按钮添加
                 </div>
+              </div>
+              <n-space justify="end" style="margin-top: 8px;">
+                <n-button size="tiny" tertiary @click="resetPresets">恢复默认推荐</n-button>
+              </n-space>
 
-                <!-- ★★★ CMS 通知配置 (可选) ★★★ -->
-                <n-divider title-placement="left" style="font-size: 14px;">CMS 通知设置 (可选)</n-divider>
-                <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 18px;">
-                    <n-alert type="info" :show-icon="false" style="margin-bottom: 12px; font-size: 12px;">
-                        配置后，当 115 下载任务添加成功，会自动通知 CMS 执行整理 (生成 strm)。
-                    </n-alert>
-                    <n-form-item label="CMS 地址"><n-input v-model:value="config.cms_url" placeholder="例如: http://192.168.1.5:9527" /></n-form-item>
-                    <n-form-item label="CMS Token"><n-input v-model:value="config.cms_token" type="password" show-password-on="click" placeholder="cloud_media_sync" /></n-form-item>
-                </div>
-             </n-gi>
-             
-             <!-- ... (保留资源过滤设置和自定义片单部分，代码不变) ... -->
-             <n-gi>
-                <n-divider title-placement="left" style="margin-top: 0; font-size: 14px;">资源过滤设置</n-divider>
-                <n-space vertical size="medium">
-                    <n-form-item label="分辨率" :show-feedback="false"><n-checkbox-group v-model:value="config.filters.resolutions"><n-space><n-checkbox value="2160p" label="4K" /><n-checkbox value="1080p" label="1080p" /><n-checkbox value="720p" label="720p" /></n-space></n-checkbox-group></n-form-item>
-                    <n-form-item label="质量/版本" :show-feedback="false"><n-checkbox-group v-model:value="config.filters.qualities"><n-space><n-checkbox value="Remux" label="Remux" /><n-checkbox value="HDR10" label="HDR" /><n-checkbox value="Dolby Vision" label="DoVi" /><n-checkbox value="BluRay" label="BluRay" /><n-checkbox value="WEB-DL" label="WEB-DL" /></n-space></n-checkbox-group></n-form-item>
-                    <n-form-item label="容器（仅电影）" :show-feedback="false"><n-space vertical><n-checkbox-group v-model:value="config.filters.containers"><n-space><n-checkbox value="mkv" label="MKV" /><n-checkbox value="mp4" label="MP4" /><n-checkbox value="ts" label="TS" /><n-checkbox value="iso" label="ISO" /></n-space></n-checkbox-group><n-switch v-model:value="config.filters.require_zh"><template #checked>中文字幕</template><template #unchecked>不限制字幕</template></n-switch></n-space></n-form-item>
-                    <n-form-item label="电影大小限制 (GB)"><n-input-group><n-input-number v-model:value="config.filters.movie_min_size" :min="0" placeholder="Min" :show-button="false" style="width: 50%" /><n-input-group-label>-</n-input-group-label><n-input-number v-model:value="config.filters.movie_max_size" :min="0" placeholder="Max" :show-button="false" style="width: 50%" /></n-input-group></n-form-item>
-                    <n-form-item label="剧集大小限制 (GB)"><n-input-group><n-input-number v-model:value="config.filters.tv_min_size" :min="0" placeholder="Min" :show-button="false" style="width: 50%" /><n-input-group-label>-</n-input-group-label><n-input-number v-model:value="config.filters.tv_max_size" :min="0" placeholder="Max" :show-button="false" style="width: 50%" /></n-input-group><template #feedback><span style="font-size: 12px; color: #999;">0 表示不限制。剧集通常指单集或单季包大小。</span></template></n-form-item>
-                </n-space>
-             </n-gi>
-             <n-gi>
-                <n-divider title-placement="left" style="margin-top: 0; font-size: 14px;">自定义精选片单</n-divider>
-                <n-alert type="info" style="margin-bottom: 12px;" :show-icon="false">添加您喜欢的 NULLBR 片单 ID。</n-alert>
-                <div style="max-height: 450px; overflow-y: auto; padding-right: 4px;">
-                    <n-dynamic-input v-model:value="config.presets" :on-create="onCreatePreset"><template #default="{ value }"><div style="display: flex; align-items: center; width: 100%; gap: 8px;"><n-input v-model:value="value.name" placeholder="名称" style="flex: 1; min-width: 0;" /><n-input v-model:value="value.id" placeholder="ID" style="width: 110px; flex-shrink: 0;" /></div></template></n-dynamic-input>
-                </div>
-                <n-space justify="end" style="margin-top: 10px;"><n-button size="tiny" @click="resetPresets">恢复默认片单</n-button></n-space>
-             </n-gi>
+            </n-gi>
           </n-grid>
-          <n-divider style="margin: 16px 0;" />
-          <n-space justify="space-between">
-            <n-button tag="a" href="https://nullbr.online/manage" target="_blank" secondary size="small">获取 NULLBR Key</n-button>
-            <n-button type="primary" @click="saveConfig" :loading="saving">保存全部配置</n-button>
+
+          <n-divider />
+          
+          <n-space justify="end">
+            <n-button type="primary" size="large" @click="saveConfig" :loading="saving">
+              <template #icon><n-icon><SaveIcon /></n-icon></template>
+              保存全部配置
+            </n-button>
           </n-space>
         </n-form>
       </n-card>
     </n-collapse-transition>
 
-    <!-- ... (保留 Tabs 及其后续内容) ... -->
+    <!-- 主体内容 Tabs -->
     <n-tabs type="line" animated style="margin-top: 16px;">
       <n-tab-pane name="search" tab="🔍 资源搜索">
         <n-card :bordered="false" class="dashboard-card">
@@ -159,7 +294,7 @@
 <script setup>
 import { ref, reactive, onMounted, h, defineComponent, computed } from 'vue';
 import axios from 'axios';
-import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip, NCheckbox, NCheckboxGroup, NInputNumber, NSwitch, NSpin, NRadioGroup, NRadioButton, NCollapseTransition, NSelect, NTabs, NTabPane, NList, NListItem, NThing, NModal } from 'naive-ui';
+import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip, NCheckbox, NCheckboxGroup, NInputNumber, NSwitch, NSpin, NRadioGroup, NRadioButton, NCollapseTransition, NSelect, NTabs, NTabPane, NList, NListItem, NThing, NModal, NLayout, NLayoutSider, NLayoutContent, NPageHeader, NCard, NAlert, NForm, NFormItem, NGrid, NGi, NDivider, NInput, NInputGroup, NInputGroupLabel, NMenu, NEmpty } from 'naive-ui';
 import { useClipboard } from '@vueuse/core';
 import NullbrSearchModal from './NullbrSearchModal.vue';
 import { 
@@ -168,7 +303,12 @@ import {
   ListOutline as ListIcon,
   PaperPlaneOutline as SendIcon,
   PulseOutline as PulseIcon,
-  RefreshOutline as RefreshIcon
+  RefreshOutline as RefreshIcon,
+  // ★★★ 补全缺失的图标 ★★★
+  ServerOutline as ServerIcon,
+  FilterOutline as FilterIcon,
+  LinkOutline as LinkIcon,
+  SaveOutline as SaveIcon
 } from '@vicons/ionicons5';
 
 const message = useMessage();
@@ -395,4 +535,59 @@ onMounted(() => {
 :deep(.ribbon-blue span) { background-color: #409eff; }
 :deep(.ribbon-purple span) { background-color: #722ed1; }
 :deep(.ribbon-orange span) { background-color: #e6a23c; }
+/* 标题样式 */
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  margin-bottom: 16px;
+  color: var(--n-text-color);
+  border-left: 4px solid var(--n-primary-color);
+  padding-left: 10px;
+}
+
+/* 子模块卡片样式 (115, CMS) */
+.sub-module {
+  background-color: rgba(128, 128, 128, 0.05);
+  border: 1px solid rgba(128, 128, 128, 0.1);
+  border-radius: 8px;
+  padding: 16px;
+  margin-top: 16px;
+}
+
+.sub-module-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.sub-module-header .title {
+  font-weight: bold;
+  font-size: 14px;
+}
+
+/* 过滤区样式 */
+.filter-box {
+  padding: 0 4px;
+}
+
+/* 片单列表样式 */
+.preset-container {
+  background-color: rgba(128, 128, 128, 0.03);
+  border-radius: 8px;
+  padding: 12px;
+  max-height: 400px;
+  overflow-y: auto;
+  border: 1px solid rgba(128, 128, 128, 0.1);
+}
+
+.preset-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
 </style>
