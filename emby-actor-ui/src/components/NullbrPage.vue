@@ -1,6 +1,7 @@
 <!-- src/components/NullbrPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
+    <!-- ... (Page Header 保持不变) ... -->
     <n-page-header title="NULLBR 资源库" subtitle="连接 115 专属资源网络">
       <template #extra>
         <n-tooltip trigger="hover">
@@ -24,15 +25,13 @@
     <!-- 配置面板 -->
     <n-collapse-transition :show="showConfig">
       <n-card title="接入配置" :bordered="false" class="dashboard-card" style="margin-top: 16px; margin-bottom: 16px;">
-        <!-- ... (配置表单内容保持不变) ... -->
         <n-alert type="info" style="margin-bottom: 16px;">
           NULLBR 是一个第三方资源索引服务，您需要先<n-button tag="a" href="https://nullbr.online/manage" target="_blank" secondary size="small">注册账号</n-button>获取 API Key。
         </n-alert>
         <n-form label-placement="top">
           <n-grid cols="1 850:2 1300:3" :x-gap="32" :y-gap="24">
-             <!-- ... (省略配置表单细节，与原文件一致) ... -->
              <n-gi>
-                <n-divider title-placement="left" style="margin-top: 0; font-size: 14px;">基础与推送设置</n-divider>
+                <n-divider title-placement="left" style="margin-top: 0; font-size: 14px;">基础设置</n-divider>
                 <n-form-item label="NULLBR API Key">
                     <n-input v-model:value="config.api_key" type="password" show-password-on="click" placeholder="请输入 NULLBR API Key" />
                 </n-form-item>
@@ -46,36 +45,37 @@
                     </n-checkbox-group>
                     <template #feedback><span style="font-size: 12px; color: #999;">每开启一个源，点击资源时消耗 1 次配额。只选 115 可最省配额。</span></template>
                 </n-form-item>
-                <!-- ... (其他配置项) ... -->
+                
                 <n-grid :cols="2" :x-gap="12">
                     <n-gi><n-form-item label="每日调用上限"><n-input-number v-model:value="config.daily_limit" :min="10" placeholder="默认100" /></n-form-item></n-gi>
                     <n-gi><n-form-item label="请求间隔 (秒)"><n-input-number v-model:value="config.request_interval" :min="1" :step="0.5" placeholder="默认5" /></n-form-item></n-gi>
                 </n-grid>
-                <n-form-item label="推送方式">
-                    <n-radio-group v-model:value="config.push_mode" name="pushmode">
-                        <n-radio-button value="cms">CMS</n-radio-button>
-                        <n-radio-button value="115">115</n-radio-button>
-                    </n-radio-group>
-                </n-form-item>
-                <n-collapse-transition :show="config.push_mode === '115'">
-                    <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 18px;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
-                            <n-text depth="3" style="font-size: 12px;">账号状态</n-text>
-                            <n-button size="tiny" secondary @click="check115Status" :loading="loading115Info"><template #icon><n-icon><RefreshIcon /></n-icon></template>检查连通性</n-button>
-                        </div>
-                        <n-collapse-transition :show="!!p115Info"><n-alert type="success" :show-icon="true" style="margin-bottom: 12px;"><span style="font-weight: bold;">{{ p115Info?.msg || 'Cookie 有效' }}</span></n-alert></n-collapse-transition>
-                        <n-collapse-transition :show="!p115Info && config.p115_cookies && !loading115Info"><n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;"><span style="font-size: 12px;">状态未知或 Cookie 无效，请检查。</span></n-alert></n-collapse-transition>
-                        <n-form-item label="115 Cookies"><n-input v-model:value="config.p115_cookies" type="textarea" placeholder="UID=...; CID=...; SEID=..." :rows="3"/><template #feedback><span style="font-size: 12px; color: #999;">请在本地浏览器登录 115 后抓取 Cookie 填入。</span></template></n-form-item>
-                        <n-form-item label="保存目录 CID"><n-input v-model:value="config.p115_save_path_cid" placeholder="0 为根目录，请直接粘贴长数字" style="width: 100%" /><template #feedback><span style="font-size: 12px; color: #999;">文件夹 ID (打开网页版文件夹，URL 最后那串数字)</span></template></n-form-item>
+
+                <!-- ★★★ 115 配置 (常驻显示) ★★★ -->
+                <n-divider title-placement="left" style="font-size: 14px;">115 下载设置 (必填)</n-divider>
+                <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 18px;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
+                        <n-text depth="3" style="font-size: 12px;">账号状态</n-text>
+                        <n-button size="tiny" secondary @click="check115Status" :loading="loading115Info"><template #icon><n-icon><RefreshIcon /></n-icon></template>检查连通性</n-button>
                     </div>
-                </n-collapse-transition>
-                <n-collapse-transition :show="config.push_mode === 'cms'">
-                    <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 18px;">
-                        <n-form-item label="CMS 地址"><n-input v-model:value="config.cms_url" placeholder="例如: http://192.168.1.5:9527" /></n-form-item>
-                        <n-form-item label="CMS Token"><n-input v-model:value="config.cms_token" type="password" show-password-on="click" placeholder="cloud_media_sync" /></n-form-item>
-                    </div>
-                </n-collapse-transition>
+                    <n-collapse-transition :show="!!p115Info"><n-alert type="success" :show-icon="true" style="margin-bottom: 12px;"><span style="font-weight: bold;">{{ p115Info?.msg || 'Cookie 有效' }}</span></n-alert></n-collapse-transition>
+                    <n-collapse-transition :show="!p115Info && config.p115_cookies && !loading115Info"><n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;"><span style="font-size: 12px;">状态未知或 Cookie 无效，请检查。</span></n-alert></n-collapse-transition>
+                    <n-form-item label="115 Cookies"><n-input v-model:value="config.p115_cookies" type="textarea" placeholder="UID=...; CID=...; SEID=..." :rows="3"/><template #feedback><span style="font-size: 12px; color: #999;">请在本地浏览器登录 115 后抓取 Cookie 填入。</span></template></n-form-item>
+                    <n-form-item label="保存目录 CID"><n-input v-model:value="config.p115_save_path_cid" placeholder="0 为根目录，请直接粘贴长数字" style="width: 100%" /><template #feedback><span style="font-size: 12px; color: #999;">文件夹 ID (打开网页版文件夹，URL 最后那串数字)</span></template></n-form-item>
+                </div>
+
+                <!-- ★★★ CMS 通知配置 (可选) ★★★ -->
+                <n-divider title-placement="left" style="font-size: 14px;">CMS 通知设置 (可选)</n-divider>
+                <div style="background: rgba(255,255,255,0.05); padding: 12px; border-radius: 8px; margin-bottom: 18px;">
+                    <n-alert type="info" :show-icon="false" style="margin-bottom: 12px; font-size: 12px;">
+                        配置后，当 115 下载任务添加成功，会自动通知 CMS 执行整理 (生成 strm)。
+                    </n-alert>
+                    <n-form-item label="CMS 地址"><n-input v-model:value="config.cms_url" placeholder="例如: http://192.168.1.5:9527" /></n-form-item>
+                    <n-form-item label="CMS Token"><n-input v-model:value="config.cms_token" type="password" show-password-on="click" placeholder="cloud_media_sync" /></n-form-item>
+                </div>
              </n-gi>
+             
+             <!-- ... (保留资源过滤设置和自定义片单部分，代码不变) ... -->
              <n-gi>
                 <n-divider title-placement="left" style="margin-top: 0; font-size: 14px;">资源过滤设置</n-divider>
                 <n-space vertical size="medium">
@@ -104,7 +104,7 @@
       </n-card>
     </n-collapse-transition>
 
-    <!-- Tabs 切换搜索和片单 -->
+    <!-- ... (保留 Tabs 及其后续内容) ... -->
     <n-tabs type="line" animated style="margin-top: 16px;">
       <n-tab-pane name="search" tab="🔍 资源搜索">
         <n-card :bordered="false" class="dashboard-card">
@@ -179,7 +179,6 @@ const showConfig = ref(false);
 const currentUsage = ref(0);
 const config = reactive({
   api_key: '',
-  push_mode: 'cms', 
   p115_cookies: '',
   p115_save_path_cid: '',
   cms_url: '',    
@@ -236,7 +235,8 @@ const saveConfig = async () => {
     showConfig.value = false;
     loadPresets(); 
   } catch (error) { message.error('保存失败'); } finally { saving.value = false; }
-  if (config.push_mode === '115') check115Status();
+  // 总是检查 115 状态
+  check115Status();
 };
 
 const onCreatePreset = () => ({ name: '', id: '' });
@@ -332,19 +332,14 @@ const mapApiItemToUi = (item) => ({
 });
 
 const nullbrModalRef = ref(null);
-const loadingResourcesId = ref(null); // 保留这个是为了点击卡片时有个短暂的加载反馈(可选)
+const loadingResourcesId = ref(null);
 
-// ★★★ 2. 重写打开模态框的方法 ★★★
 const openResourceModal = (item) => {
-  // 简单处理：直接调用子组件的 open 方法
   if (nullbrModalRef.value) {
-    // 构造子组件需要的 item 格式
-    // NullbrSearchModal 兼容 media_type 和 item_type
     nullbrModalRef.value.open(item);
   }
 };
 
-// MediaCard 组件 (保持不变)
 const MediaCard = defineComponent({
   props: ['item', 'loading'],
   components: { NImage, NEllipsis, NSpace, NTag, NText, NSpin, NIcon },

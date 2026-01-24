@@ -15,24 +15,24 @@ def handle_config():
     if request.method == 'GET':
         config = settings_db.get_setting('nullbr_config') or {}
         if 'filters' not in config:
+            # ... (保留 filters 默认值) ...
             config['filters'] = {
-                "resolutions": [],
-                "qualities": [],
+                "resolutions": [], "qualities": [],
                 "min_size": 0, "max_size": 0,
                 "movie_min_size": 0, "movie_max_size": 0,
                 "tv_min_size": 0, "tv_max_size": 0,
-                "require_zh": False,
-                "containers": []
+                "require_zh": False, "containers": []
             }
-        # ★ 默认开启所有源
         if 'enabled_sources' not in config:
             config['enabled_sources'] = ['115', 'magnet', 'ed2k']
             
-        if 'push_mode' not in config: config['push_mode'] = 'cms'
+        # ★ 移除 push_mode 的读取，或者强制设为 115
+        config['push_mode'] = '115' 
+        
         if 'p115_cookies' not in config: config['p115_cookies'] = ''
         if 'p115_save_path_cid' not in config: config['p115_save_path_cid'] = 0
 
-        # ... (统计逻辑) ...
+        # ... (保留统计逻辑) ...
         stats = settings_db.get_setting('nullbr_usage_stats') or {}
         today_str = datetime.now().strftime('%Y-%m-%d')
         current_usage = stats.get('count', 0) if stats.get('date') == today_str else 0
@@ -46,7 +46,7 @@ def handle_config():
             "api_key": data.get('api_key', '').strip(),
             "cms_url": data.get('cms_url', '').strip(),     
             "cms_token": data.get('cms_token', '').strip(),
-            "push_mode": data.get('push_mode', 'cms'),
+            # "push_mode": data.get('push_mode', 'cms'), # 不再保存 push_mode，逻辑已写死
             "p115_cookies": data.get('p115_cookies', '').strip(),
             "p115_save_path_cid": data.get('p115_save_path_cid', 0),
             "filters": data.get('filters', {}),
@@ -116,7 +116,7 @@ def get_resources():
 @admin_required
 def push_resource():
     """
-    改造后的推送接口：直接接收前端选好的 link
+    推送接口
     """
     data = request.json
     link = data.get('link')
@@ -126,26 +126,10 @@ def push_resource():
         return jsonify({"status": "error", "message": "链接为空"}), 400
 
     try:
-        # # ★★★ 核心修复：清洗链接的“脏尾巴” ★★★
-        # # NULLBR 返回的链接经常以 &# 或 & 结尾，导致 115 转存失败
-        # # 我们做一个循环清洗，直到尾巴干干净净
-        # if link:
-        #     link = link.strip() # 先去空格
-            
-        #     # 如果结尾是 &# 或者 &，就一直切，直到没有为止
-        #     while link.endswith('&#') or link.endswith('&') or link.endswith('#'):
-        #         if link.endswith('&#'):
-        #             link = link[:-2]
-        #         elif link.endswith('&') or link.endswith('#'):
-        #             link = link[:-1]
-        
-        # # 打印一下清洗后的链接，方便调试
-        # logger.info(f"  ➜ 清洗后的链接: {link}")
-
-        # 推送链接
+        # 调用 handler，内部会自动处理 115 -> CMS Notify
         nullbr_handler.handle_push_request(link, title)
         
-        return jsonify({"status": "success", "message": "已推送到 CMS"})
+        return jsonify({"status": "success", "message": "已添加至 115 离线任务"})
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
     
