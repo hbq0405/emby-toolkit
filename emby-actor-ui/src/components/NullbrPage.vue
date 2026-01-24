@@ -37,7 +37,7 @@
         </template>
         
         <n-alert type="info" style="margin-bottom: 20px;" :show-icon="true">
-          NULLBR 是一个第三方资源索引服务，配置下方信息后可自动拉取片单并推送到下载器。
+          NULLBR 是一个第三方资源索引服务，配置下方信息后可转存资源到115网盘。
         </n-alert>
 
         <n-form label-placement="top" :model="config" label-width="auto">
