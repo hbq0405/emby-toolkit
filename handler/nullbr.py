@@ -454,7 +454,7 @@ def fetch_resource_list(tmdb_id, media_type='movie', specific_source=None, seaso
     return filtered_list
 
 # ==============================================================================
-# ★★★ CMS 推送逻辑 (Token 版) ★★★
+# ★★★ 115 推送逻辑  ★★★
 # ==============================================================================
 
 def _clean_link(link):
@@ -508,19 +508,6 @@ def notify_cms_scan():
         # 通知失败不应该影响主流程的成功状态，只记录日志
         logger.warning(f"  ⚠️ CMS 通知发送失败: {e}")
         raise e
-
-def _format_size(size):
-    """辅助函数：格式化字节大小"""
-    if size < 1024:
-        return f"{size} B"
-    elif size < 1024**2:
-        return f"{size/1024:.2f} KB"
-    elif size < 1024**3:
-        return f"{size/1024**2:.2f} MB"
-    elif size < 1024**4:
-        return f"{size/1024**3:.2f} GB"
-    else:
-        return f"{size/1024**4:.2f} TB"
 
 def push_to_115(resource_link, title):
     """
