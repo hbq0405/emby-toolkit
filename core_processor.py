@@ -191,33 +191,47 @@ class MediaProcessor:
             tmdb_id = None
             search_query = None
             search_year = None
-            
+
             tmdb_regex = r'(?:tmdb|tmdbid)[-_=\s]*(\d+)'
             match = re.search(tmdb_regex, folder_name, re.IGNORECASE)
             if not match:
                 match = re.search(tmdb_regex, grandparent_name, re.IGNORECASE)
             if not match:
                 match = re.search(tmdb_regex, filename, re.IGNORECASE)
-                
+
             if match:
                 tmdb_id = match.group(1)
                 logger.info(f"  ➜ [实时监控] 成功提取 TMDb ID: {tmdb_id}")
             else:
-                year_regex = r'\b(19|20)\d{2}\b'
-                year_matches = list(re.finditer(year_regex, filename))
-                season_episode_regex = r'[sS](\d{1,2})[eE](\d{1,2})'
-                se_match = re.search(season_episode_regex, filename)
+                # 优化：先尝试从目录名提取搜索信息
+                def extract_title_year(text: str):
+                    year_regex = r'\b(19|20)\d{2}\b'
+                    season_episode_regex = r'[sS](\d{1,2})[eE](\d{1,2})'
 
-                if year_matches:
-                    last_year_match = year_matches[-1]
-                    search_year = last_year_match.group(0)
-                    raw_title = filename[:last_year_match.start()]
-                elif se_match:
-                    raw_title = filename[:se_match.start()]
-                else:
-                    raw_title = os.path.splitext(filename)[0]
+                    year_matches = list(re.finditer(year_regex, text))
+                    se_match = re.search(season_episode_regex, text)
+                    if year_matches:
+                        last_year_match = year_matches[-1]
+                        year = last_year_match.group(0)
+                        raw_title = text[:last_year_match.start()]
+                    elif se_match:
+                        year = None
+                        raw_title = text[:se_match.start()]
+                    else:
+                        year = None
+                        raw_title = text
+                    # 清理标题
+                    query = raw_title.replace('.', ' ').replace('_', ' ').strip(' -[]()')
+                    return query, year
 
-                search_query = raw_title.replace('.', ' ').replace('_', ' ').strip(' -[]()')
+                # 尝试从 folder_name 先提取搜索信息
+                search_query, search_year = extract_title_year(folder_name)
+                if not search_query or search_query == '':
+                    # 退回用 grandparent_name
+                    search_query, search_year = extract_title_year(grandparent_name)
+                # 还是没有，再用文件名
+                if not search_query or search_query == '':
+                    search_query, search_year = extract_title_year(os.path.splitext(filename)[0])
                 logger.info(f"  ➜ [实时监控] 未找到ID，提取搜索信息: 标题='{search_query}', 年份='{search_year}'")
 
             # =========================================================
