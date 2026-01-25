@@ -32,57 +32,45 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
             'codec': 'unknown', 'subtitle_count': 0, 'subtitle_languages': []
         }
 
-    # 构造伪造的 item_details 供 helper 分析
-    fake_item_details = {
-        'Path': version.get('path'),
-        'MediaStreams': []
-    }
+    # ★★★ 核心修改：直接读取数据库中已有的分析结果，不再重复造轮子 ★★★
     
-    # 还原 MediaStreams (部分还原，够用即可)
-    if version.get('video_codec'):
-        fake_item_details['MediaStreams'].append({
-            'Type': 'Video',
-            'Codec': version.get('video_codec'),
-            'Width': version.get('width'),
-            'Height': version.get('height'),
-            'BitRate': int((version.get('video_bitrate_mbps') or 0) * 1000000),
-            'BitDepth': version.get('bit_depth'),
-            'AverageFrameRate': version.get('frame_rate')
-        })
+    # 1. 获取字幕语言列表 (例如 ['chi', 'eng'])
+    # parse_full_asset_details 已经帮我们生成了这个字段
+    subtitle_langs = version.get('subtitle_languages_raw', [])
     
-    # 还原字幕流
-    # ★★★ 关键点 1：确保从 version 中正确获取 subtitles ★★★
-    # 从你提供的数据看，version 字典里确实有 'subtitles' 这个键
-    raw_subtitles = version.get('subtitles', [])
-    
-    for sub in raw_subtitles:
-        fake_item_details['MediaStreams'].append({
-            'Type': 'Subtitle',
-            'Language': sub.get('language'),
-            'DisplayTitle': sub.get('display_title'),
-            'IsExternal': False 
-        })
+    # 2. 获取字幕数量
+    # 优先使用 raw 列表的长度，如果列表为空但有 display 字符串，尝试解析一下（兜底）
+    subtitle_count = len(subtitle_langs)
+    if subtitle_count == 0:
+        # 尝试从原始 subtitles 列表获取长度 (如果存在)
+        raw_subs = version.get('subtitles', [])
+        if raw_subs:
+            subtitle_count = len(raw_subs)
 
-    # 调用 helper 进行标准化分析
-    analysis = helpers.analyze_media_asset(fake_item_details)
+    # 3. 获取其他标准化属性 (直接读，或者做简单的归一化)
+    quality = str(version.get("quality_display", "未知")).lower().replace("bluray", "blu-ray").replace("webdl", "web-dl")
+    resolution = version.get("resolution_display", "未知")
     
-    # 提取字幕信息 (这是识别出的语言列表，用于判断是否有中文)
-    subtitle_langs = analysis.get('subtitle_languages_raw', [])
-    
-    # ★★★ 关键点 2：直接使用原始列表长度作为计数 ★★★
-    # 只要 raw_subtitles 不为空，这里就应该有值
-    subtitle_count = len(raw_subtitles)
-    
+    # 特效处理：数据库里存的是 display 格式 (如 "DoVi_P8")，我们需要转成小写 (如 "dovi_p8") 以便比较
+    effect_raw = version.get("effect_display", "SDR")
+    # 兼容旧数据可能是列表的情况
+    if isinstance(effect_raw, list):
+        effect_raw = effect_raw[0] if effect_raw else "SDR"
+    effect = str(effect_raw).lower()
+
+    codec = version.get("codec_display", "未知")
+
     raw_id = version.get("emby_item_id")
     int_id = int(raw_id) if raw_id and str(raw_id).isdigit() else 0
 
     return {
         "id": version.get("emby_item_id"),
         "path": version.get("path"),
-        "quality": analysis.get("quality_display", "未知").lower(),
-        "resolution": analysis.get("resolution_display", "未知"),
-        "effect": analysis.get("effect_display", "SDR").lower(),
-        "codec": analysis.get("codec_display", "未知"),
+        
+        "quality": quality,
+        "resolution": resolution,
+        "effect": effect,
+        "codec": codec,
         
         "filesize": version.get("size_bytes", 0),
         "video_bitrate_mbps": version.get("video_bitrate_mbps") or 0,
@@ -91,8 +79,6 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
         "runtime_minutes": version.get("runtime_minutes") or 0,
         "date_added": version.get("date_added_to_library") or "",
         "int_id": int_id,
-        
-        # ★★★ 关键点 3：将计数放入返回字典 ★★★
         "subtitle_count": subtitle_count,
         "subtitle_languages": subtitle_langs
     }
