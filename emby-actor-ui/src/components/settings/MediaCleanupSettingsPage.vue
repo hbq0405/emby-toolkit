@@ -33,8 +33,9 @@
               
               <n-space class="rule-actions" align="center">
                 <!-- 保大保小切换 -->
+                <!-- ★★★ 修改：在 v-if 中加入 'subtitle' ★★★ -->
                 <n-radio-group 
-                  v-if="['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate'].includes(rule.id)" 
+                  v-if="['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate', 'subtitle'].includes(rule.id)" 
                   v-model:value="rule.priority" 
                   size="small" 
                   style="margin-right: 12px;"
@@ -197,7 +198,9 @@ const RULE_METADATA = {
   frame_rate: { name: "按帧率", description: "按帧率选择。" },
   filesize: { name: "按文件大小", description: "按视频大小选择。" },
   codec: { name: "按编码", description: "比较视频编码格式 (如 AV1, HEVC, H.264)。" },
-  date_added: { name: "按入库时间", description: "最终兜底规则。根据入库时间（或ID大小）决定去留。" }
+  date_added: { name: "按入库时间", description: "最终兜底规则。根据入库时间（或ID大小）决定去留。" },
+  // ★★★ 新增：字幕规则元数据 ★★★
+  subtitle: { name: "按字幕", description: "比较字幕语言和数量 (如中文优先)。" }
 };
 
 // --- 辅助函数 ---
@@ -213,6 +216,8 @@ const getDescLabel = (id) => {
     case 'bitrate': return '保留最高';
     case 'bit_depth': return '保留高位';
     case 'frame_rate': return '保留高帧';
+    // ★★★ 新增 ★★★
+    case 'subtitle': return '中文优先/多';
     default: return '保留大/高';
   }
 };
@@ -225,6 +230,8 @@ const getAscLabel = (id) => {
     case 'bitrate': return '保留最低';
     case 'bit_depth': return '保留低位';
     case 'frame_rate': return '保留低帧';
+    // ★★★ 新增 ★★★
+    case 'subtitle': return '字幕少优先';
     default: return '保留小/低';
   }
 };
@@ -272,9 +279,10 @@ const fetchSettings = async () => {
             return { ...rule, priority: formatEffectPriority(rule.priority, 'display') };
         }
         // 为数值型规则设置默认排序方向
-        const numericRules = ['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate', 'date_added'];
+        // ★★★ 修改：加入 subtitle ★★★
+        const numericRules = ['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate', 'date_added', 'subtitle'];
         if (numericRules.includes(rule.id) && !rule.priority) {
-            // date_added 默认为 asc (保留最早)，其他默认为 desc (保留最大)
+            // date_added 默认为 asc (保留最早)，其他默认为 desc (保留最大/中文优先)
             return { ...rule, priority: rule.id === 'date_added' ? 'asc' : 'desc' };
         }
         return rule;
@@ -305,6 +313,8 @@ const fetchSettings = async () => {
         { id: 'bitrate', enabled: true, priority: 'desc' },
         { id: 'codec', enabled: true, priority: ['AV1', 'HEVC', 'H.264', 'VP9'] },
         { id: 'quality', enabled: true, priority: ['Remux', 'BluRay', 'WEB-DL', 'HDTV'] },
+        // ★★★ 新增：字幕规则默认配置 ★★★
+        { id: 'subtitle', enabled: true, priority: 'desc' },
         { id: 'frame_rate', enabled: false, priority: 'desc' },
         { id: 'filesize', enabled: true, priority: 'desc' },
     ];
