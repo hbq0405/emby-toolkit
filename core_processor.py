@@ -204,10 +204,11 @@ class MediaProcessor:
                 logger.info(f"  ➜ [实时监控] 成功提取 TMDb ID: {tmdb_id}")
             else:
                 # 优化：先尝试从目录名提取搜索信息
+                def is_season_folder(name: str) -> bool:
+                    return bool(re.match(r'^(Season|S)\s*\d+|Specials', name, re.IGNORECASE))
                 def extract_title_year(text: str):
                     year_regex = r'\b(19|20)\d{2}\b'
                     season_episode_regex = r'[sS](\d{1,2})[eE](\d{1,2})'
-
                     year_matches = list(re.finditer(year_regex, text))
                     se_match = re.search(season_episode_regex, text)
                     if year_matches:
@@ -220,18 +221,19 @@ class MediaProcessor:
                     else:
                         year = None
                         raw_title = text
-                    # 清理标题
                     query = raw_title.replace('.', ' ').replace('_', ' ').strip(' -[]()')
                     return query, year
 
-                # 尝试从 folder_name 先提取搜索信息
-                search_query, search_year = extract_title_year(folder_name)
-                if not search_query or search_query == '':
-                    # 退回用 grandparent_name
+                # 首先尝试folder_name，但如果是季目录名，则换用grandparent_name
+                if is_season_folder(folder_name):
                     search_query, search_year = extract_title_year(grandparent_name)
-                # 还是没有，再用文件名
+                else:
+                    search_query, search_year = extract_title_year(folder_name)
+
+                # 如果目录名都没提取到有效标题，再用filename
                 if not search_query or search_query == '':
                     search_query, search_year = extract_title_year(os.path.splitext(filename)[0])
+
                 logger.info(f"  ➜ [实时监控] 未找到ID，提取搜索信息: 标题='{search_query}', 年份='{search_year}'")
 
             # =========================================================
