@@ -100,11 +100,6 @@ JOB_ID_REVIVAL_CHECK = "scheduled_revival_check"
 # ★★★ 新增：全局监控服务实例 ★★★
 monitor_service_instance = None
 
-# --- 数据库辅助函数 ---
-def task_process_single_item(processor: MediaProcessor, item_id: str, force_full_update: bool):
-    """任务：处理单个媒体项"""
-    processor.process_single_item(item_id, force_full_update)
-
 # --- 保存配置并重新加载的函数 ---
 def save_config_and_reload(new_config: Dict[str, Any]):
     """
