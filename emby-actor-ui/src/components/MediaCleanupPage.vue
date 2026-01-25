@@ -323,6 +323,44 @@ const createVersionColumns = (bestVersionIdRaw) => {
       render: (row) => row.codec ? h(NTag, { size: 'small', bordered: false, color: { color: '#f5f5f5', textColor: '#666' } }, { default: () => row.codec }) : '-'
     },
     {
+      title: '字幕',
+      key: 'subtitle_count',
+      width: 100,
+      render: (row) => {
+        const count = row.subtitle_count || 0;
+        const langs = row.subtitle_languages || [];
+        
+        // 检查是否有中文
+        const hasChinese = langs.includes('chi') || langs.includes('yue');
+        
+        // 构建显示内容
+        let content;
+        if (count === 0) {
+          content = h(NText, { depth: 3, style: 'font-size: 12px' }, { default: () => '无' });
+        } else {
+          // 如果有中文，显示绿色 Tag，否则显示普通 Tag
+          content = h(
+            NTag, 
+            { 
+              size: 'small', 
+              bordered: false, 
+              type: hasChinese ? 'success' : 'default' 
+            }, 
+            { default: () => hasChinese ? '中文' : `${count}种` }
+          );
+        }
+
+        // 添加 Tooltip 显示详细语言
+        if (count > 0) {
+          return h(NTooltip, { trigger: 'hover' }, {
+            trigger: () => content,
+            default: () => langs.join(', ') || '未知语言'
+          });
+        }
+        return content;
+      }
+    },
+    {
       title: '码率',
       key: 'video_bitrate_mbps',
       width: 100,
