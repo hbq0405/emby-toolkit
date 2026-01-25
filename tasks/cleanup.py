@@ -11,6 +11,8 @@ from collections import defaultdict
 import task_manager
 import handler.emby as emby
 from database import connection, cleanup_db, settings_db, maintenance_db
+# ★★★ 导入 helpers 模块 ★★★
+from . import helpers
 
 logger = logging.getLogger(__name__)
 
@@ -21,57 +23,76 @@ logger = logging.getLogger(__name__)
 def _get_properties_for_comparison(version: Dict) -> Dict:
     """
     从 asset_details_json 的单个版本条目中，提取用于比较的标准化属性。
-    包含：特效、分辨率、质量、文件大小、码率、色深、帧率、时长。
+    包含：特效、分辨率、质量、文件大小、码率、色深、帧率、时长、字幕语言数量。
     """
     if not version or not isinstance(version, dict):
         return {
             'id': None, 'quality': 'unknown', 'resolution': 'unknown', 'effect': 'sdr', 'filesize': 0,
             'video_bitrate_mbps': 0, 'bit_depth': 8, 'frame_rate': 0, 'runtime_minutes': 0,
-            'codec': 'unknown' 
+            'codec': 'unknown', 'subtitle_count': 0, 'subtitle_languages': []
         }
 
-    # 获取特效优先级配置
-    all_rules_list = settings_db.get_setting('media_cleanup_rules') or []
-    effect_rule = next((rule for rule in all_rules_list if rule.get('id') == 'effect'), {})
-    effect_priority = effect_rule.get('priority', ["dovi_p8", "dovi_p7", "dovi_p5", "dovi_other", "hdr10+", "hdr", "sdr"])
+    # ★★★ 核心修改：调用 helpers.analyze_media_asset 复用逻辑 ★★★
+    # analyze_media_asset 需要一个类似 Emby API 返回的结构，我们需要构造一下
+    # version 已经是 asset_details_json 的一部分，结构类似 helpers.parse_full_asset_details 的输出
+    # 但 analyze_media_asset 需要 MediaStreams 和 Path
     
-    # 特效标准化
-    effect_list = version.get("effect_display", [])
-    best_effect = 'sdr'
-    if isinstance(effect_list, str): # 兼容旧数据
-        effect_list = [effect_list]
-        
-    if effect_list:
-        standardized_effects = []
-        for e in effect_list:
-            e_lower = str(e).lower()
-            if 'dolby vision' in e_lower or 'dovi' in e_lower: standardized_effects.append('dovi_other')
-            elif 'hdr10+' in e_lower: standardized_effects.append('hdr10+')
-            elif 'hdr' in e_lower: standardized_effects.append('hdr')
-            # 这里可以根据 helpers.py 的输出进一步细化映射
-            if e_lower == 'dovi_p8': standardized_effects.append('dovi_p8')
-            if e_lower == 'dovi_p7': standardized_effects.append('dovi_p7')
-            if e_lower == 'dovi_p5': standardized_effects.append('dovi_p5')
-        
-        if standardized_effects:
-            # 选出优先级最高的一个特效
-            best_effect = min(standardized_effects, key=lambda e: effect_priority.index(e) if e in effect_priority else 999)
+    # 构造伪造的 item_details 供 helper 分析
+    fake_item_details = {
+        'Path': version.get('path'),
+        'MediaStreams': []
+    }
+    
+    # 还原 MediaStreams (部分还原，够用即可)
+    if version.get('video_codec'):
+        fake_item_details['MediaStreams'].append({
+            'Type': 'Video',
+            'Codec': version.get('video_codec'),
+            'Width': version.get('width'),
+            'Height': version.get('height'),
+            'BitRate': int((version.get('video_bitrate_mbps') or 0) * 1000000),
+            'BitDepth': version.get('bit_depth'),
+            'AverageFrameRate': version.get('frame_rate')
+        })
+    
+    # 还原字幕流
+    for sub in version.get('subtitles', []):
+        fake_item_details['MediaStreams'].append({
+            'Type': 'Subtitle',
+            'Language': sub.get('language'),
+            'DisplayTitle': sub.get('display_title'),
+            'IsExternal': False # 假设内置，如果是外挂通常不在 asset_details_json 里详细记录流信息
+        })
+
+    # 调用 helper 进行标准化分析
+    analysis = helpers.analyze_media_asset(fake_item_details)
+    
+    # 提取字幕信息
+    subtitle_langs = analysis.get('subtitle_languages_raw', [])
+    
     raw_id = version.get("emby_item_id")
     int_id = int(raw_id) if raw_id and str(raw_id).isdigit() else 0
+
     return {
         "id": version.get("emby_item_id"),
         "path": version.get("path"),
-        "quality": str(version.get("quality_display", "unknown")).lower().replace("bluray", "blu-ray").replace("webdl", "web-dl"),
-        "resolution": version.get("resolution_display", "unknown"),
-        "effect": best_effect,
+        # 使用 helper 分析出的标准化结果
+        "quality": analysis.get("quality_display", "未知").lower(),
+        "resolution": analysis.get("resolution_display", "未知"),
+        "effect": analysis.get("effect_display", "SDR").lower(), # 转小写方便比较
+        "codec": analysis.get("codec_display", "未知"),
+        
         "filesize": version.get("size_bytes", 0),
         "video_bitrate_mbps": version.get("video_bitrate_mbps") or 0,
         "bit_depth": version.get("bit_depth") or 8,
         "frame_rate": version.get("frame_rate") or 0,
         "runtime_minutes": version.get("runtime_minutes") or 0,
-        "codec": version.get("codec_display", "unknown"),
         "date_added": version.get("date_added_to_library") or "",
-        "int_id": int_id
+        "int_id": int_id,
+        
+        # ★★★ 新增：字幕统计 ★★★
+        "subtitle_count": len(subtitle_langs),
+        "subtitle_languages": subtitle_langs
     }
 
 def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[str, Any]]) -> int:
@@ -138,29 +159,25 @@ def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[s
                 else:
                     return 1 if fs1 > fs2 else -1 # 保留大体积
 
-        # --- 6. 按列表优先级 (分辨率, 质量, 特效) ---
-        elif rule_type in ['resolution', 'quality', 'effect']:
+        # --- 6. 按列表优先级 (分辨率, 质量, 特效, 编码) ---
+        elif rule_type in ['resolution', 'quality', 'effect', 'codec']:
             val1 = v1.get(rule_type)
             val2 = v2.get(rule_type)
             priority_list = rule.get("priority", [])
             
-            # ★★★ 核心修复：分辨率标准化 ★★★
+            # 标准化处理
             if rule_type == "resolution":
-                # 定义一个简单的标准化函数
                 def normalize_res(res):
                     s = str(res).lower()
                     if s == '2160p': return '4k'
                     return s
-                
-                # 1. 标准化优先级列表 (把用户设置里的 2160p 变成 4k)
                 priority_list = [normalize_res(p) for p in priority_list]
-                # 2. 标准化实际值 (把资产里的 4K 变成 4k，或者 2160p 变成 4k)
                 val1 = normalize_res(val1)
                 val2 = normalize_res(val2)
 
-            # 预处理 priority_list 以匹配数据格式 (质量和特效的逻辑保持不变)
             elif rule_type == "quality":
                 priority_list = [str(p).lower().replace("bluray", "blu-ray").replace("webdl", "web-dl") for p in priority_list]
+            
             elif rule_type == "effect":
                 priority_list = [str(p).lower().replace(" ", "_") for p in priority_list]
 
@@ -170,7 +187,6 @@ def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[s
                     if s in ['H265', 'X265']: return 'HEVC'
                     if s in ['H264', 'X264', 'AVC']: return 'H.264'
                     return s
-                
                 priority_list = [normalize_codec(p) for p in priority_list]
                 val1 = normalize_codec(val1)
                 val2 = normalize_codec(val2)
@@ -182,8 +198,27 @@ def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[s
                     return 1 if idx1 < idx2 else -1 # 索引越小优先级越高
             except (ValueError, TypeError):
                 continue
+        
+        # --- 7. ★★★ 新增：按字幕 (Subtitle) ★★★ ---
+        elif rule_type == 'subtitle':
+            # 优先比较是否有中文字幕
+            has_chi1 = 'chi' in v1.get('subtitle_languages', []) or 'yue' in v1.get('subtitle_languages', [])
+            has_chi2 = 'chi' in v2.get('subtitle_languages', []) or 'yue' in v2.get('subtitle_languages', [])
+            
+            if has_chi1 != has_chi2:
+                # 有中文的优先
+                return 1 if has_chi1 else -1
+            
+            # 如果中文情况相同，比较字幕总数
+            cnt1 = v1.get('subtitle_count', 0)
+            cnt2 = v2.get('subtitle_count', 0)
+            if cnt1 != cnt2:
+                if preference == 'asc':
+                    return 1 if cnt1 < cnt2 else -1 # 字幕少的优先
+                else:
+                    return 1 if cnt1 > cnt2 else -1 # 字幕多的优先 (默认)
 
-        # --- 7. 按入库时间 (Date Added / ID) ---
+        # --- 8. 按入库时间 (Date Added / ID) ---
         elif rule_type == 'date_added':
             # 1. 优先比较日期字符串 (ISO格式字符串可以直接比较大小)
             d1 = v1.get('date_added')
@@ -222,6 +257,8 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]]) -> Optional
             {"id": "bitrate", "enabled": True},   # 码率
             {"id": "codec", "enabled": True, "priority": ["AV1", "HEVC", "H.264", "VP9"]},
             {"id": "quality", "enabled": True, "priority": ["remux", "blu-ray", "web-dl", "hdtv"]},
+            # ★★★ 新增默认规则：字幕 ★★★
+            {"id": "subtitle", "enabled": True, "priority": "desc"}, # 字幕多的/有中文的优先
             {"id": "frame_rate", "enabled": False}, # 帧率默认关闭
             {"id": "filesize", "enabled": True},
             {"id": "date_added", "enabled": True, "priority": "asc"}
