@@ -1237,6 +1237,10 @@ class MediaProcessor:
                     season_poster = season.get('poster_path') or series_details.get('poster_path')
                     matched_emby_seasons = seasons_grouped_by_number.get(s_num_int, [])
 
+                    emby_ids_json = '[]'
+                    if matched_emby_seasons:
+                        emby_ids_json = json.dumps([s['Id'] for s in matched_emby_seasons])
+
                     records_to_upsert.append({
                         "tmdb_id": str(s_tmdb_id), "item_type": "Season", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
@@ -1245,7 +1249,7 @@ class MediaProcessor:
                         "season_number": s_num,
                         "total_episodes": season.get('episode_count', 0),
                         "in_library": bool(matched_emby_seasons) if not is_pending else False,
-                        "emby_item_ids_json": json.dumps([s['Id'] for s in matched_emby_seasons]) if matched_emby_seasons else '[]'
+                        "emby_item_ids_json": emby_ids_json
                     })
                 
                 # ★★★ 4. 处理分集 (Episode) ★★★
@@ -1351,11 +1355,11 @@ class MediaProcessor:
                 if db_row_complete['subscription_status'] is None: db_row_complete['subscription_status'] = 'NONE'
                 if db_row_complete['subscription_sources_json'] is None: db_row_complete['subscription_sources_json'] = '[]'
                 
-                # 修复：如果 emby_item_ids_json 为 None，强制设为 '[]'
-                if db_row_complete['emby_item_ids_json'] is None: db_row_complete['emby_item_ids_json'] = '[]'
-                
-                # 修复：如果 asset_details_json 为 None，强制设为 '[]'
-                if db_row_complete['asset_details_json'] is None: db_row_complete['asset_details_json'] = '[]'
+                # 确保这两个字段绝对是字符串 '[]'，而不是 None
+                if not db_row_complete.get('emby_item_ids_json'): 
+                    db_row_complete['emby_item_ids_json'] = '[]'
+                if not db_row_complete.get('asset_details_json'): 
+                    db_row_complete['asset_details_json'] = '[]'
 
                 r_date = db_row_complete.get('release_date')
                 if not r_date: db_row_complete['release_date'] = None
