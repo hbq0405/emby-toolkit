@@ -434,6 +434,33 @@
                       </n-space>
                     </template>
                     <div class="ai-settings-wrapper" :class="{ 'content-disabled': !configModel.ai_translation_enabled }">
+                      <n-form-item label="翻译范围">
+                        <n-space>
+                          <!-- 1. 演员表 -->
+                          <n-checkbox 
+                            :checked="true" 
+                            :disabled="!configModel.ai_translation_enabled"
+                          >
+                            翻译演员表
+                          </n-checkbox>
+
+                          <!-- 2. 片名 -->
+                          <n-checkbox 
+                            v-model:checked="configModel.ai_translate_title_overview" 
+                            :disabled="!configModel.ai_translation_enabled"
+                          >
+                            翻译片名简介
+                          </n-checkbox>
+
+                          <!-- 3. 简介 -->
+                          <n-checkbox 
+                            v-model:checked="configModel.ai_translate_episode_overview" 
+                            :disabled="!configModel.ai_translation_enabled"
+                          >
+                            翻译集简介
+                          </n-checkbox>
+                        </n-space>
+                      </n-form-item>
                       <n-form-item label="AI翻译模式" path="ai_translation_mode">
                         <n-radio-group v-model:value="configModel.ai_translation_mode" name="ai_translation_mode" :disabled="!configModel.ai_translation_enabled">
                           <n-space vertical><n-radio value="fast">翻译模式 (速度优先)</n-radio><n-radio value="quality">顾问模式 (质量优先)</n-radio></n-space>

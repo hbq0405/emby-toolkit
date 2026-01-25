@@ -1775,7 +1775,7 @@ class MediaProcessor:
                     logger.warning(f"  ➜ 从 TMDb API 获取数据失败: {e}")
 
             # 3. 简介缺失检查与 AI 翻译
-            if fresh_data and self.ai_translator and self.config.get("ai_translation_enabled", False):
+            if fresh_data and self.ai_translator and self.config.get("ai_translation_enabled", False) and self.config.get("ai_translate_title_overview", False):
                 current_overview = fresh_data.get("overview", "")
                 item_title = fresh_data.get("title") or fresh_data.get("name") or item_name_for_log
                 
@@ -1861,7 +1861,7 @@ class MediaProcessor:
                         logger.warning(f"  ➜ [核心处理] 标题 AI 翻译未返回结果。")
 
             # 剧集分季/分集翻译入口 
-            if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get("ai_translation_enabled", False):
+            if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get("ai_translation_enabled", False) and self.config.get("ai_translate_episode_overview", False):
                 # 此时 fresh_data 已经被更新过（可能包含翻译后的简介和标题）
                 current_series_name = fresh_data.get("name") or fresh_data.get("title") or item_name_for_log
                 translate_tmdb_metadata_recursively(

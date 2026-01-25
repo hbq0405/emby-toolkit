@@ -834,7 +834,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     if t_id_str and details: tmdb_details_map[t_id_str] = details
 
             # 在写入数据库之前，对获取到的 TMDb 数据进行翻译
-            if processor.ai_translator and processor.config.get("ai_translation_enabled", False):
+            if processor.ai_translator and processor.config.get("ai_translation_enabled", False) and processor.config.get("ai_translate_episode_overview", False):
                 for item_group in batch_item_groups:
                     if not item_group: continue
                     item = item_group[0]
