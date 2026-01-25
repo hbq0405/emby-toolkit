@@ -1237,10 +1237,6 @@ class MediaProcessor:
                     season_poster = season.get('poster_path') or series_details.get('poster_path')
                     matched_emby_seasons = seasons_grouped_by_number.get(s_num_int, [])
 
-                    emby_ids_json = '[]'
-                    if matched_emby_seasons:
-                        emby_ids_json = json.dumps([s['Id'] for s in matched_emby_seasons])
-
                     records_to_upsert.append({
                         "tmdb_id": str(s_tmdb_id), "item_type": "Season", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
@@ -1249,7 +1245,7 @@ class MediaProcessor:
                         "season_number": s_num,
                         "total_episodes": season.get('episode_count', 0),
                         "in_library": bool(matched_emby_seasons) if not is_pending else False,
-                        "emby_item_ids_json": emby_ids_json
+                        "emby_item_ids_json": json.dumps([s['Id'] for s in matched_emby_seasons]) if matched_emby_seasons else '[]'
                     })
                 
                 # ★★★ 4. 处理分集 (Episode) ★★★
@@ -1350,16 +1346,10 @@ class MediaProcessor:
 
                 db_row_complete = {col: record.get(col) for col in all_possible_columns}
                 
-                # ★★★ 核心修复：强制兜底，防止 NULL 违反数据库约束 ★★★
                 if db_row_complete['in_library'] is None: db_row_complete['in_library'] = False
                 if db_row_complete['subscription_status'] is None: db_row_complete['subscription_status'] = 'NONE'
                 if db_row_complete['subscription_sources_json'] is None: db_row_complete['subscription_sources_json'] = '[]'
-                
-                # 确保这两个字段绝对是字符串 '[]'，而不是 None
-                if not db_row_complete.get('emby_item_ids_json'): 
-                    db_row_complete['emby_item_ids_json'] = '[]'
-                if not db_row_complete.get('asset_details_json'): 
-                    db_row_complete['asset_details_json'] = '[]'
+                if db_row_complete['emby_item_ids_json'] is None: db_row_complete['emby_item_ids_json'] = '[]'
 
                 r_date = db_row_complete.get('release_date')
                 if not r_date: db_row_complete['release_date'] = None
@@ -1386,26 +1376,14 @@ class MediaProcessor:
 
             update_clauses = []
             for col in cols_to_update:
-                # 1. 针对 total_episodes 的锁定逻辑保持不变
+                # 针对 total_episodes 字段，检查锁定状态
+                # 逻辑：如果 total_episodes_locked 为 TRUE，则保持原值；否则使用新值 (EXCLUDED.total_episodes)
                 if col == 'total_episodes':
                     update_clauses.append(
                         "total_episodes = CASE WHEN media_metadata.total_episodes_locked IS TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END"
                     )
-                
-                # 2. 【核心修复】针对 Emby ID 列表：合并旧数据和新数据，并去重
-                elif col == 'emby_item_ids_json':
-                    update_clauses.append(
-                        "emby_item_ids_json = (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements(COALESCE(media_metadata.emby_item_ids_json, '[]'::jsonb) || EXCLUDED.emby_item_ids_json) t(x))"
-                    )
-
-                # 3. 【核心修复】针对 资产详情 列表：合并旧数据和新数据，并去重
-                elif col == 'asset_details_json':
-                    update_clauses.append(
-                        "asset_details_json = (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements(COALESCE(media_metadata.asset_details_json, '[]'::jsonb) || EXCLUDED.asset_details_json) t(x))"
-                    )
-
-                # 4. 其他字段正常覆盖
                 else:
+                    # 其他字段正常更新
                     update_clauses.append(f"{col} = EXCLUDED.{col}")
 
             update_clauses.append(f"{timestamp_field} = NOW()")
