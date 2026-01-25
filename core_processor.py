@@ -1346,10 +1346,16 @@ class MediaProcessor:
 
                 db_row_complete = {col: record.get(col) for col in all_possible_columns}
                 
+                # ★★★ 核心修复：强制兜底，防止 NULL 违反数据库约束 ★★★
                 if db_row_complete['in_library'] is None: db_row_complete['in_library'] = False
                 if db_row_complete['subscription_status'] is None: db_row_complete['subscription_status'] = 'NONE'
                 if db_row_complete['subscription_sources_json'] is None: db_row_complete['subscription_sources_json'] = '[]'
+                
+                # 修复：如果 emby_item_ids_json 为 None，强制设为 '[]'
                 if db_row_complete['emby_item_ids_json'] is None: db_row_complete['emby_item_ids_json'] = '[]'
+                
+                # 修复：如果 asset_details_json 为 None，强制设为 '[]'
+                if db_row_complete['asset_details_json'] is None: db_row_complete['asset_details_json'] = '[]'
 
                 r_date = db_row_complete.get('release_date')
                 if not r_date: db_row_complete['release_date'] = None

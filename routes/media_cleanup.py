@@ -129,6 +129,7 @@ def get_cleanup_settings():
             "codec": {"id": "codec", "enabled": True, "priority": ["AV1", "HEVC", "H.264", "VP9"]},
             "bitrate": {"id": "bitrate", "enabled": True, "priority": "desc"},
             "quality": {"id": "quality", "enabled": True, "priority": ["Remux", "BluRay", "WEB-DL", "HDTV"]},
+            "subtitle": {"id": "subtitle", "enabled": True, "priority": "desc"},
             "frame_rate": {"id": "frame_rate", "enabled": False, "priority": "desc"},
             "filesize": {"id": "filesize", "enabled": True, "priority": "desc"},
             "date_added": {"id": "date_added", "enabled": True, "priority": "asc"}

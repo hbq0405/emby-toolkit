@@ -33,7 +33,7 @@
               
               <n-space class="rule-actions" align="center">
                 <!-- 保大保小切换 -->
-                <!-- ★★★ 修改：在 v-if 中加入 'subtitle' ★★★ -->
+                <!-- ★★★ 修复：在 v-if 数组中加入 'subtitle' ★★★ -->
                 <n-radio-group 
                   v-if="['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate', 'subtitle'].includes(rule.id)" 
                   v-model:value="rule.priority" 
@@ -62,7 +62,6 @@
         
         <n-card class="rule-card fallback-card">
           <div class="rule-content">
-            <!-- 这里的图标换成锁，表示不可拖拽 -->
             <n-icon :component="LockIcon" size="20" style="color: #ccc; margin-right: 4px;" />
             
             <div class="rule-details">
@@ -79,15 +78,13 @@
                 <n-radio-button value="desc">保留最新</n-radio-button>
                 <n-radio-button value="asc">保留最早</n-radio-button>
               </n-radio-group>
-              
-              <!-- 兜底规则通常建议常开，但如果你想允许关闭也可以 -->
               <n-switch v-model:value="fallbackRule.enabled" />
             </n-space>
           </div>
         </n-card>
       </div>
-      <n-divider title-placement="left" style="margin-top: 24px;">高级策略</n-divider>
       
+      <n-divider title-placement="left" style="margin-top: 24px;">高级策略</n-divider>
       <n-card size="small" :bordered="false" style="background: rgba(0,0,0,0.02);">
         <n-space align="center" justify="space-between">
           <div>
@@ -100,7 +97,7 @@
           <n-switch v-model:value="keepOnePerRes" />
         </n-space>
       </n-card>
-      <!-- 扫描范围设置 -->
+
       <n-divider title-placement="left" style="margin-top: 24px;">扫描范围</n-divider>
       <n-form-item label-placement="left">
         <template #label>
@@ -123,13 +120,11 @@
         />
       </n-form-item>
 
-      <!-- 底部按钮 -->
       <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 16px;">
         <n-button @click="fetchSettings">重置更改</n-button>
         <n-button type="primary" @click="saveSettings" :loading="saving">保存设置</n-button>
       </div>
 
-      <!-- 优先级编辑弹窗 -->
       <n-modal v-model:show="showEditModal" preset="card" style="width: 500px;" title="编辑优先级">
         <p style="margin-top: 0; color: #888;">
           拖拽下方的标签来调整关键字的优先级。排在越上面的关键字，代表版本越好。
@@ -170,19 +165,14 @@ import {
 const message = useMessage();
 const emit = defineEmits(['on-close']);
 
-// --- 状态定义 ---
 const saving = ref(false);
 const showEditModal = ref(false);
 const keepOnePerRes = ref(false);
-
-// 规则数据拆分
-const draggableRules = ref([]); // 可排序的优先规则
-const fallbackRule = ref(null); // 固定的兜底规则
-
+const draggableRules = ref([]);
+const fallbackRule = ref(null);
 const currentEditingRule = ref({ priority: [] });
 const allLibraries = ref([]);
 const selectedLibraryIds = ref([]);
-
 const isRulesLoading = ref(true);
 const isLibrariesLoading = ref(true);
 const loading = computed(() => isRulesLoading.value || isLibrariesLoading.value);
@@ -199,16 +189,14 @@ const RULE_METADATA = {
   filesize: { name: "按文件大小", description: "按视频大小选择。" },
   codec: { name: "按编码", description: "比较视频编码格式 (如 AV1, HEVC, H.264)。" },
   date_added: { name: "按入库时间", description: "最终兜底规则。根据入库时间（或ID大小）决定去留。" },
-  // ★★★ 新增：字幕规则元数据 ★★★
+  // ★★★ 确保这里有 subtitle ★★★
   subtitle: { name: "按字幕", description: "比较字幕语言和数量 (如中文优先)。" }
 };
-
-// --- 辅助函数 ---
 
 const getRuleDisplayName = (id) => RULE_METADATA[id]?.name || id;
 const getRuleDescription = (id) => RULE_METADATA[id]?.description || '未知规则';
 
-// 获取“降序”按钮的文案 (desc)
+// ★★★ 修复：添加 subtitle 的降序标签 ★★★
 const getDescLabel = (id) => {
   switch (id) {
     case 'filesize': return '保留最大';
@@ -216,13 +204,12 @@ const getDescLabel = (id) => {
     case 'bitrate': return '保留最高';
     case 'bit_depth': return '保留高位';
     case 'frame_rate': return '保留高帧';
-    // ★★★ 新增 ★★★
-    case 'subtitle': return '中文优先/多';
+    case 'subtitle': return '中文优先/多'; // 新增
     default: return '保留大/高';
   }
 };
 
-// 获取“升序”按钮的文案 (asc)
+// ★★★ 修复：添加 subtitle 的升序标签 ★★★
 const getAscLabel = (id) => {
   switch (id) {
     case 'filesize': return '保留最小';
@@ -230,13 +217,11 @@ const getAscLabel = (id) => {
     case 'bitrate': return '保留最低';
     case 'bit_depth': return '保留低位';
     case 'frame_rate': return '保留低帧';
-    // ★★★ 新增 ★★★
-    case 'subtitle': return '字幕少优先';
+    case 'subtitle': return '字幕少优先'; // 新增
     default: return '保留小/低';
   }
 };
 
-// 特效优先级格式化
 const formatEffectPriority = (priorityArray, to = 'display') => {
     return priorityArray.map(p => {
         let p_lower = String(p).toLowerCase().replace(/\s/g, '_');
@@ -256,8 +241,6 @@ const formatEffectPriority = (priorityArray, to = 'display') => {
     });
 };
 
-// --- 核心逻辑 ---
-
 const fetchSettings = async () => {
   isRulesLoading.value = true;
   isLibrariesLoading.value = true;
@@ -267,44 +250,35 @@ const fetchSettings = async () => {
       axios.get('/api/resubscribe/libraries') 
     ]);
 
-    // 1. 处理规则数据
     let loadedRules = settingsRes.data.rules || [];
-
     keepOnePerRes.value = settingsRes.data.keep_one_per_res || false;
     
-    // 预处理：格式化特效优先级，初始化默认 priority
     loadedRules = loadedRules.map(rule => {
-        // 处理特效显示的格式化
         if (rule.id === 'effect' && Array.isArray(rule.priority)) {
             return { ...rule, priority: formatEffectPriority(rule.priority, 'display') };
         }
-        // 为数值型规则设置默认排序方向
-        // ★★★ 修改：加入 subtitle ★★★
+        // ★★★ 修复：在 numericRules 中加入 'subtitle'，确保初始化默认 priority ★★★
         const numericRules = ['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate', 'date_added', 'subtitle'];
         if (numericRules.includes(rule.id) && !rule.priority) {
-            // date_added 默认为 asc (保留最早)，其他默认为 desc (保留最大/中文优先)
             return { ...rule, priority: rule.id === 'date_added' ? 'asc' : 'desc' };
         }
         return rule;
     });
 
-    // 拆分规则：提取 date_added 到 fallbackRule，其余到 draggableRules
     const foundFallback = loadedRules.find(r => r.id === 'date_added');
     if (foundFallback) {
         fallbackRule.value = foundFallback;
     } else {
-        // 如果后端没返回，手动创建一个默认的
         fallbackRule.value = { id: 'date_added', enabled: true, priority: 'asc' };
     }
     draggableRules.value = loadedRules.filter(r => r.id !== 'date_added');
 
-    // 2. 处理媒体库数据
     allLibraries.value = librariesRes.data || [];
     selectedLibraryIds.value = settingsRes.data.library_ids || [];
 
   } catch (error) {
     message.error('加载设置失败！请确保后端服务正常。');
-    // 加载失败时的默认兜底配置
+    // ★★★ 修复：默认规则中加入 subtitle ★★★
     const defaultRules = [
         { id: 'runtime', enabled: true, priority: 'desc' },
         { id: 'effect', enabled: true, priority: ['DoVi P8', 'DoVi P7', 'DoVi P5', 'DoVi (Other)', 'HDR10+', 'HDR', 'SDR'] },
@@ -313,8 +287,7 @@ const fetchSettings = async () => {
         { id: 'bitrate', enabled: true, priority: 'desc' },
         { id: 'codec', enabled: true, priority: ['AV1', 'HEVC', 'H.264', 'VP9'] },
         { id: 'quality', enabled: true, priority: ['Remux', 'BluRay', 'WEB-DL', 'HDTV'] },
-        // ★★★ 新增：字幕规则默认配置 ★★★
-        { id: 'subtitle', enabled: true, priority: 'desc' },
+        { id: 'subtitle', enabled: true, priority: 'desc' }, // 新增
         { id: 'frame_rate', enabled: false, priority: 'desc' },
         { id: 'filesize', enabled: true, priority: 'desc' },
     ];
@@ -329,13 +302,11 @@ const fetchSettings = async () => {
 const saveSettings = async () => {
   saving.value = true;
   try {
-    // 合并规则：draggableRules + fallbackRule
     const allRules = [...draggableRules.value];
     if (fallbackRule.value) {
         allRules.push(fallbackRule.value);
     }
 
-    // 格式化处理：将特效优先级转回保存格式
     const rulesToSave = allRules.map(rule => {
       if (rule.id === 'effect' && Array.isArray(rule.priority)) {
         return { ...rule, priority: formatEffectPriority(rule.priority, 'save') };
@@ -351,9 +322,7 @@ const saveSettings = async () => {
 
     await axios.post('/api/cleanup/settings', payload);
     message.success('清理设置已成功保存！');
-    
     emit('on-close');
-
   } catch (error) {
     message.error('保存设置失败，请检查后端日志。');
   } finally {
@@ -379,11 +348,10 @@ onMounted(fetchSettings);
   cursor: pointer;
   transition: box-shadow 0.2s;
 }
-/* 给兜底规则卡片一点特殊样式，比如背景色稍微不同，或者边框 */
 .fallback-card {
-  cursor: default; /* 兜底规则不可点击/拖拽 */
-  background-color: rgba(0, 0, 0, 0.02); /* 极淡的背景色区分 */
-  border: 1px dashed var(--n-border-color); /* 虚线边框表示特殊区域 */
+  cursor: default;
+  background-color: rgba(0, 0, 0, 0.02);
+  border: 1px dashed var(--n-border-color);
 }
 .rule-content {
   display: flex;
