@@ -416,7 +416,7 @@
                 <!-- 左侧: AI翻译 -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card" style="height: 100%;">
-                    <template #header><span class="card-title">AI翻译</span></template>
+                    <template #header><span class="card-title">AI</span></template>
                     <template #header-extra>
                       <n-space align="center">
                         <n-button 
