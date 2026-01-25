@@ -566,6 +566,7 @@ const formatEffectTagForDisplay = (tag) => {
   if (tag_lower === 'dovi_p7') return 'DoVi P7';
   if (tag_lower === 'dovi_p5') return 'DoVi P5';
   if (tag_lower === 'dovi_other') return 'DoVi (Other)';
+  if (tag_lower === 'dovi') return 'DoVi';
   if (tag_lower === 'hdr10+') return 'HDR10+';
   return tag_lower.toUpperCase();
 };

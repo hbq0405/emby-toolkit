@@ -404,7 +404,9 @@ def task_scan_for_cleanup_issues(processor):
                     'bit_depth': props.get('bit_depth'),
                     'frame_rate': props.get('frame_rate'),
                     'runtime_minutes': props.get('runtime_minutes'),
-                    'codec': props.get('codec')
+                    'codec': props.get('codec'),
+                    'subtitle_count': props.get('subtitle_count'),
+                    'subtitle_languages': props.get('subtitle_languages')
                 })
 
             cleanup_index_entries.append({
