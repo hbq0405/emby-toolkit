@@ -1078,7 +1078,7 @@ class MediaProcessor:
             overview_embedding_json = None
             if item_type in ["Movie", "Series"] and self.ai_translator:
                 overview_text = source_data_package.get('overview') or item_details_from_emby.get('Overview')
-                if overview_text and self.config.get("ai_translation_enabled", False):
+                if overview_text and self.config.get("ai_translation_enabled", False) and self.config.get("ai_vector", False):
                     try:
                         embedding = self.ai_translator.generate_embedding(overview_text)
                         if embedding: overview_embedding_json = json.dumps(embedding)
@@ -2703,8 +2703,8 @@ class MediaProcessor:
         # ======================================================================
         logger.info(f"  ➜ 将对 {len(current_cast_list)} 位演员进行最终的翻译和格式化处理...")
 
-        if not (self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False)):
-            logger.info("  ➜ AI翻译未启用，将保留演员和角色名原文。")
+        if not (self.ai_translator and self.config.get("ai_translation_enabled", False) and self.config.get("ai_translate_actor_role", False)):
+            logger.info("  ➜ 翻译未启用，将保留演员和角色名原文。")
         else:
             final_translation_map = {}
             terms_to_translate = set()

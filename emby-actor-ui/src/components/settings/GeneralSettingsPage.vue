@@ -434,14 +434,14 @@
                       </n-space>
                     </template>
                     <div class="ai-settings-wrapper" :class="{ 'content-disabled': !configModel.ai_translation_enabled }">
-                      <n-form-item label="翻译范围">
+                      <n-form-item label="处理范围">
                         <n-space>
                           <!-- 1. 演员表 -->
                           <n-checkbox 
-                            :checked="true" 
+                            v-model:checked="configModel.ai_translate_actor_role" 
                             :disabled="!configModel.ai_translation_enabled"
                           >
-                            翻译演员表
+                            翻译演员角色
                           </n-checkbox>
 
                           <!-- 2. 片名 -->
@@ -457,7 +457,15 @@
                             v-model:checked="configModel.ai_translate_episode_overview" 
                             :disabled="!configModel.ai_translation_enabled"
                           >
-                            翻译集简介
+                            翻译分集简介
+                          </n-checkbox>
+
+                          <!-- 4. 向量 -->
+                          <n-checkbox 
+                            v-model:checked="configModel.ai_vector" 
+                            :disabled="!configModel.ai_translation_enabled"
+                          >
+                            生成媒体向量
                           </n-checkbox>
                         </n-space>
                       </n-form-item>

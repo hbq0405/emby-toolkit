@@ -126,9 +126,12 @@ CONFIG_OPTION_AI_PROVIDER = "ai_provider"                       # AI服务提供
 CONFIG_OPTION_AI_API_KEY = "ai_api_key"                         # AI服务的API密钥
 CONFIG_OPTION_AI_MODEL_NAME = "ai_model_name"                   # 使用的AI模型名称 (如 'Qwen/Qwen2-7B-Instruct')
 CONFIG_OPTION_AI_BASE_URL = "ai_base_url"                       # AI服务的API基础URL
+CONFIG_OPTION_AI_VECTOR = "ai_vector"                           # 是否启用AI向量化功能
 CONFIG_OPTION_AI_TRANSLATION_MODE = "ai_translation_mode"       # AI翻译模式 ('fast' 或 'quality')
+CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE = "ai_translate_actor_role"               # 是否翻译演员角色名
 CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW = "ai_translate_title_overview"       # 是否翻译标题和简介
 CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW = "ai_translate_episode_overview"   # 是否翻译集简介
+
 
 # ==============================================================================
 # ✨ 网络配置 (Network) - ★★★ 新增部分 ★★★

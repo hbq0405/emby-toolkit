@@ -125,7 +125,9 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_AI_API_KEY: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', ""),
     constants.CONFIG_OPTION_AI_MODEL_NAME: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "Qwen/Qwen2.5-72B-Instruct"),
     constants.CONFIG_OPTION_AI_BASE_URL: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "https://api.siliconflow.cn/v1"),
+    constants.CONFIG_OPTION_AI_VECTOR: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
     constants.CONFIG_OPTION_AI_TRANSLATION_MODE: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', 'fast'),
+    constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
     constants.CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
     constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
 

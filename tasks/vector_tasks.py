@@ -5,6 +5,7 @@ import json
 from database import connection
 from ai_translator import AITranslator
 import config_manager
+import constants
 import task_manager
 
 logger = logging.getLogger(__name__)
@@ -16,7 +17,14 @@ def task_generate_embeddings(processor):
     """
     task_name = "生成媒体向量 (Embedding)"
     logger.trace(f"--- 开始执行 '{task_name}' ---")
-    
+
+    ai = processor.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED)
+    vector = processor.config.get(constants.CONFIG_OPTION_AI_VECTOR)
+
+    if not ai or not vector:
+        logger.info("  🚫 AI向量化功能未启用，跳过任务。")
+        return
+
     try:
         # 1. 初始化 AI (使用全局配置)
         translator = AITranslator(config_manager.APP_CONFIG)

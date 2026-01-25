@@ -29,6 +29,13 @@ def task_role_translation(processor, force_full_update: bool = False):
     """
     根据传入的 force_full_update 参数，决定是执行标准扫描还是深度更新。
     """
+    ai = processor.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED)
+    actor = processor.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE)
+
+    if not ai or not actor:
+        logger.info("  🚫 AI翻译功能未启用，跳过任务。")
+        return
+
     # 1. 根据参数决定日志信息
     if force_full_update:
         logger.info("  ➜ 即将执行深度模式，将处理所有媒体项并从TMDb获取最新数据...")
