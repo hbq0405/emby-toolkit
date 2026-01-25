@@ -33,7 +33,6 @@
               
               <n-space class="rule-actions" align="center">
                 <!-- 保大保小切换 -->
-                <!-- ★★★ 修复：在 v-if 数组中加入 'subtitle' ★★★ -->
                 <n-radio-group 
                   v-if="['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate', 'subtitle'].includes(rule.id)" 
                   v-model:value="rule.priority" 
@@ -189,14 +188,12 @@ const RULE_METADATA = {
   filesize: { name: "按文件大小", description: "按视频大小选择。" },
   codec: { name: "按编码", description: "比较视频编码格式 (如 AV1, HEVC, H.264)。" },
   date_added: { name: "按入库时间", description: "最终兜底规则。根据入库时间（或ID大小）决定去留。" },
-  // ★★★ 确保这里有 subtitle ★★★
   subtitle: { name: "按字幕", description: "比较字幕语言和数量 (如中文优先)。" }
 };
 
 const getRuleDisplayName = (id) => RULE_METADATA[id]?.name || id;
 const getRuleDescription = (id) => RULE_METADATA[id]?.description || '未知规则';
 
-// ★★★ 修复：添加 subtitle 的降序标签 ★★★
 const getDescLabel = (id) => {
   switch (id) {
     case 'filesize': return '保留最大';
@@ -204,12 +201,11 @@ const getDescLabel = (id) => {
     case 'bitrate': return '保留最高';
     case 'bit_depth': return '保留高位';
     case 'frame_rate': return '保留高帧';
-    case 'subtitle': return '中文优先/多'; // 新增
+    case 'subtitle': return '中文优先/多';
     default: return '保留大/高';
   }
 };
 
-// ★★★ 修复：添加 subtitle 的升序标签 ★★★
 const getAscLabel = (id) => {
   switch (id) {
     case 'filesize': return '保留最小';
@@ -217,7 +213,7 @@ const getAscLabel = (id) => {
     case 'bitrate': return '保留最低';
     case 'bit_depth': return '保留低位';
     case 'frame_rate': return '保留低帧';
-    case 'subtitle': return '字幕少优先'; // 新增
+    case 'subtitle': return '字幕少优先'; 
     default: return '保留小/低';
   }
 };
@@ -257,7 +253,6 @@ const fetchSettings = async () => {
         if (rule.id === 'effect' && Array.isArray(rule.priority)) {
             return { ...rule, priority: formatEffectPriority(rule.priority, 'display') };
         }
-        // ★★★ 修复：在 numericRules 中加入 'subtitle'，确保初始化默认 priority ★★★
         const numericRules = ['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate', 'date_added', 'subtitle'];
         if (numericRules.includes(rule.id) && !rule.priority) {
             return { ...rule, priority: rule.id === 'date_added' ? 'asc' : 'desc' };
@@ -278,7 +273,6 @@ const fetchSettings = async () => {
 
   } catch (error) {
     message.error('加载设置失败！请确保后端服务正常。');
-    // ★★★ 修复：默认规则中加入 subtitle ★★★
     const defaultRules = [
         { id: 'runtime', enabled: true, priority: 'desc' },
         { id: 'effect', enabled: true, priority: ['DoVi P8', 'DoVi P7', 'DoVi P5', 'DoVi (Other)', 'HDR10+', 'HDR', 'SDR'] },
@@ -287,7 +281,7 @@ const fetchSettings = async () => {
         { id: 'bitrate', enabled: true, priority: 'desc' },
         { id: 'codec', enabled: true, priority: ['AV1', 'HEVC', 'H.264', 'VP9'] },
         { id: 'quality', enabled: true, priority: ['Remux', 'BluRay', 'WEB-DL', 'HDTV'] },
-        { id: 'subtitle', enabled: true, priority: 'desc' }, // 新增
+        { id: 'subtitle', enabled: true, priority: 'desc' },                                                                
         { id: 'frame_rate', enabled: false, priority: 'desc' },
         { id: 'filesize', enabled: true, priority: 'desc' },
     ];

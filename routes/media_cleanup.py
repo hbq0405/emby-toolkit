@@ -4,9 +4,7 @@ from flask import Blueprint, jsonify, request
 from extensions import task_lock_required, processor_ready_required
 
 import task_manager
-# ★★★ 修改导入：从 tasks.cleanup 导入 ★★★
 from tasks.cleanup import task_execute_cleanup, task_scan_for_cleanup_issues
-# ★★★ 修改导入：导入新的 cleanup_db ★★★
 from database import cleanup_db, settings_db
 from database.connection import get_db_connection
 import logging

@@ -32,11 +32,6 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
             'codec': 'unknown', 'subtitle_count': 0, 'subtitle_languages': []
         }
 
-    # ★★★ 核心修改：调用 helpers.analyze_media_asset 复用逻辑 ★★★
-    # analyze_media_asset 需要一个类似 Emby API 返回的结构，我们需要构造一下
-    # version 已经是 asset_details_json 的一部分，结构类似 helpers.parse_full_asset_details 的输出
-    # 但 analyze_media_asset 需要 MediaStreams 和 Path
-    
     # 构造伪造的 item_details 供 helper 分析
     fake_item_details = {
         'Path': version.get('path'),
@@ -56,19 +51,27 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
         })
     
     # 还原字幕流
-    for sub in version.get('subtitles', []):
+    # ★★★ 关键点 1：确保从 version 中正确获取 subtitles ★★★
+    # 从你提供的数据看，version 字典里确实有 'subtitles' 这个键
+    raw_subtitles = version.get('subtitles', [])
+    
+    for sub in raw_subtitles:
         fake_item_details['MediaStreams'].append({
             'Type': 'Subtitle',
             'Language': sub.get('language'),
             'DisplayTitle': sub.get('display_title'),
-            'IsExternal': False # 假设内置，如果是外挂通常不在 asset_details_json 里详细记录流信息
+            'IsExternal': False 
         })
 
     # 调用 helper 进行标准化分析
     analysis = helpers.analyze_media_asset(fake_item_details)
     
-    # 提取字幕信息
+    # 提取字幕信息 (这是识别出的语言列表，用于判断是否有中文)
     subtitle_langs = analysis.get('subtitle_languages_raw', [])
+    
+    # ★★★ 关键点 2：直接使用原始列表长度作为计数 ★★★
+    # 只要 raw_subtitles 不为空，这里就应该有值
+    subtitle_count = len(raw_subtitles)
     
     raw_id = version.get("emby_item_id")
     int_id = int(raw_id) if raw_id and str(raw_id).isdigit() else 0
@@ -76,10 +79,9 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
     return {
         "id": version.get("emby_item_id"),
         "path": version.get("path"),
-        # 使用 helper 分析出的标准化结果
         "quality": analysis.get("quality_display", "未知").lower(),
         "resolution": analysis.get("resolution_display", "未知"),
-        "effect": analysis.get("effect_display", "SDR").lower(), # 转小写方便比较
+        "effect": analysis.get("effect_display", "SDR").lower(),
         "codec": analysis.get("codec_display", "未知"),
         
         "filesize": version.get("size_bytes", 0),
@@ -90,8 +92,8 @@ def _get_properties_for_comparison(version: Dict) -> Dict:
         "date_added": version.get("date_added_to_library") or "",
         "int_id": int_id,
         
-        # ★★★ 新增：字幕统计 ★★★
-        "subtitle_count": len(subtitle_langs),
+        # ★★★ 关键点 3：将计数放入返回字典 ★★★
+        "subtitle_count": subtitle_count,
         "subtitle_languages": subtitle_langs
     }
 
