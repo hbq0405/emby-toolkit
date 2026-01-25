@@ -369,11 +369,18 @@ def task_update_resubscribe_cache(processor):
                                 reason_calculated = upgrade_reason
 
                         # 3. 一致性检查
+                        is_airing = series.get('watchlist_is_airing', False)
+                        
                         if status_calculated == 'ok' and rule.get('consistency_check_enabled'):
-                            needs_fix, fix_reason = _check_season_consistency(eps_in_season, rule)
-                            if needs_fix:
-                                status_calculated = 'needed'
-                                reason_calculated = fix_reason
+                            if not is_airing:
+                                needs_fix, fix_reason = _check_season_consistency(eps_in_season, rule)
+                                if needs_fix:
+                                    status_calculated = 'needed'
+                                    reason_calculated = fix_reason
+                            else:
+                                # 可选：打印调试日志
+                                # logger.debug(f"  ➜ [一致性检查] 《{series['title']}》正在连载中，跳过一致性检查。")
+                                pass
 
                         item_key_tuple = (tmdb_id, "Season", int(season_num))
                         existing_status = current_statuses.get(item_key_tuple)
