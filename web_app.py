@@ -154,7 +154,7 @@ def initialize_processors():
         # 如果没缓存，我们给 20 秒 (必须获取策略)
         startup_timeout = 5 if cached_id else 20
         
-        logger.info(f"正在尝试连接 Emby 获取 Server ID (超时设定: {startup_timeout}s)...")
+        logger.info(f"  ➜ 正在尝试连接 Emby 获取 Server ID (超时设定: {startup_timeout}s)...")
         
         # 尝试获取在线信息
         server_info = get_emby_server_info(emby_url, emby_key, timeout=startup_timeout)
