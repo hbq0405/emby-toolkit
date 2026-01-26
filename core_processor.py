@@ -4234,12 +4234,13 @@ class MediaProcessor:
                 file_key = os.path.splitext(filename)[0]
                 fresh_emby_data = child_data_map.get(file_key)
                 if fresh_emby_data:
-                    child_data['name'] = fresh_emby_data.get('Name', child_data.get('name'))
-                    child_data['overview'] = fresh_emby_data.get('Overview', child_data.get('overview'))
+                    if not specific_tmdb_data:
+                        child_data['name'] = fresh_emby_data.get('Name', child_data.get('name'))
+                        child_data['overview'] = fresh_emby_data.get('Overview', child_data.get('overview'))
                     if fresh_emby_data.get('CommunityRating'):
                         child_data['vote_average'] = fresh_emby_data.get('CommunityRating')
 
-                # ★★★ 步骤 F: 写入文件 ★★★
+                # 步骤 F: 写入文件 
                 try:
                     with open(child_json_path, 'w', encoding='utf-8') as f_child:
                         json.dump(child_data, f_child, ensure_ascii=False, indent=2)
