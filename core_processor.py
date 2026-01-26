@@ -1084,7 +1084,7 @@ class MediaProcessor:
             overview_embedding_json = None
             if item_type in ["Movie", "Series"] and self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_VECTOR, False):
                 overview_text = source_data_package.get('overview') or item_details_from_emby.get('Overview')
-                if overview_text:
+                if overview_text and self.config.get(constants.CONFIG_OPTION_AI_VECTOR, False):
                     try:
                         embedding = self.ai_translator.generate_embedding(overview_text)
                         if embedding: overview_embedding_json = json.dumps(embedding)
