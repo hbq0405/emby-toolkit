@@ -828,7 +828,7 @@ class MediaProcessor:
             cleaned = self._cleanup_local_db_for_deleted_file(filename)
             
             # 2. 刷新向量缓存 (如果有清理动作且开启了推荐)
-            if cleaned and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+            if cleaned and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
                 try:
                     threading.Thread(target=RecommendationEngine.refresh_cache).start()
                 except: pass
@@ -867,7 +867,7 @@ class MediaProcessor:
                 logger.error(f"  🚫 [批量删除] 处理文件 '{file_path}' 时出错: {e}")
 
         # 2. 刷新向量缓存
-        if cleaned_count > 0 and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+        if cleaned_count > 0 and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
             try:
                 threading.Thread(target=RecommendationEngine.refresh_cache).start()
             except: pass

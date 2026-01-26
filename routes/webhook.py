@@ -175,7 +175,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             logger.warning(f"  ➜ 检查所属 TMDb 合集时发生错误: {e}")
 
     # 4. 入库完成后，主动刷新向量推荐引擎缓存 ★★★
-    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
         try:
             # 异步执行，不阻塞当前 Webhook 线程
             spawn(RecommendationEngine.refresh_cache)
@@ -774,7 +774,7 @@ def emby_webhook():
                 # ==============================================================
                 # ★★★ 删除媒体后，也主动刷新向量缓存 (保持缓存纯净) ★★★
                 # ==============================================================
-                if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+                if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
                     # 只有删除了 Movie 或 Series 才需要刷新，删 Episode 不影响向量库
                     if original_item_type in ['Movie', 'Series']:
                         try:
