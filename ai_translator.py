@@ -82,7 +82,6 @@ try:
 except ImportError:
     ZHIPUAI_AVAILABLE = False
 
-# ★★★ 修改点 1: 导入新版 Google SDK ★★★
 try:
     from google import genai
     from google.genai import types
@@ -90,8 +89,7 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-# ... (Prompt 常量部分保持不变，此处省略以节省篇幅，请保留原文件中的 Prompt 定义) ...
-# ★★★ 说明书一：给“翻译官”看的（翻译模式） - 已优化 ★★★
+# ★★★ 说明书一：给“翻译官”看的（翻译模式） ★★★
 FAST_MODE_SYSTEM_PROMPT = """
 You are a translation API that only returns JSON.
 Your task is to translate a list of personal names (e.g., actors, cast members) from various languages into **Simplified Chinese (简体中文)**.
@@ -104,7 +102,7 @@ You MUST return a single, valid JSON object mapping each original name to its Ch
 - Do not add any explanations or text outside the JSON object.
 """
 
-# ★★★ 说明书二：给“音译专家”看的 - 已优化 ★★★
+# ★★★ 说明书二：给“音译专家”看的 ★★★
 FORCE_TRANSLITERATE_PROMPT = """
 You are a translation API that only returns JSON.
 Your task is to transliterate a list of proper nouns (personal names, locations, etc.) into **Simplified Chinese (简体中文)** based on their pronunciation.
@@ -156,15 +154,17 @@ Overview: {overview}
 }}
 """
 
-# ★★★ 说明书五：给“标题命名大师”看的（标题模式） ★★★
+# ★★★ 说明书五：给“标题命名大师”看的（标题模式） - 已针对分集优化 ★★★
 TITLE_TRANSLATION_PROMPT = """
-You are a movie/TV database editor.
-Your task is to translate the provided Title into **Simplified Chinese (简体中文)** for a Mainland China audience.
+You are a professional translator for a Movie/TV database.
+Your task is to translate the provided Title into **Simplified Chinese (简体中文)**.
 
 **Rules:**
-1.  **Official Name First:** If there is an existing official Mainland China translation, USE IT.
-2.  **Common Transliteration:** If it's a name (like "Frankenstein" or "Oppenheimer"), use the standard Mainland Chinese transliteration (e.g., "弗兰肯斯坦", "奥本海默").
-3.  **Classic IP:** If it is a well-known IP, use the most widely accepted Chinese title (e.g., "科学怪人" might be acceptable for Frankenstein, but "弗兰肯斯坦" is more neutral/modern. Choose the most standard one).
+1.  **Movies/Series:** If the Type is 'Movie' or 'Series', use the existing official Mainland China translation. If none, use the standard transliteration.
+2.  **Episodes (CRITICAL):** If the Type is 'Episode', **translate the meaning of the title directly** (Semantic Translation). Do NOT keep it in English unless it is a proper noun with no translation.
+    *   Example: "The Weekend in Paris Job" -> "巴黎周末行动" or "巴黎周末任务"
+    *   Example: "Pilot" -> "试播集"
+3.  **Style:** Keep it concise and professional.
 4.  **No Extra Text:** Do not include the year or explanations.
 5.  **Output:** Return a valid JSON object.
 
@@ -207,7 +207,6 @@ class AITranslator:
             
             elif self.provider == 'gemini':
                 if not GEMINI_AVAILABLE: raise ImportError("Google GenAI SDK (google-genai) 未安装")
-                # ★★★ 修改点 2: 使用新版 Client 初始化 ★★★
                 self.client = genai.Client(api_key=self.api_key)
                 logger.info(f"  ➜ Google Gemini (New SDK) 初始化成功")
 
@@ -248,10 +247,6 @@ class AITranslator:
         if not overview_text or not overview_text.strip():
             return None
 
-        # 如果已经是中文（简单判断），则直接返回
-        # 这里假设调用方已经做过判断，但为了保险再次检查
-        # (需要在文件头部 import utils 或使用简单的正则判断，这里为了解耦，我们假设传入的就是需要翻译的英文)
-        
         system_prompt = OVERVIEW_TRANSLATION_PROMPT.format(title=title, overview=overview_text)
         user_prompt = "Please translate the overview."
 
@@ -267,7 +262,7 @@ class AITranslator:
                         {"role": "user", "content": user_prompt}
                     ],
                     response_format={"type": "json_object"},
-                    temperature=0.3 # 稍微增加一点创造性，让语句更通顺
+                    temperature=0.3 
                 )
                 response_content = resp.choices[0].message.content
 
@@ -321,14 +316,13 @@ class AITranslator:
 
         try:
             response_content = ""
-            # ... (这里复用之前的调用逻辑，为了节省篇幅，只写核心部分) ...
             
             # 适配 OpenAI
             if self.provider == 'openai' and self.client:
                 resp = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-                    response_format={"type": "json_object"}, temperature=0.1 # 标题需要准确，温度调低
+                    response_format={"type": "json_object"}, temperature=0.3 # 稍微提高温度以支持意译
                 )
                 response_content = resp.choices[0].message.content
             
@@ -337,13 +331,13 @@ class AITranslator:
                 resp = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-                    response_format={"type": "json_object"}, temperature=0.1
+                    response_format={"type": "json_object"}, temperature=0.3
                 )
                 response_content = resp.choices[0].message.content
 
             # 适配 Gemini
             elif self.provider == 'gemini' and self.client:
-                config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1, system_instruction=system_prompt)
+                config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.3, system_instruction=system_prompt)
                 resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
                 response_content = resp.text
 
@@ -549,7 +543,6 @@ class AITranslator:
         system_prompt = FAST_MODE_SYSTEM_PROMPT
         user_prompt = json.dumps(texts, ensure_ascii=False)
         
-        # ★★★ 修改点 3: 使用新版 Config 和调用方式 ★★★
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.0,
@@ -572,7 +565,6 @@ class AITranslator:
         user_payload = {"context": {"title": title, "year": year}, "terms": texts}
         user_prompt = json.dumps(user_payload, ensure_ascii=False)
         
-        # ★★★ 修改点 4: 使用新版 Config 和调用方式 ★★★
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.0,
@@ -638,7 +630,6 @@ class AITranslator:
         system_prompt = FORCE_TRANSLITERATE_PROMPT
         user_prompt = json.dumps(texts, ensure_ascii=False)
         
-        # ★★★ 修改点 5: 使用新版 Config 和调用方式 ★★★
         config = types.GenerateContentConfig(
             response_mime_type="application/json",
             temperature=0.0,
@@ -686,14 +677,11 @@ class AITranslator:
 
             elif self.provider == 'gemini':
                 model_to_use = self.embedding_model if self.embedding_model else "text-embedding-004"
-                # ★★★ 修改点 6: 使用新版 embed_content ★★★
-                # 注意：新版 SDK 中 embed_content 是 models 模块下的方法
                 response = self.client.models.embed_content(
                     model=model_to_use,
                     contents=text,
                     config=types.EmbedContentConfig(title="Movie Overview")
                 )
-                # 新版返回对象包含 embeddings 列表，每个元素有 values 属性
                 return response.embeddings[0].values
 
         except Exception as e:
@@ -788,7 +776,6 @@ class AITranslator:
                 response_text = resp.choices[0].message.content
             
             elif self.provider == 'gemini':
-                # ★★★ 修改点 7: 使用新版 Config 和调用方式 ★★★
                 config = types.GenerateContentConfig(
                     response_mime_type="application/json",
                     temperature=0.5,
