@@ -1398,12 +1398,25 @@ class MediaProcessor:
 
             update_clauses = []
             for col in cols_to_update:
-                # 针对 total_episodes 字段，检查锁定状态
-                # 逻辑：如果 total_episodes_locked 为 TRUE，则保持原值；否则使用新值 (EXCLUDED.total_episodes)
+                # 1. 针对 total_episodes 的锁定逻辑
                 if col == 'total_episodes':
                     update_clauses.append(
                         "total_episodes = CASE WHEN media_metadata.total_episodes_locked IS TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END"
                     )
+                
+                # 2. 针对 Emby ID 列表：合并旧数据和新数据，并去重
+                elif col == 'emby_item_ids_json':
+                    update_clauses.append(
+                        "emby_item_ids_json = (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements(COALESCE(media_metadata.emby_item_ids_json, '[]'::jsonb) || EXCLUDED.emby_item_ids_json) t(x))"
+                    )
+
+                # 3. 针对 资产详情 列表：合并旧数据和新数据，并去重
+                elif col == 'asset_details_json':
+                    update_clauses.append(
+                        "asset_details_json = (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements(COALESCE(media_metadata.asset_details_json, '[]'::jsonb) || EXCLUDED.asset_details_json) t(x))"
+                    )
+
+                # 4. 其他字段正常覆盖
                 else:
                     # 其他字段正常更新
                     update_clauses.append(f"{col} = EXCLUDED.{col}")
