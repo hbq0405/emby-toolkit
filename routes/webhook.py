@@ -44,7 +44,7 @@ UPDATE_DEBOUNCE_TIMERS = {}
 UPDATE_DEBOUNCE_LOCK = threading.Lock()
 UPDATE_DEBOUNCE_TIME = 15
 # --- 视频流预检常量 ---
-STREAM_CHECK_MAX_RETRIES = 60   # 最大重试次数 
+STREAM_CHECK_MAX_RETRIES = 6   # 最大重试次数 
 STREAM_CHECK_INTERVAL = 10      # 每次轮询间隔(秒)
 STREAM_CHECK_SEMAPHORE = Semaphore(5) # 限制并发预检的数量，防止大量入库时查挂 Emby
 
@@ -201,15 +201,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
 
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
-    # ======================================================================
-    # ★★★ 新增：处理完成后的“二次打标” (补刀逻辑) ★★★
-    # 此时 Emby 应该已经读取了我们修正后的元数据 (如分级 XXX)，
-    # 再次运行打标逻辑，可以命中那些依赖修正后分级的规则。
-    # ======================================================================
-    # ======================================================================
-    # ★★★ 极致优化：基于本地数据库的“精准补刀打标” ★★★
-    # 直接读取刚刚写入数据库的“真理”数据，无需等待 Emby 刷新 NFO。
-    # ======================================================================
+    # 打标
     if is_new_item: 
         try:
             # 1. 从数据库获取最新记录
@@ -232,7 +224,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                 
                 if lib_id:
                     # 既然数据都在手里了，不需要延迟，直接干！
-                    logger.info(f"  ➜ [自动打标] 基于数据库最新元数据 (库ID:{lib_id}, 分级:{us_rating}) 执行二次检查...")
+                    logger.info(f"  ➜ [自动打标] 基于数据库最新元数据 (库ID:{lib_id}, 分级:{us_rating}) ...")
                     # 这里的 lib_name 传个占位符即可，不影响逻辑，只影响日志
                     _handle_immediate_tagging_with_lib(item_id, item_name_for_log, lib_id, "DB_Source", known_rating=us_rating)
                 else:
@@ -247,9 +239,6 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     if item_type == "Series" and tmdb_id:
         def _async_trigger_watchlist():
             try:
-                # =======================================================
-                # [修改] 增加判断：只有在追剧列表(Watching)中才触发刷新
-                # =======================================================
                 watching_ids = watchlist_db.get_watching_tmdb_ids()
                 if str(tmdb_id) not in watching_ids:
                     logger.debug(f"  ➜ [智能追剧] 剧集 {tmdb_id} 当前不在追剧列表中 (状态非 Watching)，跳过刷新。")
@@ -340,7 +329,6 @@ def _process_batch_webhook_events():
 
     logger.info(f"  ➜ 防抖计时器到期，开始批量处理 {len(items_in_batch)} 个 Emby Webhook 新增/入库事件。")
 
-    # ★★★ 核心修复：恢复 V5 版本的、能够记录具体分集ID的数据结构 ★★★
     parent_items = collections.defaultdict(lambda: {
         "name": "", "type": "", "episode_ids": set()
     })
@@ -386,7 +374,6 @@ def _process_batch_webhook_events():
         # 1. 检查是否已处理
         is_already_processed = parent_id in extensions.media_processor_instance.processed_items_cache
 
-        # 2. 检查数据库是否在线
         # 2. 检查数据库是否在线 (处理“僵尸数据”)
         if is_already_processed:
             # 这一步很快，只是查一下 media_metadata 表的 in_library 字段
@@ -459,7 +446,7 @@ def _enqueue_webhook_event(item_id, item_name, item_type):
 
 def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
     """
-    预检视频流数据（优化并发版）。
+    预检视频流数据。
     """
     if item_type not in ['Movie', 'Episode']:
         _enqueue_webhook_event(item_id, item_name, item_type)
@@ -472,15 +459,10 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
     emby_key = app_config.get("emby_api_key")
     emby_user_id = extensions.media_processor_instance.emby_user_id
 
-    # ★★★ 核心修改：移除最外层的 with STREAM_CHECK_SEMAPHORE ★★★
-    # 让所有任务都能进入循环，而不是在门口排队
-
     for i in range(STREAM_CHECK_MAX_RETRIES):
         try:
             item_details = None
             
-            # ★★★ 核心修改：只在发起 API 请求时占用信号量 ★★★
-            # 这样查完就释放，别人就能查，不会因为我在 sleep 而阻塞别人
             with STREAM_CHECK_SEMAPHORE:
                 item_details = emby.get_emby_item_details(
                     item_id=item_id,
@@ -520,8 +502,6 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
                 _enqueue_webhook_event(item_id, item_name, item_type)
                 return
             
-            # ★★★ sleep 在锁外面执行 ★★★
-            # 此时我不占用 API 额度，其他任务可以利用这段时间去查 Emby
             logger.debug(f"  ➜ [预检] '{item_name}' 暂无视频流数据，等待重试 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
             sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
