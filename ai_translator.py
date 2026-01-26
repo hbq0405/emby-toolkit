@@ -154,17 +154,15 @@ Overview: {overview}
 }}
 """
 
-# ★★★ 说明书五：给“标题命名大师”看的（标题模式） - 已针对分集优化 ★★★
+# ★★★ 说明书五：给“标题命名大师”看的（标题模式） ★★★
 TITLE_TRANSLATION_PROMPT = """
-You are a professional translator for a Movie/TV database.
-Your task is to translate the provided Title into **Simplified Chinese (简体中文)**.
+You are a movie/TV database editor.
+Your task is to translate the provided Title into **Simplified Chinese (简体中文)** for a Mainland China audience.
 
 **Rules:**
-1.  **Movies/Series:** If the Type is 'Movie' or 'Series', use the existing official Mainland China translation. If none, use the standard transliteration.
-2.  **Episodes (CRITICAL):** If the Type is 'Episode', **translate the meaning of the title directly** (Semantic Translation). Do NOT keep it in English unless it is a proper noun with no translation.
-    *   Example: "The Weekend in Paris Job" -> "巴黎周末行动" or "巴黎周末任务"
-    *   Example: "Pilot" -> "试播集"
-3.  **Style:** Keep it concise and professional.
+1.  **Official Name First:** If there is an existing official Mainland China translation, USE IT.
+2.  **Common Transliteration:** If it's a name (like "Frankenstein" or "Oppenheimer"), use the standard Mainland Chinese transliteration (e.g., "弗兰肯斯坦", "奥本海默").
+3.  **Classic IP:** If it is a well-known IP, use the most widely accepted Chinese title (e.g., "科学怪人" might be acceptable for Frankenstein, but "弗兰肯斯坦" is more neutral/modern. Choose the most standard one).
 4.  **No Extra Text:** Do not include the year or explanations.
 5.  **Output:** Return a valid JSON object.
 
