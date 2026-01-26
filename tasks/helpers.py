@@ -1462,7 +1462,7 @@ def translate_tmdb_metadata_recursively(
     item_name: str = ""
 ):
     """
-    通用辅助函数：递归翻译 TMDb 数据的简介 (Overview)。
+    通用辅助函数：递归翻译 TMDb 数据的简介 (Overview) 和 标题 (Name)。
     支持 Movie (单层) 和 Series (聚合层级: Show -> Season -> Episode)。
     
     :param item_type: 'Movie' or 'Series'
@@ -1474,14 +1474,27 @@ def translate_tmdb_metadata_recursively(
         return
 
     # 内部辅助：翻译单个字典的 overview
-    def _translate_one(data_dict, context_title):
+    def _translate_overview_field(data_dict, context_title):
         overview = data_dict.get('overview')
         # 只有当简介存在且不包含中文时才翻译
         if overview and not utils.contains_chinese(overview):
-            logger.debug(f"    ├─ [AI翻译] 正在翻译简介: {context_title}...")
+            # logger.debug(f"    ├─ [AI翻译] 正在翻译简介: {context_title}...")
             trans = ai_translator.translate_overview(overview, title=context_title)
             if trans:
                 data_dict['overview'] = trans
+                return True
+        return False
+
+    # ★内部辅助：翻译单个字典的 name 
+    def _translate_name_field(data_dict, context_title, m_type, year_str=""):
+        name = data_dict.get('name')
+        # 只有当标题存在且不包含中文时才翻译
+        if name and not utils.contains_chinese(name):
+            # logger.debug(f"    ├─ [AI翻译] 正在翻译标题: {name} ({context_title})...")
+            trans = ai_translator.translate_title(name, media_type=m_type, year=year_str)
+            # 只有翻译结果包含中文才采纳 (防止AI返回英文或乱码)
+            if trans and utils.contains_chinese(trans):
+                data_dict['name'] = trans
                 return True
         return False
 
@@ -1489,7 +1502,7 @@ def translate_tmdb_metadata_recursively(
 
     # --- 1. 处理电影 ---
     if item_type == 'Movie':
-        if _translate_one(tmdb_data, item_name):
+        if _translate_overview_field(tmdb_data, item_name):
             translated_count += 1
 
     # --- 2. 处理剧集 (聚合数据结构) ---
@@ -1499,14 +1512,14 @@ def translate_tmdb_metadata_recursively(
         # 尝试获取最新标题
         current_name = series_details.get('name') or series_details.get('title') or item_name
         
-        if _translate_one(series_details, current_name):
+        if _translate_overview_field(series_details, current_name):
             translated_count += 1
 
         # B. 分季 (Seasons)
         seasons = tmdb_data.get("seasons_details", [])
         for season in seasons:
             s_num = season.get("season_number", "?")
-            if _translate_one(season, f"{current_name} Season {s_num}"):
+            if _translate_overview_field(season, f"{current_name} Season {s_num}"):
                 translated_count += 1
 
         # C. 分集 (Episodes)
@@ -1517,8 +1530,19 @@ def translate_tmdb_metadata_recursively(
         for ep in episodes_list:
             s_num = ep.get("season_number")
             e_num = ep.get("episode_number")
-            if _translate_one(ep, f"{current_name} S{s_num}E{e_num}"):
+            context_str = f"{current_name} S{s_num}E{e_num}"
+            
+            # 1. 翻译分集简介
+            if _translate_overview_field(ep, context_str):
+                translated_count += 1
+            
+            # 2. 翻译分集标题
+            # 提取年份辅助翻译
+            air_date = ep.get('air_date')
+            year = air_date[:4] if air_date else ""
+            
+            if _translate_name_field(ep, context_str, 'Episode', year):
                 translated_count += 1
 
     if translated_count > 0:
-        logger.info(f"  ➜ [AI翻译] 已完成 {translated_count} 条简介的翻译 ({item_name})。")
+        logger.info(f"  ➜ [AI翻译] 已完成 {translated_count} 条元数据(简介/标题)的翻译 ({item_name})。")
