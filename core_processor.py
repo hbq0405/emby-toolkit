@@ -152,7 +152,7 @@ class MediaProcessor:
         self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.local_data_path = self.config.get("local_data_path", "").strip()
         
-        self.ai_enabled = self.config.get("ai_translation_enabled", False)
+        self.ai_enabled = self.config.get("ai_translate_actor_role", False)
         self.ai_translator = AITranslator(self.config) if self.ai_enabled else None
         
         self._stop_event = threading.Event()
@@ -481,7 +481,7 @@ class MediaProcessor:
                     return None
                 
                 # --- 标题简介翻译 ---
-                if self.ai_translator and self.config.get("ai_translation_enabled", False) and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW, False):
+                if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW, False):
                     # --- 1. 简介翻译 ---
                     current_overview = details.get("overview", "")
                     item_title = details.get("title") or details.get("name")
@@ -565,7 +565,7 @@ class MediaProcessor:
                             logger.warning(f"  ➜ [实时监控] 标题 AI 翻译未返回结果。")
 
                 # 分集简介翻译入口
-                if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get("ai_translation_enabled", False) and self.config.get("ai_translate_episode_overview", False):
+                if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get("ai_translate_episode_overview", False):
                     # 使用当前最新的标题（可能是翻译过的）
                     current_series_name = details.get("name") or details.get("title")
                     translate_tmdb_metadata_recursively(
@@ -1078,7 +1078,7 @@ class MediaProcessor:
             overview_embedding_json = None
             if item_type in ["Movie", "Series"] and self.ai_translator:
                 overview_text = source_data_package.get('overview') or item_details_from_emby.get('Overview')
-                if overview_text and self.config.get("ai_translation_enabled", False) and self.config.get("ai_vector", False):
+                if overview_text and self.config.get("ai_vector", False):
                     try:
                         embedding = self.ai_translator.generate_embedding(overview_text)
                         if embedding: overview_embedding_json = json.dumps(embedding)
@@ -2703,7 +2703,7 @@ class MediaProcessor:
         # ======================================================================
         logger.info(f"  ➜ 将对 {len(current_cast_list)} 位演员进行最终的翻译和格式化处理...")
 
-        if not (self.ai_translator and self.config.get("ai_translation_enabled", False) and self.config.get("ai_translate_actor_role", False)):
+        if not (self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False)):
             logger.info("  ➜ 翻译未启用，将保留演员和角色名原文。")
         else:
             final_translation_map = {}
@@ -2867,7 +2867,7 @@ class MediaProcessor:
             return []
 
         # ★★★ 核心修改 1: 检查AI翻译是否启用，如果未启用则直接返回 ★★★
-        if not self.ai_translator or not self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED, False):
+        if not self.ai_translator or not self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False):
             logger.info("手动编辑-一键翻译：AI翻译未启用，任务跳过。")
             # 可以在这里返回一个提示给前端，或者直接返回原始列表
             # 为了前端体验，我们可以在第一个需要翻译的演员上加一个状态

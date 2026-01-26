@@ -120,7 +120,6 @@ DYNAMIC_CONFIG_DEF = {
     "accept_language": ("Network", 'string', 'zh-CN,zh;q=0.9,en;q=0.8'),
 
     # [AITranslation]
-    constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
     constants.CONFIG_OPTION_AI_PROVIDER: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "openai"),
     constants.CONFIG_OPTION_AI_API_KEY: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', ""),
     constants.CONFIG_OPTION_AI_MODEL_NAME: (constants.CONFIG_SECTION_AI_TRANSLATION, 'string', "Qwen/Qwen2.5-72B-Instruct"),

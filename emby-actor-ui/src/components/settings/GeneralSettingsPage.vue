@@ -416,7 +416,7 @@
                 <!-- 左侧: AI翻译 -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card" style="height: 100%;">
-                    <template #header><span class="card-title">AI</span></template>
+                    <template #header><span class="card-title">AI 增强</span></template>
                     <template #header-extra>
                       <n-space align="center">
                         <n-button 
@@ -425,60 +425,70 @@
                           ghost 
                           @click="testAI" 
                           :loading="isTestingAI"
-                          :disabled="!configModel.ai_translation_enabled || !configModel.ai_api_key"
+                          :disabled="!configModel.ai_api_key"
                         >
                           测试连接
                         </n-button>
-                        <n-switch v-model:value="configModel.ai_translation_enabled" />
+                        <!-- [移除] 总开关 n-switch -->
                         <a href="https://cloud.siliconflow.cn/i/GXIrubbL" target="_blank" style="font-size: 0.85em; color: var(--n-primary-color); text-decoration: underline;">注册硅基流动</a>
                       </n-space>
                     </template>
-                    <div class="ai-settings-wrapper" :class="{ 'content-disabled': !configModel.ai_translation_enabled }">
-                      <n-form-item label="处理范围">
-                        <n-space>
-                          <!-- 1. 演员表 -->
-                          <n-checkbox 
-                            v-model:checked="configModel.ai_translate_actor_role" 
-                            :disabled="!configModel.ai_translation_enabled"
-                          >
-                            翻译演员角色
-                          </n-checkbox>
-
-                          <!-- 2. 片名 -->
-                          <n-checkbox 
-                            v-model:checked="configModel.ai_translate_title_overview" 
-                            :disabled="!configModel.ai_translation_enabled"
-                          >
-                            翻译片名简介
-                          </n-checkbox>
-
-                          <!-- 3. 简介 -->
-                          <n-checkbox 
-                            v-model:checked="configModel.ai_translate_episode_overview" 
-                            :disabled="!configModel.ai_translation_enabled"
-                          >
-                            翻译分集简介
-                          </n-checkbox>
-
-                          <!-- 4. 向量 -->
-                          <n-checkbox 
-                            v-model:checked="configModel.ai_vector" 
-                            :disabled="!configModel.ai_translation_enabled"
-                          >
-                            生成媒体向量
-                          </n-checkbox>
-                        </n-space>
+                    
+                    <!-- 移除 content-disabled 类，因为不再有总开关控制禁用 -->
+                    <div class="ai-settings-wrapper">
+                      
+                      <!-- 1. 基础配置 (上移，因为它们是前提) -->
+                      <n-form-item label="AI 服务商" path="ai_provider">
+                        <n-select v-model:value="configModel.ai_provider" :options="aiProviderOptions" />
                       </n-form-item>
-                      <n-form-item label="AI翻译模式" path="ai_translation_mode">
-                        <n-radio-group v-model:value="configModel.ai_translation_mode" name="ai_translation_mode" :disabled="!configModel.ai_translation_enabled">
-                          <n-space vertical><n-radio value="fast">翻译模式 (速度优先)</n-radio><n-radio value="quality">顾问模式 (质量优先)</n-radio></n-space>
+                      <n-form-item label="API Key" path="ai_api_key">
+                        <n-input type="password" show-password-on="mousedown" v-model:value="configModel.ai_api_key" placeholder="输入你的 API Key" />
+                      </n-form-item>
+                      <n-form-item label="模型名称" path="ai_model_name">
+                        <n-input v-model:value="configModel.ai_model_name" placeholder="例如: gpt-3.5-turbo, glm-4" />
+                      </n-form-item>
+                      <n-form-item label="API Base URL (可选)" path="ai_base_url">
+                        <n-input v-model:value="configModel.ai_base_url" placeholder="用于代理或第三方兼容服务" />
+                      </n-form-item>
+
+                      <n-divider style="margin: 10px 0; font-size: 0.9em; color: gray;">功能开关</n-divider>
+
+                      <!-- 2. 功能细分开关 -->
+                      <n-form-item label="启用功能">
+                        <n-grid :cols="2" :y-gap="8">
+                          <n-gi>
+                            <n-checkbox v-model:checked="configModel.ai_translate_actor_role">
+                              翻译演员与角色
+                            </n-checkbox>
+                          </n-gi>
+                          <n-gi>
+                            <n-checkbox v-model:checked="configModel.ai_translate_title_overview">
+                              翻译片名与简介
+                            </n-checkbox>
+                          </n-gi>
+                          <n-gi>
+                            <n-checkbox v-model:checked="configModel.ai_translate_episode_overview">
+                              翻译分集简介
+                            </n-checkbox>
+                          </n-gi>
+                          <n-gi>
+                            <n-checkbox v-model:checked="configModel.ai_vector">
+                              生成媒体向量(推荐)
+                            </n-checkbox>
+                          </n-gi>
+                        </n-grid>
+                      </n-form-item>
+
+                      <!-- 3. 高级选项 -->
+                      <n-form-item label="翻译模式" path="ai_translation_mode" v-if="configModel.ai_translate_actor_role || configModel.ai_translate_title_overview">
+                        <n-radio-group v-model:value="configModel.ai_translation_mode" name="ai_translation_mode">
+                          <n-space vertical>
+                            <n-radio value="fast">快速模式 (仅翻译)</n-radio>
+                            <n-radio value="quality">顾问模式 (结合剧情上下文)</n-radio>
+                          </n-space>
                         </n-radio-group>
-                        <template #feedback><n-text depth="3" style="font-size:0.8em;"><b>顾问模式：</b>结合上下文翻译，准确率更高，但无缓存，耗时且成本高。</n-text></template>
                       </n-form-item>
-                      <n-form-item label="AI 服务商" path="ai_provider"><n-select v-model:value="configModel.ai_provider" :options="aiProviderOptions" :disabled="!configModel.ai_translation_enabled"/></n-form-item>
-                      <n-form-item label="API Key" path="ai_api_key"><n-input type="password" show-password-on="mousedown" v-model:value="configModel.ai_api_key" placeholder="输入你的 API Key" :disabled="!configModel.ai_translation_enabled"/></n-form-item>
-                      <n-form-item label="模型名称" path="ai_model_name"><n-input v-model:value="configModel.ai_model_name" placeholder="例如: gpt-3.5-turbo, glm-4" :disabled="!configModel.ai_translation_enabled"/></n-form-item>
-                      <n-form-item label="API Base URL (可选)" path="ai_base_url"><n-input v-model:value="configModel.ai_base_url" placeholder="用于代理或第三方兼容服务" :disabled="!configModel.ai_translation_enabled"/></n-form-item>
+                      
                     </div>
                   </n-card>
                 </n-gi>

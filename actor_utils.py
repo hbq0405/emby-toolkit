@@ -181,67 +181,6 @@ def evaluate_cast_processing_quality(
     logger.info(f"  ➜ 最终评分: {final_score_rounded:.1f} ---")
     return final_score_rounded
 
-# --- 翻译演员的特定字段 ---
-def translate_actor_field(text: Optional[str], db_manager: ActorDBManager, db_cursor: psycopg2.extensions.cursor, ai_translator: Optional[AITranslator], translator_engines: List[str], ai_enabled: bool) -> Optional[str]:
-    """翻译演员的特定字段，智能选择AI或传统翻译引擎。"""
-    # 1. 前置检查：如果文本为空、是纯空格，或已包含中文，则直接返回原文
-    if not text or not text.strip() or utils.contains_chinese(text):
-        return text
-    
-    text_stripped = text.strip()
-
-    # 2. 前置检查：跳过短的大写字母缩写
-    if len(text_stripped) <= 2 and text_stripped.isupper():
-        return text
-
-    # 3. 核心修复：优先从数据库读取缓存，并处理所有情况
-    cached_entry = db_manager.get_translation_from_db(db_cursor, text_stripped)
-    if cached_entry:
-        # 情况 A: 缓存中有成功的翻译结果
-        if cached_entry.get("translated_text"):
-            cached_translation = cached_entry.get("translated_text")
-            logger.info(f"数据库翻译缓存命中 for '{text_stripped}' -> '{cached_translation}'")
-            return cached_translation
-        # 情况 B: 缓存中明确记录了这是一个失败的翻译
-        else:
-            logger.debug(f"数据库翻译缓存命中 (失败记录) for '{text_stripped}'，不再尝试在线翻译。")
-            return text # 直接返回原文，避免重复请求
-
-    # 4. 如果缓存中完全没有记录，才进行在线翻译
-    logger.debug(f"'{text_stripped}' 在翻译缓存中未找到，将进行在线翻译...")
-    final_translation = None
-    final_engine = "unknown"
-
-    # 根据配置选择翻译方式
-    ai_translation_attempted = False
-
-    # 步骤 1: 如果AI翻译启用，优先尝试AI
-    if ai_translator and ai_enabled:
-        ai_translation_attempted = True
-        logger.debug(f"AI翻译已启用，优先尝试使用 '{ai_translator.provider}' 进行翻译...")
-        try:
-            # ai_translator.translate 应该在失败时返回 None 或抛出异常
-            ai_result = ai_translator.translate(text_stripped)
-            if ai_result: # 确保AI返回了有效结果
-                final_translation = ai_result
-                final_engine = ai_translator.provider
-        except Exception as e_ai:
-            # 如果AI翻译器内部抛出异常，在这里捕获
-            logger.error(f"AI翻译器在翻译 '{text_stripped}' 时发生异常: {e_ai}")
-            # 不做任何事，让流程继续往下走，尝试传统引擎
-
-    # 5. 处理在线翻译的结果，并更新缓存
-    if final_translation and final_translation.strip() and final_translation.strip().lower() != text_stripped.lower():
-        # 翻译成功，存入缓存并返回结果
-        logger.info(f"在线翻译成功: '{text_stripped}' -> '{final_translation}' (使用引擎: {final_engine})")
-        db_manager.save_translation_to_db(db_cursor, text_stripped, final_translation, final_engine)
-        return final_translation
-    else:
-        # 翻译失败或返回原文，将失败状态存入缓存，并返回原文
-        logger.warning(f"在线翻译未能翻译 '{text_stripped}' 或返回了原文 (使用引擎: {final_engine})。")
-        db_manager.save_translation_to_db(db_cursor, text_stripped, None, f"failed_or_same_via_{final_engine}")
-        return text
-
 # ✨✨✨从豆瓣API获取指定媒体的演员原始数据列表✨✨✨
 def find_douban_cast(douban_api: DoubanApi, media_info: Dict[str, Any]) -> List[Dict[str, Any]]:
         """从豆瓣API获取演员原始数据。"""

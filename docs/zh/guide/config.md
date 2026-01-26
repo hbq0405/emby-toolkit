@@ -113,7 +113,7 @@
 
 | Key | 说明 |
 | --- | --- |
-| `ai_translation_enabled` | 启用 AI 翻译 |
+| `ai_translate_actor_role` | 启用 AI 翻译 |
 | `ai_provider` | 提供商 |
 | `ai_api_key` | API Key |
 | `ai_model_name` | 模型名称 |

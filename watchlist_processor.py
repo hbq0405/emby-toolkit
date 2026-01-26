@@ -63,7 +63,7 @@ class WatchlistProcessor:
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
         self.local_data_path = self.config.get("local_data_path", "")
-        self.ai_enabled = self.config.get("ai_translation_enabled", False)
+        self.ai_enabled = self.config.get("ai_translate_episode_overview", False)
         self.ai_translator = AITranslator(self.config) if self.ai_enabled else None
         self._stop_event = threading.Event()
         self.progress_callback = None

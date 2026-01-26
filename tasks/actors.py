@@ -171,10 +171,9 @@ def task_actor_translation(processor):
     task_name = "中文化演员名 (智能版)"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
 
-    ai = processor.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED)
     actor = processor.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE)
 
-    if not ai or not actor:
+    if not actor:
         logger.info("  🚫 AI翻译功能未启用，跳过任务。")
         return
     

@@ -29,10 +29,9 @@ def task_role_translation(processor, force_full_update: bool = False):
     """
     根据传入的 force_full_update 参数，决定是执行标准扫描还是深度更新。
     """
-    ai = processor.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_ENABLED)
     actor = processor.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE)
 
-    if not ai or not actor:
+    if not actor:
         logger.info("  🚫 AI翻译功能未启用，跳过任务。")
         return
 
@@ -841,7 +840,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     if t_id_str and details: tmdb_details_map[t_id_str] = details
 
             # 在写入数据库之前，对获取到的 TMDb 数据进行翻译
-            if processor.ai_translator and processor.config.get("ai_translation_enabled", False) and processor.config.get("ai_translate_episode_overview", False):
+            if processor.ai_translator and processor.config.get("ai_translate_episode_overview", False):
                 for item_group in batch_item_groups:
                     if not item_group: continue
                     item = item_group[0]

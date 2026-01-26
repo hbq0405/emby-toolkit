@@ -121,7 +121,6 @@ CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS = "resubscribe_delay_seconds"
 
 # --- AI 翻译 ---
 CONFIG_SECTION_AI_TRANSLATION = "AITranslation"
-CONFIG_OPTION_AI_TRANSLATION_ENABLED = "ai_translation_enabled" # 是否启用AI翻译
 CONFIG_OPTION_AI_PROVIDER = "ai_provider"                       # AI服务提供商 (如 'siliconflow', 'openai')
 CONFIG_OPTION_AI_API_KEY = "ai_api_key"                         # AI服务的API密钥
 CONFIG_OPTION_AI_MODEL_NAME = "ai_model_name"                   # 使用的AI模型名称 (如 'Qwen/Qwen2-7B-Instruct')
