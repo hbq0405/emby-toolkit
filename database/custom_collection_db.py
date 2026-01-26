@@ -588,3 +588,27 @@ def get_custom_collection_by_emby_id(emby_collection_id: str) -> Optional[Dict[s
     except psycopg2.Error as e:
         logger.error(f"根据 Emby ID {emby_collection_id} 获取自定义合集时出错: {e}", exc_info=True)
         return None
+    
+def get_active_collection_ids_for_latest_view() -> List[int]:
+    """
+    获取所有开启了“显示在最新媒体”选项(show_in_latest=True)的活跃合集 ID。
+    用于构建全局最新视图。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 获取所有活跃合集的 ID 和定义
+            cursor.execute("SELECT id, definition_json FROM custom_collections WHERE status = 'active'")
+            rows = cursor.fetchall()
+            
+            active_ids = []
+            for row in rows:
+                definition = row.get('definition_json') or {}
+                # 默认为 True，只有明确设置为 False 才排除
+                if definition.get('show_in_latest', True):
+                    active_ids.append(row['id'])
+            
+            return active_ids
+    except psycopg2.Error as e:
+        logger.error(f"获取最新视图合集ID列表时出错: {e}", exc_info=True)
+        return []
