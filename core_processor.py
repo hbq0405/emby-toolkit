@@ -152,10 +152,12 @@ class MediaProcessor:
         self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.local_data_path = self.config.get("local_data_path", "").strip()
 
-        self.ai_enabled = self.config.get("ai_translate_actor_role", False or 
-                                          "ai_translate_title_overview", False or 
-                                          "ai_translate_episode_overview", False or 
-                                          "ai_vector", False  )
+        self.ai_enabled = any([
+            self.config.get("ai_translate_actor_role", False),
+            self.config.get("ai_translate_title_overview", False),
+            self.config.get("ai_translate_episode_overview", False),
+            self.config.get("ai_vector", False),
+        ])
         self.ai_translator = AITranslator(self.config) if self.ai_enabled else None
         
         self._stop_event = threading.Event()
