@@ -1106,44 +1106,8 @@ class MediaProcessor:
                     movie_record['emby_item_ids_json'] = '[]'
                     movie_record['in_library'] = False
                 else:
-                    # 目的：确保 parse_full_asset_details 解析的是当前 item_id 对应的那个 MediaSource，
-                    # 而不是 Emby 返回的根节点（通常是主版本）的元数据。
-                    
-                    details_to_parse = item_details_from_emby
-                    media_sources = item_details_from_emby.get('MediaSources', [])
-                    
-                    # 只有当存在 MediaSources 时才需要进行清洗
-                    if media_sources:
-                        target_source = None
-                        # 1. 尝试找到 ID 完全匹配的 Source
-                        for ms in media_sources:
-                            if ms.get('Id') == item_id:
-                                target_source = ms
-                                break
-                        
-                        # 2. 如果没找到（极少见），但列表里只有一个，就用那个
-                        if not target_source and len(media_sources) == 1:
-                            target_source = media_sources[0]
-                            
-                        if target_source:
-                            # 创建副本，避免污染原始数据
-                            details_to_parse = item_details_from_emby.copy()
-                            
-                            # 强制将 Source 的关键元数据覆盖到 Root，防止解析器读错
-                            # 这些字段是导致“串门”的主要原因
-                            keys_to_overwrite = ['Width', 'Height', 'BitRate', 'Container', 'Size', 'RunTimeTicks', 'VideoType']
-                            for k in keys_to_overwrite:
-                                if k in target_source:
-                                    details_to_parse[k] = target_source[k]
-                            
-                            # 关键：只保留这一个 Source，强迫解析器只看它
-                            details_to_parse['MediaSources'] = [target_source]
-                            
-                            # 补充：MediaStreams 也需要对应覆盖
-                            if 'MediaStreams' in target_source:
-                                details_to_parse['MediaStreams'] = target_source['MediaStreams']
                     asset_details = parse_full_asset_details(
-                        details_to_parse, 
+                        item_details_from_emby, 
                         id_to_parent_map=id_to_parent_map, 
                         library_guid=lib_guid
                     )
@@ -1434,25 +1398,12 @@ class MediaProcessor:
 
             update_clauses = []
             for col in cols_to_update:
-                # 1. 针对 total_episodes 的锁定逻辑
+                # 针对 total_episodes 字段，检查锁定状态
+                # 逻辑：如果 total_episodes_locked 为 TRUE，则保持原值；否则使用新值 (EXCLUDED.total_episodes)
                 if col == 'total_episodes':
                     update_clauses.append(
                         "total_episodes = CASE WHEN media_metadata.total_episodes_locked IS TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END"
                     )
-                
-                # 2. 针对 Emby ID 列表：合并旧数据和新数据，并去重
-                elif col == 'emby_item_ids_json':
-                    update_clauses.append(
-                        "emby_item_ids_json = (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements(COALESCE(media_metadata.emby_item_ids_json, '[]'::jsonb) || EXCLUDED.emby_item_ids_json) t(x))"
-                    )
-
-                # 3. 针对 资产详情 列表：合并旧数据和新数据，并去重
-                elif col == 'asset_details_json':
-                    update_clauses.append(
-                        "asset_details_json = (SELECT jsonb_agg(DISTINCT x) FROM jsonb_array_elements(COALESCE(media_metadata.asset_details_json, '[]'::jsonb) || EXCLUDED.asset_details_json) t(x))"
-                    )
-
-                # 4. 其他字段正常覆盖
                 else:
                     # 其他字段正常更新
                     update_clauses.append(f"{col} = EXCLUDED.{col}")
