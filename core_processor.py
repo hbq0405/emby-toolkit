@@ -32,10 +32,6 @@ from watchlist_processor import WatchlistProcessor
 from handler.douban import DoubanApi
 
 logger = logging.getLogger(__name__)
-CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE = "ai_translate_actor_role"
-CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW = "ai_translate_title_overview"
-CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW = "ai_translate_episode_overview"
-CONFIG_OPTION_AI_VECTOR = "ai_vector" 
 try:
     from handler.douban import DoubanApi
     DOUBAN_API_AVAILABLE = True
@@ -155,13 +151,12 @@ class MediaProcessor:
         self.emby_user_id = self.config.get("emby_user_id")
         self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.local_data_path = self.config.get("local_data_path", "").strip()
-        
-        self.ai_translator = AITranslator(self.config) if (
-            self.config.get(CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False) or 
-            self.config.get(CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW, False) or 
-            self.config.get(CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False) or
-            self.config.get(CONFIG_OPTION_AI_VECTOR, False)
-        ) else None
+
+        self.ai_enabled = self.config.get("ai_translate_actor_role", False or 
+                                          "ai_translate_title_overview", False or 
+                                          "ai_translate_episode_overview", False or 
+                                          "ai_vector", False  )
+        self.ai_translator = AITranslator(self.config) if self.ai_enabled else None
         
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db()
