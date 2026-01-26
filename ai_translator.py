@@ -5,7 +5,8 @@ import time
 from datetime import datetime
 from typing import Optional, Dict, Any, List, Union
 import logging
-
+from database import settings_db
+import utils
 try:
     import numpy as np
 except ImportError:
@@ -89,94 +90,6 @@ try:
 except ImportError:
     GEMINI_AVAILABLE = False
 
-# ★★★ 说明书一：给“翻译官”看的（翻译模式） ★★★
-FAST_MODE_SYSTEM_PROMPT = """
-You are a translation API that only returns JSON.
-Your task is to translate a list of personal names (e.g., actors, cast members) from various languages into **Simplified Chinese (简体中文)**.
-
-You MUST return a single, valid JSON object mapping each original name to its Chinese translation.
-- The source language of the names can be anything (e.g., English, Japanese, Korean, Pinyin).
-- The target language MUST ALWAYS be Simplified Chinese.
-- If a name cannot be translated or is already in Chinese, use the original name as its value.
-- **Some names might be incomplete or contain initials (e.g., "Peter J."); provide the most likely standard transliteration based on the available parts.**
-- Do not add any explanations or text outside the JSON object.
-"""
-
-# ★★★ 说明书二：给“音译专家”看的 ★★★
-FORCE_TRANSLITERATE_PROMPT = """
-You are a translation API that only returns JSON.
-Your task is to transliterate a list of proper nouns (personal names, locations, etc.) into **Simplified Chinese (简体中文)** based on their pronunciation.
-
-- The source language can be anything. Your goal is to find the most common Chinese phonetic translation.
-- The target language MUST ALWAYS be Simplified Chinese.
-- If a name absolutely cannot be transliterated (e.g., it's a random code), use the original name as its value.
-- **Some names might be incomplete or contain initials; do your best to transliterate the recognizable parts.**
-- Do not add any explanations or text outside the JSON object.
-"""
-
-# ★★★ 说明书三：给“影视顾问”看的（顾问模式）  ★★★
-QUALITY_MODE_SYSTEM_PROMPT = """
-You are a world-class film and television expert, acting as a JSON-only API.
-Your mission is to accurately translate foreign language or Pinyin names of actors and characters into **Simplified Chinese (简体中文)**, using the provided movie/series context.
-
-**Input Format:**
-You will receive a JSON object with `context` (containing `title` and `year`) and `terms` (a list of strings to translate).
-
-**Your Strategy:**
-1.  **Use Context:** Use the `title` and `year` to identify the show. Find the official or most recognized Chinese translation for the `terms` in that specific show's context. This is crucial for character names.
-2.  **Translate Pinyin:** If a term is Pinyin (e.g., "Zhang San"), translate it to Chinese characters ("张三").
-3.  **【【【【【 最终核心指令 】】】】】**
-    **Target Language is ALWAYS Simplified Chinese:** Regardless of the original language of the show or name (e.g., Korean, Japanese, English), your final output translation for all terms MUST be in **Simplified Chinese (简体中文)**. Do NOT translate to the show's original language.
-4.  **Fallback:** If a term cannot or should not be translated, you MUST use the original string as its value.
-
-**Output Format (MANDATORY):**
-You MUST return a single, valid JSON object mapping each original term to its Chinese translation. NO other text or markdown.
-"""
-
-# ★★★ 说明书四：给“剧情翻译官”看的（简介模式） ★★★
-OVERVIEW_TRANSLATION_PROMPT = """
-You are a professional translator specializing in movie and TV show synopses.
-Your task is to translate the provided English overview into **fluent, engaging Simplified Chinese (简体中文)**.
-
-**Guidelines:**
-1.  **Tone:** Professional, engaging, and suitable for a media library description. Avoid machine-translation stiffness.
-2.  **Accuracy:** Preserve the original meaning, plot points, and tone (e.g., comedy vs. horror).
-3.  **Names:** If the overview contains names of actors or characters, translate them to their standard Chinese equivalents if known, or keep them in English if unsure.
-4.  **Output:** Return a valid JSON object with a single key "translation" containing the translated text.
-
-**Input:**
-Title: {title}
-Overview: {overview}
-
-**Output Format:**
-{{
-  "translation": "..."
-}}
-"""
-
-# ★★★ 说明书五：给“标题命名大师”看的（标题模式） ★★★
-TITLE_TRANSLATION_PROMPT = """
-You are a movie/TV database editor.
-Your task is to translate the provided Title into **Simplified Chinese (简体中文)** for a Mainland China audience.
-
-**Rules:**
-1.  **Official Name First:** If there is an existing official Mainland China translation, USE IT.
-2.  **Common Transliteration:** If it's a name (like "Frankenstein" or "Oppenheimer"), use the standard Mainland Chinese transliteration (e.g., "弗兰肯斯坦", "奥本海默").
-3.  **Classic IP:** If it is a well-known IP, use the most widely accepted Chinese title (e.g., "科学怪人" might be acceptable for Frankenstein, but "弗兰肯斯坦" is more neutral/modern. Choose the most standard one).
-4.  **No Extra Text:** Do not include the year or explanations.
-5.  **Output:** Return a valid JSON object.
-
-**Input:**
-Type: {media_type}
-Original Title: {title}
-Year: {year}
-
-**Output Format:**
-{{
-  "translation": "..."
-}}
-"""
-
 class AITranslator:
     def __init__(self, config: Dict[str, Any]):
         self.provider = config.get("ai_provider", "openai").lower()
@@ -237,6 +150,13 @@ class AITranslator:
             return self._translate_transliterate_mode(unique_texts)
         else:
             return self._translate_fast_mode(unique_texts)
+        
+    def _get_prompt(self, key: str) -> str:
+        """
+        优先从数据库获取用户自定义提示词，如果没有则使用 utils 中的默认值。
+        """
+        user_prompts = settings_db.get_setting('ai_user_prompts') or {}
+        return user_prompts.get(key, utils.DEFAULT_AI_PROMPTS.get(key, ""))
 
     def translate_overview(self, overview_text: str, title: str = "") -> Optional[str]:
         """
@@ -245,12 +165,12 @@ class AITranslator:
         if not overview_text or not overview_text.strip():
             return None
 
-        system_prompt = OVERVIEW_TRANSLATION_PROMPT.format(title=title, overview=overview_text)
+        raw_prompt = self._get_prompt("overview_translation")
+        system_prompt = raw_prompt.format(title=title, overview=overview_text)
         user_prompt = "Please translate the overview."
 
         try:
             response_content = ""
-            
             if self.provider == 'openai':
                 if not self.client: return None
                 resp = self.client.chat.completions.create(
@@ -265,8 +185,8 @@ class AITranslator:
                 response_content = resp.choices[0].message.content
 
             elif self.provider == 'zhipuai':
-                if not self.client: return None
-                resp = self.client.chat.completions.create(
+                 if not self.client: return None
+                 resp = self.client.chat.completions.create(
                     model=self.model,
                     messages=[
                         {"role": "system", "content": system_prompt},
@@ -275,8 +195,8 @@ class AITranslator:
                     response_format={"type": "json_object"},
                     temperature=0.3
                 )
-                response_content = resp.choices[0].message.content
-
+                 response_content = resp.choices[0].message.content
+            
             elif self.provider == 'gemini':
                 if not self.client: return None
                 config = types.GenerateContentConfig(
@@ -291,11 +211,9 @@ class AITranslator:
                 )
                 response_content = resp.text
 
-            # 解析结果
             result = _safe_json_loads(response_content)
             if result and "translation" in result:
                 return result["translation"]
-            
             return None
 
         except Exception as e:
@@ -309,22 +227,19 @@ class AITranslator:
         if not title_text or not title_text.strip():
             return None
 
-        system_prompt = TITLE_TRANSLATION_PROMPT.format(media_type=media_type, title=title_text, year=year)
+        raw_prompt = self._get_prompt("title_translation")
+        system_prompt = raw_prompt.format(media_type=media_type, title=title_text, year=year)
         user_prompt = "Translate this title."
 
         try:
             response_content = ""
-            
-            # 适配 OpenAI
             if self.provider == 'openai' and self.client:
                 resp = self.client.chat.completions.create(
                     model=self.model,
                     messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
-                    response_format={"type": "json_object"}, temperature=0.3 # 稍微提高温度以支持意译
+                    response_format={"type": "json_object"}, temperature=0.3
                 )
                 response_content = resp.choices[0].message.content
-            
-            # 适配 智谱AI
             elif self.provider == 'zhipuai' and self.client:
                 resp = self.client.chat.completions.create(
                     model=self.model,
@@ -332,8 +247,6 @@ class AITranslator:
                     response_format={"type": "json_object"}, temperature=0.3
                 )
                 response_content = resp.choices[0].message.content
-
-            # 适配 Gemini
             elif self.provider == 'gemini' and self.client:
                 config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.3, system_instruction=system_prompt)
                 resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
@@ -452,7 +365,7 @@ class AITranslator:
     # --- OpenAI 员工 ---
     def _fast_openai(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
-        system_prompt = FAST_MODE_SYSTEM_PROMPT
+        system_prompt = self._get_prompt("fast_mode")
         user_prompt = json.dumps(texts, ensure_ascii=False)
         try:
             chat_completion = self.client.chat.completions.create(
@@ -473,7 +386,7 @@ class AITranslator:
 
     def _quality_openai(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
         if not self.client: return {}
-        system_prompt = QUALITY_MODE_SYSTEM_PROMPT
+        system_prompt = self._get_prompt("quality_mode")
         user_payload = {"context": {"title": title, "year": year}, "terms": texts}
         user_prompt = json.dumps(user_payload, ensure_ascii=False)
         try:
@@ -496,7 +409,7 @@ class AITranslator:
     # --- 智谱AI 员工 ---
     def _fast_zhipuai(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
-        system_prompt = FAST_MODE_SYSTEM_PROMPT
+        system_prompt = self._get_prompt("fast_mode") 
         user_prompt = json.dumps(texts, ensure_ascii=False)
         try:
             response = self.client.chat.completions.create(
@@ -516,7 +429,7 @@ class AITranslator:
 
     def _quality_zhipuai(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
         if not self.client: return {}
-        system_prompt = QUALITY_MODE_SYSTEM_PROMPT
+        system_prompt = self._get_prompt("quality_mode") 
         user_payload = {"context": {"title": title, "year": year}, "terms": texts}
         user_prompt = json.dumps(user_payload, ensure_ascii=False)
         try:
@@ -538,7 +451,7 @@ class AITranslator:
     # --- Gemini 员工 (新版 SDK) ---
     def _fast_gemini(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
-        system_prompt = FAST_MODE_SYSTEM_PROMPT
+        system_prompt = self._get_prompt("fast_mode") 
         user_prompt = json.dumps(texts, ensure_ascii=False)
         
         config = types.GenerateContentConfig(
@@ -559,7 +472,7 @@ class AITranslator:
 
     def _quality_gemini(self, texts: List[str], title: Optional[str], year: Optional[int]) -> Dict[str, str]:
         if not self.client: return {}
-        system_prompt = QUALITY_MODE_SYSTEM_PROMPT
+        system_prompt = self._get_prompt("quality_mode") # ★★★
         user_payload = {"context": {"title": title, "year": year}, "terms": texts}
         user_prompt = json.dumps(user_payload, ensure_ascii=False)
         
@@ -582,7 +495,7 @@ class AITranslator:
     # ★★★ OpenAI 音译实现 ★★★
     def _transliterate_openai(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
-        system_prompt = FORCE_TRANSLITERATE_PROMPT
+        system_prompt = self._get_prompt("transliterate_mode") # ★★★
         user_prompt = json.dumps(texts, ensure_ascii=False)
         try:
             chat_completion = self.client.chat.completions.create(
@@ -604,7 +517,7 @@ class AITranslator:
     # ★★★ 智谱AI 音译实现 ★★★
     def _transliterate_zhipuai(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
-        system_prompt = FORCE_TRANSLITERATE_PROMPT
+        system_prompt = self._get_prompt("transliterate_mode") 
         user_prompt = json.dumps(texts, ensure_ascii=False)
         try:
             response = self.client.chat.completions.create(
@@ -625,7 +538,7 @@ class AITranslator:
     # ★★★ Gemini 音译实现 (新版 SDK) ★★★
     def _transliterate_gemini(self, texts: List[str]) -> Dict[str, str]:
         if not self.client: return {}
-        system_prompt = FORCE_TRANSLITERATE_PROMPT
+        system_prompt = self._get_prompt("transliterate_mode") 
         user_prompt = json.dumps(texts, ensure_ascii=False)
         
         config = types.GenerateContentConfig(

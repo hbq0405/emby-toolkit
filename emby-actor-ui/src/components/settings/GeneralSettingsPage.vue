@@ -184,7 +184,7 @@
                     </n-form-item>
                     <n-form-item label="TMDB API Base URL" path="tmdb_api_base_url">
                       <n-input v-model:value="configModel.tmdb_api_base_url" placeholder="https://api.themoviedb.org/3" />
-                      <template #feedback><n-text depth="3" style="font-size:0.8em;">TMDb API的基础URL，通常不需要修改。可通过环境变量 TMDB_API_BASE_URL 设置。</n-text></template>
+                      <template #feedback><n-text depth="3" style="font-size:0.8em;">TMDb API的基础URL，通常不需要修改。</n-text></template>
                     </n-form-item>
                     <n-form-item label="允许成人内容探索" path="tmdb_include_adult">
                       <n-space align="center">
@@ -419,6 +419,14 @@
                     <template #header><span class="card-title">AI 增强</span></template>
                     <template #header-extra>
                       <n-space align="center">
+                        <n-button 
+                          size="tiny" 
+                          type="info" 
+                          ghost 
+                          @click="openPromptModal"
+                        >
+                          配置提示词
+                        </n-button>
                         <n-button 
                           size="tiny" 
                           type="primary" 
@@ -851,6 +859,81 @@
       <n-button type="warning" @click="handleResetActorMappings" :loading="isResettingMappings">确认重置</n-button>
     </template>
   </n-modal>
+  <!-- AI 提示词配置模态框 -->
+  <n-modal v-model:show="promptModalVisible" preset="dialog" title="配置 AI 提示词" style="width: 800px; max-width: 90%;">
+    <n-alert type="info" style="margin-bottom: 16px;">
+      您可以自定义发送给 AI 的系统指令（System Prompt）。<br>
+      <b>注意：</b> 请保留关键的 JSON 输出格式要求，否则会导致解析失败。支持使用 <code>{title}</code> 等占位符。
+    </n-alert>
+    
+    <n-spin :show="loadingPrompts">
+      <n-tabs type="segment" animated>
+        <n-tab-pane name="fast_mode" tab="快速模式 (人名)">
+          <n-input
+            v-model:value="promptsModel.fast_mode"
+            type="textarea"
+            :autosize="{ minRows: 10, maxRows: 20 }"
+            placeholder="输入提示词..."
+            style="font-family: monospace;"
+          />
+        </n-tab-pane>
+        <n-tab-pane name="quality_mode" tab="顾问模式 (人名)">
+          <n-input
+            v-model:value="promptsModel.quality_mode"
+            type="textarea"
+            :autosize="{ minRows: 10, maxRows: 20 }"
+            placeholder="输入提示词..."
+            style="font-family: monospace;"
+          />
+        </n-tab-pane>
+        <n-tab-pane name="overview_translation" tab="简介翻译">
+          <n-input
+            v-model:value="promptsModel.overview_translation"
+            type="textarea"
+            :autosize="{ minRows: 10, maxRows: 20 }"
+            placeholder="输入提示词..."
+            style="font-family: monospace;"
+          />
+          <n-text depth="3" style="font-size: 12px;">可用变量: {title}, {overview}</n-text>
+        </n-tab-pane>
+        <n-tab-pane name="title_translation" tab="标题翻译">
+          <n-input
+            v-model:value="promptsModel.title_translation"
+            type="textarea"
+            :autosize="{ minRows: 10, maxRows: 20 }"
+            placeholder="输入提示词..."
+            style="font-family: monospace;"
+          />
+          <n-text depth="3" style="font-size: 12px;">可用变量: {media_type}, {title}, {year}</n-text>
+        </n-tab-pane>
+        <n-tab-pane name="transliterate_mode" tab="音译模式">
+          <n-input
+            v-model:value="promptsModel.transliterate_mode"
+            type="textarea"
+            :autosize="{ minRows: 10, maxRows: 20 }"
+            placeholder="输入提示词..."
+            style="font-family: monospace;"
+          />
+        </n-tab-pane>
+      </n-tabs>
+    </n-spin>
+
+    <template #action>
+      <n-space justify="space-between" style="width: 100%">
+        <n-popconfirm @positive-click="resetPrompts">
+          <template #trigger>
+            <n-button type="warning" ghost :loading="savingPrompts">恢复默认</n-button>
+          </template>
+          确定要丢弃所有自定义修改，恢复到系统默认提示词吗？
+        </n-popconfirm>
+        
+        <n-space>
+          <n-button @click="promptModalVisible = false">取消</n-button>
+          <n-button type="primary" @click="savePrompts" :loading="savingPrompts">保存配置</n-button>
+        </n-space>
+      </n-space>
+    </template>
+  </n-modal>
 </template>
 
 <script setup>
@@ -876,7 +959,17 @@ import {
 import { useConfig } from '../../composables/useConfig.js';
 import axios from 'axios';
 
-// ... (从 tableInfo 到 handleImportSelectionChange 的所有代码保持不变) ...
+const promptModalVisible = ref(false);
+const loadingPrompts = ref(false);
+const savingPrompts = ref(false);
+const promptsModel = ref({
+  fast_mode: '',
+  quality_mode: '',
+  overview_translation: '',
+  title_translation: '',
+  transliterate_mode: ''
+});
+
 const tableInfo = {
   'app_settings': { cn: '基础配置', isSharable: false },
   'person_identity_map': { cn: '演员映射表', isSharable: true },
@@ -1052,6 +1145,44 @@ const testAI = async () => {
     });
   } finally {
     isTestingAI.value = false;
+  }
+};
+const openPromptModal = async () => {
+  promptModalVisible.value = true;
+  loadingPrompts.value = true;
+  try {
+    const response = await axios.get('/api/ai/prompts');
+    promptsModel.value = response.data;
+  } catch (error) {
+    message.error('加载提示词失败');
+  } finally {
+    loadingPrompts.value = false;
+  }
+};
+
+const savePrompts = async () => {
+  savingPrompts.value = true;
+  try {
+    await axios.post('/api/ai/prompts', promptsModel.value);
+    message.success('提示词已保存');
+    promptModalVisible.value = false;
+  } catch (error) {
+    message.error('保存失败');
+  } finally {
+    savingPrompts.value = false;
+  }
+};
+
+const resetPrompts = async () => {
+  savingPrompts.value = true;
+  try {
+    const response = await axios.post('/api/ai/prompts/reset');
+    promptsModel.value = response.data.prompts;
+    message.success('已恢复默认提示词');
+  } catch (error) {
+    message.error('重置失败');
+  } finally {
+    savingPrompts.value = false;
   }
 };
 const fetchNativeViewsSimple = async () => {

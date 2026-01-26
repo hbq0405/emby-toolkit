@@ -16,6 +16,8 @@ import extensions
 from extensions import admin_required, task_lock_required
 from tasks.system_update import _update_process_generator
 import constants
+import utils
+from database import settings_db
 import handler.github as github
 # 1. 创建蓝图
 system_bp = Blueprint('system', __name__, url_prefix='/api')
@@ -430,3 +432,55 @@ def restart_container():
         error_msg = f"API: 重启容器时发生未知错误: {e}"
         logger.error(error_msg, exc_info=True)
         return jsonify({"error": f"发生意外错误: {str(e)}"}), 500
+    
+@system_bp.route('/ai/prompts', methods=['GET'])
+@admin_required
+def api_get_ai_prompts():
+    """
+    获取当前的 AI 提示词。
+    逻辑：返回数据库中的自定义值，如果数据库中没有，则填充默认值。
+    """
+    try:
+        user_prompts = settings_db.get_setting('ai_user_prompts') or {}
+        
+        # 合并逻辑：以默认值为基础，用数据库值覆盖
+        # 这样即使 utils.py 增加了新 key，前端也能看到
+        final_prompts = utils.DEFAULT_AI_PROMPTS.copy()
+        final_prompts.update(user_prompts)
+        
+        return jsonify(final_prompts)
+    except Exception as e:
+        logger.error(f"获取 AI 提示词失败: {e}", exc_info=True)
+        return jsonify({"error": "获取提示词失败"}), 500
+
+@system_bp.route('/ai/prompts', methods=['POST'])
+@admin_required
+def api_save_ai_prompts():
+    """
+    保存用户自定义的 AI 提示词。
+    """
+    try:
+        new_prompts = request.json
+        if not isinstance(new_prompts, dict):
+            return jsonify({"error": "无效的数据格式"}), 400
+            
+        settings_db.save_setting('ai_user_prompts', new_prompts)
+        logger.info("用户自定义 AI 提示词已保存。")
+        return jsonify({"message": "提示词已保存"})
+    except Exception as e:
+        logger.error(f"保存 AI 提示词失败: {e}", exc_info=True)
+        return jsonify({"error": "保存失败"}), 500
+
+@system_bp.route('/ai/prompts/reset', methods=['POST'])
+@admin_required
+def api_reset_ai_prompts():
+    """
+    重置 AI 提示词为默认值（删除数据库中的自定义记录）。
+    """
+    try:
+        settings_db.delete_setting('ai_user_prompts')
+        logger.info("AI 提示词已重置为默认值。")
+        return jsonify({"message": "已恢复默认提示词", "prompts": utils.DEFAULT_AI_PROMPTS})
+    except Exception as e:
+        logger.error(f"重置 AI 提示词失败: {e}", exc_info=True)
+        return jsonify({"error": "重置失败"}), 500
