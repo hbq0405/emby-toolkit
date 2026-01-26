@@ -381,7 +381,7 @@ def aggregate_full_series_data_from_tmdb(
             return None
         
         # 2. 检查是否有空简介
-        # 只有当默认语言是中文时才检查，如果是英文就没必要再请求一遍英文了
+        # 只有当默认语言是中文时才检查
         if DEFAULT_LANGUAGE.startswith("zh"):
             episodes = data_zh.get("episodes", [])
             missing_overview_indices = []
@@ -407,13 +407,27 @@ def aggregate_full_series_data_from_tmdb(
                             ep_num = target_ep.get("episode_number")
                             
                             if ep_num in en_ep_map:
-                                en_overview = en_ep_map[ep_num].get("overview")
+                                en_data_item = en_ep_map[ep_num]
+                                
+                                # A. 补全简介
+                                en_overview = en_data_item.get("overview")
                                 if en_overview:
                                     target_ep["overview"] = en_overview
+                                    
+                                    # =================================================
+                                    # ★★★ 联动替换标题 ★★★
+                                    # 如果简介缺失，说明中文数据质量差。
+                                    # 此时强制用英文标题覆盖现有的中文标题（如"第1集"），
+                                    # 以便后续流程能识别出这是英文，从而触发AI翻译。
+                                    # =================================================
+                                    en_title = en_data_item.get("name")
+                                    if en_title:
+                                        target_ep["name"] = en_title
+                                    
                                     filled_count += 1
                         
                         if filled_count > 0:
-                            logger.debug(f"    ➜ 第 {s_num} 季成功补全了 {filled_count} 条英文简介。")
+                            logger.debug(f"    ➜ 第 {s_num} 季成功补全了 {filled_count} 条英文简介和标题源。")
                 except Exception as e:
                     logger.warning(f"    ➜ 补全英文简介失败: {e}")
 
