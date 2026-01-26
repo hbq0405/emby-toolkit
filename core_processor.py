@@ -35,6 +35,7 @@ logger = logging.getLogger(__name__)
 CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE = "ai_translate_actor_role"
 CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW = "ai_translate_title_overview"
 CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW = "ai_translate_episode_overview"
+CONFIG_OPTION_AI_VECTOR = "ai_vector" 
 try:
     from handler.douban import DoubanApi
     DOUBAN_API_AVAILABLE = True
@@ -158,7 +159,8 @@ class MediaProcessor:
         self.ai_translator = AITranslator(self.config) if (
             self.config.get(CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False) or 
             self.config.get(CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW, False) or 
-            self.config.get(CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False)
+            self.config.get(CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False) or
+            self.config.get(CONFIG_OPTION_AI_VECTOR, False)
         ) else None
         
         self._stop_event = threading.Event()
