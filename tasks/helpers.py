@@ -1517,8 +1517,23 @@ def translate_tmdb_metadata_recursively(
         for ep in episodes_list:
             s_num = ep.get("season_number")
             e_num = ep.get("episode_number")
+            
+            # 1. 翻译简介
             if _translate_one(ep, f"{current_name} S{s_num}E{e_num}"):
                 translated_count += 1
 
+            ep_name = ep.get("name")
+            # 如果标题存在且不包含中文，则进行翻译
+            if ep_name and not utils.contains_chinese(ep_name):
+                logger.debug(f"    ├─ [AI翻译] 正在翻译分集标题: {ep_name} ...")
+                # 调用 ai_translator 的 translate_title，指定类型为 Episode
+                # utils.py 中的 prompt 已经针对 Episode 做了意译的优化
+                trans_name = ai_translator.translate_title(ep_name, media_type="Episode")
+                
+                if trans_name:
+                    ep['name'] = trans_name
+                    translated_count += 1
+            # =======================================================
+
     if translated_count > 0:
-        logger.info(f"  ➜ [AI翻译] 已完成 {translated_count} 条简介的翻译 ({item_name})。")
+        logger.info(f"  ➜ [AI翻译] 已完成 {translated_count} 条简介/标题的翻译 ({item_name})。")
