@@ -32,6 +32,9 @@ from watchlist_processor import WatchlistProcessor
 from handler.douban import DoubanApi
 
 logger = logging.getLogger(__name__)
+CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE = "ai_translate_actor_role"
+CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW = "ai_translate_title_overview"
+CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW = "ai_translate_episode_overview"
 try:
     from handler.douban import DoubanApi
     DOUBAN_API_AVAILABLE = True
@@ -152,8 +155,11 @@ class MediaProcessor:
         self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.local_data_path = self.config.get("local_data_path", "").strip()
         
-        self.ai_enabled = self.config.get("ai_translate_actor_role", False)
-        self.ai_translator = AITranslator(self.config) if self.ai_enabled else None
+        self.ai_translator = AITranslator(self.config) if (
+            self.config.get(CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False) or 
+            self.config.get(CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW, False) or 
+            self.config.get(CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False)
+        ) else None
         
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db()
@@ -565,7 +571,7 @@ class MediaProcessor:
                             logger.warning(f"  ➜ [实时监控] 标题 AI 翻译未返回结果。")
 
                 # 分集简介翻译入口
-                if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get("ai_translate_episode_overview", False):
+                if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False):
                     # 使用当前最新的标题（可能是翻译过的）
                     current_series_name = details.get("name") or details.get("title")
                     translate_tmdb_metadata_recursively(
@@ -1076,9 +1082,9 @@ class MediaProcessor:
 
             # 生成向量逻辑
             overview_embedding_json = None
-            if item_type in ["Movie", "Series"] and self.ai_translator:
+            if item_type in ["Movie", "Series"] and self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_VECTOR, False):
                 overview_text = source_data_package.get('overview') or item_details_from_emby.get('Overview')
-                if overview_text and self.config.get("ai_vector", False):
+                if overview_text:
                     try:
                         embedding = self.ai_translator.generate_embedding(overview_text)
                         if embedding: overview_embedding_json = json.dumps(embedding)

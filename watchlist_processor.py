@@ -531,7 +531,7 @@ class WatchlistProcessor:
             return None
 
         # 翻译简介
-        if self.ai_translator:
+        if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False):
             helpers.translate_tmdb_metadata_recursively(
                 item_type='Series',
                 tmdb_data=aggregated_data,
