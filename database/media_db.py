@@ -1334,3 +1334,27 @@ def get_timed_out_items_to_revive(revive_days: int) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 获取待复活的超时订阅失败: {e}")
         return []
+    
+def get_local_translation_info(tmdb_id: str, item_type: str) -> Optional[Dict[str, str]]:
+    """
+    获取本地数据库中存储的翻译信息（标题和简介）。
+    用于在刮削时优先使用本地已有的中文数据，防止被 TMDb 的英文数据覆盖，并节省 AI Token。
+    """
+    if not tmdb_id or not item_type:
+        return None
+        
+    sql = "SELECT title, overview FROM media_metadata WHERE tmdb_id = %s AND item_type = %s"
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (str(tmdb_id), item_type))
+                row = cursor.fetchone()
+                if row:
+                    return {
+                        'title': row['title'], 
+                        'overview': row['overview']
+                    }
+                return None
+    except Exception as e:
+        logger.debug(f"DB: 获取本地翻译缓存失败 ({tmdb_id}_{item_type}): {e}")
+        return None

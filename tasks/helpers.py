@@ -9,7 +9,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 
 from handler.tmdb import get_movie_details, get_tv_details, get_tv_season_details, search_tv_shows, get_tv_season_details
-from database import settings_db, connection, request_db
+from database import settings_db, connection, request_db, media_db
 from ai_translator import AITranslator
 import utils
 
@@ -1462,78 +1462,103 @@ def translate_tmdb_metadata_recursively(
     item_name: str = ""
 ):
     """
-    通用辅助函数：递归翻译 TMDb 数据的简介 (Overview)。
+    通用辅助函数：递归翻译 TMDb 数据的简介 (Overview) 和标题。
     支持 Movie (单层) 和 Series (聚合层级: Show -> Season -> Episode)。
     
-    :param item_type: 'Movie' or 'Series'
-    :param tmdb_data: TMDb 返回的数据对象 (电影是详情dict，剧集是聚合dict)
-    :param ai_translator: AITranslator 实例
-    :param item_name: 用于日志和AI上下文的名称
+    逻辑优化：
+    1. 先检查本地数据库。如果本地已有中文简介，直接回填到 tmdb_data，跳过 AI。
+       这不仅省钱，还防止了 TMDb 的英文数据在后续入库时覆盖掉本地的中文数据。
+    2. 如果本地没有，再判断是否需要 AI 翻译。
     """
     if not ai_translator or not tmdb_data:
         return
 
-    # 内部辅助：翻译单个字典的 overview
-    def _translate_one(data_dict, context_title):
-        overview = data_dict.get('overview')
-        # 只有当简介存在且不包含中文时才翻译
-        if overview and not utils.contains_chinese(overview):
-            logger.debug(f"    ├─ [AI翻译] 正在翻译简介: {context_title}...")
-            trans = ai_translator.translate_overview(overview, title=context_title)
-            if trans:
-                data_dict['overview'] = trans
-                return True
-        return False
-
     translated_count = 0
 
-    # --- 1. 处理电影 ---
-    if item_type == 'Movie':
-        if _translate_one(tmdb_data, item_name):
-            translated_count += 1
+    # --- 内部核心处理函数 ---
+    def _process_single_item(data_dict: Dict, context_title: str, specific_item_type: str):
+        """
+        处理单个条目（电影/剧集/季/集）：
+        1. 查库回填
+        2. AI 翻译
+        """
+        nonlocal translated_count
+        tmdb_id = data_dict.get('id')
+        
+        # 确定标题字段名 (Movie用title, 其他用name)
+        title_key = 'title' if specific_item_type == 'Movie' else 'name'
+        
+        # -------------------------------------------------------
+        # 1. 数据库缓存检查 (优先使用本地中文数据)
+        # -------------------------------------------------------
+        if tmdb_id:
+            local_info = media_db.get_local_translation_info(str(tmdb_id), specific_item_type)
+            
+            # 如果本地有简介，且简介包含中文 (说明是有效翻译过的)
+            if local_info and local_info.get('overview') and utils.contains_chinese(local_info['overview']):
+                # ★★★ 核心动作：回填 ★★★
+                # 将数据库里的中文覆盖到当前的 data_dict 中
+                # 这样后续写入数据库时，就是用这些中文数据，而不是 TMDb 的英文
+                data_dict['overview'] = local_info['overview']
+                
+                # 顺便把标题也回填了，保持一致性 (如果数据库标题也是中文的话)
+                if local_info.get('title') and utils.contains_chinese(local_info['title']):
+                    data_dict[title_key] = local_info['title']
+                
+                logger.debug(f"    ├─ [翻译跳过] 已翻译过: {context_title} ({specific_item_type})")
+                return # 既然用了本地数据，直接结束，不走 AI
+        
+        # -------------------------------------------------------
+        # 2. AI 翻译逻辑 (本地无数据或为英文时执行)
+        # -------------------------------------------------------
+        
+        # A. 翻译简介
+        overview = data_dict.get('overview')
+        if overview and not utils.contains_chinese(overview):
+            logger.debug(f"    ├─ [AI翻译] 正在翻译简介: {context_title}...")
+            trans_overview = ai_translator.translate_overview(overview, title=context_title)
+            if trans_overview:
+                data_dict['overview'] = trans_overview
+                translated_count += 1
 
-    # --- 2. 处理剧集 (聚合数据结构) ---
+        # B. 翻译标题 (主要针对分集，电影和剧集通常 TMDb 有中文)
+        # 如果是分集，且标题不含中文，尝试翻译标题
+        if specific_item_type == 'Episode':
+            ep_name = data_dict.get(title_key)
+            if ep_name and not utils.contains_chinese(ep_name):
+                logger.debug(f"    ├─ [AI翻译] 正在翻译标题: {ep_name} ...")
+                trans_title = ai_translator.translate_title(ep_name, media_type="Episode")
+                if trans_title:
+                    data_dict[title_key] = trans_title
+                    translated_count += 1
+
+    # --- 递归遍历 ---
+
+    # 1. 处理电影
+    if item_type == 'Movie':
+        _process_single_item(tmdb_data, item_name, 'Movie')
+
+    # 2. 处理剧集 (聚合数据结构)
     elif item_type == 'Series':
         # A. 剧集本身
-        series_details = tmdb_data.get('series_details', tmdb_data) # 兼容不同结构
-        # 尝试获取最新标题
+        series_details = tmdb_data.get('series_details', tmdb_data)
         current_name = series_details.get('name') or series_details.get('title') or item_name
-        
-        if _translate_one(series_details, current_name):
-            translated_count += 1
+        _process_single_item(series_details, current_name, 'Series')
 
         # B. 分季 (Seasons)
         seasons = tmdb_data.get("seasons_details", [])
         for season in seasons:
             s_num = season.get("season_number", "?")
-            if _translate_one(season, f"{current_name} Season {s_num}"):
-                translated_count += 1
+            _process_single_item(season, f"{current_name} S{s_num}", 'Season')
 
         # C. 分集 (Episodes)
         episodes_container = tmdb_data.get("episodes_details", {})
-        # 兼容字典(S1E1: data)和列表两种格式
         episodes_list = episodes_container.values() if isinstance(episodes_container, dict) else episodes_container
         
         for ep in episodes_list:
             s_num = ep.get("season_number")
             e_num = ep.get("episode_number")
-            
-            # 1. 翻译简介
-            if _translate_one(ep, f"{current_name} S{s_num}E{e_num}"):
-                translated_count += 1
-
-            ep_name = ep.get("name")
-            # 如果标题存在且不包含中文，则进行翻译
-            if ep_name and not utils.contains_chinese(ep_name):
-                logger.debug(f"    ├─ [AI翻译] 正在翻译分集标题: {ep_name} ...")
-                # 调用 ai_translator 的 translate_title，指定类型为 Episode
-                # utils.py 中的 prompt 已经针对 Episode 做了意译的优化
-                trans_name = ai_translator.translate_title(ep_name, media_type="Episode")
-                
-                if trans_name:
-                    ep['name'] = trans_name
-                    translated_count += 1
-            # =======================================================
+            _process_single_item(ep, f"{current_name} S{s_num}E{e_num}", 'Episode')
 
     if translated_count > 0:
-        logger.info(f"  ➜ [AI翻译] 已完成 {translated_count} 条简介/标题的翻译 ({item_name})。")
+        logger.info(f"  ➜ [AI翻译] 本次新翻译了 {translated_count} 条数据 ({item_name})。")
