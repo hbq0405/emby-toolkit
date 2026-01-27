@@ -63,7 +63,6 @@ def task_sync_images(processor, item_id: str, update_description: str, sync_time
     """
     logger.trace(f"任务开始：图片备份 for ID: {item_id} (原因: {update_description})")
     try:
-        # --- ▼▼▼ 核心修复 ▼▼▼ ---
         # 1. 根据 item_id 获取完整的媒体详情
         item_details = emby.get_emby_item_details(
             item_id, 
@@ -81,7 +80,6 @@ def task_sync_images(processor, item_id: str, update_description: str, sync_time
             update_description=update_description
             # episode_ids_to_sync 参数这里不需要，sync_item_images 会自己处理
         )
-        # --- ▲▲▲ 修复结束 ▲▲▲ ---
 
         logger.trace(f"任务成功：图片备份 for ID: {item_id}")
     except Exception as e:
