@@ -569,16 +569,16 @@ class MediaProcessor:
                         else:
                             logger.warning(f"  ➜ [实时监控] 标题 AI 翻译未返回结果。")
 
-                # 分集简介翻译入口
-                if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False):
-                    # 使用当前最新的标题（可能是翻译过的）
-                    current_series_name = details.get("name") or details.get("title")
-                    translate_tmdb_metadata_recursively(
-                        item_type='Series',
-                        tmdb_data=aggregated_tmdb_data,
-                        ai_translator=self.ai_translator,
-                        item_name=current_series_name
-                    )
+                # 分集简介翻译入口(暂时注释，避免重复翻译)
+                # if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False):
+                #     # 使用当前最新的标题（可能是翻译过的）
+                #     current_series_name = details.get("name") or details.get("title")
+                #     translate_tmdb_metadata_recursively(
+                #         item_type='Series',
+                #         tmdb_data=aggregated_tmdb_data,
+                #         ai_translator=self.ai_translator,
+                #         item_name=current_series_name
+                #     )
                 
                 # 准备演员源数据
                 authoritative_cast_source = []
@@ -1106,14 +1106,47 @@ class MediaProcessor:
                     movie_record['emby_item_ids_json'] = '[]'
                     movie_record['in_library'] = False
                 else:
-                    asset_details = parse_full_asset_details(
-                        item_details_from_emby, 
-                        id_to_parent_map=id_to_parent_map, 
-                        library_guid=lib_guid
-                    )
-                    asset_details['source_library_id'] = source_lib_id
-                    movie_record['asset_details_json'] = json.dumps([asset_details], ensure_ascii=False)
-                    movie_record['emby_item_ids_json'] = json.dumps([item_id])
+                    all_movie_versions = []
+                    try:
+                        # 构造查询参数：查找所有 ProviderId.Tmdb = 当前ID 的电影
+                        # 注意：这里假设 emby.get_all_library_versions 或类似函数支持 params
+                        # 如果没有现成的，我们使用 get_emby_library_items 的逻辑
+                        tmdb_id = movie_record['tmdb_id']
+                        all_movie_versions = emby.get_emby_library_items(
+                            base_url=self.emby_url,
+                            api_key=self.emby_api_key,
+                            user_id=self.emby_user_id,
+                            library_ids=None, # 全局搜索
+                            media_type_filter="Movie",
+                            fields="Id,Path,MediaSources,MediaStreams,Container,Size,RunTimeTicks,ProviderIds,_SourceLibraryId",
+                            params={"AnyProviderIdEquals": tmdb_id, "Recursive": "true"}
+                        )
+                    except Exception as e:
+                        logger.warning(f"  ➜ 查询电影多版本失败: {e}，将仅处理当前版本。")
+                    
+                    # 如果查询失败或没查到（不应该），回退到使用当前传入的 item
+                    if not all_movie_versions:
+                        all_movie_versions = [item_details_from_emby]
+
+                    all_asset_details = []
+                    all_emby_ids = []
+                    
+                    for v in all_movie_versions:
+                        # 补全 SourceLibraryId (如果 API 没返回)
+                        if not v.get('_SourceLibraryId'):
+                            v['_SourceLibraryId'] = source_lib_id
+                            
+                        details = parse_full_asset_details(
+                            v, 
+                            id_to_parent_map=id_to_parent_map, 
+                            library_guid=lib_guid
+                        )
+                        details['source_library_id'] = v.get('_SourceLibraryId')
+                        all_asset_details.append(details)
+                        all_emby_ids.append(v.get('Id'))
+
+                    movie_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
+                    movie_record['emby_item_ids_json'] = json.dumps(all_emby_ids)
                     movie_record['in_library'] = True
 
                 movie_record['actors_json'] = json.dumps([{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")], ensure_ascii=False)
