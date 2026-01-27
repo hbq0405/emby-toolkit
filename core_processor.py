@@ -984,6 +984,27 @@ class MediaProcessor:
         - 修复了 ID=0 的脏数据问题。
         - 修复了回流时因类型不匹配导致无法标记入库的问题。
         """
+        # =========================================================
+        # ✨✨✨ [魔法日志] START ✨✨✨
+        # =========================================================
+        try:
+            if item_details_from_emby:
+                # 使用 default=str 处理 datetime 等无法 JSON 序列化的对象
+                debug_json = json.dumps(item_details_from_emby, ensure_ascii=False, indent=2, default=str)
+                logger.info(f"\n🔮🔮🔮 [Magic Log] 进入 _upsert_media_metadata 🔮🔮🔮\n"
+                            f"Item Type: {item_type}\n"
+                            f"Content of item_details_from_emby:\n{debug_json}\n"
+                            f"🔮🔮🔮 [Magic Log End] 🔮🔮🔮")
+            else:
+                logger.info(f"\n🔮🔮🔮 [Magic Log] 进入 _upsert_media_metadata 🔮🔮🔮\n"
+                            f"Item Type: {item_type}\n"
+                            f"⚠️ item_details_from_emby IS NONE OR EMPTY\n"
+                            f"🔮🔮🔮 [Magic Log End] 🔮🔮🔮")
+        except Exception as e:
+            logger.error(f"🔮 [Magic Log] 序列化日志时发生错误: {e}")
+        # =========================================================
+        # ✨✨✨ [魔法日志] END ✨✨✨
+        # =========================================================
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
             return
