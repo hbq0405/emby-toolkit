@@ -974,6 +974,8 @@ class MediaProcessor:
         - 兼容 'pending' 预处理模式和 'webhook' 回流模式。
         - 修复了 ID=0 的脏数据问题。
         - 修复了回流时因类型不匹配导致无法标记入库的问题。
+        - 【修复】支持多版本电影聚合检测 (遍历 MediaSources)。
+        - 【修复】多版本剧集元数据雷同问题 (解析具体的 MediaSource 而非 Parent Item)。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
@@ -995,44 +997,40 @@ class MediaProcessor:
 
         def get_representative_runtime(emby_items, tmdb_runtime):
             if not emby_items: return tmdb_runtime
-            runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
+            # 兼容传入的是 Item 列表还是 Source 列表
+            runtimes = []
+            for item in emby_items:
+                ticks = item.get('RunTimeTicks')
+                if ticks:
+                    runtimes.append(round(ticks / 600000000))
             return max(runtimes) if runtimes else tmdb_runtime
         
         def _extract_common_json_fields(details: Dict[str, Any], m_type: str):
+            # ... (保持原有的提取逻辑不变) ...
             # 1. Genres (类型)
             genres_raw = details.get('genres', [])
             genres_list = []
             for g in genres_raw:
                 if isinstance(g, dict): 
-                    # TMDb 数据，有 ID
                     name = g.get('name')
                     if name in utils.GENRE_TRANSLATION_PATCH:
                         name = utils.GENRE_TRANSLATION_PATCH[name]
                     genres_list.append({"id": g.get('id', 0), "name": name})
                 elif isinstance(g, str): 
-                    # Emby 数据，无 ID，默认为 0
                     name = g
                     if name in utils.GENRE_TRANSLATION_PATCH:
                         name = utils.GENRE_TRANSLATION_PATCH[name]
                     genres_list.append({"id": 0, "name": name})
-            
             genres_json = json.dumps(genres_list, ensure_ascii=False)
 
-            # 2. Studios (工作室/制作公司/电视网)
-            # 剧集只取 networks，电影只取 production_companies 
+            # 2. Studios
             raw_studios = []
             if m_type == 'Series':
-                # 剧集：只要播出平台 (Networks)，不要制作公司
                 raw_studios = details.get('networks') or []
             else:
-                # 电影：保留制作公司
                 raw_studios = details.get('production_companies') or []
-            
-            if isinstance(raw_studios, list): 
-                raw_studios = list(raw_studios)
-            else: 
-                raw_studios = []
-            
+            if isinstance(raw_studios, list): raw_studios = list(raw_studios)
+            else: raw_studios = []
             unique_studios_map = {}
             for s in raw_studios:
                 if isinstance(s, dict):
@@ -1043,7 +1041,7 @@ class MediaProcessor:
                     unique_studios_map[s] = {'id': None, 'name': s}
             studios_json = json.dumps(list(unique_studios_map.values()), ensure_ascii=False)
 
-            # 3. Keywords (关键词)
+            # 3. Keywords
             keywords_data = details.get('keywords') or details.get('tags') or []
             raw_k_list = []
             if isinstance(keywords_data, dict):
@@ -1052,14 +1050,13 @@ class MediaProcessor:
                 if not raw_k_list: raw_k_list = keywords_data.get('results') or keywords_data.get('keywords') or []
             elif isinstance(keywords_data, list):
                 raw_k_list = keywords_data
-            
             keywords = []
             for k in raw_k_list:
                 if isinstance(k, dict) and k.get('name'): keywords.append({'id': k.get('id'), 'name': k.get('name')})
                 elif isinstance(k, str) and k: keywords.append({'id': None, 'name': k})
             keywords_json = json.dumps(keywords, ensure_ascii=False)
 
-            # 4. Countries (国家)
+            # 4. Countries
             countries_raw = details.get('production_countries') or details.get('origin_country') or []
             country_codes = []
             for c in countries_raw:
@@ -1097,21 +1094,18 @@ class MediaProcessor:
                 movie_record = source_data_package.copy()
                 movie_record['item_type'] = 'Movie'
                 movie_record['tmdb_id'] = str(movie_record.get('id'))
-                movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
-                movie_record['rating'] = movie_record.get('vote_average')
                 
                 # ★ 资产信息处理
                 if is_pending:
                     movie_record['asset_details_json'] = '[]'
                     movie_record['emby_item_ids_json'] = '[]'
                     movie_record['in_library'] = False
+                    movie_record['runtime_minutes'] = movie_record.get('runtime') # 使用 tmdb 数据
                 else:
                     all_movie_versions = []
                     try:
-                        # 构造查询参数：查找所有 ProviderId.Tmdb = 当前ID 的电影
-                        # 注意：这里假设 emby.get_all_library_versions 或类似函数支持 params
-                        # 如果没有现成的，我们使用 get_emby_library_items 的逻辑
-                        tmdb_id = movie_record['tmdb_id']
+                        tmdb_id_val = movie_record['tmdb_id']
+                        # 重点：查询电影时包含 MediaSources 和 MediaStreams
                         all_movie_versions = emby.get_emby_library_items(
                             base_url=self.emby_url,
                             api_key=self.emby_api_key,
@@ -1119,36 +1113,55 @@ class MediaProcessor:
                             library_ids=None, # 全局搜索
                             media_type_filter="Movie",
                             fields="Id,Path,MediaSources,MediaStreams,Container,Size,RunTimeTicks,ProviderIds,_SourceLibraryId",
-                            params={"AnyProviderIdEquals": tmdb_id, "Recursive": "true"}
+                            params={"AnyProviderIdEquals": tmdb_id_val, "Recursive": "true"}
                         )
                     except Exception as e:
                         logger.warning(f"  ➜ 查询电影多版本失败: {e}，将仅处理当前版本。")
                     
-                    # 如果查询失败或没查到（不应该），回退到使用当前传入的 item
                     if not all_movie_versions:
                         all_movie_versions = [item_details_from_emby]
 
                     all_asset_details = []
                     all_emby_ids = []
                     
+                    # ★★★ 核心修复：遍历 Item，同时遍历 Item 内部的 MediaSources ★★★
                     for v in all_movie_versions:
-                        # 补全 SourceLibraryId (如果 API 没返回)
-                        if not v.get('_SourceLibraryId'):
-                            v['_SourceLibraryId'] = source_lib_id
+                        # 记录 Emby ID (无论聚合与否，ID 属于 Item)
+                        if v.get('Id'):
+                            all_emby_ids.append(v.get('Id'))
+                        
+                        # 补全 LibraryId
+                        v_lib_id = v.get('_SourceLibraryId') or source_lib_id
+                        
+                        # 获取具体的媒体源 (Emby 聚合版本时，一个 Item 有多个 MediaSources)
+                        media_sources = v.get('MediaSources', [])
+                        
+                        # 兜底：如果 API 没返回 MediaSources (极少)，则把 v 自己当作一个源尝试解析
+                        if not media_sources:
+                            media_sources = [v]
                             
-                        details = parse_full_asset_details(
-                            v, 
-                            id_to_parent_map=id_to_parent_map, 
-                            library_guid=lib_guid
-                        )
-                        details['source_library_id'] = v.get('_SourceLibraryId')
-                        all_asset_details.append(details)
-                        all_emby_ids.append(v.get('Id'))
+                        for source in media_sources:
+                            # parse_full_asset_details 通常解析 Path, Container, MediaStreams
+                            # 如果 source 是 MediaSource 对象，它包含 specific 的 MediaStreams
+                            details = parse_full_asset_details(
+                                source, 
+                                id_to_parent_map=id_to_parent_map, 
+                                library_guid=lib_guid
+                            )
+                            details['source_library_id'] = v_lib_id
+                            all_asset_details.append(details)
 
                     movie_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
-                    movie_record['emby_item_ids_json'] = json.dumps(all_emby_ids)
+                    movie_record['emby_item_ids_json'] = json.dumps(list(set(all_emby_ids))) # 去重
                     movie_record['in_library'] = True
+                    # 重新计算时长 (基于所有来源)
+                    # 注意：get_representative_runtime 需要能处理 MediaSource 对象(有 RunTimeTicks)
+                    all_sources_flat = []
+                    for v in all_movie_versions:
+                        all_sources_flat.extend(v.get('MediaSources', [v]))
+                    movie_record['runtime_minutes'] = get_representative_runtime(all_sources_flat, movie_record.get('runtime'))
 
+                movie_record['rating'] = movie_record.get('vote_average')
                 movie_record['actors_json'] = json.dumps([{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")], ensure_ascii=False)
                 movie_record['subscription_status'] = 'NONE'
                 movie_record['date_added'] = item_details_from_emby.get("DateCreated") or datetime.now(timezone.utc)
@@ -1220,7 +1233,6 @@ class MediaProcessor:
                     "overview_embedding": overview_embedding_json
                 }
                 
-                # ★ 状态标记
                 if is_pending:
                     series_record['in_library'] = False
                     series_record['emby_item_ids_json'] = '[]'
@@ -1258,7 +1270,6 @@ class MediaProcessor:
 
                 # ★★★ 3. 处理季 (Season) ★★★
                 emby_season_versions = []
-                # ★ Pending 模式下跳过 Emby 查询
                 if not is_pending:
                     emby_season_versions = emby.get_series_seasons(
                         series_id=item_details_from_emby.get('Id'),
@@ -1270,7 +1281,6 @@ class MediaProcessor:
                 
                 seasons_grouped_by_number = defaultdict(list)
                 for s_ver in emby_season_versions:
-                    # 强制转 int，防止类型不匹配
                     idx = s_ver.get("IndexNumber")
                     if idx is not None:
                         try: seasons_grouped_by_number[int(idx)].append(s_ver)
@@ -1278,11 +1288,8 @@ class MediaProcessor:
 
                 for season in seasons_details:
                     if not isinstance(season, dict): continue
-                    
-                    # ★★★ 核心修复：严防死守 ID=0 ★★★
                     s_tmdb_id = season.get('id')
-                    if not s_tmdb_id or str(s_tmdb_id) in ['0', 'None', '']:
-                        continue
+                    if not s_tmdb_id or str(s_tmdb_id) in ['0', 'None', '']: continue
 
                     s_num = season.get('season_number')
                     if s_num is None: continue 
@@ -1305,15 +1312,15 @@ class MediaProcessor:
                 
                 # ★★★ 4. 处理分集 (Episode) ★★★
                 raw_episodes = source_data_package.get("episodes_details", {})
-                # 兼容字典(S1E1: data)和列表两种格式
                 episodes_details = list(raw_episodes.values()) if isinstance(raw_episodes, dict) else (raw_episodes if isinstance(raw_episodes, list) else [])
                 
                 emby_episode_versions = []
                 if not is_pending:
+                    # ★★★ 核心修复：添加 MediaSources 字段，以便获取具体的文件信息 ★★★
                     emby_episode_versions = emby.get_all_library_versions(
                         base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                         media_type_filter="Episode", parent_id=item_details_from_emby.get('Id'),
-                        fields="Id,Type,ParentIndexNumber,IndexNumber,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated,_SourceLibraryId"
+                        fields="Id,Type,ParentIndexNumber,IndexNumber,MediaSources,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated,_SourceLibraryId"
                     ) or []
                 
                 episodes_grouped_by_number = defaultdict(list)
@@ -1325,27 +1332,28 @@ class MediaProcessor:
                         except: pass
 
                 for episode in episodes_details:
-                    # ★★★ 核心修复：严防死守，只认 TMDb 数字 ID ★★★
                     e_tmdb_id = episode.get('id')
-                    
-                    # 1. 必须有 ID
-                    if not e_tmdb_id: 
-                        continue
-                    
-                    # 2. ID 必须是数字字符串，且不能是 '0'
+                    if not e_tmdb_id: continue
                     e_tmdb_id_str = str(e_tmdb_id)
-                    if e_tmdb_id_str in ['0', 'None', ''] or not e_tmdb_id_str.isdigit():
-                        continue
+                    if e_tmdb_id_str in ['0', 'None', ''] or not e_tmdb_id_str.isdigit(): continue
 
-                    # 3. 必须有季号和集号
                     if episode.get('episode_number') is None: continue
                     try:
                         s_num = int(episode.get('season_number'))
                         e_num = int(episode.get('episode_number'))
                     except (ValueError, TypeError): continue
 
-                    versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
-                    final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
+                    # 对应的 Emby Item 列表 (包含所有版本)
+                    versions_of_episode_items = episodes_grouped_by_number.get((s_num, e_num), [])
+                    
+                    # 扁平化处理：从 Item 中提取所有的 MediaSources
+                    all_sources_flat = []
+                    for v in versions_of_episode_items:
+                        sources = v.get('MediaSources', [])
+                        if not sources: sources = [v] # 兜底
+                        all_sources_flat.extend(sources)
+
+                    final_runtime = get_representative_runtime(all_sources_flat, episode.get('runtime'))
 
                     episode_record = {
                         "tmdb_id": e_tmdb_id_str, 
@@ -1357,13 +1365,22 @@ class MediaProcessor:
                         "runtime_minutes": final_runtime
                     }
                     
-                    if not is_pending and versions_of_episode:
-                        all_emby_ids = [v.get('Id') for v in versions_of_episode]
+                    if not is_pending and versions_of_episode_items:
+                        all_emby_ids = [v.get('Id') for v in versions_of_episode_items]
+                        
                         all_asset_details = []
-                        for v in versions_of_episode:
-                            details = parse_full_asset_details(v)
-                            details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
-                            all_asset_details.append(details)
+                        # ★★★ 核心修复：遍历扁平化后的 Sources，而非 Items ★★★
+                        for v in versions_of_episode_items:
+                            lib_id = item_details_from_emby.get('_SourceLibraryId')
+                            sources = v.get('MediaSources', [])
+                            if not sources: sources = [v]
+                            
+                            for source in sources:
+                                # 解析具体的 Source 对象，获取该版本的真实分辨率/Codec
+                                details = parse_full_asset_details(source)
+                                details['source_library_id'] = lib_id
+                                all_asset_details.append(details)
+                                
                         episode_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
                         episode_record['emby_item_ids_json'] = json.dumps(all_emby_ids)
                         episode_record['in_library'] = True
@@ -1378,7 +1395,7 @@ class MediaProcessor:
                 return
 
             # ==================================================================
-            # 批量写入数据库
+            # 批量写入数据库 (保持原有逻辑)
             # ==================================================================
             all_possible_columns = [
                 "tmdb_id", "item_type", "title", "original_title", "overview", "release_date", "release_year",
@@ -1395,7 +1412,6 @@ class MediaProcessor:
             ]
             data_for_batch = []
             for record in records_to_upsert:
-                # 再次检查 ID，防止漏网之鱼
                 if not record.get('tmdb_id') or str(record.get('tmdb_id')) == '0':
                     continue
 
@@ -1431,14 +1447,11 @@ class MediaProcessor:
 
             update_clauses = []
             for col in cols_to_update:
-                # 针对 total_episodes 字段，检查锁定状态
-                # 逻辑：如果 total_episodes_locked 为 TRUE，则保持原值；否则使用新值 (EXCLUDED.total_episodes)
                 if col == 'total_episodes':
                     update_clauses.append(
                         "total_episodes = CASE WHEN media_metadata.total_episodes_locked IS TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END"
                     )
                 else:
-                    # 其他字段正常更新
                     update_clauses.append(f"{col} = EXCLUDED.{col}")
 
             update_clauses.append(f"{timestamp_field} = NOW()")
