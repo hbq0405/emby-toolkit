@@ -980,8 +980,8 @@ class MediaProcessor:
     ):
         """
         - 实时元数据写入 (终极稳健版)。
-        - 修复：多版本电影无法识别的问题 (使用 AnyProviderIdEquals 直连查询)。
-        - 修复：多版本剧集/电影 Asset 数据雷同的问题 (强制请求 MediaSources 字段)。
+        - 修复：多版本电影无法识别的问题 (通过移除 UserId 避免聚合)。
+        - 修复：多版本剧集 Asset 数据雷同的问题 (复用 get_emby_items_by_id 获取精准数据)。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
@@ -1006,7 +1006,10 @@ class MediaProcessor:
             runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
             return max(runtimes) if runtimes else tmdb_runtime
         
+        # ... (此处省略 _extract_common_json_fields 内部函数，保持原样即可) ...
         def _extract_common_json_fields(details: Dict[str, Any], m_type: str):
+            # ... (保持原代码不变) ...
+            # 为节省篇幅，此处省略具体实现，请保留你原有的代码
             genres_raw = details.get('genres', [])
             genres_list = []
             for g in genres_raw:
@@ -1095,8 +1098,7 @@ class MediaProcessor:
                 else:
                     all_movie_versions = []
                     try:
-                        # ★★★ 修复 1: 使用底层 Client 直接查询，确保 AnyProviderIdEquals 生效 ★★★
-                        # 必须请求 MediaSources 才能获得准确的视频流信息
+                        # ★★★ 修复 1: 查找 ID 时强制不带 UserId，避免 Emby 聚合多版本 ★★★
                         tmdb_id = movie_record['tmdb_id']
                         api_url = f"{self.emby_url.rstrip('/')}/Items"
                         params = {
@@ -1104,20 +1106,31 @@ class MediaProcessor:
                             "Recursive": "true",
                             "IncludeItemTypes": "Movie",
                             "AnyProviderIdEquals": tmdb_id,
-                            # ★★★ 关键：必须包含 MediaSources ★★★
-                            "Fields": "Id,Path,MediaSources,MediaStreams,Container,Size,RunTimeTicks,ProviderIds,_SourceLibraryId"
+                            "Fields": "Id" # 只取 ID
                         }
-                        if self.emby_user_id:
-                            params["UserId"] = self.emby_user_id
-
+                        # 注意：这里故意不传 UserId
+                        
                         resp = emby.emby_client.get(api_url, params=params)
+                        found_ids = []
                         if resp.status_code == 200:
-                            all_movie_versions = resp.json().get("Items", [])
+                            items = resp.json().get("Items", [])
+                            found_ids = [i['Id'] for i in items]
+                        
+                        # ★★★ 修复 2: 使用 get_emby_items_by_id 获取详情，确保数据结构与全量扫描一致 ★★★
+                        if found_ids:
+                            all_movie_versions = emby.get_emby_items_by_id(
+                                base_url=self.emby_url,
+                                api_key=self.emby_api_key,
+                                user_id=self.emby_user_id,
+                                item_ids=found_ids,
+                                fields="Id,Path,MediaSources,MediaStreams,Container,Size,RunTimeTicks,ProviderIds,_SourceLibraryId"
+                            )
                             logger.debug(f"  ➜ [多版本] 电影 ID:{tmdb_id} 查找到 {len(all_movie_versions)} 个版本。")
+                            
                     except Exception as e:
                         logger.warning(f"  ➜ 查询电影多版本失败: {e}，将仅处理当前版本。")
                     
-                    # 如果查询失败或没查到，回退到使用当前传入的 item
+                    # 兜底
                     if not all_movie_versions:
                         all_movie_versions = [item_details_from_emby]
 
@@ -1127,10 +1140,8 @@ class MediaProcessor:
                     for v in all_movie_versions:
                         # 补全 SourceLibraryId
                         if not v.get('_SourceLibraryId'):
-                            # 尝试从 item_details_from_emby 继承，或者重新查找
                             v['_SourceLibraryId'] = source_lib_id or item_details_from_emby.get('_SourceLibraryId')
                             
-                        # ★★★ parse_full_asset_details 依赖 v 中的 MediaSources ★★★
                         details = parse_full_asset_details(
                             v, 
                             id_to_parent_map=id_to_parent_map, 
@@ -1299,13 +1310,26 @@ class MediaProcessor:
                 
                 emby_episode_versions = []
                 if not is_pending:
-                    # ★★★ 修复 2: 剧集分集必须请求 MediaSources 才能区分多版本数据 ★★★
-                    emby_episode_versions = emby.get_all_library_versions(
+                    # ★★★ 修复 3: 剧集分集处理逻辑重构 ★★★
+                    # 1. 先获取所有分集 ID (轻量级)
+                    temp_versions = emby.get_all_library_versions(
                         base_url=self.emby_url, api_key=self.emby_api_key, user_id=self.emby_user_id,
                         media_type_filter="Episode", parent_id=item_details_from_emby.get('Id'),
-                        # 关键：加入 MediaSources
-                        fields="Id,Type,ParentIndexNumber,IndexNumber,MediaSources,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated,_SourceLibraryId"
+                        fields="Id"
                     ) or []
+                    
+                    ep_ids = [v['Id'] for v in temp_versions]
+                    
+                    # 2. 再批量获取详情 (使用 get_emby_items_by_id 以获得完美数据)
+                    if ep_ids:
+                        emby_episode_versions = emby.get_emby_items_by_id(
+                            base_url=self.emby_url,
+                            api_key=self.emby_api_key,
+                            user_id=self.emby_user_id,
+                            item_ids=ep_ids,
+                            # 关键：请求 MediaSources 和 MediaStreams
+                            fields="Id,Type,ParentIndexNumber,IndexNumber,MediaSources,MediaStreams,Container,Size,Path,ProviderIds,RunTimeTicks,DateCreated,_SourceLibraryId"
+                        )
                 
                 episodes_grouped_by_number = defaultdict(list)
                 for ep_version in emby_episode_versions:
