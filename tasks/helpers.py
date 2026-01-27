@@ -388,8 +388,8 @@ def analyze_media_asset(item_details: dict) -> dict:
 
 def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, library_guid: str = None) -> dict:
     """
-    视频流分析主函数 (修复版)
-    优先从 MediaSources 获取真实的媒体信息，解决 .strm 文件数据为空的问题。
+    视频流分析主函数 (智能匹配版)
+    修复多版本数据雷同问题：通过 Path 精准匹配 MediaSource，而不是无脑取第一个。
     """
     # 提取并计算时长 (分钟)
     runtime_ticks = item_details.get('RunTimeTicks')
@@ -400,29 +400,45 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
     if id_to_parent_map and item_id:
         ancestors = calculate_ancestor_ids(item_id, id_to_parent_map, library_guid)
 
-    # ★★★ 核心修复开始 ★★★
-    # 1. 尝试获取 MediaSources
+    # ★★★ 核心修复开始：智能匹配 MediaSource ★★★
     media_sources = item_details.get("MediaSources", [])
+    item_path = item_details.get("Path", "")
     primary_source = None
     
-    # 2. 确定主要数据源
-    # 如果有 MediaSources，取第一个作为主数据源（通常包含真实路径、流信息、容器格式）
-    if media_sources and len(media_sources) > 0:
-        primary_source = media_sources[0]
+    if media_sources:
+        # 策略 1: 优先通过 Path 精确匹配 (最稳健)
+        if item_path:
+            # 归一化路径比较 (处理斜杠差异)
+            norm_item_path = os.path.normpath(item_path).lower()
+            for source in media_sources:
+                source_path = source.get("Path", "")
+                if source_path and os.path.normpath(source_path).lower() == norm_item_path:
+                    primary_source = source
+                    break
+        
+        # 策略 2: 如果 Path 没匹配到 (比如 strm 或路径格式差异)，尝试匹配 Id
+        # 注意：MediaSource 的 Id 通常不等于 Item Id，但在某些聚合情况下可能有关联，作为备选
+        if not primary_source:
+             for source in media_sources:
+                 if source.get("Id") == item_id:
+                     primary_source = source
+                     break
+
+        # 策略 3: 实在匹配不到，回退到取第一个 (兼容单版本或全量扫描场景)
+        if not primary_source and len(media_sources) > 0:
+            primary_source = media_sources[0]
     
-    # 3. 提取关键字段 (优先用 Source 的，没有则回退到 Item 顶层)
-    # 注意：.strm 的顶层 Container 通常为 null，但 Source 里会有 'mkv' 等
+    # 2. 提取关键字段 (优先用 Source 的，没有则回退到 Item 顶层)
     container = (primary_source.get("Container") if primary_source else None) or item_details.get("Container")
     size_bytes = (primary_source.get("Size") if primary_source else None) or item_details.get("Size")
     
-    # 4. 提取流信息
-    # .strm 的流信息通常只在 Source 里
+    # 3. 提取流信息
     media_streams = (primary_source.get("MediaStreams") if primary_source else None) or item_details.get("MediaStreams", [])
     # ★★★ 核心修复结束 ★★★
 
     if not item_details:
         return {
-            "emby_item_id": item_details.get("Id"), "path": item_details.get("Path", ""),
+            "emby_item_id": item_details.get("Id"), "path": item_path,
             "size_bytes": None, "container": None, "video_codec": None,
             "audio_tracks": [], "subtitles": [],
             "resolution_display": "未知", "quality_display": "未知",
@@ -437,9 +453,9 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
 
     asset = {
         "emby_item_id": item_details.get("Id"), 
-        "path": item_details.get("Path", ""),
-        "size_bytes": size_bytes,   # 使用修复后的变量
-        "container": container,     # 使用修复后的变量
+        "path": item_path,
+        "size_bytes": size_bytes,
+        "container": container,
         "video_codec": None, 
         "video_bitrate_mbps": None, 
         "bit_depth": None,          
@@ -478,13 +494,7 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
                 "format": stream.get("Codec") 
             })
             
-    # analyze_media_asset 也需要使用正确的流数据，但该函数内部逻辑较复杂
-    # 我们可以稍微修改 analyze_media_asset 或者在这里把提取好的流传进去
-    # 为了最小化改动，我们保持 analyze_media_asset 不变，
-    # 但注意：analyze_media_asset 内部也使用了 item_details.get('MediaStreams')
-    # 如果要彻底修复 display 字段，建议把 analyze_media_asset 也改一下，
-    # 或者简单点，构造一个伪造的 item_details 传给它：
-    
+    # 为了保证 analyze_media_asset 也能分析正确的数据，我们需要构造一个临时的 item 对象
     fake_details_for_analysis = item_details.copy()
     fake_details_for_analysis['MediaStreams'] = media_streams # 注入正确的流
     
