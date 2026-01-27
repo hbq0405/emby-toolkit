@@ -983,6 +983,7 @@ class MediaProcessor:
         - 兼容 'pending' 预处理模式和 'webhook' 回流模式。
         - 修复了 ID=0 的脏数据问题。
         - 修复了回流时因类型不匹配导致无法标记入库的问题。
+        - 【修改】分集处理逻辑简化：只写入主版本数据，不再聚合多版本，防止实时处理污染数据。
         """
         # =========================================================
         # ✨✨✨ [魔法日志] START ✨✨✨
@@ -1289,6 +1290,9 @@ class MediaProcessor:
                     season_poster = season.get('poster_path') or series_details.get('poster_path')
                     matched_emby_seasons = seasons_grouped_by_number.get(s_num_int, [])
 
+                    # ★★★ 修改：季也只取第一个版本，保持逻辑一致性 ★★★
+                    primary_season_id = matched_emby_seasons[0]['Id'] if matched_emby_seasons else None
+                    
                     records_to_upsert.append({
                         "tmdb_id": str(s_tmdb_id), "item_type": "Season", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
@@ -1297,7 +1301,7 @@ class MediaProcessor:
                         "season_number": s_num,
                         "total_episodes": season.get('episode_count', 0),
                         "in_library": bool(matched_emby_seasons) if not is_pending else False,
-                        "emby_item_ids_json": json.dumps([s['Id'] for s in matched_emby_seasons]) if matched_emby_seasons else '[]'
+                        "emby_item_ids_json": json.dumps([primary_season_id]) if primary_season_id else '[]'
                     })
                 
                 # ★★★ 4. 处理分集 (Episode) ★★★
@@ -1355,14 +1359,14 @@ class MediaProcessor:
                     }
                     
                     if not is_pending and versions_of_episode:
-                        all_emby_ids = [v.get('Id') for v in versions_of_episode]
-                        all_asset_details = []
-                        for v in versions_of_episode:
-                            details = parse_full_asset_details(v)
-                            details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
-                            all_asset_details.append(details)
-                        episode_record['asset_details_json'] = json.dumps(all_asset_details, ensure_ascii=False)
-                        episode_record['emby_item_ids_json'] = json.dumps(all_emby_ids)
+                        # ★★★ 核心修改：只取第一个版本（主版本），放弃多版本聚合 ★★★
+                        primary_version = versions_of_episode[0]
+                        
+                        details = parse_full_asset_details(primary_version)
+                        details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
+                        
+                        episode_record['asset_details_json'] = json.dumps([details], ensure_ascii=False)
+                        episode_record['emby_item_ids_json'] = json.dumps([primary_version.get('Id')])
                         episode_record['in_library'] = True
                     else:
                         episode_record['in_library'] = False
