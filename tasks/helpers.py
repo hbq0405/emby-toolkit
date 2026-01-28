@@ -1510,7 +1510,7 @@ def translate_tmdb_metadata_recursively(
                 data_dict[title_key] = local_info['title']
             
             # 打印日志 (这就对应你截图里看到的 "翻译跳过")
-            logger.debug(f"    ├─ [翻译跳过] 已翻译过: {context_title} ({specific_item_type})")
+            logger.debug(f"    ├─ [无需翻译] : {context_title} ({specific_item_type})")
             return # 本地有数据，直接结束，不走 AI
         
         # -------------------------------------------------------
