@@ -34,7 +34,7 @@
               <n-space class="rule-actions" align="center">
                 <!-- 保大保小切换 -->
                 <n-radio-group 
-                  v-if="['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate', 'subtitle'].includes(rule.id)" 
+                  v-if="['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate'].includes(rule.id)" 
                   v-model:value="rule.priority" 
                   size="small" 
                   style="margin-right: 12px;"
@@ -188,7 +188,7 @@ const RULE_METADATA = {
   filesize: { name: "按文件大小", description: "按视频大小选择。" },
   codec: { name: "按编码", description: "比较视频编码格式 (如 AV1, HEVC, H.264)。" },
   date_added: { name: "按入库时间", description: "最终兜底规则。根据入库时间（或ID大小）决定去留。" },
-  subtitle: { name: "按字幕", description: "比较字幕语言和数量 (如中文优先)。" }
+  subtitle: { name: "按字幕", description: "优先保留包含中文字幕的版本（不比较字幕数量）。" }
 };
 
 const getRuleDisplayName = (id) => RULE_METADATA[id]?.name || id;
@@ -201,7 +201,6 @@ const getDescLabel = (id) => {
     case 'bitrate': return '保留最高';
     case 'bit_depth': return '保留高位';
     case 'frame_rate': return '保留高帧';
-    case 'subtitle': return '中文优先/多';
     default: return '保留大/高';
   }
 };
@@ -213,7 +212,6 @@ const getAscLabel = (id) => {
     case 'bitrate': return '保留最低';
     case 'bit_depth': return '保留低位';
     case 'frame_rate': return '保留低帧';
-    case 'subtitle': return '字幕少优先'; 
     default: return '保留小/低';
   }
 };
@@ -253,7 +251,7 @@ const fetchSettings = async () => {
         if (rule.id === 'effect' && Array.isArray(rule.priority)) {
             return { ...rule, priority: formatEffectPriority(rule.priority, 'display') };
         }
-        const numericRules = ['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate', 'date_added', 'subtitle'];
+        const numericRules = ['runtime', 'filesize', 'bitrate', 'bit_depth', 'frame_rate', 'date_added'];
         if (numericRules.includes(rule.id) && !rule.priority) {
             return { ...rule, priority: rule.id === 'date_added' ? 'asc' : 'desc' };
         }

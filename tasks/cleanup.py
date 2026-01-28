@@ -196,15 +196,7 @@ def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[s
             if has_chi1 != has_chi2:
                 # 有中文的优先
                 return 1 if has_chi1 else -1
-            
-            # 如果中文情况相同，比较字幕总数
-            cnt1 = v1.get('subtitle_count', 0)
-            cnt2 = v2.get('subtitle_count', 0)
-            if cnt1 != cnt2:
-                if preference == 'asc':
-                    return 1 if cnt1 < cnt2 else -1 # 字幕少的优先
-                else:
-                    return 1 if cnt1 > cnt2 else -1 # 字幕多的优先 (默认)
+            return 0
 
         # --- 8. 按入库时间 (Date Added / ID) ---
         elif rule_type == 'date_added':
