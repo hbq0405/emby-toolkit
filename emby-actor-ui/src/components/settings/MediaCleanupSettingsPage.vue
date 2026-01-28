@@ -188,7 +188,7 @@ const RULE_METADATA = {
   filesize: { name: "按文件大小", description: "按视频大小选择。" },
   codec: { name: "按编码", description: "比较视频编码格式 (如 AV1, HEVC, H.264)。" },
   date_added: { name: "按入库时间", description: "最终兜底规则。根据入库时间（或ID大小）决定去留。" },
-  subtitle: { name: "按字幕", description: "优先保留包含中文字幕的版本（不比较字幕数量）。" }
+  subtitle: { name: "按字幕", description: "优先保留包含中文字幕的版本。" }
 };
 
 const getRuleDisplayName = (id) => RULE_METADATA[id]?.name || id;
