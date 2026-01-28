@@ -44,7 +44,7 @@ UPDATE_DEBOUNCE_TIMERS = {}
 UPDATE_DEBOUNCE_LOCK = threading.Lock()
 UPDATE_DEBOUNCE_TIME = 15
 # --- 视频流预检常量 ---
-STREAM_CHECK_MAX_RETRIES = 6   # 最大重试次数 
+STREAM_CHECK_MAX_RETRIES = 60   # 最大重试次数 
 STREAM_CHECK_INTERVAL = 10      # 每次轮询间隔(秒)
 STREAM_CHECK_SEMAPHORE = Semaphore(5) # 限制并发预检的数量，防止大量入库时查挂 Emby
 
