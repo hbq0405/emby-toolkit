@@ -7,7 +7,7 @@ import concurrent.futures
 from typing import Optional, Dict, Any, List
 from datetime import datetime, timezone
 import threading
-
+from collections import defaultdict
 # 导入我们需要的辅助模块
 from database import connection, media_db, request_db, watchlist_db, user_db, settings_db
 import constants

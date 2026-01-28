@@ -66,11 +66,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     item_type = item_details.get("Type")
     tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
 
-    # 1. 智能追剧判断 - 初始入库
-    if is_new_item and item_type == "Series":
-        processor.check_and_add_to_watchlist(item_details)
-
-    # 2. 核心调用：统一调用 process_single_item 
+    # 1. 核心调用：优先执行元数据处理 (process_single_item)
     processed_successfully = processor.process_single_item(
         item_id, 
         force_full_update=force_full_update,
@@ -80,6 +76,10 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     if not processed_successfully:
         logger.warning(f"  ➜ 项目 '{item_name_for_log}' 的元数据处理未成功完成，跳过后续步骤。")
         return
+
+    # 2. 智能追剧判断 - 初始入库
+    if is_new_item and item_type == "Series":
+        processor.check_and_add_to_watchlist(item_details)
 
     # 3. 后续处理
     if is_new_item:
