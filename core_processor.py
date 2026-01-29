@@ -805,40 +805,45 @@ class MediaProcessor:
                     series_id_from_webhook=None 
                 )
                 
-                # 3. 清理当前项 (分集/电影) 的日志和缓存
-                try:
-                    with get_central_db_connection() as conn:
-                        cursor = conn.cursor()
-                        
-                        # A. 清理当前项 (分集本身)
-                        self.log_db_manager.remove_from_processed_log(cursor, target_emby_id)
-                        if target_emby_id in self.processed_items_cache:
-                            del self.processed_items_cache[target_emby_id]
-                        
-                        # =========================================================
-                        # ★★★ 核心修复：利用返回值清理父剧集僵尸日志 ★★★
-                        # =========================================================
-                        if cascaded_info and cascaded_info.get('emby_ids'):
-                            parent_ids = cascaded_info['emby_ids']
-                            parent_type = cascaded_info['item_type']
-                            
-                            # 只有当级联清理的是 Series 时才需要额外处理 (Movie 的话 target_emby_id 就是它自己，上面已经删了)
-                            # 但为了保险，遍历删除也没问题
-                            for p_id in parent_ids:
-                                # 避免重复删除自己 (虽然删了也不报错)
-                                if p_id != target_emby_id:
-                                    # 1. 从数据库日志删除
-                                    self.log_db_manager.remove_from_processed_log(cursor, p_id)
-                                    # 2. 从内存缓存删除
-                                    if p_id in self.processed_items_cache:
-                                        del self.processed_items_cache[p_id]
-                                    logger.info(f"  🧹 [连坐清理] 检测到 {parent_type} 已下架，同步清除关联日志 (ID: {p_id})。")
+                # 3. 智能清理日志和缓存
+                # 逻辑：只有当触发了“整部剧/电影”下架时，才执行日志清理。
+                # 这样可以避免处理成百上千个分集删除的日志请求，只关注核心的“剧集ID”清理。
+                ids_to_clean = set()
 
-                        conn.commit()
+                if cascaded_info:
+                    # 情况 A: 触发了级联下架 (Series 或 Movie)
+                    # 我们清理该顶层媒体关联的所有 Emby ID
+                    if cascaded_info.get('emby_ids'):
+                        ids_to_clean.update(cascaded_info['emby_ids'])
+                        logger.info(f"  🧹 [级联清理] 顶层媒体 {cascaded_info['item_type']} (TMDB:{cascaded_info['tmdb_id']}) 已下架，准备清理 {len(ids_to_clean)} 条关联日志。")
                     
-                    logger.info(f"  ➜ [文件删除] 已同步清除 '{item_name}' 的已处理记录 (ID: {target_emby_id})。")
-                except Exception as e:
-                    logger.warning(f"  ➜ [文件删除] 清除已处理记录时遇到轻微错误: {e}")
+                    # 如果是电影，target_emby_id 本身就是顶层 ID，确保它被包含
+                    if item_type == 'Movie':
+                        ids_to_clean.add(target_emby_id)
+                
+                else:
+                    # 情况 B: 只是删了个分集，剧还在
+                    # 按照你的需求：“集删除的事件就不用响应了”
+                    # 如果是电影（虽然上面覆盖了），还是删一下比较好
+                    if item_type == 'Movie':
+                        ids_to_clean.add(target_emby_id)
+
+                # 统一执行清理
+                if ids_to_clean:
+                    try:
+                        with get_central_db_connection() as conn:
+                            cursor = conn.cursor()
+                            for clean_id in ids_to_clean:
+                                # 1. 删数据库日志
+                                self.log_db_manager.remove_from_processed_log(cursor, clean_id)
+                                # 2. 删内存缓存
+                                if clean_id in self.processed_items_cache:
+                                    del self.processed_items_cache[clean_id]
+                            conn.commit()
+                        logger.info(f"  ➜ [文件删除] 已清理 {len(ids_to_clean)} 条相关的已处理记录/缓存。")
+                    except Exception as e:
+                        logger.warning(f"  ➜ [文件删除] 清理日志时遇到轻微错误: {e}")
+
                 return True
             else:
                 logger.warning(f"  ➜ [文件删除] 数据库记录存在但无法定位 Emby ID，跳过本地清理: {filename}")
