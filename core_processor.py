@@ -1377,6 +1377,44 @@ class MediaProcessor:
 
             if not records_to_upsert:
                 return
+            
+            # 清理过期日志
+            try:
+                for record in records_to_upsert:
+                    t_id = record.get('tmdb_id')
+                    i_type = record.get('item_type')
+                    new_ids_json = record.get('emby_item_ids_json')
+                    
+                    # 只有当存在有效的 TMDb ID 时才检查
+                    if t_id and i_type and str(t_id) != '0':
+                        # 解析新 ID 列表
+                        new_ids = set()
+                        if new_ids_json and new_ids_json != '[]':
+                            try: new_ids = set(json.loads(new_ids_json))
+                            except: pass
+                        
+                        # 查询数据库中该条目当前存储的旧 ID
+                        cursor.execute("SELECT emby_item_ids_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (t_id, i_type))
+                        row = cursor.fetchone()
+                        
+                        if row and row[0]:
+                            try:
+                                old_ids = set(json.loads(row[0]))
+                                # 找出那些在旧数据里有，但新数据里没有的 ID (即被替换掉的过期 ID)
+                                stale_ids = old_ids - new_ids
+                                
+                                if stale_ids:
+                                    logger.info(f"  🧹 [自动清理] 检测到 TMDb ID {t_id} ({i_type}) 的关联 Emby ID 变更，正在清除 {len(stale_ids)} 条过期日志...")
+                                    for stale_id in stale_ids:
+                                        # 1. 从数据库日志删除
+                                        self.log_db_manager.remove_from_processed_log(cursor, stale_id)
+                                        # 2. 从内存缓存删除
+                                        if stale_id in self.processed_items_cache:
+                                            del self.processed_items_cache[stale_id]
+                            except Exception as e:
+                                logger.warning(f"  ⚠️ 清理过期日志失败: {e}")
+            except Exception as e:
+                logger.error(f"  🚫 执行日志一致性维护时出错: {e}")
 
             # ==================================================================
             # 批量写入数据库
