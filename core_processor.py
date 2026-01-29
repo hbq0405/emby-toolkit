@@ -798,7 +798,7 @@ class MediaProcessor:
                 logger.info(f"  ➜ [文件删除] 数据库命中: '{item_name}' (TMDB:{tmdb_id}) -> 对应 EmbyID: {target_emby_id}")
                 
                 # 2. 清理数据库 (maintenance_db 会自动处理父剧集的状态标记)
-                maintenance_db.cleanup_deleted_media_item(
+                cascaded_info = maintenance_db.cleanup_deleted_media_item(
                     item_id=target_emby_id,
                     item_name=item_name,
                     item_type=item_type,
@@ -810,37 +810,29 @@ class MediaProcessor:
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
                         
-                        # A. 清理当前项 (分集)
+                        # A. 清理当前项 (分集本身)
                         self.log_db_manager.remove_from_processed_log(cursor, target_emby_id)
                         if target_emby_id in self.processed_items_cache:
                             del self.processed_items_cache[target_emby_id]
                         
                         # =========================================================
-                        # ★★★ 核心修复：检查并清理父剧集僵尸日志 ★★★
+                        # ★★★ 核心修复：利用返回值清理父剧集僵尸日志 ★★★
                         # =========================================================
-                        if item_type == 'Episode' and parent_series_tmdb_id:
-                            # 检查父剧集现在的状态
-                            cursor.execute(
-                                "SELECT in_library, emby_item_ids_json FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", 
-                                (parent_series_tmdb_id,)
-                            )
-                            parent_row = cursor.fetchone()
+                        if cascaded_info and cascaded_info.get('emby_ids'):
+                            parent_ids = cascaded_info['emby_ids']
+                            parent_type = cascaded_info['item_type']
                             
-                            # 如果父剧集被标记为离线 (in_library = False)，说明刚才的 cleanup_deleted_media_item 触发了整剧清理
-                            if parent_row and not parent_row['in_library']:
-                                parent_emby_ids_json = parent_row['emby_item_ids_json']
-                                if parent_emby_ids_json:
-                                    try:
-                                        parent_ids = json.loads(parent_emby_ids_json)
-                                        for p_id in parent_ids:
-                                            # 1. 从数据库日志删除父剧集 ID
-                                            self.log_db_manager.remove_from_processed_log(cursor, p_id)
-                                            # 2. 从内存缓存删除父剧集 ID
-                                            if p_id in self.processed_items_cache:
-                                                del self.processed_items_cache[p_id]
-                                            logger.info(f"  🧹 [连坐清理] 父剧集已空，同步清除父剧集日志 (ID: {p_id})。")
-                                    except Exception as e_parse:
-                                        logger.warning(f"  ⚠️ 解析父剧集 ID 失败: {e_parse}")
+                            # 只有当级联清理的是 Series 时才需要额外处理 (Movie 的话 target_emby_id 就是它自己，上面已经删了)
+                            # 但为了保险，遍历删除也没问题
+                            for p_id in parent_ids:
+                                # 避免重复删除自己 (虽然删了也不报错)
+                                if p_id != target_emby_id:
+                                    # 1. 从数据库日志删除
+                                    self.log_db_manager.remove_from_processed_log(cursor, p_id)
+                                    # 2. 从内存缓存删除
+                                    if p_id in self.processed_items_cache:
+                                        del self.processed_items_cache[p_id]
+                                    logger.info(f"  🧹 [连坐清理] 检测到 {parent_type} 已下架，同步清除关联日志 (ID: {p_id})。")
 
                         conn.commit()
                     
