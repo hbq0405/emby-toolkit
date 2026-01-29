@@ -756,7 +756,7 @@ class MediaProcessor:
             if unique_anchor_map:
                 logger.info(f"  🚀 [实时监控] 聚合完成，正在刷新 {len(unique_anchor_map)} 个 Emby 锚点...")
                 for anchor_id, anchor_name in unique_anchor_map.items():
-                    logger.info(f"    ➜ 正在刷新: '{anchor_name}' (ID: {anchor_id})")
+                    logger.info(f"  ➜ 正在刷新: '{anchor_name}' (ID: {anchor_id})")
                     emby.refresh_item_by_id(anchor_id, self.emby_url, self.emby_api_key)
                     time.sleep(0.2) # 稍微间隔
 
