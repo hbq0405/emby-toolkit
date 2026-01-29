@@ -1469,19 +1469,21 @@ class MediaProcessor:
         # 2. 实时更新内存缓存
         self.processed_items_cache[item_id] = item_name
         
-        # 3. 清理僵尸日志 
-        deleted_zombie_ids = self.log_db_manager.cleanup_zombie_logs(cursor)
-        
-        # 同步清理内存缓存
-        if deleted_zombie_ids:
-            memory_clean_count = 0
-            for z_id in deleted_zombie_ids:
-                if z_id in self.processed_items_cache:
-                    del self.processed_items_cache[z_id]
-                    memory_clean_count += 1
+        # 3. 清理僵尸日志 (20% 概率触发)
+        if random.random() < 0.2:
+            # 获取被数据库删除的 ID 列表
+            deleted_zombie_ids = self.log_db_manager.cleanup_zombie_logs(cursor)
             
-            if memory_clean_count > 0:
-                logger.info(f"  🧹 [日志自检] 已同步清除内存缓存中的 {memory_clean_count} 条僵尸记录。")
+            # 同步清理内存缓存
+            if deleted_zombie_ids:
+                memory_clean_count = 0
+                for z_id in deleted_zombie_ids:
+                    if z_id in self.processed_items_cache:
+                        del self.processed_items_cache[z_id]
+                        memory_clean_count += 1
+                
+                if memory_clean_count > 0:
+                    logger.info(f"  🧹 [日志自检] 已同步清除内存缓存中的 {memory_clean_count} 条僵尸记录。")
 
         logger.debug(f"  ➜ 已将 '{item_name}' 标记为已处理 (数据库 & 内存)。")
     # --- 清除已处理记录 ---

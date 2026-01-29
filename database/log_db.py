@@ -100,7 +100,7 @@ class LogDBManager:
             deleted_ids = [row['item_id'] for row in rows]
             
             if deleted_ids:
-                logger.trace(f"  🧹 [日志自检] 数据库清理了 {len(deleted_ids)} 条僵尸记录。")
+                logger.debug(f"  🧹 [日志自检] 数据库清理了 {len(deleted_ids)} 条僵尸记录。")
             
         except Exception as e:
             logger.warning(f"  ⚠️ 执行日志自检清理时发生错误: {e}")
