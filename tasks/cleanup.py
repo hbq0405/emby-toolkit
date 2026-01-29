@@ -455,35 +455,13 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                     title_row = cursor.fetchone()
                     item_name = title_row['title'] if title_row else '未知媒体'
 
-            raw_best_val = task['best_version_id']
-            safe_ids_set = set()
-
-            # 尝试解析 JSON 列表 (兼容 'keep_one_per_res' 模式)
-            if raw_best_val and raw_best_val.startswith('['):
-                try:
-                    parsed_list = json.loads(raw_best_val)
-                    if isinstance(parsed_list, list):
-                        safe_ids_set = set(str(x) for x in parsed_list)
-                except Exception:
-                    logger.warning(f"  ⚠️ 解析最佳版本列表失败: {raw_best_val}，将尝试作为单ID处理。")
-            
-            # 如果解析失败或不是列表，则视为单 ID (普通模式)
-            if not safe_ids_set and raw_best_val:
-                safe_ids_set.add(str(raw_best_val))
-
-            # 安全网：如果白名单为空，绝对不能执行删除！
-            if not safe_ids_set:
-                logger.error(f"  🚫 严重错误：无法确定 '{item_name}' 的保留版本 (best_version_id: {raw_best_val})，跳过此任务以防误删。")
-                continue
-
+            best_version_id = task['best_version_id']
             versions = task['versions_info_json']
             task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) 正在清理: {item_name}")
 
             for version in versions:
-                version_id_to_check = str(version.get('id')) # 确保转为字符串比较
-                
-                # ★★★ 修改比较逻辑：使用 not in 集合 ★★★
-                if version_id_to_check not in safe_ids_set:
+                version_id_to_check = version.get('id')
+                if version_id_to_check != best_version_id:
                     logger.warning(f"  ➜ 准备删除劣质版本 (ID: {version_id_to_check}): {version.get('path')}")
                     
                     success = emby.delete_item_sy(
