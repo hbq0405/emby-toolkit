@@ -813,7 +813,7 @@ class MediaProcessor:
                     # 我们清理该顶层媒体关联的所有 Emby ID
                     if cascaded_info.get('emby_ids'):
                         ids_to_clean.update(cascaded_info['emby_ids'])
-                        logger.info(f"  🧹 [级联清理] 顶层媒体 {cascaded_info['item_name']} (TMDB:{cascaded_info['tmdb_id']}) 已离线，准备清理 {len(ids_to_clean)} 条关联日志。")
+                        logger.info(f"  🧹 [级联清理] 顶层媒体 {cascaded_info.get('item_name', '未知')} (TMDB:{cascaded_info['tmdb_id']}) 已离线，准备清理 {len(ids_to_clean)} 条关联日志。")
                     
                     # 如果是电影，target_emby_id 本身就是顶层 ID，确保它被包含
                     if item_type == 'Movie':
