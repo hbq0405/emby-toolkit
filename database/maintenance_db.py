@@ -721,10 +721,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     logger.info(f"--- 开始对 TMDB ID: {target_tmdb_id_for_full_cleanup} (Type: {target_item_type_for_full_cleanup}) 执行统一清理 ---")
                     
                     cursor.execute(
-                        "SELECT emby_item_ids_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s",
+                        "SELECT title, emby_item_ids_json FROM media_metadata WHERE tmdb_id = %s AND item_type = %s",
                         (target_tmdb_id_for_full_cleanup, target_item_type_for_full_cleanup)
                     )
                     row = cursor.fetchone()
+                    item_title = row['title'] if row and row['title'] else "未知标题"
                     parent_emby_ids = []
                     if row and row['emby_item_ids_json']:
                         raw_ids = row['emby_item_ids_json']
@@ -742,6 +743,7 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     cascaded_cleanup_info = {
                         'tmdb_id': target_tmdb_id_for_full_cleanup,
                         'item_type': target_item_type_for_full_cleanup,
+                        'item_name': item_title,
                         'emby_ids': parent_emby_ids
                     }
 

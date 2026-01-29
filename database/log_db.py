@@ -78,35 +78,6 @@ class LogDBManager:
         except Exception as e:
             logger.error(f"  ➜ 更新资源同步时间戳时失败 for item {item_id}: {e}", exc_info=True)
 
-    def cleanup_zombie_logs(self, cursor: psycopg2.extensions.cursor) -> List[str]:
-        """
-        清理 processed_log 中的僵尸数据，并返回被删除的 ID 列表。
-        """
-        deleted_ids = []
-        try:
-            # 使用 RETURNING item_id 将被删掉的 ID 传回 Python
-            sql = """
-                WITH valid_ids AS (
-                    SELECT DISTINCT jsonb_array_elements_text(emby_item_ids_json) AS id
-                    FROM media_metadata
-                    WHERE emby_item_ids_json IS NOT NULL
-                )
-                DELETE FROM processed_log
-                WHERE item_id NOT IN (SELECT id FROM valid_ids)
-                RETURNING item_id;
-            """
-            cursor.execute(sql)
-            rows = cursor.fetchall()
-            deleted_ids = [row['item_id'] for row in rows]
-            
-            if deleted_ids:
-                logger.debug(f"  🧹 [日志自检] 数据库清理了 {len(deleted_ids)} 条僵尸记录。")
-            
-        except Exception as e:
-            logger.warning(f"  ⚠️ 执行日志自检清理时发生错误: {e}")
-            
-        return deleted_ids
-
 def get_item_name_from_failed_log(item_id: str) -> Optional[str]:
     
     try:

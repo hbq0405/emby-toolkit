@@ -806,8 +806,6 @@ class MediaProcessor:
                 )
                 
                 # 3. 智能清理日志和缓存
-                # 逻辑：只有当触发了“整部剧/电影”下架时，才执行日志清理。
-                # 这样可以避免处理成百上千个分集删除的日志请求，只关注核心的“剧集ID”清理。
                 ids_to_clean = set()
 
                 if cascaded_info:
@@ -815,7 +813,7 @@ class MediaProcessor:
                     # 我们清理该顶层媒体关联的所有 Emby ID
                     if cascaded_info.get('emby_ids'):
                         ids_to_clean.update(cascaded_info['emby_ids'])
-                        logger.info(f"  🧹 [级联清理] 顶层媒体 {cascaded_info['item_type']} (TMDB:{cascaded_info['tmdb_id']}) 已下架，准备清理 {len(ids_to_clean)} 条关联日志。")
+                        logger.info(f"  🧹 [级联清理] 顶层媒体 {cascaded_info['item_name']} (TMDB:{cascaded_info['tmdb_id']}) 已离线，准备清理 {len(ids_to_clean)} 条关联日志。")
                     
                     # 如果是电影，target_emby_id 本身就是顶层 ID，确保它被包含
                     if item_type == 'Movie':
@@ -823,7 +821,6 @@ class MediaProcessor:
                 
                 else:
                     # 情况 B: 只是删了个分集，剧还在
-                    # 按照你的需求：“集删除的事件就不用响应了”
                     # 如果是电影（虽然上面覆盖了），还是删一下比较好
                     if item_type == 'Movie':
                         ids_to_clean.add(target_emby_id)
@@ -1497,22 +1494,6 @@ class MediaProcessor:
         # 2. 实时更新内存缓存
         self.processed_items_cache[item_id] = item_name
         
-        # # 3. 清理僵尸日志 (20% 概率触发)
-        # if random.random() < 0.2:
-        #     # 获取被数据库删除的 ID 列表
-        #     deleted_zombie_ids = self.log_db_manager.cleanup_zombie_logs(cursor)
-            
-        #     # 同步清理内存缓存
-        #     if deleted_zombie_ids:
-        #         memory_clean_count = 0
-        #         for z_id in deleted_zombie_ids:
-        #             if z_id in self.processed_items_cache:
-        #                 del self.processed_items_cache[z_id]
-        #                 memory_clean_count += 1
-                
-        #         if memory_clean_count > 0:
-        #             logger.info(f"  🧹 [日志自检] 已同步清除内存缓存中的 {memory_clean_count} 条僵尸记录。")
-
         logger.debug(f"  ➜ 已将 '{item_name}' 标记为已处理 (数据库 & 内存)。")
     # --- 清除已处理记录 ---
     def clear_processed_log(self):
