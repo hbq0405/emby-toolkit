@@ -785,6 +785,9 @@ class MediaProcessor:
             item_name = media_info.get('title', filename)
             target_emby_id = media_info.get('target_emby_id')
             
+            # 提取父剧集 ID (如果是分集)
+            parent_series_tmdb_id = media_info.get('parent_series_tmdb_id')
+            
             # 兜底：如果资产里没记 ID，尝试取 emby_item_ids_json 的第一个
             if not target_emby_id:
                 all_ids = media_info.get('emby_item_ids_json')
@@ -794,23 +797,51 @@ class MediaProcessor:
             if target_emby_id:
                 logger.info(f"  ➜ [文件删除] 数据库命中: '{item_name}' (TMDB:{tmdb_id}) -> 对应 EmbyID: {target_emby_id}")
                 
-                # 2. 清理数据库
+                # 2. 清理数据库 (maintenance_db 会自动处理父剧集的状态标记)
                 maintenance_db.cleanup_deleted_media_item(
                     item_id=target_emby_id,
                     item_name=item_name,
                     item_type=item_type,
                     series_id_from_webhook=None 
                 )
-                # 3. 同时清理已处理记录 (processed_log) 和 内存缓存 
+                
+                # 3. 清理当前项 (分集/电影) 的日志和缓存
                 try:
-                    # A. 清理内存缓存
-                    if target_emby_id in self.processed_items_cache:
-                        del self.processed_items_cache[target_emby_id]
-                    
-                    # B. 清理数据库记录
                     with get_central_db_connection() as conn:
                         cursor = conn.cursor()
+                        
+                        # A. 清理当前项 (分集)
                         self.log_db_manager.remove_from_processed_log(cursor, target_emby_id)
+                        if target_emby_id in self.processed_items_cache:
+                            del self.processed_items_cache[target_emby_id]
+                        
+                        # =========================================================
+                        # ★★★ 核心修复：检查并清理父剧集僵尸日志 ★★★
+                        # =========================================================
+                        if item_type == 'Episode' and parent_series_tmdb_id:
+                            # 检查父剧集现在的状态
+                            cursor.execute(
+                                "SELECT in_library, emby_item_ids_json FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", 
+                                (parent_series_tmdb_id,)
+                            )
+                            parent_row = cursor.fetchone()
+                            
+                            # 如果父剧集被标记为离线 (in_library = False)，说明刚才的 cleanup_deleted_media_item 触发了整剧清理
+                            if parent_row and not parent_row['in_library']:
+                                parent_emby_ids_json = parent_row['emby_item_ids_json']
+                                if parent_emby_ids_json:
+                                    try:
+                                        parent_ids = json.loads(parent_emby_ids_json)
+                                        for p_id in parent_ids:
+                                            # 1. 从数据库日志删除父剧集 ID
+                                            self.log_db_manager.remove_from_processed_log(cursor, p_id)
+                                            # 2. 从内存缓存删除父剧集 ID
+                                            if p_id in self.processed_items_cache:
+                                                del self.processed_items_cache[p_id]
+                                            logger.info(f"  🧹 [连坐清理] 父剧集已空，同步清除父剧集日志 (ID: {p_id})。")
+                                    except Exception as e_parse:
+                                        logger.warning(f"  ⚠️ 解析父剧集 ID 失败: {e_parse}")
+
                         conn.commit()
                     
                     logger.info(f"  ➜ [文件删除] 已同步清除 '{item_name}' 的已处理记录 (ID: {target_emby_id})。")
@@ -1469,21 +1500,21 @@ class MediaProcessor:
         # 2. 实时更新内存缓存
         self.processed_items_cache[item_id] = item_name
         
-        # 3. 清理僵尸日志 (20% 概率触发)
-        if random.random() < 0.2:
-            # 获取被数据库删除的 ID 列表
-            deleted_zombie_ids = self.log_db_manager.cleanup_zombie_logs(cursor)
+        # # 3. 清理僵尸日志 (20% 概率触发)
+        # if random.random() < 0.2:
+        #     # 获取被数据库删除的 ID 列表
+        #     deleted_zombie_ids = self.log_db_manager.cleanup_zombie_logs(cursor)
             
-            # 同步清理内存缓存
-            if deleted_zombie_ids:
-                memory_clean_count = 0
-                for z_id in deleted_zombie_ids:
-                    if z_id in self.processed_items_cache:
-                        del self.processed_items_cache[z_id]
-                        memory_clean_count += 1
+        #     # 同步清理内存缓存
+        #     if deleted_zombie_ids:
+        #         memory_clean_count = 0
+        #         for z_id in deleted_zombie_ids:
+        #             if z_id in self.processed_items_cache:
+        #                 del self.processed_items_cache[z_id]
+        #                 memory_clean_count += 1
                 
-                if memory_clean_count > 0:
-                    logger.info(f"  🧹 [日志自检] 已同步清除内存缓存中的 {memory_clean_count} 条僵尸记录。")
+        #         if memory_clean_count > 0:
+        #             logger.info(f"  🧹 [日志自检] 已同步清除内存缓存中的 {memory_clean_count} 条僵尸记录。")
 
         logger.debug(f"  ➜ 已将 '{item_name}' 标记为已处理 (数据库 & 内存)。")
     # --- 清除已处理记录 ---
