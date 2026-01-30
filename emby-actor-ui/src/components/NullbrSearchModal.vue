@@ -197,36 +197,11 @@ const ResourceList = defineComponent({
 
         const handleCopy = async (link) => {
             try {
-                // 1. 尝试使用现代 API
-                if (navigator.clipboard && window.isSecureContext) {
-                    await navigator.clipboard.writeText(link);
-                    message.success('链接已复制到剪贴板');
-                } else {
-                    // 2. 兜底方案：创建隐藏 input (兼容 HTTP 环境)
-                    const textArea = document.createElement("textarea");
-                    textArea.value = link;
-                    // 确保不可见但存在于 DOM 中
-                    textArea.style.position = "fixed";
-                    textArea.style.left = "-9999px";
-                    textArea.style.top = "0";
-                    document.body.appendChild(textArea);
-                    textArea.focus();
-                    textArea.select();
-                    
-                    const successful = document.execCommand('copy');
-                    document.body.removeChild(textArea);
-                    
-                    if (successful) {
-                        message.success('链接已复制 (兼容模式)');
-                    } else {
-                        throw new Error('execCommand 复制失败');
-                    }
-                }
+                await navigator.clipboard.writeText(link);
+                message.success('链接已复制到剪贴板');
             } catch (err) {
-                console.error('[Copy Error]', err);
-                message.error('复制失败，请尝试手动复制');
-                // 最后的温柔：弹出一个 prompt 让用户手动 Ctrl+C
-                window.prompt("复制失败，请在此手动复制:", link);
+                console.error(err);
+                message.error('复制失败，请手动复制');
             }
         };
 
