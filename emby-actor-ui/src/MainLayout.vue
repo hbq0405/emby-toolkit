@@ -1,48 +1,56 @@
 <!-- src/MainLayout.vue -->
 <template>
-  <n-layout style="height: 100vh;">
+  <n-layout style="height: 100vh; position: relative;">
     <n-layout-header :bordered="false" class="app-header">
       <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-        <span class="text-effect">
-          <img
-            :src="logo"
-            alt="Logo"
-            style="height: 1.5em; vertical-align: middle; margin-right: 0.3em;"
-          />
-          Emby Toolkit
-        </span>
-        <!-- 任务状态 -->
+        
+        <!-- 左侧：Logo 与 菜单按钮 -->
+        <div style="display: flex; align-items: center;">
+          <!-- 移动端显示的汉堡菜单按钮 -->
+          <n-button 
+            v-if="isMobile" 
+            text 
+            style="font-size: 24px; margin-right: 12px;" 
+            @click="collapsed = !collapsed"
+          >
+            <n-icon :component="MenuOutline" />
+          </n-button>
+
+          <span class="text-effect">
+            <img
+              :src="logo"
+              alt="Logo"
+              style="height: 1.5em; vertical-align: middle; margin-right: 0.3em;"
+            />
+            <span v-if="!isMobile || !collapsed">Emby Toolkit</span>
+          </span>
+        </div>
+
+        <!-- 中间：任务状态 (仅桌面端显示) -->
         <div 
-          v-if="authStore.isAdmin && props.taskStatus && props.taskStatus.current_action !== '空闲' && props.taskStatus.current_action !== '无'"
+          v-if="!isMobile && authStore.isAdmin && props.taskStatus && props.taskStatus.current_action !== '空闲' && props.taskStatus.current_action !== '无'"
           class="header-task-status"
         >
           <div class="status-content">
             <n-text class="status-text">
-              <!-- 1. 只有 is_running 为 true 时才转圈 -->
               <n-spin 
                 v-if="props.taskStatus.is_running" 
                 size="small" 
                 style="margin-right: 8px; vertical-align: middle;" 
               />
-              
-              <!-- 2. 如果没运行（空闲/等待），显示一个静止的图标（这里复用了已引入的 SchedulerIcon） -->
               <n-icon 
                 v-else 
                 :component="SchedulerIcon" 
                 size="18" 
                 style="margin-right: 8px; vertical-align: middle; opacity: 0.6;" 
               />
-
-              <!-- 3. 文字颜色也可以优化一下：运行时蓝色，空闲时灰色 -->
               <strong :style="{ color: props.taskStatus.is_running ? '#2080f0' : 'inherit' }">
                 {{ props.taskStatus.current_action }}
               </strong>
-              
               <span class="status-divider">-</span>
               <span class="status-message">{{ props.taskStatus.message }}</span>
             </n-text>
             
-            <!-- 进度条 -->
             <n-progress
               v-if="props.taskStatus.is_running && props.taskStatus.progress >= 0"
               type="line"
@@ -53,7 +61,6 @@
               style="width: 100px; margin: 0 12px;"
             />
 
-            <!-- 停止按钮 -->
             <n-tooltip trigger="hover">
               <template #trigger>
                 <n-button
@@ -71,27 +78,32 @@
             </n-tooltip>
           </div>
         </div>
-          <div style="display: flex; align-items: center; gap: 16px;">
-            <!-- 只有管理员可见 -->
-            <n-button-group v-if="authStore.isAdmin" size="small">
-              <n-tooltip>
-                <template #trigger>
-                  <n-button @click="isRealtimeLogVisible = true" circle>
-                    <template #icon><n-icon :component="ReaderOutline" /></template>
-                  </n-button>
-                </template>
-                实时日志
-              </n-tooltip>
-              <n-tooltip>
-                <template #trigger>
-                  <n-button @click="isHistoryLogVisible = true" circle>
-                    <template #icon><n-icon :component="ArchiveOutline" /></template>
-                  </n-button>
-                </template>
-                历史日志
-              </n-tooltip>
-            </n-button-group>
-            <!-- 用户名下拉菜单 -->
+
+        <!-- 右侧：工具栏 -->
+        <div style="display: flex; align-items: center; gap: 8px;">
+            <!-- 桌面端显示的工具按钮 -->
+            <template v-if="!isMobile">
+              <n-button-group v-if="authStore.isAdmin" size="small">
+                <n-tooltip>
+                  <template #trigger>
+                    <n-button @click="isRealtimeLogVisible = true" circle>
+                      <template #icon><n-icon :component="ReaderOutline" /></template>
+                    </n-button>
+                  </template>
+                  实时日志
+                </n-tooltip>
+                <n-tooltip>
+                  <template #trigger>
+                    <n-button @click="isHistoryLogVisible = true" circle>
+                      <template #icon><n-icon :component="ArchiveOutline" /></template>
+                    </n-button>
+                  </template>
+                  历史日志
+                </n-tooltip>
+              </n-button-group>
+            </template>
+
+            <!-- 用户名下拉菜单 (移动端简化显示) -->
             <n-dropdown 
               v-if="authStore.isLoggedIn" 
               trigger="hover" 
@@ -99,64 +111,78 @@
               @select="handleUserSelect"
             >
               <div style="display: flex; align-items: center; cursor: pointer; gap: 4px;">
-                <span style="font-size: 14px;">欢迎, {{ authStore.username }}</span>
-                <svg xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
+                <span style="font-size: 14px;">
+                  {{ isMobile ? '' : `欢迎, ${authStore.username}` }}
+                </span>
+                <!-- 移动端只显示一个图标或头像占位 -->
+                <n-icon v-if="isMobile" size="20" :component="UserCenterIcon" />
+                <svg v-else xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
               </div>
             </n-dropdown>
 
-            <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
+            <!-- 桌面端显示版本号和主题 -->
+            <template v-if="!isMobile">
+              <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
 
-            <!-- 主题选择器 -->
-            <n-select
-              :value="props.selectedTheme"
-              @update:value="newValue => emit('update:selected-theme', newValue)"
-              :options="themeOptions"
-              size="small"
-              style="width: 120px;"
-            />
-            <!-- 编辑按钮入口 -->
-            <n-tooltip v-if="props.selectedTheme === 'custom'">
-              <template #trigger>
-                <n-button @click="emit('edit-custom-theme')" circle size="small">
-                  <template #icon><n-icon :component="PaletteIcon" /></template>
-                </n-button>
-              </template>
-              编辑我的专属主题
-            </n-tooltip>
+              <n-select
+                :value="props.selectedTheme"
+                @update:value="newValue => emit('update:selected-theme', newValue)"
+                :options="themeOptions"
+                size="small"
+                style="width: 120px;"
+              />
+              
+              <n-tooltip v-if="props.selectedTheme === 'custom'">
+                <template #trigger>
+                  <n-button @click="emit('edit-custom-theme')" circle size="small">
+                    <template #icon><n-icon :component="PaletteIcon" /></template>
+                  </n-button>
+                </template>
+                编辑我的专属主题
+              </n-tooltip>
 
-            <!-- 随机主题按钮 -->
-            <n-tooltip>
-              <template #trigger>
-                <n-button @click="setRandomTheme" circle size="small">
-                  <template #icon><n-icon :component="ShuffleIcon" /></template>
-                </n-button>
-              </template>
-              天灵灵地灵灵，给我来个好心情！
-            </n-tooltip>
+              <n-tooltip>
+                <template #trigger>
+                  <n-button @click="setRandomTheme" circle size="small">
+                    <template #icon><n-icon :component="ShuffleIcon" /></template>
+                  </n-button>
+                </template>
+                随机主题
+              </n-tooltip>
+            </template>
 
-            <!-- 明暗模式切换器 -->
+            <!-- 明暗模式切换器 (始终显示) -->
             <n-switch 
               :value="props.isDark" 
               @update:value="newValue => emit('update:is-dark', newValue)"
               size="small"
             >
-              <template #checked>暗色</template>
-              <template #unchecked>亮色</template>
+              <template #checked-icon><n-icon :component="MoonIcon" /></template>
+              <template #unchecked-icon><n-icon :component="SunnyIcon" /></template>
             </n-switch>
           </div>
       </div>
     </n-layout-header>
-    <n-layout has-sider style="height: calc(100vh - 60px);">
+    
+    <n-layout has-sider style="height: calc(100vh - 60px); position: relative;">
+      <!-- 遮罩层：仅在移动端且侧边栏展开时显示，点击关闭侧边栏 -->
+      <div 
+        v-if="isMobile && !collapsed" 
+        class="mobile-sider-mask"
+        @click="collapsed = true"
+      ></div>
+
       <n-layout-sider
         :bordered="false"
         collapse-mode="width"
-        :collapsed-width="64"
+        :collapsed-width="isMobile ? 0 : 64"
         :width="240"
-        show-trigger="arrow-circle"
+        :show-trigger="isMobile ? false : 'arrow-circle'"
         content-style="padding-top: 10px;"
         :native-scrollbar="false"
         :collapsed="collapsed"
         @update:collapsed="val => collapsed = val"
+        :class="{ 'mobile-sider': isMobile }"
       >
         <n-menu
           :collapsed="collapsed"
@@ -180,10 +206,8 @@
       </n-layout-content>
     </n-layout>
     
-    <!-- 移除了修改密码模态框，因为现在没有本地密码了 -->
-    
     <!-- 实时日志模态框 -->
-    <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 80%; max-width: 900px;" title="实时任务日志" class="modal-card-lite">
+    <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 95%; max-width: 900px;" title="实时任务日志" class="modal-card-lite">
        <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh; font-size: 13px; line-height: 1.6;"/>
     </n-modal>
 
@@ -193,12 +217,13 @@
 </template>
 
 <script setup>
-import { ref, computed, h, watch, nextTick } from 'vue';
+import { ref, computed, h, watch, nextTick, onMounted, onUnmounted } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import {
   NLayout, NLayoutHeader, NLayoutSider, NLayoutContent,
   NMenu, NSwitch, NIcon, NModal, NDropdown, NButton,
-  NSelect, NTooltip, NCard, NText, NProgress, NButtonGroup, NLog
+  NSelect, NTooltip, NCard, NText, NProgress, NButtonGroup, NLog,
+  useMessage, useDialog
 } from 'naive-ui';
 import { useAuthStore } from './stores/auth';
 import { themes } from './theme.js';
@@ -232,14 +257,33 @@ import {
   BookmarksOutline, 
   SettingsOutline,
   ArchiveOutline,
-  BookOutline as HelpIcon // 引入帮助图标
+  BookOutline as HelpIcon,
+  MenuOutline, // 引入菜单图标
+  Moon as MoonIcon,
+  Sunny as SunnyIcon
 } from '@vicons/ionicons5';
 import axios from 'axios';
-import { useMessage, useDialog } from 'naive-ui';
 import logo from './assets/logo.png'
 
 const message = useMessage();
 const dialog = useDialog();
+
+// --- 修改开始：使用原生 JS 判断移动端 ---
+const isMobile = ref(false);
+
+const checkMobile = () => {
+  // 768px 通常是平板/手机的分界线
+  isMobile.value = window.innerWidth < 768;
+};
+
+onMounted(() => {
+  checkMobile();
+  window.addEventListener('resize', checkMobile);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('resize', checkMobile);
+});
 
 const triggerStopTask = async () => {
   try {
@@ -262,14 +306,23 @@ const emit = defineEmits(['update:is-dark', 'update:selected-theme', 'edit-custo
 const router = useRouter(); 
 const route = useRoute(); 
 const authStore = useAuthStore();
-// 修改：默认折叠侧边栏
+
+// 侧边栏状态
 const collapsed = ref(true);
 const activeMenuKey = computed(() => route.name);
 const appVersion = ref(__APP_VERSION__);
+
 // 日志相关状态
 const isRealtimeLogVisible = ref(false);
 const isHistoryLogVisible = ref(false);
 const logRef = ref(null);
+
+// 监听路由变化，如果是移动端，跳转后自动收起侧边栏
+watch(() => route.path, () => {
+  if (isMobile.value) {
+    collapsed.value = true;
+  }
+});
 
 // 3. 从 theme.js 动态生成选项
 const themeOptions = [
@@ -307,7 +360,7 @@ const userOptions = computed(() => {
     });
   }
 
-  // <--- 新增：帮助文档 --->
+  // 帮助文档
   options.push({
     label: '帮助文档',
     key: 'help-docs',
@@ -353,7 +406,6 @@ const handleUserSelect = async (key) => {
       onPositiveClick: triggerRestart, 
     });
   } else if (key === 'help-docs') {
-    // <--- 新增：跳转到帮助文档 --->
     window.open('https://hbq0405.github.io/emby-toolkit/zh/', '_blank');
   } else if (key === 'logout') {
     await authStore.logout();
@@ -363,18 +415,14 @@ const handleUserSelect = async (key) => {
 
 const menuOptions = computed(() => {
   // 1. 先定义一个基础菜单组
-  // 修改：添加 icon，移除 type: 'group' 以保持与其他一级菜单风格一致（可折叠）
   const discoveryGroup = { 
     label: '发现', 
     key: 'group-discovery', 
-    icon: renderIcon(CompassOutline), // 使用指南针图标
-    // type: 'group', // 移除此行，使其变为带图标的子菜单样式
+    icon: renderIcon(CompassOutline), 
     children: [] 
   };
 
   // 2. 根据用户类型，动态地往这个组里添加菜单项
-  
-  // 规则1: 如果用户是管理员，就添加“数据看板”
   if (authStore.isAdmin) {
     discoveryGroup.children.push({ 
       label: '数据看板', 
@@ -383,14 +431,12 @@ const menuOptions = computed(() => {
     });
   }
 
-  // 规则2: 只要是登录用户，都应该能看到“用户中心”和“影视探索”
   if (authStore.isLoggedIn) {
     discoveryGroup.children.push(
       { label: '用户中心', key: 'UserCenter', icon: renderIcon(UserCenterIcon) },
       { label: '影视探索', key: 'Discover', icon: renderIcon(DiscoverIcon) }
     );
     
-    // ★★★ 修改：将 NULLBR 移出通用列表，单独判断管理员权限 ★★★
     if (authStore.isAdmin) {
         discoveryGroup.children.push(
             { label: 'NULLBR', key: 'Nullbr', icon: renderIcon(NullbrIcon) }
@@ -442,7 +488,6 @@ const menuOptions = computed(() => {
     );
   }
 
-  // 5. 返回最终构建好的菜单
   return finalMenu;
 });
 
@@ -461,17 +506,18 @@ const setRandomTheme = () => {
 
 <style>
 /* MainLayout 的样式 */
-.app-header { padding: 0 24px; height: 60px; display: flex; align-items: center; font-size: 1.25em; font-weight: 600; flex-shrink: 0; }
+.app-header { padding: 0 16px; height: 60px; display: flex; align-items: center; font-size: 1.25em; font-weight: 600; flex-shrink: 0; }
 .app-main-content-wrapper { height: 100%; display: flex; flex-direction: column; }
 .page-content-inner-wrapper { flex-grow: 1; overflow-y: auto; }
 .n-menu .n-menu-item-group-title { font-size: 12px; font-weight: 500; color: #8e8e93; padding-left: 24px; margin-top: 16px; margin-bottom: 8px; }
 .n-menu .n-menu-item-group:first-child .n-menu-item-group-title { margin-top: 0; }
 html.dark .n-menu .n-menu-item-group-title { color: #828287; }
-/* ★★★ 新增样式：Header 中的任务状态条 ★★★ */
+
+/* 任务状态条样式 */
 .header-task-status {
   flex: 2;
   display: flex;
-  justify-content: center; /* 居中显示 */
+  justify-content: center;
   align-items: center;
   margin: 0 20px;
   overflow: hidden;
@@ -485,10 +531,9 @@ html.dark .n-menu .n-menu-item-group-title { color: #828287; }
   padding: 4px 12px;
   border-radius: 20px;
   border: 1px solid rgba(0, 0, 0, 0.05);
-  max-width: 100%; /* 允许撑满父容器 */
+  max-width: 100%;
 }
 
-/* 暗色模式适配 */
 html.dark .status-content {
   background-color: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.05);
@@ -501,19 +546,18 @@ html.dark .status-content {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1; /* 让文字区域自动填充剩余空间 */
-  min-width: 0; /* 关键：允许文字截断 */
+  flex: 1;
+  min-width: 0;
 }
 
 .status-divider {
   margin: 0 8px;
   opacity: 0.5;
-  flex-shrink: 0; /* 防止分隔符被挤压 */
+  flex-shrink: 0;
 }
 
 .status-message {
   opacity: 0.8;
-  /* ★★★ 核心修改：大幅增加最大宽度，或者直接设为 auto 配合 flex ★★★ */
   max-width: 600px; 
   overflow: hidden;
   text-overflow: ellipsis;
@@ -521,14 +565,47 @@ html.dark .status-content {
   vertical-align: bottom;
 }
 
-/* 移动端适配：屏幕太窄时隐藏消息详情，只留动作和进度条 */
+/* 移动端适配样式 */
 @media (max-width: 768px) {
-  .status-message {
-    max-width: 150px; /* 移动端还是限制一下 */
+  .app-header {
+    padding: 0 12px; /* 减小内边距 */
   }
+  
+  .status-message {
+    max-width: 150px;
+  }
+  
   .header-task-status {
     margin: 0 8px;
     flex: 1;
+  }
+
+  /* 移动端侧边栏样式：悬浮在内容之上 */
+  .mobile-sider {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 1000;
+    height: 100%;
+    box-shadow: 2px 0 8px rgba(0,0,0,0.15);
+  }
+
+  /* 移动端侧边栏遮罩 */
+  .mobile-sider-mask {
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: rgba(0,0,0,0.4);
+    z-index: 999;
+    backdrop-filter: blur(2px);
+  }
+  
+  /* 调整移动端内容区域内边距 */
+  .n-layout-content .page-content-inner-wrapper {
+    padding: 12px !important; /* 覆盖内联样式 */
   }
 }
 </style>

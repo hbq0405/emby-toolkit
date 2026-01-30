@@ -1,9 +1,9 @@
 <!-- src/components/DiscoverPage.vue -->
 <template>
-  <n-layout content-style="padding: 24px;">
+  <n-layout :content-style="{ padding: isMobile ? '12px' : '24px' }">
   <div>
     <n-page-header title="影视探索" subtitle="发现您感兴趣的下一部作品" />
-      <n-grid :x-gap="24" :y-gap="24" cols="2" style="margin-top: 24px;">
+      <n-grid :x-gap="24" :y-gap="24" :cols="isMobile ? 1 : 2" style="margin-top: 24px;">
         <!-- 左侧筛选面板 (占1列) -->
         <n-gi :span="1">
           <n-card :bordered="false" class="dashboard-card">
@@ -151,7 +151,7 @@
           </n-card>
         </n-gi>
         <!-- ★★★ 右侧“每日推荐”面板 ★★★ -->
-        <n-gi :span="1">
+        <n-gi :span="1" v-if="!isMobile">
           <n-card :bordered="false" class="dashboard-card recommendation-card">
             <!-- ★ 1. 修改卡片头，加入“换一个”按钮 -->
             <template #header>
@@ -404,6 +404,11 @@ const isLoadingMore = ref(false);
 const searchQuery = ref('');
 const isSearchMode = computed(() => searchQuery.value.trim() !== '');
 const sentinel = ref(null);
+// ★★★ 新增：移动端检测逻辑 ★★★
+const isMobile = ref(false);
+const checkMobile = () => {
+  isMobile.value = window.innerWidth < 768;
+};
 const nullbrModalRef = ref(null);
 
 const handleNullbrSearch = (media) => {
@@ -758,6 +763,8 @@ watch(searchQuery, (newValue) => { resetAndFetch(); });
 watch([() => filters.sort_by, () => filters.vote_average_gte, selectedGenres, selectedRegions, selectedLanguage, selectedKeywords, selectedStudios, genreFilterMode, yearFrom, yearTo, selectedRating], () => { resetAndFetch(); }, { deep: true });
 let observer = null;
 onMounted(() => {
+  checkMobile();
+  window.addEventListener('resize', checkMobile);
   fetchGenres();
   fetchCountries();
   fetchLanguages();
@@ -772,7 +779,11 @@ onMounted(() => {
   }, { root: null, threshold: 0.1 });
   if (sentinel.value) { observer.observe(sentinel.value); }
 });
-onUnmounted(() => { if (observer) { observer.disconnect(); } });
+onUnmounted(() => { 
+  // ★★★ 新增：移除监听 ★★★
+  window.removeEventListener('resize', checkMobile);
+  if (observer) { observer.disconnect(); } 
+});
 </script>
 
 <style scoped>
