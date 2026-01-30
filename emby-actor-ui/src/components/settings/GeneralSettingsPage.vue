@@ -478,8 +478,13 @@
                             </n-checkbox>
                           </n-gi>
                           <n-gi>
-                            <n-checkbox v-model:checked="configModel.ai_translate_title_overview">
-                              翻译片名与简介
+                            <n-checkbox v-model:checked="configModel.ai_translate_title">
+                              翻译片名
+                            </n-checkbox>
+                          </n-gi>
+                          <n-gi>
+                            <n-checkbox v-model:checked="configModel.ai_translate_overview">
+                              翻译简介
                             </n-checkbox>
                           </n-gi>
                           <n-gi>
@@ -489,7 +494,7 @@
                           </n-gi>
                           <n-gi>
                             <n-checkbox v-model:checked="configModel.ai_vector">
-                              生成媒体向量(推荐)
+                              生成媒体向量
                             </n-checkbox>
                           </n-gi>
                         </n-grid>

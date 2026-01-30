@@ -129,7 +129,8 @@ CONFIG_OPTION_AI_BASE_URL = "ai_base_url"                       # AI服务的API
 CONFIG_OPTION_AI_VECTOR = "ai_vector"                           # 是否启用AI向量化功能
 CONFIG_OPTION_AI_TRANSLATION_MODE = "ai_translation_mode"       # AI翻译模式 ('fast' 或 'quality')
 CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE = "ai_translate_actor_role"               # 是否翻译演员角色名
-CONFIG_OPTION_AI_TRANSLATE_TITLE_OVERVIEW = "ai_translate_title_overview"       # 是否翻译标题和简介
+CONFIG_OPTION_AI_TRANSLATE_TITLE = "ai_translate_title"         # 是否翻译标题
+CONFIG_OPTION_AI_TRANSLATE_OVERVIEW = "ai_translate_overview"   # 是否翻译简介
 CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW = "ai_translate_episode_overview"   # 是否翻译集简介
 
 
