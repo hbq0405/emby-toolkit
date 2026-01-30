@@ -177,27 +177,42 @@ DEFAULT_RATING_MAPPING = {
         {"code": "G", "label": "全年龄", "emby_value": 1},
         {"code": "PG12", "label": "家长辅导", "emby_value": 5},
         {"code": "R15+", "label": "限制级", "emby_value": 9},
-        {"code": "R18+", "label": "18禁", "emby_value": 10}
+        {"code": "R18+", "label": "18禁", "emby_value": 10},
+        # --- 兼容旧数据/数字录入 ---
+        {"code": "12", "label": "家长辅导", "emby_value": 5},
+        {"code": "15", "label": "限制级", "emby_value": 9},
+        {"code": "18", "label": "18禁", "emby_value": 10}
     ],
     "HK": [
         {"code": "I", "label": "全年龄", "emby_value": 1},
         {"code": "IIA", "label": "家长辅导", "emby_value": 5},
         {"code": "IIB", "label": "限制级", "emby_value": 9}, 
-        {"code": "III", "label": "18禁", "emby_value": 10}
+        {"code": "III", "label": "18禁", "emby_value": 10},
+        # --- 兼容 TMDb 历史遗留数字录入 ---
+        {"code": "15", "label": "限制级", "emby_value": 9}, # 对应 IIB
+        {"code": "18", "label": "18禁", "emby_value": 10}  # 对应 III
     ],
     "TW": [
         {"code": "0+", "label": "全年龄", "emby_value": 1},
         {"code": "6+", "label": "家长辅导", "emby_value": 5},
         {"code": "12+", "label": "青少年", "emby_value": 8},
         {"code": "15+", "label": "限制级", "emby_value": 9},
-        {"code": "18+", "label": "18禁", "emby_value": 10}
+        {"code": "18+", "label": "18禁", "emby_value": 10},
+        # --- 兼容无“+”号的数字录入 ---
+        {"code": "0", "label": "全年龄", "emby_value": 1},
+        {"code": "6", "label": "家长辅导", "emby_value": 5},
+        {"code": "12", "label": "青少年", "emby_value": 8},
+        {"code": "15", "label": "限制级", "emby_value": 9},
+        {"code": "18", "label": "18禁", "emby_value": 10}
     ],
     "KR": [
         {"code": "All", "label": "全年龄", "emby_value": 1},
         {"code": "12", "label": "家长辅导", "emby_value": 5},
         {"code": "15", "label": "青少年", "emby_value": 8},
         {"code": "19", "label": "限制级", "emby_value": 9},
-        {"code": "Restricted Screening", "label": "18禁", "emby_value": 10}
+        {"code": "Restricted Screening", "label": "18禁", "emby_value": 10},
+        # --- 兼容韩国有时会录入 18 而非 19 的情况 ---
+        {"code": "18", "label": "限制级", "emby_value": 9}
     ],
     "GB": [
         {"code": "U", "label": "全年龄", "emby_value": 1},
