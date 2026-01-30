@@ -204,73 +204,31 @@ def query_virtual_library_items(
         params.append(target_library_ids)
 
     # ======================================================================
-    # ★★★ 4. 权限控制 (修复版) ★★★
+    # ★★★ 4. 权限控制 (精简版) ★★★
     # ======================================================================
     
-    # 1. 动态构建分级取值表达式
     # 逻辑：
     # 1. 优先取 m.custom_rating (如果非空)
-    # 2. 其次根据配置的 rating_priority 顺序取 m.official_rating_json
-    # 3. 兜底取 JSON 中任意值
+    # 2. 其次取 m.official_rating_json->>'US' (这是入库时归一化后的标准分级)
     
-    # A. 获取用户配置的优先级 (如果没有配置，使用默认列表)
-    priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
-    
-    # B. 构建 SQL 字段列表
-    rating_sql_parts = ["NULLIF(m.custom_rating, '')"] # 1. 人工自定义最优先
-    
-    # ★★★ 核心修复：确立 US 分级的宗主地位 ★★★
-    # 因为我们在入库时已经把所有逻辑（包括成人拦截、多国映射）都浓缩进了 US 字段。
-    # 所以 SQL 查询时，必须优先读取 US，否则会读到未处理的原产国分级（如 DE:18），导致权限逃逸。
-    rating_sql_parts.append("m.official_rating_json->>'US'") 
-
-    for p in priority_list:
-        # 避免重复添加 US
-        if p == 'US': continue
-        
-        if p == 'ORIGIN':
-            # 特殊处理原产国
-            rating_sql_parts.append("m.official_rating_json->>(m.countries_json->>0)")
-        else:
-            # 标准国家代码
-            rating_sql_parts.append(f"m.official_rating_json->>'{p}'")
-            
-    # C. 添加最终兜底 (取 JSON 里随便一个值，防止前面都匹配不到导致 NULL)
-    rating_sql_parts.append("(SELECT value FROM jsonb_each_text(m.official_rating_json) LIMIT 1)")
-    
-    # D. 组合成 COALESCE 语句
-    rating_expr = f"""
-    COALESCE(
-        {', '.join(rating_sql_parts)}
-    )
-    """
+    rating_expr = "COALESCE(NULLIF(m.custom_rating, ''), m.official_rating_json->>'US')"
 
     # --- A. 处理分级数值限制 (Rating Value Limit) ---
-    # 逻辑：未分级(Unrated/None) 默认为 0 (安全)。
-    # 只要 (计算出的分级值 <= 限制值) 即放行。
     
     limit_value_sql = None
     
     if max_rating_override is not None:
-        # 情况1: 强制覆盖 (封面生成器)
         limit_value_sql = str(max_rating_override)
     elif user_id:
-        # 情况2: 使用用户策略
         limit_value_sql = "(u.policy_json->>'MaxParentalRating')::int"
     
     if limit_value_sql:
-        # 计算分级数值 (利用 _build_rating_value_sql 的逻辑：映射不到或非数字则为0)
         rating_value_calc_sql = _build_rating_value_sql(rating_expr)
         
         rating_limit_sql = f"""
         (
-            -- 1. 如果限制值本身为空(无限制)，则通过
             ({limit_value_sql} IS NULL)
             OR
-            -- 2. 数值比较：分级值 <= 限制值
-            -- 未分级/无分级 内容会被计算为 0。
-            -- 0 <= 8 (PG-13) -> TRUE (通过)
-            -- 9 (R) <= 8 (PG-13) -> FALSE (拦截)
             (({rating_value_calc_sql}) <= {limit_value_sql})
         )
         """
@@ -535,33 +493,15 @@ def query_virtual_library_items(
             if not target_codes:
                 continue 
 
-            # A. 获取用户配置的优先级
-            priority_list = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
-
-            json_keys = []
-            json_keys.append("NULLIF(m.custom_rating, '')")
-
-            for p in priority_list:
-                if p == 'ORIGIN':
-                    json_keys.append("m.official_rating_json->>(m.countries_json->>0)")
-                else:
-                    json_keys.append(f"m.official_rating_json->>'{p}'")
-            
-            if not json_keys:
-                json_keys = ["m.official_rating_json->>'US'"]
-                
-            target_rating_expr = f"COALESCE({', '.join(json_keys)})"
+            # ★★★ 核心修改：这里也同步为简化的双级判定逻辑 ★★★
+            target_rating_expr = "COALESCE(NULLIF(m.custom_rating, ''), m.official_rating_json->>'US')"
 
             # C. 构建查询语句
             if op in ['eq', 'is_one_of']:
-                # 正向筛选 (是...): 必须有分级且匹配
                 clause = f"{target_rating_expr} = ANY(%s)"
                 params.append(target_codes)
                 
             elif op == 'is_none_of':
-                # ★★★ 修复：反向筛选 (不是...) ★★★
-                # 旧逻辑: (IS NOT NULL AND NOT MATCH) -> 导致无分级内容被误杀
-                # 新逻辑: (IS NULL OR NOT MATCH) -> 保留无分级内容
                 clause = f"({target_rating_expr} IS NULL OR NOT ({target_rating_expr} = ANY(%s)))"
                 params.append(target_codes)
 
