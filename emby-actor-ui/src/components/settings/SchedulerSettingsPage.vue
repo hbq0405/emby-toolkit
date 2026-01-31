@@ -11,7 +11,7 @@
       <!-- ======================================================================= -->
       <!-- 卡片 1: 高频刷新任务链 -->
       <!-- ======================================================================= -->
-      <n-card :bordered="false" class="dashboard-card">
+      <n-card v-if="!isMobile" :bordered="false" class="dashboard-card">
         <template #header>
           <span class="card-title">高频刷新任务链</span>
         </template>
@@ -89,7 +89,7 @@
       <!-- ======================================================================= -->
       <!-- 卡片 2: 低频维护任务链 -->
       <!-- ======================================================================= -->
-      <n-card :bordered="false" class="dashboard-card">
+      <n-card v-if="!isMobile" :bordered="false" class="dashboard-card">
         <template #header>
           <span class="card-title">低频维护任务链</span>
         </template>
@@ -163,7 +163,7 @@
       </n-card>
 
       <!-- 保存按钮（通用） -->
-       <n-button type="primary" @click="savePageConfig" :loading="savingConfig" size="large" style="width: 100%;">
+       <n-button v-if="!isMobile" type="primary" @click="savePageConfig" :loading="savingConfig" size="large" style="width: 100%;">
           <template #icon><n-icon :component="Save24Regular" /></template>
           保存所有配置
         </n-button>
@@ -176,6 +176,7 @@
         <template #header-extra>
           <n-text depth="3">用于需要立即手动执行的场景</n-text>
         </template>
+        <!-- 修改 Grid 响应式断点，手机端单列 -->
         <n-grid cols="1 m:2 l:5" :x-gap="24" :y-gap="16" responsive="screen">
           <n-gi v-for="task in availableTasksForManualRun" :key="task.key">
             <div class="temp-task-item">
@@ -271,7 +272,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch, nextTick, computed } from 'vue';
+import { ref, onMounted, onBeforeUnmount, watch, nextTick, computed } from 'vue';
 import {
   NForm, NFormItem, NInput, NCheckbox, NGrid, NGi, NAlert,
   NButton, NCard, NSpace, NSwitch, NIcon, NText, NInputNumber,
@@ -466,9 +467,21 @@ const initializeSortable = (container, sequenceRef, instanceRef) => {
   return null;
 };
 
+// ★★★ 新增：移动端检测 ★★★
+const isMobile = ref(false);
+const checkMobile = () => {
+  isMobile.value = window.innerWidth < 768;
+};
+
 // --- Lifecycle and Watchers ---
 onMounted(() => {
+  checkMobile();
+  window.addEventListener('resize', checkMobile);
   fetchAvailableTasks();
+});
+
+onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkMobile);
 });
 
 watch(showHighFreqChainConfigModal, (newValue) => {

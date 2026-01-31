@@ -1,6 +1,6 @@
 <!-- src/components/WatchlistPage.vue -->
 <template>
-  <n-layout content-style="padding: 24px;">
+  <n-layout :content-style="{ padding: isMobile ? '12px' : '24px' }">
     <div class="watchlist-page">
       <n-page-header>
         <template #title>
@@ -11,7 +11,7 @@
             </n-tag>
           </n-space>
         </template>
-        <n-alert title="操作提示" type="info" style="margin-top: 24px;">
+        <n-alert v-if="!isMobile" title="操作提示" type="info" style="margin-top: 24px;">
           <li>本模块高度自动化，几乎无需人工干涉。新入库剧集，会自动判断是否完结，未完结剧集会进入追剧列表，并根据状态自动处理。</li>
           <li>当剧集完结后，会转入已完结列表，后台可以设置定时刷新剧集元数据以及有新季上线会自动转成追剧中，并从上线之日开始自动订阅新季。</li>
         </n-alert>
@@ -1384,7 +1384,15 @@ const saveTotalEpisodes = async (item) => {
   }
 };
 
+// ★★★ 新增：移动端检测 ★★★
+const isMobile = ref(false);
+const checkMobile = () => {
+  isMobile.value = window.innerWidth < 768;
+};
+
 onMounted(() => {
+  checkMobile();
+  window.addEventListener('resize', checkMobile);
   fetchWatchlist();
   observer = new IntersectionObserver(
     (entries) => {
@@ -1400,6 +1408,7 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkMobile);
   if (observer) {
     observer.disconnect();
   }
@@ -1439,8 +1448,10 @@ watch(loaderRef, (newEl, oldEl) => {
 .responsive-grid {
   display: grid;
   gap: 16px;
-  /* 320px 基准宽度 */
-  grid-template-columns: repeat(auto-fill, minmax(calc(320px * var(--card-scale, 1)), 1fr));
+  /* 修改：手机端允许卡片更窄一点，或者直接设为 100% */
+  /* minmax(300px, 1fr) 在小屏手机(如iPhone SE 320px)上会导致溢出或贴边 */
+  /* 改为 minmax(0, 1fr) 让它自适应，或者设置一个更小的最小值 */
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
 }
 
 .grid-item {
@@ -1791,8 +1802,45 @@ html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
 
 /* 手机端适配 */
 @media (max-width: 768px) {
-  .settings-layout {
-    grid-template-columns: 1fr;
+  .responsive-grid {
+    /* 手机端强制单列，或者双列看情况。单列通常展示信息更全 */
+    grid-template-columns: 1fr; 
+    gap: 12px;
+  }
+  
+  /* 修复卡片右侧切割：确保卡片内部容器不溢出 */
+  .series-card {
+    width: 100%; /* 强制占满 Grid 单元格 */
+    box-sizing: border-box; /* 包含边框和内边距 */
+  }
+  
+  /* 调整海报宽度，手机上稍微窄一点，给右侧留空间 */
+  .card-poster-container {
+    width: 100px !important; /* 覆盖原来的计算值 */
+  }
+  
+  /* 调整右侧内容区域 */
+  .card-content-container {
+    /* 关键：防止 flex 子项溢出 */
+    min-width: 0; 
+    width: 0; /* 配合 flex-grow: 1 使用，强制触发文本截断 */
+    flex: 1;
+  }
+  
+  /* 调整标题大小 */
+  .card-title {
+    font-size: 1em !important;
+  }
+  
+  /* 调整底部按钮间距 */
+  .card-actions {
+    gap: 4px;
+    justify-content: flex-start; /* 手机端靠左对齐可能更好，或者保持居中 */
+  }
+  
+  /* 隐藏部分不重要的图标/文字以节省空间 */
+  .info-line {
+    font-size: 0.85em;
   }
 }
 </style>

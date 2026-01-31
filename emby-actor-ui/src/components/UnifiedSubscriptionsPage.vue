@@ -1,6 +1,6 @@
 <!-- src/components/UnifiedSubscriptionsPage.vue -->
 <template>
-  <n-layout content-style="padding: 24px;">
+  <n-layout :content-style="{ padding: isMobile ? '12px' : '24px' }">
     <div class="unified-subscriptions-page">
       <n-page-header>
         <template #title>
@@ -11,7 +11,7 @@
             </n-tag>
           </n-space>
         </template>
-        <n-alert title="管理说明" type="info" style="margin-top: 24px;">
+        <n-alert v-if="!isMobile" title="管理说明" type="info" style="margin-top: 24px;">
           <li>这里汇总了所有通过“用户请求”、“演员订阅”、“合集补全”、“智能追剧”等方式进入待处理队列，但尚未入库的媒体项。</li>
           <li><b>待审核:</b> 在这里处理普通用户的订阅请求。</li>
           <li><b>待订阅:</b> 由自动化模块提交的订阅请求。</li>
@@ -47,7 +47,8 @@
               确定要从数据库中<b style="color: red">物理删除</b>当前筛选出的 {{ filteredItems.length }} 条记录吗？<br/>
               <span style="font-size: 12px; color: gray;">删除后无法恢复，且下次扫描可能会再次发现这些项目。</span>
             </n-popconfirm>
-            <n-radio-group v-model:value="filterStatus" size="small">
+            <!-- PC 端显示按钮组 -->
+            <n-radio-group v-if="!isMobile" v-model:value="filterStatus" size="small">
               <n-radio-button value="REQUESTED">待审核</n-radio-button>
               <n-radio-button value="WANTED">待订阅</n-radio-button>
               <n-radio-button value="SUBSCRIBED">已订阅</n-radio-button> 
@@ -55,6 +56,15 @@
               <n-radio-button value="PENDING_RELEASE">未上映</n-radio-button>
               <n-radio-button value="IGNORED">已忽略</n-radio-button>
             </n-radio-group>
+            
+            <!-- 手机端显示下拉菜单 -->
+            <n-select 
+              v-else 
+              v-model:value="filterStatus" 
+              :options="statusOptions" 
+              size="small" 
+              style="width: 120px;" 
+            />
             <n-button @click="showStrategyModal = true" type="warning" ghost>
               <template #icon><n-icon :component="SettingsIcon" /></template>
               策略配置
@@ -160,61 +170,38 @@
                   
                   <!-- 底部按钮 -->
                   <div class="card-actions">
-                    <n-button-group size="small">
-                      <template v-if="item.subscription_status === 'REQUESTED'">
-                        <n-button @click="() => subscribeItem(item)" type="primary" ghost>
-                          批准
-                        </n-button>
-                        <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
-                          忽略
-                        </n-button>
-                      </template>
-                      <template v-if="item.subscription_status === 'WANTED'">
-                        <n-button @click="() => subscribeItem(item)" type="primary" ghost>
-                          订阅
-                        </n-button>
-                        <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
-                          忽略
-                        </n-button>
-                      </template>
+                  <!-- 待审核 -->
+                  <template v-if="item.subscription_status === 'REQUESTED'">
+                    <n-tooltip><template #trigger><n-button @click="() => subscribeItem(item)" type="primary" ghost circle size="small"><template #icon><n-icon :component="SubscribedIcon" /></template></n-button></template>批准</n-tooltip>
+                    <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost circle size="small"><template #icon><n-icon :component="IgnoredIcon" /></template></n-button></template>忽略</n-tooltip>
+                  </template>
+                  
+                  <!-- 待订阅 -->
+                  <template v-if="item.subscription_status === 'WANTED'">
+                    <n-tooltip><template #trigger><n-button @click="() => subscribeItem(item)" type="primary" ghost circle size="small"><template #icon><n-icon :component="SubscribedIcon" /></template></n-button></template>订阅</n-tooltip>
+                    <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost circle size="small"><template #icon><n-icon :component="IgnoredIcon" /></template></n-button></template>忽略</n-tooltip>
+                  </template>
 
-                      <template v-else-if="item.subscription_status === 'SUBSCRIBED' || item.subscription_status === 'PENDING_RELEASE'">
-                        <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
-                          取消订阅 (忽略)
-                        </n-button>
-                      </template>
+                  <!-- 已订阅 / 未上映 -->
+                  <template v-else-if="item.subscription_status === 'SUBSCRIBED' || item.subscription_status === 'PENDING_RELEASE'">
+                    <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost circle size="small"><template #icon><n-icon :component="IgnoredIcon" /></template></n-button></template>取消订阅</n-tooltip>
+                  </template>
 
-                      <template v-else-if="item.subscription_status === 'PAUSED'">
-                        <n-button @click="() => updateItemStatus(item, 'SUBSCRIBED')" type="primary" ghost>
-                          恢复搜索
-                        </n-button>
-                        <n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost>
-                          取消订阅 (忽略)
-                        </n-button>
-                      </template>
+                  <!-- 已暂停 -->
+                  <template v-else-if="item.subscription_status === 'PAUSED'">
+                    <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'SUBSCRIBED')" type="primary" ghost circle size="small"><template #icon><n-icon :component="SubscribedIcon" /></template></n-button></template>恢复</n-tooltip>
+                    <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost circle size="small"><template #icon><n-icon :component="IgnoredIcon" /></template></n-button></template>取消</n-tooltip>
+                  </template>
 
-                      <template v-else-if="item.subscription_status === 'IGNORED'">
-                        <n-button @click="() => updateItemStatus(item, 'WANTED', true)" type="primary" ghost>
-                          取消忽略
-                        </n-button>
-                      </template>
-                    </n-button-group>
-                    <n-tooltip>
-                      <template #trigger>
-                        <n-button text @click="handleNullbrSearch(item)">
-                          <template #icon>
-                            <!-- 使用 CloudDownloadIcon 或 SearchIcon 都可以 -->
-                            <n-icon :component="CloudDownloadIcon" size="18" />
-                          </template>
-                        </n-button>
-                      </template>
-                      NULLBR 搜资源
-                    </n-tooltip>
-                    <n-tooltip>
-                      <template #trigger><n-button text tag="a" :href="getTMDbLink(item)" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>
-                      在 TMDb 中打开
-                    </n-tooltip>
-                  </div>
+                  <!-- 已忽略 -->
+                  <template v-else-if="item.subscription_status === 'IGNORED'">
+                    <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'WANTED', true)" type="primary" ghost circle size="small"><template #icon><n-icon :component="WantedIcon" /></template></n-button></template>取消忽略</n-tooltip>
+                  </template>
+
+                  <!-- 通用 -->
+                  <n-tooltip><template #trigger><n-button text @click="handleNullbrSearch(item)"><template #icon><n-icon :component="CloudDownloadIcon" size="18" /></template></n-button></template>NULLBR</n-tooltip>
+                  <n-tooltip><template #trigger><n-button text tag="a" :href="getTMDbLink(item)" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>TMDb</n-tooltip>
+              </div>
                 </div>
               </div>
               <!-- 布局结束 -->
@@ -989,7 +976,15 @@ const clearSelection = () => {
   selectedItems.value = [];
 };
 
+// ★★★ 新增：移动端检测 ★★★
+const isMobile = ref(false);
+const checkMobile = () => {
+  isMobile.value = window.innerWidth < 768;
+};
+
 onMounted(() => {
+  checkMobile();
+  window.addEventListener('resize', checkMobile);
   // 传入 true，表示这是首次加载，需要自动判断标签页
   fetchData(true); 
   
@@ -1004,8 +999,19 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
+  window.removeEventListener('resize', checkMobile);
   if (observer) observer.disconnect();
 });
+
+// ★★★ 新增：状态筛选器的选项 (供手机端 Select 使用) ★★★
+const statusOptions = [
+  { label: '待审核', value: 'REQUESTED' },
+  { label: '待订阅', value: 'WANTED' },
+  { label: '已订阅', value: 'SUBSCRIBED' },
+  { label: '已暂停', value: 'PAUSED' },
+  { label: '未上映', value: 'PENDING_RELEASE' },
+  { label: '已忽略', value: 'IGNORED' },
+];
 
 watch(loaderRef, (newEl, oldEl) => {
   if (oldEl && observer) observer.unobserve(oldEl);
@@ -1022,8 +1028,7 @@ watch(loaderRef, (newEl, oldEl) => {
 .responsive-grid {
   display: grid;
   gap: 16px;
-  /* 320px 基准宽度 */
-  grid-template-columns: repeat(auto-fill, minmax(calc(320px * var(--card-scale, 1)), 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
 }
 
 .grid-item {
@@ -1342,8 +1347,43 @@ watch(loaderRef, (newEl, oldEl) => {
   transform: translate(-50%, 20px); /* 从下方滑入 */
 }
 /* 手机端适配 */
-@media (max-width: 600px) {
-  .responsive-grid { grid-template-columns: 1fr !important; }
-  .card-poster-container { width: 100px; min-height: 150px; }
+@media (max-width: 768px) {
+  .responsive-grid {
+    grid-template-columns: 1fr; /* 强制单列 */
+    gap: 12px;
+  }
+  
+  .card-poster-container {
+    width: 100px !important; 
+  }
+  
+  .card-content-container {
+    min-width: 0;
+    width: 0;
+    flex: 1;
+  }
+  
+  /* 底部按钮栏：靠右对齐，紧凑排列 */
+  .card-actions {
+    justify-content: flex-end; 
+    gap: 8px;
+    padding-top: 8px;
+  }
+  
+  /* 悬浮操作栏适配 */
+  .floating-action-bar {
+    min-width: auto;
+    width: 90%;
+    bottom: 16px;
+  }
+  
+  .fab-content {
+    padding: 8px 16px;
+    gap: 12px;
+  }
+  
+  .fab-text {
+    font-size: 12px;
+  }
 }
 </style>
