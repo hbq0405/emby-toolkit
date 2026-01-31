@@ -11,8 +11,8 @@ from collections import defaultdict
 import task_manager
 import handler.emby as emby
 from database import connection, cleanup_db, settings_db, maintenance_db
-# ★★★ 导入 helpers 模块 ★★★
 from . import helpers
+from .media import task_populate_metadata_cache
 
 logger = logging.getLogger(__name__)
 
@@ -268,8 +268,16 @@ def task_scan_for_cleanup_issues(processor):
     """
     task_name = "扫描媒体库重复项"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
+
+    # 前置增量同步 
+    logger.info("  ➜ [前置操作] 正在执行增量元数据同步，以确保多版本信息已入库...")
+    try:
+        # 调用 media 模块的同步任务 (增量模式)
+        task_populate_metadata_cache(processor, force_full_update=False)
+    except Exception as e:
+        logger.error(f"  ⚠️ 前置同步失败: {e}，将尝试基于现有数据扫描。", exc_info=True)
+
     task_manager.update_status_from_thread(0, "正在准备扫描...")
-    time.sleep(0.5) # 减速齿轮
 
     try:
         library_ids_to_scan = settings_db.get_setting('media_cleanup_library_ids') or []

@@ -47,7 +47,7 @@
               :loading="isTaskRunning('扫描媒体库重复项')"
             >
               <template #icon><n-icon :component="ScanIcon" /></template>
-              扫描媒体库
+              扫描重复项
             </n-button>
           </n-space>
         </template>
