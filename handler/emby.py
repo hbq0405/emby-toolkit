@@ -801,66 +801,6 @@ def get_emby_library_items(
     logger.debug(f"  ➜ 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items_from_selected_libraries)} 个 {media_type_in_chinese} 项目。")
     
     return all_items_from_selected_libraries
-# --- 媒体去重专用 ---
-def get_library_items_for_cleanup(
-    base_url: str,
-    api_key: str,
-    user_id: Optional[str],
-    library_ids: List[str],
-    media_type_filter: str,
-    fields: str
-) -> Optional[List[Dict[str, Any]]]:
-    """
-    【媒体清理专用】根据媒体库ID列表，高效获取所有项目。
-    - 循环请求每个媒体库以确保稳定性。
-    - 自动为每个项目注入来源库ID `_SourceLibraryId`。
-    """
-    if not base_url or not api_key:
-        logger.error("get_emby_library_items_new: base_url 或 api_key 未提供。")
-        return None
-
-    if not library_ids:
-        return []
-
-    all_items = []
-    
-    # 循环遍历每个媒体库ID，而不是用逗号拼接，以提高稳定性
-    for lib_id in library_ids:
-        if not lib_id or not lib_id.strip():
-            continue
-        
-        try:
-            # 为本次请求构建参数
-            params = {
-                "api_key": api_key,
-                "Recursive": "true",
-                "ParentId": lib_id,
-                "Fields": fields,
-                "IncludeItemTypes": media_type_filter,
-            }
-            
-            # 默认使用 /Items 端点，如果提供了 user_id 则作为参数传入
-            api_url = f"{base_url.rstrip('/')}/Items"
-            if user_id:
-                params["UserId"] = user_id
-
-            logger.trace(f"正在从媒体库 ID: {lib_id} 获取项目...")
-            
-            response = emby_client.get(api_url, params=params)
-            response.raise_for_status()
-            items_in_lib = response.json().get("Items", [])
-            
-            # 为每个项目注入来源库ID，以便上层逻辑使用
-            for item in items_in_lib:
-                item['_SourceLibraryId'] = lib_id
-            all_items.extend(items_in_lib)
-        
-        except Exception as e:
-            logger.error(f"请求库 ID: {lib_id} 中的项目失败: {e}", exc_info=True)
-            continue # 一个库失败了，继续处理下一个
-
-    logger.debug(f"  ➜ 总共从 {len(library_ids)} 个选定库中获取到 {len(all_items)} 个项目。")
-    return all_items
 # ✨✨✨ 刷新Emby元数据 ✨✨✨
 def refresh_emby_item_metadata(item_emby_id: str,
                                emby_server_url: str,

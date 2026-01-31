@@ -9,7 +9,7 @@ from psycopg2 import sql
 from collections import defaultdict
 import task_manager
 import handler.emby as emby
-from database import connection, cleanup_db, settings_db, maintenance_db
+from database import connection, cleanup_db, settings_db, maintenance_db, queries_db
 from . import helpers
 from .media import task_populate_metadata_cache
 
@@ -282,37 +282,65 @@ def task_scan_for_cleanup_issues(processor):
         library_ids_to_scan = settings_db.get_setting('media_cleanup_library_ids') or []
         keep_one_per_res = settings_db.get_setting('media_cleanup_keep_one_per_res') or False
         
-        if library_ids_to_scan:
-            logger.info(f"  ➜ 将仅扫描指定的 {len(library_ids_to_scan)} 个媒体库。")
-            items_in_scope = emby.get_library_items_for_cleanup(
-                base_url=processor.emby_url,
-                api_key=processor.emby_api_key,
-                user_id=processor.emby_user_id,
-                library_ids=library_ids_to_scan,
-                media_type_filter="Movie,Series,Episode",
-                fields="Id"
-            )
-            item_ids_in_scope = {item['Id'] for item in items_in_scope}
-            
-            if not item_ids_in_scope:
-                task_manager.update_status_from_thread(100, "扫描中止：指定的媒体库为空。")
-                return
-            
-            where_clause = "AND EXISTS (SELECT 1 FROM jsonb_array_elements_text(t.emby_item_ids_json) AS elem WHERE elem = ANY(%(item_ids)s))"
-            params = {'item_ids': list(item_ids_in_scope)}
-        else:
-            logger.info("  ➜ 未指定媒体库，将扫描所有媒体库。")
-            where_clause = ""
-            params = {}
+        # ★★★ 核心优化：使用 queries_db.query_virtual_library_items 进行带权限的范围筛选 ★★★
+        logger.info(f"  ➜ 正在计算扫描范围 (基于用户 {processor.emby_user_id} 的权限)...")
+        
+        # 1. 获取允许的电影 (Movie)
+        allowed_movies, _ = queries_db.query_virtual_library_items(
+            rules=[], 
+            logic='AND',
+            user_id=processor.emby_user_id, 
+            limit=1000000, 
+            offset=0,
+            item_types=['Movie'], 
+            target_library_ids=library_ids_to_scan if library_ids_to_scan else None
+        )
+        
+        # 2. 获取允许的剧集 (Series)
+        allowed_series, _ = queries_db.query_virtual_library_items(
+            rules=[], 
+            logic='AND',
+            user_id=processor.emby_user_id, 
+            limit=1000000, 
+            offset=0,
+            item_types=['Series'], 
+            target_library_ids=library_ids_to_scan if library_ids_to_scan else None
+        )
+        
+        # 提取 TMDb ID
+        allowed_movie_tmdb_ids = [m['tmdb_id'] for m in allowed_movies if m.get('tmdb_id')]
+        allowed_series_tmdb_ids = [s['tmdb_id'] for s in allowed_series if s.get('tmdb_id')]
+        
+        total_scope = len(allowed_movie_tmdb_ids) + len(allowed_series_tmdb_ids)
+        logger.info(f"  ➜ 扫描范围确定：{len(allowed_movie_tmdb_ids)} 部电影, {len(allowed_series_tmdb_ids)} 部剧集。")
 
+        if total_scope == 0:
+            task_manager.update_status_from_thread(100, "扫描中止：当前用户视角下没有可见的媒体项。")
+            return
+
+        # 3. 构建 SQL 查询
+        #    逻辑：
+        #    - 如果是 Movie，检查其 tmdb_id 是否在 allowed_movie_tmdb_ids 中
+        #    - 如果是 Episode，检查其 parent_series_tmdb_id 是否在 allowed_series_tmdb_ids 中
+        #    这样就完美继承了 Series 的目录权限
+        
         sql_query = sql.SQL("""
             SELECT t.tmdb_id, t.item_type, t.asset_details_json
             FROM media_metadata AS t
             WHERE 
                 t.in_library = TRUE 
                 AND jsonb_array_length(t.asset_details_json) > 1
-                {where_clause}
-        """).format(where_clause=sql.SQL(where_clause))
+                AND (
+                    (t.item_type = 'Movie' AND t.tmdb_id = ANY(%(movie_ids)s))
+                    OR
+                    (t.item_type = 'Episode' AND t.parent_series_tmdb_id = ANY(%(series_ids)s))
+                )
+        """)
+        
+        params = {
+            'movie_ids': allowed_movie_tmdb_ids,
+            'series_ids': allowed_series_tmdb_ids
+        }
 
         with connection.get_db_connection() as conn:
             with conn.cursor() as cursor:
