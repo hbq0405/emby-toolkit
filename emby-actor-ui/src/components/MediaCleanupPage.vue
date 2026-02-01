@@ -264,13 +264,14 @@ const parseBestIds = (val) => {
   // 情况 2: 是字符串，尝试解析 JSON
   else if (typeof val === 'string') {
     try {
+      const trimmed = val.trim();
       // 如果是 '["123"]' 这种格式
-      if (val.trim().startsWith('[')) {
-        const parsed = JSON.parse(val);
+      if (trimmed.startsWith('[')) {
+        const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) ids = parsed;
       } else {
         // 如果是纯字符串 ID "123"
-        ids = [val];
+        ids = [trimmed];
       }
     } catch (e) {
       // 解析失败，当做普通 ID
@@ -287,8 +288,8 @@ const parseBestIds = (val) => {
 };
 
 // 定义版本详情表格的列结构
-const createVersionColumns = (bestVersionIdRaw) => {
-  // 1. 先解析出所有的最佳ID列表
+const createVersionColumns = (bestVersionJson) => {
+  // 1. 解析出最佳ID列表 (全是字符串)
   const bestIds = parseBestIds(bestVersionJson);
 
   return [
