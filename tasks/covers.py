@@ -30,6 +30,7 @@ def task_generate_all_covers(processor):
             return
 
         if not cover_config.get("enabled"):
+            logger.info("  ⚠️ 封面生成器未启用，跳过封面生成任务。")
             task_manager.update_status_from_thread(100, "任务跳过：封面生成器未启用。")
             return
 
