@@ -134,9 +134,7 @@ class WatchlistProcessor:
             if not tmdb_id: 
                 today_str = datetime.now().date().isoformat()
                 where_clause = f"""
-                    WHERE watching_status = '{STATUS_WATCHING}' 
-                       OR watching_status = '{STATUS_PENDING}' 
-                       OR (watching_status = '{STATUS_PAUSED}' AND paused_until <= '{today_str}')
+                    WHERE watching_status IN ('{STATUS_WATCHING}', '{STATUS_PENDING}', '{STATUS_PAUSED}')
                 """
 
             active_series = self._get_series_to_process(where_clause, tmdb_id=tmdb_id)
