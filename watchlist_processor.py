@@ -1206,7 +1206,7 @@ class WatchlistProcessor:
                 
                 # --- 只有本地有该季文件，才根据时间判断是追剧还是暂停 ---
                 else:
-                    # 子规则 A: 3天内就要播出 (或已播出但未下载) -> 设为“追剧中”
+                    # 子规则 A: 当天播出或已播出 -> 设为“追剧中”
                     if days_until_air <= 0:
                         final_status = STATUS_WATCHING
                         paused_until_date = None
