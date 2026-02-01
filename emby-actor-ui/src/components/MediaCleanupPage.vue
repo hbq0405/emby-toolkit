@@ -252,23 +252,44 @@ const pagination = computed(() => {
   };
 });
 
-const parseBestIds = (rawId) => {
-  if (!rawId) return [];
-  try {
-    // 尝试解析 JSON (例如 '["123", "456"]')
-    const parsed = JSON.parse(rawId);
-    if (Array.isArray(parsed)) return parsed;
-    return [rawId]; // 如果解析出来不是数组，就当单ID处理
-  } catch (e) {
-    // 解析失败，说明是普通字符串 ID (例如 "123")
-    return [rawId];
+const parseBestIds = (val) => {
+  if (!val) return [];
+  
+  let ids = [];
+  
+  // 情况 1: 后端传过来已经是数组了 (JSONB 的正常情况)
+  if (Array.isArray(val)) {
+    ids = val;
+  } 
+  // 情况 2: 是字符串，尝试解析 JSON
+  else if (typeof val === 'string') {
+    try {
+      // 如果是 '["123"]' 这种格式
+      if (val.trim().startsWith('[')) {
+        const parsed = JSON.parse(val);
+        if (Array.isArray(parsed)) ids = parsed;
+      } else {
+        // 如果是纯字符串 ID "123"
+        ids = [val];
+      }
+    } catch (e) {
+      // 解析失败，当做普通 ID
+      ids = [val];
+    }
+  } 
+  // 情况 3: 是数字或其他类型
+  else {
+    ids = [val];
   }
+
+  // ★★★ 关键：统一转为字符串，防止 123 (Number) != "123" (String) 的问题
+  return ids.map(id => String(id));
 };
 
 // 定义版本详情表格的列结构
 const createVersionColumns = (bestVersionIdRaw) => {
   // 1. 先解析出所有的最佳ID列表
-  const bestIds = parseBestIds(bestVersionIdRaw);
+  const bestIds = parseBestIds(bestVersionJson);
 
   return [
     {
@@ -278,7 +299,8 @@ const createVersionColumns = (bestVersionIdRaw) => {
       align: 'center',
       render(row) {
         // 2. 判断当前行ID是否在最佳列表中
-        const isBest = bestIds.includes(row.id);
+        const currentIdStr = String(row.id);
+        const isBest = bestIds.includes(currentIdStr);
         return h(NIcon, { 
           component: isBest ? KeepIcon : DeleteIcon, 
           color: isBest ? 'var(--n-success-color)' : 'var(--n-error-color)', 
@@ -405,21 +427,27 @@ const createVersionColumns = (bestVersionIdRaw) => {
 // ★★★ 核心修改：renderVersions 现在返回一个 NDataTable ★★★
 const renderVersions = (row) => {
   const versions = row.versions_info_json || [];
+  // 传入 best_version_json
   const bestIds = parseBestIds(row.best_version_json);
 
   // 排序：保留的版本排在前面
   const sortedVersions = [...versions].sort((a, b) => {
-    const aIsBest = bestIds.includes(a.id);
-    const bIsBest = bestIds.includes(b.id);
+    // ★★★ 修复：转字符串比对
+    const aIsBest = bestIds.includes(String(a.id));
+    const bIsBest = bestIds.includes(String(b.id));
+    
     if (aIsBest && !bIsBest) return -1;
     if (!aIsBest && bIsBest) return 1;
     return 0;
   });
 
   return h(NDataTable, {
-    columns: createVersionColumns(row.best_version_json), // 传入原始值即可，里面会解析
+    columns: createVersionColumns(row.best_version_json), 
     data: sortedVersions,
-    // ...
+    size: 'small',
+    bordered: false,
+    bottomBordered: false,
+    rowKey: r => r.id
   });
 };
 
