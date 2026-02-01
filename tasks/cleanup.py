@@ -408,9 +408,8 @@ def task_scan_for_cleanup_issues(processor):
                 if len(best_ids_set) == len(versions_from_db):
                     continue 
                 
-                # 4. 将多个 ID 序列化为 JSON 字符串存储
-                # 数据库字段 best_version_id 是 TEXT 类型，存 JSON 字符串完全没问题
-                best_id_or_ids = json.dumps(list(best_ids_set))
+                # 4. 直接传递 Python 列表
+                best_id_or_ids = list(best_ids_set)
                 
             else:
                 # --- 模式 B: 传统模式 (只留一个) ---
@@ -440,7 +439,7 @@ def task_scan_for_cleanup_issues(processor):
                 "tmdb_id": item['tmdb_id'], 
                 "item_type": item['item_type'],
                 "versions_info_json": versions_for_frontend,
-                "best_version_id": best_id_or_ids,
+                "best_version_json": best_id_or_ids,
             })
 
         task_manager.update_status_from_thread(90, f"分析完成，正在写入数据库...")
@@ -489,13 +488,29 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                     title_row = cursor.fetchone()
                     item_name = title_row['title'] if title_row else '未知媒体'
 
-            best_version_id = task['best_version_id']
+            raw_best_val = task['best_version_json']
+            safe_ids_set = set()
+
+            if raw_best_val:
+                if isinstance(raw_best_val, list):
+                    # 如果数据库存的是数组，psycopg2 会自动转为 list
+                    safe_ids_set = set(str(x) for x in raw_best_val)
+                else:
+                    # 否则就是单个 ID (str 或 int)
+                    safe_ids_set.add(str(raw_best_val))
+
+            # 安全网：如果白名单为空，绝对不能执行删除！
+            if not safe_ids_set:
+                logger.error(f"  🚫 严重错误：无法确定 '{item_name}' 的保留版本 (best_version_json: {raw_best_val})，跳过此任务以防误删。")
+                continue
+
             versions = task['versions_info_json']
             task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) 正在清理: {item_name}")
 
             for version in versions:
-                version_id_to_check = version.get('id')
-                if version_id_to_check != best_version_id:
+                version_id_to_check = str(version.get('id')) # 确保转为字符串比较
+                
+                if version_id_to_check not in safe_ids_set:
                     logger.warning(f"  ➜ 准备删除劣质版本 (ID: {version_id_to_check}): {version.get('path')}")
                     
                     success = emby.delete_item_sy(

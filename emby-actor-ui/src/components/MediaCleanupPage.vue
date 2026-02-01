@@ -405,7 +405,7 @@ const createVersionColumns = (bestVersionIdRaw) => {
 // ★★★ 核心修改：renderVersions 现在返回一个 NDataTable ★★★
 const renderVersions = (row) => {
   const versions = row.versions_info_json || [];
-  const bestIds = parseBestIds(row.best_version_id);
+  const bestIds = parseBestIds(row.best_version_json);
 
   // 排序：保留的版本排在前面
   const sortedVersions = [...versions].sort((a, b) => {
@@ -417,7 +417,7 @@ const renderVersions = (row) => {
   });
 
   return h(NDataTable, {
-    columns: createVersionColumns(row.best_version_id), // 传入原始值即可，里面会解析
+    columns: createVersionColumns(row.best_version_json), // 传入原始值即可，里面会解析
     data: sortedVersions,
     // ...
   });

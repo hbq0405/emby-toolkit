@@ -50,10 +50,14 @@ def batch_upsert_cleanup_index(tasks: List[Dict[str, Any]]):
 
                 values_to_insert = []
                 for task in tasks:
-                    row = [task.get(col) for col in columns]
-                    if 'versions_info_json' in columns:
-                        idx = columns.index('versions_info_json')
-                        row[idx] = Json(row[idx])
+                    row = []
+                    for col in columns:
+                        val = task.get(col)
+                        if col in ['versions_info_json', 'best_version_json']:
+                            row.append(Json(val) if val is not None else None)
+                        else:
+                            row.append(val)
+                    
                     values_to_insert.append(tuple(row))
             
                 execute_values(cursor, sql_query, values_to_insert, page_size=500)

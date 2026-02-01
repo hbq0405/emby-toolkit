@@ -26,7 +26,7 @@ def get_cleanup_tasks():
                 t.tmdb_id,
                 t.item_type,
                 t.versions_info_json,
-                t.best_version_id,
+                t.best_version_json,
                 m.title AS item_name,
                 m.season_number,
                 m.episode_number,

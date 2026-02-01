@@ -334,7 +334,7 @@ def init_db():
                         
                         -- 决策结果
                         versions_info_json JSONB,
-                        best_version_id TEXT,
+                        best_version_json JSONB,
                         
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -429,6 +429,9 @@ def init_db():
                     schema_upgrades = {
                         'emby_users': {
                             "policy_json": "JSONB"  
+                        },
+                        'cleanup_index': {
+                            "best_version_json": "JSONB"
                         },
                         'media_metadata': {
                             "original_language": "TEXT",
@@ -626,6 +629,9 @@ def init_db():
                             'is_airing',
                             'total_seasons',
                             'rating_locked'
+                        ],
+                        'cleanup_index': [
+                            'best_version_id'
                         ],
                         'collections_info': [
                             'status', 

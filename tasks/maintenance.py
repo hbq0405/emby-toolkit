@@ -22,6 +22,8 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
     """
     JSONB_COLUMNS = {
         'app_settings': {'value_json'},
+        'cleanup_index': {'versions_info_json', 'best_version_json', 'additional_info_json'},
+        'translation_cache': {'translated_text_json'},
         'collections_info': {'all_tmdb_ids_json'},
         'custom_collections': {'definition_json', 'allowed_user_ids', 'generated_media_info_json'},
         'emby_users': {'policy_json'},
@@ -39,7 +41,6 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             'resubscribe_subtitle_missing_languages', 'resubscribe_quality_include',
             'resubscribe_effect_include', 'resubscribe_codec_include'
         },
-        'media_cleanup_tasks': {'versions_info_json'},
         'user_templates': {'emby_policy_json', 'emby_configuration_json'}
     }
 
