@@ -279,7 +279,7 @@
                   
                   <!-- ★★★ 新增：NULLBR 搜索按钮 (仅未入库显示) ★★★ -->
                   <div 
-                    v-if="!media.in_library"
+                    v-if="!media.in_library && isPrivilegedUser"
                     class="action-btn"
                     @click.stop="handleNullbrSearch(media)"
                     title="NULLBR 搜资源"
