@@ -262,6 +262,30 @@ class MediaProcessor:
             is_series = bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
             item_type = "Series" if is_series else "Movie"
 
+            # ---------------------------------------------------------
+            # ★★★ 核心修复：提前查询刷新目标 ID (策略A) ★★★
+            # 无论后续是否跳过处理，只要数据库里有 ID，我们都优先用 ID 刷新
+            # ---------------------------------------------------------
+            target_refresh_id = None
+            if tmdb_id:
+                try:
+                    with get_central_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            # 注意：如果是分集文件，我们查询的是它所属的 'Series' ID
+                            search_type = 'Series' if item_type == 'Series' else 'Movie'
+                            cursor.execute(
+                                "SELECT emby_item_ids_json, title FROM media_metadata WHERE tmdb_id = %s AND item_type = %s AND in_library = TRUE", 
+                                (str(tmdb_id), search_type)
+                            )
+                            row = cursor.fetchone()
+                            if row and row.get('emby_item_ids_json'):
+                                ids = row['emby_item_ids_json']
+                                if isinstance(ids, str): ids = json.loads(ids)
+                                if ids and len(ids) > 0:
+                                    target_refresh_id = ids[0]
+                                    # logger.debug(f"  ➜ [实时监控] 预查询命中 ID: {target_refresh_id} ({row.get('title')})")
+                except: pass
+
             # =========================================================
             # 极速查重 (利用文件名比对)
             # =========================================================
@@ -272,9 +296,12 @@ class MediaProcessor:
                 
                 if current_filename in known_files:
                     logger.info(f"  ➜ [实时监控] 文件已完美入库 ({current_filename})，直接跳过。")
-                    return folder_path # 即使跳过处理，也返回路径以便后续刷新检查
+                    # ★★★ 关键修改：如果有 ID 返回 ID，否则返回路径 ★★★
+                    return target_refresh_id if target_refresh_id else folder_path
             except Exception as e:
                 logger.warning(f"  ➜ [实时监控] 查重失败，将继续常规流程: {e}")
+
+            if not tmdb_id: return None
 
             # =========================================================
             # ★★★ 核心升级：数据库与缓存双向互补检查 ★★★
@@ -675,67 +702,35 @@ class MediaProcessor:
                 logger.info(f"  ➜ [实时监控] 已跳过在线刮削和元数据写入 (数据已通过缓存恢复)。")
 
             # =========================================================
-            # 步骤 6: 计算刷新目标 (本地数据库优先策略)
+            # 步骤 6: 计算刷新目标
             # =========================================================
             
-            target_refresh_obj = None # 可能是 ID (str)，也可能是 Path (str)
+            # 优先使用之前查到的 ID
+            if target_refresh_id:
+                final_target = target_refresh_id
+                if not skip_refresh:
+                     logger.info(f"  ➜ [实时监控] 执行定点刷新 ID: {final_target}")
+                     emby.refresh_item_by_id(final_target, self.emby_url, self.emby_api_key)
+                return final_target
+
+            # 如果没有 ID，回退到路径刷新 (策略B)
+            path_to_refresh = folder_path
             
-            # ★★★ 策略 A: 查本地数据库 (针对追更/洗版) ★★★
-            # 逻辑：如果数据库里有这个 TMDb ID 且标记为在库，说明是老剧新集或电影洗版
-            # 直接返回 Emby ID，进行定点刷新
-            if tmdb_id:
-                try:
-                    with get_central_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            # 注意：如果是分集文件，我们查询的是它所属的 'Series' ID，而不是 'Episode'
-                            # 因为刷新 Series 才能扫出新分集
-                            target_type = 'Series' if item_type == 'Series' else 'Movie'
-                            
-                            cursor.execute(
-                                "SELECT emby_item_ids_json, title FROM media_metadata WHERE tmdb_id = %s AND item_type = %s AND in_library = TRUE", 
-                                (str(tmdb_id), target_type)
-                            )
-                            row = cursor.fetchone()
-                            if row and row.get('emby_item_ids_json'):
-                                ids = row['emby_item_ids_json']
-                                if isinstance(ids, str):
-                                    ids = json.loads(ids)
-                                
-                                if ids and len(ids) > 0:
-                                    target_refresh_obj = ids[0] # 获取主 ID
-                                    logger.info(f"  ➜ [实时监控] ⚡️ 命中本地数据库: '{row.get('title')}' (ID: {target_refresh_obj}) -> 标记为定点刷新。")
-                except Exception as e:
-                    logger.warning(f"  ➜ [实时监控] 查询本地数据库失败: {e}")
+            # 如果是剧集，且父目录看起来像 "Season X"，则向上取一级，刷新剧集根目录
+            if item_type == "Series":
+                folder_name = os.path.basename(folder_path)
+                if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
+                    path_to_refresh = os.path.dirname(folder_path)
+                    logger.debug(f"  ➜ [实时监控] 识别为剧集季目录，将刷新范围扩大至剧集根目录: {os.path.basename(path_to_refresh)}")
 
-            # ★★★ 策略 B: 路径回退 (针对首次入库) ★★★
-            # 如果数据库没查到，说明是全新的片子，Emby 肯定也没有，反查 API 也是浪费时间。
-            # 直接返回路径，让批量处理器去刷新父目录锚点。
-            if not target_refresh_obj:
-                # 默认刷新当前文件所在的父目录
-                target_refresh_obj = folder_path
-                
-                # 针对剧集季目录的优化：S01 -> Series Root
-                if item_type == "Series":
-                    folder_name = os.path.basename(folder_path)
-                    if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
-                        target_refresh_obj = os.path.dirname(folder_path)
-                        logger.debug(f"  ➜ [实时监控] 识别为季目录，刷新目标上移至: {os.path.basename(target_refresh_obj)}")
-                
-                logger.info(f"  ➜ [实时监控] 未入库新项目 (ID:{tmdb_id}) -> 标记为路径刷新: {os.path.basename(target_refresh_obj)}")
-
-            # --- 执行刷新 (仅当 skip_refresh=False 时，通常是单文件调试用) ---
             if not skip_refresh:
-                # 简单的判断：是不包含路径分隔符的纯数字/字符串 -> ID
-                if os.sep not in target_refresh_obj and '/' not in target_refresh_obj:
-                    logger.info(f"  ➜ [实时监控] 执行定点刷新 ID: {target_refresh_obj}")
-                    emby.refresh_item_by_id(target_refresh_obj, self.emby_url, self.emby_api_key)
-                else:
-                    logger.info(f"  ➜ [实时监控] 执行路径刷新: {target_refresh_obj}")
-                    emby.refresh_library_by_path(target_refresh_obj, self.emby_url, self.emby_api_key)
-                logger.info(f"  ✅ [实时监控] 处理完成。")
+                logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {path_to_refresh}")
+                emby.refresh_library_by_path(path_to_refresh, self.emby_url, self.emby_api_key)
+                logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
+            else:
+                logger.info(f"  ➜ [实时监控] 缓存已生成，等待统一刷新...")
             
-            # 返回计算出的目标 (ID 或 Path) 给批量处理器
-            return target_refresh_obj
+            return path_to_refresh
 
         except Exception as e:
             logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
