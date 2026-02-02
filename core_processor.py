@@ -675,31 +675,67 @@ class MediaProcessor:
                 logger.info(f"  ➜ [实时监控] 已跳过在线刮削和元数据写入 (数据已通过缓存恢复)。")
 
             # =========================================================
-            # 步骤 6: 通知 Emby 刷新 (可选)
+            # 步骤 6: 计算刷新目标 (本地数据库优先策略)
             # =========================================================
             
-            # ★★★ 智能计算需要刷新的根路径 ★★★
-            # 默认刷新当前文件所在的父目录 (适用于电影 / 平铺的剧集)
-            path_to_refresh = folder_path
+            target_refresh_obj = None # 可能是 ID (str)，也可能是 Path (str)
             
-            # 如果是剧集，且父目录看起来像 "Season X"，则向上取一级，刷新剧集根目录
-            # 这样可以合并同一部剧不同季的刷新请求
-            if item_type == "Series":
-                folder_name = os.path.basename(folder_path)
-                # 匹配 Season 1, S01, Specials 等常见季目录名
-                if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
-                    path_to_refresh = os.path.dirname(folder_path)
-                    logger.debug(f"  ➜ [实时监控] 识别为剧集季目录，将刷新范围扩大至剧集根目录: {os.path.basename(path_to_refresh)}")
+            # ★★★ 策略 A: 查本地数据库 (针对追更/洗版) ★★★
+            # 逻辑：如果数据库里有这个 TMDb ID 且标记为在库，说明是老剧新集或电影洗版
+            # 直接返回 Emby ID，进行定点刷新
+            if tmdb_id:
+                try:
+                    with get_central_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            # 注意：如果是分集文件，我们查询的是它所属的 'Series' ID，而不是 'Episode'
+                            # 因为刷新 Series 才能扫出新分集
+                            target_type = 'Series' if item_type == 'Series' else 'Movie'
+                            
+                            cursor.execute(
+                                "SELECT emby_item_ids_json, title FROM media_metadata WHERE tmdb_id = %s AND item_type = %s AND in_library = TRUE", 
+                                (str(tmdb_id), target_type)
+                            )
+                            row = cursor.fetchone()
+                            if row and row.get('emby_item_ids_json'):
+                                ids = row['emby_item_ids_json']
+                                if isinstance(ids, str):
+                                    ids = json.loads(ids)
+                                
+                                if ids and len(ids) > 0:
+                                    target_refresh_obj = ids[0] # 获取主 ID
+                                    logger.info(f"  ➜ [实时监控] ⚡️ 命中本地数据库: '{row.get('title')}' (ID: {target_refresh_obj}) -> 标记为定点刷新。")
+                except Exception as e:
+                    logger.warning(f"  ➜ [实时监控] 查询本地数据库失败: {e}")
 
+            # ★★★ 策略 B: 路径回退 (针对首次入库) ★★★
+            # 如果数据库没查到，说明是全新的片子，Emby 肯定也没有，反查 API 也是浪费时间。
+            # 直接返回路径，让批量处理器去刷新父目录锚点。
+            if not target_refresh_obj:
+                # 默认刷新当前文件所在的父目录
+                target_refresh_obj = folder_path
+                
+                # 针对剧集季目录的优化：S01 -> Series Root
+                if item_type == "Series":
+                    folder_name = os.path.basename(folder_path)
+                    if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
+                        target_refresh_obj = os.path.dirname(folder_path)
+                        logger.debug(f"  ➜ [实时监控] 识别为季目录，刷新目标上移至: {os.path.basename(target_refresh_obj)}")
+                
+                logger.info(f"  ➜ [实时监控] 未入库新项目 (ID:{tmdb_id}) -> 标记为路径刷新: {os.path.basename(target_refresh_obj)}")
+
+            # --- 执行刷新 (仅当 skip_refresh=False 时，通常是单文件调试用) ---
             if not skip_refresh:
-                logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {path_to_refresh}")
-                emby.refresh_library_by_path(path_to_refresh, self.emby_url, self.emby_api_key)
-                logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
-            else:
-                logger.info(f"  ➜ [实时监控] 缓存已生成，等待统一刷新...")
+                # 简单的判断：是不包含路径分隔符的纯数字/字符串 -> ID
+                if os.sep not in target_refresh_obj and '/' not in target_refresh_obj:
+                    logger.info(f"  ➜ [实时监控] 执行定点刷新 ID: {target_refresh_obj}")
+                    emby.refresh_item_by_id(target_refresh_obj, self.emby_url, self.emby_api_key)
+                else:
+                    logger.info(f"  ➜ [实时监控] 执行路径刷新: {target_refresh_obj}")
+                    emby.refresh_library_by_path(target_refresh_obj, self.emby_url, self.emby_api_key)
+                logger.info(f"  ✅ [实时监控] 处理完成。")
             
-            # 返回计算出的最优刷新路径
-            return path_to_refresh
+            # 返回计算出的目标 (ID 或 Path) 给批量处理器
+            return target_refresh_obj
 
         except Exception as e:
             logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
@@ -709,36 +745,54 @@ class MediaProcessor:
     def process_file_actively_batch(self, file_paths: List[str]):
         """
         实时监控（批量版）：
-        针对短时间内涌入的多个文件，先逐个生成覆盖缓存，最后统一刷新 Emby。
-        ★ 优化：将所有路径解析为 Emby 锚点 ID 后再去重刷新，避免同一库重复刷新。
+        1. 逐个生成缓存，并收集刷新目标（ID 或 Path）。
+        2. 优先执行 ID 定点刷新（效率最高）。
+        3. 剩余的 Path 执行锚点刷新（兼容新入库）。
         """
         if not file_paths:
             return
 
         logger.info(f"  📥 [实时监控] 收到 {len(file_paths)} 个新任务，开始批量预处理...")
         
-        folders_to_check = set()
+        paths_to_check = set()
+        ids_to_refresh = set()
         
-        # 1. 循环处理每个文件 (只生成缓存，不刷新)
+        # 1. 循环处理每个文件
         for i, file_path in enumerate(file_paths):
             try:
                 logger.info(f"  ➜ [实时监控] ({i+1}/{len(file_paths)}) 正在处理: {os.path.basename(file_path)}")
-                # process_file_actively 返回的是建议刷新的父目录路径
-                folder = self.process_file_actively(file_path, skip_refresh=True)
-                if folder:
-                    folders_to_check.add(folder)
+                # 获取刷新目标 (ID 或 Path)
+                result = self.process_file_actively(file_path, skip_refresh=True)
+                
+                if result:
+                    # 判断是 ID 还是 Path
+                    # 只要包含路径分隔符，就认为是 Path
+                    if os.sep in result or '/' in result or '\\' in result:
+                        paths_to_check.add(result)
+                    else:
+                        ids_to_refresh.add(result)
+                        
             except Exception as e:
                 logger.error(f"  🚫 [实时监控] 处理文件 '{file_path}' 失败: {e}")
 
-        # 2. ★★★ ID 级别去重与刷新 ★★★
-        if folders_to_check:
-            logger.info(f"  🔍 [实时监控] 预处理完成。正在解析 {len(folders_to_check)} 个路径对应的 Emby 锚点...")
+        # 2. ★★★ 优先刷新明确的 ID (追更/洗版) ★★★
+        if ids_to_refresh:
+             logger.info(f"  🚀 [实时监控] 正在定点刷新 {len(ids_to_refresh)} 个已存在的媒体项...")
+             for item_id in ids_to_refresh:
+                 # 这里不需要再查 Emby 了，数据库里拿到的 ID 肯定是准的
+                 emby.refresh_item_by_id(item_id, self.emby_url, self.emby_api_key)
+                 # 极短的间隔防止并发过高
+                 time.sleep(0.1) 
+
+        # 3. ★★★ 处理新入库的路径 ★★★
+        if paths_to_check:
+            logger.info(f"  🔍 [实时监控] 正在解析 {len(paths_to_check)} 个新入库路径对应的 Emby 锚点...")
             
-            unique_anchor_map = {} # ID -> Name
+            unique_anchor_map = {} # AnchorID -> AnchorName
             fallback_paths = []
 
-            # A. 解析路径到 ID
-            for folder_path in folders_to_check:
+            for folder_path in paths_to_check:
+                # 向上寻找最近的 Emby 库/文件夹 ID
                 anchor_id, anchor_name = emby.find_nearest_library_anchor(folder_path, self.emby_url, self.emby_api_key)
                 if anchor_id:
                     if anchor_id not in unique_anchor_map:
@@ -747,23 +801,21 @@ class MediaProcessor:
                 else:
                     fallback_paths.append(folder_path)
 
-            # B. 刷新唯一的 ID
+            # 刷新锚点 (通常是媒体库根目录或剧集目录)
             if unique_anchor_map:
                 logger.info(f"  🚀 [实时监控] 聚合完成，正在刷新 {len(unique_anchor_map)} 个 Emby 锚点...")
                 for anchor_id, anchor_name in unique_anchor_map.items():
                     logger.info(f"  ➜ 正在刷新: '{anchor_name}' (ID: {anchor_id})")
                     emby.refresh_item_by_id(anchor_id, self.emby_url, self.emby_api_key)
-                    time.sleep(0.2) # 稍微间隔
+                    time.sleep(0.2)
 
-            # C. 处理无法解析 ID 的路径 (回退到旧方法)
+            # 最后的兜底 (几乎不会走到这里，除非 Emby 根目录都还没建)
             if fallback_paths:
                 logger.warning(f"  ⚠️ [实时监控] 有 {len(fallback_paths)} 个路径无法解析锚点，使用回退刷新...")
                 for path in fallback_paths:
                     emby.refresh_library_by_path(path, self.emby_url, self.emby_api_key)
 
-            logger.info(f"  ✅ [实时监控] 批量预处理完成，等待Emby入库更新媒体资产数据...")
-        else:
-            logger.warning(f"  ⚠️ [实时监控] 未收集到有效的刷新目录，任务结束。")
+        logger.info(f"  ✅ [实时监控] 批量任务全部完成。")
 
     # --- 内部私有方法：单文件数据库清理逻辑 ---
     def _cleanup_local_db_for_deleted_file(self, filename: str) -> bool:
