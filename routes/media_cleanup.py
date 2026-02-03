@@ -219,11 +219,17 @@ def get_cleanup_settings():
         if keep_one_per_res is None:
             keep_one_per_res = False # 默认关闭，保持原有逻辑
 
-        # --- Part 4: 将规则和媒体库ID合并到一个对象中返回给前端 ---
+        # --- ★★★ Part 4: 获取删除延迟  ★★★ ---
+        delete_delay = settings_db.get_setting('media_cleanup_delete_delay')
+        if delete_delay is None:
+            delete_delay = 0 # 默认无延迟
+
+        # --- Part 5: 返回合并对象 ---
         return jsonify({
             "rules": final_rules,
             "library_ids": saved_library_ids,
-            "keep_one_per_res": keep_one_per_res
+            "keep_one_per_res": keep_one_per_res,
+            "delete_delay": delete_delay 
         })
         
     except Exception as e:
@@ -240,18 +246,21 @@ def save_cleanup_settings():
     new_rules = data.get('rules')
     library_ids = data.get('library_ids')
     keep_one_per_res = data.get('keep_one_per_res')
+    delete_delay = data.get('delete_delay')
 
     if not isinstance(new_rules, list):
         return jsonify({"error": "无效的规则格式，'rules' 必须是一个列表。"}), 400
-    # 对 library_ids 也进行校验
     if not isinstance(library_ids, list):
         return jsonify({"error": "无效的媒体库格式，'library_ids' 必须是一个列表。"}), 400
+    if delete_delay is not None and (not isinstance(delete_delay, int) or delete_delay < 0):
+        return jsonify({"error": "删除延迟必须是非负整数。"}), 400
     
     try:
         # 分别保存规则和媒体库ID到数据库
         settings_db.save_setting('media_cleanup_rules', new_rules)
         settings_db.save_setting('media_cleanup_library_ids', library_ids)
         settings_db.save_setting('media_cleanup_keep_one_per_res', bool(keep_one_per_res))
+        settings_db.save_setting('media_cleanup_delete_delay', int(delete_delay or 0))
         
         return jsonify({"message": "清理设置已成功保存！"}), 200
     except Exception as e:

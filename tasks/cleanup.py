@@ -2,7 +2,7 @@
 # 媒体去重与版本管理专属任务模块
 
 import logging
-import json
+import time
 from functools import cmp_to_key
 from typing import List, Dict, Any, Optional
 from psycopg2 import sql
@@ -10,7 +10,6 @@ from collections import defaultdict
 import task_manager
 import handler.emby as emby
 from database import connection, cleanup_db, settings_db, maintenance_db, queries_db
-from . import helpers
 from .media import task_populate_metadata_cache
 
 logger = logging.getLogger(__name__)
@@ -469,6 +468,11 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
+        # ★★★ 1. 读取删除延迟配置 ★★★
+        delete_delay = settings_db.get_setting('media_cleanup_delete_delay') or 0
+        if delete_delay > 0:
+            logger.info(f"  ➜ 已启用删除延迟策略，每删除一个文件将等待 {delete_delay} 秒。")
+
         tasks_to_execute = cleanup_db.get_cleanup_index_by_ids(task_ids)
         total = len(tasks_to_execute)
         if total == 0:
@@ -493,22 +497,19 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
 
             if raw_best_val:
                 if isinstance(raw_best_val, list):
-                    # 如果数据库存的是数组，psycopg2 会自动转为 list
                     safe_ids_set = set(str(x) for x in raw_best_val)
                 else:
-                    # 否则就是单个 ID (str 或 int)
                     safe_ids_set.add(str(raw_best_val))
 
-            # 安全网：如果白名单为空，绝对不能执行删除！
             if not safe_ids_set:
-                logger.error(f"  🚫 严重错误：无法确定 '{item_name}' 的保留版本 (best_version_json: {raw_best_val})，跳过此任务以防误删。")
+                logger.error(f"  🚫 严重错误：无法确定 '{item_name}' 的保留版本... 跳过。")
                 continue
 
             versions = task['versions_info_json']
             task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) 正在清理: {item_name}")
 
             for version in versions:
-                version_id_to_check = str(version.get('id')) # 确保转为字符串比较
+                version_id_to_check = str(version.get('id'))
                 
                 if version_id_to_check not in safe_ids_set:
                     logger.warning(f"  ➜ 准备删除劣质版本 (ID: {version_id_to_check}): {version.get('path')}")
@@ -522,6 +523,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                     if success:
                         deleted_count += 1
                         logger.info(f"  ➜ 成功删除 ID: {version_id_to_check}")
+                        
                         try:
                             maintenance_db.cleanup_deleted_media_item(
                                 item_id=version_id_to_check,
@@ -530,6 +532,12 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                             )
                         except Exception as cleanup_e:
                             logger.error(f"  ➜ 善后清理失败: {cleanup_e}", exc_info=True)
+
+                        # ★★★ 2. 执行延迟 (仅在删除成功后) ★★★
+                        if delete_delay > 0:
+                            logger.debug(f"    ⏳ [防风控] 等待 {delete_delay} 秒...")
+                            time.sleep(delete_delay)
+
                     else:
                         logger.error(f"  ➜ 删除 ID: {version_id_to_check} 失败！")
             

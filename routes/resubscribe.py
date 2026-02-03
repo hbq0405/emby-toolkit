@@ -2,11 +2,8 @@
 
 from flask import Blueprint, request, jsonify
 import logging
-from typing import List, Tuple, Optional
-import time
-import tasks
+from typing import Tuple, Optional
 import task_manager
-import handler.moviepilot as moviepilot
 import extensions
 import handler.emby as emby
 from extensions import admin_required, task_lock_required
