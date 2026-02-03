@@ -162,11 +162,8 @@ def task_process_actor_subscriptions(processor):
 # --- 翻译演员任务 ---
 def task_actor_translation(processor):
     """
-    【V4.0 - 智能原料版】
-    - 扫描时，同时获取演员的TMDb ID。
-    - 翻译前，利用TMDb ID从本地数据库缓存的 actor_metadata 表中反查最权威的 original_name。
-    - 优先使用 original_name 进行翻译，大幅提升对非英语演员名的翻译准确率。
-    - 整个过程无新增API调用，性能卓越。
+    【V4.1 - 详细日志版】
+    - 增加详细日志：明确打印翻译跳过原因（结果为空/结果相同）以及 Emby API 更新失败的原因。
     """
     task_name = "中文化演员名 (智能版)"
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
@@ -183,10 +180,7 @@ def task_actor_translation(processor):
         # ======================================================================
         task_manager.update_status_from_thread(0, "阶段 1/3: 正在扫描 Emby，收集所有待翻译演员...")
         
-        # ★★★ 核心修改 1: 准备新的数据结构 ★★★
-        # 我们需要存储 Emby Name -> [Emby Person 列表] 的映射
         name_to_persons_map = {}
-        # 同时，我们需要一个列表来存储需要获取 original_name 的演员信息
         actors_to_enrich = []
 
         person_generator = emby.get_all_persons_from_emby(
@@ -208,7 +202,6 @@ def task_actor_translation(processor):
                 name = person.get("Name")
                 if name and not utils.contains_chinese(name):
                     tmdb_id = person.get("ProviderIds", {}).get("Tmdb")
-                    # 只有在有 TMDb ID 时，我们才有机会获取 original_name
                     if tmdb_id:
                         actors_to_enrich.append({"name": name, "tmdb_id": tmdb_id})
                     
@@ -227,11 +220,10 @@ def task_actor_translation(processor):
         logger.info(f"  ➜ 扫描完成！共发现 {len(name_to_persons_map)} 个外文名需要翻译。")
 
         # ======================================================================
-        # ★★★ 新增阶段 2: 从本地数据库获取 Original Name ★★★
+        # 阶段 2: 从本地数据库获取 Original Name
         # ======================================================================
         task_manager.update_status_from_thread(10, "阶段 2/3: 正在从本地缓存获取演员原始名...")
         
-        # original_name -> emby_name 的映射，用于后续回填
         original_to_emby_name_map = {}
         texts_to_translate = set()
         
@@ -241,7 +233,6 @@ def task_actor_translation(processor):
             tmdb_id_to_original_name = {}
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # 使用 ANY(%s) 进行高效批量查询
                     query = "SELECT tmdb_id, original_name FROM actor_metadata WHERE tmdb_id = ANY(%s)"
                     cursor.execute(query, (tmdb_ids_to_query,))
                     for row in cursor.fetchall():
@@ -249,20 +240,16 @@ def task_actor_translation(processor):
             
             logger.trace(f"  ➜ 成功从本地数据库为 {len(tmdb_id_to_original_name)} 个TMDb ID找到了original_name。")
 
-            # 构建最终待翻译列表
             for actor in actors_to_enrich:
                 emby_name = actor['name']
                 tmdb_id = actor['tmdb_id']
                 original_name = tmdb_id_to_original_name.get(str(tmdb_id))
                 
-                # 优先使用 original_name，如果没有，则用 emby_name 作为后备
                 text_for_translation = original_name if original_name and not utils.contains_chinese(original_name) else emby_name
                 
                 texts_to_translate.add(text_for_translation)
-                # 记录映射关系，以便翻译后能找到对应的 Emby 演员
                 original_to_emby_name_map[text_for_translation] = emby_name
 
-        # 对于那些没有 TMDb ID 的演员，直接将他们的 Emby Name 加入翻译列表
         emby_names_with_tmdb_id = {actor['name'] for actor in actors_to_enrich}
         for emby_name in name_to_persons_map.keys():
             if emby_name not in emby_names_with_tmdb_id:
@@ -270,7 +257,7 @@ def task_actor_translation(processor):
                 original_to_emby_name_map[emby_name] = emby_name
 
         # ======================================================================
-        # 阶段 3: 分批翻译并并发写回 (逻辑与原版类似，但使用新的数据)
+        # 阶段 3: 分批翻译并并发写回
         # ======================================================================
         all_names_list = list(texts_to_translate)
         TRANSLATION_BATCH_SIZE = 50
@@ -294,7 +281,6 @@ def task_actor_translation(processor):
             )
             
             try:
-                # 使用 "音译" 模式，因为它对人名更友好
                 translation_map = processor.ai_translator.batch_translate(
                     texts=current_batch_names, mode="transliterate"
                 )
@@ -306,25 +292,34 @@ def task_actor_translation(processor):
                 logger.warning(f"翻译批次 {batch_num} 未能返回任何结果。")
                 continue
 
-            # ★★★ 核心修改：使用线程池并发写回当前批次的结果 ★★★
             batch_updated_count = 0
             
             # 1. 准备好所有需要更新的任务
             update_tasks = []
             for original_name, translated_name in translation_map.items():
-                if not translated_name or original_name == translated_name: continue
+                # --- [新增日志] 详细记录跳过原因 ---
+                if not translated_name:
+                    logger.warning(f"    - ⚠️ [跳过] 原名: '{original_name}' -> 翻译结果为空")
+                    continue
+                
+                if original_name == translated_name:
+                    # 如果翻译结果和原文一样，说明AI认为不需要翻译，或者翻译失败
+                    logger.info(f"    - ℹ️ [跳过] 原名: '{original_name}' -> 结果与原文相同 (未变)")
+                    continue
+                # -----------------------------------
+
                 persons_to_update = name_to_persons_map.get(original_name, [])
                 for person in persons_to_update:
                     update_tasks.append((person.get("Id"), translated_name))
 
             if not update_tasks:
+                logger.info(f"  ➜ 批次 {batch_num}: 翻译结果经比对后无有效变更，跳过写入。")
                 continue
 
-            logger.info(f"  ➜ 批次 {batch_num}/{total_batches}: 翻译完成，准备并发写入 {len(update_tasks)} 个更新...")
+            logger.info(f"  ➜ 批次 {batch_num}/{total_batches}: 准备并发写入 {len(update_tasks)} 个更新...")
             
             # 2. 使用 ThreadPoolExecutor 执行并发更新
             with ThreadPoolExecutor(max_workers=10) as executor:
-                # 提交所有更新任务
                 future_to_task = {
                     executor.submit(
                         emby.update_person_details,
@@ -336,27 +331,28 @@ def task_actor_translation(processor):
                     ): task for task in update_tasks
                 }
 
-                # 收集结果
                 for future in as_completed(future_to_task):
                     if processor.is_stop_requested():
-                        # 如果任务被中止，我们可以尝试取消未完成的 future，但最简单的是直接跳出
                         break
                     
+                    task_info = future_to_task[future] # (person_id, new_name)
                     try:
                         success = future.result()
                         if success:
                             batch_updated_count += 1
+                        else:
+                            # --- [新增日志] 记录API调用失败 ---
+                            logger.warning(f"    - ❌ [更新失败] Emby API 拒绝更新演员 ID: {task_info[0]} -> '{task_info[1]}'")
                     except Exception as exc:
-                        task_info = future_to_task[future]
-                        logger.error(f"并发更新演员 (ID: {task_info[0]}) 时线程内发生错误: {exc}")
+                        logger.error(f"    - ❌ [异常] 更新演员 (ID: {task_info[0]}) 时发生错误: {exc}")
 
             total_updated_count += batch_updated_count
             
             if batch_updated_count > 0:
-                logger.info(f"  ➜ 批次 {batch_num}/{total_batches} 并发写回完成，成功更新 {batch_updated_count} 个演员名。")
+                logger.info(f"  ➜ 批次 {batch_num}/{total_batches} 完成，成功更新 {batch_updated_count} 个演员名。")
         
         # ======================================================================
-        # 阶段 3: 任务结束 (此部分逻辑不变)
+        # 阶段 3: 任务结束
         # ======================================================================
         final_message = f"  ✅ 任务完成！共成功翻译并更新了 {total_updated_count} 个演员名。"
         if processor.is_stop_requested():
