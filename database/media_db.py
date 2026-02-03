@@ -203,13 +203,20 @@ def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
 
 def get_all_subscriptions() -> List[Dict[str, Any]]:
     """
-    获取所有有订阅状态的媒体项...
+    【性能优化版】获取所有有订阅状态的媒体项。
+    使用 CTE 替代 NOT EXISTS 子查询，解决数据量大时页面卡死的问题。
     """
     sql = """
+        WITH active_seasons AS (
+            -- 1. 预先找出所有包含活跃订阅季度的剧集ID (一次性扫描)
+            SELECT DISTINCT parent_series_tmdb_id
+            FROM media_metadata
+            WHERE item_type = 'Season'
+              AND subscription_status IN ('REQUESTED', 'WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED', 'PAUSED')
+        )
         SELECT 
             m1.tmdb_id, 
             m1.item_type, 
-            -- ★★★ 核心修复：显式查询 season_number 字段 ★★★
             m1.season_number, 
             
             CASE 
@@ -231,21 +238,26 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
             END AS series_tmdb_id
         FROM 
             media_metadata AS m1
+        -- 关联父剧集信息 (用于获取季的标题)
         LEFT JOIN 
             media_metadata AS m2 
         ON 
             m1.parent_series_tmdb_id = m2.tmdb_id AND m2.item_type = 'Series'
+        
+        -- 2. 关联 CTE，替代原本的 NOT EXISTS 子查询
+        LEFT JOIN 
+            active_seasons AS ads 
+        ON 
+            m1.tmdb_id = ads.parent_series_tmdb_id
+
         WHERE 
             m1.subscription_status IN ('REQUESTED', 'WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED', 'PAUSED')
             AND (
                 m1.item_type != 'Series'
-                OR NOT EXISTS (
-                    SELECT 1 
-                    FROM media_metadata AS child 
-                    WHERE child.parent_series_tmdb_id = m1.tmdb_id 
-                      AND child.item_type = 'Season' 
-                      AND child.subscription_status IN ('REQUESTED', 'WANTED', 'PENDING_RELEASE', 'IGNORED', 'SUBSCRIBED', 'PAUSED')
-                )
+                OR 
+                -- 如果是 Series，必须在 active_seasons 中找不到记录 (即没有活跃的子季)
+                -- 这样可以避免界面上同时显示“剧集”和该剧集的“季”，减少冗余
+                ads.parent_series_tmdb_id IS NULL
             )
         ORDER BY 
             m1.first_requested_at DESC;
