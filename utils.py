@@ -539,6 +539,14 @@ EPISODE_SKELETON_TEMPLATE = {
   }
 }
 
+# 用于生成 tags.json (标签)
+TAGS = {
+  "tags": [
+    "电影标签1",
+    "电影标签2"
+  ]
+}
+
 # --- ★★★ AI 默认提示词 (中文优化版) ★★★ ---
 DEFAULT_AI_PROMPTS = {
     "fast_mode": """你是一个只返回 JSON 格式的翻译 API。
