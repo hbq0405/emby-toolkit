@@ -865,13 +865,7 @@ class WatchlistProcessor:
                 cursor.execute(sql, (tmdb_id, season_number))
                 rows = cursor.fetchall()
 
-            # 1. 检查集数是否集齐
-            local_count = len(rows)
-            if local_count < expected_episode_count:
-                logger.info(f"  🔍 [一致性检查] S{season_number} 尚未集齐 (本地:{local_count} / TMDb:{expected_episode_count})，需要洗版补全。")
-                return False
-
-            # 2. 检查一致性 (分辨率、制作组、编码)
+            # 检查一致性 (分辨率、制作组、编码)
             resolutions = set()
             groups = set()
             codecs = set()
