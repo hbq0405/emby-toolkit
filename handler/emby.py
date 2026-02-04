@@ -201,7 +201,7 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
             
             if is_ignored:
                 # 如果是忽略的任务，仅在调试日志里记录一下，不加入 busy_reasons
-                logger.debug(f"  [队列忽略] 跳过任务: {raw_name} (在忽略列表中)")
+                # logger.debug(f"  ➜ 忽略任务: {raw_name} 执行刷新请求。")
                 continue
             # ---------------------------------------
 
