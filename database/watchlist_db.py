@@ -576,6 +576,19 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
+            # 1. 映射状态为中文
+            status_map = {
+                'Watching': '追剧中',
+                'Paused': '已暂停',
+                'Completed': '已完结',
+                'Pending': '待定',
+                'NONE': '未追踪'
+            }
+            status_cn = status_map.get(series_status, series_status)
+
+            # 2. 获取剧名 (复用你已有的函数)
+            series_name = get_watchlist_item_name(parent_tmdb_id) or parent_tmdb_id
+
             # 场景 A: 剧集整体已完结 -> 所有季标记为已完结
             if series_status == 'Completed':
                 sql = """
@@ -616,7 +629,7 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
                     """
                     cursor.execute(update_active_sql, (series_status, parent_tmdb_id, max_active_season))
                     
-                    logger.info(f"  ➜ 更新剧集 {parent_tmdb_id} 的季状态: 最新季 S{max_active_season} -> {series_status}，其余旧季 -> 已完结。")
+                    logger.info(f"  ➜ 更新剧集 《{series_name}》 第 {max_active_season} 季 状态 -> {status_cn}。")
 
             conn.commit()
     except Exception as e:

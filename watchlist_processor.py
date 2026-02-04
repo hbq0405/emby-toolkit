@@ -992,6 +992,7 @@ class WatchlistProcessor:
         watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
         auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
         aggressive_threshold = int(auto_pending_cfg.get('episodes', 5)) 
+        enable_auto_pause = watchlist_cfg.get('auto_pause', False)
 
         # 调用通用辅助函数刷新元数据
         refresh_result = self._refresh_series_metadata(tmdb_id, item_name, item_id)
@@ -1206,17 +1207,16 @@ class WatchlistProcessor:
                 
                 # --- 只有本地有该季文件，才根据时间判断是追剧还是暂停 ---
                 else:
-                    # 子规则 A: 1天内就要播出 (或已播出但未下载) -> 设为“追剧中”
-                    if days_until_air <= 1:
+                    # 子规则 A: 3天后才播出  -> 设为“暂停”
+                    if days_until_air >= 1 and enable_auto_pause:
+                        final_status = STATUS_PAUSED
+                        paused_until_date = air_date
+                        logger.info(f"  ⏸️ [判定-连载中] (第 {episode_number} 集) 将在 {days_until_air} 天后播出，设为“已暂停”。")
+                    # 子规则 B: 即将播出 -> 设为“追剧中”
+                    else:
                         final_status = STATUS_WATCHING
                         paused_until_date = None
-                        logger.info(f"  👀 [判定-连载中] S{season_number} 本地已入库，且下一集 (E{episode_number}) 即将在 {days_until_air} 天内播出 (或已播出)，保持“追剧中”。")
-
-                    # 子规则 B: 还有很久才播出 -> 暂停至播出日期
-                    else:
-                        final_status = STATUS_PAUSED
-                        paused_until_date = air_date 
-                        logger.info(f"  ⏸️ [判定-连载中] S{season_number} 本地已入库，但下一集 (E{episode_number}) 将在 {days_until_air} 天后 ({air_date}) 播出，暂停至该日期。")
+                        logger.info(f"  👀 [判定-连载中] (第 {episode_number} 集) 将在 {days_until_air} 天内 ({air_date}) 播出，设为“追剧中”。")
 
             # 情况 B: 无下一集信息 (或信息不全)
             else:
@@ -1289,7 +1289,7 @@ class WatchlistProcessor:
         # ★★★ 完结自动洗版逻辑 (V4 - 纯状态流转驱动) ★★★
         # ======================================================================
         # 核心逻辑：只有从“活跃追剧状态”转变为“完结状态”时，才视为“新鲜完结”
-        logger.debug(f"  🔍 [状态流转] 剧名: {item_name}, 旧状态: {old_status}, 新状态: {final_status}")
+        logger.debug(f"  🔍 [状态流转] 剧名: {item_name}, 旧状态: {translate_internal_status(old_status)}, 新状态: {translate_internal_status(final_status)}")
         if final_status == STATUS_COMPLETED and old_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING] and not is_force_ended:
             
             # 检查功能开关

@@ -3,6 +3,7 @@ import logging
 import requests
 import threading
 from flask import Blueprint, jsonify, session, request
+from datetime import datetime, timedelta
 
 from extensions import emby_login_required 
 from database import user_db, settings_db, media_db, request_db
@@ -315,4 +316,90 @@ def upload_avatar():
         "status": "ok", 
         "message": "头像上传成功", 
         "new_tag": new_tag
+    })
+
+@user_portal_bp.route('/playback-report', methods=['GET'])
+@emby_login_required
+def get_playback_report():
+    """
+    获取播放统计报告 (个人流水 + 全局热榜)
+    """
+    emby_user_id = session['emby_user_id']
+    days = request.args.get('days', 30, type=int)
+    config = config_manager.APP_CONFIG
+    
+    # 1. 获取个人数据
+    personal_res = emby.get_playback_reporting_data(
+        config['emby_server_url'], config['emby_api_key'], emby_user_id, days
+    )
+    
+    if "error" in personal_res:
+        if personal_res["error"] == "plugin_not_installed":
+            return jsonify({"status": "error", "message": "服务端未安装 Playback Reporting 插件"}), 404
+        return jsonify({"status": "error", "message": "获取数据失败"}), 500
+        
+    raw_activity = personal_res.get("data", [])
+    
+    # --- 处理个人数据 ---
+    personal_stats = {
+        "total_count": len(raw_activity),
+        "total_minutes": 0,
+        "history_list": [] 
+    }
+    
+    for item in raw_activity:
+        # ★★★ 兼容性修复：尝试多种字段名获取时长 ★★★
+        # PlayDuration 通常是秒
+        duration_sec = item.get("PlayDuration") or item.get("Duration") or 0
+        duration_min = int(duration_sec / 60)
+        
+        personal_stats["total_minutes"] += duration_min
+        
+        # 构建历史列表 (只取前 20 条)
+        if len(personal_stats["history_list"]) < 20:
+            # ★★★ 兼容性修复：尝试多种字段名获取标题 ★★★
+            # 插件里有时叫 Name，有时叫 ItemName
+            raw_title = item.get("Name") or item.get("ItemName") or "未知影片"
+            series_name = item.get("SeriesName")
+            episode_name = item.get("EpisodeName")
+            
+            display_title = raw_title
+            # 如果有剧集名，拼凑一下
+            if series_name:
+                if episode_name:
+                    display_title = f"{series_name} - {episode_name}"
+                else:
+                    display_title = f"{series_name} - {raw_title}"
+            
+            # ★★★ 兼容性修复：尝试多种字段名获取日期 ★★★
+            date_str = item.get("DateCreated") or item.get("Date") or item.get("Time")
+            
+            personal_stats["history_list"].append({
+                "title": display_title,
+                "date": date_str,
+                "duration": duration_min,
+                "item_type": item.get("ItemType", "Video"),
+                "item_id": item.get("ItemId") or item.get("Id")
+            })
+
+    # 2. 获取全局热榜
+    global_res = emby.get_global_popular_items(
+        config['emby_server_url'], config['emby_api_key'], days
+    )
+    
+    global_top_list = []
+    if "data" in global_res:
+        for item in global_res["data"]:
+            global_top_list.append({
+                "title": item.get("title"),
+                "play_count": item.get("play_count", 0),
+                # 关键：将秒转换为分钟，前端再除以 60 就会得到正确的小时数
+                "total_duration": int(item.get("total_duration", 0) / 60), 
+                "item_type": item.get("item_type"),
+                "item_id": item.get("item_id")
+            })
+
+    return jsonify({
+        "personal": personal_stats,
+        "global_top": global_top_list
     })

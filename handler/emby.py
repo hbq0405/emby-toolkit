@@ -4,7 +4,7 @@ import requests
 import concurrent.futures
 import os
 import gc
-import re
+import json
 import base64
 import shutil
 import time
@@ -13,6 +13,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from threading import BoundedSemaphore
+from datetime import datetime, timedelta, timezone
+from collections import defaultdict
 
 import config_manager
 import constants
@@ -2126,8 +2128,7 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
 
     all_items_with_data = []
     item_types = "Movie,Series,Episode"
-    # ★★★ 1. 为了拿到所有可能的字段，我们请求更多信息 ★★★
-    fields = "UserData,Type,SeriesId,ProviderIds,Name,LastPlayedDate" 
+    fields = "UserData,Type,SeriesId,ProviderIds,Name,LastPlayedDate,PlayCount" 
     
     api_url = f"{base_url.rstrip('/')}/Items"
     
@@ -2167,10 +2168,10 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
                 if user_data.get('Played') or user_data.get('IsFavorite') or user_data.get('PlaybackPositionTicks', 0) > 0:
                     
                     # ★★★ 3. 魔法日志：在这里把原始数据打印出来！★★★
-                    # if log_counter < LOG_LIMIT:
-                    #     # 使用 CRITICAL 级别让它在日志里最显眼，并用 json.dumps 保证完整输出
-                    #     logger.critical(f"  ➜ [魔法日志] 捕获到原始 Emby Item 数据: {json.dumps(item, indent=2, ensure_ascii=False)}")
-                    #     log_counter += 1
+                    if log_counter < LOG_LIMIT:
+                        # 使用 CRITICAL 级别让它在日志里最显眼，并用 json.dumps 保证完整输出
+                        logger.critical(f"  ➜ [魔法日志] 捕获到原始 Emby Item 数据: {json.dumps(item, indent=2, ensure_ascii=False)}")
+                        log_counter += 1
 
                     all_items_with_data.append(item)
             
@@ -2945,3 +2946,193 @@ def trigger_media_info_refresh(item_id: str, base_url: str, api_key: str, user_i
     except Exception as e:
         logger.error(f"  🚫 请求异常 ID:{item_id}: {e}")
         return False
+    
+# --- Playback Reporting 插件集成 ---
+def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days: int = 30) -> dict:
+    """
+    获取【个人】详细播放流水
+    【V5 - 修复版】
+    适配实际浏览器响应：snake_case 字段、字符串类型的秒数时长、日期时间合并。
+    """
+    # 1. 构造 URL
+    if "/emby" not in base_url:
+        api_url = f"{base_url.rstrip('/')}/emby/user_usage_stats/UserPlaylist"
+    else:
+        api_url = f"{base_url.rstrip('/')}/user_usage_stats/UserPlaylist"
+    
+    # 2. 构造参数
+    params = {
+        "api_key": api_key,
+        "user_id": user_id,
+        "days": days,
+        "aggregate_data": "true",
+        "include_stats": "true"
+    }
+    
+    try:
+        logger.debug(f"正在请求 UserPlaylist 接口: {api_url} | User: {user_id}")
+        response = emby_client.get(api_url, params=params, timeout=20)
+        
+        if response.status_code == 404:
+            return {"error": "plugin_not_installed"}
+        response.raise_for_status()
+        
+        # 3. 解析数据
+        raw_data = response.json()
+        cleaned_data = []
+        
+        if raw_data and isinstance(raw_data, list):
+            for item in raw_data:
+                normalized_item = {}
+                
+                # --- 1. 标题 (修复：优先匹配 item_name) ---
+                # 实际返回: "item_name": "欢乐颂..."
+                normalized_item['Name'] = item.get('item_name') or item.get('Name') or item.get('ItemName') or "未知影片"
+                
+                # --- 2. 日期 (修复：合并 date 和 time) ---
+                # 实际返回: "date": "2026-02-03", "time": "23:22:59"
+                date_str = item.get('date') or item.get('Date')
+                time_str = item.get('time') or ""
+                
+                if date_str and time_str:
+                    # 如果都有，拼接成完整时间字符串，方便前端排序或显示
+                    normalized_item['Date'] = f"{date_str} {time_str}"
+                else:
+                    normalized_item['Date'] = date_str or item.get('DateCreated')
+                
+                # --- 3. 时长 (修复：处理字符串类型的纯数字) ---
+                # 实际返回: "duration": "2513" (字符串秒数)
+                raw_duration = item.get('duration') or item.get('PlayDuration') or item.get('total_time') or 0
+                final_duration_sec = 0
+                
+                try:
+                    # 尝试直接转 float/int (处理 "2513" 或 2513)
+                    val = float(raw_duration)
+                    
+                    # 策略判定：
+                    # 如果数值巨大(>100000)，可能是 Ticks (1秒=1000万Ticks)，但这里不太像
+                    # 根据你的日志 "2513" 对应 41分钟，说明这就是【秒】
+                    # 如果数值很小 (<300)，也可能是【分钟】？
+                    # 但根据 API 响应 "2513" ≈ 41分钟，可以直接认定为秒。
+                    final_duration_sec = int(val)
+                    
+                except (ValueError, TypeError):
+                    # 如果转换失败，尝试处理 "HH:MM:SS" 格式
+                    if isinstance(raw_duration, str) and ":" in raw_duration:
+                        try:
+                            parts = raw_duration.split(':')
+                            if len(parts) == 3:
+                                h, m, s = map(int, parts)
+                                final_duration_sec = h * 3600 + m * 60 + s
+                            elif len(parts) == 2:
+                                m, s = map(int, parts)
+                                final_duration_sec = m * 60 + s
+                        except:
+                            final_duration_sec = 0
+                            
+                normalized_item['PlayDuration'] = final_duration_sec
+                
+                # --- 4. 类型 (修复：优先匹配 item_type) ---
+                # 实际返回: "item_type": "Episode"
+                normalized_item['ItemType'] = item.get('item_type') or item.get('Type') or 'Video'
+                
+                # --- 5. 补充字段 (可选，方便调试) ---
+                normalized_item['ItemId'] = item.get('item_id')
+                
+                cleaned_data.append(normalized_item)
+        
+        if cleaned_data:
+            import json
+            # 只打印第一条，防止日志刷屏
+            logger.info(f"🔍 [UserPlaylist] 数据获取成功，Count: {len(cleaned_data)} | Sample: {json.dumps(cleaned_data[0], ensure_ascii=False)}")
+        else:
+            logger.warning(f"🔍 [UserPlaylist] 请求成功但返回空列表 (User: {user_id})")
+
+        return {"data": cleaned_data}
+
+    except Exception as e:
+        logger.error(f"获取个人播放数据失败: {e}")
+        return {"error": str(e)}
+
+def get_global_popular_items(base_url: str, api_key: str, days: int = 30) -> dict:
+    """
+    获取全局热门数据 (聚合逻辑优化版)
+    """
+    # 1. 构造 URL (适配不同的 Base URL 格式)
+    if "/emby" not in base_url:
+        api_url = f"{base_url.rstrip('/')}/emby/user_usage_stats/UserPlaylist"
+    else:
+        api_url = f"{base_url.rstrip('/')}/user_usage_stats/UserPlaylist"
+    
+    # 2. 构造时间参数
+    start_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    
+    params = {
+        "api_key": api_key,
+        "min_date": start_date,
+        "limit": 1000 # 获取足够多的记录用于聚合
+    }
+    
+    try:
+        response = emby_client.get(api_url, params=params, timeout=20)
+        response.raise_for_status()
+        raw_logs = response.json() 
+
+        # --- 核心：聚合逻辑 ---
+        # 使用字典来合并相同的条目
+        # Key = item_id (唯一标识)
+        stats = {}
+        
+        for log in raw_logs:
+            # 获取关键字段，兼容 snake_case (你的数据) 和 PascalCase
+            iid = log.get('item_id') or log.get('ItemId')
+            if not iid: continue
+            
+            # 如果是第一次遇到这个项目，初始化
+            if iid not in stats:
+                stats[iid] = {
+                    "item_id": iid,
+                    "title": log.get("item_name") or log.get("Name") or "未知",
+                    "item_type": log.get("item_type") or log.get("Type") or "Video",
+                    "play_count": 0,
+                    "total_duration": 0,
+                    "image_tag": log.get("PrimaryImageTag") # 如果有的话
+                }
+            
+            # 累加数据
+            item = stats[iid]
+            item["play_count"] += 1
+            
+            # 处理时长 (你的数据是字符串 "480")
+            try:
+                duration_str = log.get("duration") or log.get("PlayDuration") or 0
+                item["total_duration"] += int(float(duration_str))
+            except: 
+                pass
+
+        # --- 排序与截取 ---
+        # 1. 字典转列表
+        aggregated_list = list(stats.values())
+        
+        # 2. 按播放次数倒序排列
+        aggregated_list.sort(key=lambda x: x["play_count"], reverse=True)
+        
+        # 3. 只取前 10 名
+        top_10 = aggregated_list[:10]
+        
+        # 4. 格式化时长 (秒 -> 分钟)，方便前端显示
+        for item in top_10:
+            total_seconds = item["total_duration"]
+            # 如果是单集，显示单集时长；如果是聚合，显示总时长
+            # 这里为了榜单好看，我们计算平均时长或者总时长
+            # 截图显示的是 "时长: 10分钟"，我们用总时长除以次数算平均，或者直接用单次时长
+            if item["play_count"] > 0:
+                avg_seconds = total_seconds / item["play_count"]
+                item["duration_minutes"] = int(avg_seconds / 60)
+            else:
+                item["duration_minutes"] = 0
+
+        return {"data": top_10} 
+    except Exception as e:
+        logger.error(f"获取全局热播数据失败: {e}")
+        return {"error": str(e)}

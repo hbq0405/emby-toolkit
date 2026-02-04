@@ -83,7 +83,7 @@ def task_sync_all_user_data(processor):
         task_manager.update_status_from_thread(8, "正在同步用户注册时间与扩展状态...")
         user_db.upsert_emby_users_extended_batch_sync(all_users_basic)
         
-        # 步骤 4: 循环同步每个用户的媒体播放状态 (此逻辑保持不变)
+        # 步骤 4: 循环同步每个用户的媒体播放状态
         total_users = len(all_users_basic)
         logger.info(f"  ➜ 共找到 {total_users} 个Emby用户，将逐一同步其数据...")
 
@@ -93,7 +93,7 @@ def task_sync_all_user_data(processor):
             if not user_id: continue
             if processor.is_stop_requested(): break
 
-            progress = 10 + int((i / total_users) * 90) # 进度从10%开始
+            progress = 10 + int((i / total_users) * 90)
             task_manager.update_status_from_thread(progress, f"({i+1}/{total_users}) 正在同步用户: {user_name}")
 
             user_items_with_data = emby.get_all_user_view_data(user_id, emby_url, emby_key)
@@ -104,29 +104,63 @@ def task_sync_all_user_data(processor):
             for item in user_items_with_data:
                 item_type = item.get('Type')
                 item_id = item.get('Id')
+                # 聚合逻辑：电影用自身ID，分集聚合到剧集ID
                 target_id = item_id if item_type in ['Movie', 'Series'] else item.get('SeriesId')
                 if not target_id: continue
 
+                new_user_data = item.get('UserData', {})
+                
+                # =========================================================
+                # ★★★ 核心修复：播放次数兜底逻辑 ★★★
+                # =========================================================
+                raw_play_count = new_user_data.get('PlayCount', 0)
+                is_played = new_user_data.get('Played', False)
+                
+                # 如果 Emby 说“已播放”但次数是 0，强制修正为 1
+                if is_played and raw_play_count == 0:
+                    current_play_count = 1
+                else:
+                    current_play_count = raw_play_count
+                # =========================================================
+
                 if target_id not in final_data_map:
+                    # --- 初始化新条目 ---
                     final_data_map[target_id] = item
                     if item_type == 'Episode':
                         final_data_map[target_id]['Id'] = target_id
-                else:
-                    existing_item = final_data_map[target_id]
-                    new_user_data = item.get('UserData', {})
-                    if 'PlaybackPositionTicks' in new_user_data:
-                        existing_item['UserData']['PlaybackPositionTicks'] = new_user_data['PlaybackPositionTicks']
-                    if 'Played' in new_user_data:
-                        existing_item['UserData']['Played'] = new_user_data['Played']
                     
-                    # ★★★ 在这里把播放次数累加起来 ★★★
-                    if 'PlayCount' in new_user_data:
-                        # 如果 existing_item['UserData'] 里还没有 PlayCount，就先初始化为 0
-                        if 'PlayCount' not in existing_item['UserData']:
-                            existing_item['UserData']['PlayCount'] = 0
-                        # 然后把新分集的播放次数加进去
-                        existing_item['UserData']['PlayCount'] += new_user_data['PlayCount']
+                    # 确保 UserData 字典存在
+                    if 'UserData' not in final_data_map[target_id]:
+                        final_data_map[target_id]['UserData'] = {}
+                    
+                    # 初始化 PlayCount
+                    final_data_map[target_id]['UserData']['PlayCount'] = current_play_count
+                    
+                    # 初始化 Played 状态 (如果是电影，直接用自己的；如果是分集，稍后聚合)
+                    if 'Played' not in final_data_map[target_id]['UserData']:
+                         final_data_map[target_id]['UserData']['Played'] = is_played
+
+                else:
+                    # --- 聚合到已存在的条目 (主要是剧集) ---
+                    existing_item = final_data_map[target_id]
+                    existing_ud = existing_item.get('UserData', {})
+                    
+                    # 1. 更新播放进度 (取最新的)
+                    if 'PlaybackPositionTicks' in new_user_data:
+                        existing_ud['PlaybackPositionTicks'] = new_user_data['PlaybackPositionTicks']
+                    
+                    # 2. 更新已播放状态 (逻辑：只要有一集是 Played，剧集记录就可能被更新，具体看 Emby 返回的 Series 自身状态，这里做累加辅助)
+                    if 'Played' in new_user_data:
+                        # 如果当前分集是已播放，或者之前的记录已经是已播放，则保持 true
+                        existing_ud['Played'] = existing_ud.get('Played', False) or is_played
+                    
+                    # 3. ★★★ 累加播放次数 ★★★
+                    if 'PlayCount' not in existing_ud:
+                        existing_ud['PlayCount'] = 0
+                    
+                    existing_ud['PlayCount'] += current_play_count
             
+            # 将 map 转换为 list 准备入库
             final_data_to_upsert = list(final_data_map.values())
             
             user_db.upsert_user_media_data_batch(user_id, final_data_to_upsert)

@@ -121,6 +121,107 @@
             </div>
           </n-card>
         </n-gi>
+        <!-- 播放统计卡片 -->
+        <n-gi :span="2" style="margin-top: 24px;">
+          <n-grid :cols="isMobile ? 1 : 2" :x-gap="24" :y-gap="24">
+            
+            <n-gi>
+              <n-card :bordered="false" class="dashboard-card">
+                <template #header>
+                  <span class="card-title">播放记录</span>
+                  <n-spin v-if="loading" size="small" style="float: right" />
+                </template>
+                <template #header-extra>
+                  <n-icon size="20" depth="3"><PlayCircleOutline /></n-icon>
+                </template>
+                
+                <n-grid :cols="3" :x-gap="12" style="margin-bottom: 20px;">
+                  <n-gi>
+                    <n-statistic label="近期观看" size="small">
+                      <span style="font-weight: bold;">{{ playbackData?.personal?.total_count || 0 }}</span><span style="font-size: 12px; margin-left: 2px;"> 次</span>
+                    </n-statistic>
+                  </n-gi>
+                  <n-gi>
+                    <n-statistic label="累计时长" size="small">
+                      <span style="font-weight: bold;">{{ (playbackData?.personal?.total_minutes / 60).toFixed(1) }}</span><span style="font-size: 12px; margin-left: 2px;"> 小时</span>
+                    </n-statistic>
+                  </n-gi>
+                  <n-gi>
+                    <n-statistic label="平均单次" size="small">
+                      <span style="font-weight: bold;">
+                        {{ playbackData?.personal?.total_count ? Math.round(playbackData.personal.total_minutes / playbackData.personal.total_count) : 0 }}
+                      </span><span style="font-size: 12px; margin-left: 2px;"> 分钟</span>
+                    </n-statistic>
+                  </n-gi>
+                </n-grid>
+
+                <n-divider title-placement="left" style="margin-top: 0; font-size: 12px;">最近播放</n-divider>
+
+                <n-scrollbar style="max-height: 400px;">
+                  <n-list hoverable clickable size="small">
+                    <n-list-item v-for="(item, index) in playbackData?.personal?.history_list" :key="index">
+                      <template #prefix>
+                        <n-tag :type="item.item_type === 'Movie' ? 'info' : 'success'" size="tiny" round>
+                          {{ ITEM_TYPE_MAP[item.item_type] || '未知' }}
+                        </n-tag>
+                      </template>
+                      <n-thing :title="item.title" content-style="margin-top: 0;">
+                        <template #description>
+                          <div style="font-size: 12px; color: gray;">
+                            {{ new Date(item.date).toLocaleDateString() }} · {{ item.duration }} 分钟
+                          </div>
+                        </template>
+                      </n-thing>
+                    </n-list-item>
+                    <n-empty v-if="!playbackData?.personal?.history_list?.length" description="近期无记录" />
+                  </n-list>
+                </n-scrollbar>
+              </n-card>
+            </n-gi>
+
+            <n-gi>
+              <n-card :bordered="false" class="dashboard-card">
+                <template #header>
+                  <span class="card-title">全站热播</span>
+                  <n-spin v-if="loading" size="small" style="float: right" />
+                </template>
+                <template #header-extra>
+                  <n-tag type="info" size="small" :bordered="false" round>近30天</n-tag>
+                </template>
+                
+                <n-scrollbar style="max-height: 515px;">
+                  <n-list size="small">
+                    <n-list-item v-for="(item, index) in playbackData?.global_top" :key="index">
+                      <template #prefix>
+                        <div 
+                          style="width: 20px; height: 20px; border-radius: 4px; text-align: center; line-height: 20px; font-weight: bold; font-size: 11px;"
+                          :style="{ 
+                            backgroundColor: index < 3 ? 'var(--n-primary-color)' : 'rgba(128,128,128,0.1)', 
+                            color: index < 3 ? 'gree' : 'gray' 
+                          }"
+                        >
+                          {{ index + 1 }}
+                        </div>
+                      </template>
+                      <n-thing :title="item.title">
+                        <template #header-extra>
+                          <span style="font-size: 12px; color: var(--n-primary-color); font-weight: 500;">
+                            {{ item.play_count }} 次
+                          </span>
+                        </template>
+                        <template #description>
+                          <span style="font-size: 11px; color: gray;">时长: {{ (item.total_duration) }} 分钟</span>
+                        </template>
+                      </n-thing>
+                    </n-list-item>
+                    <n-empty v-if="!playbackData?.global_top?.length" description="暂无数据" />
+                  </n-list>
+                </n-scrollbar>
+              </n-card>
+            </n-gi>
+
+          </n-grid>
+        </n-gi>
       </n-grid>
     </template>
 
@@ -211,9 +312,10 @@ import { useAuthStore } from '../stores/auth';
 import { 
   NPageHeader, NCard, NDescriptions, NDescriptionsItem, NTag, NEmpty, NGrid, NGi, 
   NDataTable, NInputGroup, NInput, NButton, NText, useMessage, NPagination, 
-  NStatistic, NRadioGroup, NRadioButton, NAvatar, NIcon, NDivider, NTooltip, NSpin
+  NStatistic, NRadioGroup, NRadioButton, NAvatar, NIcon, NDivider, NTooltip, NSpin,
+  NTabs, NTabPane, NList, NListItem, NThing, NSpace, NAlert
 } from 'naive-ui';
-import { CloudUploadOutline } from '@vicons/ionicons5';
+import { PlayCircleOutline, TimeOutline, CalendarOutline, TimerOutline } from '@vicons/ionicons5';
 
 const authStore = useAuthStore();
 const loading = ref(true);
@@ -223,7 +325,7 @@ const telegramChatId = ref('');
 const isSavingChatId = ref(false);
 const message = useMessage();
 const isFetchingBotLink = ref(false);
-
+const playbackData = ref(null);
 // 移动端检测
 const isMobile = ref(false);
 const checkMobile = () => {
@@ -390,6 +492,32 @@ const fetchSubscriptionHistory = async (page = 1) => {
   }
 };
 
+// 1. 定义常量映射表
+const ITEM_TYPE_MAP = {
+  Movie: '电影',
+  Episode: '电视剧',
+  Audio: '音乐'
+};
+
+// 计算属性：电影占比
+const moviePercentage = computed(() => {
+  if (!playbackData.value || !playbackData.value.personal) return 50;
+  // 这里其实后端没返回 distribution 了，如果需要饼图，后端得加回 distribution 统计逻辑
+  // 暂时先返回 50 避免报错，或者把进度条删掉
+  return 50; 
+});
+
+// 获取播放统计
+const fetchPlaybackStats = async () => {
+  try {
+    const res = await axios.get('/api/portal/playback-report?days=30');
+    playbackData.value = res.data;
+  } catch (error) {
+    console.error("获取播放数据失败", error);
+    // 可以加个 message.error 提示
+  }
+};
+
 watch(filterStatus, () => {
   fetchSubscriptionHistory(1); 
 });
@@ -412,6 +540,7 @@ onMounted(async () => {
   } finally {
     loading.value = false;
   }
+  fetchPlaybackStats();
 });
 
 onUnmounted(() => {
