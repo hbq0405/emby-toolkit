@@ -3927,48 +3927,49 @@ class MediaProcessor:
             data_to_write = metadata_override.copy()
 
             # --- 关键词映射处理并写入 tags.json ---
-            try:
-                # A. 获取映射表 (数据库优先 -> Utils兜底)
-                mapping_data = settings_db.get_setting('keyword_mapping')
-                if not mapping_data:
-                    mapping_data = utils.DEFAULT_KEYWORD_MAPPING
-                
-                # B. 构建 ID -> 中文Label 的查找表
-                keyword_map = {}
-                for entry in mapping_data:
-                    label = entry.get('label')
-                    if label:
-                        for kid in entry.get('ids', []):
-                            keyword_map[str(kid)] = label
-                
-                # C. 从元数据中提取原始关键词
-                source_keywords = []
-                kw_data = data_to_write.get('keywords', {})
-                if isinstance(kw_data, dict):
-                    # 兼容 Movie ('keywords') 和 Series ('results') 的结构
-                    source_keywords = kw_data.get('keywords') or kw_data.get('results') or []
-                
-                # D. 过滤并映射
-                final_tags = set()
-                for k in source_keywords:
-                    if isinstance(k, dict):
-                        kid = str(k.get('id', ''))
-                        if kid in keyword_map:
-                            final_tags.add(keyword_map[kid])
-                
-                # E. 写入 tags.json (如果存在映射结果)
-                tags_json_path = os.path.join(target_override_dir, "tags.json")
-                if final_tags:
-                    with open(tags_json_path, 'w', encoding='utf-8') as f:
-                        json.dump({"tags": list(final_tags)}, f, ensure_ascii=False, indent=2)
-                    logger.info(f"  ➜ {log_prefix} 已根据映射表生成 tags.json，包含 {len(final_tags)} 个中文标签。")
-                else:
-                    # 如果没有匹配的标签，且存在旧文件，则删除旧文件以保持干净
-                    if os.path.exists(tags_json_path):
-                        os.remove(tags_json_path)
+            if self.config.get(constants.CONFIG_OPTION_KEYWORD_TO_TAGS, False):
+                try:
+                    # A. 获取映射表 (数据库优先 -> Utils兜底)
+                    mapping_data = settings_db.get_setting('keyword_mapping')
+                    if not mapping_data:
+                        mapping_data = utils.DEFAULT_KEYWORD_MAPPING
+                    
+                    # B. 构建 ID -> 中文Label 的查找表
+                    keyword_map = {}
+                    for entry in mapping_data:
+                        label = entry.get('label')
+                        if label:
+                            for kid in entry.get('ids', []):
+                                keyword_map[str(kid)] = label
+                    
+                    # C. 从元数据中提取原始关键词
+                    source_keywords = []
+                    kw_data = data_to_write.get('keywords', {})
+                    if isinstance(kw_data, dict):
+                        # 兼容 Movie ('keywords') 和 Series ('results') 的结构
+                        source_keywords = kw_data.get('keywords') or kw_data.get('results') or []
+                    
+                    # D. 过滤并映射
+                    final_tags = set()
+                    for k in source_keywords:
+                        if isinstance(k, dict):
+                            kid = str(k.get('id', ''))
+                            if kid in keyword_map:
+                                final_tags.add(keyword_map[kid])
+                    
+                    # E. 写入 tags.json (如果存在映射结果)
+                    tags_json_path = os.path.join(target_override_dir, "tags.json")
+                    if final_tags:
+                        with open(tags_json_path, 'w', encoding='utf-8') as f:
+                            json.dump({"tags": list(final_tags)}, f, ensure_ascii=False, indent=2)
+                        logger.info(f"  ➜ {log_prefix} 已根据映射表生成 tags.json，包含 {len(final_tags)} 个中文标签。")
+                    else:
+                        # 如果没有匹配的标签，且存在旧文件，则删除旧文件以保持干净
+                        if os.path.exists(tags_json_path):
+                            os.remove(tags_json_path)
 
-            except Exception as e_tags:
-                logger.warning(f"  ➜ {log_prefix} 处理关键词映射写入 tags.json 时发生错误: {e_tags}")
+                except Exception as e_tags:
+                    logger.warning(f"  ➜ {log_prefix} 处理关键词映射写入 tags.json 时发生错误: {e_tags}")
             
             # 2. 剔除不需要写入主文件的临时字段
             # (注意：这里删除了 episodes_details，所以上面必须先提取)

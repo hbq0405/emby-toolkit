@@ -113,6 +113,7 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS: ("General", 'int', constants.DEFAULT_MAX_ACTORS_TO_PROCESS),
     constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS: ("General", 'boolean', True),
     constants.CONFIG_OPTION_BACKUP_EPISODE_IMAGE: ("General", 'boolean', False),
+    constants.CONFIG_OPTION_KEYWORD_TO_TAGS: ("General", 'boolean', False),
 
     # [Network] 
     constants.CONFIG_OPTION_NETWORK_PROXY_ENABLED: (constants.CONFIG_SECTION_NETWORK, 'boolean', False),
