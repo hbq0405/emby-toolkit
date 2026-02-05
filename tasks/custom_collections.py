@@ -400,26 +400,17 @@ def process_single_custom_collection(processor, custom_collection_id: int):
         if collection_type == 'filter':
             admin_user_id = processor.emby_user_id
             target_library_ids = definition.get('target_library_ids', [])
-            
-            logger.info(f"  ➜ 正在为筛选合集《{collection_name}》生成全量内容...")
-
-            # ★★★ 修正：Filter 类型需要全量生成，否则 Emby 里只有几部片 ★★★
             sample_items, total_count = queries_db.query_virtual_library_items(
                 rules=definition.get('rules', []),
                 logic=definition.get('logic', 'AND'),
                 user_id=admin_user_id,
-                limit=10000, 
+                limit=9,
                 offset=0,
                 item_types=definition.get('item_type', ['Movie']),
-                target_library_ids=target_library_ids,
-                sort_by=definition.get('sort_by', 'DateCreated'), # 支持自定义排序
-                sort_order=definition.get('sort_order', 'Descending')
+                target_library_ids=target_library_ids
             )
-            
             global_ordered_emby_ids = [item['Id'] for item in sample_items]
             items_for_db = [{'emby_id': item['Id']} for item in sample_items]
-            
-            logger.info(f"  ➜ 筛选合集《{collection_name}》共匹配到 {len(global_ordered_emby_ids)} 个媒体项。")
 
         # ==================================================================
         # 分支 B: 榜单/推荐类 (List/AI) - 全量模式

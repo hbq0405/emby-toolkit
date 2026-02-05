@@ -1621,7 +1621,81 @@ def create_or_update_collection_with_emby_ids(
     logger.info(f"  ➜ 开始在Emby中处理名为 '{collection_name}' 的合集...")
     wait_for_server_idle(base_url, api_key)
     try:
+        # ==============================================================================
+        # ★★★ 核心修复：将“特洛伊木马”逻辑提权到最顶层 ★★★
+        # 无论是创建还是更新，只要目标列表为空且允许为空，就先抓壮丁
+        # ==============================================================================
         final_emby_ids = list(emby_ids_in_library)
+        if not final_emby_ids and allow_empty:
+            # 想要生成 9 宫格封面，至少需要 9 个占位符
+            PLACEHOLDER_COUNT = 9 
+            logger.info(f"  ➜ 合集 '{collection_name}' 内容为空，正在抓取 {PLACEHOLDER_COUNT} 个随机媒体项作为占位...")
+            
+            try:
+                target_lib_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
+                search_scopes = target_lib_ids if target_lib_ids else [None]
+                
+                found_items_batch = [] # 改用列表存储
+                
+                # 1. 优先尝试：带分级过滤 (PG-13)
+                for parent_id in search_scopes:
+                    params = {
+                        'api_key': api_key, 
+                        'Limit': PLACEHOLDER_COUNT, # ★ 请求 9 个
+                        'Recursive': 'true', 
+                        'IncludeItemTypes': 'Movie,Series',
+                        'SortBy': 'Random',     
+                        'ImageTypes': 'Primary',
+                        'MaxOfficialRating': 'PG-13'
+                    }
+                    if parent_id: params['ParentId'] = parent_id
+                    
+                    try:
+                        temp_resp = emby_client.get(f"{base_url.rstrip('/')}/Items", params=params)
+                        if temp_resp.status_code == 200:
+                            items = temp_resp.json().get('Items', [])
+                            if items:
+                                found_items_batch = items # ★ 保留所有结果
+                                scope_name = f"媒体库 {parent_id}" if parent_id else "全局"
+                                logger.info(f"  ➜ 在 {scope_name} 中成功抓取到 {len(items)} 个随机素材 (已过滤R级+)。")
+                                break
+                    except Exception: continue
+
+                # 2. 兜底尝试
+                if not found_items_batch and target_lib_ids:
+                     logger.warning("  ➜ 严格分级模式下未找到素材，尝试在受控库中放宽分级限制重试...")
+                     for parent_id in target_lib_ids:
+                        params = {
+                            'api_key': api_key, 
+                            'Limit': PLACEHOLDER_COUNT, # ★ 请求 9 个
+                            'Recursive': 'true', 
+                            'IncludeItemTypes': 'Movie,Series', 'SortBy': 'Random', 'ImageTypes': 'Primary',
+                            'ParentId': parent_id
+                        }
+                        try:
+                            temp_resp = emby_client.get(f"{base_url.rstrip('/')}/Items", params=params)
+                            items = temp_resp.json().get('Items', [])
+                            if items:
+                                found_items_batch = items # ★ 保留所有结果
+                                logger.info(f"  ➜ 重试成功：在媒体库 {parent_id} 中抓取到 {len(items)} 个素材 (无分级限制)。")
+                                break
+                        except Exception: continue
+                
+                # ★★★ 将抓取到的所有 ID 加入列表 ★★★
+                if found_items_batch:
+                    found_ids = [i['Id'] for i in found_items_batch]
+                    final_emby_ids.extend(found_ids) # 使用 extend 批量添加
+                else:
+                    if not allow_empty:
+                        logger.warning(f"无法获取占位素材，且不允许创建空合集，跳过处理 '{collection_name}'。")
+                        return None
+                    else:
+                        logger.warning(f"无法获取占位素材，合集 '{collection_name}' 将保持真正的空状态。")
+
+            except Exception as e:
+                logger.error(f"  ➜ 获取随机素材失败: {e}")
+
+        # ==============================================================================
         
         # 1. 先尝试查找合集
         collection = prefetched_collection_map.get(collection_name.lower()) if prefetched_collection_map is not None else get_collection_by_name(collection_name, base_url, api_key, user_id)
