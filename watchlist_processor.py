@@ -1202,7 +1202,7 @@ class WatchlistProcessor:
                 # --- 只有本地有该季文件，才根据时间判断是追剧还是暂停 ---
                 else:
                     # 子规则 A: 3天后才播出  -> 设为“暂停”
-                    if days_until_air >= 1 and enable_auto_pause:
+                    if days_until_air >= 3 and enable_auto_pause:
                         final_status = STATUS_PAUSED
                         paused_until_date = air_date
                         logger.info(f"  ⏸️ [判定-连载中] (第 {episode_number} 集) 将在 {days_until_air} 天后播出，设为“已暂停”。")
