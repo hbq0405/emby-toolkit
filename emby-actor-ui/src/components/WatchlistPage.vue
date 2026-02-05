@@ -428,39 +428,47 @@
               <div class="setting-icon"><n-icon :component="PausedIcon" /></div>
               <div class="setting-content">
                 <div class="setting-header">
-                  <div class="setting-label">自动暂停</div>
-                  <n-switch 
-                    :value="watchlistConfig.auto_pause > 0" 
-                    @update:value="(val) => watchlistConfig.auto_pause = val ? 3 : 0"
-                    size="small"
-                  >
-                    <template #checked>开启</template>
-                    <template #unchecked>关闭</template>
-                  </n-switch>
-                </div>
-                <div class="setting-desc">
-                  当下一集播出时间在指定天数以后时，自动将状态设为“暂停”，减少无效的搜索请求。
-                </div>
-                <n-collapse-transition :show="watchlistConfig.auto_pause > 0">
-                  <div class="setting-sub-panel">
-                    <n-grid :cols="1">
-                      <n-grid-item>
-                        <div class="sub-label">暂停阈值 (天)</div>
-                        <n-input-number 
-                          v-model:value="watchlistConfig.auto_pause" 
-                          size="small" 
-                          placeholder="天数"
-                          :min="1"
-                        >
-                          <template #suffix>天</template>
-                        </n-input-number>
-                        <n-text depth="3" style="font-size: 12px; margin-top: 4px; display: block;">
-                          * 设置为 3 表示：如果下一集在 3 天后才播，现在就暂停MP搜索。
-                        </n-text>
-                      </n-grid-item>
-                    </n-grid>
+                  <div class="setting-label">
+                    自动暂停
+                    <!-- 加个小标签提示当前状态，直观一点 -->
+                    <n-tag 
+                      v-if="watchlistConfig.auto_pause === 0" 
+                      :bordered="false" 
+                      type="error" 
+                      size="small" 
+                      style="margin-left: 8px; transform: scale(0.85);"
+                    >
+                      已关闭
+                    </n-tag>
+                    <n-tag 
+                      v-else 
+                      :bordered="false" 
+                      type="success" 
+                      size="small" 
+                      style="margin-left: 8px; transform: scale(0.85);"
+                    >
+                      已开启
+                    </n-tag>
                   </div>
-                </n-collapse-transition>
+                  
+                  <!-- 直接放输入框，去掉 Switch -->
+                  <n-input-number 
+                    v-model:value="watchlistConfig.auto_pause" 
+                    size="small" 
+                    style="width: 150px" 
+                    placeholder="0=关闭"
+                    :min="0"
+                  >
+                    <template #suffix>天</template>
+                  </n-input-number>
+                </div>
+                
+                <div class="setting-desc">
+                  当下一集播出时间在指定天数以后时，自动将状态设为“暂停”。<br/>
+                  <span style="color: var(--n-text-color-3); font-size: 12px;">
+                    * 设置为 0 即关闭此功能；设置为 3 表示若下一集在 3 天后才播，则暂停MP订阅。
+                  </span>
+                </div>
               </div>
             </div>
           </div>
