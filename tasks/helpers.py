@@ -567,7 +567,7 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
     
     逻辑：
     1. 剧集状态为 Ended/Canceled -> 视为完结
-    2. 最后一集播出日期已过 (<= Today) -> 视为完结
+    2. 最后一集播出日期已过 (<= Today) 且 总集数 > 5 -> 视为完结 (防止只有1-2集的占位数据误判)
     3. 最后一集播出超过30天 (防止数据缺失) -> 视为完结
     4. 获取不到数据 -> 为了防止漏洗版，默认视为完结
     """
@@ -610,8 +610,13 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
                     
                     # ★★★ 修改：移除缓冲期，只要日期 <= 今天，即视为完结 ★★★
                     if last_air_date <= today:
-                        logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集于 {last_air_date} 播出，判定已完结。")
-                        return True
+                        # ★★★ 新增：集数阈值检查，防止只有1集的条目被误判完结 ★★★
+                        if len(episodes) > 5:
+                            logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集于 {last_air_date} 播出 (共{len(episodes)}集)，判定已完结。")
+                            return True
+                        else:
+                            logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集虽已播出，但集数过少 ({len(episodes)}集 <= 5集)，为防止误判(如新剧占位)，判定未完结。")
+                            return False
                     else:
                         logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最后一集将于 {last_air_date} 播出，判定未完结。")
                         return False
@@ -629,6 +634,7 @@ def check_series_completion(tmdb_id: int, api_key: str, season_number: Optional[
                         if air_date > today: return False 
                         
                         # 如果最近的一集都播出超过30天了，那大概率是完结了（或者断更了）
+                        # 这里通常保留不做集数限制，因为如果断更30天以上，通常意味着该季暂时也就这样了
                         if (today - air_date).days > 30:
                             logger.info(f"  ➜ 《{series_name}》第 {season_number} 季最近一集播出 ({air_date}) 已超30天，判定已完结。")
                             return True
