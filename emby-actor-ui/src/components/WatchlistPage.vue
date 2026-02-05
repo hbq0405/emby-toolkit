@@ -429,14 +429,38 @@
               <div class="setting-content">
                 <div class="setting-header">
                   <div class="setting-label">自动暂停</div>
-                  <n-switch v-model:value="watchlistConfig.auto_pause" size="small">
+                  <n-switch 
+                    :value="watchlistConfig.auto_pause > 0" 
+                    @update:value="(val) => watchlistConfig.auto_pause = val ? 3 : 0"
+                    size="small"
+                  >
                     <template #checked>开启</template>
                     <template #unchecked>关闭</template>
                   </n-switch>
                 </div>
                 <div class="setting-desc">
-                  当下一集播出时间在 3 天以后时，自动将状态设为“暂停”，减少无效的搜索请求。
+                  当下一集播出时间在指定天数以后时，自动将状态设为“暂停”，减少无效的搜索请求。
                 </div>
+                <n-collapse-transition :show="watchlistConfig.auto_pause > 0">
+                  <div class="setting-sub-panel">
+                    <n-grid :cols="1">
+                      <n-grid-item>
+                        <div class="sub-label">暂停阈值 (天)</div>
+                        <n-input-number 
+                          v-model:value="watchlistConfig.auto_pause" 
+                          size="small" 
+                          placeholder="天数"
+                          :min="1"
+                        >
+                          <template #suffix>天</template>
+                        </n-input-number>
+                        <n-text depth="3" style="font-size: 12px; margin-top: 4px; display: block;">
+                          * 设置为 3 表示：如果下一集在 3 天后才播，现在就暂停MP搜索。
+                        </n-text>
+                      </n-grid-item>
+                    </n-grid>
+                  </div>
+                </n-collapse-transition>
               </div>
             </div>
           </div>
@@ -647,7 +671,7 @@ const watchlistConfig = ref({
       episodes: 1, 
       default_total_episodes: 99
   },
-  auto_pause: false,
+  auto_pause: 0,
   auto_resub_ended: false,
   auto_delete_old_files: false,
   auto_delete_mp_history: false,     
@@ -669,7 +693,7 @@ const openConfigModal = async () => {
            episodes: data.auto_pending?.episodes ?? 1,
            default_total_episodes: data.auto_pending?.default_total_episodes ?? 99
          },
-         auto_pause: data.auto_pause ?? false,
+         auto_pause: data.auto_pause ?? 0,
          auto_resub_ended: data.auto_resub_ended ?? false,
          auto_delete_old_files: data.auto_delete_old_files ?? false,
          auto_delete_mp_history: data.auto_delete_mp_history ?? false,

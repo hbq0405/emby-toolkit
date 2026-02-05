@@ -746,7 +746,8 @@ class WatchlistProcessor:
         """
         try:
             watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
-            enable_auto_pause = watchlist_cfg.get('auto_pause', False)
+            auto_pause_days = int(watchlist_cfg.get('auto_pause', 0))
+            enable_auto_pause = auto_pause_days > 0
             auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
             enable_sync_sub = watchlist_cfg.get('sync_mp_subscription', False)
             
@@ -986,7 +987,8 @@ class WatchlistProcessor:
         watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
         auto_pending_cfg = watchlist_cfg.get('auto_pending', {})
         aggressive_threshold = int(auto_pending_cfg.get('episodes', 5)) 
-        enable_auto_pause = watchlist_cfg.get('auto_pause', False)
+        auto_pause_days = int(watchlist_cfg.get('auto_pause', 0))
+        enable_auto_pause = auto_pause_days > 0
 
         # 调用通用辅助函数刷新元数据
         refresh_result = self._refresh_series_metadata(tmdb_id, item_name, item_id)
@@ -1201,11 +1203,11 @@ class WatchlistProcessor:
                 
                 # --- 只有本地有该季文件，才根据时间判断是追剧还是暂停 ---
                 else:
-                    # 子规则 A: 3天后才播出  -> 设为“暂停”
-                    if days_until_air >= 3 and enable_auto_pause:
+                    # 子规则 A: 播出时间 >= 设定天数 -> 设为“暂停”
+                    if enable_auto_pause and days_until_air >= auto_pause_days:
                         final_status = STATUS_PAUSED
                         paused_until_date = air_date
-                        logger.info(f"  ⏸️ [判定-连载中] (第 {episode_number} 集) 将在 {days_until_air} 天后播出，设为“已暂停”。")
+                        logger.info(f"  ⏸️ [判定-连载中] (第 {episode_number} 集) 将在 {days_until_air} 天后播出 (阈值: {auto_pause_days}天)，设为“已暂停”。")
                     # 子规则 B: 即将播出 -> 设为“追剧中”
                     else:
                         final_status = STATUS_WATCHING
