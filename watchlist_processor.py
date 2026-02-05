@@ -779,7 +779,7 @@ class WatchlistProcessor:
                 # --- A. 检查订阅是否存在 ---
                 exists = moviepilot.check_subscription_exists(tmdb_id, 'Series', self.config, season=s_num)
                 
-                # --- B. 自动补订逻辑 (核心修改) ---
+                # --- B. 自动补订逻辑 ---
                 if not exists:
                     if not self.config.get(constants.CONFIG_OPTION_AUTOSUB_ENABLED):
                         return
@@ -893,7 +893,7 @@ class WatchlistProcessor:
                 # 获取唯一的那个规格，用于日志展示
                 res = list(resolutions)[0]
                 grp = list(groups)[0]
-                logger.info(f"  ✅ [一致性检查] S{season_number} 完美达标 (集齐且统一): [{res} / {grp}]，跳过洗版。")
+                logger.info(f"  ✅ [一致性检查] S{season_number} 完美达标: [{res} / {grp}]，跳过洗版。")
                 return True
             else:
                 logger.info(f"  ⚠️ [一致性检查] S{season_number} 版本混杂，需要洗版。分布: 分辨率{resolutions}, 制作组{groups}, 编码{codecs}")
@@ -905,7 +905,7 @@ class WatchlistProcessor:
 
     def _handle_auto_resub_ended(self, tmdb_id: str, series_name: str, season_number: int, episode_count: int):
         """
-        【重构版】针对指定季进行完结洗版。
+        针对指定季进行完结洗版。
         参数直接传入季号和集数，不再需要在内部计算。
         """
         try:
@@ -935,17 +935,16 @@ class WatchlistProcessor:
                 except Exception as e:
                     logger.error(f"  ❌ [自动清理] 执行删除逻辑时出错: {e}")
 
-            # 4. 删除整理记录 (MoviePilot) - 新增开关控制
+            # 4. 删除整理记录 (MoviePilot) - 
             related_hashes = []
             if watchlist_cfg.get('auto_delete_mp_history', False):
                 logger.info(f"  🗑️ [自动清理] 正在删除 MoviePilot 整理记录...")
                 related_hashes = moviepilot.delete_transfer_history(tmdb_id, season_number, series_name, self.config)
 
-            # 5. 清理下载器中的旧任务 - 新增开关控制
-            if watchlist_cfg.get('auto_delete_download_tasks', False):
-                logger.info(f"  🗑️ [自动清理] 正在删除下载器旧任务...")
-                # 如果第4步没开，related_hashes 为空，delete_download_tasks 内部应有处理逻辑(如按名字删)或仅跳过hash删除
-                moviepilot.delete_download_tasks(series_name, self.config, hashes=related_hashes)
+                # 5. 清理下载器中的旧任务 -
+                if watchlist_cfg.get('auto_delete_download_tasks', False):
+                    logger.info(f"  🗑️ [自动清理] 正在删除下载器旧任务...")
+                    moviepilot.delete_download_tasks(series_name, self.config, hashes=related_hashes)
 
             # 6. 取消旧订阅
             moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=season_number)

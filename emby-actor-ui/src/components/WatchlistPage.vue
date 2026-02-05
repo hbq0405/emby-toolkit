@@ -582,7 +582,7 @@
                   </n-switch>
                 </div>
                 <div class="setting-desc">
-                  当发现 MoviePilot 中缺失活跃订阅时自动补订。
+                  当发现 MoviePilot 中缺失在追剧订阅时自动补订。
                 </div>
               </div>
             </div>

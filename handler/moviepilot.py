@@ -412,10 +412,14 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
 
 def delete_download_tasks(keyword: str, config: Dict[str, Any], hashes: list = None) -> bool:
     """
-    【清理下载任务】
-    优先使用 hashes 列表进行精确删除。
-    如果 hashes 为空，则回退到使用 keyword 搜索删除（兜底）。
+    清理下载任务 - 安全版
+    Strict Mode: 仅接受 hashes 列表进行精确删除。
+    如果不传 hashes 或为空，直接跳过，绝不使用 keyword 搜索兜底。
     """
+    # --- 1. 安全检查：无 Hash 直接熔断 ---
+    if not hashes:
+        return False
+
     try:
         moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
         access_token = _get_access_token(config)
@@ -424,59 +428,32 @@ def delete_download_tasks(keyword: str, config: Dict[str, Any], hashes: list = N
         headers = {"Authorization": f"Bearer {access_token}"}
         deleted_count = 0
 
-        # --- 策略 A: 精确打击 (使用 Hash) ---
-        if hashes:
-            logger.info(f"  🎯 [下载器清理] 正在根据 Hash 精确删除 {len(hashes)} 个任务...")
-            for task_hash in hashes:
-                if not task_hash: continue
-                del_url = f"{moviepilot_url}/api/v1/download/{task_hash}"
-                try:
-                    del_res = requests.delete(del_url, headers=headers, timeout=10)
-                    if del_res.status_code == 200:
-                        logger.info(f"  🗑️ [下载器清理] 已精确删除任务 Hash: {task_hash[:8]}...")
-                        deleted_count += 1
-                except: pass
-            
-            if deleted_count > 0:
-                logger.info(f"  ✅ [下载器清理] Hash 精确清理完成，共删除 {deleted_count} 个任务。")
-                import time
-                time.sleep(2)
-                return True
-            else:
-                logger.warning(f"  ⚠️ [下载器清理] Hash 清理未成功 (可能任务早已不存在)，尝试关键词搜索兜底...")
-
-        # --- 策略 B: 地毯式轰炸 (使用关键词搜索) ---
-        # 只有当没传 Hash，或者 Hash 删除没效果时，才走这一步
-        list_url = f"{moviepilot_url}/api/v1/download/"
-        params = {"name": keyword}
+        # --- 2. 策略 A: 精确打击 (仅使用 Hash) ---
+        logger.info(f"  🎯 [下载器清理] 正在根据 Hash 精确删除 {len(hashes)} 个任务...")
         
-        res = requests.get(list_url, headers=headers, params=params, timeout=15)
-        if res.status_code != 200: return False
-            
-        tasks = res.json()
-        if not tasks:
-            logger.info(f"  ✅ [下载器清理] 未找到关键词 '{keyword}' 的活跃任务。")
-            return True
-            
-        for task in tasks:
-            task_hash = task.get('hash')
-            task_title = task.get('title', '未知任务')
+        for task_hash in hashes:
             if not task_hash: continue
             
             del_url = f"{moviepilot_url}/api/v1/download/{task_hash}"
             try:
+                # 只有这里才是真正执行删除的地方
                 del_res = requests.delete(del_url, headers=headers, timeout=10)
                 if del_res.status_code == 200:
-                    logger.info(f"  🗑️ [下载器清理] 已删除旧任务: {task_title}")
+                    logger.info(f" 🗑️ [下载器清理] 已精确删除任务 Hash: {task_hash[:8]}...")
                     deleted_count += 1
-            except: pass
-
+            except Exception as e:
+                logger.debug(f" [下载器清理] 删除 Hash {task_hash[:8]} 失败: {e}")
+        
+        # --- 3. 结果反馈 ---
         if deleted_count > 0:
-            logger.info(f"  ✅ [下载器清理] 关键词清理完成，共删除 {deleted_count} 个旧任务。")
+            logger.info(f"  ✅ [下载器清理] Hash 精确清理完成，共删除 {deleted_count} 个任务。")
             import time
             time.sleep(2)
-            
-        return True
+            return True
+        else:
+            # 即使没删掉（比如任务早就不在了），也到此为止，绝不搜索关键词
+            logger.info(f"  ℹ️ [下载器清理] 提供的 Hash 均未在下载器中找到活跃任务，无需操作。")
+            return True
 
     except Exception as e:
         logger.error(f"  ❌ [下载器清理] 执行出错: {e}")
