@@ -2464,7 +2464,9 @@ class MediaProcessor:
                 conn.commit()
 
             # 只有电影和剧集才需要刷新向量库，分集(Episode)入库不影响整体推荐，跳过以节省资源
-            if item_type in ['Movie', 'Series'] and \
+            is_pure_episode_update = (item_type == 'Series' and specific_episode_ids)
+
+            if item_type in ['Movie', 'Series'] and not is_pure_episode_update and \
                self.config.get(constants.CONFIG_OPTION_PROXY_ENABLED) and \
                self.config.get(constants.CONFIG_OPTION_AI_VECTOR):
                 try:
@@ -2473,6 +2475,8 @@ class MediaProcessor:
                     logger.debug(f"  ➜ [智能推荐] 已触发向量缓存刷新，'{item_name_for_log}' 将即刻加入推荐池。")
                 except Exception as e:
                     logger.warning(f"  ➜ [智能推荐] 触发缓存刷新失败: {e}")
+            elif is_pure_episode_update:
+                logger.debug(f"  ➜ [智能推荐] 检测到为剧集追更模式，跳过向量缓存刷新。")
 
             logger.trace(f"--- 处理完成 '{item_name_for_log}' ---")
 
