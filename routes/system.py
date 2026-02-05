@@ -133,7 +133,7 @@ def test_proxy_connection():
 
     # 如果用户还没填 API Key，提前告知
     if not tmdb_api_key:
-        return jsonify({"success": False, "message": "测试失败：请先在上方配置 TMDB API Key。"}), 400
+        return jsonify({"success": False, "message": "测试失败：请先在通用设置配置 TMDB API Key。"}), 400
 
     test_target_url = "https://api.themoviedb.org/3/configuration"
     proxies = {"http": proxy_url, "https": proxy_url}
