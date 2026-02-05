@@ -2463,6 +2463,17 @@ class MediaProcessor:
                 
                 conn.commit()
 
+            # 只有电影和剧集才需要刷新向量库，分集(Episode)入库不影响整体推荐，跳过以节省资源
+            if item_type in ['Movie', 'Series'] and \
+               self.config.get(constants.CONFIG_OPTION_PROXY_ENABLED) and \
+               self.config.get(constants.CONFIG_OPTION_AI_VECTOR):
+                try:
+                    # 使用 threading 异步执行，不阻塞核心流程
+                    threading.Thread(target=RecommendationEngine.refresh_cache).start()
+                    logger.debug(f"  ➜ [智能推荐] 已触发向量缓存刷新，'{item_name_for_log}' 将即刻加入推荐池。")
+                except Exception as e:
+                    logger.warning(f"  ➜ [智能推荐] 触发缓存刷新失败: {e}")
+
             logger.trace(f"--- 处理完成 '{item_name_for_log}' ---")
 
         except (ValueError, InterruptedError) as e:

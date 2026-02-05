@@ -174,18 +174,9 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         except Exception as e:
             logger.warning(f"  ➜ 检查所属 TMDb 合集时发生错误: {e}")
 
-    # 4. 入库完成后，主动刷新向量推荐引擎缓存 ★★★
-    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
-        try:
-            # 异步执行，不阻塞当前 Webhook 线程
-            spawn(RecommendationEngine.refresh_cache)
-            logger.debug(f"  ➜ [智能推荐] 已触发向量缓存刷新，新入库的 '{item_name_for_log}' 将即刻加入推荐池。")
-        except Exception as e:
-            logger.warning(f"  ➜ [智能推荐] 触发缓存刷新失败: {e}")
-
     logger.trace(f"  ➜ Webhook 任务及所有后续流程完成: '{item_name_for_log}'")
 
-    # 5. ★★★ 通知分流 ★★★
+    # 4. ★★★ 通知分流 ★★★
     try:
         # 如果提供了 new_episode_ids，说明是追更通知
         # 如果 is_new_item 为 True，说明是新入库通知
