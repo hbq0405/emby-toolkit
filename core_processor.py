@@ -826,13 +826,15 @@ class MediaProcessor:
                         with get_central_db_connection() as conn:
                             cursor = conn.cursor()
                             for clean_id in ids_to_clean:
-                                # 1. 删数据库日志
+                                # 1. 删除已处理日志
                                 self.log_db_manager.remove_from_processed_log(cursor, clean_id)
-                                # 2. 删内存缓存
+                                # 2. 删除待复核日志
+                                self.log_db_manager.remove_from_failed_log(cursor, clean_id)
+                                # 3. 删除内存缓存
                                 if clean_id in self.processed_items_cache:
                                     del self.processed_items_cache[clean_id]
                             conn.commit()
-                        logger.info(f"  ➜ [文件删除] 已清理 {len(ids_to_clean)} 条相关的已处理记录/缓存。")
+                        logger.info(f"  ➜ [文件删除] 已清理 {len(ids_to_clean)} 条相关的已处理/待复核/缓存。")
                     except Exception as e:
                         logger.warning(f"  ➜ [文件删除] 清理日志时遇到轻微错误: {e}")
 
@@ -1796,6 +1798,7 @@ class MediaProcessor:
                 logger.info(f"  ➜ 发现 {len(deleted_items_to_clean)} 个已从 Emby 媒体库删除的项目，正在从 '已处理' 中移除...")
                 for deleted_item_id in deleted_items_to_clean:
                     self.log_db_manager.remove_from_processed_log(cursor, deleted_item_id)
+                    self.log_db_manager.remove_from_failed_log(cursor, deleted_item_id)
                     # 同时从内存缓存中移除
                     if deleted_item_id in self.processed_items_cache:
                         del self.processed_items_cache[deleted_item_id]
