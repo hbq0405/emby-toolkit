@@ -328,7 +328,7 @@ def get_playback_report():
     days = request.args.get('days', 30, type=int)
     config = config_manager.APP_CONFIG
     
-    # 1. 获取个人数据
+    # 1. 获取个人数据 (来自 Playback Reporting 插件)
     personal_res = emby.get_playback_reporting_data(
         config['emby_server_url'], config['emby_api_key'], emby_user_id, days
     )
@@ -340,7 +340,7 @@ def get_playback_report():
         
     raw_activity = personal_res.get("data", [])
     
-    # --- 处理个人数据 ---
+    # --- 步骤 A: 统计总时长 (遍历所有数据) ---
     personal_stats = {
         "total_count": len(raw_activity),
         "total_minutes": 0,
@@ -348,39 +348,79 @@ def get_playback_report():
     }
     
     for item in raw_activity:
-        # ★★★ 兼容性修复：尝试多种字段名获取时长 ★★★
         # PlayDuration 通常是秒
         duration_sec = item.get("PlayDuration") or item.get("Duration") or 0
-        duration_min = int(duration_sec / 60)
+        personal_stats["total_minutes"] += int(duration_sec / 60)
+
+    # --- 步骤 B: 准备历史列表 (只处理前 20 条) ---
+    # 我们只对这 20 条进行“回查”，避免性能问题
+    top_20_items = raw_activity[:20]
+    
+    # 1. 收集需要回查详情的 Episode ID
+    episode_ids_to_fetch = []
+    for item in top_20_items:
+        # 注意：插件返回的 item_id 可能是 int，需要转 str
+        item_id = str(item.get("ItemId") or item.get("item_id"))
+        item_type = item.get("ItemType") or item.get("item_type") or "Video"
         
-        personal_stats["total_minutes"] += duration_min
+        if item_type == 'Episode' and item_id:
+            episode_ids_to_fetch.append(item_id)
+            
+    # 2. 批量回查 Emby 获取季号和集号 (只发起 1 次网络请求)
+    episode_details_map = {}
+    if episode_ids_to_fetch:
+        try:
+            # 调用 emby.py 中已有的批量获取函数
+            # 请求字段: SeriesName(剧集名), ParentIndexNumber(季号), IndexNumber(集号)
+            details_list = emby.get_emby_items_by_id(
+                base_url=config['emby_server_url'],
+                api_key=config['emby_api_key'],
+                user_id=emby_user_id, # 这里传 user_id 也没关系，主要是为了查元数据
+                item_ids=episode_ids_to_fetch,
+                fields="SeriesName,ParentIndexNumber,IndexNumber,Name"
+            )
+            # 构建字典映射: ID -> Detail
+            for d in details_list:
+                episode_details_map[d['Id']] = d
+        except Exception as e:
+            logger.error(f"批量回查集数详情失败: {e}")
+
+    # --- 步骤 C: 构建最终返回列表 ---
+    for item in top_20_items:
+        item_id = str(item.get("ItemId") or item.get("item_id"))
+        item_type = item.get("ItemType") or item.get("item_type") or "Video"
         
-        # 构建历史列表 (只取前 20 条)
-        if len(personal_stats["history_list"]) < 20:
-            # ★★★ 兼容性修复：尝试多种字段名获取标题 ★★★
-            # 插件里有时叫 Name，有时叫 ItemName
-            raw_title = item.get("Name") or item.get("ItemName") or "未知影片"
-            series_name = item.get("SeriesName")
-            episode_name = item.get("EpisodeName")
+        # 原始标题 (作为兜底)
+        display_title = item.get("Name") or item.get("item_name") or "未知影片"
+        
+        # ★★★ 核心逻辑：如果是剧集，且回查到了详情，则重写标题 ★★★
+        if item_type == 'Episode' and item_id in episode_details_map:
+            detail = episode_details_map[item_id]
+            series_name = detail.get('SeriesName')
+            season_num = detail.get('ParentIndexNumber')
+            episode_num = detail.get('IndexNumber')
             
-            display_title = raw_title
-            # 如果有剧集名，拼凑一下
-            if series_name:
-                if episode_name:
-                    display_title = f"{series_name} - {episode_name}"
-                else:
-                    display_title = f"{series_name} - {raw_title}"
-            
-            # ★★★ 兼容性修复：尝试多种字段名获取日期 ★★★
-            date_str = item.get("DateCreated") or item.get("Date") or item.get("Time")
-            
-            personal_stats["history_list"].append({
-                "title": display_title,
-                "date": date_str,
-                "duration": duration_min,
-                "item_type": item.get("ItemType", "Video"),
-                "item_id": item.get("ItemId") or item.get("Id")
-            })
+            if series_name and season_num is not None and episode_num is not None:
+                display_title = f"{series_name} - 第 {season_num} 季 - 第 {episode_num} 集"
+            elif series_name:
+                # 如果缺季号或集号，至少显示剧集名
+                display_title = f"{series_name} - {detail.get('Name')}"
+
+        # 日期处理
+        date_str = item.get("DateCreated") or item.get("Date") or item.get("date")
+        # 如果有 time 字段，拼接到 date 后面 (适配你提供的 JSON 格式)
+        if item.get("time") and date_str and " " not in str(date_str):
+             date_str = f"{date_str} {item.get('time')}"
+
+        duration_sec = item.get("PlayDuration") or item.get("Duration") or item.get("duration") or 0
+        
+        personal_stats["history_list"].append({
+            "title": display_title,
+            "date": date_str,
+            "duration": int(float(duration_sec) / 60),
+            "item_type": item_type,
+            "item_id": item_id
+        })
 
     # 2. 获取全局热榜
     global_res = emby.get_global_popular_items(
