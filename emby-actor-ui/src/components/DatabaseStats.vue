@@ -78,7 +78,7 @@
                             {{ stats.media_library.episodes_in_library }}
                           </n-statistic>
                         </n-gi>
-                        <!-- 演员 (已修正：显示已关联数) -->
+                        <!-- 演员 -->
                         <n-gi>
                           <n-statistic label="演员">
                             <template #prefix>
@@ -86,7 +86,6 @@
                                 <n-icon :size="14" :component="PersonOutline" color="#999" />
                               </n-icon-wrapper>
                             </template>
-                            <!-- ★★★ 修正点：这里改为 actor_mappings_linked ★★★ -->
                             {{ stats.system.actor_mappings_linked }}
                           </n-statistic>
                         </n-gi>
@@ -414,8 +413,7 @@ const loading = reactive({
 });
 
 const stats = reactive({
-  media_library: { cached_total: 0, movies_in_library: 0, series_in_library: 0, episodes_in_library: 0, missing_total: 0, resolution_stats: [] },
-  // 确保这里有 actor_mappings_linked
+  media_library: { cached_total: 0, movies_in_library: 0, series_in_library: 0, episodes_in_library: 0, resolution_stats: [] },
   system: { actor_mappings_total: 0, actor_mappings_linked: 0, actor_mappings_unlinked: 0, translation_cache_count: 0, processed_log_count: 0, failed_log_count: 0 },
   subscriptions_card: {
     watchlist: { watching: 0, paused: 0, completed: 0 },
