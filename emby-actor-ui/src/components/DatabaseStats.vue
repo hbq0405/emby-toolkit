@@ -48,13 +48,13 @@
                         <n-gi><n-statistic label="剧集" :value="stats.media_library.series_in_library" /></n-gi>
                         <n-gi><n-statistic label="总集数" :value="stats.media_library.episodes_in_library" /></n-gi>
                         <n-gi>
-                          <n-statistic label="预缓存">
+                          <n-statistic label="演员">
                             <template #prefix>
                               <n-icon-wrapper :size="20" :border-radius="5" color="#FFCC3344">
                                 <n-icon :size="14" :component="FolderOpenOutline" color="#FFCC33" />
                               </n-icon-wrapper>
                             </template>
-                            {{ stats.media_library.missing_total }}
+                            {{ stats.system.actor_mappings_linked }}
                           </n-statistic>
                         </n-gi>
                       </n-grid>
@@ -62,31 +62,6 @@
                   </n-gi>
                 </n-grid>
               </div>
-  
-              <!-- 演员数据统计 -->
-              <div>
-                <div class="section-title">演员数据统计</div>
-                <n-grid :cols="2" :x-gap="24" style="background-color: rgba(128, 128, 128, 0.05); padding: 12px; border-radius: 8px;">
-                  <n-gi>
-                    <n-statistic label="当前已关联 (Emby)">
-                      <span style="font-size: 20px; font-weight: 600; color: var(--n-primary-color);">
-                        {{ stats.system.actor_mappings_linked }}
-                      </span>
-                    </n-statistic>
-                  </n-gi>
-                  <n-gi>
-                    <n-statistic label="历史归档总数">
-                      <span style="font-size: 20px; font-weight: 600;">
-                        {{ stats.system.actor_mappings_total }}
-                      </span>
-                    </n-statistic>
-                  </n-gi>
-                </n-grid>
-                <n-text depth="3" style="font-size: 12px; margin-top: 8px; display: block;">
-                  * 归档包含所有历史处理过的演员资产（含路人甲及已删媒体演员），不随媒体库变动而清除。
-                </n-text>
-              </div>
-  
               <n-divider />
   
               <!-- 系统日志与缓存 -->
