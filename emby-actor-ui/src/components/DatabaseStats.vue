@@ -26,6 +26,7 @@
                   </n-statistic>
                 </n-gi>
                 <n-gi>
+                  <!-- 这里保持显示总归档数，代表数字资产总量 -->
                   <n-statistic label="已归档演员" class="centered-statistic">
                     <span class="stat-value">{{ stats.system.actor_mappings_total }}</span>
                   </n-statistic>
@@ -77,7 +78,7 @@
                             {{ stats.media_library.episodes_in_library }}
                           </n-statistic>
                         </n-gi>
-                        <!-- 演员 -->
+                        <!-- 演员 (已修正：显示已关联数) -->
                         <n-gi>
                           <n-statistic label="演员">
                             <template #prefix>
@@ -85,7 +86,8 @@
                                 <n-icon :size="14" :component="PersonOutline" color="#999" />
                               </n-icon-wrapper>
                             </template>
-                            {{ stats.system.actor_mappings_total }}
+                            <!-- ★★★ 修正点：这里改为 actor_mappings_linked ★★★ -->
+                            {{ stats.system.actor_mappings_linked }}
                           </n-statistic>
                         </n-gi>
                       </n-grid>
@@ -318,7 +320,8 @@
                   <n-icon :size="12" :component="PersonOutline" color="#999" />
                 </n-icon-wrapper>
               </template>
-              {{ stats.system.actor_mappings_total }}
+              <!-- ★★★ 修正点：移动端也改为 actor_mappings_linked ★★★ -->
+              {{ stats.system.actor_mappings_linked }}
             </n-statistic>
           </n-gi>
         </n-grid>
@@ -412,6 +415,7 @@ const loading = reactive({
 
 const stats = reactive({
   media_library: { cached_total: 0, movies_in_library: 0, series_in_library: 0, episodes_in_library: 0, missing_total: 0, resolution_stats: [] },
+  // 确保这里有 actor_mappings_linked
   system: { actor_mappings_total: 0, actor_mappings_linked: 0, actor_mappings_unlinked: 0, translation_cache_count: 0, processed_log_count: 0, failed_log_count: 0 },
   subscriptions_card: {
     watchlist: { watching: 0, paused: 0, completed: 0 },
@@ -444,7 +448,10 @@ const fetchLibrary = async () => {
 const fetchSystem = async () => {
   try {
     const res = await axios.get('/api/database/stats/system');
-    if (res.data.status === 'success') Object.assign(stats.system, res.data.data);
+    if (res.data.status === 'success') {
+      // 确保 actor_mappings_linked 被正确赋值
+      Object.assign(stats.system, res.data.data);
+    }
   } catch (e) { console.error(e); } finally { loading.system = false; }
 };
 const fetchSubscription = async () => {
