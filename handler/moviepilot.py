@@ -385,8 +385,7 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
 
         # 3. 逐条删除并收集 Hash
         delete_url = f"{moviepilot_url}/api/v1/history/transfer"
-        # 基础参数
-        base_del_params = {"deletesrc": "false", "deletedest": "false"}
+        del_params = {"deletesrc": "false", "deletedest": "false"}
         
         deleted_count = 0
         for rec in ids_to_delete:
@@ -396,21 +395,10 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
                 if rec_hash:
                     collected_hashes.append(rec_hash)
 
-                current_params = base_del_params.copy()
-                current_params['id'] = rec.get('id')
-                
-                if current_params['id']:
-                    del_res = requests.delete(delete_url, headers=headers, params=current_params, timeout=15)
-                    
-                    # 兼容 200 (OK) 和 204 (No Content)
-                    if del_res.status_code in [200, 204]:
-                        deleted_count += 1
-                    else:
-                        logger.debug(f"  ⚠️ 删除记录 {rec.get('id')} 失败: {del_res.status_code} - {del_res.text}")
-                
-            except Exception as e: 
-                logger.debug(f"  ⚠️ 删除单条记录时出错: {e}")
-                pass
+                del_res = requests.delete(delete_url, headers=headers, params=del_params, json=rec, timeout=15)
+                if del_res.status_code == 200:
+                    deleted_count += 1
+            except: pass
 
         # 去重 Hash
         collected_hashes = list(set(collected_hashes))
