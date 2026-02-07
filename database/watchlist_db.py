@@ -317,17 +317,18 @@ def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
         raise
 
 def get_watching_tmdb_ids() -> set:
-    """获取所有正在追看（状态为 'Watching', 'Paused'）的剧集的 TMDB ID 集合。"""
+    """获取所有正在追看（状态为 'Watching' 或 'Paused'）的剧集的 TMDB ID 集合。"""
     watching_ids = set()
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT tmdb_id FROM media_metadata WHERE watching_status in ['Watching', 'Paused'] AND item_type = 'Series'")
+            # 修改处：使用 IN ('Watching', 'Paused') 来包含两种状态
+            cursor.execute("SELECT tmdb_id FROM media_metadata WHERE watching_status IN ('Watching', 'Paused') AND item_type = 'Series'")
             rows = cursor.fetchall()
             for row in rows:
                 watching_ids.add(str(row['tmdb_id']))
     except Exception as e:
-        logger.error(f"  ➜ 从数据库获取正在追看的TMDB ID时出错: {e}", exc_info=True)
+        logger.error(f"  ➜ 从数据库获取正在追看/暂停的TMDB ID时出错: {e}", exc_info=True)
     return watching_ids
 
 def get_airing_series_tmdb_ids() -> set:
