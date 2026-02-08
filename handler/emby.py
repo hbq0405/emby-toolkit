@@ -3044,7 +3044,7 @@ def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days:
         if cleaned_data:
             import json
             # 只打印第一条，防止日志刷屏
-            logger.info(f"🔍 [UserPlaylist] 数据获取成功，Count: {len(cleaned_data)} | Sample: {json.dumps(cleaned_data[0], ensure_ascii=False)}")
+            logger.debug(f"  🔍 [UserPlaylist] 数据获取成功，Count: {len(cleaned_data)} | Sample: {json.dumps(cleaned_data[0], ensure_ascii=False)}")
         else:
             logger.warning(f"🔍 [UserPlaylist] 请求成功但返回空列表 (User: {user_id})")
 
