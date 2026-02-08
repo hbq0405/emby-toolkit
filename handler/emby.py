@@ -3056,83 +3056,72 @@ def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days:
 
 def get_global_popular_items(base_url: str, api_key: str, days: int = 30) -> dict:
     """
-    获取全局热门数据 (聚合逻辑优化版)
+    获取全局热门数据 (官方参数复刻版)
+    修复：使用官方 Web 端相同的参数 days 和 user_id=""，解决数据只显示一天的问题
     """
-    # 1. 构造 URL (适配不同的 Base URL 格式)
+    # 1. 构造 URL
+    endpoint = "/user_usage_stats/UserPlaylist"
     if "/emby" not in base_url:
-        api_url = f"{base_url.rstrip('/')}/emby/user_usage_stats/UserPlaylist"
+        api_url = f"{base_url.rstrip('/')}/emby{endpoint}"
     else:
-        api_url = f"{base_url.rstrip('/')}/user_usage_stats/UserPlaylist"
+        api_url = f"{base_url.rstrip('/')}{endpoint}"
     
-    # 2. 构造时间参数
-    start_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
-    
+    # 2. 复刻官方参数
     params = {
         "api_key": api_key,
-        "min_date": start_date,
-        "limit": 1000 # 获取足够多的记录用于聚合
+        "days": days,           # ★ 关键：直接用天数，不要用 min_date
+        "user_id": "",          # ★ 关键：传空值，明确表示获取全站数据
+        "aggregate_data": "false", # 我们在本地聚合更可控，设为 false 获取原始流水
+        "include_stats": "false",
+        "limit": 100000         # ★ 关键：拉取足够多的流水，防止被截断
     }
     
     try:
-        response = emby_client.get(api_url, params=params, timeout=20)
+        # 增加超时时间
+        response = emby_client.get(api_url, params=params, timeout=60)
         response.raise_for_status()
         raw_logs = response.json() 
 
-        # --- 核心：聚合逻辑 ---
-        # 使用字典来合并相同的条目
-        # Key = item_id (唯一标识)
+        # --- 本地聚合逻辑 (保持不变，这是最稳的) ---
         stats = {}
         
         for log in raw_logs:
-            # 获取关键字段，兼容 snake_case (你的数据) 和 PascalCase
-            iid = log.get('item_id') or log.get('ItemId')
+            # 优先取 ItemId (Emby UUID)
+            iid = log.get('ItemId') or log.get('item_id')
             if not iid: continue
             
-            # 如果是第一次遇到这个项目，初始化
+            iid = str(iid)
+            
+            # 初始化
             if iid not in stats:
                 stats[iid] = {
                     "item_id": iid,
-                    "title": log.get("item_name") or log.get("Name") or "未知",
+                    # 只要有名字就行，不管是不是正经名字
+                    "title": log.get("item_name") or log.get("Name") or log.get("ItemName") or "未知视频",
                     "item_type": log.get("item_type") or log.get("Type") or "Video",
                     "play_count": 0,
-                    "total_duration": 0,
-                    "image_tag": log.get("PrimaryImageTag") # 如果有的话
+                    "total_duration": 0
                 }
             
-            # 累加数据
-            item = stats[iid]
-            item["play_count"] += 1
+            # 累加
+            stats[iid]["play_count"] += 1
             
-            # 处理时长 (你的数据是字符串 "480")
             try:
+                # 兼容时长字段
                 duration_str = log.get("duration") or log.get("PlayDuration") or 0
-                item["total_duration"] += int(float(duration_str))
+                stats[iid]["total_duration"] += int(float(duration_str))
             except: 
                 pass
 
         # --- 排序与截取 ---
-        # 1. 字典转列表
         aggregated_list = list(stats.values())
-        
-        # 2. 按播放次数倒序排列
+        # 按播放次数倒序
         aggregated_list.sort(key=lambda x: x["play_count"], reverse=True)
+        # 取前 20 名
+        top_list = aggregated_list[:20]
         
-        # 3. 只取前 10 名
-        top_10 = aggregated_list[:10]
+        return {"data": top_list} 
         
-        # 4. 格式化时长 (秒 -> 分钟)，方便前端显示
-        for item in top_10:
-            total_seconds = item["total_duration"]
-            # 如果是单集，显示单集时长；如果是聚合，显示总时长
-            # 这里为了榜单好看，我们计算平均时长或者总时长
-            # 截图显示的是 "时长: 10分钟"，我们用总时长除以次数算平均，或者直接用单次时长
-            if item["play_count"] > 0:
-                avg_seconds = total_seconds / item["play_count"]
-                item["duration_minutes"] = int(avg_seconds / 60)
-            else:
-                item["duration_minutes"] = 0
-
-        return {"data": top_10} 
     except Exception as e:
         logger.error(f"获取全局热播数据失败: {e}")
         return {"error": str(e)}
