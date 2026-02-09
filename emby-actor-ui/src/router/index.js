@@ -20,6 +20,7 @@ import DiscoverPage from '../components/DiscoverPage.vue';
 import UserCenterPage from '../components/UserCenterPage.vue'
 import SetupPage from '../components/Setup.vue';
 import NullbrPage from '../components/NullbrPage.vue';
+import EmbyStatsPage from '../components/EmbyStatsPage.vue';
 
 // --- 2. 定义路由规则 (带 meta.public 标签) ---
 const routes = [
@@ -160,6 +161,12 @@ const routes = [
     meta: { 
       requiresAuth: true // 这个页面必须登录才能访问
     },
+  },
+  {
+    path: '/stats',
+    name: 'EmbyStats',
+    component: EmbyStatsPage,
+    meta: { requiresAuth: true, requiresAdmin: true } // 建议只给管理员看
   },
   {
     path: '/discover',

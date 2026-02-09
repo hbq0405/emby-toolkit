@@ -5,6 +5,7 @@ import re
 import threading
 from flask import Blueprint, jsonify, session, request
 from datetime import datetime, timedelta
+from collections import defaultdict
 
 from extensions import emby_login_required 
 from database import user_db, settings_db, media_db, request_db
@@ -15,6 +16,7 @@ import handler.emby as emby
 from handler.telegram import send_telegram_message
 from routes.discover import check_and_replenish_pool
 import task_manager
+import extensions
 from tasks.subscriptions import task_manual_subscribe_batch
 
 # 1. 创建一个新的蓝图
@@ -501,3 +503,159 @@ def get_playback_report():
         "personal": personal_stats,
         "global_top": global_top_list
     })
+
+@user_portal_bp.route('/dashboard-stats', methods=['GET'])
+@emby_login_required
+def get_dashboard_stats():
+    """
+    获取仪表盘综合统计数据 (修复版：增强字段兼容性)
+    """
+    # 1. 参数处理
+    days = request.args.get('days', 30, type=int)
+    config = config_manager.APP_CONFIG
+    
+    # 2. 从 Emby 获取全站原始流水
+    endpoint = "/user_usage_stats/UserPlaylist"
+    base_url = config['emby_server_url']
+    api_url = f"{base_url.rstrip('/')}/emby{endpoint}" if "/emby" not in base_url else f"{base_url.rstrip('/')}{endpoint}"
+    
+    params = {
+        "api_key": config['emby_api_key'],
+        "days": days,
+        "user_id": "", # 全站
+        "include_stats": "true",
+        "limit": 100000 
+    }
+    
+    try:
+        response = requests.get(api_url, params=params, timeout=30)
+        response.raise_for_status()
+        raw_data = response.json()
+    except Exception as e:
+        logger.error(f"获取仪表盘数据失败: {e}")
+        return jsonify({"status": "error", "message": str(e)}), 500
+
+    # 3. 数据聚合
+    server_id = extensions.EMBY_SERVER_ID
+    stats = {
+        "total_plays": 0,
+        "total_duration_hours": 0,
+        "active_users": 0,
+        "watched_items": 0,
+        "trend": {},      
+        "user_rank": {},  
+        "media_rank": [], 
+        "hourly_heat": defaultdict(int),
+        "emby_url": config.get('emby_public_url') or config.get('emby_server_url'),
+        "emby_server_id": server_id
+    }
+
+    user_set = set()
+    # item_set 存储聚合后的 ID (例如剧集 ID)，用于计算“观看了多少部剧/电影”
+    item_set = set()
+    
+    # media_counter 用于排行：Key = 聚合后的 TMDb ID
+    media_counter = {} 
+
+    # --- 阶段 1: 收集所有相关的 Emby ID ---
+    emby_ids_to_query = set()
+    valid_raw_items = []
+
+    for item in raw_data:
+        # 原始数据清洗
+        item_type = item.get("Type") or item.get("ItemType") or item.get("item_type") or "Video"
+        
+        # ★ 过滤：只处理电影和剧集 (Episode)
+        if item_type not in ['Movie', 'Episode']:
+            continue
+            
+        item_id = str(item.get("ItemId") or item.get("item_id"))
+        if item_id:
+            emby_ids_to_query.add(item_id)
+            valid_raw_items.append(item)
+
+    # --- 阶段 2: 批量查询本地数据库进行聚合 ---
+    # 返回映射: { '原始EmbyID': { 'id': 'TMDbID', 'name': '剧名', 'poster_path': '/xxx.jpg', 'type': 'Series', 'emby_id': '剧集EmbyID' } }
+    aggregation_map = media_db.get_dashboard_aggregation_map(list(emby_ids_to_query))
+
+    # --- 阶段 3: 统计 ---
+    for item in valid_raw_items:
+        # 基础数据
+        raw_duration = item.get("PlayDuration") or item.get("duration") or item.get("play_duration") or 0
+        try:
+            duration_sec = float(raw_duration)
+        except:
+            duration_sec = 0
+        duration_hours = duration_sec / 3600
+        
+        raw_date = item.get("DateCreated") or item.get("Date") or item.get("date") or ""
+        date_str = raw_date[:10] if raw_date else "Unknown"
+        
+        user_name = item.get("UserName") or item.get("User") or item.get("user_name") or item.get("user") or "Unknown"
+        raw_emby_id = str(item.get("ItemId") or item.get("item_id"))
+
+        # 1. 顶部卡片 & 趋势 & 用户排行 (这些基于原始播放行为，不需要聚合)
+        stats["total_plays"] += 1
+        stats["total_duration_hours"] += duration_hours
+        if user_name != "Unknown":
+            user_set.add(user_name)
+        
+        if date_str != "Unknown":
+            if date_str not in stats["trend"]:
+                stats["trend"][date_str] = {"count": 0, "hours": 0}
+            stats["trend"][date_str]["count"] += 1
+            stats["trend"][date_str]["hours"] += duration_hours
+
+        if user_name != "Unknown":
+            if user_name not in stats["user_rank"]:
+                stats["user_rank"][user_name] = 0
+            stats["user_rank"][user_name] += duration_hours
+
+        # 2. 媒体排行 (核心：使用聚合后的数据)
+        # 只有在本地数据库查到了聚合信息，才计入排行
+        if raw_emby_id in aggregation_map:
+            info = aggregation_map[raw_emby_id]
+            target_tmdb_id = info['id']
+            
+            # 记录“观看内容”数量 (去重)
+            item_set.add(target_tmdb_id)
+
+            if target_tmdb_id not in media_counter:
+                media_counter[target_tmdb_id] = {
+                    "id": info['emby_id'], # ★ 前端跳转用聚合后的 Emby ID (剧集ID)
+                    "name": info['name'],
+                    "type": info['type'],
+                    "poster_path": info['poster_path'], # ★ 使用 TMDb 海报路径
+                    "count": 0
+                }
+            media_counter[target_tmdb_id]["count"] += 1
+
+    # 4. 格式化输出 (保持不变)
+    stats["total_duration_hours"] = round(stats["total_duration_hours"], 2)
+    stats["active_users"] = len(user_set)
+    stats["watched_items"] = len(item_set)
+
+    # 趋势图
+    sorted_dates = sorted(stats["trend"].keys())
+    if len(sorted_dates) > days + 5: 
+        sorted_dates = sorted_dates[-(days):]
+    stats["chart_trend"] = {
+        "dates": sorted_dates,
+        "counts": [stats["trend"][d]["count"] for d in sorted_dates],
+        "hours": [round(stats["trend"][d]["hours"], 1) for d in sorted_dates]
+    }
+    del stats["trend"]
+
+    # 用户排行
+    sorted_users = sorted(stats["user_rank"].items(), key=lambda x: x[1], reverse=True)
+    stats["chart_users"] = {
+        "names": [u[0] for u in sorted_users[:10]], 
+        "hours": [round(u[1], 1) for u in sorted_users[:10]]
+    }
+    del stats["user_rank"]
+
+    # 媒体排行
+    sorted_media = sorted(media_counter.values(), key=lambda x: x["count"], reverse=True)
+    stats["media_rank"] = sorted_media[:20]
+
+    return jsonify(stats)

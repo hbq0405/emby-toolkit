@@ -260,7 +260,8 @@ import {
   BookOutline as HelpIcon,
   MenuOutline, // 引入菜单图标
   Moon as MoonIcon,
-  Sunny as SunnyIcon
+  Sunny as SunnyIcon,
+  PieChartOutline as EmbyStatsIcon // ★★★ 新增：引入图表图标 ★★★
 } from '@vicons/ionicons5';
 import axios from 'axios';
 import logo from './assets/logo.png'
@@ -432,13 +433,16 @@ const menuOptions = computed(() => {
   }
 
   if (authStore.isLoggedIn) {
+    // --- 普通用户可见 ---
     discoveryGroup.children.push(
       { label: '用户中心', key: 'UserCenter', icon: renderIcon(UserCenterIcon) },
       { label: '影视探索', key: 'Discover', icon: renderIcon(DiscoverIcon) }
     );
     
+    // --- 管理员专属 ---
     if (authStore.isAdmin) {
         discoveryGroup.children.push(
+            { label: '播放统计', key: 'EmbyStats', icon: renderIcon(EmbyStatsIcon) },
             { label: 'NULLBR', key: 'Nullbr', icon: renderIcon(NullbrIcon) }
         );
     }

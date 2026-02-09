@@ -1370,3 +1370,93 @@ def get_local_translation_info(tmdb_id: str, item_type: str) -> Optional[Dict[st
     except Exception as e:
         logger.debug(f"DB: 获取本地翻译缓存失败 ({tmdb_id}_{item_type}): {e}")
         return None
+    
+def get_dashboard_aggregation_map(emby_ids: List[str]) -> Dict[str, Dict[str, Any]]:
+    """
+    【仪表盘专用】批量聚合查询。
+    输入: 统计插件返回的原始 Emby ID 列表 (包含 Movie 和 Episode 的 ID)。
+    输出: 字典映射 { '原始EmbyID': { 'target_id':..., 'title':..., 'poster_path':..., 'type':... } }
+    
+    逻辑:
+    1. 如果是 Movie: 返回自身的 TMDb ID, 标题, 海报。
+    2. 如果是 Episode: 查找其 parent_series_tmdb_id，返回 **剧集** 的 TMDb ID, 标题, 海报。
+    3. 同时返回用于跳转的 Emby ID (剧集的 Emby ID)。
+    """
+    if not emby_ids:
+        return {}
+
+    # 去重
+    unique_ids = list(set(str(eid) for eid in emby_ids if eid))
+    if not unique_ids:
+        return {}
+
+    # SQL 逻辑解析：
+    # 1. input_ids CTE: 将输入的 ID 列表转为临时表。
+    # 2. JOIN media_metadata m: 找到原始 ID 对应的记录。
+    # 3. LEFT JOIN media_metadata p: 如果 m 是 Episode，尝试关联它的父剧集 p。
+    # 4. CASE WHEN: 如果是 Episode，取 p 的数据；否则取 m 的数据。
+    sql = """
+        WITH input_ids AS (
+            SELECT unnest(%s::text[]) AS eid
+        )
+        SELECT 
+            i.eid AS input_emby_id,
+            
+            -- 聚合后的标题
+            CASE 
+                WHEN m.item_type = 'Episode' THEN COALESCE(p.title, m.title) 
+                ELSE m.title 
+            END as title,
+            
+            -- 聚合后的海报 (优先用 TMDb poster_path)
+            CASE 
+                WHEN m.item_type = 'Episode' THEN p.poster_path 
+                ELSE m.poster_path 
+            END as poster_path,
+            
+            -- 聚合后的 TMDb ID (用于去重统计)
+            CASE 
+                WHEN m.item_type = 'Episode' THEN COALESCE(p.tmdb_id, m.tmdb_id) 
+                ELSE m.tmdb_id 
+            END as tmdb_id,
+            
+            -- 聚合后的类型
+            CASE 
+                WHEN m.item_type = 'Episode' THEN 'Series' 
+                ELSE 'Movie' 
+            END as target_type,
+            
+            -- 聚合后的 Emby 跳转 ID (如果是剧集，我们需要剧集的 Emby ID 用于跳转)
+            CASE 
+                WHEN m.item_type = 'Episode' THEN p.emby_item_ids_json->>0 
+                ELSE m.emby_item_ids_json->>0 
+            END as target_emby_id
+
+        FROM input_ids i
+        JOIN media_metadata m ON m.emby_item_ids_json @> to_jsonb(i.eid)
+        LEFT JOIN media_metadata p ON m.parent_series_tmdb_id = p.tmdb_id AND p.item_type = 'Series'
+        WHERE m.item_type IN ('Movie', 'Episode')
+    """
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (unique_ids,))
+                rows = cursor.fetchall()
+                
+                result = {}
+                for row in rows:
+                    eid = row['input_emby_id']
+                    # 只有当成功聚合到数据时才返回
+                    if row['tmdb_id']:
+                        result[eid] = {
+                            'id': row['tmdb_id'], # 聚合后的唯一标识 (TMDb ID)
+                            'name': row['title'],
+                            'poster_path': row['poster_path'],
+                            'type': row['target_type'],
+                            'emby_id': row['target_emby_id'] # 用于前端点击跳转
+                        }
+                return result
+    except Exception as e:
+        logger.error(f"DB: 获取仪表盘聚合数据失败: {e}", exc_info=True)
+        return {}
