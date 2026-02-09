@@ -84,7 +84,8 @@ CONFIG_OPTION_MIN_SCORE_FOR_REVIEW = "min_score_for_review"     # 低于此评�
 DEFAULT_MIN_SCORE_FOR_REVIEW = 6.0                              # 默认的最低分
 CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS = "remove_actors_without_avatars" # 是否移除无头像的演员
 CONFIG_OPTION_BACKUP_EPISODE_IMAGE = "backup_episode_image"     # 是否备份原有的集图片
-CONFIG_OPTION_KEYWORD_TO_TAGS = "keyword_to_tags"               # 关键词写入标签   
+CONFIG_OPTION_KEYWORD_TO_TAGS = "keyword_to_tags"               # 关键词写入标签 
+CONFIG_OPTION_STUDIO_TO_CHINESE = "studio_to_chinese"           # 是否将工作室/电视网名称转换为中文  
 
 # ==============================================================================
 # ✨ 外部API与数据源配置 (External APIs & Data Sources)

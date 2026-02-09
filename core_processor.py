@@ -3943,6 +3943,80 @@ class MediaProcessor:
             # 1. 创建一个副本，避免修改原始对象影响后续逻辑
             data_to_write = metadata_override.copy()
 
+            # 工作室/电视网中文化处理
+            if self.config.get(constants.CONFIG_OPTION_STUDIO_TO_CHINESE, False):
+                try:
+                    # A. 获取映射表 (数据库优先 -> Utils兜底)
+                    studio_mapping_data = settings_db.get_setting('studio_mapping')
+                    if not studio_mapping_data:
+                        studio_mapping_data = utils.DEFAULT_STUDIO_MAPPING
+                    
+                    # B. 构建查找表 (ID -> Label, Name -> Label)
+                    company_id_map = {}
+                    network_id_map = {}
+                    name_map = {} 
+
+                    for entry in studio_mapping_data:
+                        label = entry.get('label')
+                        if not label: continue
+                        
+                        # ID 映射
+                        for cid in entry.get('company_ids', []):
+                            company_id_map[int(cid)] = label
+                        for nid in entry.get('network_ids', []):
+                            network_id_map[int(nid)] = label
+                        
+                        # 名称映射 (转小写以模糊匹配)
+                        for en_name in entry.get('en', []):
+                            name_map[en_name.lower().strip()] = label
+
+                    # 定义通用过滤函数
+                    def filter_and_translate_studios(source_list, is_network=False):
+                        if not source_list: return []
+                        filtered = []
+                        for item in source_list:
+                            s_id = item.get('id')
+                            s_name = item.get('name', '').strip()
+                            mapped_label = None
+                            
+                            # 1. 尝试 ID 匹配
+                            if s_id is not None:
+                                try:
+                                    if is_network: mapped_label = network_id_map.get(int(s_id))
+                                    else: mapped_label = company_id_map.get(int(s_id))
+                                except: pass
+                            
+                            # 2. 尝试名称匹配 (兜底)
+                            if not mapped_label and s_name:
+                                mapped_label = name_map.get(s_name.lower())
+                            
+                            # 3. 命中则保留并改名，未命中则丢弃
+                            if mapped_label:
+                                item['name'] = mapped_label
+                                filtered.append(item)
+                        return filtered
+
+                    # C. 执行过滤 (针对 Movie 的 production_companies)
+                    if item_type == 'Movie' and 'production_companies' in data_to_write:
+                        raw_companies = data_to_write['production_companies']
+                        data_to_write['production_companies'] = filter_and_translate_studios(raw_companies, is_network=False)
+                        logger.info(f"  ➜ {log_prefix} [工作室中文化] 电影制作公司: {len(raw_companies)} -> {len(data_to_write['production_companies'])} 个 (未映射的已丢弃)")
+
+                    # D. 执行过滤 (针对 Series 的 networks 和 production_companies)
+                    elif item_type == 'Series':
+                        # 剧集主要看 networks (电视网)
+                        if 'networks' in data_to_write:
+                            raw_networks = data_to_write['networks']
+                            data_to_write['networks'] = filter_and_translate_studios(raw_networks, is_network=True)
+                            logger.info(f"  ➜ {log_prefix} [工作室中文化] 剧集电视网: {len(raw_networks)} -> {len(data_to_write['networks'])} 个 (未映射的已丢弃)")
+                        
+                        # 剧集有时也有制作公司
+                        if 'production_companies' in data_to_write:
+                            data_to_write['production_companies'] = filter_and_translate_studios(data_to_write['production_companies'], is_network=False)
+
+                except Exception as e_studio:
+                    logger.warning(f"  ➜ {log_prefix} 处理工作室中文化时发生错误: {e_studio}")
+
             # --- 关键词映射处理并写入 tags.json ---
             if self.config.get(constants.CONFIG_OPTION_KEYWORD_TO_TAGS, False):
                 try:

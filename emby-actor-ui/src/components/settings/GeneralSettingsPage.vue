@@ -64,6 +64,14 @@
                         </n-text>
                       </template>
                     </n-form-item-grid-item>
+                    <n-form-item-grid-item label="工作室中文化" path="studio_to_chinese">
+                      <n-switch v-model:value="configModel.studio_to_chinese" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          将工作室名称转换为中文。
+                        </n-text>
+                      </template>
+                    </n-form-item-grid-item>
                   </n-card>
                 </n-gi>
                 <!-- 第二列：实时监控 -->
