@@ -28,7 +28,7 @@
       <!-- 1. 核心指标卡片 -->
       <n-grid :cols="4" :x-gap="16" :y-gap="16" style="margin-top: 24px;">
         <n-gi v-for="(item, index) in summaryCards" :key="index">
-          <n-card :bordered="false" class="stat-card">
+          <n-card :bordered="false" class="stat-card dashboard-card">
             <div class="stat-icon" :style="{ background: item.colorBg, color: item.color }">
               <n-icon :component="item.icon" />
             </div>
@@ -44,7 +44,11 @@
       <n-grid :cols="2" :x-gap="16" :y-gap="16" style="margin-top: 24px;">
         <!-- 左侧：播放趋势 (折线+柱状) -->
         <n-gi :span="1">
-          <n-card title="播放趋势" :bordered="false" class="chart-card">
+          <n-card :bordered="false" class="chart-card dashboard-card">
+            <template #header>
+              <span class="card-title">播放趋势</span>
+              <n-spin v-if="loading.core || loading.library || loading.system" size="small" style="float: right" />
+            </template>
             <div style="height: 350px;">
               <v-chart class="chart" :option="trendChartOption" autoresize />
             </div>
@@ -52,7 +56,11 @@
         </n-gi>
         <!-- 右侧：用户排行 (条形图) -->
         <n-gi :span="1">
-          <n-card title="用户观看时长 (Top 10)" :bordered="false" class="chart-card">
+          <n-card :bordered="false" class="chart-card dashboard-card">
+            <template #header>
+              <span class="card-title">用户观看时长 (Top 10)</span>
+              <n-spin v-if="loading.core || loading.library || loading.system" size="small" style="float: right" />
+            </template>
             <div style="height: 350px;">
               <v-chart class="chart" :option="userChartOption" autoresize />
             </div>
@@ -61,7 +69,11 @@
       </n-grid>
 
       <!-- 3. 热门媒体 (海报墙) -->
-      <n-card title="热门剧集/电影" :bordered="false" style="margin-top: 24px; border-radius: 12px;">
+      <n-card :bordered="false" style="margin-top: 24px; border-radius: 12px;" class="dashboard-card">
+        <template #header>
+          <span class="card-title">热门媒体 (Top 20)</span>
+          <n-spin v-if="loading.core || loading.library || loading.system" size="small" style="float: right" />
+        </template>
         <n-grid :cols="10" :x-gap="12" :y-gap="12" responsive="screen" item-responsive>
           <n-gi span="5 m:2 l:1" v-for="(item, index) in statsData.media_rank" :key="item.id">
            <div class="poster-wrapper" @click="openEmbyItem(item.id)">
@@ -202,7 +214,7 @@ const userChartOption = computed(() => ({
       type: 'bar',
       data: statsData.value.chart_users.hours,
       itemStyle: { color: '#007bff', borderRadius: [0, 4, 4, 0] },
-      label: { show: true, position: 'right', formatter: '{c} h' },
+      label: { show: true, position: 'right', formatter: '{c} 小时' },
       barMaxWidth: 20
     }
   ]
