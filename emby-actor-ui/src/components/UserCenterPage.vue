@@ -123,6 +123,15 @@
         </n-gi>
         <!-- 播放统计卡片 -->
         <n-gi :span="2" style="margin-top: 24px;">
+          <div style="margin-bottom: 16px; display: flex; justify-content: flex-end;">
+            <n-radio-group v-model:value="playbackFilter" size="small" @update:value="handleFilterChange">
+              <n-radio-button value="all">全部</n-radio-button>
+              <n-radio-button value="Movie">电影</n-radio-button>
+              <n-radio-button value="Episode">剧集</n-radio-button>
+              <n-radio-button value="Audio">音乐</n-radio-button>
+              <n-radio-button value="Video">视频</n-radio-button>
+            </n-radio-group>
+          </div>
           <n-grid :cols="isMobile ? 1 : 2" :x-gap="24" :y-gap="24">
             
             <n-gi>
@@ -135,6 +144,7 @@
                   <n-icon size="20" depth="3"><PlayCircleOutline /></n-icon>
                 </template>
                 
+                <!-- 统计数字区域 -->
                 <n-grid :cols="3" :x-gap="12" style="margin-bottom: 20px;">
                   <n-gi>
                     <n-statistic label="近期观看" size="small">
@@ -161,19 +171,20 @@
                   <n-list hoverable clickable size="small">
                     <n-list-item v-for="(item, index) in playbackData?.personal?.history_list" :key="index">
                       <template #prefix>
-                        <n-tag :type="item.item_type === 'Movie' ? 'info' : 'success'" size="tiny" round>
-                          {{ ITEM_TYPE_MAP[item.item_type] || '未知' }}
+                        <!-- 动态颜色标签 -->
+                        <n-tag :type="getTypeTagColor(item.item_type)" size="tiny" round>
+                          {{ ITEM_TYPE_MAP[item.item_type] || '其他' }}
                         </n-tag>
                       </template>
                       <n-thing :title="item.title" content-style="margin-top: 0;">
                         <template #description>
                           <div style="font-size: 12px; color: gray;">
-                            {{ new Date(item.date).toLocaleDateString() }} · {{ item.duration }} 分钟
+                            {{ new Date(item.date).toLocaleDateString() }} · 播放了 {{ item.duration }} 分钟
                           </div>
                         </template>
                       </n-thing>
                     </n-list-item>
-                    <n-empty v-if="!playbackData?.personal?.history_list?.length" description="近期无记录" />
+                    <n-empty v-if="!playbackData?.personal?.history_list?.length" description="该分类下无记录" />
                   </n-list>
                 </n-scrollbar>
               </n-card>
@@ -183,7 +194,7 @@
               <n-card :bordered="false" class="dashboard-card">
                 <template #header>
                   <span class="card-title">全站热播</span>
-                  <n-spin v-if="loading" size="small" style="float: right" />
+                  <n-spin v-if="playbackLoading" size="small" style="float: right" />
                 </template>
                 <template #header-extra>
                   <n-tag type="info" size="small" :bordered="false" round>近30天</n-tag>
@@ -197,7 +208,7 @@
                           style="width: 20px; height: 20px; border-radius: 4px; text-align: center; line-height: 20px; font-weight: bold; font-size: 11px;"
                           :style="{ 
                             backgroundColor: index < 3 ? 'var(--n-primary-color)' : 'rgba(128,128,128,0.1)', 
-                            color: index < 3 ? 'gree' : 'gray' 
+                            color: index < 3 ? 'white' : 'gray' 
                           }"
                         >
                           {{ index + 1 }}
@@ -210,7 +221,13 @@
                           </span>
                         </template>
                         <template #description>
-                          <span style="font-size: 11px; color: gray;">时长: {{ (item.total_duration) }} 分钟</span>
+                          <span style="font-size: 11px; color: gray;">
+                             <!-- 显示类型标签 -->
+                             <n-tag :type="getTypeTagColor(item.item_type)" size="tiny" :bordered="false" style="margin-right: 6px; transform: scale(0.8);">
+                                {{ ITEM_TYPE_MAP[item.item_type] || '其他' }}
+                             </n-tag>
+                             累计时长: {{ (item.total_duration) }} 分钟
+                          </span>
                         </template>
                       </n-thing>
                     </n-list-item>
@@ -326,6 +343,8 @@ const isSavingChatId = ref(false);
 const message = useMessage();
 const isFetchingBotLink = ref(false);
 const playbackData = ref(null);
+const playbackFilter = ref('all');
+const playbackLoading = ref(false);
 // 移动端检测
 const isMobile = ref(false);
 const checkMobile = () => {
@@ -495,27 +514,39 @@ const fetchSubscriptionHistory = async (page = 1) => {
 // 1. 定义常量映射表
 const ITEM_TYPE_MAP = {
   Movie: '电影',
-  Episode: '电视剧',
-  Audio: '音乐'
+  Episode: '剧集',
+  Audio: '音乐',
+  Video: '视频'
 };
 
-// 计算属性：电影占比
-const moviePercentage = computed(() => {
-  if (!playbackData.value || !playbackData.value.personal) return 50;
-  // 这里其实后端没返回 distribution 了，如果需要饼图，后端得加回 distribution 统计逻辑
-  // 暂时先返回 50 避免报错，或者把进度条删掉
-  return 50; 
-});
+const getTypeTagColor = (type) => {
+    switch(type) {
+        case 'Movie': return 'info';
+        case 'Episode': return 'success';
+        case 'Audio': return 'warning';
+        case 'Video': return 'error';
+        default: return 'default';
+    }
+};
 
 // 获取播放统计
 const fetchPlaybackStats = async () => {
+  playbackLoading.value = true;
   try {
-    const res = await axios.get('/api/portal/playback-report?days=30');
+    // 传入 media_type 参数
+    const res = await axios.get(`/api/portal/playback-report?days=30&media_type=${playbackFilter.value}`);
     playbackData.value = res.data;
   } catch (error) {
     console.error("获取播放数据失败", error);
-    // 可以加个 message.error 提示
+    message.error("获取播放统计失败");
+  } finally {
+    playbackLoading.value = false;
   }
+};
+
+// 筛选变更处理
+const handleFilterChange = () => {
+    fetchPlaybackStats();
 };
 
 watch(filterStatus, () => {

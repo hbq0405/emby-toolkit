@@ -3054,10 +3054,9 @@ def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days:
         logger.error(f"获取个人播放数据失败: {e}")
         return {"error": str(e)}
 
-def get_global_popular_items(base_url: str, api_key: str, days: int = 30) -> dict:
+def get_global_popular_items(base_url: str, api_key: str, days: int = 30, media_type: str = 'all') -> dict:
     """
-    获取全局热门数据 (官方参数复刻版)
-    修复：使用官方 Web 端相同的参数 days 和 user_id=""，解决数据只显示一天的问题
+    获取全局热门数据 (支持类型筛选)
     """
     # 1. 构造 URL
     endpoint = "/user_usage_stats/UserPlaylist"
@@ -3069,36 +3068,46 @@ def get_global_popular_items(base_url: str, api_key: str, days: int = 30) -> dic
     # 2. 复刻官方参数
     params = {
         "api_key": api_key,
-        "days": days,           # ★ 关键：直接用天数，不要用 min_date
-        "user_id": "",          # ★ 关键：传空值，明确表示获取全站数据
-        "aggregate_data": "false", # 我们在本地聚合更可控，设为 false 获取原始流水
+        "days": days,
+        "user_id": "",          
+        "aggregate_data": "false", 
         "include_stats": "false",
-        "limit": 100000         # ★ 关键：拉取足够多的流水，防止被截断
+        "limit": 100000         
     }
     
     try:
-        # 增加超时时间
         response = emby_client.get(api_url, params=params, timeout=60)
         response.raise_for_status()
         raw_logs = response.json() 
 
-        # --- 本地聚合逻辑 (保持不变，这是最稳的) ---
+        # --- 本地聚合逻辑 ---
         stats = {}
         
         for log in raw_logs:
-            # 优先取 ItemId (Emby UUID)
+            # 优先取 ItemId
             iid = log.get('ItemId') or log.get('item_id')
             if not iid: continue
             
+            # --- ★★★ 新增：类型过滤逻辑 ★★★ ---
+            # 获取当前条目的类型
+            current_type = log.get("item_type") or log.get("Type") or "Video"
+            
+            # 如果指定了筛选类型，且当前类型不匹配，则跳过
+            if media_type != 'all':
+                # 特殊处理：如果筛选 'Video'，我们可能想包含 'Video' 和其他未定义的类型
+                # 但通常 Emby 类型很明确：Movie, Episode, Audio
+                if current_type != media_type:
+                    continue
+            # ----------------------------------
+
             iid = str(iid)
             
             # 初始化
             if iid not in stats:
                 stats[iid] = {
                     "item_id": iid,
-                    # 只要有名字就行，不管是不是正经名字
                     "title": log.get("item_name") or log.get("Name") or log.get("ItemName") or "未知视频",
-                    "item_type": log.get("item_type") or log.get("Type") or "Video",
+                    "item_type": current_type,
                     "play_count": 0,
                     "total_duration": 0
                 }
@@ -3107,7 +3116,6 @@ def get_global_popular_items(base_url: str, api_key: str, days: int = 30) -> dic
             stats[iid]["play_count"] += 1
             
             try:
-                # 兼容时长字段
                 duration_str = log.get("duration") or log.get("PlayDuration") or 0
                 stats[iid]["total_duration"] += int(float(duration_str))
             except: 
@@ -3115,9 +3123,7 @@ def get_global_popular_items(base_url: str, api_key: str, days: int = 30) -> dic
 
         # --- 排序与截取 ---
         aggregated_list = list(stats.values())
-        # 按播放次数倒序
         aggregated_list.sort(key=lambda x: x["play_count"], reverse=True)
-        # 取前 20 名
         top_list = aggregated_list[:20]
         
         return {"data": top_list} 

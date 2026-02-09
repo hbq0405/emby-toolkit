@@ -3820,7 +3820,6 @@ class MediaProcessor:
             # 这里我们稍微变通一下：如果用户选了原语言优先，我们尝试找原语言的；
             # 否则（中文优先），我们倾向于找无文字的或者中文的。
             # 但为了简单且符合“原图”的高质量要求，背景图我们通常还是信任 TMDb 的默认排序（通常是无文字的高分图）。
-            # 不过既然你要求了，我也让它走一遍选择逻辑，但把 'null' (无文字) 视为最高优先级。
             
             backdrops_list = images_node.get("backdrops", [])
             selected_backdrop = None
