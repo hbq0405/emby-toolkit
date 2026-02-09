@@ -284,6 +284,7 @@ DEFAULT_STUDIO_MAPPING = [
     {"label": "爱奇艺", "en": ["iQiyi"], "network_ids": [1330]},
     {"label": "优酷", "en": ["Youku"], "network_ids": [1419]},
     {"label": "芒果TV", "en": ["Mango TV"], "network_ids": [1631]},
+    {"label": "哔哩哔哩", "en": ["Bilibili"], "network_ids": [1605]},
     {"label": "TVB", "en": ["TVB Jade", "Television Broadcasts Limited"], "network_ids": [48, 79261]},
 
     # --- 全球流媒体/电视网 (Network + Company) ---
