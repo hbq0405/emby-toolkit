@@ -77,7 +77,6 @@
         <n-grid :cols="10" :x-gap="12" :y-gap="12" responsive="screen" item-responsive>
           <n-gi span="5 m:2 l:1" v-for="(item, index) in statsData.media_rank" :key="item.id">
            <div class="poster-wrapper" @click="openEmbyItem(item.id)">
-            <div class="poster-wrapper">
               <!-- 排名角标 -->
               <div class="rank-badge" :class="'rank-' + (index + 1)">{{ index + 1 }}</div>
               <!-- 播放次数角标 -->
@@ -93,7 +92,6 @@
                 class="poster-img"
               />
               <div class="poster-title">{{ item.name }}</div>
-            </div>
             </div>
           </n-gi>
         </n-grid>
@@ -223,14 +221,14 @@ const userChartOption = computed(() => ({
 // 获取海报图片 URL
 const getPosterUrl = (item) => {
   // 1. 优先使用 TMDb 海报 (走后端通用代理)
-  if (item.poster_path) {
-    // 拼接 TMDb 原图地址
-    const tmdbUrl = `https://image.tmdb.org/t/p/w300${item.poster_path}`;
+  // if (item.poster_path) {
+  //   // 拼接 TMDb 原图地址
+  //   const tmdbUrl = `https://image.tmdb.org/t/p/w300${item.poster_path}`;
     
-    // ★★★ 核心修改：通过 encodeURIComponent 编码后传给后端代理 ★★★
-    // 这样服务器就会使用你在 config.ini 里配置的代理去下载图片
-    return `/api/image_proxy?url=${encodeURIComponent(tmdbUrl)}`;
-  }
+  //   // ★★★ 核心修改：通过 encodeURIComponent 编码后传给后端代理 ★★★
+  //   // 这样服务器就会使用你在 config.ini 里配置的代理去下载图片
+  //   return `/api/image_proxy?url=${encodeURIComponent(tmdbUrl)}`;
+  // }
   
   // 2. 回退：使用 Emby 代理 (如果本地数据库没封面)
   // 这里的 item.id 已经是聚合后的 Emby ID (剧集ID)
@@ -325,13 +323,27 @@ onMounted(() => {
   position: relative;
   border-radius: 8px;
   overflow: hidden;
-  aspect-ratio: 2/3;
+  /* 强制设定比例 */
+  aspect-ratio: 2/3; 
   box-shadow: 0 4px 12px rgba(0,0,0,0.1);
   transition: transform 0.2s;
   cursor: pointer;
+  background-color: #333; /* 图片加载前的底色 */
 }
 .poster-wrapper:hover { transform: scale(1.03); }
 .poster-img {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.poster-img :deep(img) {
+  width: 100%;
+  height: 100%;
+  object-fit: cover; /* 确保图片不变形地填满 */
+}
+
+/* 如果使用的是 naive-ui 的 n-image，有时需要直接作用于组件本身 */
+:deep(.n-image) {
   width: 100%;
   height: 100%;
   display: block;
