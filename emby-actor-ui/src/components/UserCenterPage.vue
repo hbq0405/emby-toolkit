@@ -10,7 +10,6 @@
     <!-- 视图 A: PC 端 (宽屏) -->
     <!-- ================================================================================== -->
     <template v-if="!isMobile">
-      <!-- 统计栏 -->
       <n-grid :cols="5" style="margin-top: 24px; text-align: center;">
         <n-gi><n-statistic label="总申请" :value="stats.total" /></n-gi>
         <n-gi><n-statistic label="已完成" :value="stats.completed" style="--n-value-text-color: var(--n-success-color)" /></n-gi>
@@ -19,46 +18,35 @@
         <n-gi><n-statistic label="未通过" :value="stats.failed" style="--n-value-text-color: var(--n-error-color)" /></n-gi>
       </n-grid>
 
-      <n-grid cols="2" :x-gap="24" :y-gap="24" style="margin-top: 24px;">
-        <!-- 左侧卡片: 账户详情 -->
-        <n-gi :span="1">
-          <n-card :bordered="false" class="dashboard-card">
+      <n-grid :cols="3" :x-gap="20" style="margin-top: 24px;">
+        
+        <n-gi>
+          <n-card :bordered="false" class="dashboard-card" style="height: 100%">
             <template #header>
               <span class="card-title">账户详情</span>
               <n-spin v-if="loading" size="small" style="float: right" />
             </template>
             <div v-if="accountInfo">
               <div class="profile-layout">
-                <!-- 头像区域 -->
                 <div class="profile-avatar-section">
                   <n-tooltip trigger="hover" placement="right">
                     <template #trigger>
                       <div class="avatar-wrapper" @click="triggerFileUpload">
-                        <n-avatar
-                          :size="120"
-                          :src="avatarUrl"
-                          :fallback-src="null"
-                          object-fit="cover"
-                          style="cursor: pointer; background-color: transparent;"
-                        >
-                          <span v-if="!avatarUrl" style="font-size: 40px;">
+                        <n-avatar :size="100" :src="avatarUrl" object-fit="cover" style="cursor: pointer; background-color: transparent;">
+                          <span v-if="!avatarUrl" style="font-size: 30px;">
                             {{ authStore.username ? authStore.username.charAt(0).toUpperCase() : 'U' }}
                           </span>
                         </n-avatar>
-                        <div class="avatar-overlay">
-                          <n-icon size="30" color="white"><CloudUploadOutline /></n-icon>
-                        </div>
-                        <input type="file" ref="fileInput" style="display: none" accept="image/png, image/jpeg, image/jpg" @change="handleAvatarChange" />
+                        <div class="avatar-overlay"><n-icon size="24" color="white"><CloudUploadOutline /></n-icon></div>
+                        <input type="file" ref="fileInput" style="display: none" accept="image/*" @change="handleAvatarChange" />
                       </div>
                     </template>
                     点击更换头像
                   </n-tooltip>
-                  <div class="username-text">{{ accountInfo?.name || authStore.username }}</div>
+                  <div class="username-text" style="font-size: 1.2em;">{{ accountInfo?.name || authStore.username }}</div>
                 </div>
 
-                <!-- 详细信息表格 -->
-                <div class="profile-info">
-                  <n-descriptions label-placement="left" bordered :column="1" size="small">
+                <n-descriptions label-placement="left" bordered :column="1" size="small">
                     <n-descriptions-item label="账户状态"><n-tag :type="statusType" size="small">{{ statusText }}</n-tag></n-descriptions-item>
                     <n-descriptions-item label="注册时间">{{ new Date(accountInfo.registration_date).toLocaleString() }}</n-descriptions-item>
                     <n-descriptions-item label="到期时间">{{ accountInfo.expiration_date ? new Date(accountInfo.expiration_date).toLocaleString() : '永久有效' }}</n-descriptions-item>
@@ -86,159 +74,99 @@
                       <n-button text type="primary" tag="a" :href="globalChannelLink" target="_blank" size="small">点击加入频道/群组</n-button>
                     </n-descriptions-item>
                   </n-descriptions>
-
-                  <div style="margin-top: 12px;">
-                    <n-text depth="3" style="font-size:0.8em; line-height: 1.6;">
-                      1. 点击按钮 <n-button text type="primary" :loading="isFetchingBotLink" @click="openBotChat" style="font-weight: bold; text-decoration: underline;" size="small">与机器人对话</n-button> 并发送 <code>/start</code><br>
-                      2. 再向 <a href="https://t.me/userinfobot" target="_blank" style="color: var(--n-primary-color);">@userinfobot</a> 获取您的数字 ID 并粘贴于此。
-                    </n-text>
-                  </div>
+                
+                <div style="margin-top: 12px;">
+                    <n-button text type="primary" size="tiny" @click="openBotChat">1.点此找机器人发送 /start</n-button>
                 </div>
               </div>
             </div>
-            <n-empty v-else description="未能加载您的账户信息，请联系管理员。" />
           </n-card>
         </n-gi>
 
-        <!-- 右侧卡片: 订阅历史 -->
-        <n-gi :span="1">
-          <n-card :bordered="false" class="dashboard-card">
+        <n-gi>
+          <n-card :bordered="false" class="dashboard-card" style="height: 100%">
             <template #header>
-              <div style="display: flex; justify-content: space-between; align-items: center;">
-                <span class="card-title">订阅历史</span>
+              <span class="card-title">播放记录</span>
+            </template>
+            <template #header-extra>
+              <n-radio-group v-model:value="playbackFilter" size="small" @update:value="handleFilterChange">
+                <n-radio-button value="all">全部</n-radio-button>
+                <n-radio-button value="Movie">电影</n-radio-button>
+                <n-radio-button value="Episode">剧集</n-radio-button>
+                <n-radio-button value="Audio">音乐</n-radio-button>
+              </n-radio-group>
+            </template>
+
+            <n-grid :cols="2" style="margin-bottom: 16px; text-align: center;">
+              <n-gi>
+                <n-statistic label="近期观看" size="small">
+                  <span style="font-weight: bold;">{{ playbackData?.personal?.total_count || 0 }}</span>
+                </n-statistic>
+              </n-gi>
+              <n-gi>
+                <n-statistic label="累计时长" size="small">
+                  <span style="font-weight: bold;">{{ (playbackData?.personal?.total_minutes / 60).toFixed(1) }}</span><span style="font-size: 10px;">h</span>
+                </n-statistic>
+              </n-gi>
+            </n-grid>
+
+            <n-scrollbar style="max-height: 480px;">
+              <n-list hoverable clickable size="small">
+                <n-list-item v-for="(item, index) in playbackData?.personal?.history_list" :key="index">
+                  <n-thing :title="item.title" content-style="margin-top: 0;">
+                    <template #description>
+                      <div style="font-size: 11px; color: gray;">
+                        {{ new Date(item.date).toLocaleDateString() }} · {{ item.duration }} 分钟
+                      </div>
+                    </template>
+                    <template #header-extra>
+                      <n-tag :type="getTypeTagColor(item.item_type)" size="tiny" round>{{ ITEM_TYPE_MAP[item.item_type] }}</n-tag>
+                    </template>
+                  </n-thing>
+                </n-list-item>
+              </n-list>
+              <n-empty v-if="!playbackData?.personal?.history_list?.length" description="无记录" />
+            </n-scrollbar>
+          </n-card>
+        </n-gi>
+
+        <n-gi>
+          <n-card :bordered="false" class="dashboard-card" style="height: 100%">
+            <template #header>
+              <span class="card-title">订阅历史</span>
+            </template>
+            <template #header-extra>
                 <n-radio-group v-model:value="filterStatus" size="small">
                   <n-radio-button value="all">全部</n-radio-button>
                   <n-radio-button value="completed">已完成</n-radio-button>
                   <n-radio-button value="processing">处理中</n-radio-button>
-                  <n-radio-button value="pending">待审核</n-radio-button>
-                  <n-radio-button value="failed">未通过</n-radio-button>
                 </n-radio-group>
-              </div>
             </template>
-            <n-data-table :columns="historyColumns" :data="subscriptionHistory" :bordered="false" :single-line="false" :pagination="false" />
-            <div v-if="totalRecords > pageSize" style="margin-top: 16px; display: flex; justify-content: center;">
-              <n-pagination v-model:page="currentPage" :page-size="pageSize" :item-count="totalRecords" show-quick-jumper @update:page="fetchSubscriptionHistory" />
+            
+            <n-scrollbar style="max-height: 560px;">
+              <n-list size="small">
+                <n-list-item v-for="item in subscriptionHistory" :key="item.id">
+                  <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+                    <div style="flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-right: 8px;">
+                      {{ item.title }}
+                    </div>
+                    <n-tag :type="getStatusType(item.status)" size="tiny" :bordered="false">
+                      {{ getStatusText(item.status) }}
+                    </n-tag>
+                  </div>
+                  <div style="font-size: 11px; color: gray; margin-top: 4px;">
+                    {{ new Date(item.requested_at).toLocaleDateString() }} · {{ item.item_type === 'Movie' ? '电影' : '剧集' }}
+                  </div>
+                </n-list-item>
+              </n-list>
+            </n-scrollbar>
+
+            <div v-if="totalRecords > pageSize" style="margin-top: 12px; display: flex; justify-content: center;">
+              <n-pagination v-model:page="currentPage" :page-size="pageSize" :item-count="totalRecords" simple @update:page="fetchSubscriptionHistory" />
             </div>
           </n-card>
         </n-gi>
-        <!-- 播放统计卡片 -->
-        <n-gi :span="2" style="margin-top: 24px;">
-          <div style="margin-bottom: 16px; display: flex; justify-content: flex-end;">
-            <n-radio-group v-model:value="playbackFilter" size="small" @update:value="handleFilterChange">
-              <n-radio-button value="all">全部</n-radio-button>
-              <n-radio-button value="Movie">电影</n-radio-button>
-              <n-radio-button value="Episode">剧集</n-radio-button>
-              <n-radio-button value="Audio">音乐</n-radio-button>
-              <n-radio-button value="Video">视频</n-radio-button>
-            </n-radio-group>
-          </div>
-          <n-grid :cols="isMobile ? 1 : 2" :x-gap="24" :y-gap="24">
-            
-            <n-gi>
-              <n-card :bordered="false" class="dashboard-card">
-                <template #header>
-                  <span class="card-title">播放记录</span>
-                  <n-spin v-if="loading" size="small" style="float: right" />
-                </template>
-                <template #header-extra>
-                  <n-icon size="20" depth="3"><PlayCircleOutline /></n-icon>
-                </template>
-                
-                <!-- 统计数字区域 -->
-                <n-grid :cols="3" :x-gap="12" style="margin-bottom: 20px;">
-                  <n-gi>
-                    <n-statistic label="近期观看" size="small">
-                      <span style="font-weight: bold;">{{ playbackData?.personal?.total_count || 0 }}</span><span style="font-size: 12px; margin-left: 2px;"> 次</span>
-                    </n-statistic>
-                  </n-gi>
-                  <n-gi>
-                    <n-statistic label="累计时长" size="small">
-                      <span style="font-weight: bold;">{{ (playbackData?.personal?.total_minutes / 60).toFixed(1) }}</span><span style="font-size: 12px; margin-left: 2px;"> 小时</span>
-                    </n-statistic>
-                  </n-gi>
-                  <n-gi>
-                    <n-statistic label="平均单次" size="small">
-                      <span style="font-weight: bold;">
-                        {{ playbackData?.personal?.total_count ? Math.round(playbackData.personal.total_minutes / playbackData.personal.total_count) : 0 }}
-                      </span><span style="font-size: 12px; margin-left: 2px;"> 分钟</span>
-                    </n-statistic>
-                  </n-gi>
-                </n-grid>
 
-                <n-divider title-placement="left" style="margin-top: 0; font-size: 12px;">最近播放</n-divider>
-
-                <n-scrollbar style="max-height: 400px;">
-                  <n-list hoverable clickable size="small">
-                    <n-list-item v-for="(item, index) in playbackData?.personal?.history_list" :key="index">
-                      <template #prefix>
-                        <!-- 动态颜色标签 -->
-                        <n-tag :type="getTypeTagColor(item.item_type)" size="tiny" round>
-                          {{ ITEM_TYPE_MAP[item.item_type] || '其他' }}
-                        </n-tag>
-                      </template>
-                      <n-thing :title="item.title" content-style="margin-top: 0;">
-                        <template #description>
-                          <div style="font-size: 12px; color: gray;">
-                            {{ new Date(item.date).toLocaleDateString() }} · 播放了 {{ item.duration }} 分钟
-                          </div>
-                        </template>
-                      </n-thing>
-                    </n-list-item>
-                    <n-empty v-if="!playbackData?.personal?.history_list?.length" description="该分类下无记录" />
-                  </n-list>
-                </n-scrollbar>
-              </n-card>
-            </n-gi>
-
-            <n-gi>
-              <n-card :bordered="false" class="dashboard-card">
-                <template #header>
-                  <span class="card-title">全站热播</span>
-                  <n-spin v-if="playbackLoading" size="small" style="float: right" />
-                </template>
-                <template #header-extra>
-                  <n-tag type="info" size="small" :bordered="false" round>近30天</n-tag>
-                </template>
-                
-                <n-scrollbar style="max-height: 515px;">
-                  <n-list size="small">
-                    <n-list-item v-for="(item, index) in playbackData?.global_top" :key="index">
-                      <template #prefix>
-                        <div 
-                          style="width: 20px; height: 20px; border-radius: 4px; text-align: center; line-height: 20px; font-weight: bold; font-size: 11px;"
-                          :style="{ 
-                            backgroundColor: index < 3 ? 'var(--n-primary-color)' : 'rgba(128,128,128,0.1)', 
-                            color: index < 3 ? 'white' : 'gray' 
-                          }"
-                        >
-                          {{ index + 1 }}
-                        </div>
-                      </template>
-                      <n-thing :title="item.title">
-                        <template #header-extra>
-                          <span style="font-size: 12px; color: var(--n-primary-color); font-weight: 500;">
-                            {{ item.play_count }} 次
-                          </span>
-                        </template>
-                        <template #description>
-                          <span style="font-size: 11px; color: gray;">
-                             <!-- 显示类型标签 -->
-                             <n-tag :type="getTypeTagColor(item.item_type)" size="tiny" :bordered="false" style="margin-right: 6px; transform: scale(0.8);">
-                                {{ ITEM_TYPE_MAP[item.item_type] || '其他' }}
-                             </n-tag>
-                             累计时长: {{ (item.total_duration) }} 分钟
-                          </span>
-                        </template>
-                      </n-thing>
-                    </n-list-item>
-                    <n-empty v-if="!playbackData?.global_top?.length" description="暂无数据" />
-                  </n-list>
-                </n-scrollbar>
-              </n-card>
-            </n-gi>
-
-          </n-grid>
-        </n-gi>
       </n-grid>
     </template>
 
