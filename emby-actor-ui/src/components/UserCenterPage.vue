@@ -100,12 +100,12 @@
             <n-grid :cols="2" style="margin-bottom: 16px; text-align: center;">
               <n-gi>
                 <n-statistic label="近期观看" size="small">
-                  <span style="font-weight: bold;">{{ playbackData?.personal?.total_count || 0 }}</span>
+                  <span style="font-weight: bold;">{{ playbackData?.personal?.total_count || 0 }}</span><span style="font-size: 10px;"> 次</span>
                 </n-statistic>
               </n-gi>
               <n-gi>
                 <n-statistic label="累计时长" size="small">
-                  <span style="font-weight: bold;">{{ (playbackData?.personal?.total_minutes / 60).toFixed(1) }}</span><span style="font-size: 10px;">h</span>
+                  <span style="font-weight: bold;">{{ (playbackData?.personal?.total_minutes / 60).toFixed(1) }}</span><span style="font-size: 10px;"> 小时</span>
                 </n-statistic>
               </n-gi>
             </n-grid>
@@ -260,7 +260,6 @@ import {
   NStatistic, NRadioGroup, NRadioButton, NAvatar, NIcon, NDivider, NTooltip, NSpin,
   NTabs, NTabPane, NList, NListItem, NThing, NSpace, NAlert
 } from 'naive-ui';
-import { PlayCircleOutline, TimeOutline, CalendarOutline, TimerOutline } from '@vicons/ionicons5';
 
 const authStore = useAuthStore();
 const loading = ref(true);
@@ -362,21 +361,6 @@ const getStatusInfo = (status) => {
 
 const getStatusType = (status) => getStatusInfo(status).type;
 const getStatusText = (status) => getStatusInfo(status).text;
-
-const historyColumns = [
-  { title: '媒体名称', key: 'title' },
-  { title: '类型', key: 'item_type', render: (row) => (row.item_type === 'Movie' ? '电影' : '电视剧') },
-  {
-    title: '状态',
-    key: 'status',
-    render(row) {
-      const s = getStatusInfo(row.status);
-      return h(NTag, { type: s.type, bordered: false }, { default: () => s.text });
-    },
-  },
-  { title: '申请时间', key: 'requested_at', render: (row) => new Date(row.requested_at).toLocaleString() },
-  { title: '备注', key: 'notes' },
-];
 
 const saveChatId = async () => {
   isSavingChatId.value = true;
