@@ -8,7 +8,7 @@
         <n-icon size="32" color="#007bff"><StatsChart /></n-icon>
         <div style="margin-left: 12px;">
           <h2 style="margin: 0; font-size: 20px;">Emby 仪表盘</h2>
-          <span style="font-size: 12px; color: gray;">全站播放数据统计</span>
+          <span style="font-size: 12px; color: gray;">全站播放数据统计，依赖Playback Reporting插件。</span>
         </div>
       </div>
       <div class="filter-section">
@@ -134,9 +134,9 @@ const statsData = ref({
 
 // 顶部卡片配置
 const summaryCards = computed(() => [
-  { label: '播放次数', value: statsData.value.total_plays, unit: '', icon: Play, color: '#007bff', colorBg: '#e6f2ff' },
+  { label: '播放次数', value: statsData.value.total_plays, unit: '次', icon: Play, color: '#007bff', colorBg: '#e6f2ff' },
   { label: '播放时长', value: statsData.value.total_duration_hours, unit: '小时', icon: Time, color: '#fd7e14', colorBg: '#fff0e6' },
-  { label: '活跃用户', value: statsData.value.active_users, unit: '', icon: People, color: '#28a745', colorBg: '#e6f9ec' },
+  { label: '活跃用户', value: statsData.value.active_users, unit: '人', icon: People, color: '#28a745', colorBg: '#e6f9ec' },
   { label: '观看内容', value: statsData.value.watched_items, unit: '部', icon: Videocam, color: '#e83e8c', colorBg: '#fcebf3' },
 ]);
 
