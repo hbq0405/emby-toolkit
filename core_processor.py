@@ -3951,7 +3951,8 @@ class MediaProcessor:
                     if not studio_mapping_data:
                         studio_mapping_data = utils.DEFAULT_STUDIO_MAPPING
                     
-                    # B. 构建查找表 (ID -> Label, Name -> Label)
+                    # B. 构建两个独立的查找表，防止 Network ID 和 Company ID 冲突
+                    # 例如：ID 521 在 network_id_map 是 CCTV-8，在 company_id_map 是 梦工厂
                     company_id_map = {}
                     network_id_map = {}
                     name_map = {} 
@@ -3960,9 +3961,11 @@ class MediaProcessor:
                         label = entry.get('label')
                         if not label: continue
                         
-                        # ID 映射
+                        # 填充 Company 表
                         for cid in entry.get('company_ids', []):
                             company_id_map[int(cid)] = label
+                        
+                        # 填充 Network 表
                         for nid in entry.get('network_ids', []):
                             network_id_map[int(nid)] = label
                         
@@ -3971,7 +3974,11 @@ class MediaProcessor:
                             name_map[en_name.lower().strip()] = label
 
                     # 定义通用过滤函数
-                    def filter_and_translate_studios(source_list, is_network=False):
+                    def filter_and_translate_studios(source_list, is_network_field=False):
+                        """
+                        is_network_field=True: 查 network_id_map (用于 Series 的 networks)
+                        is_network_field=False: 查 company_id_map (用于 production_companies)
+                        """
                         if not source_list: return []
                         filtered = []
                         for item in source_list:
@@ -3979,40 +3986,48 @@ class MediaProcessor:
                             s_name = item.get('name', '').strip()
                             mapped_label = None
                             
-                            # 1. 尝试 ID 匹配
+                            # 1. 尝试 ID 匹配 (严格区分类型)
                             if s_id is not None:
                                 try:
-                                    if is_network: mapped_label = network_id_map.get(int(s_id))
-                                    else: mapped_label = company_id_map.get(int(s_id))
+                                    if is_network_field: 
+                                        mapped_label = network_id_map.get(int(s_id))
+                                    else: 
+                                        mapped_label = company_id_map.get(int(s_id))
                                 except: pass
                             
                             # 2. 尝试名称匹配 (兜底)
                             if not mapped_label and s_name:
                                 mapped_label = name_map.get(s_name.lower())
                             
-                            # 3. 命中则保留并改名，未命中则丢弃
+                            # 3. 核心逻辑：有映射则改名并保留，无映射则直接丢弃
                             if mapped_label:
                                 item['name'] = mapped_label
                                 filtered.append(item)
+                            # else: 丢弃 (不 append 到 filtered)
+                        
                         return filtered
 
                     # C. 执行过滤 (针对 Movie 的 production_companies)
                     if item_type == 'Movie' and 'production_companies' in data_to_write:
                         raw_companies = data_to_write['production_companies']
-                        data_to_write['production_companies'] = filter_and_translate_studios(raw_companies, is_network=False)
+                        # 电影只有制作公司，查 company_id_map
+                        data_to_write['production_companies'] = filter_and_translate_studios(raw_companies, is_network_field=False)
                         logger.info(f"  ➜ {log_prefix} [工作室中文化] 电影制作公司: {len(raw_companies)} -> {len(data_to_write['production_companies'])} 个 (未映射的已丢弃)")
 
                     # D. 执行过滤 (针对 Series 的 networks 和 production_companies)
                     elif item_type == 'Series':
-                        # 剧集主要看 networks (电视网)
+                        # 1. 剧集主要看 networks (电视网)，查 network_id_map
+                        # 这里 ID 521 会被正确识别为 CCTV-8
                         if 'networks' in data_to_write:
                             raw_networks = data_to_write['networks']
-                            data_to_write['networks'] = filter_and_translate_studios(raw_networks, is_network=True)
+                            data_to_write['networks'] = filter_and_translate_studios(raw_networks, is_network_field=True)
                             logger.info(f"  ➜ {log_prefix} [工作室中文化] 剧集电视网: {len(raw_networks)} -> {len(data_to_write['networks'])} 个 (未映射的已丢弃)")
                         
-                        # 剧集有时也有制作公司
+                        # 2. 剧集有时也有制作公司，查 company_id_map
+                        # 这里 ID 521 会被正确识别为 梦工厂 (如果它真的出现在这里)
                         if 'production_companies' in data_to_write:
-                            data_to_write['production_companies'] = filter_and_translate_studios(data_to_write['production_companies'], is_network=False)
+                            raw_companies = data_to_write['production_companies']
+                            data_to_write['production_companies'] = filter_and_translate_studios(raw_companies, is_network_field=False)
 
                 except Exception as e_studio:
                     logger.warning(f"  ➜ {log_prefix} 处理工作室中文化时发生错误: {e_studio}")
