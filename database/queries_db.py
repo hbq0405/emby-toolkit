@@ -416,44 +416,53 @@ def query_virtual_library_items(
             
             if not target_ids and not target_names: continue
             
-            column = "COALESCE(m.studios_json, '[]'::jsonb)"
+            # ★★★ 核心修改：同时查询两个新字段 ★★★
+            # 逻辑：(Companies 匹配) OR (Networks 匹配)
             
-            match_logic = """
-            (
-                (s->>'id') = ANY(%s) 
-                OR 
-                LOWER(s->>'name') = ANY(%s)
+            # 1. 定义匹配逻辑模板 (复用)
+            # {col} 会被替换为具体的列名
+            match_logic_template = """
+            EXISTS (
+                SELECT 1 FROM jsonb_array_elements(COALESCE(m.{col}, '[]'::jsonb)) s 
+                WHERE (
+                    (s->>'id') = ANY(%s) 
+                    OR 
+                    LOWER(s->>'name') = ANY(%s)
+                )
             )
             """
             
+            # 2. 构建子句
+            clause_comp = match_logic_template.format(col="production_companies_json")
+            clause_net = match_logic_template.format(col="networks_json")
+            
+            # 3. 组合逻辑
             if op in ['contains', 'is_one_of', 'eq']:
-                clause = f"""
-                EXISTS (
-                    SELECT 1 FROM jsonb_array_elements({column}) s 
-                    WHERE {match_logic}
-                )
-                """
-                params.extend([target_ids, target_names])
+                # 只要有一个字段命中即可
+                clause = f"({clause_comp} OR {clause_net})"
+                # 参数需要追加两次 (一次给 comp，一次给 net)
+                params.extend([target_ids, target_names, target_ids, target_names])
                 
             elif op == 'is_none_of':
-                clause = f"""
-                NOT EXISTS (
-                    SELECT 1 FROM jsonb_array_elements({column}) s 
-                    WHERE {match_logic}
-                )
-                """
-                params.extend([target_ids, target_names])
+                # 两个字段都不能命中
+                clause = f"(NOT {clause_comp} AND NOT {clause_net})"
+                params.extend([target_ids, target_names, target_ids, target_names])
                 
             elif op == 'is_primary':
-                # 主工作室是数组第0个
-                clause = f"""
+                # 主工作室通常指列表的第一个
+                # 我们检查两个列表的第一个元素
+                primary_logic = """
                 (
-                    ({column}->0->>'id') = ANY(%s)
+                    (COALESCE(m.{col}, '[]'::jsonb)->0->>'id') = ANY(%s)
                     OR
-                    LOWER({column}->0->>'name') = ANY(%s)
+                    LOWER(COALESCE(m.{col}, '[]'::jsonb)->0->>'name') = ANY(%s)
                 )
                 """
-                params.extend([target_ids, target_names])
+                p_comp = primary_logic.format(col="production_companies_json")
+                p_net = primary_logic.format(col="networks_json")
+                
+                clause = f"({p_comp} OR {p_net})"
+                params.extend([target_ids, target_names, target_ids, target_names])
 
         # --- 4. 复杂对象数组 (Actors, Directors) ---
         elif field in ['actors', 'directors']:

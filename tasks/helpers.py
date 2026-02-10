@@ -1382,20 +1382,23 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
         except Exception as e:
             logger.warning(f"还原 Genres 失败: {e}")
 
-    # Studios (工作室/电视网)
-    if db_row.get('studios_json'):
+    # 1. 恢复制作公司 (Companies)
+    if db_row.get('production_companies_json'):
         try:
-            raw_studios = db_row['studios_json']
-            studios_list = json.loads(raw_studios) if isinstance(raw_studios, str) else raw_studios
-            if studios_list:
-                # 数据库存的是 [{"id":1, "name":"HBO"}]
-                payload['production_companies'] = studios_list
-                # ★★★ 核心修复 2: 如果是剧集，必须同时填充 networks ★★★
-                # 这样 Emby 才能正确识别播出平台
-                if item_type == 'Series':
-                    payload['networks'] = studios_list 
-        except Exception as e:
-            logger.warning(f"还原 Studios 失败: {e}")
+            raw = db_row['production_companies_json']
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            if data:
+                payload['production_companies'] = data
+        except Exception: pass
+
+    # 2. 恢复电视网 (Networks) - 仅限剧集
+    if item_type == 'Series' and db_row.get('networks_json'):
+        try:
+            raw = db_row['networks_json']
+            data = json.loads(raw) if isinstance(raw, str) else raw
+            if data:
+                payload['networks'] = data
+        except Exception: pass
 
     # Directors (导演/主创) -> 映射到 created_by 或 crew
     if db_row.get('directors_json'):

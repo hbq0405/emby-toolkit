@@ -590,14 +590,28 @@ class WatchlistProcessor:
                     name = utils.GENRE_TRANSLATION_PATCH[name]
                 genres_list.append({"id": 0, "name": name})
 
-        genres_json = genres_list if genres_list else None
+        # 2. 处理类型 (Genres)
+        genres_raw = latest_series_data.get("genres", [])
+        genres_list = [{"id": g.get('id', 0), "name": utils.GENRE_TRANSLATION_PATCH.get(g.get('name'), g.get('name'))} 
+                       for g in genres_raw if isinstance(g, dict)]
+
+        # 3. 处理关键词 (Keywords)
         keywords = latest_series_data.get("keywords", {}).get("results", [])
         keywords_json = [{"id": k["id"], "name": k["name"]} for k in keywords]
-        studios = latest_series_data.get("production_companies", [])
-        studios_json = [{"id": s["id"], "name": s["name"]} for s in studios]
+
+        # 4. 处理制作公司 (Production Companies) 
+        production_companies = latest_series_data.get("production_companies", [])
+        production_companies_json = [{"id": p["id"], "name": p["name"], "logo_path": p.get("logo_path")} for p in production_companies]
+
+        # 5. 处理播出网络 (Networks) 
+        networks = latest_series_data.get("networks", [])
+        networks_json = [{"id": n["id"], "name": n["name"], "logo_path": n.get("logo_path")} for n in networks]
+
+        # 6. 处理产地
         countries = latest_series_data.get("origin_country", [])
         countries_json = countries if isinstance(countries, list) else [countries]
 
+        # 构造更新字典
         series_updates = {
             "original_title": latest_series_data.get("original_name"),
             "overview": latest_series_data.get("overview"),
@@ -609,9 +623,10 @@ class WatchlistProcessor:
             "total_episodes": latest_series_data.get("number_of_episodes", 0),
             "rating": latest_series_data.get("vote_average"),
             "official_rating_json": json.dumps(official_rating_json) if official_rating_json else None,
-            "genres_json": json.dumps(genres_json) if genres_json else None,
+            "genres_json": json.dumps(genres_list) if genres_list else None,
             "keywords_json": json.dumps(keywords_json) if keywords_json else None,
-            "studios_json": json.dumps(studios_json) if studios_json else None,
+            "production_companies_json": json.dumps(production_companies_json) if production_companies_json else None,
+            "networks_json": json.dumps(networks_json) if networks_json else None,
             "countries_json": json.dumps(countries_json) if countries_json else None
         }
         

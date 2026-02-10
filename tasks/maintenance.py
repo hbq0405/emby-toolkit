@@ -30,7 +30,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         'media_metadata': {
             'emby_item_ids_json', 'subscription_sources_json', 
             'tags_json', 'genres_json', 'official_rating_json', 
-            'actors_json', 'directors_json', 'studios_json', 'countries_json', 
+            'actors_json', 'directors_json', 'production_companies_json', 'networks_json', 'countries_json', 
             'keywords_json', 'last_episode_to_air_json',
             'watchlist_next_episode_json', 'watchlist_missing_info_json', 'asset_details_json',
             'overview_embedding'

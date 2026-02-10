@@ -182,7 +182,8 @@ def init_db():
                         genres_json JSONB,
                         actors_json JSONB,
                         directors_json JSONB,
-                        studios_json JSONB,
+                        production_companies_json JSONB, 
+                        networks_json JSONB,
                         countries_json JSONB,
                         keywords_json JSONB,
                         last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
@@ -472,7 +473,9 @@ def init_db():
                             "watchlist_missing_info_json": "JSONB",
                             "watchlist_is_airing": "BOOLEAN DEFAULT FALSE",
                             "total_episodes": "INTEGER DEFAULT 0",
-                            "total_episodes_locked": "BOOLEAN DEFAULT FALSE"
+                            "total_episodes_locked": "BOOLEAN DEFAULT FALSE",
+                            "production_companies_json": "JSONB",
+                            "networks_json": "JSONB"
                         },
                         'resubscribe_rules': {
                             "scope_rules": "JSONB DEFAULT '[]'::jsonb",
@@ -572,7 +575,8 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_genres_gin ON media_metadata USING GIN(genres_json jsonb_path_ops);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_tags_gin ON media_metadata USING GIN(tags_json jsonb_path_ops);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_countries_gin ON media_metadata USING GIN(countries_json jsonb_path_ops);")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_studios_gin ON media_metadata USING GIN(studios_json jsonb_path_ops);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_companies_gin ON media_metadata USING GIN(production_companies_json jsonb_path_ops);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_networks_gin ON media_metadata USING GIN(networks_json jsonb_path_ops);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_keywords_gin ON media_metadata USING GIN(keywords_json jsonb_path_ops);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_asset_details_gin ON media_metadata USING GIN(asset_details_json);")
 
@@ -633,7 +637,8 @@ def init_db():
                             'next_episode_to_air_json',
                             'is_airing',
                             'total_seasons',
-                            'rating_locked'
+                            'rating_locked',
+                            'studios_json'
                         ],
                         'cleanup_index': [
                             'best_version_id'

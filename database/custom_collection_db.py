@@ -409,32 +409,47 @@ def get_tv_genres() -> List[str]:
         return []
 
 def get_unique_studios() -> List[str]:
-    """从 media_metadata 表中提取所有不重复的工作室。"""
+    """
+    从 media_metadata 表中提取所有不重复的工作室/制作公司和网络平台。
+    """
     
     unique_studios = set()
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute("SELECT studios_json FROM media_metadata WHERE in_library = TRUE")
+            # 查询新的两个字段：production_companies_json 和 networks_json
+            cursor.execute("""
+                SELECT production_companies_json, networks_json 
+                FROM media_metadata 
+                WHERE in_library = TRUE
+            """)
             rows = cursor.fetchall()
             
             for row in rows:
-                studios = row['studios_json']
-                if studios:
-                    try:
-                        for studio in studios:
-                            if studio:
-                                unique_studios.add(studio.strip())
-                    except TypeError:
-                        logger.warning(f"  ➜ 处理 studios_json 时遇到意外的类型错误，内容: {studios}")
-                        continue
+                # 1. 处理制作公司 (Production Companies)
+                pc_list = row['production_companies_json']
+                if pc_list and isinstance(pc_list, list):
+                    for pc in pc_list:
+                        if isinstance(pc, str) and pc.strip():
+                            unique_studios.add(pc.strip())
+                        elif isinstance(pc, dict) and pc.get('name'):
+                            unique_studios.add(pc['name'].strip())
+
+                # 2. 处理网络平台 (Networks)
+                nw_list = row['networks_json']
+                if nw_list and isinstance(nw_list, list):
+                    for nw in nw_list:
+                        if isinstance(nw, str) and nw.strip():
+                            unique_studios.add(nw.strip())
+                        elif isinstance(nw, dict) and nw.get('name'):
+                            unique_studios.add(nw['name'].strip())
                         
         sorted_studios = sorted(list(unique_studios))
-        logger.trace(f"  ➜ 从数据库中成功提取出 {len(sorted_studios)} 个跨电影和电视剧的唯一工作室。")
+        logger.trace(f"  ➜ 从数据库中成功提取出 {len(sorted_studios)} 个唯一的制作公司/网络平台。")
         return sorted_studios
         
     except psycopg2.Error as e:
-        logger.error(f"  ➜ 提取唯一工作室时发生数据库错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 提取唯一工作室信息时发生数据库错误: {e}", exc_info=True)
         return []
 
 def get_unique_tags() -> List[str]:
@@ -467,18 +482,19 @@ def get_unique_tags() -> List[str]:
         return []
 
 def search_unique_studios(search_term: str, limit: int = 20) -> List[str]:
-    """ 搜索工作室并优先返回以 search_term 开头的结果。"""
-    
+    """ 
+    搜索工作室/平台，并优先返回以 search_term 开头的结果。
+    已自动适配新的 production_companies/networks 数据源。
+    """
     if not search_term:
         return []
     
+    # 获取合并后的列表
     all_studios = get_unique_studios()
-    
     if not all_studios:
         return []
 
     search_term_lower = search_term.lower()
-    
     starts_with_matches = []
     contains_matches = []
     
@@ -490,7 +506,6 @@ def search_unique_studios(search_term: str, limit: int = 20) -> List[str]:
             contains_matches.append(studio)
             
     final_matches = starts_with_matches + contains_matches
-    logger.trace(f"  ➜ 智能搜索 '{search_term}'，找到 {len(final_matches)} 个匹配项。")
     return final_matches[:limit]
 
 def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_item_emby_id: str, new_item_name: str) -> List[Dict[str, Any]]:

@@ -1073,29 +1073,25 @@ class MediaProcessor:
             genres_json = json.dumps(genres_list, ensure_ascii=False)
 
             # 2. Studios (工作室/制作公司/电视网)
-            # 剧集只取 networks，电影只取 production_companies 
-            raw_studios = []
-            if m_type == 'Series':
-                # 剧集：只要播出平台 (Networks)，不要制作公司
-                raw_studios = details.get('networks') or []
-            else:
-                # 电影：保留制作公司
-                raw_studios = details.get('production_companies') or []
+            # 2. ★★★ 拆分存储 Companies 和 Networks ★★★
             
-            if isinstance(raw_studios, list): 
-                raw_studios = list(raw_studios)
-            else: 
-                raw_studios = []
-            
-            unique_studios_map = {}
-            for s in raw_studios:
-                if isinstance(s, dict):
-                    s_id = s.get('id')
-                    s_name = s.get('name')
-                    if s_name: unique_studios_map[s_id] = {'id': s_id, 'name': s_name}
-                elif isinstance(s, str) and s:
-                    unique_studios_map[s] = {'id': None, 'name': s}
-            studios_json = json.dumps(list(unique_studios_map.values()), ensure_ascii=False)
+            # A. 制作公司 (Movie & Series 都有)
+            raw_companies = details.get('production_companies') or []
+            companies_list = []
+            if isinstance(raw_companies, list):
+                for c in raw_companies:
+                    if isinstance(c, dict) and c.get('name'):
+                        companies_list.append({'id': c.get('id'), 'name': c.get('name')})
+            companies_json = json.dumps(companies_list, ensure_ascii=False)
+
+            # B. 电视网 (仅 Series 有，Movie 为空)
+            raw_networks = details.get('networks') or []
+            networks_list = []
+            if isinstance(raw_networks, list):
+                for n in raw_networks:
+                    if isinstance(n, dict) and n.get('name'):
+                        networks_list.append({'id': n.get('id'), 'name': n.get('name')})
+            networks_json = json.dumps(networks_list, ensure_ascii=False)
 
             # 3. Keywords (关键词)
             keywords_data = details.get('keywords') or details.get('tags') or []
@@ -1122,7 +1118,7 @@ class MediaProcessor:
                     if code: country_codes.append(code)
                 elif isinstance(c, str) and c: country_codes.append(c)
             countries_json = json.dumps(country_codes, ensure_ascii=False)
-            return genres_json, studios_json, keywords_json, countries_json
+            return genres_json, companies_json, networks_json, keywords_json, countries_json
 
         try:
             from psycopg2.extras import execute_batch
@@ -1176,9 +1172,10 @@ class MediaProcessor:
                 movie_record['overview_embedding'] = overview_embedding_json
 
                 # 通用字段
-                g_json, s_json, k_json, c_json = _extract_common_json_fields(source_data_package, 'Movie')
+                g_json, comp_json, net_json, k_json, c_json = _extract_common_json_fields(source_data_package, 'Movie')
                 movie_record['genres_json'] = g_json
-                movie_record['studios_json'] = s_json
+                movie_record['production_companies_json'] = comp_json 
+                movie_record['networks_json'] = net_json
                 movie_record['keywords_json'] = k_json
                 movie_record['countries_json'] = c_json
 
@@ -1266,9 +1263,10 @@ class MediaProcessor:
                 series_record['official_rating_json'] = json.dumps(raw_ratings_map, ensure_ascii=False)
 
                 # 通用字段
-                g_json, s_json, k_json, c_json = _extract_common_json_fields(series_details, 'Series')
+                g_json, comp_json, net_json, k_json, c_json = _extract_common_json_fields(series_details, 'Series')
                 series_record['genres_json'] = g_json
-                series_record['studios_json'] = s_json
+                series_record['production_companies_json'] = comp_json
+                series_record['networks_json'] = net_json
                 series_record['keywords_json'] = k_json
                 series_record['countries_json'] = c_json
                 
@@ -1415,7 +1413,7 @@ class MediaProcessor:
                 "poster_path", "rating", "actors_json", "parent_series_tmdb_id", "season_number", "episode_number",
                 "in_library", "subscription_status", "subscription_sources_json", "emby_item_ids_json", "date_added",
                 "official_rating_json",
-                "genres_json", "directors_json", "studios_json", "countries_json", "keywords_json", "ignore_reason",
+                "genres_json", "directors_json", "production_companies_json", "networks_json", "countries_json", "keywords_json", "ignore_reason",
                 "asset_details_json",
                 "runtime_minutes",
                 "overview_embedding",

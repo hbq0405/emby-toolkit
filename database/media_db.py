@@ -1098,7 +1098,7 @@ def batch_upsert_media_metadata(metadata_list: List[Dict[str, Any]]) -> int:
         'release_date', 'release_year', 'poster_path', 'rating', 
         'original_language', 'in_library', 'subscription_status',
         'emby_item_ids_json', 'asset_details_json', 
-        'genres_json', 'tags_json', 'studios_json', 'keywords_json',
+        'genres_json', 'tags_json', 'production_companies_json', 'networks_json', 'keywords_json',
         'directors_json', 'countries_json', 'official_rating_json',
         'parent_series_tmdb_id', 'season_number', 'episode_number',
         'runtime_minutes', 'date_added', 'total_episodes'
