@@ -1360,7 +1360,8 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
         payload['original_name'] = db_row.get('original_title')
         r_date = db_row.get('release_date')
         payload['first_air_date'] = str(r_date) if r_date else ''
-        # 恢复总集数
+        l_date = db_row.get('last_air_date')
+        payload['last_air_date'] = str(l_date) if l_date else ''
         payload['number_of_episodes'] = db_row.get('total_episodes', 0)
         # 数据库不存总季数，给个默认值 1，避免为 0
         payload['number_of_seasons'] = 1 

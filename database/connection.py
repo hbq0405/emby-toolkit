@@ -171,6 +171,7 @@ def init_db():
                         overview_embedding JSONB,
                         release_date DATE,
                         release_year INTEGER,
+                        last_air_date DATE,
                         poster_path TEXT,
                         runtime_minutes INTEGER,
                         rating REAL,
@@ -435,6 +436,7 @@ def init_db():
                         },
                         'media_metadata': {
                             "original_language": "TEXT",
+                            "last_air_date": "DATE",
                             "asset_details_json": "JSONB",
                             "last_updated_at": "TIMESTAMP WITH TIME ZONE",
                             "overview": "TEXT",

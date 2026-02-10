@@ -901,11 +901,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 # 提取发行日期 
                 emby_date = item.get('PremiereDate') or None
                 tmdb_date = None
+                tmdb_last_date = None
                 if tmdb_details:
                     if item_type == 'Movie': 
                         tmdb_date = tmdb_details.get('release_date')
                     elif item_type == 'Series': 
                         tmdb_date = tmdb_details.get('first_air_date')
+                        tmdb_last_date = tmdb_details.get('last_air_date')
                 
                 final_release_date = emby_date or tmdb_date
                 # 提取全量分级数据
@@ -947,6 +949,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     "rating": item.get('CommunityRating'),
                     "date_added": item.get('DateCreated') or None,
                     "release_date": final_release_date,
+                    "last_air_date": tmdb_last_date,
                     "genres_json": json.dumps(final_genres_list, ensure_ascii=False),
                     "tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
                     "official_rating_json": rating_json_str,

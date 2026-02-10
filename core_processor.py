@@ -1233,7 +1233,9 @@ class MediaProcessor:
                 series_record = {
                     "item_type": "Series", "tmdb_id": str(series_details.get('id')), "title": series_details.get('name'),
                     "original_title": series_details.get('original_name'), "overview": series_details.get('overview'),
-                    "release_date": series_details.get('first_air_date'), "poster_path": series_details.get('poster_path'),
+                    "release_date": series_details.get('first_air_date'), 
+                    "last_air_date": series_details.get('last_air_date'),
+                    "poster_path": series_details.get('poster_path'),
                     "rating": series_details.get('vote_average'),
                     "total_episodes": series_details.get('number_of_episodes', 0),
                     "watchlist_tmdb_status": series_details.get('status'),
@@ -1406,6 +1408,7 @@ class MediaProcessor:
             # ==================================================================
             all_possible_columns = [
                 "tmdb_id", "item_type", "title", "original_title", "overview", "release_date", "release_year",
+                "last_air_date",
                 "original_language",
                 "poster_path", "rating", "actors_json", "parent_series_tmdb_id", "season_number", "episode_number",
                 "in_library", "subscription_status", "subscription_sources_json", "emby_item_ids_json", "date_added",
