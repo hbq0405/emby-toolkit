@@ -1072,7 +1072,7 @@ class MediaProcessor:
             
             genres_json = json.dumps(genres_list, ensure_ascii=False)
 
-            # A. Studios (制作公司)
+            # A. 制作公司 (Production Companies)
             raw_companies = details.get('production_companies') or []
             companies_list = []
             if isinstance(raw_companies, list):
@@ -1081,16 +1081,14 @@ class MediaProcessor:
                         companies_list.append({'id': c.get('id'), 'name': c.get('name')})
             companies_json = json.dumps(companies_list, ensure_ascii=False)
 
-            # B. 电视网 (Networks) - 只有剧集才有
-            networks_json = "[]"
-            if m_type == 'Series':
-                raw_networks = details.get('networks') or []
-                networks_list = []
-                if isinstance(raw_networks, list):
-                    for n in raw_networks:
-                        if isinstance(n, dict) and n.get('name'):
-                            networks_list.append({'id': n.get('id'), 'name': n.get('name')})
-                networks_json = json.dumps(networks_list, ensure_ascii=False)
+            # B. 电视网 (Networks - 仅限剧集)
+            raw_networks = details.get('networks') or []
+            networks_list = []
+            if isinstance(raw_networks, list):
+                for n in raw_networks:
+                    if isinstance(n, dict) and n.get('name'):
+                        networks_list.append({'id': n.get('id'), 'name': n.get('name')})
+            networks_json = json.dumps(networks_list, ensure_ascii=False)
 
             # 3. Keywords (关键词)
             keywords_data = details.get('keywords') or details.get('tags') or []
