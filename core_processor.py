@@ -3907,8 +3907,6 @@ class MediaProcessor:
         基于模板和现有数据构建 override 文件。
         同时支持传递 TMDb 分集原始数据。
         """
-        item_id = item_details.get("Id")
-        item_name_for_log = item_details.get("Name", f"未知项目(ID:{item_id})")
         item_type = item_details.get("Type")
         log_prefix = "[覆盖缓存-元数据写入]"
 
@@ -3973,6 +3971,8 @@ class MediaProcessor:
                         for en_name in entry.get('en', []):
                             name_map[en_name.lower().strip()] = label
 
+                    # 获取原语言，用于解决 ID 冲突 (如 521: CCTV-8 vs 梦工厂)
+                    origin_lang = data_to_write.get('original_language', '').lower()
                     # 定义通用过滤函数
                     def filter_and_translate_studios(source_list, is_network_field=False):
                         """
@@ -3986,13 +3986,27 @@ class MediaProcessor:
                             s_name = item.get('name', '').strip()
                             mapped_label = None
                             
-                            # 1. 尝试 ID 匹配 (严格区分类型)
+                            # 1. 尝试 ID 匹配
                             if s_id is not None:
                                 try:
-                                    if is_network_field: 
-                                        mapped_label = network_id_map.get(int(s_id))
-                                    else: 
-                                        mapped_label = company_id_map.get(int(s_id))
+                                    s_id_int = int(s_id)
+                                    
+                                    # ★★★ 核心修复开始：冲突仲裁 ★★★
+                                    # 如果是剧集，且正在处理制作公司字段 (production_companies)，
+                                    # 且原语言是中文，优先检查 Network 表。
+                                    # 解决 ID 521 被误判为梦工厂 (Company) 而非 CCTV-8 (Network) 的问题。
+                                    if item_type == 'Series' and not is_network_field and origin_lang in ['zh', 'cn', 'chi', 'zho']:
+                                        if s_id_int in network_id_map:
+                                            mapped_label = network_id_map.get(s_id_int)
+
+                                    # 如果上面没命中，或者不是国产剧，则执行标准逻辑
+                                    if not mapped_label:
+                                        if is_network_field: 
+                                            mapped_label = network_id_map.get(s_id_int)
+                                        else: 
+                                            mapped_label = company_id_map.get(s_id_int)
+                                    # ★★★ 核心修复结束 ★★★
+
                                 except: pass
                             
                             # 2. 尝试名称匹配 (兜底)
@@ -4003,7 +4017,6 @@ class MediaProcessor:
                             if mapped_label:
                                 item['name'] = mapped_label
                                 filtered.append(item)
-                            # else: 丢弃 (不 append 到 filtered)
                         
                         return filtered
 
