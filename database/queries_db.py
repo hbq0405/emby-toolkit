@@ -60,7 +60,8 @@ def _expand_studio_labels(value) -> Dict[str, List]:
     elif isinstance(mapping_data, dict):
         mapping = mapping_data
 
-    target_ids = []
+    target_network_ids = []
+    target_company_ids = []
     target_names = []
     
     labels = value if isinstance(value, list) else [value]
@@ -69,14 +70,15 @@ def _expand_studio_labels(value) -> Dict[str, List]:
         if label in mapping:
             item = mapping[label]
             
-            # ★★★ 核心修改：同时收集三种可能的 ID 字段 ★★★
-            # 这样本地筛选时，无论 Emby 存的是哪种 ID，都能命中
-            if item.get('ids'):
-                target_ids.extend([str(i) for i in item['ids']])
+            # ★★★ 核心修改：分别收集 ID ★★★
+            
+            # 1. 明确的 Network ID
             if item.get('network_ids'):
-                target_ids.extend([str(i) for i in item['network_ids']])
+                target_network_ids.extend([str(i) for i in item['network_ids']])
+            
+            # 2. 明确的 Company ID
             if item.get('company_ids'):
-                target_ids.extend([str(i) for i in item['company_ids']])
+                target_company_ids.extend([str(i) for i in item['company_ids']])
                 
             if item.get('en'):
                 target_names.extend(item['en'])
@@ -84,7 +86,8 @@ def _expand_studio_labels(value) -> Dict[str, List]:
             target_names.append(label)
             
     return {
-        'ids': list(set(target_ids)),
+        'network_ids': list(set(target_network_ids)),
+        'company_ids': list(set(target_company_ids)),
         'names': list(set(filter(None, target_names)))
     }
 
@@ -411,19 +414,18 @@ def query_virtual_library_items(
         # --- 3. 工作室 (Studios) ---
         elif field == 'studios':
             expanded = _expand_studio_labels(value)
-            target_ids = expanded['ids']
+            target_net_ids = expanded['network_ids']
+            target_comp_ids = expanded['company_ids']
             target_names = [str(n).lower() for n in expanded['names']]
             
-            if not target_ids and not target_names: continue
+            if not target_net_ids and not target_comp_ids and not target_names: continue
             
-            # ★★★ 核心修改：同时查询两个新字段 ★★★
-            # 逻辑：(Companies 匹配) OR (Networks 匹配)
+            # ★★★ 核心修复：对号入座，防止 ID 撞车 ★★★
             
-            # 1. 定义匹配逻辑模板 (复用)
-            # {col} 会被替换为具体的列名
-            match_logic_template = """
+            # 1. 制作公司匹配逻辑 (只查 company_ids 和 names)
+            clause_comp = """
             EXISTS (
-                SELECT 1 FROM jsonb_array_elements(COALESCE(m.{col}, '[]'::jsonb)) s 
+                SELECT 1 FROM jsonb_array_elements(COALESCE(m.production_companies_json, '[]'::jsonb)) s 
                 WHERE (
                     (s->>'id') = ANY(%s) 
                     OR 
@@ -432,25 +434,32 @@ def query_virtual_library_items(
             )
             """
             
-            # 2. 构建子句
-            clause_comp = match_logic_template.format(col="production_companies_json")
-            clause_net = match_logic_template.format(col="networks_json")
+            # 2. 电视网匹配逻辑 (只查 network_ids 和 names)
+            clause_net = """
+            EXISTS (
+                SELECT 1 FROM jsonb_array_elements(COALESCE(m.networks_json, '[]'::jsonb)) s 
+                WHERE (
+                    (s->>'id') = ANY(%s) 
+                    OR 
+                    LOWER(s->>'name') = ANY(%s)
+                )
+            )
+            """
             
             # 3. 组合逻辑
             if op in ['contains', 'is_one_of', 'eq']:
-                # 只要有一个字段命中即可
+                # (匹配制作公司) OR (匹配电视网)
                 clause = f"({clause_comp} OR {clause_net})"
-                # 参数需要追加两次 (一次给 comp，一次给 net)
-                params.extend([target_ids, target_names, target_ids, target_names])
+                # 参数顺序: [comp_ids, names, net_ids, names]
+                params.extend([target_comp_ids, target_names, target_net_ids, target_names])
                 
             elif op == 'is_none_of':
-                # 两个字段都不能命中
+                # (不匹配制作公司) AND (不匹配电视网)
                 clause = f"(NOT {clause_comp} AND NOT {clause_net})"
-                params.extend([target_ids, target_names, target_ids, target_names])
+                params.extend([target_comp_ids, target_names, target_net_ids, target_names])
                 
             elif op == 'is_primary':
                 # 主工作室通常指列表的第一个
-                # 我们检查两个列表的第一个元素
                 primary_logic = """
                 (
                     (COALESCE(m.{col}, '[]'::jsonb)->0->>'id') = ANY(%s)
@@ -462,7 +471,7 @@ def query_virtual_library_items(
                 p_net = primary_logic.format(col="networks_json")
                 
                 clause = f"({p_comp} OR {p_net})"
-                params.extend([target_ids, target_names, target_ids, target_names])
+                params.extend([target_comp_ids, target_names, target_net_ids, target_names])
 
         # --- 4. 复杂对象数组 (Actors, Directors) ---
         elif field in ['actors', 'directors']:

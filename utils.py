@@ -289,7 +289,7 @@ DEFAULT_STUDIO_MAPPING = [
 
     # --- 全球流媒体/电视网 (Network + Company) ---
     # 这些巨头通常既作为播出平台(Network)，也作为制作公司(Company)存在
-    {"label": "网飞", "en": ["Netflix"], "network_ids": [213], "company_ids": [20580]},
+    {"label": "网飞", "en": ["Netflix"], "network_ids": [213], "company_ids": [178464]},
     {"label": "HBO", "en": ["HBO"], "network_ids": [49], "company_ids": [3268]},
     {"label": "迪士尼", "en": ["Disney+", "Walt Disney Pictures"], "network_ids": [2739], "company_ids": [2]},
     {"label": "苹果TV", "en": ["Apple TV+"], "network_ids": [2552], "company_ids": [108568]},
