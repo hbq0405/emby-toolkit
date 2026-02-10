@@ -1236,6 +1236,8 @@ class MediaProcessor:
                     "release_date": series_details.get('first_air_date'), 
                     "last_air_date": series_details.get('last_air_date'),
                     "poster_path": series_details.get('poster_path'),
+                    "backdrop_path": series_details.get('backdrop_path'), 
+                    "homepage": series_details.get('homepage'),
                     "rating": series_details.get('vote_average'),
                     "total_episodes": series_details.get('number_of_episodes', 0),
                     "watchlist_tmdb_status": series_details.get('status'),
@@ -1408,7 +1410,7 @@ class MediaProcessor:
             # ==================================================================
             all_possible_columns = [
                 "tmdb_id", "item_type", "title", "original_title", "overview", "release_date", "release_year",
-                "last_air_date",
+                "last_air_date", "backdrop_path", "homepage",
                 "original_language",
                 "poster_path", "rating", "actors_json", "parent_series_tmdb_id", "season_number", "episode_number",
                 "in_library", "subscription_status", "subscription_sources_json", "emby_item_ids_json", "date_added",

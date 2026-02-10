@@ -957,6 +957,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 }
                 if tmdb_details:
                     top_record['poster_path'] = tmdb_details.get('poster_path')
+                    top_record['backdrop_path'] = tmdb_details.get('backdrop_path') 
+                    top_record['homepage'] = tmdb_details.get('homepage')
                     top_record['overview'] = tmdb_details.get('overview')
                     if tmdb_details.get('vote_average') is not None:
                         top_record['rating'] = tmdb_details.get('vote_average')
@@ -1008,6 +1010,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     top_record['keywords_json'] = json.dumps(keywords, ensure_ascii=False)
                 else:
                     top_record['poster_path'] = None
+                    top_record['backdrop_path'] = None 
+                    top_record['homepage'] = None
                     top_record['studios_json'] = '[]'
                     top_record['directors_json'] = '[]'; top_record['countries_json'] = '[]'; top_record['keywords_json'] = '[]'
 

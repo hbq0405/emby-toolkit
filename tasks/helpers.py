@@ -1341,12 +1341,10 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
     # 2. 基础字段映射
     payload['id'] = int(db_row.get('tmdb_id') or 0)
     payload['overview'] = db_row.get('overview')
-    
-    # ★★★ 核心修复 1: 必须恢复原语言，否则 ID 521 冲突修复逻辑无法生效 ★★★
     payload['original_language'] = db_row.get('original_language')
-    
-    # 恢复状态 (数据库的 watchlist_tmdb_status 对应 JSON 的 status)
     payload['status'] = db_row.get('watchlist_tmdb_status')
+    payload['backdrop_path'] = db_row.get('backdrop_path')
+    payload['homepage'] = db_row.get('homepage')
 
     # 标题与日期
     if item_type == "Movie":
