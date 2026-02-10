@@ -1119,41 +1119,49 @@ class WatchlistProcessor:
         # ==============================================================================
         is_aggressive_completed = False
         
-        # 1. 获取 TMDb 记录的总集数
-        calculated_total = len([ep for ep in all_tmdb_episodes if ep.get('season_number', 0) > 0])
-        current_total_episodes = calculated_total if calculated_total > 0 else latest_series_data.get('number_of_episodes', 0)
+        # 1. 找到最新一季的信息
+        tmdb_seasons_list = latest_series_data.get('seasons', [])
+        valid_tmdb_seasons = sorted(
+            [s for s in tmdb_seasons_list if s.get('season_number', 0) > 0], 
+            key=lambda x: x['season_number'], 
+            reverse=True
+        )
 
-        # 2. 计算本地已入库的正片总集数
-        local_total_episodes = 0
-        if emby_seasons:
-            for s_num, ep_set in emby_seasons.items():
-                if s_num > 0: local_total_episodes += len(ep_set)
-        
-        # 3. 判断逻辑
-        # 前置条件: 总集数超过阈值 (防止误伤短剧，短剧交给后续的7天规则处理)
-        if current_total_episodes > aggressive_threshold:
+        if valid_tmdb_seasons:
+            latest_s_info = valid_tmdb_seasons[0]
+            latest_s_num = latest_s_info.get('season_number')
+            # TMDb 记录的最新季总集数
+            latest_s_total_episodes = latest_s_info.get('episode_count', 0)
             
-            # ★★★ 修正点：获取最新播出集的集号 ★★★
+            # 本地已入库的最新季集数
+            local_latest_s_episodes = len(emby_seasons.get(latest_s_num, set()))
+
+            # 2. 获取最新播出集的信息 (用于时间判定)
             last_ep_number = 0
             last_air_date = None
             if last_episode_to_air:
-                last_ep_number = last_episode_to_air.get('episode_number', 0)
+                # 只有当最后播出集属于最新一季时，才参与进度判定
+                if last_episode_to_air.get('season_number') == latest_s_num:
+                    last_ep_number = last_episode_to_air.get('episode_number', 0)
+                
                 if date_str := last_episode_to_air.get('air_date'):
                     try:
                         last_air_date = datetime.strptime(date_str, '%Y-%m-%d').date()
                     except ValueError: pass
 
-            # 条件 A: 时间维度 (最后一集已播出)
-            # 逻辑：最新播出的集号 >= 总集数 AND 播出日期 <= 今天
-            if last_ep_number >= current_total_episodes and last_air_date and last_air_date <= today:
-                is_aggressive_completed = True
-                logger.info(f"  🚀 《{item_name}》大结局(E{last_ep_number})已播出，判定完结。")
-            
-            # 条件 B: 收藏维度 (本地已集齐)
-            # 逻辑：本地集数 >= TMDb总集数
-            elif not is_aggressive_completed and local_total_episodes >= current_total_episodes:
-                is_aggressive_completed = True
-                logger.info(f"  🚀 《{item_name}》本地已集齐 {local_total_episodes}/{current_total_episodes} 集，判定完结。")
+            # 3. 核心判定逻辑 (针对最新季)
+            # 只有当最新季集数超过保护阈值时才触发
+            if latest_s_total_episodes > aggressive_threshold:
+                
+                # 条件 A: 时间维度 (最新季的最后一集已播出)
+                if last_ep_number >= latest_s_total_episodes and last_air_date and last_air_date <= today:
+                    is_aggressive_completed = True
+                    logger.info(f"  🚀 《{item_name}》最新季 S{latest_s_num} 大结局(E{last_ep_number})已播出，判定完结。")
+                
+                # 条件 B: 收藏维度 (最新季本地已集齐)
+                elif not is_aggressive_completed and local_latest_s_episodes >= latest_s_total_episodes:
+                    is_aggressive_completed = True
+                    logger.info(f"  🚀 《{item_name}》最新季 S{latest_s_num} 本地已集齐 {local_latest_s_episodes}/{latest_s_total_episodes} 集，判定完结。")
 
         # ==============================================================================
         # ★★★ 重构后的状态判定逻辑 ★★★
