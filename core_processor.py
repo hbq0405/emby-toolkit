@@ -4,6 +4,7 @@ import os
 import json
 import time
 import re
+import copy
 import random
 from typing import Dict, List, Optional, Any, Tuple
 from collections import defaultdict
@@ -3939,7 +3940,7 @@ class MediaProcessor:
                 tmdb_seasons_data = metadata_override['seasons_details']
 
             # 创建一个副本，避免修改原始对象影响后续逻辑
-            data_to_write = metadata_override.copy()
+            data_to_write = copy.deepcopy(metadata_override)
 
             # 工作室/电视网中文化处理
             if self.config.get(constants.CONFIG_OPTION_STUDIO_TO_CHINESE, False):
