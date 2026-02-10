@@ -1422,10 +1422,8 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
 
         # C. 写入 JSON
         if merged_list:
-            # Emby 剧集主要看 networks
+            # Emby 剧集只看 networks
             payload['networks'] = merged_list
-            # 为了保险，production_companies 也填一样的，防止 Emby 抽风
-            payload['production_companies'] = merged_list
 
     # Directors (导演/主创) -> 映射到 created_by 或 crew
     if db_row.get('directors_json'):
