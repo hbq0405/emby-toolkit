@@ -1156,12 +1156,12 @@ class WatchlistProcessor:
                 # 条件 A: 时间维度 (最新季的最后一集已播出)
                 if last_ep_number >= latest_s_total_episodes and last_air_date and last_air_date <= today:
                     is_aggressive_completed = True
-                    logger.info(f"  🚀 《{item_name}》最新季 S{latest_s_num} 大结局(E{last_ep_number})已播出，判定完结。")
+                    logger.info(f"  🚀 《{item_name}》 （第 {latest_s_num} 季） 大结局(E{last_ep_number})已播出，判定完结。")
                 
                 # 条件 B: 收藏维度 (最新季本地已集齐)
                 elif not is_aggressive_completed and local_latest_s_episodes >= latest_s_total_episodes:
                     is_aggressive_completed = True
-                    logger.info(f"  🚀 《{item_name}》最新季 S{latest_s_num} 本地已集齐 {local_latest_s_episodes}/{latest_s_total_episodes} 集，判定完结。")
+                    logger.info(f"  🚀 《{item_name}》 （第 {latest_s_num} 季） 本地已集齐 {local_latest_s_episodes}/{latest_s_total_episodes} 集，判定完结。")
 
         # ==============================================================================
         # ★★★ 重构后的状态判定逻辑 ★★★
