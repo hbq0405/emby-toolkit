@@ -1072,10 +1072,7 @@ class MediaProcessor:
             
             genres_json = json.dumps(genres_list, ensure_ascii=False)
 
-            # 2. Studios (工作室/制作公司/电视网)
-            # 2. ★★★ 拆分存储 Companies 和 Networks ★★★
-            
-            # A. 制作公司 (Movie & Series 都有)
+            # 2. Studios (制作公司 - Production Companies)
             raw_companies = details.get('production_companies') or []
             companies_list = []
             if isinstance(raw_companies, list):
@@ -1084,7 +1081,7 @@ class MediaProcessor:
                         companies_list.append({'id': c.get('id'), 'name': c.get('name')})
             companies_json = json.dumps(companies_list, ensure_ascii=False)
 
-            # B. 电视网 (仅 Series 有，Movie 为空)
+            # B. 电视网 (Networks - 仅限剧集)
             raw_networks = details.get('networks') or []
             networks_list = []
             if isinstance(raw_networks, list):

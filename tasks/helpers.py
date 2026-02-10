@@ -1382,23 +1382,55 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
         except Exception as e:
             logger.warning(f"还原 Genres 失败: {e}")
 
-    # 1. 恢复制作公司 (Companies)
-    if db_row.get('production_companies_json'):
-        try:
-            raw = db_row['production_companies_json']
-            data = json.loads(raw) if isinstance(raw, str) else raw
-            if data:
-                payload['production_companies'] = data
-        except Exception: pass
+    # 1. 电影：只恢复制作公司
+    if item_type == 'Movie':
+        if db_row.get('production_companies_json'):
+            try:
+                raw = db_row['production_companies_json']
+                data = json.loads(raw) if isinstance(raw, str) else raw
+                if data: payload['production_companies'] = data
+            except Exception: pass
 
-    # 2. 恢复电视网 (Networks) - 仅限剧集
-    if item_type == 'Series' and db_row.get('networks_json'):
-        try:
-            raw = db_row['networks_json']
-            data = json.loads(raw) if isinstance(raw, str) else raw
-            if data:
-                payload['networks'] = data
-        except Exception: pass
+    # 2. 剧集：合并 Networks + Companies -> 写入 networks
+    elif item_type == 'Series':
+        merged_list = []
+        seen_ids = set()
+
+        # A. 优先读取 Networks (权重高，如 CCTV-8)
+        if db_row.get('networks_json'):
+            try:
+                raw = db_row['networks_json']
+                nets = json.loads(raw) if isinstance(raw, str) else raw
+                if nets:
+                    for n in nets:
+                        nid = n.get('id')
+                        if nid and nid not in seen_ids:
+                            merged_list.append(n)
+                            seen_ids.add(nid)
+            except Exception: pass
+
+        # B. 补充读取 Companies (权重低，如 正午阳光)
+        # 只有当 ID 不冲突时才加入。
+        # 例子：如果 Networks 里有 521(CCTV-8)，Companies 里有 521(梦工厂)，这里会跳过梦工厂，保留 CCTV-8。
+        # 例子：正午阳光 ID 是独立的，会成功加入。
+        if db_row.get('production_companies_json'):
+            try:
+                raw = db_row['production_companies_json']
+                comps = json.loads(raw) if isinstance(raw, str) else raw
+                if comps:
+                    for c in comps:
+                        cid = c.get('id')
+                        if cid and cid not in seen_ids:
+                            merged_list.append(c)
+                            seen_ids.add(cid)
+            except Exception: pass
+
+        # C. 写入 JSON
+        if merged_list:
+            # Emby 剧集主要看 networks
+            payload['networks'] = merged_list
+            # 为了保险，production_companies 也填一样的，防止 Emby 抽风
+            payload['production_companies'] = merged_list
 
     # Directors (导演/主创) -> 映射到 created_by 或 crew
     if db_row.get('directors_json'):
