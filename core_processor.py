@@ -3945,13 +3945,12 @@ class MediaProcessor:
             # 工作室/电视网中文化处理
             if self.config.get(constants.CONFIG_OPTION_STUDIO_TO_CHINESE, False):
                 try:
-                    # A. 获取映射表 (数据库优先 -> Utils兜底)
+                    # A. 获取映射表
                     studio_mapping_data = settings_db.get_setting('studio_mapping')
                     if not studio_mapping_data:
                         studio_mapping_data = utils.DEFAULT_STUDIO_MAPPING
                     
-                    # B. 构建两个独立的查找表，防止 Network ID 和 Company ID 冲突
-                    # 例如：ID 521 在 network_id_map 是 CCTV-8，在 company_id_map 是 梦工厂
+                    # B. 构建两个独立的查找表
                     company_id_map = {}
                     network_id_map = {}
                     name_map = {} 
@@ -3959,27 +3958,14 @@ class MediaProcessor:
                     for entry in studio_mapping_data:
                         label = entry.get('label')
                         if not label: continue
-                        
-                        # 填充 Company 表
-                        for cid in entry.get('company_ids', []):
-                            company_id_map[int(cid)] = label
-                        
-                        # 填充 Network 表
-                        for nid in entry.get('network_ids', []):
-                            network_id_map[int(nid)] = label
-                        
-                        # 名称映射 (转小写以模糊匹配)
-                        for en_name in entry.get('en', []):
-                            name_map[en_name.lower().strip()] = label
+                        # 分别存入对应的 ID 表
+                        for cid in entry.get('company_ids', []): company_id_map[int(cid)] = label
+                        for nid in entry.get('network_ids', []): network_id_map[int(nid)] = label
+                        # 名称映射作为兜底
+                        for en_name in entry.get('en', []): name_map[en_name.lower().strip()] = label
 
-                    # 获取原语言，用于解决 ID 冲突 (如 521: CCTV-8 vs 梦工厂)
-                    origin_lang = data_to_write.get('original_language', '').lower()
-                    # 定义通用过滤函数
+                    # C. 定义通用过滤函数 (逻辑已简化)
                     def filter_and_translate_studios(source_list, is_network_field=False):
-                        """
-                        is_network_field=True: 查 network_id_map (用于 Series 的 networks)
-                        is_network_field=False: 查 company_id_map (用于 production_companies)
-                        """
                         if not source_list: return []
                         filtered = []
                         for item in source_list:
@@ -3987,77 +3973,57 @@ class MediaProcessor:
                             s_name = item.get('name', '').strip()
                             mapped_label = None
                             
-                            # 1. 尝试 ID 匹配
+                            # 1. 优先 ID 匹配 (精准区分 Network 和 Company)
                             if s_id is not None:
                                 try:
                                     s_id_int = int(s_id)
-                                    
-                                    # ★★★ 核心修复开始：冲突仲裁 ★★★
-                                    # 如果是剧集，且正在处理制作公司字段 (production_companies)，
-                                    # 且原语言是中文，优先检查 Network 表。
-                                    # 解决 ID 521 被误判为梦工厂 (Company) 而非 CCTV-8 (Network) 的问题。
-                                    if item_type == 'Series' and not is_network_field and origin_lang in ['zh', 'cn', 'chi', 'zho']:
-                                        if s_id_int in network_id_map:
-                                            mapped_label = network_id_map.get(s_id_int)
-
-                                    # 如果上面没命中，或者不是国产剧，则执行标准逻辑
-                                    if not mapped_label:
-                                        if is_network_field: 
-                                            mapped_label = network_id_map.get(s_id_int)
-                                        else: 
-                                            mapped_label = company_id_map.get(s_id_int)
-                                    # ★★★ 核心修复结束 ★★★
-
+                                    if is_network_field:
+                                        # 如果是 networks 字段，只查 network_id_map
+                                        mapped_label = network_id_map.get(s_id_int)
+                                    else:
+                                        # 如果是 production_companies 字段，只查 company_id_map
+                                        mapped_label = company_id_map.get(s_id_int)
                                 except: pass
                             
                             # 2. 尝试名称匹配 (兜底)
                             if not mapped_label and s_name:
                                 mapped_label = name_map.get(s_name.lower())
                             
-                            # 3. 核心逻辑：有映射则改名并保留，无映射则直接丢弃
+                            # 3. 有映射则改名并保留，无映射则丢弃
                             if mapped_label:
                                 item['name'] = mapped_label
                                 filtered.append(item)
-                        
                         return filtered
 
-                    # C. 执行过滤 (针对 Movie 的 production_companies)
+                    # D. 执行过滤
                     if item_type == 'Movie' and 'production_companies' in data_to_write:
-                        raw_companies = data_to_write['production_companies']
-                        # 电影只有制作公司，查 company_id_map
-                        data_to_write['production_companies'] = filter_and_translate_studios(raw_companies, is_network_field=False)
-                        logger.info(f"  ➜ {log_prefix} [工作室中文化] 电影制作公司: {len(raw_companies)} -> {len(data_to_write['production_companies'])} 个 (未映射的已丢弃)")
-
-                    # D. 执行过滤 (针对 Series 的 networks 和 production_companies)
+                        # 电影只有制作公司
+                        data_to_write['production_companies'] = filter_and_translate_studios(data_to_write['production_companies'], is_network_field=False)
+                    
                     elif item_type == 'Series':
-                        # 1. 剧集主要看 networks (电视网)，查 network_id_map
+                        # 剧集：Networks 查 Network 表
                         if 'networks' in data_to_write:
-                            raw_networks = data_to_write['networks']
-                            data_to_write['networks'] = filter_and_translate_studios(raw_networks, is_network_field=True)
-                            logger.info(f"  ➜ {log_prefix} [工作室中文化] 剧集电视网: {len(raw_networks)} -> {len(data_to_write['networks'])} 个 (未映射的已丢弃)")
+                            data_to_write['networks'] = filter_and_translate_studios(data_to_write['networks'], is_network_field=True)
                         
-                        # 2. 剧集有时也有制作公司，查 company_id_map
+                        # 剧集：Production Companies 查 Company 表
                         if 'production_companies' in data_to_write:
-                            raw_companies = data_to_write['production_companies']
-                            data_to_write['production_companies'] = filter_and_translate_studios(raw_companies, is_network_field=False)
+                            data_to_write['production_companies'] = filter_and_translate_studios(data_to_write['production_companies'], is_network_field=False)
 
                 except Exception as e_studio:
                     logger.warning(f"  ➜ {log_prefix} 处理工作室中文化时发生错误: {e_studio}")
 
             # =========================================================
-            # ★★★ 新增逻辑：剧集 Networks/Production Companies 合并 ★★★
+            # 2. ★★★ 剧集专属：合并 Networks 和 Production Companies ★★★
             # =========================================================
             if item_type == 'Series':
-                # Emby 对于剧集不读取 production_companies，只读取 networks。
-                # 因此将 production_companies 合并到 networks 中，并去重。
-                
+                # 获取两个列表
                 current_networks = data_to_write.get('networks', [])
                 current_companies = data_to_write.get('production_companies', [])
                 
-                # 1. 合并列表
+                # 合并
                 merged_list = current_networks + current_companies
                 
-                # 2. 去重 (优先用 ID，没有 ID 用 Name)
+                # 去重 (优先 ID，其次 Name)
                 unique_networks = []
                 seen_ids = set()
                 seen_names = set()
@@ -4071,33 +4037,26 @@ class MediaProcessor:
                     is_duplicate = False
                     
                     if i_id:
-                        if i_id in seen_ids:
-                            is_duplicate = True
-                        else:
-                            seen_ids.add(i_id)
+                        if i_id in seen_ids: is_duplicate = True
+                        else: seen_ids.add(i_id)
                     
-                    # 如果只有名字没有ID，或者ID不同但名字相同(防止重复显示)
                     if i_name:
-                        if i_name in seen_names:
-                            is_duplicate = True
-                        else:
-                            seen_names.add(i_name)
+                        if i_name in seen_names: is_duplicate = True
+                        else: seen_names.add(i_name)
                     
-                    # 如果既没ID也没Name，视为无效数据丢弃
-                    if not i_id and not i_name:
-                        continue
+                    if not i_id and not i_name: continue
                         
                     if not is_duplicate:
                         unique_networks.append(item)
                 
-                # 3. 回写到 networks
+                # 回写到 networks
                 data_to_write['networks'] = unique_networks
                 
-                # 4. 删除 production_companies，防止冗余 (且 Emby 不读)
+                # ★★★ 关键：删除 production_companies，Emby 剧集不读此字段，且防止冗余 ★★★
                 if 'production_companies' in data_to_write:
                     del data_to_write['production_companies']
                 
-                logger.debug(f"  ➜ {log_prefix} [剧集优化] 已将制作公司合并入电视网，最终数量: {len(unique_networks)}")
+                logger.debug(f"  ➜ {log_prefix} [剧集优化] 已将制作公司合并入电视网并去重，最终数量: {len(unique_networks)}")
 
             # --- 关键词映射处理并写入 tags.json ---
             if self.config.get(constants.CONFIG_OPTION_KEYWORD_TO_TAGS, False):
