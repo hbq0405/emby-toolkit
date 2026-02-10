@@ -1208,7 +1208,17 @@ class MediaProcessor:
             # 处理剧集 (Series)
             # ==================================================================
             elif item_type == "Series":
-                series_details = source_data_package.get("series_details", source_data_package)
+                # ★★★ 核心修复：优先使用 source_data_package (顶层数据)，而不是嵌套的 series_details ★★★
+                # source_data_package 经过 construct_metadata_payload 处理，包含了修正后的字段。
+                # 而 nested series_details 往往是原始 TMDb 数据，可能存在字段缺失或错乱。
+                series_details = source_data_package
+                
+                # 如果 source_data_package 只是一个简单的包装器（没有 name/overview 等字段），
+                # 则回退到获取内部的 series_details。
+                # 判断依据：看是否有 'name' 字段。
+                if not series_details.get('name') and series_details.get('series_details'):
+                    series_details = series_details.get('series_details')
+
                 seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
                 
                 series_asset_details = []
@@ -4031,20 +4041,73 @@ class MediaProcessor:
                     # D. 执行过滤 (针对 Series 的 networks 和 production_companies)
                     elif item_type == 'Series':
                         # 1. 剧集主要看 networks (电视网)，查 network_id_map
-                        # 这里 ID 521 会被正确识别为 CCTV-8
                         if 'networks' in data_to_write:
                             raw_networks = data_to_write['networks']
                             data_to_write['networks'] = filter_and_translate_studios(raw_networks, is_network_field=True)
                             logger.info(f"  ➜ {log_prefix} [工作室中文化] 剧集电视网: {len(raw_networks)} -> {len(data_to_write['networks'])} 个 (未映射的已丢弃)")
                         
                         # 2. 剧集有时也有制作公司，查 company_id_map
-                        # 这里 ID 521 会被正确识别为 梦工厂 (如果它真的出现在这里)
                         if 'production_companies' in data_to_write:
                             raw_companies = data_to_write['production_companies']
                             data_to_write['production_companies'] = filter_and_translate_studios(raw_companies, is_network_field=False)
 
                 except Exception as e_studio:
                     logger.warning(f"  ➜ {log_prefix} 处理工作室中文化时发生错误: {e_studio}")
+
+            # =========================================================
+            # ★★★ 新增逻辑：剧集 Networks/Production Companies 合并 ★★★
+            # =========================================================
+            if item_type == 'Series':
+                # Emby 对于剧集不读取 production_companies，只读取 networks。
+                # 因此将 production_companies 合并到 networks 中，并去重。
+                
+                current_networks = data_to_write.get('networks', [])
+                current_companies = data_to_write.get('production_companies', [])
+                
+                # 1. 合并列表
+                merged_list = current_networks + current_companies
+                
+                # 2. 去重 (优先用 ID，没有 ID 用 Name)
+                unique_networks = []
+                seen_ids = set()
+                seen_names = set()
+                
+                for item in merged_list:
+                    if not isinstance(item, dict): continue
+                    
+                    i_id = item.get('id')
+                    i_name = item.get('name')
+                    
+                    is_duplicate = False
+                    
+                    if i_id:
+                        if i_id in seen_ids:
+                            is_duplicate = True
+                        else:
+                            seen_ids.add(i_id)
+                    
+                    # 如果只有名字没有ID，或者ID不同但名字相同(防止重复显示)
+                    if i_name:
+                        if i_name in seen_names:
+                            is_duplicate = True
+                        else:
+                            seen_names.add(i_name)
+                    
+                    # 如果既没ID也没Name，视为无效数据丢弃
+                    if not i_id and not i_name:
+                        continue
+                        
+                    if not is_duplicate:
+                        unique_networks.append(item)
+                
+                # 3. 回写到 networks
+                data_to_write['networks'] = unique_networks
+                
+                # 4. 删除 production_companies，防止冗余 (且 Emby 不读)
+                if 'production_companies' in data_to_write:
+                    del data_to_write['production_companies']
+                
+                logger.debug(f"  ➜ {log_prefix} [剧集优化] 已将制作公司合并入电视网，最终数量: {len(unique_networks)}")
 
             # --- 关键词映射处理并写入 tags.json ---
             if self.config.get(constants.CONFIG_OPTION_KEYWORD_TO_TAGS, False):
