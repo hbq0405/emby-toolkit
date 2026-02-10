@@ -1208,17 +1208,7 @@ class MediaProcessor:
             # 处理剧集 (Series)
             # ==================================================================
             elif item_type == "Series":
-                # ★★★ 核心修复：优先使用 source_data_package (顶层数据)，而不是嵌套的 series_details ★★★
-                # source_data_package 经过 construct_metadata_payload 处理，包含了修正后的字段。
-                # 而 nested series_details 往往是原始 TMDb 数据，可能存在字段缺失或错乱。
-                series_details = source_data_package
-                
-                # 如果 source_data_package 只是一个简单的包装器（没有 name/overview 等字段），
-                # 则回退到获取内部的 series_details。
-                # 判断依据：看是否有 'name' 字段。
-                if not series_details.get('name') and series_details.get('series_details'):
-                    series_details = series_details.get('series_details')
-
+                series_details = source_data_package.get("series_details", source_data_package)
                 seasons_details = source_data_package.get("seasons_details", series_details.get("seasons", []))
                 
                 series_asset_details = []

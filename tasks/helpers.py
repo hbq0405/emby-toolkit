@@ -1251,16 +1251,11 @@ def construct_metadata_payload(item_type: str, tmdb_data: Dict[str, Any],
                 payload['videos'] = tmdb_data['videos']
 
         # 手动处理 Studios 字段
-        if item_type == 'Series':
-            # 剧集：强制将 networks 赋值给 production_companies 和 networks
-            # 这样 Emby 的 "工作室" 栏位显示的就是播出平台
-            if 'networks' in tmdb_data:
-                payload['production_companies'] = tmdb_data['networks']
-                payload['networks'] = tmdb_data['networks']
-        else:
-            # 电影：照常使用 production_companies
-            if 'production_companies' in tmdb_data:
-                payload['production_companies'] = tmdb_data['production_companies']
+        if 'production_companies' in tmdb_data:
+            payload['production_companies'] = tmdb_data['production_companies']
+        
+        if 'networks' in tmdb_data:
+            payload['networks'] = tmdb_data['networks']
 
         # 4. 类型特定处理
         if item_type == "Movie":
