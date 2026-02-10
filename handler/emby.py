@@ -1621,81 +1621,7 @@ def create_or_update_collection_with_emby_ids(
     logger.info(f"  ➜ 开始在Emby中处理名为 '{collection_name}' 的合集...")
     wait_for_server_idle(base_url, api_key)
     try:
-        # ==============================================================================
-        # ★★★ 核心修复：将“特洛伊木马”逻辑提权到最顶层 ★★★
-        # 无论是创建还是更新，只要目标列表为空且允许为空，就先抓壮丁
-        # ==============================================================================
         final_emby_ids = list(emby_ids_in_library)
-        if not final_emby_ids and allow_empty:
-            # 想要生成 9 宫格封面，至少需要 9 个占位符
-            PLACEHOLDER_COUNT = 9 
-            logger.info(f"  ➜ 合集 '{collection_name}' 内容为空，正在抓取 {PLACEHOLDER_COUNT} 个随机媒体项作为占位...")
-            
-            try:
-                target_lib_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
-                search_scopes = target_lib_ids if target_lib_ids else [None]
-                
-                found_items_batch = [] # 改用列表存储
-                
-                # 1. 优先尝试：带分级过滤 (PG-13)
-                for parent_id in search_scopes:
-                    params = {
-                        'api_key': api_key, 
-                        'Limit': PLACEHOLDER_COUNT, # ★ 请求 9 个
-                        'Recursive': 'true', 
-                        'IncludeItemTypes': 'Movie,Series',
-                        'SortBy': 'Random',     
-                        'ImageTypes': 'Primary',
-                        'MaxOfficialRating': 'PG-13'
-                    }
-                    if parent_id: params['ParentId'] = parent_id
-                    
-                    try:
-                        temp_resp = emby_client.get(f"{base_url.rstrip('/')}/Items", params=params)
-                        if temp_resp.status_code == 200:
-                            items = temp_resp.json().get('Items', [])
-                            if items:
-                                found_items_batch = items # ★ 保留所有结果
-                                scope_name = f"媒体库 {parent_id}" if parent_id else "全局"
-                                logger.info(f"  ➜ 在 {scope_name} 中成功抓取到 {len(items)} 个随机素材 (已过滤R级+)。")
-                                break
-                    except Exception: continue
-
-                # 2. 兜底尝试
-                if not found_items_batch and target_lib_ids:
-                     logger.warning("  ➜ 严格分级模式下未找到素材，尝试在受控库中放宽分级限制重试...")
-                     for parent_id in target_lib_ids:
-                        params = {
-                            'api_key': api_key, 
-                            'Limit': PLACEHOLDER_COUNT, # ★ 请求 9 个
-                            'Recursive': 'true', 
-                            'IncludeItemTypes': 'Movie,Series', 'SortBy': 'Random', 'ImageTypes': 'Primary',
-                            'ParentId': parent_id
-                        }
-                        try:
-                            temp_resp = emby_client.get(f"{base_url.rstrip('/')}/Items", params=params)
-                            items = temp_resp.json().get('Items', [])
-                            if items:
-                                found_items_batch = items # ★ 保留所有结果
-                                logger.info(f"  ➜ 重试成功：在媒体库 {parent_id} 中抓取到 {len(items)} 个素材 (无分级限制)。")
-                                break
-                        except Exception: continue
-                
-                # ★★★ 将抓取到的所有 ID 加入列表 ★★★
-                if found_items_batch:
-                    found_ids = [i['Id'] for i in found_items_batch]
-                    final_emby_ids.extend(found_ids) # 使用 extend 批量添加
-                else:
-                    if not allow_empty:
-                        logger.warning(f"无法获取占位素材，且不允许创建空合集，跳过处理 '{collection_name}'。")
-                        return None
-                    else:
-                        logger.warning(f"无法获取占位素材，合集 '{collection_name}' 将保持真正的空状态。")
-
-            except Exception as e:
-                logger.error(f"  ➜ 获取随机素材失败: {e}")
-
-        # ==============================================================================
         
         # 1. 先尝试查找合集
         collection = prefetched_collection_map.get(collection_name.lower()) if prefetched_collection_map is not None else get_collection_by_name(collection_name, base_url, api_key, user_id)
@@ -3044,7 +2970,7 @@ def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days:
         if cleaned_data:
             import json
             # 只打印第一条，防止日志刷屏
-            logger.debug(f"  🔍 [UserPlaylist] 数据获取成功，Count: {len(cleaned_data)} | Sample: {json.dumps(cleaned_data[0], ensure_ascii=False)}")
+            logger.info(f"🔍 [UserPlaylist] 数据获取成功，Count: {len(cleaned_data)} | Sample: {json.dumps(cleaned_data[0], ensure_ascii=False)}")
         else:
             logger.warning(f"🔍 [UserPlaylist] 请求成功但返回空列表 (User: {user_id})")
 
@@ -3054,80 +2980,85 @@ def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days:
         logger.error(f"获取个人播放数据失败: {e}")
         return {"error": str(e)}
 
-def get_global_popular_items(base_url: str, api_key: str, days: int = 30, media_type: str = 'all') -> dict:
+def get_global_popular_items(base_url: str, api_key: str, days: int = 30) -> dict:
     """
-    获取全局热门数据 (支持类型筛选)
+    获取全局热门数据 (聚合逻辑优化版)
     """
-    # 1. 构造 URL
-    endpoint = "/user_usage_stats/UserPlaylist"
+    # 1. 构造 URL (适配不同的 Base URL 格式)
     if "/emby" not in base_url:
-        api_url = f"{base_url.rstrip('/')}/emby{endpoint}"
+        api_url = f"{base_url.rstrip('/')}/emby/user_usage_stats/UserPlaylist"
     else:
-        api_url = f"{base_url.rstrip('/')}{endpoint}"
+        api_url = f"{base_url.rstrip('/')}/user_usage_stats/UserPlaylist"
     
-    # 2. 复刻官方参数
+    # 2. 构造时间参数
+    start_date = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+    
     params = {
         "api_key": api_key,
-        "days": days,
-        "user_id": "",          
-        "aggregate_data": "false", 
-        "include_stats": "false",
-        "limit": 100000         
+        "min_date": start_date,
+        "limit": 1000 # 获取足够多的记录用于聚合
     }
     
     try:
-        response = emby_client.get(api_url, params=params, timeout=60)
+        response = emby_client.get(api_url, params=params, timeout=20)
         response.raise_for_status()
         raw_logs = response.json() 
 
-        # --- 本地聚合逻辑 ---
+        # --- 核心：聚合逻辑 ---
+        # 使用字典来合并相同的条目
+        # Key = item_id (唯一标识)
         stats = {}
         
         for log in raw_logs:
-            # 优先取 ItemId
-            iid = log.get('ItemId') or log.get('item_id')
+            # 获取关键字段，兼容 snake_case (你的数据) 和 PascalCase
+            iid = log.get('item_id') or log.get('ItemId')
             if not iid: continue
             
-            # --- ★★★ 新增：类型过滤逻辑 ★★★ ---
-            # 获取当前条目的类型
-            current_type = log.get("item_type") or log.get("Type") or "Video"
-            
-            # 如果指定了筛选类型，且当前类型不匹配，则跳过
-            if media_type != 'all':
-                # 特殊处理：如果筛选 'Video'，我们可能想包含 'Video' 和其他未定义的类型
-                # 但通常 Emby 类型很明确：Movie, Episode, Audio
-                if current_type != media_type:
-                    continue
-            # ----------------------------------
-
-            iid = str(iid)
-            
-            # 初始化
+            # 如果是第一次遇到这个项目，初始化
             if iid not in stats:
                 stats[iid] = {
                     "item_id": iid,
-                    "title": log.get("item_name") or log.get("Name") or log.get("ItemName") or "未知视频",
-                    "item_type": current_type,
+                    "title": log.get("item_name") or log.get("Name") or "未知",
+                    "item_type": log.get("item_type") or log.get("Type") or "Video",
                     "play_count": 0,
-                    "total_duration": 0
+                    "total_duration": 0,
+                    "image_tag": log.get("PrimaryImageTag") # 如果有的话
                 }
             
-            # 累加
-            stats[iid]["play_count"] += 1
+            # 累加数据
+            item = stats[iid]
+            item["play_count"] += 1
             
+            # 处理时长 (你的数据是字符串 "480")
             try:
                 duration_str = log.get("duration") or log.get("PlayDuration") or 0
-                stats[iid]["total_duration"] += int(float(duration_str))
+                item["total_duration"] += int(float(duration_str))
             except: 
                 pass
 
         # --- 排序与截取 ---
+        # 1. 字典转列表
         aggregated_list = list(stats.values())
+        
+        # 2. 按播放次数倒序排列
         aggregated_list.sort(key=lambda x: x["play_count"], reverse=True)
-        top_list = aggregated_list[:20]
         
-        return {"data": top_list} 
+        # 3. 只取前 10 名
+        top_10 = aggregated_list[:10]
         
+        # 4. 格式化时长 (秒 -> 分钟)，方便前端显示
+        for item in top_10:
+            total_seconds = item["total_duration"]
+            # 如果是单集，显示单集时长；如果是聚合，显示总时长
+            # 这里为了榜单好看，我们计算平均时长或者总时长
+            # 截图显示的是 "时长: 10分钟"，我们用总时长除以次数算平均，或者直接用单次时长
+            if item["play_count"] > 0:
+                avg_seconds = total_seconds / item["play_count"]
+                item["duration_minutes"] = int(avg_seconds / 60)
+            else:
+                item["duration_minutes"] = 0
+
+        return {"data": top_10} 
     except Exception as e:
         logger.error(f"获取全局热播数据失败: {e}")
         return {"error": str(e)}
