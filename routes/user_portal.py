@@ -325,7 +325,7 @@ def upload_avatar():
 @emby_login_required
 def get_playback_report():
     """
-    获取播放统计报告 (个人流水 + 全局热榜)
+    获取播放统计报告 (个人)
     支持参数: days (天数), media_type (筛选类型: all, Movie, Episode, Audio, Video)
     """
     emby_user_id = session['emby_user_id']
@@ -358,16 +358,7 @@ def get_playback_report():
         raw_activity = filtered_activity
 
     # ==================================================
-    # 2. 获取 全局数据 (提前获取，以便合并查询元数据)
-    # ==================================================
-    global_res = emby.get_global_popular_items(
-        config['emby_server_url'], config['emby_api_key'], days, 
-        media_type=media_type_filter
-    )
-    global_raw_list = global_res.get("data", [])
-
-    # ==================================================
-    # 3. 统一收集 Episode ID 进行批量回查
+    # 2. 统一收集 Episode ID 进行批量回查
     # ==================================================
     episode_ids_to_fetch = set() # 使用集合去重
 
@@ -379,14 +370,7 @@ def get_playback_report():
         if item_type == 'Episode' and item_id:
             episode_ids_to_fetch.add(item_id)
 
-    # B. 收集全站热播中的剧集ID
-    for item in global_raw_list:
-        item_id = str(item.get("item_id"))
-        item_type = item.get("item_type") or "Video"
-        if item_type == 'Episode' and item_id:
-            episode_ids_to_fetch.add(item_id)
-
-    # C. 批量向 Emby 查询详情 (SeriesName, ParentIndexNumber, IndexNumber)
+    # B. 批量向 Emby 查询详情 (SeriesName, ParentIndexNumber, IndexNumber)
     episode_details_map = {}
     if episode_ids_to_fetch:
         try:
@@ -403,7 +387,7 @@ def get_playback_report():
             logger.error(f"批量回查集数详情失败: {e}")
 
     # ==================================================
-    # 4. 格式化 个人数据
+    # 3. 格式化 个人数据
     # ==================================================
     personal_stats = {
         "total_count": len(raw_activity),
@@ -479,29 +463,8 @@ def get_playback_report():
             "item_id": item_id
         })
 
-    # ==================================================
-    # 5. 格式化 全局数据
-    # ==================================================
-    global_top_list = []
-    for item in global_raw_list:
-        item_id = str(item.get("item_id"))
-        item_type = item.get("item_type")
-        raw_title = item.get("title")
-        
-        # ★★★ 调用智能格式化 ★★★
-        display_title = format_episode_title(item_id, item_type, raw_title, episode_details_map)
-
-        global_top_list.append({
-            "title": display_title,
-            "play_count": item.get("play_count", 0),
-            "total_duration": int(item.get("total_duration", 0) / 60), 
-            "item_type": item_type,
-            "item_id": item_id
-        })
-
     return jsonify({
         "personal": personal_stats,
-        "global_top": global_top_list
     })
 
 @user_portal_bp.route('/dashboard-stats', methods=['GET'])
