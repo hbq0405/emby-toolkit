@@ -117,12 +117,12 @@ def task_process_all_custom_collections(processor):
         all_collections = custom_collection_db.get_all_active_custom_collections()
         
         # --- 过滤逻辑：只保留需要从外部获取数据的类型 ---
-        target_types = {'list', 'ai_recommendation_global', 'filter'}
+        target_types = {'list', 'ai_recommendation_global'}
         active_collections = [c for c in all_collections if c['type'] in target_types]
         
         skipped_count = len(all_collections) - len(active_collections)
         if skipped_count > 0:
-            logger.info(f"  -> 已跳过 {skipped_count} 个人AI类合集 (无需定时刷新)。")
+            logger.info(f"  -> 已跳过 {skipped_count} 个本地筛选/个人AI类合集 (无需定时刷新)。")
 
         if not active_collections:
             task_manager.update_status_from_thread(100, "没有需要刷新的榜单或全局推荐合集。")
@@ -297,7 +297,7 @@ def task_process_all_custom_collections(processor):
 
                 # 后续处理
                 # 1. 更新 Emby 实体合集 (用于封面)
-                should_allow_empty = (collection_type in ['list', 'ai_recommendation_global', 'filter'])
+                should_allow_empty = (collection_type in ['list', 'ai_recommendation_global'])
                 
                 emby_collection_id = emby.create_or_update_collection_with_emby_ids(
                     collection_name=collection_name, 
