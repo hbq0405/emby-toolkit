@@ -297,7 +297,7 @@ def task_process_all_custom_collections(processor):
 
                 # 后续处理
                 # 1. 更新 Emby 实体合集 (用于封面)
-                should_allow_empty = (collection_type in ['list', 'ai_recommendation_global'])
+                should_allow_empty = (collection_type in ['list', 'ai_recommendation_global', 'filter'])
                 
                 emby_collection_id = emby.create_or_update_collection_with_emby_ids(
                     collection_name=collection_name, 
