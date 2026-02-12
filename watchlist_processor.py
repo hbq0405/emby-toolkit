@@ -934,37 +934,21 @@ class WatchlistProcessor:
             if self._check_season_consistency(tmdb_id, season_number, episode_count):
                 return
             
-            # 3. 检查是否需要删除旧文件 (Emby)
-            if watchlist_cfg.get('auto_delete_old_files', False):
-                logger.info(f"  🗑️ [自动清理] 检测到“删除 Emby 旧文件”已开启，正在查找并删除 S{season_number}...")
-                try:
-                    target_season_id = watchlist_db.get_season_emby_id(tmdb_id, season_number)
-                    if target_season_id:
-                        if emby.delete_item(target_season_id, self.emby_url, self.emby_api_key, self.emby_user_id):
-                            logger.info(f"  ✅ [自动清理] 已成功从 Emby 删除 S{season_number} (ID: {target_season_id})。")
-                            time.sleep(2)
-                        else:
-                            logger.error(f"  ❌ [自动清理] 删除 S{season_number} 失败，将继续执行洗版订阅。")
-                    else:
-                        logger.warning(f"  ⚠️ [自动清理] 数据库中未找到 S{season_number} 的 Emby ID，跳过删除。")
-                except Exception as e:
-                    logger.error(f"  ❌ [自动清理] 执行删除逻辑时出错: {e}")
-
-            # 4. 删除整理记录 (MoviePilot) - 
+            # 3. 删除整理记录 (MoviePilot) - 
             related_hashes = []
             if watchlist_cfg.get('auto_delete_mp_history', False):
                 logger.info(f"  🗑️ [自动清理] 正在删除 MoviePilot 整理记录...")
                 related_hashes = moviepilot.delete_transfer_history(tmdb_id, season_number, series_name, self.config)
 
-                # 5. 清理下载器中的旧任务 -
+                # 4. 清理下载器中的旧任务 -
                 if watchlist_cfg.get('auto_delete_download_tasks', False):
                     logger.info(f"  🗑️ [自动清理] 正在删除下载器旧任务...")
                     moviepilot.delete_download_tasks(series_name, self.config, hashes=related_hashes)
 
-            # 6. 取消旧订阅
+            # 5. 取消旧订阅
             moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=season_number)
             
-            # 7. 发起新订阅 (洗版)
+            # 6. 发起新订阅 (洗版)
             payload = {
                 "name": series_name,
                 "tmdbid": int(tmdb_id),
