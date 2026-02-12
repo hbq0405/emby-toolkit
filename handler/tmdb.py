@@ -48,7 +48,6 @@ class LoggedRetry(Retry):
 
         return new_retry
 
-
 # ★★★ 创建带重试功能的 Session (已修改为使用 LoggedRetry) ★★★
 def requests_retry_session(
     retries=3,
@@ -91,7 +90,7 @@ def get_tmdb_api_base_url() -> str:
 DEFAULT_LANGUAGE = "zh-CN"
 DEFAULT_REGION = "CN"
 
-
+# --- 通用的 TMDb 请求函数 ---
 def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] = None, use_default_language: bool = True) -> Optional[Dict[str, Any]]:
     """【V2.1 - 最终驱魔版】增加了 use_default_language 开关，用于控制是否添加默认语言参数。"""
     if not api_key:
@@ -130,6 +129,7 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
     except json.JSONDecodeError as e:
         logger.error(f"  ➜ TMDb API JSON 解码错误: {e}. URL: {full_url}. Response: {response.text[:200] if response else 'N/A'}", exc_info=False)
         return None
+
 # --- 获取电影的详细信息 ---
 def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,release_dates", language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
@@ -166,6 +166,7 @@ def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[
         details["english_title"] = details.get("original_title")
 
     return details
+
 # --- 获取电视剧的详细信息 ---
 def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings", language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
@@ -200,31 +201,7 @@ def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] =
         details["english_name"] = details.get("original_name")
 
     return details
-# --- 获取演员详情 ---
-def get_person_details_tmdb(person_id: int, api_key: str, append_to_response: Optional[str] = "movie_credits,tv_credits,images,external_ids,translations") -> Optional[Dict[str, Any]]:
-    endpoint = f"/person/{person_id}"
-    params = {
-        "language": DEFAULT_LANGUAGE,
-        "append_to_response": append_to_response
-    }
-    details = _tmdb_request(endpoint, api_key, params)
 
-    # 尝试补充英文名，如果主语言是中文且original_name不是英文 (TMDb人物的original_name通常是其母语名)
-    if details and details.get("name") != details.get("original_name") and DEFAULT_LANGUAGE.startswith("zh"):
-        # 检查 translations 是否包含英文名
-        if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
-            for trans in details["translations"]["translations"]:
-                if trans.get("iso_639_1") == "en" and trans.get("data", {}).get("name"):
-                    details["english_name_from_translations"] = trans["data"]["name"]
-                    logger.trace(f"  从translations补充人物英文名: {details['english_name_from_translations']}")
-                    break
-        # 如果 original_name 本身是英文，也可以用 (需要判断 original_name 的语言，较复杂)
-        # 简单处理：如果 original_name 和 name 不同，且 name 是中文，可以认为 original_name 可能是外文名
-        if details.get("original_name") and not contains_chinese(details.get("original_name", "")): # 假设 contains_chinese 在这里可用
-             details["foreign_name_from_original"] = details.get("original_name")
-
-
-    return details
 # --- 获取电视剧某一季的详细信息 ---
 def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append_to_response: Optional[str] = "credits", item_name: Optional[str] = None, language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
@@ -246,6 +223,7 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
         logger.debug(f"  ➜ TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
     
     return _tmdb_request(endpoint, api_key, params)
+
 # --- 获取电视剧某一季的详细信息，简化调用版 ---
 def get_tv_season_details(tv_id: int, season_number: int, api_key: str) -> Optional[Dict[str, Any]]:
     """
@@ -260,78 +238,7 @@ def get_tv_season_details(tv_id: int, season_number: int, api_key: str) -> Optio
         api_key=api_key,
         append_to_response=None
     )
-# --- 接收一个剧集 TMDB ID 列表，并发地获取所有这些剧集的完整子项（季、集）信息 ---
-def batch_get_full_series_details_tmdb(
-    series_tmdb_ids: List[str], 
-    api_key: str, 
-    max_workers: int = 5, # <-- 将默认并发数从10降低到5，更加安全
-    progress_callback: Optional[Callable] = None
-) -> Dict[str, List[Dict]]:
-    """
-    【V1.2 - 稳定防崩溃版】
-    接收一个剧集 TMDB ID 列表，并发地获取所有这些剧集的完整子项（季、集）信息。
-    通过降低默认并发数和增加请求间隔，防止触发TMDb的速率限制。
-    """
-    if not series_tmdb_ids or not api_key:
-        return {}
 
-    logger.info(f"  ➜ 开始为 {len(series_tmdb_ids)} 部剧集并发聚合 TMDB 子项数据 (并发数: {max_workers})...")
-    
-    all_children_data = {}
-    completed_count = 0
-    lock = threading.Lock()
-    total_tasks = len(series_tmdb_ids)
-
-    def _fetch_one_series_all_children(tv_id: str) -> Optional[List[Dict]]:
-        """线程工作函数：获取单部剧集的所有子项"""
-        try:
-            series_details = get_tv_details(tv_id, api_key, append_to_response="seasons")
-            if not series_details or not series_details.get("seasons"):
-                logger.warning(f"    ➜ 无法获取剧集 {tv_id} 的季列表，跳过。")
-                return None
-
-            children = []
-            for season_summary in series_details.get("seasons", []):
-                season_num = season_summary.get("season_number")
-                if season_num is None or season_num == 0:
-                    continue
-                
-                children.append(season_summary)
-                season_details = get_season_details_tmdb(tv_id, season_num, api_key)
-                if season_details and season_details.get("episodes"):
-                    children.extend(season_details["episodes"])
-                
-                # ★★★ 核心修复 2/2：在这里加入一个微小的延时 ★★★
-                # 这会极大地增加程序的稳定性，避免被服务器拒绝连接。
-                time.sleep(0.05) # 暂停 50 毫秒
-
-            return children
-        except Exception as e:
-            logger.error(f"    ➜ 获取剧集 {tv_id} 的子项时出错: {e}", exc_info=False)
-            return None
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_id = {executor.submit(_fetch_one_series_all_children, tv_id): tv_id for tv_id in series_tmdb_ids}
-        
-        for future in concurrent.futures.as_completed(future_to_id):
-            tv_id = future_to_id[future]
-            try:
-                result = future.result()
-                if result:
-                    all_children_data[tv_id] = result
-            except Exception as exc:
-                logger.error(f"    剧集 {tv_id} 的并发任务执行时产生异常: {exc}")
-            finally:
-                if progress_callback:
-                    with lock:
-                        completed_count += 1
-                    
-                    progress_percent = 15 + (completed_count / total_tasks) * 25
-                    message = f"正在从TMDb并发获取... ({completed_count}/{total_tasks})"
-                    progress_callback(int(progress_percent), message)
-
-    logger.info(f"  ➜ 成功为 {len(all_children_data)} 部剧集获取了完整的子项元数据。")
-    return all_children_data
 # --- 并发获取剧集详情 ---
 def aggregate_full_series_data_from_tmdb(
     tv_id: int,
@@ -499,30 +406,7 @@ def aggregate_full_series_data_from_tmdb(
     logger.info(f"  ➜ 聚合完成。获取了 {len(temp_seasons)} 个季详情，提取并清洗了 {len(final_aggregated_data['episodes_details'])} 个集详情。")
     
     return final_aggregated_data
-# +++ 获取集详情 +++
-def get_episode_details_tmdb(tv_id: int, season_number: int, episode_number: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,external_ids") -> Optional[Dict[str, Any]]:
-    """
-    获取电视剧某一集的详细信息。
-    """
-    endpoint = f"/tv/{tv_id}/season/{season_number}/episode/{episode_number}"
-    params = {
-        "language": DEFAULT_LANGUAGE,
-        "append_to_response": append_to_response
-    }
-    logger.trace(f"  ➜ TMDb API: 获取电视剧 (ID: {tv_id}) S{season_number}E{episode_number} 的详情...")
-    return _tmdb_request(endpoint, api_key, params)
-def get_tv_episode_details(tv_id: int, season_number: int, episode_number: int, api_key: str) -> Optional[Dict[str, Any]]:
-    """
-    获取电视剧某一集的详细信息。
-    这是 get_episode_details_tmdb 的一个更简洁的别名，用于简化调用。
-    """
-    return get_episode_details_tmdb(
-        tv_id=tv_id,
-        season_number=season_number,
-        episode_number=episode_number,
-        api_key=api_key,
-        append_to_response=None # 仅获取基础信息，不需要 credits 等额外数据，提高速度
-    )
+
 # --- 通过外部ID (如 IMDb ID) 在 TMDb 上查找人物 ---
 def find_person_by_external_id(external_id: str, api_key: str, source: str = "imdb_id",
                                names_for_verification: Optional[Dict[str, str]] = None) -> Optional[Dict[str, Any]]:
@@ -586,6 +470,7 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
     except requests.exceptions.RequestException as e:
         logger.error(f"TMDb: 通过外部ID查找时发生网络错误: {e}")
         return None
+
 # --- 获取合集的详细信息 ---
 def get_collection_details(collection_id: int, api_key: str) -> Optional[Dict[str, Any]]:
     """
@@ -599,6 +484,7 @@ def get_collection_details(collection_id: int, api_key: str) -> Optional[Dict[st
     
     logger.debug(f"TMDb: 获取合集详情 (ID: {collection_id})")
     return _tmdb_request(endpoint, api_key, params)
+
 # --- 搜索媒体 ---
 def search_media(query: str, api_key: str, item_type: str = 'movie', year: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
     """
@@ -645,6 +531,7 @@ def search_media(query: str, api_key: str, item_type: str = 'movie', year: Optio
         data = _tmdb_request(endpoint, api_key, params)
 
     return data.get("results") if data else None
+
 # --- 搜索媒体 (为探索页面定制) ---
 def search_media_for_discover(query: str, api_key: str, item_type: str = 'movie', year: Optional[str] = None, page: int = 1) -> Optional[Dict[str, Any]]:
     """
@@ -688,6 +575,7 @@ def search_media_for_discover(query: str, api_key: str, item_type: str = 'movie'
         data = _tmdb_request(endpoint, api_key, params)
 
     return data
+
 # --- 搜索电视剧 ---
 def search_tv_shows(query: str, api_key: str, year: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
     """
@@ -695,6 +583,7 @@ def search_tv_shows(query: str, api_key: str, year: Optional[str] = None) -> Opt
     这是 search_media 的一个便捷封装。
     """
     return search_media(query=query, api_key=api_key, item_type='tv', year=year)
+
 # --- 搜索演员 ---
 def search_person_tmdb(query: str, api_key: str) -> Optional[List[Dict[str, Any]]]:
     """
@@ -712,6 +601,33 @@ def search_person_tmdb(query: str, api_key: str) -> Optional[List[Dict[str, Any]
     logger.debug(f"TMDb: 正在搜索演员: '{query}'")
     data = _tmdb_request(endpoint, api_key, params)
     return data.get("results") if data else None
+
+# --- 获取演员详情 ---
+def get_person_details_tmdb(person_id: int, api_key: str, append_to_response: Optional[str] = "movie_credits,tv_credits,images,external_ids,translations") -> Optional[Dict[str, Any]]:
+    endpoint = f"/person/{person_id}"
+    params = {
+        "language": DEFAULT_LANGUAGE,
+        "append_to_response": append_to_response
+    }
+    details = _tmdb_request(endpoint, api_key, params)
+
+    # 尝试补充英文名，如果主语言是中文且original_name不是英文 (TMDb人物的original_name通常是其母语名)
+    if details and details.get("name") != details.get("original_name") and DEFAULT_LANGUAGE.startswith("zh"):
+        # 检查 translations 是否包含英文名
+        if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
+            for trans in details["translations"]["translations"]:
+                if trans.get("iso_639_1") == "en" and trans.get("data", {}).get("name"):
+                    details["english_name_from_translations"] = trans["data"]["name"]
+                    logger.trace(f"  从translations补充人物英文名: {details['english_name_from_translations']}")
+                    break
+        # 如果 original_name 本身是英文，也可以用 (需要判断 original_name 的语言，较复杂)
+        # 简单处理：如果 original_name 和 name 不同，且 name 是中文，可以认为 original_name 可能是外文名
+        if details.get("original_name") and not contains_chinese(details.get("original_name", "")): # 假设 contains_chinese 在这里可用
+             details["foreign_name_from_original"] = details.get("original_name")
+
+
+    return details
+
 # --- 获取演员的所有影视作品 ---
 def get_person_credits_tmdb(person_id: int, api_key: str) -> Optional[Dict[str, Any]]:
     """
@@ -734,7 +650,7 @@ def get_person_credits_tmdb(person_id: int, api_key: str) -> Optional[Dict[str, 
 
     return details
 
-# --- 通过 TMDb API v3 /find/{imdb_id} 方式获取TMDb ID ---
+# --- 通过 IMDb ID 获取 TMDb ID ---
 def get_tmdb_id_by_imdb_id(imdb_id: str, api_key: str, media_type: str) -> Optional[int]:
     """
     通过 TMDb API v3 /find/{imdb_id} 方式获取TMDb ID。
@@ -765,6 +681,7 @@ def get_tmdb_id_by_imdb_id(imdb_id: str, api_key: str, media_type: str) -> Optio
         
     return None
 
+# --- 获取片单的详细信息 ---
 def get_list_details_tmdb(list_id: int, api_key: str, page: int = 1) -> Optional[Dict[str, Any]]:
     """
     【新】获取指定 TMDb 片单的详细信息，支持分页。
@@ -799,6 +716,7 @@ def discover_tv_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str,
     logger.debug(f"TMDb: 发现电视剧 (条件: {params})")
     return _tmdb_request(endpoint, api_key, params, use_default_language=True)
 
+# --- 获取电影类型列表 ---
 def get_movie_genres_tmdb(api_key: str) -> Optional[List[Dict[str, Any]]]:
     """【新】获取TMDb所有电影类型的官方列表。"""
     endpoint = "/genre/movie/list"
