@@ -8,6 +8,7 @@ from .connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
+# 获取媒体库中 TMDb ID 对应的 Emby ID 映射
 def check_tmdb_ids_in_library(tmdb_ids: List[str], item_type: str) -> Dict[str, str]:
     """
     接收 TMDb ID 列表，返回一个字典，映射 TMDb ID 到 Emby Item ID。
@@ -32,7 +33,8 @@ def check_tmdb_ids_in_library(tmdb_ids: List[str], item_type: str) -> Dict[str, 
     except Exception as e:
         logger.error(f"DB: 检查 TMDb ID 是否在库时失败: {e}", exc_info=True)
         return {}
-    
+
+# 根据 Emby ID 反查 TMDb ID    
 def get_tmdb_id_from_emby_id(emby_id: str) -> Optional[str]:
     """
     根据 Emby ID，从 media_metadata 表中反查出对应的 TMDB ID。
@@ -51,6 +53,7 @@ def get_tmdb_id_from_emby_id(emby_id: str) -> Optional[str]:
         logger.error(f"根据 Emby ID {emby_id} 反查 TMDB ID 时出错: {e}", exc_info=True)
         return None
 
+# 根据复合主键获取媒体详情
 def get_media_details(tmdb_id: str, item_type: str) -> Optional[Dict[str, Any]]:
     """
     根据完整的复合主键 (tmdb_id, item_type) 获取唯一的一条媒体记录。
@@ -69,6 +72,7 @@ def get_media_details(tmdb_id: str, item_type: str) -> Optional[Dict[str, Any]]:
         logger.error(f"DB: 获取媒体详情 (TMDb ID: {tmdb_id}, Type: {item_type}) 时失败: {e}", exc_info=True)
         return None
 
+# 根据 TMDb ID 列表批量获取媒体详情
 def get_media_details_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     """
     根据 TMDB ID 列表，批量获取 media_metadata 表中的完整记录。
@@ -91,6 +95,7 @@ def get_media_details_by_tmdb_ids(tmdb_ids: List[str]) -> Dict[str, Dict[str, An
         logger.error(f"根据TMDb ID列表批量获取媒体详情时出错: {e}", exc_info=True)
         return {}
 
+# 获取所有状态为 'WANTED' 的媒体项
 def get_all_wanted_media() -> List[Dict[str, Any]]:
     """
     获取所有状态为 'WANTED' 的媒体项。
@@ -115,7 +120,8 @@ def get_all_wanted_media() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 获取所有待订阅(WANTED)媒体失败: {e}", exc_info=True)
         return []
-    
+
+# 将 PENDING_RELEASE 状态的媒体晋升为 WANTED    
 def promote_pending_to_wanted() -> int:
     """
     检查所有状态为 'PENDING_RELEASE' 的媒体项。
@@ -143,6 +149,7 @@ def promote_pending_to_wanted() -> int:
         logger.error(f"DB: 晋升 PENDING_RELEASE 状态失败: {e}", exc_info=True)
         return 0
 
+# 确保媒体元数据记录存在
 def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
     """
     确保媒体元数据记录存在于数据库中。
@@ -201,6 +208,7 @@ def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
         logger.error(f"  ➜ [元数据注册] 确保媒体记录存在时发生错误: {e}", exc_info=True)
         raise
 
+# 获取所有有订阅状态的媒体项
 def get_all_subscriptions() -> List[Dict[str, Any]]:
     """
     【性能优化版】获取所有有订阅状态的媒体项。
@@ -270,7 +278,8 @@ def get_all_subscriptions() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 获取所有订阅媒体失败: {e}", exc_info=True)
         return []
-    
+
+# 获取用户订阅历史记录    
 def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, status_filter: str = 'all') -> tuple[List[Dict[str, Any]], int]:
     """
     获取用户订阅历史记录。
@@ -346,6 +355,7 @@ def get_user_request_history(user_id: str, page: int = 1, page_size: int = 10, s
         logger.error(f"DB: 查询用户 {user_id} 的订阅历史失败: {e}", exc_info=True)
         return [], 0
 
+# 同步剧集的所有季和集的元数据
 def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], episodes: List[Dict], local_in_library_info: Dict[int, set]):
     """
     根据从 TMDB 获取的最新数据，批量同步一个剧集的所有季和集到 media_metadata 表。
@@ -463,6 +473,7 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
     except Exception as e:
         logger.error(f"  ➜ [追剧联动] 在同步剧集 {series_title} 的子项目时发生错误: {e}", exc_info=True)
 
+# 根据 TMDB ID 精确查询剧集的标题
 def get_series_title_by_tmdb_id(tmdb_id: str) -> Optional[str]:
     """根据 TMDB ID 精确查询剧集的标题。"""
     if not tmdb_id:
@@ -478,6 +489,7 @@ def get_series_title_by_tmdb_id(tmdb_id: str) -> Optional[str]:
         logger.error(f"根据 TMDB ID {tmdb_id} 查询剧集标题时出错: {e}", exc_info=True)
         return None
 
+# 根据 TMDb ID 列表批量获取在库状态（含类型区分）
 def get_in_library_status_with_type_bulk(tmdb_ids: list) -> Dict[str, bool]:
     """
     【精确查询】传入 TMDB ID 列表，查询数据库。
@@ -514,7 +526,8 @@ def get_in_library_status_with_type_bulk(tmdb_ids: list) -> Dict[str, bool]:
     except Exception as e:
         logger.error(f"DB: 批量查询(带类型)在库状态失败: {e}", exc_info=True)
         return {}
-    
+
+# 获取剧集的本地子项目结构信息    
 def get_series_local_children_info(parent_tmdb_id: str) -> dict:
     """
     从本地数据库获取一个剧集在媒体库中的结构信息。
@@ -542,6 +555,7 @@ def get_series_local_children_info(parent_tmdb_id: str) -> dict:
         logger.error(f"从本地数据库获取剧集 {parent_tmdb_id} 的子项目结构时失败: {e}")
         return {}
 
+# 动态更新媒体元数据字段
 def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str, Any]):
     """
     根据传入的 updates 字典，动态更新指定媒体的字段。
@@ -587,6 +601,7 @@ def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str
     except Exception as e:
         logger.error(f"更新媒体 {tmdb_id} ({item_type}) 的元数据字段时失败: {e}", exc_info=True)
 
+# 从数据库生成全量映射表
 def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
     """
     直接从数据库生成全量映射表。
@@ -665,7 +680,8 @@ def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, D
     except Exception as e:
         logger.error(f"从数据库生成 TMDb->Emby 映射时出错: {e}", exc_info=True)
         return {}
-    
+
+# 获取用户订阅请求的统计信息    
 def get_user_request_stats(user_id: str) -> Dict[str, int]:
     """获取用户订阅请求的统计信息"""
     source_filter = json.dumps([{"type": "user_request", "user_id": user_id}])
@@ -699,7 +715,8 @@ def get_user_request_stats(user_id: str) -> Dict[str, int]:
     except Exception as e:
         logger.error(f"DB: 获取用户统计失败: {e}", exc_info=True)
         return stats
-    
+
+# 批量物理删除媒体元数据    
 def delete_media_metadata_batch(items: List[Dict[str, str]]) -> int:
     """
     【批量物理删除媒体元数据。
@@ -739,7 +756,8 @@ def delete_media_metadata_batch(items: List[Dict[str, str]]) -> int:
     except Exception as e:
         logger.error(f"DB: 批量物理删除媒体元数据失败: {e}", exc_info=True)
         return 0
-    
+
+# 批量插入基础电影条目    
 def batch_ensure_basic_movies(movies_list: List[Dict[str, Any]]):
     """
     批量插入基础电影条目。
@@ -780,6 +798,7 @@ def batch_ensure_basic_movies(movies_list: List[Dict[str, Any]]):
     except Exception as e:
         logger.error(f"批量插入基础电影条目时出错: {e}", exc_info=True)
 
+# 获取用户的“好评”观看历史
 def get_user_positive_history(user_id: str, limit: int = 20) -> List[Dict[str, Any]]:
     """
     获取指定用户的“好评”观看历史。
@@ -818,7 +837,8 @@ def get_user_positive_history(user_id: str, limit: int = 20) -> List[Dict[str, A
     except Exception as e:
         logger.error(f"获取用户 {user_id} 的观看历史失败: {e}")
         return []
-    
+
+# 获取用户的所有交互历史（含弃坑/未完结）    
 def get_user_all_interacted_history(user_id: str) -> List[Dict[str, Any]]:
     """
     获取指定用户的所有交互历史（用于去重过滤）。
@@ -849,7 +869,8 @@ def get_user_all_interacted_history(user_id: str) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"获取用户 {user_id} 的全量交互历史失败: {e}")
         return []
-    
+
+# 获取全站最受欢迎的媒体项    
 def get_global_popular_items(limit: int = 20) -> List[Dict[str, Any]]:
     """
     获取全站最受欢迎的媒体项（基于完整播放的用户数量）。
@@ -886,7 +907,8 @@ def get_global_popular_items(limit: int = 20) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"获取全站热门项目失败: {e}")
         return []
-    
+
+# 检查 Emby ID 是否在库中    
 def is_emby_id_in_library(emby_id: str) -> bool:
     """
     检查指定 Emby ID 对应的媒体项是否标记为在库 (in_library = TRUE)。
@@ -904,57 +926,8 @@ def is_emby_id_in_library(emby_id: str) -> bool:
     except Exception as e:
         logger.error(f"检查 Emby ID {emby_id} 在库状态时出错: {e}", exc_info=True)
         return False
-    
-def check_if_tmdb_id_exists(tmdb_id: str, item_type: str) -> bool:
-    """
-    【轻量级检查】判断指定的 TMDb ID 是否已存在于数据库中（无论 in_library 状态如何）。
-    用于 Webhook 快速判断是否需要执行“快速补全”流程。
-    """
-    if not tmdb_id or not item_type:
-        return False
-        
-    sql = "SELECT 1 FROM media_metadata WHERE tmdb_id = %s AND item_type = %s LIMIT 1"
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, (tmdb_id, item_type))
-                return cursor.fetchone() is not None
-    except Exception as e:
-        logger.error(f"DB: 检查 TMDb ID 存在性失败: {e}", exc_info=True)
-        return False
-    
-def get_episode_in_library_status(parent_tmdb_id: str, season_number: int, episode_number: int) -> Optional[bool]:
-    """
-    根据 父剧集TMDbID + 季号 + 集号，查询该分集是否已入库。
-    返回:
-        True: 已入库
-        False: 未入库 (但有记录，处于预处理状态)
-        None: 无记录
-    """
-    if not parent_tmdb_id:
-        return None
-        
-    sql = """
-        SELECT in_library 
-        FROM media_metadata 
-        WHERE parent_series_tmdb_id = %s 
-          AND item_type = 'Episode' 
-          AND season_number = %s 
-          AND episode_number = %s
-        LIMIT 1
-    """
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(sql, (parent_tmdb_id, season_number, episode_number))
-                row = cursor.fetchone()
-                if row:
-                    return row['in_library']
-                return None
-    except Exception as e:
-        logger.error(f"DB: 查询分集状态失败 (S{season_number}E{episode_number}): {e}")
-        return None
-    
+
+# 根据 TMDb ID 获取已知文件名集合    
 def get_known_filenames_by_tmdb_id(tmdb_id: str) -> set:
     """
     【监控优化】根据 TMDb ID 获取数据库中已存在的所有文件名集合。
@@ -997,7 +970,8 @@ def get_known_filenames_by_tmdb_id(tmdb_id: str) -> set:
     except Exception as e:
         logger.error(f"DB: 获取已知文件名集合失败 (ID: {tmdb_id}): {e}")
         return set()
-    
+
+# 根据文件名反查媒体元数据（多版本精确版）    
 def get_media_info_by_filename(filename: str) -> Optional[Dict[str, Any]]:
     """
     【监控专用 - 多版本精确版】
@@ -1050,158 +1024,7 @@ def get_media_info_by_filename(filename: str) -> Optional[Dict[str, Any]]:
         logger.error(f"DB: 根据文件名反查精确媒体信息失败 ({filename}): {e}")
         return None
     
-def get_full_metadata_by_tmdb_ids(tmdb_ids: List[str]) -> List[Dict[str, Any]]:
-    """
-    【洗版专用】根据 TMDb ID 列表，批量获取完整的媒体元数据。
-    返回: List[Dict] (包含 asset_details_json, rating 等所有字段)
-    """
-    if not tmdb_ids:
-        return []
-
-    # 去重并转为字符串
-    unique_ids = list(set(str(tid) for tid in tmdb_ids if tid))
-    
-    if not unique_ids:
-        return []
-
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            # 直接查全表字段
-            # 注意：这里只查 Movie 和 Series，因为洗版逻辑主要针对顶层项目
-            # 如果你的洗版逻辑需要处理 Season/Episode，这里可能需要调整
-            # 但目前的洗版逻辑是基于 Series 查子集的，所以查顶层就够了
-            sql = """
-                SELECT * 
-                FROM media_metadata 
-                WHERE tmdb_id = ANY(%s) 
-                  AND item_type IN ('Movie', 'Series')
-            """
-            cursor.execute(sql, (unique_ids,))
-            return [dict(row) for row in cursor.fetchall()]
-            
-    except Exception as e:
-        logger.error(f"批量获取完整元数据失败: {e}", exc_info=True)
-        return []
-    
-def batch_upsert_media_metadata(metadata_list: List[Dict[str, Any]]) -> int:
-    """
-    【高性能批量写入】将清洗好的元数据列表批量写入数据库。
-    包含智能字段保护逻辑（如不覆盖用户修改的标题、锁定的集数等）。
-    """
-    if not metadata_list:
-        return 0
-
-    # 1. 定义数据库表的所有列 (Schema)
-    all_columns = [
-        'tmdb_id', 'item_type', 'title', 'original_title', 'overview', 
-        'release_date', 'release_year', 'poster_path', 'rating', 
-        'original_language', 'in_library', 'subscription_status',
-        'emby_item_ids_json', 'asset_details_json', 
-        'genres_json', 'tags_json', 'production_companies_json', 'networks_json', 'keywords_json',
-        'directors_json', 'countries_json', 'official_rating_json',
-        'parent_series_tmdb_id', 'season_number', 'episode_number',
-        'runtime_minutes', 'date_added', 'total_episodes'
-    ]
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                from psycopg2.extras import execute_batch
-                
-                # 2. 构建 SQL 语句
-                cols_str = ', '.join(all_columns)
-                vals_str = ', '.join([f"%({col})s" for col in all_columns])
-                
-                update_clauses = []
-                for col in all_columns:
-                    # 永远不更新的字段
-                    if col in ['tmdb_id', 'item_type', 'subscription_sources_json', 'subscription_status']:
-                        continue
-                    
-                    # 智能保护逻辑
-                    if col == 'title':
-                        # Movie/Series 不覆盖标题，Season/Episode 覆盖
-                        update_clauses.append(f"{col} = CASE WHEN media_metadata.item_type IN ('Movie', 'Series') THEN media_metadata.title ELSE EXCLUDED.title END")
-                    elif col == 'total_episodes':
-                        # 保护锁定字段
-                        update_clauses.append(f"{col} = CASE WHEN media_metadata.total_episodes_locked = TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END")
-                    else:
-                        update_clauses.append(f"{col} = EXCLUDED.{col}")
-                
-                update_clauses.append("last_synced_at = NOW()")
-                
-                sql = f"""
-                    INSERT INTO media_metadata ({cols_str}, last_synced_at) 
-                    VALUES ({vals_str}, NOW()) 
-                    ON CONFLICT (tmdb_id, item_type) 
-                    DO UPDATE SET {', '.join(update_clauses)}
-                """
-                
-                # 3. 数据清洗与对齐 (确保每条数据都有所有列，缺少的补 None)
-                clean_batch_data = []
-                for item in metadata_list:
-                    clean_item = {}
-                    for col in all_columns:
-                        val = item.get(col)
-                        
-                        if col == 'subscription_status' and val is None:
-                            val = 'NONE'
-                            
-                        clean_item[col] = val
-                    clean_batch_data.append(clean_item)
-                
-                # 4. 执行批量写入
-                execute_batch(cursor, sql, clean_batch_data)
-                conn.commit()
-                
-                return len(clean_batch_data)
-
-    except Exception as e:
-        logger.error(f"DB: 批量写入元数据失败: {e}", exc_info=True)
-        return 0
-
-def batch_mark_children_offline(parent_tmdb_ids: List[str], active_child_tmdb_ids: List[str]) -> int:
-    """
-    【批量离线对账】
-    对于指定的父剧集列表，将其下属的所有子集（Season/Episode）标记为离线，
-    除非该子集的 TMDb ID 在 active_child_tmdb_ids 列表中。
-    """
-    if not parent_tmdb_ids:
-        return 0
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                if active_child_tmdb_ids:
-                    sql = """
-                        UPDATE media_metadata
-                        SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
-                        WHERE parent_series_tmdb_id = ANY(%s)
-                          AND item_type IN ('Season', 'Episode')
-                          AND in_library = TRUE
-                          AND tmdb_id != ALL(%s)
-                    """
-                    cursor.execute(sql, (parent_tmdb_ids, active_child_tmdb_ids))
-                else:
-                    # 如果没有活跃子集，说明这些父剧集下的所有子集都离线了
-                    sql = """
-                        UPDATE media_metadata
-                        SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
-                        WHERE parent_series_tmdb_id = ANY(%s)
-                          AND item_type IN ('Season', 'Episode')
-                          AND in_library = TRUE
-                    """
-                    cursor.execute(sql, (parent_tmdb_ids,))
-                
-                updated_count = cursor.rowcount
-                conn.commit()
-                return updated_count
-
-    except Exception as e:
-        logger.error(f"DB: 批量标记子集离线失败: {e}", exc_info=True)
-        return 0
-    
+# 清理使用内部生成ID的离线僵尸条目    
 def cleanup_offline_internal_ids() -> int:
     """
     【大扫除】物理删除所有处于离线状态(in_library=False)且使用内部生成ID(非纯数字)的僵尸条目。
@@ -1224,7 +1047,8 @@ def cleanup_offline_internal_ids() -> int:
     except Exception as e:
         logger.error(f"DB: 执行内部ID大扫除失败: {e}", exc_info=True)
         return 0
-    
+
+# 获取可能有问题的资产列表    
 def get_items_with_potentially_bad_assets() -> List[Dict[str, Any]]:
     """
     【质检专用 - 优化版】查询所有已入库但资产数据可能不完整的项目。
@@ -1274,7 +1098,8 @@ def get_items_with_potentially_bad_assets() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 查询异常资产失败: {e}", exc_info=True)
         return []
-    
+
+# 获取指定剧集下坏分集的 Emby ID 列表    
 def get_bad_episode_emby_ids(parent_tmdb_id: str) -> List[str]:
     """
     【精准治疗】查询指定剧集下，所有资产数据不完整的分集的 Emby ID。
@@ -1317,7 +1142,8 @@ def get_bad_episode_emby_ids(parent_tmdb_id: str) -> List[str]:
     except Exception as e:
         logger.error(f"DB: 查询坏分集ID失败: {e}")
         return []
-    
+
+# 获取需要复活的超时订阅    
 def get_timed_out_items_to_revive(revive_days: int) -> List[Dict[str, Any]]:
     """
     【新增】获取需要复活的超时订阅。
@@ -1346,7 +1172,8 @@ def get_timed_out_items_to_revive(revive_days: int) -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 获取待复活的超时订阅失败: {e}")
         return []
-    
+
+# 获取本地翻译信息（标题和简介）    
 def get_local_translation_info(tmdb_id: str, item_type: str) -> Optional[Dict[str, str]]:
     """
     获取本地数据库中存储的翻译信息（标题和简介）。
@@ -1370,7 +1197,8 @@ def get_local_translation_info(tmdb_id: str, item_type: str) -> Optional[Dict[st
     except Exception as e:
         logger.debug(f"DB: 获取本地翻译缓存失败 ({tmdb_id}_{item_type}): {e}")
         return None
-    
+
+# 批量聚合查询仪表盘数据   
 def get_dashboard_aggregation_map(emby_ids: List[str]) -> Dict[str, Dict[str, Any]]:
     """
     【仪表盘专用】批量聚合查询。
