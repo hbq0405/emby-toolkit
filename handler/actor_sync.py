@@ -5,7 +5,7 @@ import threading
 # 导入必要的模块
 import handler.emby as emby
 from database.actor_db import ActorDBManager
-from database import connection, actor_db
+from database import connection
 import logging
 logger = logging.getLogger(__name__)
 

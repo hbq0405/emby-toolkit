@@ -6,7 +6,7 @@ from typing import Optional, Dict, Any, List, Tuple, Set
 from datetime import datetime
 
 from .connection import get_db_connection
-from . import media_db, request_db
+from . import request_db
 from utils import contains_chinese
 from handler.emby import get_emby_item_details
 from config_manager import APP_CONFIG
@@ -59,7 +59,7 @@ class ActorDBManager:
 
 
     def save_translation_to_db(self, cursor: psycopg2.extensions.cursor, original_text: str, translated_text: Optional[str], engine_used: Optional[str]):
-        """【PostgreSQL版】将翻译结果保存到数据库，增加中文校验。"""
+        """将翻译结果保存到数据库，增加中文校验。"""
         
         if translated_text and translated_text.strip() and not contains_chinese(translated_text):
             logger.warning(f"  ➜ 翻译结果 '{translated_text}' 不含中文，已丢弃。原文: '{original_text}'")
@@ -82,7 +82,7 @@ class ActorDBManager:
     # 核心批量写入函数
     def batch_upsert_actors_and_metadata(self, cursor: psycopg2.extensions.cursor, actors_list: List[Dict[str, Any]], emby_config: Dict[str, Any]) -> Dict[str, int]:
         """
-        【管家函数-写】接收一个完整的演员列表，自动将数据分发到
+        接收一个完整的演员列表，自动将数据分发到
         person_identity_map 和 actor_metadata 两个表中。
         这是所有演员数据写入的唯一入口。
         """
@@ -108,7 +108,7 @@ class ActorDBManager:
     # 核心批量读取函数
     def get_full_actor_details_by_tmdb_ids(self, cursor: psycopg2.extensions.cursor, tmdb_ids: List[Any]) -> Dict[int, Dict[str, Any]]:
         """
-        【管家函数-读】根据一组 TMDB ID，从 actor_metadata 表中高效地获取所有演员的详细信息。
+        根据一组 TMDB ID，从 actor_metadata 表中高效地获取所有演员的详细信息。
         返回一个以 TMDB ID 为键，演员信息字典为值的映射。
         """
         if not tmdb_ids:
@@ -290,7 +290,6 @@ class ActorDBManager:
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
         """
-        【V8 - 精准统计修复版】
         通过为 ON CONFLICT DO UPDATE 增加 WHERE 条件，实现真正的条件更新。
         这能准确区分数据实际被“更新”和数据因无变化而“未变”的情况，从而解决统计不准的问题。
         """
@@ -411,7 +410,7 @@ class ActorDBManager:
         
     def update_actor_metadata_from_tmdb(self, cursor: psycopg2.extensions.cursor, tmdb_id: int, tmdb_data: Dict[str, Any]):
         """
-        【最终实现版】将从 TMDb API 获取的演员详情数据，更新或插入到 actor_metadata 表中。
+        将从 TMDb API 获取的演员详情数据，更新或插入到 actor_metadata 表中。
         此函数与 init_db() 中定义的表结构完全匹配。
         """
         if not tmdb_id or not tmdb_data:
@@ -452,24 +451,7 @@ class ActorDBManager:
         except Exception as e:
             logger.error(f"  ➜ 缓存演员 (TMDb ID: {tmdb_id}) 元数据到数据库时失败: {e}", exc_info=True)
 
-def get_all_emby_person_ids_from_map() -> set:
-    """从 person_identity_map 表中获取所有 emby_person_id 的集合。"""
-    
-    ids = set()
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute("SELECT emby_person_id FROM person_identity_map")
-            rows = cursor.fetchall()
-            for row in rows:
-                ids.add(row['emby_person_id'])
-        return ids
-    except Exception as e:
-        logger.error(f"  ➜ 获取所有演员映射Emby ID时失败: {e}", exc_info=True)
-        raise
-
-# --- 演员订阅数据访问 ---
-
+#   --- 获取所有演员订阅的简略列表 ---
 def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
     """获取所有演员订阅的简略列表。"""
     
@@ -482,8 +464,9 @@ def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
         logger.error(f"  ➜ 获取演员订阅列表失败: {e}", exc_info=True)
         raise
 
+#   --- 获取单个订阅的完整详情 ---
 def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, Any]]:
-    """【V5 - 新架构版】获取单个订阅的完整详情，从 media_metadata 读取追踪媒体。"""
+    """获取单个订阅的完整详情，从 media_metadata 读取追踪媒体。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -593,6 +576,7 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
         logger.error(f"DB: 获取订阅详情 {subscription_id} 失败: {e}", exc_info=True)
         raise
 
+#   --- 新增演员订阅 ---
 def safe_json_dumps(value):
     """安全地将Python对象转换为JSON字符串。"""
     
@@ -604,9 +588,8 @@ def safe_json_dumps(value):
             return json.dumps(value, ensure_ascii=False)
     else:
         return json.dumps(value, ensure_ascii=False)
-
 def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: str, config: dict) -> int:
-    """【V5 - 列名/值完全匹配最终版】新增一个演员订阅。"""
+    """新增一个演员订阅。"""
     
     start_year = config.get('start_year', 1900)
     media_types_list = config.get('media_types', ['Movie','TV'])
@@ -651,6 +634,7 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
         logger.error(f"  ➜ 添加演员订阅 '{actor_name}' 时失败: {e}", exc_info=True)
         raise
 
+#   --- 更新演员订阅 ---
 def update_actor_subscription(subscription_id: int, data: dict) -> bool:
     """更新订阅，并在配置变化时自动清理已忽略的记录。"""
     logger.debug(f"  ➜ 准备更新订阅ID {subscription_id}，接收到的原始数据: {data}")
@@ -739,8 +723,9 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
         logger.error(f"  ➜ 更新订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
 
+#   --- 删除演员订阅 ---
 def delete_actor_subscription(subscription_id: int) -> bool:
-    """【V2 - 新架构版】删除一个演员订阅，并清理其在 media_metadata 中的所有追踪记录。"""
+    """删除一个演员订阅，并清理其在 media_metadata 中的所有追踪记录。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -780,6 +765,7 @@ def delete_actor_subscription(subscription_id: int) -> bool:
         logger.error(f"  ➜ 删除订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
 
+#   --- 为演员订阅任务获取所有在库媒体数据 ---
 def get_all_in_library_media_for_actor_sync() -> Tuple[Dict[str, str], Dict[str, Set[int]], Dict[str, str]]:
     """
     为演员订阅任务，一次性从 media_metadata 表中提取所有需要的数据。
@@ -843,10 +829,11 @@ def get_all_in_library_media_for_actor_sync() -> Tuple[Dict[str, str], Dict[str,
         logger.error(f"DB: 为演员同步任务准备在库媒体数据时失败: {e}", exc_info=True)
         # 即使失败也返回空字典，避免上层任务崩溃
         return {}, {}, {}
-    
+
+#   --- 批量获取演员中文名 ---    
 def get_actor_chinese_names_by_tmdb_ids(tmdb_ids: List[int]) -> Dict[int, str]:
     """
-    【新增】根据 TMDb Person ID 列表，高效地批量查询演员的中文名。
+    根据 TMDb Person ID 列表，高效地批量查询演员的中文名。
     返回一个以 tmdb_id 为键，中文名 (primary_name) 为值的字典。
     """
     if not tmdb_ids:
