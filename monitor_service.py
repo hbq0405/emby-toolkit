@@ -35,7 +35,24 @@ class MediaFileHandler(FileSystemEventHandler):
     文件系统事件处理器
     """
     def __init__(self, extensions: List[str], exclude_dirs: List[str] = None):
-        self.extensions = [ext.lower() for ext in extensions]
+        # ★★★ 防呆处理：标准化扩展名 ★★★
+        # 1. 去除空格、转小写
+        # 2. 去除可能误输入的通配符 * (例如 *.mp4 -> .mp4)
+        # 3. 补齐开头的 . (例如 mp4 -> .mp4)
+        self.extensions = []
+        for ext in extensions:
+            if not ext: continue
+            
+            clean_ext = ext.strip().lower().replace('*', '')
+            
+            if clean_ext:
+                if not clean_ext.startswith('.'):
+                    clean_ext = '.' + clean_ext
+                self.extensions.append(clean_ext)
+        
+        # 记录一下最终生效的监控后缀，方便调试
+        logger.trace(f"  [实时监控] 已加载监控后缀: {self.extensions}")
+
         # 注意：exclude_dirs 参数在这里不再用于过滤，过滤逻辑已移至 process_batch_queue
         # 这里保留参数是为了兼容调用签名
 
@@ -46,9 +63,10 @@ class MediaFileHandler(FileSystemEventHandler):
         
         # 2. 检查扩展名
         _, ext = os.path.splitext(file_path)
+        # os.path.splitext 提取的后缀是带点的 (如 .mp4)，所以我们的 self.extensions 也必须带点
         if ext.lower() not in self.extensions: 
             # 调试日志：如果扩展名不匹配，记录一下（仅在调试模式下）
-            logger.trace(f"  [监控忽略] 扩展名不匹配: {os.path.basename(file_path)}")
+            # logger.trace(f"  [监控忽略] 扩展名不匹配: {os.path.basename(file_path)}")
             return False
         
         filename = os.path.basename(file_path)
@@ -72,6 +90,7 @@ class MediaFileHandler(FileSystemEventHandler):
             return
         
         _, ext = os.path.splitext(event.src_path)
+        # 即使是删除事件，也要检查后缀是否在监控列表中，避免误报非媒体文件的删除
         if ext.lower() not in self.extensions:
             return
 
