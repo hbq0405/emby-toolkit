@@ -937,13 +937,16 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             if name in utils.GENRE_TRANSLATION_PATCH:
                                 name = utils.GENRE_TRANSLATION_PATCH[name]
                             final_genres_list.append({"id": 0, "name": name})
-                # 1. 处理制作公司
-                raw_companies = tmdb_details.get('production_companies') or []
-                fmt_companies = [{'id': c.get('id'), 'name': c.get('name')} for c in raw_companies if c.get('name')]
+                # 1. 处理制作公司 & 2. 处理电视网 
+                fmt_companies = []
+                fmt_networks = []
                 
-                # 2. 处理电视网
-                raw_networks = tmdb_details.get('networks') or []
-                fmt_networks = [{'id': n.get('id'), 'name': n.get('name')} for n in raw_networks if n.get('name')]
+                if tmdb_details:
+                    raw_companies = tmdb_details.get('production_companies') or []
+                    fmt_companies = [{'id': c.get('id'), 'name': c.get('name')} for c in raw_companies if c.get('name')]
+                    
+                    raw_networks = tmdb_details.get('networks') or []
+                    fmt_networks = [{'id': n.get('id'), 'name': n.get('name')} for n in raw_networks if n.get('name')]
                 top_record = {
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
