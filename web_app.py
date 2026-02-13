@@ -147,17 +147,17 @@ def initialize_processors():
     
     # 检查是否开启了任意 AI 功能
     ai_enabled = any([
-        current_config.get("ai_translate_actor_role", False),
+        current_config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False),
         current_config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False),    
         current_config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False), 
-        current_config.get("ai_translate_episode_overview", False),
-        current_config.get("ai_vector", False),
+        current_config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False),
+        current_config.get(constants.CONFIG_OPTION_AI_VECTOR, False),
     ])
 
     if ai_enabled:
         try:
             shared_ai_translator = AITranslator(current_config)
-            logger.info("✅ AI增强服务实例已初始化。")
+            logger.info("  ✅ AI增强服务实例已初始化。")
         except Exception as e:
             logger.error(f"❌ AITranslator 初始化失败: {e}")
     
