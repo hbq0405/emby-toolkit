@@ -1117,7 +1117,7 @@ class WatchlistProcessor:
                     )
                     
                     # 只有当豆瓣有数据，且与 TMDb 不同时，才执行锁定
-                    if douban_count and douban_count > 0 and douban_count != current_tmdb_count:
+                    if douban_count and douban_count > 0:
                         logger.info(f"  ✨ [豆瓣修正] 《{item_name}》第 {latest_s_num} 季 TMDb集数({current_tmdb_count}) -> 豆瓣集数({douban_count})。正在锁定...")
                         
                         # 1. 更新数据库并锁定 (locked=True)
@@ -1135,10 +1135,8 @@ class WatchlistProcessor:
                         if not seasons_lock_map: seasons_lock_map = {}
                         seasons_lock_map[latest_s_num] = {'locked': True, 'count': douban_count}
                     
-                    elif douban_count and douban_count > 0 and douban_count == current_tmdb_count:
-                         # 如果豆瓣和TMDb一致，为了防止TMDb后续变卦，也可以考虑锁定（可选）
-                         # 这里我们选择不锁定，保持灵活性，除非用户手动锁
-                         logger.debug(f"  ✅ [豆瓣修正] 《{item_name}》第 {latest_s_num} 季 豆瓣与TMDb集数一致 ({douban_count})，无需修正。")
+                    else:
+                         logger.debug(f"  ⚠️ [豆瓣修正] 《{item_name}》第 {latest_s_num} 季 未获取到有效集数，跳过豆瓣修正。")
             
             if seasons_lock_map:
                 filtered_episodes = []
