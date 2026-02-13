@@ -108,7 +108,7 @@ def _aggregate_series_cast_from_tmdb_data(series_data: Dict[str, Any], all_episo
     logger.info(f"  ➜ 共为 '{series_data.get('name')}' 聚合了 {len(full_aggregated_cast)} 位独立演员。")
     return full_aggregated_cast
 class MediaProcessor:
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], ai_translator=None):
         # ★★★ 然后，从这个 config 字典里，解析出所有需要的属性 ★★★
         self.config = config
 
@@ -153,14 +153,7 @@ class MediaProcessor:
         self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.local_data_path = self.config.get("local_data_path", "").strip()
 
-        self.ai_enabled = any([
-            self.config.get("ai_translate_actor_role", False),
-            self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False),    
-            self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False), 
-            self.config.get("ai_translate_episode_overview", False),
-            self.config.get("ai_vector", False),
-        ])
-        self.ai_translator = AITranslator(self.config) if self.ai_enabled else None
+        self.ai_translator = ai_translator
         
         self._stop_event = threading.Event()
         self.processed_items_cache = self._load_processed_log_from_db()
@@ -1534,7 +1527,7 @@ class MediaProcessor:
         logger.info(f"  ➜ 开始为新入库剧集 '{item_name_for_log}' 进行追剧状态判断...")
         try:
             # 实例化 WatchlistProcessor 并执行添加操作
-            watchlist_proc = WatchlistProcessor(self.config)
+            watchlist_proc = WatchlistProcessor(self.config, ai_translator=self.ai_translator)
             watchlist_proc.add_series_to_watchlist(item_details)
         except Exception as e_watchlist:
             logger.error(f"  ➜ 在自动添加 '{item_name_for_log}' 到追剧列表时发生错误: {e_watchlist}", exc_info=True)

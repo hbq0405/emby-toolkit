@@ -54,7 +54,7 @@ class WatchlistProcessor:
     - 读写逻辑重构，以 tmdb_id 为核心标识符。
     - 保留了所有复杂的状态判断逻辑，使其在新架构下无缝工作。
     """
-    def __init__(self, config: Dict[str, Any]):
+    def __init__(self, config: Dict[str, Any], ai_translator=None):
         if not isinstance(config, dict):
             raise TypeError(f"配置参数(config)必须是一个字典，但收到了 {type(config).__name__} 类型。")
         self.config = config
@@ -63,8 +63,7 @@ class WatchlistProcessor:
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
         self.local_data_path = self.config.get("local_data_path", "")
-        self.ai_enabled = self.config.get("ai_translate_episode_overview", False)
-        self.ai_translator = AITranslator(self.config) if self.ai_enabled else None
+        self.ai_translator = ai_translator
         self._stop_event = threading.Event()
         self.progress_callback = None
         logger.trace("WatchlistProcessor 初始化完成。")

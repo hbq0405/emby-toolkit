@@ -18,6 +18,7 @@ from typing import Dict, Any
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 import atexit # 用于应用退出处理
+from ai_translator import AITranslator
 from core_processor import MediaProcessor
 from actor_subscription_processor import ActorSubscriptionProcessor
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -140,6 +141,25 @@ def initialize_processors():
     current_config = config_manager.APP_CONFIG.copy()
 
     # --- 1. 创建实例并存储在局部变量中 ---
+
+    # --- 初始化共享的 AI 实例 ---
+    shared_ai_translator = None
+    
+    # 检查是否开启了任意 AI 功能
+    ai_enabled = any([
+        current_config.get("ai_translate_actor_role", False),
+        current_config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False),    
+        current_config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False), 
+        current_config.get("ai_translate_episode_overview", False),
+        current_config.get("ai_vector", False),
+    ])
+
+    if ai_enabled:
+        try:
+            shared_ai_translator = AITranslator(current_config)
+            logger.info("✅ AI增强服务实例已初始化。")
+        except Exception as e:
+            logger.error(f"❌ AITranslator 初始化失败: {e}")
     
     # 初始化 server_id_local
     server_id_local = None
@@ -177,7 +197,7 @@ def initialize_processors():
 
     # 初始化 media_processor_instance_local
     try:
-        media_processor_instance_local = MediaProcessor(config=current_config)
+        media_processor_instance_local = MediaProcessor(config=current_config, ai_translator=shared_ai_translator)
         logger.trace("  ->核心处理器 实例已创建/更新。")
     except Exception as e:
         logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
@@ -185,7 +205,7 @@ def initialize_processors():
 
     # 初始化 watchlist_processor_instance_local
     try:
-        watchlist_processor_instance_local = WatchlistProcessor(config=current_config)
+        watchlist_processor_instance_local = WatchlistProcessor(config=current_config, ai_translator=shared_ai_translator)
         logger.trace("WatchlistProcessor 实例已成功初始化。")
     except Exception as e:
         logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)
