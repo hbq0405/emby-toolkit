@@ -1061,8 +1061,8 @@ class WatchlistProcessor:
             # 1. 获取所有季的锁定配置
             seasons_lock_map = watchlist_db.get_series_seasons_lock_info(tmdb_id)
             
-            # ★★★ 新增：豆瓣辅助修正逻辑 ★★★
-            # 策略：找到最新的一季，如果它没被锁定，且开启了豆瓣API，尝试修正
+            # 2. 获取豆瓣辅助修正开关配置
+            enable_douban_correction = watchlist_cfg.get('douban_count_correction', False)
             
             # A. 确定最新季
             tmdb_seasons_list = latest_series_data.get('seasons', [])
@@ -1083,7 +1083,7 @@ class WatchlistProcessor:
                     is_locked = seasons_lock_map[latest_s_num].get('locked', False)
                 
                 # C. 如果未锁定，尝试查询豆瓣
-                if not is_locked and self.config.get(constants.CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API, True):
+                if not is_locked and self.config.get(constants.CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API, True) and enable_douban_correction:
                     release_date = latest_season_info.get('air_date') or latest_series_data.get('first_air_date')
                     year = release_date[:4] if release_date else ""
                     
@@ -1141,6 +1141,11 @@ class WatchlistProcessor:
                     
                     else:
                         logger.debug(f"  ⚠️ [豆瓣辅助] 《{item_name}》第{latest_s_num}季 未获取到有效集数，跳过修正。")
+                else:
+                    if is_locked:
+                        logger.debug(f"  🔒 《{item_name}》第{latest_s_num}季 已锁定为 {seasons_lock_map[latest_s_num].get('count')} 集，跳过豆瓣修正。")
+                    else:
+                        logger.debug(f"  ⚠️ 《{item_name}》第{latest_s_num}季 未锁定，但豆瓣修正未启用，跳过。")
             
             if seasons_lock_map:
                 filtered_episodes = []

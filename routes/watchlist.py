@@ -276,6 +276,7 @@ def api_watchlist_settings():
             "default_total_episodes": 99 
         },
         "auto_pause": 0,
+        "douban_count_correction": False,
         "auto_resub_ended": False,
         "auto_delete_mp_history": False,     
         "auto_delete_download_tasks": False,

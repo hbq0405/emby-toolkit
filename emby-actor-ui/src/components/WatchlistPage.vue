@@ -466,35 +466,25 @@
                 </div>
               </div>
             </div>
-          </div>
+          <n-divider style="margin: 0" />
 
-          <!-- 第三组：跟踪与维护 (移到左列下方) -->
-          <div class="settings-group-title" style="margin-top: 24px;">跟踪与维护</div>
-          <div class="settings-card">
-            
-            <!-- 6. 全量刷新回溯期 -->
+            <!-- 3. 豆瓣辅助修正 -->
             <div class="setting-item">
-              <div class="setting-icon"><n-icon :component="TimeIcon" /></div>
+              <div class="setting-icon"><n-icon :component="DoubanIcon" /></div>
               <div class="setting-content">
                 <div class="setting-header">
-                  <div class="setting-label">全量刷新回溯期</div>
-                  <n-input-number 
-                    v-model:value="watchlistConfig.revival_check_days" 
-                    size="small" 
-                    style="width: 160px" 
-                    placeholder="天数"
-                    :min="1"
-                  >
-                    <template #suffix>天</template>
-                  </n-input-number>
+                  <div class="setting-label">豆瓣辅助修正集数</div>
+                  <n-switch v-model:value="watchlistConfig.douban_count_correction" size="small">
+                    <template #checked>开启</template>
+                    <template #unchecked>关闭</template>
+                  </n-switch>
                 </div>
                 <div class="setting-desc">
-                  对于已完结超过此天数的剧集，仅进行轻量级检查（只看有没有新季），不再全量刷新元数据，以提高效率。
+                  当 TMDb 集数数据滞后或错误时，尝试从豆瓣获取准确的总集数并锁定。
                 </div>
               </div>
             </div>
           </div>
-
         </div>
 
         <!-- === 右侧列：订阅与洗版 === -->
@@ -504,7 +494,7 @@
           <div class="settings-group-title">订阅与洗版</div>
           <div class="settings-card">
             
-            <!-- 3. 完结自动洗版 -->
+            <!-- 4. 完结自动洗版 -->
             <div class="setting-item">
               <div class="setting-icon"><n-icon :component="RefreshIcon" /></div>
               <div class="setting-content">
@@ -556,7 +546,7 @@
 
             <n-divider style="margin: 0" />
 
-            <!-- 4 MoviePilot 自动补订 -->
+            <!-- 5 MoviePilot 自动补订 -->
             <div class="setting-item">
               <div class="setting-icon"><n-icon :component="MPSyncIcon" /></div>
               <div class="setting-content">
@@ -574,6 +564,33 @@
             </div>
 
             <n-divider style="margin: 0" />
+            
+          </div>
+          <!-- 第三组：跟踪与维护 -->
+          <div class="settings-group-title" style="margin-top: 24px;">跟踪与维护</div>
+          <div class="settings-card">
+            
+            <!-- 6. 全量刷新回溯期 -->
+            <div class="setting-item">
+              <div class="setting-icon"><n-icon :component="TimeIcon" /></div>
+              <div class="setting-content">
+                <div class="setting-header">
+                  <div class="setting-label">全量刷新回溯期</div>
+                  <n-input-number 
+                    v-model:value="watchlistConfig.revival_check_days" 
+                    size="small" 
+                    style="width: 160px" 
+                    placeholder="天数"
+                    :min="1"
+                  >
+                    <template #suffix>天</template>
+                  </n-input-number>
+                </div>
+                <div class="setting-desc">
+                  对于已完结超过此天数的剧集，仅进行轻量级检查（只看有没有新季），不再全量刷新元数据，以提高效率。
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -592,7 +609,7 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress, useThemeVars, NPopover, NInputNumber, NSwitch, NCollapseTransition, NText } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon, AlbumsOutline as CollectionsIcon, SettingsOutline as SettingsIcon, HourglassOutline as PendingIcon, TimerOutline as TimerIcon, RefreshCircleOutline as RefreshIcon, GitNetworkOutline as GapIcon, RepeatOutline as MPSyncIcon, CloudDownloadOutline as BackfillIcon} from '@vicons/ionicons5';
+import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon, AlbumsOutline as CollectionsIcon, SettingsOutline as SettingsIcon, HourglassOutline as PendingIcon, TimerOutline as TimerIcon, RefreshCircleOutline as RefreshIcon, GitNetworkOutline as GapIcon, RepeatOutline as MPSyncIcon, CloudDownloadOutline as BackfillIcon, EarthOutline as DoubanIcon} from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -647,6 +664,7 @@ const watchlistConfig = ref({
       default_total_episodes: 99
   },
   auto_pause: 0,
+  douban_count_correction: false,
   auto_resub_ended: false,
   auto_delete_mp_history: false,     
   auto_delete_download_tasks: false,
@@ -667,6 +685,7 @@ const openConfigModal = async () => {
            default_total_episodes: data.auto_pending?.default_total_episodes ?? 99
          },
          auto_pause: data.auto_pause ?? 0,
+         douban_count_correction: data.douban_count_correction ?? false,
          auto_resub_ended: data.auto_resub_ended ?? false,
          auto_delete_mp_history: data.auto_delete_mp_history ?? false,
          auto_delete_download_tasks: data.auto_delete_download_tasks ?? false,
