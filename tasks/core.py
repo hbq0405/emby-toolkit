@@ -14,7 +14,7 @@ from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_trans
                      task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
 from .media import task_role_translation, task_populate_metadata_cache, task_sync_ratings_to_emby, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_restore_local_cache_from_db, task_scan_incomplete_assets 
-from .watchlist import task_process_watchlist, task_refresh_completed_series, task_scan_library_gaps, task_scan_old_seasons_backfill, task_add_all_series_to_watchlist
+from .watchlist import task_process_watchlist, task_refresh_completed_series, task_scan_old_seasons_backfill, task_add_all_series_to_watchlist
 from .custom_collections import task_process_all_custom_collections, process_single_custom_collection
 from .tmdb_collections import task_refresh_collections
 from .subscriptions import task_auto_subscribe, task_manual_subscribe_batch
@@ -213,7 +213,6 @@ def get_task_registry(context: str = 'all'):
         'resubscribe-library': (task_resubscribe_library, "媒体订阅删除", 'media', False),
         'update-daily-theme': (task_update_daily_theme, "更新每日主题", 'media', False),
         'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),
-        'scan-library-gaps': (task_scan_library_gaps, "扫描缺集的季", 'watchlist', False),
         'scan_old_seasons_backfill': (task_scan_old_seasons_backfill, "扫描缺季的剧", 'watchlist', False),
         'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', False),
     }
