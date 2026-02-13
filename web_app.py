@@ -60,7 +60,15 @@ from database import connection, settings_db
 import task_manager
 # ★★★ 新增：导入监控服务 ★★★
 from monitor_service import MonitorService 
-
+# 导入 DoubanApi
+try:
+    from handler.douban import DoubanApi
+    DOUBAN_API_AVAILABLE = True
+except ImportError:
+    DOUBAN_API_AVAILABLE = False
+    class DoubanApi:
+        def __init__(self, *args, **kwargs): pass
+        def close(self): pass
 # --- 核心模块导入结束 ---
 logger = logging.getLogger(__name__)
 logging.getLogger("apscheduler.scheduler").setLevel(logging.WARNING)
@@ -160,6 +168,25 @@ def initialize_processors():
             logger.debug("  ✅ AI增强服务实例已初始化。")
         except Exception as e:
             logger.error(f"  ❌ AITranslator 初始化失败: {e}")
+
+    # --- 初始化共享的 Douban 实例 ---
+    shared_douban_api = None
+    if getattr(constants, 'DOUBAN_API_AVAILABLE', False):
+        try:
+            # 从配置中获取参数
+            douban_cooldown = current_config.get(constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, 2.0)
+            douban_cookie = current_config.get(constants.CONFIG_OPTION_DOUBAN_COOKIE, "")
+            
+            if not douban_cookie:
+                logger.debug(f"配置文件中未找到 '{constants.CONFIG_OPTION_DOUBAN_COOKIE}'。豆瓣功能可能受限。")
+            
+            shared_douban_api = DoubanApi(
+                cooldown_seconds=douban_cooldown,
+                user_cookie=douban_cookie
+            )
+            logger.trace("DoubanApi 共享实例已初始化。")
+        except Exception as e:
+            logger.error(f"DoubanApi 初始化失败: {e}", exc_info=True)
     
     # 初始化 server_id_local
     server_id_local = None
@@ -197,7 +224,11 @@ def initialize_processors():
 
     # 初始化 media_processor_instance_local
     try:
-        media_processor_instance_local = MediaProcessor(config=current_config, ai_translator=shared_ai_translator)
+        media_processor_instance_local = MediaProcessor(
+            config=current_config, 
+            ai_translator=shared_ai_translator,
+            douban_api=shared_douban_api 
+        )
         logger.trace("  ->核心处理器 实例已创建/更新。")
     except Exception as e:
         logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
@@ -205,7 +236,11 @@ def initialize_processors():
 
     # 初始化 watchlist_processor_instance_local
     try:
-        watchlist_processor_instance_local = WatchlistProcessor(config=current_config, ai_translator=shared_ai_translator)
+        watchlist_processor_instance_local = WatchlistProcessor(
+            config=current_config, 
+            ai_translator=shared_ai_translator,
+            douban_api=shared_douban_api
+        )
         logger.trace("WatchlistProcessor 实例已成功初始化。")
     except Exception as e:
         logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)

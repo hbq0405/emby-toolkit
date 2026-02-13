@@ -54,7 +54,7 @@ class WatchlistProcessor:
     - 读写逻辑重构，以 tmdb_id 为核心标识符。
     - 保留了所有复杂的状态判断逻辑，使其在新架构下无缝工作。
     """
-    def __init__(self, config: Dict[str, Any], ai_translator=None):
+    def __init__(self, config: Dict[str, Any], ai_translator=None, douban_api=None):
         if not isinstance(config, dict):
             raise TypeError(f"配置参数(config)必须是一个字典，但收到了 {type(config).__name__} 类型。")
         self.config = config
@@ -64,6 +64,7 @@ class WatchlistProcessor:
         self.emby_user_id = self.config.get("emby_user_id")
         self.local_data_path = self.config.get("local_data_path", "")
         self.ai_translator = ai_translator
+        self.douban_api = douban_api
         self._stop_event = threading.Event()
         self.progress_callback = None
         logger.trace("WatchlistProcessor 初始化完成。")
@@ -965,6 +966,65 @@ class WatchlistProcessor:
         except Exception as e:
             logger.error(f"  ⚠️ 执行完结自动洗版逻辑时出错: {e}", exc_info=True)
 
+    # --- 尝试从豆瓣获取总集数 ---
+    def _try_fetch_douban_episode_count(self, series_name: str, season_number: int, year: str, imdb_id: Optional[str] = None) -> Optional[int]:
+        """
+        尝试从豆瓣获取剧集的总集数。
+        策略：
+        1. 优先使用 IMDb ID (如果提供)。
+        2. 否则使用名称搜索：
+           - 第1季: 剧名 + 年份
+           - 第N季: 剧名 + 季号 + 年份 (如 "乡村爱情18 2026")
+        """
+        if not self.douban_api or not self.config.get(constants.CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API, True):
+            return None
+
+        try:
+            # --- 构造搜索条件 ---
+            search_name = series_name
+            
+            # 如果是第2季及以上，修改搜索名称为 "剧名+季号"
+            if season_number > 1:
+                search_name = f"{series_name}{season_number}"
+            
+            logger.debug(f"  🔍 [豆瓣修正] 准备查询 S{season_number} 集数。IMDb: {imdb_id}, 搜索名: {search_name}, 年份: {year}")
+
+            # 1. 搜索/匹配豆瓣条目 (match_info 内部优先处理 IMDb ID)
+            match_result = self.douban_api.match_info(
+                name=search_name, 
+                imdbid=imdb_id, 
+                mtype='tv', 
+                year=year
+            )
+            
+            if not match_result or not match_result.get('id'):
+                logger.debug(f"  ⚠️ [豆瓣修正] 未匹配到豆瓣条目: {search_name}")
+                return None
+            
+            douban_id = match_result['id']
+            
+            # 2. 获取详情 (使用 protected 方法 _get_subject_details)
+            details = self.douban_api._get_subject_details(douban_id, "tv")
+            
+            if details and not details.get("error"):
+                # 优先读取 episodes_count (int)
+                ep_count = details.get('episodes_count')
+                
+                # 兜底：有时候豆瓣返回的是字符串
+                if not ep_count and details.get('episodes_count_str'):
+                     try: ep_count = int(details.get('episodes_count_str'))
+                     except: pass
+                
+                if ep_count:
+                    logger.debug(f"  ✅ [豆瓣修正] 获取成功: ID {douban_id} ({details.get('title')}) -> {ep_count} 集")
+                    return int(ep_count)
+            
+            return None
+
+        except Exception as e:
+            logger.warning(f"  ⚠️ 尝试从豆瓣获取集数失败 ({series_name} S{season_number}): {e}")
+            return None
+    
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
         tmdb_id = series_data['tmdb_id']
@@ -1000,6 +1060,85 @@ class WatchlistProcessor:
         try:
             # 1. 获取所有季的锁定配置
             seasons_lock_map = watchlist_db.get_series_seasons_lock_info(tmdb_id)
+            
+            # ★★★ 新增：豆瓣辅助修正逻辑 ★★★
+            # 策略：找到最新的一季，如果它没被锁定，且开启了豆瓣API，尝试修正
+            
+            # A. 确定最新季
+            tmdb_seasons_list = latest_series_data.get('seasons', [])
+            valid_tmdb_seasons = sorted(
+                [s for s in tmdb_seasons_list if s.get('season_number', 0) > 0], 
+                key=lambda x: x['season_number'], 
+                reverse=True
+            )
+            
+            if valid_tmdb_seasons:
+                latest_season_info = valid_tmdb_seasons[0]
+                latest_s_num = latest_season_info.get('season_number')
+                current_tmdb_count = latest_season_info.get('episode_count', 0)
+                
+                # B. 检查锁定状态
+                is_locked = False
+                if seasons_lock_map and latest_s_num in seasons_lock_map:
+                    is_locked = seasons_lock_map[latest_s_num].get('locked', False)
+                
+                # C. 如果未锁定，尝试查询豆瓣
+                if not is_locked and self.config.get(constants.CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API, True):
+                    release_date = latest_season_info.get('air_date') or latest_series_data.get('first_air_date')
+                    year = release_date[:4] if release_date else ""
+                    
+                    # 尝试获取该季的 IMDb ID (如果 TMDb 提供了 external_ids)
+                    season_imdb_id = None
+                    try:
+                        # 直接请求 TMDb 获取该季的 external_ids
+                        # TMDb 接口很稳，多这一次请求能换来豆瓣匹配的精准度，非常划算
+                        season_details_remote = tmdb.get_season_details_tmdb(
+                            tv_id=int(tmdb_id), 
+                            season_number=latest_s_num, 
+                            api_key=self.tmdb_api_key,
+                            append_to_response="external_ids",
+                            item_name=item_name # 用于日志显示
+                        )
+                        
+                        if season_details_remote and 'external_ids' in season_details_remote:
+                            season_imdb_id = season_details_remote['external_ids'].get('imdb_id')
+                            if season_imdb_id:
+                                logger.debug(f"  🎯 [TMDb辅助] 成功获取《{item_name}》S{latest_s_num} 的 IMDb ID: {season_imdb_id}")
+                    except Exception as e:
+                        logger.warning(f"  ⚠️ 尝试从 TMDb 获取分季 IMDb ID 时出错: {e}")
+
+                    # ==============================================================================
+                    
+                    douban_count = self._try_fetch_douban_episode_count(
+                        series_name=item_name, 
+                        season_number=latest_s_num, 
+                        year=year,
+                        imdb_id=season_imdb_id # ★ 传入获取到的 IMDb ID
+                    )
+                    
+                    # 只有当豆瓣有数据，且与 TMDb 不同时，才执行锁定
+                    if douban_count and douban_count > 0 and douban_count != current_tmdb_count:
+                        logger.info(f"  ✨ [豆瓣修正] 《{item_name}》S{latest_s_num} TMDb集数({current_tmdb_count}) -> 豆瓣集数({douban_count})。正在锁定...")
+                        
+                        # 1. 更新数据库并锁定 (locked=True)
+                        watchlist_db.update_specific_season_total_episodes(
+                            tmdb_id, latest_s_num, douban_count, locked=True
+                        )
+                        
+                        # 2. ★★★ 关键：立即更新内存中的数据，以便后续逻辑使用新集数 ★★★
+                        latest_season_info['episode_count'] = douban_count
+                        # 如果是单季剧，同步更新 series 级的 total_episodes
+                        if len(valid_tmdb_seasons) == 1:
+                            latest_series_data['number_of_episodes'] = douban_count
+                            
+                        # 3. 刷新一下锁缓存，防止下面逻辑出错
+                        if not seasons_lock_map: seasons_lock_map = {}
+                        seasons_lock_map[latest_s_num] = {'locked': True, 'count': douban_count}
+                    
+                    elif douban_count and douban_count > 0 and douban_count == current_tmdb_count:
+                         # 如果豆瓣和TMDb一致，为了防止TMDb后续变卦，也可以考虑锁定（可选）
+                         # 这里我们选择不锁定，保持灵活性，除非用户手动锁
+                         logger.debug(f"  ✅ [豆瓣修正] 《{item_name}》S{latest_s_num} 豆瓣与TMDb集数一致 ({douban_count})，无需修正。")
             
             if seasons_lock_map:
                 filtered_episodes = []

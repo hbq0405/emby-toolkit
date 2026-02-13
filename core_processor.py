@@ -108,7 +108,7 @@ def _aggregate_series_cast_from_tmdb_data(series_data: Dict[str, Any], all_episo
     logger.info(f"  ➜ 共为 '{series_data.get('name')}' 聚合了 {len(full_aggregated_cast)} 位独立演员。")
     return full_aggregated_cast
 class MediaProcessor:
-    def __init__(self, config: Dict[str, Any], ai_translator=None):
+    def __init__(self, config: Dict[str, Any], ai_translator=None, douban_api=None):
         # ★★★ 然后，从这个 config 字典里，解析出所有需要的属性 ★★★
         self.config = config
 
@@ -116,37 +116,7 @@ class MediaProcessor:
         self.actor_db_manager = ActorDBManager()
         self.log_db_manager = LogDBManager()
 
-        # 从 config 中获取所有其他配置
-        self.douban_api = None
-        if getattr(constants, 'DOUBAN_API_AVAILABLE', False):
-            try:
-                # --- ✨✨✨ 核心修改区域 START ✨✨✨ ---
-
-                # 1. 从配置中获取冷却时间 
-                douban_cooldown = self.config.get(constants.CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN, 2.0)
-                
-                # 2. 从配置中获取 Cookie，使用我们刚刚在 constants.py 中定义的常量
-                douban_cookie = self.config.get(constants.CONFIG_OPTION_DOUBAN_COOKIE, "")
-                
-                # 3. 添加一个日志，方便调试
-                if not douban_cookie:
-                    logger.debug(f"配置文件中未找到或未设置 '{constants.CONFIG_OPTION_DOUBAN_COOKIE}'。如果豆瓣API返回'need_login'错误，请配置豆瓣cookie。")
-                else:
-                    logger.debug("已从配置中加载豆瓣 Cookie。")
-
-                # 4. 将所有参数传递给 DoubanApi 的构造函数
-                self.douban_api = DoubanApi(
-                    cooldown_seconds=douban_cooldown,
-                    user_cookie=douban_cookie  # <--- 将 cookie 传进去
-                )
-                logger.trace("DoubanApi 实例已在 MediaProcessorAPI 中创建。")
-                
-                # --- ✨✨✨ 核心修改区域 END ✨✨✨ ---
-
-            except Exception as e:
-                logger.error(f"MediaProcessorAPI 初始化 DoubanApi 失败: {e}", exc_info=True)
-        else:
-            logger.warning("DoubanApi 常量指示不可用，将不使用豆瓣功能。")
+        self.douban_api = douban_api
         self.emby_url = self.config.get("emby_server_url")
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
