@@ -157,9 +157,9 @@ def initialize_processors():
     if ai_enabled:
         try:
             shared_ai_translator = AITranslator(current_config)
-            logger.info("  ✅ AI增强服务实例已初始化。")
+            logger.debug("  ✅ AI增强服务实例已初始化。")
         except Exception as e:
-            logger.error(f"❌ AITranslator 初始化失败: {e}")
+            logger.error(f"  ❌ AITranslator 初始化失败: {e}")
     
     # 初始化 server_id_local
     server_id_local = None
