@@ -239,10 +239,7 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
 # ★★★ 手动动订阅任务 ★★★
 def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
     """
-    【手动订阅任务 - 纯净版】
-    - 移除所有自动策略开关 (use_gap_fill_resubscribe)。
-    - 移除所有历史自定义参数查找逻辑。
-    - 逻辑简化：用户点订阅 -> 检查完结状态 -> (完结? 洗版 : 追更) -> 提交。
+    手动订阅任务
     """
     total_items = len(subscribe_requests)
     task_name = f"手动订阅 {total_items} 个项目"
@@ -431,7 +428,6 @@ def task_auto_subscribe(processor):
     try:
         # 读取配置
         watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
-        use_gap_fill_resubscribe = watchlist_cfg.get('gap_fill_resubscribe', False)
         # ======================================================================
         # 阶段 1 - 清理超时订阅 
         # ======================================================================
@@ -767,9 +763,6 @@ def task_auto_subscribe(processor):
                         if stype == 'resubscribe':
                             should_force_resub = True
                             break
-                        if stype == 'gap_scan' and use_gap_fill_resubscribe:
-                            should_force_resub = True
-                            break
 
                     success = _subscribe_full_series_with_logic(
                         tmdb_id=int(item['tmdb_id']),
@@ -823,14 +816,6 @@ def task_auto_subscribe(processor):
                             mp_payload["best_version"] = 1
                             logger.info(f"  ➜ 触发自动洗版规则，为《{series_name}》S{season_num} 启用洗版模式。")
                             
-                        elif is_gap_scan:
-                            # 情况 B: 缺集扫描触发 -> 根据配置决定是否 best_version=1
-                            if use_gap_fill_resubscribe:
-                                mp_payload["best_version"] = 1
-                                logger.info(f"  ➜ 触发缺集扫描且配置开启，为《{series_name}》S{season_num} 启用洗版模式。")
-                            else:
-                                logger.info(f"  ➜ 触发缺集扫描 (配置未开启洗版)，为《{series_name}》S{season_num} 执行普通订阅。")
-                                
                         elif "best_version" not in mp_payload:
                             # 情况 C: 普通订阅
                             

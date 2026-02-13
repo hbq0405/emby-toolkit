@@ -43,11 +43,6 @@
               此操作会忽略已在列表中的剧集，只添加新的。
             </n-popconfirm>
 
-            <n-button size="small" @click="triggerGapScan" :loading="isGapScanning">
-              <template #icon><n-icon :component="DownloadIcon" /></template>
-              扫描缺集
-            </n-button>
-
             <n-button size="small" @click="triggerBackfillTask" :loading="isBackfilling">
               <template #icon><n-icon :component="BackfillIcon" /></template>
               补全旧季
@@ -579,25 +574,7 @@
             </div>
 
             <n-divider style="margin: 0" />
-
-            <!-- 5. 缺集自动洗版 -->
-            <div class="setting-item">
-              <div class="setting-icon"><n-icon :component="GapIcon" /></div>
-              <div class="setting-content">
-                <div class="setting-header">
-                  <div class="setting-label">缺集优先洗版</div>
-                  <n-switch v-model:value="watchlistConfig.gap_fill_resubscribe" size="small">
-                    <template #checked>开启</template>
-                    <template #unchecked>关闭</template>
-                  </n-switch>
-                </div>
-                <div class="setting-desc">
-                  发现中间有缺集时，洗版整季。关闭则采用普通订阅模式，仅下载缺失的单集。
-                </div>
-              </div>
-            </div>
           </div>
-
         </div>
       </div>
 
@@ -640,7 +617,6 @@ const isBatchUpdating = ref(false);
 const error = ref(null);
 const showModal = ref(false);
 const isAddingAll = ref(false);
-const isGapScanning = ref(false);
 const selectedSeries = ref(null);
 const refreshingItems = ref({});
 const isTaskRunning = computed(() => props.taskStatus.is_running);
@@ -674,7 +650,6 @@ const watchlistConfig = ref({
   auto_resub_ended: false,
   auto_delete_mp_history: false,     
   auto_delete_download_tasks: false,
-  gap_fill_resubscribe: false,
   sync_mp_subscription: false,
   revival_check_days: 365
 });
@@ -695,7 +670,6 @@ const openConfigModal = async () => {
          auto_resub_ended: data.auto_resub_ended ?? false,
          auto_delete_mp_history: data.auto_delete_mp_history ?? false,
          auto_delete_download_tasks: data.auto_delete_download_tasks ?? false,
-         gap_fill_resubscribe: data.gap_fill_resubscribe ?? false,
          enable_backfill: data.enable_backfill ?? false,
          sync_mp_subscription: data.sync_mp_subscription ?? false,
          revival_check_days: data.revival_check_days ?? 365
@@ -1164,18 +1138,6 @@ const addAllSeriesToWatchlist = async () => {
     message.error(err.response?.data?.error || '启动扫描任务失败。');
   } finally {
     isAddingAll.value = false;
-  }
-};
-
-const triggerGapScan = async () => {
-  isGapScanning.value = true;
-  try {
-    const response = await axios.post('/api/tasks/run', { task_name: 'scan-library-gaps' });
-    message.success(response.data.message || '媒体库缺集扫描任务已成功提交！');
-  } catch (err) {
-    message.error(err.response?.data?.error || '启动缺集扫描任务失败。');
-  } finally {
-    isGapScanning.value = false;
   }
 };
 

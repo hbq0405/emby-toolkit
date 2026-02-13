@@ -279,7 +279,6 @@ def api_watchlist_settings():
         "auto_resub_ended": False,
         "auto_delete_mp_history": False,     
         "auto_delete_download_tasks": False,
-        "gap_fill_resubscribe": False,
         "enable_backfill": False,
         "sync_mp_subscription": False,  
         "revival_check_days": 365      
