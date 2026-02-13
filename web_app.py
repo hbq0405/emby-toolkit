@@ -184,7 +184,7 @@ def initialize_processors():
                 cooldown_seconds=douban_cooldown,
                 user_cookie=douban_cookie
             )
-            logger.trace("DoubanApi 共享实例已初始化。")
+            logger.debug("  ✅ DoubanApi 共享实例已初始化。")
         except Exception as e:
             logger.error(f"DoubanApi 初始化失败: {e}", exc_info=True)
     

@@ -1087,25 +1087,25 @@ class WatchlistProcessor:
                     release_date = latest_season_info.get('air_date') or latest_series_data.get('first_air_date')
                     year = release_date[:4] if release_date else ""
                     
-                    # 尝试获取该季的 IMDb ID (如果 TMDb 提供了 external_ids)
-                    season_imdb_id = None
-                    try:
-                        # 直接请求 TMDb 获取该季的 external_ids
-                        # TMDb 接口很稳，多这一次请求能换来豆瓣匹配的精准度，非常划算
-                        season_details_remote = tmdb.get_season_details_tmdb(
-                            tv_id=int(tmdb_id), 
-                            season_number=latest_s_num, 
-                            api_key=self.tmdb_api_key,
-                            append_to_response="external_ids",
-                            item_name=item_name # 用于日志显示
-                        )
+                    # 尝试获取该剧的 IMDb ID（如果是 S1，且 TMDb 有提供剧集级 IMDb ID，则使用它；否则不传）
+                    target_imdb_id = None
+                    
+                    # 策略：
+                    # 1. 如果是第 1 季，使用剧集(Series)层面的 IMDb ID。
+                    #    (TMDb 的 aggregate_full_series_data_from_tmdb 已经请求了 external_ids，直接取即可，无需额外请求)
+                    # 2. 如果是第 2+ 季，强制不使用 IMDb ID。
+                    #    (因为主剧的 IMDb ID 在豆瓣通常只对应 S1，传了反而可能导致 S2 匹配成 S1 的数据)
+                    
+                    if latest_s_num == 1:
+                        external_ids = latest_series_data.get('external_ids', {})
+                        target_imdb_id = external_ids.get('imdb_id')
                         
-                        if season_details_remote and 'external_ids' in season_details_remote:
-                            season_imdb_id = season_details_remote['external_ids'].get('imdb_id')
-                            if season_imdb_id:
-                                logger.debug(f"  🎯 [TMDb辅助] 成功获取《{item_name}》S{latest_s_num} 的 IMDb ID: {season_imdb_id}")
-                    except Exception as e:
-                        logger.warning(f"  ⚠️ 尝试从 TMDb 获取分季 IMDb ID 时出错: {e}")
+                        if target_imdb_id:
+                            logger.debug(f"  🎯 [TMDb辅助] S1 命中剧集级 IMDb ID: {target_imdb_id}")
+                        else:
+                            logger.debug(f"  ⚠️ [TMDb辅助] S1 未找到剧集级 IMDb ID，将回退到名称搜索。")
+                    else:
+                        logger.debug(f"  🔀 [TMDb辅助] S{latest_s_num} 非首季，主动放弃 IMDb ID 匹配，强制使用名称+季号搜索。")
 
                     # ==============================================================================
                     
@@ -1113,7 +1113,7 @@ class WatchlistProcessor:
                         series_name=item_name, 
                         season_number=latest_s_num, 
                         year=year,
-                        imdb_id=season_imdb_id # ★ 传入获取到的 IMDb ID
+                        imdb_id=target_imdb_id # ★ 传入处理后的 ID
                     )
                     
                     # 只有当豆瓣有数据，且与 TMDb 不同时，才执行锁定
