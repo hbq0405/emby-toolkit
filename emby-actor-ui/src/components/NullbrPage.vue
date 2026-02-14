@@ -29,7 +29,7 @@
         <template #header>
           <n-space align="center" justify="space-between">
             <span>接入配置</span>
-            <n-button tag="a" href="https://nullbr.online/manage" target="_blank" secondary type="primary" size="small">
+            <n-button tag="a" href="https://nullbr.com/manage" target="_blank" secondary type="primary" size="small">
               <template #icon><n-icon><LinkIcon /></n-icon></template>
               获取 NULLBR Key
             </n-button>
