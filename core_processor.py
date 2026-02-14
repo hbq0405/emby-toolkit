@@ -3736,19 +3736,33 @@ class MediaProcessor:
             logger.debug(f"  ➜ {log_prefix} 图片偏好: {'中文优先' if lang_pref == 'zh' else '原语言优先'} (原语言: {original_lang_code})")
 
             # =========================================================
-            # ★★★ 定义通用图片选择逻辑 (不再偷懒，统一逻辑) ★★★
+            # ★★★ 定义通用图片选择逻辑 (优化版：细分中文优先级) ★★★
             # =========================================================
             def _select_best_image(image_list: list, preference: str, orig_lang: str) -> Optional[str]:
                 if not image_list:
                     return None
                 
-                selected = None
                 if preference == 'zh':
-                    # 策略 A: 中文 > 原语言 > 英文 > 第一个
+                    # 策略 A: 中文优先 (细分: zh-CN > zh > zh-TW/HK/SG > 原语言 > 英文)
+                    
+                    # 1. 优先找明确标记为 zh-CN 的 (简体)
+                    for img in image_list:
+                        if img.get("iso_639_1") == "zh-CN": return img["file_path"]
+                    
+                    # 2. 其次找通用 zh 的 (通常也是简体或未区分)
                     for img in image_list:
                         if img.get("iso_639_1") == "zh": return img["file_path"]
+                    
+                    # 3. 再找其他中文变体 (zh-TW, zh-HK, zh-SG 等)
+                    for img in image_list:
+                        lang = img.get("iso_639_1")
+                        if lang and lang.startswith("zh-"): return img["file_path"]
+
+                    # 4. 原语言
                     for img in image_list:
                         if img.get("iso_639_1") == orig_lang: return img["file_path"]
+                    
+                    # 5. 英文
                     for img in image_list:
                         if img.get("iso_639_1") == "en": return img["file_path"]
                 else:
@@ -3759,7 +3773,9 @@ class MediaProcessor:
                         for img in image_list:
                             if img.get("iso_639_1") == "en": return img["file_path"]
                     for img in image_list:
-                        if img.get("iso_639_1") == "zh": return img["file_path"]
+                        lang = img.get("iso_639_1")
+                        # 包含所有中文变体
+                        if lang == "zh" or (lang and lang.startswith("zh-")): return img["file_path"]
                 
                 # 兜底：返回评分最高的第一个（TMDb默认已按评分排序）
                 return image_list[0]["file_path"]
