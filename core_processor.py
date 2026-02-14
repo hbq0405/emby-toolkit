@@ -3736,6 +3736,28 @@ class MediaProcessor:
             logger.debug(f"  ➜ {log_prefix} 图片偏好: {'中文优先' if lang_pref == 'zh' else '原语言优先'} (原语言: {original_lang_code})")
 
             # =========================================================
+            # ✨✨✨ [魔法日志] START: 打印 TMDb 返回的前15张海报数据 ✨✨✨
+            # =========================================================
+            try:
+                raw_posters = tmdb_data.get("images", {}).get("posters", [])
+                logger.info(f"🔮 [Magic Log] TMDb 返回海报总数: {len(raw_posters)}")
+                if raw_posters:
+                    logger.info(f"🔮 [Magic Log] 前 32 张海报详情 (按 TMDb 默认排序):")
+                    for idx, img in enumerate(raw_posters[:32]):
+                        p_lang = img.get("iso_639_1")
+                        p_vote = img.get("vote_average")
+                        p_path = img.get("file_path")
+                        p_width = img.get("width")
+                        logger.info(f"   ├─ [{idx:02d}] Lang: {str(p_lang):<7} | Vote: {str(p_vote):<5} | Size: {p_width}w | Path: {p_path}")
+                else:
+                    logger.warning(f"🔮 [Magic Log] TMDb 未返回任何海报数据！检查 include_image_language 参数。")
+            except Exception as e:
+                logger.error(f"🔮 [Magic Log] 打印日志出错: {e}")
+            # =========================================================
+            # ✨✨✨ [魔法日志] END ✨✨✨
+            # =========================================================
+            
+            # =========================================================
             # ★★★ 定义通用图片选择逻辑 (优化版：细分中文优先级) ★★★
             # =========================================================
             def _select_best_image(image_list: list, preference: str, orig_lang: str) -> Optional[str]:
