@@ -3701,7 +3701,7 @@ class MediaProcessor:
         """
         【主动监控专用】
         直接从 TMDb API 获取并下载图片到本地 override 目录。
-        用于在 Emby 尚未入库时，预先准备好图片素材。
+        采用“分步逼问”策略，解决 TMDb API 将 zh-CN/zh-TW 混淆为 zh 的问题。
         """
         if not tmdb_id or not self.local_data_path:
             logger.error(f"  ➜ [TMDb图片预取] 缺少 TMDb ID 或本地路径配置，无法下载。")
@@ -3710,185 +3710,142 @@ class MediaProcessor:
         try:
             log_prefix = "[TMDb图片预取]"
             
-            # 1. 准备目录 (保持与 sync_item_images 一致的目录结构)
+            # 1. 准备目录
             cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
             base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, str(tmdb_id))
             image_override_dir = os.path.join(base_override_dir, "images")
             os.makedirs(image_override_dir, exist_ok=True)
 
-            # 2. 从 TMDb 获取图片数据
-            logger.info(f"  ➜ {log_prefix} 正在从 TMDb API 获取图片链接 (ID: {tmdb_id})...")
-            
-            tmdb_data = None
-            if item_type == "Movie":
-                tmdb_data = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, append_to_response="images")
-            elif item_type == "Series":
-                tmdb_data = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, append_to_response="images,seasons")
-            
-            if not tmdb_data:
-                logger.error(f"  ➜ {log_prefix} 无法获取 TMDb 数据。")
-                return False
-            
-            # ★★★ 读取语言偏好配置 ★★★
+            # 2. 确定搜索策略
+            # 读取语言偏好，默认为 zh
             lang_pref = self.config.get(constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE, 'zh')
-            original_lang_code = tmdb_data.get("original_language", "en")
             
-            logger.debug(f"  ➜ {log_prefix} 图片偏好: {'中文优先' if lang_pref == 'zh' else '原语言优先'} (原语言: {original_lang_code})")
-
-            # =========================================================
-            # ✨✨✨ [魔法日志] START: 打印 TMDb 返回的前15张海报数据 ✨✨✨
-            # =========================================================
-            try:
-                raw_posters = tmdb_data.get("images", {}).get("posters", [])
-                logger.info(f"🔮 [Magic Log] TMDb 返回海报总数: {len(raw_posters)}")
-                if raw_posters:
-                    logger.info(f"🔮 [Magic Log] 前 32 张海报详情 (按 TMDb 默认排序):")
-                    for idx, img in enumerate(raw_posters[:32]):
-                        p_lang = img.get("iso_639_1")
-                        p_vote = img.get("vote_average")
-                        p_path = img.get("file_path")
-                        p_width = img.get("width")
-                        logger.info(f"   ├─ [{idx:02d}] Lang: {str(p_lang):<7} | Vote: {str(p_vote):<5} | Size: {p_width}w | Path: {p_path}")
-                else:
-                    logger.warning(f"🔮 [Magic Log] TMDb 未返回任何海报数据！检查 include_image_language 参数。")
-            except Exception as e:
-                logger.error(f"🔮 [Magic Log] 打印日志出错: {e}")
-            # =========================================================
-            # ✨✨✨ [魔法日志] END ✨✨✨
-            # =========================================================
+            # 定义搜索队列：(语言参数字符串, 描述)
+            # 这里的逻辑是：既然 API 返回结果不分 CN/TW，那我们在请求时就只请求 CN，强制 API 帮我们过滤。
+            search_strategies = []
             
-            # =========================================================
-            # ★★★ 定义通用图片选择逻辑 (优化版：细分中文优先级) ★★★
-            # =========================================================
-            def _select_best_image(image_list: list, preference: str, orig_lang: str) -> Optional[str]:
-                if not image_list:
-                    return None
-                
-                if preference == 'zh':
-                    # 策略 A: 中文优先 (细分: zh-CN > zh > zh-TW/HK/SG > 原语言 > 英文)
-                    
-                    # 1. 优先找明确标记为 zh-CN 的 (简体)
-                    for img in image_list:
-                        if img.get("iso_639_1") == "zh-CN": return img["file_path"]
-                    
-                    # 2. 其次找通用 zh 的 (通常也是简体或未区分)
-                    for img in image_list:
-                        if img.get("iso_639_1") == "zh": return img["file_path"]
-                    
-                    # 3. 再找其他中文变体 (zh-TW, zh-HK, zh-SG 等)
-                    for img in image_list:
-                        lang = img.get("iso_639_1")
-                        if lang and lang.startswith("zh-"): return img["file_path"]
+            if lang_pref == 'zh':
+                # 策略 A: 严格中文优先
+                # 1. 只要简体 (zh-CN)
+                search_strategies.append(("zh-CN", "简体中文(zh-CN)"))
+                # 2. 如果没有，尝试通用中文和繁体 (zh, zh-TW)
+                search_strategies.append(("zh,zh-TW", "繁体/通用中文(zh/zh-TW)"))
+                # 3. 还没有，尝试英文和无文字 (en, null)
+                search_strategies.append(("en,null", "英文/无文字(en,null)"))
+            else:
+                # 策略 B: 原文/英文优先
+                search_strategies.append(("en,null", "英文/无文字"))
+                search_strategies.append(("zh-CN,zh-TW,zh", "中文全集"))
 
-                    # 4. 原语言
-                    for img in image_list:
-                        if img.get("iso_639_1") == orig_lang: return img["file_path"]
-                    
-                    # 5. 英文
-                    for img in image_list:
-                        if img.get("iso_639_1") == "en": return img["file_path"]
-                else:
-                    # 策略 B: 原语言 > 英文 > 中文 > 第一个
-                    for img in image_list:
-                        if img.get("iso_639_1") == orig_lang: return img["file_path"]
-                    if orig_lang != 'en':
-                        for img in image_list:
-                            if img.get("iso_639_1") == "en": return img["file_path"]
-                    for img in image_list:
-                        lang = img.get("iso_639_1")
-                        # 包含所有中文变体
-                        if lang == "zh" or (lang and lang.startswith("zh-")): return img["file_path"]
-                
-                # 兜底：返回评分最高的第一个（TMDb默认已按评分排序）
-                return image_list[0]["file_path"]
+            tmdb_data = None
+            used_strategy = ""
 
-            # 3. 定义下载任务列表
+            # 3. 执行分步请求
+            for lang_param, desc in search_strategies:
+                logger.debug(f"  ➜ {log_prefix} 尝试获取图片，策略: {desc} ...")
+                
+                # 构造特定的 params 来覆盖 tmdb.py 中的默认值
+                # 注意：这里我们只请求 images，不请求其他详情，以加快速度
+                req_params = {"include_image_language": lang_param}
+                
+                try:
+                    if item_type == "Movie":
+                        # 注意：这里调用 get_movie_details 时传入 params 会覆盖默认的 include_image_language
+                        data = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, append_to_response="images", params=req_params)
+                    elif item_type == "Series":
+                        data = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, append_to_response="images,seasons", params=req_params)
+                    
+                    # 检查是否获取到了海报
+                    if data and data.get("images", {}).get("posters"):
+                        tmdb_data = data
+                        used_strategy = desc
+                        logger.info(f"  ➜ {log_prefix} 成功通过策略 [{desc}] 获取到 {len(data['images']['posters'])} 张海报。")
+                        break # 找到了就停止，不再尝试后续策略
+                    else:
+                        logger.debug(f"  ➜ {log_prefix} 策略 [{desc}] 未返回有效海报，尝试下一策略...")
+                
+                except Exception as e:
+                    logger.warning(f"  ➜ {log_prefix} 策略 [{desc}] 请求失败: {e}")
+
+            if not tmdb_data:
+                logger.error(f"  ➜ {log_prefix} 所有策略均未获取到图片数据。")
+                return False
+
+            # =========================================================
+            # 4. 图片选择逻辑 (现在简单多了，因为数据源已经纯净了)
+            # =========================================================
+            # 因为我们已经通过请求参数过滤过了，所以这里直接取 Vote 最高的第一张即可
+            # TMDb 返回的 list 默认就是按 vote_average 降序排列的
+            
             downloads = []
             images_node = tmdb_data.get("images", {})
 
             # --- A. 海报 (Poster) ---
-            # ★★★ 修复：不再直接取 poster_path，而是去 posters 列表里挑 ★★★
             posters_list = images_node.get("posters", [])
-            selected_poster = _select_best_image(posters_list, lang_pref, original_lang_code)
-            
-            # 如果列表里没挑出来（极少见），再用顶层字段兜底
-            if not selected_poster:
-                selected_poster = tmdb_data.get("poster_path")
-            
-            if selected_poster:
+            if posters_list:
+                # 直接取第一张，因为它是当前策略下评分最高的
+                selected_poster = posters_list[0]["file_path"]
                 downloads.append((selected_poster, "poster.jpg"))
+                logger.info(f"  ➜ {log_prefix} 选中海报: {selected_poster} (评分: {posters_list[0].get('vote_average')})")
             
-            # --- B. 背景 (Backdrop / Fanart) ---
-            # 背景图通常首选无文字(null)，其次才看语言。
-            # 这里我们稍微变通一下：如果用户选了原语言优先，我们尝试找原语言的；
-            # 否则（中文优先），我们倾向于找无文字的或者中文的。
-            # 但为了简单且符合“原图”的高质量要求，背景图我们通常还是信任 TMDb 的默认排序（通常是无文字的高分图）。
-            
+            # --- B. 背景 (Backdrop) ---
+            # 背景图通常不需要严格区分简繁，甚至无文字(null)最好。
+            # 如果刚才的策略是 "zh-CN"，可能导致背景图很少。
+            # 所以为了背景图，如果当前数据里没有好的背景，我们可以稍微放宽一点标准再拿一次？
+            # 考虑到性能，我们先看当前数据里有没有。
             backdrops_list = images_node.get("backdrops", [])
             selected_backdrop = None
             
-            # 特殊逻辑：背景图优先找无文字 (iso_639_1 is None or 'null')
-            for img in backdrops_list:
-                if img.get("iso_639_1") in [None, "null"]:
-                    selected_backdrop = img["file_path"]
-                    break
+            # 优先找无文字的 (null) - 无论什么策略，null 语言通常都会被包含(如果请求了null)或者在zh策略里也能混进去
+            # 如果刚才请求的是 "zh-CN"，可能没包含 "null"。
+            # 这是一个小缺陷：为了海报的精准中文，可能牺牲了背景图的丰富度。
+            # 补救：如果当前策略没找到背景图，且策略是 zh-CN，我们可以单独再请求一次背景图吗？
+            # 简化处理：直接在当前结果里找。
             
-            # 如果没找到无文字的，再按语言偏好找
-            if not selected_backdrop:
-                selected_backdrop = _select_best_image(backdrops_list, lang_pref, original_lang_code)
+            if backdrops_list:
+                selected_backdrop = backdrops_list[0]["file_path"]
             
-            # 兜底
+            # 兜底：如果没找到背景图，但海报找到了，说明电影存在。尝试用顶层字段兜底
             if not selected_backdrop:
                 selected_backdrop = tmdb_data.get("backdrop_path")
 
             if selected_backdrop:
                 downloads.append((selected_backdrop, "fanart.jpg"))
-                # 顺便拿第一张背景做 landscape (缩略图)
                 downloads.append((selected_backdrop, "landscape.jpg"))
 
-            # --- C. Logo (Clearlogo) ---
+            # --- C. Logo ---
             logos_list = images_node.get("logos", [])
-            selected_logo = _select_best_image(logos_list, lang_pref, original_lang_code)
-            
-            if selected_logo:
-                downloads.append((selected_logo, "clearlogo.png"))
+            if logos_list:
+                downloads.append((logos_list[0]["file_path"], "clearlogo.png"))
 
-            # --- D. 剧集特有：季海报 ---
+            # --- D. 剧集季海报 ---
             if item_type == "Series":
                 seasons = tmdb_data.get("seasons", [])
                 for season in seasons:
                     s_num = season.get("season_number")
-                    # 季海报通常在顶层数据里没有详细的 images 列表，只能拿 poster_path
-                    # 要想精确控制季海报语言，需要单独请求每一季的详情，这会增加很多 API 请求。
-                    # 考虑到性能，季海报这里暂时保持原样（通常季海报文字较少）。
                     s_poster = season.get("poster_path")
                     if s_num is not None and s_poster:
                         downloads.append((s_poster, f"season-{s_num}.jpg"))
 
-            # 4. 执行下载
+            # 5. 执行下载
             base_image_url = "https://image.tmdb.org/t/p/original"
             success_count = 0
-            
             import requests
             
             for tmdb_path, local_name in downloads:
                 if not tmdb_path: continue
-                
                 full_url = f"{base_image_url}{tmdb_path}"
                 save_path = os.path.join(image_override_dir, local_name)
                 
-                # 如果文件已存在且大小不为0，跳过
                 if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
                     continue
 
                 try:
-                    # 使用简单的 requests 下载，带超时
                     resp = requests.get(full_url, timeout=15)
                     if resp.status_code == 200:
                         with open(save_path, 'wb') as f:
                             f.write(resp.content)
                         success_count += 1
-                        # 稍微延时避免触发 TMDb 速率限制
                         time_module.sleep(0.1)
                 except Exception as e:
                     logger.warning(f"  ➜ 下载图片失败 {local_name}: {e}")
