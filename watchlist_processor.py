@@ -1148,6 +1148,19 @@ class WatchlistProcessor:
                         logger.debug(f"  ⚠️ 《{item_name}》第{latest_s_num}季 未锁定，但豆瓣修正未启用，跳过。")
             
             if seasons_lock_map:
+                for season_obj in latest_series_data.get('seasons', []):
+                    s_num = season_obj.get('season_number')
+                    # 如果该季在锁定表中，且已启用锁定
+                    if s_num in seasons_lock_map and seasons_lock_map[s_num].get('locked'):
+                        locked_count = seasons_lock_map[s_num].get('count')
+                        # 如果 TMDb 原生集数与锁定集数不一致，强制覆盖
+                        if locked_count is not None and season_obj.get('episode_count') != locked_count:
+                            logger.debug(f"  🔒 [元数据同步] 将 S{s_num} 的总集数由 TMDb({season_obj.get('episode_count')}) 修正为锁定值({locked_count})，以便正确判定完结。")
+                            season_obj['episode_count'] = locked_count
+                            
+                            # 如果是单季剧，通常 series 级的 number_of_episodes 也需要修正
+                            if len(valid_tmdb_seasons) == 1:
+                                latest_series_data['number_of_episodes'] = locked_count
                 filtered_episodes = []
                 discarded_count = 0
                 
