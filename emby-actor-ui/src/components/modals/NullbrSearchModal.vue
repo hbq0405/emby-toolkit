@@ -1,4 +1,4 @@
-<!-- src/components/NullbrSearchModal.vue -->
+<!-- src/components/modals/NullbrSearchModal.vue -->
 <template>
   <n-modal
     v-model:show="showModal"

@@ -296,7 +296,7 @@ import { ref, reactive, onMounted, h, defineComponent, computed } from 'vue';
 import axios from 'axios';
 import { useMessage, NIcon, NTag, NEllipsis, NSpace, NImage, NButton, NText, NDynamicInput, NTooltip, NCheckbox, NCheckboxGroup, NInputNumber, NSwitch, NSpin, NRadioGroup, NRadioButton, NCollapseTransition, NSelect, NTabs, NTabPane, NList, NListItem, NThing, NModal, NLayout, NLayoutSider, NLayoutContent, NPageHeader, NCard, NAlert, NForm, NFormItem, NGrid, NGi, NDivider, NInput, NInputGroup, NInputGroupLabel, NMenu, NEmpty } from 'naive-ui';
 import { useClipboard } from '@vueuse/core';
-import NullbrSearchModal from './NullbrSearchModal.vue';
+import NullbrSearchModal from './modals/NullbrSearchModal.vue';
 import { 
   SettingsOutline as SettingsIcon, 
   Search as SearchIcon, 

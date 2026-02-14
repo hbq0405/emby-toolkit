@@ -338,7 +338,7 @@ import {
   NInputNumber, NSpin, NGrid, NGi, NButton, NThing, useMessage, NIcon, 
   NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4, NH3, NTooltip
 } from 'naive-ui';
-import NullbrSearchModal from './NullbrSearchModal.vue';
+import NullbrSearchModal from './modals/NullbrSearchModal.vue';
 import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon, CloudDownloadOutline as CloudDownloadIcon } from '@vicons/ionicons5';
 
 // ... (所有顶部的 import 和 ref 定义保持不变) ...
