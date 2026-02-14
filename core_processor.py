@@ -3699,16 +3699,14 @@ class MediaProcessor:
     # --- 从 TMDb 直接下载图片 (用于实时监控/预处理) ---
     def download_images_from_tmdb(self, tmdb_id: str, item_type: str) -> bool:
         """
-        【主动监控专用】
         直接从 TMDb API 获取并下载图片到本地 override 目录。
-        采用“分步逼问”策略，解决 TMDb API 将 zh-CN/zh-TW 混淆为 zh 的问题。
         """
         if not tmdb_id or not self.local_data_path:
-            logger.error(f"  ➜ [TMDb图片预取] 缺少 TMDb ID 或本地路径配置，无法下载。")
+            logger.error(f"  ➜ [TMDb图片下载] 缺少 TMDb ID 或本地路径配置，无法下载。")
             return False
 
         try:
-            log_prefix = "[TMDb图片预取]"
+            log_prefix = "[TMDb图片下载]"
             
             # 1. 准备目录
             cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
@@ -3716,25 +3714,43 @@ class MediaProcessor:
             image_override_dir = os.path.join(base_override_dir, "images")
             os.makedirs(image_override_dir, exist_ok=True)
 
+            # 先获取基础信息以确定原语言
+            orig_lang = "en" # 默认兜底
+            try:
+                # 发起一个轻量级请求（不带 append_to_response），只为拿 original_language
+                if item_type == "Movie":
+                    base_info = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, append_to_response="")
+                elif item_type == "Series":
+                    base_info = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, append_to_response="")
+                
+                if base_info:
+                    orig_lang = base_info.get("original_language", "en")
+                    logger.debug(f"  ➜ {log_prefix} 获取到原语言: {orig_lang}")
+            except Exception as e:
+                logger.warning(f"  ➜ {log_prefix} 获取原语言失败，将默认使用 en: {e}")
+
             # 2. 确定搜索策略
-            # 读取语言偏好，默认为 zh
             lang_pref = self.config.get(constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE, 'zh')
-            
-            # 定义搜索队列：(语言参数字符串, 描述)
-            # 这里的逻辑是：既然 API 返回结果不分 CN/TW，那我们在请求时就只请求 CN，强制 API 帮我们过滤。
+            logger.debug(f"  ➜ {log_prefix} 图片偏好: {'简体中文优先' if lang_pref == 'zh' else '原语言优先'} (原语言: {orig_lang})")
+
             search_strategies = []
             
             if lang_pref == 'zh':
                 # 策略 A: 严格中文优先
-                # 1. 只要简体 (zh-CN)
                 search_strategies.append(("zh-CN", "简体中文(zh-CN)"))
-                # 2. 如果没有，尝试通用中文和繁体 (zh, zh-TW)
                 search_strategies.append(("zh,zh-TW", "繁体/通用中文(zh/zh-TW)"))
-                # 3. 还没有，尝试英文和无文字 (en, null)
                 search_strategies.append(("en,null", "英文/无文字(en,null)"))
             else:
-                # 策略 B: 原文/英文优先
-                search_strategies.append(("en,null", "英文/无文字"))
+                # 策略 B: 原语言优先
+                # 例如：韩国电影(ko)，这里就会先找 ko 的海报
+                if orig_lang != 'en':
+                    search_strategies.append((orig_lang, f"原语言({orig_lang})"))
+                
+                # 2. 第二顺位：英文/无文字 (高质量通用图)
+                # 如果原语言就是英语(en)，这一步自然就覆盖了原语言
+                search_strategies.append(("en,null", "英文/无文字(en,null)"))
+                
+                # 3. 第三顺位：中文兜底
                 search_strategies.append(("zh-CN,zh-TW,zh", "中文全集"))
 
             tmdb_data = None
@@ -3744,11 +3760,8 @@ class MediaProcessor:
             for lang_param, desc in search_strategies:
                 logger.debug(f"  ➜ {log_prefix} 尝试获取图片，策略: {desc} ...")
                 
-                # ★★★ 修改点：不再构造 req_params，而是直接传参 ★★★
-                
                 try:
                     if item_type == "Movie":
-                        # 直接传入 include_image_language 参数
                         data = tmdb.get_movie_details(
                             int(tmdb_id), 
                             self.tmdb_api_key, 
@@ -3756,7 +3769,6 @@ class MediaProcessor:
                             include_image_language=lang_param
                         )
                     elif item_type == "Series":
-                        # 直接传入 include_image_language 参数
                         data = tmdb.get_tv_details(
                             int(tmdb_id), 
                             self.tmdb_api_key, 
@@ -3764,12 +3776,11 @@ class MediaProcessor:
                             include_image_language=lang_param
                         )
                     
-                    # 检查是否获取到了海报
                     if data and data.get("images", {}).get("posters"):
                         tmdb_data = data
                         used_strategy = desc
                         logger.info(f"  ➜ {log_prefix} 成功通过策略 [{desc}] 获取到 {len(data['images']['posters'])} 张海报。")
-                        break # 找到了就停止，不再尝试后续策略
+                        break 
                     else:
                         logger.debug(f"  ➜ {log_prefix} 策略 [{desc}] 未返回有效海报，尝试下一策略...")
                 
@@ -3781,40 +3792,24 @@ class MediaProcessor:
                 return False
 
             # =========================================================
-            # 4. 图片选择逻辑 (现在简单多了，因为数据源已经纯净了)
+            # 4. 图片选择逻辑
             # =========================================================
-            # 因为我们已经通过请求参数过滤过了，所以这里直接取 Vote 最高的第一张即可
-            # TMDb 返回的 list 默认就是按 vote_average 降序排列的
-            
             downloads = []
             images_node = tmdb_data.get("images", {})
 
             # --- A. 海报 (Poster) ---
             posters_list = images_node.get("posters", [])
             if posters_list:
-                # 直接取第一张，因为它是当前策略下评分最高的
                 selected_poster = posters_list[0]["file_path"]
                 downloads.append((selected_poster, "poster.jpg"))
                 logger.info(f"  ➜ {log_prefix} 选中海报: {selected_poster} (评分: {posters_list[0].get('vote_average')})")
             
             # --- B. 背景 (Backdrop) ---
-            # 背景图通常不需要严格区分简繁，甚至无文字(null)最好。
-            # 如果刚才的策略是 "zh-CN"，可能导致背景图很少。
-            # 所以为了背景图，如果当前数据里没有好的背景，我们可以稍微放宽一点标准再拿一次？
-            # 考虑到性能，我们先看当前数据里有没有。
             backdrops_list = images_node.get("backdrops", [])
             selected_backdrop = None
-            
-            # 优先找无文字的 (null) - 无论什么策略，null 语言通常都会被包含(如果请求了null)或者在zh策略里也能混进去
-            # 如果刚才请求的是 "zh-CN"，可能没包含 "null"。
-            # 这是一个小缺陷：为了海报的精准中文，可能牺牲了背景图的丰富度。
-            # 补救：如果当前策略没找到背景图，且策略是 zh-CN，我们可以单独再请求一次背景图吗？
-            # 简化处理：直接在当前结果里找。
-            
             if backdrops_list:
                 selected_backdrop = backdrops_list[0]["file_path"]
             
-            # 兜底：如果没找到背景图，但海报找到了，说明电影存在。尝试用顶层字段兜底
             if not selected_backdrop:
                 selected_backdrop = tmdb_data.get("backdrop_path")
 
@@ -3859,7 +3854,7 @@ class MediaProcessor:
                 except Exception as e:
                     logger.warning(f"  ➜ 下载图片失败 {local_name}: {e}")
 
-            logger.info(f"  ➜ {log_prefix} 图片预取完成，共下载 {success_count} 张图片。")
+            logger.info(f"  ➜ {log_prefix} 共下载 {success_count} 张图片。")
             return True
 
         except Exception as e:
