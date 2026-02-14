@@ -180,8 +180,8 @@
                     <n-form-item label="图片语言偏好" path="tmdb_image_language_preference">
                       <n-radio-group v-model:value="configModel.tmdb_image_language_preference" name="image_lang_group">
                         <n-space>
-                          <n-radio value="zh">中文优先</n-radio>
-                          <n-radio value="original">英文/原语言优先</n-radio>
+                          <n-radio value="zh">简体中文优先</n-radio>
+                          <n-radio value="original">原语言优先</n-radio>
                         </n-space>
                       </n-radio-group>
                       <template #feedback>
