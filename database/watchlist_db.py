@@ -317,13 +317,13 @@ def batch_update_watchlist_status(item_ids: list, new_status: str) -> int:
         raise
 
 def get_watching_tmdb_ids() -> set:
-    """获取所有正在追看（状态为 'Watching' 或 'Paused'）的剧集的 TMDB ID 集合。"""
+    """获取所有正在追看（状态为 'Watching', 'Paused', 或 'Pending'）的剧集的 TMDB ID 集合。"""
     watching_ids = set()
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 修改处：使用 IN ('Watching', 'Paused') 来包含两种状态
-            cursor.execute("SELECT tmdb_id FROM media_metadata WHERE watching_status IN ('Watching', 'Paused') AND item_type = 'Series'")
+            # 修改处：使用 IN ('Watching', 'Paused', 'Pending') 来包含三种状态
+            cursor.execute("SELECT tmdb_id FROM media_metadata WHERE watching_status IN ('Watching', 'Paused', 'Pending') AND item_type = 'Series'")
             rows = cursor.fetchall()
             for row in rows:
                 watching_ids.add(str(row['tmdb_id']))
