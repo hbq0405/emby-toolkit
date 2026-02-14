@@ -3730,7 +3730,6 @@ class MediaProcessor:
 
             # 2. 确定搜索策略
             lang_pref = self.config.get(constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE, 'zh')
-            logger.debug(f"  ➜ {log_prefix} 图片偏好: {'简体中文优先' if lang_pref == 'zh' else '原语言优先'} ({orig_lang})")
 
             search_strategies = []
             
