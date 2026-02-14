@@ -3744,16 +3744,25 @@ class MediaProcessor:
             for lang_param, desc in search_strategies:
                 logger.debug(f"  ➜ {log_prefix} 尝试获取图片，策略: {desc} ...")
                 
-                # 构造特定的 params 来覆盖 tmdb.py 中的默认值
-                # 注意：这里我们只请求 images，不请求其他详情，以加快速度
-                req_params = {"include_image_language": lang_param}
+                # ★★★ 修改点：不再构造 req_params，而是直接传参 ★★★
                 
                 try:
                     if item_type == "Movie":
-                        # 注意：这里调用 get_movie_details 时传入 params 会覆盖默认的 include_image_language
-                        data = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, append_to_response="images", params=req_params)
+                        # 直接传入 include_image_language 参数
+                        data = tmdb.get_movie_details(
+                            int(tmdb_id), 
+                            self.tmdb_api_key, 
+                            append_to_response="images", 
+                            include_image_language=lang_param
+                        )
                     elif item_type == "Series":
-                        data = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, append_to_response="images,seasons", params=req_params)
+                        # 直接传入 include_image_language 参数
+                        data = tmdb.get_tv_details(
+                            int(tmdb_id), 
+                            self.tmdb_api_key, 
+                            append_to_response="images,seasons", 
+                            include_image_language=lang_param
+                        )
                     
                     # 检查是否获取到了海报
                     if data and data.get("images", {}).get("posters"):

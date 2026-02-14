@@ -131,30 +131,33 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
         return None
 
 # --- 获取电影的详细信息 ---
-def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,release_dates", language: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,release_dates", language: Optional[str] = None, include_image_language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     【新增】获取电影的详细信息。
+    增加 include_image_language 参数支持自定义图片语言筛选。
     """
     endpoint = f"/movie/{movie_id}"
-    # ★★★ 修改点：优先使用传入的 language，否则使用默认值 ★★★
+    
+    # 默认的图片语言列表
+    default_img_lang = "zh-CN,zh-TW,zh,en,null,ja,ko"
+    
     params = {
         "language": language or DEFAULT_LANGUAGE, 
         "append_to_response": append_to_response or "",
-        "include_image_language": "zh-CN,zh-TW,zh,en,null,ja,ko"
+        # 优先使用传入的参数，否则使用默认值
+        "include_image_language": include_image_language if include_image_language is not None else default_img_lang
     }
     logger.trace(f"TMDb: 获取电影详情 (ID: {movie_id})")
     details = _tmdb_request(endpoint, api_key, params)
     
-    # 同样为电影补充英文标题，保持逻辑一致性
+    # ... (保留原本的英文标题补充逻辑) ...
     if details and details.get("original_language") != "en" and DEFAULT_LANGUAGE.startswith("zh"):
-        # 优先从 translations 获取
         if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
             for trans in details["translations"]["translations"]:
                 if trans.get("iso_639_1") == "en" and trans.get("data", {}).get("title"):
                     details["english_title"] = trans["data"]["title"]
                     logger.trace(f"  从translations补充电影英文名: {details['english_title']}")
                     break
-        # 如果没有，再单独请求一次英文版
         if not details.get("english_title"):
             logger.trace(f"  尝试获取电影 {movie_id} 的英文名...")
             en_params = {"language": "en-US"}
@@ -168,21 +171,26 @@ def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[
     return details
 
 # --- 获取电视剧的详细信息 ---
-def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings", language: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings", language: Optional[str] = None, include_image_language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     【已升级】获取电视剧的详细信息。
+    增加 include_image_language 参数支持自定义图片语言筛选。
     """
     endpoint = f"/tv/{tv_id}"
-    # ★★★ 修改点：优先使用传入的 language，否则使用默认值 ★★★
+    
+    # 默认的图片语言列表
+    default_img_lang = "zh-CN,zh-TW,zh,en,null,ja,ko"
+
     params = {
         "language": language or DEFAULT_LANGUAGE,
         "append_to_response": append_to_response or "",
-        "include_image_language": "zh-CN,zh-TW,zh,en,null,ja,ko"
+        # 优先使用传入的参数，否则使用默认值
+        "include_image_language": include_image_language if include_image_language is not None else default_img_lang
     }
     logger.trace(f"TMDb: 获取电视剧详情 (ID: {tv_id})")
     details = _tmdb_request(endpoint, api_key, params)
     
-    # 同样可以为剧集补充英文标题
+    # ... (保留原本的英文标题补充逻辑) ...
     if details and details.get("original_language") != "en" and DEFAULT_LANGUAGE.startswith("zh"):
         if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
             for trans in details["translations"]["translations"]:
