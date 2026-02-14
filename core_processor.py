@@ -3725,21 +3725,20 @@ class MediaProcessor:
                 
                 if base_info:
                     orig_lang = base_info.get("original_language", "en")
-                    logger.debug(f"  ➜ {log_prefix} 获取到原语言: {orig_lang}")
             except Exception as e:
                 logger.warning(f"  ➜ {log_prefix} 获取原语言失败，将默认使用 en: {e}")
 
             # 2. 确定搜索策略
             lang_pref = self.config.get(constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE, 'zh')
-            logger.debug(f"  ➜ {log_prefix} 图片偏好: {'简体中文优先' if lang_pref == 'zh' else '原语言优先'} (原语言: {orig_lang})")
+            logger.debug(f"  ➜ {log_prefix} 图片偏好: {'简体中文优先' if lang_pref == 'zh' else '原语言优先'} ({orig_lang})")
 
             search_strategies = []
             
             if lang_pref == 'zh':
                 # 策略 A: 严格中文优先
-                search_strategies.append(("zh-CN", "简体中文(zh-CN)"))
-                search_strategies.append(("zh,zh-TW", "繁体/通用中文(zh/zh-TW)"))
-                search_strategies.append(("en,null", "英文/无文字(en,null)"))
+                search_strategies.append(("zh-CN", "简体中文"))
+                search_strategies.append(("zh,zh-TW", "繁体中文"))
+                search_strategies.append(("en,null", "英文/无文字"))
             else:
                 # 策略 B: 原语言优先
                 # 例如：韩国电影(ko)，这里就会先找 ko 的海报
@@ -3748,10 +3747,10 @@ class MediaProcessor:
                 
                 # 2. 第二顺位：英文/无文字 (高质量通用图)
                 # 如果原语言就是英语(en)，这一步自然就覆盖了原语言
-                search_strategies.append(("en,null", "英文/无文字(en,null)"))
+                search_strategies.append(("en,null", "英文/无文字"))
                 
                 # 3. 第三顺位：中文兜底
-                search_strategies.append(("zh-CN,zh-TW,zh", "中文全集"))
+                search_strategies.append(("zh-CN,zh-TW,zh", "中文兜底"))
 
             tmdb_data = None
             used_strategy = ""
