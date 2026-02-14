@@ -56,7 +56,7 @@ def subscribe_with_custom_payload(payload: dict, config: Dict[str, Any]) -> bool
 
         logger.trace(f"  ➜ 最终发送给 MoviePilot 的 Payload: {json.dumps(payload, ensure_ascii=False)}")
         
-        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=payload, timeout=15)
+        sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=payload, timeout=60)
         
         if sub_response.status_code in [200, 201, 204]:
             logger.info(f"  ✅ MoviePilot 已接受订阅任务。")
@@ -99,7 +99,7 @@ def cancel_subscription(tmdb_id: str, item_type: str, config: Dict[str, Any], se
             logger.info(f"  ➜ 正在向 MoviePilot 发送取消订阅请求: {media_id_for_api}{season_log}")
 
             try:
-                response = requests.delete(cancel_url, headers=headers, params=params, timeout=15)
+                response = requests.delete(cancel_url, headers=headers, params=params, timeout=30)
                 if response.status_code in [200, 204]:
                     logger.info(f"  ✅ MoviePilot 已成功取消订阅: {media_id_for_api}{season_log}")
                     return True
