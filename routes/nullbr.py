@@ -102,6 +102,8 @@ def get_resources():
         )
         return jsonify({"status": "success", "data": resource_list, "total": len(resource_list)})
     except Exception as e:
+        if "配额" in str(e):
+            return jsonify({"status": "error", "message": str(e), "code": 402}), 402
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @nullbr_bp.route('/push', methods=['POST'])

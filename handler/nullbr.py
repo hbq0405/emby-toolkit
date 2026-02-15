@@ -21,9 +21,11 @@ logger = logging.getLogger(__name__)
 NULLBR_APP_ID = "7DqRtfNX3"
 NULLBR_API_BASE = "https://api.nullbr.com"
 
-# 简单的内存缓存，用于存储用户等级以控制请求频率，避免每次都查库
+# 内存缓存，用于存储用户等级以控制请求频率，避免每次都查库
 _user_level_cache = {
     "sub_name": "free",
+    "daily_used": 0,
+    "daily_quota": 0,
     "updated_at": 0
 }
 
@@ -104,32 +106,27 @@ def _is_resource_valid(item, filters, media_type='movie'):
 # ==============================================================================
 
 def get_user_info():
-    """
-    获取用户信息 (配额、等级、过期时间)
-    """
+    """获取用户信息"""
     url = f"{NULLBR_API_BASE}/user/info"
     try:
         proxies = config_manager.get_proxies_for_requests()
-        
-        logger.info(f"正在获取 NULLBR 用户信息: {url}")
         response = requests.get(url, headers=_get_headers(), timeout=15, proxies=proxies)
-        
-        # 打印一下原始响应，方便调试
-        if response.status_code != 200:
-            logger.error(f"NULLBR 用户信息请求失败 [{response.status_code}]: {response.text}")
-            
         response.raise_for_status()
         data = response.json()
         
         if data.get('success'):
             user_data = data.get('data', {})
-            _user_level_cache['sub_name'] = user_data.get('sub_name', 'free').lower()
-            _user_level_cache['updated_at'] = time.time()
+            _user_level_cache.update({
+                'sub_name': user_data.get('sub_name', 'free').lower(),
+                'daily_used': user_data.get('daily_used', 0),
+                'daily_quota': user_data.get('daily_quota', 0),
+                'updated_at': time.time()
+            })
             return user_data
         else:
             raise Exception(data.get('message', '获取用户信息失败'))
     except Exception as e:
-        logger.error(f"获取 NULLBR 用户信息异常: {e}")
+        logger.error(f"  ⚠️ 获取 NULLBR 用户信息异常: {e}")
         raise e
 
 def redeem_code(code):
@@ -151,7 +148,7 @@ def redeem_code(code):
             msg = data.get('message') or "兑换失败"
             return {"success": False, "message": msg}
     except Exception as e:
-        logger.error(f"兑换请求异常: {e}")
+        logger.error(f"  ➜ 兑换请求异常: {e}")
         return {"success": False, "message": str(e)}
 
 def _wait_for_rate_limit():
@@ -242,7 +239,7 @@ def search_media(keyword, page=1):
         enriched_items = _enrich_items_with_status(items)
         return { "code": 200, "data": { "list": enriched_items, "total": data.get('total_results', 0) } }
     except Exception as e:
-        logger.error(f"NULLBR 搜索失败: {e}")
+        logger.error(f"  ➜ NULLBR 搜索失败: {e}")
         raise e
 
 def _fetch_single_source(tmdb_id, media_type, source_type, season_number=None):
@@ -269,12 +266,17 @@ def _fetch_single_source(tmdb_id, media_type, source_type, season_number=None):
         response = requests.get(url, headers=_get_headers(), timeout=10, proxies=proxies)
         
         if response.status_code == 404: return []
-        # 处理配额耗尽的情况
+        
         if response.status_code == 402:
-            logger.warning("NULLBR 配额已耗尽")
+            logger.warning("  ⚠️ NULLBR 接口返回 402: 配额已耗尽")
+            if _user_level_cache['daily_quota'] > 0:
+                _user_level_cache['daily_used'] = _user_level_cache['daily_quota']
             return []
             
         response.raise_for_status()
+        
+        _user_level_cache['daily_used'] = _user_level_cache.get('daily_used', 0) + 1
+        
         data = response.json()
         raw_list = data.get(source_type, [])
         
@@ -314,7 +316,7 @@ def _fetch_single_source(tmdb_id, media_type, source_type, season_number=None):
                 })
         return cleaned_list
     except Exception as e:
-        logger.warning(f"获取 {source_type} 资源失败: {e}")
+        logger.warning(f"  ➜ 获取 {source_type} 资源失败: {e}")
         return []
 
 def fetch_resource_list(tmdb_id, media_type='movie', specific_source=None, season_number=None):
@@ -323,6 +325,10 @@ def fetch_resource_list(tmdb_id, media_type='movie', specific_source=None, seaso
         sources_to_fetch = [specific_source]
     else:
         sources_to_fetch = config.get('enabled_sources', ['115', 'magnet', 'ed2k'])
+
+    if _user_level_cache.get('daily_quota', 0) > 0 and _user_level_cache.get('daily_used', 0) >= _user_level_cache.get('daily_quota', 0):
+        logger.warning(f"  ⚠️ 本地缓存显示配额已用完 ({_user_level_cache['daily_used']}/{_user_level_cache['daily_quota']})，跳过请求")
+        raise Exception("今日 API 配额已用完，请明日再试或升级套餐。")
     
     all_resources = []
     
