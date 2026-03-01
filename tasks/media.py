@@ -239,8 +239,8 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
                             time.sleep(0.2) # 稍微间隔
                         
                         # 2. 轮询等待 (关键修改)
-                        task_manager.update_status_from_thread(20, f"等待媒体信息提取 (最长10分钟)...")
-                        _wait_for_items_recovery(processor, ids_to_heal, max_retries=60, interval=10)
+                        task_manager.update_status_from_thread(20, f"等待媒体信息提取 (最长1分钟)...")
+                        _wait_for_items_recovery(processor, ids_to_heal, max_retries=6, interval=10)
                         
             except Exception as e_heal:
                 logger.warning(f"  ⚠️ 流程出现小插曲 (不影响后续重扫): {e_heal}")
