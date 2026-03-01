@@ -121,7 +121,7 @@ def task_sync_all_metadata(processor, item_id: str, item_name: str):
         logger.error(f"  ➜ 任务失败：{log_prefix} 时发生错误: {e}", exc_info=True)
         raise
 
-def _wait_for_items_recovery(processor, item_ids: list, max_retries=60, interval=10) -> bool:
+def _wait_for_items_recovery(processor, item_ids: list, max_retries=6, interval=10) -> bool:
     """
     轮询检查指定的一组 Emby ID 是否都已具备有效的媒体信息文件 (-mediainfo.json)。
     用于等待神医插件处理网盘文件。
