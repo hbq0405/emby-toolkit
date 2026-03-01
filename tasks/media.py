@@ -2052,8 +2052,6 @@ def task_backup_mediainfo(processor):
                                     target_log_type, 
                                     score=0.0
                                 )
-                                # 同时从 processed_log 移除，确保它真正在待复核列表显眼位置
-                                processor.log_db_manager.remove_from_processed_log(cursor, target_emby_id)
                                 logger.warning(f"  ⚠️ [{log_title}] 缺失本地 JSON，已标记为待复核: {os.path.basename(mediainfo_path)}")
                         else:
                             # 文件存在，如果有 SHA1 且未缓存，则备份
