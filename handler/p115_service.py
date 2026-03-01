@@ -1647,14 +1647,10 @@ def task_scan_and_organize_115(processor=None):
     if not client: raise Exception("无法初始化 115 客户端")
 
     config = get_config()
-    cookies = config.get(constants.CONFIG_OPTION_115_COOKIES)
     cid_val = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
     save_val = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_NAME, '待整理')
     enable_organize = config.get(constants.CONFIG_OPTION_115_ENABLE_ORGANIZE, False)
 
-    if not cookies:
-        logger.error("  ⚠️ 未配置 115 Cookies，跳过。")
-        return
     if not cid_val or str(cid_val) == '0':
         logger.error("  ⚠️ 未配置待整理目录 (CID)，跳过。")
         return
