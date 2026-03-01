@@ -1953,7 +1953,7 @@ def task_backup_mediainfo(processor):
             for i, item in enumerate(items):
                 if processor.is_stop_requested(): break
                 
-                if i % 2 == 0: 
+                if i % 50 == 0: 
                     task_manager.update_status_from_thread(int((i/total)*100), f"正在处理 ({i+1}/{total}): {item['title']}...")
                 
                 tmdb_id = item['tmdb_id']
@@ -2069,7 +2069,7 @@ def task_backup_mediainfo(processor):
                                         
                                         if cursor.rowcount > 0:
                                             mediainfo_backed_up_count += 1
-                                            logger.debug(f"  💾 [{log_title}] 媒体信息已成功备份至指纹库。")
+                                            logger.info(f"  💾 [{log_title}] 媒体信息已成功备份至数据库。")
                                 except Exception as e:
                                     logger.warning(f"  ⚠️ 读取本地 JSON 失败 {mediainfo_path}: {e}")
                 
