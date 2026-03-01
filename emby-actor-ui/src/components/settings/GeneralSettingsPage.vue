@@ -471,14 +471,20 @@
 
                     <!-- ★ 卡片 2：自定义重命名 (移到这里) -->
                     <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
-                      <template #header><span class="card-title">自定义重命名</span></template>
-                      <n-alert type="success" :show-icon="true" style="margin-bottom: 16px;">
+                      <template #header>
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <span class="card-title">自定义重命名</span>
+                          <n-button secondary type="primary" @click="renameModalRef?.open()">
+                            <template #icon>
+                              <n-icon :component="ColorWandIcon" />
+                            </template>
+                            配置命名规则
+                          </n-button>
+                        </div>
+                      </template>
+                      <n-alert type="success" :show-icon="true">
                         打造强迫症专属的完美媒体库命名格式。支持自定义主目录、季目录及文件的中英文、年份、TMDb标签等。
                       </n-alert>
-                      <n-button type="primary" block dashed @click="renameModalRef?.open()">
-                        <template #icon><n-icon :component="ColorWandIcon" /></template>
-                        配置命名规则
-                      </n-button>
                     </n-card>
 
                   </n-space>
