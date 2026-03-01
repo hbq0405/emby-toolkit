@@ -25,12 +25,6 @@ def get_115_tokens():
     auth_data = settings_db.get_setting('p115_auth_tokens')
     if auth_data:
         cookie = auth_data.get('cookie')
-        # ★ 无缝迁移逻辑：如果数据库里没 Cookie，去老配置里找，找到就存进数据库
-        if not cookie:
-            old_cookie = get_config().get(constants.CONFIG_OPTION_115_COOKIES)
-            if old_cookie:
-                save_115_tokens(auth_data.get('access_token'), auth_data.get('refresh_token'), old_cookie)
-                cookie = old_cookie
                 
         return auth_data.get('access_token'), auth_data.get('refresh_token'), cookie
     return None, None, None
@@ -1519,44 +1513,6 @@ def _parse_115_size(size_val):
     except Exception:
         pass
     return 0
-
-def get_115_account_info():
-    """
-    获取 115 账号状态及详细信息
-    """
-    client = P115Service.get_client()
-    if not client: raise Exception("无法初始化 115 客户端")
-
-    config = get_config()
-    auth_str = config.get(constants.CONFIG_OPTION_115_COOKIES, "")
-
-    if not auth_str:
-        raise Exception("未配置 115 凭证")
-
-    try:
-        # 尝试获取详细用户信息 (仅 OpenAPI 支持)
-        if hasattr(client, 'get_user_info'):
-            user_resp = client.get_user_info()
-            if user_resp and user_resp.get('state'):
-                return {
-                    "valid": True,
-                    "msg": "混合模式正常 (OpenAPI+Cookie)" if "|||" in auth_str else "OpenAPI 模式正常",
-                    "user_info": user_resp.get('data', {})
-                }
-
-        # 如果没有 OpenAPI，回退到基础检查
-        resp = client.fs_files_app({'limit': 1})
-        if not resp.get('state'):
-            raise Exception("凭证已失效")
-
-        return {
-            "valid": True,
-            "msg": "Cookie 模式正常",
-            "user_info": None
-        }
-    except Exception as e:
-        raise Exception(f"凭证无效或网络不通: {e}")
-
 
 def _identify_media_enhanced(filename, forced_media_type=None):
     """

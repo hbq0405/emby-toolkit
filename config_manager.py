@@ -104,7 +104,6 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_MONITOR_CONVERT_STRM_TO_ETK: (constants.CONFIG_SECTION_MONITOR, 'boolean', False), # 新增配置项：是否启用 .strm 转 ETK URL 的功能
 
     # [115] 
-    constants.CONFIG_OPTION_115_COOKIES: (constants.CONFIG_SECTION_115, 'string', ""),
     constants.CONFIG_OPTION_115_SAVE_PATH_CID: (constants.CONFIG_SECTION_115, 'string', "0"),
     constants.CONFIG_OPTION_115_SAVE_PATH_NAME: (constants.CONFIG_SECTION_115, 'string', "根目录"),
     constants.CONFIG_OPTION_115_MEDIA_ROOT_NAME: (constants.CONFIG_SECTION_115, 'string', "根目录"),
