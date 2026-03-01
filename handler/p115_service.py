@@ -1429,14 +1429,19 @@ class SmartOrganizer:
                                                 raw_info = row['mediainfo_json']
                                                 if isinstance(raw_info, list) and len(raw_info) > 0:
                                                     mediainfo_path = os.path.join(local_dir, os.path.splitext(new_filename)[0] + "-mediainfo.json")
-                                                    with open(mediainfo_path, 'w', encoding='utf-8') as f_json:
-                                                        json.dump(raw_info, f_json, ensure_ascii=False)
                                                     
-                                                    # 更新命中次数
-                                                    cursor.execute("UPDATE p115_mediainfo_cache SET hit_count = hit_count + 1 WHERE sha1 = %s", (file_sha1,))
-                                                    conn.commit()
-                                                    
-                                                    logger.info(f"  ⚡ [媒体信息缓存] 匹配到相同 SHA1，极速生成媒体信息: {os.path.basename(mediainfo_path)}")
+                                                    # ★★★ 新增：判断文件是否存在，不存在才写入，防止更新时间戳触发监控死循环 ★★★
+                                                    if not os.path.exists(mediainfo_path):
+                                                        with open(mediainfo_path, 'w', encoding='utf-8') as f_json:
+                                                            json.dump(raw_info, f_json, ensure_ascii=False)
+                                                        
+                                                        # 更新命中次数
+                                                        cursor.execute("UPDATE p115_mediainfo_cache SET hit_count = hit_count + 1 WHERE sha1 = %s", (file_sha1,))
+                                                        conn.commit()
+                                                        
+                                                        logger.info(f"  ⚡ [媒体信息缓存] 匹配到相同 SHA1，极速生成媒体信息: {os.path.basename(mediainfo_path)}")
+                                                    else:
+                                                        logger.debug(f"  ⚡ [媒体信息缓存] 本地已存在媒体信息文件，跳过生成: {os.path.basename(mediainfo_path)}")
                                 except Exception as e_sha1:
                                     logger.warning(f"  ⚠️ 尝试秒传媒体信息失败: {e_sha1}")
                             
