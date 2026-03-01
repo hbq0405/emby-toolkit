@@ -1379,7 +1379,7 @@ def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], ratin
                 item_name = item.get('Name', '未知')
                 
                 # ★★★ 修复点：将进度更新移到过滤逻辑之前，并提高频率 ★★★
-                if i % 5 == 0:
+                if i % 50 == 0:
                     # 计算全局进度
                     current_progress = int((lib_idx/total_libs)*100 + (i/total_items)*(100/total_libs))
                     task_manager.update_status_from_thread(
