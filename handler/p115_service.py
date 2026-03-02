@@ -1731,10 +1731,10 @@ def _identify_media_enhanced(filename, forced_media_type=None, ai_translator=Non
             pass
 
     # =================================================================
-    # ★★★ 3. 新增：AI 辅助识别 (兜底) ★★★
+    # ★★★ 3. AI 辅助识别 (兜底) ★★★
     # =================================================================
     if use_ai and ai_translator and not tmdb_id:
-        logger.info(f"  🤖 常规识别失败，尝试召唤 AI 辅助解析: {filename}")
+        logger.info(f"  🤖 常规识别失败，尝试 AI 辅助识别: {filename}")
         try:
             ai_result = ai_translator.parse_media_filename(filename)
             if ai_result and ai_result.get('title'):
