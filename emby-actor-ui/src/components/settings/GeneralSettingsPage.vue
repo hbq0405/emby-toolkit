@@ -1543,6 +1543,15 @@
           />
         </n-tab-pane>
       </n-tabs>
+      <n-tab-pane name="filename_parsing" tab="辅助识别">
+          <n-input
+            v-model:value="promptsModel.filename_parsing"
+            type="textarea"
+            :autosize="{ minRows: 10, maxRows: 20 }"
+            placeholder="输入提示词..."
+            style="font-family: monospace;"
+          />
+        </n-tab-pane>
     </n-spin>
 
     <template #action>
