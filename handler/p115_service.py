@@ -1119,6 +1119,93 @@ class SmartOrganizer:
             if re.search(pattern, filename):
                 return True
         return False
+    
+    def _execute_collection_breakdown(self, root_item, collection_movies):
+        """内部方法：拆解并独立整理合集包内的文件"""
+        source_root_id = root_item.get('fid') or root_item.get('file_id')
+        root_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '未知')
+        unidentified_cid = None 
+        
+        # 获取未识别目录 CID
+        config = get_config()
+        save_cid = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
+        if save_cid and str(save_cid) != '0':
+            try:
+                search_res = self.client.fs_files({'cid': save_cid, 'search_value': '未识别', 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                if search_res.get('data'):
+                    for item in search_res['data']:
+                        if item.get('fn') == '未识别' and str(item.get('fc')) == '0':
+                            unidentified_cid = item.get('fid')
+                            break
+            except: pass
+
+        processed_count = 0
+        try:
+            sub_res = self.client.fs_files({'cid': source_root_id, 'limit': 100, 'record_open_time': 0, 'count_folders': 0})
+            sub_items = sub_res.get('data', [])
+            
+            for sub_item in sub_items:
+                sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name')
+                sub_id = sub_item.get('fid') or sub_item.get('file_id')
+                
+                # 1. 优先看子项自己有没有带 ID
+                sub_tmdb_id, sub_type, sub_title = _identify_media_enhanced(sub_name)
+                
+                # 2. 模糊匹配
+                if not sub_tmdb_id:
+                    matched_movie = None
+                    clean_sub_name = re.sub(r'[^\w\u4e00-\u9fa5]', '', sub_name).lower()
+                    
+                    for movie in collection_movies:
+                        m_title = movie.get('title', '')
+                        m_orig = movie.get('original_title', '')
+                        m_year = movie.get('release_date', '')[:4] if movie.get('release_date') else ''
+                        
+                        clean_m_title = re.sub(r'[^\w\u4e00-\u9fa5]', '', m_title).lower()
+                        clean_m_orig = re.sub(r'[^\w\u4e00-\u9fa5]', '', m_orig).lower()
+                        
+                        if (clean_m_title and clean_m_title in clean_sub_name) or \
+                           (clean_m_orig and clean_m_orig in clean_sub_name):
+                            if m_year and m_year in sub_name:
+                                matched_movie = movie
+                                break
+                            elif not matched_movie:
+                                matched_movie = movie
+                    
+                    if matched_movie:
+                        sub_tmdb_id = str(matched_movie['id'])
+                        sub_type = 'movie'
+                        sub_title = matched_movie.get('title')
+                        logger.info(f"    ├─ 模糊匹配子项: {sub_name} -> {sub_title} (ID:{sub_tmdb_id})")
+                
+                # 3. 执行单体整理 (递归调用新的 Organizer)
+                if sub_tmdb_id:
+                    logger.info(f"    ├─ 准备整理子项: {sub_name} -> ID:{sub_tmdb_id}")
+                    try:
+                        organizer = SmartOrganizer(self.client, sub_tmdb_id, sub_type, sub_title)
+                        target_cid = organizer.get_target_cid()
+                        if organizer.execute(sub_item, target_cid, delete_source=False):
+                            processed_count += 1
+                    except Exception as e:
+                        logger.error(f"    ❌ 处理子项失败: {e}")
+                else:
+                    logger.warning(f"    ⚠️ 无法识别合集子项: {sub_name}，移入未识别。")
+                    if unidentified_cid:
+                        try: 
+                            self.client.fs_move(sub_id, unidentified_cid)
+                        except: pass
+            
+            # 拆解完毕，尝试删除空的合集文件夹
+            try: 
+                self.client.fs_delete([source_root_id])
+                logger.info(f"  🧹 已清理拆解完毕的合集包空目录: {root_name}")
+            except: pass
+            
+            return processed_count > 0
+            
+        except Exception as e:
+            logger.error(f"  ❌ 拆解合集包失败: {e}")
+            return False
 
     def execute(self, root_item, target_cid, delete_source=True):
         title = self.details.get('title') or self.original_title
@@ -1145,6 +1232,43 @@ class SmartOrganizer:
         fc_val = root_item.get('fc') if root_item.get('fc') is not None else root_item.get('type')
         is_source_file = str(fc_val) == '1'
         dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+
+        # =================================================================
+        # ★★★ 新增：在底层拦截 NULLBR 传来的合集包 ★★★
+        # =================================================================
+        if not is_source_file and re.search(r'(合集|部曲|系列|Collection|Pack|Trilogy|Quadrilogy|\d+-\d+)', root_name, re.IGNORECASE):
+            logger.info(f"  📦 [底层拦截] 检测到疑似合集包: {root_name}，正在验证...")
+            collection_movies = []
+            
+            # 1. 检查当前传入的 tmdb_id 是否本身就是合集 ID
+            try:
+                res_c = tmdb.get_collection_details(int(self.tmdb_id), self.api_key)
+                if res_c and 'parts' in res_c:
+                    collection_movies = res_c['parts']
+            except: pass
+            
+            # 2. 检查当前传入的电影是否属于某个合集
+            if not collection_movies and self.media_type == 'movie':
+                try:
+                    c_id = None
+                    # 优先从已获取的元数据中取
+                    if hasattr(self, 'raw_metadata') and self.raw_metadata and self.raw_metadata.get('belongs_to_collection'):
+                        c_id = self.raw_metadata['belongs_to_collection']['id']
+                    else:
+                        res_m = tmdb.get_movie_details(int(self.tmdb_id), self.api_key)
+                        if res_m and res_m.get('belongs_to_collection'):
+                            c_id = res_m['belongs_to_collection']['id']
+                            
+                    if c_id:
+                        res_c = tmdb.get_collection_details(int(c_id), self.api_key)
+                        if res_c and 'parts' in res_c:
+                            collection_movies = res_c['parts']
+                except Exception as e:
+                    logger.debug(f"    ├─ 验证合集失败: {e}")
+
+            if collection_movies:
+                logger.info(f"  📦 确认为合集包，包含 {len(collection_movies)} 部电影，启动拆解模式...")
+                return self._execute_collection_breakdown(root_item, collection_movies)
 
         config = get_config()
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
@@ -1682,121 +1806,13 @@ def task_scan_and_organize_115(processor=None):
             if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
                 continue
 
-            # =================================================================
-            # ★★★ 新增：合集包拦截与拆解逻辑 ★★★
-            # =================================================================
-            if is_folder and re.search(r'(合集|部曲|系列|Collection|Pack|Trilogy|Quadrilogy|\d+-\d+)', name, re.IGNORECASE):
-                match_tag = re.search(r'\{?tmdb(?:id)?[=\-](\d+)\}?', name, re.IGNORECASE)
-                if match_tag:
-                    possible_id = match_tag.group(1)
-                    api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-                    if api_key:
-                        logger.info(f"  📦 检测到疑似合集包: {name}，正在向 TMDb 查询合集信息...")
-                        
-                        collection_movies = []
-                        # ★ 修改点2：使用 tmdb 模块的内置方法，享受代理、重试和错误处理
-                        # 1. 尝试作为 Collection 查询
-                        try:
-                            res_c = tmdb.get_collection_details(int(possible_id), api_key)
-                            if res_c and 'parts' in res_c:
-                                collection_movies = res_c['parts']
-                        except Exception as e: 
-                            logger.debug(f"    ├─ 作为合集查询失败: {e}")
-                        
-                        # 2. 如果查不到，尝试作为 Movie 查询，看它是否属于某个 Collection (NULLBR常犯的错)
-                        if not collection_movies:
-                            try:
-                                res_m = tmdb.get_movie_details(int(possible_id), api_key)
-                                if res_m and res_m.get('belongs_to_collection'):
-                                    c_id = res_m['belongs_to_collection']['id']
-                                    res_c = tmdb.get_collection_details(int(c_id), api_key)
-                                    if res_c and 'parts' in res_c:
-                                        collection_movies = res_c['parts']
-                            except Exception as e:
-                                logger.debug(f"    ├─ 作为电影查询所属合集失败: {e}")
-
-                        if collection_movies:
-                            logger.info(f"  📦 确认为合集包，包含 {len(collection_movies)} 部电影，开始拆解处理...")
-                            
-                            try:
-                                # 获取合集包内的子项目
-                                sub_res = client.fs_files({'cid': item_id, 'limit': 100, 'record_open_time': 0, 'count_folders': 0})
-                                sub_items = sub_res.get('data', [])
-                                
-                                for sub_item in sub_items:
-                                    sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name')
-                                    sub_id = sub_item.get('fid') or sub_item.get('file_id')
-                                    
-                                    # 1. 优先看子项自己有没有带 ID (最准)
-                                    sub_tmdb_id, sub_type, sub_title = _identify_media_enhanced(sub_name)
-                                    
-                                    # 2. 如果没带 ID，尝试在合集电影列表中模糊匹配
-                                    if not sub_tmdb_id:
-                                        matched_movie = None
-                                        clean_sub_name = re.sub(r'[^\w\u4e00-\u9fa5]', '', sub_name).lower()
-                                        
-                                        for movie in collection_movies:
-                                            m_title = movie.get('title', '')
-                                            m_orig = movie.get('original_title', '')
-                                            m_year = movie.get('release_date', '')[:4] if movie.get('release_date') else ''
-                                            
-                                            clean_m_title = re.sub(r'[^\w\u4e00-\u9fa5]', '', m_title).lower()
-                                            clean_m_orig = re.sub(r'[^\w\u4e00-\u9fa5]', '', m_orig).lower()
-                                            
-                                            # 匹配逻辑：子文件名包含电影名，且最好包含年份（防止《钢铁侠》匹配到《钢铁侠2》）
-                                            if (clean_m_title and clean_m_title in clean_sub_name) or \
-                                               (clean_m_orig and clean_m_orig in clean_sub_name):
-                                                if m_year and m_year in sub_name:
-                                                    matched_movie = movie
-                                                    break
-                                                elif not matched_movie:
-                                                    matched_movie = movie # 暂存，如果没有带年份的就用它
-                                        
-                                        if matched_movie:
-                                            sub_tmdb_id = str(matched_movie['id'])
-                                            sub_type = 'movie'
-                                            sub_title = matched_movie.get('title')
-                                            logger.info(f"    ├─ 模糊匹配子项: {sub_name} -> {sub_title} (ID:{sub_tmdb_id})")
-                                    
-                                    # 3. 执行单体整理
-                                    if sub_tmdb_id:
-                                        logger.info(f"    ├─ 准备整理子项: {sub_name} -> ID:{sub_tmdb_id}")
-                                        try:
-                                            organizer = SmartOrganizer(client, sub_tmdb_id, sub_type, sub_title)
-                                            target_cid = organizer.get_target_cid()
-                                            if organizer.execute(sub_item, target_cid, delete_source=False):
-                                                processed_count += 1
-                                        except Exception as e:
-                                            logger.error(f"    ❌ 处理子项失败: {e}")
-                                    else:
-                                        logger.warning(f"    ⚠️ 无法识别合集子项: {sub_name}，移入未识别。")
-                                        if unidentified_cid:
-                                            try: 
-                                                client.fs_move(sub_id, unidentified_cid)
-                                                moved_to_unidentified += 1
-                                            except: pass
-                                
-                                # 拆解完毕，尝试删除空的合集文件夹
-                                try: 
-                                    client.fs_delete([item_id])
-                                    logger.info(f"  🧹 已清理拆解完毕的合集包空目录: {name}")
-                                except: pass
-                                
-                            except Exception as e:
-                                logger.error(f"  ❌ 拆解合集包失败: {e}")
-                                
-                            # ★★★ 核心：合集包处理完毕，直接 continue 跳过外层的常规单体识别逻辑 ★★★
-                            continue 
-
-            # =================================================================
-            # 原有的单体透视与识别逻辑保持不变
-            # =================================================================
             forced_type = None
             peek_failed = False
 
             if is_folder:
                 # =================================================================
                 # ★★★ 子目录透视：扫描前20个项目(包含文件和文件夹)来判断是否为剧集 ★★★
+                # =================================================================
                 for retry in range(2):
                     try:
                         sub_res = client.fs_files({
