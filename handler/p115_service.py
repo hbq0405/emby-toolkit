@@ -1777,7 +1777,7 @@ def task_scan_and_organize_115(processor=None):
     cid_val = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
     save_val = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_NAME, '待整理')
     enable_organize = config.get(constants.CONFIG_OPTION_115_ENABLE_ORGANIZE, False)
-    use_ai = config.get(constants.CONFIG_OPTION_115_AI_RECOGNITION, False)
+    use_ai = config.get(constants.CONFIG_OPTION_AI_RECOGNITION, False)
     ai_translator = processor.ai_translator if processor and hasattr(processor, 'ai_translator') else None
 
     if not cid_val or str(cid_val) == '0':
