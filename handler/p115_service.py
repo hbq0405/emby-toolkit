@@ -628,11 +628,13 @@ def get_config():
     return config_manager.APP_CONFIG
 
 class SmartOrganizer:
-    def __init__(self, client, tmdb_id, media_type, original_title):
+    def __init__(self, client, tmdb_id, media_type, original_title, ai_translator=None, use_ai=False):
         self.client = client
         self.tmdb_id = tmdb_id
         self.media_type = media_type
         self.original_title = original_title
+        self.ai_translator = ai_translator # 新增
+        self.use_ai = use_ai
         self.api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
 
         self.studio_map = settings_db.get_setting('studio_mapping') or utils.DEFAULT_STUDIO_MAPPING
@@ -1149,7 +1151,11 @@ class SmartOrganizer:
                 sub_id = sub_item.get('fid') or sub_item.get('file_id')
                 
                 # 1. 优先看子项自己有没有带 ID
-                sub_tmdb_id, sub_type, sub_title = _identify_media_enhanced(sub_name)
+                sub_tmdb_id, sub_type, sub_title = _identify_media_enhanced(
+                    sub_name, 
+                    ai_translator=self.ai_translator, 
+                    use_ai=self.use_ai
+                )
                 
                 # 2. 模糊匹配 (仅当有官方合集列表时)
                 if not sub_tmdb_id and collection_movies:
@@ -1203,7 +1209,7 @@ class SmartOrganizer:
                 if sub_tmdb_id:
                     logger.info(f"    ├─ 准备整理子项: {sub_name} -> ID:{sub_tmdb_id}")
                     try:
-                        organizer = SmartOrganizer(self.client, sub_tmdb_id, sub_type, sub_title)
+                        organizer = SmartOrganizer(self.client, sub_tmdb_id, sub_type, sub_title, self.ai_translator, self.use_ai)
                         target_cid = organizer.get_target_cid()
                         if organizer.execute(sub_item, target_cid, delete_source=False):
                             processed_count += 1
@@ -1667,32 +1673,29 @@ def _parse_115_size(size_val):
         pass
     return 0
 
-def _identify_media_enhanced(filename, forced_media_type=None):
+def _identify_media_enhanced(filename, forced_media_type=None, ai_translator=None, use_ai=False):
     """
     增强识别逻辑：
     1. 支持多种 TMDb ID 标签格式: {tmdb=xxx}
     2. 支持标准命名格式: Title (Year)
-    3. 接收外部强制指定的类型 (forced_media_type)，不再轮询猜测
-    
-    返回: (tmdb_id, media_type, title) 或 (None, None, None)
+    3. 接收外部强制指定的类型 (forced_media_type)
+    4. 【新增】AI 辅助识别兜底
     """
     tmdb_id = None
     media_type = 'movie' # 默认
     title = filename
+    api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
     
     # 1. 优先提取 TMDb ID 标签 (最稳)
     match_tag = re.search(r'\{?tmdb(?:id)?[=\-](\d+)\}?', filename, re.IGNORECASE)
     
     if match_tag:
         tmdb_id = match_tag.group(1)
-        
-        # 如果外部指定了类型，直接用；否则看文件名特征
         if forced_media_type:
             media_type = forced_media_type
         elif re.search(r'(?:S\d{1,2}|E\d{1,2}|第\d+季|Season)', filename, re.IGNORECASE):
             media_type = 'tv'
         
-        # 提取标题
         clean_name = re.sub(r'\{?tmdb(?:id)?[=\-]\d+\}?', '', filename, flags=re.IGNORECASE).strip()
         match_title = re.match(r'^(.+?)\s*[\(\[]\d{4}[\)\]]', clean_name)
         if match_title:
@@ -1708,37 +1711,51 @@ def _identify_media_enhanced(filename, forced_media_type=None):
         name_part = match_std.group(1).strip()
         year_part = match_std.group(2)
         
-        # === 关键修正：类型判断逻辑 ===
         if forced_media_type:
-            # 如果外部透视过目录，确定是 TV，直接信赖
             media_type = forced_media_type
         else:
-            # 否则才根据文件名特征判断
             if re.search(r'(?:S\d{1,2}|E\d{1,2}|第\d+季|Season)', filename, re.IGNORECASE):
                 media_type = 'tv'
             else:
                 media_type = 'movie'
             
-        # 尝试通过 TMDb API 确认 ID
         try:
-            api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
             if api_key:
-                # 精准搜索，不轮询，不瞎猜
-                results = tmdb.search_media(
-                    query=name_part, 
-                    api_key=api_key, 
-                    item_type=media_type, 
-                    year=year_part
-                )
-                
+                results = tmdb.search_media(query=name_part, api_key=api_key, item_type=media_type, year=year_part)
                 if results and len(results) > 0:
                     best = results[0]
-                    return best['id'], media_type, (best.get('title') or best.get('name'))
+                    return str(best['id']), media_type, (best.get('title') or best.get('name'))
                 else:
                     logger.warning(f"  ⚠️ TMDb 未找到资源: {name_part} ({year_part}) 类型: {media_type}")
-
-        except Exception as e:
+        except Exception:
             pass
+
+    # =================================================================
+    # ★★★ 3. 新增：AI 辅助识别 (兜底) ★★★
+    # =================================================================
+    if use_ai and ai_translator and not tmdb_id:
+        logger.info(f"  🤖 常规识别失败，尝试召唤 AI 辅助解析: {filename}")
+        try:
+            ai_result = ai_translator.parse_media_filename(filename)
+            if ai_result and ai_result.get('title'):
+                ai_title = ai_result.get('title')
+                ai_year = ai_result.get('year')
+                ai_type = forced_media_type or ai_result.get('type') or 'movie'
+                
+                logger.info(f"  🤖 AI 解析结果: 标题='{ai_title}', 年份='{ai_year}', 类型='{ai_type}'")
+                
+                if api_key:
+                    results = tmdb.search_media(query=ai_title, api_key=api_key, item_type=ai_type, year=ai_year)
+                    if results and len(results) > 0:
+                        best = results[0]
+                        final_id = str(best['id'])
+                        final_title = best.get('title') or best.get('name')
+                        logger.info(f"  ✅ AI 辅助搜索成功: {final_title} (ID:{final_id})")
+                        return final_id, ai_type, final_title
+                    else:
+                        logger.warning(f"  ⚠️ AI 提取后 TMDb 仍未找到资源: {ai_title} ({ai_year})")
+        except Exception as e:
+            logger.error(f"  ❌ AI 辅助识别出错: {e}")
 
     return None, None, None
 
@@ -1760,6 +1777,8 @@ def task_scan_and_organize_115(processor=None):
     cid_val = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
     save_val = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_NAME, '待整理')
     enable_organize = config.get(constants.CONFIG_OPTION_115_ENABLE_ORGANIZE, False)
+    use_ai = config.get(constants.CONFIG_OPTION_115_AI_RECOGNITION, False)
+    ai_translator = processor.ai_translator if processor and hasattr(processor, 'ai_translator') else None
 
     if not cid_val or str(cid_val) == '0':
         logger.error("  ⚠️ 未配置待整理目录 (CID)，跳过。")
@@ -1917,12 +1936,17 @@ def task_scan_and_organize_115(processor=None):
                 logger.warning(f"  ⏭️ 透视 '{name}' 连续失败，为防误判跳过本次识别。")
                 continue
 
-            tmdb_id, media_type, title = _identify_media_enhanced(name, forced_media_type=forced_type)
+            tmdb_id, media_type, title = _identify_media_enhanced(
+                name, 
+                forced_media_type=forced_type,
+                ai_translator=ai_translator,
+                use_ai=use_ai
+            )
             
             if tmdb_id:
                 logger.info(f"  ➜ 识别成功: {name} -> ID:{tmdb_id} ({media_type})")
                 try:
-                    organizer = SmartOrganizer(client, tmdb_id, media_type, title)
+                    organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
                     target_cid = organizer.get_target_cid()
                     
                     if organizer.execute(item, target_cid, delete_source=False):

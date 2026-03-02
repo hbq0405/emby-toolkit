@@ -150,6 +150,7 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_AI_TRANSLATE_TITLE: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
     constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
     constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
+    constants.CONFIG_OPTION_AI_RECOGNITION: (constants.CONFIG_SECTION_AI_TRANSLATION, 'boolean', False),
 
     # [Scheduler]
     # --- 高频任务链 ---

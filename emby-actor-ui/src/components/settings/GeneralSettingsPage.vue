@@ -745,6 +745,11 @@
                               生成媒体向量
                             </n-checkbox>
                           </n-gi>
+                          <n-gi>
+                            <n-checkbox v-model:checked="configModel.ai_recognition">
+                              辅助识别
+                            </n-checkbox>
+                          </n-gi>
                         </n-grid>
                       </n-form-item>
 

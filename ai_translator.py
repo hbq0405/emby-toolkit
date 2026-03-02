@@ -261,6 +261,45 @@ class AITranslator:
             logger.error(f"  ➜ [标题翻译] 翻译失败: {e}")
             return None
 
+    def parse_media_filename(self, filename: str) -> Optional[Dict[str, str]]:
+        """
+        专门用于解析不规范的影视文件名。
+        """
+        if not filename or not filename.strip():
+            return None
+
+        raw_prompt = self._get_prompt("filename_parsing")
+        system_prompt = raw_prompt.format(filename=filename)
+        user_prompt = "Parse this filename and return JSON."
+
+        try:
+            response_content = ""
+            if self.provider == 'openai' and self.client:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    response_format={"type": "json_object"}, temperature=0.1
+                )
+                response_content = resp.choices[0].message.content
+            elif self.provider == 'zhipuai' and self.client:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    response_format={"type": "json_object"}, temperature=0.1
+                )
+                response_content = resp.choices[0].message.content
+            elif self.provider == 'gemini' and self.client:
+                config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.1, system_instruction=system_prompt)
+                resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
+                response_content = resp.text
+
+            result = _safe_json_loads(response_content)
+            return result
+
+        except Exception as e:
+            logger.error(f"  ➜ [文件名解析] AI 解析失败: {e}")
+            return None
+
     def _translate_fast_mode(self, texts: List[str]) -> Dict[str, str]:
         CHUNK_SIZE = 50
         REQUEST_INTERVAL = 1.5

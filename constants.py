@@ -61,6 +61,7 @@ CONFIG_OPTION_115_DOWNLOAD_SUBS = "p115_download_subs"           # 是否下载�
 CONFIG_OPTION_115_LOCAL_CLEANUP = "p115_local_cleanup"           # 是否启用本地清理功能
 DB_KEY_115_RENAME_CONFIG = "p115_rename_config"                  # 重命名配置模块
 
+
 # ==============================================================================
 # ✨ 通知服务 (Notification Services)
 # ==============================================================================
@@ -151,6 +152,7 @@ CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE = "ai_translate_actor_role"               
 CONFIG_OPTION_AI_TRANSLATE_TITLE = "ai_translate_title"         # 是否翻译标题
 CONFIG_OPTION_AI_TRANSLATE_OVERVIEW = "ai_translate_overview"   # 是否翻译简介
 CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW = "ai_translate_episode_overview"   # 是否翻译集简介
+CONFIG_OPTION_AI_RECOGNITION = "ai_recognition"                 # 是否启用AI辅助识别
 
 
 # ==============================================================================
