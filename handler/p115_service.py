@@ -1151,8 +1151,8 @@ class SmartOrganizer:
                 # 1. 优先看子项自己有没有带 ID
                 sub_tmdb_id, sub_type, sub_title = _identify_media_enhanced(sub_name)
                 
-                # 2. 模糊匹配
-                if not sub_tmdb_id:
+                # 2. 模糊匹配 (仅当有官方合集列表时)
+                if not sub_tmdb_id and collection_movies:
                     matched_movie = None
                     clean_sub_name = re.sub(r'[^\w\u4e00-\u9fa5]', '', sub_name).lower()
                     
@@ -1176,9 +1176,30 @@ class SmartOrganizer:
                         sub_tmdb_id = str(matched_movie['id'])
                         sub_type = 'movie'
                         sub_title = matched_movie.get('title')
-                        logger.info(f"    ├─ 模糊匹配子项: {sub_name} -> {sub_title} (ID:{sub_tmdb_id})")
+                        logger.info(f"    ├─ 官方合集匹配成功: {sub_name} -> {sub_title} (ID:{sub_tmdb_id})")
+
+                # ★★★ 3. 终极兜底：无官方合集时的文件名暴力解析搜索 ★★★
+                if not sub_tmdb_id and not collection_movies:
+                    # 去除常见的前缀广告，如 魅力社989pa.com- 或 [xxx]
+                    clean_name = re.sub(r'^\[.*?\]|^.*?\.com-|^.*?\.[a-z]{2,3}-', '', sub_name, flags=re.IGNORECASE)
+                    # 提取年份前面的部分作为标题
+                    match_year = re.search(r'^(.*?)(?:\.|_|-|\s|\()+(19\d{2}|20\d{2})\b', clean_name)
+                    if match_year:
+                        guess_title = match_year.group(1).replace('.', ' ').strip()
+                        guess_year = match_year.group(2)
+                        logger.info(f"    ├─ 尝试暴力搜索: '{guess_title}' ({guess_year})")
+                        try:
+                            api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+                            results = tmdb.search_media(query=guess_title, api_key=api_key, item_type='movie', year=guess_year)
+                            if results and len(results) > 0:
+                                sub_tmdb_id = str(results[0]['id'])
+                                sub_type = 'movie'
+                                sub_title = results[0].get('title') or results[0].get('name')
+                                logger.info(f"    ├─ 暴力搜索成功: {sub_title} (ID:{sub_tmdb_id})")
+                        except Exception as e:
+                            logger.debug(f"    ├─ 暴力搜索出错: {e}")
                 
-                # 3. 执行单体整理 (递归调用新的 Organizer)
+                # 4. 执行单体整理 (递归调用新的 Organizer)
                 if sub_tmdb_id:
                     logger.info(f"    ├─ 准备整理子项: {sub_name} -> ID:{sub_tmdb_id}")
                     try:
@@ -1267,8 +1288,11 @@ class SmartOrganizer:
                     logger.debug(f"    ├─ 验证合集失败: {e}")
 
             if collection_movies:
-                logger.info(f"  📦 确认为合集包，包含 {len(collection_movies)} 部电影，启动拆解模式...")
-                return self._execute_collection_breakdown(root_item, collection_movies)
+                logger.info(f"  📦 确认为官方合集包，包含 {len(collection_movies)} 部电影，启动精确拆解模式...")
+            else:
+                logger.info(f"  📦 未找到官方合集信息 (可能是民间自制包)，启动基于文件名的暴力拆解模式...")
+                
+            return self._execute_collection_breakdown(root_item, collection_movies)
 
         config = get_config()
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
