@@ -481,7 +481,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
             sha1 = processor._get_sha1_by_pickcode(pc)
             
             if sha1:
-                logger.info(f"  ☁️ [P115Center] 发现目标，开始同步媒体信息 (SHA1: {sha1})")
+                logger.info(f"  ☁️ [P115Center] 开始同步媒体信息 (SHA1: {sha1})")
                 resp = processor.p115_center.download_emby_mediainfo_data([sha1])
                 media_data = resp.get(sha1)
                 need_upload = False if media_data else True
@@ -489,7 +489,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
                 if media_data:
                     logger.info(f"  ☁️ [P115Center] 命中中心缓存，下发给神医恢复...")
                 else:
-                    logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医执行真实提取 (请耐心等待)...")
+                    logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医提取媒体信息...")
 
                 # 阻塞调用神医接口 (此时 Emby 已经入库，绝对不会报 400)
                 res_json = emby.sync_item_media_info(
