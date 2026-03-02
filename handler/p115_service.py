@@ -1187,7 +1187,7 @@ class SmartOrganizer:
                     if match_year:
                         guess_title = match_year.group(1).replace('.', ' ').strip()
                         guess_year = match_year.group(2)
-                        logger.info(f"    ├─ 尝试暴力搜索: '{guess_title}' ({guess_year})")
+                        logger.info(f"    ├─ 尝试搜索: '{guess_title}' ({guess_year})")
                         try:
                             api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
                             results = tmdb.search_media(query=guess_title, api_key=api_key, item_type='movie', year=guess_year)
@@ -1195,9 +1195,9 @@ class SmartOrganizer:
                                 sub_tmdb_id = str(results[0]['id'])
                                 sub_type = 'movie'
                                 sub_title = results[0].get('title') or results[0].get('name')
-                                logger.info(f"    ├─ 暴力搜索成功: {sub_title} (ID:{sub_tmdb_id})")
+                                logger.info(f"    ├─ 搜索成功: {sub_title} (ID:{sub_tmdb_id})")
                         except Exception as e:
-                            logger.debug(f"    ├─ 暴力搜索出错: {e}")
+                            logger.debug(f"    ├─ 搜索出错: {e}")
                 
                 # 4. 执行单体整理 (递归调用新的 Organizer)
                 if sub_tmdb_id:
@@ -1258,7 +1258,7 @@ class SmartOrganizer:
         # ★★★ 新增：在底层拦截 NULLBR 传来的合集包 ★★★
         # =================================================================
         if not is_source_file and re.search(r'(合集|部曲|系列|Collection|Pack|Trilogy|Quadrilogy|\d+-\d+)', root_name, re.IGNORECASE):
-            logger.info(f"  📦 [底层拦截] 检测到疑似合集包: {root_name}，正在验证...")
+            logger.info(f"  📦 检测到疑似合集包: {root_name}，正在验证...")
             collection_movies = []
             
             # 1. 检查当前传入的 tmdb_id 是否本身就是合集 ID
