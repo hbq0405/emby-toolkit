@@ -31,6 +31,12 @@ from cachetools import TTLCache
 from ai_translator import AITranslator
 from watchlist_processor import WatchlistProcessor
 from handler.douban import DoubanApi
+# --- P115Center 依赖 ---
+try:
+    from p115center import P115Center
+    P115_AVAILABLE = True
+except ImportError:
+    P115_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 try:
@@ -130,6 +136,17 @@ class MediaProcessor:
         self.manual_edit_cache = TTLCache(maxsize=10, ttl=600)
         self._global_lib_guid_map = {}
         self._last_lib_map_update = 0
+        # =========================================================
+        # P115Center 初始化
+        # =========================================================
+        if P115_AVAILABLE and self.config.get("p115_enabled", True):
+            machine_id = self.config.get("p115_machine_id", "")
+            self.p115_center = P115Center(machine_id=machine_id)
+            self.p115_enabled = True
+            logger.info("P115Center SDK 初始化成功，已启用神医媒体信息中心化同步功能。")
+        else:
+            self.p115_enabled = False
+            self.p115_center = None
         logger.trace("核心处理器初始化完成。")
 
     # --- [优化版] 实时监控文件逻辑 (增加缓存跳过 & 支持批量延迟刷新) ---

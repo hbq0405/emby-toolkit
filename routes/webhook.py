@@ -447,45 +447,77 @@ def _enqueue_webhook_event(item_id, item_name, item_type):
 
 def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
     """
-    预检视频流数据 (基于神医 mediainfo.json 物理文件检查)。
+    预检视频流数据 + P115Center 神医联动 (完美闭环版)
     """
     if item_type not in ['Movie', 'Episode']:
         _enqueue_webhook_event(item_id, item_name, item_type)
         return
 
-    logger.info(f"  ➜ [预检] 开始检查 '{item_name}' (ID:{item_id}) 的媒体信息文件...")
+    logger.info(f"  ➜ [预检] 开始处理 '{item_name}' (ID:{item_id}) 的媒体信息...")
 
     app_config = config_manager.APP_CONFIG
     emby_url = app_config.get("emby_server_url")
     emby_key = app_config.get("emby_api_key")
-    emby_user_id = extensions.media_processor_instance.emby_user_id
+    processor = extensions.media_processor_instance
+    emby_user_id = processor.emby_user_id
 
-    for i in range(STREAM_CHECK_MAX_RETRIES):
+    # =========================================================
+    # 1. 获取物理路径并触发神医联动
+    # =========================================================
+    file_path = None
+    try:
+        item_details = emby.get_emby_item_details(item_id, emby_url, emby_key, emby_user_id, fields="Path,MediaSources")
+        if item_details:
+            file_path = item_details.get("Path")
+            if not file_path and item_details.get("MediaSources"):
+                file_path = item_details["MediaSources"][0].get("Path")
+    except Exception as e:
+        logger.warning(f"  ➜ [预检] 获取路径失败: {e}")
+
+    if file_path and getattr(processor, 'p115_enabled', False) and processor.p115_center:
         try:
-            item_details = None
+            # 利用 core_processor 里现成的神级方法反查 SHA1
+            pc = processor._extract_pickcode_from_strm(file_path)
+            sha1 = processor._get_sha1_by_pickcode(pc)
             
-            with STREAM_CHECK_SEMAPHORE:
-                item_details = emby.get_emby_item_details(
-                    item_id=item_id,
-                    emby_server_url=emby_url,
-                    emby_api_key=emby_key,
-                    user_id=emby_user_id,
-                    fields="Path,MediaSources" # ★ 请求 Path 字段
+            if sha1:
+                logger.info(f"  ☁️ [P115Center] 发现目标，开始同步媒体信息 (SHA1: {sha1})")
+                resp = processor.p115_center.download_emby_mediainfo_data([sha1])
+                media_data = resp.get(sha1)
+                need_upload = False if media_data else True
+
+                if media_data:
+                    logger.info(f"  ☁️ [P115Center] 命中中心缓存，下发给神医恢复...")
+                else:
+                    logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医执行真实提取 (请耐心等待)...")
+
+                # 阻塞调用神医接口 (此时 Emby 已经入库，绝对不会报 400)
+                res_json = emby.sync_item_media_info(
+                    item_id=item_id, 
+                    path=file_path,
+                    media_data=media_data,
+                    base_url=emby_url,
+                    api_key=emby_key
                 )
 
-            if not item_details:
-                logger.warning(f"  ➜ [预检] 无法获取 '{item_name}' 详情，可能已被删除。停止等待。")
-                return
+                if res_json and res_json.get("Chapters") is not None and res_json.get("MediaSourceInfo") is not None:
+                    logger.info(f"  ✅ [神医] 媒体信息处理成功！")
+                    
+                    # 调试阶段：注释掉反哺，只白嫖
+                    # if need_upload:
+                    #     processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
+                    #     logger.info(f"  ☁️ [P115Center] 反哺成功！")
+                else:
+                    logger.warning(f"  ⚠️ [神医] 返回数据无效或提取失败。")
+        except Exception as e:
+            logger.error(f"  ❌ [P115Center] 联动异常: {e}")
 
+    # =========================================================
+    # 2. 走原来的物理文件检查逻辑 (此时神医应该已经生成了文件)
+    # =========================================================
+    for i in range(STREAM_CHECK_MAX_RETRIES):
+        try:
             has_valid_video_stream = False
-            
-            # ★★★ 核心修改：直接查找物理文件 ★★★
-            file_path = item_details.get("Path")
-            if not file_path:
-                # 兜底：尝试从 MediaSources 中获取 Path
-                media_sources = item_details.get("MediaSources", [])
-                if media_sources:
-                    file_path = media_sources[0].get("Path")
             
             if file_path:
                 mediainfo_path = os.path.splitext(file_path)[0] + "-mediainfo.json"
@@ -493,11 +525,11 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
                     has_valid_video_stream = True
             
             if has_valid_video_stream:
-                logger.info(f"  ➜ [预检] 成功检测到 '{item_name}' 的媒体信息文件 (耗时: {i * STREAM_CHECK_INTERVAL}s)，加入队列。")
+                logger.info(f"  ➜ [预检] 成功检测到 '{item_name}' 的媒体信息文件，加入处理队列。")
                 _enqueue_webhook_event(item_id, item_name, item_type)
                 return
             
-            logger.debug(f"  ➜ [预检] '{item_name}' 暂无媒体信息文件，等待神医提取 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
+            logger.debug(f"  ➜ [预检] '{item_name}' 暂无媒体信息文件，等待神医落盘 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
             sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
         except Exception as e:
@@ -505,7 +537,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
             sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
     # 超时强制入库
-    logger.warning(f"  ➜ [预检] 超时！在 {STREAM_CHECK_MAX_RETRIES * STREAM_CHECK_INTERVAL} 秒内未提取到 '{item_name}' 的媒体信息文件。强制加入队列。")
+    logger.warning(f"  ➜ [预检] 超时！未检测到 '{item_name}' 的媒体信息文件。强制加入队列。")
     _enqueue_webhook_event(item_id, item_name, item_type)
 
 # --- Webhook 路由 ---
