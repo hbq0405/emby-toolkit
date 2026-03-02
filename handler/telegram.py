@@ -312,14 +312,15 @@ def _handle_incoming_message(message: dict):
     # 2. 识别链接类型
     is_magnet = text.lower().startswith('magnet:?')
     is_ed2k = text.lower().startswith('ed2k://')
-    is_115_share = '115.com/s/' in text
+    # ★ 修复：兼容 115.com 和 115cdn.com
+    is_115_share = re.search(r'115(?:cdn)?\.com/s/', text, re.IGNORECASE) is not None
 
     if not (is_magnet or is_ed2k or is_115_share):
-        # 不是支持的链接，忽略 (或者你可以加个 /help 指令回复)
         return
 
     logger.info(f"  📥 [TG交互] 收到来自 {chat_id} 的资源链接，准备处理...")
-    send_telegram_message(chat_id, "⏳ *收到链接，正在提交至 115...*", disable_notification=True)
+    # ★ 修复：使用 escape_markdown 转义特殊字符
+    send_telegram_message(chat_id, escape_markdown("⏳ *收到链接，正在提交至 115...*"), disable_notification=True)
 
     # 3. 获取 115 客户端和目标目录
     client = P115Service.get_client()
@@ -350,8 +351,8 @@ def _handle_incoming_message(message: dict):
 
         # --- 处理 115 分享链接转存 ---
         elif is_115_share:
-            # 提取分享码
-            share_code_match = re.search(r'115\.com/s/([a-zA-Z0-9]+)', text)
+            # ★ 修复：兼容 115cdn.com 的正则提取
+            share_code_match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', text, re.IGNORECASE)
             share_code = share_code_match.group(1) if share_code_match else None
             
             # 提取接收码 (密码)
@@ -361,16 +362,53 @@ def _handle_incoming_message(message: dict):
                 receive_code = pwd_match.group(1)
 
             if not share_code:
-                send_telegram_message(chat_id, "❌ *解析失败*：未找到有效的 115 分享码。")
+                send_telegram_message(chat_id, escape_markdown("❌ *解析失败*：未找到有效的 115 分享码。"))
                 return
 
             res = client.share_import(share_code, receive_code, target_cid)
             
             if res and res.get('state'):
-                send_telegram_message(chat_id, "✅ *分享链接转存成功！*\n文件已保存至待整理目录，等待系统处理。")
+                send_telegram_message(chat_id, escape_markdown("✅ *分享链接转存成功！*\n系统已自动触发整理任务。"))
+                
+                # ★★★ 新增：自动唤醒整理任务 ★★★
+                try:
+                    import task_manager
+                    # 延迟 5 秒触发，给 115 服务器一点反应时间
+                    threading.Timer(5.0, task_manager.trigger_115_organize_task).start()
+                    logger.info("  ➜ [TG交互] 已自动唤醒 115 整理任务。")
+                except Exception as e:
+                    logger.error(f"  ⚠️ 唤醒整理任务失败: {e}")
+                    
             else:
                 err = res.get('error_msg', '未知错误') if res else '无响应'
-                send_telegram_message(chat_id, f"❌ *转存失败*：{err}")
+                send_telegram_message(chat_id, escape_markdown(f"❌ *转存失败*：{err}"))
+
+        # --- 处理磁力/ED2K 离线下载 ---
+        if is_magnet or is_ed2k:
+            # 提取纯链接，防止用户发了一段话里面夹着链接
+            link_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
+            target_url = link_match.group(1) if link_match else text
+
+            payload = {
+                "url[0]": target_url,
+                "wp_path_id": target_cid
+            }
+            res = client.offline_add_urls(payload)
+            
+            if res and res.get('state'):
+                send_telegram_message(chat_id, escape_markdown("✅ *离线任务提交成功！*\n系统将在后台自动监控并整理入库。"))
+                
+                # ★★★ 新增：对于离线任务，由于下载需要时间，我们触发一次整理任务去“碰碰运气”
+                # 如果是秒传的，马上就能整理出来；如果没下完，整理任务会自动跳过。
+                try:
+                    import task_manager
+                    threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
+                    logger.info("  ➜ [TG交互] 已自动唤醒 115 整理任务 (离线秒传检测)。")
+                except Exception as e:
+                    pass
+            else:
+                err = res.get('error_msg', '未知错误') if res else '无响应'
+                send_telegram_message(chat_id, escape_markdown(f"❌ *离线提交失败*：{err}"))
 
     except Exception as e:
         logger.error(f"  ❌ [TG交互] 处理链接失败: {e}", exc_info=True)
