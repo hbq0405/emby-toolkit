@@ -1617,7 +1617,8 @@ const promptsModel = ref({
   quality_mode: '',
   overview_translation: '',
   title_translation: '',
-  transliterate_mode: ''
+  transliterate_mode: '',
+  filename_parsing: ''
 });
 
 // 一键更换strm地址
