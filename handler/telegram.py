@@ -331,26 +331,8 @@ def _handle_incoming_message(message: dict):
     target_cid = APP_CONFIG.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID, '0')
 
     try:
-        # --- 处理磁力/ED2K 离线下载 ---
-        if is_magnet or is_ed2k:
-            # 提取纯链接，防止用户发了一段话里面夹着链接
-            link_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
-            target_url = link_match.group(1) if link_match else text
-
-            payload = {
-                "url[0]": target_url,
-                "wp_path_id": target_cid
-            }
-            res = client.offline_add_urls(payload)
-            
-            if res and res.get('state'):
-                send_telegram_message(chat_id, "✅ *离线任务提交成功！*\n系统将在后台自动监控并整理入库。")
-            else:
-                err = res.get('error_msg', '未知错误') if res else '无响应'
-                send_telegram_message(chat_id, f"❌ *离线提交失败*：{err}")
-
         # --- 处理 115 分享链接转存 ---
-        elif is_115_share:
+        if is_115_share:
             # ★ 修复：兼容 115cdn.com 的正则提取
             share_code_match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', text, re.IGNORECASE)
             share_code = share_code_match.group(1) if share_code_match else None
