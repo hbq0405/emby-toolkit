@@ -27,7 +27,19 @@
                 </n-gi>
                 <n-gi>
                   <n-statistic label="已备份媒体信息" class="centered-statistic">
-                    <span class="stat-value">{{ stats.media_library.mediainfo_backed_up_total }}</span>
+                    <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
+                      <span class="stat-value">{{ stats.media_library.mediainfo_backed_up_total }}</span>
+                      <n-tag 
+                        v-if="stats.media_library.mediainfo_hits_total > 0" 
+                        type="success" 
+                        size="small" 
+                        round 
+                        :bordered="false" 
+                        style="font-size: 12px; height: 20px; padding: 0 6px;"
+                      >
+                        命中 {{ stats.media_library.mediainfo_hits_total }} 次
+                      </n-tag>
+                    </div>
                   </n-statistic>
                 </n-gi>
                 <n-gi>
@@ -290,7 +302,19 @@
         <n-gi>
           <n-card size="small" :bordered="false" class="mobile-stat-card">
             <n-statistic label="已备份信息">
-              <span class="mobile-stat-value">{{ stats.media_library.mediainfo_backed_up_total }}</span>
+              <div style="display: flex; align-items: center; gap: 4px;">
+                <span class="mobile-stat-value">{{ stats.media_library.mediainfo_backed_up_total }}</span>
+                <n-tag 
+                  v-if="stats.media_library.mediainfo_hits_total > 0" 
+                  type="success" 
+                  size="small" 
+                  round 
+                  :bordered="false" 
+                  style="font-size: 10px; height: 16px; padding: 0 4px;"
+                >
+                  命中 {{ stats.media_library.mediainfo_hits_total }}
+                </n-tag>
+              </div>
             </n-statistic>
           </n-card>
         </n-gi>
@@ -441,7 +465,7 @@ const loading = reactive({
 });
 
 const stats = reactive({
-  media_library: { cached_total: 0, mediainfo_backed_up_total: 0, movies_in_library: 0, series_in_library: 0, episodes_in_library: 0, resolution_stats: [] },
+  media_library: { cached_total: 0, mediainfo_backed_up_total: 0, mediainfo_hits_total: 0, movies_in_library: 0, series_in_library: 0, episodes_in_library: 0, resolution_stats: [] },
   system: { actor_mappings_total: 0, actor_mappings_linked: 0, actor_mappings_unlinked: 0, translation_cache_count: 0, processed_log_count: 0, failed_log_count: 0 },
   subscriptions_card: {
     watchlist: { watching: 0, paused: 0, completed: 0 },
@@ -467,7 +491,8 @@ const fetchCore = async () => {
     if (res.data.status === 'success') {
       Object.assign(stats.media_library, { 
         cached_total: res.data.data.media_cached_total,
-        mediainfo_backed_up_total: res.data.data.mediainfo_backed_up_total
+        mediainfo_backed_up_total: res.data.data.mediainfo_backed_up_total,
+        mediainfo_hits_total: res.data.data.mediainfo_hits_total
       });
       Object.assign(stats.system, { actor_mappings_total: res.data.data.actor_mappings_total });
     }
