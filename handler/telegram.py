@@ -402,7 +402,7 @@ def _handle_incoming_message(message: dict):
                 # 如果是秒传的，马上就能整理出来；如果没下完，整理任务会自动跳过。
                 try:
                     import task_manager
-                    threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
+                    threading.Timer(10.0, task_manager.task_scan_and_organize_115).start()
                     logger.info("  ➜ [TG交互] 已自动唤醒 115 整理任务 (离线秒传检测)。")
                 except Exception as e:
                     pass
