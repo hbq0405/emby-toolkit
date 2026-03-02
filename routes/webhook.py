@@ -4,6 +4,7 @@ import collections
 import threading
 import time
 import os
+import json
 import random
 from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
@@ -15,7 +16,6 @@ import task_manager
 import handler.emby as emby
 import config_manager
 import constants
-import utils
 import handler.telegram as telegram
 import extensions
 from extensions import SYSTEM_UPDATE_MARKERS, SYSTEM_UPDATE_LOCK, RECURSION_SUPPRESSION_WINDOW, DELETING_COLLECTIONS, UPDATING_IMAGES, UPDATING_METADATA
@@ -27,6 +27,7 @@ from handler.custom_collection import RecommendationEngine
 from handler import tmdb_collections as collections_handler
 from services.cover_generator import CoverGeneratorService
 from database import custom_collection_db, tmdb_collection_db, settings_db, user_db, maintenance_db, media_db, queries_db, watchlist_db
+from database.connection import get_db_connection
 from database.log_db import LogDBManager
 from handler.tmdb import get_movie_details, get_tv_details
 from handler.p115_service import P115Service, SmartOrganizer, get_config
@@ -502,6 +503,19 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
 
                 if res_json and res_json.get("Chapters") is not None and res_json.get("MediaSourceInfo") is not None:
                     logger.info(f"  ✅ [神医] 媒体信息处理成功！")
+
+                    # 存入本地数据库缓存
+                    try:
+                        with get_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute("""
+                                    INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
+                                    VALUES (%s, %s::jsonb)
+                                    ON CONFLICT (sha1) DO NOTHING
+                                """, (sha1, json.dumps(res_json, ensure_ascii=False)))
+                                conn.commit()
+                    except Exception as e_db:
+                        pass
                     
                     # 调试阶段：注释掉反哺，只白嫖
                     # if need_upload:
