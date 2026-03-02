@@ -1542,8 +1542,7 @@
             style="font-family: monospace;"
           />
         </n-tab-pane>
-      </n-tabs>
-      <n-tab-pane name="filename_parsing" tab="辅助识别">
+        <n-tab-pane name="filename_parsing" tab="辅助识别">
           <n-input
             v-model:value="promptsModel.filename_parsing"
             type="textarea"
@@ -1552,6 +1551,7 @@
             style="font-family: monospace;"
           />
         </n-tab-pane>
+      </n-tabs>
     </n-spin>
 
     <template #action>
