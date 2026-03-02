@@ -1425,14 +1425,17 @@ class MediaProcessor:
                 unique_mediainfo = {sha1: info_json for sha1, info_json in mediainfo_to_upsert}
                 batch_data = [(sha1, info_json) for sha1, info_json in unique_mediainfo.items()]
                 
+                # ★★★ 核心优化：改为 DO NOTHING。因为同一个 SHA1 的媒体信息是绝对不变的，
+                # 如果实时监控已经存过了，或者以前全量扫过了，这里直接跳过，节省大量数据库 I/O。
                 sql_mediainfo = """
                     INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
                     VALUES (%s, %s::jsonb)
-                    ON CONFLICT (sha1) DO UPDATE SET 
-                        mediainfo_json = EXCLUDED.mediainfo_json
+                    ON CONFLICT (sha1) DO NOTHING
                 """
                 execute_batch(cursor, sql_mediainfo, batch_data)
-                logger.info(f"  ➜ 成功将 {len(batch_data)} 个媒体信息存入数据库。")
+                
+                # 因为是 DO NOTHING，execute_batch 不会返回具体插入了多少条，所以改一下日志文案
+                logger.info(f"  ➜ 媒体信息检查完成 (共核对 {len(batch_data)} 个文件)。")
 
         except Exception as e:
             logger.error(f"批量写入层级元数据到数据库时失败: {e}", exc_info=True)
