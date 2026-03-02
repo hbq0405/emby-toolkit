@@ -415,10 +415,10 @@ def restart_container():
         container_name = config_manager.APP_CONFIG.get('container_name', 'emby-toolkit')
         
         if not container_name:
-            logger.error("API: 尝试重启容器，但配置中未找到 'container_name'。")
+            logger.error("  ➜ API: 尝试重启容器，但配置中未找到 'container_name'。")
             return jsonify({"error": "未在配置中指定容器名称。"}), 500
 
-        logger.info(f"API: 收到重启容器 '{container_name}' 的请求。")
+        logger.info(f"  ➜ API: 收到重启容器 '{container_name}' 的请求。")
         container = client.containers.get(container_name)
         container.restart()
         
@@ -450,7 +450,7 @@ def api_get_ai_prompts():
         
         return jsonify(final_prompts)
     except Exception as e:
-        logger.error(f"获取 AI 提示词失败: {e}", exc_info=True)
+        logger.error(f"  ❌ 获取 AI 提示词失败: {e}", exc_info=True)
         return jsonify({"error": "获取提示词失败"}), 500
 
 @system_bp.route('/ai/prompts', methods=['POST'])
@@ -465,10 +465,10 @@ def api_save_ai_prompts():
             return jsonify({"error": "无效的数据格式"}), 400
             
         settings_db.save_setting('ai_user_prompts', new_prompts)
-        logger.info("用户自定义 AI 提示词已保存。")
+        logger.info("  ✅ 用户自定义 AI 提示词已保存。")
         return jsonify({"message": "提示词已保存"})
     except Exception as e:
-        logger.error(f"保存 AI 提示词失败: {e}", exc_info=True)
+        logger.error(f"  ❌ 保存 AI 提示词失败: {e}", exc_info=True)
         return jsonify({"error": "保存失败"}), 500
 
 @system_bp.route('/ai/prompts/reset', methods=['POST'])
@@ -479,8 +479,8 @@ def api_reset_ai_prompts():
     """
     try:
         settings_db.delete_setting('ai_user_prompts')
-        logger.info("AI 提示词已重置为默认值。")
+        logger.info("  ➜ AI 提示词已重置为默认值。")
         return jsonify({"message": "已恢复默认提示词", "prompts": utils.DEFAULT_AI_PROMPTS})
     except Exception as e:
-        logger.error(f"重置 AI 提示词失败: {e}", exc_info=True)
+        logger.error(f"  ❌ 重置 AI 提示词失败: {e}", exc_info=True)
         return jsonify({"error": "重置失败"}), 500
