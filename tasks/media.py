@@ -1972,15 +1972,21 @@ def task_backup_mediainfo(processor):
                 target_log_type = item_type
                 log_title = title
                 
-                if item_type == 'Episode' and item.get('parent_emby_ids_json'):
-                    parent_ids = item['parent_emby_ids_json']
+                if item_type == 'Episode':
+                    parent_ids = item.get('parent_emby_ids_json')
                     if isinstance(parent_ids, str):
                         try: parent_ids = json.loads(parent_ids)
                         except: parent_ids = []
+                    elif not parent_ids:
+                        parent_ids = []
+                        
                     if parent_ids:
                         target_emby_id = parent_ids[0]
                         target_log_type = 'Series'
-                        log_title = f"{item.get('parent_title', '未知剧集')} - {title}"
+                        log_title = item.get('parent_title') or '未知剧集'
+                    else:
+                        # ★ 核心修复：如果找不到父剧集ID，强制设为 None，防止把分集ID写进待复核列表
+                        target_emby_id = None
                 
                 pcs = item['file_pickcode_json'] if isinstance(item['file_pickcode_json'], list) else []
                 sha1s = item['file_sha1_json'] if isinstance(item['file_sha1_json'], list) else []
@@ -2041,9 +2047,16 @@ def task_backup_mediainfo(processor):
                         mediainfo_path = os.path.splitext(current_path)[0] + "-mediainfo.json"
                         
                         if not os.path.exists(mediainfo_path):
-                            # ★★★ 核心新增：缺失 mediainfo.json，标记待复核 ★★★
-                            if target_emby_id:
-                                reason = f"缺失媒体信息文件: {os.path.basename(mediainfo_path)}"
+                            # ★★★ 核心新增：缺失 mediainfo.json，标记待复核 (仅限电影和剧集) ★★★
+                            if target_emby_id and target_log_type in ['Movie', 'Series']:
+                                # ★ 提取集号精简展示
+                                filename = os.path.basename(mediainfo_path)
+                                match = re.search(r'(S\d{1,2}E\d{1,3})', filename, re.IGNORECASE)
+                                if match:
+                                    reason = f"缺失媒体信息: {match.group(1).upper()}"
+                                else:
+                                    reason = "缺失媒体信息"
+                                    
                                 processor.log_db_manager.save_to_failed_log(
                                     cursor, 
                                     target_emby_id, 
@@ -2052,7 +2065,9 @@ def task_backup_mediainfo(processor):
                                     target_log_type, 
                                     score=0.0
                                 )
-                                logger.warning(f"  ⚠️ [{log_title}] 缺失本地 JSON，已标记为待复核: {os.path.basename(mediainfo_path)}")
+                                # 同时从 processed_log 移除，确保它真正在待复核列表显眼位置
+                                # processor.log_db_manager.remove_from_processed_log(cursor, target_emby_id)
+                                logger.warning(f"  ⚠️ [{log_title}] 缺失本地 JSON，已标记为待复核: {reason}")
                         else:
                             # 文件存在，如果有 SHA1 且未缓存，则备份
                             if current_sha1 and not media_db.is_mediainfo_cached(current_sha1):

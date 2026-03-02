@@ -1457,7 +1457,7 @@ class SmartOrganizer:
                                             import requests
                                             headers = {
                                                 "User-Agent": "Mozilla/5.0",
-                                                "Cookie": self.get_cookies()
+                                                "Cookie": P115Service.get_cookies()
                                             }
                                             resp = requests.get(dl_url, stream=True, timeout=30, headers=headers)
                                             resp.raise_for_status()
