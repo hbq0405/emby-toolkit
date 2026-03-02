@@ -28,6 +28,7 @@ from flask import session
 from croniter import croniter
 from scheduler_manager import scheduler_manager
 from reverse_proxy import proxy_app
+from handler import telegram
 import logging
 from gevent import spawn_later # Added for debouncing
 # --- 导入蓝图 ---
@@ -456,6 +457,9 @@ def main_app_start():
             monitor_service_instance.start()
     except Exception as e:
         logger.error(f"启动实时监控服务失败: {e}", exc_info=True)
+
+    # 启动 Telegram 机器人交互监听
+    telegram.start_telegram_bot()
 
     def warmup_vector_cache():
         try:

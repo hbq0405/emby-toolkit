@@ -281,3 +281,162 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             
     except Exception as e:
         logger.error(f"发送媒体通知时发生严重错误: {e}", exc_info=True)
+
+# ======================================================================
+# ★★★ 新增：Telegram 机器人交互监听 (长轮询) ★★★
+# ======================================================================
+import re
+import time
+import threading
+from handler.p115_service import P115Service
+
+# 全局变量控制轮询线程
+_tg_polling_thread = None
+_tg_polling_active = False
+
+def _handle_incoming_message(message: dict):
+    """处理接收到的单条消息"""
+    chat_id = str(message.get('chat', {}).get('id', ''))
+    text = message.get('text', '').strip()
+    if not chat_id or not text:
+        return
+
+    # 1. 权限校验：只允许管理员发送指令
+    admin_ids = [str(aid) for aid in user_db.get_admin_telegram_chat_ids()]
+    global_channel = str(APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID, ''))
+    
+    if chat_id not in admin_ids and chat_id != global_channel:
+        logger.warning(f"  ⚠️ [TG交互] 收到未授权用户 ({chat_id}) 的消息，已忽略。")
+        return
+
+    # 2. 识别链接类型
+    is_magnet = text.lower().startswith('magnet:?')
+    is_ed2k = text.lower().startswith('ed2k://')
+    is_115_share = '115.com/s/' in text
+
+    if not (is_magnet or is_ed2k or is_115_share):
+        # 不是支持的链接，忽略 (或者你可以加个 /help 指令回复)
+        return
+
+    logger.info(f"  📥 [TG交互] 收到来自 {chat_id} 的资源链接，准备处理...")
+    send_telegram_message(chat_id, "⏳ *收到链接，正在提交至 115...*", disable_notification=True)
+
+    # 3. 获取 115 客户端和目标目录
+    client = P115Service.get_client()
+    if not client:
+        send_telegram_message(chat_id, "❌ *提交失败*：115 客户端未初始化，请检查配置。")
+        return
+        
+    target_cid = APP_CONFIG.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID, '0')
+
+    try:
+        # --- 处理磁力/ED2K 离线下载 ---
+        if is_magnet or is_ed2k:
+            # 提取纯链接，防止用户发了一段话里面夹着链接
+            link_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
+            target_url = link_match.group(1) if link_match else text
+
+            payload = {
+                "url[0]": target_url,
+                "wp_path_id": target_cid
+            }
+            res = client.offline_add_urls(payload)
+            
+            if res and res.get('state'):
+                send_telegram_message(chat_id, "✅ *离线任务提交成功！*\n系统将在后台自动监控并整理入库。")
+            else:
+                err = res.get('error_msg', '未知错误') if res else '无响应'
+                send_telegram_message(chat_id, f"❌ *离线提交失败*：{err}")
+
+        # --- 处理 115 分享链接转存 ---
+        elif is_115_share:
+            # 提取分享码
+            share_code_match = re.search(r'115\.com/s/([a-zA-Z0-9]+)', text)
+            share_code = share_code_match.group(1) if share_code_match else None
+            
+            # 提取接收码 (密码)
+            receive_code = ""
+            pwd_match = re.search(r'(?:访问码|提取码|密码|password)[:：=\s]*([a-zA-Z0-9]{4})', text, re.IGNORECASE)
+            if pwd_match:
+                receive_code = pwd_match.group(1)
+
+            if not share_code:
+                send_telegram_message(chat_id, "❌ *解析失败*：未找到有效的 115 分享码。")
+                return
+
+            res = client.share_import(share_code, receive_code, target_cid)
+            
+            if res and res.get('state'):
+                send_telegram_message(chat_id, "✅ *分享链接转存成功！*\n文件已保存至待整理目录，等待系统处理。")
+            else:
+                err = res.get('error_msg', '未知错误') if res else '无响应'
+                send_telegram_message(chat_id, f"❌ *转存失败*：{err}")
+
+    except Exception as e:
+        logger.error(f"  ❌ [TG交互] 处理链接失败: {e}", exc_info=True)
+        send_telegram_message(chat_id, f"❌ *系统异常*：处理链接时发生错误。")
+
+def _telegram_polling_worker():
+    """后台轮询线程"""
+    global _tg_polling_active
+    bot_token = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
+    if not bot_token:
+        logger.info("  ➜ 未配置 Telegram Bot Token，交互功能未启动。")
+        return
+
+    api_url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
+    offset = None
+    
+    logger.info("  🚀 Telegram 机器人交互监听已启动！")
+    
+    while _tg_polling_active:
+        try:
+            params = {'timeout': 30, 'allowed_updates': ['message']}
+            if offset:
+                params['offset'] = offset
+                
+            proxies = get_proxies_for_requests()
+            # 使用长轮询，timeout 设为 30 秒
+            response = requests.get(api_url, params=params, timeout=40, proxies=proxies)
+            
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('ok'):
+                    for update in data.get('result', []):
+                        # 更新 offset，确保不重复处理
+                        offset = update['update_id'] + 1
+                        
+                        if 'message' in update:
+                            _handle_incoming_message(update['message'])
+            elif response.status_code == 401 or response.status_code == 404:
+                logger.error("  ❌ Telegram Bot Token 无效，停止轮询。")
+                break
+                
+        except requests.exceptions.Timeout:
+            pass # 正常的长轮询超时，继续下一次循环
+        except Exception as e:
+            logger.debug(f"  ⚠️ Telegram 轮询网络异常 (将自动重试): {e}")
+            time.sleep(5) # 出错时休眠 5 秒防死循环
+            
+        time.sleep(1) # 基础循环间隔
+
+def start_telegram_bot():
+    """启动 Telegram 机器人监听"""
+    global _tg_polling_thread, _tg_polling_active
+    
+    if _tg_polling_active:
+        return
+        
+    bot_token = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
+    if not bot_token:
+        return
+        
+    _tg_polling_active = True
+    _tg_polling_thread = threading.Thread(target=_telegram_polling_worker, daemon=True, name="TG_Polling_Thread")
+    _tg_polling_thread.start()
+
+def stop_telegram_bot():
+    """停止 Telegram 机器人监听"""
+    global _tg_polling_active
+    _tg_polling_active = False
+    logger.info("  ➜ Telegram 机器人交互监听已停止。")
