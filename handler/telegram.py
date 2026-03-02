@@ -374,7 +374,7 @@ def _handle_incoming_message(message: dict):
                 try:
                     import task_manager
                     # 延迟 5 秒触发，给 115 服务器一点反应时间
-                    threading.Timer(5.0, task_manager.trigger_115_organize_task).start()
+                    threading.Timer(5.0, task_manager.task_scan_and_organize_115).start()
                     logger.info("  ➜ [TG交互] 已自动唤醒 115 整理任务。")
                 except Exception as e:
                     logger.error(f"  ⚠️ 唤醒整理任务失败: {e}")
