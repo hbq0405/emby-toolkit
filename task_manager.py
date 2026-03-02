@@ -178,3 +178,29 @@ def clear_task_queue():
             except Queue.Empty:
                 break
         logger.info("任务队列已清空。")
+
+def trigger_115_organize_task():
+    """
+    【公共接口】触发 115 网盘整理任务。
+    通过 Telegram 分享链接后调用此函数来唤醒后台整理任务。
+    """
+    try:
+        # 延迟导入避免循环依赖
+        from tasks.core import task_scan_and_organize_115
+        
+        # 使用 submit_task 提交任务，processor_type 为 'media'
+        result = submit_task(
+            task_scan_and_organize_115, 
+            "115网盘整理(TG触发)", 
+            processor_type='media'
+        )
+        
+        if result:
+            logger.info("  ✅ [TG交互] 115 整理任务已成功提交到后台队列。")
+        else:
+            logger.warning("  ⚠️ [TG交互] 115 整理任务提交失败，可能有其他任务正在运行。")
+        
+        return result
+    except Exception as e:
+        logger.error(f"  ❌ [TG交互] 触发 115 整理任务时发生错误: {e}", exc_info=True)
+        return False

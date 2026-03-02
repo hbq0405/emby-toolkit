@@ -1749,6 +1749,7 @@ def task_scan_and_organize_115(processor=None):
     - 识别成功 -> 归类到目标目录
     - 识别失败 -> 移动到 '未识别' 目录
     ★ 修复：增加子文件探测逻辑，防止剧集文件夹因命名不规范被误判为电影
+    ★ 优化：增加空目录检查逻辑，跳过空目录的整理
     """
     logger.info("=== 开始执行 115 待整理目录扫描 ===")
 
@@ -1816,8 +1817,51 @@ def task_scan_and_organize_115(processor=None):
             logger.info(f"  📂 [{save_name}] 目录为空或获取失败。")
             return
 
+        # =================================================================
+        # ★★★ 优化：空目录检查 ★★★
+        # 在处理前先检查每个目录是否包含有效的视频文件
+        # 如果目录为空或只有垃圾文件，则跳过整理
+        # =================================================================
+        configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
+        allowed_exts = set(e.lower() for e in configured_exts)
+        known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
+        
+        def has_valid_video_files(item_id, is_folder):
+            """检查目录/文件中是否包含有效的视频文件"""
+            if not is_folder:
+                # 如果是文件，直接检查扩展名
+                return True  # 文件级别在后续处理时再判断
+            
+            # 如果是目录，扫描子目录查找视频文件
+            try:
+                sub_res = client.fs_files({
+                    'cid': item_id, 'limit': 100,
+                    'record_open_time': 0, 'count_folders': 0
+                })
+                if sub_res.get('data'):
+                    for sub_item in sub_res['data']:
+                        sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
+                        sub_fc = sub_item.get('fc') if sub_item.get('fc') is not None else sub_item.get('type')
+                        sub_is_folder = str(sub_fc) == '0'
+                        
+                        if sub_is_folder:
+                            # 递归检查子目录
+                            sub_id = sub_item.get('fid') or sub_item.get('file_id')
+                            if has_valid_video_files(sub_id, True):
+                                return True
+                        else:
+                            # 检查文件扩展名
+                            sub_ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
+                            if sub_ext in allowed_exts or sub_ext in known_video_exts:
+                                return True
+            except Exception as e:
+                logger.debug(f"  ⚠️ 检查目录内容时出错: {e}")
+            
+            return False
+
         processed_count = 0
         moved_to_unidentified = 0
+        skipped_empty = 0
 
         for item in res['data']:
             # 兼容 OpenAPI 键名
@@ -1828,6 +1872,14 @@ def task_scan_and_organize_115(processor=None):
             is_folder = str(fc_val) == '0'
 
             if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
+                continue
+
+            # =================================================================
+            # ★★★ 优化：空目录检查 - 在处理前先检查是否包含有效视频文件 ★★★
+            # =================================================================
+            if is_folder and not has_valid_video_files(item_id, True):
+                logger.info(f"  ⏭️ 跳过空目录: {name} (无有效视频文件)")
+                skipped_empty += 1
                 continue
 
             forced_type = None
@@ -1896,7 +1948,7 @@ def task_scan_and_organize_115(processor=None):
                         moved_to_unidentified += 1
                     except: pass
 
-        logger.info(f"=== 扫描结束，成功归类 {processed_count} 个，移入未识别 {moved_to_unidentified} 个 ===")
+        logger.info(f"=== 扫描结束，成功归类 {processed_count} 个，移入未识别 {moved_to_unidentified} 个，跳过空目录 {skipped_empty} 个 ===")
 
     except Exception as e:
         logger.error(f"  ⚠️ 115 扫描任务异常: {e}", exc_info=True)
