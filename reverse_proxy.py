@@ -827,7 +827,7 @@ def proxy_all(path):
                 forward_headers['Host'] = urlparse(base_url).netloc
                 forward_params = request.args.copy()
                 forward_params['api_key'] = api_key
-                resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), timeout=30.0, stream=True)
+                resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), timeout=(10.0, 1800.0), stream=True)
                 excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
                 response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
                 return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
@@ -1054,7 +1054,7 @@ def proxy_all(path):
             params=forward_params,
             data=request.get_data(),
             stream=True,
-            timeout=30.0
+            ttimeout=(10.0, 1800.0)
         )
         
         excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
