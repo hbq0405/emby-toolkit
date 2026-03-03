@@ -523,7 +523,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                 )
 
                 if res_json:
-                    logger.info(f"  ✅ [神医] 媒体信息获取成功！(数据类型: {type(res_json).__name__})")
+                    logger.info(f"  ✅ [神医] 媒体信息提取成功！")
 
                     # 如果数据不是来自本地缓存，则存入本地数据库
                     if not is_from_local:
@@ -548,7 +548,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     if need_upload:
                         try:
                             processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                            logger.info(f"  ☁️ [P115Center] 反哺成功！")
+                            logger.info(f"  ☁️ [P115Center] 反哺中心服务器成功！")
                         except Exception as e_up:
                             logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
                 else:
