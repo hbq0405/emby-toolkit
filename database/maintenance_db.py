@@ -645,21 +645,21 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
 
                 # --- 情况 A: 还有其他版本存在 ---
                 if remaining_count > 0:
-                    logger.info(f"  ➜ 媒体项 '{item_name}' (TMDB: {tmdb_id}) 移除了一个版本，但仍有 {remaining_count} 个版本在库中。")
+                    logger.info(f"  ➜ 媒体项 《{item_name}》 (TMDB: {tmdb_id}) 移除了一个版本，但仍有 {remaining_count} 个版本在库中。")
                     conn.commit()
                     return None
 
                 # --- 情况 B: 所有版本都已删除 (remaining_count == 0) ---
-                logger.info(f"  ➜ 媒体项 '{item_name}' (TMDB: {tmdb_id}) 的所有版本均已删除，标记为“不在库中”。")
+                logger.info(f"  ➜ 媒体项 《{item_name}》 (TMDB: {tmdb_id}) 的所有版本均已删除，标记为“不在库中”。")
                 
                 # ★★★ 清理 processed_log 和 failed_log ★★★
                 # 当媒体项从 Emby 完全删除（所有版本离线）时，同步清理相关的处理日志
-                # 日志表使用 item_id 字段存储 TMDB ID
-                cursor.execute("DELETE FROM processed_log WHERE item_id = %s", (tmdb_id,))
+                # 日志表使用 item_id 字段存储 Emby ID (item_id 参数)
+                cursor.execute("DELETE FROM processed_log WHERE item_id = %s", (item_id,))
                 if cursor.rowcount > 0:
                     logger.info(f"  ➜ 已从 已处理 中移除: 《{item_name}》")
                 
-                cursor.execute("DELETE FROM failed_log WHERE item_id = %s", (tmdb_id,))
+                cursor.execute("DELETE FROM failed_log WHERE item_id = %s", (item_id,))
                 if cursor.rowcount > 0:
                     logger.info(f"  ➜ 已从 待复核 中移除: 《{item_name}》")
 
