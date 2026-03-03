@@ -1417,3 +1417,34 @@ def get_mediainfo_by_pc_or_prefix(pickcode: str, filename_prefix: str) -> Option
     except Exception as e:
         logger.error(f"DB: 查找媒体信息指纹失败: {e}")
     return None
+
+def get_local_mediainfo_assets_with_sha1() -> List[Dict[str, Any]]:
+    """
+    【反哺专用】获取本地所有包含 SHA1 且在库的媒体资产及其 Emby ID。
+    """
+    # 修复了 SQL 别名错误：将 elem->>'emby_item_id' 改为了 a.asset->>'emby_item_id'
+    sql = """
+        SELECT 
+            m.title,
+            a.asset->>'emby_item_id' AS emby_id,
+            s.sha1_val
+        FROM media_metadata m
+        JOIN LATERAL jsonb_array_elements(
+            CASE WHEN jsonb_typeof(m.asset_details_json) = 'array' THEN m.asset_details_json ELSE '[]'::jsonb END
+        ) WITH ORDINALITY AS a(asset, idx) ON true
+        JOIN LATERAL jsonb_array_elements_text(
+            CASE WHEN jsonb_typeof(m.file_sha1_json) = 'array' THEN m.file_sha1_json ELSE '[]'::jsonb END
+        ) WITH ORDINALITY AS s(sha1_val, idx2) ON a.idx = s.idx2
+        WHERE m.in_library = TRUE 
+          AND m.item_type IN ('Movie', 'Episode')
+          AND s.sha1_val IS NOT NULL 
+          AND s.sha1_val != ''
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取本地带 SHA1 的资产失败: {e}")
+        return []

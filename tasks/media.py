@@ -2197,40 +2197,17 @@ def task_contribute_mediainfo_to_center(processor):
 
     task_manager.update_status_from_thread(0, "正在收集本地媒体资产数据...")
     
+    # ★ 调用 media_db 获取数据
+    raw_items = media_db.get_local_mediainfo_assets_with_sha1()
+    
     items_to_check = []
-    try:
-        with connection.get_db_connection() as conn:
-            cursor = conn.cursor()
-            # 精准提取有 SHA1 且在库的媒体及其 Emby ID
-            sql = """
-                SELECT 
-                    m.title,
-                    elem->>'emby_item_id' AS emby_id,
-                    s.sha1_val
-                FROM media_metadata m
-                JOIN LATERAL jsonb_array_elements(
-                    CASE WHEN jsonb_typeof(m.asset_details_json) = 'array' THEN m.asset_details_json ELSE '[]'::jsonb END
-                ) WITH ORDINALITY AS a(asset, idx) ON true
-                JOIN LATERAL jsonb_array_elements_text(
-                    CASE WHEN jsonb_typeof(m.file_sha1_json) = 'array' THEN m.file_sha1_json ELSE '[]'::jsonb END
-                ) WITH ORDINALITY AS s(sha1_val, idx2) ON a.idx = s.idx2
-                WHERE m.in_library = TRUE 
-                  AND m.item_type IN ('Movie', 'Episode')
-                  AND s.sha1_val IS NOT NULL 
-                  AND s.sha1_val != ''
-            """
-            cursor.execute(sql)
-            for row in cursor.fetchall():
-                if row['emby_id'] and row['sha1_val']:
-                    items_to_check.append({
-                        'title': row['title'],
-                        'emby_id': row['emby_id'],
-                        'sha1': row['sha1_val'].upper()
-                    })
-    except Exception as e:
-        logger.error(f"获取本地资产失败: {e}")
-        task_manager.update_status_from_thread(-1, "获取本地资产失败")
-        return
+    for row in raw_items:
+        if row.get('emby_id') and row.get('sha1_val'):
+            items_to_check.append({
+                'title': row['title'],
+                'emby_id': row['emby_id'],
+                'sha1': row['sha1_val'].upper() # 统一转大写防坑
+            })
 
     total_items = len(items_to_check)
     if total_items == 0:
