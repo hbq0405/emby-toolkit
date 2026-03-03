@@ -522,23 +522,27 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     api_key=emby_key
                 )
 
-                if res_json and res_json.get("Chapters") is not None and res_json.get("MediaSourceInfo") is not None:
-                    logger.info(f"  ✅ [神医] 媒体信息提取成功！")
+                if res_json:
+                    logger.info(f"  ✅ [神医] 媒体信息获取成功！(数据类型: {type(res_json).__name__})")
 
                     # 如果数据不是来自本地缓存，则存入本地数据库
                     if not is_from_local:
                         try:
+                            # 2. 直接将原始数据序列化存入
+                            # 无论 res_json 是 list 还是 dict，json.dumps 都能正确处理
+                            json_str = json.dumps(res_json, ensure_ascii=False)
+                            
                             with get_db_connection() as conn:
                                 with conn.cursor() as cursor:
                                     cursor.execute("""
                                         INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
                                         VALUES (%s, %s::jsonb)
                                         ON CONFLICT (sha1) DO NOTHING
-                                    """, (sha1, json.dumps(res_json, ensure_ascii=False)))
+                                    """, (sha1, json_str))
                                     conn.commit()
-                                logger.info(f"  💾 [本地缓存] 媒体信息已保存至本地数据库。")
+                                logger.info(f"  💾 [本地缓存] 原始数据已保存至数据库。")
                         except Exception as e_db:
-                            logger.warning(f"  ⚠️ [本地缓存] 写入本地数据库失败: {e_db}")
+                            logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
                     
                     # 中心化服务器正式上线后，执行反哺
                     # if need_upload:

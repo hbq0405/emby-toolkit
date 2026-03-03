@@ -68,7 +68,7 @@
                 <n-form-item label="链接格式">
                   <n-select v-model:value="config.strm_url_fmt" :options="strmUrlOptions" />
                   <template #feedback>
-                    <span style="font-size: 12px; color: gray;">该选项对第三方STRM无效</span>
+                    <span style="font-size: 12px; color: gray;">更改该选项后无法一键批量修正STRM</span>
                   </template>
                 </n-form-item>
               </n-form>
