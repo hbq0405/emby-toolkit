@@ -555,6 +555,9 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                             logger.info(f"  ☁️ [P115Center] 成功将新提取的媒体信息反哺至中心服务器。")
                         except Exception as e_up:
                             logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
+                elif res_json == []:
+                    # 神医返回 []，说明正在后台异步提取，这是正常现象！
+                    logger.info(f"  ⏳ [神医] 已触发媒体信息提取...")
                 else:
                     # 区分失败情况
                     fail_type = "恢复" if media_data else "提取"
@@ -579,7 +582,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                 _enqueue_webhook_event(item_id, item_name, item_type)
                 return
             
-            logger.debug(f"  ➜ [预检] '{item_name}' 暂无媒体信息文件，等待神医落盘 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
+            logger.debug(f"  ➜ [预检] '{item_name}' 暂无媒体信息文件，等待神医提取 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
             sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
         except Exception as e:
