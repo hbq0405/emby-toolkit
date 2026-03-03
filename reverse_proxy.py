@@ -51,6 +51,26 @@ def _get_real_emby_url_and_key():
     if not base_url or not api_key: raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
 
+def _extract_pickcode_from_strm_url(url: str):
+    """万能 PC 码提取器：支持 ETK, MP, CMS, MH 等各种第三方 STRM 链接格式"""
+    if not url or not isinstance(url, str):
+        return None
+    # 1. ETK 格式
+    if '/p115/play/' in url:
+        return url.split('/p115/play/')[-1].split('/')[0].split('?')[0].strip()
+    # 2. MP 格式 (pickcode=xxx)
+    match = re.search(r'pick_?code=([a-zA-Z0-9]+)', url, re.IGNORECASE)
+    if match: return match.group(1)
+    # 3. CMS 格式 (/d/xxx)
+    match = re.search(r'/d/([a-zA-Z0-9]+)[.?/]', url)
+    if not match: match = re.search(r'/d/([a-zA-Z0-9]+)$', url)
+    if match: return match.group(1)
+    # 4. MH 格式 (fileid=xxx)
+    match = re.search(r'fileid=([a-zA-Z0-9]+)', url, re.IGNORECASE)
+    if match: return match.group(1)
+    
+    return None
+
 def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     """
     并发分块获取 Emby 项目详情。
@@ -838,11 +858,11 @@ def proxy_all(path):
                     for source in data.get('MediaSources', []):
                         strm_url = source.get('Path', '')
                         if isinstance(strm_url, str):
-                            pick_code = None
-                            if '/api/p115/play/' in strm_url:
-                                pick_code = strm_url.split('/play/')[-1].split('/')[0].split('?')[0].strip()
-                            else:
-                                # 挂载模式：通过 item_id 查库获取 PC 码
+                            # ★ 实时万能解析第三方 STRM 链接
+                            pick_code = _extract_pickcode_from_strm_url(strm_url)
+                            
+                            if not pick_code:
+                                # 挂载模式兜底：通过 item_id 查库获取 PC 码
                                 pick_code = media_db.get_pickcode_by_emby_id(item_id)
                             
                             if pick_code:
@@ -921,13 +941,13 @@ def proxy_all(path):
                         for source in data.get('MediaSources', []):
                             strm_url = source.get('Path', '')
                             if isinstance(strm_url, str):
-                                pick_code = None
                                 real_115_cdn_url = None
+                                
+                                # ★ 实时万能解析第三方 STRM 链接
+                                pick_code = _extract_pickcode_from_strm_url(strm_url)
 
-                                if '/api/p115/play/' in strm_url:
-                                    pick_code = strm_url.split('/play/')[-1].split('/')[0].split('?')[0].strip()
-                                else:
-                                    # 挂载模式：从请求路径提取 item_id 查库
+                                if not pick_code:
+                                    # 挂载模式兜底：从请求路径提取 item_id 查库
                                     item_id = path.split('/')[2]
                                     pick_code = media_db.get_pickcode_by_emby_id(item_id)
                                     
