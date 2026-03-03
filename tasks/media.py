@@ -2181,3 +2181,139 @@ def task_restore_mediainfo(processor):
     msg = f"还原任务完成！成功还原: {restored_count} 个，未找到备份: {failed_count} 个。"
     logger.info(f"  ✅ {msg}")
     task_manager.update_status_from_thread(100, msg)
+
+def task_contribute_mediainfo_to_center(processor):
+    """
+    【人人为我，我为人人】专属反哺任务
+    专门扫描本地已有的 SHA1，批量对比中心服务器，
+    将中心服务器缺失的媒体信息，通过神医接口提取并反哺上传。
+    """
+    logger.info("--- 开始执行媒体信息反哺中心服务器任务 ---")
+    
+    if not getattr(processor, 'p115_enabled', False) or not processor.p115_center:
+        logger.warning("  🚫 P115Center 未启用或未配置，无法执行反哺任务。")
+        task_manager.update_status_from_thread(100, "P115Center 未启用")
+        return
+
+    task_manager.update_status_from_thread(0, "正在收集本地媒体资产数据...")
+    
+    items_to_check = []
+    try:
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 精准提取有 SHA1 且在库的媒体及其 Emby ID
+            sql = """
+                SELECT 
+                    m.title,
+                    elem->>'emby_item_id' AS emby_id,
+                    s.sha1_val
+                FROM media_metadata m
+                JOIN LATERAL jsonb_array_elements(
+                    CASE WHEN jsonb_typeof(m.asset_details_json) = 'array' THEN m.asset_details_json ELSE '[]'::jsonb END
+                ) WITH ORDINALITY AS a(asset, idx) ON true
+                JOIN LATERAL jsonb_array_elements_text(
+                    CASE WHEN jsonb_typeof(m.file_sha1_json) = 'array' THEN m.file_sha1_json ELSE '[]'::jsonb END
+                ) WITH ORDINALITY AS s(sha1_val, idx2) ON a.idx = s.idx2
+                WHERE m.in_library = TRUE 
+                  AND m.item_type IN ('Movie', 'Episode')
+                  AND s.sha1_val IS NOT NULL 
+                  AND s.sha1_val != ''
+            """
+            cursor.execute(sql)
+            for row in cursor.fetchall():
+                if row['emby_id'] and row['sha1_val']:
+                    items_to_check.append({
+                        'title': row['title'],
+                        'emby_id': row['emby_id'],
+                        'sha1': row['sha1_val'].upper()
+                    })
+    except Exception as e:
+        logger.error(f"获取本地资产失败: {e}")
+        task_manager.update_status_from_thread(-1, "获取本地资产失败")
+        return
+
+    total_items = len(items_to_check)
+    if total_items == 0:
+        task_manager.update_status_from_thread(100, "没有找到可反哺的媒体资产")
+        return
+        
+    logger.info(f"  ➜ 共收集到 {total_items} 个包含 SHA1 的媒体资产，准备与中心服务器比对...")
+    
+    # 分批查询中心服务器 (每次 500 个，极速过滤)
+    BATCH_SIZE = 500
+    missing_in_center = []
+    
+    for i in range(0, total_items, BATCH_SIZE):
+        if processor.is_stop_requested(): break
+        batch = items_to_check[i:i+BATCH_SIZE]
+        sha1_list = [item['sha1'] for item in batch]
+        
+        task_manager.update_status_from_thread(
+            int((i/total_items)*30), 
+            f"正在比对中心服务器 ({i}/{total_items})..."
+        )
+        
+        try:
+            resp = processor.p115_center.download_emby_mediainfo_data(sha1_list)
+            for item in batch:
+                if not resp.get(item['sha1']):
+                    missing_in_center.append(item)
+        except Exception as e:
+            logger.warning(f"  ⚠️ 批量查询中心服务器失败: {e}")
+            time.sleep(2)
+            
+    total_missing = len(missing_in_center)
+    logger.info(f"  ➜ 比对完成！发现中心服务器缺失 {total_missing} 个项目的媒体信息。")
+    
+    if total_missing == 0:
+        task_manager.update_status_from_thread(100, "中心服务器数据已是最新，无需反哺")
+        return
+        
+    # 逐个提取并反哺
+    success_count = 0
+    for i, item in enumerate(missing_in_center):
+        if processor.is_stop_requested(): break
+        
+        title = item['title']
+        emby_id = item['emby_id']
+        sha1 = item['sha1']
+        
+        progress = 30 + int((i/total_missing)*70)
+        task_manager.update_status_from_thread(progress, f"正在提取并反哺 ({i+1}/{total_missing}): {title}")
+        
+        try:
+            # 调神医提取
+            extracted_data = emby.sync_item_media_info(
+                item_id=emby_id,
+                media_data=None,
+                base_url=processor.emby_url,
+                api_key=processor.emby_api_key
+            )
+            
+            if extracted_data:
+                # 反哺中心服务器
+                processor.p115_center.upload_emby_mediainfo_data(sha1, extracted_data)
+                
+                # 顺手存入本地数据库
+                with connection.get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
+                            VALUES (%s, %s::jsonb)
+                            ON CONFLICT (sha1) DO NOTHING
+                        """, (sha1, json.dumps(extracted_data, ensure_ascii=False)))
+                        conn.commit()
+                        
+                success_count += 1
+                logger.info(f"  ✅ [反哺成功] {title} (SHA1: {sha1})")
+            else:
+                logger.debug(f"  ⚠️ [提取失败] {title} 无法获取媒体信息")
+                
+        except Exception as e:
+            logger.warning(f"  ❌ 处理 {title} 时发生异常: {e}")
+            
+        time.sleep(0.5) # 稍微限速，保护 Emby 和 中心服务器
+        
+    msg = f"反哺任务完成！成功为中心服务器贡献了 {success_count} 条媒体信息。"
+    logger.info(f"  🎉 {msg}")
+    task_manager.update_status_from_thread(100, msg)

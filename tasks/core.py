@@ -13,7 +13,7 @@ import task_manager
 from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_translation, 
                      task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
-from .media import task_role_translation, task_populate_metadata_cache, task_sync_ratings_to_emby, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_restore_local_cache_from_db, task_backup_mediainfo, task_restore_mediainfo
+from .media import task_role_translation, task_populate_metadata_cache, task_sync_ratings_to_emby, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_restore_local_cache_from_db, task_backup_mediainfo, task_restore_mediainfo, task_contribute_mediainfo_to_center
 from .watchlist import task_process_watchlist, task_refresh_completed_series, task_scan_old_seasons_backfill, task_add_all_series_to_watchlist
 from .custom_collections import task_process_all_custom_collections, process_single_custom_collection
 from .tmdb_collections import task_refresh_collections
@@ -209,6 +209,7 @@ def get_task_registry(context: str = 'all'):
         'full-sync-strm': (task_full_sync_strm_and_subs, "增量生成STRM", 'media', True),
         'backup-mediainfo': (task_backup_mediainfo, "备份媒体信息", 'media', True),
         'restore_mediainfo': (task_restore_mediainfo, "还原媒体信息", 'media', True),
+        'contribute-mediainfo': (task_contribute_mediainfo_to_center, "分享媒体信息", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'add-all-series-to-watchlist': (task_add_all_series_to_watchlist, "一键扫描全库剧集", 'watchlist', False),
