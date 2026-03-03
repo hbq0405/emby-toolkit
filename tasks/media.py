@@ -2293,19 +2293,8 @@ def task_contribute_mediainfo_to_center(processor):
                 # 调用中心服务器的批量上传接口
                 processor.p115_center.upload_emby_mediainfo_data_bulk(payload_batch)
                 
-                # 批量写入本地数据库 (使用同一个事务，极速写入)
-                with connection.get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        for batch_sha1, batch_data in payload_batch:
-                            cursor.execute("""
-                                INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
-                                VALUES (%s, %s::jsonb)
-                                ON CONFLICT (sha1) DO NOTHING
-                            """, (batch_sha1, json.dumps(batch_data, ensure_ascii=False)))
-                        conn.commit()
-                        
                 success_count += len(payload_batch)
-                logger.info(f"  ✅ [批量反哺] 成功上传并入库 {len(payload_batch)} 条数据！")
+                logger.info(f"  ✅ [批量反哺] 成功上传 {len(payload_batch)} 条数据！")
                 
             except Exception as e:
                 logger.error(f"  ❌ [批量反哺] 批量上传失败: {e}")
