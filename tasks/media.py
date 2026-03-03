@@ -2217,7 +2217,7 @@ def task_contribute_mediainfo_to_center(processor):
     logger.info(f"  ➜ 共收集到 {total_items} 个包含 SHA1 的媒体资产，准备与中心服务器比对...")
     
     # 分批查询中心服务器 (每次 500 个，极速过滤)
-    BATCH_SIZE = 1000
+    BATCH_SIZE = 500
     missing_in_center = []
     
     for i in range(0, total_items, BATCH_SIZE):
@@ -2249,7 +2249,7 @@ def task_contribute_mediainfo_to_center(processor):
     # ==========================================
     # ★ 批量提取与上传逻辑
     # ==========================================
-    UPLOAD_BATCH_SIZE = 500  # 每凑够 50 个执行一次批量上传
+    UPLOAD_BATCH_SIZE = 100  # 每凑够 50 个执行一次批量上传
     payload_batch = []      # 用于存放 [(sha1, data), ...]
     success_count = 0
     
