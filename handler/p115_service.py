@@ -1,7 +1,6 @@
 # handler/p115_service.py
 import logging
 import requests
-import urllib.parse
 import os
 import json
 import re
@@ -1551,8 +1550,7 @@ class SmartOrganizer:
                                 # 默认的 ETK 302 直链模式
                                 strm_content = f"{etk_url}/api/p115/play/{pick_code}"
                                 if cfg.get('strm_url_fmt') == 'with_name':
-                                    encoded_name = urllib.parse.quote(new_filename)
-                                    strm_content = f"{strm_content}/{encoded_name}"
+                                    strm_content = f"{strm_content}/{new_filename}"
                             
                             with open(strm_filepath, 'w', encoding='utf-8') as f:
                                 f.write(strm_content)
@@ -2384,8 +2382,7 @@ def task_full_sync_strm_and_subs(processor=None):
                                 # 默认的 ETK 302 直链模式
                                 content = f"{etk_url}/api/p115/play/{pc}"
                                 if rename_cfg.get('strm_url_fmt') == 'with_name':
-                                    encoded_name = urllib.parse.quote(name)
-                                    content = f"{content}/{encoded_name}"
+                                    content = f"{content}/{name}"
                             
                             # ★ 优化：在写入前先判断文件存不存在
                             is_new_file = not os.path.exists(strm_path)

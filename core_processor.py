@@ -814,11 +814,15 @@ class MediaProcessor:
     def _extract_pickcode_from_strm(self, strm_path: str) -> Optional[str]:
         if not strm_path: return None
         
+        # ★ 严谨正则：提取 /play/ 后面的一串字母数字，直到遇到 / 或 ? 或结尾
+        pattern_play = r'/play/([a-zA-Z0-9]+)(?:/|\?|$)'
+        pattern_pickcode = r'pick_?code=([a-zA-Z0-9]+)'
+        
         # ★ 杀手锏：如果传入的直接是 HTTP 链接，直接正则提取，无需读文件！
         if strm_path.startswith('http'):
-            match = re.search(r'/play/([a-zA-Z0-9]+)', strm_path)
+            match = re.search(pattern_play, strm_path)
             if match: return match.group(1)
-            match = re.search(r'pick_?code=([a-zA-Z0-9]+)', strm_path, re.IGNORECASE)
+            match = re.search(pattern_pickcode, strm_path, re.IGNORECASE)
             if match: return match.group(1)
             return None
             
@@ -827,9 +831,9 @@ class MediaProcessor:
             try:
                 with open(strm_path, 'r', encoding='utf-8') as f:
                     content = f.read().strip()
-                    match = re.search(r'/play/([a-zA-Z0-9]+)', content)
+                    match = re.search(pattern_play, content)
                     if match: return match.group(1)
-                    match = re.search(r'pick_?code=([a-zA-Z0-9]+)', content, re.IGNORECASE)
+                    match = re.search(pattern_pickcode, content, re.IGNORECASE)
                     if match: return match.group(1)
             except Exception: pass
             

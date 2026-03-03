@@ -174,7 +174,7 @@ const strmUrlOptions = [
 const previewMovieStrm = computed(() => {
   const baseUrl = 'http://127.0.0.1:5257/api/p115/play/abc123xyz';
   if (config.value.strm_url_fmt === 'with_name') {
-    return `${baseUrl}/${encodeURIComponent(previewMovieFile.value)}`;
+    return `${baseUrl}/${previewMovieFile.value}`;
   }
   return baseUrl;
 });
@@ -182,7 +182,7 @@ const previewMovieStrm = computed(() => {
 const previewTvStrm = computed(() => {
   const baseUrl = 'http://127.0.0.1:5257/api/p115/play/def456uvw';
   if (config.value.strm_url_fmt === 'with_name') {
-    return `${baseUrl}/${encodeURIComponent(previewTvFile.value)}`;
+    return `${baseUrl}/${previewTvFile.value}`;
   }
   return baseUrl;
 });
