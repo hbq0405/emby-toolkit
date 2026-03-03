@@ -525,9 +525,9 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                 if res_json:
                     # 根据是否有缓存数据，显示不同的成功日志
                     if media_data:
-                        logger.info(f" ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
+                        logger.info(f"  ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
                     else:
-                        logger.info(f" ✅ [神医] 媒体信息提取成功！(全新分析)")
+                        logger.info(f"  ✅ [神医] 媒体信息提取成功！(全新分析)")
 
                     # 如果数据不是来自本地缓存，则存入本地数据库
                     if not is_from_local:
@@ -541,17 +541,17 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                                         ON CONFLICT (sha1) DO UPDATE SET mediainfo_json = EXCLUDED.mediainfo_json
                                     """, (sha1, json_str))
                                     conn.commit()
-                            logger.info(f" 💾 [本地缓存] 原始数据已同步至本地数据库。")
+                            logger.info(f"  💾 [本地缓存] 原始数据已同步至本地数据库。")
                         except Exception as e_db:
-                            logger.warning(f" ⚠️ [本地缓存] 写入数据库失败: {e_db}")
+                            logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
                     
                     # 执行反哺 (仅当中心服务器没有时)
                     if need_upload:
                         try:
                             processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                            logger.info(f" ☁️ [P115Center] 成功将新提取的数据反哺至中心服务器。")
+                            logger.info(f"  ☁️ [P115Center] 成功将新提取的数据反哺至中心服务器。")
                         except Exception as e_up:
-                            logger.warning(f" ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
+                            logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
                 else:
                     # 区分失败情况
                     fail_type = "恢复" if media_data else "提取"
