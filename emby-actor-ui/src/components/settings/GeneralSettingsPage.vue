@@ -349,12 +349,12 @@
                         </n-text>
                       </template>
                     </n-form-item>
-                    <n-form-item label="批量修正 STRM" path="">
-                        <n-button @click="handleFixStrm" :loading="isFixingStrm" type="warning" ghost>
-                            一键更新本地所有 STRM 链接
+                    <n-form-item label="批量替换 STRM" path="">
+                        <n-button @click="openReplaceStrmModal" type="warning" ghost>
+                            批量替换本地 STRM 链接
                         </n-button>
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">当你修改了“STRM 链接地址”后，点击此按钮可批量把本地硬盘里所有的 .strm 文件更新为新地址，省去重刮削的麻烦。</n-text>
+                            <n-text depth="3" style="font-size:0.8em;">支持普通字符串替换和正则表达式替换，可用于更换 IP、端口或链接结构。</n-text>
                         </template>
                     </n-form-item>
                   </n-card>
@@ -1462,6 +1462,48 @@
       <n-button type="error" @click="handleClearTables" :disabled="tablesToClear.length === 0" :loading="isClearing">确认清空</n-button>
     </template>
   </n-modal>
+  <!-- ★★★ 批量替换 STRM 模态框 ★★★ -->
+    <n-modal v-model:show="showReplaceStrmModal" preset="card" title="批量替换本地 STRM 链接" style="width: 600px;">
+      <n-form label-placement="left" label-width="100">
+        <n-form-item label="替换模式">
+          <n-radio-group v-model:value="replaceStrmForm.mode">
+            <n-space>
+              <n-radio value="plain">普通替换</n-radio>
+              <n-radio value="regex">正则替换</n-radio>
+            </n-space>
+          </n-radio-group>
+        </n-form-item>
+        <n-form-item label="查找内容">
+          <n-input v-model:value="replaceStrmForm.search" placeholder="例如: 192.168.1.100:5257 或 http://(.*)/api" />
+        </n-form-item>
+        <n-form-item label="替换为">
+          <n-input v-model:value="replaceStrmForm.replace" placeholder="例如: 10.0.0.5:8080 或 https://new-domain.com/api" />
+        </n-form-item>
+        
+        <n-divider title-placement="left" style="font-size: 12px; color: #999;">实时效果预览</n-divider>
+        
+        <n-form-item label="测试原始链接">
+          <n-input v-model:value="replaceStrmForm.testUrl" placeholder="输入一个现有的 STRM 链接用于测试" />
+        </n-form-item>
+        <n-form-item label="替换后结果">
+          <n-alert :type="previewResult.type" :show-icon="true" style="width: 100%; word-break: break-all;">
+            {{ previewResult.text }}
+          </n-alert>
+        </n-form-item>
+      </n-form>
+      
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showReplaceStrmModal = false">取消</n-button>
+          <n-popconfirm @positive-click="submitReplaceStrm">
+            <template #trigger>
+              <n-button type="primary" :loading="isReplacingStrm" :disabled="!replaceStrmForm.search">确认执行替换</n-button>
+            </template>
+            确定要遍历本地所有 .strm 文件并执行替换吗？此操作不可逆！
+          </n-popconfirm>
+        </n-space>
+      </template>
+    </n-modal>
   <!-- 重置演员映射模态框 -->
   <n-modal 
     v-model:show="resetMappingsModalVisible" 
@@ -1600,7 +1642,6 @@ import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
 import axios from 'axios';
 const renameModalRef = ref(null);
-const isFixingStrm = ref(false);
 const promptModalVisible = ref(false);
 const loadingPrompts = ref(false);
 const savingPrompts = ref(false);
@@ -1613,20 +1654,70 @@ const promptsModel = ref({
   filename_parsing: ''
 });
 
-// 一键更换strm地址
-const handleFixStrm = async () => {
-  isFixingStrm.value = true;
+// ★★★ 批量替换 STRM 状态与逻辑 ★★★
+const showReplaceStrmModal = ref(false);
+const isReplacingStrm = ref(false);
+const replaceStrmForm = ref({
+  mode: 'plain',
+  search: '',
+  replace: '',
+  testUrl: 'http://192.168.1.100:5257/api/p115/play/abcde12345'
+});
+
+const openReplaceStrmModal = () => {
+  if (configModel.value?.etk_server_url) {
+    replaceStrmForm.value.testUrl = `${configModel.value.etk_server_url}/api/p115/play/abcde12345`;
+  }
+  showReplaceStrmModal.value = true;
+};
+
+const previewResult = computed(() => {
+  const { mode, search, replace, testUrl } = replaceStrmForm.value;
+  if (!search) return { type: 'default', text: '请输入查找内容以查看预览' };
+  if (!testUrl) return { type: 'default', text: '请输入测试原始链接' };
+
   try {
-    const response = await axios.post('/api/p115/fix_strm');
+    let resultUrl = testUrl;
+    if (mode === 'plain') {
+      // 普通全局替换
+      resultUrl = testUrl.split(search).join(replace);
+    } else if (mode === 'regex') {
+      // 正则替换
+      const regex = new RegExp(search, 'g');
+      resultUrl = testUrl.replace(regex, replace);
+    }
+    
+    if (resultUrl === testUrl) {
+      return { type: 'warning', text: '未发生匹配，链接保持不变：\n' + resultUrl };
+    }
+    return { type: 'success', text: resultUrl };
+  } catch (e) {
+    return { type: 'error', text: '正则表达式语法错误: ' + e.message };
+  }
+});
+
+const submitReplaceStrm = async () => {
+  if (!replaceStrmForm.value.search) {
+    message.warning('请输入查找内容');
+    return;
+  }
+  isReplacingStrm.value = true;
+  try {
+    const response = await axios.post('/api/p115/replace_strm', {
+      mode: replaceStrmForm.value.mode,
+      search: replaceStrmForm.value.search,
+      replace: replaceStrmForm.value.replace
+    });
     if (response.data.success) {
       message.success(response.data.message);
+      showReplaceStrmModal.value = false;
     } else {
       message.error(response.data.message);
     }
   } catch (error) {
     message.error(error.response?.data?.message || '请求失败');
   } finally {
-    isFixingStrm.value = false;
+    isReplacingStrm.value = false;
   }
 };
 

@@ -12,7 +12,6 @@ from flask import Blueprint, jsonify, request, redirect
 from extensions import admin_required
 from database import settings_db
 from handler.p115_service import P115Service, get_config
-from tasks.helpers import convert_strm_content_to_etk
 import constants
 from functools import lru_cache, wraps
 
@@ -685,23 +684,36 @@ def play_115_video(pick_code, filename=None):
         logger.error(f"  ❌ 直链解析发生异常: {e}")
         return str(e), 500
     
-@p115_bp.route('/fix_strm', methods=['POST'])
+@p115_bp.route('/replace_strm', methods=['POST'])
 @admin_required
-def fix_strm_files():
-    """扫描并修正本地所有 .strm 文件的内部链接 (支持兼容 CMS 老格式)"""
+def replace_strm_files():
+    """遍历本地所有 .strm 文件，执行普通或正则替换"""
+    data = request.json
+    mode = data.get('mode', 'plain')
+    search_str = data.get('search', '')
+    replace_str = data.get('replace', '')
+    
+    if not search_str:
+        return jsonify({"success": False, "message": "查找内容不能为空！"}), 400
+
     config = get_config()
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
-    etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
     
     if not local_root or not os.path.exists(local_root):
         return jsonify({"success": False, "message": "未配置本地 STRM 根目录，或该目录在容器中不存在！"}), 400
-    if not etk_url:
-        return jsonify({"success": False, "message": "未配置 STRM 链接地址！"}), 400
         
     fixed_count = 0
     skipped_count = 0
     
     try:
+        # 预编译正则以提高性能
+        regex_pattern = None
+        if mode == 'regex':
+            try:
+                regex_pattern = re.compile(search_str)
+            except Exception as e:
+                return jsonify({"success": False, "message": f"正则表达式语法错误: {e}"}), 400
+
         # 递归遍历整个本地 STRM 目录
         for root_dir, _, files in os.walk(local_root):
             for file in files:
@@ -711,31 +723,31 @@ def fix_strm_files():
                         with open(file_path, 'r', encoding='utf-8') as f:
                             content = f.read().strip()
                         
-                        # ★ 调用公共函数进行解析和转换
-                        needs_update, new_content = convert_strm_content_to_etk(content, etk_url)
+                        new_content = content
+                        if mode == 'plain':
+                            if search_str in content:
+                                new_content = content.replace(search_str, replace_str)
+                        elif mode == 'regex':
+                            new_content = regex_pattern.sub(replace_str, content)
                         
-                        if needs_update and new_content:
+                        if new_content != content:
                             with open(file_path, 'w', encoding='utf-8') as f:
                                 f.write(new_content)
                             fixed_count += 1
-                        elif new_content is None:
-                            logger.warning(f"  ⚠️ 无法识别该 strm 格式，已跳过: {file_path}")
-                            skipped_count += 1
                         else:
-                            # 已经是标准格式，无需修改
                             skipped_count += 1
                             
                     except Exception as e:
                         logger.error(f"  ❌ 处理文件 {file_path} 失败: {e}")
         
-        msg = f"转换完毕！成功修正了 {fixed_count} 个文件"
+        msg = f"替换完毕！成功修改了 {fixed_count} 个文件"
         if skipped_count > 0:
-            msg += f" (已跳过 {skipped_count} 个无需修改的文件)"
-        logger.info(f"  🧹 [转换完毕] {msg}")
+            msg += f" (已跳过 {skipped_count} 个未匹配的文件)"
+        logger.info(f"  🧹 [批量替换] {msg}")
         return jsonify({"success": True, "message": msg})
         
     except Exception as e:
-        logger.error(f"  ❌ 批量修正异常: {e}", exc_info=True)
+        logger.error(f"  ❌ 批量替换异常: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
 
 @p115_bp.route('/rename_config', methods=['GET', 'POST'])
