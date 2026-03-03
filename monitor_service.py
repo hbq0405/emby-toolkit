@@ -62,13 +62,8 @@ class MediaFileHandler(FileSystemEventHandler):
         return True
 
     def on_created(self, event):
-        if not event.is_directory:
-            # 1. 如果是视频/STRM文件，加入刮削队列
-            if self._is_valid_media_file(event.src_path):
-                self._enqueue_file(event.src_path)
-            # 2. 如果是新创建的媒体信息文件，加入备份队列
-            elif event.src_path.endswith('-mediainfo.json'):
-                self._enqueue_mediainfo(event.src_path)
+        if not event.is_directory and self._is_valid_media_file(event.src_path):
+            self._enqueue_file(event.src_path)
 
     def on_moved(self, event):
         if not event.is_directory and self._is_valid_media_file(event.dest_path):
@@ -245,12 +240,8 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
                         row = cursor.fetchone()
                         if row: sha1 = row['sha1']
 
-                    # 3. 覆盖/新增写入指纹库
+                    # 3. 覆盖写入指纹库
                     if sha1:
-                        # 先查一下数据库里有没有这个指纹
-                        cursor.execute("SELECT 1 FROM p115_mediainfo_cache WHERE sha1 = %s", (sha1,))
-                        is_update = cursor.fetchone() is not None
-                        
                         cursor.execute("""
                             INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json, created_at)
                             VALUES (%s, %s::jsonb, NOW())
@@ -259,12 +250,7 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
                                 created_at = NOW()
                         """, (sha1, json.dumps(raw_info, ensure_ascii=False)))
                         conn.commit()
-                        
-                        # 根据实际情况打印准确的日志
-                        if is_update:
-                            logger.info(f"  💾 [实时监控] 检测到媒体信息更新，已更新数据库备份: {os.path.basename(file_path)}")
-                        else:
-                            logger.info(f"  💾 [实时监控] 提取到媒体信息，已备份至数据库: {os.path.basename(file_path)}")
+                        logger.info(f"  💾 [实时监控] 检测到媒体信息更新，已成功覆盖备份至数据库: {os.path.basename(file_path)}")
                     else:
                         logger.debug(f"  ⚠️ [实时监控] 无法匹配到 SHA1，跳过备份: {os.path.basename(file_path)}")
 
