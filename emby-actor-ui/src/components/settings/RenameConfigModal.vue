@@ -16,7 +16,7 @@
                 <n-form-item label="片名语言">
                   <n-radio-group v-model:value="config.main_title_lang">
                     <n-radio-button value="zh">中文优先</n-radio-button>
-                    <n-radio-button value="original">原名优先</n-radio-button>
+                    <n-radio-button value="original">原文优先</n-radio-button>
                   </n-radio-group>
                 </n-form-item>
                 
@@ -42,7 +42,7 @@
                 <n-form-item label="片名语言">
                   <n-radio-group v-model:value="config.file_title_lang">
                     <n-radio-button value="zh">中文优先</n-radio-button>
-                    <n-radio-button value="original">原名优先</n-radio-button>
+                    <n-radio-button value="original">原文优先</n-radio-button>
                   </n-radio-group>
                 </n-form-item>
                 
