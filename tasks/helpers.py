@@ -441,8 +441,7 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
         "subtitles": [],
         "date_added_to_library": date_added_to_library,
         "ancestor_ids": ancestors,
-        "runtime_minutes": runtime_min,
-        "raw_mediainfo": raw_shenyi_data # ★ 将神医原文无损存入
+        "runtime_minutes": runtime_min
     }
     
     # 遍历流信息提取基础数据

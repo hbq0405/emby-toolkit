@@ -960,7 +960,6 @@ class MediaProcessor:
                 return
 
             records_to_upsert = []
-            mediainfo_to_upsert = []
 
             # 生成向量逻辑
             overview_embedding_json = None
@@ -1031,11 +1030,6 @@ class MediaProcessor:
                             )
                             asset_details['source_library_id'] = source_lib_id
 
-                            raw_info = asset_details.pop('raw_mediainfo', None)
-                            # ★ 强校验：必须是列表且有内容才存入指纹库
-                            if raw_info and isinstance(raw_info, list) and len(raw_info) > 0 and file_sha1:
-                                mediainfo_to_upsert.append((file_sha1, json.dumps(raw_info, ensure_ascii=False)))
-                            
                             all_assets.append(asset_details)
                             if file_pc: all_pcs.append(file_pc)
                             if file_sha1: all_sha1s.append(file_sha1)
@@ -1055,11 +1049,6 @@ class MediaProcessor:
                         )
                         asset_details['source_library_id'] = source_lib_id
 
-                        raw_info = asset_details.pop('raw_mediainfo', None)
-                        # ★ 强校验：必须是列表且有内容才存入指纹库
-                        if raw_info and isinstance(raw_info, list) and len(raw_info) > 0 and file_sha1:
-                            mediainfo_to_upsert.append((file_sha1, json.dumps(raw_info, ensure_ascii=False)))
-                        
                         all_assets.append(asset_details)
                         if file_pc: all_pcs.append(file_pc)
                         if file_sha1: all_sha1s.append(file_sha1)
@@ -1329,11 +1318,6 @@ class MediaProcessor:
                             )
                             details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
 
-                            raw_info = details.pop('raw_mediainfo', None)
-                            # ★ 强校验：必须是列表且有内容才存入指纹库
-                            if raw_info and isinstance(raw_info, list) and len(raw_info) > 0 and file_sha1:
-                                mediainfo_to_upsert.append((file_sha1, json.dumps(raw_info, ensure_ascii=False)))
-                            
                             all_assets.append(details)
                             all_ids.append(version.get('Id'))
                             if file_sha1: all_sha1s.append(file_sha1)
@@ -1433,26 +1417,6 @@ class MediaProcessor:
             
             execute_batch(cursor, sql, data_for_batch)
             logger.info(f"  ➜ 成功将 {len(data_for_batch)} 条层级元数据记录批量写入数据库。")
-
-            # ==================================================================
-            # ★ 将分离出来的媒体信息写入数据库
-            # ==================================================================
-            if mediainfo_to_upsert:
-                # 去重，防止同一个 SHA1 在同一次批处理中重复
-                unique_mediainfo = {sha1: info_json for sha1, info_json in mediainfo_to_upsert}
-                batch_data = [(sha1, info_json) for sha1, info_json in unique_mediainfo.items()]
-                
-                # ★★★ 核心优化：改为 DO NOTHING。因为同一个 SHA1 的媒体信息是绝对不变的，
-                # 如果实时监控已经存过了，或者以前全量扫过了，这里直接跳过，节省大量数据库 I/O。
-                sql_mediainfo = """
-                    INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
-                    VALUES (%s, %s::jsonb)
-                    ON CONFLICT (sha1) DO NOTHING
-                """
-                execute_batch(cursor, sql_mediainfo, batch_data)
-                
-                # 因为是 DO NOTHING，execute_batch 不会返回具体插入了多少条，所以改一下日志文案
-                logger.info(f"  ➜ 媒体信息检查完成 (共核对 {len(batch_data)} 个文件)。")
 
         except Exception as e:
             logger.error(f"批量写入层级元数据到数据库时失败: {e}", exc_info=True)

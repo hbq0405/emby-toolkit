@@ -523,7 +523,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                 )
 
                 if res_json and res_json.get("Chapters") is not None and res_json.get("MediaSourceInfo") is not None:
-                    logger.info(f"  ✅ [神医] 媒体信息处理成功！")
+                    logger.info(f"  ✅ [神医] 媒体信息提取成功！")
 
                     # 如果数据不是来自本地缓存，则存入本地数据库
                     if not is_from_local:

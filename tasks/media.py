@@ -888,7 +888,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             library_guid=current_lib_guid
                         )
                         details['source_library_id'] = source_lib_id
-                        details.pop('raw_mediainfo', None)
                         asset_details_list.append(details)
 
                 emby_runtime = round(item['RunTimeTicks'] / 600000000) if item.get('RunTimeTicks') else None
@@ -1129,7 +1128,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                         ep_asset_details_list = []
                         for v in versions:
                             details = parse_full_asset_details(v) 
-                            details.pop('raw_mediainfo', None)
                             ep_asset_details_list.append(details)
 
                         # 提取分集发行日期 
