@@ -652,6 +652,17 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 # --- 情况 B: 所有版本都已删除 (remaining_count == 0) ---
                 logger.info(f"  ➜ 媒体项 '{item_name}' (TMDB: {tmdb_id}) 的所有版本均已删除，标记为“不在库中”。")
                 
+                # ★★★ 清理 processed_log 和 failed_log ★★★
+                # 当媒体项从 Emby 完全删除（所有版本离线）时，同步清理相关的处理日志
+                # 日志表使用 item_id 字段存储 TMDB ID
+                cursor.execute("DELETE FROM processed_log WHERE item_id = %s", (tmdb_id,))
+                if cursor.rowcount > 0:
+                    logger.info(f"  ➜ 已从 已处理 中移除 : 《{item_name}》")
+                
+                cursor.execute("DELETE FROM failed_log WHERE item_id = %s", (tmdb_id,))
+                if cursor.rowcount > 0:
+                    logger.info(f"  ➜ 已从 待复核 中移除 TMDB ID: 《{item_name}》")
+
                 # 1. 标记当前项为不在库
                 cursor.execute(
                     "UPDATE media_metadata SET in_library = FALSE WHERE tmdb_id = %s AND item_type = %s",
