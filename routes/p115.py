@@ -660,7 +660,8 @@ def _get_cached_115_url_legacy(pick_code, user_agent, client_ip=None):
     return _get_cached_115_url(pick_code, user_agent, client_ip)
 
 @p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) # 允许 HEAD 请求，加速客户端嗅探
-def play_115_video(pick_code):
+@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
+def play_115_video(pick_code, filename=None):
     """
     终极极速 302 直链解析服务 (带内存缓存版)
     """
