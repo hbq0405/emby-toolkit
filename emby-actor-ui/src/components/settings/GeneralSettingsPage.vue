@@ -177,14 +177,6 @@
                         </n-text>
                       </template>
                     </n-form-item>
-                    <n-form-item-grid-item label="转换第三方 STRM" path="monitor_convert_strm_to_etk">
-                      <n-switch v-model:value="configModel.monitor_convert_strm_to_etk" />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          将第三方 STRM 链接转换为 ETK 标准格式。
-                        </n-text>
-                      </template>
-                    </n-form-item-grid-item>
                     <n-form-item label="图片语言偏好" path="tmdb_image_language_preference">
                       <n-radio-group v-model:value="configModel.tmdb_image_language_preference" name="image_lang_group">
                         <n-space>

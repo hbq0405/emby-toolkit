@@ -40,7 +40,6 @@ CONFIG_OPTION_MONITOR_EXCLUDE_DIRS = "monitor_exclude_dirs"
 DEFAULT_MONITOR_EXCLUDE_DIRS = [] # 默认排除路径列表
 CONFIG_OPTION_MONITOR_EXCLUDE_REFRESH_DELAY = "monitor_exclude_refresh_delay"
 DEFAULT_MONITOR_EXCLUDE_REFRESH_DELAY = 0 # 默认不延迟
-CONFIG_OPTION_MONITOR_CONVERT_STRM_TO_ETK = "monitor_convert_strm_to_etk" # 是否启用 .strm 转 ETK URL 的功能
 
 # ==============================================================================
 # ✨ 115 网盘配置 (115 Cloud Drive) 

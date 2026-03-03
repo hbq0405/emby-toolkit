@@ -12,7 +12,6 @@ from gevent import spawn_later
 import constants
 import config_manager
 import handler.emby as emby
-from tasks.helpers import convert_strm_content_to_etk
 
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
@@ -290,54 +289,14 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
         except Exception as e:
             logger.error(f"  ❌ [实时监控] 处理媒体信息更新失败 {file_path}: {e}")
 
-def _process_strm_conversions(file_paths: List[str]) -> List[str]:
-    """
-    拦截并处理新增/修改的 strm 文件，将其转换为 ETK 标准格式
-    """
-    config = config_manager.APP_CONFIG
-    # 检查转换开关
-    convert_enabled = config.get(constants.CONFIG_OPTION_MONITOR_CONVERT_STRM_TO_ETK, False)
-    
-    if not convert_enabled:
-        return file_paths
-
-    etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
-    if not etk_url:
-        logger.warning("  ⚠️ [实时监控] 开启了 STRM 转换，但未配置 STRM 链接地址，跳过转换。")
-        return file_paths
-
-    for file_path in file_paths:
-        if not file_path.lower().endswith('.strm'):
-            continue
-            
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                content = f.read().strip()
-            
-            needs_update, new_content = convert_strm_content_to_etk(content, etk_url)
-            
-            if needs_update and new_content:
-                with open(file_path, 'w', encoding='utf-8') as f:
-                    f.write(new_content)
-                logger.info(f"  🔗 [实时监控] 已将第三方 STRM 链接转换为 ETK 格式: {os.path.basename(file_path)}")
-            elif new_content is None:
-                logger.warning(f"  ⚠️ [实时监控] 无法识别的 STRM 链接格式，跳过转换: {os.path.basename(file_path)}")
-                
-        except Exception as e:
-            logger.error(f"  ❌ [实时监控] 处理 STRM 文件转换失败 {file_path}: {e}")
-            
-    return file_paths
-
 def _handle_batch_file_task(processor, file_paths: List[str]):
     valid_files = _wait_for_files_stability(file_paths)
     if not valid_files: return
-    valid_files = _process_strm_conversions(valid_files)
     processor.process_file_actively_batch(valid_files)
 
 def _handle_batch_refresh_only_task(file_paths: List[str]):
     valid_files = _wait_for_files_stability(file_paths)
     if not valid_files: return
-    valid_files = _process_strm_conversions(valid_files)
     parent_dirs = set()
     for f in valid_files:
         parent_dirs.add(os.path.dirname(f))
