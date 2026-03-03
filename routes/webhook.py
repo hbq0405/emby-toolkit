@@ -499,6 +499,9 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                                     media_data = json.loads(media_data)
                                 is_from_local = True
                                 logger.info(f"  💾 [本地缓存] 命中本地数据库 (SHA1: {sha1})，下发给神医恢复...")
+                                # 更新命中次数
+                                cursor.execute("UPDATE p115_mediainfo_cache SET hit_count = hit_count + 1 WHERE sha1 = %s", (sha1,))
+                                conn.commit()
                 except Exception as e_db:
                     logger.warning(f"  ⚠️ [本地缓存] 查询本地数据库失败: {e_db}")
 
