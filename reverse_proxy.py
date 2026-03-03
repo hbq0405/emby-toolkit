@@ -1054,7 +1054,7 @@ def proxy_all(path):
             params=forward_params,
             data=request.get_data(),
             stream=True,
-            ttimeout=(10.0, 1800.0)
+            timeout=(10.0, 1800.0)
         )
         
         excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
