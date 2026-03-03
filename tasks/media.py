@@ -2003,14 +2003,20 @@ def task_backup_mediainfo(processor):
                     
                     extracted_pc = None
                     
+                    # 提取逻辑封装，兼容带文件名和不带文件名的格式
+                    def _extract_pc(url):
+                        if '/p115/play/' in url:
+                            return url.split('/p115/play/')[-1].split('/')[0].split('?')[0].strip()
+                        return url.rstrip('/').split('/')[-1].split('?')[0].strip()
+
                     if current_path.startswith('http'):
-                        extracted_pc = current_path.rstrip('/').split('/')[-1]
+                        extracted_pc = _extract_pc(current_path)
                     elif current_path.lower().endswith('.strm') and os.path.exists(current_path):
                         try:
                             with open(current_path, 'r', encoding='utf-8') as f:
                                 strm_content = f.read().strip()
                                 if strm_content.startswith('http'):
-                                    extracted_pc = strm_content.rstrip('/').split('/')[-1]
+                                    extracted_pc = _extract_pc(strm_content)
                         except Exception as e:
                             logger.warning(f"  ⚠️ 读取 STRM 文件失败 {current_path}: {e}")
                             
@@ -2157,8 +2163,8 @@ def task_restore_mediainfo(processor):
                     # 兼容逻辑：
                     # 1. 如果包含特定路径标识符 /p115/play/
                     if '/p115/play/' in content:
-                        # 核心逻辑：取 /play/ 之后的部分，再取第一个斜杠之前的 ID
-                        pickcode = content.split('/play/')[-1].split('/')[0].split('?')[0].strip()
+                        # 核心逻辑：取 /p115/play/ 之后的部分，再取第一个斜杠之前的 ID
+                        pickcode = content.split('/p115/play/')[-1].split('/')[0].split('?')[0].strip()
                     else:
                         # 2. 如果不含特定路径，降级使用原有的末尾提取逻辑
                         pickcode = content.rstrip('/').split('/')[-1].split('?')[0].strip()
