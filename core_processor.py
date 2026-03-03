@@ -156,7 +156,7 @@ class MediaProcessor:
                     file_path=auth_file_path
                 )
                 self.p115_enabled = True
-                logger.info("P115Center SDK 初始化成功，已启用神医媒体信息中心化同步功能。")
+                logger.info("  ✅ P115Center SDK 初始化成功，已启用神医媒体信息中心化同步功能。")
             except Exception as e:
                 logger.error(f"P115Center SDK 初始化失败: {e}")
                 self.p115_enabled = False
