@@ -2400,7 +2400,7 @@ def task_full_sync_strm_and_subs(processor=None):
                                                         
                                                         cursor.execute("UPDATE p115_mediainfo_cache SET hit_count = hit_count + 1 WHERE sha1 = %s", (file_sha1,))
                                                         conn.commit()
-                                                        logger.debug(f"  ⚡ [指纹库秒传] 匹配到相同 SHA1，自动生成媒体信息: {os.path.basename(mediainfo_path)}")
+                                                        logger.debug(f"  ⚡ 匹配到相同 SHA1，自动生成媒体信息: {os.path.basename(mediainfo_path)}")
                                 except Exception: pass
                                 
                         # 处理字幕下载
