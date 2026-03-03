@@ -657,11 +657,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 # 日志表使用 item_id 字段存储 TMDB ID
                 cursor.execute("DELETE FROM processed_log WHERE item_id = %s", (tmdb_id,))
                 if cursor.rowcount > 0:
-                    logger.info(f"  ➜ 已从 已处理 中移除 : 《{item_name}》")
+                    logger.info(f"  ➜ 已从 已处理 中移除: 《{item_name}》")
                 
                 cursor.execute("DELETE FROM failed_log WHERE item_id = %s", (tmdb_id,))
                 if cursor.rowcount > 0:
-                    logger.info(f"  ➜ 已从 待复核 中移除 TMDB ID: 《{item_name}》")
+                    logger.info(f"  ➜ 已从 待复核 中移除: 《{item_name}》")
 
                 # 1. 标记当前项为不在库
                 cursor.execute(
