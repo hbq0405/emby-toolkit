@@ -64,6 +64,13 @@
                     <span style="font-size: 12px; color: gray;">保留分辨率、编码、特效等信息 (如 1080p · H265)</span>
                   </template>
                 </n-form-item>
+                <n-divider title-placement="left" style="font-size: 13px; color: #888;">STRM 链接设置</n-divider>
+                <n-form-item label="链接格式">
+                  <n-select v-model:value="config.strm_url_fmt" :options="strmUrlOptions" />
+                  <template #feedback>
+                    <span style="font-size: 12px; color: gray;">启用该功能将无法转换第三方STRM</span>
+                  </template>
+                </n-form-item>
               </n-form>
             </n-tab-pane>
           </n-tabs>
@@ -89,6 +96,10 @@
                   <n-icon color="#2080f0" size="16"><DocumentIcon /></n-icon>
                   <span class="node-text">{{ previewMovieFile }}</span>
                 </div>
+                <div class="tree-node grandchild">
+                  <n-icon color="#888" size="14"><LinkIcon /></n-icon>
+                  <span class="node-text" style="color: #888; font-size: 11px;">{{ previewMovieStrm }}</span>
+                </div>
               </div>
 
               <n-divider style="margin: 16px 0;" />
@@ -107,6 +118,10 @@
                 <div class="tree-node grandchild">
                   <n-icon color="#2080f0" size="16"><DocumentIcon /></n-icon>
                   <span class="node-text">{{ previewTvFile }}</span>
+                </div>
+                <div class="tree-node grandchild" style="padding-left: 72px;">
+                  <n-icon color="#888" size="14"><LinkIcon /></n-icon>
+                  <span class="node-text" style="color: #888; font-size: 11px;">{{ previewTvStrm }}</span>
                 </div>
               </div>
             </div>
@@ -145,7 +160,31 @@ const config = ref({
   file_year_en: false,
   file_tmdb_fmt: 'none',
   file_params_en: true,
-  file_sep: ' - '
+  file_sep: ' - ',
+  strm_url_fmt: 'standard'
+});
+
+// 2. 新增下拉选项
+const strmUrlOptions = [
+  { label: '标准格式 (/api/p115/play/xxx)', value: 'standard' },
+  { label: '带文件名后缀 (/api/p115/play/xxx/文件名.mkv)', value: 'with_name' }
+];
+
+// 3. 新增计算属性用于预览
+const previewMovieStrm = computed(() => {
+  const baseUrl = 'http://127.0.0.1:5257/api/p115/play/abc123xyz';
+  if (config.value.strm_url_fmt === 'with_name') {
+    return `${baseUrl}/${encodeURIComponent(previewMovieFile.value)}`;
+  }
+  return baseUrl;
+});
+
+const previewTvStrm = computed(() => {
+  const baseUrl = 'http://127.0.0.1:5257/api/p115/play/def456uvw';
+  if (config.value.strm_url_fmt === 'with_name') {
+    return `${baseUrl}/${encodeURIComponent(previewTvFile.value)}`;
+  }
+  return baseUrl;
 });
 
 // 选项字典

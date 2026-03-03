@@ -1,7 +1,7 @@
 # handler/p115_service.py
 import logging
 import requests
-import random
+import urllib.parse
 import os
 import json
 import re
@@ -647,7 +647,8 @@ class SmartOrganizer:
         self.rename_config = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {
             "main_title_lang": "zh", "main_year_en": True, "main_tmdb_fmt": "{tmdb=ID}",
             "season_fmt": "Season {02}", "file_title_lang": "zh", "file_year_en": False,
-            "file_tmdb_fmt": "none", "file_params_en": True, "file_sep": " - "
+            "file_tmdb_fmt": "none", "file_params_en": True, "file_sep": " - ",
+            "strm_url_fmt": "standard"
         }
         raw_rules = settings_db.get_setting(constants.DB_KEY_115_SORTING_RULES)
         self.rules = []
@@ -1549,6 +1550,9 @@ class SmartOrganizer:
                             else:
                                 # 默认的 ETK 302 直链模式
                                 strm_content = f"{etk_url}/api/p115/play/{pick_code}"
+                                if cfg.get('strm_url_fmt') == 'with_name':
+                                    encoded_name = urllib.parse.quote(new_filename)
+                                    strm_content = f"{strm_content}/{encoded_name}"
                             
                             with open(strm_filepath, 'w', encoding='utf-8') as f:
                                 f.write(strm_content)
@@ -2168,6 +2172,7 @@ def task_full_sync_strm_and_subs(processor=None):
         update_progress(100, "错误：未配置分类规则！")
         return
     rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
+    rename_cfg = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {}
 
     # =================================================================
     # 阶段 1: 加载规则与本地目录树缓存到内存 (耗时: 毫秒级)
@@ -2378,6 +2383,9 @@ def task_full_sync_strm_and_subs(processor=None):
                             else:
                                 # 默认的 ETK 302 直链模式
                                 content = f"{etk_url}/api/p115/play/{pc}"
+                                if rename_cfg.get('strm_url_fmt') == 'with_name':
+                                    encoded_name = urllib.parse.quote(name)
+                                    content = f"{content}/{encoded_name}"
                             
                             # ★ 优化：在写入前先判断文件存不存在
                             is_new_file = not os.path.exists(strm_path)
