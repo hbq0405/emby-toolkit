@@ -552,7 +552,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     if need_upload:
                         try:
                             processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                            logger.info(f"  ☁️ [P115Center] 成功将新提取的数据反哺至中心服务器。")
+                            logger.info(f"  ☁️ [P115Center] 成功将新提取的媒体信息反哺至中心服务器。")
                         except Exception as e_up:
                             logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
                 else:
