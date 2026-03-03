@@ -204,10 +204,17 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
 
     for file_path in valid_files:
         try:
-            # 1. 读取更新后的 JSON
+            # 1. 读取文件内容，先进行字符串级别的“片头”检测 (最高效)
             with open(file_path, 'r', encoding='utf-8') as f:
-                raw_info = json.load(f)
+                content = f.read()
             
+            # 如果没有“片头”字样，直接忽略，不消耗性能
+            if "片头" not in content:
+                logger.trace(f"  ⏭️ [实时监控] 文件未包含'片头'信息，忽略更新: {os.path.basename(file_path)}")
+                continue
+                
+            # 确认有片头后，再解析 JSON
+            raw_info = json.loads(content)
             if not raw_info or not isinstance(raw_info, list):
                 continue
 
@@ -222,19 +229,38 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
             strm_path = base_path + '.strm'
             if os.path.exists(strm_path):
                 with open(strm_path, 'r', encoding='utf-8') as f:
-                    content = f.read().strip()
-                    if content.startswith('http'):
-                        pickcode = content.rstrip('/').split('/')[-1]
+                    strm_content = f.read().strip()
+                    if strm_content.startswith('http'):
+                        pickcode = strm_content.rstrip('/').split('/')[-1]
 
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # 优先通过 PC 码查 SHA1
+                    # --- 复用 media_db.py 中的 3 步高精度查找逻辑 ---
+                    
+                    # 步1: 优先通过 PC 码查 p115_filesystem_cache (最快最准)
                     if pickcode:
                         cursor.execute("SELECT sha1 FROM p115_filesystem_cache WHERE pick_code = %s AND sha1 IS NOT NULL LIMIT 1", (pickcode,))
                         row = cursor.fetchone()
                         if row: sha1 = row['sha1']
 
-                    # 兜底：通过文件名前缀查 SHA1 (适配挂载模式)
+                    # 步2: 如果没有，通过 media_metadata 兜底查 PC 码
+                    if not sha1 and pickcode:
+                        sql = """
+                            SELECT m.file_sha1_json, arr.idx
+                            FROM media_metadata m,
+                                 jsonb_array_elements_text(m.file_pickcode_json) WITH ORDINALITY AS arr(pc, idx)
+                            WHERE arr.pc = %s
+                            LIMIT 1
+                        """
+                        cursor.execute(sql, (pickcode,))
+                        row = cursor.fetchone()
+                        if row:
+                            sha1_arr = row['file_sha1_json']
+                            idx = row['idx'] - 1 # ORDINALITY 是从 1 开始的
+                            if isinstance(sha1_arr, list) and idx < len(sha1_arr):
+                                sha1 = sha1_arr[idx]
+
+                    # 步3: 兜底：通过文件名前缀查 SHA1 (适配挂载模式)
                     if not sha1:
                         cursor.execute("SELECT sha1 FROM p115_filesystem_cache WHERE name LIKE %s AND sha1 IS NOT NULL LIMIT 1", (f"{base_name}.%",))
                         row = cursor.fetchone()
@@ -250,7 +276,7 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
                                 created_at = NOW()
                         """, (sha1, json.dumps(raw_info, ensure_ascii=False)))
                         conn.commit()
-                        logger.info(f"  💾 [实时监控] 检测到媒体信息更新，已成功覆盖备份至数据库: {os.path.basename(file_path)}")
+                        logger.info(f"  💾 [实时监控] 检测到片头媒体信息更新，已成功备份至数据库: {os.path.basename(file_path)}")
                     else:
                         logger.debug(f"  ⚠️ [实时监控] 无法匹配到 SHA1，跳过备份: {os.path.basename(file_path)}")
 
