@@ -514,45 +514,48 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医提取媒体信息...")
                         need_upload = True
 
-                # --- 第三步：阻塞调用神医接口 (此时只传 item_id) ---
+                # --- 第三步：阻塞调用神医接口 ---
                 res_json = emby.sync_item_media_info(
                     item_id=item_id, 
-                    media_data=media_data,
+                    media_data=media_data, # 如果有缓存，传给神医执行“恢复”；没有则传 None 让其“提取”
                     base_url=emby_url,
                     api_key=emby_key
                 )
 
                 if res_json:
-                    logger.info(f"  ✅ [神医] 媒体信息提取成功！")
+                    # 根据是否有缓存数据，显示不同的成功日志
+                    if media_data:
+                        logger.info(f" ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
+                    else:
+                        logger.info(f" ✅ [神医] 媒体信息提取成功！(全新分析)")
 
                     # 如果数据不是来自本地缓存，则存入本地数据库
                     if not is_from_local:
                         try:
-                            # 2. 直接将原始数据序列化存入
-                            # 无论 res_json 是 list 还是 dict，json.dumps 都能正确处理
                             json_str = json.dumps(res_json, ensure_ascii=False)
-                            
                             with get_db_connection() as conn:
                                 with conn.cursor() as cursor:
                                     cursor.execute("""
                                         INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
                                         VALUES (%s, %s::jsonb)
-                                        ON CONFLICT (sha1) DO NOTHING
+                                        ON CONFLICT (sha1) DO UPDATE SET mediainfo_json = EXCLUDED.mediainfo_json
                                     """, (sha1, json_str))
                                     conn.commit()
-                                logger.info(f"  💾 [本地缓存] 原始数据已保存至数据库。")
+                            logger.info(f" 💾 [本地缓存] 原始数据已同步至本地数据库。")
                         except Exception as e_db:
-                            logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
+                            logger.warning(f" ⚠️ [本地缓存] 写入数据库失败: {e_db}")
                     
-                    # 执行反哺
+                    # 执行反哺 (仅当中心服务器没有时)
                     if need_upload:
                         try:
                             processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                            logger.info(f"  ☁️ [P115Center] 反哺中心服务器成功！")
+                            logger.info(f" ☁️ [P115Center] 成功将新提取的数据反哺至中心服务器。")
                         except Exception as e_up:
-                            logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
+                            logger.warning(f" ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
                 else:
-                    logger.warning(f"  ⚠️ [神医] 返回数据无效或提取失败。")
+                    # 区分失败情况
+                    fail_type = "恢复" if media_data else "提取"
+                    logger.warning(f" ⚠️ [神医] 媒体信息{fail_type}失败，返回数据无效。")
         except Exception as e:
             logger.error(f"  ❌ [P115Center] 联动异常: {e}")
 
