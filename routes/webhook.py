@@ -446,7 +446,7 @@ def _enqueue_webhook_event(item_id, item_name, item_type):
         else:
             logger.debug("  ➜ [队列] 批量处理计时器运行中，等待合并。")
 
-def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
+def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=None):
     """
     预检视频流数据 + P115Center 神医联动 (完美闭环版)
     """
@@ -463,17 +463,18 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
     emby_user_id = processor.emby_user_id
 
     # =========================================================
-    # 1. 获取物理路径并触发神医联动
+    # 1. 获取物理路径并触发神医联动 (路径仅用于提取 pickcode)
     # =========================================================
-    file_path = None
-    try:
-        item_details = emby.get_emby_item_details(item_id, emby_url, emby_key, emby_user_id, fields="Path,MediaSources")
-        if item_details:
-            file_path = item_details.get("Path")
-            if not file_path and item_details.get("MediaSources"):
-                file_path = item_details["MediaSources"][0].get("Path")
-    except Exception as e:
-        logger.warning(f"  ➜ [预检] 获取路径失败: {e}")
+    # 如果 Webhook 没有传过来路径，才去主动请求 Emby API 兜底
+    if not file_path:
+        try:
+            item_details = emby.get_emby_item_details(item_id, emby_url, emby_key, emby_user_id, fields="Path,MediaSources")
+            if item_details:
+                file_path = item_details.get("Path")
+                if not file_path and item_details.get("MediaSources"):
+                    file_path = item_details["MediaSources"][0].get("Path")
+        except Exception as e:
+            logger.warning(f"  ➜ [预检] 获取路径失败: {e}")
 
     if file_path and getattr(processor, 'p115_enabled', False) and processor.p115_center:
         try:
@@ -482,20 +483,40 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
             sha1 = processor._get_sha1_by_pickcode(pc)
             
             if sha1:
-                logger.info(f"  ☁️ [P115Center] 开始同步媒体信息 (SHA1: {sha1})")
-                resp = processor.p115_center.download_emby_mediainfo_data([sha1])
-                media_data = resp.get(sha1)
-                need_upload = False if media_data else True
+                media_data = None
+                need_upload = False
+                is_from_local = False
+                
+                # --- 第一步：优先查询本地数据库缓存 ---
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s", (sha1,))
+                            row = cursor.fetchone()
+                            if row and row[0]:
+                                media_data = row[0]
+                                if isinstance(media_data, str):
+                                    media_data = json.loads(media_data)
+                                is_from_local = True
+                                logger.info(f"  💾 [本地缓存] 命中本地数据库 (SHA1: {sha1})，下发给神医恢复...")
+                except Exception as e_db:
+                    logger.warning(f"  ⚠️ [本地缓存] 查询本地数据库失败: {e_db}")
 
-                if media_data:
-                    logger.info(f"  ☁️ [P115Center] 命中中心缓存，下发给神医恢复...")
-                else:
-                    logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医提取媒体信息...")
+                # --- 第二步：本地没有，再查中心服务器 ---
+                if not is_from_local:
+                    logger.info(f"  ☁️ [P115Center] 本地无缓存，开始查询中心服务器 (SHA1: {sha1})")
+                    resp = processor.p115_center.download_emby_mediainfo_data([sha1])
+                    media_data = resp.get(sha1)
+                    
+                    if media_data:
+                        logger.info(f"  ☁️ [P115Center] 命中中心缓存，下发给神医恢复...")
+                    else:
+                        logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医提取媒体信息...")
+                        need_upload = True
 
-                # 阻塞调用神医接口 (此时 Emby 已经入库，绝对不会报 400)
+                # --- 第三步：阻塞调用神医接口 (此时只传 item_id) ---
                 res_json = emby.sync_item_media_info(
                     item_id=item_id, 
-                    path=file_path,
                     media_data=media_data,
                     base_url=emby_url,
                     api_key=emby_key
@@ -504,23 +525,28 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type):
                 if res_json and res_json.get("Chapters") is not None and res_json.get("MediaSourceInfo") is not None:
                     logger.info(f"  ✅ [神医] 媒体信息处理成功！")
 
-                    # 存入本地数据库缓存
-                    try:
-                        with get_db_connection() as conn:
-                            with conn.cursor() as cursor:
-                                cursor.execute("""
-                                    INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
-                                    VALUES (%s, %s::jsonb)
-                                    ON CONFLICT (sha1) DO NOTHING
-                                """, (sha1, json.dumps(res_json, ensure_ascii=False)))
-                                conn.commit()
-                    except Exception as e_db:
-                        pass
+                    # 如果数据不是来自本地缓存，则存入本地数据库
+                    if not is_from_local:
+                        try:
+                            with get_db_connection() as conn:
+                                with conn.cursor() as cursor:
+                                    cursor.execute("""
+                                        INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
+                                        VALUES (%s, %s::jsonb)
+                                        ON CONFLICT (sha1) DO NOTHING
+                                    """, (sha1, json.dumps(res_json, ensure_ascii=False)))
+                                    conn.commit()
+                                logger.info(f"  💾 [本地缓存] 媒体信息已保存至本地数据库。")
+                        except Exception as e_db:
+                            logger.warning(f"  ⚠️ [本地缓存] 写入本地数据库失败: {e_db}")
                     
-                    # 调试阶段：注释掉反哺，只白嫖
+                    # 中心化服务器正式上线后，执行反哺
                     # if need_upload:
-                    #     processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                    #     logger.info(f"  ☁️ [P115Center] 反哺成功！")
+                    #     try:
+                    #         processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
+                    #         logger.info(f"  ☁️ [P115Center] 反哺成功！")
+                    #     except Exception as e_up:
+                    #         logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
                 else:
                     logger.warning(f"  ⚠️ [神医] 返回数据无效或提取失败。")
         except Exception as e:
@@ -922,6 +948,7 @@ def emby_webhook():
     original_item_id = item_from_webhook.get("Id")
     original_item_type = item_from_webhook.get("Type")
     original_item_name = item_from_webhook.get("Name", "未知项目")
+    original_item_path = item_from_webhook.get("Path")
     
     # 如果是分集，将名字格式化为 "剧名 - 集名"，方便日志搜索
     raw_name = item_from_webhook.get("Name", "未知项目")
@@ -1015,7 +1042,7 @@ def emby_webhook():
                 return jsonify({"status": "ignored_library"}), 200
 
     if event_type in ["item.add", "library.new"]:
-        spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type)
+        spawn(_wait_for_stream_data_and_enqueue, original_item_id, original_item_name, original_item_type, original_item_path)
         
         logger.info(f"  ➜ Webhook: 收到入库事件 '{original_item_name}'，已分派预检任务。")
         return jsonify({"status": "processing_started_with_stream_check", "item_id": original_item_id}), 202

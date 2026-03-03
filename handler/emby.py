@@ -2763,31 +2763,25 @@ def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days:
         return {"error": str(e)}
 
 # ✨✨✨ 神医插件: 同步/提取媒体信息 ✨✨✨
-def sync_item_media_info(item_id: str, path: str, media_data: Optional[Dict[str, Any]], base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
-    if not all([path, base_url, api_key]):
+def sync_item_media_info(item_id: str, media_data: Optional[Dict[str, Any]], base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
+    # 只需要校验 item_id, base_url, api_key
+    if not all([item_id, base_url, api_key]):
         return None
 
-    from urllib.parse import quote
-    # 严格按照作者的写法，手动 quote 路径
-    path_encoded = quote(path, safe="")
-    
-    # 严格按照作者的写法，把参数直接拼在 URL 上
-    api_url = f"{base_url.rstrip('/')}/emby/Items/SyncMediaInfo?Path={path_encoded}&api_key={api_key}"
-    if item_id:
-        api_url += f"&Id={item_id}"
+    # 严格按照作者的写法，把参数直接拼在 URL 上，只传 Id
+    api_url = f"{base_url.rstrip('/')}/emby/Items/SyncMediaInfo?Id={item_id}&api_key={api_key}"
         
     headers = {"Content-Type": "application/json"}
-    custom_timeout = 120.0 # 真实提取耗时较长
+    custom_timeout = 600.0 # 真实提取耗时较长
     
     try:
-        # 注意：这里不再传 params，因为已经拼在 URL 里了
         response = emby_client.post(api_url, json=media_data, headers=headers, timeout=custom_timeout)
         response.raise_for_status()
         return response.json()
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 404:
-            api_url_fallback = f"{base_url.rstrip('/')}/Items/SyncMediaInfo?Path={path_encoded}&api_key={api_key}"
-            if item_id: api_url_fallback += f"&Id={item_id}"
+            # 备用接口同样只传 Id
+            api_url_fallback = f"{base_url.rstrip('/')}/Items/SyncMediaInfo?Id={item_id}&api_key={api_key}"
             try:
                 response_fallback = emby_client.post(api_url_fallback, json=media_data, headers=headers, timeout=custom_timeout)
                 response_fallback.raise_for_status()
