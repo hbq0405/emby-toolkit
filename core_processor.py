@@ -6,6 +6,7 @@ import time
 import re
 import copy
 import random
+from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 from collections import defaultdict
 import threading
@@ -141,9 +142,25 @@ class MediaProcessor:
         # =========================================================
         if P115_AVAILABLE and self.config.get("p115_enabled", True):
             machine_id = self.config.get("p115_machine_id", "")
-            self.p115_center = P115Center(machine_id=machine_id)
-            self.p115_enabled = True
-            logger.info("P115Center SDK 初始化成功，已启用神医媒体信息中心化同步功能。")
+            
+            # 获取当前文件所在目录下的 web_app.py 路径
+            auth_file_path = str(Path(__file__).resolve().parent / "web_app.py")
+            
+            #  License 
+            license_key = "5891de8a3f8781dbbc37d2c24e1f09eac01066b0816141fe98bb781225bd2d14"
+            
+            try:
+                self.p115_center = P115Center(
+                    machine_id=machine_id,
+                    license=license_key,
+                    file_path=auth_file_path
+                )
+                self.p115_enabled = True
+                logger.info("P115Center SDK 初始化成功，已启用神医媒体信息中心化同步功能。")
+            except Exception as e:
+                logger.error(f"P115Center SDK 初始化失败: {e}")
+                self.p115_enabled = False
+                self.p115_center = None
         else:
             self.p115_enabled = False
             self.p115_center = None

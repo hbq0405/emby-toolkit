@@ -544,13 +544,13 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         except Exception as e_db:
                             logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
                     
-                    # 中心化服务器正式上线后，执行反哺
-                    # if need_upload:
-                    #     try:
-                    #         processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                    #         logger.info(f"  ☁️ [P115Center] 反哺成功！")
-                    #     except Exception as e_up:
-                    #         logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
+                    # 执行反哺
+                    if need_upload:
+                        try:
+                            processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
+                            logger.info(f"  ☁️ [P115Center] 反哺成功！")
+                        except Exception as e_up:
+                            logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
                 else:
                     logger.warning(f"  ⚠️ [神医] 返回数据无效或提取失败。")
         except Exception as e:
