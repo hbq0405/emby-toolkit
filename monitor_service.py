@@ -230,8 +230,13 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
             if os.path.exists(strm_path):
                 with open(strm_path, 'r', encoding='utf-8') as f:
                     strm_content = f.read().strip()
-                    if strm_content.startswith('http'):
-                        pickcode = strm_content.rstrip('/').split('/')[-1]
+                    
+                    # 寻找特征锚点
+                    marker = 'p115/play/'
+                    if marker in strm_content:
+                        # 提取锚点之后的内容，并取第一个斜杠前的部分
+                        pickcode = strm_content.split(marker)[-1].split('/')[0]
+                        # print(f"成功提取 PC 码: {pickcode}")
 
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:

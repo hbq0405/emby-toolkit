@@ -1927,7 +1927,7 @@ def task_backup_mediainfo(processor):
     3. 检查本地 -mediainfo.json，如果缺失则将该项目标记为“待复核”。
     4. 如果存在，则读取并写入指纹库 p115_mediainfo_cache。
     """
-    logger.info("--- 开始执行媒体信息单向备份任务 (精准模式) ---")
+    logger.info("--- 开始执行媒体信息备份任务 ---")
     
     task_manager.update_status_from_thread(0, "正在扫描需要备份的媒体项，请稍候...")
     
@@ -2154,7 +2154,15 @@ def task_restore_mediainfo(processor):
             with open(strm_path, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
                 if content.startswith('http'):
-                    pickcode = content.rstrip('/').split('/')[-1]
+                    # 兼容逻辑：
+                    # 1. 如果包含特定路径标识符 /p115/play/
+                    if '/p115/play/' in content:
+                        # 核心逻辑：取 /play/ 之后的部分，再取第一个斜杠之前的 ID
+                        pickcode = content.split('/play/')[-1].split('/')[0].split('?')[0].strip()
+                    else:
+                        # 2. 如果不含特定路径，降级使用原有的末尾提取逻辑
+                        pickcode = content.rstrip('/').split('/')[-1].split('?')[0].strip()
+                        
         except Exception as e:
             logger.warning(f"  ⚠️ 读取 STRM 失败 {strm_path}: {e}")
             

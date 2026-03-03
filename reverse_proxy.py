@@ -840,7 +840,7 @@ def proxy_all(path):
                         if isinstance(strm_url, str):
                             pick_code = None
                             if '/api/p115/play/' in strm_url:
-                                pick_code = strm_url.split('/play/')[-1].split('?')[0].strip()
+                                pick_code = strm_url.split('/play/')[-1].split('/')[0].split('?')[0].strip()
                             else:
                                 # 挂载模式：通过 item_id 查库获取 PC 码
                                 pick_code = media_db.get_pickcode_by_emby_id(item_id)
@@ -925,7 +925,7 @@ def proxy_all(path):
                                 real_115_cdn_url = None
 
                                 if '/api/p115/play/' in strm_url:
-                                    pick_code = strm_url.split('/play/')[-1].split('?')[0].strip()
+                                    pick_code = strm_url.split('/play/')[-1].split('/')[0].split('?')[0].strip()
                                 else:
                                     # 挂载模式：从请求路径提取 item_id 查库
                                     item_id = path.split('/')[2]
