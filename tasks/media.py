@@ -2184,11 +2184,11 @@ def task_restore_mediainfo(processor):
 
 def task_contribute_mediainfo_to_center(processor):
     """
-    【人人为我，我为人人】专属反哺任务
+    【人人为我，我为人人】专属反哺任务 (批量上传优化版)
     专门扫描本地已有的 SHA1，批量对比中心服务器，
-    将中心服务器缺失的媒体信息，通过神医接口提取并反哺上传。
+    将中心服务器缺失的媒体信息，通过神医接口提取，并使用批量接口反哺上传。
     """
-    logger.info("--- 开始执行媒体信息反哺中心服务器任务 ---")
+    logger.info("--- 开始执行媒体信息反哺中心服务器任务 (批量模式) ---")
     
     if not getattr(processor, 'p115_enabled', False) or not processor.p115_center:
         logger.warning("  🚫 P115Center 未启用或未配置，无法执行反哺任务。")
@@ -2197,7 +2197,7 @@ def task_contribute_mediainfo_to_center(processor):
 
     task_manager.update_status_from_thread(0, "正在收集本地媒体资产数据...")
     
-    # ★ 调用 media_db 获取数据
+    # 调用 media_db 获取数据
     raw_items = media_db.get_local_mediainfo_assets_with_sha1()
     
     items_to_check = []
@@ -2246,8 +2246,13 @@ def task_contribute_mediainfo_to_center(processor):
         task_manager.update_status_from_thread(100, "中心服务器数据已是最新，无需反哺")
         return
         
-    # 逐个提取并反哺
+    # ==========================================
+    # ★ 批量提取与上传逻辑
+    # ==========================================
+    UPLOAD_BATCH_SIZE = 50  # 每凑够 50 个执行一次批量上传
+    payload_batch = []      # 用于存放 [(sha1, data), ...]
     success_count = 0
+    
     for i, item in enumerate(missing_in_center):
         if processor.is_stop_requested(): break
         
@@ -2256,10 +2261,10 @@ def task_contribute_mediainfo_to_center(processor):
         sha1 = item['sha1']
         
         progress = 30 + int((i/total_missing)*70)
-        task_manager.update_status_from_thread(progress, f"正在提取并反哺 ({i+1}/{total_missing}): {title}")
+        task_manager.update_status_from_thread(progress, f"正在提取 ({i+1}/{total_missing}): {title}")
         
         try:
-            # 调神医提取
+            # 1. 逐个调神医提取 (必须逐个，因为要查本地 Emby)
             extracted_data = emby.sync_item_media_info(
                 item_id=emby_id,
                 media_data=None,
@@ -2268,28 +2273,45 @@ def task_contribute_mediainfo_to_center(processor):
             )
             
             if extracted_data:
-                # 反哺中心服务器
-                processor.p115_center.upload_emby_mediainfo_data(sha1, extracted_data)
-                
-                # 顺手存入本地数据库
-                with connection.get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("""
-                            INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
-                            VALUES (%s, %s::jsonb)
-                            ON CONFLICT (sha1) DO NOTHING
-                        """, (sha1, json.dumps(extracted_data, ensure_ascii=False)))
-                        conn.commit()
-                        
-                success_count += 1
-                logger.info(f"  ✅ [反哺成功] {title} (SHA1: {sha1})")
+                # 加入批量上传队列
+                payload_batch.append((sha1, extracted_data))
+                logger.debug(f"  ⏳ [加入队列] {title} (当前队列: {len(payload_batch)}/{UPLOAD_BATCH_SIZE})")
             else:
                 logger.debug(f"  ⚠️ [提取失败] {title} 无法获取媒体信息")
                 
         except Exception as e:
-            logger.warning(f"  ❌ 处理 {title} 时发生异常: {e}")
+            logger.warning(f"  ❌ 提取 {title} 时发生异常: {e}")
             
-        time.sleep(0.5) # 稍微限速，保护 Emby 和 中心服务器
+        # 稍微限速，保护本地 Emby
+        time.sleep(0.5) 
+        
+        # 2. 达到批量阈值，或已经是最后一个项目时，执行批量上传
+        is_last_item = (i == total_missing - 1)
+        if len(payload_batch) >= UPLOAD_BATCH_SIZE or (is_last_item and payload_batch):
+            logger.info(f"  🚀 [批量反哺] 正在将 {len(payload_batch)} 条媒体信息打包上传至中心服务器...")
+            try:
+                # 调用中心服务器的批量上传接口
+                processor.p115_center.upload_emby_mediainfo_data_bulk(payload_batch)
+                
+                # 批量写入本地数据库 (使用同一个事务，极速写入)
+                with connection.get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        for batch_sha1, batch_data in payload_batch:
+                            cursor.execute("""
+                                INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
+                                VALUES (%s, %s::jsonb)
+                                ON CONFLICT (sha1) DO NOTHING
+                            """, (batch_sha1, json.dumps(batch_data, ensure_ascii=False)))
+                        conn.commit()
+                        
+                success_count += len(payload_batch)
+                logger.info(f"  ✅ [批量反哺] 成功上传并入库 {len(payload_batch)} 条数据！")
+                
+            except Exception as e:
+                logger.error(f"  ❌ [批量反哺] 批量上传失败: {e}")
+            finally:
+                # 清空队列，准备下一批
+                payload_batch = []
         
     msg = f"反哺任务完成！成功为中心服务器贡献了 {success_count} 条媒体信息。"
     logger.info(f"  🎉 {msg}")
