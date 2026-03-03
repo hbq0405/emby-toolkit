@@ -493,8 +493,8 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         with conn.cursor() as cursor:
                             cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s", (sha1,))
                             row = cursor.fetchone()
-                            if row and row[0]:
-                                media_data = row[0]
+                            if row and row['mediainfo_json']:
+                                media_data = row['mediainfo_json']
                                 if isinstance(media_data, str):
                                     media_data = json.loads(media_data)
                                 is_from_local = True
