@@ -857,7 +857,7 @@ def proxy_all(path):
             # 如果获取到 115 直链，直接 302 重定向！不要用 Python 中转流！
             # 这样 Infuse 等播放器会自己去连 115，完美支持拖动进度条，且不消耗服务器带宽。
             if real_115_url:
-                logger.info(f"  ✅ 已 302 重定向到 115 直链")
+                #logger.info(f"  ✅ 已 302 重定向到 115 直链")
                 return redirect(real_115_url, code=302)
             
             # 如果获取失败，回退到原来的转发方式
