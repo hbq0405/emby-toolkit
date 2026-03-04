@@ -493,7 +493,7 @@
                         </div>
                       </template>
                       <n-alert type="info" :show-icon="true">
-                        支持第三方工具生成的 STRM 文件，通过自定义正则表达式，让 ETK 实时拦截并提取 PC 码实现302播放。
+                        支持第三方工具生成的 STRM 文件，通过自定义正则表达式，让 ETK 实时拦截并提取 PC 码实现302播放。不会编写正则的，可以把第三方STRM链接丢给AI，让AI编写。
                       </n-alert>
                     </n-card>
 
@@ -1482,7 +1482,7 @@
   </n-modal>
 
   <!-- ★★★ 自定义 STRM 正则模态框 ★★★ -->
-    <n-modal v-model:show="showCustomRegexModal" preset="card" title="配置万能提取正则" style="width: 650px;">
+    <n-modal v-model:show="showCustomRegexModal" preset="card" title="配置自定义提取正则" style="width: 650px;">
       <n-alert type="warning" :show-icon="true" style="margin-bottom: 16px;">
         <b>正则编写规则：</b><br/>
         必须使用小括号 <code>()</code> 将 115 的 PC 码包裹起来作为<b>第一个捕获组</b>。<br/>
