@@ -2030,8 +2030,20 @@ def task_backup_mediainfo(processor):
                     
                     # 阶段 1: 补齐缺失的 SHA1
                     if not current_sha1 and actual_pc:
-                        logger.info(f"  🔍 [{title}] 缺失 SHA1，正在通过 115 API 补齐 (PC: {actual_pc})...")
-                        fid = P115CacheManager.get_fid_by_pickcode(actual_pc)
+                        logger.info(f"  🔍 [{title}] 缺失 SHA1，正在通过本地计算 FID 并请求 115 API 补齐 (PC: {actual_pc})...")
+                        fid = None
+                        try:
+                            # 优先使用 p115pickcode 库本地计算，无需查库，速度极快
+                            from p115pickcode import to_id
+                            fid = to_id(actual_pc)
+                        except ImportError:
+                            try:
+                                from p115client.tool.iterdir import to_id
+                                fid = to_id(actual_pc)
+                            except ImportError:
+                                # 兜底查库
+                                fid = P115CacheManager.get_fid_by_pickcode(actual_pc)
+                                
                         if fid and client:
                             try:
                                 info_res = client.fs_get_info(fid)
