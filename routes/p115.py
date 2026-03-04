@@ -758,16 +758,14 @@ def handle_rename_config():
         config = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {}
         # 提供默认值，确保前端始终有完整的数据结构
         defaults = {
-            "keep_original_name": False,   # bool
-            "main_title_lang": "zh",       # zh, original
-            "main_year_en": True,          # bool
-            "main_tmdb_fmt": "{tmdb=ID}",  # {tmdb=ID}, [tmdbid=ID], tmdb-ID, none
-            "season_fmt": "Season {02}",   # Season {02}, Season {1}, S{02}, S{1}, 第{1}季
-            "file_title_lang": "zh",       # zh, original
-            "file_year_en": False,         # bool
-            "file_tmdb_fmt": "none",       # {tmdb=ID}, [tmdbid=ID], tmdb-ID, none
-            "file_params_en": True,        # bool
-            "file_sep": " - "              # " - ", ".", " ", "_"
+            "main_title_lang": "zh",       
+            "main_year_en": True,          
+            "main_tmdb_fmt": "{tmdb=ID}",  
+            "season_fmt": "Season {02}",   
+            "file_format": ["title_zh", "year", "s_e", "resolution", "codec", "audio", "group"], # 乐高轨道
+            "file_tmdb_fmt": "none",       
+            "file_sep": " - ",
+            "strm_url_fmt": "standard"
         }
         defaults.update(config)
         return jsonify({"success": True, "data": defaults})

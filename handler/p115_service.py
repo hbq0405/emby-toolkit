@@ -934,81 +934,55 @@ class SmartOrganizer:
 
     def _extract_video_info(self, filename):
         """
-        从文件名提取视频信息 (来源 · 分辨率 · 编码 · 音频 · 制作组)
-        参考格式: BluRay · 1080p · X264 · DDP 7.1 · CMCT
+        从文件名提取视频信息，返回字典供乐高模块调用
         """
-        info_tags = []
+        info_dict = {
+            'source': '', 'effect': '', 'resolution': '', 
+            'codec': '', 'audio': '', 'group': ''
+        }
         name_upper = filename.upper()
 
-        # 1. 来源/质量 (Source)
-        source = ""
-        if re.search(r'REMUX', name_upper): source = 'Remux'
-        elif re.search(r'BLU-?RAY|BD', name_upper): source = 'BluRay'
-        elif re.search(r'WEB-?DL', name_upper): source = 'WEB-DL'
-        elif re.search(r'WEB-?RIP', name_upper): source = 'WEBRip'
-        elif re.search(r'HDTV', name_upper): source = 'HDTV'
-        elif re.search(r'DVD', name_upper): source = 'DVD'
-
-        # ★★★ 修复：UHD 识别 ★★★
+        # 1. 来源 (Source)
+        if re.search(r'REMUX', name_upper): info_dict['source'] = 'Remux'
+        elif re.search(r'BLU-?RAY|BD', name_upper): info_dict['source'] = 'BluRay'
+        elif re.search(r'WEB-?DL', name_upper): info_dict['source'] = 'WEB-DL'
+        elif re.search(r'WEB-?RIP', name_upper): info_dict['source'] = 'WEBRip'
+        elif re.search(r'HDTV', name_upper): info_dict['source'] = 'HDTV'
+        elif re.search(r'DVD', name_upper): info_dict['source'] = 'DVD'
         if 'UHD' in name_upper:
-            if source == 'BluRay': source = 'UHD BluRay'
-            elif not source: source = 'UHD'
+            info_dict['source'] = 'UHD BluRay' if info_dict['source'] == 'BluRay' else 'UHD'
 
-        # 2. 特效 (Effect: HDR/DV)
-        effect = ""
+        # 2. 特效 (Effect)
         is_dv = re.search(r'(?:^|[\.\s\-\_])(DV|DOVI|DOLBY\s?VISION)(?:$|[\.\s\-\_])', name_upper)
         is_hdr = re.search(r'(?:^|[\.\s\-\_])(HDR|HDR10\+?)(?:$|[\.\s\-\_])', name_upper)
-
-        if is_dv and is_hdr: effect = "HDR DV"
-        elif is_dv: effect = "DV"
-        elif is_hdr: effect = "HDR"
-
-        if source:
-            info_tags.append(f"{source} {effect}".strip())
-        elif effect:
-            info_tags.append(effect)
+        if is_dv and is_hdr: info_dict['effect'] = "HDR DV"
+        elif is_dv: info_dict['effect'] = "DV"
+        elif is_hdr: info_dict['effect'] = "HDR"
 
         # 3. 分辨率 (Resolution)
         res_match = re.search(r'(2160|1080|720|480)[pP]', filename)
-        if res_match:
-            info_tags.append(res_match.group(0).lower())
-        elif '4K' in name_upper:
-            info_tags.append('2160p')
+        if res_match: info_dict['resolution'] = res_match.group(0).lower()
+        elif '4K' in name_upper: info_dict['resolution'] = '2160p'
 
         # 4. 编码 (Codec)
         codec = ""
-        if re.search(r'[HX]265|HEVC', name_upper): info_tags.append('H265')
-        elif re.search(r'[HX]264|AVC', name_upper): info_tags.append('H264')
-        elif re.search(r'AV1', name_upper): info_tags.append('AV1')
-        elif re.search(r'MPEG-?2', name_upper): info_tags.append('MPEG2')
-        # 比特率提取 (Bit Depth) 
-        bit_depth = ""
-        bit_match = re.search(r'(\d{1,2})BIT', name_upper)
-        if bit_match:
-            bit_depth = f"{bit_match.group(1)}bit" # 统一格式为小写 bit
-
-        # 将编码和比特率组合，比如 "H265 10bit" 或单独 "H265"
-        if codec:
-            full_codec = f"{codec} {bit_depth}".strip()
-            info_tags.append(full_codec)
-        elif bit_depth:
-            info_tags.append(bit_depth)
-
-        # 5. 音频 (Audio) - ★★★ 修复重点 ★★★
-        audio_info = []
+        if re.search(r'[HX]265|HEVC', name_upper): codec = 'H265'
+        elif re.search(r'[HX]264|AVC', name_upper): codec = 'H264'
+        elif re.search(r'AV1', name_upper): codec = 'AV1'
         
-        # (1) 优先匹配带数字的音轨 (2Audio, 3Audios) 并统一格式为 "xAudios"
-        # 正则说明: 匹配边界 + 数字 + 空格(可选) + Audio + s(可选) + 边界
-        num_audio_match = re.search(r'\b(\d+)\s?Audios?\b', name_upper, re.IGNORECASE)
-        if num_audio_match:
-            # 统一格式化为: 数字 + Audios (例如: 2Audios)
-            audio_info.append(f"{num_audio_match.group(1)}Audios")
-        else:
-            # (2) 如果没有数字音轨，再匹配 Multi/Dual 等通用标签
-            if re.search(r'\b(Multi|双语|多音轨|Dual-Audio)\b', name_upper, re.IGNORECASE):
-                audio_info.append('Multi')
+        bit_match = re.search(r'(\d{1,2})BIT', name_upper)
+        bit_depth = f"{bit_match.group(1)}bit" if bit_match else ""
+        
+        if codec and bit_depth: info_dict['codec'] = f"{codec} {bit_depth}"
+        elif codec: info_dict['codec'] = codec
+        elif bit_depth: info_dict['codec'] = bit_depth
 
-        # (3) 其他具体音频编码
+        # 5. 音频 (Audio)
+        audio_info = []
+        num_audio_match = re.search(r'\b(\d+)\s?Audios?\b', name_upper, re.IGNORECASE)
+        if num_audio_match: audio_info.append(f"{num_audio_match.group(1)}Audios")
+        elif re.search(r'\b(Multi|双语|多音轨|Dual-Audio)\b', name_upper, re.IGNORECASE): audio_info.append('Multi')
+
         if re.search(r'ATMOS', name_upper): audio_info.append('Atmos')
         elif re.search(r'TRUEHD', name_upper): audio_info.append('TrueHD')
         elif re.search(r'DTS-?HD(\s?MA)?', name_upper): audio_info.append('DTS-HD')
@@ -1017,47 +991,27 @@ class SmartOrganizer:
         elif re.search(r'AC3|DD', name_upper): audio_info.append('AC3')
         elif re.search(r'AAC', name_upper): audio_info.append('AAC')
         elif re.search(r'FLAC', name_upper): audio_info.append('FLAC')
-        elif re.search(r'OPUS', name_upper): audio_info.append('Opus')
         
         chan_match = re.search(r'\b(7\.1|5\.1|2\.0)\b', filename)
-        if chan_match:
-            audio_info.append(chan_match.group(1))
-            
-        if audio_info:
-            info_tags.append(" ".join(audio_info))
+        if chan_match: audio_info.append(chan_match.group(1))
+        if audio_info: info_dict['audio'] = " ".join(audio_info)
 
-        # 流媒体平台识别
-        # 匹配 NF, AMZN, DSNP, HMAX, HULU, NETFLIX, DISNEY+, APPLETV+
-        stream_match = re.search(r'\b(NF|AMZN|DSNP|HMAX|HULU|NETFLIX|DISNEY\+|APPLETV\+|B-GLOBAL)\b', name_upper)
-        if stream_match:
-            info_tags.append(stream_match.group(1))
-
-        # 6. 发布组 (Release Group)
-        group_found = False
+        # 6. 发布组 (Group)
         try:
             from tasks import helpers
             for group_name, patterns in helpers.RELEASE_GROUPS.items():
                 for pattern in patterns:
-                    try:
-                        match = re.search(pattern, filename, re.IGNORECASE)
-                        if match:
-                            info_tags.append(match.group(0))
-                            group_found = True
-                            break
-                    except: pass
-                if group_found: break
+                    if re.search(pattern, filename, re.IGNORECASE):
+                        info_dict['group'] = group_name
+                        break
+                if info_dict['group']: break
+            if not info_dict['group']:
+                match_suffix = re.search(r'-([a-zA-Z0-9]+)$', os.path.splitext(filename)[0])
+                if match_suffix and len(match_suffix.group(1)) > 2 and match_suffix.group(1).upper() not in ['1080P', '2160P', '4K', 'HDR', 'H265', 'H264']:
+                    info_dict['group'] = match_suffix.group(1)
+        except: pass
 
-            if not group_found:
-                name_no_ext = os.path.splitext(filename)[0]
-                match_suffix = re.search(r'-([a-zA-Z0-9]+)$', name_no_ext)
-                if match_suffix:
-                    possible_group = match_suffix.group(1)
-                    if len(possible_group) > 2 and possible_group.upper() not in ['1080P', '2160P', '4K', 'HDR', 'H265', 'H264']:
-                        info_tags.append(possible_group)
-        except ImportError:
-            pass
-
-        return " · ".join(info_tags) if info_tags else ""
+        return info_dict
 
     def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
@@ -1067,63 +1021,33 @@ class SmartOrganizer:
         name_body = parts[0]
         ext = parts[1].lower()
 
-        # ... (保留原有的 is_sub 和 lang_suffix 逻辑) ...
         is_sub = ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']
         lang_suffix = ""
         if is_sub:
-            lang_keywords = [
-                'zh', 'cn', 'tw', 'hk', 'en', 'jp', 'kr',
-                'chs', 'cht', 'eng', 'jpn', 'kor', 'fre', 'spa',
-                'default', 'forced', 'tc', 'sc'
-            ]
+            lang_keywords = ['zh', 'cn', 'tw', 'hk', 'en', 'jp', 'kr', 'chs', 'cht', 'eng', 'jpn', 'kor', 'fre', 'spa', 'default', 'forced', 'tc', 'sc']
             sub_parts = name_body.split('.')
-            if len(sub_parts) > 1:
-                last_part = sub_parts[-1].lower()
-                if last_part in lang_keywords or '-' in last_part:
-                    lang_suffix = f".{sub_parts[-1]}"
-
+            if len(sub_parts) > 1 and (sub_parts[-1].lower() in lang_keywords or '-' in sub_parts[-1].lower()):
+                lang_suffix = f".{sub_parts[-1]}"
             if not lang_suffix:
                 match = re.search(r'(?:\.|-|_|\s)(chs|cht|zh-cn|zh-tw|eng|jpn|kor|tc|sc)(?:\.|-|_|$)', name_body, re.IGNORECASE)
-                if match:
-                    lang_suffix = f".{match.group(1)}"
+                if match: lang_suffix = f".{match.group(1)}"
 
-        # ★ 应用文件重命名配置
         cfg = self.rename_config
-        base_title = original_title if cfg.get('file_title_lang') == 'original' and original_title else new_base_name
-        
-        # ★ 修复：将年份直接拼接到片名后面，用空格隔开
-        if cfg.get('file_year_en') and year:
-            base_title = f"{base_title} ({year})"
-            
         file_sep = cfg.get('file_sep', ' - ')
+        
+        # 默认乐高轨道
+        default_format = ['title_zh', 'year', 's_e', 'resolution', 'codec', 'audio', 'group']
+        file_format = cfg.get('file_format', default_format)
 
-        tag_suffix = ""
-        if cfg.get('file_params_en', True):
-            try:
-                search_name = original_name
-                if is_sub:
-                    if lang_suffix and name_body.endswith(lang_suffix):
-                        clean_body = name_body[:-len(lang_suffix)]
-                        search_name = f"{clean_body}.mkv"
-                    else:
-                        search_name = f"{name_body}.mkv"
+        # 提取视频信息字典
+        search_name = original_name
+        if is_sub and lang_suffix and name_body.endswith(lang_suffix):
+            search_name = f"{name_body[:-len(lang_suffix)]}.mkv"
+        video_info = self._extract_video_info(search_name)
 
-                video_info = self._extract_video_info(search_name)
-                if video_info:
-                    if file_sep.strip() == '.':
-                        tag_suffix = f".{video_info.replace(' · ', '.')}"
-                    else:
-                        tag_suffix = f" · {video_info}"
-            except Exception as e:
-                pass
-
-        # 构建文件名主体
-        name_parts = [base_title] # 此时 base_title 已经包含了年份
-            
-        tmdb_fmt = cfg.get('file_tmdb_fmt', 'none')
-        if tmdb_fmt != 'none':
-            name_parts.append(tmdb_fmt.replace('ID', str(self.tmdb_id)))
-
+        # 解析季集号 (支持到9999集)
+        season_num = None
+        episode_num = None
         if is_tv:
             pattern = r'(?:s|S)(\d{1,4})(?:e|E)(\d{1,4})|Ep?(\d{1,4})|第(\d{1,4})[集话]'
             match = re.search(pattern, original_name)
@@ -1132,19 +1056,32 @@ class SmartOrganizer:
                 season_num = int(s) if s else 1
                 episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
 
-                s_str = f"S{season_num:02d}"
-                e_str = f"E{episode_num:02d}"
-                
-                name_parts.append(f"{s_str}{e_str}")
-                core_name = file_sep.join(name_parts)
-                new_name = f"{core_name}{tag_suffix}{lang_suffix}.{ext}"
-                return new_name, season_num
-            else:
-                return original_name, None
+        # 组装乐高积木
+        name_parts = []
+        for block in file_format:
+            if block == 'title_zh': name_parts.append(new_base_name)
+            elif block == 'title_en' and original_title: name_parts.append(original_title)
+            elif block == 'year' and year: name_parts.append(f"({year})")
+            elif block == 'tmdb':
+                tmdb_fmt = cfg.get('file_tmdb_fmt', '{tmdb=ID}')
+                if tmdb_fmt != 'none': name_parts.append(tmdb_fmt.replace('ID', str(self.tmdb_id)))
+            elif block == 's_e' and is_tv and season_num is not None:
+                name_parts.append(f"S{season_num:02d}E{episode_num:02d}")
+            elif block == 'original_name': 
+                name_parts.append(name_body)
+            elif block in video_info and video_info[block]:
+                name_parts.append(video_info[block])
+
+        # 清理空积木并拼接
+        clean_parts = [str(p).strip() for p in name_parts if p and str(p).strip()]
+        
+        if file_sep == '.':
+            core_name = ".".join([p.replace(' ', '.') for p in clean_parts])
         else:
-            core_name = file_sep.join(name_parts)
-            new_name = f"{core_name}{tag_suffix}{lang_suffix}.{ext}"
-            return new_name, None
+            core_name = file_sep.join(clean_parts)
+
+        new_name = f"{core_name}{lang_suffix}.{ext}"
+        return new_name, season_num
 
     def _scan_files_recursively(self, cid, depth=0, max_depth=3, current_rel_path=""):
         all_files = []
