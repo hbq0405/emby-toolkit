@@ -888,77 +888,77 @@ def proxy_all(path):
         # ====================================================================
         # ★★★ 终极拦截 G: PlaybackInfo 智能劫持 (完美兼容版) ★★★
         # ====================================================================
-        if 'PlaybackInfo' in path:
-            try:
-                base_url, api_key = _get_real_emby_url_and_key()
-                target_url = f"{base_url}/{path.lstrip('/')}"
+        # if 'PlaybackInfo' in path:
+        #     try:
+        #         base_url, api_key = _get_real_emby_url_and_key()
+        #         target_url = f"{base_url}/{path.lstrip('/')}"
                 
-                client_name = request.headers.get('X-Emby-Client', '').lower()
-                user_agent = request.headers.get('User-Agent', '').lower()
+        #         client_name = request.headers.get('X-Emby-Client', '').lower()
+        #         user_agent = request.headers.get('User-Agent', '').lower()
 
-                forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
-                forward_headers['Host'] = urlparse(base_url).netloc
-                forward_params = request.args.copy()
-                forward_params['api_key'] = api_key
+        #         forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
+        #         forward_headers['Host'] = urlparse(base_url).netloc
+        #         forward_params = request.args.copy()
+        #         forward_params['api_key'] = api_key
                 
-                resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), timeout=10)
+        #         resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), timeout=10)
                 
-                if resp.status_code == 200 and 'application/json' in resp.headers.get('Content-Type', ''):
-                    data = resp.json()
-                    modified = False
+        #         if resp.status_code == 200 and 'application/json' in resp.headers.get('Content-Type', ''):
+        #             data = resp.json()
+        #             modified = False
                     
-                    # 【修复核心】先判断是否为浏览器，再决定是否获取115直链
-                    is_browser = 'mozilla' in user_agent or 'chrome' in user_agent or 'safari' in user_agent
+        #             # 【修复核心】先判断是否为浏览器，再决定是否获取115直链
+        #             is_browser = 'mozilla' in user_agent or 'chrome' in user_agent or 'safari' in user_agent
                     
-                    # 排除已知的本地播放器 (它们伪装了 UA，但可以通过 Client 或特定关键字识别)
-                    native_clients = ['androidtv', 'infuse', 'emby for ios', 'emby for android', 'emby theater', 'senplayer']
-                    if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent:
-                        is_browser = False
+        #             # 排除已知的本地播放器 (它们伪装了 UA，但可以通过 Client 或特定关键字识别)
+        #             native_clients = ['androidtv', 'infuse', 'emby for ios', 'emby for android', 'emby theater', 'senplayer']
+        #             if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent:
+        #                 is_browser = False
                     
-                    # logger.info(f"  🔍 客户端名称: {client_name}, User-Agent: {user_agent[:50]}, 是否浏览器: {is_browser}")
+        #             # logger.info(f"  🔍 客户端名称: {client_name}, User-Agent: {user_agent[:50]}, 是否浏览器: {is_browser}")
                     
-                    # 只有非浏览器才获取115直链
-                    if not is_browser:
-                        for source in data.get('MediaSources', []):
-                            strm_url = source.get('Path', '')
-                            if isinstance(strm_url, str):
-                                real_115_cdn_url = None
+        #             # 只有非浏览器才获取115直链
+        #             if not is_browser:
+        #                 for source in data.get('MediaSources', []):
+        #                     strm_url = source.get('Path', '')
+        #                     if isinstance(strm_url, str):
+        #                         real_115_cdn_url = None
                                 
-                                # ★ 实时万能解析第三方 STRM 链接
-                                pick_code = extract_pickcode_from_strm_url(strm_url)
+        #                         # ★ 实时万能解析第三方 STRM 链接
+        #                         pick_code = extract_pickcode_from_strm_url(strm_url)
 
-                                if not pick_code:
-                                    # 挂载模式兜底：从请求路径提取 item_id 查库
-                                    item_id = path.split('/')[2]
-                                    pick_code = media_db.get_pickcode_by_emby_id(item_id)
+        #                         if not pick_code:
+        #                             # 挂载模式兜底：从请求路径提取 item_id 查库
+        #                             item_id = path.split('/')[2]
+        #                             pick_code = media_db.get_pickcode_by_emby_id(item_id)
                                     
-                                if pick_code:
-                                    player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
-                                    client_ip = request.headers.get('X-Real-IP', request.remote_addr)
-                                    real_115_cdn_url = _get_cached_115_url(pick_code, player_ua, client_ip)
+        #                         if pick_code:
+        #                             player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+        #                             client_ip = request.headers.get('X-Real-IP', request.remote_addr)
+        #                             real_115_cdn_url = _get_cached_115_url(pick_code, player_ua, client_ip)
                                 
-                                # ★★★ 只有成功获取到直链，才进行劫持注入 ★★★
-                                if real_115_cdn_url:
-                                    source['RemoteUrl'] = real_115_cdn_url
-                                    source['Path'] = real_115_cdn_url
-                                    source['IsRemote'] = True
-                                    source.pop('TranscodingUrl', None)
-                                    source['Protocol'] = 'Http'
-                                    source['SupportsDirectPlay'] = True
-                                    source['SupportsDirectStream'] = True
-                                    source['SupportsTranscoding'] = False
-                                    modified = True
-                    # else: 浏览器直接跳过，不获取115直链
+        #                         # ★★★ 只有成功获取到直链，才进行劫持注入 ★★★
+        #                         if real_115_cdn_url:
+        #                             source['RemoteUrl'] = real_115_cdn_url
+        #                             source['Path'] = real_115_cdn_url
+        #                             source['IsRemote'] = True
+        #                             source.pop('TranscodingUrl', None)
+        #                             source['Protocol'] = 'Http'
+        #                             source['SupportsDirectPlay'] = True
+        #                             source['SupportsDirectStream'] = True
+        #                             source['SupportsTranscoding'] = False
+        #                             modified = True
+        #             # else: 浏览器直接跳过，不获取115直链
                             
-                    if modified:
-                        return Response(json.dumps(data), status=200, mimetype='application/json')
+        #             if modified:
+        #                 return Response(json.dumps(data), status=200, mimetype='application/json')
                         
-                excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-                response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_resp_headers]
-                return Response(resp.content, resp.status_code, response_headers)
+        #         excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+        #         response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_resp_headers]
+        #         return Response(resp.content, resp.status_code, response_headers)
                 
-            except Exception as e:
-                logger.error(f"  ❌ PlaybackInfo 劫持异常: {e}")
+        #     except Exception as e:
+        #         logger.error(f"  ❌ PlaybackInfo 劫持异常: {e}")
 
         # --- 拦截 A: 虚拟项目海报图片 ---
         if path.startswith('emby/Items/') and '/Images/Primary' in path:
