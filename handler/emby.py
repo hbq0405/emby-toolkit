@@ -1710,7 +1710,7 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
 
 # --- 定位媒体库 ---
 def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
-    logger.debug("  ➜ 正在为项目ID {item_id} 定位媒体库...")
+    logger.debug(f"  ➜ 正在为项目ID {item_id} 定位媒体库...")
     try:
         all_libraries_data = get_all_libraries_with_paths(base_url, api_key)
         if not all_libraries_data:
