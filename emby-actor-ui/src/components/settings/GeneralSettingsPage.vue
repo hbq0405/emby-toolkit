@@ -1463,7 +1463,14 @@
     </template>
   </n-modal>
   <!-- ★★★ 批量替换 STRM 模态框 ★★★ -->
-    <n-modal v-model:show="showReplaceStrmModal" preset="card" title="批量替换本地 STRM 链接" style="width: 600px;">
+    <n-modal v-model:show="showReplaceStrmModal" preset="card" title="批量替换本地 STRM 链接" style="width: 650px;">
+      
+      <n-alert type="info" :show-icon="true" style="margin-bottom: 16px;">
+        <b>ETK 标准格式示例 (不带文件名后缀)：</b><br/>
+        <code>http://192.168.1.100:5257/api/p115/play/abcde12345</code><br/>
+        <span style="font-size: 0.85em; color: gray;">(注意：标准格式以 115 的 PC 码结尾，不带斜杠和 .mkv 等后缀)</span>
+      </n-alert>
+
       <n-form label-placement="left" label-width="100">
         <n-form-item label="替换模式">
           <n-radio-group v-model:value="replaceStrmForm.mode">
@@ -1486,9 +1493,20 @@
           <n-input v-model:value="replaceStrmForm.testUrl" placeholder="输入一个现有的 STRM 链接用于测试" />
         </n-form-item>
         <n-form-item label="替换后结果">
-          <n-alert :type="previewResult.type" :show-icon="true" style="width: 100%; word-break: break-all;">
-            {{ previewResult.text }}
-          </n-alert>
+          <n-space vertical style="width: 100%;">
+            <n-alert :type="previewResult.type" :show-icon="true" style="width: 100%; word-break: break-all;">
+              {{ previewResult.text }}
+            </n-alert>
+            <!-- 实时标准格式校验提示 -->
+            <n-text 
+              v-if="previewResult.type === 'success' || previewResult.type === 'warning'" 
+              :type="previewResult.isStandard ? 'success' : 'error'" 
+              style="font-size: 0.9em; font-weight: bold; display: flex; align-items: center; gap: 4px;"
+            >
+              <n-icon :component="previewResult.isStandard ? CheckIcon : CloseIcon" />
+              {{ previewResult.standardMsg }}
+            </n-text>
+          </n-space>
         </n-form-item>
       </n-form>
       
@@ -1673,8 +1691,8 @@ const openReplaceStrmModal = () => {
 
 const previewResult = computed(() => {
   const { mode, search, replace, testUrl } = replaceStrmForm.value;
-  if (!search) return { type: 'default', text: '请输入查找内容以查看预览' };
-  if (!testUrl) return { type: 'default', text: '请输入测试原始链接' };
+  if (!search) return { type: 'default', text: '请输入查找内容以查看预览', isStandard: false };
+  if (!testUrl) return { type: 'default', text: '请输入测试原始链接', isStandard: false };
 
   try {
     let resultUrl = testUrl;
@@ -1687,12 +1705,20 @@ const previewResult = computed(() => {
       resultUrl = testUrl.replace(regex, replace);
     }
     
+    // ★ 校验是否符合 ETK 标准格式 (不带文件名后缀)
+    // 规则: http(s)://域名或IP:端口/api/p115/play/字母数字组合
+    const standardRegex = /^https?:\/\/[^\/]+\/api\/p115\/play\/[a-zA-Z0-9]+$/;
+    const isStandard = standardRegex.test(resultUrl);
+    const standardMsg = isStandard 
+      ? '校验通过：符合 ETK 标准格式' 
+      : '校验失败：不符合 ETK 标准格式 (可能带有文件名后缀、路径错误或非 http 协议)';
+
     if (resultUrl === testUrl) {
-      return { type: 'warning', text: '未发生匹配，链接保持不变：\n' + resultUrl };
+      return { type: 'warning', text: '未发生匹配，链接保持不变：\n' + resultUrl, isStandard, standardMsg };
     }
-    return { type: 'success', text: resultUrl };
+    return { type: 'success', text: resultUrl, isStandard, standardMsg };
   } catch (e) {
-    return { type: 'error', text: '正则表达式语法错误: ' + e.message };
+    return { type: 'error', text: '正则表达式语法错误: ' + e.message, isStandard: false };
   }
 });
 
