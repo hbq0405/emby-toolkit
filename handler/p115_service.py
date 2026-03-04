@@ -1626,6 +1626,12 @@ class SmartOrganizer:
                             with open(strm_filepath, 'w', encoding='utf-8') as f:
                                 f.write(strm_content)
                             logger.info(f"  📝 STRM 已生成 -> {strm_filename}")
+                            # ★ 主动推送给监控服务接盘
+                            try:
+                                from monitor_service import enqueue_file_actively
+                                enqueue_file_actively(strm_filepath)
+                            except Exception as e:
+                                logger.warning(f"  ⚠️ 主动推送监控队列失败: {e}")
 
                             if not file_sha1 and fid:
                                 try:
@@ -2447,6 +2453,13 @@ def task_full_sync_strm_and_subs(processor=None):
                                     logger.debug(f"  🔄 [更新] 覆盖 STRM: {strm_name}")
                                     
                                 files_generated += 1
+
+                                # ★ 主动推送给监控服务接盘
+                                try:
+                                    from monitor_service import enqueue_file_actively
+                                    enqueue_file_actively(strm_path)
+                                except Exception:
+                                    pass
                                 
                             valid_local_files.add(os.path.abspath(strm_path))
 

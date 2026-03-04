@@ -74,16 +74,8 @@ class MediaFileHandler(FileSystemEventHandler):
             self._enqueue_mediainfo(event.src_path)
 
     def _enqueue_file(self, file_path: str):
-        """新增/移动文件入队"""
-        global DEBOUNCE_TIMER
-        with QUEUE_LOCK:
-            if file_path not in FILE_EVENT_QUEUE:
-                logger.info(f"  🔍 [实时监控] 文件加入队列: {file_path}")
-            
-            FILE_EVENT_QUEUE.add(file_path)
-            
-            if DEBOUNCE_TIMER: DEBOUNCE_TIMER.kill()
-            DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_batch_queue)
+        """新增/移动文件入队 (被动监听)"""
+        enqueue_file_actively(file_path)
 
     def _enqueue_mediainfo(self, file_path: str):
         """媒体信息入队逻辑 (独立防抖)"""
@@ -97,18 +89,6 @@ class MediaFileHandler(FileSystemEventHandler):
             if MEDIAINFO_DEBOUNCE_TIMER: MEDIAINFO_DEBOUNCE_TIMER.kill()
             MEDIAINFO_DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_mediainfo_queue)
 
-    def _enqueue_file(self, file_path: str):
-        """新增/移动文件入队"""
-        global DEBOUNCE_TIMER
-        with QUEUE_LOCK:
-            if file_path not in FILE_EVENT_QUEUE:
-                logger.info(f"  🔍 [实时监控] 文件加入队列: {file_path}")
-            
-            FILE_EVENT_QUEUE.add(file_path)
-            
-            if DEBOUNCE_TIMER: DEBOUNCE_TIMER.kill()
-            DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_batch_queue)
-
 def _is_path_excluded(file_path: str, exclude_paths: List[str]) -> bool:
     if not exclude_paths:
         return False
@@ -118,6 +98,18 @@ def _is_path_excluded(file_path: str, exclude_paths: List[str]) -> bool:
         if norm_file == norm_exc or norm_file.startswith(norm_exc + os.sep):
             return True
     return False
+
+def enqueue_file_actively(file_path: str):
+    """主动将文件推入监控队列 (供内部模块调用，防侧漏)"""
+    global DEBOUNCE_TIMER
+    with QUEUE_LOCK:
+        if file_path not in FILE_EVENT_QUEUE:
+            logger.info(f"  🎯 [主动推送] 文件加入监控队列: {os.path.basename(file_path)}")
+        
+        FILE_EVENT_QUEUE.add(file_path)
+        
+        if DEBOUNCE_TIMER: DEBOUNCE_TIMER.kill()
+        DEBOUNCE_TIMER = spawn_later(DEBOUNCE_DELAY, process_batch_queue)
 
 def process_batch_queue():
     """
