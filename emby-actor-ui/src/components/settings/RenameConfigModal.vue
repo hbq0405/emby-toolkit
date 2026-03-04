@@ -168,16 +168,16 @@ const allBlocks = [
   { id: 'title_zh', label: '中文片名' },
   { id: 'title_en', label: '英文/原名' },
   { id: 'year', label: '年份' },
-  { id: 's_e', label: '季集号 (S01E01)' },
+  { id: 's_e', label: '季集号' },
   { id: 'resolution', label: '分辨率' },
-  { id: 'source', label: '来源 (WEB-DL等)' },
-  { id: 'stream', label: '流媒体 (NF/AMZN等)' },
-  { id: 'effect', label: '特效 (HDR/DV)' },
-  { id: 'codec', label: '视频编码' },
-  { id: 'audio', label: '音频/音轨' },
+  { id: 'source', label: '质量' },
+  { id: 'stream', label: '流媒体' },
+  { id: 'effect', label: '特效' },
+  { id: 'codec', label: '编码' },
+  { id: 'audio', label: '音频' },
   { id: 'group', label: '发布组' },
   { id: 'tmdb', label: 'TMDb标签' },
-  { id: 'original_name', label: '原文件名(保留原名)' }
+  { id: 'original_name', label: '保留原名' }
 ];
 
 const activeBlocks = ref([]);
