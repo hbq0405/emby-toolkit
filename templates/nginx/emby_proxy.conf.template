@@ -93,63 +93,6 @@ server {
         proxy_pass http://emby_server;
     }
 
-    # ====================================================================
-    #  内部流媒体代理路由 (配合 Python 的 X-Accel-Redirect)
-    # ====================================================================
-
-    # 1. 专门代理 115 直链 (解决浏览器跨域问题)
-    location = /proxy_115_stream {
-        internal; # 关键：表示这是一个内部路由，外部用户不能直接访问这个路径
-        
-        # 必须配置 DNS 解析器，因为 115 的 CDN 域名是动态的
-        resolver 8.8.8.8 114.114.114.114 223.5.5.5 valid=300s;
-        
-        # 从 Python 传过来的 Header 中提取真实的 115 链接
-        set $target_url $upstream_http_x_target_url;
-        
-        # 代理到 115 CDN
-        proxy_pass $target_url;
-        
-        # 伪装请求头，防止 115 防盗链拦截
-        proxy_set_header Host $proxy_host;
-        proxy_set_header Referer "";
-        proxy_set_header User-Agent "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
-        
-        # ★★★ 核心：强行注入跨域头，欺骗浏览器，解决 CORS 报错 ★★★
-        add_header Access-Control-Allow-Origin * always;
-        add_header Access-Control-Allow-Headers * always;
-        add_header Access-Control-Allow-Methods "GET, OPTIONS" always;
-        add_header Access-Control-Expose-Headers "Content-Length, Content-Range" always;
-        
-        # 优化视频流缓冲，支持浏览器拖动进度条
-        proxy_buffering off;
-        proxy_set_header Range $http_range;
-        proxy_set_header If-Range $http_if_range;
-        
-        # 忽略 115 返回的跨域头（如果有的话），防止冲突
-        proxy_hide_header Access-Control-Allow-Origin;
-    }
-
-    # 2. 兜底代理真实的 Emby 视频流
-    location = /proxy_emby_stream {
-        internal;
-        
-        # 从 Python 传过来的 Header 中提取真实的 Emby 链接
-        set $target_url $upstream_http_x_target_url;
-        
-        proxy_pass $target_url;
-        
-        # 透传客户端信息给真实 Emby
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        
-        # 优化视频流缓冲
-        proxy_buffering off;
-        proxy_set_header Range $http_range;
-        proxy_set_header If-Range $http_if_range;
-    }
-
     # 兜底规则：转发所有其他请求到真实 Emby
     location / {
         proxy_pass http://emby_server;
