@@ -531,8 +531,8 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                             base_url=emby_url,
                             api_key=emby_key
                         )
-                        # ★ 核心：拿到响应后，强制当前队列暂停 2.5 秒，给 Emby 喘息的时间
-                        #sleep(2.5)
+                        # ★ 核心：拿到响应后，强制当前队列暂停 1 秒，给 Emby 喘息的时间
+                        sleep(1)
                         
                     if res_json:
                         # 拿到了实质性数据，跳出轮询
@@ -551,7 +551,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     if media_data:
                         logger.info(f"  ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
                     else:
-                        logger.info(f"  ✅ [神医] 媒体信息提取成功！(已拿到纯净数据)")
+                        logger.info(f"  ✅ [神医] 媒体信息提取成功！")
 
                     # 如果数据不是来自本地缓存，则存入本地数据库
                     if not is_from_local:
