@@ -775,3 +775,19 @@ def handle_rename_config():
         new_config = request.json
         settings_db.save_setting(constants.DB_KEY_115_RENAME_CONFIG, new_config)
         return jsonify({"success": True, "message": "重命名规则已保存"})
+    
+@p115_bp.route('/custom_strm_regex', methods=['GET', 'POST'])
+@admin_required
+def handle_custom_strm_regex():
+    """管理自定义 STRM 提取正则"""
+    if request.method == 'GET':
+        rules = settings_db.get_setting("custom_strm_regex") or []
+        return jsonify({"success": True, "data": rules})
+    
+    if request.method == 'POST':
+        data = request.json
+        rules = data.get('rules', [])
+        # 简单清洗一下空字符串
+        clean_rules = [r.strip() for r in rules if r and r.strip()]
+        settings_db.save_setting("custom_strm_regex", clean_rules)
+        return jsonify({"success": True, "message": "自定义正则已保存"})

@@ -20,6 +20,7 @@ from handler.custom_collection import RecommendationEngine
 import config_manager
 import constants
 from routes.p115 import _get_cached_115_url
+from utils import extract_pickcode_from_strm_url
 
 import extensions
 import handler.emby as emby
@@ -50,26 +51,6 @@ def _get_real_emby_url_and_key():
     api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
     if not base_url or not api_key: raise ValueError("Emby服务器地址或API Key未配置")
     return base_url, api_key
-
-def _extract_pickcode_from_strm_url(url: str):
-    """万能 PC 码提取器：支持 ETK, MP, CMS, MH 等各种第三方 STRM 链接格式"""
-    if not url or not isinstance(url, str):
-        return None
-    # 1. ETK 格式
-    if '/p115/play/' in url:
-        return url.split('/p115/play/')[-1].split('/')[0].split('?')[0].strip()
-    # 2. MP 格式 (pickcode=xxx)
-    match = re.search(r'pick_?code=([a-zA-Z0-9]+)', url, re.IGNORECASE)
-    if match: return match.group(1)
-    # 3. CMS 格式 (/d/xxx)
-    match = re.search(r'/d/([a-zA-Z0-9]+)[.?/]', url)
-    if not match: match = re.search(r'/d/([a-zA-Z0-9]+)$', url)
-    if match: return match.group(1)
-    # 4. MH 格式 (fileid=xxx)
-    match = re.search(r'fileid=([a-zA-Z0-9]+)', url, re.IGNORECASE)
-    if match: return match.group(1)
-    
-    return None
 
 def _fetch_items_in_chunks(base_url, api_key, user_id, item_ids, fields):
     """
@@ -859,7 +840,7 @@ def proxy_all(path):
                         strm_url = source.get('Path', '')
                         if isinstance(strm_url, str):
                             # ★ 实时万能解析第三方 STRM 链接
-                            pick_code = _extract_pickcode_from_strm_url(strm_url)
+                            pick_code = extract_pickcode_from_strm_url(strm_url)
                             
                             if not pick_code:
                                 # 挂载模式兜底：通过 item_id 查库获取 PC 码
@@ -944,7 +925,7 @@ def proxy_all(path):
                                 real_115_cdn_url = None
                                 
                                 # ★ 实时万能解析第三方 STRM 链接
-                                pick_code = _extract_pickcode_from_strm_url(strm_url)
+                                pick_code = extract_pickcode_from_strm_url(strm_url)
 
                                 if not pick_code:
                                     # 挂载模式兜底：从请求路径提取 item_id 查库

@@ -479,6 +479,24 @@
                       </n-alert>
                     </n-card>
 
+                    <!-- ★ 卡片 3：第三方 STRM 兼容 -->
+                    <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
+                      <template #header>
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <span class="card-title">第三方 STRM 兼容</span>
+                          <n-button secondary type="primary" @click="openCustomRegexModal">
+                            <template #icon>
+                              <n-icon :component="BuildIcon" />
+                            </template>
+                            配置提取正则
+                          </n-button>
+                        </div>
+                      </template>
+                      <n-alert type="info" :show-icon="true">
+                        保留第三方工具生成的 STRM 文件，通过自定义正则表达式，让 ETK 实时拦截并提取 PC 码实现秒播。
+                      </n-alert>
+                    </n-card>
+
                   </n-space>
                 </n-gi>
               </n-grid>
@@ -1462,6 +1480,43 @@
       <n-button type="error" @click="handleClearTables" :disabled="tablesToClear.length === 0" :loading="isClearing">确认清空</n-button>
     </template>
   </n-modal>
+
+  <!-- ★★★ 自定义 STRM 正则模态框 ★★★ -->
+    <n-modal v-model:show="showCustomRegexModal" preset="card" title="配置万能提取正则" style="width: 650px;">
+      <n-alert type="warning" :show-icon="true" style="margin-bottom: 16px;">
+        <b>正则编写规则：</b><br/>
+        必须使用小括号 <code>()</code> 将 115 的 PC 码包裹起来作为<b>第一个捕获组</b>。<br/>
+        例如，链接为 <code>http://xxx/play?id=abcde123</code>，正则应写为：<code>id=([a-zA-Z0-9]+)</code>
+      </n-alert>
+
+      <n-dynamic-input 
+        v-model:value="customRegexRules" 
+        placeholder="输入正则表达式" 
+        :min="0"
+        style="margin-bottom: 24px;"
+      />
+
+      <n-divider title-placement="left" style="font-size: 12px; color: #999;">实时效果测试</n-divider>
+      
+      <n-form label-placement="left" label-width="100">
+        <n-form-item label="测试链接">
+          <n-input v-model:value="regexTestUrl" placeholder="输入一个未知的第三方 STRM 链接" />
+        </n-form-item>
+        <n-form-item label="提取结果">
+          <n-alert :type="regexTestResult.type" :show-icon="true" style="width: 100%;">
+            {{ regexTestResult.text }}
+          </n-alert>
+        </n-form-item>
+      </n-form>
+
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showCustomRegexModal = false">取消</n-button>
+          <n-button type="primary" @click="saveCustomRegex" :loading="isSavingRegex">保存配置</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
   <!-- ★★★ 批量替换 STRM 模态框 ★★★ -->
     <n-modal v-model:show="showReplaceStrmModal" preset="card" title="批量替换本地 STRM 链接" style="width: 650px;">
       
@@ -2261,6 +2316,78 @@ const closeQrcodeModal = () => {
   qrcodeUrl.value = '';
   qrcodeStatus.value = 'idle';
 };
+
+// ★★★ 自定义 STRM 正则状态与逻辑 ★★★
+const showCustomRegexModal = ref(false);
+const customRegexRules = ref([]);
+const regexTestUrl = ref('');
+const isSavingRegex = ref(false);
+
+const openCustomRegexModal = async () => {
+  try {
+    const res = await axios.get('/api/p115/custom_strm_regex');
+    if (res.data.success) {
+      customRegexRules.value = res.data.data || [];
+    }
+  } catch (e) {
+    message.error('加载正则配置失败');
+  }
+  showCustomRegexModal.value = true;
+};
+
+const saveCustomRegex = async () => {
+  isSavingRegex.value = true;
+  try {
+    const res = await axios.post('/api/p115/custom_strm_regex', {
+      rules: customRegexRules.value
+    });
+    if (res.data.success) {
+      message.success(res.data.message);
+      showCustomRegexModal.value = false;
+    }
+  } catch (e) {
+    message.error('保存失败');
+  } finally {
+    isSavingRegex.value = false;
+  }
+};
+
+// 实时测试计算属性
+const regexTestResult = computed(() => {
+  const url = regexTestUrl.value.trim();
+  if (!url) return { type: 'default', text: '请输入测试链接' };
+
+  // 1. 模拟内置规则测试
+  if (url.includes('/p115/play/')) {
+    const pc = url.split('/p115/play/').pop().split('/')[0].split('?')[0].trim();
+    return { type: 'success', text: `[内置 ETK 规则命中] 提取到 PC 码: ${pc}` };
+  }
+  let match = url.match(/pick_?code=([a-zA-Z0-9]+)/i);
+  if (match) return { type: 'success', text: `[内置 MP 规则命中] 提取到 PC 码: ${match[1]}` };
+  
+  match = url.match(/\/d\/([a-zA-Z0-9]+)[.?/]/) || url.match(/\/d\/([a-zA-Z0-9]+)$/);
+  if (match) return { type: 'success', text: `[内置 CMS 规则命中] 提取到 PC 码: ${match[1]}` };
+  
+  match = url.match(/fileid=([a-zA-Z0-9]+)/i);
+  if (match) return { type: 'success', text: `[内置 MH 规则命中] 提取到 PC 码: ${match[1]}` };
+
+  // 2. 模拟用户自定义规则测试
+  for (let i = 0; i < customRegexRules.value.length; i++) {
+    const rule = customRegexRules.value[i];
+    if (!rule) continue;
+    try {
+      const regex = new RegExp(rule, 'i');
+      const customMatch = url.match(regex);
+      if (customMatch && customMatch[1]) {
+        return { type: 'success', text: `[自定义规则 ${i + 1} 命中] 提取到 PC 码: ${customMatch[1]}` };
+      }
+    } catch (e) {
+      return { type: 'error', text: `规则 ${i + 1} 语法错误: ${e.message}` };
+    }
+  }
+
+  return { type: 'warning', text: '未命中任何规则，提取失败。请检查正则是否包含 () 捕获组。' };
+});
 
 // 检查 115 状态
 const check115Status = async () => {

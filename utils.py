@@ -712,3 +712,40 @@ def get_rating_label(details: dict, media_type: str, rating_map: Optional[dict] 
                 return rule['label']
 
     return '未知'
+
+# --- ★★★ 万能 STRM 提取器 (支持自定义正则) ★★★ ---
+def extract_pickcode_from_strm_url(url: str) -> Optional[str]:
+    """万能 PC 码提取器：支持 ETK, MP, CMS, MH 等，以及用户自定义正则"""
+    if not url or not isinstance(url, str):
+        return None
+        
+    # 1. ETK 官方格式 (最高优先级，最快，绝对精准)
+    if '/p115/play/' in url:
+        return url.split('/p115/play/')[-1].split('/')[0].split('?')[0].strip()
+        
+    # 2. 用户自定义正则 (高优先级，赋予用户最高控制权)
+    try:
+        from database import settings_db
+        custom_rules = settings_db.get_setting("custom_strm_regex") or []
+        for rule in custom_rules:
+            if not rule: continue
+            match = re.search(rule, url, re.IGNORECASE)
+            # 必须使用 () 捕获组，且提取第一组
+            if match and len(match.groups()) > 0:
+                return match.group(1)
+    except Exception as e:
+        logger.error(f"执行自定义 STRM 正则时出错: {e}")
+
+    # 3. 内置常见第三方格式 (作为最后的兜底)
+    # MP 格式 (pickcode=xxx)
+    match = re.search(r'pick_?code=([a-zA-Z0-9]+)', url, re.IGNORECASE)
+    if match: return match.group(1)
+    # CMS 格式 (/d/xxx)
+    match = re.search(r'/d/([a-zA-Z0-9]+)[.?/]', url)
+    if not match: match = re.search(r'/d/([a-zA-Z0-9]+)$', url)
+    if match: return match.group(1)
+    # MH 格式 (fileid=xxx)
+    match = re.search(r'fileid=([a-zA-Z0-9]+)', url, re.IGNORECASE)
+    if match: return match.group(1)
+        
+    return None
