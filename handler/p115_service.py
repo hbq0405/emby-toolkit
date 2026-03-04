@@ -5,6 +5,7 @@ import os
 import json
 import re
 import threading
+from gevent import spawn_later
 import time
 import config_manager
 import constants
@@ -622,6 +623,76 @@ class P115CacheManager:
                     conn.commit()
         except Exception as e:
             logger.error(f"  ❌ 清理 115 文件缓存失败: {e}")
+
+# ======================================================================
+# ★★★ 115 全局批量删除缓冲队列 (防流控) ★★★
+# ======================================================================
+class P115DeleteBuffer:
+    _lock = threading.Lock()
+    _fids_to_delete = set()
+    _cids_to_check = set()
+    _timer = None
+
+    @classmethod
+    def add(cls, fids, base_cid):
+        with cls._lock:
+            if fids:
+                cls._fids_to_delete.update(fids)
+            if base_cid:
+                cls._cids_to_check.add(base_cid)
+
+            # 如果没有计时器在运行，启动一个 5 秒的倒计时
+            # 5秒内如果有新的删除请求进来，会被合并到集合中
+            if cls._timer is None:
+                cls._timer = spawn_later(5.0, cls.flush)
+
+    @classmethod
+    def flush(cls):
+        with cls._lock:
+            fids = list(cls._fids_to_delete)
+            cids = list(cls._cids_to_check)
+            cls._fids_to_delete.clear()
+            cls._cids_to_check.clear()
+            cls._timer = None
+
+        if not fids and not cids:
+            return
+
+        client = P115Service.get_client()
+        if not client: return
+
+        # 1. 终极必杀：一键批量删除所有收集到的文件
+        if fids:
+            logger.info(f"  💥 [批量销毁] 缓冲期结束，正在向 115 网盘发送批量删除指令 ({len(fids)} 个文件)...")
+            resp = client.fs_delete(fids)
+            if resp.get('state'):
+                P115CacheManager.delete_files(fids)
+                logger.info(f"  🧹 [批量销毁] 成功在网盘删除，并已清理本地缓存。")
+            else:
+                logger.error(f"  ❌ [批量销毁] 115 删除接口调用失败: {resp}")
+
+        # 2. 鞭尸检查：清理空目录
+        for cid in cids:
+            video_count = 0
+            def count_videos(current_cid):
+                nonlocal video_count
+                try:
+                    res = client.fs_files({'cid': current_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
+                    for item in res.get('data', []):
+                        if str(item.get('fc')) == '1':
+                            ext = str(item.get('fn', '')).split('.')[-1].lower()
+                            if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso']:
+                                video_count += 1
+                        elif str(item.get('fc')) == '0':
+                            count_videos(item.get('fid'))
+                except Exception:
+                    video_count += 999 
+
+            count_videos(cid)
+            if video_count == 0:
+                client.fs_delete([cid])
+                P115CacheManager.delete_cid(cid)
+                logger.info(f"  🧹 [联动删除] 主目录已空，已删除网盘目录及本地缓存: CID {cid}")
 
 def get_config():
     return config_manager.APP_CONFIG
@@ -2545,40 +2616,10 @@ def delete_115_files_by_webhook(item_path, pickcodes):
 
             scan_and_match(base_cid)
 
-        # 4. 执行物理销毁
+        # 4. 执行物理销毁 -> 改为推入全局缓冲队列
         if fids_to_delete:
-            resp = client.fs_delete(fids_to_delete)
-            if resp.get('state'):
-                logger.info(f"  💥 [联动删除] 成功在 115 网盘删除了 {len(fids_to_delete)} 个文件！")
-                # 同步清理这些文件在本地数据库的缓存记录
-                P115CacheManager.delete_files(fids_to_delete)
-                logger.info(f"  🧹 [联动删除] 已清理被删文件的本地缓存记录。")
-            else:
-                logger.error(f"  ❌ [联动删除] 115 删除接口调用失败: {resp}")
-
-            # 5. 鞭尸检查：如果主目录里已经没有视频文件了，连目录一起扬了
-            video_count = 0
-            def count_videos(cid):
-                nonlocal video_count
-                try:
-                    res = client.fs_files({'cid': cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
-                    for item in res.get('data', []):
-                        if str(item.get('fc')) == '1':
-                            ext = str(item.get('fn', '')).split('.')[-1].lower()
-                            if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso']:
-                                video_count += 1
-                        elif str(item.get('fc')) == '0':
-                            count_videos(item.get('fid'))
-                except Exception:
-                    video_count += 999 
-
-            count_videos(base_cid)
-            if video_count == 0:
-                client.fs_delete(base_cid)
-                P115CacheManager.delete_cid(base_cid)
-                logger.info(f"  🧹 [联动删除] 主目录已空，已删除网盘目录及本地目录缓存: {tmdb_folder_name}")
-            else:
-                logger.debug(f"  🛡️ [联动删除] 目录内仍有视频或检查受阻，保留主目录。")
+            logger.info(f"  ⏳ [联动删除] 已锁定 {len(fids_to_delete)} 个文件，加入全局批量销毁队列...")
+            P115DeleteBuffer.add(fids_to_delete, base_cid)
         else:
             logger.warning(f"  ⚠️ [联动删除] 未在网盘找到匹配的提取码文件。")
 

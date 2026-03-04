@@ -409,10 +409,6 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
     logger.trace(f"--- 开始执行 '{task_name}' 任务 ---")
     
     try:
-        delete_delay = settings_db.get_setting('media_cleanup_delete_delay') or 0
-        if delete_delay > 0:
-            logger.info(f"  ➜ 已启用删除延迟策略，每删除一个文件将等待 {delete_delay} 秒。")
-
         tasks_to_execute = cleanup_db.get_cleanup_index_by_ids(task_ids)
         total = len(tasks_to_execute)
         if total == 0:
@@ -472,10 +468,6 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                             )
                         except Exception as cleanup_e:
                             logger.error(f"  ➜ 善后清理失败: {cleanup_e}", exc_info=True)
-
-                        if delete_delay > 0:
-                            logger.debug(f"    ⏳ [防风控] 等待 {delete_delay} 秒...")
-                            time.sleep(delete_delay)
 
                     else:
                         logger.error(f"  ➜ 删除 ID: {version_id_to_check} 失败！")

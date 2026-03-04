@@ -111,26 +111,6 @@
                 </div>
                 <n-switch v-model:value="keepOnePerRes" />
               </div>
-
-              <n-divider style="margin: 0" />
-
-              <!-- ★★★ 新增：删除策略 (针对网盘用户) ★★★ -->
-              <div class="setting-row">
-                <div class="setting-info">
-                  <div class="setting-title">
-                    删除间隔延迟
-                    <n-tag type="warning" size="small" :bordered="false" style="margin-left: 8px;">网盘防风控</n-tag>
-                  </div>
-                  <div class="setting-desc">
-                    在执行批量去重时，每删除一个文件后等待的时间（秒）。<br>
-                    建议网盘用户设置为 <b>5-10 秒</b>，以防止因并发删除请求过多触发 API 限制。
-                  </div>
-                </div>
-                <n-input-number v-model:value="deleteDelay" :min="0" :step="1" style="width: 120px;">
-                   <template #suffix>秒</template>
-                </n-input-number>
-              </div>
-
             </n-space>
           </n-card>
         </n-gi>
@@ -207,7 +187,6 @@ const emit = defineEmits(['on-close']);
 const saving = ref(false);
 const showEditModal = ref(false);
 const keepOnePerRes = ref(false);
-const deleteDelay = ref(0); // 新增：删除延迟
 const draggableRules = ref([]);
 const fallbackRule = ref(null);
 const currentEditingRule = ref({ priority: [] });
@@ -287,7 +266,6 @@ const fetchSettings = async () => {
 
     let loadedRules = settingsRes.data.rules || [];
     keepOnePerRes.value = settingsRes.data.keep_one_per_res || false;
-    deleteDelay.value = settingsRes.data.delete_delay || 0; // 加载删除延迟
     
     loadedRules = loadedRules.map(rule => {
         if (rule.id === 'effect' && Array.isArray(rule.priority)) {
@@ -339,7 +317,6 @@ const saveSettings = async () => {
       rules: rulesToSave,
       library_ids: selectedLibraryIds.value,
       keep_one_per_res: keepOnePerRes.value,
-      delete_delay: deleteDelay.value // 保存删除延迟
     };
 
     await axios.post('/api/cleanup/settings', payload);
