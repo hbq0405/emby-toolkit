@@ -54,6 +54,8 @@ UPDATE_DEBOUNCE_TIME = 15
 STREAM_CHECK_MAX_RETRIES = 6   # 最大重试次数 
 STREAM_CHECK_INTERVAL = 10      # 每次轮询间隔(秒)
 STREAM_CHECK_SEMAPHORE = Semaphore(5) # 限制并发预检的数量，防止大量入库时查挂 Emby
+# 神医 API 专属排队锁 (严格串行，防止 Emby 429 报错)
+SYNDROME_API_LOCK = Semaphore(1)
 
 # MP 临时目录延迟清理定时器 ★★★
 MP_TEMP_DIR_TIMERS = {}
@@ -517,13 +519,16 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医提取媒体信息...")
                         need_upload = True
 
-                # --- 第三步：阻塞调用神医接口 ---
-                res_json = emby.sync_item_media_info(
-                    item_id=item_id, 
-                    media_data=media_data, # 如果有缓存，传给神医执行“恢复”；没有则传 None 让其“提取”
-                    base_url=emby_url,
-                    api_key=emby_key
-                )
+                # --- 第三步：阻塞调用神医接口 (严格排队) ---
+                with SYNDROME_API_LOCK:
+                    res_json = emby.sync_item_media_info(
+                        item_id=item_id, 
+                        media_data=media_data, # 如果有缓存，传给神医执行“恢复”；没有则传 None 让其“提取”
+                        base_url=emby_url,
+                        api_key=emby_key
+                    )
+                    # ★ 核心：拿到响应后，强制当前队列暂停 2.5 秒，给 Emby 喘息的时间
+                    sleep(2.5)
 
                 if res_json:
                     # 根据是否有缓存数据，显示不同的成功日志
