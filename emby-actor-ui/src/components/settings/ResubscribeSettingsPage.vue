@@ -447,14 +447,12 @@
                           逐集删除 (安全模式)
                           <div class="tip">
                             推荐。找出该季下的所有单集，<b>一集一集</b>地删除。<br>
-                            配合下方的延迟设置，可有效避免网盘API风控。
                           </div>
                         </n-radio>
                         <n-radio value="series">
                           整季/剧删除 (快速模式)
                           <div class="tip">
                             直接删除整季或整部剧。<br>
-                            速度快，但一次性删除大量文件可能触发网盘限制。
                           </div>
                         </n-radio>
                       </n-space>
