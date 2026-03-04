@@ -519,23 +519,39 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医提取媒体信息...")
                         need_upload = True
 
-                # --- 第三步：阻塞调用神医接口 (严格排队) ---
-                with SYNDROME_API_LOCK:
-                    res_json = emby.sync_item_media_info(
-                        item_id=item_id, 
-                        media_data=media_data, # 如果有缓存，传给神医执行“恢复”；没有则传 None 让其“提取”
-                        base_url=emby_url,
-                        api_key=emby_key
-                    )
-                    # ★ 核心：拿到响应后，强制当前队列暂停 2.5 秒，给 Emby 喘息的时间
-                    #sleep(2.5)
+                # --- 第三步：轮询调用神医接口，死等纯净数据 ---
+                res_json = None
+                max_api_polls = 12  # 最大轮询 12 次，每次等 5 秒，总计约 1 分钟
+                
+                for poll_attempt in range(max_api_polls):
+                    with SYNDROME_API_LOCK:
+                        res_json = emby.sync_item_media_info(
+                            item_id=item_id, 
+                            media_data=media_data, # 第一次可能有缓存，后续如果是[]，传None继续查状态
+                            base_url=emby_url,
+                            api_key=emby_key
+                        )
+                        # ★ 核心：拿到响应后，强制当前队列暂停 2.5 秒，给 Emby 喘息的时间
+                        #sleep(2.5)
+                        
+                    if res_json:
+                        # 拿到了实质性数据，跳出轮询
+                        break
+                    elif res_json == []:
+                        # 返回 [] 说明神医正在后台异步提取
+                        logger.info(f"  ⏳ [神医] 已触发媒体信息提取，等待数据返回... ({poll_attempt+1}/{max_api_polls})")
+                        # ★ 核心：在锁的外面等 5 秒！让出坑位给其他集数去触发提取
+                        sleep(5) 
+                    else:
+                        # 返回 None 或其他错误，跳出
+                        break
 
                 if res_json:
                     # 根据是否有缓存数据，显示不同的成功日志
                     if media_data:
                         logger.info(f"  ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
                     else:
-                        logger.info(f"  ✅ [神医] 媒体信息提取成功！(全新分析)")
+                        logger.info(f"  ✅ [神医] 媒体信息提取成功！(已拿到纯净数据)")
 
                     # 如果数据不是来自本地缓存，则存入本地数据库
                     if not is_from_local:
@@ -549,7 +565,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                                         ON CONFLICT (sha1) DO UPDATE SET mediainfo_json = EXCLUDED.mediainfo_json
                                     """, (sha1, json_str))
                                     conn.commit()
-                            logger.info(f"  💾 [本地缓存] 原始数据已备份至本地数据库。")
+                            logger.info(f"  💾 [本地缓存] 媒体信息已备份至本地数据库。")
                         except Exception as e_db:
                             logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
                     
@@ -557,16 +573,15 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     if need_upload:
                         try:
                             processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                            logger.info(f"  ☁️ [P115Center] 成功将新提取的媒体信息反哺至中心服务器。")
+                            logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
                         except Exception as e_up:
                             logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
                 elif res_json == []:
-                    # 神医返回 []，说明正在后台异步提取，这是正常现象！
-                    logger.info(f"  ⏳ [神医] 已触发媒体信息提取...")
+                    logger.warning(f"  ⚠️ [神医] 提取媒体信息超时（1分钟）。")
                 else:
                     # 区分失败情况
                     fail_type = "恢复" if media_data else "提取"
-                    logger.warning(f" ⚠️ [神医] 媒体信息{fail_type}失败，返回数据无效。")
+                    logger.warning(f"  ⚠️ [神医] 媒体信息{fail_type}失败，返回数据无效。")
         except Exception as e:
             logger.error(f"  ❌ [P115Center] 联动异常: {e}")
 
