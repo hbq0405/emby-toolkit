@@ -171,6 +171,7 @@ const allBlocks = [
   { id: 's_e', label: '季集号 (S01E01)' },
   { id: 'resolution', label: '分辨率' },
   { id: 'source', label: '来源 (WEB-DL等)' },
+  { id: 'stream', label: '流媒体 (NF/AMZN等)' },
   { id: 'effect', label: '特效 (HDR/DV)' },
   { id: 'codec', label: '视频编码' },
   { id: 'audio', label: '音频/音轨' },
@@ -196,7 +197,18 @@ watch(() => config.value.file_format, (newFormat) => {
 
 // 乐高交互方法
 const addBlock = (block) => {
-  activeBlocks.value.push(block);
+  if (block.id === 'original_name') {
+    // 如果添加的是“保留原名”，清空轨道，只放它一个
+    activeBlocks.value = [block];
+  } else {
+    // 如果添加的是其他模块，检查轨道里有没有“保留原名”
+    const origIndex = activeBlocks.value.findIndex(b => b.id === 'original_name');
+    if (origIndex !== -1) {
+      // 如果有，把它移除
+      activeBlocks.value.splice(origIndex, 1);
+    }
+    activeBlocks.value.push(block);
+  }
   updateConfigFormat();
 };
 
@@ -254,7 +266,7 @@ const strmUrlOptions = [
 
 // 模拟数据
 const mockMovie = { zh: '蝙蝠侠：黑暗骑士', en: 'The Dark Knight', year: '2008', tmdb: '155', res: '1080p', src: 'BluRay', codec: 'H264', audio: 'DDP 5.1', group: 'CMCT', orig: 'The.Dark.Knight.2008.REMASTERED.1080p', ext: '.mkv' };
-const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', effect: 'HDR', codec: 'H265', audio: 'Atmos', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.WEB-DL', ext: '.mp4' };
+const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', src: 'WEB-DL', stream: 'NF', effect: 'HDR', codec: 'H265', audio: 'Atmos', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.NF.WEB-DL', ext: '.mp4' };
 
 // 预览计算
 const previewMovieDir = computed(() => {
@@ -284,6 +296,7 @@ const buildFileName = (mockData, isTv) => {
     else if (blockId === 'original_name') parts.push(mockData.orig);
     else if (blockId === 'resolution' && mockData.res) parts.push(mockData.res);
     else if (blockId === 'source' && mockData.src) parts.push(mockData.src);
+    else if (blockId === 'stream' && mockData.stream) parts.push(mockData.stream);
     else if (blockId === 'effect' && mockData.effect) parts.push(mockData.effect);
     else if (blockId === 'codec' && mockData.codec) parts.push(mockData.codec);
     else if (blockId === 'audio' && mockData.audio) parts.push(mockData.audio);
@@ -386,14 +399,15 @@ defineExpose({ open });
 .track-item {
   display: flex;
   align-items: center;
-  background: var(--n-primary-color);
-  color: white;
+  background-color: #18a058; /* 强制焊死绿色背景，无视主题 */
+  color: #ffffff; /* 强制焊死白色文字 */
   padding: 4px 12px;
   border-radius: 16px;
   font-size: 13px;
   cursor: grab;
   user-select: none;
   transition: all 0.2s;
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1); /* 加点阴影更有立体感 */
 }
 .track-item:active {
   cursor: grabbing;

@@ -446,7 +446,7 @@ class P115Service:
 
 
 # ======================================================================
-# ★★★ 新增：115 目录树 DB 缓存管理器 ★★★
+# ★★★ 115 目录树 DB 缓存管理器 ★★★
 # ======================================================================
 class P115CacheManager:
     @staticmethod
@@ -938,7 +938,7 @@ class SmartOrganizer:
         """
         info_dict = {
             'source': '', 'effect': '', 'resolution': '', 
-            'codec': '', 'audio': '', 'group': ''
+            'codec': '', 'audio': '', 'group': '', 'stream': ''
         }
         name_upper = filename.upper()
 
@@ -995,6 +995,11 @@ class SmartOrganizer:
         chan_match = re.search(r'\b(7\.1|5\.1|2\.0)\b', filename)
         if chan_match: audio_info.append(chan_match.group(1))
         if audio_info: info_dict['audio'] = " ".join(audio_info)
+
+        # 流媒体平台识别
+        stream_match = re.search(r'\b(NF|AMZN|DSNP|HMAX|HULU|NETFLIX|DISNEY\+|APPLETV\+|B-GLOBAL)\b', name_upper)
+        if stream_match:
+            info_dict['stream'] = stream_match.group(1)
 
         # 6. 发布组 (Group)
         try:
@@ -1069,6 +1074,8 @@ class SmartOrganizer:
                 name_parts.append(f"S{season_num:02d}E{episode_num:02d}")
             elif block == 'original_name': 
                 name_parts.append(name_body)
+            elif block == 'stream' and video_info.get('stream'):
+                name_parts.append(video_info['stream'])
             elif block in video_info and video_info[block]:
                 name_parts.append(video_info[block])
 
