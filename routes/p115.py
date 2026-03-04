@@ -758,6 +758,7 @@ def handle_rename_config():
         config = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {}
         # 提供默认值，确保前端始终有完整的数据结构
         defaults = {
+            "keep_original_name": False,   # bool
             "main_title_lang": "zh",       # zh, original
             "main_year_en": True,          # bool
             "main_tmdb_fmt": "{tmdb=ID}",  # {tmdb=ID}, [tmdbid=ID], tmdb-ID, none

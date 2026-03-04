@@ -6,6 +6,13 @@
         
         <!-- 左侧：配置表单 -->
         <n-gi>
+          <n-form-item label="保留原名" label-placement="left" style="margin-bottom: 12px; background: rgba(24, 160, 88, 0.05); padding: 8px 12px; border-radius: 6px;">
+            <n-switch v-model:value="config.keep_original_name" />
+            <template #feedback>
+              <span style="font-size: 12px; color: gray;">开启后仅做归类，原目录架构和文件名原封不动 (覆盖下方所有规则)</span>
+            </template>
+          </n-form-item>
+
           <n-tabs type="segment" animated size="small">
             
             <!-- 标签页 1：目录命名 -->
@@ -152,6 +159,7 @@ const saving = ref(false);
 
 // 默认配置
 const config = ref({
+  keep_original_name: false,
   main_title_lang: 'zh',
   main_year_en: true,
   main_tmdb_fmt: '{tmdb=ID}',
@@ -214,6 +222,12 @@ const sepOptions = [
 const mockMovie = { zh: '蝙蝠侠：黑暗骑士', en: 'The Dark Knight', year: '2008', tmdb: '155', params: '1080p · H264', ext: '.mkv' };
 const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', params: '2160p · HDR · H265', ext: '.mp4' };
 
+// 模拟原名
+const mockOriginalMovieDir = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264";
+const mockOriginalMovieFile = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264.mkv";
+const mockOriginalTvDir = "Breaking.Bad.S01.2160p.WEB-DL.x265";
+const mockOriginalTvFile = "Breaking.Bad.S01E01.2160p.WEB-DL.x265.mp4";
+
 // 实时预览计算属性
 const previewMovieDir = computed(() => {
   let name = config.value.main_title_lang === 'zh' ? mockMovie.zh : mockMovie.en;
@@ -223,6 +237,7 @@ const previewMovieDir = computed(() => {
 });
 
 const previewMovieFile = computed(() => {
+  if (config.value.keep_original_name) return mockOriginalMovieFile;
   let baseTitle = config.value.file_title_lang === 'zh' ? mockMovie.zh : mockMovie.en;
   if (config.value.file_year_en) baseTitle += ` (${mockMovie.year})`;
   
@@ -237,6 +252,7 @@ const previewMovieFile = computed(() => {
 });
 
 const previewTvDir = computed(() => {
+  if (config.value.keep_original_name) return mockOriginalTvDir;
   let name = config.value.main_title_lang === 'zh' ? mockTv.zh : mockTv.en;
   if (config.value.main_year_en) name += ` (${mockTv.year})`;
   if (config.value.main_tmdb_fmt !== 'none') name += ` ${config.value.main_tmdb_fmt.replace('ID', mockTv.tmdb)}`;
@@ -244,10 +260,12 @@ const previewTvDir = computed(() => {
 });
 
 const previewTvSeason = computed(() => {
+  if (config.value.keep_original_name) return "(保留原始子目录)";
   return config.value.season_fmt.replace('{02}', '01').replace('{1}', '1');
 });
 
 const previewTvFile = computed(() => {
+  if (config.value.keep_original_name) return mockOriginalTvFile;
   let baseTitle = config.value.file_title_lang === 'zh' ? mockTv.zh : mockTv.en;
   if (config.value.file_year_en) baseTitle += ` (${mockTv.year})`;
   
