@@ -528,7 +528,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         api_key=emby_key
                     )
                     # ★ 核心：拿到响应后，强制当前队列暂停 2.5 秒，给 Emby 喘息的时间
-                    sleep(2.5)
+                    #sleep(2.5)
 
                 if res_json:
                     # 根据是否有缓存数据，显示不同的成功日志
