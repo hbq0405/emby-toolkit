@@ -493,7 +493,7 @@
                         </div>
                       </template>
                       <n-alert type="info" :show-icon="true">
-                        保留第三方工具生成的 STRM 文件，通过自定义正则表达式，让 ETK 实时拦截并提取 PC 码实现秒播。
+                        支持第三方工具生成的 STRM 文件，通过自定义正则表达式，让 ETK 实时拦截并提取 PC 码实现302播放。
                       </n-alert>
                     </n-card>
 
