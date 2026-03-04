@@ -878,7 +878,7 @@ def proxy_all(path):
                     client_ip = request.headers.get('X-Real-IP', request.remote_addr)
                     real_115_url = _get_cached_115_url(pick_code, player_ua, client_ip)
                     if real_115_url:
-                        # logger.info(f"  ✅ 已 302 跳转重定向到 115 直链")
+                        logger.info(f"  ✅ 已 302 跳转重定向到 115 直链")
                         return redirect(real_115_url, code=302)
             
             excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
@@ -932,7 +932,7 @@ def proxy_all(path):
                                     
                                 if pick_code:
                                     # ★ 修复：不再提前请求 115 直链，而是伪造一个指向代理的 URL
-                                    # 让客户端真正播放时再去请求，避免详情页触发风控
+                                    # 让客户端真正播放时再去请求，避免详情页触发提取直链
                                     proxy_play_url = strm_url if '/api/p115/play/' in strm_url else f"/api/p115/play/{pick_code}"
                                     
                                     source['RemoteUrl'] = proxy_play_url
