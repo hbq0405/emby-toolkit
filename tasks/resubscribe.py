@@ -1012,7 +1012,6 @@ def _execute_resubscribe(processor, task_name: str, target):
         # --- 分支 1: 仅删除模式 ---
         if rule_type == 'delete':
             delete_mode = rule.get('delete_mode', 'episode') # 'episode' (逐集) or 'series' (整锅端)
-            delay_seconds = int(rule.get('delete_delay_seconds', 0))
             
             # 1. 确定要删除的目标 ID 列表
             ids_to_delete_queue = []
@@ -1062,10 +1061,6 @@ def _execute_resubscribe(processor, task_name: str, target):
                     logger.info(f"    - 已删除文件 ({idx+1}/{total_files}): ID {target_id}")
                 else:
                     logger.error(f"    - 删除失败: ID {target_id}")
-
-                # ★★★ 核心：防风控延迟 ★★★
-                if delay_seconds > 0 and idx < total_files - 1:
-                    time.sleep(delay_seconds)
 
             # 3. 善后处理
             if success_count > 0:

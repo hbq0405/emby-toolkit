@@ -460,15 +460,7 @@
                       </n-space>
                     </n-radio-group>
                   </n-form-item>
-
-                  <n-form-item label="删除间隔延迟 (秒)">
-                    <n-input-number v-model:value="currentRule.delete_delay_seconds" :min="0" :step="1" />
-                    <template #feedback>
-                      <span class="tip">每删除一个文件后等待的时间。网盘用户建议设置 5-10 秒以上。</span>
-                    </template>
-                  </n-form-item>
                 </div>
-
               </n-card>
             </n-gi>
           </n-grid>
@@ -656,7 +648,7 @@ const openRuleModal = async (rule = null) => {
       consistency_check_enabled: false, consistency_must_match_resolution: false, consistency_must_match_group: false,
       resubscribe_source: 'moviepilot', 
       resubscribe_entire_season: false,
-      delete_mode: 'episode', delete_delay_seconds: 5
+      delete_mode: 'episode'
     };
     addScopeRule();
   }
