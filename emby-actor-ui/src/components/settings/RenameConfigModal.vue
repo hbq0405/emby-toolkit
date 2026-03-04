@@ -353,9 +353,13 @@ const buildFileName = (mockData, isTv) => {
     if (item.isSep) {
       let hasContentBefore = evaluated.slice(0, i).some(x => !x.isSep);
       let hasContentAfter = evaluated.slice(i + 1).some(x => !x.isSep);
-      let prevIsSep = i > 0 ? evaluated[i-1].isSep : true;
+      // 检查后面紧挨着的是不是也是连接符 (如果是连续连接符，只保留最后一个)
+      let isLastSepInGroup = true;
+      if (i + 1 < evaluated.length && evaluated[i+1].isSep) {
+        isLastSepInGroup = false;
+      }
       
-      if (hasContentBefore && hasContentAfter && !prevIsSep) {
+      if (hasContentBefore && hasContentAfter && isLastSepInGroup) {
         finalParts.push(item.val);
       }
     } else {

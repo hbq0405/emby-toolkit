@@ -1006,8 +1006,9 @@ class SmartOrganizer:
             from tasks import helpers
             for group_name, patterns in helpers.RELEASE_GROUPS.items():
                 for pattern in patterns:
-                    if re.search(pattern, filename, re.IGNORECASE):
-                        info_dict['group'] = group_name
+                    match = re.search(pattern, filename, re.IGNORECASE)
+                    if match:
+                        info_dict['group'] = match.group(0) # 取匹配到的原文字母，而不是字典的中文 key
                         break
                 if info_dict['group']: break
             if not info_dict['group']:
@@ -1097,10 +1098,12 @@ class SmartOrganizer:
                 has_content_before = any(not x['is_sep'] for x in evaluated[:i])
                 # 检查后面是否有实质内容
                 has_content_after = any(not x['is_sep'] for x in evaluated[i+1:])
-                # 防止连续出现两个分隔符
-                prev_is_sep = evaluated[i-1]['is_sep'] if i > 0 else True
+                # 检查后面紧挨着的是不是也是连接符 (如果是连续连接符，只保留最后一个)
+                is_last_sep_in_group = True
+                if i + 1 < len(evaluated) and evaluated[i+1]['is_sep']:
+                    is_last_sep_in_group = False
                 
-                if has_content_before and has_content_after and not prev_is_sep:
+                if has_content_before and has_content_after and is_last_sep_in_group:
                     final_parts.append(item['val'])
             else:
                 final_parts.append(item['val'])
