@@ -1997,12 +1997,6 @@ def get_all_user_view_data(user_id: str, base_url: str, api_key: str) -> Optiona
                 # 我们只关心那些确实有播放记录或收藏的条目
                 if user_data.get('Played') or user_data.get('IsFavorite') or user_data.get('PlaybackPositionTicks', 0) > 0:
                     
-                    # ★★★ 3. 魔法日志：在这里把原始数据打印出来！★★★
-                    if log_counter < LOG_LIMIT:
-                        # 使用 CRITICAL 级别让它在日志里最显眼，并用 json.dumps 保证完整输出
-                        logger.critical(f"  ➜ [魔法日志] 捕获到原始 Emby Item 数据: {json.dumps(item, indent=2, ensure_ascii=False)}")
-                        log_counter += 1
-
                     all_items_with_data.append(item)
             
             start_index += len(items)
