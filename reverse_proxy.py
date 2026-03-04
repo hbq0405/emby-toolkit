@@ -899,48 +899,49 @@ def proxy_all(path):
                     data = resp.json()
                     modified = False
                     
-                    # 【修复核心】先判断是否为浏览器，再决定是否获取115直链
                     is_browser = 'mozilla' in user_agent or 'chrome' in user_agent or 'safari' in user_agent
-                    
-                    # 排除已知的本地播放器 (它们伪装了 UA，但可以通过 Client 或特定关键字识别)
                     native_clients = ['androidtv', 'infuse', 'emby for ios', 'emby for android', 'emby theater', 'senplayer']
                     if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent:
                         is_browser = False
                     
-                    # logger.info(f"  🔍 客户端名称: {client_name}, User-Agent: {user_agent[:50]}, 是否浏览器: {is_browser}")
-                    
-                    # 只有非浏览器才获取115直链
-                    if not is_browser:
-                        for source in data.get('MediaSources', []):
-                            strm_url = source.get('Path', '')
-                            if isinstance(strm_url, str):
-                                real_115_cdn_url = None
-                                
-                                # ★ 实时万能解析第三方 STRM 链接
-                                pick_code = extract_pickcode_from_strm_url(strm_url)
+                    for source in data.get('MediaSources', []):
+                        strm_url = source.get('Path', '')
+                        if isinstance(strm_url, str):
+                            real_115_cdn_url = None
+                            
+                            # ★ 实时万能解析第三方 STRM 链接
+                            pick_code = extract_pickcode_from_strm_url(strm_url)
 
-                                if not pick_code:
-                                    # 挂载模式兜底：从请求路径提取 item_id 查库
-                                    item_id = path.split('/')[2]
-                                    pick_code = media_db.get_pickcode_by_emby_id(item_id)
-                                    
-                                if pick_code:
-                                    player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
-                                    client_ip = request.headers.get('X-Real-IP', request.remote_addr)
-                                    real_115_cdn_url = _get_cached_115_url(pick_code, player_ua, client_ip)
+                            if not pick_code:
+                                item_id = path.split('/')[2]
+                                pick_code = media_db.get_pickcode_by_emby_id(item_id)
                                 
-                                # ★★★ 只有成功获取到直链，才进行劫持注入 ★★★
-                                if real_115_cdn_url:
+                            if pick_code:
+                                player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+                                client_ip = request.headers.get('X-Real-IP', request.remote_addr)
+                                real_115_cdn_url = _get_cached_115_url(pick_code, player_ua, client_ip)
+                            
+                            # ★★★ 核心修改：无论是不是浏览器，都进行劫持 ★★★
+                            if real_115_cdn_url:
+                                if not is_browser:
+                                    # 1. 客户端：直接塞入 115 直链，让它自己去连
                                     source['RemoteUrl'] = real_115_cdn_url
                                     source['Path'] = real_115_cdn_url
                                     source['IsRemote'] = True
-                                    source.pop('TranscodingUrl', None)
-                                    source['Protocol'] = 'Http'
-                                    source['SupportsDirectPlay'] = True
-                                    source['SupportsDirectStream'] = True
-                                    source['SupportsTranscoding'] = False
-                                    modified = True
-                    # else: 浏览器直接跳过，不获取115直链
+                                else:
+                                    # 2. 浏览器：不能给 115 直链(会跨域)。
+                                    # 我们不修改 Path，让它保持原样 (Emby Web 稍后会请求 /videos/xxx/stream.mp4)
+                                    # 但我们强制修改容器格式为 mp4，骗过浏览器让它尝试直连
+                                    source['Container'] = 'mp4'
+                                    source['IsRemote'] = False
+                                
+                                # 3. 共同操作：强制关闭转码，开启直连
+                                source.pop('TranscodingUrl', None)
+                                source['Protocol'] = 'Http'
+                                source['SupportsDirectPlay'] = True
+                                source['SupportsDirectStream'] = True
+                                source['SupportsTranscoding'] = False
+                                modified = True
                             
                     if modified:
                         return Response(json.dumps(data), status=200, mimetype='application/json')
