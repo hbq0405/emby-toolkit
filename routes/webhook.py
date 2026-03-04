@@ -544,7 +544,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                                         ON CONFLICT (sha1) DO UPDATE SET mediainfo_json = EXCLUDED.mediainfo_json
                                     """, (sha1, json_str))
                                     conn.commit()
-                            logger.info(f"  💾 [本地缓存] 原始数据已同步至本地数据库。")
+                            logger.info(f"  💾 [本地缓存] 原始数据已备份至本地数据库。")
                         except Exception as e_db:
                             logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
                     
