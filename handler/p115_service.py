@@ -1038,10 +1038,9 @@ class SmartOrganizer:
                 if match: lang_suffix = f".{match.group(1)}"
 
         cfg = self.rename_config
-        file_sep = cfg.get('file_sep', ' - ')
         
-        # 默认乐高轨道
-        default_format = ['title_zh', 'year', 's_e', 'resolution', 'codec', 'audio', 'group']
+        # 默认乐高轨道 (加入了连接符)
+        default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
         file_format = cfg.get('file_format', default_format)
 
         # 提取视频信息字典
@@ -1062,31 +1061,51 @@ class SmartOrganizer:
                 episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
 
         # 组装乐高积木
-        name_parts = []
+        evaluated = []
         for block in file_format:
-            if block == 'title_zh': name_parts.append(new_base_name)
-            elif block == 'title_en' and original_title: name_parts.append(original_title)
-            elif block == 'year' and year: name_parts.append(f"({year})")
+            val = None
+            is_sep = False
+            
+            if block == 'title_zh': val = new_base_name
+            elif block == 'title_en' and original_title: val = original_title
+            elif block == 'year': val = f"({year})" if year else None
             elif block == 'tmdb':
                 tmdb_fmt = cfg.get('file_tmdb_fmt', '{tmdb=ID}')
-                if tmdb_fmt != 'none': name_parts.append(tmdb_fmt.replace('ID', str(self.tmdb_id)))
-            elif block == 's_e' and is_tv and season_num is not None:
-                name_parts.append(f"S{season_num:02d}E{episode_num:02d}")
-            elif block == 'original_name': 
-                name_parts.append(name_body)
-            elif block == 'stream' and video_info.get('stream'):
-                name_parts.append(video_info['stream'])
-            elif block in video_info and video_info[block]:
-                name_parts.append(video_info[block])
+                val = tmdb_fmt.replace('ID', str(self.tmdb_id)) if tmdb_fmt != 'none' else None
+            elif block == 's_e': val = f"S{season_num:02d}E{episode_num:02d}" if is_tv and season_num is not None else None
+            elif block == 'original_name': val = name_body
+            elif block == 'stream': val = video_info.get('stream')
+            elif block.startswith('sep_'):
+                is_sep = True
+                if block.startswith('sep_dash_space'): val = ' - '
+                elif block.startswith('sep_middot_space'): val = ' · '
+                elif block.startswith('sep_middot'): val = '·'
+                elif block.startswith('sep_dot'): val = '.'
+                elif block.startswith('sep_dash'): val = '-'
+                elif block.startswith('sep_underline'): val = '_'
+                elif block.startswith('sep_space'): val = ' '
+            elif block in video_info: val = video_info.get(block)
 
-        # 清理空积木并拼接
-        clean_parts = [str(p).strip() for p in name_parts if p and str(p).strip()]
-        
-        if file_sep == '.':
-            core_name = ".".join([p.replace(' ', '.') for p in clean_parts])
-        else:
-            core_name = file_sep.join(clean_parts)
+            if val:
+                evaluated.append({'val': str(val).strip() if not is_sep else val, 'is_sep': is_sep})
 
+        # ★ 智能消除算法：移除多余的、悬空的分隔符
+        final_parts = []
+        for i, item in enumerate(evaluated):
+            if item['is_sep']:
+                # 检查前面是否有实质内容
+                has_content_before = any(not x['is_sep'] for x in evaluated[:i])
+                # 检查后面是否有实质内容
+                has_content_after = any(not x['is_sep'] for x in evaluated[i+1:])
+                # 防止连续出现两个分隔符
+                prev_is_sep = evaluated[i-1]['is_sep'] if i > 0 else True
+                
+                if has_content_before and has_content_after and not prev_is_sep:
+                    final_parts.append(item['val'])
+            else:
+                final_parts.append(item['val'])
+
+        core_name = "".join(final_parts)
         new_name = f"{core_name}{lang_suffix}.{ext}"
         return new_name, season_num
 

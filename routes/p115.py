@@ -758,13 +758,13 @@ def handle_rename_config():
         config = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {}
         # 提供默认值，确保前端始终有完整的数据结构
         defaults = {
+            "keep_original_name": False,   
             "main_title_lang": "zh",       
             "main_year_en": True,          
             "main_tmdb_fmt": "{tmdb=ID}",  
             "season_fmt": "Season {02}",   
-            "file_format": ["title_zh", "year", "s_e", "resolution", "codec", "audio", "group"], # 乐高轨道
+            "file_format": ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group'],
             "file_tmdb_fmt": "none",       
-            "file_sep": " - ",
             "strm_url_fmt": "standard"
         }
         defaults.update(config)

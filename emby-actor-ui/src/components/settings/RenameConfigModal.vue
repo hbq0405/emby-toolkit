@@ -1,5 +1,5 @@
 <template>
-  <n-modal v-model:show="isVisible" preset="card" title="自定义重命名规则 (乐高模式)" style="width: 900px; max-width: 95%;">
+  <n-modal v-model:show="isVisible" preset="card" title="自定义重命名规则" style="width: 900px; max-width: 95%;">
     <n-spin :show="loading">
       
       <!-- 顶部：配置区域 -->
@@ -11,7 +11,6 @@
             <div class="lego-container">
               <div class="lego-header">
                 <span>📦 备选模块 (点击添加到轨道)</span>
-                <n-select v-model:value="config.file_sep" :options="sepOptions" size="small" style="width: 140px;" placeholder="选择连接符" />
               </div>
               
               <!-- 备选池 -->
@@ -19,13 +18,12 @@
                 <n-tag 
                   v-for="block in availableBlocks" 
                   :key="block.id" 
-                  type="info" 
+                  :type="block.isSep ? 'warning' : 'info'" 
                   class="lego-block"
                   @click="addBlock(block)"
                 >
                   + {{ block.label }}
                 </n-tag>
-                <div v-if="availableBlocks.length === 0" class="empty-tip">所有模块已在轨道中</div>
               </div>
 
               <div class="lego-header" style="margin-top: 16px;">
@@ -37,8 +35,8 @@
                 <transition-group name="list">
                   <div 
                     v-for="(block, index) in activeBlocks" 
-                    :key="block.id"
-                    class="track-item"
+                    :key="block.uid"
+                    :class="['track-item', block.isSep ? 'is-sep' : '']"
                     draggable="true"
                     @dragstart="dragStart($event, index)"
                     @dragover.prevent
@@ -56,6 +54,12 @@
 
           <!-- 标签页 2：目录命名 -->
           <n-tab-pane name="dir" tab="目录命名">
+            <n-form-item label="保留原名" label-placement="left" style="margin-bottom: 12px; background: rgba(24, 160, 88, 0.05); padding: 8px 12px; border-radius: 6px;">
+              <n-switch v-model:value="config.keep_original_name" />
+              <template #feedback>
+                <span style="font-size: 12px; color: gray;">开启后仅做归类，原目录架构和文件名原封不动 (覆盖下方所有规则)</span>
+              </template>
+            </n-form-item>
             <n-form inline label-placement="left" size="small" style="margin-top: 10px;">
               <n-form-item label="主目录语言">
                 <n-radio-group v-model:value="config.main_title_lang">
@@ -153,43 +157,61 @@ const saving = ref(false);
 
 // 默认配置
 const config = ref({
+  keep_original_name: false,
   main_title_lang: 'zh',
   main_year_en: true,
   main_tmdb_fmt: '{tmdb=ID}',
   season_fmt: 'Season {02}',
-  file_format: ['title_zh', 'year', 's_e', 'resolution', 'codec', 'audio', 'group'],
+  file_format: ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group'],
   file_tmdb_fmt: 'none',
-  file_sep: ' - ',
   strm_url_fmt: 'standard'
 });
 
-// 乐高模块定义
+// 乐高模块定义 (加入无限量供应的连接符)
 const allBlocks = [
   { id: 'title_zh', label: '中文片名' },
   { id: 'title_en', label: '英文/原名' },
   { id: 'year', label: '年份' },
-  { id: 's_e', label: '季集号' },
+  { id: 's_e', label: '季集号 (S01E01)' },
   { id: 'resolution', label: '分辨率' },
-  { id: 'source', label: '质量' },
-  { id: 'stream', label: '流媒体' },
-  { id: 'effect', label: '特效' },
-  { id: 'codec', label: '编码' },
-  { id: 'audio', label: '音频' },
+  { id: 'source', label: '来源 (WEB-DL等)' },
+  { id: 'stream', label: '流媒体 (NF/AMZN等)' },
+  { id: 'effect', label: '特效 (HDR/DV)' },
+  { id: 'codec', label: '视频编码' },
+  { id: 'audio', label: '音频/音轨' },
   { id: 'group', label: '发布组' },
   { id: 'tmdb', label: 'TMDb标签' },
-  { id: 'original_name', label: '保留原名' }
+  { id: 'original_name', label: '原文件名(保留原名)' },
+  // 连接符 (isSep: true 表示可以无限添加)
+  { id: 'sep_dash_space', label: '分隔符 ( - )', isSep: true },
+  { id: 'sep_middot_space', label: '分隔符 ( · )', isSep: true },
+  { id: 'sep_middot', label: '中圆点 (·)', isSep: true },
+  { id: 'sep_dot', label: '点 (.)', isSep: true },
+  { id: 'sep_dash', label: '短横线 (-)', isSep: true },
+  { id: 'sep_underline', label: '下划线 (_)', isSep: true },
+  { id: 'sep_space', label: '空格 ( )', isSep: true }
 ];
 
 const activeBlocks = ref([]);
+
+// 备选池：普通模块用过就隐藏，连接符永远显示
 const availableBlocks = computed(() => {
-  const activeIds = activeBlocks.value.map(b => b.id);
-  return allBlocks.filter(b => !activeIds.includes(b.id));
+  const activeBaseIds = activeBlocks.value.map(b => b.id);
+  return allBlocks.filter(b => b.isSep || !activeBaseIds.includes(b.id));
 });
 
-// 监听 config.file_format 初始化轨道
+// 监听 config 初始化轨道
 watch(() => config.value.file_format, (newFormat) => {
   if (newFormat && newFormat.length > 0) {
-    activeBlocks.value = newFormat.map(id => allBlocks.find(b => b.id === id)).filter(Boolean);
+    activeBlocks.value = newFormat.map((id, index) => {
+      // 处理带有唯一后缀的连接符 ID
+      const baseId = id.replace(/_\d+$/, '');
+      const blockDef = allBlocks.find(b => b.id === baseId);
+      if (blockDef) {
+        return { ...blockDef, uid: `${baseId}_${index}_${Date.now()}`, originalId: id };
+      }
+      return null;
+    }).filter(Boolean);
   } else {
     activeBlocks.value = [];
   }
@@ -198,16 +220,14 @@ watch(() => config.value.file_format, (newFormat) => {
 // 乐高交互方法
 const addBlock = (block) => {
   if (block.id === 'original_name') {
-    // 如果添加的是“保留原名”，清空轨道，只放它一个
-    activeBlocks.value = [block];
+    activeBlocks.value = [{ ...block, uid: `orig_${Date.now()}`, originalId: block.id }];
   } else {
-    // 如果添加的是其他模块，检查轨道里有没有“保留原名”
     const origIndex = activeBlocks.value.findIndex(b => b.id === 'original_name');
-    if (origIndex !== -1) {
-      // 如果有，把它移除
-      activeBlocks.value.splice(origIndex, 1);
-    }
-    activeBlocks.value.push(block);
+    if (origIndex !== -1) activeBlocks.value.splice(origIndex, 1);
+    
+    // 如果是连接符，生成唯一 ID
+    const newId = block.isSep ? `${block.id}_${Date.now()}` : block.id;
+    activeBlocks.value.push({ ...block, uid: newId, originalId: newId });
   }
   updateConfigFormat();
 };
@@ -218,7 +238,7 @@ const removeBlock = (index) => {
 };
 
 const updateConfigFormat = () => {
-  config.value.file_format = activeBlocks.value.map(b => b.id);
+  config.value.file_format = activeBlocks.value.map(b => b.originalId);
 };
 
 // 原生拖拽排序
@@ -252,13 +272,6 @@ const seasonOptions = [
   { label: '第1季', value: '第{1}季' }
 ];
 
-const sepOptions = [
-  { label: '空格 - 空格 ( - )', value: ' - ' },
-  { label: '点 (.)', value: '.' },
-  { label: '下划线 (_)', value: '_' },
-  { label: '空格 ( )', value: ' ' }
-];
-
 const strmUrlOptions = [
   { label: '标准格式 (/api/p115/play/xxx)', value: 'standard' },
   { label: '带文件名后缀 (/api/p115/play/xxx/文件名.mkv)', value: 'with_name' }
@@ -268,8 +281,14 @@ const strmUrlOptions = [
 const mockMovie = { zh: '蝙蝠侠：黑暗骑士', en: 'The Dark Knight', year: '2008', tmdb: '155', res: '1080p', src: 'BluRay', codec: 'H264', audio: 'DDP 5.1', group: 'CMCT', orig: 'The.Dark.Knight.2008.REMASTERED.1080p', ext: '.mkv' };
 const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', src: 'WEB-DL', stream: 'NF', effect: 'HDR', codec: 'H265', audio: 'Atmos', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.NF.WEB-DL', ext: '.mp4' };
 
+const mockOriginalMovieDir = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264";
+const mockOriginalMovieFile = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264.mkv";
+const mockOriginalTvDir = "Breaking.Bad.S01.2160p.WEB-DL.x265";
+const mockOriginalTvFile = "Breaking.Bad.S01E01.2160p.WEB-DL.x265.mp4";
+
 // 预览计算
 const previewMovieDir = computed(() => {
+  if (config.value.keep_original_name) return mockOriginalMovieDir;
   let name = config.value.main_title_lang === 'zh' ? mockMovie.zh : mockMovie.en;
   if (config.value.main_year_en) name += ` (${mockMovie.year})`;
   if (config.value.main_tmdb_fmt !== 'none') name += ` ${config.value.main_tmdb_fmt.replace('ID', mockMovie.tmdb)}`;
@@ -277,35 +296,74 @@ const previewMovieDir = computed(() => {
 });
 
 const previewTvDir = computed(() => {
+  if (config.value.keep_original_name) return mockOriginalTvDir;
   let name = config.value.main_title_lang === 'zh' ? mockTv.zh : mockTv.en;
   if (config.value.main_year_en) name += ` (${mockTv.year})`;
   if (config.value.main_tmdb_fmt !== 'none') name += ` ${config.value.main_tmdb_fmt.replace('ID', mockTv.tmdb)}`;
   return name;
 });
 
-const previewTvSeason = computed(() => config.value.season_fmt.replace('{02}', '01').replace('{1}', '1'));
+const previewTvSeason = computed(() => {
+  if (config.value.keep_original_name) return "(保留原始子目录)";
+  return config.value.season_fmt.replace('{02}', '01').replace('{1}', '1');
+});
 
+// 前端智能消除算法 (与后端 Python 逻辑完全一致)
 const buildFileName = (mockData, isTv) => {
-  let parts = [];
-  for (const blockId of config.value.file_format) {
-    if (blockId === 'title_zh') parts.push(mockData.zh);
-    else if (blockId === 'title_en') parts.push(mockData.en);
-    else if (blockId === 'year') parts.push(`(${mockData.year})`);
-    else if (blockId === 'tmdb' && config.value.file_tmdb_fmt !== 'none') parts.push(config.value.file_tmdb_fmt.replace('ID', mockData.tmdb));
-    else if (blockId === 's_e' && isTv) parts.push(`S0${mockData.s}E0${mockData.e}`);
-    else if (blockId === 'original_name') parts.push(mockData.orig);
-    else if (blockId === 'resolution' && mockData.res) parts.push(mockData.res);
-    else if (blockId === 'source' && mockData.src) parts.push(mockData.src);
-    else if (blockId === 'stream' && mockData.stream) parts.push(mockData.stream);
-    else if (blockId === 'effect' && mockData.effect) parts.push(mockData.effect);
-    else if (blockId === 'codec' && mockData.codec) parts.push(mockData.codec);
-    else if (blockId === 'audio' && mockData.audio) parts.push(mockData.audio);
-    else if (blockId === 'group' && mockData.group) parts.push(mockData.group);
+  if (config.value.keep_original_name) return isTv ? mockOriginalTvFile : mockOriginalMovieFile;
+
+  let evaluated = [];
+  for (const rawId of config.value.file_format) {
+    const blockId = rawId.replace(/_\d+$/, ''); // 去除后缀
+    let val = null;
+    let isSep = false;
+    
+    if (blockId === 'title_zh') val = mockData.zh;
+    else if (blockId === 'title_en') val = mockData.en;
+    else if (blockId === 'year') val = `(${mockData.year})`;
+    else if (blockId === 'tmdb' && config.value.file_tmdb_fmt !== 'none') val = config.value.file_tmdb_fmt.replace('ID', mockData.tmdb);
+    else if (blockId === 's_e' && isTv) val = `S0${mockData.s}E0${mockData.e}`;
+    else if (blockId === 'original_name') val = mockData.orig;
+    else if (blockId === 'resolution' && mockData.res) val = mockData.res;
+    else if (blockId === 'source' && mockData.src) val = mockData.src;
+    else if (blockId === 'stream' && mockData.stream) val = mockData.stream;
+    else if (blockId === 'effect' && mockData.effect) val = mockData.effect;
+    else if (blockId === 'codec' && mockData.codec) val = mockData.codec;
+    else if (blockId === 'audio' && mockData.audio) val = mockData.audio;
+    else if (blockId === 'group' && mockData.group) val = mockData.group;
+    else if (blockId.startsWith('sep_')) {
+      isSep = true;
+      if (blockId === 'sep_dash_space') val = ' - ';
+      else if (blockId === 'sep_middot_space') val = ' · ';
+      else if (blockId === 'sep_middot') val = '·';
+      else if (blockId === 'sep_dot') val = '.';
+      else if (blockId === 'sep_dash') val = '-';
+      else if (blockId === 'sep_underline') val = '_';
+      else if (blockId === 'sep_space') val = ' ';
+    }
+    
+    if (val) {
+      evaluated.push({ val: isSep ? val : String(val).trim(), isSep });
+    }
   }
   
-  let sep = config.value.file_sep;
-  if (sep === '.') return parts.map(p => p.replace(/ /g, '.')).join('.') + mockData.ext;
-  return parts.join(sep) + mockData.ext;
+  let finalParts = [];
+  for (let i = 0; i < evaluated.length; i++) {
+    let item = evaluated[i];
+    if (item.isSep) {
+      let hasContentBefore = evaluated.slice(0, i).some(x => !x.isSep);
+      let hasContentAfter = evaluated.slice(i + 1).some(x => !x.isSep);
+      let prevIsSep = i > 0 ? evaluated[i-1].isSep : true;
+      
+      if (hasContentBefore && hasContentAfter && !prevIsSep) {
+        finalParts.push(item.val);
+      }
+    } else {
+      finalParts.push(item.val);
+    }
+  }
+  
+  return finalParts.join('') + mockData.ext;
 };
 
 const previewMovieFile = computed(() => buildFileName(mockMovie, false));
@@ -396,25 +454,29 @@ defineExpose({ open });
   align-items: center;
 }
 
+/* 强制焊死颜色，无视亮色/暗色主题 */
 .track-item {
   display: flex;
   align-items: center;
-  background-color: #18a058; /* 强制焊死绿色背景，无视主题 */
-  color: #ffffff; /* 强制焊死白色文字 */
+  background-color: #18a058; 
+  color: #ffffff; 
   padding: 4px 12px;
   border-radius: 16px;
   font-size: 13px;
   cursor: grab;
   user-select: none;
   transition: all 0.2s;
-  box-shadow: 0 2px 4px rgba(0,0,0,0.1); /* 加点阴影更有立体感 */
+  box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+.track-item.is-sep {
+  background-color: #f0a020; /* 连接符用橙色区分 */
 }
 .track-item:active {
   cursor: grabbing;
   transform: scale(0.95);
 }
 .track-item:hover {
-  background: #d03050; /* 悬停变红提示可删除 */
+  background-color: #d03050; /* 悬停变红提示可删除 */
 }
 
 .drag-handle {
