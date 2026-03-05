@@ -2309,19 +2309,9 @@ def task_full_sync_strm_and_subs(processor=None):
         if task_manager: task_manager.update_status_from_thread(prog, msg)
         logger.info(msg)
 
-    # ★ 修复：让前端第一时间收到启动消息
     start_msg = "=== 🚀 开始增量同步 STRM 与 字幕 ===" if download_subs else "=== 🚀 开始增量同步 STRM (跳过字幕) ==="
     if enable_cleanup: start_msg += " [已开启本地清理]"
     update_progress(0, start_msg)
-    
-    try:
-        import task_manager
-    except ImportError:
-        task_manager = None
-
-    def update_progress(prog, msg):
-        if task_manager: task_manager.update_status_from_thread(prog, msg)
-        logger.info(msg)
 
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
@@ -2329,7 +2319,14 @@ def task_full_sync_strm_and_subs(processor=None):
     known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
     known_sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
     
-    allowed_exts = set(e.lower() for e in config.get(constants.CONFIG_OPTION_115_EXTENSIONS, []))
+    # 自动剥离用户配置中可能带有的 "." 和空格
+    raw_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
+    allowed_exts = set()
+    for e in raw_exts:
+        clean_e = str(e).lower().strip().lstrip('.')
+        if clean_e:
+            allowed_exts.add(clean_e)
+            
     if not allowed_exts:
         allowed_exts = known_video_exts | known_sub_exts
     
@@ -2347,9 +2344,6 @@ def task_full_sync_strm_and_subs(processor=None):
     rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
     rename_cfg = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {}
 
-    # =================================================================
-    # 阶段 1: 加载规则与本地目录树缓存到内存 (耗时: 毫秒级)
-    # =================================================================
     update_progress(5, "  🧠 正在加载本地目录树缓存到内存...")
     
     cid_to_rel_path = {}  
@@ -2361,57 +2355,36 @@ def task_full_sync_strm_and_subs(processor=None):
             target_cids.add(cid)
             cid_to_rel_path[cid] = r.get('category_path') or r.get('dir_name', '未识别')
 
-    # =================================================================
-    # ★ 核心升级：动态智能路径推导器 (带内存与 DB 双重缓存)
-    # =================================================================
-    pid_path_cache = {} # 内存缓存，防止同一个文件夹重复请求 115
+    pid_path_cache = {} 
 
     def get_local_path_for_pid(pid, target_cid, base_category_path):
         pid = str(pid)
         target_cid = str(target_cid)
         
-        # 1. 如果文件直接在分类主目录下，直接返回分类路径
-        if pid == target_cid:
-            return base_category_path
+        if pid == target_cid: return base_category_path
+        if pid in pid_path_cache: return pid_path_cache[pid]
             
-        # 2. 查内存缓存 (极速)
-        if pid in pid_path_cache:
-            return pid_path_cache[pid]
-            
-        # 3. 查本地数据库缓存 (直接命中)
         db_path = P115CacheManager.get_local_path(pid)
         if db_path:
             pid_path_cache[pid] = db_path
             return db_path
             
-        # =================================================================
-        # ★ 3.5 找他爹要路径 (神级优化：如果自己没路径，但数据库里有爹的记录)
-        # =================================================================
         node_info = P115CacheManager.get_node_info(pid)
         if node_info:
             parent_id = node_info['parent_id']
             node_name = node_info['name']
-            
-            # 递归找爹的路径 (利用内存和DB缓存，瞬间返回)
             parent_path = get_local_path_for_pid(parent_id, target_cid, base_category_path)
             if parent_path:
-                # 爹有路径，直接拼上自己的名字！
                 final_path = os.path.join(parent_path, node_name)
-                
-                # 存入内存，并顺手更新自己的数据库记录，下次连爹都不用找了！
                 pid_path_cache[pid] = final_path
                 P115CacheManager.update_local_path(pid, final_path)
-                
-                logger.debug(f"  👨‍👦 成功通过父目录推导路径: {final_path}")
                 return final_path
 
-        # 4. 终极兜底：向 115 问路！(100% 准确，且每个文件夹只会问一次)
         try:
             dir_info = client.fs_files({'cid': pid, 'limit': 1, 'record_open_time': 0})
             path_nodes = dir_info.get('path', [])
             
             start_idx = -1
-            # 在路径链路中寻找 target_cid (分类目录)
             for i, node in enumerate(path_nodes):
                 if str(node.get('cid') or node.get('file_id')) == target_cid:
                     start_idx = i + 1
@@ -2421,51 +2394,41 @@ def task_full_sync_strm_and_subs(processor=None):
                 sub_folders = []
                 for n in path_nodes[start_idx:]:
                     node_name = n.get('file_name') or n.get('fn') or n.get('name') or n.get('n')
-                    if node_name: 
-                        sub_folders.append(str(node_name).strip())
+                    if node_name: sub_folders.append(str(node_name).strip())
                 
-                # 拼接出最终的本地相对路径
                 final_path = os.path.join(base_category_path, *sub_folders) if sub_folders else base_category_path
-                
-                # 存入内存和数据库，下次秒出！
                 pid_path_cache[pid] = final_path
-                
-                # 顺手把这个目录的结构存入数据库，防止外键报错
                 P115CacheManager.save_cid(pid, path_nodes[-2].get('cid') if len(path_nodes)>1 else '0', path_nodes[-1].get('file_name'))
                 P115CacheManager.update_local_path(pid, final_path)
-                
-                logger.info(f"  🔍 [动态推导] 缓存新路径: {final_path}")
                 return final_path
-            else:
-                logger.warning(f"  ⚠️ 路径异常: 文件夹 {pid} 不在分类 {target_cid} 之下！")
         except Exception as e:
             logger.warning(f"  ⚠️ 向 115 动态查询路径失败 (pid={pid}): {e}")
             
         return None
 
-    # =================================================================
-    # 阶段 2: 分类目录级全局拉取 (耗时: 秒级/分钟级)
-    # =================================================================
     valid_local_files = set()
     files_generated = 0
+    files_skipped = 0  # ★ 新增：跳过计数器
     subs_downloaded = 0
-    
     total_targets = len(target_cids)
     api_fatal_error = False 
 
-    # ★ 提取公共处理逻辑，供极速模式和 OpenAPI 模式共用
-    def handle_file_item(item, target_cid, category_name):
-        nonlocal files_generated, subs_downloaded
-        name = item.get('fn') or item.get('n') or item.get('file_name', '')
+    def handle_file_item(item, target_cid, category_name, precalculated_rel_dir=None):
+        nonlocal files_generated, files_skipped, subs_downloaded
+        name = item.get('fn') or item.get('n') or item.get('file_name') or item.get('name', '')
+        if not name: return
+        
         ext = name.split('.')[-1].lower() if '.' in name else ''
-        if ext not in allowed_exts: return
+        if ext not in allowed_exts: 
+            return
         
         pc = item.get('pc') or item.get('pick_code') or item.get('pickcode')
         pid = item.get('pid') or item.get('cid') or item.get('parent_id')
         fid = item.get('fid') or item.get('file_id') or item.get('id')
         file_sha1 = item.get('sha1') or item.get('sha')
         
-        if not pc or not pid or not fid: return
+        if not pc or not pid or not fid: 
+            return
 
         if not file_sha1:
             cached_sha1 = P115CacheManager.get_file_sha1(fid)
@@ -2478,18 +2441,11 @@ def task_full_sync_strm_and_subs(processor=None):
                         file_sha1 = info_res['data'].get('sha1')
                 except Exception: pass
 
-        # 先计算路径，再存入数据库
-        rel_dir = get_local_path_for_pid(pid, target_cid, category_name)
+        rel_dir = precalculated_rel_dir if precalculated_rel_dir else get_local_path_for_pid(pid, target_cid, category_name)
         if not rel_dir: return 
         
-        # 计算文件的相对 local_path
         file_local_path = os.path.join(rel_dir, name).replace('\\', '/')
-        
-        # 存入数据库 (传入 local_path)
         P115CacheManager.save_file_cache(fid, pid, name, sha1=file_sha1, pick_code=pc, local_path=file_local_path)
-        
-        rel_dir = get_local_path_for_pid(pid, target_cid, category_name)
-        if not rel_dir: return 
             
         current_local_path = os.path.join(local_root, rel_dir)
         os.makedirs(current_local_path, exist_ok=True)
@@ -2527,6 +2483,9 @@ def task_full_sync_strm_and_subs(processor=None):
                     from monitor_service import enqueue_file_actively
                     enqueue_file_actively(strm_path)
                 except Exception: pass
+            else:
+                # ★ 记录跳过的文件
+                files_skipped += 1
                 
             valid_local_files.add(os.path.abspath(strm_path))
 
@@ -2545,7 +2504,6 @@ def task_full_sync_strm_and_subs(processor=None):
                                             json.dump(raw_info, f_json, ensure_ascii=False)
                                         cursor.execute("UPDATE p115_mediainfo_cache SET hit_count = hit_count + 1 WHERE sha1 = %s", (file_sha1,))
                                         conn.commit()
-                                        logger.debug(f"  ⚡ 匹配到相同 SHA1，自动生成媒体信息: {os.path.basename(mediainfo_path)}")
                 except Exception: pass
                 
         elif ext in known_sub_exts and download_subs:
@@ -2569,17 +2527,13 @@ def task_full_sync_strm_and_subs(processor=None):
     for idx, target_cid in enumerate(target_cids):
         category_name = cid_to_rel_path.get(target_cid, "未知分类")
         base_prog = 10 + int((idx / total_targets) * 80)
-        
         fast_mode_success = False
         
-        # =================================================================
-        # A. 优先尝试极速遍历 (iter_files_with_path_skim)
-        # =================================================================
         try:
             from p115client.tool.iterdir import iter_files_with_path_skim
             raw_p115_client = getattr(client, 'raw_client', None)
             if not raw_p115_client:
-                raise Exception("无法获取底层 P115Client (可能未配置 Cookie)，极速模式不可用")
+                raise Exception("无法获取底层 P115Client，极速模式不可用")
             
             update_progress(base_prog, f"  🚀 正在使用极速模式遍历分类 [{category_name}] ...")
             
@@ -2595,88 +2549,92 @@ def task_full_sync_strm_and_subs(processor=None):
                 if processor and getattr(processor, 'is_stop_requested', lambda: False)(): return
                 
                 fid = info.get('fid') or info.get('id')
-                if not fid or info.get('ico') == 'folder': continue
+                is_dir = info.get('is_dir') or info.get('ico') == 'folder' or str(info.get('fc', '')) == '0'
+                if not fid or is_dir: continue
                 
-                handle_file_item(info, target_cid, category_name)
+                precalculated_rel_dir = None
+                ancestors = info.get('ancestors') or info.get('paths') or info.get('path')
+                if isinstance(ancestors, (list, tuple)):
+                    start_idx = -1
+                    for i, anc in enumerate(ancestors):
+                        if isinstance(anc, dict):
+                            anc_id = str(anc.get('id') or anc.get('cid') or anc.get('file_id') or anc.get('parent_id') or '')
+                            if anc_id == target_cid:
+                                start_idx = i + 1
+                                break
+                    if start_idx != -1:
+                        sub_folders = []
+                        for anc in ancestors[start_idx:]:
+                            if isinstance(anc, dict):
+                                n = anc.get('name') or anc.get('file_name') or anc.get('fn')
+                                if n: sub_folders.append(str(n).strip())
+                        precalculated_rel_dir = os.path.join(category_name, *sub_folders) if sub_folders else category_name
+
+                handle_file_item(info, target_cid, category_name, precalculated_rel_dir)
                 count += 1
                 if count % 500 == 0:
                     update_progress(base_prog, f"  🚀 [{category_name}] 极速遍历中... (已处理 {count} 个文件)")
             
-            fast_mode_success = True
-            logger.info(f"  ✅ [{category_name}] 极速遍历完成，共处理 {count} 个文件。")
+            if count > 0:
+                fast_mode_success = True
+                logger.info(f"  ✅ [{category_name}] 极速遍历完成，共处理 {count} 个文件。")
+            else:
+                logger.warning(f"  ⚠️ [{category_name}] 极速遍历未找到任何文件，将使用 OpenAPI 进行复查...")
+                fast_mode_success = False
             
         except Exception as e:
             err_str = str(e)
             if '405' in err_str or 'Method Not Allowed' in err_str or '403' in err_str:
-                logger.warning(f"  ⚠️ 极速遍历触发风控 (405/403)，立即回退到 OpenAPI 接口...")
+                logger.warning(f"  ⚠️ 极速遍历触发风控 (405/403)，立即回退到 OpenAPI 递归...")
             else:
-                logger.warning(f"  ⚠️ 极速遍历异常，回退到 OpenAPI: {e}")
+                logger.warning(f"  ⚠️ 极速遍历异常，回退到 OpenAPI 递归: {e}")
                 
         if fast_mode_success:
             continue
             
-        # =================================================================
-        # B. 智能降级：回退到 OpenAPI 遍历
-        # =================================================================
-        update_progress(base_prog, f"  🌐 正在使用 OpenAPI 全局拉取分类 [{category_name}] ...")
+        update_progress(base_prog, f"  🌐 正在使用 OpenAPI 递归拉取分类 [{category_name}] ...")
         
-        pull_tasks = [{"name": "视频", "is_search": False, "params": {'type': 4}}]
-        if download_subs:
-            for ext in ['srt', 'ass', 'ssa', 'sub', 'vtt']:
-                pull_tasks.append({"name": f"字幕(.{ext})", "is_search": True, "params": {'search_value': f'.{ext}'}})
-        
-        for task in pull_tasks:
-            task_name = task["name"]
-            is_search = task["is_search"]
-            base_params = task["params"]
-            
+        def fallback_recursive_scan(current_cid, current_rel_dir):
+            nonlocal api_fatal_error
+            if api_fatal_error: return
+            if processor and getattr(processor, 'is_stop_requested', lambda: False)(): return
+
             offset = 0
             limit = 1000
-            page = 1
-            
             while True:
-                if processor and getattr(processor, 'is_stop_requested', lambda: False)(): return
-                
                 try:
-                    req_payload = {'cid': target_cid, 'limit': limit, 'offset': offset}
-                    req_payload.update(base_params)
-                    
-                    if is_search and hasattr(client, 'fs_search'):
-                        res = client.fs_search(req_payload)
-                    else:
-                        req_payload['record_open_time'] = 0
-                        res = client.fs_files(req_payload)
-                    
+                    res = client.fs_files({'cid': current_cid, 'limit': limit, 'offset': offset, 'record_open_time': 0})
                     if not res.get('state'):
-                        logger.error(f"  🛑 [致命错误] 115 API 返回失败: {res.get('error_msg', res)}，触发熔断保护！")
+                        logger.error(f"  🛑 [致命错误] 115 API 返回失败: {res.get('error_msg', res)}")
                         api_fatal_error = True
                         break
 
                     data = res.get('data', [])
                     if not data: break
-                    
-                    update_progress(base_prog, f"  ➜ [{category_name}] - [{task_name}] 获取第 {page} 页 ({len(data)} 个文件)...")
-                    
+
                     for item in data:
-                        handle_file_item(item, target_cid, category_name)
+                        fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
+                        if fc == '1': 
+                            handle_file_item(item, target_cid, category_name, precalculated_rel_dir=current_rel_dir)
+                        elif fc == '0': 
+                            sub_cid = item.get('fid') or item.get('file_id')
+                            sub_name = item.get('fn') or item.get('n') or item.get('file_name')
+                            if sub_cid and sub_name:
+                                fallback_recursive_scan(sub_cid, os.path.join(current_rel_dir, str(sub_name)))
 
                     if len(data) < limit: break
                     offset += limit
-                    page += 1
-                    
                 except Exception as e:
-                    logger.error(f"  ❌ 全局拉取异常 (cid={target_cid}, type={task_name}): {e}")
+                    logger.error(f"  ❌ 递归扫描异常 (cid={current_cid}): {e}")
                     api_fatal_error = True
                     break
-            
-            if api_fatal_error: break
+
+        fallback_recursive_scan(target_cid, category_name)
         if api_fatal_error: break
 
-    logger.info(f"  ✅ 增量同步完成！新增/更新 STRM: {files_generated} 个, 下载字幕: {subs_downloaded} 个。")
+    # ★ 修改了这里的日志输出，加上了跳过计数
+    logger.info(f"  ✅ 增量同步完成！新增/更新 STRM: {files_generated} 个, 跳过已存在: {files_skipped} 个, 下载字幕: {subs_downloaded} 个。")
 
-    # =================================================================
-    # 阶段 3: 本地失效文件清理 (耗时: 秒级)
-    # =================================================================
     if enable_cleanup:
         if api_fatal_error:
             update_progress(90, "  🛑 [熔断保护] 由于拉取过程中发生 API 错误，为防止误删，已强制跳过本地清理阶段！")
@@ -2700,6 +2658,10 @@ def task_full_sync_strm_and_subs(processor=None):
                                 os.remove(file_path)
                                 cleaned_files += 1
                                 logger.debug(f"  🗑️ [清理] 删除失效文件: {file}")
+                                if ext == 'strm':
+                                    mi_path = file_path.replace('.strm', '-mediainfo.json')
+                                    if os.path.exists(mi_path):
+                                        os.remove(mi_path)
                             except Exception as e:
                                 logger.warning(f"  ⚠️ 删除文件失败 {file}: {e}")
             
