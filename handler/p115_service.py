@@ -2325,13 +2325,6 @@ def task_full_sync_strm_and_subs(processor=None):
 
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
-
-    def get_standard_rel_path(file_full_path):
-        try:
-            rel = os.path.relpath(file_full_path, local_root)
-            return rel.replace('\\', '/').lower()
-        except:
-            return ""
     
     known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
     known_sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
@@ -2535,7 +2528,7 @@ def task_full_sync_strm_and_subs(processor=None):
                     enqueue_file_actively(strm_path)
                 except Exception: pass
                 
-            valid_local_files.add(get_standard_rel_path(strm_path))
+            valid_local_files.add(os.path.abspath(strm_path))
 
             if file_sha1:
                 try:
@@ -2571,7 +2564,7 @@ def task_full_sync_strm_and_subs(processor=None):
                         subs_downloaded += 1
                 except Exception as e:
                     logger.error(f"  ❌ 下载字幕失败 [{name}]: {e}")
-            valid_local_files.add(get_standard_rel_path(sub_path))
+            valid_local_files.add(os.path.abspath(sub_path))
 
     for idx, target_cid in enumerate(target_cids):
         category_name = cid_to_rel_path.get(target_cid, "未知分类")
@@ -2687,6 +2680,7 @@ def task_full_sync_strm_and_subs(processor=None):
     if enable_cleanup:
         if api_fatal_error:
             update_progress(90, "  🛑 [熔断保护] 由于拉取过程中发生 API 错误，为防止误删，已强制跳过本地清理阶段！")
+            logger.warning("  🛑 [熔断保护] 拒绝执行本地清理！")
         else:
             update_progress(90, "  🧹 正在比对并清理本地失效文件...")
         cleaned_files = 0
@@ -2700,11 +2694,8 @@ def task_full_sync_strm_and_subs(processor=None):
                 for file in files:
                     ext = file.split('.')[-1].lower()
                     if ext in known_sub_exts or ext == 'strm':
-                        file_path = os.path.join(root_dir, file)
-                        # ★ 核心修复：用魔法函数计算标准的相对路径进行比对
-                        std_rel = get_standard_rel_path(file_path)
-                        
-                        if std_rel not in valid_local_files:
+                        file_path = os.path.abspath(os.path.join(root_dir, file))
+                        if file_path not in valid_local_files:
                             try:
                                 os.remove(file_path)
                                 cleaned_files += 1
