@@ -483,6 +483,34 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
             # 利用 core_processor 里现成的神级方法反查 SHA1
             pc = processor._extract_pickcode_from_strm(file_path)
             sha1 = processor._get_sha1_by_pickcode(pc)
+
+            # ★★★ 终极兼容兜底：非 ETK 处理的媒体项，现场用 PC 算 FID 找 115 要 SHA1 ★★★
+            if not sha1 and pc:
+                logger.info(f"  🔍 未在本地数据库找到 SHA1，尝试通过 115api 获取...")
+                try:
+                    to_id_func = None
+                    try:
+                        from p115pickcode import to_id
+                        to_id_func = to_id
+                    except ImportError:
+                        try:
+                            from p115client.tool.iterdir import to_id
+                            to_id_func = to_id
+                        except ImportError:
+                            pass
+                    
+                    if to_id_func:
+                        fid = str(to_id_func(pc))
+                        from handler.p115_service import P115Service
+                        client = P115Service.get_client()
+                        if client and fid:
+                            info_res = client.fs_get_info(fid)
+                            if info_res and info_res.get('state'):
+                                sha1 = info_res['data'].get('sha1')
+                                if sha1:
+                                    logger.info(f"  ✅ 成功通过 115 API 实时获取到 SHA1: {sha1}")
+                except Exception as e:
+                    logger.warning(f"  ⚠️ 实时获取 SHA1 失败: {e}")
             
             if sha1:
                 media_data = None

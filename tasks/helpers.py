@@ -342,11 +342,12 @@ def analyze_media_asset(item_details: dict) -> dict:
                 codec_str = val
                 break
 
+    # 恢复语言标签提取 (保证洗版和筛选规则正常工作)
     detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
     audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs]))
     
-    # ★★★ 核心修改：增强音频 (Audio) 的文件名兜底 ★★★
-    # 如果 Emby 没分析出音轨，尝试从文件名提取常见音频格式作为展示
+    # ★★★ 增强音频 (Audio) 的文件名兜底 ★★★
+    # 如果 Emby 没分析出音轨语言，尝试从文件名提取常见音频格式作为展示
     if not audio_str:
         audio_keywords = {
             'truehd': 'TrueHD', 'atmos': 'Atmos', 
@@ -359,13 +360,11 @@ def analyze_media_asset(item_details: dict) -> dict:
             if k in file_name_lower:
                 found_audios.append(v)
         if found_audios:
-            audio_str = " | ".join(found_audios) # 用竖线分隔，表示这是文件名猜的
+            audio_str = " | ".join(found_audios) 
         else:
-            audio_str = '无' # 真的猜不到了
+            audio_str = '无' 
 
-    detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
-    audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs])) or '无'
-
+    # 提取字幕语言
     detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle')
     if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs and any(
         s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
@@ -400,7 +399,14 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
     if id_to_parent_map and item_id:
         ancestors = calculate_ancestor_ids(item_id, id_to_parent_map, library_guid)
 
-    # ★★★ 核心改造：优先读取神医生成的本地 JSON ★★★
+    # ★★★ 核心修复 1：如果没有传入路径，主动去同级目录寻找 JSON ★★★
+    if not local_mediainfo_path:
+        file_path = item_details.get('Path', '')
+        if file_path and not file_path.startswith('http'):
+            guessed_path = os.path.splitext(file_path)[0] + "-mediainfo.json"
+            if os.path.exists(guessed_path):
+                local_mediainfo_path = guessed_path
+
     raw_shenyi_data = None
     if local_mediainfo_path and os.path.exists(local_mediainfo_path):
         try:
@@ -412,9 +418,13 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
     primary_source = None
     media_streams = []
     
-    # 如果成功读取到神医数据，使用神医数据作为解析源
+    # ★★★ 核心修复 2：兼容两种不同的 JSON 嵌套格式 ★★★
     if raw_shenyi_data and isinstance(raw_shenyi_data, list) and len(raw_shenyi_data) > 0:
-        primary_source = raw_shenyi_data[0].get("MediaSourceInfo", {})
+        first_item = raw_shenyi_data[0]
+        if "MediaSourceInfo" in first_item:
+            primary_source = first_item.get("MediaSourceInfo", {})
+        else:
+            primary_source = first_item
         media_streams = primary_source.get("MediaStreams", [])
     else:
         # 兜底：使用 Emby 原始数据 (通常在提取完成前)
