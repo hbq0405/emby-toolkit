@@ -261,7 +261,8 @@ import {
   MenuOutline, // 引入菜单图标
   Moon as MoonIcon,
   Sunny as SunnyIcon,
-  PieChartOutline as EmbyStatsIcon // ★★★ 新增：引入图表图标 ★★★
+  PieChartOutline as EmbyStatsIcon,
+  DocumentTextOutline as RecordsIcon
 } from '@vicons/ionicons5';
 import axios from 'axios';
 import logo from './assets/logo.png'
@@ -463,7 +464,8 @@ const menuOptions = computed(() => {
           { label: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, 
           { label: '媒体去重', key: 'MediaCleanupPage', icon: renderIcon(CleanupIcon) },
           { label: '媒体整理', key: 'ResubscribePage', icon: renderIcon(ResubscribeIcon) },
-          { label: '自动标签', key: 'AutoTaggingPage', icon: renderIcon(TagIcon) },  
+          { label: '自动标签', key: 'AutoTaggingPage', icon: renderIcon(TagIcon) },
+          { label: '整理记录', key: 'OrganizeRecords', icon: renderIcon(RecordsIcon) },  
           { label: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }, 
         ] 
       },

@@ -429,6 +429,22 @@ def init_db():
                     )
                 """)
 
+                logger.trace("  ➜ 正在创建 'p115_organize_records' 表 (115整理记录)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS p115_organize_records (
+                        id SERIAL PRIMARY KEY,
+                        file_id TEXT UNIQUE NOT NULL,  -- 115 原始文件/文件夹ID (使用UNIQUE防止重复记录)
+                        original_name TEXT NOT NULL,   -- 原始名称
+                        renamed_name TEXT,             -- 整理后的名称
+                        status TEXT NOT NULL,          -- 'success' 或 'unrecognized'
+                        tmdb_id TEXT,
+                        media_type TEXT,
+                        target_cid TEXT,               -- 目标分类CID
+                        category_name TEXT,            -- 目标分类名称
+                        processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
                 # ======================================================================
                 # ★★★ 数据库平滑升级 (START) ★★★
                 # 此处代码用于新增在新版本中添加的列。

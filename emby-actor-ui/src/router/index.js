@@ -21,6 +21,7 @@ import UserCenterPage from '../components/UserCenterPage.vue'
 import SetupPage from '../components/Setup.vue';
 import NullbrPage from '../components/NullbrPage.vue';
 import EmbyStatsPage from '../components/EmbyStatsPage.vue';
+import OrganizeRecordsPage from '../components/OrganizeRecordsPage.vue';
 
 // --- 2. 定义路由规则 (带 meta.public 标签) ---
 const routes = [
@@ -61,6 +62,12 @@ const routes = [
     path: '/DatabaseStats',
     name: 'DatabaseStats',
     component: DatabaseStats,
+    meta: { requiresAuth: true },
+  },
+  {
+    path: '/organize-records',
+    name: 'OrganizeRecords',
+    component: OrganizeRecordsPage,
     meta: { requiresAuth: true },
   },
   {

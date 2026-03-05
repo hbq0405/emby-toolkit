@@ -790,3 +790,115 @@ def handle_custom_strm_regex():
         clean_rules = [r.strip() for r in rules if r and r.strip()]
         settings_db.save_setting("custom_strm_regex", clean_rules)
         return jsonify({"success": True, "message": "自定义正则已保存"})
+    
+# ======================================================================
+# ★★★ 115 整理记录面板 API ★★★
+# ======================================================================
+from database.connection import get_db_connection
+
+@p115_bp.route('/records', methods=['GET'])
+@admin_required
+def get_organize_records():
+    """获取整理记录列表及统计数据"""
+    page = int(request.args.get('page', 1))
+    per_page = int(request.args.get('per_page', 15))
+    search = request.args.get('search', '')
+    status = request.args.get('status', 'all')
+    cid = request.args.get('cid', '')
+    
+    offset = (page - 1) * per_page
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 1. 基础查询条件构建
+                where_clauses = []
+                params = []
+                
+                if search:
+                    where_clauses.append("(original_name ILIKE %s OR renamed_name ILIKE %s)")
+                    params.extend([f"%{search}%", f"%{search}%"])
+                if status != 'all':
+                    where_clauses.append("status = %s")
+                    params.append(status)
+                if cid:
+                    where_clauses.append("target_cid = %s")
+                    params.append(str(cid))
+                    
+                where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+                
+                # 2. 获取总条数
+                cursor.execute(f"SELECT COUNT(*) as count FROM p115_organize_records {where_sql}", tuple(params))
+                total = cursor.fetchone()['count']
+                
+                # 3. 获取分页数据
+                cursor.execute(f"""
+                    SELECT * FROM p115_organize_records 
+                    {where_sql} 
+                    ORDER BY processed_at DESC 
+                    LIMIT %s OFFSET %s
+                """, tuple(params + [per_page, offset]))
+                items = cursor.fetchall()
+                
+                # 4. 获取顶部 Dashboard 统计面板数据
+                cursor.execute("SELECT COUNT(*) as total FROM p115_organize_records")
+                stat_total = cursor.fetchone()['total']
+                
+                cursor.execute("SELECT COUNT(*) as success FROM p115_organize_records WHERE status = 'success'")
+                stat_success = cursor.fetchone()['success']
+                
+                cursor.execute("SELECT COUNT(*) as unrecognized FROM p115_organize_records WHERE status = 'unrecognized'")
+                stat_unrecognized = cursor.fetchone()['unrecognized']
+                
+                cursor.execute("SELECT COUNT(*) as this_week FROM p115_organize_records WHERE processed_at >= NOW() - INTERVAL '7 days'")
+                stat_week = cursor.fetchone()['this_week']
+
+                return jsonify({
+                    "success": True,
+                    "items": items,
+                    "total": total,
+                    "stats": {
+                        "total": stat_total,
+                        "success": stat_success,
+                        "unrecognized": stat_unrecognized,
+                        "thisWeek": stat_week
+                    }
+                })
+    except Exception as e:
+        logger.error(f"获取整理记录失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@p115_bp.route('/records/<int:record_id>', methods=['DELETE'])
+@admin_required
+def delete_organize_record(record_id):
+    """删除单条整理记录 (仅删数据库，不影响网盘文件)"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM p115_organize_records WHERE id = %s", (record_id,))
+                conn.commit()
+        return jsonify({"success": True, "message": "记录已删除"})
+    except Exception as e:
+        return jsonify({"success": False, "message": str(e)}), 500
+
+@p115_bp.route('/records/correct', methods=['POST'])
+@admin_required
+def correct_organize_record():
+    """手动纠错与重新排盘核心 API"""
+    data = request.json
+    record_id = data.get('id')
+    tmdb_id = data.get('tmdb_id')
+    media_type = data.get('media_type')
+    target_cid = data.get('target_cid')
+    
+    if not all([record_id, tmdb_id, media_type, target_cid]):
+        return jsonify({"success": False, "message": "缺少必要参数！"}), 400
+        
+    try:
+        from handler.p115_service import manual_correct_organize_record
+        # 触发后端强制重组
+        manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid)
+        return jsonify({"success": True, "message": "重组完成！网盘与 STRM 已迁移。"})
+    except Exception as e:
+        logger.error(f"  ❌ 手动重组失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500

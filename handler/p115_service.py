@@ -642,6 +642,37 @@ class P115CacheManager:
             logger.error(f"  ❌ 清理 115 文件缓存失败: {e}")
 
 # ======================================================================
+# ★★★ 115 整理记录 DB 管理器 ★★★
+# ======================================================================
+class P115RecordManager:
+    @staticmethod
+    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None):
+        """添加或更新整理记录（基于 file_id 唯一约束）"""
+        if not file_id or not original_name: return
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        INSERT INTO p115_organize_records 
+                        (file_id, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        ON CONFLICT (file_id) 
+                        DO UPDATE SET 
+                            status = EXCLUDED.status,
+                            tmdb_id = EXCLUDED.tmdb_id,
+                            media_type = EXCLUDED.media_type,
+                            target_cid = EXCLUDED.target_cid,
+                            category_name = EXCLUDED.category_name,
+                            renamed_name = EXCLUDED.renamed_name,
+                            processed_at = NOW()
+                    """, (str(file_id), str(original_name), str(status), str(tmdb_id) if tmdb_id else None, 
+                          str(media_type) if media_type else None, str(target_cid) if target_cid else None, 
+                          str(category_name) if category_name else None, str(renamed_name) if renamed_name else None))
+                    conn.commit()
+        except Exception as e:
+            logger.error(f"  ❌ 写入 115 整理记录失败: {e}")
+
+# ======================================================================
 # ★★★ 115 全局批量删除缓冲队列 (防流控) ★★★
 # ======================================================================
 class P115DeleteBuffer:
@@ -1746,6 +1777,25 @@ class SmartOrganizer:
             self.client.fs_delete([source_root_id])
             logger.info(f"  🧹 已清理空目录")
 
+        # --- 整理记录 ---
+        if moved_count > 0 or keep_original:
+            category_name = "未识别"
+            for rule in self.rules:
+                if str(rule.get('cid')) == str(target_cid):
+                    category_name = rule.get('dir_name', '未识别')
+                    break
+            
+            P115RecordManager.add_or_update_record(
+                file_id=source_root_id,
+                original_name=root_name,
+                status='success',
+                tmdb_id=self.tmdb_id,
+                media_type=self.media_type,
+                target_cid=target_cid,
+                category_name=category_name,
+                renamed_name=std_root_name
+            )
+
         return True
 
 def _parse_115_size(size_val):
@@ -2076,6 +2126,8 @@ def task_scan_and_organize_115(processor=None):
                                 if unidentified_cid and depth == 0:
                                     client.fs_move(item_id, unidentified_cid)
                                     moved_to_unidentified += 1
+                                    # 记录未识别文件夹
+                                    P115RecordManager.add_or_update_record(item_id, name, 'unrecognized', target_cid=unidentified_cid, category_name="未识别")
                         except: pass
                     else:
                         # 是文件且识别失败，直接移入未识别
@@ -2083,6 +2135,8 @@ def task_scan_and_organize_115(processor=None):
                             try:
                                 client.fs_move(item_id, unidentified_cid)
                                 moved_to_unidentified += 1
+                                # 记录未识别文件
+                                P115RecordManager.add_or_update_record(item_id, name, 'unrecognized', target_cid=unidentified_cid, category_name="未识别")
                             except: pass
 
         # 启动递归扫描
@@ -2727,3 +2781,69 @@ def delete_115_files_by_webhook(item_path, pickcodes):
 
     except Exception as e:
         logger.error(f"  ❌ [联动删除] 执行异常: {e}", exc_info=True)
+
+def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
+    """
+    接收前端手动纠错指令，调动 SmartOrganizer 重新对网盘文件进行物理重组，并生成 STRM。
+    """
+    client = P115Service.get_client()
+    if not client:
+        raise Exception("115 客户端未初始化")
+        
+    file_id = None
+    original_name = None
+    
+    # 1. 查询数据库获取要操作的 115 文件 ID
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT file_id, original_name FROM p115_organize_records WHERE id = %s", (record_id,))
+                row = cursor.fetchone()
+                if not row:
+                    raise Exception("未找到该整理记录")
+                file_id = row['file_id']
+                original_name = row['original_name']
+    except Exception as e:
+        raise Exception(f"数据库查询失败: {e}")
+
+    # 2. 从 115 获取该文件的最新状态 (构造 root_item)
+    root_item = None
+    try:
+        # 尝试把它当目录查
+        info_res = client.fs_get_info(file_id)
+        if info_res.get('state') and info_res.get('data'):
+            root_item = info_res['data']
+            # 兼容字段名
+            root_item['fid'] = root_item.get('file_id') or root_item.get('cid')
+            root_item['fc'] = '0' # 目录
+            root_item['fn'] = root_item.get('file_name')
+        else:
+            raise Exception("目录不存在，可能被删除了")
+    except Exception as e:
+        # 如果是文件，获取详情的 API 不一样，这里简单化：如果失败抛出异常
+        raise Exception(f"无法在 115 网盘中定位到该项目(ID:{file_id})，它可能已被删除。")
+
+    # 3. 获取 TMDb 标题用于重新整理
+    title = original_name
+    api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+    try:
+        import handler.tmdb as tmdb
+        if media_type == 'tv':
+            details = tmdb.get_tv_details(tmdb_id, api_key)
+        else:
+            details = tmdb.get_movie_details(tmdb_id, api_key)
+        if details:
+            title = details.get('title') or details.get('name') or original_name
+    except: pass
+
+    # 4. 召唤乐高工具，强行重组！
+    logger.info(f"  🛠️ [手动重组] 开始对 '{original_name}' 执行定向整理 -> ID:{tmdb_id} ({media_type})")
+    organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
+    
+    # 执行整理 (delete_source=False，因为它是被移动的本体)
+    success = organizer.execute(root_item, target_cid, delete_source=False)
+    
+    if not success:
+        raise Exception("SmartOrganizer 执行重组失败，请查看后台日志。")
+        
+    return True
