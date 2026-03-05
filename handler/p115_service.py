@@ -2522,8 +2522,15 @@ def task_full_sync_strm_and_subs(processor=None):
                                 except Exception:
                                     pass
 
-                        # 存入缓存表
-                        P115CacheManager.save_file_cache(fid, pid, name, sha1=file_sha1, pick_code=pc)
+                        # 先计算路径，再存入数据库
+                        rel_dir = get_local_path_for_pid(pid, target_cid, category_name)
+                        if not rel_dir: return 
+                        
+                        # 计算文件的相对 local_path
+                        file_local_path = os.path.join(rel_dir, name).replace('\\', '/')
+                        
+                        # 存入数据库 (传入 local_path)
+                        P115CacheManager.save_file_cache(fid, pid, name, sha1=file_sha1, pick_code=pc, local_path=file_local_path)
                         
                         # ★ 智能推导本地路径 (传入 pid, 当前分类 cid, 当前分类的基准路径)
                         rel_dir = get_local_path_for_pid(pid, target_cid, category_name)
