@@ -113,8 +113,12 @@ def enqueue_file_actively(file_path: str):
 
 def process_batch_queue():
     """
-    处理新增/修改队列 (无视监控开关，只要队列有数据就处理)
+    处理新增/修改队列
     """
+    if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+        with QUEUE_LOCK:
+            FILE_EVENT_QUEUE.clear()
+        return
     global DEBOUNCE_TIMER
     with QUEUE_LOCK:
         files_to_process = list(FILE_EVENT_QUEUE)
@@ -165,6 +169,11 @@ def process_batch_queue():
 
 def process_mediainfo_queue():
     """处理媒体信息更新队列"""
+    if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+        with MEDIAINFO_QUEUE_LOCK:
+            MEDIAINFO_EVENT_QUEUE.clear()
+        return
+    
     global MEDIAINFO_DEBOUNCE_TIMER
     with MEDIAINFO_QUEUE_LOCK:
         files_to_process = list(MEDIAINFO_EVENT_QUEUE)
@@ -288,6 +297,9 @@ def _handle_batch_refresh_only_task(file_paths: List[str]):
 
 def _refresh_parent_dirs(parent_dirs: Set[str], action_type: str):
     config = config_manager.APP_CONFIG
+    if not config.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+        return
+
     base_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
     api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
     delay_seconds = config.get(constants.CONFIG_OPTION_MONITOR_EXCLUDE_REFRESH_DELAY, 0)
@@ -299,6 +311,8 @@ def _refresh_parent_dirs(parent_dirs: Set[str], action_type: str):
     if delay_seconds > 0:
         logger.info(f"  ⏳ [实时监控-{action_type}] 命中排除路径，等待 {delay_seconds} 秒后通知 Emby 刷新...")
         time.sleep(delay_seconds)
+        if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+            return
 
     logger.info(f"  🔄 [实时监控-{action_type}] 正在通知 Emby 刷新 {len(parent_dirs)} 个排除目录...")
     for folder_path in parent_dirs:
