@@ -1939,23 +1939,41 @@ def task_scan_and_organize_115(processor=None):
                 if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
                     continue
 
+                is_shell_folder = False
                 forced_type = None
                 peek_failed = False
 
-                # 如果是文件夹，先透视一下是不是剧集
+                # 如果是文件夹，先透视一下内容，判断是媒体目录还是分类壳子
                 if is_folder:
                     for retry in range(2):
                         try:
                             sub_res = client.fs_files({
-                                'cid': item_id, 'limit': 20, 
+                                'cid': item_id, 'limit': 100, 
                                 'record_open_time': 0, 'count_folders': 0
                             })
                             if sub_res.get('data'):
+                                video_count = 0
+                                suspicious_folder_count = 0
+                                
                                 for sub_item in sub_res['data']:
                                     sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
-                                    if re.search(r'(Season\s?\d+|S\d+|Ep?\d+|第\d+季)', sub_name, re.IGNORECASE):
-                                        forced_type = 'tv'
-                                        break
+                                    sub_fc = str(sub_item.get('fc') if sub_item.get('fc') is not None else sub_item.get('type'))
+                                    
+                                    if sub_fc == '1': # 文件
+                                        ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
+                                        if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                                            video_count += 1
+                                    elif sub_fc == '0': # 文件夹
+                                        # 检查是否为常见的媒体内部子目录 (季、特典、字幕、原盘目录等)
+                                        if re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第\d+季|Specials|SP|Featurettes|Extras|Subs|Subtitles|BDMV|CERTIFICATE|CD\d+|DVD\d+|Disc\d+)$', sub_name, re.IGNORECASE):
+                                            forced_type = 'tv' if re.search(r'(Season|S\d+|第\d+季)', sub_name, re.IGNORECASE) else forced_type
+                                        else:
+                                            suspicious_folder_count += 1
+                                            
+                                # ★★★ 智能壳子判定：如果没有直属视频文件，且包含非标准子目录，判定为分类壳子 ★★★
+                                if video_count == 0 and suspicious_folder_count > 0:
+                                    is_shell_folder = True
+                                    
                             peek_failed = False
                             break
                         except Exception as e:
@@ -1969,7 +1987,25 @@ def task_scan_and_organize_115(processor=None):
                 if peek_failed:
                     continue
 
-                # 尝试识别当前项 (文件或文件夹)
+                # ★★★ 如果判定为分类壳子，直接没收 AI 发言权，强制下钻！ ★★★
+                if is_shell_folder:
+                    logger.info(f"  📂 检测到分类壳子 '{name}'，跳过识别，扫描子目录 (层级 {depth+1})...")
+                    scan_directory(item_id, name, depth + 1)
+                    
+                    # 钻完出来后，检查这个壳子是不是空了，空了就顺手删掉
+                    try:
+                        check_res = client.fs_files({'cid': item_id, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                        if not check_res.get('data'):
+                            client.fs_delete([item_id])
+                            logger.info(f"  🧹 已清理被掏空的分类壳子: {name}")
+                        else:
+                            if unidentified_cid and depth == 0:
+                                client.fs_move(item_id, unidentified_cid)
+                                moved_to_unidentified += 1
+                    except: pass
+                    continue # 壳子处理完毕，直接 continue，跳过下面的识别逻辑
+
+                # 尝试识别当前项 (文件或真正的媒体文件夹)
                 tmdb_id, media_type, title = _identify_media_enhanced(
                     name, 
                     forced_media_type=forced_type,
