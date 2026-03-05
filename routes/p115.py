@@ -662,13 +662,27 @@ def _get_cached_115_url_legacy(pick_code, user_agent, client_ip=None):
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (带内存缓存版)
+    终极极速 302 直链解析服务 (带内存缓存版 + 客户端 UA 劫持修复)
     """
     try:
         # 获取客户端真实的 User-Agent
-        player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+        original_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+        player_ua = original_ua
         
-        # 尝试从缓存获取直链 (HEAD 请求也会走这里，利用缓存不会增加 115 API 负担)
+        # ====== 【核心修复】苹果设备/原生播放器 302 直链 UA 劫持修复 ======
+        # Emby for iOS / Apple TV 的底层是 AVPlayer。
+        # 当它接受 302 重定向去请求 115 真实视频流时，会丢弃 Emby 的 UA，
+        # 强制使用 AppleCoreMedia。如果 UA 不一致，115 会直接 403。
+        # 所以我们预判魔法，只要是苹果设备，统一用 AppleCoreMedia 向 115 申请直链！
+        if any(keyword in original_ua for keyword in ['iOS', 'iPhone', 'iPad', 'AppleTV', 'Mac OS', 'CFNetwork']):
+            player_ua = 'AppleCoreMedia/1.0.0.19G82 (iPhone; U; CPU OS 15_6_1 like Mac OS X; zh_cn)'
+        
+        # (可选) 如果你发现安卓端官方 Emby 也有类似转码问题，可以放开下面的注释：
+        # elif 'Android' in original_ua and 'Emby' in original_ua:
+        #     player_ua = 'ExoPlayer/2.18.1' 
+        # =========================================================
+
+        # 尝试从缓存获取直链 (带上我们伪造好的 player_ua)
         real_url = _get_cached_115_url(pick_code, player_ua)
         
         if not real_url:
@@ -676,7 +690,6 @@ def play_115_video(pick_code, filename=None):
             return "Too Many Requests - 115 API Protection", 429
             
         # 无论是 GET 还是 HEAD，都直接 302 重定向到真实地址
-        # Flask 的 redirect 会自动处理 HEAD 请求（只返回 Header，不返回 Body）
         return redirect(real_url, code=302)
         
     except Exception as e:
