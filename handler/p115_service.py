@@ -2325,6 +2325,13 @@ def task_full_sync_strm_and_subs(processor=None):
 
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
+
+    def get_standard_rel_path(file_full_path):
+        try:
+            rel = os.path.relpath(file_full_path, local_root)
+            return rel.replace('\\', '/').lower()
+        except:
+            return ""
     
     known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
     known_sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
@@ -2528,7 +2535,7 @@ def task_full_sync_strm_and_subs(processor=None):
                     enqueue_file_actively(strm_path)
                 except Exception: pass
                 
-            valid_local_files.add(os.path.normcase(os.path.normpath(os.path.abspath(strm_path))))
+            valid_local_files.add(get_standard_rel_path(strm_path))
 
             if file_sha1:
                 try:
@@ -2564,7 +2571,7 @@ def task_full_sync_strm_and_subs(processor=None):
                         subs_downloaded += 1
                 except Exception as e:
                     logger.error(f"  ❌ 下载字幕失败 [{name}]: {e}")
-            valid_local_files.add(os.path.normcase(os.path.normpath(os.path.abspath(sub_path))))
+            valid_local_files.add(get_standard_rel_path(sub_path))
 
     for idx, target_cid in enumerate(target_cids):
         category_name = cid_to_rel_path.get(target_cid, "未知分类")
@@ -2680,7 +2687,6 @@ def task_full_sync_strm_and_subs(processor=None):
     if enable_cleanup:
         if api_fatal_error:
             update_progress(90, "  🛑 [熔断保护] 由于拉取过程中发生 API 错误，为防止误删，已强制跳过本地清理阶段！")
-            logger.warning("  🛑 [熔断保护] 拒绝执行本地清理！")
         else:
             update_progress(90, "  🧹 正在比对并清理本地失效文件...")
         cleaned_files = 0
@@ -2694,10 +2700,11 @@ def task_full_sync_strm_and_subs(processor=None):
                 for file in files:
                     ext = file.split('.')[-1].lower()
                     if ext in known_sub_exts or ext == 'strm':
-                        # ★ 无敌路径比对法：标准化大小写和斜杠
-                        file_path = os.path.normcase(os.path.normpath(os.path.abspath(os.path.join(root_dir, file))))
+                        file_path = os.path.join(root_dir, file)
+                        # ★ 核心修复：用魔法函数计算标准的相对路径进行比对
+                        std_rel = get_standard_rel_path(file_path)
                         
-                        if file_path not in valid_local_files:
+                        if std_rel not in valid_local_files:
                             try:
                                 os.remove(file_path)
                                 cleaned_files += 1
@@ -2792,7 +2799,7 @@ def delete_115_files_by_webhook(item_path, pickcodes):
         logger.error(f"  ❌ [联动删除] 执行异常: {e}", exc_info=True)
 
 def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
-    """手动纠错：移动文件，并顺手清理遗留的空目录"""
+    """手动纠错：移动文件、生成新STRM，并彻底清理旧空壳和旧STRM"""
     client = P115Service.get_client()
     if not client: raise Exception("115 客户端未初始化")
         
@@ -2807,13 +2814,12 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
     except Exception as e:
         raise Exception(f"数据库查询失败: {e}")
 
-    # 获取最新信息
     info_res = client.fs_get_info(file_id)
     if not info_res or not info_res.get('state') or not info_res.get('data'):
-        raise Exception(f"无法在 115 网盘中定位到该项目(ID:{file_id})，它可能已被删除。")
+        raise Exception(f"无法在 115 中定位到该文件(ID:{file_id})，可能已被删除。")
         
     info_data = info_res['data']
-    old_pid = info_data.get('parent_id') or info_data.get('cid') # ★ 记住它原来的爹是谁
+    old_pid = info_data.get('parent_id') or info_data.get('cid')
     
     root_item = {
         'fid': info_data.get('file_id') or file_id,
@@ -2833,21 +2839,42 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
     except: pass
 
     logger.info(f"  🛠️ [手动重组] 开始对 '{original_name}' 执行定向整理 -> ID:{tmdb_id}")
-    organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     
+    # 1. 执行重组 (新文件和新STRM已经生成)
+    organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     success = organizer.execute(root_item, target_cid, delete_source=False)
-    if not success: raise Exception("SmartOrganizer 执行重组失败。")
-        
-    # ★★★ 核心修复：顺手把旧分类留下的空壳子端了 ★★★
+    if not success: raise Exception("执行重组失败。")
+
+    # 2. 擦屁股：找到旧的本地 STRM 并删除
+    try:
+        config = get_config()
+        local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+        if local_root and old_pid:
+            old_rel_path = P115CacheManager.get_local_path(old_pid)
+            if old_rel_path:
+                old_strm_path = os.path.join(local_root, old_rel_path, os.path.splitext(root_item['fn'])[0] + ".strm")
+                if os.path.exists(old_strm_path):
+                    os.remove(old_strm_path)
+                    logger.info(f"  🧹 [擦屁股] 成功删除本地旧 STRM 文件: {old_strm_path}")
+    except Exception as e:
+        logger.warning(f"  ⚠️ 删除本地旧 STRM 失败: {e}")
+
+    # 3. 擦屁股：检查网盘旧父目录，如果是空的，连锅端
     if old_pid and str(old_pid) != '0':
         try:
             check_res = client.fs_files({'cid': old_pid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
-            if not check_res.get('data'): # 如果空了
+            if not check_res.get('data'): 
                 client.fs_delete([old_pid])
-                logger.info(f"  🧹 [手动重组] 已顺手清理原路径遗留的空目录 (CID:{old_pid})")
+                logger.info(f"  🧹 [擦屁股] 网盘旧目录已空，执行物理销毁 (CID:{old_pid})")
+                
+                # 顺手把本地空文件夹也删了
+                if old_rel_path:
+                    old_dir_path = os.path.join(local_root, old_rel_path)
+                    if os.path.exists(old_dir_path) and not os.listdir(old_dir_path):
+                        os.rmdir(old_dir_path)
         except: pass
 
-    # 更新数据库状态
+    # 4. 更新记录状态
     try:
         category_name = "未识别"
         for rule in organizer.rules:
