@@ -13,17 +13,29 @@ env:
   IMAGE_NAME: ${{ secrets.DOCKERHUB_USERNAME }}/emby-toolkit
 
 jobs:
+  # 1. 新增：动态生成构建矩阵
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Determine Architecture Matrix
+        id: set-matrix
+        run: |
+          if [ "${{ github.ref_name }}" == "dev" ]; then
+            # 如果是 dev 分支，只构建 amd64
+            echo 'matrix={"include":[{"platform":"linux/amd64","platform_id":"amd64","runner":"ubuntu-latest"}]}' >> "$GITHUB_OUTPUT"
+          else
+            # 其他情况 (main, tags)，构建 amd64 和 arm64
+            echo 'matrix={"include":[{"platform":"linux/amd64","platform_id":"amd64","runner":"ubuntu-latest"},{"platform":"linux/arm64","platform_id":"arm64","runner":"ubuntu-24.04-arm"}]}' >> "$GITHUB_OUTPUT"
+          fi
+
   build:
+    needs: prepare # 依赖 prepare 任务
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - platform: linux/amd64
-            platform_id: amd64
-            runner: ubuntu-latest
-          - platform: linux/arm64
-            platform_id: arm64
-            runner: ubuntu-24.04-arm
+      # 读取动态生成的矩阵
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
