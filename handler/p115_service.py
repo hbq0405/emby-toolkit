@@ -1078,7 +1078,10 @@ class SmartOrganizer:
             elif block == 'title_en' and original_title: val = original_title
             elif block == 'year': val = f"({year})" if year else None
             elif block == 'tmdb':
-                tmdb_fmt = cfg.get('file_tmdb_fmt', '{tmdb=ID}')
+                # 废弃独立的文件TMDb格式，直接复用主目录的格式配置
+                tmdb_fmt = cfg.get('file_tmdb_fmt')
+                if not tmdb_fmt or tmdb_fmt == 'none':
+                    tmdb_fmt = cfg.get('main_tmdb_fmt', '{tmdb=ID}')
                 val = tmdb_fmt.replace('ID', str(self.tmdb_id)) if tmdb_fmt != 'none' else None
             elif block == 's_e': val = f"S{season_num:02d}E{episode_num:02d}" if is_tv and season_num is not None else None
             elif block == 'original_name': val = name_body

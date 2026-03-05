@@ -81,12 +81,14 @@
 
           <!-- 标签页 3：高级设置 -->
           <n-tab-pane name="adv" tab="高级设置">
-            <n-form inline label-placement="left" size="small" style="margin-top: 10px;">
+            <n-form label-placement="left" size="small" style="margin-top: 16px;">
               <n-form-item label="STRM 链接格式">
-                <n-select v-model:value="config.strm_url_fmt" :options="strmUrlOptions" style="width: 300px;" />
-              </n-form-item>
-              <n-form-item label="文件 TMDb 标签">
-                <n-select v-model:value="config.file_tmdb_fmt" :options="tmdbOptions" style="width: 150px;" />
+                <n-radio-group v-model:value="config.strm_url_fmt">
+                  <n-space vertical>
+                    <n-radio value="standard">标准格式 (/api/p115/play/xxx)</n-radio>
+                    <n-radio value="with_name">带文件名后缀 (/api/p115/play/xxx/文件名.mkv)</n-radio>
+                  </n-space>
+                </n-radio-group>
               </n-form-item>
             </n-form>
           </n-tab-pane>
@@ -113,6 +115,10 @@
                 <n-icon color="#2080f0" size="16"><DocumentIcon /></n-icon>
                 <span class="node-text">{{ previewMovieFile }}</span>
               </div>
+              <div class="tree-node grandchild">
+                <n-icon color="#888" size="14"><LinkIcon /></n-icon>
+                <span class="node-text" style="color: #888; font-size: 11px;">{{ previewMovieStrm }}</span>
+              </div>
             </n-gi>
             <n-gi>
               <div class="section-title">📺 剧集示例</div>
@@ -127,6 +133,10 @@
               <div class="tree-node grandchild">
                 <n-icon color="#2080f0" size="16"><DocumentIcon /></n-icon>
                 <span class="node-text">{{ previewTvFile }}</span>
+              </div>
+              <div class="tree-node grandchild" style="padding-left: 72px;">
+                <n-icon color="#888" size="14"><LinkIcon /></n-icon>
+                <span class="node-text" style="color: #888; font-size: 11px;">{{ previewTvStrm }}</span>
               </div>
             </n-gi>
           </n-grid>
@@ -146,8 +156,8 @@
 
 <script setup>
 import { ref, computed, watch } from 'vue';
-import { NModal, NGrid, NGi, NTabs, NTabPane, NForm, NFormItem, NRadioGroup, NRadioButton, NSwitch, NSelect, NSpace, NButton, NIcon, NSpin, NTag, useMessage } from 'naive-ui';
-import { Folder as FolderIcon, DocumentTextOutline as DocumentIcon, EyeOutline as EyeIcon, Menu as MenuIcon } from '@vicons/ionicons5';
+import { NModal, NGrid, NGi, NTabs, NTabPane, NForm, NFormItem, NRadioGroup, NRadioButton, NSwitch, NSelect, NSpace, NButton, NIcon, NSpin, NTag, useMessage, NRadio } from 'naive-ui';
+import { Folder as FolderIcon, DocumentTextOutline as DocumentIcon, EyeOutline as EyeIcon, Menu as MenuIcon, LinkOutline as LinkIcon } from '@vicons/ionicons5';
 import axios from 'axios';
 
 const message = useMessage();
@@ -287,6 +297,16 @@ const mockOriginalTvDir = "Breaking.Bad.S01.2160p.WEB-DL.x265";
 const mockOriginalTvFile = "Breaking.Bad.S01E01.2160p.WEB-DL.x265.mp4";
 
 // 预览计算
+const previewMovieStrm = computed(() => {
+  const baseUrl = 'http://127.0.0.1:5257/api/p115/play/abc123xyz';
+  return config.value.strm_url_fmt === 'with_name' ? `${baseUrl}/${previewMovieFile.value}` : baseUrl;
+});
+
+const previewTvStrm = computed(() => {
+  const baseUrl = 'http://127.0.0.1:5257/api/p115/play/def456uvw';
+  return config.value.strm_url_fmt === 'with_name' ? `${baseUrl}/${previewTvFile.value}` : baseUrl;
+});
+
 const previewMovieDir = computed(() => {
   if (config.value.keep_original_name) return mockOriginalMovieDir;
   let name = config.value.main_title_lang === 'zh' ? mockMovie.zh : mockMovie.en;
