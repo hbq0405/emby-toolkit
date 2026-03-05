@@ -136,7 +136,7 @@
 import { ref, onMounted, computed, h } from 'vue';
 import axios from 'axios';
 import {
-  NTag, NButton, NSpace, NText, NIcon, NTooltip, useMessage, useDialog
+  NTag, NButton, NSpace, NText, NIcon, NTooltip, NEllipsis, useMessage, useDialog
 } from 'naive-ui';
 import {
   LayersOutline as LayersIcon,
@@ -209,11 +209,22 @@ const columns = computed(() => [
     title: '名称演变 (原文件 ➔ 整理后)',
     key: 'name_evolution',
     render(row) {
-      return h('div', { style: 'display: flex; align-items: center; gap: 8px; flex-wrap: wrap;' }, [
-        h(NText, { depth: 3, style: 'max-width: 250px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;' }, { default: () => row.original_name }),
-        h(NIcon, { component: ArrowIcon, depth: 3 }),
-        h(NText, { strong: true, style: 'max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;', type: row.status === 'success' ? 'primary' : 'default' }, { 
-          default: () => row.renamed_name || '尚未重命名' 
+      return h('div', { 
+        style: 'display: flex; flex-direction: column; gap: 6px; overflow: hidden; max-width: 400px;' 
+      }, [
+        // 上面：原文件名
+        h(NText, { depth: 3, style: 'font-size: 12px; display: flex; align-items: center;' }, { 
+          default: () => [
+            h(NTag, { size: 'tiny', bordered: false, style: 'margin-right: 6px; flex-shrink: 0;' }, { default: () => '原' }),
+            h(NEllipsis, { style: 'max-width: 100%;' }, { default: () => row.original_name })
+          ]
+        }),
+        // 下面：整理后的文件名
+        h(NText, { strong: true, type: row.status === 'success' ? 'primary' : 'default', style: 'display: flex; align-items: center;' }, { 
+          default: () => [
+            h(NTag, { size: 'tiny', type: row.status === 'success' ? 'success' : 'warning', bordered: false, style: 'margin-right: 6px; flex-shrink: 0;' }, { default: () => '新' }),
+            h(NEllipsis, { style: 'max-width: 100%;' }, { default: () => row.renamed_name || '等待手动整理...' })
+          ]
         })
       ]);
     }

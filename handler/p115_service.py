@@ -1570,6 +1570,26 @@ class SmartOrganizer:
                 else:
                     logger.info(f"  📁 [移动] {file_name} -> {std_root_name}")
                 moved_count += 1
+                # ★★★精准记录单个视频文件的整理结果 ★★★
+                try:
+                    category_name = "未识别"
+                    for rule in self.rules:
+                        if str(rule.get('cid')) == str(target_cid):
+                            category_name = rule.get('dir_name', '未识别')
+                            break
+                    from handler.p115_service import P115RecordManager
+                    P115RecordManager.add_or_update_record(
+                        file_id=fid,
+                        original_name=file_name,
+                        status='success',
+                        tmdb_id=self.tmdb_id,
+                        media_type=self.media_type,
+                        target_cid=target_cid,
+                        category_name=category_name,
+                        renamed_name=new_filename
+                    )
+                except Exception as e:
+                    logger.error(f"  ❌ 记录文件整理日志失败: {e}")
 
                 # 兼容 OpenAPI 键名
                 pick_code = file_item.get('pc') or file_item.get('pick_code')
@@ -2126,8 +2146,6 @@ def task_scan_and_organize_115(processor=None):
                                 if unidentified_cid and depth == 0:
                                     client.fs_move(item_id, unidentified_cid)
                                     moved_to_unidentified += 1
-                                    # 记录未识别文件夹
-                                    P115RecordManager.add_or_update_record(item_id, name, 'unrecognized', target_cid=unidentified_cid, category_name="未识别")
                         except: pass
                     else:
                         # 是文件且识别失败，直接移入未识别
@@ -2761,16 +2779,12 @@ def delete_115_files_by_webhook(item_path, pickcodes):
 
 def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
     """
-    接收前端手动纠错指令，调动 SmartOrganizer 重新对网盘文件进行物理重组，并生成 STRM。
+    手动纠错核心：精准获取文件信息，调用乐高引擎重组
     """
     client = P115Service.get_client()
     if not client:
         raise Exception("115 客户端未初始化")
         
-    file_id = None
-    original_name = None
-    
-    # 1. 查询数据库获取要操作的 115 文件 ID
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -2783,24 +2797,23 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
     except Exception as e:
         raise Exception(f"数据库查询失败: {e}")
 
-    # 2. 从 115 获取该文件的最新状态 (构造 root_item)
-    root_item = None
-    try:
-        # 尝试把它当目录查
-        info_res = client.fs_get_info(file_id)
-        if info_res.get('state') and info_res.get('data'):
-            root_item = info_res['data']
-            # 兼容字段名
-            root_item['fid'] = root_item.get('file_id') or root_item.get('cid')
-            root_item['fc'] = '0' # 目录
-            root_item['fn'] = root_item.get('file_name')
-        else:
-            raise Exception("目录不存在，可能被删除了")
-    except Exception as e:
-        # 如果是文件，获取详情的 API 不一样，这里简单化：如果失败抛出异常
+    # 1. 使用官方 get_info 接口查询该文件最新状态
+    info_res = client.fs_get_info(file_id)
+    if not info_res or not info_res.get('state') or not info_res.get('data'):
         raise Exception(f"无法在 115 网盘中定位到该项目(ID:{file_id})，它可能已被删除。")
+        
+    info_data = info_res['data']
+    
+    # ★★★ 核心修复：正确映射 115 API 返回的 file_category 到 fc 字段
+    # 文档明确说明：file_category 为 "1" 是文件，"0" 是文件夹
+    root_item = {
+        'fid': info_data.get('file_id') or file_id,
+        'file_id': info_data.get('file_id') or file_id,
+        'fn': info_data.get('file_name') or original_name,
+        'fc': str(info_data.get('file_category', '1')), # 动态获取，准确无误
+        'pid': info_data.get('parent_id') or info_data.get('cid')
+    }
 
-    # 3. 获取 TMDb 标题用于重新整理
     title = original_name
     api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
     try:
@@ -2813,14 +2826,32 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
             title = details.get('title') or details.get('name') or original_name
     except: pass
 
-    # 4. 召唤乐高工具，强行重组！
     logger.info(f"  🛠️ [手动重组] 开始对 '{original_name}' 执行定向整理 -> ID:{tmdb_id} ({media_type})")
+    
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     
-    # 执行整理 (delete_source=False，因为它是被移动的本体)
+    # delete_source=False，因为它是针对本体的操作
     success = organizer.execute(root_item, target_cid, delete_source=False)
     
     if not success:
         raise Exception("SmartOrganizer 执行重组失败，请查看后台日志。")
         
+    # ★ 手动纠错成功后，更新该条记录的状态
+    try:
+        category_name = "未识别"
+        for rule in organizer.rules:
+            if str(rule.get('cid')) == str(target_cid):
+                category_name = rule.get('dir_name', '未识别')
+                break
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE p115_organize_records 
+                    SET status = 'success', tmdb_id = %s, media_type = %s, target_cid = %s, category_name = %s
+                    WHERE id = %s
+                """, (tmdb_id, media_type, target_cid, category_name, record_id))
+                conn.commit()
+    except Exception as e:
+        logger.warning(f"  ⚠️ 手动纠错成功，但更新记录状态失败: {e}")
+
     return True
