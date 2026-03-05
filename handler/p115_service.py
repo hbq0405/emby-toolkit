@@ -2309,7 +2309,7 @@ def task_full_sync_strm_and_subs(processor=None):
         if task_manager: task_manager.update_status_from_thread(prog, msg)
         logger.info(msg)
 
-    start_msg = "=== 🚀 开始增量同步 STRM 与 字幕 ===" if download_subs else "=== 🚀 开始增量同步 STRM (跳过字幕) ==="
+    start_msg = "=== 🚀 开始全量同步 STRM 与 字幕 ===" if download_subs else "=== 🚀 开始全量同步 STRM (跳过字幕) ==="
     if enable_cleanup: start_msg += " [已开启本地清理]"
     update_progress(0, start_msg)
 
@@ -2479,10 +2479,6 @@ def task_full_sync_strm_and_subs(processor=None):
                 else:
                     logger.debug(f"  🔄 [更新] 覆盖 STRM: {strm_name}")
                 files_generated += 1
-                try:
-                    from monitor_service import enqueue_file_actively
-                    enqueue_file_actively(strm_path)
-                except Exception: pass
             else:
                 # ★ 记录跳过的文件
                 files_skipped += 1
@@ -2633,7 +2629,7 @@ def task_full_sync_strm_and_subs(processor=None):
         if api_fatal_error: break
 
     # ★ 修改了这里的日志输出，加上了跳过计数
-    logger.info(f"  ✅ 增量同步完成！新增/更新 STRM: {files_generated} 个, 跳过已存在: {files_skipped} 个, 下载字幕: {subs_downloaded} 个。")
+    logger.info(f"  ✅ 全量同步完成！新增/更新 STRM: {files_generated} 个, 跳过已存在: {files_skipped} 个, 下载字幕: {subs_downloaded} 个。")
 
     if enable_cleanup:
         if api_fatal_error:
@@ -2676,7 +2672,7 @@ def task_full_sync_strm_and_subs(processor=None):
                     
         logger.info(f"  🧹 清理完成: 删除了 {cleaned_files} 个失效文件, {cleaned_dirs} 个空目录。")
 
-    update_progress(100, "=== 极速全量同步任务圆满结束 ===")
+    update_progress(100, "=== 极速全量同步任务结束 ===")
 
 def delete_115_files_by_webhook(item_path, pickcodes):
     """
