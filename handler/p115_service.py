@@ -1846,11 +1846,9 @@ def _identify_media_enhanced(filename, forced_media_type=None, ai_translator=Non
 
 def task_scan_and_organize_115(processor=None):
     """
-    [任务链] 主动扫描 115 待整理目录
-    - 识别成功 -> 归类到目标目录
-    - 识别失败 -> 移动到 '未识别' 目录
-    ★ 修复：增加子文件探测逻辑，防止剧集文件夹因命名不规范被误判为电影
-    ★ 优化：增加空目录检查逻辑，跳过空目录的整理
+    [任务链] 主动扫描 115 待整理目录 (挖地三尺刨祖坟版)
+    - 识别成功 -> 整体打包归类到目标目录
+    - 识别失败 -> 如果是文件夹，递归钻进去扫描；如果是文件，移入未识别
     """
     logger.info("=== 开始执行 115 待整理目录扫描 ===")
 
@@ -1865,11 +1863,12 @@ def task_scan_and_organize_115(processor=None):
     ai_translator = processor.ai_translator if processor and hasattr(processor, 'ai_translator') else None
 
     if not cid_val or str(cid_val) == '0':
-        logger.error("  ⚠️ 未配置待整理目录 (CID)，跳过。")
+        logger.error("  ⚠️ 未配置待整理目录，跳过。")
         return
     if not enable_organize:
         logger.warning("  ⚠️ 未开启智能整理开关，仅扫描不处理。")
         return
+        
     current_time = time.time()
     try:
         save_cid = int(cid_val)
@@ -1879,7 +1878,6 @@ def task_scan_and_organize_115(processor=None):
         unidentified_folder_name = "未识别"
         unidentified_cid = None
         try:
-            # ★ 优化：纯读模式，不统计文件夹
             search_res = client.fs_files({
                 'cid': save_cid, 'search_value': unidentified_folder_name, 'limit': 1,
                 'record_open_time': 0, 'count_folders': 0
@@ -1897,166 +1895,139 @@ def task_scan_and_organize_115(processor=None):
                 if mk_res.get('state'): unidentified_cid = mk_res.get('cid')
             except: pass
 
-        logger.info(f"  🔍 正在扫描目录: {save_name} ...")
+        logger.info(f"  🔍 正在扫描主目录: {save_name} ...")
         
-        # =================================================================
-        # ★★★ 主目录扫描：纯读模式 + 修正排序字段 + 退避重试 ★★★
-        # =================================================================
-        res = {}
-        for retry in range(3):
-            try:
-                res = client.fs_files({
-                    'cid': save_cid, 'limit': 50, 'o': 'user_utime', 'asc': 0,
-                    'record_open_time': 0, 'count_folders': 0
-                })
-                break 
-            except Exception as e:
-                if '405' in str(e) or 'Method Not Allowed' in str(e):
-                    logger.warning(f"  ⚠️ 扫描主目录触发 115 风控拦截 (405)，休眠 5 秒后重试 ({retry+1}/3)...")
-                else:
-                    raise
-
-        if not res.get('data'):
-            logger.info(f"  📂 [{save_name}] 目录为空或获取失败。")
-            return
-
-        # =================================================================
-        # ★★★ 优化：空目录检查 ★★★
-        # 在处理前先检查每个目录是否包含有效的视频文件
-        # 如果目录为空或只有垃圾文件，则跳过整理
-        # =================================================================
-        configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
-        allowed_exts = set(e.lower() for e in configured_exts)
-        known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
-        
-        def has_valid_video_files(item_id, is_folder):
-            """检查目录/文件中是否包含有效的视频文件"""
-            if not is_folder:
-                # 如果是文件，直接检查扩展名
-                return True  # 文件级别在后续处理时再判断
-            
-            # 如果是目录，扫描子目录查找视频文件
-            try:
-                sub_res = client.fs_files({
-                    'cid': item_id, 'limit': 100,
-                    'record_open_time': 0, 'count_folders': 0
-                })
-                if sub_res.get('data'):
-                    for sub_item in sub_res['data']:
-                        sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
-                        sub_fc = sub_item.get('fc') if sub_item.get('fc') is not None else sub_item.get('type')
-                        sub_is_folder = str(sub_fc) == '0'
-                        
-                        if sub_is_folder:
-                            # 递归检查子目录
-                            sub_id = sub_item.get('fid') or sub_item.get('file_id')
-                            if has_valid_video_files(sub_id, True):
-                                return True
-                        else:
-                            # 检查文件扩展名
-                            sub_ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
-                            if sub_ext in allowed_exts or sub_ext in known_video_exts:
-                                return True
-            except Exception as e:
-                logger.debug(f"  ⚠️ 检查目录内容时出错: {e}")
-            
-            return False
-
         processed_count = 0
         moved_to_unidentified = 0
-        skipped_empty = 0
-
-        for item in res['data']:
-            # 兼容 OpenAPI 键名
-            name = item.get('fn') or item.get('n') or item.get('file_name')
-            if not name: continue
-            item_id = item.get('fid') or item.get('file_id')
-            fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
-            is_folder = str(fc_val) == '0'
-
-            if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
-                continue
-
-            # =================================================================
-            # ★★★ 优化：空目录检查 - 在处理前先检查是否包含有效视频文件 ★★★
-            # =================================================================
-            if is_folder and not has_valid_video_files(item_id, True):
-                logger.info(f"  ⏭️ 跳过空目录: {name} (无有效视频文件)")
-                skipped_empty += 1
-                continue
-
-            forced_type = None
-            peek_failed = False
-
-            if is_folder:
-                # =================================================================
-                # ★★★ 子目录透视：扫描前20个项目(包含文件和文件夹)来判断是否为剧集 ★★★
-                # =================================================================
-                for retry in range(2):
-                    try:
-                        sub_res = client.fs_files({
-                            'cid': item_id, 'limit': 20, # ★ 修复1: 使用 item_id 作为目标目录
-                            'record_open_time': 0, 'count_folders': 0
-                            # ★ 修复2: 移除 'nf': 1，允许读取视频文件，兼容没有季文件夹的扁平剧集
-                        })
-                        if sub_res.get('data'):
-                            for sub_item in sub_res['data']:
-                                # ★ 修复3: 兼容 OpenAPI 键名
-                                sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
-                                if re.search(r'(Season\s?\d+|S\d+|Ep?\d+|第\d+季)', sub_name, re.IGNORECASE):
-                                    forced_type = 'tv'
-                                    break
-                        peek_failed = False
-                        break
-                    except Exception as e:
-                        if '405' in str(e) or 'Method Not Allowed' in str(e):
-                            logger.warning(f"  ⚠️ 透视目录 '{name}' 触发风控，休眠 3 秒后重试 ({retry+1}/2)...")
-                            peek_failed = True
-                        else:
-                            peek_failed = True
-                            break
-
-            if peek_failed:
-                logger.warning(f"  ⏭️ 透视 '{name}' 连续失败，为防误判跳过本次识别。")
-                continue
-
-            tmdb_id, media_type, title = _identify_media_enhanced(
-                name, 
-                forced_media_type=forced_type,
-                ai_translator=ai_translator,
-                use_ai=use_ai
-            )
+        
+        # =================================================================
+        # ★★★ 核心重构：递归扫描函数 (刨祖坟专用) ★★★
+        # =================================================================
+        def scan_directory(current_cid, current_name, depth=0):
+            nonlocal processed_count, moved_to_unidentified
             
-            if tmdb_id:
-                logger.info(f"  ➜ 识别成功: {name} -> ID:{tmdb_id} ({media_type})")
+            # 绝对安全防线：最多挖 5 层，防止死循环
+            if depth > 5: 
+                logger.warning(f"  ⚠️ 目录层级过深，停止扫描: {current_name}")
+                return
+                
+            res = {}
+            for retry in range(3):
                 try:
-                    organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
-                    target_cid = organizer.get_target_cid()
-                    
-                    if organizer.execute(item, target_cid, delete_source=False):
-                        processed_count += 1
-                        
-                        if is_folder:
-                            update_time_str = item.get('upt') or '0'
-                            try:
-                                update_time = int(update_time_str)
-                            except:
-                                update_time = current_time
-                                
-                            if (current_time - update_time) > 86400:
-                                logger.info(f"  🧹 [兜底清理] 清理已过期(>24h)的残留目录: {name}")
-                                client.fs_delete([item_id])
-
+                    res = client.fs_files({
+                        'cid': current_cid, 'limit': 100, 'o': 'user_utime', 'asc': 0,
+                        'record_open_time': 0, 'count_folders': 0
+                    })
+                    break 
                 except Exception as e:
-                    logger.error(f"  ❌ 整理出错: {e}")
-            else:
-                if unidentified_cid:
-                    try:
-                        client.fs_move(item_id, unidentified_cid)
-                        moved_to_unidentified += 1
-                    except: pass
+                    if '405' in str(e) or 'Method Not Allowed' in str(e):
+                        time.sleep(3)
+                    else:
+                        raise
 
-        logger.info(f"=== 扫描结束，成功归类 {processed_count} 个，移入未识别 {moved_to_unidentified} 个，跳过空目录 {skipped_empty} 个 ===")
+            if not res.get('data'):
+                return
+
+            for item in res['data']:
+                name = item.get('fn') or item.get('n') or item.get('file_name')
+                if not name: continue
+                item_id = item.get('fid') or item.get('file_id')
+                fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
+                is_folder = str(fc_val) == '0'
+
+                # 跳过未识别目录本身
+                if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
+                    continue
+
+                forced_type = None
+                peek_failed = False
+
+                # 如果是文件夹，先透视一下是不是剧集
+                if is_folder:
+                    for retry in range(2):
+                        try:
+                            sub_res = client.fs_files({
+                                'cid': item_id, 'limit': 20, 
+                                'record_open_time': 0, 'count_folders': 0
+                            })
+                            if sub_res.get('data'):
+                                for sub_item in sub_res['data']:
+                                    sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
+                                    if re.search(r'(Season\s?\d+|S\d+|Ep?\d+|第\d+季)', sub_name, re.IGNORECASE):
+                                        forced_type = 'tv'
+                                        break
+                            peek_failed = False
+                            break
+                        except Exception as e:
+                            if '405' in str(e) or 'Method Not Allowed' in str(e):
+                                time.sleep(2)
+                                peek_failed = True
+                            else:
+                                peek_failed = True
+                                break
+
+                if peek_failed:
+                    continue
+
+                # 尝试识别当前项 (文件或文件夹)
+                tmdb_id, media_type, title = _identify_media_enhanced(
+                    name, 
+                    forced_media_type=forced_type,
+                    ai_translator=ai_translator,
+                    use_ai=use_ai
+                )
+                
+                if tmdb_id:
+                    # 识别成功：整体打包带走！
+                    logger.info(f"  ➜ 识别成功: {name} -> ID:{tmdb_id} ({media_type})")
+                    try:
+                        organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
+                        target_cid = organizer.get_target_cid()
+                        
+                        if organizer.execute(item, target_cid, delete_source=False):
+                            processed_count += 1
+                            
+                            # 清理过期残留
+                            if is_folder:
+                                update_time_str = item.get('upt') or '0'
+                                try: update_time = int(update_time_str)
+                                except: update_time = current_time
+                                if (current_time - update_time) > 86400:
+                                    client.fs_delete([item_id])
+
+                    except Exception as e:
+                        logger.error(f"  ❌ 整理出错: {e}")
+                else:
+                    # 识别失败
+                    if is_folder:
+                        # ★★★ 刨祖坟核心：文件夹识别失败，说明可能是分类壳子，钻进去！ ★★★
+                        logger.info(f"  📂 目录 '{name}' 无法直接识别，深入扫描子目录 (层级 {depth+1})...")
+                        scan_directory(item_id, name, depth + 1)
+                        
+                        # 钻完出来后，检查这个壳子是不是空了，空了就顺手删掉
+                        try:
+                            check_res = client.fs_files({'cid': item_id, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                            if not check_res.get('data'):
+                                client.fs_delete([item_id])
+                                logger.info(f"  🧹 已清理空目录: {name}")
+                            else:
+                                # 里面还有垃圾，如果是顶层目录，移入未识别
+                                if unidentified_cid and depth == 0:
+                                    client.fs_move(item_id, unidentified_cid)
+                                    moved_to_unidentified += 1
+                        except: pass
+                    else:
+                        # 是文件且识别失败，直接移入未识别
+                        if unidentified_cid:
+                            try:
+                                client.fs_move(item_id, unidentified_cid)
+                                moved_to_unidentified += 1
+                            except: pass
+
+        # 启动递归扫描
+        scan_directory(save_cid, save_name, depth=0)
+
+        logger.info(f"=== 扫描结束，成功归类 {processed_count} 个，移入未识别 {moved_to_unidentified} 个 ===")
 
     except Exception as e:
         logger.error(f"  ⚠️ 115 扫描任务异常: {e}", exc_info=True)
