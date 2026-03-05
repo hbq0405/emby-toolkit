@@ -2319,7 +2319,6 @@ def task_full_sync_strm_and_subs(processor=None):
     known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
     known_sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
     
-    # 自动剥离用户配置中可能带有的 "." 和空格
     raw_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
     allowed_exts = set()
     for e in raw_exts:
@@ -2408,7 +2407,7 @@ def task_full_sync_strm_and_subs(processor=None):
 
     valid_local_files = set()
     files_generated = 0
-    files_skipped = 0  # ★ 新增：跳过计数器
+    files_skipped = 0
     subs_downloaded = 0
     total_targets = len(target_cids)
     api_fatal_error = False 
@@ -2480,7 +2479,6 @@ def task_full_sync_strm_and_subs(processor=None):
                     logger.debug(f"  🔄 [更新] 覆盖 STRM: {strm_name}")
                 files_generated += 1
             else:
-                # ★ 记录跳过的文件
                 files_skipped += 1
                 
             valid_local_files.add(os.path.abspath(strm_path))
@@ -2560,7 +2558,8 @@ def task_full_sync_strm_and_subs(processor=None):
                                 break
                     if start_idx != -1:
                         sub_folders = []
-                        for anc in ancestors[start_idx:]:
+                        # ★★★ 核心修复：切片 [start_idx:-1]，强制排除最后一个元素（文件本身）★★★
+                        for anc in ancestors[start_idx:-1]:
                             if isinstance(anc, dict):
                                 n = anc.get('name') or anc.get('file_name') or anc.get('fn')
                                 if n: sub_folders.append(str(n).strip())
@@ -2628,7 +2627,6 @@ def task_full_sync_strm_and_subs(processor=None):
         fallback_recursive_scan(target_cid, category_name)
         if api_fatal_error: break
 
-    # ★ 修改了这里的日志输出，加上了跳过计数
     logger.info(f"  ✅ 全量同步完成！新增/更新 STRM: {files_generated} 个, 跳过已存在: {files_skipped} 个, 下载字幕: {subs_downloaded} 个。")
 
     if enable_cleanup:
