@@ -708,7 +708,7 @@ class P115DeleteBuffer:
             if media_count == 0:
                 client.fs_delete([cid])
                 P115CacheManager.delete_cid(cid)
-                logger.info(f"  🧹 [联动删除] 目录内已无有效媒体文件(仅剩字幕/歌词等垃圾)，已连锅端: CID {cid}")
+                logger.info(f"  🧹 [联动删除] 目录内已无有效媒体文件，执行删除: CID {cid}")
 
 def get_config():
     return config_manager.APP_CONFIG
