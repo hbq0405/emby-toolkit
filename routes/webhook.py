@@ -663,35 +663,37 @@ def emby_webhook():
         original_item_id = item_from_webhook.get("Id")
         original_item_type = item_from_webhook.get("Type")
         original_item_name = item_from_webhook.get("Name", "未知项目")
+        # 如果是分集，提取所属剧集 ID，供后续清理主库使用
         series_id_from_webhook = item_from_webhook.get("SeriesId") if original_item_type == "Episode" else None
 
         # --------------------------------------------------------
-        # 任务 1: 提取 115 网盘联动删除参数 (⚠️ 必须在清理本地数据库前执行！)
+        # 任务 1: 联动删除 115 网盘文件 (所有层级均生效，且必须在清理数据库前执行！)
         # --------------------------------------------------------
         nb_config = get_config()
-        enable_sync_delete = nb_config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False)
-        
-        description = data.get("Description", "")
-        item_path = ""
-        pickcodes = []
-        parse_error = False
-
-        if enable_sync_delete and description:
+        if nb_config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
+            description = data.get("Description", "")
             try:
                 import re
+                # 提取 Item Path (用于后续可能需要的目录清理)
                 path_match = re.search(r'Item Path:\n(.*?)\n\n', description)
                 item_path = path_match.group(1).strip() if path_match else ""
 
+                pickcodes = []
+                processor = extensions.media_processor_instance
+                
+                # ★★★ 核心重构：提取 Mount Paths，直接喂给万能提取器！★★★
                 if "Mount Paths:\n" in description:
                     mount_paths_str = description.split("Mount Paths:\n")[-1]
                     urls = [line.strip() for line in mount_paths_str.split('\n') if line.strip()]
                     
                     for url in urls:
-                        pc_match = re.search(r'/api/p115/play/([a-zA-Z0-9]+)', url)
-                        if pc_match:
-                            pickcodes.append(pc_match.group(1))
+                        if processor:
+                            # 无论是 HTTP 直链 还是 挂载的物理路径，万能提取器通吃！
+                            pc, _ = processor._extract_115_fingerprints(url)
+                            if pc:
+                                pickcodes.append(pc)
 
-                # 挂载模式兜底，如果正则没提取到，直接查库 (此时数据库数据完好)
+                # ★ 数据库兜底：如果万能提取器没拿到，查库 (此时数据库还没被删，完美拿到 PC！)
                 if not pickcodes and original_item_id:
                     logger.debug(f"  🔍 [深度删除] 未从描述中提取到 PC 码，尝试通过 Emby ID ({original_item_id}) 查库...")
                     db_pc = media_db.get_pickcode_by_emby_id(original_item_id)
@@ -699,64 +701,57 @@ def emby_webhook():
                         pickcodes.append(db_pc)
                         logger.debug(f"  ✅ [深度删除] 成功从数据库查到 PC 码: {db_pc}")
 
+                if pickcodes and item_path:
+                    logger.info(f"  🎯 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
+                    from handler.p115_service import delete_115_files_by_webhook
+                    spawn(delete_115_files_by_webhook, item_path, pickcodes)
+                else:
+                    logger.warning("  ⚠️ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
             except Exception as e:
                 logger.error(f"  ❌ 解析深度删除通知失败: {e}", exc_info=True)
-                parse_error = True
+        else:
+            logger.debug("  🚫 联动删除未开启，跳过网盘清理。")
 
         # --------------------------------------------------------
-        # 任务 2: 清理本地数据库 (完全替代原 library.deleted)
+        # 任务 2: 清理本地数据库、日志与内存缓存 (网盘删完再删本地)
         # --------------------------------------------------------
-        if original_item_id and original_item_type:
+        if original_item_id:
             try:
-                logger.info(f"  🧹 [深度删除] 开始清理本地数据库记录: {original_item_name}")
+                logger.info(f"  🧹 [深度删除] 开始清理本地数据库与缓存: {original_item_name} ({original_item_type})")
+                
+                # 1. 清理主媒体库记录 (★ 所有层级均生效，删一集就清理一集的记录)
                 maintenance_db.cleanup_deleted_media_item(
                     item_id=original_item_id,
                     item_name=original_item_name,
                     item_type=original_item_type,
                     series_id_from_webhook=series_id_from_webhook
                 )
-                # 清理已处理日志和待复核日志 (老六的板斧警告)
-                processor = extensions.media_processor_instance
-                if processor:
-                    with get_db_connection() as conn:
-                        cursor = conn.cursor()
-                        processor.log_db_manager.remove_from_processed_log(cursor, original_item_id)
-                        processor.log_db_manager.remove_from_failed_log(cursor, original_item_id)
-                        conn.commit()
-                    
-                    # 实时抹除内存缓存 (不重启也能立刻生效)
-                    if original_item_id in processor.processed_items_cache:
-                        del processor.processed_items_cache[original_item_id]
-                        logger.debug(f"  🧹 [深度删除] 已清理内存缓存: {original_item_id}")
-                # 刷新向量缓存
-                if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
-                    if original_item_type in ['Movie', 'Series']:
+
+                # 2. 清理已处理日志和待复核日志 (★ 老六法旨：仅限电影和剧集顶层！)
+                if original_item_type in ['Movie', 'Series']:
+                    processor = extensions.media_processor_instance
+                    if processor:
+                        with get_db_connection() as conn:
+                            cursor = conn.cursor()
+                            processor.log_db_manager.remove_from_processed_log(cursor, original_item_id)
+                            processor.log_db_manager.remove_from_failed_log(cursor, original_item_id)
+                            conn.commit()
+                        
+                        # 3. 实时抹除内存缓存 (仅限顶层)
+                        if original_item_id in processor.processed_items_cache:
+                            del processor.processed_items_cache[original_item_id]
+                            logger.debug(f"  🧹 [深度删除] 已清理顶层媒体内存缓存: {original_item_id}")
+
+                    # 4. 刷新向量缓存 (仅限顶层)
+                    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
                         spawn(RecommendationEngine.refresh_cache)
-                        logger.debug(f"  ➜ [智能推荐] 检测到媒体删除，已触发向量缓存刷新。")
+                        logger.debug(f"  ➜ [智能推荐] 检测到顶层媒体删除，已触发向量缓存刷新。")
+
             except Exception as e:
-                logger.error(f"  ❌ [深度删除] 清理本地数据库失败: {e}", exc_info=True)
+                logger.error(f"  ❌ [深度删除] 清理本地数据库与缓存失败: {e}", exc_info=True)
 
-        # --------------------------------------------------------
-        # 任务 3: 判断网盘联动条件，执行任务并返回 HTTP 响应
-        # --------------------------------------------------------
-        if parse_error:
-            return jsonify({"status": "error_parsing_deep_delete"}), 500
-
-        if not enable_sync_delete:
-            logger.debug("  🚫 联动删除未开启，跳过网盘清理。")
-            return jsonify({"status": "processed_db_only"}), 200
-
-        if not description:
-            return jsonify({"status": "ignored_no_description"}), 200
-
-        if pickcodes and item_path:
-            logger.info(f"  🎯 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
-            from handler.p115_service import delete_115_files_by_webhook
-            spawn(delete_115_files_by_webhook, item_path, pickcodes)
-            return jsonify({"status": "deep_delete_task_started"}), 202
-        else:
-            logger.warning("  ⚠️ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
-            return jsonify({"status": "processed_db_only_no_pickcodes"}), 200
+        # 深度删除处理完毕，直接返回 200，不再往下走
+        return jsonify({"status": "deep_delete_processed"}), 200
     # ======================================================================
     # ★★★ 处理 MoviePilot transfer.complete 事件 ★★★
     # ======================================================================
