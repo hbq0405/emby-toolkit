@@ -658,46 +658,26 @@ def _get_cached_115_url_legacy(pick_code, user_agent, client_ip=None):
     """
     return _get_cached_115_url(pick_code, user_agent, client_ip)
 
-@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD'])
+@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) # 允许 HEAD 请求，加速客户端嗅探
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (带魔法探针日志版)
+    终极极速 302 直链解析服务 (带内存缓存版)
     """
-    try:
-        # 1. 提取各种真实信息
-        client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-        original_ua = request.headers.get('User-Agent', 'Unknown UA')
-        
-        # 2. 打印华丽的排错日志
-        logger.warning(f"")
-        logger.warning(f"========== 🕵️‍♂️ [115直链魔法探针] 抓包开始 ==========")
-        logger.warning(f"  📍 1. 请求方法: {request.method}")
-        logger.warning(f"  📍 2. 请求文件: {filename or pick_code}")
-        logger.warning(f"  📍 3. 客户端真实IP: {client_ip}")
-        logger.warning(f"  📍 4. 客户端原始UA: {original_ua}")
-        
-        # 3. 决定用什么 UA 去向 115 申请直链
-        player_ua = original_ua
-        if any(keyword in original_ua for keyword in ['iOS', 'iPhone', 'iPad', 'AppleTV', 'Mac OS', 'CFNetwork']):
-            # 苹果设备强制使用原生 UA 申请
-            player_ua = 'AppleCoreMedia/1.0.0.19G82 (iPhone; U; CPU OS 15_6_1 like Mac OS X; zh_cn)'
-        
-        logger.warning(f"  📍 5. 伪装去骗115的UA: {player_ua}")
+    if request.method == 'HEAD':
+        # HEAD 请求通常是播放器嗅探，直接返回 200 或简单处理，不触发解析
+        return '', 200
 
-        # 4. 获取真实链接
+    try:
+        player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+        
+        # 尝试从缓存获取
         real_url = _get_cached_115_url(pick_code, player_ua)
         
         if not real_url:
-            logger.error(f"  ❌ 6. 获取直链失败！可能触发了115风控或Cookie失效。")
-            logger.warning(f"==================================================\n")
+            # 如果解析太快被拦截了，给播放器返回 429 告知稍后再试
             return "Too Many Requests - 115 API Protection", 429
             
-        logger.warning(f"  ✅ 6. 成功拿到115直链: {real_url[:120]}... (已省略尾部)")
-        logger.warning(f"========== 🕵️‍♂️ [115直链魔法探针] 抓包结束 ==========")
-        logger.warning(f"")
-
-        # 5. 执行 302 重定向
         return redirect(real_url, code=302)
         
     except Exception as e:
