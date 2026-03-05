@@ -662,34 +662,42 @@ def _get_cached_115_url_legacy(pick_code, user_agent, client_ip=None):
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (带内存缓存版 + 客户端 UA 劫持修复)
+    终极极速 302 直链解析服务 (带魔法探针日志版)
     """
     try:
-        # 获取客户端真实的 User-Agent
-        original_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
-        player_ua = original_ua
+        # 1. 提取各种真实信息
+        client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
+        original_ua = request.headers.get('User-Agent', 'Unknown UA')
         
-        # ====== 【核心修复】苹果设备/原生播放器 302 直链 UA 劫持修复 ======
-        # Emby for iOS / Apple TV 的底层是 AVPlayer。
-        # 当它接受 302 重定向去请求 115 真实视频流时，会丢弃 Emby 的 UA，
-        # 强制使用 AppleCoreMedia。如果 UA 不一致，115 会直接 403。
-        # 所以我们预判魔法，只要是苹果设备，统一用 AppleCoreMedia 向 115 申请直链！
+        # 2. 打印华丽的排错日志
+        logger.warning(f"")
+        logger.warning(f"========== 🕵️‍♂️ [115直链魔法探针] 抓包开始 ==========")
+        logger.warning(f"  📍 1. 请求方法: {request.method}")
+        logger.warning(f"  📍 2. 请求文件: {filename or pick_code}")
+        logger.warning(f"  📍 3. 客户端真实IP: {client_ip}")
+        logger.warning(f"  📍 4. 客户端原始UA: {original_ua}")
+        
+        # 3. 决定用什么 UA 去向 115 申请直链
+        player_ua = original_ua
         if any(keyword in original_ua for keyword in ['iOS', 'iPhone', 'iPad', 'AppleTV', 'Mac OS', 'CFNetwork']):
+            # 苹果设备强制使用原生 UA 申请
             player_ua = 'AppleCoreMedia/1.0.0.19G82 (iPhone; U; CPU OS 15_6_1 like Mac OS X; zh_cn)'
         
-        # (可选) 如果你发现安卓端官方 Emby 也有类似转码问题，可以放开下面的注释：
-        # elif 'Android' in original_ua and 'Emby' in original_ua:
-        #     player_ua = 'ExoPlayer/2.18.1' 
-        # =========================================================
+        logger.warning(f"  📍 5. 伪装去骗115的UA: {player_ua}")
 
-        # 尝试从缓存获取直链 (带上我们伪造好的 player_ua)
+        # 4. 获取真实链接
         real_url = _get_cached_115_url(pick_code, player_ua)
         
         if not real_url:
-            # 如果解析太快被拦截了，给播放器返回 429 告知稍后再试
+            logger.error(f"  ❌ 6. 获取直链失败！可能触发了115风控或Cookie失效。")
+            logger.warning(f"==================================================\n")
             return "Too Many Requests - 115 API Protection", 429
             
-        # 无论是 GET 还是 HEAD，都直接 302 重定向到真实地址
+        logger.warning(f"  ✅ 6. 成功拿到115直链: {real_url[:120]}... (已省略尾部)")
+        logger.warning(f"========== 🕵️‍♂️ [115直链魔法探针] 抓包结束 ==========")
+        logger.warning(f"")
+
+        # 5. 执行 302 重定向
         return redirect(real_url, code=302)
         
     except Exception as e:
