@@ -712,13 +712,21 @@ def emby_webhook():
                     if pc_match:
                         pickcodes.append(pc_match.group(1))
 
+            # 挂载模式兜底，如果正则没提取到，直接查库 
+            if not pickcodes and original_item_id:
+                logger.debug(f"  🔍 [深度删除] 未从描述中提取到 PC 码，尝试通过 Emby ID ({original_item_id}) 查库...")
+                db_pc = media_db.get_pickcode_by_emby_id(original_item_id)
+                if db_pc:
+                    pickcodes.append(db_pc)
+                    logger.debug(f"  ✅ [深度删除] 成功从数据库查到 PC 码: {db_pc}")
+
             if pickcodes and item_path:
                 logger.info(f"  🎯 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
                 from handler.p115_service import delete_115_files_by_webhook
                 spawn(delete_115_files_by_webhook, item_path, pickcodes)
                 return jsonify({"status": "deep_delete_task_started"}), 202
             else:
-                logger.warning("  ⚠️ 深度删除通知中未找到有效的 ETK 直链或路径，跳过网盘清理。")
+                logger.warning("  ⚠️ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
                 return jsonify({"status": "processed_db_only_no_pickcodes"}), 200
 
         except Exception as e:

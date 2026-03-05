@@ -2001,20 +2001,8 @@ def task_backup_mediainfo(processor):
                     current_sha1 = sha1s[idx] if idx < len(sha1s) else None
                     current_pc = pcs[idx] if idx < len(pcs) else None
                     
-                    extracted_pc = None
-                    
-                    # ★ 核心修复：直接调用万能解析器处理第三方 STRM
-                    from utils import extract_pickcode_from_strm_url
-
-                    if current_path.startswith('http'):
-                        extracted_pc = extract_pickcode_from_strm_url(current_path)
-                    elif current_path.lower().endswith('.strm') and os.path.exists(current_path):
-                        try:
-                            with open(current_path, 'r', encoding='utf-8') as f:
-                                strm_content = f.read().strip()
-                                extracted_pc = extract_pickcode_from_strm_url(strm_content)
-                        except Exception as e:
-                            logger.warning(f"  ⚠️ 读取 STRM 文件失败 {current_path}: {e}")
+                    # ★★★ 核心修复：直接调用核心处理器的万能双指纹提取器 (完美兼容 STRM 和 挂载模式) ★★★
+                    extracted_pc, extracted_sha1 = processor._extract_115_fingerprints(current_path)
                             
                     # 兜底安检：确保提取出来的是合法的 PC 码 (纯字母数字且长度合理)
                     if extracted_pc and not (extracted_pc.isalnum() and 10 < len(extracted_pc) < 25):
@@ -2022,13 +2010,22 @@ def task_backup_mediainfo(processor):
                             
                     actual_pc = extracted_pc or current_pc
 
-                    # 如果从 STRM 里提取到了 PC 码，且数据库里没有，则更新 PC 数组
+                    # 如果提取到了 PC 码，且数据库里没有，则更新 PC 数组
                     if extracted_pc and current_pc != extracted_pc:
                         while len(pcs) <= idx: pcs.append(None)
                         pcs[idx] = extracted_pc
                         needs_db_update = True
+                        
+                    # ★★★ 意外惊喜：如果万能提取器(通过挂载路径匹配)顺手把 SHA1 也查出来了，直接用！★★★
+                    if extracted_sha1 and not current_sha1:
+                        current_sha1 = extracted_sha1
+                        while len(sha1s) <= idx: sha1s.append(None)
+                        sha1s[idx] = current_sha1
+                        needs_db_update = True
+                        sha1_fixed_count += 1
+                        logger.info(f"    ✅ 成功通过本地路径匹配获取 SHA1: {current_sha1}")
                     
-                    # 阶段 1: 补齐缺失的 SHA1
+                    # 阶段 1: 补齐缺失的 SHA1 (如果万能提取器没拿到 SHA1，再调 API)
                     if not current_sha1 and actual_pc:
                         logger.info(f"  🔍 [{title}] 缺失 SHA1，正在通过本地计算 FID 并请求 115 API 补齐 (PC: {actual_pc})...")
                         fid = None
@@ -2083,8 +2080,6 @@ def task_backup_mediainfo(processor):
                                     target_log_type, 
                                     score=0.0
                                 )
-                                # 同时从 processed_log 移除，确保它真正在待复核列表显眼位置
-                                # processor.log_db_manager.remove_from_processed_log(cursor, target_emby_id)
                                 logger.warning(f"  ⚠️ [{log_title}] 缺失本地 JSON，已标记为待复核: {reason}")
                         else:
                             # 文件存在，如果有 SHA1 且未缓存，则备份
