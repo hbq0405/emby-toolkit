@@ -598,22 +598,32 @@ class P115CacheManager:
             logger.error(f"  ❌ 清理 115 DB 缓存失败: {e}")
 
     @staticmethod
-    def save_file_cache(fid, parent_id, name, sha1=None, pick_code=None):
-        """专门将文件(fc=1)的 SHA1 和 PC码 存入本地数据库缓存"""
+    def save_file_cache(fid, parent_id, name, sha1=None, pick_code=None, local_path=None):
+        """专门将文件(fc=1)的 SHA1、PC码 和 本地相对路径 存入本地数据库缓存"""
         if not fid or not parent_id or not name: return
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
+                    # ★★★ 核心修复：智能洗版检测 SQL ★★★
                     cursor.execute("""
-                        INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, pick_code)
-                        VALUES (%s, %s, %s, %s, %s)
+                        INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, pick_code, local_path)
+                        VALUES (%s, %s, %s, %s, %s, %s)
                         ON CONFLICT (parent_id, name)
                         DO UPDATE SET 
-                            id = EXCLUDED.id, 
-                            sha1 = COALESCE(EXCLUDED.sha1, p115_filesystem_cache.sha1), 
-                            pick_code = COALESCE(EXCLUDED.pick_code, p115_filesystem_cache.pick_code), 
+                            -- 如果 FID 变了，说明是洗版替换，强制使用新值（即使新值是 NULL 也要覆盖，绝不保留旧指纹）
+                            -- 如果 FID 没变，说明是信息补充，使用 COALESCE 保留已有指纹
+                            sha1 = CASE 
+                                WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.sha1 
+                                ELSE COALESCE(EXCLUDED.sha1, p115_filesystem_cache.sha1) 
+                            END,
+                            pick_code = CASE 
+                                WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.pick_code 
+                                ELSE COALESCE(EXCLUDED.pick_code, p115_filesystem_cache.pick_code) 
+                            END,
+                            local_path = COALESCE(EXCLUDED.local_path, p115_filesystem_cache.local_path),
+                            id = EXCLUDED.id, -- 永远更新为最新的 FID
                             updated_at = NOW()
-                    """, (str(fid), str(parent_id), str(name), sha1, pick_code))
+                    """, (str(fid), str(parent_id), str(name), sha1, pick_code, local_path))
                     conn.commit()
         except Exception as e:
             logger.error(f"  ❌ 写入 115 文件缓存失败: {e}")
@@ -1679,9 +1689,24 @@ class SmartOrganizer:
                                 except Exception as e_info:
                                     logger.warning(f"  ⚠️ 调用详情接口获取 SHA1 失败: {e_info}")
 
-                            # 存入缓存表
+                            # 计算文件的相对 local_path 
+                            if keep_original:
+                                rel_path = file_item.get('rel_path', '')
+                                if rel_path:
+                                    file_local_path = os.path.join(relative_category_path, std_root_name, rel_path.replace('/', os.sep), new_filename)
+                                else:
+                                    file_local_path = os.path.join(relative_category_path, std_root_name, new_filename)
+                            elif self.media_type == 'tv' and season_num is not None:
+                                file_local_path = os.path.join(relative_category_path, std_root_name, s_name, new_filename)
+                            else:
+                                file_local_path = os.path.join(relative_category_path, std_root_name, new_filename)
+                            
+                            # 统一使用正斜杠存入数据库
+                            file_local_path = file_local_path.replace('\\', '/')
+
+                            # 存入缓存表 (传入 local_path)
                             if pick_code and fid:
-                                P115CacheManager.save_file_cache(fid, real_target_cid, new_filename, sha1=file_sha1, pick_code=pick_code)
+                                P115CacheManager.save_file_cache(fid, real_target_cid, new_filename, sha1=file_sha1, pick_code=pick_code, local_path=file_local_path)
                                 
                         elif is_sub:
                             if config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True):
@@ -2392,7 +2417,15 @@ def task_full_sync_strm_and_subs(processor=None):
                         file_sha1 = info_res['data'].get('sha1')
                 except Exception: pass
 
-        P115CacheManager.save_file_cache(fid, pid, name, sha1=file_sha1, pick_code=pc)
+        # 先计算路径，再存入数据库
+        rel_dir = get_local_path_for_pid(pid, target_cid, category_name)
+        if not rel_dir: return 
+        
+        # 计算文件的相对 local_path
+        file_local_path = os.path.join(rel_dir, name).replace('\\', '/')
+        
+        # 存入数据库 (传入 local_path)
+        P115CacheManager.save_file_cache(fid, pid, name, sha1=file_sha1, pick_code=pc, local_path=file_local_path)
         
         rel_dir = get_local_path_for_pid(pid, target_cid, category_name)
         if not rel_dir: return 

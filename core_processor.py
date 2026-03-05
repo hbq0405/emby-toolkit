@@ -827,34 +827,83 @@ class MediaProcessor:
 
         return id_to_parent_map, lib_guid
 
-    # 直接从 STRM 文件或 HTTP 链接中抠出 115 提取码 (PC码)
+    def _get_115_info_by_local_path(self, file_path: str) -> Tuple[Optional[str], Optional[str]]:
+        """
+        【挂载模式核心】通过 local_path 精准匹配 115 缓存表。
+        返回 (pick_code, sha1)。
+        """
+        if not file_path: return None, None
+        
+        # 统一路径分隔符
+        normalized_path = file_path.replace('\\', '/')
+        filename = os.path.basename(normalized_path)
+        
+        try:
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                
+                # 1. 终极绝杀：利用 local_path 进行后缀匹配
+                # 数据库存的是 "电影/科幻/阿凡达/阿凡达.mkv"
+                # Emby 传的是 "/mnt/115/电影/科幻/阿凡达/阿凡达.mkv"
+                cursor.execute("SELECT pick_code, sha1, local_path FROM p115_filesystem_cache WHERE name = %s AND local_path IS NOT NULL", (filename,))
+                rows = cursor.fetchall()
+                for row in rows:
+                    db_local_path = row['local_path']
+                    # 只要 Emby 的绝对路径以数据库的相对路径结尾，就是 100% 命中！
+                    if normalized_path.endswith(db_local_path):
+                        logger.debug(f"  🎯 [挂载模式] 路径命中: {db_local_path}")
+                        return row['pick_code'], row['sha1']
+                        
+                # 2. 降级方案：三级目录联合匹配 (兼容以前没有写入 local_path 的老数据)
+                path_parts = normalized_path.split('/')
+                if len(path_parts) >= 3:
+                    parent_name = path_parts[-2]
+                    grandparent_name = path_parts[-3]
+                    sql = """
+                        SELECT c.pick_code, c.sha1 
+                        FROM p115_filesystem_cache c
+                        JOIN p115_filesystem_cache p ON c.parent_id = p.id
+                        JOIN p115_filesystem_cache gp ON p.parent_id = gp.id
+                        WHERE c.name = %s AND p.name = %s AND gp.name = %s
+                        LIMIT 1
+                    """
+                    cursor.execute(sql, (filename, parent_name, grandparent_name))
+                    row = cursor.fetchone()
+                    if row: return row['pick_code'], row['sha1']
+                    
+        except Exception as e:
+            logger.warning(f"通过路径查询 115 信息失败: {e}")
+            
+        return None, None
+
+    # 直接从 STRM 文件、HTTP 链接 或 挂载路径中抠出 115 提取码 (PC码)
     def _extract_pickcode_from_strm(self, strm_path: str) -> Optional[str]:
         if not strm_path: return None
         
-        # ★ 严谨正则：提取 /play/ 后面的一串字母数字，直到遇到 / 或 ? 或结尾
-        pattern_play = r'/play/([a-zA-Z0-9]+)(?:/|\?|$)'
-        pattern_pickcode = r'pick_?code=([a-zA-Z0-9]+)'
-        
-        # ★ 杀手锏：如果传入的直接是 HTTP 链接，直接正则提取，无需读文件！
-        if strm_path.startswith('http'):
-            match = re.search(pattern_play, strm_path)
-            if match: return match.group(1)
-            match = re.search(pattern_pickcode, strm_path, re.IGNORECASE)
-            if match: return match.group(1)
-            return None
-            
-        # 如果是本地物理文件
-        if strm_path.lower().endswith('.strm') and os.path.exists(strm_path):
-            try:
+        # =========================================================
+        # 🥇 优先级 1：嫡子 (STRM 模式) - 调用万能解析器
+        # =========================================================
+        try:
+            # 1. 如果直接是 HTTP 链接
+            if strm_path.startswith('http'):
+                pc = utils.extract_pickcode_from_strm_url(strm_path)
+                if pc: return pc
+                
+            # 2. 如果是物理 STRM 文件
+            elif strm_path.lower().endswith('.strm') and os.path.exists(strm_path):
                 with open(strm_path, 'r', encoding='utf-8') as f:
                     content = f.read().strip()
-                    match = re.search(pattern_play, content)
-                    if match: return match.group(1)
-                    match = re.search(pattern_pickcode, content, re.IGNORECASE)
-                    if match: return match.group(1)
-            except Exception: pass
+                    pc = utils.extract_pickcode_from_strm_url(content)
+                    if pc: return pc
+        except Exception as e:
+            logger.warning(f"使用万能解析器提取 PC 码失败: {e}")
             
-        return None
+        # =========================================================
+        # 🥈 优先级 2：庶子 (挂载模式) - 调用 local_path 精准匹配
+        # =========================================================
+        # 只要走到这里，说明要么是挂载的真实视频文件，要么是 STRM 解析失败
+        pc, _ = self._get_115_info_by_local_path(strm_path)
+        return pc
 
     # 通过 PC 码反查 SHA1 (无视文件被MP移动或重命名)
     def _get_sha1_by_pickcode(self, pick_code: str) -> Optional[str]:
