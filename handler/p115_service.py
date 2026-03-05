@@ -2576,13 +2576,6 @@ def task_full_sync_strm_and_subs(processor=None):
                                     
                                 files_generated += 1
 
-                                # ★ 主动推送给监控服务接盘
-                                try:
-                                    from monitor_service import enqueue_file_actively
-                                    enqueue_file_actively(strm_path)
-                                except Exception:
-                                    pass
-                                
                             valid_local_files.add(os.path.abspath(strm_path))
 
                             # ★★★ 秒传生成媒体信息 JSON ★★★
@@ -2685,7 +2678,7 @@ def task_full_sync_strm_and_subs(processor=None):
         logger.info(f"  🧹 清理完成: 删除了 {cleaned_files} 个失效文件, {cleaned_dirs} 个空目录。")
 
     update_progress(100, "=== 极速全量同步任务圆满结束 ===")
-    
+
 def delete_115_files_by_webhook(item_path, pickcodes):
     """
     接收神医 Webhook 传来的提取码，精准销毁 115 网盘文件。
