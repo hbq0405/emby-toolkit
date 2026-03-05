@@ -658,26 +658,25 @@ def _get_cached_115_url_legacy(pick_code, user_agent, client_ip=None):
     """
     return _get_cached_115_url(pick_code, user_agent, client_ip)
 
-@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) # 允许 HEAD 请求，加速客户端嗅探
+@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD'])
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
     终极极速 302 直链解析服务 (带内存缓存版)
     """
-    if request.method == 'HEAD':
-        # HEAD 请求通常是播放器嗅探，直接返回 200 或简单处理，不触发解析
-        return '', 200
-
     try:
+        # 获取客户端真实的 User-Agent
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
-        # 尝试从缓存获取
+        # 尝试从缓存获取直链 (HEAD 请求也会走这里，利用缓存不会增加 115 API 负担)
         real_url = _get_cached_115_url(pick_code, player_ua)
         
         if not real_url:
             # 如果解析太快被拦截了，给播放器返回 429 告知稍后再试
             return "Too Many Requests - 115 API Protection", 429
             
+        # 无论是 GET 还是 HEAD，都直接 302 重定向到真实地址
+        # Flask 的 redirect 会自动处理 HEAD 请求（只返回 Header，不返回 Body）
         return redirect(real_url, code=302)
         
     except Exception as e:
