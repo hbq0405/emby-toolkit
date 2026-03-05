@@ -2286,7 +2286,7 @@ def task_sync_115_directory_tree(processor=None):
 
 def task_full_sync_strm_and_subs(processor=None):
     """
-    增量生成 STRM 与 同步字幕
+    全量生成 STRM 与 同步字幕
     利用 115 分类目录级全局拉取 (type=4/1) + 本地 DB 目录树缓存，实现秒级增量同步！
     """
     config = get_config()
@@ -2303,7 +2303,7 @@ def task_full_sync_strm_and_subs(processor=None):
         logger.info(msg)
 
     # ★ 修复：让前端第一时间收到启动消息
-    start_msg = "=== 🚀 开始增量同步 STRM 与 字幕 ===" if download_subs else "=== 🚀 开始增量同步 STRM (跳过字幕) ==="
+    start_msg = "=== 🚀 开始全量同步 STRM 与 字幕 ===" if download_subs else "=== 🚀 开始全量同步 STRM (跳过字幕) ==="
     if enable_cleanup: start_msg += " [已开启本地清理]"
     update_progress(0, start_msg)
     
@@ -2642,7 +2642,7 @@ def task_full_sync_strm_and_subs(processor=None):
             if api_fatal_error: break
         if api_fatal_error: break
 
-    logger.info(f"  ✅ 增量同步完成！新增/更新 STRM: {files_generated} 个, 下载字幕: {subs_downloaded} 个。")
+    logger.info(f"  ✅ 全量同步完成！新增/更新 STRM: {files_generated} 个, 下载字幕: {subs_downloaded} 个。")
 
     # =================================================================
     # 阶段 3: 本地失效文件清理 (耗时: 秒级)
@@ -2684,7 +2684,7 @@ def task_full_sync_strm_and_subs(processor=None):
                     
         logger.info(f"  🧹 清理完成: 删除了 {cleaned_files} 个失效文件, {cleaned_dirs} 个空目录。")
 
-    update_progress(100, "=== 极速全量同步任务圆满结束 ===")
+    update_progress(100, "=== 全量生成STRM任务结束 ===")
 
 def delete_115_files_by_webhook(item_path, pickcodes):
     """

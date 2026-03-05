@@ -206,7 +206,7 @@ def get_task_registry(context: str = 'all'):
         'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', True),
         'scan-organize-115': (task_scan_and_organize_115, "网盘文件整理", 'media', True),
         'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', True),
-        'full-sync-strm': (task_full_sync_strm_and_subs, "增量生成STRM", 'media', True),
+        'full-sync-strm': (task_full_sync_strm_and_subs, "全量生成STRM", 'media', True),
         'backup-mediainfo': (task_backup_mediainfo, "备份媒体信息", 'media', True),
         'restore_mediainfo': (task_restore_mediainfo, "还原媒体信息", 'media', True),
         'contribute-mediainfo': (task_contribute_mediainfo_to_center, "分享媒体信息", 'media', True),
