@@ -534,6 +534,11 @@ def enrich_all_actor_aliases_task(
                                             if conflicting_record and conflicting_record['map_id'] != target_id:
                                                 # 存在冲突！这个ID属于另一个记录。我们需要先把它从旧记录上剥离。
                                                 logger.warning(f"  ➜ 检测到 {id_field_name} '{id_value}' 存在于第三方记录 (map_id: {conflicting_record['map_id']})。将从旧记录中移除。")
+                                                
+                                                # ★ 核心修复：如果剥离的是 tmdb_person_id，必须先删除 actor_metadata 中的关联记录，否则会触发外键约束报错
+                                                if id_field_name == 'tmdb_person_id':
+                                                    cursor.execute("DELETE FROM actor_metadata WHERE tmdb_id = %s", (id_value,))
+                                                    
                                                 cursor.execute(f"UPDATE person_identity_map SET {id_field_name} = NULL WHERE map_id = %s", (conflicting_record['map_id'],))
 
                                             # 现在可以安全地更新到目标记录了
@@ -557,6 +562,9 @@ def enrich_all_actor_aliases_task(
                                         raise ie
 
                             if invalid_tmdb_ids:
+                                # ★ 核心修复：先删除 actor_metadata 中的关联记录，解除外键约束
+                                cursor.executemany("DELETE FROM actor_metadata WHERE tmdb_id = %s", [(tid,) for tid in invalid_tmdb_ids])
+                                # 然后再将 person_identity_map 中的 tmdb_person_id 置空
                                 cursor.executemany("UPDATE person_identity_map SET tmdb_person_id = NULL WHERE tmdb_person_id = %s", [(tid,) for tid in invalid_tmdb_ids])
 
                             conn.commit()
