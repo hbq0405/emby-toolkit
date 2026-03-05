@@ -666,7 +666,45 @@ def emby_webhook():
         series_id_from_webhook = item_from_webhook.get("SeriesId") if original_item_type == "Episode" else None
 
         # --------------------------------------------------------
-        # 任务 1: 清理本地数据库 (完全替代原 library.deleted)
+        # 任务 1: 提取 115 网盘联动删除参数 (⚠️ 必须在清理本地数据库前执行！)
+        # --------------------------------------------------------
+        nb_config = get_config()
+        enable_sync_delete = nb_config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False)
+        
+        description = data.get("Description", "")
+        item_path = ""
+        pickcodes = []
+        parse_error = False
+
+        if enable_sync_delete and description:
+            try:
+                import re
+                path_match = re.search(r'Item Path:\n(.*?)\n\n', description)
+                item_path = path_match.group(1).strip() if path_match else ""
+
+                if "Mount Paths:\n" in description:
+                    mount_paths_str = description.split("Mount Paths:\n")[-1]
+                    urls = [line.strip() for line in mount_paths_str.split('\n') if line.strip()]
+                    
+                    for url in urls:
+                        pc_match = re.search(r'/api/p115/play/([a-zA-Z0-9]+)', url)
+                        if pc_match:
+                            pickcodes.append(pc_match.group(1))
+
+                # 挂载模式兜底，如果正则没提取到，直接查库 (此时数据库数据完好)
+                if not pickcodes and original_item_id:
+                    logger.debug(f"  🔍 [深度删除] 未从描述中提取到 PC 码，尝试通过 Emby ID ({original_item_id}) 查库...")
+                    db_pc = media_db.get_pickcode_by_emby_id(original_item_id)
+                    if db_pc:
+                        pickcodes.append(db_pc)
+                        logger.debug(f"  ✅ [深度删除] 成功从数据库查到 PC 码: {db_pc}")
+
+            except Exception as e:
+                logger.error(f"  ❌ 解析深度删除通知失败: {e}", exc_info=True)
+                parse_error = True
+
+        # --------------------------------------------------------
+        # 任务 2: 清理本地数据库 (完全替代原 library.deleted)
         # --------------------------------------------------------
         if original_item_id and original_item_type:
             try:
@@ -686,52 +724,26 @@ def emby_webhook():
                 logger.error(f"  ❌ [深度删除] 清理本地数据库失败: {e}", exc_info=True)
 
         # --------------------------------------------------------
-        # 任务 2: 联动删除 115 网盘文件
+        # 任务 3: 判断网盘联动条件，执行任务并返回 HTTP 响应
         # --------------------------------------------------------
-        nb_config = get_config()
-        if not nb_config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
+        if parse_error:
+            return jsonify({"status": "error_parsing_deep_delete"}), 500
+
+        if not enable_sync_delete:
             logger.debug("  🚫 联动删除未开启，跳过网盘清理。")
             return jsonify({"status": "processed_db_only"}), 200
 
-        description = data.get("Description", "")
         if not description:
             return jsonify({"status": "ignored_no_description"}), 200
 
-        try:
-            import re
-            path_match = re.search(r'Item Path:\n(.*?)\n\n', description)
-            item_path = path_match.group(1).strip() if path_match else ""
-
-            pickcodes = []
-            if "Mount Paths:\n" in description:
-                mount_paths_str = description.split("Mount Paths:\n")[-1]
-                urls = [line.strip() for line in mount_paths_str.split('\n') if line.strip()]
-                
-                for url in urls:
-                    pc_match = re.search(r'/api/p115/play/([a-zA-Z0-9]+)', url)
-                    if pc_match:
-                        pickcodes.append(pc_match.group(1))
-
-            # 挂载模式兜底，如果正则没提取到，直接查库 
-            if not pickcodes and original_item_id:
-                logger.debug(f"  🔍 [深度删除] 未从描述中提取到 PC 码，尝试通过 Emby ID ({original_item_id}) 查库...")
-                db_pc = media_db.get_pickcode_by_emby_id(original_item_id)
-                if db_pc:
-                    pickcodes.append(db_pc)
-                    logger.debug(f"  ✅ [深度删除] 成功从数据库查到 PC 码: {db_pc}")
-
-            if pickcodes and item_path:
-                logger.info(f"  🎯 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
-                from handler.p115_service import delete_115_files_by_webhook
-                spawn(delete_115_files_by_webhook, item_path, pickcodes)
-                return jsonify({"status": "deep_delete_task_started"}), 202
-            else:
-                logger.warning("  ⚠️ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
-                return jsonify({"status": "processed_db_only_no_pickcodes"}), 200
-
-        except Exception as e:
-            logger.error(f"  ❌ 解析深度删除通知失败: {e}", exc_info=True)
-            return jsonify({"status": "error_parsing_deep_delete"}), 500
+        if pickcodes and item_path:
+            logger.info(f"  🎯 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
+            from handler.p115_service import delete_115_files_by_webhook
+            spawn(delete_115_files_by_webhook, item_path, pickcodes)
+            return jsonify({"status": "deep_delete_task_started"}), 202
+        else:
+            logger.warning("  ⚠️ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
+            return jsonify({"status": "processed_db_only_no_pickcodes"}), 200
     # ======================================================================
     # ★★★ 处理 MoviePilot transfer.complete 事件 ★★★
     # ======================================================================
