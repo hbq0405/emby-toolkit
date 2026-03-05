@@ -1805,17 +1805,6 @@ class SmartOrganizer:
                     category_name = rule.get('dir_name', '未识别')
                     break
             
-            P115RecordManager.add_or_update_record(
-                file_id=source_root_id,
-                original_name=root_name,
-                status='success',
-                tmdb_id=self.tmdb_id,
-                media_type=self.media_type,
-                target_cid=target_cid,
-                category_name=category_name,
-                renamed_name=std_root_name
-            )
-
         return True
 
 def _parse_115_size(size_val):
@@ -2539,7 +2528,7 @@ def task_full_sync_strm_and_subs(processor=None):
                     enqueue_file_actively(strm_path)
                 except Exception: pass
                 
-            valid_local_files.add(os.path.abspath(strm_path))
+            valid_local_files.add(os.path.normcase(os.path.normpath(os.path.abspath(strm_path))))
 
             if file_sha1:
                 try:
@@ -2575,7 +2564,7 @@ def task_full_sync_strm_and_subs(processor=None):
                         subs_downloaded += 1
                 except Exception as e:
                     logger.error(f"  ❌ 下载字幕失败 [{name}]: {e}")
-            valid_local_files.add(os.path.abspath(sub_path))
+            valid_local_files.add(os.path.normcase(os.path.normpath(os.path.abspath(sub_path))))
 
     for idx, target_cid in enumerate(target_cids):
         category_name = cid_to_rel_path.get(target_cid, "未知分类")
@@ -2705,7 +2694,9 @@ def task_full_sync_strm_and_subs(processor=None):
                 for file in files:
                     ext = file.split('.')[-1].lower()
                     if ext in known_sub_exts or ext == 'strm':
-                        file_path = os.path.abspath(os.path.join(root_dir, file))
+                        # ★ 无敌路径比对法：标准化大小写和斜杠
+                        file_path = os.path.normcase(os.path.normpath(os.path.abspath(os.path.join(root_dir, file))))
+                        
                         if file_path not in valid_local_files:
                             try:
                                 os.remove(file_path)
@@ -2801,65 +2792,62 @@ def delete_115_files_by_webhook(item_path, pickcodes):
         logger.error(f"  ❌ [联动删除] 执行异常: {e}", exc_info=True)
 
 def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
-    """
-    手动纠错核心：精准获取文件信息，调用乐高引擎重组
-    """
+    """手动纠错：移动文件，并顺手清理遗留的空目录"""
     client = P115Service.get_client()
-    if not client:
-        raise Exception("115 客户端未初始化")
+    if not client: raise Exception("115 客户端未初始化")
         
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT file_id, original_name FROM p115_organize_records WHERE id = %s", (record_id,))
                 row = cursor.fetchone()
-                if not row:
-                    raise Exception("未找到该整理记录")
+                if not row: raise Exception("未找到该整理记录")
                 file_id = row['file_id']
                 original_name = row['original_name']
     except Exception as e:
         raise Exception(f"数据库查询失败: {e}")
 
-    # 1. 使用官方 get_info 接口查询该文件最新状态
+    # 获取最新信息
     info_res = client.fs_get_info(file_id)
     if not info_res or not info_res.get('state') or not info_res.get('data'):
         raise Exception(f"无法在 115 网盘中定位到该项目(ID:{file_id})，它可能已被删除。")
         
     info_data = info_res['data']
+    old_pid = info_data.get('parent_id') or info_data.get('cid') # ★ 记住它原来的爹是谁
     
-    # ★★★ 核心修复：正确映射 115 API 返回的 file_category 到 fc 字段
-    # 文档明确说明：file_category 为 "1" 是文件，"0" 是文件夹
     root_item = {
         'fid': info_data.get('file_id') or file_id,
         'file_id': info_data.get('file_id') or file_id,
         'fn': info_data.get('file_name') or original_name,
-        'fc': str(info_data.get('file_category', '1')), # 动态获取，准确无误
-        'pid': info_data.get('parent_id') or info_data.get('cid')
+        'fc': str(info_data.get('file_category', '1')), 
+        'pid': old_pid
     }
 
     title = original_name
     api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
     try:
         import handler.tmdb as tmdb
-        if media_type == 'tv':
-            details = tmdb.get_tv_details(tmdb_id, api_key)
-        else:
-            details = tmdb.get_movie_details(tmdb_id, api_key)
-        if details:
-            title = details.get('title') or details.get('name') or original_name
+        if media_type == 'tv': details = tmdb.get_tv_details(tmdb_id, api_key)
+        else: details = tmdb.get_movie_details(tmdb_id, api_key)
+        if details: title = details.get('title') or details.get('name') or original_name
     except: pass
 
-    logger.info(f"  🛠️ [手动重组] 开始对 '{original_name}' 执行定向整理 -> ID:{tmdb_id} ({media_type})")
-    
+    logger.info(f"  🛠️ [手动重组] 开始对 '{original_name}' 执行定向整理 -> ID:{tmdb_id}")
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     
-    # delete_source=False，因为它是针对本体的操作
     success = organizer.execute(root_item, target_cid, delete_source=False)
-    
-    if not success:
-        raise Exception("SmartOrganizer 执行重组失败，请查看后台日志。")
+    if not success: raise Exception("SmartOrganizer 执行重组失败。")
         
-    # ★ 手动纠错成功后，更新该条记录的状态
+    # ★★★ 核心修复：顺手把旧分类留下的空壳子端了 ★★★
+    if old_pid and str(old_pid) != '0':
+        try:
+            check_res = client.fs_files({'cid': old_pid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+            if not check_res.get('data'): # 如果空了
+                client.fs_delete([old_pid])
+                logger.info(f"  🧹 [手动重组] 已顺手清理原路径遗留的空目录 (CID:{old_pid})")
+        except: pass
+
+    # 更新数据库状态
     try:
         category_name = "未识别"
         for rule in organizer.rules:
@@ -2874,7 +2862,6 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
                     WHERE id = %s
                 """, (tmdb_id, media_type, target_cid, category_name, record_id))
                 conn.commit()
-    except Exception as e:
-        logger.warning(f"  ⚠️ 手动纠错成功，但更新记录状态失败: {e}")
+    except Exception as e: pass
 
     return True

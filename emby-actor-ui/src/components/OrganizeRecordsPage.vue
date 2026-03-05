@@ -210,20 +210,21 @@ const columns = computed(() => [
     key: 'name_evolution',
     render(row) {
       return h('div', { 
-        style: 'display: flex; flex-direction: column; gap: 6px; overflow: hidden; max-width: 400px;' 
+        // ★ 核心修复：移除 max-width，使用 min-width 并允许自由伸展
+        style: 'display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 300px;' 
       }, [
-        // 上面：原文件名
-        h(NText, { depth: 3, style: 'font-size: 12px; display: flex; align-items: center;' }, { 
+        // 第一行：原文件 (带 tooltip 悬浮显示完整文本)
+        h(NText, { depth: 3, style: 'font-size: 13px; display: flex; align-items: center;' }, { 
           default: () => [
-            h(NTag, { size: 'tiny', bordered: false, style: 'margin-right: 6px; flex-shrink: 0;' }, { default: () => '原' }),
-            h(NEllipsis, { style: 'max-width: 100%;' }, { default: () => row.original_name })
+            h(NTag, { size: 'tiny', bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '原' }),
+            h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.original_name })
           ]
         }),
-        // 下面：整理后的文件名
-        h(NText, { strong: true, type: row.status === 'success' ? 'primary' : 'default', style: 'display: flex; align-items: center;' }, { 
+        // 第二行：新文件
+        h(NText, { strong: true, type: row.status === 'success' ? 'primary' : 'default', style: 'font-size: 13px; display: flex; align-items: center;' }, { 
           default: () => [
-            h(NTag, { size: 'tiny', type: row.status === 'success' ? 'success' : 'warning', bordered: false, style: 'margin-right: 6px; flex-shrink: 0;' }, { default: () => '新' }),
-            h(NEllipsis, { style: 'max-width: 100%;' }, { default: () => row.renamed_name || '等待手动整理...' })
+            h(NTag, { size: 'tiny', type: row.status === 'success' ? 'success' : 'warning', bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '新' }),
+            h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.renamed_name || '等待分配 TMDb ID 手动整理...' })
           ]
         })
       ]);
