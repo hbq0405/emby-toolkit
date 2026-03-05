@@ -2003,22 +2003,22 @@ def task_backup_mediainfo(processor):
                     
                     extracted_pc = None
                     
-                    # 提取逻辑封装，兼容带文件名和不带文件名的格式
-                    def _extract_pc(url):
-                        if '/p115/play/' in url:
-                            return url.split('/p115/play/')[-1].split('/')[0].split('?')[0].strip()
-                        return url.rstrip('/').split('/')[-1].split('?')[0].strip()
+                    # ★ 核心修复：直接调用万能解析器处理第三方 STRM
+                    from utils import extract_pickcode_from_strm_url
 
                     if current_path.startswith('http'):
-                        extracted_pc = _extract_pc(current_path)
+                        extracted_pc = extract_pickcode_from_strm_url(current_path)
                     elif current_path.lower().endswith('.strm') and os.path.exists(current_path):
                         try:
                             with open(current_path, 'r', encoding='utf-8') as f:
                                 strm_content = f.read().strip()
-                                if strm_content.startswith('http'):
-                                    extracted_pc = _extract_pc(strm_content)
+                                extracted_pc = extract_pickcode_from_strm_url(strm_content)
                         except Exception as e:
                             logger.warning(f"  ⚠️ 读取 STRM 文件失败 {current_path}: {e}")
+                            
+                    # 兜底安检：确保提取出来的是合法的 PC 码 (纯字母数字且长度合理)
+                    if extracted_pc and not (extracted_pc.isalnum() and 10 < len(extracted_pc) < 25):
+                        extracted_pc = None
                             
                     actual_pc = extracted_pc or current_pc
 
@@ -2036,11 +2036,11 @@ def task_backup_mediainfo(processor):
                             # 优先使用 p115pickcode 库本地计算，无需查库，速度极快
                             from p115pickcode import to_id
                             fid = to_id(actual_pc)
-                        except ImportError:
+                        except (ImportError, ValueError, TypeError): # ★ 增加异常捕获，防止奇葩字符串搞崩任务
                             try:
                                 from p115client.tool.iterdir import to_id
                                 fid = to_id(actual_pc)
-                            except ImportError:
+                            except (ImportError, ValueError, TypeError):
                                 # 兜底查库
                                 fid = P115CacheManager.get_fid_by_pickcode(actual_pc)
                                 
