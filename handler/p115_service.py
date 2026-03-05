@@ -641,15 +641,16 @@ class P115DeleteBuffer:
     _timer = None
 
     @classmethod
-    def add(cls, fids, base_cid):
+    def add(cls, fids, base_cids=None):
         with cls._lock:
             if fids:
                 cls._fids_to_delete.update(fids)
-            if base_cid:
-                cls._cids_to_check.add(base_cid)
+            if base_cids:
+                if isinstance(base_cids, (list, set)):
+                    cls._cids_to_check.update(base_cids)
+                else:
+                    cls._cids_to_check.add(base_cids)
 
-            # 如果没有计时器在运行，启动一个 5 秒的倒计时
-            # 5秒内如果有新的删除请求进来，会被合并到集合中
             if cls._timer is None:
                 cls._timer = spawn_later(5.0, cls.flush)
 
@@ -678,28 +679,36 @@ class P115DeleteBuffer:
             else:
                 logger.error(f"  ❌ [批量销毁] 115 删除接口调用失败: {resp}")
 
-        # 2. 鞭尸检查：清理空目录
+        # 2. 鞭尸检查：清理空目录 (智能连锅端)
+        config = get_config()
+        configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
+        allowed_exts = set(e.lower() for e in configured_exts)
+        # 定义有效媒体格式 (视频 + 音频)，字幕和歌词不在其中，会被视为垃圾
+        media_exts = allowed_exts | {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg'}
+
         for cid in cids:
-            video_count = 0
-            def count_videos(current_cid):
-                nonlocal video_count
+            if str(cid) == '0': continue # 绝对安全防线：禁止删根目录
+            
+            media_count = 0
+            def count_media(current_cid):
+                nonlocal media_count
                 try:
                     res = client.fs_files({'cid': current_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
                     for item in res.get('data', []):
                         if str(item.get('fc')) == '1':
                             ext = str(item.get('fn', '')).split('.')[-1].lower()
-                            if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso']:
-                                video_count += 1
+                            if ext in media_exts:
+                                media_count += 1
                         elif str(item.get('fc')) == '0':
-                            count_videos(item.get('fid'))
+                            count_media(item.get('fid'))
                 except Exception:
-                    video_count += 999 
+                    media_count += 999 # 报错就假装有文件，防止误删
 
-            count_videos(cid)
-            if video_count == 0:
+            count_media(cid)
+            if media_count == 0:
                 client.fs_delete([cid])
                 P115CacheManager.delete_cid(cid)
-                logger.info(f"  🧹 [联动删除] 主目录已空，已删除网盘目录及本地缓存: CID {cid}")
+                logger.info(f"  🧹 [联动删除] 目录内已无有效媒体文件(仅剩字幕/歌词等垃圾)，已连锅端: CID {cid}")
 
 def get_config():
     return config_manager.APP_CONFIG
@@ -2608,75 +2617,73 @@ def task_full_sync_strm_and_subs(processor=None):
 
 def delete_115_files_by_webhook(item_path, pickcodes):
     """
-    接收神医 Webhook 传来的路径和提取码，精准销毁 115 网盘文件。
-    ★ 终极优化版：优先查本地缓存瞬间锁定，未命中再兜底扫描。
+    接收神医 Webhook 传来的提取码，精准销毁 115 网盘文件。
+    ★ 终极暴力版：无视路径，直接通过 PC 码本地计算 FID 锁定文件！
     """
-    if not pickcodes or not item_path: return
+    if not pickcodes: return
 
     client = P115Service.get_client()
     if not client: return
 
     try:
-        # 1. 提取主目录名称
-        match = re.search(r'([^/\\]+\{tmdb=\d+\})', item_path)
-        if not match:
-            logger.warning(f"  ⚠️ [联动删除] 无法从路径提取 TMDb 目录名: {item_path}")
-            return
-        tmdb_folder_name = match.group(1)
+        fids_to_delete = set()
+        pids_to_check = set()
 
-        # 2. 查找主目录 CID
-        base_cid = P115CacheManager.get_cid_by_name(tmdb_folder_name)
-        if not base_cid:
-            try:
-                res = client.fs_files({'search_value': tmdb_folder_name, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
-                for item in res.get('data', []):
-                    if item.get('fn') == tmdb_folder_name and str(item.get('fc')) == '0':
-                        base_cid = item.get('fid')
-                        break
-            except Exception: pass
-
-        if not base_cid:
-            logger.warning(f"  ⚠️ [联动删除] 未在 115 找到对应主目录，可能已被删除: {tmdb_folder_name}")
-            return
-
-        # =================================================================
-        # ★ 3. 核心优化：优先查本地数据库缓存，瞬间锁定文件 ID
-        # =================================================================
-        fids_to_delete = []
+        # 1. 优先查本地数据库缓存，瞬间锁定文件 ID 和 父目录 ID
         cached_files = P115CacheManager.get_files_by_pickcodes(pickcodes)
+        cached_pcs = set()
         
         for f in cached_files:
-            fids_to_delete.append(f['id'])
+            fids_to_delete.add(str(f['id']))
+            if f.get('parent_id'):
+                pids_to_check.add(str(f['parent_id']))
+            cached_pcs.add(f['pick_code'])
             
-        # 找出哪些 PC 码没有在缓存中命中
-        cached_pcs = [f['pick_code'] for f in cached_files]
-        unmatched_pickcodes = set(pickcodes) - set(cached_pcs)
+        unmatched_pickcodes = set(pickcodes) - cached_pcs
 
-        if not unmatched_pickcodes:
-            logger.info("  ⚡ [联动删除] 缓存全命中，已定位所有待删除文件！")
-        else:
-            logger.info(f"  🔍 [联动删除] 有 {len(unmatched_pickcodes)} 个文件未命中缓存，启动网盘扫描兜底...")
-            # 兜底扫描：只匹配那些没找到的 PC 码
-            def scan_and_match(cid):
+        # 2. 缓存未命中的，直接用 to_id 本地暴力计算 FID
+        if unmatched_pickcodes:
+            logger.info(f"  🔍 [联动删除] 有 {len(unmatched_pickcodes)} 个文件未命中缓存，尝试本地计算 FID...")
+            
+            # 尝试导入 to_id 函数
+            to_id_func = None
+            try:
+                from p115pickcode import to_id
+                to_id_func = to_id
+            except ImportError:
                 try:
-                    res = client.fs_files({'cid': cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
-                    for item in res.get('data', []):
-                        if str(item.get('fc')) == '1':
-                            if item.get('pc') in unmatched_pickcodes:
-                                fids_to_delete.append(item.get('fid'))
-                        elif str(item.get('fc')) == '0':
-                            scan_and_match(item.get('fid'))
-                except Exception as e:
-                    logger.warning(f"  ⚠️ [联动删除] 扫描目录 {cid} 报错: {e}")
+                    from p115client.tool.iterdir import to_id
+                    to_id_func = to_id
+                except ImportError:
+                    pass
 
-            scan_and_match(base_cid)
+            for pc in unmatched_pickcodes:
+                fid = None
+                if to_id_func:
+                    try:
+                        fid = str(to_id_func(pc))
+                    except Exception: pass
+                
+                if fid:
+                    fids_to_delete.add(fid)
+                    # 为了能连锅端空目录，我们需要知道它的父目录 ID，这里只能调一次 API 查户口
+                    try:
+                        info_res = client.fs_get_info(fid)
+                        if info_res and info_res.get('state'):
+                            pid = info_res['data'].get('pid') or info_res['data'].get('cid') or info_res['data'].get('parent_id')
+                            if pid:
+                                pids_to_check.add(str(pid))
+                    except Exception as e:
+                        logger.debug(f"  ⚠️ 获取文件 {fid} 详情失败: {e}")
+                else:
+                    logger.warning(f"  ⚠️ [联动删除] 无法计算 PC 码的 FID: {pc}")
 
-        # 4. 执行物理销毁 -> 改为推入全局缓冲队列
+        # 3. 执行物理销毁 -> 推入全局缓冲队列
         if fids_to_delete:
             logger.info(f"  ⏳ [联动删除] 已锁定 {len(fids_to_delete)} 个文件，加入全局批量销毁队列...")
-            P115DeleteBuffer.add(fids_to_delete, base_cid)
+            P115DeleteBuffer.add(list(fids_to_delete), list(pids_to_check))
         else:
-            logger.warning(f"  ⚠️ [联动删除] 未在网盘找到匹配的提取码文件。")
+            logger.warning(f"  ⚠️ [联动删除] 未能锁定任何待删除文件。")
 
     except Exception as e:
         logger.error(f"  ❌ [联动删除] 执行异常: {e}", exc_info=True)
