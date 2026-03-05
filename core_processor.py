@@ -876,45 +876,87 @@ class MediaProcessor:
             
         return None, None
 
-    # 直接从 STRM 文件、HTTP 链接 或 挂载路径中抠出 115 提取码 (PC码)
-    def _extract_pickcode_from_strm(self, strm_path: str) -> Optional[str]:
-        if not strm_path: return None
+    # 直接从 STRM 文件、HTTP 链接 或 挂载路径中抠出 115 提取码 (PC) 和 SHA1
+    def _extract_115_fingerprints(self, file_path: str) -> Tuple[Optional[str], Optional[str]]:
+        if not file_path: return None, None
         
+        pc = None
+        sha1 = None
+        target_path_for_db = file_path # 默认用传入的路径去查库
+
         # =========================================================
         # 🥇 优先级 1：嫡子 (STRM 模式) - 调用万能解析器
         # =========================================================
         try:
-            # 1. 如果直接是 HTTP 链接
-            if strm_path.startswith('http'):
-                pc = utils.extract_pickcode_from_strm_url(strm_path)
-                if pc: return pc
-                
-            # 2. 如果是物理 STRM 文件
-            elif strm_path.lower().endswith('.strm') and os.path.exists(strm_path):
-                with open(strm_path, 'r', encoding='utf-8') as f:
+            if file_path.startswith('http'):
+                pc = utils.extract_pickcode_from_strm_url(file_path)
+            elif file_path.lower().endswith('.strm') and os.path.exists(file_path):
+                with open(file_path, 'r', encoding='utf-8') as f:
                     content = f.read().strip()
+                    # 尝试按 HTTP 链接解析
                     pc = utils.extract_pickcode_from_strm_url(content)
-                    if pc: return pc
+                    
+                    # ★★★ 核心修复：如果 STRM 里面存的是挂载路径，把这个路径提取出来供后续查库 ★★★
+                    if not pc and content and not content.startswith('http'):
+                        target_path_for_db = content
         except Exception as e:
-            logger.warning(f"使用万能解析器提取 PC 码失败: {e}")
+            logger.warning(f"读取 STRM 文件失败: {e}")
             
         # =========================================================
         # 🥈 优先级 2：庶子 (挂载模式) - 调用 local_path 精准匹配
         # =========================================================
-        # 只要走到这里，说明要么是挂载的真实视频文件，要么是 STRM 解析失败
-        pc, _ = self._get_115_info_by_local_path(strm_path)
-        return pc
+        # 拿着真实的视频路径 (可能是直接传进来的，也可能是从 STRM 里读出来的) 去查库
+        db_pc, db_sha1 = self._get_115_info_by_local_path(target_path_for_db)
+        
+        # 合并结果 (如果正则提取到了 PC 就用正则的，否则用数据库的)
+        pc = pc or db_pc
+        sha1 = db_sha1
 
-    # 通过 PC 码反查 SHA1 (无视文件被MP移动或重命名)
+        return pc, sha1
+
+    # 通过 PC 码反查 SHA1 (自带 115 API 兜底)
     def _get_sha1_by_pickcode(self, pick_code: str) -> Optional[str]:
         if not pick_code: return None
+        
+        # 1. 优先查本地数据库
         try:
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
                 cursor.execute("SELECT sha1 FROM p115_filesystem_cache WHERE pick_code = %s AND sha1 IS NOT NULL LIMIT 1", (pick_code,))
                 row = cursor.fetchone()
-                return row['sha1'] if row else None
-        except Exception: return None
+                if row and row['sha1']: 
+                    return row['sha1']
+        except Exception: pass
+
+        # 2. 查不到？现场算 FID 调 API 查！(专治第三方 STRM)
+        logger.info(f"  🔍 未在本地数据库找到 SHA1，尝试通过 115api 获取...")
+        try:
+            to_id_func = None
+            try:
+                from p115pickcode import to_id
+                to_id_func = to_id
+            except ImportError:
+                try:
+                    from p115client.tool.iterdir import to_id
+                    to_id_func = to_id
+                except ImportError:
+                    pass
+
+            if to_id_func:
+                fid = str(to_id_func(pick_code))
+                from handler.p115_service import P115Service
+                client = P115Service.get_client()
+                if client and fid:
+                    info_res = client.fs_get_info(fid)
+                    if info_res and info_res.get('state'):
+                        sha1 = info_res['data'].get('sha1')
+                        if sha1:
+                            logger.info(f"  ✅ 成功通过 115 API 实时获取到 SHA1: {sha1}")
+                            return sha1
+        except Exception as e:
+            logger.warning(f"  ⚠️ 实时获取 SHA1 失败: {e}")
+
+        return None
 
     # --- 更新媒体元数据缓存 ---
     def _upsert_media_metadata(
@@ -1074,8 +1116,9 @@ class MediaProcessor:
                             if not raw_path: continue
                             
                             # 先提取 PC 码 (支持直接从 HTTP 链接提取)
-                            file_pc = self._extract_pickcode_from_strm(raw_path)
-                            file_sha1 = self._get_sha1_by_pickcode(file_pc)
+                            file_pc, file_sha1 = self._extract_115_fingerprints(raw_path)
+                            if not file_sha1 and file_pc:
+                                file_sha1 = self._get_sha1_by_pickcode(file_pc)
                             
                             # 强制兜底物理路径：如果 raw_path 是 http，尝试用顶层 Path 兜底
                             emby_path = raw_path
@@ -1108,8 +1151,9 @@ class MediaProcessor:
                         emby_path = item_details_from_emby.get('Path', '')
                         mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json"
                         
-                        file_pc = self._extract_pickcode_from_strm(emby_path)
-                        file_sha1 = self._get_sha1_by_pickcode(file_pc)
+                        file_pc, file_sha1 = self._extract_115_fingerprints(raw_path)
+                        if not file_sha1 and file_pc:
+                            file_sha1 = self._get_sha1_by_pickcode(file_pc)
 
                         asset_details = parse_full_asset_details(
                             item_details_from_emby, 
@@ -1372,8 +1416,9 @@ class MediaProcessor:
                         # 遍历该集的所有版本
                         for version in versions_of_episode:
                             raw_path = version.get('Path', '')
-                            file_pc = self._extract_pickcode_from_strm(raw_path)
-                            file_sha1 = self._get_sha1_by_pickcode(file_pc)
+                            file_pc, file_sha1 = self._extract_115_fingerprints(raw_path)
+                            if not file_sha1 and file_pc:
+                                file_sha1 = self._get_sha1_by_pickcode(file_pc)
                             
                             emby_path = raw_path
                             if emby_path.startswith('http'):

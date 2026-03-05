@@ -480,17 +480,14 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
 
     if file_path and getattr(processor, 'p115_enabled', False) and processor.p115_center:
         try:
-            pc = None
-            sha1 = None
-
             # =========================================================
-            # 1. 统一调用核心处理器的万能提取方法 
-            # (内部已自动按优先级处理：HTTP直链 -> 物理STRM -> 挂载路径匹配)
+            # 1. 统一调用核心处理器的双指纹提取方法 
+            # (内部已自动处理：HTTP直链 -> 物理STRM -> 挂载路径匹配)
             # =========================================================
-            pc = processor._extract_pickcode_from_strm(file_path)
+            pc, sha1 = processor._extract_115_fingerprints(file_path)
             
-            if pc:
-                logger.debug(f"  🔍 [路径解析] 成功提取 PC 码: {pc}")
+            if pc or sha1:
+                logger.debug(f"  🔍 [路径解析] 成功提取指纹 -> PC: {pc}, SHA1: {sha1}")
             else:
                 # =========================================================
                 # 2. 养子 (数据库兜底) - 通过 Emby ID 查 PC 码
@@ -501,39 +498,10 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         logger.debug(f"  🔍 [数据库兜底] 成功通过 Emby ID ({item_id}) 查到 PC 码。")
 
             # =========================================================
-            # 3. 补全 SHA1
+            # 3. 补全 SHA1 (内部自带 115 API 兜底)
             # =========================================================
-            if pc:
-                # 优先从本地数据库秒查
+            if not sha1 and pc:
                 sha1 = processor._get_sha1_by_pickcode(pc)
-                
-                # 终极兼容兜底：现场用 PC 算 FID 找 115 API 要 SHA1
-                if not sha1:
-                    logger.info(f"  🔍 未在本地数据库找到 SHA1，尝试通过 115api 获取...")
-                    try:
-                        to_id_func = None
-                        try:
-                            from p115pickcode import to_id
-                            to_id_func = to_id
-                        except ImportError:
-                            try:
-                                from p115client.tool.iterdir import to_id
-                                to_id_func = to_id
-                            except ImportError:
-                                pass
-                        
-                        if to_id_func:
-                            fid = str(to_id_func(pc))
-                            from handler.p115_service import P115Service
-                            client = P115Service.get_client()
-                            if client and fid:
-                                info_res = client.fs_get_info(fid)
-                                if info_res and info_res.get('state'):
-                                    sha1 = info_res['data'].get('sha1')
-                                    if sha1:
-                                        logger.info(f"  ✅ 成功通过 115 API 实时获取到 SHA1: {sha1}")
-                    except Exception as e:
-                        logger.warning(f"  ⚠️ 实时获取 SHA1 失败: {e}")
             
             if sha1:
                 media_data = None
