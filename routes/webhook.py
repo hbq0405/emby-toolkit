@@ -715,6 +715,19 @@ def emby_webhook():
                     item_type=original_item_type,
                     series_id_from_webhook=series_id_from_webhook
                 )
+                # 清理已处理日志和待复核日志 (老六的板斧警告)
+                processor = extensions.media_processor_instance
+                if processor:
+                    with get_db_connection() as conn:
+                        cursor = conn.cursor()
+                        processor.log_db_manager.remove_from_processed_log(cursor, original_item_id)
+                        processor.log_db_manager.remove_from_failed_log(cursor, original_item_id)
+                        conn.commit()
+                    
+                    # 实时抹除内存缓存 (不重启也能立刻生效)
+                    if original_item_id in processor.processed_items_cache:
+                        del processor.processed_items_cache[original_item_id]
+                        logger.debug(f"  🧹 [深度删除] 已清理内存缓存: {original_item_id}")
                 # 刷新向量缓存
                 if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
                     if original_item_type in ['Movie', 'Series']:

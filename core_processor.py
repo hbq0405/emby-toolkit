@@ -2446,7 +2446,10 @@ class MediaProcessor:
                 if cache_row:
                     logger.info(f"  ➜ [快速模式] 基于缓存数据的实时复核评分: {processing_score:.2f}")
                 
-                min_score_for_review = float(self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW))
+                raw_min_score = self.config.get("min_score_for_review")
+                if raw_min_score is None:
+                    raw_min_score = constants.DEFAULT_MIN_SCORE_FOR_REVIEW
+                min_score_for_review = float(raw_min_score)
                 
                 # 最终判定与日志写入 ---
                 # 确定要记录到数据库的目标 ID 和 名称
