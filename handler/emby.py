@@ -1682,21 +1682,20 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
 
         libraries_with_paths = []
         for folder in virtual_folders_data:
-            if not folder.get("CollectionType"):
-                continue
-
             lib_id = folder.get("ItemId")
             lib_name = folder.get("Name")
             lib_guid = folder.get("Guid")
             locations = folder.get("Locations", [])
 
+            # 只要有 ID、名字，并且配置了物理路径，它就是一个有效的实体媒体库！
             if lib_id and lib_name and locations:
                 libraries_with_paths.append({
                     "info": {
                         "Name": lib_name,
                         "Id": lib_id,
                         "Guid": lib_guid,
-                        "CollectionType": folder.get("CollectionType")
+                        # 如果为空，给个默认标识 'mixed'，防止后续逻辑报错
+                        "CollectionType": folder.get("CollectionType") or "mixed" 
                     },
                     "paths": locations
                 })
