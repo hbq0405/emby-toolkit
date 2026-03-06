@@ -1601,26 +1601,27 @@ class SmartOrganizer:
                 else:
                     logger.info(f"  📁 [移动] {file_name} -> {std_root_name}")
                 moved_count += 1
-                # ★★★精准记录单个视频文件的整理结果 ★★★
-                try:
-                    category_name = "未识别"
-                    for rule in self.rules:
-                        if str(rule.get('cid')) == str(target_cid):
-                            category_name = rule.get('dir_name', '未识别')
-                            break
-                    from handler.p115_service import P115RecordManager
-                    P115RecordManager.add_or_update_record(
-                        file_id=fid,
-                        original_name=file_name,
-                        status='success',
-                        tmdb_id=self.tmdb_id,
-                        media_type=self.media_type,
-                        target_cid=target_cid,
-                        category_name=category_name,
-                        renamed_name=new_filename
-                    )
-                except Exception as e:
-                    logger.error(f"  ❌ 记录文件整理日志失败: {e}")
+                # 整理日志
+                if ext in known_video_exts:
+                    try:
+                        category_name = "未识别"
+                        for rule in self.rules:
+                            if str(rule.get('cid')) == str(target_cid):
+                                category_name = rule.get('dir_name', '未识别')
+                                break
+                        from handler.p115_service import P115RecordManager
+                        P115RecordManager.add_or_update_record(
+                            file_id=fid,
+                            original_name=file_name,
+                            status='success',
+                            tmdb_id=self.tmdb_id,
+                            media_type=self.media_type,
+                            target_cid=target_cid,
+                            category_name=category_name,
+                            renamed_name=new_filename
+                        )
+                    except Exception as e:
+                        logger.error(f"  ❌ 记录文件整理日志失败: {e}")
 
                 # 兼容 OpenAPI 键名
                 pick_code = file_item.get('pc') or file_item.get('pick_code')
@@ -2210,13 +2211,16 @@ def task_scan_and_organize_115(processor=None):
                                     moved_to_unidentified += 1
                         except: pass
                     else:
-                        # 是文件且识别失败，直接移入未识别
+                        # 整理日志
                         if unidentified_cid:
                             try:
                                 client.fs_move(item_id, unidentified_cid)
                                 moved_to_unidentified += 1
-                                # 记录未识别文件
-                                P115RecordManager.add_or_update_record(item_id, name, 'unrecognized', target_cid=unidentified_cid, category_name="未识别")
+                                
+                                # ★ 修复：只记录未识别的视频文件，忽略散落的字幕
+                                ext = name.split('.')[-1].lower() if '.' in name else ''
+                                if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                                    P115RecordManager.add_or_update_record(item_id, name, 'unrecognized', target_cid=unidentified_cid, category_name="未识别")
                             except: pass
 
         # 启动递归扫描
