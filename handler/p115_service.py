@@ -2816,7 +2816,8 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
     if local_root and old_cache and old_cache.get('local_path'):
         try:
             import shutil
-            old_file_rel_path = old_cache['local_path']
+            # ★ 修复 1：强行剥离前导斜杠，防止 os.path.join 吞掉 local_root
+            old_file_rel_path = str(old_cache['local_path']).lstrip('\\/')
             old_strm_rel_path = os.path.splitext(old_file_rel_path)[0] + ".strm"
             old_strm_full_path = os.path.join(local_root, old_strm_rel_path)
             
@@ -2828,15 +2829,25 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
             if os.path.exists(old_mi_full_path):
                 os.remove(old_mi_full_path)
 
+            # ★ 修复 2：获取所有受保护的分类根目录，防止误删分类大类（如 /mnt/strm/电影）
+            protected_dirs = {os.path.abspath(local_root)}
+            for rule in organizer.rules:
+                cat_path = rule.get('category_path') or rule.get('dir_name')
+                if cat_path:
+                    protected_dirs.add(os.path.abspath(os.path.join(local_root, cat_path.lstrip('\\/'))))
+            protected_dirs.add(os.path.abspath(os.path.join(local_root, "未识别")))
+
             # 向上递归清理本地空目录
-            old_dir = os.path.dirname(os.path.join(local_root, old_file_rel_path))
-            while old_dir and old_dir != local_root:
+            old_dir = os.path.abspath(os.path.dirname(os.path.join(local_root, old_file_rel_path)))
+            
+            while old_dir and old_dir not in protected_dirs:
                 if os.path.exists(old_dir):
                     has_media = False
                     for root, _, files in os.walk(old_dir):
                         for f in files:
                             ext = f.split('.')[-1].lower()
-                            if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov'}:
+                            # 只要有这些文件，就认为目录还有用，不删 (加入 nfo 保护)
+                            if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'nfo'}:
                                 has_media = True
                                 break
                         if has_media: break
@@ -2850,14 +2861,23 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
                 else:
                     break
         except Exception as e:
-            logger.warning(f"  ⚠️ 清理本地旧 STRM 失败: {e}")
+            logger.warning(f"  ⚠️ 清理本地旧 STRM/目录 失败: {e}")
 
     # ★ 4. 网盘擦屁股：直接移交全局垃圾回收器 (P115DeleteBuffer)
-    if old_pid and str(old_pid) != '0':
+    # ★ 修复 3：不仅清理直属父目录，还要把整个旧路径链条上的目录都交给回收器，解决剧集残留外层空壳的问题
+    old_cids_to_check = set()
+    if info_data.get('paths'):
+        for p in info_data['paths']:
+            cid_val = str(p.get('file_id') or p.get('cid', ''))
+            if cid_val and cid_val != '0':
+                old_cids_to_check.add(cid_val)
+    elif old_pid and str(old_pid) != '0':
+        old_cids_to_check.add(str(old_pid))
+
+    if old_cids_to_check:
         from handler.p115_service import P115DeleteBuffer
-        logger.info(f"  ⏳ [擦屁股] 已将网盘旧目录 (CID:{old_pid}) 加入全局清理队列，稍后执行智能连锅端...")
-        # 传入 base_cids，DeleteBuffer 会在 5 秒后自动去嗅探并递归清理空目录
-        P115DeleteBuffer.add(fids=[], base_cids=[old_pid])
+        logger.info(f"  ⏳ [擦屁股] 已将网盘旧目录链条 ({len(old_cids_to_check)}个层级) 加入全局清理队列，稍后执行智能连锅端...")
+        P115DeleteBuffer.add(fids=[], base_cids=list(old_cids_to_check))
 
     # 5. 更新记录状态
     try:
