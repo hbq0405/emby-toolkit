@@ -604,14 +604,15 @@ class P115CacheManager:
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # ★★★ 核心修复：智能洗版检测 SQL ★★★
+                    # ★★★ 核心修复：先解除旧 ID 的绑定，防止文件在网盘移动后触发主键冲突 ★★★
+                    cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s", (str(fid),))
+                    
+                    # ★ 然后执行插入，利用 ON CONFLICT (parent_id, name) 处理同名洗版替换
                     cursor.execute("""
                         INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, pick_code, local_path)
                         VALUES (%s, %s, %s, %s, %s, %s)
                         ON CONFLICT (parent_id, name)
                         DO UPDATE SET 
-                            -- 如果 FID 变了，说明是洗版替换，强制使用新值（即使新值是 NULL 也要覆盖，绝不保留旧指纹）
-                            -- 如果 FID 没变，说明是信息补充，使用 COALESCE 保留已有指纹
                             sha1 = CASE 
                                 WHEN p115_filesystem_cache.id != EXCLUDED.id THEN EXCLUDED.sha1 
                                 ELSE COALESCE(EXCLUDED.sha1, p115_filesystem_cache.sha1) 
@@ -621,7 +622,7 @@ class P115CacheManager:
                                 ELSE COALESCE(EXCLUDED.pick_code, p115_filesystem_cache.pick_code) 
                             END,
                             local_path = COALESCE(EXCLUDED.local_path, p115_filesystem_cache.local_path),
-                            id = EXCLUDED.id, -- 永远更新为最新的 FID
+                            id = EXCLUDED.id,
                             updated_at = NOW()
                     """, (str(fid), str(parent_id), str(name), sha1, pick_code, local_path))
                     conn.commit()
@@ -2761,19 +2762,14 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
     except Exception as e:
         raise Exception(f"数据库查询失败: {e}")
 
-    # ★ 1. 从本地缓存获取旧文件的精确信息
+    # 1. 从本地缓存获取旧文件的精确信息
     old_cache = None
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("SELECT parent_id, pick_code, sha1, local_path FROM p115_filesystem_cache WHERE id = %s", (str(file_id),))
                 old_cache = cursor.fetchone()
-                
-                # ★ 核心修复 1：提前删除旧的数据库缓存，防止重组时触发主键冲突 (p115_filesystem_cache_pkey)
-                cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s", (str(file_id),))
-                conn.commit()
-    except Exception as e:
-        logger.warning(f"  ⚠️ 读取/清理旧缓存失败: {e}")
+    except: pass
 
     info_res = client.fs_get_info(file_id)
     if not info_res or not info_res.get('state') or not info_res.get('data'):
@@ -2809,12 +2805,12 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
 
     logger.info(f"  🛠️ [手动重组] 开始对 '{original_name}' 执行定向整理 -> ID:{tmdb_id}")
     
-    # ★ 2. 执行重组
+    # 2. 执行重组 (SmartOrganizer 内部会调用已修复的 save_file_cache，不再报错)
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     success = organizer.execute(root_item, target_cid, delete_source=False)
     if not success: raise Exception("执行重组失败。")
 
-    # ★ 3. 擦屁股：精准删除旧的本地 STRM 和空目录
+    # 3. 本地擦屁股：精准删除旧的本地 STRM 和空目录
     config = get_config()
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     if local_root and old_cache and old_cache.get('local_path'):
@@ -2832,7 +2828,7 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
             if os.path.exists(old_mi_full_path):
                 os.remove(old_mi_full_path)
 
-            # 向上递归清理本地空目录 (智能连锅端：忽略 nfo/jpg 等残留)
+            # 向上递归清理本地空目录
             old_dir = os.path.dirname(os.path.join(local_root, old_file_rel_path))
             while old_dir and old_dir != local_root:
                 if os.path.exists(old_dir):
@@ -2856,53 +2852,12 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
         except Exception as e:
             logger.warning(f"  ⚠️ 清理本地旧 STRM 失败: {e}")
 
-    # ★ 4. 擦屁股：递归清理网盘旧空目录 (连锅端)
-    def clean_empty_115_dirs(cid):
-        if not cid or str(cid) == '0': return
-        try:
-            # ★ 核心修复 2：115 API 有延迟，休眠 2 秒确保刚移走的文件不再出现在列表中
-            time.sleep(2)
-            
-            media_count = 0
-            media_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg'}
-            
-            def count_media(current_cid):
-                nonlocal media_count
-                try:
-                    res = client.fs_files({'cid': current_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
-                    for item in res.get('data', []):
-                        if str(item.get('fc')) == '1':
-                            ext = str(item.get('fn', '')).split('.')[-1].lower()
-                            if ext in media_exts:
-                                media_count += 1
-                        elif str(item.get('fc')) == '0':
-                            count_media(item.get('fid'))
-                except:
-                    media_count += 999 
-
-            count_media(cid)
-            
-            if media_count == 0: 
-                parent_cid = None
-                try:
-                    p_info = client.fs_get_info(cid)
-                    if p_info and p_info.get('state'):
-                        parent_cid = p_info['data'].get('parent_id')
-                except: pass
-                
-                client.fs_delete([cid])
-                P115CacheManager.delete_cid(cid)
-                logger.info(f"  🧹 [擦屁股] 网盘旧目录已无媒体文件，执行连锅端物理销毁 (CID:{cid})")
-                
-                # 递归查它爹是不是也空了 (完美解决剧集季目录残留问题)
-                if parent_cid:
-                    clean_empty_115_dirs(parent_cid)
-        except Exception as e:
-            logger.warning(f"  ⚠️ 清理网盘旧目录失败: {e}")
-
+    # ★ 4. 网盘擦屁股：直接移交全局垃圾回收器 (P115DeleteBuffer)
     if old_pid and str(old_pid) != '0':
-        # 放到后台线程执行，不阻塞前端响应，且允许休眠等待 115 缓存刷新
-        threading.Thread(target=clean_empty_115_dirs, args=(old_pid,)).start()
+        from handler.p115_service import P115DeleteBuffer
+        logger.info(f"  ⏳ [擦屁股] 已将网盘旧目录 (CID:{old_pid}) 加入全局清理队列，稍后执行智能连锅端...")
+        # 传入 base_cids，DeleteBuffer 会在 5 秒后自动去嗅探并递归清理空目录
+        P115DeleteBuffer.add(fids=[], base_cids=[old_pid])
 
     # 5. 更新记录状态
     try:
