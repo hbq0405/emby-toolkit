@@ -1827,7 +1827,7 @@ class SmartOrganizer:
         if not is_source_file:
             config = get_config()
             # 读取延迟删除开关 (使用 getattr 防御，常量你可以自己去 constants.py 里加)
-            delay_delete = config.get(getattr(constants, 'CONFIG_OPTION_115_DELAY_DELETE', 'p115_delay_delete'), False)
+            delay_delete = config.get(constants.CONFIG_OPTION_115_DELAY_DELETE, False)
             
             from handler.p115_service import P115DeleteBuffer
             from gevent import spawn_later
