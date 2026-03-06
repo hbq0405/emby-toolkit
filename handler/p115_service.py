@@ -1365,7 +1365,7 @@ class SmartOrganizer:
             logger.error(f"  ❌ 拆解合集包失败: {e}")
             return False
 
-    def execute(self, root_item, target_cid):
+    def execute(self, root_item, target_cid, mpup=False):
         title = self.details.get('title') or self.original_title
         original_title = self.details.get('original_title') or title
         date_str = self.details.get('date') or ''
@@ -1824,7 +1824,7 @@ class SmartOrganizer:
                     logger.warning(f"  🧹 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {real_target_cid}")
                     P115CacheManager.delete_cid(real_target_cid)
 
-        if not is_source_file:
+        if not is_source_file and mpup:
             config = get_config()
             # 读取延迟删除开关 
             delay_delete = config.get(constants.CONFIG_OPTION_115_DELAY_DELETE, False)

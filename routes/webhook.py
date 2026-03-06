@@ -830,7 +830,7 @@ def emby_webhook():
 
                 # logger.info(f"  🚀 [MP上传] 转交 SmartOrganizer.execute 处理...")
                 # 复用 execute 逻辑
-                organizer.execute(real_root_item, target_cid)
+                organizer.execute(real_root_item, target_cid, mpup=True)
                 
             else:
                 logger.info("  🚫 [MP上传] 未命中任何分类规则，保持原样。")
