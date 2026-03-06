@@ -773,7 +773,7 @@ class P115DeleteBuffer:
             if media_count == 0:
                 client.fs_delete([cid])
                 P115CacheManager.delete_cid(cid)
-                logger.info(f"  🧹 [联动删除] 目录内已无有效媒体文件，执行删除: CID {cid}")
+                logger.info(f"  🧹 目录内已无有效媒体文件，执行删除: CID {cid}")
 
 def get_config():
     return config_manager.APP_CONFIG
@@ -1839,7 +1839,7 @@ class SmartOrganizer:
             from gevent import spawn_later
             
             if delay_delete:
-                logger.info(f"  ⏳ [延迟清理] 已开启延迟清理，30 分钟后将检查并销毁源目录: CID {dir_to_check}")
+                logger.info(f"  ⏳ [延迟清理] 已开启延迟删除空目录，30 分钟后将删除源目录: CID {dir_to_check}")
                 # 延迟 1800 秒 (30分钟) 后，推入全局垃圾回收器
                 spawn_later(1800.0, P115DeleteBuffer.add, [], [dir_to_check])
             else:
