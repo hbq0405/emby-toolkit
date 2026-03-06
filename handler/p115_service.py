@@ -1365,7 +1365,7 @@ class SmartOrganizer:
             logger.error(f"  ❌ 拆解合集包失败: {e}")
             return False
 
-    def execute(self, root_item, target_cid, mpup=False):
+    def execute(self, root_item, target_cid):
         title = self.details.get('title') or self.original_title
         original_title = self.details.get('original_title') or title
         date_str = self.details.get('date') or ''
@@ -1824,19 +1824,28 @@ class SmartOrganizer:
                     logger.warning(f"  🧹 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {real_target_cid}")
                     P115CacheManager.delete_cid(real_target_cid)
 
-        if not is_source_file and mpup:
+        # 确定要检查的目录：如果是单文件，检查它的父目录；如果是文件夹，检查它自己
+        dir_to_check = None
+        if is_source_file:
+            dir_to_check = root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid')
+        else:
+            dir_to_check = source_root_id
+
+        if dir_to_check and str(dir_to_check) != '0':
             config = get_config()
-            # 读取延迟删除开关 
+            # 读取延迟删除开关 (使用 getattr 防御)
             delay_delete = config.get(constants.CONFIG_OPTION_115_DELAY_DELETE, False)
             
+            from gevent import spawn_later
+            
             if delay_delete:
-                logger.info(f"  ⏳ [延迟清理] 已开启延迟清理，30 分钟后将检查并销毁源目录: CID {source_root_id}")
+                logger.info(f"  ⏳ [延迟清理] 已开启延迟清理，30 分钟后将检查并销毁源目录: CID {dir_to_check}")
                 # 延迟 1800 秒 (30分钟) 后，推入全局垃圾回收器
-                spawn_later(1800.0, P115DeleteBuffer.add, [], [source_root_id])
+                spawn_later(1800.0, P115DeleteBuffer.add, [], [dir_to_check])
             else:
-                logger.info(f"  ⏳ [清理空目录] 已将源目录交由全局垃圾回收器检查清理: CID {source_root_id}")
+                logger.info(f"  ⏳ [清理空目录] 已将源目录交由全局垃圾回收器检查清理: CID {dir_to_check}")
                 # 立即推入全局垃圾回收器 (5秒后执行安全检查与连锅端)
-                P115DeleteBuffer.add(fids=[], base_cids=[source_root_id])
+                P115DeleteBuffer.add(fids=[], base_cids=[dir_to_check])
 
         # --- 整理记录 ---
         if moved_count > 0 or keep_original:
