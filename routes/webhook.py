@@ -44,7 +44,7 @@ webhook_bp = Blueprint('webhook_bp', __name__)
 # --- 模块级变量 ---
 WEBHOOK_BATCH_QUEUE = collections.deque()
 WEBHOOK_BATCH_LOCK = threading.Lock()
-WEBHOOK_BATCH_DEBOUNCE_TIME = 5
+WEBHOOK_BATCH_DEBOUNCE_TIME = 30
 WEBHOOK_BATCH_DEBOUNCER = None
 
 UPDATE_DEBOUNCE_TIMERS = {}
