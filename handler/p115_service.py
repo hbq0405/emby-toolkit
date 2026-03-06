@@ -2761,6 +2761,15 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
     except Exception as e:
         raise Exception(f"数据库查询失败: {e}")
 
+    # ★ 1. 从本地缓存获取旧文件的精确信息 (用于精准删除旧 STRM)
+    old_cache = None
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT parent_id, pick_code, sha1, local_path FROM p115_filesystem_cache WHERE id = %s", (str(file_id),))
+                old_cache = cursor.fetchone()
+    except: pass
+
     info_res = client.fs_get_info(file_id)
     if not info_res or not info_res.get('state') or not info_res.get('data'):
         raise Exception(f"无法在 115 中定位到该文件(ID:{file_id})，可能已被删除。")
@@ -2768,12 +2777,20 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
     info_data = info_res['data']
     old_pid = info_data.get('parent_id') or info_data.get('cid')
     
+    # ★ 2. 补全 pick_code，否则 SmartOrganizer 绝对不会生成 STRM！
+    pick_code = info_data.get('pick_code')
+    if not pick_code and old_cache:
+        pick_code = old_cache['pick_code']
+        
     root_item = {
         'fid': info_data.get('file_id') or file_id,
         'file_id': info_data.get('file_id') or file_id,
         'fn': info_data.get('file_name') or original_name,
         'fc': str(info_data.get('file_category', '1')), 
-        'pid': old_pid
+        'pid': old_pid,
+        'pc': pick_code,          # ★ 核心修复：必须传 pc
+        'pick_code': pick_code,   # ★ 核心修复
+        'sha1': info_data.get('sha1') or (old_cache['sha1'] if old_cache else None)
     }
 
     title = original_name
@@ -2787,41 +2804,69 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
 
     logger.info(f"  🛠️ [手动重组] 开始对 '{original_name}' 执行定向整理 -> ID:{tmdb_id}")
     
-    # 1. 执行重组 (新文件和新STRM已经生成)
+    # ★ 3. 执行重组 (传入完整的 root_item，内部会自动生成新 STRM)
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     success = organizer.execute(root_item, target_cid, delete_source=False)
     if not success: raise Exception("执行重组失败。")
 
-    # 2. 擦屁股：找到旧的本地 STRM 并删除
-    try:
-        config = get_config()
-        local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
-        if local_root and old_pid:
-            old_rel_path = P115CacheManager.get_local_path(old_pid)
-            if old_rel_path:
-                old_strm_path = os.path.join(local_root, old_rel_path, os.path.splitext(root_item['fn'])[0] + ".strm")
-                if os.path.exists(old_strm_path):
-                    os.remove(old_strm_path)
-                    logger.info(f"  🧹 [擦屁股] 成功删除本地旧 STRM 文件: {old_strm_path}")
-    except Exception as e:
-        logger.warning(f"  ⚠️ 删除本地旧 STRM 失败: {e}")
-
-    # 3. 擦屁股：检查网盘旧父目录，如果是空的，连锅端
-    if old_pid and str(old_pid) != '0':
+    # ★ 4. 擦屁股：精准删除旧的本地 STRM 和空目录
+    config = get_config()
+    local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+    if local_root and old_cache and old_cache.get('local_path'):
         try:
-            check_res = client.fs_files({'cid': old_pid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
-            if not check_res.get('data'): 
-                client.fs_delete([old_pid])
-                logger.info(f"  🧹 [擦屁股] 网盘旧目录已空，执行物理销毁 (CID:{old_pid})")
+            old_file_rel_path = old_cache['local_path']
+            # 替换后缀为 .strm
+            old_strm_rel_path = os.path.splitext(old_file_rel_path)[0] + ".strm"
+            old_strm_full_path = os.path.join(local_root, old_strm_rel_path)
+            
+            if os.path.exists(old_strm_full_path):
+                os.remove(old_strm_full_path)
+                logger.info(f"  🧹 [擦屁股] 成功删除本地旧 STRM: {old_strm_full_path}")
                 
-                # 顺手把本地空文件夹也删了
-                if old_rel_path:
-                    old_dir_path = os.path.join(local_root, old_rel_path)
-                    if os.path.exists(old_dir_path) and not os.listdir(old_dir_path):
-                        os.rmdir(old_dir_path)
+            # 连带删除 mediainfo
+            old_mi_full_path = os.path.splitext(old_file_rel_path)[0] + "-mediainfo.json"
+            if os.path.exists(old_mi_full_path):
+                os.remove(old_mi_full_path)
+
+            # 向上递归清理本地空目录
+            old_dir = os.path.dirname(os.path.join(local_root, old_file_rel_path))
+            while old_dir and old_dir != local_root:
+                if os.path.exists(old_dir) and not os.listdir(old_dir):
+                    os.rmdir(old_dir)
+                    logger.info(f"  🧹 [擦屁股] 成功删除本地旧空目录: {old_dir}")
+                    old_dir = os.path.dirname(old_dir)
+                else:
+                    break
+        except Exception as e:
+            logger.warning(f"  ⚠️ 清理本地旧 STRM 失败: {e}")
+
+    # ★ 5. 擦屁股：递归清理网盘旧空目录 (连锅端)
+    def clean_empty_115_dirs(cid):
+        if not cid or str(cid) == '0': return
+        try:
+            check_res = client.fs_files({'cid': cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+            if not check_res.get('data'): 
+                # 删之前先查一下它爹是谁
+                parent_cid = None
+                try:
+                    p_info = client.fs_get_info(cid)
+                    if p_info and p_info.get('state'):
+                        parent_cid = p_info['data'].get('parent_id')
+                except: pass
+                
+                client.fs_delete([cid])
+                P115CacheManager.delete_cid(cid)
+                logger.info(f"  🧹 [擦屁股] 网盘旧目录已空，执行物理销毁 (CID:{cid})")
+                
+                # 递归查它爹是不是也空了
+                if parent_cid:
+                    clean_empty_115_dirs(parent_cid)
         except: pass
 
-    # 4. 更新记录状态
+    if old_pid and str(old_pid) != '0':
+        clean_empty_115_dirs(old_pid)
+
+    # 6. 更新记录状态
     try:
         category_name = "未识别"
         for rule in organizer.rules:
