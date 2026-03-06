@@ -1826,11 +1826,8 @@ class SmartOrganizer:
 
         if not is_source_file:
             config = get_config()
-            # 读取延迟删除开关 (使用 getattr 防御，常量你可以自己去 constants.py 里加)
+            # 读取延迟删除开关 
             delay_delete = config.get(constants.CONFIG_OPTION_115_DELAY_DELETE, False)
-            
-            from handler.p115_service import P115DeleteBuffer
-            from gevent import spawn_later
             
             if delay_delete:
                 logger.info(f"  ⏳ [延迟清理] 已开启延迟清理，30 分钟后将检查并销毁源目录: CID {source_root_id}")
