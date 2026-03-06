@@ -1019,7 +1019,7 @@ class SmartOrganizer:
         """
         info_dict = {
             'source': '', 'effect': '', 'resolution': '', 
-            'codec': '', 'audio': '', 'group': '', 'stream': ''
+            'codec': '', 'audio': '', 'group': '', 'stream': '', 'fps': '' # ★ 新增 fps 字段
         }
         name_upper = filename.upper()
 
@@ -1073,9 +1073,15 @@ class SmartOrganizer:
         elif re.search(r'AAC', name_upper): audio_info.append('AAC')
         elif re.search(r'FLAC', name_upper): audio_info.append('FLAC')
         
-        chan_match = re.search(r'\b(7\.1|5\.1|2\.0)\b', filename)
+        # 声道
+        chan_match = re.search(r'(?<!\d)(7\.1|5\.1|2\.0)(?!\d)', filename)
         if chan_match: audio_info.append(chan_match.group(1))
         if audio_info: info_dict['audio'] = " ".join(audio_info)
+
+        # 帧率 (FPS) 提取
+        fps_match = re.search(r'(?<!\d)(\d{2,3}FPS)\b', name_upper)
+        if fps_match:
+            info_dict['fps'] = fps_match.group(1).lower() # 统一转为小写 60fps
 
         # 流媒体平台识别
         stream_match = re.search(r'\b(NF|AMZN|DSNP|HMAX|HULU|NETFLIX|DISNEY\+|APPLETV\+|B-GLOBAL)\b', name_upper)
@@ -1089,7 +1095,7 @@ class SmartOrganizer:
                 for pattern in patterns:
                     match = re.search(pattern, filename, re.IGNORECASE)
                     if match:
-                        info_dict['group'] = match.group(0) # 取匹配到的原文字母，而不是字典的中文 key
+                        info_dict['group'] = match.group(0) 
                         break
                 if info_dict['group']: break
             if not info_dict['group']:

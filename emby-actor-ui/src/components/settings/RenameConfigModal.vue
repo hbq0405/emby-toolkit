@@ -189,6 +189,7 @@ const allBlocks = [
   { id: 'effect', label: '特效 (HDR/DV)' },
   { id: 'codec', label: '视频编码' },
   { id: 'audio', label: '音频/音轨' },
+  { id: 'fps', label: '帧率 (fps)' },
   { id: 'group', label: '发布组' },
   { id: 'tmdb', label: 'TMDb标签' },
   { id: 'original_name', label: '原文件名(保留原名)' },
@@ -289,7 +290,7 @@ const strmUrlOptions = [
 
 // 模拟数据
 const mockMovie = { zh: '蝙蝠侠：黑暗骑士', en: 'The Dark Knight', year: '2008', tmdb: '155', res: '1080p', src: 'BluRay', codec: 'H264', audio: 'DDP 5.1', group: 'CMCT', orig: 'The.Dark.Knight.2008.REMASTERED.1080p', ext: '.mkv' };
-const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', src: 'WEB-DL', stream: 'NF', effect: 'HDR', codec: 'H265', audio: 'Atmos', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.NF.WEB-DL', ext: '.mp4' };
+const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', src: 'WEB-DL', stream: 'NF', effect: 'HDR', codec: 'H265', audio: 'Atmos', fps: '60fps', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.NF.WEB-DL', ext: '.mp4' };
 
 const mockOriginalMovieDir = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264";
 const mockOriginalMovieFile = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264.mkv";
@@ -350,6 +351,7 @@ const buildFileName = (mockData, isTv) => {
     else if (blockId === 'effect' && mockData.effect) val = mockData.effect;
     else if (blockId === 'codec' && mockData.codec) val = mockData.codec;
     else if (blockId === 'audio' && mockData.audio) val = mockData.audio;
+    else if (blockId === 'fps' && mockData.fps) val = mockData.fps;
     else if (blockId === 'group' && mockData.group) val = mockData.group;
     else if (blockId.startsWith('sep_')) {
       isSep = true;
