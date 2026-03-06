@@ -460,15 +460,6 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                         deleted_count += 1
                         logger.info(f"  ➜ 成功删除 ID: {version_id_to_check}")
                         
-                        try:
-                            maintenance_db.cleanup_deleted_media_item(
-                                item_id=version_id_to_check,
-                                item_name=item_name,
-                                item_type=task['item_type']
-                            )
-                        except Exception as cleanup_e:
-                            logger.error(f"  ➜ 善后清理失败: {cleanup_e}", exc_info=True)
-
                     else:
                         logger.error(f"  ➜ 删除 ID: {version_id_to_check} 失败！")
             
