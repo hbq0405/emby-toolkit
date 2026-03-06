@@ -1342,7 +1342,7 @@ class SmartOrganizer:
                     try:
                         organizer = SmartOrganizer(self.client, sub_tmdb_id, sub_type, sub_title, self.ai_translator, self.use_ai)
                         target_cid = organizer.get_target_cid()
-                        if organizer.execute(sub_item, target_cid, delete_source=False):
+                        if organizer.execute(sub_item, target_cid):
                             processed_count += 1
                     except Exception as e:
                         logger.error(f"    ❌ 处理子项失败: {e}")
@@ -1365,7 +1365,7 @@ class SmartOrganizer:
             logger.error(f"  ❌ 拆解合集包失败: {e}")
             return False
 
-    def execute(self, root_item, target_cid, delete_source=True):
+    def execute(self, root_item, target_cid):
         title = self.details.get('title') or self.original_title
         original_title = self.details.get('original_title') or title
         date_str = self.details.get('date') or ''
@@ -1824,9 +1824,22 @@ class SmartOrganizer:
                     logger.warning(f"  🧹 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {real_target_cid}")
                     P115CacheManager.delete_cid(real_target_cid)
 
-        if delete_source and not is_source_file and moved_count > 0:
-            self.client.fs_delete([source_root_id])
-            logger.info(f"  🧹 已清理空目录")
+        if not is_source_file:
+            config = get_config()
+            # 读取延迟删除开关 (使用 getattr 防御，常量你可以自己去 constants.py 里加)
+            delay_delete = config.get(getattr(constants, 'CONFIG_OPTION_115_DELAY_DELETE', 'p115_delay_delete'), False)
+            
+            from handler.p115_service import P115DeleteBuffer
+            from gevent import spawn_later
+            
+            if delay_delete:
+                logger.info(f"  ⏳ [延迟清理] 已开启延迟清理，30 分钟后将检查并销毁源目录: CID {source_root_id}")
+                # 延迟 1800 秒 (30分钟) 后，推入全局垃圾回收器
+                spawn_later(1800.0, P115DeleteBuffer.add, [], [source_root_id])
+            else:
+                logger.info(f"  ⏳ [清理空目录] 已将源目录交由全局垃圾回收器检查清理: CID {source_root_id}")
+                # 立即推入全局垃圾回收器 (5秒后执行安全检查与连锅端)
+                P115DeleteBuffer.add(fids=[], base_cids=[source_root_id])
 
         # --- 整理记录 ---
         if moved_count > 0 or keep_original:
@@ -2057,6 +2070,7 @@ def task_scan_and_organize_115(processor=None):
                 is_shell_folder = False
                 forced_type = None
                 peek_failed = False
+                is_empty_dir = False # ★ 新增：纯空/垃圾目录标记
 
                 # 如果是文件夹，先透视一下内容，判断是媒体目录还是分类壳子
                 if is_folder:
@@ -2066,28 +2080,42 @@ def task_scan_and_organize_115(processor=None):
                                 'cid': item_id, 'limit': 100, 
                                 'record_open_time': 0, 'count_folders': 0
                             })
-                            if sub_res.get('data'):
-                                video_count = 0
-                                suspicious_folder_count = 0
+                            if not sub_res.get('data'):
+                                is_empty_dir = True # 连文件都没有，纯空
+                                break
                                 
-                                for sub_item in sub_res['data']:
-                                    sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
-                                    sub_fc = str(sub_item.get('fc') if sub_item.get('fc') is not None else sub_item.get('type'))
-                                    
-                                    if sub_fc == '1': # 文件
-                                        ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
-                                        if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
-                                            video_count += 1
-                                    elif sub_fc == '0': # 文件夹
-                                        # 检查是否为常见的媒体内部子目录 (季、特典、字幕、原盘目录等)
-                                        if re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第\d+季|Specials|SP|Featurettes|Extras|Subs|Subtitles|BDMV|CERTIFICATE|CD\d+|DVD\d+|Disc\d+)$', sub_name, re.IGNORECASE):
-                                            forced_type = 'tv' if re.search(r'(Season|S\d+|第\d+季)', sub_name, re.IGNORECASE) else forced_type
-                                        else:
-                                            suspicious_folder_count += 1
-                                            
-                                # ★★★ 智能壳子判定：如果没有直属视频文件，且包含非标准子目录，判定为分类壳子 ★★★
-                                if video_count == 0 and suspicious_folder_count > 0:
-                                    is_shell_folder = True
+                            video_count = 0
+                            suspicious_folder_count = 0
+                            sub_folder_count = 0
+                            
+                            for sub_item in sub_res['data']:
+                                sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
+                                sub_fc = str(sub_item.get('fc') if sub_item.get('fc') is not None else sub_item.get('type'))
+                                
+                                if sub_fc == '1': # 文件
+                                    ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
+                                    if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                                        video_count += 1
+                                elif sub_fc == '0': # 文件夹
+                                    sub_folder_count += 1
+                                    # 检查是否为常见的媒体内部子目录
+                                    if re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第\d+季|Specials|SP|Featurettes|Extras|Subs|Subtitles|BDMV|CERTIFICATE|CD\d+|DVD\d+|Disc\d+)$', sub_name, re.IGNORECASE):
+                                        forced_type = 'tv' if re.search(r'(Season|S\d+|第\d+季)', sub_name, re.IGNORECASE) else forced_type
+                                    else:
+                                        suspicious_folder_count += 1
+                                        
+                            # ★★★ 智能判定逻辑 ★★★
+                            if video_count == 0 and sub_folder_count == 0:
+                                # 既没有视频，也没有子文件夹（可能只有 nfo/jpg 等垃圾文件）
+                                is_empty_dir = True
+                            elif video_count == 0 and suspicious_folder_count > 0:
+                                # 没有直属视频，但有非标准子目录 -> 分类壳子
+                                is_shell_folder = True
+                            elif video_count == 0 and suspicious_folder_count == 0:
+                                # 没有直属视频，也没有可疑目录。检查是不是 BDMV 原盘
+                                has_bdmv = any(re.search(r'^(BDMV|CERTIFICATE)$', si.get('fn', ''), re.IGNORECASE) for si in sub_res['data'])
+                                if not has_bdmv:
+                                    is_empty_dir = True # 连 BDMV 都不是，纯垃圾目录
                                     
                             peek_failed = False
                             break
@@ -2100,6 +2128,14 @@ def task_scan_and_organize_115(processor=None):
                                 break
 
                 if peek_failed:
+                    continue
+                    
+                # ★★★ 如果是空目录或纯垃圾目录，直接当场超度，绝不拿去识别！ ★★★
+                if is_empty_dir:
+                    try:
+                        client.fs_delete([item_id])
+                        logger.info(f"  🧹 发现无视频的空/垃圾目录，直接清理: {name}")
+                    except: pass
                     continue
 
                 # ★★★ 如果判定为分类壳子，直接没收 AI 发言权，强制下钻！ ★★★
@@ -2135,7 +2171,7 @@ def task_scan_and_organize_115(processor=None):
                         organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
                         target_cid = organizer.get_target_cid()
                         
-                        if organizer.execute(item, target_cid, delete_source=False):
+                        if organizer.execute(item, target_cid):
                             processed_count += 1
                             
                             # 清理过期残留
@@ -2841,7 +2877,7 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, s
     if season_num is not None and str(season_num).strip():
         organizer.forced_season = int(season_num)
         logger.info(f"  📌 [手动重组] 已强制指定季号: Season {organizer.forced_season}")
-    success = organizer.execute(root_item, target_cid, delete_source=False)
+    success = organizer.execute(root_item, target_cid)
     if not success: raise Exception("执行重组失败。")
 
     # 3. 本地擦屁股：精准删除旧的本地 STRM 和空目录

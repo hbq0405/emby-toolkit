@@ -119,6 +119,7 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE: (constants.CONFIG_SECTION_115, 'boolean', False),
     constants.CONFIG_OPTION_115_DOWNLOAD_SUBS: (constants.CONFIG_SECTION_115, 'boolean', True),
     constants.CONFIG_OPTION_115_LOCAL_CLEANUP: (constants.CONFIG_SECTION_115, 'boolean', False),
+    constants.CONFIG_OPTION_115_DELAY_DELETE: (constants.CONFIG_SECTION_115, "boolean", False),
 
     # [LocalDataSource]
     constants.CONFIG_OPTION_LOCAL_DATA_PATH: (constants.CONFIG_SECTION_LOCAL_DATA, 'string', ""),

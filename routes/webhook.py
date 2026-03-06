@@ -830,44 +830,8 @@ def emby_webhook():
 
                 # logger.info(f"  🚀 [MP上传] 转交 SmartOrganizer.execute 处理...")
                 # 复用 execute 逻辑
-                success = organizer.execute(real_root_item, target_cid, delete_source=False)
+                organizer.execute(real_root_item, target_cid)
                 
-                if success:
-                    # 异步延迟删除 MP 临时目录 (带重置防抖机制) 
-                    if current_parent_cid and str(current_parent_cid) != '0':
-                        delay_seconds = 3600 # 60分钟
-                        
-                        def _delayed_delete_temp_dir(cid):
-                            try:
-                                c = P115Service.get_client()
-                                if c:
-                                    logger.info(f"  🧹 [延迟清理] 倒计时结束，正在清理 MP 临时目录 (CID: {cid})")
-                                    c.fs_delete([cid])
-                            except Exception as e:
-                                logger.warning(f"  ⚠️ 延迟清理临时目录失败: {e}")
-                            finally:
-                                # 执行完毕后，从字典中移除自己，防止内存泄漏
-                                with MP_TEMP_DIR_LOCK:
-                                    if cid in MP_TEMP_DIR_TIMERS:
-                                        del MP_TEMP_DIR_TIMERS[cid]
-                                        
-                        # 使用锁来安全地管理定时器
-                        with MP_TEMP_DIR_LOCK:
-                            # 1. 如果这个目录已经有倒计时了，杀掉旧的倒计时
-                            if current_parent_cid in MP_TEMP_DIR_TIMERS:
-                                MP_TEMP_DIR_TIMERS[current_parent_cid].kill()
-                                logger.debug(f"  ⏳ [MP上传] 目录 (CID: {current_parent_cid}) 正在持续上传，已重置清理倒计时 ({delay_seconds//60}分钟)。")
-                            else:
-                                logger.info(f"  ⏳ [MP上传] 整理成功，已安排在 {delay_seconds//60} 分钟后静默清理临时目录。")
-                            
-                            # 2. 创建一个新的倒计时，并存入字典
-                            new_timer = spawn_later(delay_seconds, _delayed_delete_temp_dir, current_parent_cid)
-                            MP_TEMP_DIR_TIMERS[current_parent_cid] = new_timer
-
-                    return jsonify({"status": "success_organized"}), 200
-                else:
-                    return jsonify({"status": "failed_organize"}), 500
-
             else:
                 logger.info("  🚫 [MP上传] 未命中任何分类规则，保持原样。")
                 return jsonify({"status": "ignored_no_rule_match"}), 200
