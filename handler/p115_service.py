@@ -674,7 +674,7 @@ class P115RecordManager:
             logger.error(f"  ❌ 写入 115 整理记录失败: {e}")
 
 # ======================================================================
-# ★★★ 115 全局批量删除缓冲队列 (防流控) ★★★
+# ★★★ 115 全局批量删除缓冲队列 (防流控 + 绝对防御版) ★★★
 # ======================================================================
 class P115DeleteBuffer:
     _lock = threading.Lock()
@@ -721,15 +721,38 @@ class P115DeleteBuffer:
             else:
                 logger.error(f"  ❌ [批量销毁] 115 删除接口调用失败: {resp}")
 
-        # 2. 鞭尸检查：清理空目录 (智能连锅端)
+        # =================================================================
+        # ★★★ 核心修复：获取免死金牌名单 (受保护的 CID) ★★★
+        # =================================================================
         config = get_config()
+        protected_cids = {'0'} # 绝对防线：根目录永远不死
+        
+        # 保护 1：媒体库根目录
+        media_root = config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID)
+        if media_root: protected_cids.add(str(media_root))
+        
+        # 保护 2：待整理目录
+        save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
+        if save_path: protected_cids.add(str(save_path))
+        
+        # 保护 3：所有前端配置的分类目录 (电影、剧集、动漫等)
+        raw_rules = settings_db.get_setting(constants.DB_KEY_115_SORTING_RULES)
+        if raw_rules:
+            rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
+            for rule in rules:
+                if rule.get('cid'):
+                    protected_cids.add(str(rule['cid']))
+
+        # 2. 鞭尸检查：清理空目录 (智能连锅端 + 绝对防御)
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
         allowed_exts = set(e.lower() for e in configured_exts)
-        # 定义有效媒体格式 (视频 + 音频)，字幕和歌词不在其中，会被视为垃圾
         media_exts = allowed_exts | {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg'}
 
         for cid in cids:
-            if str(cid) == '0': continue # 绝对安全防线：禁止删根目录
+            # ★ 触发免死金牌：如果是受保护的目录，直接跳过，绝不执行删除！
+            if str(cid) in protected_cids:
+                logger.debug(f"  🛡️ [绝对防御] CID {cid} 是受保护的分类/根目录，拒绝清理！")
+                continue
             
             media_count = 0
             def count_media(current_cid):
@@ -2823,7 +2846,7 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
             
             if os.path.exists(old_strm_full_path):
                 os.remove(old_strm_full_path)
-                logger.info(f"  🧹 [擦屁股] 成功删除本地旧 STRM: {old_strm_full_path}")
+                logger.info(f"  🧹 成功删除本地旧 STRM: {old_strm_full_path}")
                 
             old_mi_full_path = os.path.splitext(old_file_rel_path)[0] + "-mediainfo.json"
             if os.path.exists(old_mi_full_path):
@@ -2854,7 +2877,7 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
                     
                     if not has_media:
                         shutil.rmtree(old_dir)
-                        logger.info(f"  🧹 [擦屁股] 本地旧目录已无媒体文件，执行连锅端销毁: {old_dir}")
+                        logger.info(f"  🧹 本地旧目录已无媒体文件，执行删除: {old_dir}")
                         old_dir = os.path.dirname(old_dir)
                     else:
                         break
@@ -2876,7 +2899,7 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
 
     if old_cids_to_check:
         from handler.p115_service import P115DeleteBuffer
-        logger.info(f"  ⏳ [擦屁股] 已将网盘旧目录链条 ({len(old_cids_to_check)}个层级) 加入全局清理队列，稍后执行智能连锅端...")
+        logger.info(f"  ⏳ 已将网盘旧目录链条 ({len(old_cids_to_check)}个层级) 加入全局清理队列，稍后执行清理...")
         P115DeleteBuffer.add(fids=[], base_cids=list(old_cids_to_check))
 
     # 5. 更新记录状态
