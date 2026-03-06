@@ -890,14 +890,14 @@ def correct_organize_record():
     tmdb_id = data.get('tmdb_id')
     media_type = data.get('media_type')
     target_cid = data.get('target_cid')
+    season_num = data.get('season_num')  
     
     if not all([record_id, tmdb_id, media_type, target_cid]):
         return jsonify({"success": False, "message": "缺少必要参数！"}), 400
         
     try:
         from handler.p115_service import manual_correct_organize_record
-        # 触发后端强制重组
-        manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid)
+        manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num)
         return jsonify({"success": True, "message": "重组完成！网盘与 STRM 已迁移。"})
     except Exception as e:
         logger.error(f"  ❌ 手动重组失败: {e}", exc_info=True)

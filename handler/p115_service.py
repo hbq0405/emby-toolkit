@@ -1142,6 +1142,13 @@ class SmartOrganizer:
                 season_num = int(s) if s else 1
                 episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
 
+            # 如果外部强制指定了季号，直接覆盖！
+            if hasattr(self, 'forced_season') and self.forced_season is not None:
+                season_num = int(self.forced_season)
+                # 兜底：如果连集数都没匹配到，给个默认值 1，防止后续报错
+                if episode_num is None:
+                    episode_num = 1
+
         # 组装乐高积木
         evaluated = []
         for block in file_format:
@@ -2769,7 +2776,7 @@ def delete_115_files_by_webhook(item_path, pickcodes):
     except Exception as e:
         logger.error(f"  ❌ [联动删除] 执行异常: {e}", exc_info=True)
 
-def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
+def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num=None):
     """手动纠错：移动文件、生成新STRM，并彻底清理旧空壳和旧STRM"""
     client = P115Service.get_client()
     if not client: raise Exception("115 客户端未初始化")
@@ -2830,6 +2837,10 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid):
     
     # 2. 执行重组 (SmartOrganizer 内部会调用已修复的 save_file_cache，不再报错)
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
+    # 将前端传来的季号注入到 organizer 实例中
+    if season_num is not None and str(season_num).strip():
+        organizer.forced_season = int(season_num)
+        logger.info(f"  📌 [手动重组] 已强制指定季号: Season {organizer.forced_season}")
     success = organizer.execute(root_item, target_cid, delete_source=False)
     if not success: raise Exception("执行重组失败。")
 

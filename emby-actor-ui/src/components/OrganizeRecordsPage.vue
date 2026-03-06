@@ -1,3 +1,4 @@
+<!-- src/components/OrganizeRecordsPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
     <!-- 顶部统计仪表盘 -->
@@ -66,19 +67,30 @@
           />
         </n-space>
         
-        <n-button type="primary" secondary @click="fetchRecords">
-          <template #icon><n-icon :component="RefreshIcon" /></template>
-          刷新
-        </n-button>
+        <n-space>
+          <n-button type="primary" :disabled="!realSelectedIds.length" @click="openBatchEditModal">
+            <template #icon><n-icon :component="SparklesIcon" /></template>
+            批量整理 ({{ realSelectedIds.length }})
+          </n-button>
+          <n-button type="error" :disabled="!realSelectedIds.length" @click="batchDelete">
+            <template #icon><n-icon :component="TrashIcon" /></template>
+            批量删除
+          </n-button>
+          <n-button type="primary" secondary @click="fetchRecords">
+            <template #icon><n-icon :component="RefreshIcon" /></template>
+            刷新
+          </n-button>
+        </n-space>
       </n-space>
 
       <!-- 数据表格 -->
       <n-data-table
         :columns="columns"
-        :data="tableData"
+        :data="processedTableData"
         :loading="loading"
         :pagination="paginationProps"
         :bordered="false"
+        v-model:checked-row-keys="checkedRowKeys"
         striped
         size="small"
         :row-key="row => row.id"
@@ -90,17 +102,19 @@
     <n-modal v-model:show="showEditModal" preset="card" style="width: 500px;" title="手动整理 / 纠错" :bordered="false">
       <template #header-extra>
         <n-tag :type="editForm.status === 'success' ? 'info' : 'warning'" size="small">
-          {{ editForm.status === 'success' ? '纠正信息' : '手动识别' }}
+          {{ editForm.ids.length > 1 ? '批量重组' : (editForm.status === 'success' ? '纠正信息' : '手动识别') }}
         </n-tag>
       </template>
       
-      <n-alert v-if="editForm.status === 'success'" type="info" style="margin-bottom: 16px;">
+      <n-alert v-if="editForm.status === 'success' || editForm.ids.length > 1" type="info" style="margin-bottom: 16px;">
         更改此项将触发 115 网盘和本地 STRM 的物理移动与重命名。
       </n-alert>
       
       <n-form ref="formRef" :model="editForm" label-placement="left" label-width="100">
-        <n-form-item label="原文件名">
-          <n-text depth="3" style="word-break: break-all;">{{ editForm.original_name }}</n-text>
+        <n-form-item label="操作对象">
+          <n-text depth="3" style="word-break: break-all;" :strong="editForm.ids.length > 1">
+            {{ editForm.original_name }}
+          </n-text>
         </n-form-item>
         
         <n-form-item label="TMDb ID" path="tmdb_id">
@@ -112,6 +126,17 @@
             <n-radio-button value="movie">电影 (Movie)</n-radio-button>
             <n-radio-button value="tv">剧集 (TV)</n-radio-button>
           </n-radio-group>
+        </n-form-item>
+
+        <!-- ★ 新增：季号输入框 (仅剧集模式显示) -->
+        <n-form-item v-if="editForm.media_type === 'tv'" label="季号 (Season)" path="season_num">
+          <n-input-number 
+            v-model:value="editForm.season_num" 
+            placeholder="留空自动提取 (如 1, 2, 3)" 
+            :min="1" 
+            clearable 
+            style="width: 100%;" 
+          />
         </n-form-item>
         
         <n-form-item label="目标分类" path="target_cid">
@@ -136,7 +161,7 @@
 import { ref, onMounted, computed, h } from 'vue';
 import axios from 'axios';
 import {
-  NTag, NButton, NSpace, NText, NIcon, NTooltip, NEllipsis, useMessage, useDialog
+  NTag, NButton, NSpace, NText, NIcon, NTooltip, NEllipsis, NInputNumber, useMessage, useDialog
 } from 'naive-ui';
 import {
   LayersOutline as LayersIcon,
@@ -146,9 +171,9 @@ import {
   SearchOutline as SearchIcon,
   RefreshOutline as RefreshIcon,
   SparklesOutline as SparklesIcon,
-  ArrowForwardOutline as ArrowIcon,
   ConstructOutline as EditIcon,
-  TrashOutline as TrashIcon
+  TrashOutline as TrashIcon,
+  FolderOpenOutline as FolderIcon
 } from '@vicons/ionicons5';
 
 const message = useMessage();
@@ -158,6 +183,7 @@ const dialog = useDialog();
 const loading = ref(false);
 const submitting = ref(false);
 const tableData = ref([]);
+const checkedRowKeys = ref([]);
 const totalItems = ref(0);
 const currentPage = ref(1);
 const itemsPerPage = ref(15);
@@ -177,22 +203,84 @@ const categoryOptions = ref([{ label: '所有分类', value: null }]);
 // 模态框数据
 const showEditModal = ref(false);
 const editForm = ref({
-  id: null,
+  ids: [],
   original_name: '',
   status: '',
   tmdb_id: '',
   media_type: 'movie',
+  season_num: null, // ★ 新增季号字段
   target_cid: null
+});
+
+// 提取季号的正则工具
+const getSeason = (name) => {
+  if (!name) return '未知季';
+  const match = name.match(/S(\d{1,2})/i) || name.match(/Season\s*(\d{1,2})/i) || name.match(/第(\d+)季/);
+  return match ? `第 ${parseInt(match[1])} 季` : '未知季';
+};
+
+// 将扁平数据按 TMDb ID 和 季号 智能折叠为树形结构
+const processedTableData = computed(() => {
+  const groups = {};
+  const result = [];
+
+  tableData.value.forEach(item => {
+    if (item.media_type === 'tv' && item.tmdb_id && item.status === 'success') {
+      const season = getSeason(item.renamed_name || item.original_name);
+      const key = `tv_${item.tmdb_id}_${item.target_cid}_${season}`;
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(item);
+    } else {
+      result.push(item);
+    }
+  });
+
+  Object.keys(groups).forEach(key => {
+    const children = groups[key];
+    if (children.length > 1) {
+      const first = children[0];
+      const season = getSeason(first.renamed_name || first.original_name);
+      result.push({
+        id: `group_${key}`,
+        isGroup: true,
+        original_name: `📺 剧集折叠包 | TMDb: ${first.tmdb_id} | ${season} | 共 ${children.length} 集`,
+        renamed_name: `支持整季批量纠错 / 批量删除`,
+        status: 'success',
+        media_type: 'tv',
+        tmdb_id: first.tmdb_id,
+        target_cid: first.target_cid,
+        category_name: first.category_name,
+        processed_at: first.processed_at,
+        children: children.sort((a, b) => a.original_name.localeCompare(b.original_name))
+      });
+    } else {
+      result.push(children[0]);
+    }
+  });
+
+  result.sort((a, b) => new Date(b.processed_at) - new Date(a.processed_at));
+  return result;
+});
+
+const realSelectedIds = computed(() => {
+  return checkedRowKeys.value.filter(key => !String(key).startsWith('group_'));
 });
 
 // 表格列定义
 const columns = computed(() => [
+  { type: 'selection', fixed: 'left' },
   {
     title: '状态',
     key: 'status',
     width: 100,
     align: 'center',
     render(row) {
+      if (row.isGroup) {
+        return h(NTag, { type: 'info', bordered: false, size: 'small', round: true }, {
+          icon: () => h(NIcon, { component: FolderIcon }),
+          default: () => '剧集包'
+        });
+      }
       const isSuccess = row.status === 'success';
       return h(NTag, {
         type: isSuccess ? 'success' : 'warning',
@@ -210,20 +298,25 @@ const columns = computed(() => [
     key: 'name_evolution',
     render(row) {
       return h('div', { 
-        // ★ 核心修复：移除 max-width，使用 min-width 并允许自由伸展
         style: 'display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 300px;' 
       }, [
-        // 第一行：原文件 (带 tooltip 悬浮显示完整文本)
-        h(NText, { depth: 3, style: 'font-size: 13px; display: flex; align-items: center;' }, { 
+        h(NText, { 
+          strong: row.isGroup, 
+          depth: row.isGroup ? 1 : 3, 
+          style: 'font-size: 13px; display: flex; align-items: center;' 
+        }, { 
           default: () => [
-            h(NTag, { size: 'tiny', bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '原' }),
+            !row.isGroup ? h(NTag, { size: 'tiny', bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '原' }) : null,
             h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.original_name })
           ]
         }),
-        // 第二行：新文件
-        h(NText, { strong: true, type: row.status === 'success' ? 'primary' : 'default', style: 'font-size: 13px; display: flex; align-items: center;' }, { 
+        h(NText, { 
+          strong: !row.isGroup, 
+          type: row.status === 'success' ? 'primary' : 'default', 
+          style: 'font-size: 13px; display: flex; align-items: center;' 
+        }, { 
           default: () => [
-            h(NTag, { size: 'tiny', type: row.status === 'success' ? 'success' : 'warning', bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '新' }),
+            !row.isGroup ? h(NTag, { size: 'tiny', type: row.status === 'success' ? 'success' : 'warning', bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '新' }) : null,
             h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.renamed_name || '等待分配 TMDb ID 手动整理...' })
           ]
         })
@@ -271,21 +364,20 @@ const columns = computed(() => [
             size: 'small', type: 'primary', ghost: true, circle: true,
             onClick: () => openEditModal(row)
           }, { icon: () => h(NIcon, { component: EditIcon }) }),
-          default: () => row.status === 'success' ? '修改整理分类/纠错' : '手动分配ID整理'
+          default: () => row.isGroup ? '整季批量纠错' : (row.status === 'success' ? '修改整理分类/纠错' : '手动分配ID整理')
         }),
         h(NTooltip, null, {
           trigger: () => h(NButton, {
             size: 'small', type: 'error', ghost: true, circle: true,
             onClick: () => deleteRecord(row)
           }, { icon: () => h(NIcon, { component: TrashIcon }) }),
-          default: () => '删除此记录 (仅删除记录不删文件)'
+          default: () => row.isGroup ? '整季批量删除记录' : '删除此记录 (仅删除记录不删文件)'
         })
       ]);
     }
   }
 ]);
 
-// 分页配置
 const paginationProps = computed(() => ({
   page: currentPage.value,
   pageSize: itemsPerPage.value,
@@ -296,9 +388,9 @@ const paginationProps = computed(() => ({
   onUpdatePageSize: (pageSize) => { itemsPerPage.value = pageSize; currentPage.value = 1; fetchRecords(); }
 }));
 
-// API 获取数据
 const fetchRecords = async () => {
   loading.value = true;
+  checkedRowKeys.value = [];
   try {
     const res = await axios.get('/api/p115/records', {
       params: {
@@ -338,13 +430,45 @@ const handleFilter = () => {
 };
 
 const openEditModal = (row) => {
+  let ids = [row.id];
+  let name = row.original_name;
+  let defaultSeason = null;
+  
+  // ★ 智能预填季号逻辑
+  if (row.isGroup) {
+    ids = row.children.map(c => c.id);
+    name = `[整季批量操作] ${row.original_name}`;
+    const match = row.original_name.match(/第 (\d+) 季/);
+    if (match) defaultSeason = parseInt(match[1]);
+  } else if (row.media_type === 'tv') {
+    const match = row.renamed_name?.match(/S(\d{1,2})E/i) || row.original_name?.match(/S(\d{1,2})/i);
+    if (match) defaultSeason = parseInt(match[1]);
+  }
+
   editForm.value = {
-    id: row.id,
-    original_name: row.original_name,
+    ids: ids,
+    original_name: name,
     status: row.status,
     tmdb_id: row.tmdb_id || '',
     media_type: row.media_type || 'movie',
+    season_num: defaultSeason, // 预填季号
     target_cid: row.target_cid || null
+  };
+  showEditModal.value = true;
+};
+
+const openBatchEditModal = () => {
+  const ids = realSelectedIds.value;
+  if (!ids.length) return;
+  
+  editForm.value = {
+    ids: ids,
+    original_name: `[全局批量操作] 已选中 ${ids.length} 个文件`,
+    status: 'unrecognized',
+    tmdb_id: '',
+    media_type: 'tv',
+    season_num: null,
+    target_cid: null
   };
   showEditModal.value = true;
 };
@@ -356,32 +480,73 @@ const submitCorrection = async () => {
   }
   submitting.value = true;
   try {
-    const res = await axios.post('/api/p115/records/correct', editForm.value);
-    if (res.data.success) {
-      message.success(res.data.message || '重组指令已发送！');
-      showEditModal.value = false;
-      fetchRecords(); // 刷新列表
-    }
+    const promises = editForm.value.ids.map(id => 
+      axios.post('/api/p115/records/correct', {
+        id: id,
+        tmdb_id: editForm.value.tmdb_id,
+        media_type: editForm.value.media_type,
+        target_cid: editForm.value.target_cid,
+        season_num: editForm.value.season_num // ★ 发送季号给后端
+      })
+    );
+    await Promise.all(promises);
+    
+    message.success(`成功发送 ${promises.length} 个重组指令！`);
+    showEditModal.value = false;
+    checkedRowKeys.value = [];
+    fetchRecords();
   } catch (error) {
-    message.error(error.response?.data?.message || '操作失败');
+    message.error('部分或全部操作失败，请检查后端日志');
   } finally {
     submitting.value = false;
   }
 };
 
 const deleteRecord = (row) => {
+  let ids = [row.id];
+  let text = `确定要删除记录 "${row.original_name}" 吗？`;
+  
+  if (row.isGroup) {
+    ids = row.children.map(c => c.id);
+    text = `确定要批量删除该季的 ${ids.length} 条记录吗？`;
+  }
+
   dialog.warning({
     title: '删除记录',
-    content: `确定要删除记录 "${row.original_name}" 吗？这只会删除数据库记录，不会删除网盘文件。`,
+    content: text + ' 这只会删除数据库记录，不会删除网盘文件。',
     positiveText: '确定',
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        await axios.delete(`/api/p115/records/${row.id}`);
-        message.success('记录已删除');
+        const promises = ids.map(id => axios.delete(`/api/p115/records/${id}`));
+        await Promise.all(promises);
+        message.success(`成功删除 ${promises.length} 条记录`);
         fetchRecords();
       } catch (error) {
         message.error('删除失败');
+      }
+    }
+  });
+};
+
+const batchDelete = () => {
+  const ids = realSelectedIds.value;
+  if (!ids.length) return;
+  
+  dialog.warning({
+    title: '批量删除记录',
+    content: `确定要删除选中的 ${ids.length} 条记录吗？这只会删除数据库记录，不会删除网盘文件。`,
+    positiveText: '确定',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const promises = ids.map(id => axios.delete(`/api/p115/records/${id}`));
+        await Promise.all(promises);
+        message.success(`成功删除 ${promises.length} 条记录`);
+        checkedRowKeys.value = [];
+        fetchRecords();
+      } catch (error) {
+        message.error('批量删除失败');
       }
     }
   });
