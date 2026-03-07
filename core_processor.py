@@ -2971,12 +2971,19 @@ class MediaProcessor:
                 if remaining_terms:
                     logger.debug(f"    ➜ 提交给[音译模式]的词条: {remaining_terms}")
                 transliterate_results = self.ai_translator.batch_translate(remaining_terms, mode='transliterate')
-                final_translation_map.update(transliterate_results)
+                
+                if isinstance(transliterate_results, dict):
+                    final_translation_map.update(transliterate_results)
+                elif isinstance(transliterate_results, list) and len(transliterate_results) == len(remaining_terms):
+                    for i, term in enumerate(remaining_terms):
+                        final_translation_map[term] = transliterate_results[i]
+                
                 still_failed_terms = []
                 for term in remaining_terms:
                     if not utils.contains_chinese(final_translation_map.get(term, term)):
                         still_failed_terms.append(term)
                 remaining_terms = still_failed_terms
+                
             if remaining_terms:
                 item_title = item_details_from_emby.get("Name")
                 item_year = item_details_from_emby.get("ProductionYear")
@@ -2984,7 +2991,13 @@ class MediaProcessor:
                 if remaining_terms:
                     logger.debug(f"  ➜ 提交给[顾问模式]的词条: {remaining_terms}")
                 quality_results = self.ai_translator.batch_translate(remaining_terms, mode='quality', title=item_title, year=item_year)
-                final_translation_map.update(quality_results)
+                
+                # ★ 修复：防御 AI 翻译器返回非字典类型
+                if isinstance(quality_results, dict):
+                    final_translation_map.update(quality_results)
+                elif isinstance(quality_results, list) and len(quality_results) == len(remaining_terms):
+                    for i, term in enumerate(remaining_terms):
+                        final_translation_map[term] = quality_results[i]
             
             successfully_translated_terms = {term for term in terms_to_translate if utils.contains_chinese(final_translation_map.get(term, ''))}
             failed_to_translate_terms = terms_to_translate - successfully_translated_terms
