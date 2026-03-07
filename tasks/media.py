@@ -2174,7 +2174,7 @@ def task_restore_mediainfo(processor):
         except Exception as e:
             logger.warning(f"  ⚠️ 读取 STRM 失败 {strm_path}: {e}")
 
-        sha1 = processor._extract_115_fingerprints(strm_content_path)
+        pc, sha1 = processor._extract_115_fingerprints(strm_content_path)
         mediainfo = media_db.get_mediainfo_by_sha1(sha1)
         
         # 4. 写入本地文件
