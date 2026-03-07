@@ -1866,7 +1866,18 @@ class MediaProcessor:
             processed_log_entries = cursor.fetchall()
             
             processed_ids_in_db = {entry['item_id'] for entry in processed_log_entries}
-            emby_ids_in_library = {item.get('Id') for item in all_items if item.get('Id')}
+            # ★★★ 穿透获取所有多版本 ID，防止被误判为已删除 ★★★
+            emby_ids_in_library = set()
+            for item in all_items:
+                if item.get('Id'):
+                    emby_ids_in_library.add(str(item['Id']))
+                
+                # 如果是电影，且包含多个媒体源，把它们的独立 ID 也加进存活名单
+                if item.get('Type') == 'Movie' and item.get('MediaSources'):
+                    for source in item['MediaSources']:
+                        source_id = str(source.get('Id', '')).replace('mediasource_', '')
+                        if source_id:
+                            emby_ids_in_library.add(source_id)
             
             # 找出在 processed_log 中但不在 Emby 媒体库中的项目
             deleted_items_to_clean = processed_ids_in_db - emby_ids_in_library
