@@ -2119,9 +2119,9 @@ def task_backup_mediainfo(processor):
 
 def task_restore_mediainfo(processor):
     """
-    【恢复媒体信息任务】
+    【恢复媒体信息任务】(精准路径匹配 + I/O 节流优化版)
     遍历本地媒体库，查找缺少 -mediainfo.json 的 .strm 文件。
-    提取 PC 码或文件名，从数据库指纹库中还原媒体信息。
+    提取 PC 码或完整挂载路径，从数据库指纹库中精准还原媒体信息。
     """
     logger.info("--- 开始执行媒体信息还原任务 ---")
     task_manager.update_status_from_thread(0, "正在扫描本地媒体库目录...")
@@ -2156,34 +2156,32 @@ def task_restore_mediainfo(processor):
     for i, strm_path in enumerate(strm_files_to_restore):
         if processor.is_stop_requested(): break
         
-        if i % 10 == 0:
+        # ★ 优化 1：降低进度推送频率，每 50 个文件推送一次，防止前端 WebSocket 堵塞卡死
+        if i % 50 == 0:
             task_manager.update_status_from_thread(int((i/total)*100), f"正在还原 ({i+1}/{total})...")
+            time.sleep(0.1) # 强制让出 CPU 时间片，让前端喘口气
             
         filename = os.path.basename(strm_path)
         
-        # 2. 尝试从 STRM 提取 PC 码
+        # 2. 尝试从 STRM 提取 PC 码 或 挂载路径
         pickcode = None
+        strm_content_path = None
+        
         try:
             with open(strm_path, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
-                if content.startswith('http'):
-                    # 兼容逻辑：
-                    # 1. 如果包含特定路径标识符 /p115/play/
-                    if '/p115/play/' in content:
-                        # 核心逻辑：取 /p115/play/ 之后的部分，再取第一个斜杠之前的 ID
-                        pickcode = content.split('/p115/play/')[-1].split('/')[0].split('?')[0].strip()
-                    else:
-                        # 2. 如果不含特定路径，降级使用原有的末尾提取逻辑
-                        pickcode = content.rstrip('/').split('/')[-1].split('?')[0].strip()
+                if '/p115/play/' in content:
+                    # 提取直链模式的 PC 码
+                    pickcode = content.split('/p115/play/')[-1].split('/')[0].split('?')[0].strip()
+                else:
+                    # ★ 核心修改：如果不是标准直链，则视为挂载模式，提取完整路径内容
+                    strm_content_path = content.replace('\\', '/')
                         
         except Exception as e:
             logger.warning(f"  ⚠️ 读取 STRM 失败 {strm_path}: {e}")
-            
-        # 提取文件名前缀 (例如 "Avatar (2009)")
-        video_name_prefix = os.path.splitext(filename)[0]
-        
-        # 3. 召唤数据库指纹查询大法
-        mediainfo = media_db.get_mediainfo_by_pc_or_prefix(pickcode, video_name_prefix)
+
+        sha1 = processor._extract_115_fingerprints(strm_content_path)
+        mediainfo = media_db.get_mediainfo_by_sha1(sha1)
         
         # 4. 写入本地文件
         if mediainfo:
@@ -2198,6 +2196,9 @@ def task_restore_mediainfo(processor):
                 failed_count += 1
         else:
             failed_count += 1
+            
+        # ★ 优化 2：每个文件处理完微小休眠，进行 I/O 节流，防止高速 SSD 瞬间写满队列导致系统卡顿
+        time.sleep(0.005)
             
     msg = f"还原任务完成！成功还原: {restored_count} 个，未找到备份: {failed_count} 个。"
     logger.info(f"  ✅ {msg}")

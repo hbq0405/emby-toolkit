@@ -1364,47 +1364,16 @@ def is_mediainfo_cached(sha1: str) -> bool:
     except Exception:
         return False
 
-# 根据 PC码 或 文件名前缀 查找指纹库中的媒体信息
-def get_mediainfo_by_pc_or_prefix(pickcode: str, filename_prefix: str) -> Optional[list]:
+# 根据 PC码 或 路径 查找指纹库中的媒体信息
+def get_mediainfo_by_sha1(sha1: str) -> Optional[str]:
     """
-    【指纹还原】根据 PC码 或 文件名前缀 查找指纹库中的媒体信息。
+    【指纹还原】根据 PC码 或 挂载路径 查找指纹库中的媒体信息。
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             sha1 = None
             
-            # 1. 优先通过 PC 码查 p115_filesystem_cache (最快最准)
-            if pickcode:
-                cursor.execute("SELECT sha1 FROM p115_filesystem_cache WHERE pick_code = %s AND sha1 IS NOT NULL LIMIT 1", (pickcode,))
-                row = cursor.fetchone()
-                if row: sha1 = row['sha1']
-                
-            # 2. 如果没有，通过 media_metadata 兜底查 PC 码
-            # 利用 ORDINALITY 获取 PC 码在数组中的索引，然后去 file_sha1_json 数组里取对应位置的 SHA1
-            if not sha1 and pickcode:
-                sql = """
-                    SELECT m.file_sha1_json, arr.idx
-                    FROM media_metadata m,
-                         jsonb_array_elements_text(m.file_pickcode_json) WITH ORDINALITY AS arr(pc, idx)
-                    WHERE arr.pc = %s
-                    LIMIT 1
-                """
-                cursor.execute(sql, (pickcode,))
-                row = cursor.fetchone()
-                if row:
-                    sha1_arr = row['file_sha1_json']
-                    idx = row['idx'] - 1 # ORDINALITY 是从 1 开始的
-                    if isinstance(sha1_arr, list) and idx < len(sha1_arr):
-                        sha1 = sha1_arr[idx]
-
-            # 3. 如果还是没有，通过文件名前缀查 p115_filesystem_cache (适配挂载模式，STRM里没有PC码的情况)
-            if not sha1 and filename_prefix:
-                cursor.execute("SELECT sha1 FROM p115_filesystem_cache WHERE name LIKE %s AND sha1 IS NOT NULL LIMIT 1", (f"{filename_prefix}.%",))
-                row = cursor.fetchone()
-                if row: sha1 = row['sha1']
-                
-            # 4. 拿到 SHA1 后，去指纹库提取 JSON
             if sha1:
                 cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s LIMIT 1", (sha1,))
                 row = cursor.fetchone()
