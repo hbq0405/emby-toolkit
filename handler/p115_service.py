@@ -1181,10 +1181,15 @@ class SmartOrganizer:
                 elif w >= 1900: info['resolution'] = '1080p'
                 elif w >= 1200: info['resolution'] = '720p'
 
-                # 真实编码 (10bit 冗余显示)
+                # 真实编码与色深
                 codec_raw = video_stream.get("Codec", "").lower()
                 codec_map = {'hevc': 'H265', 'h264': 'H264', 'avc': 'H264', 'av1': 'AV1'}
-                info['codec'] = codec_map.get(codec_raw, codec_raw.upper())
+                c_str = codec_map.get(codec_raw, codec_raw.upper())
+                bit_depth = video_stream.get("BitDepth")
+                if bit_depth and bit_depth > 8:
+                    info['codec'] = f"{c_str} {bit_depth}bit"
+                else:
+                    info['codec'] = c_str
 
                 # 真实特效 (HDR/DV 细分)
                 v_range = video_stream.get("VideoRange", "")
