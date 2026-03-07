@@ -2164,6 +2164,17 @@ def task_scan_and_organize_115(processor=None):
     """
     logger.info("=== 开始执行 115 待整理目录扫描 (多线程并发模式) ===")
 
+    try:
+        import task_manager
+    except ImportError:
+        task_manager = None
+
+    def update_progress(prog, msg):
+        if task_manager:
+            task_manager.update_status_from_thread(prog, msg)
+
+    update_progress(10, "正在初始化 115 客户端与目录扫描...")
+
     client = P115Service.get_client()
     if not client: raise Exception("无法初始化 115 客户端")
 
@@ -2259,6 +2270,7 @@ def task_scan_and_organize_115(processor=None):
                     if organizer.execute(item, target_cid):
                         with counter_lock:
                             processed_count += 1
+                            update_progress(50, f"正在并发极速整理... (已成功: {processed_count} | 未识别: {moved_to_unidentified})")
                             
                         # 清理过期残留
                         if is_folder:
@@ -2283,13 +2295,17 @@ def task_scan_and_organize_115(processor=None):
                     if unidentified_cid and depth == 0:
                         try:
                             client.fs_move(item_id, unidentified_cid)
-                            with counter_lock: moved_to_unidentified += 1
+                            with counter_lock: 
+                                moved_to_unidentified += 1
+                                update_progress(50, f"正在并发极速整理... (已成功: {processed_count} | 未识别: {moved_to_unidentified})")
                         except: pass
                 else:
                     if unidentified_cid:
                         try:
                             client.fs_move(item_id, unidentified_cid)
-                            with counter_lock: moved_to_unidentified += 1
+                            with counter_lock: 
+                                moved_to_unidentified += 1
+                                update_progress(50, f"正在并发极速整理... (已成功: {processed_count} | 未识别: {moved_to_unidentified})")
                             
                             ext = name.split('.')[-1].lower() if '.' in name else ''
                             if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
@@ -2404,10 +2420,13 @@ def task_scan_and_organize_115(processor=None):
                 task_cond.wait()
 
         executor.shutdown()
-        logger.info(f"=== 扫描结束，成功归类 {processed_count} 个，移入未识别 {moved_to_unidentified} 个 ===")
+        final_msg = f"扫描结束！成功归类 {processed_count} 个，移入未识别 {moved_to_unidentified} 个。"
+        logger.info(f"=== {final_msg} ===")
+        update_progress(100, final_msg)
 
     except Exception as e:
         logger.error(f"  ⚠️ 115 扫描任务异常: {e}", exc_info=True)
+        update_progress(100, f"扫描异常结束: {e}")
 
 def task_sync_115_directory_tree(processor=None):
     """
