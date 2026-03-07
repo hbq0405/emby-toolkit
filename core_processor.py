@@ -1141,6 +1141,13 @@ class MediaProcessor:
                             if 'Size' in source: temp_item['Size'] = source['Size']
                             if 'RunTimeTicks' in source: temp_item['RunTimeTicks'] = source['RunTimeTicks']
                             
+                            # ★★★ 核心修复 5：将当前版本的专属流信息强行覆盖到顶层 ★★★
+                            if 'MediaStreams' in source:
+                                temp_item['MediaStreams'] = source['MediaStreams']
+                            
+                            # ★★★ 核心修复 6：隔离污染，让底层函数只看到当前这一个 source ★★★
+                            temp_item['MediaSources'] = [source]
+                            
                             asset_details = parse_full_asset_details(
                                 temp_item, 
                                 id_to_parent_map=id_to_parent_map, 
