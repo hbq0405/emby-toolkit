@@ -2871,14 +2871,16 @@ def task_full_sync_strm_and_subs(processor=None):
         if not valid_local_files and files_generated == 0:
             logger.warning("  ⚠️ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
         else:
-            update_progress(90, "  🧹 正在比对并清理本地失效文件...")
+            update_progress(90, "  🧹 正在比对并清理本地失效文件与空壳目录...")
             cleaned_files = 0
             cleaned_dirs = 0
+            import shutil  # 引入 shutil 用于连锅端
             
             for cid, rel_path in cid_to_rel_path.items():
                 target_local_dir = os.path.join(local_root, rel_path)
                 if not os.path.exists(target_local_dir): continue
                 
+                # 1. 先清理失效的 STRM 和 字幕文件
                 for root_dir, dirs, files in os.walk(target_local_dir):
                     for file in files:
                         ext = file.split('.')[-1].lower()
@@ -2892,16 +2894,30 @@ def task_full_sync_strm_and_subs(processor=None):
                                 except Exception as e:
                                     logger.warning(f"  ⚠️ 删除文件失败 {file}: {e}")
                 
+                # 2. ★ 终极暴力清理：自下而上扫描，只要没有 STRM，无视任何残留文件直接连锅端！
                 for root_dir, dirs, files in os.walk(target_local_dir, topdown=False):
                     for d in dirs:
                         dir_path = os.path.join(root_dir, d)
-                        try:
-                            if not os.listdir(dir_path): 
-                                os.rmdir(dir_path)
+                        if not os.path.exists(dir_path):
+                            continue
+                            
+                        # 检查该目录及其所有子目录中，是否还存在任何 .strm 文件
+                        has_strm = False
+                        for r, _, fs in os.walk(dir_path):
+                            if any(f.lower().endswith('.strm') for f in fs):
+                                has_strm = True
+                                break
+                                
+                        # 如果没有 STRM，判定为空壳目录，直接物理超度（连带里面的 nfo/jpg 一起扬了）
+                        if not has_strm:
+                            try:
+                                shutil.rmtree(dir_path)
                                 cleaned_dirs += 1
-                        except: pass
+                                logger.debug(f"  🗑️ [清理] 删除无 STRM 的空壳目录: {dir_path}")
+                            except Exception as e:
+                                logger.warning(f"  ⚠️ 删除目录失败 {dir_path}: {e}")
                         
-            logger.info(f"  🧹 清理完成: 删除了 {cleaned_files} 个失效文件, {cleaned_dirs} 个空目录。")
+            logger.info(f"  🧹 清理完成: 删除了 {cleaned_files} 个失效文件, {cleaned_dirs} 个无STRM的空壳目录。")
 
     update_progress(100, "=== 全量生成STRM任务结束 ===")
 
