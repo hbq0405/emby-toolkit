@@ -2723,6 +2723,9 @@ def task_full_sync_strm_and_subs(processor=None, force_full_update=False):
         total_targets = len(target_cids)
         api_fatal_error = False 
 
+        pid_path_cache = {} 
+        created_dirs_cache = set() # ★ 新增：目录创建内存缓存，极大减少磁盘 I/O
+
         def handle_file_item(item, target_cid, category_name, precalculated_rel_dir=None):
             nonlocal files_generated, files_skipped, subs_downloaded
             name = item.get('fn') or item.get('n') or item.get('file_name') or item.get('name', '')
@@ -2740,16 +2743,10 @@ def task_full_sync_strm_and_subs(processor=None, force_full_update=False):
             if not pc or not pid or not fid: 
                 return
 
+            # ★★★ 极速改造 1：切除网络请求黑洞 ★★★
             if not file_sha1:
-                cached_sha1 = P115CacheManager.get_file_sha1(fid)
-                if cached_sha1:
-                    file_sha1 = cached_sha1
-                else:
-                    try:
-                        info_res = client.fs_get_info(fid)
-                        if info_res.get('state') and info_res.get('data'):
-                            file_sha1 = info_res['data'].get('sha1')
-                    except Exception: pass
+                # 只查本地数据库，查不到拉倒，绝对不调 API！
+                file_sha1 = P115CacheManager.get_file_sha1(fid)
 
             rel_dir = precalculated_rel_dir if precalculated_rel_dir else get_local_path_for_pid(pid, target_cid, category_name)
             if not rel_dir: return 
@@ -2758,7 +2755,11 @@ def task_full_sync_strm_and_subs(processor=None, force_full_update=False):
             P115CacheManager.save_file_cache(fid, pid, name, sha1=file_sha1, pick_code=pc, local_path=file_local_path)
                 
             current_local_path = os.path.join(local_root, rel_dir)
-            os.makedirs(current_local_path, exist_ok=True)
+            
+            # ★★★ 极速改造 2：利用内存缓存减少 os.makedirs 磁盘 I/O ★★★
+            if current_local_path not in created_dirs_cache:
+                os.makedirs(current_local_path, exist_ok=True)
+                created_dirs_cache.add(current_local_path)
             
             if ext in known_video_exts:
                 strm_name = os.path.splitext(name)[0] + ".strm"
@@ -2784,23 +2785,20 @@ def task_full_sync_strm_and_subs(processor=None, force_full_update=False):
                             
                 if need_write:
                     with open(strm_path, 'w', encoding='utf-8') as f: f.write(content)
-                    if is_new_file:
-                        logger.debug(f"  📝 [新增] 生成 STRM: {strm_name}")
-                    else:
-                        logger.debug(f"  🔄 [更新] 覆盖 STRM: {strm_name}")
+                    # 极速模式下，关闭单文件的 DEBUG 日志，防止日志刷屏拖慢速度
+                    # if is_new_file: logger.debug(f"  📝 [新增] 生成 STRM: {strm_name}")
                     files_generated += 1
                     
-                    # ★ 主动推送给监控服务接盘 (由于开启了队列抑制，这里只会入队，不会触发刮削)
                     try:
                         from monitor_service import enqueue_file_actively
                         enqueue_file_actively(strm_path)
-                    except Exception as e:
-                        logger.warning(f"  ⚠️ 主动推送监控队列失败: {e}")
+                    except Exception: pass
                 else:
                     files_skipped += 1
                     
                 valid_local_files.add(os.path.abspath(strm_path))
 
+                # ★★★ 极速改造 3：只有当 file_sha1 存在时，才去查神医缓存 ★★★
                 if file_sha1:
                     try:
                         from database.connection import get_db_connection
@@ -2831,7 +2829,7 @@ def task_full_sync_strm_and_subs(processor=None, force_full_update=False):
                             resp.raise_for_status()
                             with open(sub_path, 'wb') as f:
                                 for chunk in resp.iter_content(8192): f.write(chunk)
-                            logger.info(f"  ⬇️ [增量] 下载字幕: {name}")
+                            # logger.info(f"  ⬇️ [增量] 下载字幕: {name}")
                             subs_downloaded += 1
                     except Exception as e:
                         logger.error(f"  ❌ 下载字幕失败 [{name}]: {e}")
