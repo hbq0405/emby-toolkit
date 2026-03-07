@@ -2163,19 +2163,13 @@ def task_restore_mediainfo(processor):
             
         filename = os.path.basename(strm_path)
         
-        # 2. 尝试从 STRM 提取 PC 码 或 挂载路径
-        pickcode = None
+        # 2. 尝试从 STRM 提取链接
         strm_content_path = None
         
         try:
             with open(strm_path, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
-                if '/p115/play/' in content:
-                    # 提取直链模式的 PC 码
-                    pickcode = content.split('/p115/play/')[-1].split('/')[0].split('?')[0].strip()
-                else:
-                    # ★ 核心修改：如果不是标准直链，则视为挂载模式，提取完整路径内容
-                    strm_content_path = content.replace('\\', '/')
+                strm_content_path = content.replace('\\', '/')
                         
         except Exception as e:
             logger.warning(f"  ⚠️ 读取 STRM 失败 {strm_path}: {e}")
