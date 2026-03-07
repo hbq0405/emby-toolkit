@@ -1103,7 +1103,7 @@ class MediaProcessor:
                     movie_record['in_library'] = False
                 else:
                     all_assets = []
-                    all_ids = [item_id]
+                    all_ids = []  # ★ 修复 1：初始化为空列表
                     all_sha1s = []
                     all_pcs = []
                     
@@ -1130,6 +1130,11 @@ class MediaProcessor:
                             
                             # 构造临时 item 传递给 parse_full_asset_details，确保解析的是当前版本的属性
                             temp_item = item_details_from_emby.copy()
+                            
+                            # ★ 修复 2：提取当前版本的真实 ID (MediaSourceId)，并覆盖到 temp_item 中
+                            source_id = source.get('Id') or item_id
+                            temp_item['Id'] = source_id 
+                            
                             temp_item['Path'] = emby_path
                             if 'Container' in source: temp_item['Container'] = source['Container']
                             if 'Size' in source: temp_item['Size'] = source['Size']
@@ -1144,6 +1149,7 @@ class MediaProcessor:
                             asset_details['source_library_id'] = source_lib_id
 
                             all_assets.append(asset_details)
+                            all_ids.append(source_id) # ★ 修复 3：将当前版本的 ID 收集起来
                             if file_pc: all_pcs.append(file_pc)
                             if file_sha1: all_sha1s.append(file_sha1)
                     else:
@@ -1164,6 +1170,7 @@ class MediaProcessor:
                         asset_details['source_library_id'] = source_lib_id
 
                         all_assets.append(asset_details)
+                        all_ids.append(item_id) # ★ 修复 4：兜底时收集主 ID
                         if file_pc: all_pcs.append(file_pc)
                         if file_sha1: all_sha1s.append(file_sha1)
                     
