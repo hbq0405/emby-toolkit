@@ -2890,14 +2890,33 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, s
 
     logger.info(f"  🛠️ [手动重组] 开始对 '{original_name}' 执行定向整理 -> ID:{tmdb_id}")
     
-    # 2. 执行重组 (SmartOrganizer 内部会调用已修复的 save_file_cache，不再报错)
+    # 2. 执行重组
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
-    # 将前端传来的季号注入到 organizer 实例中
     if season_num is not None and str(season_num).strip():
         organizer.forced_season = int(season_num)
         logger.info(f"  📌 [手动重组] 已强制指定季号: Season {organizer.forced_season}")
+    
     success = organizer.execute(root_item, target_cid)
     if not success: raise Exception("执行重组失败。")
+
+    # ★ 新增：查找并重组关联字幕
+    if old_pid and str(old_pid) != '0':
+        try:
+            # 获取视频当前的基础名（去掉后缀），用于匹配字幕
+            current_video_name = info_data.get('file_name') or original_name
+            video_base_name = current_video_name.rsplit('.', 1)[0] if '.' in current_video_name else current_video_name
+            
+            sub_res = client.fs_files({'cid': old_pid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
+            for item in sub_res.get('data', []):
+                if str(item.get('fc', '0')) == '1':
+                    sub_name = item.get('fn') or item.get('n') or item.get('file_name', '')
+                    ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
+                    # 如果是字幕文件，且文件名以视频基础名开头（完美兼容 .zh.srt 等语言后缀）
+                    if ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'] and sub_name.startswith(video_base_name):
+                        logger.info(f"  🔤 [手动重组] 发现关联字幕，跟随重组: {sub_name}")
+                        organizer.execute(item, target_cid)
+        except Exception as e:
+            logger.warning(f"  ⚠️ 查找关联字幕失败: {e}")
 
     # 3. 本地擦屁股：精准删除旧的本地 STRM 和空目录
     config = get_config()
@@ -2918,7 +2937,19 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, s
             if os.path.exists(old_mi_full_path):
                 os.remove(old_mi_full_path)
 
-            # ★ 修复 2：获取所有受保护的分类根目录，防止误删分类大类（如 /mnt/strm/电影）
+            # 清理本地残留的旧字幕文件
+            old_dir_full_path = os.path.dirname(old_strm_full_path)
+            old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
+            if os.path.exists(old_dir_full_path):
+                for f in os.listdir(old_dir_full_path):
+                    if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
+                        sub_to_del = os.path.join(old_dir_full_path, f)
+                        try:
+                            os.remove(sub_to_del)
+                            logger.info(f"  🧹 成功删除本地旧字幕: {sub_to_del}")
+                        except: pass
+
+            # 获取所有受保护的分类根目录，防止误删分类大类（如 /mnt/strm/电影）
             protected_dirs = {os.path.abspath(local_root)}
             for rule in organizer.rules:
                 cat_path = rule.get('category_path') or rule.get('dir_name')
