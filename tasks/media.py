@@ -2157,7 +2157,7 @@ def task_restore_mediainfo(processor):
         if processor.is_stop_requested(): break
         
         # ★ 优化 1：降低进度推送频率，每 50 个文件推送一次，防止前端 WebSocket 堵塞卡死
-        if i % 500 == 0:
+        if i % 100 == 0:
             task_manager.update_status_from_thread(int((i/total)*100), f"正在还原 ({i+1}/{total})...")
             time.sleep(0.1) # 强制让出 CPU 时间片，让前端喘口气
             
