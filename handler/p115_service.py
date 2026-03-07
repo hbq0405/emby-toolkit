@@ -2635,6 +2635,7 @@ def task_full_sync_strm_and_subs(processor=None):
         update_progress(100, "错误：未配置分类规则！")
         return
     rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
+    rename_config = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {}
 
     # =================================================================
     # 阶段 1: 加载规则与本地目录树缓存到内存 (耗时: 毫秒级)
@@ -2758,7 +2759,20 @@ def task_full_sync_strm_and_subs(processor=None):
                         if ext in known_video_exts:
                             strm_name = os.path.splitext(name)[0] + ".strm"
                             strm_path = os.path.join(current_local_path, strm_name)
-                            content = f"{etk_url}/api/p115/play/{pc}"
+                            
+                            # ==================================================
+                            # ★ 动态计算 STRM 内容 (支持挂载模式与直链模式)
+                            # ==================================================
+                            if not etk_url.startswith('http'):
+                                # 挂载模式
+                                mount_prefix = etk_url
+                                mount_path = os.path.join(mount_prefix, rel_dir, name)
+                                content = mount_path.replace('\\', '/')
+                            else:
+                                # 默认的 ETK 302 直链模式
+                                content = f"{etk_url}/api/p115/play/{pc}"
+                                if rename_config.get('strm_url_fmt') == 'with_name':
+                                    content = f"{content}/{name}"
                             
                             need_write = True
                             if os.path.exists(strm_path):
@@ -2778,6 +2792,23 @@ def task_full_sync_strm_and_subs(processor=None):
                                 files_generated += 1
                                 
                             valid_local_files.add(os.path.abspath(strm_path))
+                            
+                            # ==================================================
+                            # ★ 写入本地数据库缓存 (p115_filesystem_cache)
+                            # ==================================================
+                            fid = item.get('fid') or item.get('file_id')
+                            sha1 = item.get('sha1') or item.get('sha')
+                            if pc and fid:
+                                # 计算相对 local_path 并统一正斜杠
+                                file_local_path = os.path.join(rel_dir, name).replace('\\', '/')
+                                P115CacheManager.save_file_cache(
+                                    fid=fid, 
+                                    parent_id=pid, 
+                                    name=name, 
+                                    sha1=sha1, 
+                                    pick_code=pc, 
+                                    local_path=file_local_path
+                                )
                                 
                         # 处理字幕下载
                         elif ext in known_sub_exts and download_subs:
