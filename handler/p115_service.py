@@ -763,7 +763,10 @@ class P115DeleteBuffer:
                         if str(item.get('fc')) == '1':
                             ext = str(item.get('fn', '')).split('.')[-1].lower()
                             if ext in media_exts:
-                                media_count += 1
+                                # ★ 垃圾回收时，同样无视小于 10MB 的假视频
+                                item_size = _parse_115_size(item.get('fs') or item.get('size'))
+                                if item_size == 0 or item_size > 10 * 1024 * 1024:
+                                    media_count += 1
                         elif str(item.get('fc')) == '0':
                             count_media(item.get('fid'))
                 except Exception:
@@ -2277,7 +2280,10 @@ def task_scan_and_organize_115(processor=None):
                                 if sub_fc == '1': # 文件
                                     ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
                                     if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
-                                        video_count += 1
+                                        # ★ 绝杀狗皮膏药：小于 10MB 的视频直接当成空气，不计入有效视频数
+                                        sub_size = _parse_115_size(sub_item.get('fs') or sub_item.get('size'))
+                                        if sub_size == 0 or sub_size > 10 * 1024 * 1024:
+                                            video_count += 1
                                 elif sub_fc == '0': # 文件夹
                                     sub_folder_count += 1
                                     # 检查是否为常见的媒体内部子目录 (增加中文数字支持)
