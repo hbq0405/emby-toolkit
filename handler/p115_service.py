@@ -2280,9 +2280,9 @@ def task_scan_and_organize_115(processor=None):
                                         video_count += 1
                                 elif sub_fc == '0': # 文件夹
                                     sub_folder_count += 1
-                                    # 检查是否为常见的媒体内部子目录
-                                    if re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第\d+季|Specials|SP|Featurettes|Extras|Subs|Subtitles|BDMV|CERTIFICATE|CD\d+|DVD\d+|Disc\d+)$', sub_name, re.IGNORECASE):
-                                        forced_type = 'tv' if re.search(r'(Season|S\d+|第\d+季)', sub_name, re.IGNORECASE) else forced_type
+                                    # 检查是否为常见的媒体内部子目录 (增加中文数字支持)
+                                    if re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第[一二三四五六七八九十\d]+季|Specials|SP|Featurettes|Extras|Subs|Subtitles|BDMV|CERTIFICATE|CD\d+|DVD\d+|Disc\d+)$', sub_name, re.IGNORECASE):
+                                        forced_type = 'tv' if re.search(r'(Season|S\d+|第[一二三四五六七八九十\d]+季)', sub_name, re.IGNORECASE) else forced_type
                                     else:
                                         suspicious_folder_count += 1
                                         
@@ -2290,14 +2290,17 @@ def task_scan_and_organize_115(processor=None):
                             if video_count == 0 and sub_folder_count == 0:
                                 # 既没有视频，也没有子文件夹（可能只有 nfo/jpg 等垃圾文件）
                                 is_empty_dir = True
-                            elif video_count == 0 and suspicious_folder_count > 0:
-                                # 没有直属视频，但有非标准子目录 -> 分类壳子
-                                is_shell_folder = True
-                            elif video_count == 0 and suspicious_folder_count == 0:
-                                # 没有直属视频，也没有可疑目录。检查是不是 BDMV 原盘
+                            elif video_count == 0 and sub_folder_count > 0:
+                                # 检查是不是 BDMV 原盘
                                 has_bdmv = any(re.search(r'^(BDMV|CERTIFICATE)$', si.get('fn', ''), re.IGNORECASE) for si in sub_res['data'])
-                                if not has_bdmv:
-                                    is_empty_dir = True # 连 BDMV 都不是，纯垃圾目录
+                                if has_bdmv:
+                                    pass # 是原盘，放行去识别
+                                elif suspicious_folder_count > 0:
+                                    # 有非标准子目录 -> 判定为分类壳子，强制下钻
+                                    is_shell_folder = True
+                                else:
+                                    # 全是标准子目录 (如 Season 1) -> 完美的剧集根目录，放行去识别
+                                    pass
                                     
                             peek_failed = False
                             break
