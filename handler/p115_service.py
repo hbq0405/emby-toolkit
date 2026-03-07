@@ -1005,7 +1005,27 @@ class SmartOrganizer:
         return True
 
     def get_target_cid(self):
-        """遍历规则，返回命中的 CID。未命中返回 None"""
+        """获取目标 CID：优先查历史整理记录（记忆手动纠错），其次遍历规则"""
+        # ★★★ 1. 查历史记录 (记忆功能) ★★★
+        try:
+            from database.connection import get_db_connection
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # 查找该 tmdb_id 最近一次成功的整理记录
+                    cursor.execute("""
+                        SELECT target_cid, category_name 
+                        FROM p115_organize_records 
+                        WHERE tmdb_id = %s AND status = 'success' 
+                        ORDER BY processed_at DESC LIMIT 1
+                    """, (str(self.tmdb_id),))
+                    row = cursor.fetchone()
+                    if row and row['target_cid']:
+                        logger.info(f"  🧠 [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {row['target_cid']})")
+                        return row['target_cid']
+        except Exception as e:
+            logger.warning(f"  ⚠️ 查询历史整理记录失败: {e}")
+
+        # 2. 遍历规则 (原有逻辑)
         for rule in self.rules:
             if not rule.get('enabled', True): continue
             if self._match_rule(rule):
@@ -1174,11 +1194,21 @@ class SmartOrganizer:
                 # 真实特效 (HDR/DV)
                 v_range = video_stream.get("VideoRange", "")
                 ext_type = video_stream.get("ExtendedVideoType", "")
+                ext_sub_type = video_stream.get("ExtendedVideoSubType", "") # 提取 Profile
+
                 is_dv = "DolbyVision" in v_range or "DolbyVision" in ext_type
                 is_hdr = "HDR" in v_range or video_stream.get("ColorTransfer") == "smpte2084"
                 
-                if is_dv and is_hdr: info['effect'] = "HDR DV"
-                elif is_dv: info['effect'] = "DV"
+                # ★★★ 解析具体的 DoVi Profile ★★★
+                dv_str = "DV"
+                if is_dv:
+                    if "Profile8" in ext_sub_type: dv_str = "DoVi P8"
+                    elif "Profile7" in ext_sub_type: dv_str = "DoVi P7"
+                    elif "Profile5" in ext_sub_type: dv_str = "DoVi P5"
+                    else: dv_str = "DoVi"
+
+                if is_dv and is_hdr: info['effect'] = f"HDR {dv_str}"
+                elif is_dv: info['effect'] = dv_str
                 elif is_hdr: info['effect'] = "HDR"
 
                 # 真实帧率
@@ -2058,10 +2088,11 @@ def _identify_media_enhanced(filename, forced_media_type=None, ai_translator=Non
             
         return tmdb_id, media_type, title
 
-    # 2. 其次提取标准格式 Title (Year)
-    match_std = re.match(r'^(.+?)\s+[\(\[](\d{4})[\)\]]', filename)
+    # 2. 其次提取标准格式 Title (Year) 或 P2P 格式 Title.Year.
+    # 兼容: "Title (2024)", "Title.2024.1080p", "Title 2024 2160p"
+    match_std = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', filename)
     if match_std:
-        name_part = match_std.group(1).strip()
+        name_part = match_std.group(1).replace('.', ' ').strip()
         year_part = match_std.group(2)
         
         if forced_media_type:
