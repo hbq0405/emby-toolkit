@@ -1109,6 +1109,114 @@ class SmartOrganizer:
 
         return info_dict
 
+    def _fetch_and_parse_mediainfo(self, sha1):
+        """
+        通过 SHA1 获取真实的媒体信息，并转换为乐高重命名参数
+        """
+        if not sha1: return {}
+        
+        raw_json = None
+        # 1. 优先查本地数据库
+        try:
+            from database.connection import get_db_connection
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s", (sha1,))
+                    row = cursor.fetchone()
+                    if row and row['mediainfo_json']:
+                        raw_json = row['mediainfo_json'] if isinstance(row['mediainfo_json'], list) else json.loads(row['mediainfo_json'])
+        except Exception as e:
+            logger.debug(f"  ⚠️ 查询本地媒体信息缓存失败: {e}")
+
+        # 2. 本地没有，尝试查 P115Center 中心服务器
+        if not raw_json:
+            try:
+                import extensions
+                processor = extensions.media_processor_instance
+                if processor and getattr(processor, 'p115_enabled', False) and processor.p115_center:
+                    resp = processor.p115_center.download_emby_mediainfo_data([sha1])
+                    if resp and sha1 in resp:
+                        raw_json = resp[sha1]
+            except Exception:
+                pass
+
+        if not raw_json: return {}
+
+        # 3. 开始解析 Emby 的真实数据
+        info = {}
+        try:
+            if isinstance(raw_json, list) and len(raw_json) > 0:
+                source_info = raw_json[0].get("MediaSourceInfo", raw_json[0])
+            else:
+                source_info = raw_json
+
+            streams = source_info.get("MediaStreams", [])
+            video_stream = next((s for s in streams if s.get("Type") == "Video"), None)
+            audio_streams = [s for s in streams if s.get("Type") == "Audio"]
+
+            if video_stream:
+                # 真实分辨率
+                w = video_stream.get("Width", 0)
+                if w >= 3800: info['resolution'] = '2160p'
+                elif w >= 1900: info['resolution'] = '1080p'
+                elif w >= 1200: info['resolution'] = '720p'
+
+                # 真实编码与色深
+                codec_raw = video_stream.get("Codec", "").lower()
+                codec_map = {'hevc': 'H265', 'h264': 'H264', 'avc': 'H264', 'av1': 'AV1'}
+                c_str = codec_map.get(codec_raw, codec_raw.upper())
+                bit_depth = video_stream.get("BitDepth")
+                if bit_depth and bit_depth > 8:
+                    info['codec'] = f"{c_str} {bit_depth}bit"
+                else:
+                    info['codec'] = c_str
+
+                # 真实特效 (HDR/DV)
+                v_range = video_stream.get("VideoRange", "")
+                ext_type = video_stream.get("ExtendedVideoType", "")
+                is_dv = "DolbyVision" in v_range or "DolbyVision" in ext_type
+                is_hdr = "HDR" in v_range or video_stream.get("ColorTransfer") == "smpte2084"
+                
+                if is_dv and is_hdr: info['effect'] = "HDR DV"
+                elif is_dv: info['effect'] = "DV"
+                elif is_hdr: info['effect'] = "HDR"
+
+                # 真实帧率
+                fps = video_stream.get("RealFrameRate") or video_stream.get("AverageFrameRate")
+                if fps: info['fps'] = f"{round(fps)}fps"
+
+            if audio_streams:
+                # 真实音轨
+                audio_tags = []
+                if len(audio_streams) > 1: audio_tags.append("Multi")
+
+                # 取第一条默认音轨或第一条音轨作为主音轨展示
+                primary_audio = next((s for s in audio_streams if s.get("IsDefault")), audio_streams[0])
+                acodec = primary_audio.get("Codec", "").lower()
+                profile = primary_audio.get("Profile", "").lower()
+
+                if acodec == 'truehd' and 'atmos' in profile: audio_tags.append("TrueHD Atmos")
+                elif acodec == 'truehd': audio_tags.append("TrueHD")
+                elif acodec == 'dts' and 'ma' in profile: audio_tags.append("DTS-HD MA")
+                elif acodec == 'dts': audio_tags.append("DTS")
+                elif acodec == 'eac3': audio_tags.append("DDP")
+                elif acodec == 'ac3': audio_tags.append("AC3")
+                elif acodec == 'aac': audio_tags.append("AAC")
+                elif acodec == 'flac': audio_tags.append("FLAC")
+
+                channels = primary_audio.get("Channels")
+                if channels == 8: audio_tags.append("7.1")
+                elif channels == 6: audio_tags.append("5.1")
+                elif channels == 2: audio_tags.append("2.0")
+
+                if audio_tags:
+                    info['audio'] = " ".join(audio_tags)
+
+        except Exception as e:
+            logger.warning(f"  ⚠️ 解析真实媒体信息失败: {e}")
+
+        return info
+
     def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
         if '.' not in original_name: return original_name, None
@@ -1134,11 +1242,28 @@ class SmartOrganizer:
         default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
         file_format = cfg.get('file_format', default_format)
 
-        # 提取视频信息字典
+        # 提取视频信息字典 (基于文件名的猜测)
         search_name = original_name
         if is_sub and lang_suffix and name_body.endswith(lang_suffix):
             search_name = f"{name_body[:-len(lang_suffix)]}.mkv"
         video_info = self._extract_video_info(search_name)
+
+        # ★★★ 神医降维打击：基于 SHA1 获取真实参数并覆盖猜测 ★★★
+        if not is_sub: # 字幕文件不需要查视频流
+            sha1 = file_node.get('sha1') or file_node.get('sha')
+            if sha1:
+                real_info = self._fetch_and_parse_mediainfo(sha1)
+                if real_info:
+                    # 记录一下被纠正的参数，方便看日志爽一下
+                    corrected_items = []
+                    for k, v in real_info.items():
+                        if v: # 只要真实数据有值，无脑覆盖文件名的猜测
+                            if video_info.get(k) != v:
+                                corrected_items.append(f"{k}: '{video_info.get(k, '空')}' -> '{v}'")
+                            video_info[k] = v
+                    
+                    if corrected_items:
+                        logger.info(f"  ✨ [神医赋能] 成功利用真实媒体信息补全/纠错文件参数: {', '.join(corrected_items)}")
 
         # 解析季集号 (支持到9999集)
         season_num = None
