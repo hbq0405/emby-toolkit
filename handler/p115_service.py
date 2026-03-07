@@ -1181,35 +1181,40 @@ class SmartOrganizer:
                 elif w >= 1900: info['resolution'] = '1080p'
                 elif w >= 1200: info['resolution'] = '720p'
 
-                # 真实编码与色深
+                # 真实编码 (10bit 冗余显示)
                 codec_raw = video_stream.get("Codec", "").lower()
                 codec_map = {'hevc': 'H265', 'h264': 'H264', 'avc': 'H264', 'av1': 'AV1'}
-                c_str = codec_map.get(codec_raw, codec_raw.upper())
-                bit_depth = video_stream.get("BitDepth")
-                if bit_depth and bit_depth > 8:
-                    info['codec'] = f"{c_str} {bit_depth}bit"
-                else:
-                    info['codec'] = c_str
+                info['codec'] = codec_map.get(codec_raw, codec_raw.upper())
 
-                # 真实特效 (HDR/DV)
+                # 真实特效 (HDR/DV 细分)
                 v_range = video_stream.get("VideoRange", "")
                 ext_type = video_stream.get("ExtendedVideoType", "")
-                ext_sub_type = video_stream.get("ExtendedVideoSubType", "") # 提取 Profile
+                ext_sub_type = video_stream.get("ExtendedVideoSubType", "")
+                ext_desc = video_stream.get("ExtendedVideoSubTypeDescription", "") # 提取描述，里面有 HDR10 compatible
 
                 is_dv = "DolbyVision" in v_range or "DolbyVision" in ext_type
-                is_hdr = "HDR" in v_range or video_stream.get("ColorTransfer") == "smpte2084"
                 
+                # ★★★ 精准识别 HDR 版本 ★★★
+                hdr_str = ""
+                if "HDR10+" in v_range or "HDR10+" in ext_desc:
+                    hdr_str = "HDR10+"
+                elif "HDR10" in v_range or "HDR10" in ext_desc:
+                    hdr_str = "HDR10"
+                elif "HDR" in v_range or video_stream.get("ColorTransfer") == "smpte2084":
+                    hdr_str = "HDR"
+
                 # ★★★ 解析具体的 DoVi Profile ★★★
                 dv_str = "DV"
                 if is_dv:
-                    if "Profile8" in ext_sub_type: dv_str = "DoVi P8"
-                    elif "Profile7" in ext_sub_type: dv_str = "DoVi P7"
-                    elif "Profile5" in ext_sub_type: dv_str = "DoVi P5"
+                    if "Profile8" in ext_sub_type or "Profile 8" in ext_desc: dv_str = "DoVi P8"
+                    elif "Profile7" in ext_sub_type or "Profile 7" in ext_desc: dv_str = "DoVi P7"
+                    elif "Profile5" in ext_sub_type or "Profile 5" in ext_desc: dv_str = "DoVi P5"
                     else: dv_str = "DoVi"
 
-                if is_dv and is_hdr: info['effect'] = f"HDR {dv_str}"
+                # 融合输出
+                if is_dv and hdr_str: info['effect'] = f"{hdr_str} {dv_str}"
                 elif is_dv: info['effect'] = dv_str
-                elif is_hdr: info['effect'] = "HDR"
+                elif hdr_str: info['effect'] = hdr_str
 
                 # 真实帧率
                 fps = video_stream.get("RealFrameRate") or video_stream.get("AverageFrameRate")
