@@ -29,7 +29,8 @@ DEBOUNCE_DELAY = 3 # 防抖延迟秒数
 MEDIAINFO_EVENT_QUEUE = set()
 MEDIAINFO_QUEUE_LOCK = threading.Lock()
 MEDIAINFO_DEBOUNCE_TIMER = None
-
+# --- 全局队列抑制标志 ---
+IS_PROCESSING_PAUSED = False
 class MediaFileHandler(FileSystemEventHandler):
     """
     文件系统事件处理器 (纯净版：仅监控新增和修改，忽略删除)
@@ -119,7 +120,16 @@ def process_batch_queue():
         with QUEUE_LOCK:
             FILE_EVENT_QUEUE.clear()
         return
-    global DEBOUNCE_TIMER
+        
+    global DEBOUNCE_TIMER, IS_PROCESSING_PAUSED
+    
+    # 如果处于抑制状态，重新定个 5 秒的闹钟，继续憋着
+    if IS_PROCESSING_PAUSED:
+        with QUEUE_LOCK:
+            if DEBOUNCE_TIMER: DEBOUNCE_TIMER.kill()
+            DEBOUNCE_TIMER = spawn_later(5.0, process_batch_queue)
+        return
+
     with QUEUE_LOCK:
         files_to_process = list(FILE_EVENT_QUEUE)
         FILE_EVENT_QUEUE.clear()
@@ -409,3 +419,21 @@ class MonitorService:
             self.observer.stop()
             self.observer.join()
             logger.info("  ➜ 实时监控服务已停止。")
+
+def pause_queue_processing():
+    """暂停监控队列处理 (进入蓄水池模式)"""
+    global IS_PROCESSING_PAUSED
+    IS_PROCESSING_PAUSED = True
+    logger.info("  ⏸️ [实时监控] 已开启队列抑制，暂停处理新文件 (等待网盘整理完成)...")
+
+def resume_queue_processing():
+    """恢复监控队列处理 (开闸放水)"""
+    global IS_PROCESSING_PAUSED, DEBOUNCE_TIMER
+    IS_PROCESSING_PAUSED = False
+    logger.info("  ▶️ [实时监控] 队列抑制已解除，恢复处理。")
+    
+    # 开闸后，如果池子里有水，立刻触发处理
+    with QUEUE_LOCK:
+        if FILE_EVENT_QUEUE:
+            if DEBOUNCE_TIMER: DEBOUNCE_TIMER.kill()
+            DEBOUNCE_TIMER = spawn_later(1, process_batch_queue)
