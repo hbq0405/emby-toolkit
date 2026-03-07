@@ -1364,15 +1364,14 @@ def is_mediainfo_cached(sha1: str) -> bool:
     except Exception:
         return False
 
-# 根据 PC码 或 路径 查找指纹库中的媒体信息
+# 根据 sha1 查找指纹库中的媒体信息
 def get_mediainfo_by_sha1(sha1: str) -> Optional[str]:
     """
-    【指纹还原】根据 PC码 或 挂载路径 查找指纹库中的媒体信息。
+    根据 sha1 查找指纹库中的媒体信息。
     """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            sha1 = None
             
             if sha1:
                 cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s LIMIT 1", (sha1,))
