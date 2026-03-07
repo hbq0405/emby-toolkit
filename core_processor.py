@@ -1131,8 +1131,9 @@ class MediaProcessor:
                             # 构造临时 item 传递给 parse_full_asset_details，确保解析的是当前版本的属性
                             temp_item = item_details_from_emby.copy()
                             
-                            # ★ 修复 2：提取当前版本的真实 ID (MediaSourceId)，并覆盖到 temp_item 中
-                            source_id = source.get('Id') or item_id
+                            # ★ 修复 2：提取当前版本的真实 ID，并强制剥离 mediasource_ 前缀
+                            raw_source_id = str(source.get('Id') or item_id)
+                            source_id = raw_source_id.replace("mediasource_", "")
                             temp_item['Id'] = source_id 
                             
                             temp_item['Path'] = emby_path
@@ -1441,7 +1442,11 @@ class MediaProcessor:
                             details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
 
                             all_assets.append(details)
-                            all_ids.append(version.get('Id'))
+                            
+                            # ★ 强制剥离 mediasource_ 前缀
+                            clean_v_id = str(version.get('Id')).replace("mediasource_", "")
+                            all_ids.append(clean_v_id)
+                            
                             if file_sha1: all_sha1s.append(file_sha1)
                             if file_pc: all_pcs.append(file_pc)
                             
