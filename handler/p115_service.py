@@ -2594,7 +2594,7 @@ def task_sync_115_directory_tree(processor=None):
 def task_full_sync_strm_and_subs(processor=None):
     """
     【V4 终极上帝视角版】全量生成 STRM 与 同步字幕
-    利用 115 分类目录级全局拉取 (type=4/1) + 本地 DB 目录树缓存，实现秒级增量同步！
+    利用 115 分类目录级全局拉取 (type=4/1) + 动态 API 溯源 + 本地 DB 目录树缓存，实现秒级增量同步！
     """
     config = get_config()
     download_subs = config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True)
@@ -2635,6 +2635,8 @@ def task_full_sync_strm_and_subs(processor=None):
         update_progress(100, "错误：未配置分类规则！")
         return
     rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
+
+    # 获取重命名配置，用于判断 STRM 直链是否需要带文件名
     rename_config = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {}
 
     # =================================================================
@@ -2651,28 +2653,41 @@ def task_full_sync_strm_and_subs(processor=None):
             target_cids.add(cid)
             cid_to_rel_path[cid] = r.get('category_path') or r.get('dir_name', '未识别')
 
-    # 加载 DB 中的目录树
+    # 加载 DB 中的目录树 (新增提取 local_path)
     dir_cache = {} 
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT id, parent_id, name FROM p115_filesystem_cache")
+                cursor.execute("SELECT id, parent_id, name, local_path FROM p115_filesystem_cache")
                 for row in cursor.fetchall():
                     dir_cache[str(row['id'])] = {
                         'pid': str(row['parent_id']), 
-                        'name': str(row['name'])
+                        'name': str(row['name']),
+                        'local_path': row['local_path']
                     }
     except Exception as e:
         update_progress(100, f"读取本地目录缓存失败: {e}")
         return
 
-    # 内存路径推导函数 (核心魔法)
-    def resolve_local_dir(pid):
-        """根据文件的 pid，向上追溯直到命中 target_cids，返回拼接好的本地相对路径"""
+    # 动态 API 路径缓存池 (防止重复请求 115 接口)
+    dynamic_path_cache = {}
+
+    # 内存路径推导函数 (★ 终极修复版：DB缓存 + API动态溯源)
+    def resolve_local_dir(pid, target_cid):
         pid = str(pid)
+        # 1. 如果文件直接在分类根目录下
         if pid in cid_to_rel_path:
             return cid_to_rel_path[pid]
             
+        # 2. 如果刚才已经通过 API 查过这个目录了，直接秒回
+        if pid in dynamic_path_cache:
+            return dynamic_path_cache[pid]
+
+        # 3. 尝试使用数据库中已有的 local_path
+        if pid in dir_cache and dir_cache[pid].get('local_path'):
+            return dir_cache[pid]['local_path']
+            
+        # 4. 尝试在数据库缓存中向上追溯
         parts = []
         curr = pid
         while curr and curr in dir_cache:
@@ -2682,7 +2697,30 @@ def task_full_sync_strm_and_subs(processor=None):
             if curr in cid_to_rel_path:
                 parts.append(cid_to_rel_path[curr])
                 parts.reverse()
-                return os.path.join(*parts)
+                resolved_path = os.path.join(*parts)
+                dynamic_path_cache[pid] = resolved_path # 存入内存池
+                return resolved_path
+
+        # 5. ★ 终极兜底：缓存穿透时，主动向 115 请求该目录的真实路径
+        try:
+            dir_info = client.fs_files({'cid': pid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+            path_nodes = dir_info.get('path', [])
+            if path_nodes:
+                start_idx = -1
+                for i, p_node in enumerate(path_nodes):
+                    if str(p_node.get('cid') or p_node.get('file_id')) == target_cid:
+                        start_idx = i + 1
+                        break
+                if start_idx != -1:
+                    sub_folders = [str(p.get('name') or p.get('file_name')).strip() for p in path_nodes[start_idx:]]
+                    base_cat_path = cid_to_rel_path.get(target_cid, '未识别')
+                    resolved_path = os.path.join(base_cat_path, *sub_folders) if sub_folders else base_cat_path
+                    dynamic_path_cache[pid] = resolved_path # 存入内存池，同目录文件不再请求
+                    logger.debug(f"  🔍 [API溯源] 成功动态推导路径: {resolved_path}")
+                    return resolved_path
+        except Exception as e:
+            logger.debug(f"  ⚠️ 动态查询目录路径失败 (pid: {pid}): {e}")
+
         return None
 
     # =================================================================
@@ -2730,26 +2768,11 @@ def task_full_sync_strm_and_subs(processor=None):
                         pid = item.get('pid') or item.get('cid') or item.get('parent_id')
                         if not pc or not pid: continue
                         
-                        # ★ 瞬间推导本地路径 (增强版：优先使用 API 返回的 path 数组，彻底摆脱对本地缓存的强依赖)
-                        rel_dir = None
-                        item_paths = item.get('path') or item.get('paths')
-                        if item_paths and isinstance(item_paths, list):
-                            start_idx = -1
-                            for i, p_node in enumerate(item_paths):
-                                if str(p_node.get('cid') or p_node.get('file_id')) == target_cid:
-                                    start_idx = i + 1
-                                    break
-                            if start_idx != -1:
-                                sub_folders = [str(p.get('name') or p.get('file_name')).strip() for p in item_paths[start_idx:]]
-                                base_cat_path = cid_to_rel_path.get(target_cid, '未识别')
-                                rel_dir = os.path.join(base_cat_path, *sub_folders) if sub_folders else base_cat_path
-
-                        # 如果 API 没有返回 path，兜底使用本地 DB 缓存推导
-                        if not rel_dir:
-                            rel_dir = resolve_local_dir(pid)
+                        # ★ 瞬间推导本地路径 (使用终极修复版函数)
+                        rel_dir = resolve_local_dir(pid, target_cid)
                             
                         if not rel_dir: 
-                            logger.debug(f"  ⚠️ 无法推导路径，跳过文件: {name} (pid: {pid})")
+                            logger.warning(f"  ⚠️ 彻底无法推导路径，跳过文件: {name} (pid: {pid})")
                             continue 
                             
                         current_local_path = os.path.join(local_root, rel_dir)
@@ -2844,37 +2867,41 @@ def task_full_sync_strm_and_subs(processor=None):
     # 阶段 3: 本地失效文件清理 (耗时: 秒级)
     # =================================================================
     if enable_cleanup:
-        update_progress(90, "  🧹 正在比对并清理本地失效文件...")
-        cleaned_files = 0
-        cleaned_dirs = 0
-        
-        for cid, rel_path in cid_to_rel_path.items():
-            target_local_dir = os.path.join(local_root, rel_path)
-            if not os.path.exists(target_local_dir): continue
+        # 安全锁：如果本次拉取完全失败（没有任何有效文件），拒绝执行清理，防止误删
+        if not valid_local_files and files_generated == 0:
+            logger.warning("  ⚠️ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
+        else:
+            update_progress(90, "  🧹 正在比对并清理本地失效文件...")
+            cleaned_files = 0
+            cleaned_dirs = 0
             
-            for root_dir, dirs, files in os.walk(target_local_dir):
-                for file in files:
-                    ext = file.split('.')[-1].lower()
-                    if ext in known_sub_exts or ext == 'strm':
-                        file_path = os.path.abspath(os.path.join(root_dir, file))
-                        if file_path not in valid_local_files:
-                            try:
-                                os.remove(file_path)
-                                cleaned_files += 1
-                                logger.debug(f"  🗑️ [清理] 删除失效文件: {file}")
-                            except Exception as e:
-                                logger.warning(f"  ⚠️ 删除文件失败 {file}: {e}")
-            
-            for root_dir, dirs, files in os.walk(target_local_dir, topdown=False):
-                for d in dirs:
-                    dir_path = os.path.join(root_dir, d)
-                    try:
-                        if not os.listdir(dir_path): 
-                            os.rmdir(dir_path)
-                            cleaned_dirs += 1
-                    except: pass
-                    
-        logger.info(f"  🧹 清理完成: 删除了 {cleaned_files} 个失效文件, {cleaned_dirs} 个空目录。")
+            for cid, rel_path in cid_to_rel_path.items():
+                target_local_dir = os.path.join(local_root, rel_path)
+                if not os.path.exists(target_local_dir): continue
+                
+                for root_dir, dirs, files in os.walk(target_local_dir):
+                    for file in files:
+                        ext = file.split('.')[-1].lower()
+                        if ext in known_sub_exts or ext == 'strm':
+                            file_path = os.path.abspath(os.path.join(root_dir, file))
+                            if file_path not in valid_local_files:
+                                try:
+                                    os.remove(file_path)
+                                    cleaned_files += 1
+                                    logger.debug(f"  🗑️ [清理] 删除失效文件: {file}")
+                                except Exception as e:
+                                    logger.warning(f"  ⚠️ 删除文件失败 {file}: {e}")
+                
+                for root_dir, dirs, files in os.walk(target_local_dir, topdown=False):
+                    for d in dirs:
+                        dir_path = os.path.join(root_dir, d)
+                        try:
+                            if not os.listdir(dir_path): 
+                                os.rmdir(dir_path)
+                                cleaned_dirs += 1
+                        except: pass
+                        
+            logger.info(f"  🧹 清理完成: 删除了 {cleaned_files} 个失效文件, {cleaned_dirs} 个空目录。")
 
     update_progress(100, "=== 全量生成STRM任务结束 ===")
 
