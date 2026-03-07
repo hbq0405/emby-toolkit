@@ -2159,11 +2159,9 @@ def _identify_media_enhanced(filename, forced_media_type=None, ai_translator=Non
 
 def task_scan_and_organize_115(processor=None):
     """
-    [任务链] 主动扫描 115 待整理目录 (挖地三尺刨祖坟版)
-    - 识别成功 -> 整体打包归类到目标目录
-    - 识别失败 -> 如果是文件夹，递归钻进去扫描；如果是文件，移入未识别
+    [任务链] 主动扫描 115 待整理目录 (多线程并发极速版)
     """
-    logger.info("=== 开始执行 115 待整理目录扫描 ===")
+    logger.info("=== 开始执行 115 待整理目录扫描 (多线程并发模式) ===")
 
     client = P115Service.get_client()
     if not client: raise Exception("无法初始化 115 客户端")
@@ -2210,19 +2208,96 @@ def task_scan_and_organize_115(processor=None):
 
         logger.info(f"  🔍 正在扫描主目录: {save_name} ...")
         
+        # =================================================================
+        # ★★★ 核心重构：多线程并发任务池 ★★★
+        # =================================================================
         processed_count = 0
         moved_to_unidentified = 0
-        
-        # =================================================================
-        # ★★★ 核心重构：递归扫描函数 (刨祖坟专用) ★★★
-        # =================================================================
-        def scan_directory(current_cid, current_name, depth=0):
+        counter_lock = threading.Lock() # 计数器锁
+
+        executor = ThreadPoolExecutor(max_workers=5) # 开启 5 个并发线程
+        active_tasks = 0
+        task_cond = threading.Condition()
+
+        def submit_task(func, *args):
+            """安全提交任务到线程池"""
+            nonlocal active_tasks
+            with task_cond:
+                active_tasks += 1
+            executor.submit(task_wrapper, func, *args)
+
+        def task_wrapper(func, *args):
+            """任务执行包装器，确保任务计数正确递减"""
+            nonlocal active_tasks
+            try:
+                func(*args)
+            except Exception as e:
+                logger.error(f"  ❌ 线程执行异常: {e}", exc_info=True)
+            finally:
+                with task_cond:
+                    active_tasks -= 1
+                    if active_tasks == 0:
+                        task_cond.notify_all() # 所有任务完成，唤醒主线程
+
+        def process_single_item(item, name, is_folder, depth, forced_type):
+            """单个媒体项的识别与整理逻辑 (在子线程中运行)"""
             nonlocal processed_count, moved_to_unidentified
+            item_id = item.get('fid') or item.get('file_id')
+
+            # 尝试识别当前项
+            tmdb_id, media_type, title = _identify_media_enhanced(
+                name, forced_media_type=forced_type, ai_translator=ai_translator, use_ai=use_ai
+            )
             
-            # 绝对安全防线：最多挖 5 层，防止死循环
-            if depth > 5: 
-                logger.warning(f"  ⚠️ 目录层级过深，停止扫描: {current_name}")
-                return
+            if tmdb_id:
+                logger.info(f"  ➜ 识别成功: {name} -> ID:{tmdb_id} ({media_type})")
+                try:
+                    organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
+                    target_cid = organizer.get_target_cid()
+                    
+                    if organizer.execute(item, target_cid):
+                        with counter_lock:
+                            processed_count += 1
+                            
+                        # 清理过期残留
+                        if is_folder:
+                            update_time_str = item.get('upt') or '0'
+                            try: update_time = int(update_time_str)
+                            except: update_time = current_time
+                            if (current_time - update_time) > 86400:
+                                client.fs_delete([item_id])
+                except Exception as e:
+                    logger.error(f"  ❌ 整理出错: {e}")
+            else:
+                # 识别失败
+                if is_folder:
+                    logger.info(f"  📂 目录 '{name}' 无法直接识别，深入扫描子目录 (层级 {depth+1})...")
+                    # ★ 核心：将子目录扫描作为新任务提交给线程池
+                    submit_task(scan_directory, item_id, name, depth + 1)
+                    
+                    # 钻完出来后，把空壳子交给全局垃圾回收器处理
+                    from handler.p115_service import P115DeleteBuffer
+                    P115DeleteBuffer.add(fids=[], base_cids=[item_id])
+                    
+                    if unidentified_cid and depth == 0:
+                        try:
+                            client.fs_move(item_id, unidentified_cid)
+                            with counter_lock: moved_to_unidentified += 1
+                        except: pass
+                else:
+                    if unidentified_cid:
+                        try:
+                            client.fs_move(item_id, unidentified_cid)
+                            with counter_lock: moved_to_unidentified += 1
+                            
+                            ext = name.split('.')[-1].lower() if '.' in name else ''
+                            if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                                P115RecordManager.add_or_update_record(item_id, name, 'unrecognized', target_cid=unidentified_cid, category_name="未识别")
+                        except: pass
+
+        def scan_directory(current_cid, current_name, depth=0):
+            """目录透视与任务分发逻辑 (在子线程中运行)"""
+            if depth > 5: return
                 
             res = {}
             for retry in range(3):
@@ -2233,13 +2308,10 @@ def task_scan_and_organize_115(processor=None):
                     })
                     break 
                 except Exception as e:
-                    if '405' in str(e) or 'Method Not Allowed' in str(e):
-                        time.sleep(3)
-                    else:
-                        raise
+                    if '405' in str(e) or 'Method Not Allowed' in str(e): time.sleep(3)
+                    else: raise
 
-            if not res.get('data'):
-                return
+            if not res.get('data'): return
 
             for item in res['data']:
                 name = item.get('fn') or item.get('n') or item.get('file_name')
@@ -2248,25 +2320,20 @@ def task_scan_and_organize_115(processor=None):
                 fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
                 is_folder = str(fc_val) == '0'
 
-                # 跳过未识别目录本身
                 if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
                     continue
 
                 is_shell_folder = False
                 forced_type = None
                 peek_failed = False
-                is_empty_dir = False # ★ 新增：纯空/垃圾目录标记
+                is_empty_dir = False 
 
-                # 如果是文件夹，先透视一下内容，判断是媒体目录还是分类壳子
                 if is_folder:
                     for retry in range(2):
                         try:
-                            sub_res = client.fs_files({
-                                'cid': item_id, 'limit': 100, 
-                                'record_open_time': 0, 'count_folders': 0
-                            })
+                            sub_res = client.fs_files({'cid': item_id, 'limit': 100, 'record_open_time': 0, 'count_folders': 0})
                             if not sub_res.get('data'):
-                                is_empty_dir = True # 连文件都没有，纯空
+                                is_empty_dir = True 
                                 break
                                 
                             video_count = 0
@@ -2277,36 +2344,26 @@ def task_scan_and_organize_115(processor=None):
                                 sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
                                 sub_fc = str(sub_item.get('fc') if sub_item.get('fc') is not None else sub_item.get('type'))
                                 
-                                if sub_fc == '1': # 文件
+                                if sub_fc == '1': 
                                     ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
                                     if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
-                                        # ★ 绝杀狗皮膏药：小于 10MB 的视频直接当成空气，不计入有效视频数
                                         sub_size = _parse_115_size(sub_item.get('fs') or sub_item.get('size'))
                                         if sub_size == 0 or sub_size > 10 * 1024 * 1024:
                                             video_count += 1
-                                elif sub_fc == '0': # 文件夹
+                                elif sub_fc == '0': 
                                     sub_folder_count += 1
-                                    # 检查是否为常见的媒体内部子目录 (增加中文数字支持)
                                     if re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第[一二三四五六七八九十\d]+季|Specials|SP|Featurettes|Extras|Subs|Subtitles|BDMV|CERTIFICATE|CD\d+|DVD\d+|Disc\d+)$', sub_name, re.IGNORECASE):
                                         forced_type = 'tv' if re.search(r'(Season|S\d+|第[一二三四五六七八九十\d]+季)', sub_name, re.IGNORECASE) else forced_type
                                     else:
                                         suspicious_folder_count += 1
                                         
-                            # ★★★ 智能判定逻辑 ★★★
                             if video_count == 0 and sub_folder_count == 0:
-                                # 既没有视频，也没有子文件夹（可能只有 nfo/jpg 等垃圾文件）
                                 is_empty_dir = True
                             elif video_count == 0 and sub_folder_count > 0:
-                                # 检查是不是 BDMV 原盘
                                 has_bdmv = any(re.search(r'^(BDMV|CERTIFICATE)$', si.get('fn', ''), re.IGNORECASE) for si in sub_res['data'])
-                                if has_bdmv:
-                                    pass # 是原盘，放行去识别
-                                elif suspicious_folder_count > 0:
-                                    # 有非标准子目录 -> 判定为分类壳子，强制下钻
-                                    is_shell_folder = True
-                                else:
-                                    # 全是标准子目录 (如 Season 1) -> 完美的剧集根目录，放行去识别
-                                    pass
+                                if has_bdmv: pass 
+                                elif suspicious_folder_count > 0: is_shell_folder = True
+                                else: pass
                                     
                             peek_failed = False
                             break
@@ -2318,10 +2375,8 @@ def task_scan_and_organize_115(processor=None):
                                 peek_failed = True
                                 break
 
-                if peek_failed:
-                    continue
+                if peek_failed: continue
                     
-                # ★★★ 如果是空目录或纯垃圾目录，直接当场超度，绝不拿去识别！ ★★★
                 if is_empty_dir:
                     try:
                         client.fs_delete([item_id])
@@ -2329,87 +2384,25 @@ def task_scan_and_organize_115(processor=None):
                     except: pass
                     continue
 
-                # ★★★ 如果判定为分类壳子，直接没收 AI 发言权，强制下钻！ ★★★
                 if is_shell_folder:
                     logger.info(f"  📂 检测到分类壳子 '{name}'，跳过识别，扫描子目录 (层级 {depth+1})...")
-                    scan_directory(item_id, name, depth + 1)
-                    
-                    # 钻完出来后，检查这个壳子是不是空了，空了就顺手删掉
-                    try:
-                        check_res = client.fs_files({'cid': item_id, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
-                        if not check_res.get('data'):
-                            client.fs_delete([item_id])
-                            logger.info(f"  🧹 已清理被掏空的分类壳子: {name}")
-                        else:
-                            if unidentified_cid and depth == 0:
-                                client.fs_move(item_id, unidentified_cid)
-                                moved_to_unidentified += 1
-                    except: pass
-                    continue # 壳子处理完毕，直接 continue，跳过下面的识别逻辑
+                    submit_task(scan_directory, item_id, name, depth + 1)
+                    from handler.p115_service import P115DeleteBuffer
+                    P115DeleteBuffer.add(fids=[], base_cids=[item_id])
+                    continue 
 
-                # 尝试识别当前项 (文件或真正的媒体文件夹)
-                tmdb_id, media_type, title = _identify_media_enhanced(
-                    name, 
-                    forced_media_type=forced_type,
-                    ai_translator=ai_translator,
-                    use_ai=use_ai
-                )
-                
-                if tmdb_id:
-                    # 识别成功：整体打包带走！
-                    logger.info(f"  ➜ 识别成功: {name} -> ID:{tmdb_id} ({media_type})")
-                    try:
-                        organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
-                        target_cid = organizer.get_target_cid()
-                        
-                        if organizer.execute(item, target_cid):
-                            processed_count += 1
-                            
-                            # 清理过期残留
-                            if is_folder:
-                                update_time_str = item.get('upt') or '0'
-                                try: update_time = int(update_time_str)
-                                except: update_time = current_time
-                                if (current_time - update_time) > 86400:
-                                    client.fs_delete([item_id])
+                # ★ 核心：将正常的媒体项提交给线程池并发处理
+                submit_task(process_single_item, item, name, is_folder, depth, forced_type)
 
-                    except Exception as e:
-                        logger.error(f"  ❌ 整理出错: {e}")
-                else:
-                    # 识别失败
-                    if is_folder:
-                        # ★★★ 刨祖坟核心：文件夹识别失败，说明可能是分类壳子，钻进去！ ★★★
-                        logger.info(f"  📂 目录 '{name}' 无法直接识别，深入扫描子目录 (层级 {depth+1})...")
-                        scan_directory(item_id, name, depth + 1)
-                        
-                        # 钻完出来后，检查这个壳子是不是空了，空了就顺手删掉
-                        try:
-                            check_res = client.fs_files({'cid': item_id, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
-                            if not check_res.get('data'):
-                                client.fs_delete([item_id])
-                                logger.info(f"  🧹 已清理空目录: {name}")
-                            else:
-                                # 里面还有垃圾，如果是顶层目录，移入未识别
-                                if unidentified_cid and depth == 0:
-                                    client.fs_move(item_id, unidentified_cid)
-                                    moved_to_unidentified += 1
-                        except: pass
-                    else:
-                        # 整理日志
-                        if unidentified_cid:
-                            try:
-                                client.fs_move(item_id, unidentified_cid)
-                                moved_to_unidentified += 1
-                                
-                                # ★ 修复：只记录未识别的视频文件，忽略散落的字幕
-                                ext = name.split('.')[-1].lower() if '.' in name else ''
-                                if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
-                                    P115RecordManager.add_or_update_record(item_id, name, 'unrecognized', target_cid=unidentified_cid, category_name="未识别")
-                            except: pass
+        # 启动初始扫描任务
+        submit_task(scan_directory, save_cid, save_name, 0)
 
-        # 启动递归扫描
-        scan_directory(save_cid, save_name, depth=0)
+        # ★ 阻塞主线程，直到所有子线程任务全部执行完毕
+        with task_cond:
+            while active_tasks > 0:
+                task_cond.wait()
 
+        executor.shutdown()
         logger.info(f"=== 扫描结束，成功归类 {processed_count} 个，移入未识别 {moved_to_unidentified} 个 ===")
 
     except Exception as e:
