@@ -1035,10 +1035,13 @@ class SmartOrganizer:
 
         # 2. 特效 (Effect)
         is_dv = re.search(r'(?:^|[\.\s\-\_])(DV|DOVI|DOLBY\s?VISION)(?:$|[\.\s\-\_])', name_upper)
-        is_hdr = re.search(r'(?:^|[\.\s\-\_])(HDR|HDR10\+?)(?:$|[\.\s\-\_])', name_upper)
-        if is_dv and is_hdr: info_dict['effect'] = "HDR DV"
+        # 优化正则顺序，优先匹配 HDR10+ 和 HDR10
+        is_hdr = re.search(r'(?:^|[\.\s\-\_])(HDR10\+|HDR10|HDR)(?:$|[\.\s\-\_])', name_upper)
+        
+        hdr_str = is_hdr.group(1) if is_hdr else ""
+        if is_dv and is_hdr: info_dict['effect'] = f"{hdr_str} DV"
         elif is_dv: info_dict['effect'] = "DV"
-        elif is_hdr: info_dict['effect'] = "HDR"
+        elif is_hdr: info_dict['effect'] = hdr_str
 
         # 3. 分辨率 (Resolution)
         res_match = re.search(r'(2160|1080|720|480)[pP]', filename)
@@ -1084,7 +1087,7 @@ class SmartOrganizer:
             info_dict['fps'] = fps_match.group(1).lower() # 统一转为小写 60fps
 
         # 流媒体平台识别
-        stream_match = re.search(r'\b(NF|AMZN|DSNP|HMAX|HULU|NETFLIX|DISNEY\+|APPLETV\+|B-GLOBAL)\b', name_upper)
+        stream_match = re.search(r'\b(NF|AMZN|DSNP|HMAX|HULU|NETFLIX|DISNEY\+|APPLETV\+|B-GLOBAL|ITUNES)\b', name_upper)
         if stream_match:
             info_dict['stream'] = stream_match.group(1)
 
@@ -2868,7 +2871,7 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, s
     root_item = {
         'fid': info_data.get('file_id') or file_id,
         'file_id': info_data.get('file_id') or file_id,
-        'fn': info_data.get('file_name') or original_name,
+        'fn': original_name,
         'fc': str(info_data.get('file_category', '1')), 
         'pid': old_pid,
         'pc': pick_code,
