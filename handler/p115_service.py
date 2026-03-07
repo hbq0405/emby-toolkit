@@ -2884,8 +2884,8 @@ def task_full_sync_strm_and_subs(processor=None, force_full_update=False):
                                         break
                             if start_idx != -1 and start_idx < len(ancestors):
                                 sub_folders = []
-                                # 遍历从目标分类目录之后的层级
-                                for anc in ancestors[start_idx:]:
+                                # ★★★ 致命修复：必须加上 [:-1] 切片，强制排除最后一个元素（文件本身）★★★
+                                for anc in ancestors[start_idx:-1]:
                                     if isinstance(anc, dict):
                                         n = anc.get('name') or anc.get('file_name') or anc.get('fn')
                                         if n: sub_folders.append(str(n).strip())
