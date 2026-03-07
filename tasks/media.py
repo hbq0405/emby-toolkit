@@ -2119,9 +2119,9 @@ def task_backup_mediainfo(processor):
 
 def task_restore_mediainfo(processor):
     """
-    【恢复媒体信息任务】(精准路径匹配 + I/O 节流优化版)
+    【恢复媒体信息任务】(万能指纹提取 + I/O 节流优化版)
     遍历本地媒体库，查找缺少 -mediainfo.json 的 .strm 文件。
-    提取 PC 码或完整挂载路径，从数据库指纹库中精准还原媒体信息。
+    利用核心处理器的万能提取器获取 SHA1，从数据库指纹库中精准还原媒体信息。
     """
     logger.info("--- 开始执行媒体信息还原任务 ---")
     task_manager.update_status_from_thread(0, "正在扫描本地媒体库目录...")
@@ -2157,25 +2157,31 @@ def task_restore_mediainfo(processor):
         if processor.is_stop_requested(): break
         
         # ★ 优化 1：降低进度推送频率，每 50 个文件推送一次，防止前端 WebSocket 堵塞卡死
-        if i % 50 == 0:
+        if i % 500 == 0:
             task_manager.update_status_from_thread(int((i/total)*100), f"正在还原 ({i+1}/{total})...")
             time.sleep(0.1) # 强制让出 CPU 时间片，让前端喘口气
             
         filename = os.path.basename(strm_path)
-        
-        # 2. 尝试从 STRM 提取链接
         strm_content_path = None
         
         try:
             with open(strm_path, 'r', encoding='utf-8') as f:
                 content = f.read().strip()
                 strm_content_path = content.replace('\\', '/')
-                        
         except Exception as e:
             logger.warning(f"  ⚠️ 读取 STRM 失败 {strm_path}: {e}")
+            failed_count += 1
+            continue
 
+        # 2. 调用核心处理器的万能指纹提取器
         pc, sha1 = processor._extract_115_fingerprints(strm_content_path)
-        mediainfo = media_db.get_mediainfo_by_sha1(sha1)
+        
+        # ★ 核心补全：如果只提取到了 PC 码（直链模式），需要转换成 SHA1
+        if not sha1 and pc:
+            sha1 = processor._get_sha1_by_pickcode(pc)
+            
+        # 3. 通过 SHA1 精准获取媒体信息
+        mediainfo = media_db.get_mediainfo_by_sha1(sha1) if sha1 else None
         
         # 4. 写入本地文件
         if mediainfo:

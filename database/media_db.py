@@ -1365,25 +1365,28 @@ def is_mediainfo_cached(sha1: str) -> bool:
         return False
 
 # 根据 sha1 查找指纹库中的媒体信息
-def get_mediainfo_by_sha1(sha1: str) -> Optional[str]:
+def get_mediainfo_by_sha1(sha1: str) -> Optional[list]:
     """
-    根据 sha1 查找指纹库中的媒体信息。
+    【指纹还原】根据 SHA1 查找指纹库中的媒体信息。
     """
+    if not sha1:
+        return None
+        
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
+            cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s LIMIT 1", (sha1,))
+            row = cursor.fetchone()
             
-            if sha1:
-                cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s LIMIT 1", (sha1,))
-                row = cursor.fetchone()
-                if row and row['mediainfo_json']:
-                    # 顺手更新一下指纹库的命中次数
-                    cursor.execute("UPDATE p115_mediainfo_cache SET hit_count = hit_count + 1 WHERE sha1 = %s", (sha1,))
-                    conn.commit()
-                    return row['mediainfo_json']
+            if row and row['mediainfo_json']:
+                # 顺手更新一下指纹库的命中次数
+                cursor.execute("UPDATE p115_mediainfo_cache SET hit_count = hit_count + 1 WHERE sha1 = %s", (sha1,))
+                conn.commit()
+                return row['mediainfo_json']
                     
     except Exception as e:
         logger.error(f"DB: 查找媒体信息指纹失败: {e}")
+        
     return None
 
 def get_local_mediainfo_assets_with_sha1() -> List[Dict[str, Any]]:
