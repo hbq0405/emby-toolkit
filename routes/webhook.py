@@ -720,32 +720,13 @@ def emby_webhook():
                 logger.info(f"  🧹 [深度删除] 开始清理本地数据库与缓存: {original_item_name} ({original_item_type})")
                 
                 # 1. 清理主媒体库记录 (★ 所有层级均生效，删一集就清理一集的记录)
+                # ★ 修复：日志和内存缓存的清理已下沉到此函数内部，利用其完善的多版本善后逻辑，防止误清理
                 maintenance_db.cleanup_deleted_media_item(
                     item_id=original_item_id,
                     item_name=original_item_name,
                     item_type=original_item_type,
                     series_id_from_webhook=series_id_from_webhook
                 )
-
-                # 2. 清理已处理日志和待复核日志 (★ 老六法旨：仅限电影和剧集顶层！)
-                if original_item_type in ['Movie', 'Series']:
-                    processor = extensions.media_processor_instance
-                    if processor:
-                        with get_db_connection() as conn:
-                            cursor = conn.cursor()
-                            processor.log_db_manager.remove_from_processed_log(cursor, original_item_id)
-                            processor.log_db_manager.remove_from_failed_log(cursor, original_item_id)
-                            conn.commit()
-                        
-                        # 3. 实时抹除内存缓存 (仅限顶层)
-                        if original_item_id in processor.processed_items_cache:
-                            del processor.processed_items_cache[original_item_id]
-                            logger.debug(f"  🧹 [深度删除] 已清理顶层媒体内存缓存: {original_item_id}")
-
-                    # 4. 刷新向量缓存 (仅限顶层)
-                    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
-                        spawn(RecommendationEngine.refresh_cache)
-                        logger.debug(f"  ➜ [智能推荐] 检测到顶层媒体删除，已触发向量缓存刷新。")
 
             except Exception as e:
                 logger.error(f"  ❌ [深度删除] 清理本地数据库与缓存失败: {e}", exc_info=True)

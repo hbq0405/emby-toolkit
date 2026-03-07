@@ -865,6 +865,32 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                                 logger.info(f"  🗑️ 原生合集 '{c_name}' (ID: {c_id}) 内所有媒体均已离线，正在自动清理该合集记录...")
                                 cursor.execute("DELETE FROM collections_info WHERE emby_collection_id = %s", (c_id,))
                     
+                    # 日志与缓存清理逻辑 (仅在完全删除时触发) ★★★
+                    if target_item_type_for_full_cleanup in ['Movie', 'Series']:
+                        try:
+                            import extensions
+                            import config_manager
+                            from gevent import spawn
+                            from handler.custom_collection import RecommendationEngine
+                            
+                            processor = extensions.media_processor_instance
+                            if processor:
+                                # 1. 清理数据库日志 & 内存缓存 (遍历该 TMDB ID 下所有的历史 Emby ID)
+                                for eid in parent_emby_ids:
+                                    processor.log_db_manager.remove_from_processed_log(cursor, eid)
+                                    processor.log_db_manager.remove_from_failed_log(cursor, eid)
+                                    
+                                    if eid in processor.processed_items_cache:
+                                        del processor.processed_items_cache[eid]
+                                        logger.debug(f"  🧹 [深度删除] 已清理顶层媒体内存缓存: {eid}")
+
+                                # 2. 刷新向量缓存
+                                if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
+                                    spawn(RecommendationEngine.refresh_cache)
+                                    logger.debug(f"  ➜ [智能推荐] 检测到顶层媒体完全删除，已触发向量缓存刷新。")
+                        except Exception as e:
+                            logger.error(f"  ❌ 清理日志与缓存失败: {e}", exc_info=True)
+
                     logger.info(f"--- 对 TMDB ID: {target_tmdb_id_for_full_cleanup} 的完全清理已完成 ---")
 
                 # 提交事务
