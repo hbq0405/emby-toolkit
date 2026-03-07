@@ -1625,6 +1625,13 @@ class SmartOrganizer:
 
         final_home_cid = P115CacheManager.get_cid(dest_parent_cid, std_root_name)
 
+        # ★★★ 缓存自愈：如果缓存的 CID 竟然等于源文件夹的 CID，且目标父目录不是源父目录，说明缓存串线了！
+        source_parent_cid = str(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+        if final_home_cid and str(final_home_cid) == str(source_root_id) and str(dest_parent_cid) != source_parent_cid:
+            logger.warning(f"  ⚠️ 检测到缓存串线 (目标目录与源目录重合)，正在强制清除错误缓存并重建...")
+            P115CacheManager.delete_cid(final_home_cid)
+            final_home_cid = None
+
         if final_home_cid:
             logger.info(f"  ⚡ [缓存命中] 主目录: {std_root_name}")
         else:
@@ -1640,7 +1647,10 @@ class SmartOrganizer:
                         for item in search_res['data']:
                             item_name = item.get('fn') or item.get('n') or item.get('file_name')
                             item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                            if item_name == std_root_name and str(item_fc) == '0':
+                            item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid')) # ★ 提取父ID
+                            
+                            # ★ 致命漏洞修复：必须校验搜出来的文件夹，它的父目录确实是我们指定的 dest_parent_cid
+                            if item_name == std_root_name and str(item_fc) == '0' and item_pid == str(dest_parent_cid):
                                 final_home_cid = item.get('fid') or item.get('file_id')
                                 P115CacheManager.save_cid(final_home_cid, dest_parent_cid, std_root_name)
                                 logger.info(f"  📂 成功查找到已存在主目录并永久缓存: {std_root_name}")
@@ -1755,7 +1765,10 @@ class SmartOrganizer:
                                 for item in s_search.get('data', []):
                                     item_name = item.get('fn') or item.get('n') or item.get('file_name')
                                     item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                                    if item_name == s_name and str(item_fc) == '0':
+                                    item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid')) # ★ 提取父ID
+                                    
+                                    # ★ 同样校验父目录
+                                    if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
                                         s_cid = item.get('fid') or item.get('file_id')
                                         break
                             except: pass
