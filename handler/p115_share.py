@@ -170,14 +170,14 @@ class ShareStrmManager:
                     
         return collected_count, share_title
 
-    def process_single_item(self, item, share_title):
+    def process_single_item(self, item, share_code, receive_code, share_title):
         file_name = item.get('name', '')
         ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
         
         if ext not in self.allowed_exts: return
             
-        pick_code = item.get('pc')
-        if not pick_code: return
+        file_id = item.get('id')
+        if not file_id: return
         
         rel_path = item.get('path', file_name)
         if not rel_path.startswith(share_title):
@@ -188,7 +188,8 @@ class ShareStrmManager:
         
         os.makedirs(os.path.dirname(strm_full_path), exist_ok=True)
         
-        strm_content = f"{self.etk_url}/api/p115/play/{pick_code}/{file_name}"
+        # ★ 核心修改：生成动态转存路由，包含 share_code, receive_code 和 file_id
+        strm_content = f"{self.etk_url}/api/p115/play_share/{share_code}/{receive_code}/{file_id}/{file_name}"
         
         need_write = True
         if os.path.exists(strm_full_path):

@@ -10,7 +10,7 @@ from gevent import spawn_later
 import time
 import config_manager
 import constants
-from database import settings_db
+from database import settings_db, media_db
 from database.connection import get_db_connection
 import handler.tmdb as tmdb
 import utils
@@ -1139,18 +1139,8 @@ class SmartOrganizer:
         """
         if not sha1: return {}
         
-        raw_json = None
-        # 1. 优先查本地数据库
-        try:
-            from database.connection import get_db_connection
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s", (sha1,))
-                    row = cursor.fetchone()
-                    if row and row['mediainfo_json']:
-                        raw_json = row['mediainfo_json'] if isinstance(row['mediainfo_json'], list) else json.loads(row['mediainfo_json'])
-        except Exception as e:
-            logger.debug(f"  ⚠️ 查询本地媒体信息缓存失败: {e}")
+        # 1. 先查本地缓存
+        raw_json = media_db.get_mediainfo_by_sha1(sha1) if sha1 else None
 
         # 2. 本地没有，尝试查 P115Center 中心服务器
         if not raw_json:

@@ -921,3 +921,88 @@ def trigger_share_sync():
     except Exception as e:
         logger.error(f"  ❌ 启动分享同步任务失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
+    
+SHARE_CACHE_FILE = "data/share_transfer_cache.json"
+
+def get_share_cache():
+    if os.path.exists(SHARE_CACHE_FILE):
+        try:
+            with open(SHARE_CACHE_FILE, 'r') as f:
+                return json.load(f)
+        except: pass
+    return {}
+
+def save_share_cache(cache):
+    os.makedirs("data", exist_ok=True)
+    with open(SHARE_CACHE_FILE, 'w') as f:
+        json.dump(cache, f)
+
+@p115_bp.route('/play_share/<share_code>/<receive_code>/<file_id>/<path:filename>', methods=['GET', 'HEAD'])
+def play_share_video(share_code, receive_code, file_id, filename):
+    """分享挂载专用：播放时动态转存并获取直链"""
+    if request.method == 'HEAD':
+        return '', 200
+
+    config = get_config()
+    transfer_cid = config.get('p115_share_transfer_cid')
+    if not transfer_cid:
+        return "未配置分享转存目录，请在设置中配置", 400
+
+    # 1. 检查本地缓存，避免重复转存
+    cache_key = f"{share_code}_{file_id}"
+    cache = get_share_cache()
+    new_pick_code = cache.get(cache_key)
+
+    client = P115Service.get_cookie_client()
+    if not client:
+        return "115 Cookie 未配置", 500
+
+    if not new_pick_code:
+        logger.info(f"  🔄 [动态转存] 首次播放，正在转存文件: {filename}")
+        # 2. 调用 115 接口执行转存
+        url = "https://webapi.115.com/share/receive"
+        payload = {
+            'share_code': share_code,
+            'receive_code': receive_code,
+            'file_id': file_id,
+            'cid': transfer_cid
+        }
+        try:
+            res = client.request(url, method='POST', data=payload).json()
+            state = res.get('state')
+            error_msg = res.get('error', '')
+
+            # 如果转存成功，或者提示文件已存在
+            if state or '存在' in error_msg:
+                # 3. 查找刚转存的文件，获取它的 pick_code
+                # 按修改时间倒序查找，确保拿到最新转存的那个
+                search_url = f"https://webapi.115.com/files?cid={transfer_cid}&limit=50&o=user_utime&asc=0"
+                search_res = client.request(search_url).json()
+                
+                for item in search_res.get('data', []):
+                    if item.get('n') == filename:
+                        new_pick_code = item.get('pc')
+                        break
+                
+                if new_pick_code:
+                    cache[cache_key] = new_pick_code
+                    save_share_cache(cache)
+                    logger.info(f"  ✅ [动态转存] 成功！获取到新 PC 码: {new_pick_code}")
+                else:
+                    logger.error(f"  ❌ [动态转存] 转存成功但未在目录中找到文件: {filename}")
+                    return f"转存成功但未找到文件: {filename}", 404
+            else:
+                logger.error(f"  ❌ [动态转存] 失败: {error_msg}")
+                return f"转存失败: {error_msg}", 500
+        except Exception as e:
+            logger.error(f"  ❌ [动态转存] 接口异常: {e}")
+            return str(e), 500
+
+    # 4. 获取直链并重定向 (复用现有的缓存直链逻辑)
+    player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+    real_url = _get_cached_115_url(new_pick_code, player_ua)
+    
+    if not real_url:
+        return "Too Many Requests - 115 API Protection", 429
+        
+    return redirect(real_url, code=302)

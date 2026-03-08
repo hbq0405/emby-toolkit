@@ -1409,7 +1409,12 @@
     </n-modal>
     <!-- ★ 引入自定义重命名模态框 -->
     <RenameConfigModal ref="renameModalRef" />
-    <P115ShareMountModal ref="shareMountModalRef" :config="configModel" @saveConfig="save" />
+    <P115ShareMountModal 
+      ref="shareMountModalRef" 
+      :config="configModel" 
+      @saveConfig="save" 
+      @openFolderSelector="openFolderSelector" 
+    />
   </n-layout>
   
   <!-- 导出选项模态框 -->
@@ -2496,6 +2501,10 @@ const confirmFolderSelection = () => {
     // 规则编辑模式
     currentRule.value.cid = cid;
     currentRule.value.dir_name = name;
+  } else if (selectorContext.value === 'share_transfer') {
+    // ★ 新增：处理分享转存目录的选择
+    configModel.value.p115_share_transfer_cid = cid;
+    configModel.value.p115_share_transfer_name = name;
   }
   
   message.success(`已选择: ${name}`);
