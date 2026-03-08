@@ -2074,26 +2074,34 @@ def task_backup_mediainfo(processor):
                                 
                     # 阶段 2: 备份媒体信息到指纹库 & 缺失检查
                     if current_path and not current_path.startswith('http'):
-                        mediainfo_path = os.path.splitext(current_path)[0] + "-mediainfo.json"
+                        local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, '')
+                        mediainfo_path = None
+                        
+                        # ★★★ 核心修复：解决挂载模式下找不到 JSON 的问题 ★★★
+                        # Emby 的 current_path 可能是挂载路径，而 JSON 实际在本地 STRM 目录
+                        if current_sha1 or actual_pc:
+                            query_val = current_sha1 if current_sha1 else actual_pc
+                            query_col = "sha1" if current_sha1 else "pick_code"
+                            cursor.execute(f"SELECT local_path FROM p115_filesystem_cache WHERE {query_col} = %s AND local_path IS NOT NULL LIMIT 1", (query_val,))
+                            cache_row = cursor.fetchone()
+                            if cache_row and cache_row['local_path']:
+                                # 拼接出真实的本地 JSON 路径
+                                base_local = os.path.join(local_root, str(cache_row['local_path']).lstrip('\\/'))
+                                mediainfo_path = os.path.splitext(base_local)[0] + "-mediainfo.json"
+                        
+                        # 兜底：如果没查到，或者本来就是本地 STRM 路径，直接替换后缀
+                        if not mediainfo_path:
+                            mediainfo_path = os.path.splitext(current_path)[0] + "-mediainfo.json"
                         
                         if not os.path.exists(mediainfo_path):
-                            # ★★★ 核心新增：缺失 mediainfo.json，标记待复核 (仅限电影和剧集) ★★★
+                            # ★★★ 缺失 mediainfo.json，标记待复核 (仅限电影和剧集) ★★★
                             if target_emby_id and target_log_type in ['Movie', 'Series']:
-                                # ★ 提取集号精简展示
                                 filename = os.path.basename(mediainfo_path)
                                 match = re.search(r'(S\d{1,2}E\d{1,3})', filename, re.IGNORECASE)
-                                if match:
-                                    reason = f"缺失媒体信息: {match.group(1).upper()}"
-                                else:
-                                    reason = "缺失媒体信息"
+                                reason = f"缺失媒体信息: {match.group(1).upper()}" if match else "缺失媒体信息"
                                     
                                 processor.log_db_manager.save_to_failed_log(
-                                    cursor, 
-                                    target_emby_id, 
-                                    log_title, 
-                                    reason, 
-                                    target_log_type, 
-                                    score=0.0
+                                    cursor, target_emby_id, log_title, reason, target_log_type, score=0.0
                                 )
                                 logger.warning(f"  ⚠️ [{log_title}] 缺失本地 JSON，已标记为待复核: {reason}")
                         else:
