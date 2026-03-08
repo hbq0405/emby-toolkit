@@ -147,9 +147,11 @@ class P115OpenAPIClient:
             resp["cid"] = resp["data"].get("file_id")
         return resp
 
-    def fs_move(self, fid, to_cid):
+    def fs_move(self, fids, to_cid):
         url = f"{self.base_url}/open/ufile/move"
-        return self._do_request("POST", url, data={"file_ids": str(fid), "to_cid": str(to_cid)})
+        # ★ 支持传入列表，自动用逗号拼接
+        fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
+        return self._do_request("POST", url, data={"file_ids": fids_str, "to_cid": str(to_cid)})
 
     def fs_rename(self, fid_name_tuple):
         url = f"{self.base_url}/open/ufile/update"
@@ -384,10 +386,10 @@ class P115Service:
                 self._rate_limit()
                 return self._openapi.fs_mkdir(name, pid)
 
-            def fs_move(self, fid, to_cid):
+            def fs_move(self, fids, to_cid):
                 self._check_openapi()
                 self._rate_limit()
-                return self._openapi.fs_move(fid, to_cid)
+                return self._openapi.fs_move(fids, to_cid)
 
             def fs_rename(self, fid_name_tuple):
                 self._check_openapi()
@@ -1756,6 +1758,9 @@ class SmartOrganizer:
         if not candidates: return True
 
         moved_count = 0
+        # ★ 新增：用于批量移动的分组字典 { 目标CID: [文件1, 文件2, ...] }
+        move_groups = {}
+
         for file_item in candidates:
             # 兼容 OpenAPI 键名
             fid = file_item.get('fid') or file_item.get('file_id')
@@ -1783,6 +1788,8 @@ class SmartOrganizer:
             if keep_original:
                 new_filename = file_name
                 season_num = None
+                s_name = None
+                is_center_cached = False
                 real_target_cid = final_home_cid
                 
                 # 1:1 复刻原始目录架构 (包含季目录、SP目录等)
@@ -1816,6 +1823,7 @@ class SmartOrganizer:
                 )
 
                 real_target_cid = final_home_cid
+                s_name = None
                 if self.media_type == 'tv' and season_num is not None:
                     season_fmt = cfg.get('season_fmt', 'Season {02}')
                     if '{02}' in season_fmt:
@@ -1838,9 +1846,8 @@ class SmartOrganizer:
                                 for item in s_search.get('data', []):
                                     item_name = item.get('fn') or item.get('n') or item.get('file_name')
                                     item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                                    item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid')) # ★ 提取父ID
+                                    item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid'))
                                     
-                                    # ★ 同样校验父目录
                                     if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
                                         s_cid = item.get('fid') or item.get('file_id')
                                         break
@@ -1858,239 +1865,221 @@ class SmartOrganizer:
                 else:
                     logger.warning(f"  ⚠️ [重命名失败] {file_name} -> {new_filename}, 原因: {ren_res.get('error_msg', ren_res)}")
 
-            move_res = self.client.fs_move(fid, real_target_cid)
+            # ★ 核心修改：不再逐个移动，而是将文件信息暂存入分组字典
+            file_item['_new_filename'] = new_filename
+            file_item['_season_num'] = season_num
+            file_item['_s_name'] = s_name
+            file_item['_is_center_cached'] = is_center_cached
+            
+            if real_target_cid not in move_groups:
+                move_groups[real_target_cid] = []
+            move_groups[real_target_cid].append(file_item)
+
+        # =================================================================
+        # ★★★ 执行批量移动与后续 STRM 生成 ★★★
+        # =================================================================
+        for batch_target_cid, items in move_groups.items():
+            fids = [item.get('fid') or item.get('file_id') for item in items]
+            
+            # 1. 批量发送移动指令 (一次 API 请求搞定整个目录的文件)
+            move_res = self.client.fs_move(fids, batch_target_cid)
+            
             if move_res.get('state'):
-                if self.media_type == 'tv' and season_num is not None:
-                    logger.info(f"  📁 [移动] {file_name} -> {std_root_name} - {s_name}")
-                else:
-                    logger.info(f"  📁 [移动] {file_name} -> {std_root_name}")
-                moved_count += 1
-                # 兼容 OpenAPI 键名
-                pick_code = file_item.get('pc') or file_item.get('pick_code') 
-                file_sha1 = file_item.get('sha1') or file_item.get('sha')
-                # 整理日志
-                if ext in known_video_exts:
-                    try:
-                        category_name = "未识别"
-                        for rule in self.rules:
-                            if str(rule.get('cid')) == str(target_cid):
-                                category_name = rule.get('dir_name', '未识别')
-                                break
-                        from handler.p115_service import P115RecordManager
-                        P115RecordManager.add_or_update_record(
-                            file_id=fid,
-                            original_name=file_name,
-                            status='success',
-                            tmdb_id=self.tmdb_id,
-                            media_type=self.media_type,
-                            target_cid=target_cid,
-                            category_name=category_name,
-                            renamed_name=new_filename,
-                            is_center_cached=is_center_cached if not keep_original else False,
-                            pick_code=pick_code 
-                        )
-                    except Exception as e:
-                        logger.error(f"  ❌ 记录文件整理日志失败: {e}")
-
+                # 提取展示用的目录名
+                display_target = std_root_name
+                if items and items[0].get('_s_name'):
+                    display_target = f"{std_root_name} - {items[0]['_s_name']}"
+                logger.info(f"  📁 [批量移动] 成功将 {len(fids)} 个文件移动至 -> {display_target}")
                 
-                local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
-                etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "http://127.0.0.1:5257").rstrip('/')
-                
-                if pick_code and local_root and os.path.exists(local_root):
-                    try:
-                        category_name = None
-                        for rule in self.rules:
-                            if rule.get('cid') == str(target_cid):
-                                category_name = rule.get('dir_name', '未识别')
-                                break
-                        if not category_name: category_name = "未识别"
-
-                        # ==================================================
-                        # ★ 动态计算并缓存分类路径 (category_path)
-                        # ==================================================
-                        category_rule = next((r for r in self.rules if str(r.get('cid')) == str(target_cid)), None)
-                        relative_category_path = "未识别"
-                        
-                        if category_rule:
-                            if 'category_path' in category_rule and category_rule['category_path']:
-                                relative_category_path = category_rule['category_path']
-                                logger.debug(f"  ⚡ [规则缓存] 命中分类路径: '{relative_category_path}'")
-                            else:
-                                # 缓存未命中，动态计算 (完全对齐 routes/p115.py 的逻辑)
-                                logger.info(f"  🔍 [规则缓存] 未命中路径缓存，正在向 115 请求计算层级...")
-                                media_root_cid = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID, '0'))
-                                try:
-                                    dir_info = self.client.fs_files({'cid': target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
-                                    path_nodes = dir_info.get('path', [])
-                                    start_idx = 0
-                                    found_root = False
-                                    
-                                    if media_root_cid == '0':
-                                        # ★ 修复 0 层级 Bug：115 的根目录永远在 index 0，所以从 1 开始切片是绝对正确的。
-                                        # 但如果分类目录本身就是根目录，这里需要特殊处理
-                                        if str(target_cid) == '0':
-                                            start_idx = 0
-                                        else:
-                                            start_idx = 1 
-                                        found_root = True
-                                    else:
-                                        for i, node in enumerate(path_nodes):
-                                            node_cid = str(node.get('cid') or node.get('file_id'))
-                                            if node_cid == media_root_cid:
-                                                start_idx = i + 1
-                                                found_root = True
-                                                break
-                                    
-                                    if found_root and start_idx < len(path_nodes):
-                                        rel_segments = []
-                                        for n in path_nodes[start_idx:]:
-                                            node_name = n.get('file_name') or n.get('fn') or n.get('name') or n.get('n')
-                                            if node_name:
-                                                rel_segments.append(str(node_name).strip())
-                                        relative_category_path = "/".join(rel_segments) if rel_segments else category_rule.get('dir_name', '未识别')
-                                    else:
-                                        relative_category_path = category_rule.get('dir_name', '未识别')
-                                        
-                                    # 更新内存规则并持久化到数据库
-                                    category_rule['category_path'] = relative_category_path
-                                    settings_db.save_setting(constants.DB_KEY_115_SORTING_RULES, self.rules)
-                                    logger.info(f"  💾 [规则缓存] 已动态计算并永久保存路径: '{relative_category_path}'")
-                                    
-                                except Exception as e:
-                                    logger.warning(f"  ⚠️ 动态计算分类路径失败: {e}")
-                                    relative_category_path = category_rule.get('dir_name', '未识别')
-
-                        if keep_original:
-                            rel_path = file_item.get('rel_path', '')
-                            if rel_path:
-                                local_dir = os.path.join(local_root, relative_category_path, std_root_name, rel_path.replace('/', os.sep))
-                            else:
-                                local_dir = os.path.join(local_root, relative_category_path, std_root_name)
-                        elif self.media_type == 'tv' and season_num is not None:
-                            local_dir = os.path.join(local_root, relative_category_path, std_root_name, s_name)
-                        else:
-                            local_dir = os.path.join(local_root, relative_category_path, std_root_name)
-                        
-                        os.makedirs(local_dir, exist_ok=True) 
-
-                        # 实时将计算好的路径写入数据库缓存，以便后续快速访问
+                # 2. 移动成功后，遍历该批次文件，生成 STRM 和记录日志
+                for file_item in items:
+                    fid = file_item.get('fid') or file_item.get('file_id')
+                    file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
+                    new_filename = file_item['_new_filename']
+                    season_num = file_item['_season_num']
+                    s_name = file_item['_s_name']
+                    is_center_cached = file_item['_is_center_cached']
+                    
+                    moved_count += 1
+                    pick_code = file_item.get('pc') or file_item.get('pick_code') 
+                    file_sha1 = file_item.get('sha1') or file_item.get('sha')
+                    ext = new_filename.split('.')[-1].lower() if '.' in new_filename else ''
+                    
+                    # 整理日志
+                    if ext in known_video_exts:
                         try:
-                            # 1. 实时更新主目录的 local_path
-                            main_folder_path = os.path.join(relative_category_path, std_root_name)
-                            P115CacheManager.update_local_path(final_home_cid, main_folder_path)
+                            category_name = "未识别"
+                            for rule in self.rules:
+                                if str(rule.get('cid')) == str(target_cid):
+                                    category_name = rule.get('dir_name', '未识别')
+                                    break
+                            from handler.p115_service import P115RecordManager
+                            P115RecordManager.add_or_update_record(
+                                file_id=fid,
+                                original_name=file_name,
+                                status='success',
+                                tmdb_id=self.tmdb_id,
+                                media_type=self.media_type,
+                                target_cid=target_cid,
+                                category_name=category_name,
+                                renamed_name=new_filename,
+                                is_center_cached=is_center_cached if not keep_original else False,
+                                pick_code=pick_code 
+                            )
+                        except Exception as e:
+                            logger.error(f"  ❌ 记录文件整理日志失败: {e}")
+
+                    local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+                    etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "http://127.0.0.1:5257").rstrip('/')
+                    
+                    if pick_code and local_root and os.path.exists(local_root):
+                        try:
+                            category_name = None
+                            for rule in self.rules:
+                                if rule.get('cid') == str(target_cid):
+                                    category_name = rule.get('dir_name', '未识别')
+                                    break
+                            if not category_name: category_name = "未识别"
+
+                            category_rule = next((r for r in self.rules if str(r.get('cid')) == str(target_cid)), None)
+                            relative_category_path = "未识别"
                             
-                            # 2. 实时更新子目录的 local_path
+                            if category_rule:
+                                if 'category_path' in category_rule and category_rule['category_path']:
+                                    relative_category_path = category_rule['category_path']
+                                else:
+                                    media_root_cid = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID, '0'))
+                                    try:
+                                        dir_info = self.client.fs_files({'cid': target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                                        path_nodes = dir_info.get('path', [])
+                                        start_idx = 0
+                                        found_root = False
+                                        
+                                        if media_root_cid == '0':
+                                            if str(target_cid) == '0': start_idx = 0
+                                            else: start_idx = 1 
+                                            found_root = True
+                                        else:
+                                            for i, node in enumerate(path_nodes):
+                                                if str(node.get('cid') or node.get('file_id')) == media_root_cid:
+                                                    start_idx = i + 1
+                                                    found_root = True
+                                                    break
+                                        
+                                        if found_root and start_idx < len(path_nodes):
+                                            rel_segments = [str(n.get('file_name') or n.get('fn') or n.get('name') or n.get('n')).strip() for n in path_nodes[start_idx:] if (n.get('file_name') or n.get('fn') or n.get('name') or n.get('n'))]
+                                            relative_category_path = "/".join(rel_segments) if rel_segments else category_rule.get('dir_name', '未识别')
+                                        else:
+                                            relative_category_path = category_rule.get('dir_name', '未识别')
+                                            
+                                        category_rule['category_path'] = relative_category_path
+                                        settings_db.save_setting(constants.DB_KEY_115_SORTING_RULES, self.rules)
+                                        
+                                    except Exception as e:
+                                        relative_category_path = category_rule.get('dir_name', '未识别')
+
                             if keep_original:
                                 rel_path = file_item.get('rel_path', '')
                                 if rel_path:
-                                    sub_folder_path = os.path.join(main_folder_path, rel_path.replace('/', os.sep))
-                                    P115CacheManager.update_local_path(real_target_cid, sub_folder_path)
+                                    local_dir = os.path.join(local_root, relative_category_path, std_root_name, rel_path.replace('/', os.sep))
+                                else:
+                                    local_dir = os.path.join(local_root, relative_category_path, std_root_name)
                             elif self.media_type == 'tv' and season_num is not None:
-                                season_folder_path = os.path.join(main_folder_path, s_name)
-                                P115CacheManager.update_local_path(real_target_cid, season_folder_path)
-                        except Exception as e:
-                            logger.warning(f"  ⚠️ 实时更新目录路径缓存失败: {e}") 
+                                local_dir = os.path.join(local_root, relative_category_path, std_root_name, s_name)
+                            else:
+                                local_dir = os.path.join(local_root, relative_category_path, std_root_name)
+                            
+                            os.makedirs(local_dir, exist_ok=True) 
 
-                        ext = new_filename.split('.')[-1].lower() if '.' in new_filename else ''
-                        is_video = ext in known_video_exts
-                        is_sub = ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']
-
-                        if is_video:
-                            strm_filename = os.path.splitext(new_filename)[0] + ".strm"
-                            strm_filepath = os.path.join(local_dir, strm_filename)
-                            # ★★★ 判断是否是否挂载 ★★★
-                            if not etk_url.startswith('http'):
-                                mount_prefix = etk_url
+                            try:
+                                main_folder_path = os.path.join(relative_category_path, std_root_name)
+                                P115CacheManager.update_local_path(final_home_cid, main_folder_path)
                                 if keep_original:
                                     rel_path = file_item.get('rel_path', '')
                                     if rel_path:
-                                        mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, rel_path.replace('/', os.sep), new_filename)
+                                        P115CacheManager.update_local_path(batch_target_cid, os.path.join(main_folder_path, rel_path.replace('/', os.sep)))
+                                elif self.media_type == 'tv' and season_num is not None:
+                                    P115CacheManager.update_local_path(batch_target_cid, os.path.join(main_folder_path, s_name))
+                            except Exception: pass 
+
+                            is_video = ext in known_video_exts
+                            is_sub = ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']
+
+                            if is_video:
+                                strm_filename = os.path.splitext(new_filename)[0] + ".strm"
+                                strm_filepath = os.path.join(local_dir, strm_filename)
+                                if not etk_url.startswith('http'):
+                                    mount_prefix = etk_url
+                                    if keep_original:
+                                        rel_path = file_item.get('rel_path', '')
+                                        if rel_path: mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, rel_path.replace('/', os.sep), new_filename)
+                                        else: mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, new_filename)
+                                    elif self.media_type == 'tv' and season_num is not None:
+                                        mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, s_name, new_filename)
                                     else:
                                         mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, new_filename)
-                                elif self.media_type == 'tv' and season_num is not None:
-                                    mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, s_name, new_filename)
+                                    strm_content = mount_path.replace('\\', '/')
                                 else:
-                                    mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, new_filename)
-                                strm_content = mount_path.replace('\\', '/')
-                                logger.debug(f"  💿 [挂载模式] 生成 STRM: {strm_content}")
-                            else:
-                                # 默认的 ETK 302 直链模式
-                                strm_content = f"{etk_url}/api/p115/play/{pick_code}"
-                                if cfg.get('strm_url_fmt') == 'with_name':
-                                    strm_content = f"{strm_content}/{new_filename}"
-                            
-                            with open(strm_filepath, 'w', encoding='utf-8') as f:
-                                f.write(strm_content)
-                            logger.info(f"  📝 STRM 已生成 -> {strm_filename}")
-                            # ★ 主动推送给监控服务接盘
-                            try:
-                                from monitor_service import enqueue_file_actively
-                                enqueue_file_actively(strm_filepath)
-                            except Exception as e:
-                                logger.warning(f"  ⚠️ 主动推送监控队列失败: {e}")
-
-                            if not file_sha1 and fid:
+                                    strm_content = f"{etk_url}/api/p115/play/{pick_code}"
+                                    if cfg.get('strm_url_fmt') == 'with_name':
+                                        strm_content = f"{strm_content}/{new_filename}"
+                                
+                                with open(strm_filepath, 'w', encoding='utf-8') as f:
+                                    f.write(strm_content)
+                                logger.info(f"  📝 STRM 已生成 -> {strm_filename}")
+                                
                                 try:
-                                    info_res = self.client.fs_get_info(fid)
-                                    if info_res.get('state') and info_res.get('data'):
-                                        file_sha1 = info_res['data'].get('sha1')
-                                        if file_sha1:
-                                            logger.debug(f"  ➜ [API补充] 成功通过详情接口获取到 SHA1: {file_sha1}")
-                                except Exception as e_info:
-                                    logger.warning(f"  ⚠️ 调用详情接口获取 SHA1 失败: {e_info}")
+                                    from monitor_service import enqueue_file_actively
+                                    enqueue_file_actively(strm_filepath)
+                                except Exception: pass
 
-                            # 计算文件的相对 local_path 
-                            if keep_original:
-                                rel_path = file_item.get('rel_path', '')
-                                if rel_path:
-                                    file_local_path = os.path.join(relative_category_path, std_root_name, rel_path.replace('/', os.sep), new_filename)
+                                if not file_sha1 and fid:
+                                    try:
+                                        info_res = self.client.fs_get_info(fid)
+                                        if info_res.get('state') and info_res.get('data'):
+                                            file_sha1 = info_res['data'].get('sha1')
+                                    except Exception: pass
+
+                                if keep_original:
+                                    rel_path = file_item.get('rel_path', '')
+                                    if rel_path: file_local_path = os.path.join(relative_category_path, std_root_name, rel_path.replace('/', os.sep), new_filename)
+                                    else: file_local_path = os.path.join(relative_category_path, std_root_name, new_filename)
+                                elif self.media_type == 'tv' and season_num is not None:
+                                    file_local_path = os.path.join(relative_category_path, std_root_name, s_name, new_filename)
                                 else:
                                     file_local_path = os.path.join(relative_category_path, std_root_name, new_filename)
-                            elif self.media_type == 'tv' and season_num is not None:
-                                file_local_path = os.path.join(relative_category_path, std_root_name, s_name, new_filename)
-                            else:
-                                file_local_path = os.path.join(relative_category_path, std_root_name, new_filename)
-                            
-                            # 统一使用正斜杠存入数据库
-                            file_local_path = file_local_path.replace('\\', '/')
-
-                            # 存入缓存表 (传入 local_path)
-                            if pick_code and fid:
-                                P115CacheManager.save_file_cache(fid, real_target_cid, new_filename, sha1=file_sha1, pick_code=pick_code, local_path=file_local_path)
                                 
-                        elif is_sub:
-                            if config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True):
-                                sub_filepath = os.path.join(local_dir, new_filename)
-                                if not os.path.exists(sub_filepath):
-                                    try:
-                                        logger.info(f"  ⬇️ [字幕下载] 正在向 115 拉取外挂字幕: {new_filename} ...")
-                                        url_obj = self.client.download_url(pick_code, user_agent="Mozilla/5.0")
-                                        dl_url = str(url_obj)
-                                        if dl_url:
-                                            import requests
-                                            headers = {
-                                                "User-Agent": "Mozilla/5.0",
-                                                "Cookie": P115Service.get_cookies()
-                                            }
-                                            resp = requests.get(dl_url, stream=True, timeout=30, headers=headers)
-                                            resp.raise_for_status()
-                                            with open(sub_filepath, 'wb') as f:
-                                                for chunk in resp.iter_content(chunk_size=8192):
-                                                    f.write(chunk)
-                                            logger.info(f"  ✅ [字幕下载] 下载完成！")
-                                    except Exception as e:
-                                        logger.error(f"  ❌ 下载字幕失败: {e}")
-                        
-                    except Exception as e:
-                        logger.error(f"  ❌ 生成 STRM 文件失败: {e}", exc_info=True)
+                                file_local_path = file_local_path.replace('\\', '/')
+
+                                if pick_code and fid:
+                                    P115CacheManager.save_file_cache(fid, batch_target_cid, new_filename, sha1=file_sha1, pick_code=pick_code, local_path=file_local_path)
+                                    
+                            elif is_sub:
+                                if config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True):
+                                    sub_filepath = os.path.join(local_dir, new_filename)
+                                    if not os.path.exists(sub_filepath):
+                                        try:
+                                            url_obj = self.client.download_url(pick_code, user_agent="Mozilla/5.0")
+                                            if url_obj:
+                                                import requests
+                                                headers = {"User-Agent": "Mozilla/5.0", "Cookie": P115Service.get_cookies()}
+                                                resp = requests.get(str(url_obj), stream=True, timeout=30, headers=headers)
+                                                resp.raise_for_status()
+                                                with open(sub_filepath, 'wb') as f:
+                                                    for chunk in resp.iter_content(chunk_size=8192): f.write(chunk)
+                                                logger.info(f"  ✅ [字幕下载] {new_filename} 下载完成！")
+                                        except Exception as e:
+                                            logger.error(f"  ❌ 下载字幕失败: {e}")
+                            
+                        except Exception as e:
+                            logger.error(f"  ❌ 生成 STRM 文件失败: {e}", exc_info=True)
             else:
                 err_msg = str(move_res.get('error_msg', move_res))
-                logger.error(f"  ❌ [移动失败] {file_name} -> 目标CID:{real_target_cid}, 原因: {err_msg}")
+                logger.error(f"  ❌ [批量移动失败] 目标CID:{batch_target_cid}, 包含 {len(fids)} 个文件, 原因: {err_msg}")
                 
-                # ★ 智能自愈：如果是目标目录不存在，说明缓存失效了，立刻清理本地缓存！
                 if '不存在' in err_msg or move_res.get('code') in [20004, 70004]:
-                    logger.warning(f"  🧹 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {real_target_cid}")
-                    P115CacheManager.delete_cid(real_target_cid)
+                    logger.warning(f"  🧹 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {batch_target_cid}")
+                    P115CacheManager.delete_cid(batch_target_cid)
 
         # 确定要检查的目录：如果是单文件，检查它的父目录；如果是文件夹，检查它自己
         dir_to_check = None
