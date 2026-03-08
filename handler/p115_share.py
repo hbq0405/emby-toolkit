@@ -62,27 +62,31 @@ class ShareOOPServerHelper:
             client.upload_share_file_iter(batch_id, temp_file)
             logger.info(f"  ✅ [分享挂载] 数据反哺上传成功！")
         except Exception as e:
-            logger.warning(f"  ⚠️ [分享挂载] 数据上传中心服务器失败: {e}")
-        # ★ 致命 Bug 修复：这里绝对不能删文件！交由主流程最后清理！
+            # 明确告知用户这是中心服务器的问题，不影响本地使用
+            err_str = str(e)
+            if 'os error 2' in err_str or '504' in err_str or '500' in err_str:
+                logger.warning(f"  ⚠️ [分享挂载] 中心服务器异常，反哺失败 (不影响本地 STRM 生成): {err_str}")
+            else:
+                logger.warning(f"  ⚠️ [分享挂载] 数据上传中心服务器失败: {err_str}")
 
 class ShareStrmManager:
     def __init__(self):
-        # ★ 架构升级：从独立数据库键读取配置，彻底解耦全局配置
         self.share_config = settings_db.get_setting('p115_share_config') or {}
         self.local_dir = self.share_config.get('p115_share_local_dir', '')
         
-        # etk_url 依然需要从全局配置拿，因为这是系统级参数
         global_config = get_config()
         self.etk_url = global_config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "http://127.0.0.1:5257").rstrip('/')
         
         exts = global_config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
         if not exts:
             exts = ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'mp3', 'flac', 'wav']
-        self.allowed_exts = set(e.lower() for e in exts)
+        # ★ 修复：去除用户可能输入的点号
+        self.allowed_exts = set(e.lstrip('.').lower() for e in exts)
         
         self.client = P115Service.get_cookie_client()
         self.strm_count = 0
         self.total_count = 0
+        self.skip_count = 0
 
     def extract_share_codes(self, link: str):
         link = link.strip()
@@ -179,6 +183,18 @@ class ShareStrmManager:
                         }
                         f.write(json.dumps(record).encode('utf-8') + b"\n")
                         collected_count += 1
+            elif str(share_info.get('fc', '')) == '1':
+                # ★ 修复：单文件分享兜底
+                record = {
+                    "id": share_info.get('file_id') or share_info.get('fid'),
+                    "name": share_info.get('file_name') or share_info.get('n'),
+                    "path": f"{share_title}/{share_info.get('file_name') or share_info.get('n')}",
+                    "size": share_info.get('file_size') or share_info.get('s', 0),
+                    "pc": share_info.get('pick_code') or share_info.get('pc'),
+                    "sha1": share_info.get('sha1') or share_info.get('sha')
+                }
+                f.write(json.dumps(record).encode('utf-8') + b"\n")
+                collected_count += 1
             else:
                 for record in _fetch_dir(root_cid, share_title):
                     f.write(json.dumps(record).encode('utf-8') + b"\n")
@@ -190,10 +206,15 @@ class ShareStrmManager:
     def process_single_item(self, item, share_code, receive_code, share_title):
         file_name = item.get('name', '')
         ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
-        if ext not in self.allowed_exts: return
+        
+        if ext not in self.allowed_exts: 
+            logger.debug(f"  ⏭️ [跳过] 扩展名不匹配: {file_name}")
+            return
             
         file_id = item.get('id')
-        if not file_id: return
+        if not file_id: 
+            logger.debug(f"  ⏭️ [跳过] 缺少 file_id: {file_name}")
+            return
         
         rel_path = item.get('path', file_name)
         if not rel_path.startswith(share_title):
@@ -210,13 +231,18 @@ class ShareStrmManager:
         if os.path.exists(strm_full_path):
             try:
                 with open(strm_full_path, 'r', encoding='utf-8') as f:
-                    if f.read().strip() == strm_content: need_write = False
+                    if f.read().strip() == strm_content: 
+                        need_write = False
             except: pass
             
         if need_write:
             with open(strm_full_path, 'w', encoding='utf-8') as f:
                 f.write(strm_content)
             self.strm_count += 1
+            logger.debug(f"  ✅ [生成] STRM: {strm_rel_path}")
+        else:
+            self.skip_count += 1
+            logger.debug(f"  ⏭️ [跳过] STRM 已存在且内容一致: {strm_rel_path}")
             
         try:
             from monitor_service import enqueue_file_actively
@@ -245,13 +271,12 @@ class ShareStrmManager:
             download_success = ShareOOPServerHelper.download_share_files_data(share_code, receive_code, temp_file)
             
             share_title = share_code
-            need_upload = False # 标记是否需要反哺上传
+            need_upload = False
             
             if not download_success:
                 try:
                     count, share_title = self.fetch_share_list_from_115(share_code, receive_code, temp_file)
                     if count > 0:
-                        # ★ 核心修改：这里不立刻上传，只打个标记
                         need_upload = True
                     else:
                         logger.warning(f"  ⚠️ [分享挂载] 该分享为空或拉取失败。")
@@ -268,7 +293,6 @@ class ShareStrmManager:
                         if line.strip(): yield json.loads(line)
                             
             try:
-                # ★ 核心修改：先生成 STRM
                 with ThreadPoolExecutor(max_workers=32) as executor:
                     for batch in batched(read_gzip_iter(), 1000):
                         self.total_count += len(batch)
@@ -276,19 +300,17 @@ class ShareStrmManager:
                         for future in as_completed(futures):
                             future.result()
                             
-                # ★ 核心修改：STRM 生成完毕后，再执行反哺上传 (就算 SDK 删文件也无所谓了)
                 if need_upload:
                     ShareOOPServerHelper.upload_share_files_data(share_code, receive_code, temp_file)
                     
             except Exception as e:
                 logger.error(f"  ❌ [分享挂载] 生成 STRM 发生异常: {e}")
             finally:
-                # 兜底清理
                 if os.path.exists(temp_file):
                     try: os.remove(temp_file)
                     except: pass
                     
-        logger.info(f"=== 分享挂载任务结束！共遍历 {self.total_count} 个文件，新增/更新 {self.strm_count} 个 STRM ===")
+        logger.info(f"=== 分享挂载任务结束！共遍历 {self.total_count} 个文件，新增/更新 {self.strm_count} 个 STRM，跳过已存在 {self.skip_count} 个 ===")
 
 def task_sync_share_links():
     try:
