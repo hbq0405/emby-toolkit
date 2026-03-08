@@ -1328,10 +1328,12 @@ class SmartOrganizer:
         season_num = None
         episode_num = None
         if is_tv:
-            pattern = r'(?:s|S)(\d{1,4})(?:e|E)(\d{1,4})|Ep?(\d{1,4})|第(\d{1,4})[集话]'
-            match = re.search(pattern, original_name)
+            # ★★★ 核心修复：增强正则，支持 EP, Episode, E，并加上 re.IGNORECASE ★★★
+            pattern = r'(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})|(?:ep|e|episode)[ \.\-]*?(\d{1,4})|第(\d{1,4})[集话]'
+            match = re.search(pattern, original_name, re.IGNORECASE)
             if match:
                 s, e, ep_only, zh_ep = match.groups()
+                # 如果没有提取到季号(s)，一律按第 1 季处理
                 season_num = int(s) if s else 1
                 episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
 
@@ -2134,7 +2136,7 @@ def _identify_media_enhanced(filename, forced_media_type=None, ai_translator=Non
         tmdb_id = match_tag.group(1)
         if forced_media_type:
             media_type = forced_media_type
-        elif re.search(r'(?:S\d{1,2}|E\d{1,2}|第\d+季|Season)', filename, re.IGNORECASE):
+        elif re.search(r'(?:S\d{1,2}|EP?\d{1,3}|第\d+季|Season)', filename, re.IGNORECASE):
             media_type = 'tv'
         
         clean_name = re.sub(r'\{?tmdb(?:id)?[=\-]\d+\}?', '', filename, flags=re.IGNORECASE).strip()
@@ -2156,7 +2158,7 @@ def _identify_media_enhanced(filename, forced_media_type=None, ai_translator=Non
         if forced_media_type:
             media_type = forced_media_type
         else:
-            if re.search(r'(?:S\d{1,2}|E\d{1,2}|第\d+季|Season)', filename, re.IGNORECASE):
+            if re.search(r'(?:S\d{1,2}|EP?\d{1,3}|第\d+季|Season)', filename, re.IGNORECASE):
                 media_type = 'tv'
             else:
                 media_type = 'movie'

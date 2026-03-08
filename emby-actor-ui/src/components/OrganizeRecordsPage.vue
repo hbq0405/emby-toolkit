@@ -231,13 +231,15 @@ const getSeason = (name) => {
 // 提取剧名的工具函数
 const getSeriesName = (name) => {
   if (!name) return '未知剧集';
-  const parts = name.split(' - S0');
-  if (parts.length > 1) return parts[0];
-  const parts2 = name.split(' - S1');
-  if (parts2.length > 1) return parts2[0];
   
-  const match = name.match(/^(.*?)(S\d{1,2}|Season|第)/i);
-  return match ? match[1].replace(/[\.\-_]/g, ' ').trim() : '未知剧集';
+  // 优先从整理后的标准命名提取 (例如: 匹兹堡医护前线 (2025) - S02E09...)
+  // 匹配 " - SxxExx" 前面的所有内容
+  const matchStd = name.match(/^(.*?)\s*-\s*S\d{2}E\d{2}/i);
+  if (matchStd) return matchStd[1].trim();
+  
+  // 兜底从原文件名提取 (遇到 S01, EP01, Season, 第x季 就截断)
+  const matchOrig = name.match(/^(.*?)(?:S\d{1,2}|EP?\d{1,3}|Season|第)/i);
+  return matchOrig ? matchOrig[1].replace(/[\.\-_]/g, ' ').trim() : '未知剧集';
 };
 
 // 将扁平数据按 TMDb ID 和 季号 智能折叠为树形结构
