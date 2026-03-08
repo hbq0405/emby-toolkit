@@ -513,11 +513,11 @@ def _clean_link(link):
 
 def _standardize_115_file(client, file_item, save_cid, raw_title, tmdb_id, media_type='movie'):
     """
-    对 115 新入库的文件/文件夹进行标准化重命名
+    对 115 新入库的文件/文件夹进行基础的标准化重命名 (套壳加 TMDb ID)
     """
     try:
         # ==================================================
-        # 1. 获取官方元数据 (TMDb) - 保持原逻辑
+        # 1. 获取官方元数据 (TMDb)
         # ==================================================
         final_title = raw_title
         final_year = None
@@ -539,7 +539,7 @@ def _standardize_115_file(client, file_item, save_cid, raw_title, tmdb_id, media
                         release_date = details.get('release_date')
                         if release_date: final_year = release_date[:4]
         except Exception as e:
-            logger.warning(f"  ⚠️ [整理] TMDb 获取失败: {e}")
+            logger.warning(f"  ⚠️ [基础整理] TMDb 获取失败: {e}")
 
         if not final_year:
             match = re.search(r'[(（](\d{4})[)）]', raw_title)
@@ -549,32 +549,38 @@ def _standardize_115_file(client, file_item, save_cid, raw_title, tmdb_id, media
         std_name = f"{safe_title} ({final_year}) {{tmdb={tmdb_id}}}" if final_year else f"{safe_title} {{tmdb={tmdb_id}}}"
 
         # ==================================================
-        # 2. 核心修复：兼容 OpenAPI 和 WebAPI 键名
+        # 2. 核心修复：精准提取自身 ID，绝不混用父目录 CID
         # ==================================================
         fc_val = file_item.get('fc') if file_item.get('fc') is not None else file_item.get('type')
-        file_id = file_item.get('fid') or file_item.get('file_id')
-        
-        is_directory = (file_item.get('ico') == 'folder') or (not file_id) or (str(fc_val) == '0')
+        # ★ 修复：必须使用 fid 或 file_id 作为操作对象的唯一标识
+        item_id = file_item.get('fid') or file_item.get('file_id')
         current_name = file_item.get('n') or file_item.get('fn') or file_item.get('file_name')
+        
+        if not item_id:
+            logger.error(f"  ❌ [基础整理] 无法获取项目自身 ID，跳过操作: {current_name}")
+            return
+
+        is_directory = str(fc_val) == '0'
 
         if current_name == std_name:
-            logger.info(f"  ✅ [整理] 名称已符合标准，跳过操作。")
+            logger.info(f"  ✅ [基础整理] 名称已符合标准，跳过操作。")
             return
 
         if is_directory:
-            folder_id = file_item.get('cid') or file_item.get('file_id')
-            logger.info(f"  🛠️ [整理] 识别为文件夹，执行重命名: {current_name} -> {std_name}")
+            # === 情况 A: 文件夹直接重命名 ===
+            logger.info(f"  🛠️ [基础整理] 识别为文件夹，执行重命名: {current_name} -> {std_name}")
 
-            rename_res = client.fs_rename((folder_id, std_name))
+            # ★ 修复：传入正确的自身 ID
+            rename_res = client.fs_rename((item_id, std_name))
 
             if isinstance(rename_res, dict) and rename_res.get('state'):
-                logger.info(f"  ✅ [整理] 文件夹重命名成功")
+                logger.info(f"  ✅ [基础整理] 文件夹重命名成功")
             else:
-                logger.warning(f"  ⚠️ [整理] 重命名失败: {rename_res}")
+                logger.warning(f"  ⚠️ [基础整理] 重命名失败: {rename_res}")
 
         else:
-            # === 情况 B: 单文件归档 ===
-            logger.info(f"  🛠️ [整理] 识别为单文件，正在归档至目录: {std_name}")
+            # === 情况 B: 单文件创建外层标准文件夹并移入 ===
+            logger.info(f"  🛠️ [基础整理] 识别为单文件，正在归档至标准目录: {std_name}")
 
             target_dir_cid = None
             search_res = client.fs_files({'cid': save_cid, 'search_value': std_name, 'record_open_time': 0, 'count_folders': 0})
@@ -582,8 +588,9 @@ def _standardize_115_file(client, file_item, save_cid, raw_title, tmdb_id, media
                 for item in search_res['data']:
                     item_name = item.get('n') or item.get('fn') or item.get('file_name')
                     item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                    if item_name == std_name and (item.get('ico') == 'folder' or str(item_fc) == '0'):
-                        target_dir_cid = item.get('cid') or item.get('file_id')
+                    if item_name == std_name and str(item_fc) == '0':
+                        # ★ 修复：找到目标文件夹后，提取它的自身 ID 作为移动的目标 CID
+                        target_dir_cid = item.get('fid') or item.get('file_id')
                         break
 
             if not target_dir_cid:
@@ -591,19 +598,20 @@ def _standardize_115_file(client, file_item, save_cid, raw_title, tmdb_id, media
                 if isinstance(mkdir_res, dict) and mkdir_res.get('state'):
                     target_dir_cid = mkdir_res.get('cid')
                 else:
-                    logger.error(f"  ❌ [整理] 创建文件夹失败")
+                    logger.error(f"  ❌ [基础整理] 创建标准文件夹失败")
                     return
 
-            move_res = client.fs_move([file_id], target_dir_cid)
+            # ★ 修复：传入正确的单文件 ID 和目标文件夹 ID
+            move_res = client.fs_move(item_id, target_dir_cid)
             if isinstance(move_res, dict) and move_res.get('state'):
-                logger.info(f"  ✅ [整理] 单文件已归档成功")
+                logger.info(f"  ✅ [基础整理] 单文件已成功归档至标准目录")
             else:
-                logger.warning(f"  ⚠️ [整理] 移动文件失败")
+                logger.warning(f"  ⚠️ [基础整理] 移动文件失败: {move_res}")
 
     except Exception as e:
-        logger.error(f"  ⚠️ 标准化重命名流程异常: {e}", exc_info=True)
+        logger.error(f"  ⚠️ 基础整理流程异常: {e}", exc_info=True)
 
-def push_to_115(resource_link, title, tmdb_id=None, media_type=None):
+def push_to_115(resource_link, title, tmdb_id=None, media_type=None, season_number=None):
     """
     智能推送：支持 115/115cdn/anxia 转存 和 磁力离线
     并执行 智能整理 (Smart Organize)
@@ -717,12 +725,22 @@ def push_to_115(resource_link, title, tmdb_id=None, media_type=None):
             
             if tmdb_id:
                 try:
-                    # ★ 从全局配置读取整理开关
                     enable_organize = global_config.get(constants.CONFIG_OPTION_115_ENABLE_ORGANIZE, False)
                     
                     if enable_organize:
                         logger.info("  🧠 [整理] 智能整理已开启，开始分析...")
                         organizer = SmartOrganizer(client, tmdb_id, media_type, title)
+                        
+                        # ==================================================
+                        # ★★★ 核心修改：注入强制季号，锁死识别结果 ★★★
+                        # ==================================================
+                        if season_number is not None:
+                            try:
+                                organizer.forced_season = int(season_number)
+                                logger.info(f"  📌 [整理] 已接收到前端传递的强制季号: Season {organizer.forced_season}")
+                            except:
+                                pass
+
                         target_cid = organizer.get_target_cid()
                         organizer.execute(found_item, target_cid)
                     else:
@@ -745,12 +763,12 @@ def push_to_115(resource_link, title, tmdb_id=None, media_type=None):
 
     return False
 
-def handle_push_request(link, title, tmdb_id=None, media_type=None):
+def handle_push_request(link, title, tmdb_id=None, media_type=None, season_number=None):
     """
     统一推送入口
     """
     # 推送到 115 (传递 ID 以便重命名)
-    push_to_115(link, title, tmdb_id, media_type)
+    push_to_115(link, title, tmdb_id, media_type, season_number)
     
     return True
 
@@ -791,7 +809,7 @@ def auto_download_best_resource(tmdb_id, media_type, title, season_number=None, 
                     logger.info(f"  👉 尝试第 {index + 1} 个资源: {res['title']}")
                     
                     # 调用统一推送入口 (115 -> CMS Notify)
-                    handle_push_request(res['link'], title, tmdb_id, media_type)
+                    handle_push_request(res['link'], title, tmdb_id, media_type, season_number)
                     
                     logger.info(f"  ✅ 资源推送成功，停止后续尝试。")
                     return True

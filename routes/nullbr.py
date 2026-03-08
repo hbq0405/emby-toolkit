@@ -110,7 +110,8 @@ def push_resource():
             data.get('link'), 
             data.get('title', '未知资源'),
             tmdb_id=data.get('tmdb_id'),
-            media_type=data.get('media_type')
+            media_type=data.get('media_type'),
+            season_number=data.get('season_number') 
         )
         return jsonify({"status": "success", "message": "已添加至 115 离线任务"})
     except Exception as e:

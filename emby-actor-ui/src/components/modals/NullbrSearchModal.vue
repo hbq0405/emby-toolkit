@@ -168,10 +168,10 @@ const confirmPush = async (resource) => {
       link: resource.link,
       title: resource.title || currentItemTitle.value,
       tmdb_id: currentItemId.value,
-      media_type: currentItemType.value
+      media_type: currentItemType.value,
+      season_number: currentSeasonNumber.value 
     });
     message.success('已推送任务');
-    // showModal.value = false; // 推送成功后是否关闭弹窗？看个人喜好，这里暂时不关
   } catch (error) {
     message.error('推送失败: ' + (error.response?.data?.message || error.message));
   } finally {
