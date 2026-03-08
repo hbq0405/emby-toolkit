@@ -1988,9 +1988,20 @@ def task_backup_mediainfo(processor):
                         # ★ 核心修复：如果找不到父剧集ID，强制设为 None，防止把分集ID写进待复核列表
                         target_emby_id = None
                 
-                pcs = item['file_pickcode_json'] if isinstance(item['file_pickcode_json'], list) else []
-                sha1s = item['file_sha1_json'] if isinstance(item['file_sha1_json'], list) else []
-                assets = item['asset_details_json'] if isinstance(item['asset_details_json'], list) else []
+                def _safe_parse_json_list(data):
+                    if isinstance(data, list):
+                        return data
+                    if isinstance(data, str):
+                        try:
+                            parsed = json.loads(data)
+                            return parsed if isinstance(parsed, list) else []
+                        except:
+                            return []
+                    return []
+
+                pcs = _safe_parse_json_list(item.get('file_pickcode_json'))
+                sha1s = _safe_parse_json_list(item.get('file_sha1_json'))
+                assets = _safe_parse_json_list(item.get('asset_details_json'))
                 
                 needs_db_update = False
                 
