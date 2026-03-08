@@ -217,7 +217,7 @@ const editForm = ref({
   status: '',
   tmdb_id: '',
   media_type: 'movie',
-  season_num: null, // ★ 新增季号字段
+  season_num: null, 
   target_cid: null
 });
 
@@ -268,11 +268,10 @@ const processedTableData = computed(() => {
       result.push({
         id: `group_${key}`,
         isGroup: true,
-        original_name: `📺 ${seriesName} | TMDb: ${first.tmdb_id} | ${season} | 共 ${children.length} 集`,
+        original_name: `📺 ${seriesName} | ${season} | 共 ${children.length} 集`,
         renamed_name: `支持整季批量纠错 / 批量删除`,
         status: 'success',
         media_type: 'tv',
-        tmdb_id: first.tmdb_id,
         target_cid: first.target_cid,
         category_name: first.category_name,
         processed_at: first.processed_at,
