@@ -729,15 +729,44 @@ class P115DeleteBuffer:
         client = P115Service.get_client()
         if not client: return
 
+        def _safe_batch_delete(ids, is_dir=False):
+            """带重试和降级机制的批量删除，返回成功删除的 ID 列表"""
+            if not ids: return []
+            item_type = "目录" if is_dir else "文件"
+            
+            max_retries = 3
+            for attempt in range(max_retries):
+                resp = client.fs_delete(ids)
+                if resp.get('state'):
+                    return ids
+                    
+                logger.error(f"  ❌ [批量销毁] 115 删除{item_type}失败 (第 {attempt + 1}/{max_retries} 次): {resp}")
+                if attempt < max_retries - 1:
+                    logger.info(f"  ⏳ 等待 5 秒后重试...")
+                    time.sleep(5)
+                    
+            # 降级为逐个删除，精准定位问题文件
+            logger.warning(f"  ⚠️ [批量销毁] 批量删除彻底失败，降级为逐个删除以定位问题...")
+            success_ids = []
+            for item_id in ids:
+                resp = client.fs_delete([item_id])
+                if resp.get('state'):
+                    success_ids.append(item_id)
+                else:
+                    logger.error(f"  💀 [逐个销毁] 删除{item_type}失败 ID: {item_id}, 原因: {resp}")
+                    
+            if success_ids:
+                logger.info(f"  ✅ [逐个销毁] 成功挽救删除 {len(success_ids)} 个{item_type}。")
+                
+            return success_ids
+
         # 1. 终极必杀：一键批量删除所有收集到的文件
         if fids:
             logger.info(f"  💥 [批量销毁] 缓冲期结束，正在向 115 网盘发送批量删除指令 ({len(fids)} 个文件)...")
-            resp = client.fs_delete(fids)
-            if resp.get('state'):
-                P115CacheManager.delete_files(fids)
-                logger.info(f"  🧹 [批量销毁] 成功在网盘删除，并已清理本地缓存。")
-            else:
-                logger.error(f"  ❌ [批量销毁] 115 删除接口调用失败: {resp}")
+            success_fids = _safe_batch_delete(fids, is_dir=False)
+            if success_fids:
+                P115CacheManager.delete_files(success_fids)
+                logger.info(f"  🧹 [批量销毁] 成功在网盘删除 {len(success_fids)} 个文件，并已清理本地缓存。")
 
         # =================================================================
         # ★★★ 核心修复：获取免死金牌名单 (受保护的 CID) ★★★
@@ -766,6 +795,8 @@ class P115DeleteBuffer:
         allowed_exts = set(e.lower() for e in configured_exts)
         media_exts = allowed_exts | {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg'}
 
+        empty_cids_to_delete = []
+
         for cid in cids:
             # ★ 触发免死金牌：如果是受保护的目录，直接跳过，绝不执行删除！
             if str(cid) in protected_cids:
@@ -792,9 +823,17 @@ class P115DeleteBuffer:
 
             count_media(cid)
             if media_count == 0:
-                client.fs_delete([cid])
-                P115CacheManager.delete_cid(cid)
-                logger.info(f"  🧹 目录内已无有效媒体文件，执行删除: CID {cid}")
+                empty_cids_to_delete.append(cid)
+                logger.info(f"  🗑️ 判定为空目录，加入待清理队列: CID {cid}")
+
+        # ★ 3. 批量删除空目录
+        if empty_cids_to_delete:
+            logger.info(f"  💥 [批量清理] 正在向 115 网盘发送批量删除空目录指令 ({len(empty_cids_to_delete)} 个目录)...")
+            success_cids = _safe_batch_delete(empty_cids_to_delete, is_dir=True)
+            if success_cids:
+                for cid in success_cids:
+                    P115CacheManager.delete_cid(cid)
+                logger.info(f"  🧹 [批量清理] 成功在网盘删除 {len(success_cids)} 个空目录，并已清理本地缓存。")
 
 def get_config():
     return config_manager.APP_CONFIG
