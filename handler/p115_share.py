@@ -118,51 +118,63 @@ class ShareStrmManager:
             
         logger.info(f"  🚀 [分享挂载] 开始从 115 官方接口递归拉取分享数据...")
         
+        # 1. 请求 snap 接口获取第一层数据
         snap_url = f"https://webapi.115.com/share/snap?share_code={share_code}&receive_code={receive_code}"
         snap_res = self.client.request(snap_url)
+        
         if not snap_res.get('state'):
             raise Exception(f"分享链接无效或提取码错误: {snap_res.get('error', '未知错误')}")
             
         share_info = snap_res.get('data', {})
         share_title = share_info.get('share_title', share_code)
+        top_list = share_info.get('list', [])
         
         collected_count = 0
         
+        # 2. 定义处理列表的生成器
+        def _process_list(item_list, current_path):
+            for item in item_list:
+                item_name = item.get('n') or item.get('file_name')
+                is_dir = str(item.get('fc', item.get('type'))) == '0'
+                
+                if is_dir:
+                    new_path = f"{current_path}/{item_name}" if current_path else item_name
+                    # 文件夹的 ID 可能是 cid 或 fid
+                    folder_id = item.get('cid') or item.get('fid')
+                    yield from _fetch_dir(folder_id, new_path)
+                else:
+                    yield {
+                        "id": item.get('fid') or item.get('file_id'),
+                        "name": item_name,
+                        "path": f"{current_path}/{item_name}" if current_path else item_name,
+                        "size": item.get('s') or item.get('size', 0),
+                        "pc": item.get('pc') or item.get('pick_code'),
+                        "sha1": item.get('sha') or item.get('sha1')
+                    }
+
+        # 3. 定义递归请求 down 接口的生成器
         def _fetch_dir(cid, current_path):
-            nonlocal collected_count
             offset = 0
             limit = 1000
             while True:
                 url = f"https://webapi.115.com/share/down?share_code={share_code}&receive_code={receive_code}&cid={cid}&limit={limit}&offset={offset}"
                 res = self.client.request(url)
+                
                 if not res.get('state'): break
                 
-                data = res.get('data', {}).get('list', [])
-                if not data: break
+                data_list = res.get('data', {}).get('list', [])
+                if not data_list: break
                 
-                for item in data:
-                    item_name = item.get('n') or item.get('file_name')
-                    is_dir = str(item.get('fc', item.get('type'))) == '0'
-                    
-                    if is_dir:
-                        new_path = f"{current_path}/{item_name}" if current_path else item_name
-                        yield from _fetch_dir(item.get('fid') or item.get('cid'), new_path)
-                    else:
-                        yield {
-                            "id": item.get('fid') or item.get('file_id'),
-                            "name": item_name,
-                            "path": f"{current_path}/{item_name}" if current_path else item_name,
-                            "size": item.get('s') or item.get('size', 0),
-                            "pc": item.get('pc') or item.get('pick_code'),
-                            "sha1": item.get('sha') or item.get('sha1')
-                        }
+                yield from _process_list(data_list, current_path)
                 
-                if len(data) < limit: break
+                if len(data_list) < limit: break
                 offset += limit
-                time.sleep(0.5)
+                time.sleep(0.5) # 防风控休眠
 
+        # 4. 开始边解析边写入 GZIP
         with gzip.open(temp_file, "wb") as f:
-            for record in _fetch_dir(share_info.get('cid', ''), share_title):
+            # 从 snap 返回的第一层列表开始处理
+            for record in _process_list(top_list, share_title):
                 f.write(json.dumps(record).encode('utf-8') + b"\n")
                 collected_count += 1
                 if collected_count % 1000 == 0:
