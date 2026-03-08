@@ -441,7 +441,8 @@ def init_db():
                         media_type TEXT,
                         target_cid TEXT,               -- 目标分类CID
                         category_name TEXT,            -- 目标分类名称
-                        processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                        processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        is_center_cached BOOLEAN DEFAULT FALSE
                     )
                 """)
 
@@ -468,6 +469,9 @@ def init_db():
                             "local_path": "TEXT",
                             "sha1": "TEXT",
                             "pick_code": "TEXT"
+                        },
+                        'p115_organize_records': {
+                            "is_center_cached": "BOOLEAN DEFAULT FALSE"
                         },
                         'emby_users': {
                             "policy_json": "JSONB"  

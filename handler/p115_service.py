@@ -648,7 +648,7 @@ class P115CacheManager:
 # ======================================================================
 class P115RecordManager:
     @staticmethod
-    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None):
+    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None, is_center_cached=False):
         """添加或更新整理记录（基于 file_id 唯一约束）"""
         if not file_id or not original_name: return
         try:
@@ -656,8 +656,8 @@ class P115RecordManager:
                 with conn.cursor() as cursor:
                     cursor.execute("""
                         INSERT INTO p115_organize_records 
-                        (file_id, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        (file_id, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at, is_center_cached)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
                         ON CONFLICT (file_id) 
                         DO UPDATE SET 
                             status = EXCLUDED.status,
@@ -666,10 +666,11 @@ class P115RecordManager:
                             target_cid = EXCLUDED.target_cid,
                             category_name = EXCLUDED.category_name,
                             renamed_name = EXCLUDED.renamed_name,
-                            processed_at = NOW()
+                            processed_at = NOW(),
+                            is_center_cached = EXCLUDED.is_center_cached
                     """, (str(file_id), str(original_name), str(status), str(tmdb_id) if tmdb_id else None, 
                           str(media_type) if media_type else None, str(target_cid) if target_cid else None, 
-                          str(category_name) if category_name else None, str(renamed_name) if renamed_name else None))
+                          str(category_name) if category_name else None, str(renamed_name) if renamed_name else None, bool(is_center_cached)))
                     conn.commit()
         except Exception as e:
             logger.error(f"  ❌ 写入 115 整理记录失败: {e}")
@@ -1133,14 +1134,27 @@ class SmartOrganizer:
 
         return info_dict
 
-    def _fetch_and_parse_mediainfo(self, sha1):
+    def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None):
         """
         通过 SHA1 获取真实的媒体信息，并转换为乐高重命名参数
         """
-        if not sha1: return {}
+        if not sha1: return {}, False
         
-        # 1. 先查本地缓存
-        raw_json = media_db.get_mediainfo_by_sha1(sha1) if sha1 else None
+        raw_json = None
+        is_center = False
+        data_source = "本地缓存"
+
+        # 1. 先查本地数据库
+        try:
+            from database.connection import get_db_connection
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s", (sha1,))
+                    row = cursor.fetchone()
+                    if row and row['mediainfo_json']:
+                        raw_json = row['mediainfo_json'] if isinstance(row['mediainfo_json'], list) else json.loads(row['mediainfo_json'])
+        except Exception as e:
+            pass
 
         # 2. 本地没有，尝试查 P115Center 中心服务器
         if not raw_json:
@@ -1151,10 +1165,12 @@ class SmartOrganizer:
                     resp = processor.p115_center.download_emby_mediainfo_data([sha1])
                     if resp and sha1 in resp:
                         raw_json = resp[sha1]
+                        is_center = True
+                        data_source = "中心服务器"
             except Exception:
                 pass
 
-        if not raw_json: return {}
+        if not raw_json: return {}, False
 
         # 3. 开始解析 Emby 的真实数据
         info = {}
@@ -1169,13 +1185,11 @@ class SmartOrganizer:
             audio_streams = [s for s in streams if s.get("Type") == "Audio"]
 
             if video_stream:
-                # 真实分辨率
                 w = video_stream.get("Width", 0)
                 if w >= 3800: info['resolution'] = '2160p'
                 elif w >= 1900: info['resolution'] = '1080p'
                 elif w >= 1200: info['resolution'] = '720p'
 
-                # 真实编码与色深
                 codec_raw = video_stream.get("Codec", "").lower()
                 codec_map = {'hevc': 'H265', 'h264': 'H264', 'avc': 'H264', 'av1': 'AV1'}
                 c_str = codec_map.get(codec_raw, codec_raw.upper())
@@ -1185,24 +1199,18 @@ class SmartOrganizer:
                 else:
                     info['codec'] = c_str
 
-                # 真实特效 (HDR/DV 细分)
                 v_range = video_stream.get("VideoRange", "")
                 ext_type = video_stream.get("ExtendedVideoType", "")
                 ext_sub_type = video_stream.get("ExtendedVideoSubType", "")
-                ext_desc = video_stream.get("ExtendedVideoSubTypeDescription", "") # 提取描述，里面有 HDR10 compatible
+                ext_desc = video_stream.get("ExtendedVideoSubTypeDescription", "")
 
                 is_dv = "DolbyVision" in v_range or "DolbyVision" in ext_type
                 
-                # ★★★ 精准识别 HDR 版本 ★★★
                 hdr_str = ""
-                if "HDR10+" in v_range or "HDR10+" in ext_desc:
-                    hdr_str = "HDR10+"
-                elif "HDR10" in v_range or "HDR10" in ext_desc:
-                    hdr_str = "HDR10"
-                elif "HDR" in v_range or video_stream.get("ColorTransfer") == "smpte2084":
-                    hdr_str = "HDR"
+                if "HDR10+" in v_range or "HDR10+" in ext_desc: hdr_str = "HDR10+"
+                elif "HDR10" in v_range or "HDR10" in ext_desc: hdr_str = "HDR10"
+                elif "HDR" in v_range or video_stream.get("ColorTransfer") == "smpte2084": hdr_str = "HDR"
 
-                # ★★★ 解析具体的 DoVi Profile ★★★
                 dv_str = "DV"
                 if is_dv:
                     if "Profile8" in ext_sub_type or "Profile 8" in ext_desc: dv_str = "DoVi P8"
@@ -1210,21 +1218,17 @@ class SmartOrganizer:
                     elif "Profile5" in ext_sub_type or "Profile 5" in ext_desc: dv_str = "DoVi P5"
                     else: dv_str = "DoVi"
 
-                # 融合输出
                 if is_dv and hdr_str: info['effect'] = f"{hdr_str} {dv_str}"
                 elif is_dv: info['effect'] = dv_str
                 elif hdr_str: info['effect'] = hdr_str
 
-                # 真实帧率
                 fps = video_stream.get("RealFrameRate") or video_stream.get("AverageFrameRate")
                 if fps: info['fps'] = f"{round(fps)}fps"
 
             if audio_streams:
-                # 真实音轨
                 audio_tags = []
                 if len(audio_streams) > 1: audio_tags.append("Multi")
 
-                # 取第一条默认音轨或第一条音轨作为主音轨展示
                 primary_audio = next((s for s in audio_streams if s.get("IsDefault")), audio_streams[0])
                 acodec = primary_audio.get("Codec", "").lower()
                 profile = primary_audio.get("Profile", "").lower()
@@ -1249,7 +1253,17 @@ class SmartOrganizer:
         except Exception as e:
             logger.warning(f"  ⚠️ 解析真实媒体信息失败: {e}")
 
-        return info
+        # ★★★ 神医赋能日志转移到这里，并区分数据源 ★★★
+        if guessed_info is not None and info:
+            corrected_items = []
+            for k, v in info.items():
+                if v and guessed_info.get(k) != v:
+                    corrected_items.append(f"{k}: '{guessed_info.get(k, '空')}' -> '{v}'")
+            
+            if corrected_items:
+                logger.info(f"  ✨ 成功利用 {data_source} 补全/纠错文件参数: {', '.join(corrected_items)}")
+
+        return info, is_center
 
     def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
@@ -1283,22 +1297,17 @@ class SmartOrganizer:
         video_info = self._extract_video_info(search_name)
 
         # ★★★ 神医降维打击：基于 SHA1 获取真实参数并覆盖猜测 ★★★
+        is_center_cached = False
         if not is_sub: # 字幕文件不需要查视频流
             sha1 = file_node.get('sha1') or file_node.get('sha')
             if sha1:
-                real_info = self._fetch_and_parse_mediainfo(sha1)
+                # 传入 video_info 供内部比对打印日志
+                real_info, is_center_cached = self._fetch_and_parse_mediainfo(sha1, video_info)
                 if real_info:
-                    # 记录一下被纠正的参数，方便看日志爽一下
-                    corrected_items = []
                     for k, v in real_info.items():
                         if v: # 只要真实数据有值，无脑覆盖文件名的猜测
-                            if video_info.get(k) != v:
-                                corrected_items.append(f"{k}: '{video_info.get(k, '空')}' -> '{v}'")
                             video_info[k] = v
                     
-                    if corrected_items:
-                        logger.info(f"  ✨ [神医赋能] 成功利用真实媒体信息补全/纠错文件参数: {', '.join(corrected_items)}")
-
         # 解析季集号 (支持到9999集)
         season_num = None
         episode_num = None
@@ -1369,7 +1378,7 @@ class SmartOrganizer:
 
         core_name = "".join(final_parts)
         new_name = f"{core_name}{lang_suffix}.{ext}"
-        return new_name, season_num
+        return new_name, season_num, is_center_cached
 
     def _scan_files_recursively(self, cid, depth=0, max_depth=3, current_rel_path=""):
         all_files = []
@@ -1728,7 +1737,7 @@ class SmartOrganizer:
                             break
                     real_target_cid = current_parent
             else:
-                new_filename, season_num = self._rename_file_node(
+                new_filename, season_num, is_center_cached = self._rename_file_node(
                     file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title
                 )
 
@@ -1799,7 +1808,8 @@ class SmartOrganizer:
                             media_type=self.media_type,
                             target_cid=target_cid,
                             category_name=category_name,
-                            renamed_name=new_filename
+                            renamed_name=new_filename,
+                            is_center_cached=is_center_cached if not keep_original else False
                         )
                     except Exception as e:
                         logger.error(f"  ❌ 记录文件整理日志失败: {e}")

@@ -35,6 +35,14 @@
           </n-statistic>
         </n-card>
       </n-gi>
+      <n-gi>
+        <n-card class="stat-card" size="small">
+          <n-statistic label="命中中心缓存">
+            <template #prefix><n-icon :component="CloudDoneIcon" color="#18a058" /></template>
+            {{ stats.center_cached || 0 }}
+          </n-statistic>
+        </n-card>
+      </n-gi>
     </n-grid>
 
     <n-card class="dashboard-card" :bordered="false" size="small">
@@ -173,7 +181,8 @@ import {
   SparklesOutline as SparklesIcon,
   ConstructOutline as EditIcon,
   TrashOutline as TrashIcon,
-  FolderOpenOutline as FolderIcon
+  FolderOpenOutline as FolderIcon,
+  CloudDoneOutline as CloudDoneIcon
 } from '@vicons/ionicons5';
 
 const message = useMessage();
@@ -196,7 +205,8 @@ const stats = ref({ total: 0, success: 0, unrecognized: 0, thisWeek: 0 });
 const statusOptions = [
   { label: '全部状态', value: 'all' },
   { label: '识别成功', value: 'success' },
-  { label: '未识别/异常', value: 'unrecognized' }
+  { label: '未识别/异常', value: 'unrecognized' },
+  { label: '命中中心缓存', value: 'center_cached' }
 ];
 const categoryOptions = ref([{ label: '所有分类', value: null }]);
 
@@ -329,10 +339,25 @@ const columns = computed(() => [
     width: 200,
     render(row) {
       if (row.status !== 'success') return h(NText, { depth: 3 }, { default: () => '-' });
-      return h(NSpace, { size: 'small' }, () => [
+      
+      const tags = [
         h(NTag, { size: 'small', type: 'info', bordered: false }, { default: () => row.media_type === 'tv' ? '剧集' : '电影' }),
         h(NTag, { size: 'small', bordered: false, style: 'cursor: pointer;', onClick: () => window.open(`https://www.themoviedb.org/${row.media_type}/${row.tmdb_id}`, '_blank') }, { default: () => `TMDb: ${row.tmdb_id}` })
-      ]);
+      ];
+
+      if (row.is_center_cached) {
+        tags.push(
+          h(NTooltip, null, {
+            trigger: () => h(NTag, { size: 'small', type: 'success', bordered: false, round: true }, { 
+              icon: () => h(NIcon, { component: CloudDoneIcon }),
+              default: () => '中心缓存' 
+            }),
+            default: () => '该媒体的真实参数由 P115Center 中心服务器提供'
+          })
+        );
+      }
+
+      return h(NSpace, { size: 'small' }, () => tags);
     }
   },
   {
