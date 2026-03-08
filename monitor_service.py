@@ -424,7 +424,7 @@ def pause_queue_processing():
     """暂停监控队列处理 (进入蓄水池模式)"""
     global IS_PROCESSING_PAUSED
     IS_PROCESSING_PAUSED = True
-    logger.info("  ⏸️ [实时监控] 已开启队列抑制，暂停处理新文件 (等待网盘整理完成)...")
+    logger.info("  ⏸️ [实时监控] 已开启队列抑制，暂停处理新文件 (等待网盘处理完成)...")
 
 def resume_queue_processing():
     """恢复监控队列处理 (开闸放水)"""
