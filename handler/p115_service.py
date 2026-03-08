@@ -10,7 +10,7 @@ from gevent import spawn_later
 import time
 import config_manager
 import constants
-from database import settings_db, media_db
+from database import settings_db
 from database.connection import get_db_connection
 import handler.tmdb as tmdb
 import utils
