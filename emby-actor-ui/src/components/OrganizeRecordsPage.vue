@@ -272,6 +272,7 @@ const processedTableData = computed(() => {
         renamed_name: `支持整季批量纠错 / 批量删除`,
         status: 'success',
         media_type: 'tv',
+        tmdb_id: first.tmdb_id,
         target_cid: first.target_cid,
         category_name: first.category_name,
         processed_at: first.processed_at,
