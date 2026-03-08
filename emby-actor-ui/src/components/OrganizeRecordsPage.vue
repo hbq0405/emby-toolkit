@@ -2,7 +2,7 @@
 <template>
   <n-layout content-style="padding: 24px;">
     <!-- 顶部统计仪表盘 -->
-    <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:4" responsive="screen" style="margin-bottom: 24px;">
+    <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:5" responsive="screen" style="margin-bottom: 24px;">
       <n-gi>
         <n-card class="stat-card" size="small">
           <n-statistic label="总处理记录">
