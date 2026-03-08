@@ -2498,13 +2498,11 @@ const confirmFolderSelection = () => {
     configModel.value.p115_media_root_cid = cid;
     configModel.value.p115_media_root_name = name;
   } else if (selectorContext.value === 'rule') {
-    // 规则编辑模式
     currentRule.value.cid = cid;
     currentRule.value.dir_name = name;
   } else if (selectorContext.value === 'share_transfer') {
-    // ★ 新增：处理分享转存目录的选择
-    configModel.value.p115_share_transfer_cid = cid;
-    configModel.value.p115_share_transfer_name = name;
+    // ★ 调用子组件暴露的方法更新数据
+    shareMountModalRef.value?.updateTransferFolder(cid, name);
   }
   
   message.success(`已选择: ${name}`);

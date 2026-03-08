@@ -947,14 +947,54 @@ def save_share_cache(cache):
     with open(SHARE_CACHE_FILE, 'w') as f:
         json.dump(cache, f)
 
+@p115_bp.route('/share_config', methods=['GET', 'POST'])
+@admin_required
+def handle_share_config():
+    """独立的分享挂载配置接口，不触发全局重载"""
+    if request.method == 'GET':
+        config = settings_db.get_setting('p115_share_config') or {
+            "p115_share_enabled": False,
+            "p115_share_local_dir": "",
+            "p115_share_links": [],
+            "p115_share_transfer_cid": "",
+            "p115_share_transfer_name": "",
+            "p115_share_auto_cleanup": True,
+            "p115_share_cleanup_hours": 24.0
+        }
+        return jsonify({"success": True, "data": config})
+    
+    if request.method == 'POST':
+        data = request.json
+        settings_db.save_setting('p115_share_config', data)
+        return jsonify({"success": True, "message": "分享挂载配置已保存"})
+
+@p115_bp.route('/share_sync', methods=['POST'])
+@admin_required
+def trigger_share_sync():
+    """手动触发 115 分享链接同步任务"""
+    # 改为从独立配置读取
+    share_config = settings_db.get_setting('p115_share_config') or {}
+    if not share_config.get('p115_share_enabled'):
+        return jsonify({"success": False, "message": "分享挂载功能未开启"}), 400
+        
+    try:
+        from handler.p115_share import task_sync_share_links
+        import threading
+        threading.Thread(target=task_sync_share_links, daemon=True).start()
+        return jsonify({"success": True, "message": "分享同步任务已在后台启动，请查看日志了解进度。"})
+    except Exception as e:
+        logger.error(f"  ❌ 启动分享同步任务失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500
+
+# ★ 修改 play_share_video，让它从独立配置读取 transfer_cid
 @p115_bp.route('/play_share/<share_code>/<receive_code>/<file_id>/<path:filename>', methods=['GET', 'HEAD'])
 def play_share_video(share_code, receive_code, file_id, filename):
-    """分享挂载专用：播放时动态转存并获取直链"""
-    if request.method == 'HEAD':
-        return '', 200
+    if request.method == 'HEAD': return '', 200
 
-    config = get_config()
-    transfer_cid = config.get('p115_share_transfer_cid')
+    # ★ 改为从独立配置读取
+    share_config = settings_db.get_setting('p115_share_config') or {}
+    transfer_cid = share_config.get('p115_share_transfer_cid')
+    
     if not transfer_cid:
         return "未配置分享转存目录，请在设置中配置", 400
 

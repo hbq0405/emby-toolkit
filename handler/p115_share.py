@@ -11,6 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from itertools import islice
 
 from handler.p115_service import P115Service, get_config
+from database import settings_db
 import constants
 
 try:
@@ -21,23 +22,16 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 def batched(iterable, n):
-    """Python 3.12 以下版本的 batched 替代方案"""
     it = iter(iterable)
     while batch := list(islice(it, n)):
         yield batch
 
 class ShareOOPServerHelper:
-    """处理 P115Center 中心化共享数据的助手"""
-    
     @staticmethod
     def get_center_client():
-        if not P115Center:
-            return None
-        try:
-            return P115Center() 
-        except Exception as e:
-            logger.debug(f"P115Center 初始化失败: {e}")
-            return None
+        if not P115Center: return None
+        try: return P115Center() 
+        except: return None
 
     @staticmethod
     def download_share_files_data(share_code: str, receive_code: str, temp_file: str) -> bool:
@@ -52,19 +46,15 @@ class ShareOOPServerHelper:
             logger.info(f"  ✅ [分享挂载] 中心缓存下载成功，文件大小: {size_mb:.2f} MB")
             return True
         except Exception as e:
-            if '404' in str(e):
-                logger.info(f"  ℹ️ [分享挂载] 中心服务器暂无该分享的缓存数据。")
-            else:
-                logger.debug(f"  ⚠️ [分享挂载] 下载中心缓存失败: {e}")
+            if '404' in str(e): logger.info(f"  ℹ️ [分享挂载] 中心服务器暂无该分享的缓存数据。")
+            else: logger.debug(f"  ⚠️ [分享挂载] 下载中心缓存失败: {e}")
             return False
 
     @staticmethod
     def upload_share_files_data(share_code: str, receive_code: str, temp_file: str):
         client = ShareOOPServerHelper.get_center_client()
         if not client: return
-        
-        if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0:
-            return
+        if not os.path.exists(temp_file) or os.path.getsize(temp_file) == 0: return
 
         batch_id = f"{share_code}{receive_code}"
         logger.info(f"  ⬆️ [分享挂载] 开始上传解析数据到中心服务器反哺社区，batch_id: {batch_id}")
@@ -73,18 +63,19 @@ class ShareOOPServerHelper:
             logger.info(f"  ✅ [分享挂载] 数据反哺上传成功！")
         except Exception as e:
             logger.warning(f"  ⚠️ [分享挂载] 数据上传中心服务器失败: {e}")
-        finally:
-            try:
-                os.remove(temp_file)
-            except: pass
+        # ★ 致命 Bug 修复：这里绝对不能删文件！交由主流程最后清理！
 
 class ShareStrmManager:
     def __init__(self):
-        self.config = get_config()
-        self.local_dir = self.config.get('p115_share_local_dir', '')
-        self.etk_url = self.config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "http://127.0.0.1:5257").rstrip('/')
+        # ★ 架构升级：从独立数据库键读取配置，彻底解耦全局配置
+        self.share_config = settings_db.get_setting('p115_share_config') or {}
+        self.local_dir = self.share_config.get('p115_share_local_dir', '')
         
-        exts = self.config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
+        # etk_url 依然需要从全局配置拿，因为这是系统级参数
+        global_config = get_config()
+        self.etk_url = global_config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "http://127.0.0.1:5257").rstrip('/')
+        
+        exts = global_config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
         if not exts:
             exts = ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'mp3', 'flac', 'wav']
         self.allowed_exts = set(e.lower() for e in exts)
@@ -96,29 +87,21 @@ class ShareStrmManager:
     def extract_share_codes(self, link: str):
         link = link.strip()
         share_code, receive_code = None, None
-        
         match = re.search(r'/s/([a-zA-Z0-9]+)', link)
         if match: share_code = match.group(1)
-        
         pwd_match = re.search(r'password=([a-zA-Z0-9]+)', link)
         if pwd_match: receive_code = pwd_match.group(1)
-        
         if not receive_code:
-            parts = link.split()
-            for part in parts:
+            for part in link.split():
                 if len(part) == 4 and part.isalnum():
                     receive_code = part
                     break
-                    
         return share_code, receive_code
 
     def fetch_share_list_from_115(self, share_code, receive_code, temp_file):
-        if not self.client:
-            raise Exception("未配置 115 Cookie，无法拉取分享列表")
-            
+        if not self.client: raise Exception("未配置 115 Cookie，无法拉取分享列表")
         logger.info(f"  🚀 [分享挂载] 开始从 115 官方接口递归拉取分享数据...")
         
-        # ★ 绝对防御：强制将任何类型的响应转换为字典
         def _ensure_dict(resp):
             if isinstance(resp, dict): return resp
             if hasattr(resp, 'json'):
@@ -129,7 +112,6 @@ class ShareStrmManager:
                 except: pass
             return {}
 
-        # 1. 请求 snap 接口获取第一层数据
         snap_url = f"https://webapi.115.com/share/snap?share_code={share_code}&receive_code={receive_code}"
         snap_res = _ensure_dict(self.client.request(snap_url))
         
@@ -143,14 +125,12 @@ class ShareStrmManager:
         
         collected_count = 0
         
-        # 2. 定义递归请求 down 接口的生成器
         def _fetch_dir(cid, current_path):
             offset = 0
             limit = 1000
             while True:
                 url = f"https://webapi.115.com/share/down?share_code={share_code}&receive_code={receive_code}&cid={cid}&limit={limit}&offset={offset}"
                 res = _ensure_dict(self.client.request(url))
-                
                 if not res.get('state'): break
                 
                 data_list = res.get('data', {}).get('list', [])
@@ -159,7 +139,6 @@ class ShareStrmManager:
                 for item in data_list:
                     item_name = item.get('n') or item.get('file_name')
                     is_dir = str(item.get('fc', item.get('type'))) == '0'
-                    
                     if is_dir:
                         new_path = f"{current_path}/{item_name}" if current_path else item_name
                         folder_id = item.get('cid') or item.get('fid')
@@ -173,27 +152,22 @@ class ShareStrmManager:
                             "pc": item.get('pc') or item.get('pick_code'),
                             "sha1": item.get('sha') or item.get('sha1')
                         }
-                
                 if len(data_list) < limit: break
                 offset += limit
-                time.sleep(0.5) # 防风控休眠
+                time.sleep(0.5)
 
-        # 3. 开始边解析边写入 GZIP
         with gzip.open(temp_file, "wb") as f:
-            # ★ 薛定谔兜底：如果 snap 返回了 list，处理 list；如果没返回，直接用 root_cid 查 down 接口
             if top_list:
                 for item in top_list:
                     item_name = item.get('n') or item.get('file_name')
                     is_dir = str(item.get('fc', item.get('type'))) == '0'
-                    
                     if is_dir:
                         new_path = f"{share_title}/{item_name}" if share_title else item_name
                         folder_id = item.get('cid') or item.get('fid')
                         for record in _fetch_dir(folder_id, new_path):
                             f.write(json.dumps(record).encode('utf-8') + b"\n")
                             collected_count += 1
-                            if collected_count % 1000 == 0:
-                                logger.info(f"  ⏳ [分享挂载] 已拉取 {collected_count} 条数据...")
+                            if collected_count % 1000 == 0: logger.info(f"  ⏳ [分享挂载] 已拉取 {collected_count} 条数据...")
                     else:
                         record = {
                             "id": item.get('fid') or item.get('file_id'),
@@ -206,19 +180,16 @@ class ShareStrmManager:
                         f.write(json.dumps(record).encode('utf-8') + b"\n")
                         collected_count += 1
             else:
-                # 兜底：直接从根目录查
                 for record in _fetch_dir(root_cid, share_title):
                     f.write(json.dumps(record).encode('utf-8') + b"\n")
                     collected_count += 1
-                    if collected_count % 1000 == 0:
-                        logger.info(f"  ⏳ [分享挂载] 已拉取 {collected_count} 条数据...")
+                    if collected_count % 1000 == 0: logger.info(f"  ⏳ [分享挂载] 已拉取 {collected_count} 条数据...")
                         
         return collected_count, share_title
 
     def process_single_item(self, item, share_code, receive_code, share_title):
         file_name = item.get('name', '')
         ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
-        
         if ext not in self.allowed_exts: return
             
         file_id = item.get('id')
@@ -233,15 +204,13 @@ class ShareStrmManager:
         
         os.makedirs(os.path.dirname(strm_full_path), exist_ok=True)
         
-        # ★ 核心修改：生成动态转存路由，包含 share_code, receive_code 和 file_id
         strm_content = f"{self.etk_url}/api/p115/play_share/{share_code}/{receive_code}/{file_id}/{file_name}"
         
         need_write = True
         if os.path.exists(strm_full_path):
             try:
                 with open(strm_full_path, 'r', encoding='utf-8') as f:
-                    if f.read().strip() == strm_content:
-                        need_write = False
+                    if f.read().strip() == strm_content: need_write = False
             except: pass
             
         if need_write:
@@ -255,7 +224,7 @@ class ShareStrmManager:
         except: pass
 
     def execute(self):
-        links = self.config.get('p115_share_links', [])
+        links = self.share_config.get('p115_share_links', [])
         if not links or not self.local_dir:
             logger.warning("  ⚠️ [分享挂载] 未配置分享链接或本地目录，任务取消。")
             return
@@ -294,19 +263,19 @@ class ShareStrmManager:
             def read_gzip_iter():
                 with gzip.open(temp_file, "rb") as f:
                     for line in f:
-                        if line.strip():
-                            yield json.loads(line)
+                        if line.strip(): yield json.loads(line)
                             
             try:
                 with ThreadPoolExecutor(max_workers=32) as executor:
                     for batch in batched(read_gzip_iter(), 1000):
                         self.total_count += len(batch)
-                        futures = [executor.submit(self.process_single_item, item, share_title) for item in batch]
+                        futures = [executor.submit(self.process_single_item, item, share_code, receive_code, share_title) for item in batch]
                         for future in as_completed(futures):
                             future.result()
             except Exception as e:
                 logger.error(f"  ❌ [分享挂载] 生成 STRM 发生异常: {e}")
             finally:
+                # ★ 只有在这里，整个流程跑完后，才清理临时文件！
                 if os.path.exists(temp_file):
                     try: os.remove(temp_file)
                     except: pass
