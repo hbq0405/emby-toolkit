@@ -978,7 +978,7 @@ def play_share_video(share_code, receive_code, file_id, filename):
             'cid': transfer_cid
         }
         try:
-            res = client.request(url, method='POST', data=payload).json()
+            res = client.request(url, method='POST', data=payload)
             state = res.get('state')
             error_msg = res.get('error', '')
 
@@ -987,7 +987,7 @@ def play_share_video(share_code, receive_code, file_id, filename):
                 # 3. 查找刚转存的文件，获取它的 pick_code
                 # 按修改时间倒序查找，确保拿到最新转存的那个
                 search_url = f"https://webapi.115.com/files?cid={transfer_cid}&limit=50&o=user_utime&asc=0"
-                search_res = client.request(search_url).json()
+                search_res = client.request(search_url)
                 
                 for item in search_res.get('data', []):
                     if item.get('n') == filename:

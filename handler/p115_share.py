@@ -119,7 +119,7 @@ class ShareStrmManager:
         logger.info(f"  🚀 [分享挂载] 开始从 115 官方接口递归拉取分享数据...")
         
         snap_url = f"https://webapi.115.com/share/snap?share_code={share_code}&receive_code={receive_code}"
-        snap_res = self.client.request(snap_url).json()
+        snap_res = self.client.request(snap_url)
         if not snap_res.get('state'):
             raise Exception(f"分享链接无效或提取码错误: {snap_res.get('error', '未知错误')}")
             
@@ -134,7 +134,7 @@ class ShareStrmManager:
             limit = 1000
             while True:
                 url = f"https://webapi.115.com/share/down?share_code={share_code}&receive_code={receive_code}&cid={cid}&limit={limit}&offset={offset}"
-                res = self.client.request(url).json()
+                res = self.client.request(url)
                 if not res.get('state'): break
                 
                 data = res.get('data', {}).get('list', [])
