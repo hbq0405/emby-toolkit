@@ -648,18 +648,34 @@ class P115CacheManager:
 # ======================================================================
 class P115RecordManager:
     @staticmethod
-    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None, is_center_cached=False):
-        """添加或更新整理记录（基于 file_id 唯一约束）"""
+    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None, is_center_cached=False, pick_code=None):
+        """添加或更新整理记录（基于 file_id 和 pick_code 唯一约束，智能继承原名）"""
         if not file_id or not original_name: return
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
+                    # ★ 核心逻辑 1：如果提供了 PC 码，先查前世今生
+                    if pick_code:
+                        cursor.execute("SELECT file_id, original_name FROM p115_organize_records WHERE pick_code = %s", (pick_code,))
+                        row = cursor.fetchone()
+                        if row:
+                            old_file_id = row['file_id']
+                            # 强制继承最开始的原始文件名！
+                            original_name = row['original_name'] 
+                            
+                            # 如果 file_id 变了 (网盘内移动/复制导致)，删掉旧记录，给新记录腾出 PC 码的唯一约束位置
+                            if str(old_file_id) != str(file_id):
+                                cursor.execute("DELETE FROM p115_organize_records WHERE file_id = %s", (old_file_id,))
+
+                    # ★ 核心逻辑 2：执行插入或更新
                     cursor.execute("""
                         INSERT INTO p115_organize_records 
-                        (file_id, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at, is_center_cached)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+                        (file_id, pick_code, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at, is_center_cached)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
                         ON CONFLICT (file_id) 
                         DO UPDATE SET 
+                            pick_code = EXCLUDED.pick_code,
+                            -- 注意：这里绝对不更新 original_name，始终保持第一次插入时的原名
                             status = EXCLUDED.status,
                             tmdb_id = EXCLUDED.tmdb_id,
                             media_type = EXCLUDED.media_type,
@@ -668,7 +684,7 @@ class P115RecordManager:
                             renamed_name = EXCLUDED.renamed_name,
                             processed_at = NOW(),
                             is_center_cached = EXCLUDED.is_center_cached
-                    """, (str(file_id), str(original_name), str(status), str(tmdb_id) if tmdb_id else None, 
+                    """, (str(file_id), pick_code, str(original_name), str(status), str(tmdb_id) if tmdb_id else None, 
                           str(media_type) if media_type else None, str(target_cid) if target_cid else None, 
                           str(category_name) if category_name else None, str(renamed_name) if renamed_name else None, bool(is_center_cached)))
                     conn.commit()
@@ -1804,6 +1820,9 @@ class SmartOrganizer:
                 else:
                     logger.info(f"  📁 [移动] {file_name} -> {std_root_name}")
                 moved_count += 1
+                # 兼容 OpenAPI 键名
+                pick_code = file_item.get('pc') or file_item.get('pick_code') 
+                file_sha1 = file_item.get('sha1') or file_item.get('sha')
                 # 整理日志
                 if ext in known_video_exts:
                     try:
@@ -1822,14 +1841,13 @@ class SmartOrganizer:
                             target_cid=target_cid,
                             category_name=category_name,
                             renamed_name=new_filename,
-                            is_center_cached=is_center_cached if not keep_original else False
+                            is_center_cached=is_center_cached if not keep_original else False,
+                            pick_code=pick_code 
                         )
                     except Exception as e:
                         logger.error(f"  ❌ 记录文件整理日志失败: {e}")
 
-                # 兼容 OpenAPI 键名
-                pick_code = file_item.get('pc') or file_item.get('pick_code')
-                file_sha1 = file_item.get('sha1') or file_item.get('sha')
+                
                 local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
                 etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "http://127.0.0.1:5257").rstrip('/')
                 
@@ -2343,7 +2361,12 @@ def task_scan_and_organize_115(processor=None):
                             
                             ext = name.split('.')[-1].lower() if '.' in name else ''
                             if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
-                                P115RecordManager.add_or_update_record(item_id, name, 'unrecognized', target_cid=unidentified_cid, category_name="未识别")
+                                pc = item.get('pc') or item.get('pick_code') 
+                                P115RecordManager.add_or_update_record(
+                                    item_id, name, 'unrecognized', 
+                                    target_cid=unidentified_cid, category_name="未识别", 
+                                    pick_code=pc 
+                                )
                         except: pass
 
         def scan_directory(current_cid, current_name, depth=0):
@@ -2940,6 +2963,18 @@ def delete_115_files_by_webhook(item_path, pickcodes):
     ★ 终极暴力版：无视路径，直接通过 PC 码本地计算 FID 锁定文件！
     """
     if not pickcodes: return
+
+    # 联动删除整理记录
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM p115_organize_records WHERE pick_code = ANY(%s)", (list(pickcodes),))
+                if cursor.rowcount > 0:
+                    logger.info(f"  🧹 [联动删除] 已同步删除 {cursor.rowcount} 条对应的整理记录。")
+                conn.commit()
+    except Exception as e:
+        logger.warning(f"  ⚠️ [联动删除] 删除整理记录失败: {e}")
 
     client = P115Service.get_client()
     if not client: return

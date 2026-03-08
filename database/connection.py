@@ -434,6 +434,7 @@ def init_db():
                     CREATE TABLE IF NOT EXISTS p115_organize_records (
                         id SERIAL PRIMARY KEY,
                         file_id TEXT UNIQUE NOT NULL,  -- 115 原始文件/文件夹ID (使用UNIQUE防止重复记录)
+                        pick_code TEXT UNIQUE,
                         original_name TEXT NOT NULL,   -- 原始名称
                         renamed_name TEXT,             -- 整理后的名称
                         status TEXT NOT NULL,          -- 'success' 或 'unrecognized'
@@ -471,7 +472,8 @@ def init_db():
                             "pick_code": "TEXT"
                         },
                         'p115_organize_records': {
-                            "is_center_cached": "BOOLEAN DEFAULT FALSE"
+                            "is_center_cached": "BOOLEAN DEFAULT FALSE",
+                            "pick_code": "TEXT UNIQUE"
                         },
                         'emby_users': {
                             "policy_json": "JSONB"  
