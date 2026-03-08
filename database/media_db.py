@@ -931,16 +931,10 @@ def is_emby_id_in_library(emby_id: str) -> bool:
 def get_known_filenames_by_tmdb_id(tmdb_id: str) -> set:
     """
     【监控优化】根据 TMDb ID 获取数据库中已存在的所有文件名集合。
-    
-    逻辑：
-    1. 如果是电影，直接查 tmdb_id = ID
-    2. 如果是剧集，查 parent_series_tmdb_id = ID (查所有分集)
-    3. 解析 asset_details_json，提取文件名 (basename)
     """
     if not tmdb_id:
         return set()
 
-    # 查询该 ID 对应的电影，或者该 ID 作为父剧集的所有分集
     sql = """
         SELECT asset_details_json 
         FROM media_metadata 
@@ -962,9 +956,9 @@ def get_known_filenames_by_tmdb_id(tmdb_id: str) -> set:
                         for asset in assets:
                             path = asset.get('path')
                             if path:
-                                # 只提取文件名，忽略路径差异 (Docker映射问题)
                                 filename = os.path.basename(path)
-                                known_files.add(filename)
+                                name_without_ext, _ = os.path.splitext(filename)
+                                known_files.add(name_without_ext)
                                 
         return known_files
     except Exception as e:

@@ -1738,7 +1738,9 @@ def task_scan_monitor_folders(processor):
                     if target_id not in db_assets_cache:
                         db_assets_cache[target_id] = media_db.get_known_filenames_by_tmdb_id(target_id)
                     
-                    if filename in db_assets_cache[target_id]:
+                    name_without_ext, _ = os.path.splitext(filename)
+                    
+                    if name_without_ext in db_assets_cache[target_id]:
                         skipped_exists_count += 1
                         continue
 
@@ -1747,7 +1749,8 @@ def task_scan_monitor_folders(processor):
                         processor.process_file_actively(file_path)
                         processed_in_this_run.add(target_id)
                         if target_id in db_assets_cache:
-                            db_assets_cache[target_id].add(filename)
+                            # ★ 存入缓存时也存无扩展名的版本
+                            db_assets_cache[target_id].add(name_without_ext)
                         trigger_count += 1
                         time.sleep(1) 
                     except Exception as e:
