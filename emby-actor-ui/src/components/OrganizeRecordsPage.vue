@@ -102,7 +102,6 @@
         striped
         size="small"
         :row-key="row => row.id"
-        remote
       />
     </n-card>
 
@@ -229,6 +228,18 @@ const getSeason = (name) => {
   return match ? `第 ${parseInt(match[1])} 季` : '未知季';
 };
 
+// 提取剧名的工具函数
+const getSeriesName = (name) => {
+  if (!name) return '未知剧集';
+  const parts = name.split(' - S0');
+  if (parts.length > 1) return parts[0];
+  const parts2 = name.split(' - S1');
+  if (parts2.length > 1) return parts2[0];
+  
+  const match = name.match(/^(.*?)(S\d{1,2}|Season|第)/i);
+  return match ? match[1].replace(/[\.\-_]/g, ' ').trim() : '未知剧集';
+};
+
 // 将扁平数据按 TMDb ID 和 季号 智能折叠为树形结构
 const processedTableData = computed(() => {
   const groups = {};
@@ -250,10 +261,12 @@ const processedTableData = computed(() => {
     if (children.length > 1) {
       const first = children[0];
       const season = getSeason(first.renamed_name || first.original_name);
+      const seriesName = getSeriesName(first.renamed_name || first.original_name);
+      
       result.push({
         id: `group_${key}`,
         isGroup: true,
-        original_name: `📺 剧集折叠包 | TMDb: ${first.tmdb_id} | ${season} | 共 ${children.length} 集`,
+        original_name: `📺 ${seriesName} | TMDb: ${first.tmdb_id} | ${season} | 共 ${children.length} 集`,
         renamed_name: `支持整季批量纠错 / 批量删除`,
         status: 'success',
         media_type: 'tv',
@@ -404,13 +417,9 @@ const columns = computed(() => [
 ]);
 
 const paginationProps = computed(() => ({
-  page: currentPage.value,
   pageSize: itemsPerPage.value,
-  itemCount: totalItems.value,
   showSizePicker: true,
   pageSizes: [15, 30, 50, 100],
-  onChange: (page) => { currentPage.value = page; fetchRecords(); },
-  onUpdatePageSize: (pageSize) => { itemsPerPage.value = pageSize; currentPage.value = 1; fetchRecords(); }
 }));
 
 const fetchRecords = async () => {
@@ -419,15 +428,14 @@ const fetchRecords = async () => {
   try {
     const res = await axios.get('/api/p115/records', {
       params: {
-        page: currentPage.value,
-        per_page: itemsPerPage.value,
+        page: 1,
+        per_page: 5000, 
         search: searchQuery.value,
         status: statusFilter.value,
         cid: categoryFilter.value
       }
     });
     tableData.value = res.data.items;
-    totalItems.value = res.data.total;
     stats.value = res.data.stats;
   } catch (error) {
     message.error('获取整理记录失败');

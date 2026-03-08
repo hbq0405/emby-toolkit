@@ -1706,6 +1706,19 @@ class SmartOrganizer:
             file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
             if ext in known_video_exts and 0 < file_size < MIN_VIDEO_SIZE: continue
 
+            # 在重命名和查缓存前，如果缺失 SHA1，主动请求详情补齐 
+            file_sha1 = file_item.get('sha1') or file_item.get('sha')
+            if not file_sha1 and fid and ext in known_video_exts:
+                try:
+                    info_res = self.client.fs_get_info(fid)
+                    if info_res.get('state') and info_res.get('data'):
+                        fetched_sha1 = info_res['data'].get('sha1')
+                        if fetched_sha1:
+                            file_item['sha1'] = fetched_sha1 # 注入回 file_item 供后续使用
+                            logger.debug(f"  ➜ [API前置补充] 成功在重命名前获取到 SHA1: {fetched_sha1}")
+                except Exception as e_info:
+                    pass
+
             if keep_original:
                 new_filename = file_name
                 season_num = None

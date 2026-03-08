@@ -1989,14 +1989,12 @@ def task_backup_mediainfo(processor):
                         target_emby_id = None
                 
                 def _safe_parse_json_list(data):
-                    if isinstance(data, list):
-                        return data
+                    if isinstance(data, list): return data
                     if isinstance(data, str):
                         try:
                             parsed = json.loads(data)
                             return parsed if isinstance(parsed, list) else []
-                        except:
-                            return []
+                        except: return []
                     return []
 
                 pcs = _safe_parse_json_list(item.get('file_pickcode_json'))
@@ -2006,6 +2004,9 @@ def task_backup_mediainfo(processor):
                 needs_db_update = False
                 
                 for idx, asset in enumerate(assets):
+                    if not isinstance(asset, dict):
+                        continue
+                        
                     current_path = asset.get('path')
                     if not current_path: continue
                     
