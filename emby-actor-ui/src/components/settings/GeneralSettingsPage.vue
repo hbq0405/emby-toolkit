@@ -507,7 +507,7 @@
                     <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
-                          <span class="card-title">115 分享挂载 (STRM)</span>
+                          <span class="card-title">115 分享挂载 (开发中)</span>
                           <n-button secondary type="primary" @click="shareMountModalRef?.open()">
                             <template #icon>
                               <n-icon :component="CloudDownloadIcon" />
@@ -517,7 +517,7 @@
                         </div>
                       </template>
                       <n-alert type="info" :show-icon="true">
-                        自动解析 115 分享链接，利用 P115Center 中心缓存极速生成本地 STRM 文件，防风控。
+                        还不能用。
                       </n-alert>
                     </n-card>
 
