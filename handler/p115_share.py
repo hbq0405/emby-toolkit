@@ -245,12 +245,14 @@ class ShareStrmManager:
             download_success = ShareOOPServerHelper.download_share_files_data(share_code, receive_code, temp_file)
             
             share_title = share_code
+            need_upload = False # 标记是否需要反哺上传
             
             if not download_success:
                 try:
                     count, share_title = self.fetch_share_list_from_115(share_code, receive_code, temp_file)
                     if count > 0:
-                        ShareOOPServerHelper.upload_share_files_data(share_code, receive_code, temp_file)
+                        # ★ 核心修改：这里不立刻上传，只打个标记
+                        need_upload = True
                     else:
                         logger.warning(f"  ⚠️ [分享挂载] 该分享为空或拉取失败。")
                         continue
@@ -266,16 +268,22 @@ class ShareStrmManager:
                         if line.strip(): yield json.loads(line)
                             
             try:
+                # ★ 核心修改：先生成 STRM
                 with ThreadPoolExecutor(max_workers=32) as executor:
                     for batch in batched(read_gzip_iter(), 1000):
                         self.total_count += len(batch)
                         futures = [executor.submit(self.process_single_item, item, share_code, receive_code, share_title) for item in batch]
                         for future in as_completed(futures):
                             future.result()
+                            
+                # ★ 核心修改：STRM 生成完毕后，再执行反哺上传 (就算 SDK 删文件也无所谓了)
+                if need_upload:
+                    ShareOOPServerHelper.upload_share_files_data(share_code, receive_code, temp_file)
+                    
             except Exception as e:
                 logger.error(f"  ❌ [分享挂载] 生成 STRM 发生异常: {e}")
             finally:
-                # ★ 只有在这里，整个流程跑完后，才清理临时文件！
+                # 兜底清理
                 if os.path.exists(temp_file):
                     try: os.remove(temp_file)
                     except: pass
