@@ -160,7 +160,7 @@ class ShareStrmManager:
                 offset += limit
                 time.sleep(0.5)
 
-        with gzip.open(temp_file, "wb") as f:
+        with open(temp_file, "w", encoding="utf-8") as f:
             if top_list:
                 for item in top_list:
                     item_name = item.get('n') or item.get('file_name')
@@ -169,7 +169,7 @@ class ShareStrmManager:
                         new_path = f"{share_title}/{item_name}" if share_title else item_name
                         folder_id = item.get('cid') or item.get('fid')
                         for record in _fetch_dir(folder_id, new_path):
-                            f.write(json.dumps(record).encode('utf-8') + b"\n")
+                            f.write(json.dumps(record, ensure_ascii=False) + "\n")
                             collected_count += 1
                             if collected_count % 1000 == 0: logger.info(f"  ⏳ [分享挂载] 已拉取 {collected_count} 条数据...")
                     else:
@@ -181,10 +181,9 @@ class ShareStrmManager:
                             "pc": item.get('pc') or item.get('pick_code'),
                             "sha1": item.get('sha') or item.get('sha1')
                         }
-                        f.write(json.dumps(record).encode('utf-8') + b"\n")
+                        f.write(json.dumps(record, ensure_ascii=False) + "\n")
                         collected_count += 1
-            elif str(share_info.get('fc', '')) == '1':
-                # ★ 修复：单文件分享兜底
+            elif str(share_info.get('fc', '')) == '1' or str(share_info.get('file_category', '')) == '1':
                 record = {
                     "id": share_info.get('file_id') or share_info.get('fid'),
                     "name": share_info.get('file_name') or share_info.get('n'),
@@ -193,11 +192,11 @@ class ShareStrmManager:
                     "pc": share_info.get('pick_code') or share_info.get('pc'),
                     "sha1": share_info.get('sha1') or share_info.get('sha')
                 }
-                f.write(json.dumps(record).encode('utf-8') + b"\n")
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
                 collected_count += 1
             else:
                 for record in _fetch_dir(root_cid, share_title):
-                    f.write(json.dumps(record).encode('utf-8') + b"\n")
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
                     collected_count += 1
                     if collected_count % 1000 == 0: logger.info(f"  ⏳ [分享挂载] 已拉取 {collected_count} 条数据...")
                         
@@ -208,11 +207,13 @@ class ShareStrmManager:
         ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
         
         if ext not in self.allowed_exts: 
-            logger.debug(f"  ⏭️ [跳过] 扩展名不匹配: {file_name}")
+            self.skip_count += 1
+            logger.debug(f"  ⏭️ [跳过] 扩展名不匹配 ({ext}): {file_name}")
             return
             
-        file_id = item.get('id')
+        file_id = item.get('id') or item.get('fid') or item.get('file_id')
         if not file_id: 
+            self.skip_count += 1
             logger.debug(f"  ⏭️ [跳过] 缺少 file_id: {file_name}")
             return
         
@@ -265,9 +266,7 @@ class ShareStrmManager:
                 logger.warning(f"  ⚠️ [分享挂载] 无法解析链接: {link}")
                 continue
                 
-            logger.info(f"  🔗 [分享挂载] 正在处理分享: share_code={share_code}")
-            
-            temp_file = os.path.join(gettempdir(), f"share_data_{share_code}{receive_code}.json.gz")
+            temp_file = os.path.join(gettempdir(), f"share_data_{share_code}{receive_code}.jsonl")
             download_success = ShareOOPServerHelper.download_share_files_data(share_code, receive_code, temp_file)
             
             share_title = share_code
@@ -287,14 +286,14 @@ class ShareStrmManager:
             
             logger.info(f"  📝 [分享挂载] 开始生成 STRM 文件...")
             
-            def read_gzip_iter():
-                with gzip.open(temp_file, "rb") as f:
+            def read_jsonl_iter():
+                with open(temp_file, "r", encoding="utf-8") as f:
                     for line in f:
                         if line.strip(): yield json.loads(line)
                             
             try:
                 with ThreadPoolExecutor(max_workers=32) as executor:
-                    for batch in batched(read_gzip_iter(), 1000):
+                    for batch in batched(read_jsonl_iter(), 1000):
                         self.total_count += len(batch)
                         futures = [executor.submit(self.process_single_item, item, share_code, receive_code, share_title) for item in batch]
                         for future in as_completed(futures):
@@ -310,7 +309,7 @@ class ShareStrmManager:
                     try: os.remove(temp_file)
                     except: pass
                     
-        logger.info(f"=== 分享挂载任务结束！共遍历 {self.total_count} 个文件，新增/更新 {self.strm_count} 个 STRM，跳过已存在 {self.skip_count} 个 ===")
+        logger.info(f"=== 分享挂载任务结束！共遍历 {self.total_count} 个文件，新增/更新 {self.strm_count} 个 STRM，跳过 {self.skip_count} 个 ===")
 
 def task_sync_share_links():
     try:
