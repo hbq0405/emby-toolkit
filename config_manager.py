@@ -120,6 +120,13 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_115_DOWNLOAD_SUBS: (constants.CONFIG_SECTION_115, 'boolean', True),
     constants.CONFIG_OPTION_115_LOCAL_CLEANUP: (constants.CONFIG_SECTION_115, 'boolean', False),
     constants.CONFIG_OPTION_115_DELAY_DELETE: (constants.CONFIG_SECTION_115, "boolean", False),
+    constants.CONFIG_OPTION_115_SHARE_ENABLED: (constants.CONFIG_SECTION_115, 'boolean', False),
+    constants.CONFIG_OPTION_115_SHARE_LOCAL_DIR: (constants.CONFIG_SECTION_115, 'string', ""),
+    constants.CONFIG_OPTION_115_SHARE_LINKS: (constants.CONFIG_SECTION_115, 'list', []),
+    constants.CONFIG_OPTION_115_SHARE_TRANSFER_CID: (constants.CONFIG_SECTION_115, 'string', ""),
+    constants.CONFIG_OPTION_115_SHARE_TRANSFER_NAME: (constants.CONFIG_SECTION_115, 'string', ""),
+    constants.CONFIG_OPTION_115_SHARE_AUTO_CLEANUP: (constants.CONFIG_SECTION_115, 'boolean', True), # 默认开启自动清理
+    constants.CONFIG_OPTION_115_SHARE_CLEANUP_HOURS: (constants.CONFIG_SECTION_115, 'float', 24.0),  # 默认保留 24 小时
 
     # [LocalDataSource]
     constants.CONFIG_OPTION_LOCAL_DATA_PATH: (constants.CONFIG_SECTION_LOCAL_DATA, 'string', ""),

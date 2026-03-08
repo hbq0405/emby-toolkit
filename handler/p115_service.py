@@ -1715,7 +1715,7 @@ class SmartOrganizer:
                         fetched_sha1 = info_res['data'].get('sha1')
                         if fetched_sha1:
                             file_item['sha1'] = fetched_sha1 # 注入回 file_item 供后续使用
-                            logger.debug(f"  ➜ [API前置补充] 成功在重命名前获取到 SHA1: {fetched_sha1}")
+                            logger.debug(f"  ➜ [115] 成功在重命名前获取到 SHA1: {fetched_sha1}")
                 except Exception as e_info:
                     pass
 

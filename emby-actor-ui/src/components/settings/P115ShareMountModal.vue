@@ -43,6 +43,23 @@
           :disabled="!config.p115_share_enabled"
         />
       </n-form-item>
+      <n-form-item label="自动清理临时文件">
+        <n-space align="center">
+          <n-switch v-model:value="config.p115_share_auto_cleanup" />
+          <n-input-number 
+            v-if="config.p115_share_auto_cleanup" 
+            v-model:value="config.p115_share_cleanup_hours" 
+            :min="1" 
+            :step="1" 
+            style="width: 120px; margin-left: 10px;"
+          >
+            <template #suffix>小时</template>
+          </n-input-number>
+        </n-space>
+        <template #feedback>
+          <n-text depth="3" style="font-size:0.8em;">开启后，系统会定时删除转存目录中超过设定时间的视频，实现 0 空间占用。</n-text>
+        </template>
+      </n-form-item>
     </n-form>
     <template #footer>
       <n-space justify="end">
