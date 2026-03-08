@@ -958,7 +958,6 @@ def play_share_video(share_code, receive_code, file_id, filename):
     if not transfer_cid:
         return "未配置分享转存目录，请在设置中配置", 400
 
-    # 1. 检查本地缓存，避免重复转存
     cache_key = f"{share_code}_{file_id}"
     cache = get_share_cache()
     new_pick_code = cache.get(cache_key)
@@ -967,9 +966,16 @@ def play_share_video(share_code, receive_code, file_id, filename):
     if not client:
         return "115 Cookie 未配置", 500
 
+    # ★ 绝对防御
+    def _ensure_dict(resp):
+        if isinstance(resp, dict): return resp
+        if hasattr(resp, 'json'):
+            try: return resp.json()
+            except: pass
+        return {}
+
     if not new_pick_code:
         logger.info(f"  🔄 [动态转存] 首次播放，正在转存文件: {filename}")
-        # 2. 调用 115 接口执行转存
         url = "https://webapi.115.com/share/receive"
         payload = {
             'share_code': share_code,
@@ -978,16 +984,13 @@ def play_share_video(share_code, receive_code, file_id, filename):
             'cid': transfer_cid
         }
         try:
-            res = client.request(url, method='POST', data=payload)
+            res = _ensure_dict(client.request(url, method='POST', data=payload))
             state = res.get('state')
             error_msg = res.get('error', '')
 
-            # 如果转存成功，或者提示文件已存在
             if state or '存在' in error_msg:
-                # 3. 查找刚转存的文件，获取它的 pick_code
-                # 按修改时间倒序查找，确保拿到最新转存的那个
                 search_url = f"https://webapi.115.com/files?cid={transfer_cid}&limit=50&o=user_utime&asc=0"
-                search_res = client.request(search_url)
+                search_res = _ensure_dict(client.request(search_url))
                 
                 for item in search_res.get('data', []):
                     if item.get('n') == filename:
@@ -1008,7 +1011,6 @@ def play_share_video(share_code, receive_code, file_id, filename):
             logger.error(f"  ❌ [动态转存] 接口异常: {e}")
             return str(e), 500
 
-    # 4. 获取直链并重定向 (复用现有的缓存直链逻辑)
     player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
     real_url = _get_cached_115_url(new_pick_code, player_ua)
     
