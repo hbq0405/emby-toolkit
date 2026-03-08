@@ -336,30 +336,22 @@ class P115Service:
                     raise Exception("未配置 115 Token (OpenAPI)，无法执行管理操作")
 
             def _rate_limit(self):
-                """★ 核心升级：底层统一 API 流控拦截器 (无阻塞高并发版) ★"""
+                """★ 核心升级：底层统一 API 流控拦截器 (公平阻塞版) ★"""
                 try:
                     # 默认 0.5 秒请求一次 (即 2 QPS)，对 OpenAPI 来说非常安全且高效
                     interval = float(get_config().get(constants.CONFIG_OPTION_115_INTERVAL, 0.5))
                 except (ValueError, TypeError):
                     interval = 0.5
                 
-                sleep_time = 0
+                # ★ 核心修复：将 sleep 放回锁内。
+                # 之前的漏桶算法会导致后台狂奔时把时间片排到几十秒后，导致前端请求被卡死。
+                # 现在改为公平阻塞：谁拿到锁，谁就等够间隔再释放。前端请求最多只需等前面一个请求的 0.5 秒。
                 with P115Service._rate_limit_lock:
                     current_time = time.time()
-                    
-                    # 如果距离上次计划的请求时间已经超过了间隔，说明可以直接发请求
-                    if current_time - P115Service._last_request_time >= interval:
-                        P115Service._last_request_time = current_time
-                        sleep_time = 0
-                    else:
-                        # 否则，计算目标时间并排队 (漏桶算法)
-                        target_time = P115Service._last_request_time + interval
-                        sleep_time = target_time - current_time
-                        P115Service._last_request_time = target_time
-
-                # ★ 核心修复：在锁外进行 sleep，绝不阻塞其他线程获取客户端或排队
-                if sleep_time > 0:
-                    time.sleep(sleep_time)
+                    elapsed = current_time - P115Service._last_request_time
+                    if elapsed < interval:
+                        time.sleep(interval - elapsed)
+                    P115Service._last_request_time = time.time()
 
             def get_user_info(self):
                 self._rate_limit()
