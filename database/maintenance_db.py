@@ -115,14 +115,9 @@ def get_stats_library() -> dict:
     """2. 媒体库概览 (较快)"""
     sql = """
     SELECT
-        -- 电影：统计所有版本的总和 (通过计算 emby_item_ids_json 数组的长度)
-        (SELECT COALESCE(SUM(jsonb_array_length(emby_item_ids_json)), 0) FROM media_metadata WHERE item_type = 'Movie' AND in_library = TRUE) AS media_movies_in_library,
-        
-        -- 剧集：按部统计 (剧集本身没有多版本概念，只算一部)
+        (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Movie' AND in_library = TRUE) AS media_movies_in_library,
         (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Series' AND in_library = TRUE) AS media_series_in_library,
-        
-        -- 分集：统计所有版本的总和
-        (SELECT COALESCE(SUM(jsonb_array_length(emby_item_ids_json)), 0) FROM media_metadata WHERE item_type = 'Episode' AND in_library = TRUE) AS media_episodes_in_library
+        (SELECT COUNT(*) FROM media_metadata WHERE item_type = 'Episode' AND in_library = TRUE) AS media_episodes_in_library
     """
     data = _execute_single_row_query(sql)
     data['resolution_stats'] = get_resolution_distribution() # 复用现有的分辨率函数
