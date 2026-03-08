@@ -1,6 +1,8 @@
 # database/connection.py
 import psycopg2
+from psycopg2 import pool
 from psycopg2.extras import RealDictCursor
+from contextlib import contextmanager
 import logging
 
 import config_manager
@@ -8,30 +10,55 @@ import constants
 
 logger = logging.getLogger(__name__)
 
+
 # ======================================================================
-# 模块: 中央数据访问 
+# 模块: 中央数据访问 (线程安全连接池版)
 # ======================================================================
 
-def get_db_connection() -> psycopg2.extensions.connection:
+_db_pool = None
+
+def _init_pool():
+    global _db_pool
+    if _db_pool is None:
+        try:
+            cfg = config_manager.APP_CONFIG
+            # 初始化连接池 (最小1个，最大50个并发连接)
+            _db_pool = psycopg2.pool.ThreadedConnectionPool(
+                minconn=1,
+                maxconn=50,
+                host=cfg.get(constants.CONFIG_OPTION_DB_HOST),
+                port=cfg.get(constants.CONFIG_OPTION_DB_PORT),
+                user=cfg.get(constants.CONFIG_OPTION_DB_USER),
+                password=cfg.get(constants.CONFIG_OPTION_DB_PASSWORD),
+                dbname=cfg.get(constants.CONFIG_OPTION_DB_NAME)
+            )
+            logger.info("  ✅ PostgreSQL 线程安全连接池初始化成功 (Max: 50)")
+        except Exception as e:
+            logger.error(f"  ❌ 初始化数据库连接池失败: {e}", exc_info=True)
+            raise
+
+@contextmanager
+def get_db_connection():
     """
     【中央函数】获取一个配置好 RealDictCursor 的 PostgreSQL 数据库连接。
-    这是整个应用获取数据库连接的唯一入口。
+    使用上下文管理器，确保高并发下连接用完瞬间回收，绝不泄漏。
     """
+    global _db_pool
+    if _db_pool is None:
+        _init_pool()
+        
+    # 从连接池借出一个连接
+    conn = _db_pool.getconn()
     try:
-        # 从全局配置中获取连接参数
-        cfg = config_manager.APP_CONFIG
-        conn = psycopg2.connect(
-            host=cfg.get(constants.CONFIG_OPTION_DB_HOST),
-            port=cfg.get(constants.CONFIG_OPTION_DB_PORT),
-            user=cfg.get(constants.CONFIG_OPTION_DB_USER),
-            password=cfg.get(constants.CONFIG_OPTION_DB_PASSWORD),
-            dbname=cfg.get(constants.CONFIG_OPTION_DB_NAME),
-            cursor_factory=RealDictCursor
-        )
-        return conn
-    except psycopg2.Error as e:
-        logger.error(f"获取 PostgreSQL 数据库连接失败: {e}", exc_info=True)
+        conn.cursor_factory = RealDictCursor
+        yield conn
+    except Exception:
+        # 如果发生异常，回滚未提交的事务，保证归还给池子的连接是干净的
+        conn.rollback()
         raise
+    finally:
+        # ★ 核心：无论成功失败，用完立刻归还给连接池
+        _db_pool.putconn(conn)
 
 def init_db():
     """
