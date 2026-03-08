@@ -902,3 +902,22 @@ def correct_organize_record():
     except Exception as e:
         logger.error(f"  ❌ 手动重组失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
+
+@p115_bp.route('/share_sync', methods=['POST'])
+@admin_required
+def trigger_share_sync():
+    """手动触发 115 分享链接同步任务"""
+    config = get_config()
+    if not config.get('p115_share_enabled'):
+        return jsonify({"success": False, "message": "分享挂载功能未开启"}), 400
+        
+    try:
+        # 异步执行，防止阻塞前端
+        from handler.p115_share import task_sync_share_links
+        import threading
+        threading.Thread(target=task_sync_share_links, daemon=True).start()
+        
+        return jsonify({"success": True, "message": "分享同步任务已在后台启动，请查看日志了解进度。"})
+    except Exception as e:
+        logger.error(f"  ❌ 启动分享同步任务失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500

@@ -503,6 +503,24 @@
                       </n-alert>
                     </n-card>
 
+                    <!-- ★ 卡片 4：115 分享挂载 -->
+                    <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
+                      <template #header>
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <span class="card-title">115 分享挂载 (STRM)</span>
+                          <n-button secondary type="primary" @click="shareMountModalRef?.open()">
+                            <template #icon>
+                              <n-icon :component="CloudDownloadIcon" />
+                            </template>
+                            配置分享挂载
+                          </n-button>
+                        </div>
+                      </template>
+                      <n-alert type="info" :show-icon="true">
+                        自动解析 115 分享链接，利用 P115Center 中心缓存极速生成本地 STRM 文件，防风控。
+                      </n-alert>
+                    </n-card>
+
                   </n-space>
                 </n-gi>
               </n-grid>
@@ -1391,6 +1409,7 @@
     </n-modal>
     <!-- ★ 引入自定义重命名模态框 -->
     <RenameConfigModal ref="renameModalRef" />
+    <P115ShareMountModal ref="shareMountModalRef" :config="configModel" @saveConfig="save" />
   </n-layout>
   
   <!-- 导出选项模态框 -->
@@ -1715,12 +1734,15 @@ import {
   TrashOutline as DeleteIcon, 
   Menu as DragHandleIcon,
   ColorWandOutline as ColorWandIcon,
+  CloudDownloadOutline as CloudDownloadIcon,
   QrCodeOutline
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
+import P115ShareMountModal from './P115ShareMountModal.vue';
 import axios from 'axios';
 const renameModalRef = ref(null);
+const shareMountModalRef = ref(null);
 const promptModalVisible = ref(false);
 const loadingPrompts = ref(false);
 const savingPrompts = ref(false);
