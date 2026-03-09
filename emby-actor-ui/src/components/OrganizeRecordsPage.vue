@@ -123,19 +123,34 @@
             {{ editForm.original_name }}
           </n-text>
         </n-form-item>
+
+        <!-- ★ 新增：批量操作模式选择 (仅多选时显示) -->
+        <n-form-item v-if="editForm.ids.length > 1" label="批量模式" path="batch_mode">
+          <n-radio-group v-model:value="editForm.batch_mode">
+            <n-radio-button value="reclassify">保持原ID重新分类</n-radio-button>
+            <n-radio-button value="merge">合并为同一影视</n-radio-button>
+          </n-radio-group>
+        </n-form-item>
         
         <n-form-item label="TMDb ID" path="tmdb_id">
-          <n-input v-model:value="editForm.tmdb_id" placeholder="输入数字 ID, 例如 12345" />
+          <n-input 
+            v-model:value="editForm.tmdb_id" 
+            placeholder="输入数字 ID, 例如 12345" 
+            :disabled="editForm.ids.length > 1 && editForm.batch_mode === 'reclassify'"
+          />
         </n-form-item>
         
         <n-form-item label="媒体类型" path="media_type">
-          <n-radio-group v-model:value="editForm.media_type">
+          <n-radio-group 
+            v-model:value="editForm.media_type"
+            :disabled="editForm.ids.length > 1 && editForm.batch_mode === 'reclassify'"
+          >
             <n-radio-button value="movie">电影 (Movie)</n-radio-button>
             <n-radio-button value="tv">剧集 (TV)</n-radio-button>
           </n-radio-group>
         </n-form-item>
 
-        <!-- ★ 新增：季号输入框 (仅剧集模式显示) -->
+        <!-- 季号输入框 (仅剧集模式显示，且在重新分类模式下禁用) -->
         <n-form-item v-if="editForm.media_type === 'tv'" label="季号 (Season)" path="season_num">
           <n-input-number 
             v-model:value="editForm.season_num" 
@@ -143,11 +158,19 @@
             :min="1" 
             clearable 
             style="width: 100%;" 
+            :disabled="editForm.ids.length > 1 && editForm.batch_mode === 'reclassify'"
           />
         </n-form-item>
         
+        <!-- ★ 修复：增加 virtual-scroll="false" 和 placement="bottom" 解决自动滑到底部的问题 -->
         <n-form-item label="目标分类" path="target_cid">
-          <n-select v-model:value="editForm.target_cid" :options="categoryOptions.slice(1)" placeholder="选择 115 目标整理目录" />
+          <n-select 
+            v-model:value="editForm.target_cid" 
+            :options="categoryOptions.slice(1)" 
+            placeholder="选择 115 目标整理目录" 
+            :virtual-scroll="false"
+            placement="bottom"
+          />
         </n-form-item>
       </n-form>
       
@@ -218,7 +241,8 @@ const editForm = ref({
   tmdb_id: '',
   media_type: 'movie',
   season_num: null, 
-  target_cid: null
+  target_cid: null,
+  batch_mode: 'merge' // 新增：批量操作模式
 });
 
 // 提取季号的正则工具
@@ -231,13 +255,8 @@ const getSeason = (name) => {
 // 提取剧名的工具函数
 const getSeriesName = (name) => {
   if (!name) return '未知剧集';
-  
-  // 优先从整理后的标准命名提取 (例如: 匹兹堡医护前线 (2025) - S02E09...)
-  // 匹配 " - SxxExx" 前面的所有内容
   const matchStd = name.match(/^(.*?)\s*-\s*S\d{2}E\d{2}/i);
   if (matchStd) return matchStd[1].trim();
-  
-  // 兜底从原文件名提取 (遇到 S01, EP01, Season, 第x季 就截断)
   const matchOrig = name.match(/^(.*?)(?:S\d{1,2}|EP?\d{1,3}|Season|第)/i);
   return matchOrig ? matchOrig[1].replace(/[\.\-_]/g, ' ').trim() : '未知剧集';
 };
@@ -469,7 +488,6 @@ const openEditModal = (row) => {
   let name = row.original_name;
   let defaultSeason = null;
   
-  // ★ 智能预填季号逻辑
   if (row.isGroup) {
     ids = row.children.map(c => c.id);
     name = `[整季批量操作] ${row.original_name}`;
@@ -486,8 +504,9 @@ const openEditModal = (row) => {
     status: row.status,
     tmdb_id: row.tmdb_id || '',
     media_type: row.media_type || 'movie',
-    season_num: defaultSeason, // 预填季号
-    target_cid: row.target_cid || null
+    season_num: defaultSeason,
+    target_cid: row.target_cid || null,
+    batch_mode: 'merge' // 单个文件默认 merge
   };
   showEditModal.value = true;
 };
@@ -496,34 +515,62 @@ const openBatchEditModal = () => {
   const ids = realSelectedIds.value;
   if (!ids.length) return;
   
+  // ★ 智能预判：如果选中的文件都已经有 TMDb ID，则默认选中“保持原ID重新分类”
+  const selectedRows = tableData.value.filter(row => ids.includes(row.id));
+  const allHaveTmdbId = selectedRows.every(row => row.tmdb_id);
+
   editForm.value = {
     ids: ids,
     original_name: `[全局批量操作] 已选中 ${ids.length} 个文件`,
     status: 'unrecognized',
     tmdb_id: '',
-    media_type: 'tv',
+    media_type: 'movie',
     season_num: null,
-    target_cid: null
+    target_cid: null,
+    batch_mode: allHaveTmdbId ? 'reclassify' : 'merge'
   };
   showEditModal.value = true;
 };
 
 const submitCorrection = async () => {
-  if (!editForm.value.tmdb_id || !editForm.value.target_cid) {
-    message.warning('TMDb ID 和目标分类不能为空！');
+  const isBatchReclassify = editForm.value.ids.length > 1 && editForm.value.batch_mode === 'reclassify';
+
+  if (!isBatchReclassify && !editForm.value.tmdb_id) {
+    message.warning('TMDb ID 不能为空！');
     return;
   }
+  if (!editForm.value.target_cid) {
+    message.warning('目标分类不能为空！');
+    return;
+  }
+
   submitting.value = true;
   try {
-    const promises = editForm.value.ids.map(id => 
-      axios.post('/api/p115/records/correct', {
+    const promises = editForm.value.ids.map(id => {
+      let payload = {
         id: id,
-        tmdb_id: editForm.value.tmdb_id,
-        media_type: editForm.value.media_type,
-        target_cid: editForm.value.target_cid,
-        season_num: editForm.value.season_num // ★ 发送季号给后端
-      })
-    );
+        target_cid: editForm.value.target_cid
+      };
+
+      // ★ 核心逻辑：如果是批量重新分类，从原表格数据中提取各自的 TMDb ID
+      if (isBatchReclassify) {
+        const row = tableData.value.find(r => r.id === id);
+        if (!row || !row.tmdb_id) {
+          throw new Error(`文件 "${row?.original_name || id}" 没有原 TMDb ID，无法保持原 ID 重分类！`);
+        }
+        payload.tmdb_id = row.tmdb_id;
+        payload.media_type = row.media_type || 'movie';
+        payload.season_num = null; 
+      } else {
+        // 否则使用表单填写的统一 ID
+        payload.tmdb_id = editForm.value.tmdb_id;
+        payload.media_type = editForm.value.media_type;
+        payload.season_num = editForm.value.season_num;
+      }
+
+      return axios.post('/api/p115/records/correct', payload);
+    });
+
     await Promise.all(promises);
     
     message.success(`成功发送 ${promises.length} 个重组指令！`);
@@ -531,7 +578,7 @@ const submitCorrection = async () => {
     checkedRowKeys.value = [];
     fetchRecords();
   } catch (error) {
-    message.error('部分或全部操作失败，请检查后端日志');
+    message.error(error.message || '部分或全部操作失败，请检查后端日志');
   } finally {
     submitting.value = false;
   }
