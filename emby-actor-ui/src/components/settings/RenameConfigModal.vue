@@ -82,6 +82,12 @@
           <!-- 标签页 3：高级设置 -->
           <n-tab-pane name="adv" tab="高级设置">
             <n-form label-placement="left" size="small" style="margin-top: 16px;">
+              <n-form-item label="智能重命名">
+                <n-switch v-model:value="config.enable_smart_rename" />
+                <template #feedback>
+                  <span style="font-size: 12px; color: gray;">开启后将通过 SHA1 查询真实视频流参数(耗时较长)。关闭则仅通过文件名猜测(极速)。</span>
+                </template>
+              </n-form-item>
               <n-form-item label="STRM 链接格式">
                 <n-radio-group v-model:value="config.strm_url_fmt">
                   <n-space vertical>
@@ -168,6 +174,7 @@ const saving = ref(false);
 // 默认配置
 const config = ref({
   keep_original_name: false,
+  enable_smart_rename: true,
   main_title_lang: 'zh',
   main_year_en: true,
   main_tmdb_fmt: '{tmdb=ID}',

@@ -1360,10 +1360,10 @@ class SmartOrganizer:
         video_info = self._extract_video_info(search_name)
 
         # ★★★ 神医降维打击：基于 SHA1 获取真实参数并覆盖猜测 ★★★
+        enable_smart_rename = cfg.get('enable_smart_rename', True)
         is_center_cached = False
-        config = get_config()
-        smart_rename = config.get(constants.CONFIG_OPTION_115_SMART_RENAME, False)
-        if not is_sub and smart_rename: # 字幕文件不需要查视频流
+        
+        if not is_sub and enable_smart_rename: # 字幕文件不需要查视频流
             sha1 = file_node.get('sha1') or file_node.get('sha')
             if sha1:
                 # 传入 video_info 供内部比对打印日志
