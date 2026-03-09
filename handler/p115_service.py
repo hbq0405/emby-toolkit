@@ -342,15 +342,14 @@ class P115Service:
                     raise Exception("未配置 115 Token (OpenAPI)，无法执行管理操作")
 
             def _rate_limit(self):
-                """★ 核心升级：底层统一 API 流控拦截器 (公平阻塞版) ★"""
+                """底层统一 API 流控拦截器 """
                 try:
-                    # 将默认 0.5 秒改为 0.15 秒 (约 6 QPS)，大幅释放多线程性能
-                    interval = float(get_config().get(constants.CONFIG_OPTION_115_INTERVAL, 0.15))
+                    # 默认 0.5 秒
+                    interval = float(get_config().get(constants.CONFIG_OPTION_115_INTERVAL, 0.5))
                 except (ValueError, TypeError):
-                    interval = 0.15
+                    interval = 0.5
                 
-                # ★ 核心修复：将 sleep 放回锁内。
-                # 之前的漏桶算法会导致后台狂奔时把时间片排到几十秒后，导致前端请求被卡死。
+                # 将 sleep 放回锁内。
                 # 现在改为公平阻塞：谁拿到锁，谁就等够间隔再释放。前端请求最多只需等前面一个请求的 0.5 秒。
                 with P115Service._rate_limit_lock:
                     current_time = time.time()
