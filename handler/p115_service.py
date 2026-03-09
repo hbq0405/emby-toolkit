@@ -1775,6 +1775,19 @@ class SmartOrganizer:
         known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
         MIN_VIDEO_SIZE = 10 * 1024 * 1024
 
+        # ★ 新增：获取“未识别”目录的 CID，准备接收垃圾文件
+        unidentified_cid = None
+        save_cid = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
+        if save_cid and str(save_cid) != '0':
+            try:
+                search_res = self.client.fs_files({'cid': save_cid, 'search_value': '未识别', 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                if search_res.get('data'):
+                    for item in search_res['data']:
+                        if item.get('fn') == '未识别' and str(item.get('fc')) == '0':
+                            unidentified_cid = item.get('fid')
+                            break
+            except: pass
+
         logger.info(f"  🚀 [115] 开始整理: {root_name} -> {std_root_name}")
 
         final_home_cid = P115CacheManager.get_cid(dest_parent_cid, std_root_name)
@@ -1850,18 +1863,26 @@ class SmartOrganizer:
         if not candidates: return True
 
         moved_count = 0
-        # ★ 新增：用于批量移动的分组字典 { 目标CID: [文件1, 文件2, ...] }
         move_groups = {}
+        junk_fids = [] # ★ 新增：用于收集花絮/样本视频的垃圾桶
 
         for file_item in candidates:
             # 兼容 OpenAPI 键名
             fid = file_item.get('fid') or file_item.get('file_id')
             file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
             ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
-            if self._is_junk_file(file_name): continue
-            if ext not in allowed_exts: continue
-            
             file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
+            
+            # ★ 核心修改：垃圾分类逻辑
+            if ext in known_video_exts:
+                # 如果是视频，且被判定为花絮(OP/ED) 或 体积太小(样本)，扔进垃圾桶
+                if self._is_junk_file(file_name) or (0 < file_size < MIN_VIDEO_SIZE):
+                    if fid: junk_fids.append(fid)
+                    continue
+            else:
+                # 如果不是视频，且不在允许的扩展名列表里（比如 .txt, .jpg），留在原地等死
+                if ext not in allowed_exts: 
+                    continue
             if ext in known_video_exts and 0 < file_size < MIN_VIDEO_SIZE: continue
 
             # 在重命名和查缓存前，如果缺失 SHA1，主动请求详情补齐 
@@ -2172,6 +2193,13 @@ class SmartOrganizer:
                 if '不存在' in err_msg or move_res.get('code') in [20004, 70004]:
                     logger.warning(f"  🧹 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {batch_target_cid}")
                     P115CacheManager.delete_cid(batch_target_cid)
+
+        # =================================================================
+        # ★★★ 终极清理：将收集到的花絮/样本视频移入未识别目录 ★★★
+        # =================================================================
+        if junk_fids and unidentified_cid:
+            logger.info(f"  🗑️ 发现 {len(junk_fids)} 个花絮/样本视频，正在移入未识别目录...")
+            self.client.fs_move(junk_fids, unidentified_cid)
 
         # 确定要检查的目录：如果是单文件，检查它的父目录；如果是文件夹，检查它自己
         dir_to_check = None
