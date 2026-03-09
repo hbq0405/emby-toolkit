@@ -1561,7 +1561,7 @@ class SmartOrganizer:
 
         processed_count = 0
         try:
-            sub_res = self.client.fs_files({'cid': source_root_id, 'limit': 100, 'record_open_time': 0, 'count_folders': 0})
+            sub_res = self.client.fs_files({'cid': source_root_id, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
             sub_items = sub_res.get('data', [])
             
             for sub_item in sub_items:
@@ -2529,100 +2529,114 @@ def task_scan_and_organize_115(processor=None):
             """目录透视与任务分发逻辑 (在子线程中运行)"""
             if depth > 5: return
                 
-            res = {}
-            for retry in range(3):
-                try:
-                    res = client.fs_files({
-                        'cid': current_cid, 'limit': 100, 'o': 'user_utime', 'asc': 0,
-                        'record_open_time': 0, 'count_folders': 0
-                    })
-                    break 
-                except Exception as e:
-                    if '405' in str(e) or 'Method Not Allowed' in str(e): time.sleep(3)
-                    else: raise
-
-            if not res.get('data'): return
-
-            for item in res['data']:
-                name = item.get('fn') or item.get('n') or item.get('file_name')
-                if not name: continue
-                item_id = item.get('fid') or item.get('file_id')
-                fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
-                is_folder = str(fc_val) == '0'
-
-                if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
-                    continue
-
-                is_shell_folder = False
-                forced_type = None
-                peek_failed = False
-                is_empty_dir = False 
-
-                if is_folder:
-                    for retry in range(2):
-                        try:
-                            sub_res = client.fs_files({'cid': item_id, 'limit': 100, 'record_open_time': 0, 'count_folders': 0})
-                            if not sub_res.get('data'):
-                                is_empty_dir = True 
-                                break
-                                
-                            video_count = 0
-                            suspicious_folder_count = 0
-                            sub_folder_count = 0
-                            
-                            for sub_item in sub_res['data']:
-                                sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
-                                sub_fc = str(sub_item.get('fc') if sub_item.get('fc') is not None else sub_item.get('type'))
-                                
-                                if sub_fc == '1': 
-                                    ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
-                                    if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
-                                        sub_size = _parse_115_size(sub_item.get('fs') or sub_item.get('size'))
-                                        if sub_size == 0 or sub_size > 10 * 1024 * 1024:
-                                            video_count += 1
-                                elif sub_fc == '0': 
-                                    sub_folder_count += 1
-                                    if re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第[一二三四五六七八九十\d]+季|Specials|SP|Featurettes|Extras|Subs|Subtitles|BDMV|CERTIFICATE|CD\d+|DVD\d+|Disc\d+)$', sub_name, re.IGNORECASE):
-                                        forced_type = 'tv' if re.search(r'(Season|S\d+|第[一二三四五六七八九十\d]+季)', sub_name, re.IGNORECASE) else forced_type
-                                    else:
-                                        suspicious_folder_count += 1
-                                        
-                            if video_count == 0 and sub_folder_count == 0:
-                                is_empty_dir = True
-                            elif video_count == 0 and sub_folder_count > 0:
-                                has_bdmv = any(re.search(r'^(BDMV|CERTIFICATE)$', si.get('fn', ''), re.IGNORECASE) for si in sub_res['data'])
-                                if has_bdmv: pass 
-                                elif suspicious_folder_count > 0: is_shell_folder = True
-                                else: pass
-                                    
-                            peek_failed = False
-                            break
-                        except Exception as e:
-                            if '405' in str(e) or 'Method Not Allowed' in str(e):
-                                time.sleep(2)
-                                peek_failed = True
-                            else:
-                                peek_failed = True
-                                break
-
-                if peek_failed: continue
-                    
-                if is_empty_dir:
+            offset = 0
+            limit = 1000 # ★ 直接拉满到 1000
+            
+            while True: # ★ 核心修复：加入无限翻页循环
+                res = {}
+                for retry in range(3):
                     try:
-                        client.fs_delete([item_id])
-                        logger.info(f"  🧹 发现无视频的空/垃圾目录，直接清理: {name}")
-                    except: pass
-                    continue
+                        res = client.fs_files({
+                            'cid': current_cid, 'limit': limit, 'offset': offset, 'o': 'user_utime', 'asc': 0,
+                            'record_open_time': 0, 'count_folders': 0
+                        })
+                        break 
+                    except Exception as e:
+                        if '405' in str(e) or 'Method Not Allowed' in str(e): time.sleep(3)
+                        else: raise
 
-                if is_shell_folder:
-                    logger.info(f"  📂 检测到分类壳子 '{name}'，跳过识别，扫描子目录 (层级 {depth+1})...")
-                    submit_task(scan_directory, item_id, name, depth + 1)
-                    from handler.p115_service import P115DeleteBuffer
-                    P115DeleteBuffer.add(fids=[], base_cids=[item_id])
-                    continue 
+                data = res.get('data', [])
+                if not data: 
+                    break # 没数据了，彻底扫完，下班！
 
-                # ★ 核心：将正常的媒体项提交给线程池并发处理
-                submit_task(process_single_item, item, name, is_folder, depth, forced_type)
+                for item in data:
+                    name = item.get('fn') or item.get('n') or item.get('file_name')
+                    if not name: continue
+                    item_id = item.get('fid') or item.get('file_id')
+                    fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
+                    is_folder = str(fc_val) == '0'
+
+                    if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
+                        continue
+
+                    is_shell_folder = False
+                    forced_type = None
+                    peek_failed = False
+                    is_empty_dir = False 
+
+                    if is_folder:
+                        for retry in range(2):
+                            try:
+                                # 这里的 limit 100 足够了，因为只是偷偷看一眼子目录里有没有视频
+                                sub_res = client.fs_files({'cid': item_id, 'limit': 100, 'record_open_time': 0, 'count_folders': 0})
+                                if not sub_res.get('data'):
+                                    is_empty_dir = True 
+                                    break
+                                    
+                                video_count = 0
+                                suspicious_folder_count = 0
+                                sub_folder_count = 0
+                                
+                                for sub_item in sub_res['data']:
+                                    sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
+                                    sub_fc = str(sub_item.get('fc') if sub_item.get('fc') is not None else sub_item.get('type'))
+                                    
+                                    if sub_fc == '1': 
+                                        ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
+                                        if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                                            sub_size = _parse_115_size(sub_item.get('fs') or sub_item.get('size'))
+                                            if sub_size == 0 or sub_size > 10 * 1024 * 1024:
+                                                video_count += 1
+                                    elif sub_fc == '0': 
+                                        sub_folder_count += 1
+                                        if re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第[一二三四五六七八九十\d]+季|Specials|SP|Featurettes|Extras|Subs|Subtitles|BDMV|CERTIFICATE|CD\d+|DVD\d+|Disc\d+)$', sub_name, re.IGNORECASE):
+                                            forced_type = 'tv' if re.search(r'(Season|S\d+|第[一二三四五六七八九十\d]+季)', sub_name, re.IGNORECASE) else forced_type
+                                        else:
+                                            suspicious_folder_count += 1
+                                            
+                                if video_count == 0 and sub_folder_count == 0:
+                                    is_empty_dir = True
+                                elif video_count == 0 and sub_folder_count > 0:
+                                    has_bdmv = any(re.search(r'^(BDMV|CERTIFICATE)$', si.get('fn', ''), re.IGNORECASE) for si in sub_res['data'])
+                                    if has_bdmv: pass 
+                                    elif suspicious_folder_count > 0: is_shell_folder = True
+                                    else: pass
+                                        
+                                peek_failed = False
+                                break
+                            except Exception as e:
+                                if '405' in str(e) or 'Method Not Allowed' in str(e):
+                                    time.sleep(2)
+                                    peek_failed = True
+                                else:
+                                    peek_failed = True
+                                    break
+
+                    if peek_failed: continue
+                        
+                    if is_empty_dir:
+                        try:
+                            client.fs_delete([item_id])
+                            logger.info(f"  🧹 发现无视频的空/垃圾目录，直接清理: {name}")
+                        except: pass
+                        continue
+
+                    if is_shell_folder:
+                        logger.info(f"  📂 检测到分类壳子 '{name}'，跳过识别，扫描子目录 (层级 {depth+1})...")
+                        submit_task(scan_directory, item_id, name, depth + 1)
+                        from handler.p115_service import P115DeleteBuffer
+                        P115DeleteBuffer.add(fids=[], base_cids=[item_id])
+                        continue 
+
+                    # ★ 核心：将正常的媒体项提交给线程池并发处理
+                    submit_task(process_single_item, item, name, is_folder, depth, forced_type)
+
+                # ★ 翻页逻辑：如果当前页拿到的数据少于 limit，说明到底了
+                if len(data) < limit:
+                    break
+                
+                # 否则，增加 offset，继续下一页！
+                offset += limit
 
         # 启动初始扫描任务
         submit_task(scan_directory, save_cid, save_name, 0)
