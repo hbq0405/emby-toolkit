@@ -295,9 +295,9 @@ const strmUrlOptions = [
   { label: '带文件名后缀 (/api/p115/play/xxx/文件名.mkv)', value: 'with_name' }
 ];
 
-// 模拟数据
-const mockMovie = { zh: '蝙蝠侠：黑暗骑士', en: 'The Dark Knight', year: '2008', tmdb: '155', res: '1080p', src: 'BluRay', codec: 'H264', audio: 'DDP 5.1', group: 'CMCT', orig: 'The.Dark.Knight.2008.REMASTERED.1080p', ext: '.mkv' };
-const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', src: 'WEB-DL', stream: 'NF', effect: 'HDR', codec: 'H265', audio_count: '2Audios', audio: 'Atmos', fps: '60fps', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.NF.WEB-DL', ext: '.mp4' };
+// 模拟数据 (统一使用商业名 AVC / HEVC)
+const mockMovie = { zh: '蝙蝠侠：黑暗骑士', en: 'The Dark Knight', year: '2008', tmdb: '155', res: '1080p', src: 'BluRay', codec: 'AVC', audio: 'DDP 5.1', group: 'CMCT', orig: 'The.Dark.Knight.2008.REMASTERED.1080p', ext: '.mkv' };
+const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', src: 'WEB-DL', stream: 'NF', effect: 'HDR', codec: 'HEVC', audio_count: '2Audios', audio: 'Atmos', fps: '60fps', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.NF.WEB-DL', ext: '.mp4' };
 const mockOriginalMovieDir = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264";
 const mockOriginalMovieFile = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264.mkv";
 const mockOriginalTvDir = "Breaking.Bad.S01.2160p.WEB-DL.x265";

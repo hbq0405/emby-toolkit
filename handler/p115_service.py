@@ -1134,10 +1134,10 @@ class SmartOrganizer:
         if res_match: info_dict['resolution'] = res_match.group(0).lower()
         elif '4K' in name_upper: info_dict['resolution'] = '2160p'
 
-        # 4. 编码 (Codec)
+        # 4. 编码 (Codec) - ★ 统一使用商业名
         codec = ""
-        if re.search(r'[HX]265|HEVC', name_upper): codec = 'H265'
-        elif re.search(r'[HX]264|AVC', name_upper): codec = 'H264'
+        if re.search(r'[HX]265|HEVC', name_upper): codec = 'HEVC'
+        elif re.search(r'[HX]264|AVC', name_upper): codec = 'AVC'
         elif re.search(r'AV1', name_upper): codec = 'AV1'
         
         bit_match = re.search(r'(\d{1,2})BIT', name_upper)
@@ -1263,8 +1263,10 @@ class SmartOrganizer:
                 elif w >= 1200: info['resolution'] = '720p'
 
                 codec_raw = video_stream.get("Codec", "").lower()
-                codec_map = {'hevc': 'H265', 'h264': 'H264', 'avc': 'H264', 'av1': 'AV1'}
+                # ★ 核心修改：统一映射为商业名 HEVC 和 AVC
+                codec_map = {'hevc': 'HEVC', 'h265': 'HEVC', 'h264': 'AVC', 'avc': 'AVC', 'av1': 'AV1'}
                 c_str = codec_map.get(codec_raw, codec_raw.upper())
+                
                 bit_depth = video_stream.get("BitDepth")
                 if bit_depth and bit_depth > 8:
                     info['codec'] = f"{c_str} {bit_depth}bit"
