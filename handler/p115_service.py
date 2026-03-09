@@ -1288,7 +1288,9 @@ class SmartOrganizer:
 
             if audio_streams:
                 audio_tags = []
-                if len(audio_streams) > 1: audio_tags.append("Multi")
+                num_audios = len(audio_streams)
+                if num_audios > 1: 
+                    audio_tags.append(f"{num_audios}Audios")
 
                 primary_audio = next((s for s in audio_streams if s.get("IsDefault")), audio_streams[0])
                 acodec = primary_audio.get("Codec", "").lower()
