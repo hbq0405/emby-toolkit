@@ -1386,25 +1386,41 @@ class SmartOrganizer:
                         if v: # 只要真实数据有值，无脑覆盖文件名的猜测
                             video_info[k] = v
                     
-        # 解析季集号 (支持到9999集)
+        # 解析季集号 (支持到9999集) - ★ 增强版：兼容动漫纯数字序号
         season_num = None
         episode_num = None
-        if is_tv:
-            # ★★★ 核心修复：增强正则，支持 EP, Episode, E，并加上 re.IGNORECASE ★★★
-            pattern = r'(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})|(?:ep|e|episode)[ \.\-]*?(\d{1,4})|第(\d{1,4})[集话]'
-            match = re.search(pattern, original_name, re.IGNORECASE)
-            if match:
-                s, e, ep_only, zh_ep = match.groups()
-                # 如果没有提取到季号(s)，一律按第 1 季处理
-                season_num = int(s) if s else 1
-                episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
+        
+        # 1. 优先匹配标准格式 (S01E01, EP01, 第1集)
+        pattern_std = r'(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})|(?:ep|e|episode)[ \.\-]*?(\d{1,4})|第(\d{1,4})[集话]'
+        match_std = re.search(pattern_std, original_name, re.IGNORECASE)
+        
+        if match_std:
+            s, e, ep_only, zh_ep = match_std.groups()
+            season_num = int(s) if s else 1
+            episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
+        else:
+            # 2. 动漫/日剧纯数字格式兜底 (如 " - 04 ", "[04]", " 04 ")
+            # 先剔除常见干扰项：年份、分辨率、编码、声道
+            clean_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', original_name)
+            
+            # 匹配 " - 04 ", "[04]", "【04】"
+            match_anime = re.search(r'(?:-\s*|\[|【)(\d{1,4})(?:\s+|\]|】)', clean_name)
+            if match_anime:
+                season_num = 1
+                episode_num = int(match_anime.group(1))
+            else:
+                # 匹配空格包围的数字 " 04 "
+                match_space = re.search(r'\s(\d{2,4})\s', clean_name)
+                if match_space:
+                    season_num = 1
+                    episode_num = int(match_space.group(1))
 
-            # 如果外部强制指定了季号，直接覆盖！
-            if hasattr(self, 'forced_season') and self.forced_season is not None:
-                season_num = int(self.forced_season)
-                # 兜底：如果连集数都没匹配到，给个默认值 1，防止后续报错
-                if episode_num is None:
-                    episode_num = 1
+        # 如果外部强制指定了季号，直接覆盖！
+        if hasattr(self, 'forced_season') and self.forced_season is not None:
+            season_num = int(self.forced_season)
+            # 兜底：如果连集数都没匹配到，给个默认值 1，防止后续报错
+            if episode_num is None:
+                episode_num = 1
 
         # 组装乐高积木
         evaluated = []
@@ -1421,7 +1437,13 @@ class SmartOrganizer:
                 if not tmdb_fmt or tmdb_fmt == 'none':
                     tmdb_fmt = cfg.get('main_tmdb_fmt', '{tmdb=ID}')
                 val = tmdb_fmt.replace('ID', str(self.tmdb_id)) if tmdb_fmt != 'none' else None
-            elif block == 's_e': val = f"S{season_num:02d}E{episode_num:02d}" if is_tv and season_num is not None else None
+            elif block == 's_e': 
+                # 只要提取到了集数，不管是不是剧集，都强制输出，防止同名碰撞！
+                if episode_num is not None:
+                    s_val = season_num if season_num is not None else 1
+                    val = f"S{s_val:02d}E{episode_num:02d}"
+                else:
+                    val = None
             elif block == 'original_name': val = name_body
             elif block == 'stream': val = video_info.get('stream')
             elif block.startswith('sep_'):
@@ -1676,20 +1698,26 @@ class SmartOrganizer:
         # ★★★ 3. 智能类型纠错嗅探 (Movie -> TV) ★★★
         # =================================================================
         if self.media_type == 'movie':
-            # 匹配 S01E01, EP01, 第1集 等特征
-            tv_pattern = r'(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}|(?:ep|episode)[ \.\-]*\d{1,4}|第\d{1,4}[集话]'
             is_actually_tv = False
             for c in candidates:
                 c_name = c.get('fn') or c.get('n') or c.get('file_name', '')
-                if re.search(tv_pattern, c_name, re.IGNORECASE):
+                
+                # 1. 标准特征 (EP01, S01E01)
+                if re.search(r'(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}|(?:ep|episode)[ \.\-]*\d{1,4}|第\d{1,4}[集话]', c_name, re.IGNORECASE):
+                    is_actually_tv = True
+                    break
+                
+                # 2. 动漫特征 (剔除干扰后，寻找纯数字序号)
+                clean_c_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', c_name)
+                # 至少2位数字，防止把类似 " - 1 " 的杂讯误判为剧集
+                if re.search(r'(?:-\s*|\[|【)(\d{2,4})(?:\s+|\]|】)', clean_c_name): 
                     is_actually_tv = True
                     break
             
             if is_actually_tv:
-                logger.warning(f"  🕵️‍♂️ [智能纠错] 发现文件包含明显的剧集特征(如EP01)，但当前被错误识别为电影。正在尝试自动纠错...")
+                logger.warning(f"  🕵️‍♂️ [智能纠错] 发现文件包含明显的剧集特征(如EP01或纯数字序号)，但当前被错误识别为电影。正在尝试自动纠错...")
                 try:
                     search_title = self.original_title
-                    # 清理标题，去掉年份等干扰项
                     clean_title = re.sub(r'\(\d{4}\)', '', search_title).strip()
                     results = tmdb.search_media(query=clean_title, api_key=self.api_key, item_type='tv')
                     
@@ -1697,13 +1725,11 @@ class SmartOrganizer:
                         new_tmdb_id = str(results[0]['id'])
                         logger.info(f"  ✅ [智能纠错] 成功纠正为剧集: {results[0].get('name')} (ID:{new_tmdb_id})")
                         
-                        # 原地变身！更新自身所有属性
                         self.tmdb_id = new_tmdb_id
                         self.media_type = 'tv'
                         self.raw_metadata = self._fetch_raw_metadata()
                         self.details = self.raw_metadata
                         
-                        # 重新计算目标分类目录 (从电影分类跳到剧集分类)
                         target_cid = self.get_target_cid()
                         dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
                     else:
