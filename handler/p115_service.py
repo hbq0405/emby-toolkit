@@ -709,6 +709,7 @@ class P115DeleteBuffer:
     _fids_to_delete = set()
     _cids_to_check = set()
     _timer = None
+    _last_add_time = 0  # ★ 新增：记录最后一次添加任务的时间
 
     @classmethod
     def add(cls, fids, base_cids=None):
@@ -721,12 +722,21 @@ class P115DeleteBuffer:
                 else:
                     cls._cids_to_check.add(base_cids)
 
+            # ★ 核心防抖：每次有新文件整理完，刷新倒计时
+            cls._last_add_time = time.time()
             if cls._timer is None:
-                cls._timer = spawn_later(5.0, cls.flush)
+                cls._timer = spawn_later(5.0, cls._check_and_flush)
 
     @classmethod
-    def flush(cls):
+    def _check_and_flush(cls):
         with cls._lock:
+            now = time.time()
+            # ★ 智能防抖：如果距离最后一次整理还不到 10 秒，说明大部队还在干活，继续等！
+            # 这能完美解决 115 后端数据同步延迟导致的“假装非空”问题
+            if now - cls._last_add_time < 10.0:
+                cls._timer = spawn_later(10.0 - (now - cls._last_add_time), cls._check_and_flush)
+                return
+            
             fids = list(cls._fids_to_delete)
             cids = list(cls._cids_to_check)
             cls._fids_to_delete.clear()
@@ -740,67 +750,46 @@ class P115DeleteBuffer:
         if not client: return
 
         def _safe_batch_delete(ids, is_dir=False):
-            """带重试和降级机制的批量删除，返回成功删除的 ID 列表"""
             if not ids: return []
             item_type = "目录" if is_dir else "文件"
-            
             max_retries = 3
             for attempt in range(max_retries):
                 resp = client.fs_delete(ids)
                 if resp.get('state'):
                     return ids
-                    
                 logger.error(f"  ❌ [批量销毁] 115 删除{item_type}失败 (第 {attempt + 1}/{max_retries} 次): {resp}")
                 if attempt < max_retries - 1:
-                    logger.info(f"  ⏳ 等待 5 秒后重试...")
-                    time.sleep(5)
-                    
-            # 降级为逐个删除，精准定位问题文件
-            logger.warning(f"  ⚠️ [批量销毁] 批量删除彻底失败，降级为逐个删除以定位问题...")
+                    time.sleep(3)
+            
+            logger.warning(f"  ⚠️ [批量销毁] 降级为逐个删除以定位问题...")
             success_ids = []
             for item_id in ids:
                 resp = client.fs_delete([item_id])
-                if resp.get('state'):
-                    success_ids.append(item_id)
-                else:
-                    logger.error(f"  💀 [逐个销毁] 删除{item_type}失败 ID: {item_id}, 原因: {resp}")
-                    
-            if success_ids:
-                logger.info(f"  ✅ [逐个销毁] 成功挽救删除 {len(success_ids)} 个{item_type}。")
-                
+                if resp.get('state'): success_ids.append(item_id)
             return success_ids
 
-        # 1. 终极必杀：一键批量删除所有收集到的文件
+        # 1. 删除文件
         if fids:
-            logger.info(f"  💥 [批量销毁] 缓冲期结束，正在向 115 网盘发送批量删除指令 ({len(fids)} 个文件)...")
+            logger.info(f"  💥 [批量销毁] 缓冲期结束，正在删除 {len(fids)} 个文件...")
             success_fids = _safe_batch_delete(fids, is_dir=False)
             if success_fids:
                 P115CacheManager.delete_files(success_fids)
-                logger.info(f"  🧹 [批量销毁] 成功在网盘删除 {len(success_fids)} 个文件，并已清理本地缓存。")
 
-        # =================================================================
-        # ★★★ 核心修复：获取免死金牌名单 (受保护的 CID) ★★★
-        # =================================================================
+        # 2. 获取免死金牌名单
         config = get_config()
-        protected_cids = {'0'} # 绝对防线：根目录永远不死
-        
-        # 保护 1：媒体库根目录
+        protected_cids = {'0'}
         media_root = config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID)
         if media_root: protected_cids.add(str(media_root))
-        
-        # 保护 2：待整理目录
         save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
         if save_path: protected_cids.add(str(save_path))
         
-        # 保护 3：所有前端配置的分类目录 (电影、剧集、动漫等)
         raw_rules = settings_db.get_setting(constants.DB_KEY_115_SORTING_RULES)
         if raw_rules:
             rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
             for rule in rules:
-                if rule.get('cid'):
-                    protected_cids.add(str(rule['cid']))
+                if rule.get('cid'): protected_cids.add(str(rule['cid']))
 
-        # 2. 鞭尸检查：清理空目录 (智能连锅端 + 绝对防御)
+        # 3. 检查空目录
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
         allowed_exts = set(e.lower() for e in configured_exts)
         media_exts = allowed_exts | {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg'}
@@ -808,42 +797,48 @@ class P115DeleteBuffer:
         empty_cids_to_delete = []
 
         for cid in cids:
-            # ★ 触发免死金牌：如果是受保护的目录，直接跳过，绝不执行删除！
-            if str(cid) in protected_cids:
-                logger.debug(f"  🛡️ [绝对防御] CID {cid} 是受保护的分类/根目录，拒绝清理！")
-                continue
+            if str(cid) in protected_cids: continue
             
             media_count = 0
             def count_media(current_cid):
                 nonlocal media_count
-                try:
-                    res = client.fs_files({'cid': current_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
-                    for item in res.get('data', []):
-                        if str(item.get('fc')) == '1':
-                            ext = str(item.get('fn', '')).split('.')[-1].lower()
-                            if ext in media_exts:
-                                # ★ 垃圾回收时，同样无视小于 10MB 的假视频
-                                item_size = _parse_115_size(item.get('fs') or item.get('size'))
-                                if item_size == 0 or item_size > 10 * 1024 * 1024:
-                                    media_count += 1
-                        elif str(item.get('fc')) == '0':
-                            count_media(item.get('fid'))
-                except Exception:
-                    media_count += 999 # 报错就假装有文件，防止误删
+                # ★ 增加重试机制，防止网络波动导致误判为非空
+                for attempt in range(3):
+                    try:
+                        res = client.fs_files({'cid': current_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
+                        for item in res.get('data', []):
+                            if str(item.get('fc')) == '1':
+                                ext = str(item.get('fn', '')).split('.')[-1].lower()
+                                if ext in media_exts:
+                                    item_size = _parse_115_size(item.get('fs') or item.get('size'))
+                                    if item_size == 0 or item_size > 10 * 1024 * 1024:
+                                        media_count += 1
+                            elif str(item.get('fc')) == '0':
+                                count_media(item.get('fid'))
+                        return # 成功则退出重试
+                    except Exception as e:
+                        if attempt == 2:
+                            media_count += 999 # 彻底失败才假装有文件
+                        time.sleep(1)
 
             count_media(cid)
             if media_count == 0:
                 empty_cids_to_delete.append(cid)
                 logger.info(f"  🗑️ 判定为空目录，加入待清理队列: CID {cid}")
 
-        # ★ 3. 批量删除空目录
+        # 4. 批量删除空目录
         if empty_cids_to_delete:
-            logger.info(f"  💥 [批量清理] 正在向 115 网盘发送批量删除空目录指令 ({len(empty_cids_to_delete)} 个目录)...")
+            logger.info(f"  💥 [批量清理] 正在向 115 发送批量删除空目录指令 ({len(empty_cids_to_delete)} 个)...")
             success_cids = _safe_batch_delete(empty_cids_to_delete, is_dir=True)
             if success_cids:
                 for cid in success_cids:
                     P115CacheManager.delete_cid(cid)
-                logger.info(f"  🧹 [批量清理] 成功在网盘删除 {len(success_cids)} 个空目录，并已清理本地缓存。")
+                logger.info(f"  🧹 [批量清理] 成功删除 {len(success_cids)} 个空目录。")
+
+    @classmethod
+    def flush(cls):
+        """兼容老接口调用"""
+        cls._check_and_flush()
 
 def get_config():
     return config_manager.APP_CONFIG
@@ -2479,13 +2474,6 @@ def task_scan_and_organize_115(processor=None):
                             processed_count += 1
                             update_progress(50, f"正在并发极速整理... (已成功: {processed_count} | 未识别: {moved_to_unidentified})")
                             
-                        # 清理过期残留
-                        if is_folder:
-                            update_time_str = item.get('upt') or '0'
-                            try: update_time = int(update_time_str)
-                            except: update_time = current_time
-                            if (current_time - update_time) > 86400:
-                                client.fs_delete([item_id])
                 except Exception as e:
                     logger.error(f"  ❌ 整理出错: {e}")
             else:
