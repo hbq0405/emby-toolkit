@@ -195,6 +195,7 @@ def get_task_registry(context: str = 'all'):
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
         'purge-unregistered-actors': (task_purge_unregistered_actors, "删除黑户演员", 'media', True),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
+        'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', True),
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         'generate_embeddings': (task_generate_embeddings, "生成媒体向量", 'media', True),
@@ -220,7 +221,6 @@ def get_task_registry(context: str = 'all'):
         'update-daily-theme': (task_update_daily_theme, "更新每日主题", 'media', False),
         'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),
         'scan_old_seasons_backfill': (task_scan_old_seasons_backfill, "扫描缺季的剧", 'watchlist', False),
-        'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', False),
     }
 
     if context == 'chain':
