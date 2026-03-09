@@ -404,8 +404,8 @@
                         </template>
                     </n-form-item>
 
-                    <n-form-item label="智能整理" path="p115_smart_rename">
-                        <n-switch v-model:value="configModel.p115_smart_rename">
+                    <n-form-item label="智能整理开关" path="p115_enable_organize">
+                        <n-switch v-model:value="configModel.p115_enable_organize">
                             <template #checked>整理并生成STRM</template>
                             <template #unchecked>仅转存</template>
                         </n-switch>
