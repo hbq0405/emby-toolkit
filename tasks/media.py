@@ -262,48 +262,45 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
         task_manager.update_status_from_thread(-1, f"处理失败: {item_name_for_ui}")
 
 # --- 重新处理所有待复核项 ---
-def task_reprocess_all_review_items(processor):
+def task_reprocess_all_review_items(processor, reason_filter: Optional[str] = None):
     """
-    【已升级】后台任务：遍历所有待复核项并逐一以“强制在线获取”模式重新处理。
+    后台任务：遍历待复核项并逐一重新处理。支持按原因筛选。
     """
-    logger.trace("--- 开始执行“重新处理所有待复核项”任务 [强制在线获取模式] ---")
+    logger.trace(f"--- 开始执行“重新处理待复核项”任务 [筛选原因: {reason_filter or '无'}] ---")
     try:
-        # +++ 核心修改 1：同时查询 item_id, item_name 和 reason +++
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
-            # 从 failed_log 中获取 ID, Name 和 Reason
-            cursor.execute("SELECT item_id, item_name, reason FROM failed_log")
-            # 将结果保存为一个字典列表，方便后续使用
+            if reason_filter:
+                cursor.execute("SELECT item_id, item_name, reason FROM failed_log WHERE reason LIKE %s", (f"{reason_filter}%",))
+            else:
+                cursor.execute("SELECT item_id, item_name, reason FROM failed_log")
+            
             all_items = [{'id': row['item_id'], 'name': row['item_name'], 'reason': row['reason']} for row in cursor.fetchall()]
         
         total = len(all_items)
         if total == 0:
-            logger.info("待复核列表中没有项目，任务结束。")
-            task_manager.update_status_from_thread(100, "待复核列表为空。")
+            logger.info("没有符合条件的项目，任务结束。")
+            task_manager.update_status_from_thread(100, "列表为空。")
             return
 
-        logger.info(f"共找到 {total} 个待复核项需要以“强制在线获取”模式重新处理。")
+        logger.info(f"共找到 {total} 个项目需要重新处理。")
 
-        # +++ 核心修改 2：在循环中解包 item_id, item_name 和 reason +++
         for i, item in enumerate(all_items):
             if processor.is_stop_requested():
                 logger.info("  🚫 任务被中止。")
                 break
             
             item_id = item['id']
-            item_name = item['name'] or f"ItemID: {item_id}" # 如果名字为空，提供一个备用名
-            failure_reason = item['reason'] # 获取失败原因
+            item_name = item['name'] or f"ItemID: {item_id}"
+            failure_reason = item['reason']
 
             task_manager.update_status_from_thread(int((i/total)*100), f"正在重新处理 {i+1}/{total}: {item_name}")
             
-            # +++ 核心修改 3：传递 failure_reason 参数 +++
             task_reprocess_single_item(processor, item_id, item_name, failure_reason=failure_reason)
-            
-            # 每个项目之间稍作停顿
             time.sleep(2) 
 
     except Exception as e:
-        logger.error(f"重新处理所有待复核项时发生严重错误: {e}", exc_info=True)
+        logger.error(f"重新处理待复核项时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务失败")
 
 # 提取标签

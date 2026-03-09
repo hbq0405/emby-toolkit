@@ -344,15 +344,26 @@ def api_get_review_items():
     page = request.args.get('page', 1, type=int)
     per_page = request.args.get('per_page', 20, type=int)
     query_filter = request.args.get('query', '', type=str).strip()
+    reason_filter = request.args.get('reason', '', type=str).strip() # ★ 新增
     try:
-        items, total = log_db.get_review_items_paginated(page, per_page, query_filter)
+        items, total = log_db.get_review_items_paginated(page, per_page, query_filter, reason_filter)
         total_pages = (total + per_page - 1) // per_page if total > 0 else 0
         return jsonify({
             "items": items, "total_items": total, "total_pages": total_pages,
-            "current_page": page, "per_page": per_page, "query": query_filter
+            "current_page": page, "per_page": per_page, "query": query_filter, "reason": reason_filter
         })
     except Exception as e:
         return jsonify({"error": "获取待复核列表时发生服务器内部错误"}), 500
+
+# ★ 获取原因下拉列表
+@db_admin_bp.route('/review_reasons', methods=['GET'])
+@admin_required
+def api_get_review_reasons():
+    try:
+        reasons = log_db.get_unique_reasons()
+        return jsonify({"status": "success", "data": reasons})
+    except Exception as e:
+        return jsonify({"error": "获取原因列表失败"}), 500
 
 @db_admin_bp.route('/actions/mark_item_processed/<item_id>', methods=['POST'])
 @admin_required

@@ -90,18 +90,27 @@ def get_item_name_from_failed_log(item_id: str) -> Optional[str]:
         logger.error(f"  ➜ 从 failed_log 获取 item_name 时出错: {e}")
         return None
 
-def get_review_items_paginated(page: int, per_page: int, query_filter: str) -> Tuple[List, int]:
-    
+def get_review_items_paginated(page: int, per_page: int, query_filter: str, reason_filter: str = '') -> Tuple[List, int]:
     offset = (page - 1) * per_page
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            where_clause = ""
+            where_clauses = []
             sql_params = []
+            
             if query_filter:
-                where_clause = "WHERE item_name ILIKE %s"
+                where_clauses.append("item_name ILIKE %s")
                 sql_params.append(f"%{query_filter}%")
+                
+            if reason_filter:
+                # 使用 LIKE 前缀匹配，这样选"缺失媒体信息"也能匹配到"缺失媒体信息: S01E01"
+                where_clauses.append("reason LIKE %s")
+                sql_params.append(f"{reason_filter}%")
+
+            where_clause = ""
+            if where_clauses:
+                where_clause = "WHERE " + " AND ".join(where_clauses)
 
             count_sql = f"SELECT COUNT(*) as total FROM failed_log {where_clause}"
             cursor.execute(count_sql, tuple(sql_params))
@@ -120,6 +129,18 @@ def get_review_items_paginated(page: int, per_page: int, query_filter: str) -> T
     except Exception as e:
         logger.error(f"  ➜ 获取待复核列表失败: {e}", exc_info=True)
         raise
+
+def get_unique_reasons() -> List[str]:
+    """获取所有去重后的失败原因（截取冒号前面的主原因）"""
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 使用 split_part 提取主原因，例如把 "缺失媒体信息: S01" 归类为 "缺失媒体信息"
+            cursor.execute("SELECT DISTINCT split_part(reason, ':', 1) as base_reason FROM failed_log WHERE reason IS NOT NULL")
+            return [row['base_reason'].strip() for row in cursor.fetchall() if row['base_reason']]
+    except Exception as e:
+        logger.error(f"  ➜ 获取失败原因列表出错: {e}")
+        return []
 
 def mark_review_item_as_processed(item_id: str) -> bool:
     """从待复核列表中移除一个项目。"""

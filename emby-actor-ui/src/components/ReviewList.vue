@@ -1,3 +1,4 @@
+<!-- src/components/ReviewList.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
   <n-card class="dashboard-card" :bordered="false" size="small">
@@ -6,7 +7,6 @@
           可在下方搜索框输入片名直接搜索处理，也可以搜索存量剧集点击 <n-icon :component="AddToWatchlistIcon" /> 加入智能追剧 <br />
           可点击待复核列表媒体项进入手动编辑页面、可一键清空待复核列表转到已处理记录。
     </n-alert>
-    <!-- ✅ [修正] Access prop via `props.taskStatus` -->
     <n-alert 
       v-if="props.taskStatus?.is_running" 
       title="后台任务运行中" 
@@ -18,42 +18,57 @@
     </n-alert>
     
     <div>
-      <n-input
-        v-model:value="searchQuery"
-        placeholder="输入媒体名称搜索整个 Emby 库..."
-        clearable
-        @keyup.enter="handleSearch"
-        @clear="handleSearch"
-        style="margin-bottom: 20px; max-width: 400px;"
-      >
-        <template #suffix>
-          <n-icon :component="SearchIcon" @click="handleSearch" style="cursor: pointer;" />
-        </template>
-      </n-input>
-      <n-popconfirm
-          @positive-click="clearAllReviewItems"
-          :positive-button-props="{ type: 'error' }"
+      <!-- ★ 新增：搜索框和筛选框放在同一行 -->
+      <n-space style="margin-bottom: 20px;" align="center">
+        <n-input
+          v-model:value="searchQuery"
+          placeholder="输入媒体名称搜索整个 Emby 库..."
+          clearable
+          @keyup.enter="handleSearch"
+          @clear="handleSearch"
+          style="width: 300px;"
         >
-          <template #trigger>
-            <n-button type="error" ghost :disabled="tableData.length === 0 || loading || isShowingSearchResults">
-              <template #icon><n-icon :component="TrashIcon" /></template>
-              清空所有待复核项
-            </n-button>
+          <template #suffix>
+            <n-icon :component="SearchIcon" @click="handleSearch" style="cursor: pointer;" />
           </template>
-          确定要清空所有 {{ totalItems }} 条待复核记录吗？此操作不可恢复。
+        </n-input>
+
+        <n-select
+          v-model:value="selectedReason"
+          :options="reasonOptions"
+          placeholder="按失败原因筛选"
+          clearable
+          style="width: 200px;"
+          @update:value="handleReasonChange"
+          :disabled="isShowingSearchResults"
+        />
+
+        <n-popconfirm
+            @positive-click="clearAllReviewItems"
+            :positive-button-props="{ type: 'error' }"
+          >
+            <template #trigger>
+              <n-button type="error" ghost :disabled="tableData.length === 0 || loading || isShowingSearchResults">
+                <template #icon><n-icon :component="TrashIcon" /></template>
+                清空所有待复核项
+              </n-button>
+            </template>
+            确定要清空所有 {{ totalItems }} 条待复核记录吗？此操作不可恢复。
         </n-popconfirm>
+
         <n-popconfirm
             @positive-click="reprocessAllReviewItems"
         >
             <template #trigger>
-                <!-- ✅ [修正] Access prop via `props.taskStatus` -->
                 <n-button type="warning" ghost :disabled="tableData.length === 0 || loading || props.taskStatus?.is_running || isShowingSearchResults">
                     <template #icon><n-icon :component="ReprocessIcon" /></template>
-                    重新处理所有
+                    <!-- ★ 动态按钮文字 -->
+                    {{ selectedReason ? `重新处理筛选出的 ${totalItems} 项` : '重新处理所有' }}
                 </n-button>
             </template>
-            确定要重新处理所有 {{ totalItems }} 条待复核记录吗？
+            确定要重新处理 {{ selectedReason ? '当前筛选出的' : '所有' }} {{ totalItems }} 条记录吗？
         </n-popconfirm>
+      </n-space>
 
       <n-spin :show="loading">
         <div v-if="error" class="error-message">
@@ -90,27 +105,22 @@ import { useRouter } from 'vue-router';
 import { ref, onMounted, computed, h } from 'vue';
 import axios from 'axios';
 import {
-    NCard, NSpin, NAlert, NText, NDataTable, NButton, NSpace, NPopconfirm, NEmpty, NInput, NIcon,
+    NCard, NSpin, NAlert, NText, NDataTable, NButton, NSpace, NPopconfirm, NEmpty, NInput, NIcon, NSelect,
     useMessage
 } from 'naive-ui';
 import { HeartOutline as AddToWatchlistIcon } from '@vicons/ionicons5';
 import { SearchOutline as SearchIcon, PlayForwardOutline as ReprocessIcon, CheckmarkCircleOutline as MarkDoneIcon, TrashOutline as TrashIcon } from '@vicons/ionicons5';
 
-import { useConfig } from '../composables/useConfig';
-
-// ✅ [修正] defineProps returns an object, which we've named `props`.
 const props = defineProps({
   taskStatus: {
     type: Object,
     required: true,
-    // Providing a default is still good practice, but required: true makes it mandatory.
     default: () => ({ is_running: false }) 
   }
 });
 
 const router = useRouter();
 const message = useMessage();
-const { configModel } = useConfig();
 
 const tableData = ref([]);
 const loading = ref(true);
@@ -123,7 +133,29 @@ const loadingAction = ref({});
 const currentRowId = ref(null);
 const isShowingSearchResults = ref(false);
 
-// ... other functions like addToWatchlist, formatDate, etc. remain unchanged ...
+// ★ 新增：原因筛选相关状态
+const selectedReason = ref(null);
+const reasonOptions = ref([]);
+
+const fetchReasons = async () => {
+  try {
+    const res = await axios.get('/api/review_reasons');
+    if (res.data && res.data.data) {
+      reasonOptions.value = res.data.data.map(reason => ({
+        label: reason,
+        value: reason
+      }));
+    }
+  } catch (err) {
+    console.error("获取原因列表失败:", err);
+  }
+};
+
+const handleReasonChange = () => {
+  currentPage.value = 1;
+  fetchReviewItems();
+};
+
 const addToWatchlist = async (rowData) => {
   if (rowData.item_type !== 'Series') {
     message.warning('只有剧集类型才能添加到追剧列表。');
@@ -169,6 +201,7 @@ const clearAllReviewItems = async () => {
     const response = await axios.post('/api/actions/clear_review_items');
     message.success(response.data.message);
     await fetchReviewItems(); 
+    await fetchReasons(); // 清空后刷新下拉框
   } catch (err) {
     console.error("清空待复核列表失败:", err);
     message.error(`操作失败: ${err.response?.data?.error || err.message}`);
@@ -192,6 +225,7 @@ const handleMarkAsProcessed = async (row) => {
     await axios.post(`/api/actions/mark_item_processed/${row.item_id}`);
     message.success(`项目 "${row.item_name}" 已标记为已处理。`);
     await fetchReviewItems();
+    await fetchReasons(); // 标记处理后可能原因列表变了
   } catch (err) {
     console.error("标记为已处理失败:", err);
     message.error(`标记项目 "${row.item_name}" 为已处理失败: ${err.response?.data?.error || err.message}`);
@@ -200,7 +234,6 @@ const handleMarkAsProcessed = async (row) => {
     currentRowId.value = null;
   }
 };
-
 
 const columns = computed(() => [
   {
@@ -234,7 +267,6 @@ const columns = computed(() => [
     resizable: true,
     render(row) { return isShowingSearchResults.value ? 'N/A' : formatDate(row.failed_at); }
   },
-  // ✅【关键修复】将 key 从 'error_message' 改为 'reason'
   { title: '原因', key: 'reason', resizable: true, ellipsis: { tooltip: true } },
   {
     title: '评分',
@@ -254,7 +286,6 @@ const columns = computed(() => [
     render(row) {
       const actionButtons = [];
       
-      // ✅ [修改] 将“重新处理”按钮移出条件判断，使其在搜索结果中也显示
       actionButtons.push(
         h(NPopconfirm, { onPositiveClick: () => handleReprocessItem(row) }, {
             trigger: () => h(NButton, {
@@ -279,7 +310,6 @@ const columns = computed(() => [
         }, { default: () => '手动编辑' })
       );
 
-      // “标记为已处理”按钮仅在待复核列表视图中显示
       if (!isShowingSearchResults.value) {
         actionButtons.push(
           h(NPopconfirm, { onPositiveClick: () => handleMarkAsProcessed(row) }, {
@@ -311,7 +341,6 @@ const columns = computed(() => [
   }
 ]);
 
-// ... other functions like paginationProps, fetchReviewItems, etc. remain unchanged ...
 const paginationProps = computed(() => ({
     disabled: isShowingSearchResults.value,
     page: currentPage.value,
@@ -343,6 +372,7 @@ const fetchReviewItems = async () => {
         params: {
             page: currentPage.value,
             per_page: itemsPerPage.value,
+            reason: selectedReason.value || '' // ★ 传递筛选原因
         }
     });
     tableData.value = response.data.items;
@@ -358,11 +388,11 @@ const searchEmbyLibrary = async () => {
   loading.value = true;
   error.value = null;
   isShowingSearchResults.value = true;
+  selectedReason.value = null; // 搜索时清空筛选
   try {
     const response = await axios.get(`/api/search_emby_library`, {
         params: { query: searchQuery.value }
     });
-    // 为搜索结果补充一些待复核列表才有的字段，防止渲染时出错
     tableData.value = response.data.items.map(item => ({
         ...item,
         failed_at: null,
@@ -380,12 +410,10 @@ const handleReprocessItem = async (row) => {
   currentRowId.value = row.item_id;
   loadingAction.value[row.item_id] = true;
   try {
-    // ★★★ 修改：在请求体中传递 reason ★★★
     const response = await axios.post(`/api/actions/reprocess_item/${row.item_id}`, {
-        reason: row.reason // 将当前行的失败原因传给后端
+        reason: row.reason 
     });
     message.success(response.data.message || `项目 "${row.item_name}" 的重新处理任务已提交。`);
-    // 如果是在待复核列表操作，则刷新列表
     if (!isShowingSearchResults.value) {
         await fetchReviewItems();
     }
@@ -400,11 +428,13 @@ const handleReprocessItem = async (row) => {
 
 const reprocessAllReviewItems = async () => {
   try {
-    const response = await axios.post('/api/actions/reprocess_all_review_items');
-    message.success(response.data.message || '重新处理所有待复核项的任务已成功提交！');
-  } catch (err)
- {
-    console.error("提交重新处理所有任务失败:", err);
+    // ★ 提交时带上当前选中的原因
+    const response = await axios.post('/api/actions/reprocess_all_review_items', {
+      reason: selectedReason.value || ''
+    });
+    message.success(response.data.message || '重新处理任务已成功提交！');
+  } catch (err) {
+    console.error("提交重新处理任务失败:", err);
     message.error(`操作失败: ${err.response?.data?.error || err.message}`);
   }
 };
@@ -426,9 +456,7 @@ const handleSearch = () => {
 };
 
 onMounted(() => {
+  fetchReasons(); // ★ 初始化时获取原因列表
   fetchReviewItems();
 });
 </script>
-
-<style scoped>
-</style>

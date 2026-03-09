@@ -52,9 +52,25 @@ def api_reprocess_item(item_id):
 @task_lock_required
 @processor_ready_required
 def api_reprocess_all_review_items():
-    from tasks.media import task_reprocess_all_review_items # 延迟导入
-    success = task_manager.submit_task(task_reprocess_all_review_items, "重新处理所有待复核项", processor_type='media')
-    if success:
-        return jsonify({"message": "重新处理所有待复核项的任务已提交。"}), 202
-    else:
-        return jsonify({"error": "提交任务失败，已有任务在运行。"}), 409
+    if task_manager.is_task_running():
+        return jsonify({"error": "后台有任务正在运行，请稍后再试。"}), 409
+    try:
+        # 获取前端传来的 reason 筛选条件
+        data = request.get_json() or {}
+        reason_filter = data.get('reason', '').strip()
+        
+        task_name = f"批量重新处理 ({reason_filter})" if reason_filter else "批量重新处理 (全部)"
+        
+        from core_processor import task_reprocess_all_review_items
+        success = task_manager.submit_task(
+            task_reprocess_all_review_items,
+            task_name,
+            processor_type='media',
+            reason_filter=reason_filter # 传给核心处理器
+        )
+        if success:
+            return jsonify({"message": f"任务 '{task_name}' 已成功提交！"}), 202
+        else:
+            return jsonify({"error": "任务提交失败"}), 500
+    except Exception as e:
+        return jsonify({"error": "服务器内部错误"}), 500
