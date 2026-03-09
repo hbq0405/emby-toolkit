@@ -1183,8 +1183,8 @@ class SmartOrganizer:
         if fps_match:
             info_dict['fps'] = fps_match.group(1).lower() # 统一转为小写 60fps
 
-        # 流媒体平台识别
-        stream_match = re.search(r'\b(NF|AMZN|DSNP|HMAX|HULU|NETFLIX|DISNEY\+|APPLETV\+|B-GLOBAL|ITUNES)\b', name_upper)
+        # 流媒体平台识别 (扩充国内平台与HQ标识)
+        stream_match = re.search(r'\b(NF|AMZN|DSNP|HMAX|HULU|NETFLIX|DISNEY\+|APPLETV\+|B-GLOBAL|ITUNES|IQ|YK|TC|VIU|HQ)\b', name_upper)
         if stream_match:
             info_dict['stream'] = stream_match.group(1)
 
