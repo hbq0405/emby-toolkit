@@ -1147,12 +1147,21 @@ class SmartOrganizer:
         elif codec: info_dict['codec'] = codec
         elif bit_depth: info_dict['codec'] = bit_depth
 
-        # 5. 音频 (Audio)
+        # 5. 音频 (Audio) 与 音轨数 (Audio Count) 分离
         audio_info = []
+        audio_count_str = ""
+        
+        # 提取音轨数
         num_audio_match = re.search(r'\b(\d+)\s?Audios?\b', name_upper, re.IGNORECASE)
-        if num_audio_match: audio_info.append(f"{num_audio_match.group(1)}Audios")
-        elif re.search(r'\b(Multi|双语|多音轨|Dual-Audio)\b', name_upper, re.IGNORECASE): audio_info.append('Multi')
+        if num_audio_match: 
+            audio_count_str = f"{num_audio_match.group(1)}Audios"
+        elif re.search(r'\b(Multi|双语|多音轨|Dual-Audio)\b', name_upper, re.IGNORECASE): 
+            audio_count_str = 'Multi'
+            
+        if audio_count_str:
+            info_dict['audio_count'] = audio_count_str
 
+        # 提取音频格式
         if re.search(r'ATMOS', name_upper): audio_info.append('Atmos')
         elif re.search(r'TRUEHD', name_upper): audio_info.append('TrueHD')
         elif re.search(r'DTS-?HD(\s?MA)?', name_upper): audio_info.append('DTS-HD')
@@ -1165,7 +1174,9 @@ class SmartOrganizer:
         # 声道
         chan_match = re.search(r'(?<!\d)(7\.1|5\.1|2\.0)(?!\d)', filename)
         if chan_match: audio_info.append(chan_match.group(1))
-        if audio_info: info_dict['audio'] = " ".join(audio_info)
+        
+        if audio_info: 
+            info_dict['audio'] = " ".join(audio_info)
 
         # 帧率 (FPS) 提取
         fps_match = re.search(r'(?<!\d)(\d{2,3}FPS)\b', name_upper)
@@ -1288,9 +1299,11 @@ class SmartOrganizer:
 
             if audio_streams:
                 audio_tags = []
+                
+                # ★ 核心修改：音轨数独立赋值给 audio_count
                 num_audios = len(audio_streams)
                 if num_audios > 1: 
-                    audio_tags.append(f"{num_audios}Audios")
+                    info['audio_count'] = f"{num_audios}Audios"
 
                 primary_audio = next((s for s in audio_streams if s.get("IsDefault")), audio_streams[0])
                 acodec = primary_audio.get("Codec", "").lower()

@@ -85,7 +85,7 @@
               <n-form-item label="智能重命名">
                 <n-switch v-model:value="config.enable_smart_rename" />
                 <template #feedback>
-                  <span style="font-size: 12px; color: gray;">开启后将通过 SHA1 查询真实视频流参数(耗时较长)。关闭则仅通过文件名猜测(极速)。</span>
+                  <span style="font-size: 12px; color: gray;">开启后将通过中心服务器查询媒体信息补齐缺失的参数（较慢）。关闭则仅通过文件名猜测(极速)。</span>
                 </template>
               </n-form-item>
               <n-form-item label="STRM 链接格式">
@@ -179,7 +179,7 @@ const config = ref({
   main_year_en: true,
   main_tmdb_fmt: '{tmdb=ID}',
   season_fmt: 'Season {02}',
-  file_format: ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group'],
+  file_format: ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio_count', 'sep_space', 'audio', 'sep_middot_space', 'group'],
   file_tmdb_fmt: 'none',
   strm_url_fmt: 'standard'
 });
@@ -195,12 +195,12 @@ const allBlocks = [
   { id: 'stream', label: '流媒体 (NF/AMZN等)' },
   { id: 'effect', label: '特效 (HDR/DV)' },
   { id: 'codec', label: '视频编码' },
-  { id: 'audio', label: '音频/音轨' },
+  { id: 'audio_count', label: '音轨数 (2Audios)' },
+  { id: 'audio', label: '音频格式 (DTS/AC3)' },
   { id: 'fps', label: '帧率 (fps)' },
   { id: 'group', label: '发布组' },
   { id: 'tmdb', label: 'TMDb标签' },
   { id: 'original_name', label: '原文件名(保留原名)' },
-  // 连接符 (isSep: true 表示可以无限添加)
   { id: 'sep_dash_space', label: '分隔符 ( - )', isSep: true },
   { id: 'sep_middot_space', label: '分隔符 ( · )', isSep: true },
   { id: 'sep_middot', label: '中圆点 (·)', isSep: true },
@@ -297,8 +297,7 @@ const strmUrlOptions = [
 
 // 模拟数据
 const mockMovie = { zh: '蝙蝠侠：黑暗骑士', en: 'The Dark Knight', year: '2008', tmdb: '155', res: '1080p', src: 'BluRay', codec: 'H264', audio: 'DDP 5.1', group: 'CMCT', orig: 'The.Dark.Knight.2008.REMASTERED.1080p', ext: '.mkv' };
-const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', src: 'WEB-DL', stream: 'NF', effect: 'HDR', codec: 'H265', audio: 'Atmos', fps: '60fps', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.NF.WEB-DL', ext: '.mp4' };
-
+const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', src: 'WEB-DL', stream: 'NF', effect: 'HDR', codec: 'H265', audio_count: '2Audios', audio: 'Atmos', fps: '60fps', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.NF.WEB-DL', ext: '.mp4' };
 const mockOriginalMovieDir = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264";
 const mockOriginalMovieFile = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264.mkv";
 const mockOriginalTvDir = "Breaking.Bad.S01.2160p.WEB-DL.x265";
@@ -357,6 +356,7 @@ const buildFileName = (mockData, isTv) => {
     else if (blockId === 'stream' && mockData.stream) val = mockData.stream;
     else if (blockId === 'effect' && mockData.effect) val = mockData.effect;
     else if (blockId === 'codec' && mockData.codec) val = mockData.codec;
+    else if (blockId === 'audio_count' && mockData.audio_count) val = mockData.audio_count;
     else if (blockId === 'audio' && mockData.audio) val = mockData.audio;
     else if (blockId === 'fps' && mockData.fps) val = mockData.fps;
     else if (blockId === 'group' && mockData.group) val = mockData.group;
