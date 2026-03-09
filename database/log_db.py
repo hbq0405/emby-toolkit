@@ -131,13 +131,29 @@ def get_review_items_paginated(page: int, per_page: int, query_filter: str, reas
         raise
 
 def get_unique_reasons() -> List[str]:
-    """获取所有去重后的失败原因（截取冒号前面的主原因）"""
+    """获取所有去重后的失败原因（智能截取主原因）"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 使用 split_part 提取主原因，例如把 "缺失媒体信息: S01" 归类为 "缺失媒体信息"
-            cursor.execute("SELECT DISTINCT split_part(reason, ':', 1) as base_reason FROM failed_log WHERE reason IS NOT NULL")
-            return [row['base_reason'].strip() for row in cursor.fetchall() if row['base_reason']]
+            # 先查出所有不为空的原始原因
+            cursor.execute("SELECT DISTINCT reason FROM failed_log WHERE reason IS NOT NULL")
+            raw_reasons = [row['reason'].strip() for row in cursor.fetchall() if row['reason']]
+            
+            unique_reasons = set()
+            for reason in raw_reasons:
+                # 1. 处理带冒号的，如 "缺失媒体信息: S01" -> "缺失媒体信息"
+                if ':' in reason:
+                    base = reason.split(':')[0].strip()
+                    unique_reasons.add(base)
+                # 2. 处理评分相关的，如 "处理评分 (9.50) 低于阈值..." -> "处理评分"
+                elif reason.startswith('处理评分'):
+                    unique_reasons.add('处理评分')
+                # 3. 其他情况直接加入
+                else:
+                    unique_reasons.add(reason)
+                    
+            # 排序后返回，让下拉框更好看
+            return sorted(list(unique_reasons))
     except Exception as e:
         logger.error(f"  ➜ 获取失败原因列表出错: {e}")
         return []
