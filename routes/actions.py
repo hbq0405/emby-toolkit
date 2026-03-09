@@ -61,7 +61,7 @@ def api_reprocess_all_review_items():
         
         task_name = f"批量重新处理 ({reason_filter})" if reason_filter else "批量重新处理 (全部)"
         
-        from core_processor import task_reprocess_all_review_items
+        from tasks.media import task_reprocess_all_review_items
         success = task_manager.submit_task(
             task_reprocess_all_review_items,
             task_name,
