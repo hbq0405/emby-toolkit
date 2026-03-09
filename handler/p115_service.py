@@ -752,31 +752,24 @@ class P115DeleteBuffer:
             if not ids: return []
             item_type = "目录" if is_dir else "文件"
             max_retries = 3
+            
             for attempt in range(max_retries):
                 resp = client.fs_delete(ids)
                 if resp.get('state'):
                     return ids
                 
-                # 流控熔断机制
+                # ★ 流控熔断机制
                 if resp.get('code') in [770004, 990001]:
-                    logger.error(f"  🛑 [触发流控] 115 API 提示达到访问上限 ({resp.get('code')})，立即终止本次删除任务！")
-                    return [] # 直接 return 空列表，放弃所有重试和降级
+                    logger.error(f"  🛑 [触发流控] 115 API 提示达到访问上限 ({resp.get('code')})，立即终止本次删除任务，保护账号！")
+                    return [] 
 
                 logger.error(f"  ❌ [批量销毁] 115 删除{item_type}失败 (第 {attempt + 1}/{max_retries} 次): {resp}")
                 if attempt < max_retries - 1:
                     time.sleep(3)
             
-            logger.warning(f"  ⚠️ [批量销毁] 降级为逐个删除以定位问题...")
-            success_ids = []
-            for item_id in ids:
-                resp = client.fs_delete([item_id])
-                if resp.get('state'): 
-                    success_ids.append(item_id)
-                # ★ 逐个删除时也要防流控
-                elif resp.get('code') in [770004, 990001]:
-                    logger.error(f"  🛑 [触发流控] 逐个删除时触发访问上限，立即终止！")
-                    break
-            return success_ids
+            # ★ 核心修改：重试3次全失败后，直接放弃，不再降级为逐个删除！
+            logger.warning(f"  ⚠️ [批量销毁] 批量删除彻底失败，放弃本次清理，等待下次任务回收或手动删除。")
+            return []
 
         # 1. 删除文件
         if fids:
