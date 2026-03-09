@@ -162,14 +162,13 @@
           />
         </n-form-item>
         
-        <!-- ★ 修复：增加 virtual-scroll="false" 和 placement="bottom" 解决自动滑到底部的问题 -->
         <n-form-item label="目标分类" path="target_cid">
           <n-select 
             v-model:value="editForm.target_cid" 
             :options="categoryOptions.slice(1)" 
-            placeholder="选择 115 目标整理目录" 
-            :virtual-scroll="false"
-            placement="bottom"
+            placeholder="选择或搜索分类..." 
+            filterable
+            clearable
           />
         </n-form-item>
       </n-form>
