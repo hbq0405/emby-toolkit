@@ -1373,7 +1373,7 @@ class SmartOrganizer:
         video_info = self._extract_video_info(search_name)
 
         # ★★★ 神医降维打击：基于 SHA1 获取真实参数并覆盖猜测 ★★★
-        enable_smart_rename = cfg.get('enable_smart_rename', True)
+        enable_smart_rename = cfg.get('enable_smart_rename', False)
         is_center_cached = False
         
         if not is_sub and enable_smart_rename: # 字幕文件不需要查视频流
