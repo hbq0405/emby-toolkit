@@ -333,41 +333,64 @@ def _refresh_parent_dirs(parent_dirs: Set[str], action_type: str):
             logger.error(f"    ❌ 刷新目录失败 {folder_path}: {e}")
 
 def _wait_for_files_stability(file_paths: List[str]) -> List[str]:
+    """
+    【极速并发版】文件稳定性检测
+    1. 并发检测：所有文件同时倒计时，40个文件也只需要3秒。
+    2. STRM 绿色通道：.strm 文本文件写入极快，只要 size > 0 瞬间放行，0 延迟！
+    """
     valid_files = []
-    for file_path in file_paths:
-        if not os.path.exists(file_path):
-            continue
-            
-        stable_count = 0
-        last_size = -1
-        is_stable = False
-        
-        for _ in range(60): 
-            try:
-                if not os.path.exists(file_path): 
-                    break 
-                
-                size = os.path.getsize(file_path)
-                if size > 0 and size == last_size:
-                    stable_count += 1
-                else:
-                    stable_count = 0
-                
-                last_size = size
-                
-                if stable_count >= 3: 
-                    is_stable = True
-                    break
-                
-                time.sleep(1)
-            except: 
-                pass
-        
-        if is_stable:
-            valid_files.append(file_path)
-        else:
-            logger.warning(f"  ⚠️ [实时监控] 文件不稳定或超时，跳过处理: {os.path.basename(file_path)}")
     
+    # 初始化待检测字典 { filepath: {'last_size': -1, 'stable_count': 0} }
+    pending_files = {}
+    for fp in file_paths:
+        if os.path.exists(fp):
+            pending_files[fp] = {'last_size': -1, 'stable_count': 0}
+            
+    # 全局最多等待 60 秒
+    for _ in range(60):
+        if not pending_files:
+            break # 所有文件都已稳定，提前结束
+            
+        # 遍历当前还在等待的文件 (使用 list 包装以便在循环中删除字典元素)
+        for fp in list(pending_files.keys()):
+            if not os.path.exists(fp):
+                del pending_files[fp]
+                continue
+                
+            try:
+                size = os.path.getsize(fp)
+                
+                # ★★★ 优化 1：STRM 绿色通道 ★★★
+                # STRM 文件极小，只要有内容(size>0)说明已经写完，瞬间放行！
+                if fp.lower().endswith('.strm') and size > 0:
+                    valid_files.append(fp)
+                    del pending_files[fp]
+                    continue
+                
+                # ★★★ 优化 2：常规文件的并发检测 ★★★
+                if size > 0 and size == pending_files[fp]['last_size']:
+                    pending_files[fp]['stable_count'] += 1
+                else:
+                    pending_files[fp]['stable_count'] = 0
+                    
+                pending_files[fp]['last_size'] = size
+                
+                # 连续 3 秒大小不变，视为稳定
+                if pending_files[fp]['stable_count'] >= 3:
+                    valid_files.append(fp)
+                    del pending_files[fp]
+                    
+            except Exception:
+                pass # 忽略读取过程中的权限/占用错误
+                
+        # 如果还有未稳定的文件，全局休眠 1 秒后继续下一轮检查
+        if pending_files:
+            time.sleep(1)
+            
+    # 记录那些等了 60 秒还没写完的死文件
+    for fp in pending_files:
+        logger.warning(f"  ⚠️ [实时监控] 文件不稳定或超时，跳过处理: {os.path.basename(fp)}")
+        
     return valid_files
 
 class MonitorService:
