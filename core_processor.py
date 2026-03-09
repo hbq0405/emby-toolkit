@@ -2407,7 +2407,7 @@ class MediaProcessor:
                     if os.path.exists(mediainfo_path):
                         return True, ""
                     else:
-                        return False, f"{label_prefix} 缺失媒体信息: 文件 (-mediainfo.json)"
+                        return False, f"{label_prefix}缺失媒体信息: 文件 (-mediainfo.json)"
 
                 # --- 分类处理 ---
                 if item_type in ['Movie', 'Episode']:

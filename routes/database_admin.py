@@ -361,8 +361,7 @@ def api_get_review_items():
 def api_get_review_reasons():
     try:
         reasons = log_db.get_unique_reasons()
-        cleaned_reasons = list(set([r.strip() for r in reasons if r and r.strip()]))
-        return jsonify({"status": "success", "data": cleaned_reasons})
+        return jsonify({"status": "success", "data": reasons})
     except Exception as e:
         return jsonify({"error": "获取原因列表失败"}), 500
 
