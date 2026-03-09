@@ -1623,17 +1623,104 @@ class SmartOrganizer:
             return False
 
     def execute(self, root_item, target_cid):
+        # 兼容 OpenAPI 键名
+        root_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '未知')
+        source_root_id = root_item.get('fid') or root_item.get('file_id')
+        fc_val = root_item.get('fc') if root_item.get('fc') is not None else root_item.get('type')
+        is_source_file = str(fc_val) == '1'
+        dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+
+        # =================================================================
+        # 1. 拦截合集包 (Collection Breakdown)
+        # =================================================================
+        if not is_source_file and re.search(r'(合集|部曲|系列|Collection|Pack|Trilogy|Quadrilogy|\d+-\d+)', root_name, re.IGNORECASE):
+            logger.info(f"  📦 检测到疑似合集包: {root_name}，正在验证...")
+            collection_movies = []
+            try:
+                res_c = tmdb.get_collection_details(int(self.tmdb_id), self.api_key)
+                if res_c and 'parts' in res_c: collection_movies = res_c['parts']
+            except: pass
+            
+            if not collection_movies and self.media_type == 'movie':
+                try:
+                    c_id = None
+                    if hasattr(self, 'raw_metadata') and self.raw_metadata and self.raw_metadata.get('belongs_to_collection'):
+                        c_id = self.raw_metadata['belongs_to_collection']['id']
+                    else:
+                        res_m = tmdb.get_movie_details(int(self.tmdb_id), self.api_key)
+                        if res_m and res_m.get('belongs_to_collection'):
+                            c_id = res_m['belongs_to_collection']['id']
+                    if c_id:
+                        res_c = tmdb.get_collection_details(int(c_id), self.api_key)
+                        if res_c and 'parts' in res_c: collection_movies = res_c['parts']
+                except: pass
+
+            if collection_movies:
+                logger.info(f"  📦 确认为官方合集包，包含 {len(collection_movies)} 部电影，启动精确拆解模式...")
+            else:
+                logger.info(f"  📦 未找到官方合集信息 (可能是民间自制包)，启动基于文件名的暴力拆解模式...")
+            return self._execute_collection_breakdown(root_item, collection_movies)
+
+        # =================================================================
+        # 2. 提前获取候选文件列表
+        # =================================================================
+        candidates = []
+        if is_source_file:
+            candidates.append(root_item)
+        else:
+            candidates = self._scan_files_recursively(source_root_id, max_depth=3)
+
+        if not candidates: return True
+
+        # =================================================================
+        # ★★★ 3. 智能类型纠错嗅探 (Movie -> TV) ★★★
+        # =================================================================
+        if self.media_type == 'movie':
+            # 匹配 S01E01, EP01, 第1集 等特征
+            tv_pattern = r'(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}|(?:ep|episode)[ \.\-]*\d{1,4}|第\d{1,4}[集话]'
+            is_actually_tv = False
+            for c in candidates:
+                c_name = c.get('fn') or c.get('n') or c.get('file_name', '')
+                if re.search(tv_pattern, c_name, re.IGNORECASE):
+                    is_actually_tv = True
+                    break
+            
+            if is_actually_tv:
+                logger.warning(f"  🕵️‍♂️ [智能纠错] 发现文件包含明显的剧集特征(如EP01)，但当前被错误识别为电影。正在尝试自动纠错...")
+                try:
+                    search_title = self.original_title
+                    # 清理标题，去掉年份等干扰项
+                    clean_title = re.sub(r'\(\d{4}\)', '', search_title).strip()
+                    results = tmdb.search_media(query=clean_title, api_key=self.api_key, item_type='tv')
+                    
+                    if results and len(results) > 0:
+                        new_tmdb_id = str(results[0]['id'])
+                        logger.info(f"  ✅ [智能纠错] 成功纠正为剧集: {results[0].get('name')} (ID:{new_tmdb_id})")
+                        
+                        # 原地变身！更新自身所有属性
+                        self.tmdb_id = new_tmdb_id
+                        self.media_type = 'tv'
+                        self.raw_metadata = self._fetch_raw_metadata()
+                        self.details = self.raw_metadata
+                        
+                        # 重新计算目标分类目录 (从电影分类跳到剧集分类)
+                        target_cid = self.get_target_cid()
+                        dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+                    else:
+                        logger.warning(f"  ⚠️ [智能纠错] 未能在 TMDb 找到对应的剧集，将强制按剧集格式重命名以防冲突。")
+                except Exception as e:
+                    logger.error(f"  ❌ [智能纠错] 搜索剧集失败: {e}")
+
+        # =================================================================
+        # 4. 计算最终的目录名称和路径
+        # =================================================================
         title = self.details.get('title') or self.original_title
         original_title = self.details.get('original_title') or title
         date_str = self.details.get('date') or ''
         year = date_str[:4] if date_str else ''
 
-        # ★ 应用主目录重命名配置
         cfg = self.rename_config
         keep_original = cfg.get('keep_original_name', False)
-        
-        # 兼容 OpenAPI 键名
-        root_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '未知')
         
         if keep_original:
             std_root_name = root_name
@@ -1649,50 +1736,6 @@ class SmartOrganizer:
             main_tmdb_fmt = cfg.get('main_tmdb_fmt', '{tmdb=ID}')
             if main_tmdb_fmt != 'none':
                 std_root_name += f" {main_tmdb_fmt.replace('ID', str(self.tmdb_id))}"
-        source_root_id = root_item.get('fid') or root_item.get('file_id')
-        fc_val = root_item.get('fc') if root_item.get('fc') is not None else root_item.get('type')
-        is_source_file = str(fc_val) == '1'
-        dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
-
-        # =================================================================
-        # ★★★ 新增：在底层拦截 NULLBR 传来的合集包 ★★★
-        # =================================================================
-        if not is_source_file and re.search(r'(合集|部曲|系列|Collection|Pack|Trilogy|Quadrilogy|\d+-\d+)', root_name, re.IGNORECASE):
-            logger.info(f"  📦 检测到疑似合集包: {root_name}，正在验证...")
-            collection_movies = []
-            
-            # 1. 检查当前传入的 tmdb_id 是否本身就是合集 ID
-            try:
-                res_c = tmdb.get_collection_details(int(self.tmdb_id), self.api_key)
-                if res_c and 'parts' in res_c:
-                    collection_movies = res_c['parts']
-            except: pass
-            
-            # 2. 检查当前传入的电影是否属于某个合集
-            if not collection_movies and self.media_type == 'movie':
-                try:
-                    c_id = None
-                    # 优先从已获取的元数据中取
-                    if hasattr(self, 'raw_metadata') and self.raw_metadata and self.raw_metadata.get('belongs_to_collection'):
-                        c_id = self.raw_metadata['belongs_to_collection']['id']
-                    else:
-                        res_m = tmdb.get_movie_details(int(self.tmdb_id), self.api_key)
-                        if res_m and res_m.get('belongs_to_collection'):
-                            c_id = res_m['belongs_to_collection']['id']
-                            
-                    if c_id:
-                        res_c = tmdb.get_collection_details(int(c_id), self.api_key)
-                        if res_c and 'parts' in res_c:
-                            collection_movies = res_c['parts']
-                except Exception as e:
-                    logger.debug(f"    ├─ 验证合集失败: {e}")
-
-            if collection_movies:
-                logger.info(f"  📦 确认为官方合集包，包含 {len(collection_movies)} 部电影，启动精确拆解模式...")
-            else:
-                logger.info(f"  📦 未找到官方合集信息 (可能是民间自制包)，启动基于文件名的暴力拆解模式...")
-                
-            return self._execute_collection_breakdown(root_item, collection_movies)
 
         config = get_config()
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
