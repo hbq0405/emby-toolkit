@@ -404,11 +404,20 @@
                         </template>
                     </n-form-item>
 
-                    <n-form-item label="智能整理开关" path="p115_enable_organize">
-                        <n-switch v-model:value="configModel.p115_enable_organize">
+                    <n-form-item label="智能整理" path="p115_smart_rename">
+                        <n-switch v-model:value="configModel.p115_smart_rename">
                             <template #checked>整理并生成STRM</template>
                             <template #unchecked>仅转存</template>
                         </n-switch>
+                    </n-form-item>
+                    <n-form-item label="智能重命名" path="p115_enable_organize">
+                        <n-switch v-model:value="configModel.p115_enable_organize">
+                            <template #checked>根据媒体信息重命名</template>
+                            <template #unchecked>根据文件名重命名</template>
+                        </n-switch>
+                        <template #feedback>
+                            <n-text depth="3" style="font-size:0.8em;">实时查询中心服务器缓存，根据媒体信息补齐缺失的参数。</n-text>
+                        </template>
                     </n-form-item>
                     <n-form-item label="延迟删除空目录" path="p115_delay_delete">
                         <n-switch v-model:value="configModel.p115_delay_delete">
