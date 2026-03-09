@@ -1715,7 +1715,6 @@ import {
   TrashOutline as DeleteIcon, 
   Menu as DragHandleIcon,
   ColorWandOutline as ColorWandIcon,
-  CloudDownloadOutline as CloudDownloadIcon,
   QrCodeOutline
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
