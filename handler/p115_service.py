@@ -1388,47 +1388,25 @@ class SmartOrganizer:
                         if v: # 只要真实数据有值，无脑覆盖文件名的猜测
                             video_info[k] = v
                     
-        # 解析季集号 (支持到9999集) - ★ 终极增强版：兼容动漫纯数字序号 + 独立季号提取
+        # 解析季集号 (支持到9999集)
         season_num = None
         episode_num = None
-        
-        # 1. 优先匹配标准连体格式 (S01E01, EP01, 第1集)
-        pattern_std = r'(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})|(?:ep|e|episode)[ \.\-]*?(\d{1,4})|第(\d{1,4})[集话]'
-        match_std = re.search(pattern_std, original_name, re.IGNORECASE)
-        
-        if match_std:
-            s, e, ep_only, zh_ep = match_std.groups()
-            season_num = int(s) if s else 1
-            episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
-        else:
-            # 2. 动漫/日剧纯数字格式兜底 (如 " - 04 ", "[04]")
-            
-            # ★ 提前单独打捞可能存在的孤立季号 (如 "Season 2")
-            match_isolated_season = re.search(r'(?:Season|第)\s*(\d{1,2})\s*(?:季)?', original_name, re.IGNORECASE)
-            if match_isolated_season:
-                season_num = int(match_isolated_season.group(1))
-            else:
-                season_num = 1 # 默认第一季
-                
-            # 先剔除常见干扰项：年份、分辨率、编码、声道、以及刚才提取过的 Season
-            clean_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0|(?:Season|第)\s*\d{1,2}\s*(?:季)?', '', original_name, flags=re.IGNORECASE)
-            
-            # 匹配 " - 04 ", "[04]", "【04】"
-            match_anime = re.search(r'(?:-\s*|\[|【)(\d{1,4})(?:\s+|\]|】)', clean_name)
-            if match_anime:
-                episode_num = int(match_anime.group(1))
-            else:
-                # 匹配空格包围的数字 " 04 "
-                match_space = re.search(r'\s(\d{2,4})\s', clean_name)
-                if match_space:
-                    episode_num = int(match_space.group(1))
+        if is_tv:
+            # ★★★ 核心修复：增强正则，支持 EP, Episode, E，并加上 re.IGNORECASE ★★★
+            pattern = r'(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})|(?:ep|e|episode)[ \.\-]*?(\d{1,4})|第(\d{1,4})[集话]'
+            match = re.search(pattern, original_name, re.IGNORECASE)
+            if match:
+                s, e, ep_only, zh_ep = match.groups()
+                # 如果没有提取到季号(s)，一律按第 1 季处理
+                season_num = int(s) if s else 1
+                episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
 
-        # 如果外部强制指定了季号，直接覆盖！
-        if hasattr(self, 'forced_season') and self.forced_season is not None:
-            season_num = int(self.forced_season)
-            # 兜底：如果连集数都没匹配到，给个默认值 1，防止后续报错
-            if episode_num is None:
-                episode_num = 1
+            # 如果外部强制指定了季号，直接覆盖！
+            if hasattr(self, 'forced_season') and self.forced_season is not None:
+                season_num = int(self.forced_season)
+                # 兜底：如果连集数都没匹配到，给个默认值 1，防止后续报错
+                if episode_num is None:
+                    episode_num = 1
 
         # 组装乐高积木
         evaluated = []
@@ -1723,9 +1701,10 @@ class SmartOrganizer:
                     break
             
             if is_actually_tv:
-                logger.warning(f"  🕵️‍♂️ [智能纠错] 发现文件包含明显的剧集特征(如EP01或纯数字序号)，但当前被错误识别为电影。正在尝试自动纠错...")
+                logger.warning(f"  🕵️‍♂️ [智能纠错] 发现文件包含明显的剧集特征(如EP01)，但当前被错误识别为电影。正在尝试自动纠错...")
                 try:
                     search_title = self.original_title
+                    # 清理标题，去掉年份等干扰项
                     clean_title = re.sub(r'\(\d{4}\)', '', search_title).strip()
                     results = tmdb.search_media(query=clean_title, api_key=self.api_key, item_type='tv')
                     
@@ -1733,11 +1712,13 @@ class SmartOrganizer:
                         new_tmdb_id = str(results[0]['id'])
                         logger.info(f"  ✅ [智能纠错] 成功纠正为剧集: {results[0].get('name')} (ID:{new_tmdb_id})")
                         
+                        # 原地变身！更新自身所有属性
                         self.tmdb_id = new_tmdb_id
                         self.media_type = 'tv'
                         self.raw_metadata = self._fetch_raw_metadata()
                         self.details = self.raw_metadata
                         
+                        # 重新计算目标分类目录 (从电影分类跳到剧集分类)
                         target_cid = self.get_target_cid()
                         dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
                     else:
