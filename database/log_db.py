@@ -141,11 +141,10 @@ def get_unique_reasons() -> List[str]:
             
             unique_reasons = set()
             for reason in raw_reasons:
-                # 1. 处理带冒号的，如 "缺失媒体信息: S01" -> "缺失媒体信息"
-                if ':' in reason:
-                    base = reason.split(':')[0].strip()
-                    unique_reasons.add(base)
-                # 2. 处理评分相关的，如 "处理评分 (9.50) 低于阈值..." -> "处理评分"
+                # 1. 处理缺失媒体信息
+                if reason.startswith('缺失媒体信息'):
+                    unique_reasons.add('缺失媒体信息')
+                # 2. 处理评分
                 elif reason.startswith('处理评分'):
                     unique_reasons.add('处理评分')
                 # 3. 其他情况直接加入
