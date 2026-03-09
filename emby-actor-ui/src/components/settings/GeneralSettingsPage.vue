@@ -1720,7 +1720,6 @@ import {
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
-import P115ShareMountModal from './P115ShareMountModal.vue';
 import axios from 'axios';
 const renameModalRef = ref(null);
 const promptModalVisible = ref(false);
