@@ -21,6 +21,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+# 内存级缓存，防止同剧集/同系列疯狂重复请求 TMDb
+_TMDB_METADATA_CACHE = {}
+_TMDB_SEARCH_CACHE = {}
+
 def get_115_tokens():
     """唯一真理：只从独立数据库获取 Token 和 Cookie"""
     auth_data = settings_db.get_setting('p115_auth_tokens')
@@ -340,10 +344,10 @@ class P115Service:
             def _rate_limit(self):
                 """★ 核心升级：底层统一 API 流控拦截器 (公平阻塞版) ★"""
                 try:
-                    # 默认 0.5 秒请求一次 (即 2 QPS)，对 OpenAPI 来说非常安全且高效
-                    interval = float(get_config().get(constants.CONFIG_OPTION_115_INTERVAL, 0.5))
+                    # 将默认 0.5 秒改为 0.15 秒 (约 6 QPS)，大幅释放多线程性能
+                    interval = float(get_config().get(constants.CONFIG_OPTION_115_INTERVAL, 0.15))
                 except (ValueError, TypeError):
-                    interval = 0.5
+                    interval = 0.15
                 
                 # ★ 核心修复：将 sleep 放回锁内。
                 # 之前的漏桶算法会导致后台狂奔时把时间片排到几十秒后，导致前端请求被卡死。
@@ -885,6 +889,11 @@ class SmartOrganizer:
         获取 TMDb 原始元数据 (ID/Code)，不进行任何中文转换。
         """
         if not self.api_key: return {}
+        
+        # 读取内存缓存
+        cache_key = f"{self.media_type}_{self.tmdb_id}"
+        if cache_key in _TMDB_METADATA_CACHE:
+            return _TMDB_METADATA_CACHE[cache_key]
 
         data = {
             'genre_ids': [],
@@ -949,6 +958,8 @@ class SmartOrganizer:
                     pass
             # 补充评分供规则匹配
             data['vote_average'] = raw_details.get('vote_average', 0)
+
+            _TMDB_METADATA_CACHE[cache_key] = data # 写入缓存
 
             return data
 
@@ -2300,7 +2311,14 @@ def _identify_media_enhanced(filename, forced_media_type=None, ai_translator=Non
             
         try:
             if api_key:
-                results = tmdb.search_media(query=name_part, api_key=api_key, item_type=media_type, year=year_part)
+                # 搜索缓存逻辑
+                search_key = f"{name_part}_{year_part}_{media_type}"
+                if search_key in _TMDB_SEARCH_CACHE:
+                    results = _TMDB_SEARCH_CACHE[search_key]
+                else:
+                    results = tmdb.search_media(query=name_part, api_key=api_key, item_type=media_type, year=year_part)
+                    _TMDB_SEARCH_CACHE[search_key] = results
+
                 if results and len(results) > 0:
                     best = results[0]
                     return str(best['id']), media_type, (best.get('title') or best.get('name'))
@@ -2416,7 +2434,7 @@ def task_scan_and_organize_115(processor=None):
         moved_to_unidentified = 0
         counter_lock = threading.Lock() # 计数器锁
 
-        executor = ThreadPoolExecutor(max_workers=5) # 开启 5 个并发线程
+        executor = ThreadPoolExecutor(max_workers=15) # 开启 5 个并发线程
         active_tasks = 0
         task_cond = threading.Condition()
 
