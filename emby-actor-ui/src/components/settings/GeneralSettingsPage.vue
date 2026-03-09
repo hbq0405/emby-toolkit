@@ -503,24 +503,6 @@
                       </n-alert>
                     </n-card>
 
-                    <!-- ★ 卡片 4：115 分享挂载 -->
-                    <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
-                      <template #header>
-                        <div style="display: flex; align-items: center; justify-content: space-between;">
-                          <span class="card-title">115 分享挂载 (开发中)</span>
-                          <n-button secondary type="primary" @click="shareMountModalRef?.open()">
-                            <template #icon>
-                              <n-icon :component="CloudDownloadIcon" />
-                            </template>
-                            配置分享挂载
-                          </n-button>
-                        </div>
-                      </template>
-                      <n-alert type="info" :show-icon="true">
-                        还不能用。
-                      </n-alert>
-                    </n-card>
-
                   </n-space>
                 </n-gi>
               </n-grid>
@@ -1409,12 +1391,6 @@
     </n-modal>
     <!-- ★ 引入自定义重命名模态框 -->
     <RenameConfigModal ref="renameModalRef" />
-    <P115ShareMountModal 
-      ref="shareMountModalRef" 
-      :config="configModel" 
-      @saveConfig="save" 
-      @openFolderSelector="openFolderSelector" 
-    />
   </n-layout>
   
   <!-- 导出选项模态框 -->
@@ -1747,7 +1723,6 @@ import RenameConfigModal from './RenameConfigModal.vue';
 import P115ShareMountModal from './P115ShareMountModal.vue';
 import axios from 'axios';
 const renameModalRef = ref(null);
-const shareMountModalRef = ref(null);
 const promptModalVisible = ref(false);
 const loadingPrompts = ref(false);
 const savingPrompts = ref(false);
