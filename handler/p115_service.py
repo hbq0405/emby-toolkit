@@ -1386,11 +1386,11 @@ class SmartOrganizer:
                         if v: # 只要真实数据有值，无脑覆盖文件名的猜测
                             video_info[k] = v
                     
-        # 解析季集号 (支持到9999集) - ★ 增强版：兼容动漫纯数字序号
+        # 解析季集号 (支持到9999集) - ★ 终极增强版：兼容动漫纯数字序号 + 独立季号提取
         season_num = None
         episode_num = None
         
-        # 1. 优先匹配标准格式 (S01E01, EP01, 第1集)
+        # 1. 优先匹配标准连体格式 (S01E01, EP01, 第1集)
         pattern_std = r'(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})|(?:ep|e|episode)[ \.\-]*?(\d{1,4})|第(\d{1,4})[集话]'
         match_std = re.search(pattern_std, original_name, re.IGNORECASE)
         
@@ -1399,20 +1399,26 @@ class SmartOrganizer:
             season_num = int(s) if s else 1
             episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
         else:
-            # 2. 动漫/日剧纯数字格式兜底 (如 " - 04 ", "[04]", " 04 ")
-            # 先剔除常见干扰项：年份、分辨率、编码、声道
-            clean_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', original_name)
+            # 2. 动漫/日剧纯数字格式兜底 (如 " - 04 ", "[04]")
+            
+            # ★ 提前单独打捞可能存在的孤立季号 (如 "Season 2")
+            match_isolated_season = re.search(r'(?:Season|第)\s*(\d{1,2})\s*(?:季)?', original_name, re.IGNORECASE)
+            if match_isolated_season:
+                season_num = int(match_isolated_season.group(1))
+            else:
+                season_num = 1 # 默认第一季
+                
+            # 先剔除常见干扰项：年份、分辨率、编码、声道、以及刚才提取过的 Season
+            clean_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0|(?:Season|第)\s*\d{1,2}\s*(?:季)?', '', original_name, flags=re.IGNORECASE)
             
             # 匹配 " - 04 ", "[04]", "【04】"
             match_anime = re.search(r'(?:-\s*|\[|【)(\d{1,4})(?:\s+|\]|】)', clean_name)
             if match_anime:
-                season_num = 1
                 episode_num = int(match_anime.group(1))
             else:
                 # 匹配空格包围的数字 " 04 "
                 match_space = re.search(r'\s(\d{2,4})\s', clean_name)
                 if match_space:
-                    season_num = 1
                     episode_num = int(match_space.group(1))
 
         # 如果外部强制指定了季号，直接覆盖！
