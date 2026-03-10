@@ -1238,7 +1238,9 @@ class SmartOrganizer:
             pass
 
         # 2. 本地没有，尝试查 P115Center 中心服务器
-        if not raw_json:
+        config = get_config()
+        mediainfo_center = config.get(constants.CONFIG_OPTION_115_MEDIAINFO_CENTER, False)
+        if not raw_json and mediainfo_center:
             try:
                 import extensions
                 processor = extensions.media_processor_instance
