@@ -7,6 +7,8 @@ from psycopg2.extras import Json, execute_values
 import logging
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timezone
+import threading
+from gevent import spawn_later, spawn
 
 from .connection import get_db_connection
 from .log_db import LogDBManager
@@ -14,6 +16,152 @@ from .media_db import get_tmdb_id_from_emby_id
 import constants
 
 logger = logging.getLogger(__name__)
+
+# ======================================================================
+# ★★★ 智能网盘删除缓冲池 (防并发冲突) ★★★
+# ======================================================================
+_SMART_DELETE_BUFFER = set()
+_SMART_DELETE_TIMER = None
+_SMART_DELETE_LOCK = threading.Lock()
+
+def _queue_smart_delete(pickcode: str, item_name: str, item_type: str):
+    """将待删除的 PC 码加入缓冲池，5秒后统一执行智能剪枝删除"""
+    global _SMART_DELETE_TIMER
+    with _SMART_DELETE_LOCK:
+        if pickcode:
+            _SMART_DELETE_BUFFER.add((pickcode, item_name, item_type))
+        
+        if _SMART_DELETE_TIMER is None:
+            _SMART_DELETE_TIMER = spawn_later(5.0, _flush_smart_delete)
+
+def _flush_smart_delete():
+    """执行缓冲池中的所有删除任务"""
+    global _SMART_DELETE_TIMER
+    with _SMART_DELETE_LOCK:
+        items = list(_SMART_DELETE_BUFFER)
+        _SMART_DELETE_BUFFER.clear()
+        _SMART_DELETE_TIMER = None
+
+    if not items: return
+
+    pickcodes = [i[0] for i in items]
+    # 取第一个作为日志代表
+    sample_name = items[0][1]
+    sample_type = items[0][2]
+    
+    _execute_smart_115_deletion(pickcodes, sample_name, sample_type)
+
+def _execute_smart_115_deletion(pickcodes: List[str], sample_item_name: str, sample_item_type: str):
+    """
+    【核心魔法】自底向上智能剪枝删除算法。
+    利用本地 p115_filesystem_cache 目录树，判断删除文件后父目录是否为空。
+    如果为空，则直接删除父目录（甚至爷爷目录），只需 1 次 API 调用！
+    """
+    if not pickcodes: return
+
+    try:
+        from handler.p115_service import P115Service, get_config
+        
+        client = P115Service.get_client()
+        if not client: return
+
+        # 1. 获取防火墙 (受保护的目录 CID，绝对不能删)
+        config = get_config()
+        protected_cids = {'0'}
+        if config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID):
+            protected_cids.add(str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID)))
+        if config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID):
+            protected_cids.add(str(config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)))
+        
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT value_json FROM app_settings WHERE setting_key = %s", (constants.DB_KEY_115_SORTING_RULES,))
+                row = cursor.fetchone()
+                if row and row['value_json']:
+                    rules = row['value_json'] if isinstance(row['value_json'], list) else json.loads(row['value_json'])
+                    for r in rules:
+                        if r.get('cid'): protected_cids.add(str(r['cid']))
+
+        # 2. 自底向上寻找最优删除目标
+        nodes_to_delete = set()
+        
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 获取初始文件
+                cursor.execute("SELECT id, parent_id, name FROM p115_filesystem_cache WHERE pick_code = ANY(%s)", (pickcodes,))
+                files = cursor.fetchall()
+                
+                if not files:
+                    logger.warning(f"  ⚠️ [网盘清理] 未能在本地缓存中找到对应的 PC 码，放弃本地智能删除。")
+                    return
+
+                for f in files:
+                    nodes_to_delete.add(f['id'])
+
+                parents_to_check = {f['parent_id'] for f in files}
+
+                # 向上追溯，寻找空目录
+                while parents_to_check:
+                    next_parents = set()
+                    for pid in parents_to_check:
+                        if pid in protected_cids or pid == '0':
+                            continue
+                        
+                        # 检查该目录下是否还有【不属于本次删除计划】的其他文件/目录
+                        cursor.execute("""
+                            SELECT id FROM p115_filesystem_cache 
+                            WHERE parent_id = %s AND id != ALL(%s) 
+                            LIMIT 1
+                        """, (pid, list(nodes_to_delete)))
+                        
+                        has_others = cursor.fetchone()
+                        
+                        if not has_others:
+                            # 目录空了！将父目录加入删除计划
+                            nodes_to_delete.add(pid)
+                            # 优化：既然要删父目录，子节点就不需要单独发 API 删了 (115是递归删除)
+                            cursor.execute("SELECT id FROM p115_filesystem_cache WHERE parent_id = %s", (pid,))
+                            for child in cursor.fetchall():
+                                nodes_to_delete.discard(child['id'])
+                                
+                            # 继续向上检查爷爷目录
+                            cursor.execute("SELECT parent_id FROM p115_filesystem_cache WHERE id = %s", (pid,))
+                            p_info = cursor.fetchone()
+                            if p_info and p_info['parent_id']:
+                                next_parents.add(p_info['parent_id'])
+                                
+                    parents_to_check = next_parents
+
+        # 3. 执行物理删除
+        if nodes_to_delete:
+            # 格式化人类友好日志
+            log_title = sample_item_name.split(' - ')[0] if ' - ' in sample_item_name else sample_item_name
+            if len(pickcodes) > 1:
+                log_msg = f"已同步删除网盘媒体《{log_title}》等相关文件/目录 (共 {len(pickcodes)} 个视频)"
+            else:
+                log_msg = f"已同步删除网盘媒体《{sample_item_name}》的相关文件/目录"
+
+            logger.info(f"  💥 [网盘清理] 锁定 {len(nodes_to_delete)} 个顶级目标(文件/目录)，正在发送删除指令...")
+            resp = client.fs_delete(list(nodes_to_delete))
+            
+            if resp.get('state'):
+                logger.info(f"  ✅ [网盘清理] {log_msg}")
+                # 4. 清理本地缓存与整理记录
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        # 清理整理记录
+                        cursor.execute("DELETE FROM p115_organize_records WHERE pick_code = ANY(%s)", (pickcodes,))
+                        # 清理目录树缓存
+                        cursor.execute("DELETE FROM p115_filesystem_cache WHERE pick_code = ANY(%s)", (pickcodes,))
+                        for nid in nodes_to_delete:
+                            cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s OR parent_id = %s", (nid, nid))
+                        conn.commit()
+            else:
+                logger.error(f"  ❌ [网盘清理] 删除失败: {resp}")
+
+    except Exception as e:
+        logger.error(f"  ❌ [网盘清理] 智能删除执行异常: {e}", exc_info=True)
+
 
 # ======================================================================
 # 模块: 维护数据访问
@@ -505,7 +653,6 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
                         logger.warning(f"  ➜ 表 {table_name} 不存在，跳过清空。")
 
                 logger.info("第二步：重置 media_metadata 表中的 Emby 关联字段...")
-                # ★★★ 核心修复：同步清空 file_sha1_json 和 file_pickcode_json ★★★
                 cursor.execute("""
                     UPDATE media_metadata
                     SET 
@@ -548,8 +695,7 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
                     UPDATE custom_collections 
                     SET 
                         emby_collection_id = NULL,
-                        in_library_count = 0,
-                        missing_count = 0
+                        in_library_count = 0
                     WHERE emby_collection_id IS NOT NULL;
                 """)
                 results["updated_rows"]["custom_collections"] = cursor.rowcount
@@ -571,7 +717,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
     try:
         # ======================================================================
         # ★★★ 核心解绑：第一步，无脑清理该特定版本的专属日志和内存缓存 ★★★
-        # 无论是不是多版本，只要这个 Emby ID 被删了，它的专属记录必须死！
         # ======================================================================
         try:
             import extensions
@@ -588,12 +733,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     logger.debug(f"  🧹 [深度删除] 已精准抹除该版本的专属日志与内存缓存: EmbyID {item_id}")
         except Exception as e:
             logger.error(f"  ❌ 清理专属日志缓存失败: {e}")
+            
         # ======================================================================
-        # 辅助函数：执行外科手术式移除，并返回剩余的 ID 数量
-        # ★ 核心重构：在 Python 内存中精准定位索引并同步剔除四个数组的元素 ★
+        # 辅助函数：执行外科手术式移除，并返回剩余的 ID 数量和被删除的 PC 码
         # ======================================================================
         def remove_id_from_metadata(cursor, target_emby_id):
-            # 1. 查找包含该 ID 的记录 (锁定行)
             cursor.execute("""
                 SELECT tmdb_id, item_type, parent_series_tmdb_id, season_number,
                        emby_item_ids_json, asset_details_json, file_sha1_json, file_pickcode_json
@@ -604,28 +748,28 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
             row = cursor.fetchone()
 
             if not row:
-                return None, None, None, None, None
+                return None, None, None, None, None, None
 
-            # 2. 解析 JSON 为 Python 列表
             emby_ids = row['emby_item_ids_json'] if isinstance(row['emby_item_ids_json'], list) else json.loads(row['emby_item_ids_json'] or '[]')
             
             if not isinstance(emby_ids, list) or target_emby_id not in emby_ids:
-                return None, None, None, None, None
+                return None, None, None, None, None, None
 
             assets = row['asset_details_json'] if isinstance(row['asset_details_json'], list) else json.loads(row['asset_details_json'] or '[]')
             sha1s = row['file_sha1_json'] if isinstance(row['file_sha1_json'], list) else json.loads(row['file_sha1_json'] or '[]')
             pcs = row['file_pickcode_json'] if isinstance(row['file_pickcode_json'], list) else json.loads(row['file_pickcode_json'] or '[]')
 
-            # 3. 找到目标 ID 的索引并移除
             idx = emby_ids.index(target_emby_id)
             emby_ids.pop(idx)
             
-            # 安全移除其他三个数组的对应项 (防止越界报错)
             if isinstance(assets, list) and idx < len(assets): assets.pop(idx)
             if isinstance(sha1s, list) and idx < len(sha1s): sha1s.pop(idx)
-            if isinstance(pcs, list) and idx < len(pcs): pcs.pop(idx)
+            
+            # ★ 核心：捕获被删除的 PC 码
+            deleted_pc = None
+            if isinstance(pcs, list) and idx < len(pcs): 
+                deleted_pc = pcs.pop(idx)
 
-            # 4. 更新回数据库
             cursor.execute("""
                 UPDATE media_metadata
                 SET emby_item_ids_json = %s::jsonb,
@@ -636,13 +780,13 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 WHERE tmdb_id = %s AND item_type = %s
             """, (
                 json.dumps(emby_ids, ensure_ascii=False),
-                json.dumps(assets, ensure_ascii=False) if assets else None, # asset_details_json 允许为 NULL
+                json.dumps(assets, ensure_ascii=False) if assets else None, 
                 json.dumps(sha1s, ensure_ascii=False),
                 json.dumps(pcs, ensure_ascii=False),
                 row['tmdb_id'], row['item_type']
             ))
 
-            return len(emby_ids), row['tmdb_id'], row['item_type'], row['parent_series_tmdb_id'], row['season_number']
+            return len(emby_ids), row['tmdb_id'], row['item_type'], row['parent_series_tmdb_id'], row['season_number'], deleted_pc
 
         # ======================================================================
         # 开始处理
@@ -651,12 +795,13 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
         target_tmdb_id_for_full_cleanup: Optional[str] = None
         target_item_type_for_full_cleanup: Optional[str] = None
         cascaded_cleanup_info = None
+        captured_deleted_pc = None
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 
                 # --- 执行移除操作 ---
-                remaining_count, tmdb_id, db_item_type, parent_tmdb_id, season_num = remove_id_from_metadata(cursor, item_id)
+                remaining_count, tmdb_id, db_item_type, parent_tmdb_id, season_num, captured_deleted_pc = remove_id_from_metadata(cursor, item_id)
 
                 if remaining_count is None:
                     logger.warning(f"  ➜ 在数据库中未找到包含 Emby ID {item_id} 的记录，无需清理。")
@@ -666,6 +811,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 if remaining_count > 0:
                     logger.info(f"  ➜ 媒体项 '{item_name}' (TMDB: {tmdb_id}) 移除了一个版本，但仍有 {remaining_count} 个版本在库中。")
                     conn.commit()
+                    # ★ 如果开启了联动删除，即使只是删了一个版本，也要把这个版本的网盘文件删掉
+                    if captured_deleted_pc:
+                        from handler.p115_service import get_config
+                        if get_config().get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
+                            _queue_smart_delete(captured_deleted_pc, item_name, item_type)
                     return None
 
                 # --- 情况 B: 所有版本都已删除 (remaining_count == 0) ---
@@ -685,7 +835,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 elif db_item_type == 'Season':
                     logger.info(f"  ➜ 第 {season_num} 季已完全删除，正在检查父剧集 (TMDB: {parent_tmdb_id})...")
                     
-                    # ★ 同步清空指纹数组
                     cursor.execute(
                         """
                         UPDATE media_metadata 
@@ -730,7 +879,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
 
                     if not has_episodes_in_season:
                         logger.info(f"  ➜ 第 {season_num} 季已无任何在库分集，标记该季为离线。")
-                        # ★ 同步清空指纹数组
                         cursor.execute(
                             """
                             UPDATE media_metadata 
@@ -806,7 +954,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         'emby_ids': parent_emby_ids
                     }
 
-                    # ★ 同步清空指纹数组
                     cursor.execute(
                         """
                         UPDATE media_metadata 
@@ -821,7 +968,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     )
 
                     if target_item_type_for_full_cleanup == 'Series':
-                        # ★ 同步清空指纹数组
                         cursor.execute(
                             """
                             UPDATE media_metadata 
@@ -884,13 +1030,9 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                                 logger.info(f"  🗑️ 原生合集 '{c_name}' (ID: {c_id}) 内所有媒体均已离线，正在自动清理该合集记录...")
                                 cursor.execute("DELETE FROM collections_info WHERE emby_collection_id = %s", (c_id,))
                     
-                    # ======================================================================
-                    # ★★★ 全局清理：刷新 AI 向量推荐池 (仅在整部电影/剧集死绝时触发) ★★★
-                    # ======================================================================
                     if target_item_type_for_full_cleanup in ['Movie', 'Series']:
                         try:
                             import config_manager
-                            from gevent import spawn
                             from handler.custom_collection import RecommendationEngine
                             
                             if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED) and config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
@@ -901,8 +1043,15 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
 
                     logger.info(f"--- 对 TMDB ID: {target_tmdb_id_for_full_cleanup} 的完全清理已完成 ---")
 
-                # 提交事务
                 conn.commit()
+
+        # ======================================================================
+        # ★★★ 终极联动：将捕获到的 PC 码送入智能网盘删除缓冲池 ★★★
+        # ======================================================================
+        if captured_deleted_pc:
+            from handler.p115_service import get_config
+            if get_config().get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
+                _queue_smart_delete(captured_deleted_pc, item_name, item_type)
 
         return cascaded_cleanup_info
 
@@ -924,11 +1073,6 @@ def cleanup_offline_media() -> Dict[str, int]:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 1. 核心清理：删除 media_metadata 中符合条件的记录
-                # 条件：
-                #   - in_library = FALSE (不在库)
-                #   - subscription_status = 'NONE' (无订阅)
-                #   - watching_status = 'NONE' (无追剧状态 - 防止误删正在追但暂时缺集的内容)
                 logger.info("正在执行离线媒体清理任务...")
                 
                 cursor.execute("""
@@ -940,8 +1084,6 @@ def cleanup_offline_media() -> Dict[str, int]:
                 results["media_metadata_deleted"] = cursor.rowcount
                 logger.info(f"  ➜ 已从 media_metadata 删除 {results['media_metadata_deleted']} 条无效离线记录。")
 
-                # 2. 级联清理：清理 resubscribe_index 中的孤儿记录
-                # (即：主表中已经不存在，但洗版表中还残留的记录)
                 cursor.execute("""
                     DELETE FROM resubscribe_index ri
                     WHERE NOT EXISTS (
@@ -951,7 +1093,6 @@ def cleanup_offline_media() -> Dict[str, int]:
                 """)
                 results["resubscribe_index_cleaned"] = cursor.rowcount
                 
-                # 3. 级联清理：清理 cleanup_index 中的孤儿记录
                 cursor.execute("""
                     DELETE FROM cleanup_index ci
                     WHERE NOT EXISTS (
@@ -977,7 +1118,6 @@ def clear_all_vectors() -> int:
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 仅清空 embedding 字段，保留其他元数据
             cursor.execute("UPDATE media_metadata SET overview_embedding = NULL WHERE overview_embedding IS NOT NULL")
             count = cursor.rowcount
             conn.commit()
