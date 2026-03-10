@@ -140,7 +140,7 @@ class MediaProcessor:
         # =========================================================
         # P115Center 初始化
         # =========================================================
-        if P115_AVAILABLE and self.config.get("p115_mediainfo_center", True):
+        if P115_AVAILABLE and self.config.get("p115_mediainfo_center", False):
             machine_id = self.config.get("p115_machine_id", "")
             
             # 获取当前文件所在目录下的 web_app.py 路径
