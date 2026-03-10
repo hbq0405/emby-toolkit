@@ -461,7 +461,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
     app_config = config_manager.APP_CONFIG
     emby_url = app_config.get("emby_server_url")
     emby_key = app_config.get("emby_api_key")
-    distributed_mediainfo = app_config.get("p115_distributed_mediainfo")
+    mediainfo_center = app_config.get("p115_mediainfo_center")
     processor = extensions.media_processor_instance
     emby_user_id = processor.emby_user_id
 
@@ -479,7 +479,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
         except Exception as e:
             logger.warning(f"  ➜ [预检] 获取路径失败: {e}")
 
-    if file_path and getattr(processor, 'p115_enabled', False) and processor.p115_center and distributed_mediainfo:
+    if file_path and getattr(processor, 'p115_enabled', False) and processor.p115_center and mediainfo_center:
         try:
             # =========================================================
             # 1. 统一调用核心处理器的双指纹提取方法 
