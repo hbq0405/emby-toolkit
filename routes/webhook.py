@@ -461,7 +461,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
     app_config = config_manager.APP_CONFIG
     emby_url = app_config.get("emby_server_url")
     emby_key = app_config.get("emby_api_key")
-    distributed_mediainfo = app_config("distributed_mediainfo")
+    distributed_mediainfo = app_config.get("p115_distributed_mediainfo")
     processor = extensions.media_processor_instance
     emby_user_id = processor.emby_user_id
 
