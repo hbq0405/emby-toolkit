@@ -3079,10 +3079,9 @@ def task_full_sync_strm_and_subs(processor=None):
 
 def delete_115_files_by_webhook(item_path, pickcodes):
     """
-    【V6 上帝视角极速版】接收神医 Webhook 传来的提取码，精准销毁 115 网盘文件。
-    ★ 现场计算兜底：无视数据库缺失，利用 to_id 现场计算 FID，并动态补全族谱。
-    ★ 无限向上溯源：完美解决旧版无法删除剧目录的 Bug，季空删季，剧空删剧。
-    ★ 顶级节点提炼：无论删多少层级，最终提炼出最高层级节点，仅需 1 次 API 调用连锅端！
+    【V5 终极极速版】接收神医 Webhook 传来的提取码，精准销毁 115 网盘文件。
+    ★ 核心重构：放弃 API 递归查空，完全依赖本地 p115_filesystem_cache 缓存进行自下而上的空目录推导。
+    ★ 极致优化：无论删一集、删一季还是删全剧，最终提炼出最高层级节点，仅需 1 次 API 调用连锅端！
     """
     if not pickcodes: return
 
@@ -3104,114 +3103,62 @@ def delete_115_files_by_webhook(item_path, pickcodes):
             for rule in rules:
                 if rule.get('cid'): protected_cids.add(str(rule['cid']))
 
-        # 尝试导入 to_id 函数 (用于兜底计算)
-        to_id_func = None
-        try:
-            from p115pickcode import to_id
-            to_id_func = to_id
-        except ImportError:
-            try:
-                from p115client.tool.iterdir import to_id
-                to_id_func = to_id
-            except ImportError:
-                pass
-
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
+                # =================================================================
+                # 第一步：通过 PC 码从本地缓存锁定初始文件 (FID) 和 父目录 (PID)
+                # =================================================================
+                cursor.execute("SELECT id, parent_id FROM p115_filesystem_cache WHERE pick_code = ANY(%s)", (list(pickcodes),))
+                initial_files = cursor.fetchall()
+
+                if not initial_files:
+                    logger.warning(f"  ⚠️ [深度删除] 本地缓存未找到对应 PC 码的文件，无法执行本地推导，任务终止。")
+                    return
+
                 deleted_nodes = set()       # 记录所有被判死刑的节点 (文件 + 变空的目录)
                 nodes_to_check = set()      # 待检查是否变空的父目录
-                node_parent_map = {}        # 动态族谱映射 (id -> parent_id)
+                node_parent_map = {}        # 缓存节点关系 (id -> parent_id)，用于最后提炼顶级节点
 
-                # =================================================================
-                # 第一步：查本地数据库，锁定已知文件
-                # =================================================================
-                cursor.execute("SELECT id, parent_id, pick_code FROM p115_filesystem_cache WHERE pick_code = ANY(%s)", (list(pickcodes),))
-                cached_files = cursor.fetchall()
-                cached_pcs = set()
-
-                for row in cached_files:
+                for row in initial_files:
                     fid = str(row['id'])
                     pid = str(row['parent_id'])
-                    cached_pcs.add(row['pick_code'])
-                    
                     deleted_nodes.add(fid)
                     node_parent_map[fid] = pid
                     if pid and pid not in protected_cids:
                         nodes_to_check.add(pid)
 
                 # =================================================================
-                # 第二步：现场计算兜底 (处理音乐、第三方STRM等无缓存文件)
-                # =================================================================
-                unmatched_pcs = set(pickcodes) - cached_pcs
-                if unmatched_pcs and to_id_func:
-                    logger.info(f"  🔍 [深度删除] 发现 {len(unmatched_pcs)} 个文件无本地缓存，启动现场计算与族谱补全...")
-                    for pc in unmatched_pcs:
-                        try:
-                            fid = str(to_id_func(pc))
-                            if fid:
-                                deleted_nodes.add(fid)
-                                # ★ 核心魔法：调用一次 info 获取 paths，把缺失的族谱动态注入到本地映射表中！
-                                info_res = client.fs_get_info(fid)
-                                if info_res and info_res.get('state') and info_res.get('data'):
-                                    paths = info_res['data'].get('paths', [])
-                                    # 遍历 paths 数组，建立完整的父子关系链 (季->剧->分类)
-                                    for i in range(len(paths) - 1, 0, -1):
-                                        child_id = str(paths[i].get('file_id') or paths[i].get('cid'))
-                                        parent_id = str(paths[i-1].get('file_id') or paths[i-1].get('cid'))
-                                        node_parent_map[child_id] = parent_id
-
-                                    pid = str(info_res['data'].get('pid') or info_res['data'].get('parent_id'))
-                                    if pid:
-                                        node_parent_map[fid] = pid
-                                        if pid not in protected_cids:
-                                            nodes_to_check.add(pid)
-                        except Exception as e:
-                            logger.warning(f"  ⚠️ 现场计算 FID 或获取详情失败 (PC: {pc}): {e}")
-
-                if not deleted_nodes:
-                    logger.warning(f"  ⚠️ [深度删除] 未能锁定任何有效文件，任务终止。")
-                    return
-
-                # =================================================================
-                # 第三步：无限向上溯源，本地计算空目录 (季目录 -> 剧目录 -> ...)
+                # 第二步：自下而上溯源，本地计算空目录 (季目录 -> 剧目录)
                 # =================================================================
                 while nodes_to_check:
                     current_pid = nodes_to_check.pop()
                     if current_pid in protected_cids:
                         continue
 
-                    # 1. 从数据库获取该目录已知的子节点
+                    # 查当前目录下的所有子节点
                     cursor.execute("SELECT id FROM p115_filesystem_cache WHERE parent_id = %s", (current_pid,))
-                    db_children = {str(r['id']) for r in cursor.fetchall()}
+                    children = {str(r['id']) for r in cursor.fetchall()}
 
-                    # 2. 从动态族谱获取该目录的子节点 (弥补数据库盲区)
-                    dynamic_children = {k for k, v in node_parent_map.items() if v == current_pid}
-
-                    # 合并所有已知的子节点
-                    all_known_children = db_children | dynamic_children
-
-                    # ★ 核心逻辑：如果该目录下的所有已知子节点都在死刑名单里，说明该目录将被掏空！
-                    if all_known_children and all_known_children.issubset(deleted_nodes):
+                    # ★ 核心逻辑：如果该目录下的所有子节点都在死刑名单里，说明该目录将被掏空！
+                    if children and children.issubset(deleted_nodes):
                         deleted_nodes.add(current_pid) # 目录本身加入死刑名单
                         
-                        # 查当前目录的父目录，继续向上溯源 (季空了查剧，剧空了查分类)
-                        grand_pid = node_parent_map.get(current_pid)
-                        if not grand_pid:
-                            cursor.execute("SELECT parent_id FROM p115_filesystem_cache WHERE id = %s", (current_pid,))
-                            p_row = cursor.fetchone()
-                            grand_pid = str(p_row['parent_id']) if p_row else None
-
-                        if grand_pid:
+                        # 查当前目录的父目录，继续向上溯源 (比如季目录空了，继续查剧目录)
+                        cursor.execute("SELECT parent_id FROM p115_filesystem_cache WHERE id = %s", (current_pid,))
+                        parent_row = cursor.fetchone()
+                        if parent_row and parent_row['parent_id']:
+                            grand_pid = str(parent_row['parent_id'])
                             node_parent_map[current_pid] = grand_pid
                             if grand_pid not in protected_cids:
                                 nodes_to_check.add(grand_pid)
 
                 # =================================================================
-                # 第四步：提炼最终需要发送给 115 API 的顶级节点
+                # 第三步：提炼最终需要发送给 115 API 的顶级节点
                 # =================================================================
                 final_api_ids = []
                 for node in deleted_nodes:
                     parent_id = node_parent_map.get(node)
+                    # 如果缓存 map 里没有，去库里查一下兜底
                     if not parent_id:
                         cursor.execute("SELECT parent_id FROM p115_filesystem_cache WHERE id = %s", (node,))
                         p_row = cursor.fetchone()
@@ -3222,7 +3169,7 @@ def delete_115_files_by_webhook(item_path, pickcodes):
                         final_api_ids.append(node)
 
                 # =================================================================
-                # 第五步：执行唯一一次 115 API 删除调用
+                # 第四步：执行唯一一次 115 API 删除调用
                 # =================================================================
                 if final_api_ids:
                     logger.info(f"  💥 [深度删除] 本地推导完毕！向 115 发送最终删除指令 (共 {len(final_api_ids)} 个顶级节点)...")
@@ -3235,10 +3182,10 @@ def delete_115_files_by_webhook(item_path, pickcodes):
                         return # API 失败则不清理本地库，保持一致性
 
                 # =================================================================
-                # 第六步：清理本地数据库记录 (缓存表 + 整理记录表)
+                # 第五步：清理本地数据库记录 (缓存表 + 整理记录表)
                 # =================================================================
                 if deleted_nodes:
-                    # 1. 清理目录树缓存 (连带空目录的记录一起删掉)
+                    # 1. 清理目录树缓存
                     cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = ANY(%s)", (list(deleted_nodes),))
                     deleted_cache_count = cursor.rowcount
 
@@ -3380,6 +3327,7 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, s
 
             # 向上递归清理本地空目录
             old_dir = os.path.abspath(os.path.dirname(os.path.join(local_root, old_file_rel_path)))
+            refresh_target_dir = old_dir
             
             while old_dir and old_dir not in protected_dirs:
                 if os.path.exists(old_dir):
@@ -3401,6 +3349,18 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, s
                         break
                 else:
                     break
+
+            # 通知 Emby 刷新旧路径，防止出现重复媒体项
+            emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+            emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+            if emby_url and emby_api_key:
+                try:
+                    from handler import emby
+                    logger.info(f"  🔄 正在通知 Emby 刷新旧路径以清理失效媒体项: {refresh_target_dir}")
+                    emby.refresh_library_by_path(refresh_target_dir, emby_url, emby_api_key)
+                except Exception as e:
+                    logger.warning(f"  ⚠️ 通知 Emby 刷新旧路径失败: {e}")
+
         except Exception as e:
             logger.warning(f"  ⚠️ 清理本地旧 STRM/目录 失败: {e}")
 
