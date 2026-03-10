@@ -410,6 +410,12 @@
                             <template #unchecked>仅转存</template>
                         </n-switch>
                     </n-form-item>
+                    <n-form-item label="分布式媒体信息" path="p115_distributed_mediainfo">
+                        <n-switch v-model:value="configModel.p115_distributed_mediainfo">
+                            <template #checked>共享媒体信息</template>
+                            <template #unchecked>本地媒体信息</template>
+                        </n-switch>
+                    </n-form-item>
                     <n-form-item label="延迟删除空目录" path="p115_delay_delete">
                         <n-switch v-model:value="configModel.p115_delay_delete">
                             <template #checked>延迟30分钟删除</template>

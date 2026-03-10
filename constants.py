@@ -60,6 +60,7 @@ CONFIG_OPTION_115_DOWNLOAD_SUBS = "p115_download_subs"           # 是否下载�
 CONFIG_OPTION_115_LOCAL_CLEANUP = "p115_local_cleanup"           # 是否启用本地清理功能
 CONFIG_OPTION_115_DELAY_DELETE = "p115_delay_delete"             # 是否启用延迟删除
 DB_KEY_115_RENAME_CONFIG = "p115_rename_config"                  # 重命名配置模块
+CONFIG_OPTION_115_DISTRIBUTED_MEDIAINFO = "p115_distributed_mediainfo" # 分布式媒体信息
 
 # ==============================================================================
 # ✨ 通知服务 (Notification Services)
