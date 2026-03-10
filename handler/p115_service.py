@@ -1238,13 +1238,11 @@ class SmartOrganizer:
             pass
 
         # 2. 本地没有，尝试查 P115Center 中心服务器
-        config = get_config()
-        mediainfo_center = config.get(constants.CONFIG_OPTION_115_MEDIAINFO_CENTER, False)
-        if not raw_json and mediainfo_center:
+        if not raw_json:
             try:
                 import extensions
                 processor = extensions.media_processor_instance
-                if processor and getattr(processor, 'p115_enabled', False) and processor.p115_center:
+                if processor and getattr(processor, 'p115_center', None):
                     resp = processor.p115_center.download_emby_mediainfo_data([sha1])
                     if resp and sha1 in resp:
                         raw_json = resp[sha1]
