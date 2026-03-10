@@ -675,16 +675,33 @@ def emby_webhook():
             elif series_name:
                 original_item_name = f"{series_name} - {original_item_name}"
 
+        # --------------------------------------------------------
+        # 提取 Webhook 中的 PC 码 (用于精准锁定文件)
+        # --------------------------------------------------------
+        webhook_pcs = []
+        description = data.get("Description", "")
+        if "Mount Paths:\n" in description:
+            try:
+                mount_paths_str = description.split("Mount Paths:\n")[-1]
+                urls = [line.strip() for line in mount_paths_str.split('\n') if line.strip()]
+                processor = extensions.media_processor_instance
+                if processor:
+                    for url in urls:
+                        pc, _ = processor._extract_115_fingerprints(url)
+                        if pc: webhook_pcs.append(pc)
+            except Exception as e:
+                logger.warning(f"  ⚠️ 提取 Webhook PC 码失败: {e}")
+
         if original_item_id:
             try:
                 logger.info(f"  🧹 [深度删除] 开始清理本地数据库与缓存: {original_item_name} ({original_item_type})")
                 
-                # ★ 核心：把所有脏活累活全交给 maintenance_db，它会自己去查 PC 码并执行网盘清理
                 maintenance_db.cleanup_deleted_media_item(
                     item_id=original_item_id,
                     item_name=original_item_name,
                     item_type=original_item_type,
-                    series_id_from_webhook=series_id_from_webhook
+                    series_id_from_webhook=series_id_from_webhook,
+                    webhook_pcs=webhook_pcs  
                 )
 
             except Exception as e:

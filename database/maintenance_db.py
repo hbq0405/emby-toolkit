@@ -706,11 +706,12 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
         logger.error(f"执行 prepare_for_library_rebuild 时发生严重错误: {e}", exc_info=True)
         raise
 
-def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, series_id_from_webhook: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, series_id_from_webhook: Optional[str] = None, webhook_pcs: List[str] = None) -> Optional[Dict[str, Any]]:
     """
     处理一个从 Emby 中被删除的媒体项，同步清除所有相关的数据。
     """
     logger.info(f"  ➜ 检测到 Emby 媒体项被删除: '{item_name}' (Type: {item_type}, EmbyID: {item_id})，开始清理流程...")
+    collected_pcs = set(webhook_pcs) if webhook_pcs else set()
 
     try:
         # ======================================================================
@@ -841,6 +842,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     for r in cursor.fetchall():
                         pcs = r['file_pickcode_json'] if isinstance(r['file_pickcode_json'], list) else json.loads(r['file_pickcode_json'] or '[]')
                         collected_pcs.update(pcs)
+                    
+                    # ★ 终极兜底：从目录树缓存中按 TMDB ID 暴力捞取
+                    cursor.execute("SELECT pick_code FROM p115_filesystem_cache WHERE local_path LIKE %s AND pick_code IS NOT NULL", (f"%{{tmdb={parent_tmdb_id}}}%",))
+                    for r in cursor.fetchall():
+                        collected_pcs.add(r['pick_code'])
 
                     cursor.execute(
                         """
@@ -980,6 +986,11 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         for r in cursor.fetchall():
                             pcs = r['file_pickcode_json'] if isinstance(r['file_pickcode_json'], list) else json.loads(r['file_pickcode_json'] or '[]')
                             collected_pcs.update(pcs)
+                            
+                        # ★ 终极兜底：从目录树缓存中按 TMDB ID 暴力捞取
+                        cursor.execute("SELECT pick_code FROM p115_filesystem_cache WHERE local_path LIKE %s AND pick_code IS NOT NULL", (f"%{{tmdb={target_tmdb_id_for_full_cleanup}}}%",))
+                        for r in cursor.fetchall():
+                            collected_pcs.add(r['pick_code'])
 
                         cursor.execute(
                             """
@@ -1064,7 +1075,6 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
         if collected_pcs:
             from handler.p115_service import get_config
             if get_config().get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
-                # 传入列表，如果删的是整剧，这里面可能包含几十上百个 PC 码
                 _queue_smart_delete(list(collected_pcs), item_name, item_type)
 
         return cascaded_cleanup_info
