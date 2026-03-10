@@ -415,6 +415,9 @@
                             <template #checked>共享媒体信息</template>
                             <template #unchecked>本地媒体信息</template>
                         </n-switch>
+                        <template #feedback>
+                            <n-text depth="3" style="font-size:0.8em;">全量生成 STRM 时，会自动删除本地存在但网盘已不存在的 .strm 和字幕文件。</n-text>
+                        </template>
                     </n-form-item>
                     <n-form-item label="延迟删除空目录" path="p115_delay_delete">
                         <n-switch v-model:value="configModel.p115_delay_delete">
