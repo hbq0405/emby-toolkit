@@ -663,7 +663,17 @@ def emby_webhook():
         original_item_id = item_from_webhook.get("Id")
         original_item_type = item_from_webhook.get("Type")
         original_item_name = item_from_webhook.get("Name", "未知项目")
-        series_id_from_webhook = item_from_webhook.get("SeriesId") if original_item_type == "Episode" else None
+        
+        series_id_from_webhook = None
+        if original_item_type == "Episode":
+            series_id_from_webhook = item_from_webhook.get("SeriesId")
+            series_name = item_from_webhook.get("SeriesName")
+            s_num = item_from_webhook.get("ParentIndexNumber")
+            e_num = item_from_webhook.get("IndexNumber")
+            if series_name and s_num is not None and e_num is not None:
+                original_item_name = f"{series_name} - S{s_num:02d}E{e_num:02d}"
+            elif series_name:
+                original_item_name = f"{series_name} - {original_item_name}"
 
         if original_item_id:
             try:

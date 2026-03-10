@@ -24,15 +24,13 @@ _SMART_DELETE_BUFFER = set()
 _SMART_DELETE_TIMER = None
 _SMART_DELETE_LOCK = threading.Lock()
 
-def _queue_smart_delete(pickcode: str, item_name: str, item_type: str):
-    """将待删除的 PC 码加入缓冲池，5秒后统一执行智能剪枝删除"""
+def _queue_smart_delete(pickcodes: list, item_name: str, item_type: str):
+    """将待删除的 PC 码列表加入缓冲池，5秒后统一执行智能剪枝删除"""
     global _SMART_DELETE_TIMER
     with _SMART_DELETE_LOCK:
-        if pickcode:
-            _SMART_DELETE_BUFFER.add((pickcode, item_name, item_type))
-        
-        if _SMART_DELETE_TIMER is None:
-            _SMART_DELETE_TIMER = spawn_later(5.0, _flush_smart_delete)
+        if pickcodes:
+            for pc in pickcodes:
+                if pc: _SMART_DELETE_BUFFER.add((pc, item_name, item_type))
 
 def _flush_smart_delete():
     """执行缓冲池中的所有删除任务"""
@@ -141,7 +139,7 @@ def _execute_smart_115_deletion(pickcodes: List[str], sample_item_name: str, sam
             else:
                 log_msg = f"已同步删除网盘媒体《{sample_item_name}》的相关文件/目录"
 
-            logger.info(f"  💥 [网盘清理] 锁定 {len(nodes_to_delete)} 个顶级目标(文件/目录)，正在发送删除指令...")
+            logger.info(f"  💥 [网盘清理] 锁定 {len(nodes_to_delete)} 个网盘节点(含自动追溯的空目录)，正在发送删除指令...")
             resp = client.fs_delete(list(nodes_to_delete))
             
             if resp.get('state'):
@@ -796,12 +794,15 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
         target_item_type_for_full_cleanup: Optional[str] = None
         cascaded_cleanup_info = None
         captured_deleted_pc = None
+        collected_pcs = set()
 
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 
                 # --- 执行移除操作 ---
                 remaining_count, tmdb_id, db_item_type, parent_tmdb_id, season_num, captured_deleted_pc = remove_id_from_metadata(cursor, item_id)
+                if captured_deleted_pc:
+                    collected_pcs.add(captured_deleted_pc)
 
                 if remaining_count is None:
                     logger.warning(f"  ➜ 在数据库中未找到包含 Emby ID {item_id} 的记录，无需清理。")
@@ -835,6 +836,12 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 elif db_item_type == 'Season':
                     logger.info(f"  ➜ 第 {season_num} 季已完全删除，正在检查父剧集 (TMDB: {parent_tmdb_id})...")
                     
+                    # ★ 提前捞取该季所有分集的 PC 码
+                    cursor.execute("SELECT file_pickcode_json FROM media_metadata WHERE parent_series_tmdb_id = %s AND season_number = %s AND item_type = 'Episode'", (parent_tmdb_id, season_num))
+                    for r in cursor.fetchall():
+                        pcs = r['file_pickcode_json'] if isinstance(r['file_pickcode_json'], list) else json.loads(r['file_pickcode_json'] or '[]')
+                        collected_pcs.update(pcs)
+
                     cursor.execute(
                         """
                         UPDATE media_metadata 
@@ -968,6 +975,12 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                     )
 
                     if target_item_type_for_full_cleanup == 'Series':
+                        # ★ 提前捞取全剧所有分集的 PC 码
+                        cursor.execute("SELECT file_pickcode_json FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode'", (target_tmdb_id_for_full_cleanup,))
+                        for r in cursor.fetchall():
+                            pcs = r['file_pickcode_json'] if isinstance(r['file_pickcode_json'], list) else json.loads(r['file_pickcode_json'] or '[]')
+                            collected_pcs.update(pcs)
+
                         cursor.execute(
                             """
                             UPDATE media_metadata 
@@ -1046,12 +1059,13 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 conn.commit()
 
         # ======================================================================
-        # ★★★ 终极联动：将捕获到的 PC 码送入智能网盘删除缓冲池 ★★★
+        # ★★★ 终极联动：将捕获到的所有 PC 码送入智能网盘删除缓冲池 ★★★
         # ======================================================================
-        if captured_deleted_pc:
+        if collected_pcs:
             from handler.p115_service import get_config
             if get_config().get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
-                _queue_smart_delete(captured_deleted_pc, item_name, item_type)
+                # 传入列表，如果删的是整剧，这里面可能包含几十上百个 PC 码
+                _queue_smart_delete(list(collected_pcs), item_name, item_type)
 
         return cascaded_cleanup_info
 
