@@ -663,45 +663,69 @@ def emby_webhook():
         original_item_id = item_from_webhook.get("Id")
         original_item_type = item_from_webhook.get("Type")
         original_item_name = item_from_webhook.get("Name", "未知项目")
-        
-        series_id_from_webhook = None
-        if original_item_type == "Episode":
-            series_id_from_webhook = item_from_webhook.get("SeriesId")
-            series_name = item_from_webhook.get("SeriesName")
-            s_num = item_from_webhook.get("ParentIndexNumber")
-            e_num = item_from_webhook.get("IndexNumber")
-            if series_name and s_num is not None and e_num is not None:
-                original_item_name = f"{series_name} - S{s_num:02d}E{e_num:02d}"
-            elif series_name:
-                original_item_name = f"{series_name} - {original_item_name}"
+        # 如果是分集，提取所属剧集 ID，供后续清理主库使用
+        series_id_from_webhook = item_from_webhook.get("SeriesId") if original_item_type == "Episode" else None
 
         # --------------------------------------------------------
-        # 提取 Webhook 中的 PC 码 (用于精准锁定文件)
+        # 任务 1: 联动删除 115 网盘文件 (所有层级均生效，且必须在清理数据库前执行！)
         # --------------------------------------------------------
-        webhook_pcs = []
-        description = data.get("Description", "")
-        if "Mount Paths:\n" in description:
+        nb_config = get_config()
+        if nb_config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False):
+            description = data.get("Description", "")
             try:
-                mount_paths_str = description.split("Mount Paths:\n")[-1]
-                urls = [line.strip() for line in mount_paths_str.split('\n') if line.strip()]
-                processor = extensions.media_processor_instance
-                if processor:
-                    for url in urls:
-                        pc, _ = processor._extract_115_fingerprints(url)
-                        if pc: webhook_pcs.append(pc)
-            except Exception as e:
-                logger.warning(f"  ⚠️ 提取 Webhook PC 码失败: {e}")
+                import re
+                # 提取 Item Path (用于后续可能需要的目录清理)
+                path_match = re.search(r'Item Path:\n(.*?)\n\n', description)
+                item_path = path_match.group(1).strip() if path_match else ""
 
+                pickcodes = []
+                processor = extensions.media_processor_instance
+                
+                # ★★★ 核心重构：提取 Mount Paths，直接喂给万能提取器！★★★
+                if "Mount Paths:\n" in description:
+                    mount_paths_str = description.split("Mount Paths:\n")[-1]
+                    urls = [line.strip() for line in mount_paths_str.split('\n') if line.strip()]
+                    
+                    for url in urls:
+                        if processor:
+                            # 无论是 HTTP 直链 还是 挂载的物理路径，万能提取器通吃！
+                            pc, _ = processor._extract_115_fingerprints(url)
+                            if pc:
+                                pickcodes.append(pc)
+
+                # ★ 数据库兜底：如果万能提取器没拿到，查库 (此时数据库还没被删，完美拿到 PC！)
+                if not pickcodes and original_item_id:
+                    logger.debug(f"  🔍 [深度删除] 未从描述中提取到 PC 码，尝试通过 Emby ID ({original_item_id}) 查库...")
+                    db_pc = media_db.get_pickcode_by_emby_id(original_item_id)
+                    if db_pc:
+                        pickcodes.append(db_pc)
+                        logger.debug(f"  ✅ [深度删除] 成功从数据库查到 PC 码: {db_pc}")
+
+                if pickcodes and item_path:
+                    logger.info(f"  🎯 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
+                    from handler.p115_service import delete_115_files_by_webhook
+                    spawn(delete_115_files_by_webhook, item_path, pickcodes)
+                else:
+                    logger.warning("  ⚠️ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
+            except Exception as e:
+                logger.error(f"  ❌ 解析深度删除通知失败: {e}", exc_info=True)
+        else:
+            logger.debug("  🚫 联动删除未开启，跳过网盘清理。")
+
+        # --------------------------------------------------------
+        # 任务 2: 清理本地数据库、日志与内存缓存 (网盘删完再删本地)
+        # --------------------------------------------------------
         if original_item_id:
             try:
                 logger.info(f"  🧹 [深度删除] 开始清理本地数据库与缓存: {original_item_name} ({original_item_type})")
                 
+                # 1. 清理主媒体库记录 (★ 所有层级均生效，删一集就清理一集的记录)
+                # ★ 修复：日志和内存缓存的清理已下沉到此函数内部，利用其完善的多版本善后逻辑，防止误清理
                 maintenance_db.cleanup_deleted_media_item(
                     item_id=original_item_id,
                     item_name=original_item_name,
                     item_type=original_item_type,
-                    series_id_from_webhook=series_id_from_webhook,
-                    webhook_pcs=webhook_pcs  
+                    series_id_from_webhook=series_id_from_webhook
                 )
 
             except Exception as e:
