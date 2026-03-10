@@ -210,7 +210,7 @@ def get_task_registry(context: str = 'all'):
         'full-sync-strm': (task_full_sync_strm_and_subs, "全量生成STRM", 'media', True),
         'backup-mediainfo': (task_backup_mediainfo, "备份媒体信息", 'media', True),
         'restore_mediainfo': (task_restore_mediainfo, "还原媒体信息", 'media', True),
-        'contribute-mediainfo': (task_contribute_mediainfo_to_center, "分享媒体信息", 'media', True),
+        'contribute-mediainfo': (task_contribute_mediainfo_to_center, "分享媒体信息", 'media', False),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'add-all-series-to-watchlist': (task_add_all_series_to_watchlist, "一键扫描全库剧集", 'watchlist', False),
