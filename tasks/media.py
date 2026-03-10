@@ -2035,7 +2035,7 @@ def task_backup_mediainfo(processor):
                         sha1s[idx] = current_sha1
                         needs_db_update = True
                         sha1_fixed_count += 1
-                        logger.info(f"    ✅ 成功通过本地路径匹配获取 SHA1: {current_sha1}")
+                        logger.info(f"  ✅ 成功通过本地路径匹配获取 SHA1: {current_sha1}")
                     
                     # 阶段 1: 补齐缺失的 SHA1 (如果万能提取器没拿到 SHA1，再调 API)
                     if not current_sha1 and actual_pc:
@@ -2065,9 +2065,9 @@ def task_backup_mediainfo(processor):
                                         sha1s[idx] = current_sha1
                                         needs_db_update = True
                                         sha1_fixed_count += 1
-                                        logger.info(f"    ✅ 成功获取 SHA1: {current_sha1}")
+                                        logger.info(f"  ✅ 成功获取 SHA1: {current_sha1}")
                             except Exception as e:
-                                logger.warning(f"    ⚠️ 获取 SHA1 失败: {e}")
+                                logger.warning(f"  ⚠️ 获取 SHA1 失败: {e}")
                                 
                     # 阶段 2: 备份媒体信息到指纹库 & 缺失检查
                     if current_path and not current_path.startswith('http'):
