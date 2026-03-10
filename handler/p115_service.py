@@ -3079,88 +3079,125 @@ def task_full_sync_strm_and_subs(processor=None):
 
 def delete_115_files_by_webhook(item_path, pickcodes):
     """
-    接收神医 Webhook 传来的提取码，精准销毁 115 网盘文件。
-    ★ 终极暴力版：无视路径，直接通过 PC 码本地计算 FID 锁定文件！
+    【V5 终极极速版】接收神医 Webhook 传来的提取码，精准销毁 115 网盘文件。
+    ★ 核心重构：放弃 API 递归查空，完全依赖本地 p115_filesystem_cache 缓存进行自下而上的空目录推导。
+    ★ 极致优化：无论删一集、删一季还是删全剧，最终提炼出最高层级节点，仅需 1 次 API 调用连锅端！
     """
     if not pickcodes: return
-
-    # 联动删除整理记录
-    try:
-        from database.connection import get_db_connection
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM p115_organize_records WHERE pick_code = ANY(%s)", (list(pickcodes),))
-                if cursor.rowcount > 0:
-                    logger.info(f"  🧹 [联动删除] 已同步删除 {cursor.rowcount} 条对应的整理记录。")
-                conn.commit()
-    except Exception as e:
-        logger.warning(f"  ⚠️ [联动删除] 删除整理记录失败: {e}")
 
     client = P115Service.get_client()
     if not client: return
 
     try:
-        fids_to_delete = set()
-        pids_to_check = set()
+        # 1. 获取免死金牌名单 (绝对不能删的根目录)
+        config = get_config()
+        protected_cids = {'0'}
+        media_root = config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID)
+        if media_root: protected_cids.add(str(media_root))
+        save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
+        if save_path: protected_cids.add(str(save_path))
 
-        # 1. 优先查本地数据库缓存，瞬间锁定文件 ID 和 父目录 ID
-        cached_files = P115CacheManager.get_files_by_pickcodes(pickcodes)
-        cached_pcs = set()
-        
-        for f in cached_files:
-            fids_to_delete.add(str(f['id']))
-            if f.get('parent_id'):
-                pids_to_check.add(str(f['parent_id']))
-            cached_pcs.add(f['pick_code'])
-            
-        unmatched_pickcodes = set(pickcodes) - cached_pcs
+        raw_rules = settings_db.get_setting(constants.DB_KEY_115_SORTING_RULES)
+        if raw_rules:
+            rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
+            for rule in rules:
+                if rule.get('cid'): protected_cids.add(str(rule['cid']))
 
-        # 2. 缓存未命中的，直接用 to_id 本地暴力计算 FID
-        if unmatched_pickcodes:
-            logger.info(f"  🔍 [联动删除] 有 {len(unmatched_pickcodes)} 个文件未命中缓存，尝试本地计算 FID...")
-            
-            # 尝试导入 to_id 函数
-            to_id_func = None
-            try:
-                from p115pickcode import to_id
-                to_id_func = to_id
-            except ImportError:
-                try:
-                    from p115client.tool.iterdir import to_id
-                    to_id_func = to_id
-                except ImportError:
-                    pass
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # =================================================================
+                # 第一步：通过 PC 码从本地缓存锁定初始文件 (FID) 和 父目录 (PID)
+                # =================================================================
+                cursor.execute("SELECT id, parent_id FROM p115_filesystem_cache WHERE pick_code = ANY(%s)", (list(pickcodes),))
+                initial_files = cursor.fetchall()
 
-            for pc in unmatched_pickcodes:
-                fid = None
-                if to_id_func:
-                    try:
-                        fid = str(to_id_func(pc))
-                    except Exception: pass
-                
-                if fid:
-                    fids_to_delete.add(fid)
-                    # 为了能连锅端空目录，我们需要知道它的父目录 ID，这里只能调一次 API 查户口
-                    try:
-                        info_res = client.fs_get_info(fid)
-                        if info_res and info_res.get('state'):
-                            pid = info_res['data'].get('pid') or info_res['data'].get('cid') or info_res['data'].get('parent_id')
-                            if pid:
-                                pids_to_check.add(str(pid))
-                    except Exception as e:
-                        logger.debug(f"  ⚠️ 获取文件 {fid} 详情失败: {e}")
-                else:
-                    logger.warning(f"  ⚠️ [联动删除] 无法计算 PC 码的 FID: {pc}")
+                if not initial_files:
+                    logger.warning(f"  ⚠️ [深度删除] 本地缓存未找到对应 PC 码的文件，无法执行本地推导，任务终止。")
+                    return
 
-        # 3. 执行物理销毁 -> 推入全局缓冲队列
-        if fids_to_delete:
-            logger.info(f"  ⏳ [联动删除] 已锁定 {len(fids_to_delete)} 个文件，加入全局批量销毁队列...")
-            P115DeleteBuffer.add(list(fids_to_delete), list(pids_to_check))
-        else:
-            logger.warning(f"  ⚠️ [联动删除] 未能锁定任何待删除文件。")
+                deleted_nodes = set()       # 记录所有被判死刑的节点 (文件 + 变空的目录)
+                nodes_to_check = set()      # 待检查是否变空的父目录
+                node_parent_map = {}        # 缓存节点关系 (id -> parent_id)，用于最后提炼顶级节点
+
+                for row in initial_files:
+                    fid = str(row['id'])
+                    pid = str(row['parent_id'])
+                    deleted_nodes.add(fid)
+                    node_parent_map[fid] = pid
+                    if pid and pid not in protected_cids:
+                        nodes_to_check.add(pid)
+
+                # =================================================================
+                # 第二步：自下而上溯源，本地计算空目录 (季目录 -> 剧目录)
+                # =================================================================
+                while nodes_to_check:
+                    current_pid = nodes_to_check.pop()
+                    if current_pid in protected_cids:
+                        continue
+
+                    # 查当前目录下的所有子节点
+                    cursor.execute("SELECT id FROM p115_filesystem_cache WHERE parent_id = %s", (current_pid,))
+                    children = {str(r['id']) for r in cursor.fetchall()}
+
+                    # ★ 核心逻辑：如果该目录下的所有子节点都在死刑名单里，说明该目录将被掏空！
+                    if children and children.issubset(deleted_nodes):
+                        deleted_nodes.add(current_pid) # 目录本身加入死刑名单
+                        
+                        # 查当前目录的父目录，继续向上溯源 (比如季目录空了，继续查剧目录)
+                        cursor.execute("SELECT parent_id FROM p115_filesystem_cache WHERE id = %s", (current_pid,))
+                        parent_row = cursor.fetchone()
+                        if parent_row and parent_row['parent_id']:
+                            grand_pid = str(parent_row['parent_id'])
+                            node_parent_map[current_pid] = grand_pid
+                            if grand_pid not in protected_cids:
+                                nodes_to_check.add(grand_pid)
+
+                # =================================================================
+                # 第三步：提炼最终需要发送给 115 API 的顶级节点
+                # =================================================================
+                final_api_ids = []
+                for node in deleted_nodes:
+                    parent_id = node_parent_map.get(node)
+                    # 如果缓存 map 里没有，去库里查一下兜底
+                    if not parent_id:
+                        cursor.execute("SELECT parent_id FROM p115_filesystem_cache WHERE id = %s", (node,))
+                        p_row = cursor.fetchone()
+                        parent_id = str(p_row['parent_id']) if p_row else None
+
+                    # ★ 核心优化：如果一个节点的父节点也在死刑名单里，说明它会被连锅端，不需要单独发 API！
+                    if parent_id not in deleted_nodes:
+                        final_api_ids.append(node)
+
+                # =================================================================
+                # 第四步：执行唯一一次 115 API 删除调用
+                # =================================================================
+                if final_api_ids:
+                    logger.info(f"  💥 [深度删除] 本地推导完毕！向 115 发送最终删除指令 (共 {len(final_api_ids)} 个顶级节点)...")
+                    resp = client.fs_delete(final_api_ids)
+                    
+                    if resp.get('state'):
+                        logger.info(f"  ✅ [深度删除] 115 网盘文件/空目录物理销毁成功！")
+                    else:
+                        logger.error(f"  ❌ [深度删除] 115 API 删除失败: {resp}")
+                        return # API 失败则不清理本地库，保持一致性
+
+                # =================================================================
+                # 第五步：清理本地数据库记录 (缓存表 + 整理记录表)
+                # =================================================================
+                if deleted_nodes:
+                    # 1. 清理目录树缓存
+                    cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = ANY(%s)", (list(deleted_nodes),))
+                    deleted_cache_count = cursor.rowcount
+
+                    # 2. 清理整理记录
+                    cursor.execute("DELETE FROM p115_organize_records WHERE pick_code = ANY(%s)", (list(pickcodes),))
+                    deleted_record_count = cursor.rowcount
+
+                    conn.commit()
+                    logger.info(f"  🧹 [深度删除] 本地数据清理完毕: 缓存表移除 {deleted_cache_count} 条, 记录表移除 {deleted_record_count} 条。")
 
     except Exception as e:
-        logger.error(f"  ❌ [联动删除] 执行异常: {e}", exc_info=True)
+        logger.error(f"  ❌ [深度删除] 执行异常: {e}", exc_info=True)
 
 def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num=None):
     """手动纠错：移动文件、生成新STRM，并彻底清理旧空壳和旧STRM"""
