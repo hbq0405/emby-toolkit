@@ -478,7 +478,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
         except Exception as e:
             logger.warning(f"  ➜ [预检] 获取路径失败: {e}")
 
-    if file_path and getattr(processor, 'p115_mediainfo_center', False) and processor.p115_center:
+    if file_path:
         try:
             # =========================================================
             # 1. 统一调用核心处理器的双指纹提取方法 
@@ -527,7 +527,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     logger.warning(f"  ⚠️ [本地缓存] 查询本地数据库失败: {e_db}")
 
                 # --- 第二步：本地没有，再查中心服务器 ---
-                if not is_from_local and processor.p115_center:
+                if not is_from_local and getattr(processor, 'p115_center', None):
                     logger.info(f"  ☁️ [P115Center] 本地无缓存，开始查询中心服务器 (SHA1: {sha1})")
                     resp = processor.p115_center.download_emby_mediainfo_data([sha1])
                     media_data = resp.get(sha1)
@@ -589,7 +589,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                             logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
                     
                     # 执行反哺 (仅当中心服务器没有时)
-                    if need_upload and processor.p115_center:
+                    if need_upload and getattr(processor, 'p115_center', None):
                         try:
                             processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
                             logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
