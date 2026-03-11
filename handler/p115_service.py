@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 # 内存级缓存，防止同剧集/同系列疯狂重复请求 TMDb
 _TMDB_METADATA_CACHE = {}
 _TMDB_SEARCH_CACHE = {}
+_AI_PARSE_CACHE = {}
 
 def get_115_tokens():
     """唯一真理：只从独立数据库获取 Token 和 Cookie"""
@@ -2399,45 +2400,54 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                 pass
 
     # =================================================================
-    # ★★★ 优先级 4: AI 辅助识别 (终极兜底) ★★★
+    # ★ 第三步：AI 辅助识别 (终极兜底 + 记忆体优化)
     # =================================================================
     if use_ai and ai_translator:
         target_ai_name = main_dir_name if main_dir_name else filename
-        logger.info(f"  🤖 常规识别失败，尝试 AI 辅助识别: {target_ai_name}")
-        try:
-            ai_result = ai_translator.parse_media_filename(target_ai_name)
+        
+        def _do_ai_search(target_name):
+            # 1. 查 AI 记忆体
+            if target_name in _AI_PARSE_CACHE:
+                ai_result = _AI_PARSE_CACHE[target_name]
+                # logger.debug(f"  🤖 [AI缓存命中] 无需消耗 Token: {target_name}")
+            else:
+                logger.info(f"  🤖 常规识别失败，消耗 Token 请求 AI 解析: {target_name}")
+                try:
+                    ai_result = ai_translator.parse_media_filename(target_name)
+                    _AI_PARSE_CACHE[target_name] = ai_result # 写入记忆体
+                except Exception as e:
+                    logger.error(f"  ❌ AI 解析出错: {e}")
+                    return None
+
+            # 2. 查 TMDb 记忆体
             if ai_result and ai_result.get('title'):
                 ai_title = ai_result.get('title')
                 ai_year = ai_result.get('year')
                 ai_type = forced_media_type or ai_result.get('type') or media_type
                 
                 if api_key:
-                    results = tmdb.search_media(query=ai_title, api_key=api_key, item_type=ai_type, year=ai_year)
+                    search_key = f"AI_{ai_title}_{ai_year}_{ai_type}"
+                    if search_key in _TMDB_SEARCH_CACHE:
+                        results = _TMDB_SEARCH_CACHE[search_key]
+                    else:
+                        results = tmdb.search_media(query=ai_title, api_key=api_key, item_type=ai_type, year=ai_year)
+                        _TMDB_SEARCH_CACHE[search_key] = results
+
                     if results and len(results) > 0:
                         best = results[0]
                         return str(best['id']), ai_type, (best.get('title') or best.get('name'))
                     else:
                         logger.debug(f"  🤖 AI 提取了标题 '{ai_title}'，但在 TMDb 未搜索到结果。")
-        except Exception as e:
-            logger.error(f"  ❌ AI 辅助识别出错: {e}")
+            return None
 
-        # ★ 核心修复：如果主目录 AI 没搜到结果，继续尝试用文件名！
+        # 优先尝试主目录 (如果有 50 个文件，这里只会调 1 次 AI)
+        res = _do_ai_search(target_ai_name)
+        if res: return res
+        
+        # 如果主目录彻底没救了，且当前是文件，才尝试解析文件名
         if main_dir_name and not is_same_name:
-            logger.info(f"  🤖 主目录 AI 识别无果，尝试 AI 识别文件名: {filename}")
-            try:
-                ai_result = ai_translator.parse_media_filename(filename)
-                if ai_result and ai_result.get('title'):
-                    ai_title = ai_result.get('title')
-                    ai_year = ai_result.get('year')
-                    ai_type = forced_media_type or ai_result.get('type') or media_type
-                    
-                    if api_key:
-                        results = tmdb.search_media(query=ai_title, api_key=api_key, item_type=ai_type, year=ai_year)
-                        if results and len(results) > 0:
-                            best = results[0]
-                            return str(best['id']), ai_type, (best.get('title') or best.get('name'))
-            except Exception as e:
-                logger.error(f"  ❌ 文件名 AI 辅助识别出错: {e}")
+            res_file = _do_ai_search(filename)
+            if res_file: return res_file
 
     return None, None, None
 
@@ -2670,7 +2680,22 @@ def task_scan_and_organize_115(processor=None):
 
                     if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
                         continue
-                    
+
+                    # =================================================================
+                    # ★★★ 核心防御：绝对禁止钻入蓝光/DVD原盘结构目录 ★★★
+                    # 原盘必须作为一个整体被识别(靠父目录名)。如果父目录识别失败，
+                    # 绝对不能钻进去把里面的 CERTIFICATE 或 .m2ts 拆散！
+                    # =================================================================
+                    if is_folder and name.upper() in ['BDMV', 'CERTIFICATE', 'ANY!', 'VIDEO_TS', 'AUDIO_TS', 'PLAYLIST', 'CLIPINF', 'STREAM', 'BACKUP']:
+                        logger.warning(f"  🛑 [原盘防御] 拒绝深入扫描蓝光/DVD内部结构目录: {name}")
+                        continue
+                        
+                    # 顺手把原盘里的碎片文件也屏蔽掉，防止它们散落在外面被误杀
+                    if not is_folder:
+                        ext = name.split('.')[-1].lower() if '.' in name else ''
+                        if ext in ['clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo']:
+                            continue
+
                     forced_type = None
                     if is_folder and re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第[一二三四五六七八九十\d]+季)$', name, re.IGNORECASE):
                         forced_type = 'tv'
