@@ -1082,26 +1082,27 @@ class SmartOrganizer:
 
         return True
 
-    def get_target_cid(self):
+    def get_target_cid(self, ignore_memory=False):
         """获取目标 CID：优先查历史整理记录（记忆手动纠错），其次遍历规则"""
         # ★★★ 1. 查历史记录 (记忆功能) ★★★
-        try:
-            from database.connection import get_db_connection
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    # 查找该 tmdb_id 最近一次成功的整理记录
-                    cursor.execute("""
-                        SELECT target_cid, category_name 
-                        FROM p115_organize_records 
-                        WHERE tmdb_id = %s AND status = 'success' 
-                        ORDER BY processed_at DESC LIMIT 1
-                    """, (str(self.tmdb_id),))
-                    row = cursor.fetchone()
-                    if row and row['target_cid']:
-                        logger.info(f"  🧠 [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {row['target_cid']})")
-                        return row['target_cid']
-        except Exception as e:
-            logger.warning(f"  ⚠️ 查询历史整理记录失败: {e}")
+        if not ignore_memory:
+            try:
+                from database.connection import get_db_connection
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        # 查找该 tmdb_id 最近一次成功的整理记录
+                        cursor.execute("""
+                            SELECT target_cid, category_name 
+                            FROM p115_organize_records 
+                            WHERE tmdb_id = %s AND status = 'success' 
+                            ORDER BY processed_at DESC LIMIT 1
+                        """, (str(self.tmdb_id),))
+                        row = cursor.fetchone()
+                        if row and row['target_cid']:
+                            logger.info(f"  🧠 [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {row['target_cid']})")
+                            return row['target_cid']
+            except Exception as e:
+                logger.warning(f"  ⚠️ 查询历史整理记录失败: {e}")
 
         # 2. 遍历规则 (原有逻辑)
         for rule in self.rules:
@@ -1805,65 +1806,85 @@ class SmartOrganizer:
 
         logger.info(f"  🚀 [115] 开始整理: {root_name} -> {std_root_name}")
 
-        final_home_cid = P115CacheManager.get_cid(dest_parent_cid, std_root_name)
+        final_home_cid = None
+        current_parent_cid = dest_parent_cid
+        
+        # ★★★ 核心修复：最多尝试 2 次。第一次用记忆体，失败则回退到规则匹配重试 ★★★
+        for attempt in range(2):
+            final_home_cid = P115CacheManager.get_cid(current_parent_cid, std_root_name)
 
-        # ★★★ 缓存自愈：如果缓存的 CID 竟然等于源文件夹的 CID，且目标父目录不是源父目录，说明缓存串线了！
-        source_parent_cid = str(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
-        if final_home_cid and str(final_home_cid) == str(source_root_id) and str(dest_parent_cid) != source_parent_cid:
-            logger.warning(f"  ⚠️ 检测到缓存串线 (目标目录与源目录重合)，正在强制清除错误缓存并重建...")
-            P115CacheManager.delete_cid(final_home_cid)
-            final_home_cid = None
+            # 缓存自愈：如果缓存的 CID 竟然等于源文件夹的 CID，且目标父目录不是源父目录，说明缓存串线了！
+            source_parent_cid = str(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+            if final_home_cid and str(final_home_cid) == str(source_root_id) and str(current_parent_cid) != source_parent_cid:
+                logger.warning(f"  ⚠️ 检测到缓存串线 (目标目录与源目录重合)，正在强制清除错误缓存并重建...")
+                P115CacheManager.delete_cid(final_home_cid)
+                final_home_cid = None
 
-        if final_home_cid:
-            logger.info(f"  ⚡ [缓存命中] 主目录: {std_root_name}")
-        else:
-            mk_res = self.client.fs_mkdir(std_root_name, dest_parent_cid)
-            if mk_res.get('state'):
-                final_home_cid = mk_res.get('cid')
-                P115CacheManager.save_cid(final_home_cid, dest_parent_cid, std_root_name)
-                logger.info(f"  🆕 创建新主目录并缓存: {std_root_name}")
+            if final_home_cid:
+                logger.info(f"  ⚡ [缓存命中] 主目录: {std_root_name}")
             else:
-                try:
-                    search_res = self.client.fs_files({'cid': dest_parent_cid, 'search_value': std_root_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
-                    if search_res.get('data'):
-                        for item in search_res['data']:
-                            item_name = item.get('fn') or item.get('n') or item.get('file_name')
-                            item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                            item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid')) # ★ 提取父ID
-                            
-                            # ★ 致命漏洞修复：必须校验搜出来的文件夹，它的父目录确实是我们指定的 dest_parent_cid
-                            if item_name == std_root_name and str(item_fc) == '0' and item_pid == str(dest_parent_cid):
-                                final_home_cid = item.get('fid') or item.get('file_id')
-                                P115CacheManager.save_cid(final_home_cid, dest_parent_cid, std_root_name)
-                                logger.info(f"  📂 成功查找到已存在主目录并永久缓存: {std_root_name}")
-                                break
-                except Exception as e:
-                    logger.warning(f"  ⚠️ 115模糊查找异常: {e}")
-
-                if not final_home_cid:
-                    logger.warning(f"  ⚠️ 115搜索失效，启动全量遍历查找老目录: '{std_root_name}' ...")
-                    offset = 0
-                    limit = 1000
-                    while True:
-                        try:
-                            res = self.client.fs_files({'cid': dest_parent_cid, 'limit': limit, 'offset': offset, 'type': 0, 'record_open_time': 0, 'count_folders': 0})
-                            data = res.get('data', [])
-                            if not data: break 
-                            
-                            for item in data:
+                mk_res = self.client.fs_mkdir(std_root_name, current_parent_cid)
+                if mk_res.get('state'):
+                    final_home_cid = mk_res.get('cid')
+                    P115CacheManager.save_cid(final_home_cid, current_parent_cid, std_root_name)
+                    logger.info(f"  🆕 创建新主目录并缓存: {std_root_name}")
+                else:
+                    try:
+                        search_res = self.client.fs_files({'cid': current_parent_cid, 'search_value': std_root_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
+                        if search_res.get('data'):
+                            for item in search_res['data']:
                                 item_name = item.get('fn') or item.get('n') or item.get('file_name')
                                 item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                                if item_name == std_root_name and str(item_fc) == '0':
+                                item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid')) 
+                                
+                                if item_name == std_root_name and str(item_fc) == '0' and item_pid == str(current_parent_cid):
                                     final_home_cid = item.get('fid') or item.get('file_id')
-                                    P115CacheManager.save_cid(final_home_cid, dest_parent_cid, std_root_name)
+                                    P115CacheManager.save_cid(final_home_cid, current_parent_cid, std_root_name)
                                     logger.info(f"  📂 成功查找到已存在主目录并永久缓存: {std_root_name}")
                                     break
-                                    
-                            if final_home_cid: break 
-                            offset += limit 
-                        except Exception as e:
-                            logger.error(f"遍历查找失败: {e}")
-                            break
+                    except Exception as e:
+                        logger.warning(f"  ⚠️ 115模糊查找异常: {e}")
+
+                    if not final_home_cid:
+                        logger.warning(f"  ⚠️ 115搜索失效，启动全量遍历查找老目录: '{std_root_name}' ...")
+                        offset = 0
+                        limit = 1000
+                        while True:
+                            try:
+                                res = self.client.fs_files({'cid': current_parent_cid, 'limit': limit, 'offset': offset, 'type': 0, 'record_open_time': 0, 'count_folders': 0})
+                                data = res.get('data', [])
+                                if not data: break 
+                                
+                                for item in data:
+                                    item_name = item.get('fn') or item.get('n') or item.get('file_name')
+                                    item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
+                                    if item_name == std_root_name and str(item_fc) == '0':
+                                        final_home_cid = item.get('fid') or item.get('file_id')
+                                        P115CacheManager.save_cid(final_home_cid, current_parent_cid, std_root_name)
+                                        logger.info(f"  📂 成功查找到已存在主目录并永久缓存: {std_root_name}")
+                                        break
+                                        
+                                if final_home_cid: break 
+                                offset += limit 
+                            except Exception as e:
+                                logger.error(f"遍历查找失败: {e}")
+                                break
+
+            if final_home_cid:
+                break # 成功获取，跳出重试循环
+                
+            # 如果失败了，且是第一次尝试，触发记忆体失效回退机制
+            if attempt == 0:
+                fallback_cid = self.get_target_cid(ignore_memory=True)
+                if fallback_cid and str(fallback_cid) != str(current_parent_cid):
+                    logger.warning(f"  ⚠️ 目标父目录(CID:{current_parent_cid})可能已被手动删除失效！正在抛弃记忆体，回退到规则匹配目录(CID:{fallback_cid})重试...")
+                    # 清理失效的缓存
+                    P115CacheManager.delete_cid(current_parent_cid)
+                    # 更新变量，准备下一次循环
+                    current_parent_cid = fallback_cid
+                    target_cid = fallback_cid # ★ 同步更新 target_cid，保证后续写记录时能刷新记忆体！
+                else:
+                    break # 没有备用 CID，或者备用 CID 和当前一样，彻底没救了
 
         if not final_home_cid:
             logger.error(f"  ❌ 无法获取或创建目标目录 (已尝试所有手段)")
