@@ -1698,44 +1698,64 @@ class SmartOrganizer:
             is_actually_tv = False
             for c in candidates:
                 c_name = c.get('fn') or c.get('n') or c.get('file_name', '')
+                rel_path = c.get('rel_path', '')
                 
-                # 1. 标准特征 (EP01, S01E01)
+                # 1. 相对路径特征 (Season 1)
+                if re.search(r'(?:Season\s?\d+|S\d+|第[一二三四五六七八九十\d]+季)', rel_path, re.IGNORECASE):
+                    is_actually_tv = True
+                    break
+                
+                # 2. 标准特征 (EP01, S01E01)
                 if re.search(r'(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}|(?:ep|episode)[ \.\-]*\d{1,4}|第\d{1,4}[集话]', c_name, re.IGNORECASE):
                     is_actually_tv = True
                     break
                 
-                # 2. 动漫特征 (剔除干扰后，寻找纯数字序号)
+                # 3. 动漫特征 (剔除干扰后，寻找纯数字序号)
                 clean_c_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', c_name)
-                # 至少2位数字，防止把类似 " - 1 " 的杂讯误判为剧集
                 if re.search(r'(?:-\s*|\[|【)(\d{2,4})(?:\s+|\]|】)', clean_c_name): 
                     is_actually_tv = True
                     break
             
             if is_actually_tv:
-                logger.warning(f"  🕵️‍♂️ [智能纠错] 发现文件包含明显的剧集特征(如EP01)，但当前被错误识别为电影。正在尝试自动纠错...")
+                logger.warning(f"  🕵️‍♂️ [智能纠错] 发现文件包含明显的剧集特征(如季目录/EP01)，但当前被错误识别为电影。正在尝试自动纠错...")
                 try:
-                    search_title = self.original_title
-                    # 清理标题，去掉年份等干扰项
-                    clean_title = re.sub(r'\(\d{4}\)', '', search_title).strip()
-                    results = tmdb.search_media(query=clean_title, api_key=self.api_key, item_type='tv')
+                    # ★ 核心修复：坚决保留原 TMDb ID，只切换类型重新拉取数据！
+                    self.media_type = 'tv'
                     
-                    if results and len(results) > 0:
-                        new_tmdb_id = str(results[0]['id'])
-                        logger.info(f"  ✅ [智能纠错] 成功纠正为剧集: {results[0].get('name')} (ID:{new_tmdb_id})")
+                    # 强制清除旧的电影缓存数据，重新拉取剧集数据
+                    cache_key = f"tv_{self.tmdb_id}"
+                    if cache_key in _TMDB_METADATA_CACHE:
+                        del _TMDB_METADATA_CACHE[cache_key]
                         
-                        # 原地变身！更新自身所有属性
-                        self.tmdb_id = new_tmdb_id
-                        self.media_type = 'tv'
-                        self.raw_metadata = self._fetch_raw_metadata()
+                    self.raw_metadata = self._fetch_raw_metadata()
+                    
+                    # 如果拉取成功（说明这个 ID 确实有对应的剧集数据）
+                    if self.raw_metadata and self.raw_metadata.get('title'):
                         self.details = self.raw_metadata
+                        logger.info(f"  ✅ [智能纠错] 成功保留原 ID ({self.tmdb_id}) 并切换为剧集: {self.details.get('title')}")
                         
-                        # 重新计算目标分类目录 (从电影分类跳到剧集分类)
                         target_cid = self.get_target_cid()
                         dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
                     else:
-                        logger.warning(f"  ⚠️ [智能纠错] 未能在 TMDb 找到对应的剧集，将强制按剧集格式重命名以防冲突。")
+                        # 只有在原 ID 作为剧集彻底查不到数据时，才迫不得已用名字重新搜索
+                        logger.warning(f"  ⚠️ [智能纠错] 原 ID ({self.tmdb_id}) 作为剧集查询失败，尝试用名称重新搜索...")
+                        search_title = self.original_title
+                        clean_title = re.sub(r'\(\d{4}\)', '', search_title).strip()
+                        results = tmdb.search_media(query=clean_title, api_key=self.api_key, item_type='tv')
+                        
+                        if results and len(results) > 0:
+                            new_tmdb_id = str(results[0]['id'])
+                            logger.info(f"  ✅ [智能纠错] 成功重新搜索并纠正为剧集: {results[0].get('name')} (ID:{new_tmdb_id})")
+                            self.tmdb_id = new_tmdb_id
+                            self.raw_metadata = self._fetch_raw_metadata()
+                            self.details = self.raw_metadata
+                            
+                            target_cid = self.get_target_cid()
+                            dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+                        else:
+                            logger.warning(f"  ⚠️ [智能纠错] 未能在 TMDb 找到对应的剧集，将强制按剧集格式重命名以防冲突。")
                 except Exception as e:
-                    logger.error(f"  ❌ [智能纠错] 搜索剧集失败: {e}")
+                    logger.error(f"  ❌ [智能纠错] 纠错失败: {e}")
 
         # =================================================================
         # 4. 计算最终的目录名称和路径
@@ -2269,49 +2289,62 @@ def _parse_115_size(size_val):
 
 def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=False, forced_media_type=None, ai_translator=None, use_ai=False):
     """
-    【终极优化版】增强识别逻辑：
-    1. 优先从主目录 (main_dir_name) 提取 TMDb ID 标签格式: {tmdb=xxx}
-    2. 结合子目录特征 (has_season_subdirs) 和文件名特征判断媒体类型 (TV/Movie)
-    3. 其次从主目录提取 Title (Year) 进行搜索
-    4. 再次从当前文件名提取 TMDb ID 或 Title (Year) 进行搜索
-    5. AI 辅助识别兜底
+    【绝对正确版】识别逻辑：
+    1. 先定类型：综合主目录、子目录特征、文件名，判断是 Movie 还是 TV。
+    2. 再提 ID：优先从主目录提取 {tmdb=xxx}，其次提取 Title (Year)，最后看文件名。
+    3. 定向查询：用确定的类型 + ID/名称 向 TMDb 发起查询。
     """
     tmdb_id = None
-    media_type = 'movie' # 默认
+    media_type = 'movie' # 默认兜底
     title = filename
     api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
     
     is_same_name = (main_dir_name == filename)
 
-    # 辅助函数：判断是否包含剧集特征
-    def _check_tv_features(text):
-        if not text: return False
-        return bool(re.search(r'(?:S\d{1,4}[ \.\-]*(?:E|P)\d{1,4}|EP?\d{1,4}|第\d+季|Season)', text, re.IGNORECASE))
-
-    # 确定最终用来判断类型的文本组合
-    combined_text_for_type = f"{main_dir_name or ''} {filename}"
-
-    # ★ 核心：精准确定媒体类型
+    # =================================================================
+    # ★ 第一步：铁腕判定媒体类型 (Movie or TV)
+    # =================================================================
     if forced_media_type:
         media_type = forced_media_type
-    elif has_season_subdirs or _check_tv_features(combined_text_for_type):
-        media_type = 'tv'
+    else:
+        # 将主目录名和文件名拼在一起，寻找剧集特征
+        combined_text = f"{main_dir_name or ''} {filename}"
+        # 只要包含 S01、EP01、第x季、Season 等字眼，立刻锁定为剧集
+        if has_season_subdirs or re.search(r'(?:S\d{1,4}[ \.\-]*(?:E|P)\d{1,4}|EP?\d{1,4}|第[一二三四五六七八九十\d]+季|Season)', combined_text, re.IGNORECASE):
+            media_type = 'tv'
+
+    # 辅助函数：用已锁定的类型去 TMDb 查官方标题
+    def _fetch_title_by_id(ext_id, m_type):
+        if not api_key: return None
+        try:
+            if m_type == 'tv':
+                res = tmdb.get_tv_details(ext_id, api_key)
+                if res: return res.get('name') or res.get('original_name')
+            else:
+                res = tmdb.get_movie_details(ext_id, api_key)
+                if res: return res.get('title') or res.get('original_title')
+        except Exception:
+            pass
+        return None
 
     # =================================================================
-    # 优先级 1: 从主目录名提取 TMDb ID (最稳)
+    # ★ 第二步：按优先级提取信息并定向查询
     # =================================================================
+    
+    # 优先级 1: 从主目录名提取 TMDb ID
     if main_dir_name:
         match_tag_main = re.search(r'\{?tmdb(?:id)?[=\-](\d+)\}?', main_dir_name, re.IGNORECASE)
         if match_tag_main:
             tmdb_id = match_tag_main.group(1)
             clean_name = re.sub(r'\{?tmdb(?:id)?[=\-]\d+\}?', '', main_dir_name, flags=re.IGNORECASE).strip()
             match_title = re.match(r'^(.+?)\s*[\(\[]\d{4}[\)\]]', clean_name)
-            title = match_title.group(1).strip() if match_title else clean_name
-            return tmdb_id, media_type, title
+            fallback_title = match_title.group(1).strip() if match_title else clean_name
+            
+            # 用锁定的类型去查标题
+            official_title = _fetch_title_by_id(tmdb_id, media_type)
+            return tmdb_id, media_type, official_title or fallback_title
 
-    # =================================================================
     # 优先级 2: 从主目录名提取 Title (Year) 进行搜索
-    # =================================================================
     if main_dir_name:
         match_std_main = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', main_dir_name)
         if match_std_main:
@@ -2323,6 +2356,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                     if search_key in _TMDB_SEARCH_CACHE:
                         results = _TMDB_SEARCH_CACHE[search_key]
                     else:
+                        # 严格按照锁定的 media_type 搜索
                         results = tmdb.search_media(query=name_part, api_key=api_key, item_type=media_type, year=year_part)
                         _TMDB_SEARCH_CACHE[search_key] = results
 
@@ -2332,20 +2366,18 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             except Exception:
                 pass
 
-    # =================================================================
     # 优先级 3: 兜底 - 从当前文件名提取 TMDb ID 或 Title (Year)
-    # =================================================================
     if not is_same_name:
-        # 3.1 查文件名里的 TMDB ID
         match_tag_file = re.search(r'\{?tmdb(?:id)?[=\-](\d+)\}?', filename, re.IGNORECASE)
         if match_tag_file:
             tmdb_id = match_tag_file.group(1)
             clean_name = re.sub(r'\{?tmdb(?:id)?[=\-]\d+\}?', '', filename, flags=re.IGNORECASE).strip()
             match_title = re.match(r'^(.+?)\s*[\(\[]\d{4}[\)\]]', clean_name)
-            title = match_title.group(1).strip() if match_title else clean_name
-            return tmdb_id, media_type, title
+            fallback_title = match_title.group(1).strip() if match_title else clean_name
+            
+            official_title = _fetch_title_by_id(tmdb_id, media_type)
+            return tmdb_id, media_type, official_title or fallback_title
 
-        # 3.2 查文件名里的 Title (Year)
         match_std_file = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', filename)
         if match_std_file:
             name_part = match_std_file.group(1).replace('.', ' ').strip()
@@ -2366,10 +2398,9 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                 pass
 
     # =================================================================
-    # ★★★ 优先级 4: AI 辅助识别 (终极兜底) ★★★
+    # ★ 第三步：AI 辅助识别 (终极兜底)
     # =================================================================
     if use_ai and ai_translator:
-        # 优先让 AI 识别主目录名，如果没有再识别文件名
         target_ai_name = main_dir_name if main_dir_name else filename
         logger.info(f"  🤖 常规识别失败，尝试 AI 辅助识别: {target_ai_name}")
         try:
@@ -2377,6 +2408,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             if ai_result and ai_result.get('title'):
                 ai_title = ai_result.get('title')
                 ai_year = ai_result.get('year')
+                # 如果 AI 没给出类型，强制使用我们第一步锁定的类型
                 ai_type = forced_media_type or ai_result.get('type') or media_type
                 
                 if api_key:
@@ -2386,24 +2418,6 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                         return str(best['id']), ai_type, (best.get('title') or best.get('name'))
         except Exception as e:
             logger.error(f"  ❌ AI 辅助识别出错: {e}")
-
-        # 如果主目录 AI 失败，且有文件名，再试一次文件名
-        if main_dir_name and not is_same_name:
-            logger.info(f"  🤖 主目录 AI 识别失败，尝试 AI 识别文件名: {filename}")
-            try:
-                ai_result = ai_translator.parse_media_filename(filename)
-                if ai_result and ai_result.get('title'):
-                    ai_title = ai_result.get('title')
-                    ai_year = ai_result.get('year')
-                    ai_type = forced_media_type or ai_result.get('type') or media_type
-                    
-                    if api_key:
-                        results = tmdb.search_media(query=ai_title, api_key=api_key, item_type=ai_type, year=ai_year)
-                        if results and len(results) > 0:
-                            best = results[0]
-                            return str(best['id']), ai_type, (best.get('title') or best.get('name'))
-            except Exception:
-                pass
 
     return None, None, None
 
