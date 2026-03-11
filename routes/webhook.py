@@ -628,13 +628,18 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         diff = abs(syndrome_size - file_size_115)
                         error_margin = diff / file_size_115
                         
-                        # ★ 采用中心服务器作者建议：使用 0.5% (0.005) 的百分比容错率
+                        # ★ 采用使用 0.5% (0.005) 的百分比容错率
                         if error_margin > 0.005:
                             logger.error(f"  🚨 [数据校验] 严重警告！神医大小({syndrome_size})与115真实大小({file_size_115})误差达 {error_margin*100:.3f}%！")
                             logger.error(f"  🚨 [数据校验] 判定为同名异版脏数据！正在调用神医接口清除错误缓存，强制重新提取...")
                             
+                            # 1. 清除旧的脏数据
                             emby.clear_item_media_info(item_id, emby_url, emby_key)
                             
+                            # 2. 发送伪装播放请求，强制它立刻去读取物理文件！
+                            emby.trigger_media_info_refresh(item_id, emby_url, emby_key, emby_user_id)
+                            
+                            # 重置变量，利用 continue 进入下一轮循环
                             res_json = None
                             media_data = None 
                             is_from_local = False

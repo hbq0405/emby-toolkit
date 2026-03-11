@@ -1908,6 +1908,9 @@ class SmartOrganizer:
         moved_count = 0
         move_groups = {}
         unrecognized_fids = [] # ★ 终极垃圾桶：收集所有不符合要求的文件
+        
+        # ★ 新增：用于记录本批次已经生成的目标文件名，防止同名冲突
+        seen_new_filenames = set()
 
         # 确保 allowed_exts 有兜底，防止用户清空列表导致报错
         if not allowed_exts:
@@ -1920,9 +1923,6 @@ class SmartOrganizer:
             ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
             file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
             
-            # =================================================================
-            # ★ 终极严格过滤逻辑：不在列表里的，统统移入未识别！
-            # =================================================================
             # 1. 扩展名绝对白名单校验 (最高优先级)
             if ext not in allowed_exts:
                 logger.debug(f"  🚫 扩展名 .{ext} 不在允许列表中，打入未识别: {file_name}")
@@ -1939,15 +1939,13 @@ class SmartOrganizer:
             # 在重命名和查缓存前，如果缺失 SHA1，主动请求详情补齐 
             file_sha1 = file_item.get('sha1') or file_item.get('sha')
             if not file_sha1 and fid and ext in known_video_exts:
-                logger.info()
                 try:
                     info_res = self.client.fs_get_info(fid)
                     if info_res.get('state') and info_res.get('data'):
                         fetched_sha1 = info_res['data'].get('sha1')
                         if fetched_sha1:
-                            file_item['sha1'] = fetched_sha1 # 注入回 file_item 供后续使用
-                            logger.debug(f"  ➜ [115] 成功在重命名前获取到 SHA1: {fetched_sha1}")
-                except Exception as e_info:
+                            file_item['sha1'] = fetched_sha1 
+                except Exception:
                     pass
 
             if keep_original:
@@ -1957,7 +1955,7 @@ class SmartOrganizer:
                 is_center_cached = False
                 real_target_cid = final_home_cid
                 
-                # 1:1 复刻原始目录架构 (包含季目录、SP目录等)
+                # 1:1 复刻原始目录架构
                 rel_path = file_item.get('rel_path', '')
                 if rel_path:
                     current_parent = final_home_cid
@@ -1999,7 +1997,6 @@ class SmartOrganizer:
                     s_cid = P115CacheManager.get_cid(final_home_cid, s_name)
                     
                     if s_cid:
-                        logger.info(f"  ⚡ [缓存命中] 季目录: {std_root_name} - {s_name}")
                         real_target_cid = s_cid
                     else:
                         s_mk = self.client.fs_mkdir(s_name, final_home_cid)
@@ -2020,8 +2017,18 @@ class SmartOrganizer:
                         
                         if s_cid:
                             P115CacheManager.save_cid(s_cid, final_home_cid, s_name)
-                            logger.info(f"  🆕 创建季目录并缓存: {std_root_name} - {s_name}")
                             real_target_cid = s_cid
+
+            # =================================================================
+            # ★★★ 核心修复：严格去重逻辑 (防多版本/洗版残留冲突) ★★★
+            # =================================================================
+            if new_filename in seen_new_filenames:
+                logger.warning(f"  ⚠️ [去重丢弃] 发现重复版本: '{file_name}' -> 目标名 '{new_filename}' 已被占用，当作垃圾打入未识别！")
+                if fid: unrecognized_fids.append(fid)
+                continue # 直接跳过，绝不重命名，绝不移动，绝不生成 STRM！
+            
+            # 记录已占用的文件名
+            seen_new_filenames.add(new_filename)
 
             if new_filename != file_name:
                 ren_res = self.client.fs_rename((fid, new_filename))
@@ -2030,7 +2037,7 @@ class SmartOrganizer:
                 else:
                     logger.warning(f"  ⚠️ [重命名失败] {file_name} -> {new_filename}, 原因: {ren_res.get('error_msg', ren_res)}")
 
-            # ★ 核心修改：不再逐个移动，而是将文件信息暂存入分组字典
+            # 暂存入分组字典
             file_item['_new_filename'] = new_filename
             file_item['_season_num'] = season_num
             file_item['_s_name'] = s_name
