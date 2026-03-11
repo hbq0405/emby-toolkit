@@ -23,7 +23,8 @@ def create_custom_collection(name: str, type: str, definition_json: str, allowed
             # ★★★ 2. 在执行时传入第4个参数 ★★★
             cursor.execute(sql, (name, type, definition_json, allowed_user_ids_json))
             new_id = cursor.fetchone()['id']
-            logger.info(f"成功创建自定义合集 '{name}' (类型: {type})。")
+            conn.commit()
+            logger.info(f"  ➜ 成功创建自定义合集 '{name}' (类型: {type})。")
             return new_id
     except psycopg2.Error as e:
         logger.error(f"创建自定义合集 '{name}' 时发生数据库错误: {e}", exc_info=True)
@@ -75,6 +76,7 @@ def update_custom_collection(collection_id: int, name: str, type: str, definitio
             cursor = conn.cursor()
             # ★★★ 2. 在执行时传入新参数 ★★★
             cursor.execute(sql, (name, type, definition_json, status, allowed_user_ids_json, collection_id))
+            conn.commit()
             return cursor.rowcount > 0
     except psycopg2.Error as e:
         logger.error(f"更新自定义合集 ID {collection_id} 时出错: {e}", exc_info=True)
@@ -86,6 +88,7 @@ def delete_custom_collection(collection_id: int) -> bool:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute("DELETE FROM custom_collections WHERE id = %s", (collection_id,))
+            conn.commit()
             return cursor.rowcount > 0
     except psycopg2.Error as e:
         logger.error(f"删除自定义合集 (ID: {collection_id}) 时出错: {e}", exc_info=True)
@@ -100,6 +103,7 @@ def update_custom_collections_order(ordered_ids: List[int]) -> bool:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.executemany(sql, data_to_update)
+            conn.commit()
             return True
     except psycopg2.Error as e:
         logger.error(f"批量更新自定义合集顺序时出错: {e}", exc_info=True)
@@ -133,6 +137,7 @@ def update_custom_collection_sync_results(collection_id: int, update_data: Dict[
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(sql, tuple(values))
+            conn.commit()
     except psycopg2.Error as e:
         logger.error(f"更新自定义合集 {collection_id} 的同步结果时出错: {e}", exc_info=True)
         raise
@@ -585,6 +590,7 @@ def match_and_update_list_collections_on_item_add(new_item_tmdb_id: str, new_ite
                     except Exception as e_inner:
                         logger.error(f"  ➜ 处理合集《{collection_name}》时发生内部错误: {e_inner}", exc_info=True)
                         continue
+            conn.commit()
         
         return collections_to_update_in_emby
     
