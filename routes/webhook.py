@@ -550,7 +550,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                 need_upload = False
                 is_from_local = False
                 
-                # --- 提前查询 115 真实文件大小 (供中心服务器校验和本地严格比对使用) ---
+                # --- 提前查询 115 真实文件大小 (供本地严格比对使用) ---
                 file_size_115 = 0
                 try:
                     with get_db_connection() as conn:
@@ -584,44 +584,39 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                 if not is_from_local and getattr(processor, 'p115_center', None):
                     logger.info(f"  ☁️ [P115Center] 本地无缓存，开始查询中心服务器 (SHA1: {sha1})")
                     
-                    # ★ 核心修改 1：下载时带上 size 参数，让中心服务器直接拦截脏数据
-                    payload = [(sha1, file_size_115)] if file_size_115 > 0 else [sha1]
-                    resp = processor.p115_center.download_emby_mediainfo_data(payload)
+                    # ★ 撤销传入 file_size_115，防止中心服务器因 HTTP 波动拒收
+                    resp = processor.p115_center.download_emby_mediainfo_data([sha1])
                     media_data = resp.get(sha1)
                     
                     if media_data:
                         logger.info(f"  ☁️ [P115Center] 命中中心缓存，下发给神医恢复...")
                     else:
-                        logger.info(f"  ☁️ [P115Center] 中心无缓存(或校验不通过)，通知神医提取媒体信息...")
+                        logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医提取媒体信息...")
                         need_upload = True
 
                 # --- 第三步：轮询调用神医接口，死等纯净数据 ---
                 res_json = None
-                max_api_polls = 15  # 稍微增加轮询次数，给重新提取留足时间
+                max_api_polls = 15  
                 
                 for poll_attempt in range(max_api_polls):
                     with SYNDROME_API_LOCK:
                         res_json = emby.sync_item_media_info(
                             item_id=item_id, 
-                            media_data=media_data, # 第一次可能有缓存，后续如果是[]或被清空，传None继续查状态
+                            media_data=media_data, 
                             base_url=emby_url,
                             api_key=emby_key
                         )
-                        # ★ 核心：拿到响应后，强制当前队列暂停 1 秒，给 Emby 喘息的时间
                         sleep(1)
                         
                     if res_json == []:
-                        # 返回 [] 说明神医正在后台异步提取
                         logger.info(f"  ⏳ [神医] 已触发媒体信息提取，等待数据返回... ({poll_attempt+1}/{max_api_polls})")
-                        # ★ 核心：在锁的外面等 5 秒！让出坑位给其他集数去触发提取
                         sleep(5) 
                         continue
                     elif not res_json:
-                        # 返回 None 或其他错误，跳出
                         break
 
                     # =========================================================
-                    # ★★★ 神医返回数据 Size 校验机制 (移入循环内) ★★★
+                    # ★★★ 神医返回数据 Size 校验机制 (科学容错版) ★★★
                     # =========================================================
                     syndrome_size = 0
                     if isinstance(res_json, list) and len(res_json) > 0:
@@ -629,35 +624,34 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     elif isinstance(res_json, dict):
                         syndrome_size = res_json.get("MediaSourceInfo", {}).get("Size", res_json.get("Size", 0))
                     
-                    # ★ 严格校验 (必须完全一致，0容错)
                     if syndrome_size > 0 and file_size_115 > 0:
-                        if syndrome_size != file_size_115:
-                            logger.error(f"  🚨 [数据校验] 严重警告！神医返回的媒体大小({syndrome_size})与115真实大小({file_size_115})不一致！")
-                            logger.error(f"  🚨 [数据校验] 发现脏数据！正在调用神医接口清除错误缓存，强制重新提取...")
+                        diff = abs(syndrome_size - file_size_115)
+                        # ★ 科学校验：允许 5MB (5242880 字节) 的网络协议波动误差
+                        # 同名异版的差异通常在几百 MB 以上，5MB 足以完美区分
+                        if diff > 5242880:
+                            logger.error(f"  🚨 [数据校验] 严重警告！神医大小({syndrome_size})与115真实大小({file_size_115})相差 {diff/1024/1024:.2f} MB！")
+                            logger.error(f"  🚨 [数据校验] 判定为同名异版脏数据！正在调用神医接口清除错误缓存，强制重新提取...")
                             
-                            # ★ 核心动作：调用新接口，清得毛都不剩
                             emby.clear_item_media_info(item_id, emby_url, emby_key)
                             
-                            # 重置变量，利用 continue 进入下一轮循环，强制神医重新提取
                             res_json = None
-                            media_data = None # 清空本地传入的脏缓存，强制神医走物理提取
+                            media_data = None 
                             is_from_local = False
-                            need_upload = True # 既然重新提取了，提取完肯定要反哺给中心服务器
+                            need_upload = True 
                             
-                            sleep(2) # 给 Emby 一点时间消化删除操作
+                            sleep(2) 
                             continue
+                        elif diff > 0:
+                            logger.debug(f"  ℹ️ [数据校验] 存在 {diff} 字节的合理网络波动，校验通过。")
 
-                    # 如果没有触发脏数据拦截，说明数据是干净的，跳出轮询！
                     break
 
                 if res_json:
-                    # 根据是否有缓存数据，显示不同的成功日志
                     if media_data:
                         logger.info(f"  ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
                     else:
                         logger.info(f"  ✅ [神医] 媒体信息提取成功！")
 
-                    # 如果数据不是来自本地缓存，则存入本地数据库
                     if not is_from_local:
                         try:
                             json_str = json.dumps(res_json, ensure_ascii=False)
@@ -673,14 +667,10 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         except Exception as e_db:
                             logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
                     
-                    # 执行反哺 (仅当中心服务器没有时)
                     if need_upload and getattr(processor, 'p115_center', None):
                         try:
-                            # ★ 核心修改 2：上传时带上 size 参数，让中心服务器严格校验
-                            if file_size_115 > 0:
-                                processor.p115_center.upload_emby_mediainfo_data(sha1, res_json, size=file_size_115)
-                            else:
-                                processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
+                            # ★ 撤销传入 file_size_115，让中心服务器使用 JSON 内部的 Size 进行自洽校验
+                            processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
                             logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
                         except Exception as e_up:
                             logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
