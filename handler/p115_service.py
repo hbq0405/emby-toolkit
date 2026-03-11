@@ -1537,18 +1537,26 @@ class SmartOrganizer:
         root_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '未知')
         unidentified_cid = None 
         
-        # 获取未识别目录 CID
+        # 获取或创建未识别目录 CID
         config = get_config()
         save_cid = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
+        unidentified_folder_name = "未识别"
         if save_cid and str(save_cid) != '0':
             try:
-                search_res = self.client.fs_files({'cid': save_cid, 'search_value': '未识别', 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                search_res = self.client.fs_files({'cid': save_cid, 'search_value': unidentified_folder_name, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
                 if search_res.get('data'):
                     for item in search_res['data']:
-                        if item.get('fn') == '未识别' and str(item.get('fc')) == '0':
+                        if item.get('fn') == unidentified_folder_name and str(item.get('fc')) == '0':
                             unidentified_cid = item.get('fid')
                             break
             except: pass
+            
+            # ★ 核心修复：如果不存在，必须主动创建！
+            if not unidentified_cid:
+                try:
+                    mk_res = self.client.fs_mkdir(unidentified_folder_name, save_cid)
+                    if mk_res.get('state'): unidentified_cid = mk_res.get('cid')
+                except: pass
 
         processed_count = 0
         try:
@@ -1560,14 +1568,14 @@ class SmartOrganizer:
                 sub_id = sub_item.get('fid') or sub_item.get('file_id')
                 
                 # 1. 优先看子项自己有没有带 ID
-                sub_tmdb_id, sub_type, sub_title = _identify_media_enhanced(
+                tmdb_id, sub_type, sub_title = _identify_media_enhanced(
                     sub_name, 
                     ai_translator=self.ai_translator, 
                     use_ai=self.use_ai
                 )
                 
                 # 2. 模糊匹配 (仅当有官方合集列表时)
-                if not sub_tmdb_id and collection_movies:
+                if not tmdb_id and collection_movies:
                     matched_movie = None
                     clean_sub_name = re.sub(r'[^\w\u4e00-\u9fa5]', '', sub_name).lower()
                     
@@ -1588,16 +1596,14 @@ class SmartOrganizer:
                                 matched_movie = movie
                     
                     if matched_movie:
-                        sub_tmdb_id = str(matched_movie['id'])
+                        tmdb_id = str(matched_movie['id'])
                         sub_type = 'movie'
                         sub_title = matched_movie.get('title')
-                        logger.info(f"    ├─ 官方合集匹配成功: {sub_name} -> {sub_title} (ID:{sub_tmdb_id})")
+                        logger.info(f"    ├─ 官方合集匹配成功: {sub_name} -> {sub_title} (ID:{tmdb_id})")
 
-                # ★★★ 3. 终极兜底：无官方合集时的文件名暴力解析搜索 ★★★
-                if not sub_tmdb_id and not collection_movies:
-                    # 去除常见的前缀广告，如 魅力社989pa.com- 或 [xxx]
+                # 3. 终极兜底：无官方合集时的文件名暴力解析搜索
+                if not tmdb_id and not collection_movies:
                     clean_name = re.sub(r'^\[.*?\]|^.*?\.com-|^.*?\.[a-z]{2,3}-', '', sub_name, flags=re.IGNORECASE)
-                    # 提取年份前面的部分作为标题
                     match_year = re.search(r'^(.*?)(?:\.|_|-|\s|\()+(19\d{2}|20\d{2})\b', clean_name)
                     if match_year:
                         guess_title = match_year.group(1).replace('.', ' ').strip()
@@ -1607,18 +1613,18 @@ class SmartOrganizer:
                             api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
                             results = tmdb.search_media(query=guess_title, api_key=api_key, item_type='movie', year=guess_year)
                             if results and len(results) > 0:
-                                sub_tmdb_id = str(results[0]['id'])
+                                tmdb_id = str(results[0]['id'])
                                 sub_type = 'movie'
                                 sub_title = results[0].get('title') or results[0].get('name')
-                                logger.info(f"    ├─ 搜索成功: {sub_title} (ID:{sub_tmdb_id})")
+                                logger.info(f"    ├─ 搜索成功: {sub_title} (ID:{tmdb_id})")
                         except Exception as e:
                             logger.debug(f"    ├─ 搜索出错: {e}")
                 
-                # 4. 执行单体整理 (递归调用新的 Organizer)
-                if sub_tmdb_id:
-                    logger.info(f"    ├─ 准备整理子项: {sub_name} -> ID:{sub_tmdb_id}")
+                # 4. 执行单体整理
+                if tmdb_id:
+                    logger.info(f"    ├─ 准备整理子项: {sub_name} -> ID:{tmdb_id}")
                     try:
-                        organizer = SmartOrganizer(self.client, sub_tmdb_id, sub_type, sub_title, self.ai_translator, self.use_ai)
+                        organizer = SmartOrganizer(self.client, tmdb_id, sub_type, sub_title, self.ai_translator, self.use_ai)
                         target_cid = organizer.get_target_cid()
                         if organizer.execute(sub_item, target_cid):
                             processed_count += 1
@@ -1628,14 +1634,15 @@ class SmartOrganizer:
                     logger.warning(f"    ⚠️ 无法识别合集子项: {sub_name}，移入未识别。")
                     if unidentified_cid:
                         try: 
-                            self.client.fs_move(sub_id, unidentified_cid)
-                        except: pass
+                            # ★ 核心修复：传入列表，确保移动成功
+                            self.client.fs_move([sub_id], unidentified_cid)
+                        except Exception as e: 
+                            logger.error(f"    ❌ 移入未识别失败: {e}")
             
-            # 拆解完毕，尝试删除空的合集文件夹
-            try: 
-                self.client.fs_delete([source_root_id])
-                logger.info(f"  🧹 已清理拆解完毕的合集包空目录: {root_name}")
-            except: pass
+            # ★★★ 绝对安全防御：禁止直接删除，交由垃圾回收器检查是否为空 ★★★
+            from handler.p115_service import P115DeleteBuffer
+            P115DeleteBuffer.add(fids=[], base_cids=[source_root_id])
+            logger.info(f"  ⏳ [清理空目录] 已将拆解完毕的合集包交由垃圾回收器检查: {root_name}")
             
             return processed_count > 0
             
