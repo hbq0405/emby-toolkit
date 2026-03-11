@@ -505,7 +505,7 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
                         logger.warning(f"  ➜ 表 {table_name} 不存在，跳过清空。")
 
                 logger.info("第二步：重置 media_metadata 表中的 Emby 关联字段...")
-                # ★★★ 核心修复：同步清空 file_sha1_json 和 file_pickcode_json ★★★
+                # ★★★ 核心修复：将所有指纹和资产字段加入 WHERE 检查，彻底扫除幽灵数据 ★★★
                 cursor.execute("""
                     UPDATE media_metadata
                     SET 
@@ -517,7 +517,7 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
                         asset_details_json = NULL,         
                         date_added = NULL,
                         
-                        -- 2. 追剧状态重置 (库都没了，追剧状态自然要重置)
+                        -- 2. 追剧状态重置
                         watching_status = 'NONE',
                         paused_until = NULL,
                         force_ended = FALSE,
@@ -530,6 +530,9 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
                     WHERE 
                         in_library = TRUE 
                         OR emby_item_ids_json::text != '[]'
+                        OR file_sha1_json::text != '[]'
+                        OR file_pickcode_json::text != '[]'
+                        OR asset_details_json IS NOT NULL
                         OR watching_status != 'NONE';
                 """)
                 results["updated_rows"]["media_metadata"] = cursor.rowcount
