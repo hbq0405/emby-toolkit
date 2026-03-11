@@ -639,7 +639,6 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
         gc.collect()
 
         # --- 3. 反向差异检测 (删除) ---
-        # ★ 修复：移除 if not force_full_update 限制，全量更新也必须做减法
         missing_emby_ids = known_online_emby_ids - current_scan_emby_ids
         
         del known_online_emby_ids # 释放内存
@@ -647,11 +646,13 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
         gc.collect()
 
         if missing_emby_ids:
-            logger.info(f"  ➜ 检测到 {len(missing_emby_ids)} 个 Emby ID 已消失，正在处理离线标记...")
+            logger.info(f"  ➜ 检测到 {len(missing_emby_ids)} 个 Emby ID 已消失，正在执行铁腕清理...")
             missing_ids_list = list(missing_emby_ids)
             
             with connection.get_db_connection() as conn:
                 cursor = conn.cursor()
+                
+                # 1. 查出这些消失的 ID 到底属于谁
                 cursor.execute("""
                     SELECT tmdb_id, item_type, parent_series_tmdb_id
                     FROM media_metadata 
@@ -664,7 +665,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 """, (missing_ids_list,))
                 
                 rows = cursor.fetchall()
-                direct_offline_tmdb_ids = []
+                
+                # 分类收集
+                offline_movies_and_series = []
+                offline_seasons_and_episodes = []
                 affected_parent_ids = set()
                 
                 for row in rows:
@@ -673,13 +677,16 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     r_parent = row['parent_series_tmdb_id']
                     
                     if r_type in ['Movie', 'Series']:
-                        direct_offline_tmdb_ids.append(r_tmdb)
-                    elif r_type in ['Season', 'Episode'] and r_parent:
-                        affected_parent_ids.add(r_parent)
+                        offline_movies_and_series.append(r_tmdb)
+                    elif r_type in ['Season', 'Episode']:
+                        # ★ 核心修复：把消失的子集也收集起来，直接枪毙！
+                        offline_seasons_and_episodes.append(r_tmdb)
+                        if r_parent:
+                            affected_parent_ids.add(r_parent)
 
-                if direct_offline_tmdb_ids:
-                    logger.info(f"  ➜ 正在标记 {len(direct_offline_tmdb_ids)} 个顶层项目及其子项为离线...")
-                    # ★ 修复 1：标记顶层，并彻底清空指纹和资产缓存
+                # 2. 铁腕清理 1：直接枪毙所有消失的顶层项目 (Movie, Series)
+                if offline_movies_and_series:
+                    logger.info(f"  ➜ 正在标记 {len(offline_movies_and_series)} 个顶层项目为离线...")
                     cursor.execute("""
                         UPDATE media_metadata
                         SET in_library = FALSE, 
@@ -688,10 +695,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             file_sha1_json = '[]'::jsonb,
                             file_pickcode_json = '[]'::jsonb
                         WHERE tmdb_id = ANY(%s) AND item_type IN ('Movie', 'Series')
-                    """, (direct_offline_tmdb_ids,))
+                    """, (offline_movies_and_series,))
                     total_offline_count += cursor.rowcount
                     
-                    # ★ 修复 2：级联标记子项 (Season, Episode) 为离线
+                    # 级联枪毙：顶层剧集死了，它下面的所有季和集必须陪葬！
                     cursor.execute("""
                         UPDATE media_metadata
                         SET in_library = FALSE, 
@@ -700,14 +707,30 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             file_sha1_json = '[]'::jsonb,
                             file_pickcode_json = '[]'::jsonb
                         WHERE parent_series_tmdb_id = ANY(%s) AND item_type IN ('Season', 'Episode')
-                    """, (direct_offline_tmdb_ids,))
+                    """, (offline_movies_and_series,))
+                    total_offline_count += cursor.rowcount
+
+                # 3. 铁腕清理 2：直接枪毙所有消失的子集 (Season, Episode)
+                # 以前这里是甩锅给父剧集，现在我们自己动手！
+                if offline_seasons_and_episodes:
+                    logger.info(f"  ➜ 正在标记 {len(offline_seasons_and_episodes)} 个子集(季/集)为离线...")
+                    cursor.execute("""
+                        UPDATE media_metadata
+                        SET in_library = FALSE, 
+                            emby_item_ids_json = '[]'::jsonb, 
+                            asset_details_json = NULL,
+                            file_sha1_json = '[]'::jsonb,
+                            file_pickcode_json = '[]'::jsonb
+                        WHERE tmdb_id = ANY(%s) AND item_type IN ('Season', 'Episode')
+                    """, (offline_seasons_and_episodes,))
                     total_offline_count += cursor.rowcount
                     
+                # 4. 善后：如果子集死了，但父剧集还活着，让父剧集刷新一下状态
                 if affected_parent_ids:
-                    # ★ 优化：过滤掉已经被级联离线的父剧集，避免无用的 API 请求
-                    valid_parent_ids = [pid for pid in affected_parent_ids if pid not in direct_offline_tmdb_ids]
+                    # 过滤掉已经死透的父剧集
+                    valid_parent_ids = [pid for pid in affected_parent_ids if pid not in offline_movies_and_series]
                     if valid_parent_ids:
-                        logger.info(f"  ➜ 因分集消失，将 {len(valid_parent_ids)} 个父剧集加入刷新队列...")
+                        logger.info(f"  ➜ 将 {len(valid_parent_ids)} 个受影响的存活父剧集加入刷新队列...")
                         for pid in valid_parent_ids:
                             dirty_keys.add((pid, 'Series'))
                 
