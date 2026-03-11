@@ -548,7 +548,7 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
                     UPDATE custom_collections 
                     SET 
                         emby_collection_id = NULL,
-                        in_library_count = 0,
+                        in_library_count = 0
                     WHERE emby_collection_id IS NOT NULL;
                 """)
                 results["updated_rows"]["custom_collections"] = cursor.rowcount
