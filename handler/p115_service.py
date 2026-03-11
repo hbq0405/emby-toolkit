@@ -1352,7 +1352,7 @@ class SmartOrganizer:
                     corrected_items.append(f"{k}: '{guessed_info.get(k, '空')}' -> '{v}'")
             
             if corrected_items:
-                logger.info(f"  ✨ 成功利用 {data_source} 补全/纠错文件参数: {', '.join(corrected_items)}")
+                logger.info(f"  ✨ [智能重命名] 成功利用 {data_source} 补全/纠错文件参数: {', '.join(corrected_items)}")
 
         return info, is_center
 
