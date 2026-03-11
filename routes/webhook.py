@@ -616,7 +616,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         break
 
                     # =========================================================
-                    # ★★★ 神医返回数据 Size 校验机制 (百分比科学容错版) ★★★
+                    # ★★★ 神医返回数据 Size 校验机制 (0.5% 科学容错版) ★★★
                     # =========================================================
                     syndrome_size = 0
                     if isinstance(res_json, list) and len(res_json) > 0:
@@ -643,7 +643,6 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                             sleep(2) 
                             continue
                         elif diff > 0:
-                            # 打印出具体的微小误差，让你心里有数
                             logger.debug(f"  ℹ️ [数据校验] 存在 {diff} 字节 ({error_margin*100:.4f}%) 的合理网络波动，校验通过。")
 
                     break
@@ -671,8 +670,11 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     
                     if need_upload and getattr(processor, 'p115_center', None):
                         try:
-                            # ★ 传入 file_size_115，让中心服务器校验
-                            processor.p115_center.upload_emby_mediainfo_data(sha1, res_json, size=file_size_115)
+                            # ★ 核心修复：传入 syndrome_size，既满足接口规范，又防止中心服务器 0 容错拒收
+                            if syndrome_size > 0:
+                                processor.p115_center.upload_emby_mediainfo_data(sha1, res_json, size=syndrome_size)
+                            else:
+                                processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
                             logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
                         except Exception as e_up:
                             logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")

@@ -2399,7 +2399,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                 pass
 
     # =================================================================
-    # ★ 第三步：AI 辅助识别 (终极兜底)
+    # ★★★ 优先级 4: AI 辅助识别 (终极兜底) ★★★
     # =================================================================
     if use_ai and ai_translator:
         target_ai_name = main_dir_name if main_dir_name else filename
@@ -2409,7 +2409,6 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             if ai_result and ai_result.get('title'):
                 ai_title = ai_result.get('title')
                 ai_year = ai_result.get('year')
-                # 如果 AI 没给出类型，强制使用我们第一步锁定的类型
                 ai_type = forced_media_type or ai_result.get('type') or media_type
                 
                 if api_key:
@@ -2417,8 +2416,28 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                     if results and len(results) > 0:
                         best = results[0]
                         return str(best['id']), ai_type, (best.get('title') or best.get('name'))
+                    else:
+                        logger.debug(f"  🤖 AI 提取了标题 '{ai_title}'，但在 TMDb 未搜索到结果。")
         except Exception as e:
             logger.error(f"  ❌ AI 辅助识别出错: {e}")
+
+        # ★ 核心修复：如果主目录 AI 没搜到结果，继续尝试用文件名！
+        if main_dir_name and not is_same_name:
+            logger.info(f"  🤖 主目录 AI 识别无果，尝试 AI 识别文件名: {filename}")
+            try:
+                ai_result = ai_translator.parse_media_filename(filename)
+                if ai_result and ai_result.get('title'):
+                    ai_title = ai_result.get('title')
+                    ai_year = ai_result.get('year')
+                    ai_type = forced_media_type or ai_result.get('type') or media_type
+                    
+                    if api_key:
+                        results = tmdb.search_media(query=ai_title, api_key=api_key, item_type=ai_type, year=ai_year)
+                        if results and len(results) > 0:
+                            best = results[0]
+                            return str(best['id']), ai_type, (best.get('title') or best.get('name'))
+            except Exception as e:
+                logger.error(f"  ❌ 文件名 AI 辅助识别出错: {e}")
 
     return None, None, None
 
@@ -2589,7 +2608,8 @@ def task_scan_and_organize_115(processor=None):
                 else:
                     if unidentified_cid:
                         try:
-                            client.fs_move(item_id, unidentified_cid)
+                            # ★ 核心修复：传入列表 [item_id]，并捕获打印真实错误
+                            client.fs_move([item_id], unidentified_cid)
                             with counter_lock: 
                                 moved_to_unidentified += 1
                                 update_progress(50, f"正在并发极速整理... (已成功: {processed_count} | 未识别: {moved_to_unidentified})")
@@ -2602,7 +2622,8 @@ def task_scan_and_organize_115(processor=None):
                                     target_cid=unidentified_cid, category_name="未识别", 
                                     pick_code=pc 
                                 )
-                        except: pass
+                        except Exception as e:
+                            logger.error(f"  ❌ 移入未识别目录失败 ({name}): {e}")
 
         def scan_directory(current_cid, current_name, depth=0, root_dir_name=None):
             """目录透视与任务分发逻辑 (在子线程中运行)"""
