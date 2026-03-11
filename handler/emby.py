@@ -2788,3 +2788,31 @@ def sync_item_media_info(item_id: str, media_data: Optional[Dict[str, Any]], bas
     except Exception as e:
         logger.error(f"  ➜ 调用神医接口时发生网络异常: {e}")
         return None
+
+# ✨✨✨ 神医插件: 清除媒体信息 (强制重新提取) ✨✨✨
+def clear_item_media_info(item_id: str, base_url: str, api_key: str) -> bool:
+    """
+    调用神医插件接口，彻底清除指定项目的媒体信息缓存 (清得毛都不剩)。
+    接口: POST /Items/{Id}/ClearMediaInfo
+    """
+    if not all([item_id, base_url, api_key]):
+        return False
+
+    api_url = f"{base_url.rstrip('/')}/Items/{item_id}/ClearMediaInfo"
+    params = {"api_key": api_key}
+
+    try:
+        # 这个接口是 POST 请求，不需要 body
+        response = emby_client.post(api_url, params=params)
+        response.raise_for_status()
+        logger.info(f"  🧹 [神医] 成功清除项目 (ID:{item_id}) 的错误媒体信息缓存。")
+        return True
+    except requests.exceptions.HTTPError as e:
+        if e.response is not None and e.response.status_code == 404:
+            logger.warning(f"  ⚠️ [神医] 清除媒体信息失败 (404): 插件版本可能过低，不支持此接口。")
+        else:
+            logger.error(f"  ❌ [神医] 清除媒体信息报错: HTTP {e.response.status_code} - {e.response.text}")
+        return False
+    except Exception as e:
+        logger.error(f"  ❌ [神医] 调用清除媒体信息接口时发生网络异常: {e}")
+        return False

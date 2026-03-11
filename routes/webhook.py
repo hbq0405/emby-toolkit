@@ -538,93 +538,105 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医提取媒体信息...")
                         need_upload = True
 
+                # --- 提前查询 115 真实文件大小 (供后续循环内校验使用) ---
+                file_size_115 = 0
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute("SELECT size FROM p115_filesystem_cache WHERE sha1 = %s", (sha1,))
+                            row = cursor.fetchone()
+                            if row and row['size']:
+                                file_size_115 = row['size']
+                except Exception as e_db:
+                    logger.warning(f"  ⚠️ [数据校验] 查询本地文件大小失败: {e_db}")
+
                 # --- 第三步：轮询调用神医接口，死等纯净数据 ---
                 res_json = None
-                max_api_polls = 12  # 最大轮询 12 次，每次等 5 秒，总计约 1 分钟
+                max_api_polls = 15  # 稍微增加轮询次数，给重新提取留足时间
                 
                 for poll_attempt in range(max_api_polls):
                     with SYNDROME_API_LOCK:
                         res_json = emby.sync_item_media_info(
                             item_id=item_id, 
-                            media_data=media_data, # 第一次可能有缓存，后续如果是[]，传None继续查状态
+                            media_data=media_data, # 第一次可能有缓存，后续如果是[]或被清空，传None继续查状态
                             base_url=emby_url,
                             api_key=emby_key
                         )
                         # ★ 核心：拿到响应后，强制当前队列暂停 1 秒，给 Emby 喘息的时间
                         sleep(1)
                         
-                    if res_json:
-                        # 拿到了实质性数据，跳出轮询
-                        break
-                    elif res_json == []:
+                    if res_json == []:
                         # 返回 [] 说明神医正在后台异步提取
                         logger.info(f"  ⏳ [神医] 已触发媒体信息提取，等待数据返回... ({poll_attempt+1}/{max_api_polls})")
                         # ★ 核心：在锁的外面等 5 秒！让出坑位给其他集数去触发提取
                         sleep(5) 
-                    else:
+                        continue
+                    elif not res_json:
                         # 返回 None 或其他错误，跳出
                         break
 
-                if res_json:
-                    # ★★★ 神医返回数据 Size 校验机制 ★★★
+                    # =========================================================
+                    # ★★★ 神医返回数据 Size 校验机制 (移入循环内) ★★★
+                    # =========================================================
                     syndrome_size = 0
                     if isinstance(res_json, list) and len(res_json) > 0:
                         syndrome_size = res_json[0].get("MediaSourceInfo", {}).get("Size", 0)
                     elif isinstance(res_json, dict):
                         syndrome_size = res_json.get("MediaSourceInfo", {}).get("Size", res_json.get("Size", 0))
                     
-                    file_size_115 = 0
-                    try:
-                        with get_db_connection() as conn:
-                            with conn.cursor() as cursor:
-                                cursor.execute("SELECT size FROM p115_filesystem_cache WHERE sha1 = %s", (sha1,))
-                                row = cursor.fetchone()
-                                if row and row['size']:
-                                    file_size_115 = row['size']
-                    except Exception as e_db:
-                        logger.warning(f"  ⚠️ [数据校验] 查询本地文件大小失败: {e_db}")
-
                     # 误差校验 (大于 1% 即判定为脏数据)
-                    is_dirty_data = False
                     if syndrome_size > 0 and file_size_115 > 0:
                         error_margin = abs(syndrome_size - file_size_115) / file_size_115
                         if error_margin > 0.01:
                             logger.error(f"  🚨 [数据校验] 严重警告！神医返回的媒体大小({syndrome_size})与115真实大小({file_size_115})误差达 {error_margin*100:.2f}%！")
-                            logger.error(f"  🚨 [数据校验] 该数据可能属于同名异版文件，已强制丢弃，防止污染中心服务器！")
-                            is_dirty_data = True
+                            logger.error(f"  🚨 [数据校验] 发现脏数据！正在调用神医接口清除错误缓存，强制重新提取...")
+                            
+                            # ★ 核心动作：调用新接口，清得毛都不剩
+                            emby.clear_item_media_info(item_id, emby_url, emby_key)
+                            
+                            # 重置变量，利用 continue 进入下一轮循环，强制神医重新提取
                             res_json = None
-                            need_upload = False
+                            media_data = None # 清空本地传入的脏缓存，强制神医走物理提取
+                            is_from_local = False
+                            need_upload = True # 既然重新提取了，提取完肯定要反哺给中心服务器
+                            
+                            sleep(2) # 给 Emby 一点时间消化删除操作
+                            continue
 
-                    if not is_dirty_data:
-                        # 根据是否有缓存数据，显示不同的成功日志
-                        if media_data:
-                            logger.info(f"  ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
-                        else:
-                            logger.info(f"  ✅ [神医] 媒体信息提取成功！")
+                    # 如果没有触发脏数据拦截，说明数据是干净的，跳出轮询！
+                    break
 
-                        # 如果数据不是来自本地缓存，则存入本地数据库
-                        if not is_from_local:
-                            try:
-                                json_str = json.dumps(res_json, ensure_ascii=False)
-                                with get_db_connection() as conn:
-                                    with conn.cursor() as cursor:
-                                        cursor.execute("""
-                                            INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
-                                            VALUES (%s, %s::jsonb)
-                                            ON CONFLICT (sha1) DO UPDATE SET mediainfo_json = EXCLUDED.mediainfo_json
-                                        """, (sha1, json_str))
-                                        conn.commit()
-                                logger.info(f"  💾 [本地缓存] 媒体信息已备份至本地数据库。")
-                            except Exception as e_db:
-                                logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
-                        
-                        # 执行反哺 (仅当中心服务器没有时)
-                        if need_upload and getattr(processor, 'p115_center', None):
-                            try:
-                                processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                                logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
-                            except Exception as e_up:
-                                logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
+                if res_json:
+                    # 根据是否有缓存数据，显示不同的成功日志
+                    if media_data:
+                        logger.info(f"  ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
+                    else:
+                        logger.info(f"  ✅ [神医] 媒体信息提取成功！")
+
+                    # 如果数据不是来自本地缓存，则存入本地数据库
+                    if not is_from_local:
+                        try:
+                            json_str = json.dumps(res_json, ensure_ascii=False)
+                            with get_db_connection() as conn:
+                                with conn.cursor() as cursor:
+                                    cursor.execute("""
+                                        INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
+                                        VALUES (%s, %s::jsonb)
+                                        ON CONFLICT (sha1) DO UPDATE SET mediainfo_json = EXCLUDED.mediainfo_json
+                                    """, (sha1, json_str))
+                                    conn.commit()
+                            logger.info(f"  💾 [本地缓存] 媒体信息已备份至本地数据库。")
+                        except Exception as e_db:
+                            logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
+                    
+                    # 执行反哺 (仅当中心服务器没有时)
+                    if need_upload and getattr(processor, 'p115_center', None):
+                        try:
+                            processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
+                            logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
+                        except Exception as e_up:
+                            logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
+
         except Exception as e:
             logger.error(f"  ❌ [P115Center] 联动异常: {e}")
 
