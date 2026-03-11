@@ -2528,7 +2528,25 @@ def task_scan_and_organize_115(processor=None):
             nonlocal processed_count, moved_to_unidentified
             item_id = item.get('fid') or item.get('file_id')
 
-            # ★ 核心：将主目录名和子目录特征传递给识别引擎
+            # =================================================================
+            # ★ 终极防线：透视眼！
+            # 如果当前是目录，且光看名字不知道是电影还是剧集，
+            # 绝对不瞎猜！先发一个极速请求往目录里面看一眼，寻找剧集特征！
+            # =================================================================
+            if is_folder and not forced_type:
+                try:
+                    # 极速探测目录内部特征 (只看前 100 个子项，耗时极短)
+                    res = client.fs_files({'cid': item_id, 'limit': 100, 'record_open_time': 0, 'count_folders': 0})
+                    for sub_item in res.get('data', []):
+                        sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
+                        # 只要里面有 Season 目录，或者 S01E01 这种文件，立刻死死锁定为剧集！
+                        if re.search(r'(?:Season\s?\d+|S\d{1,4}[ \.\-]*(?:E|P)\d{1,4}|EP?\d{1,4}|第[一二三四五六七八九十\d]+季)', sub_name, re.IGNORECASE):
+                            forced_type = 'tv'
+                            break
+                except Exception:
+                    pass
+
+            # ★ 带着铁证（forced_type）去进行识别和 TMDb 查询
             tmdb_id, media_type, title = _identify_media_enhanced(
                 name, 
                 main_dir_name=main_dir_name,
@@ -2555,10 +2573,8 @@ def task_scan_and_organize_115(processor=None):
                 # 识别失败
                 if is_folder:
                     logger.info(f"  📂 目录 '{name}' 无法直接识别，深入扫描子目录 (层级 {depth+1})...")
-                    # ★ 核心：将当前目录名作为主目录名 (main_dir_name) 传递给下一层
                     submit_task(scan_directory, item_id, name, depth + 1, main_dir_name)
                     
-                    # 钻完出来后，把空壳子交给全局垃圾回收器处理
                     from handler.p115_service import P115DeleteBuffer
                     P115DeleteBuffer.add(fids=[], base_cids=[item_id])
                     
