@@ -1902,6 +1902,7 @@ class SmartOrganizer:
             # 在重命名和查缓存前，如果缺失 SHA1，主动请求详情补齐 
             file_sha1 = file_item.get('sha1') or file_item.get('sha')
             if not file_sha1 and fid and ext in known_video_exts:
+                logger.info()
                 try:
                     info_res = self.client.fs_get_info(fid)
                     if info_res.get('state') and info_res.get('data'):

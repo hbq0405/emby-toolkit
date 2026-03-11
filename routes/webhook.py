@@ -60,6 +60,48 @@ SYNDROME_API_LOCK = Semaphore(1)
 # MP 临时目录延迟清理定时器 ★★★
 MP_TEMP_DIR_TIMERS = {}
 MP_TEMP_DIR_LOCK = threading.Lock()
+# MP Webhook 专属防抖队列
+MP_TRANSFER_QUEUE = {} 
+MP_TRANSFER_LOCK = threading.Lock()
+MP_TRANSFER_DEBOUNCER = None
+MP_TRANSFER_DEBOUNCE_TIME = 60.0
+
+def _process_mp_transfer_queue():
+    """处理 MP 转移防抖队列，执行目录级整理"""
+    global MP_TRANSFER_DEBOUNCER
+    with MP_TRANSFER_LOCK:
+        queue_copy = MP_TRANSFER_QUEUE.copy()
+        MP_TRANSFER_QUEUE.clear()
+        MP_TRANSFER_DEBOUNCER = None
+        
+    if not queue_copy: return
+    
+    client = P115Service.get_client()
+    if not client: return
+    
+    logger.info(f"  ⏳ [MP上传] 60秒防抖期结束，开始批量接管 {len(queue_copy)} 个目录的整理...")
+    
+    for cid, info in queue_copy.items():
+        try:
+            organizer = SmartOrganizer(client, info['tmdb_id'], info['media_type'], info['title'])
+            target_cid = organizer.get_target_cid()
+            
+            if target_cid:
+                # 构造一个代表“父目录”的 root_item
+                root_item = {
+                    'fid': cid,
+                    'file_id': cid,
+                    'fn': info['name'],
+                    'file_name': info['name'],
+                    'fc': '0', # 明确告知整理器这是一个目录
+                    'type': '0'
+                }
+                logger.info(f"  🚀 [MP上传] 开始接管目录整理: {info['name']} -> ID:{info['tmdb_id']}")
+                organizer.execute(root_item, target_cid)
+            else:
+                logger.info(f"  🚫 [MP上传] 目录 '{info['name']}' 未命中任何分类规则，保持原样。")
+        except Exception as e:
+            logger.error(f"  ❌ [MP上传] 目录整理失败: {e}", exc_info=True)
 
 def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None, is_new_item: bool = True):
     """
@@ -779,98 +821,49 @@ def emby_webhook():
     # ★★★ 处理 MoviePilot transfer.complete 事件 ★★★
     # ======================================================================
     if mp_event_type == "transfer.complete":
-        # 1. 检查配置是否开启了智能整理
         nb_config = get_config()
         if not nb_config.get(constants.CONFIG_OPTION_115_ENABLE_ORGANIZE, False):
             logger.debug("  🚫 智能整理未开启，忽略 MP 通知。")
             return jsonify({"status": "ignored_smart_organize_disabled"}), 200
-        else:
-            logger.info("  📥 收到 MoviePilot 上传完成通知，开始接管整理...")
 
-        # 2. 提取关键数据
         try:
             transfer_info = data.get("data", {}).get("transferinfo", {})
             media_info = data.get("data", {}).get("mediainfo", {})
             
-            # 115 文件 ID 和 文件名
             target_item = transfer_info.get("target_item", {})
-            file_id = target_item.get("fileid")
-            pc = target_item.get("pickcode") 
-            
-            # 115 当前父目录 ID (MP 创建的临时目录)
             target_dir = transfer_info.get("target_diritem", {})
-            current_parent_cid = target_dir.get("fileid")
             
-            # 元数据
+            # 提取 MP 创建的临时父目录 ID 和名称
+            dir_cid = target_dir.get("fileid")
+            dir_name = target_dir.get("name", "未知目录")
+            
             tmdb_id = media_info.get("tmdb_id")
             media_type_cn = media_info.get("type") 
             title = media_info.get("title")
             
-            if not file_id or not tmdb_id:
-                logger.warning("  ⚠️ MP 通知缺少 fileid 或 tmdb_id，无法处理。")
+            if not dir_cid or not tmdb_id:
+                logger.warning("  ⚠️ MP 通知缺少目录 ID 或 tmdb_id，无法处理。")
                 return jsonify({"status": "ignored_missing_data"}), 200
 
-            # 转换媒体类型
             media_type = 'tv' if media_type_cn == '电视剧' else 'movie'
             
-            # 3. 获取共享 115 客户端
-            client = P115Service.get_client()
-            if not client:
-                return jsonify({"status": "error_no_p115_client"}), 500
-                
-            # 4. 初始化智能整理器
-            organizer = SmartOrganizer(client, tmdb_id, media_type, title)
-            
-            # 5. 计算目标分类 CID
-            target_cid = organizer.get_target_cid()
-            
-            if target_cid:
-                logger.info(f"  🚀 [MP上传] 新文件: {target_item.get('name')} (文件大小: {int(target_item.get('size', 0))/1024/1024/1024:.2f} GB)")
-                
-                # 构造真实的文件对象 (兼容 WebAPI 和 OpenAPI 双重结构)
-                is_folder = str(target_item.get("type")) == "0"
-                
-                real_root_item = {
-                    'n': target_item.get("name"),
-                    'file_name': target_item.get("name"),
-                    's': target_item.get("size"),
-                    'size': target_item.get("size"),
-                    'cid': current_parent_cid,
-                    'parent_id': current_parent_cid,
-                    'fid': file_id if not is_folder else None,
-                    'file_id': file_id if not is_folder else None,
-                    'pc': pc,
-                    'pick_code': pc,
-                    'fc': '0' if is_folder else '1',  # ★ 关键修复：明确告知是文件还是文件夹
-                    'type': '0' if is_folder else '1'
+            # ★ 核心逻辑：加入防抖队列，重置 30 秒定时器
+            with MP_TRANSFER_LOCK:
+                MP_TRANSFER_QUEUE[dir_cid] = {
+                    'tmdb_id': tmdb_id,
+                    'media_type': media_type,
+                    'title': title,
+                    'name': dir_name
                 }
                 
-                # 双重保险：如果 MP 传的是文件夹 (type=0)，则将 cid 指向自身
-                if is_folder:
-                    logger.warning("  ⚠️ 检测到 MP 上传的是文件夹，这可能会导致递归扫描，请谨慎！")
-                    real_root_item['cid'] = file_id
-                    real_root_item['parent_id'] = file_id
-
-                # 延迟 30 秒执行，给 115 计算 SHA1 的时间，省下昂贵的 fs_get_info API 调用 ★★★
-                def _delayed_mp_organize(item, cid, t_id, m_type, m_title):
-                    logger.info(f"  ⏳ [MP上传] 30秒延迟结束，开始接管整理: {item.get('n')} ...")
-                    try:
-                        # 延迟执行时重新获取 client，防止跨线程失效
-                        delayed_client = P115Service.get_client()
-                        if delayed_client:
-                            delayed_organizer = SmartOrganizer(delayed_client, t_id, m_type, m_title)
-                            delayed_organizer.execute(item, cid)
-                    except Exception as e:
-                        logger.error(f"  ❌ [MP上传] 延迟整理执行失败: {e}", exc_info=True)
-
-                logger.info(f"  ⏳ [MP上传] 已将文件加入 30 秒延迟队列 (等待 115 生成 SHA1 指纹)...")
-                spawn_later(30.0, _delayed_mp_organize, real_root_item, target_cid, tmdb_id, media_type, title)
+                global MP_TRANSFER_DEBOUNCER
+                if MP_TRANSFER_DEBOUNCER:
+                    MP_TRANSFER_DEBOUNCER.kill()
                 
-                return jsonify({"status": "delayed_processing"}), 200
+                logger.info(f"  📥 [MP上传] 收到文件: {target_item.get('name')}，所属目录 '{dir_name}' 已加入防抖队列 (等待后续文件)...")
+                MP_TRANSFER_DEBOUNCER = spawn_later(MP_TRANSFER_DEBOUNCE_TIME, _process_mp_transfer_queue)
                 
-            else:
-                logger.info("  🚫 [MP上传] 未命中任何分类规则，保持原样。")
-                return jsonify({"status": "ignored_no_rule_match"}), 200
+            return jsonify({"status": "queued_for_debounce"}), 200
 
         except Exception as e:
             logger.error(f"  ❌ [MP上传] 处理失败: {e}", exc_info=True)
