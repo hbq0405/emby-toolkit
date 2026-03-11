@@ -836,13 +836,37 @@ def find_nearest_library_anchor(file_path: str, base_url: str, api_key: str) -> 
     return None, None
 
 # --- 仅根据 ID 强制刷新 ---
+# def refresh_item_by_id(item_id: str, base_url: str, api_key: str) -> bool:
+#     """
+#     对指定 ID 执行强制递归刷新
+#     """
+#     refresh_url = f"{base_url.rstrip('/')}/Items/{item_id}/Refresh"
+#     refresh_params = {
+#         "api_key": api_key,
+#         "Recursive": "true", 
+#         "ImageRefreshMode": "Default",
+#         "MetadataRefreshMode": "Default",
+#         "ReplaceAllMetadata": "false",
+#         "ReplaceAllImages": "false"
+#     }
+    
+#     try:
+#         emby_client.post(refresh_url, params=refresh_params)
+#         return True
+#     except Exception as e:
+#         logger.error(f"  ❌ 刷新请求失败 (ID: {item_id}): {e}")
+#         return False
+
+# --- 仅根据 ID 强制刷新 (Token 提权极速版) ---
 def refresh_item_by_id(item_id: str, base_url: str, api_key: str) -> bool:
     """
-    对指定 ID 执行强制递归刷新
+    对指定 ID 执行强制递归刷新。
+    【终极优化】优先使用管理员 Token 并伪装成 Web 客户端触发，获取 Emby 内部最高响应优先级！
     """
     refresh_url = f"{base_url.rstrip('/')}/Items/{item_id}/Refresh"
+    
+    # 基础参数 (不带 api_key)
     refresh_params = {
-        "api_key": api_key,
         "Recursive": "true", 
         "ImageRefreshMode": "Default",
         "MetadataRefreshMode": "Default",
@@ -850,8 +874,27 @@ def refresh_item_by_id(item_id: str, base_url: str, api_key: str) -> bool:
         "ReplaceAllImages": "false"
     }
     
+    headers = {}
+    
+    # ★ 核心提权：尝试获取管理员 Token
+    access_token, _ = get_admin_access_token()
+    
+    if access_token:
+        # 完美伪装成 Web 客户端，骗过 Emby 的优先级调度器
+        headers = {
+            'X-Emby-Token': access_token,
+            'X-Emby-Client': 'Emby Web',
+            'X-Emby-Device-Name': 'Chrome Windows',
+            'X-Emby-Device-Id': '810639de-c2a7-488f-a610-0a86644b6fa9'
+        }
+        logger.debug(f"  🚀 [提权刷新] 伪装 Web 客户端触发刷新 (ID: {item_id})")
+    else:
+        # 兜底：如果没拿到 Token，老老实实用 API Key 排队
+        refresh_params["api_key"] = api_key
+        logger.debug(f"  🚀 [普通刷新] 使用 API Key 触发刷新 (ID: {item_id})")
+    
     try:
-        emby_client.post(refresh_url, params=refresh_params)
+        emby_client.post(refresh_url, params=refresh_params, headers=headers)
         return True
     except Exception as e:
         logger.error(f"  ❌ 刷新请求失败 (ID: {item_id}): {e}")
