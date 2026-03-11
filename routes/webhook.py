@@ -60,48 +60,48 @@ SYNDROME_API_LOCK = Semaphore(1)
 # MP 临时目录延迟清理定时器 ★★★
 MP_TEMP_DIR_TIMERS = {}
 MP_TEMP_DIR_LOCK = threading.Lock()
-# MP Webhook 专属防抖队列
-MP_TRANSFER_QUEUE = {} 
+# --- MP Webhook 专属防抖队列 (按目录独立防抖) ---
+MP_TRANSFER_INFO = {}       # 存放目录的元数据
+MP_TRANSFER_TIMERS = {}     # 存放每个目录独立的定时器
 MP_TRANSFER_LOCK = threading.Lock()
-MP_TRANSFER_DEBOUNCER = None
 MP_TRANSFER_DEBOUNCE_TIME = 120.0
 
-def _process_mp_transfer_queue():
-    """处理 MP 转移防抖队列，执行目录级整理"""
-    global MP_TRANSFER_DEBOUNCER
+def _process_single_mp_directory(dir_cid):
+    """处理单个 MP 目录的整理 (独立触发)"""
     with MP_TRANSFER_LOCK:
-        queue_copy = MP_TRANSFER_QUEUE.copy()
-        MP_TRANSFER_QUEUE.clear()
-        MP_TRANSFER_DEBOUNCER = None
-        
-    if not queue_copy: return
+        # 弹出该目录的信息并清理定时器记录
+        info = MP_TRANSFER_INFO.pop(dir_cid, None)
+        if dir_cid in MP_TRANSFER_TIMERS:
+            del MP_TRANSFER_TIMERS[dir_cid]
+            
+    if not info: return
     
     client = P115Service.get_client()
     if not client: return
     
-    logger.info(f"  ⏳ [MP上传] 120秒防抖期结束，开始批量接管 {len(queue_copy)} 个目录的整理...")
+    logger.info(f"  ⏳ [MP上传] 目录 '{info['name']}' 的 120 秒独立防抖期结束，开始接管整理...")
     
-    for cid, info in queue_copy.items():
-        try:
-            organizer = SmartOrganizer(client, info['tmdb_id'], info['media_type'], info['title'])
-            target_cid = organizer.get_target_cid()
-            
-            if target_cid:
-                # 构造一个代表“父目录”的 root_item
-                root_item = {
-                    'fid': cid,
-                    'file_id': cid,
-                    'fn': info['name'],
-                    'file_name': info['name'],
-                    'fc': '0', # 明确告知整理器这是一个目录
-                    'type': '0'
-                }
-                logger.info(f"  🚀 [MP上传] 开始接管目录整理: {info['name']} -> ID:{info['tmdb_id']}")
-                organizer.execute(root_item, target_cid)
-            else:
-                logger.info(f"  🚫 [MP上传] 目录 '{info['name']}' 未命中任何分类规则，保持原样。")
-        except Exception as e:
-            logger.error(f"  ❌ [MP上传] 目录整理失败: {e}", exc_info=True)
+    try:
+        # 这里的 tmdb_id 和 media_type 绝对精准，因为是该目录专属的 info
+        organizer = SmartOrganizer(client, info['tmdb_id'], info['media_type'], info['title'])
+        target_cid = organizer.get_target_cid()
+        
+        if target_cid:
+            # 构造一个代表“父目录”的 root_item，交给 organizer 去遍历里面的所有分集
+            root_item = {
+                'fid': dir_cid,
+                'file_id': dir_cid,
+                'fn': info['name'],
+                'file_name': info['name'],
+                'fc': '0', # 明确告知整理器这是一个目录
+                'type': '0'
+            }
+            logger.info(f"  🚀 [MP上传] 开始接管目录整理: {info['name']} -> ID:{info['tmdb_id']}")
+            organizer.execute(root_item, target_cid)
+        else:
+            logger.info(f"  🚫 [MP上传] 目录 '{info['name']}' 未命中任何分类规则，保持原样。")
+    except Exception as e:
+        logger.error(f"  ❌ [MP上传] 目录整理失败: {e}", exc_info=True)
 
 def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None, is_new_item: bool = True):
     """
@@ -846,21 +846,27 @@ def emby_webhook():
 
             media_type = 'tv' if media_type_cn == '电视剧' else 'movie'
             
-            # ★ 核心逻辑：加入防抖队列，重置 30 秒定时器
+            # ★ 核心优化：按目录 ID (dir_cid) 独立防抖
             with MP_TRANSFER_LOCK:
-                MP_TRANSFER_QUEUE[dir_cid] = {
+                # 1. 更新该目录的元数据
+                MP_TRANSFER_INFO[dir_cid] = {
                     'tmdb_id': tmdb_id,
                     'media_type': media_type,
                     'title': title,
                     'name': dir_name
                 }
                 
-                global MP_TRANSFER_DEBOUNCER
-                if MP_TRANSFER_DEBOUNCER:
-                    MP_TRANSFER_DEBOUNCER.kill()
+                # 2. 如果该目录已经有定时器在跑，杀掉它（重置 120 秒）
+                if dir_cid in MP_TRANSFER_TIMERS:
+                    MP_TRANSFER_TIMERS[dir_cid].kill()
                 
-                logger.info(f"  📥 [MP上传] 收到文件: {target_item.get('name')}，所属目录 '{dir_name}' 已加入防抖队列 (等待后续文件)...")
-                MP_TRANSFER_DEBOUNCER = spawn_later(MP_TRANSFER_DEBOUNCE_TIME, _process_mp_transfer_queue)
+                # 3. 为该目录单独启动一个新的 120 秒定时器
+                logger.info(f"  📥 [MP上传] 收到文件: {target_item.get('name')}，所属目录 '{dir_name}' 已刷新独立防抖倒计时...")
+                MP_TRANSFER_TIMERS[dir_cid] = spawn_later(
+                    MP_TRANSFER_DEBOUNCE_TIME, 
+                    _process_single_mp_directory, 
+                    dir_cid
+                )
                 
             return jsonify({"status": "queued_for_debounce"}), 200
 
