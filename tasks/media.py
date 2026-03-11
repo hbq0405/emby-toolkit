@@ -501,26 +501,24 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 if t_id:
                     tmdb_key_to_emby_ids[(t_id, i_type)].add(e_id)
 
-            # B. 获取在线状态
-            if not force_full_update:
-                # ★★★ 内存优化 1: 只查询在线的 ID ★★★
-                cursor.execute("""
-                    SELECT jsonb_array_elements_text(emby_item_ids_json) AS emby_id
-                    FROM media_metadata 
-                    WHERE in_library = TRUE
-                """)
-                for row in cursor.fetchall():
-                    known_online_emby_ids.add(row['emby_id'])
-                
-                cursor.execute("""
-                    SELECT COUNT(*) as total, SUM(CASE WHEN in_library THEN 1 ELSE 0 END) as online 
-                    FROM media_metadata
-                """)
-                stat_row = cursor.fetchone()
-                total_items = stat_row['total'] if stat_row else 0
-                online_items = stat_row['online'] if stat_row and stat_row['online'] is not None else 0
-                
-                logger.info(f"  ➜ 本地数据库共存储 {total_items} 个媒体项 (其中在线: {online_items})。")
+            # B. 获取在线状态 (★ 修复：无论是否全量更新，都必须获取在线状态，否则无法检测离线)
+            cursor.execute("""
+                SELECT jsonb_array_elements_text(emby_item_ids_json) AS emby_id
+                FROM media_metadata 
+                WHERE in_library = TRUE
+            """)
+            for row in cursor.fetchall():
+                known_online_emby_ids.add(row['emby_id'])
+            
+            cursor.execute("""
+                SELECT COUNT(*) as total, SUM(CASE WHEN in_library THEN 1 ELSE 0 END) as online 
+                FROM media_metadata
+            """)
+            stat_row = cursor.fetchone()
+            total_items = stat_row['total'] if stat_row else 0
+            online_items = stat_row['online'] if stat_row and stat_row['online'] is not None else 0
+            
+            logger.info(f"  ➜ 本地数据库共存储 {total_items} 个媒体项 (其中在线: {online_items})。")
 
         logger.info("  ➜ 正在预加载 Emby 文件夹路径映射...")
         folder_map = emby.get_all_folder_mappings(processor.emby_url, processor.emby_api_key)
@@ -641,61 +639,79 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
         gc.collect()
 
         # --- 3. 反向差异检测 (删除) ---
-        if not force_full_update:
-            # known_online_emby_ids 本身就是 active_db_ids
-            missing_emby_ids = known_online_emby_ids - current_scan_emby_ids
+        # ★ 修复：移除 if not force_full_update 限制，全量更新也必须做减法
+        missing_emby_ids = known_online_emby_ids - current_scan_emby_ids
+        
+        del known_online_emby_ids # 释放内存
+        del current_scan_emby_ids
+        gc.collect()
+
+        if missing_emby_ids:
+            logger.info(f"  ➜ 检测到 {len(missing_emby_ids)} 个 Emby ID 已消失，正在处理离线标记...")
+            missing_ids_list = list(missing_emby_ids)
             
-            del known_online_emby_ids # 释放内存
-            del current_scan_emby_ids
-            gc.collect()
-
-            if missing_emby_ids:
-                # ... (保留原有的离线处理逻辑) ...
-                logger.info(f"  ➜ 检测到 {len(missing_emby_ids)} 个 Emby ID 已消失，正在处理离线标记...")
-                missing_ids_list = list(missing_emby_ids)
+            with connection.get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT tmdb_id, item_type, parent_series_tmdb_id
+                    FROM media_metadata 
+                    WHERE in_library = TRUE 
+                      AND EXISTS (
+                          SELECT 1 
+                          FROM jsonb_array_elements_text(emby_item_ids_json) as eid 
+                          WHERE eid = ANY(%s)
+                      )
+                """, (missing_ids_list,))
                 
-                with connection.get_db_connection() as conn:
-                    cursor = conn.cursor()
-                    cursor.execute("""
-                        SELECT tmdb_id, item_type, parent_series_tmdb_id
-                        FROM media_metadata 
-                        WHERE in_library = TRUE 
-                          AND EXISTS (
-                              SELECT 1 
-                              FROM jsonb_array_elements_text(emby_item_ids_json) as eid 
-                              WHERE eid = ANY(%s)
-                          )
-                    """, (missing_ids_list,))
+                rows = cursor.fetchall()
+                direct_offline_tmdb_ids = []
+                affected_parent_ids = set()
+                
+                for row in rows:
+                    r_type = row['item_type']
+                    r_tmdb = row['tmdb_id']
+                    r_parent = row['parent_series_tmdb_id']
                     
-                    rows = cursor.fetchall()
-                    direct_offline_tmdb_ids = []
-                    affected_parent_ids = set()
-                    
-                    for row in rows:
-                        r_type = row['item_type']
-                        r_tmdb = row['tmdb_id']
-                        r_parent = row['parent_series_tmdb_id']
-                        
-                        if r_type in ['Movie', 'Series']:
-                            direct_offline_tmdb_ids.append(r_tmdb)
-                        elif r_type in ['Season', 'Episode'] and r_parent:
-                            affected_parent_ids.add(r_parent)
+                    if r_type in ['Movie', 'Series']:
+                        direct_offline_tmdb_ids.append(r_tmdb)
+                    elif r_type in ['Season', 'Episode'] and r_parent:
+                        affected_parent_ids.add(r_parent)
 
-                    if direct_offline_tmdb_ids:
-                        logger.info(f"  ➜ 正在标记 {len(direct_offline_tmdb_ids)} 个顶层项目为离线...")
-                        cursor.execute("""
-                            UPDATE media_metadata
-                            SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
-                            WHERE tmdb_id = ANY(%s) AND item_type IN ('Movie', 'Series')
-                        """, (direct_offline_tmdb_ids,))
-                        total_offline_count += cursor.rowcount
-                        
-                    if affected_parent_ids:
-                        logger.info(f"  ➜ 因分集消失，将 {len(affected_parent_ids)} 个父剧集加入刷新队列...")
-                        for pid in affected_parent_ids:
-                            dirty_keys.add((pid, 'Series'))
+                if direct_offline_tmdb_ids:
+                    logger.info(f"  ➜ 正在标记 {len(direct_offline_tmdb_ids)} 个顶层项目及其子项为离线...")
+                    # ★ 修复 1：标记顶层，并彻底清空指纹和资产缓存
+                    cursor.execute("""
+                        UPDATE media_metadata
+                        SET in_library = FALSE, 
+                            emby_item_ids_json = '[]'::jsonb, 
+                            asset_details_json = NULL,
+                            file_sha1_json = '[]'::jsonb,
+                            file_pickcode_json = '[]'::jsonb
+                        WHERE tmdb_id = ANY(%s) AND item_type IN ('Movie', 'Series')
+                    """, (direct_offline_tmdb_ids,))
+                    total_offline_count += cursor.rowcount
                     
-                    conn.commit()
+                    # ★ 修复 2：级联标记子项 (Season, Episode) 为离线
+                    cursor.execute("""
+                        UPDATE media_metadata
+                        SET in_library = FALSE, 
+                            emby_item_ids_json = '[]'::jsonb, 
+                            asset_details_json = NULL,
+                            file_sha1_json = '[]'::jsonb,
+                            file_pickcode_json = '[]'::jsonb
+                        WHERE parent_series_tmdb_id = ANY(%s) AND item_type IN ('Season', 'Episode')
+                    """, (direct_offline_tmdb_ids,))
+                    total_offline_count += cursor.rowcount
+                    
+                if affected_parent_ids:
+                    # ★ 优化：过滤掉已经被级联离线的父剧集，避免无用的 API 请求
+                    valid_parent_ids = [pid for pid in affected_parent_ids if pid not in direct_offline_tmdb_ids]
+                    if valid_parent_ids:
+                        logger.info(f"  ➜ 因分集消失，将 {len(valid_parent_ids)} 个父剧集加入刷新队列...")
+                        for pid in valid_parent_ids:
+                            dirty_keys.add((pid, 'Series'))
+                
+                conn.commit()
 
         # ★★★ 打印详细统计日志 ★★★
         logger.info(f"  ➜ Emby 扫描完成，共扫描 {scan_count} 个项。")
@@ -1227,7 +1243,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                         if active_child_ids_list:
                             cursor.execute("""
                                 UPDATE media_metadata
-                                SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
+                                SET in_library = FALSE, 
+                                    emby_item_ids_json = '[]'::jsonb, 
+                                    asset_details_json = NULL,
+                                    file_sha1_json = '[]'::jsonb,
+                                    file_pickcode_json = '[]'::jsonb
                                 WHERE parent_series_tmdb_id = ANY(%s)
                                   AND item_type IN ('Season', 'Episode')
                                   AND in_library = TRUE
@@ -1237,7 +1257,11 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                         else:
                             cursor.execute("""
                                 UPDATE media_metadata
-                                SET in_library = FALSE, emby_item_ids_json = '[]'::jsonb, asset_details_json = '[]'::jsonb
+                                SET in_library = FALSE, 
+                                    emby_item_ids_json = '[]'::jsonb, 
+                                    asset_details_json = NULL,
+                                    file_sha1_json = '[]'::jsonb,
+                                    file_pickcode_json = '[]'::jsonb
                                 WHERE parent_series_tmdb_id = ANY(%s)
                                   AND item_type IN ('Season', 'Episode')
                                   AND in_library = TRUE
