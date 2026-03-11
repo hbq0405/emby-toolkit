@@ -2267,97 +2267,143 @@ def _parse_115_size(size_val):
         pass
     return 0
 
-def _identify_media_enhanced(filename, forced_media_type=None, ai_translator=None, use_ai=False):
+def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=False, forced_media_type=None, ai_translator=None, use_ai=False):
     """
-    增强识别逻辑：
-    1. 支持多种 TMDb ID 标签格式: {tmdb=xxx}
-    2. 支持标准命名格式: Title (Year)
-    3. 接收外部强制指定的类型 (forced_media_type)
-    4. 【新增】AI 辅助识别兜底
+    【终极优化版】增强识别逻辑：
+    1. 优先从主目录 (main_dir_name) 提取 TMDb ID 标签格式: {tmdb=xxx}
+    2. 结合子目录特征 (has_season_subdirs) 和文件名特征判断媒体类型 (TV/Movie)
+    3. 其次从主目录提取 Title (Year) 进行搜索
+    4. 再次从当前文件名提取 TMDb ID 或 Title (Year) 进行搜索
+    5. AI 辅助识别兜底
     """
     tmdb_id = None
     media_type = 'movie' # 默认
     title = filename
     api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
     
-    # 1. 优先提取 TMDb ID 标签 (最稳)
-    match_tag = re.search(r'\{?tmdb(?:id)?[=\-](\d+)\}?', filename, re.IGNORECASE)
-    
-    if match_tag:
-        tmdb_id = match_tag.group(1)
-        if forced_media_type:
-            media_type = forced_media_type
-        elif re.search(r'(?:S\d{1,2}|EP?\d{1,3}|第\d+季|Season)', filename, re.IGNORECASE):
-            media_type = 'tv'
-        
-        clean_name = re.sub(r'\{?tmdb(?:id)?[=\-]\d+\}?', '', filename, flags=re.IGNORECASE).strip()
-        match_title = re.match(r'^(.+?)\s*[\(\[]\d{4}[\)\]]', clean_name)
-        if match_title:
-            title = match_title.group(1).strip()
-        else:
-            title = clean_name
-            
-        return tmdb_id, media_type, title
+    is_same_name = (main_dir_name == filename)
 
-    # 2. 其次提取标准格式 Title (Year) 或 P2P 格式 Title.Year.
-    # 兼容: "Title (2024)", "Title.2024.1080p", "Title 2024 2160p"
-    match_std = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', filename)
-    if match_std:
-        name_part = match_std.group(1).replace('.', ' ').strip()
-        year_part = match_std.group(2)
-        
-        if forced_media_type:
-            media_type = forced_media_type
-        else:
-            if re.search(r'(?:S\d{1,2}|EP?\d{1,3}|第\d+季|Season)', filename, re.IGNORECASE):
-                media_type = 'tv'
-            else:
-                media_type = 'movie'
-            
-        try:
-            if api_key:
-                # 搜索缓存逻辑
-                search_key = f"{name_part}_{year_part}_{media_type}"
-                if search_key in _TMDB_SEARCH_CACHE:
-                    results = _TMDB_SEARCH_CACHE[search_key]
-                else:
-                    results = tmdb.search_media(query=name_part, api_key=api_key, item_type=media_type, year=year_part)
-                    _TMDB_SEARCH_CACHE[search_key] = results
+    # 辅助函数：判断是否包含剧集特征
+    def _check_tv_features(text):
+        if not text: return False
+        return bool(re.search(r'(?:S\d{1,4}[ \.\-]*(?:E|P)\d{1,4}|EP?\d{1,4}|第\d+季|Season)', text, re.IGNORECASE))
 
-                if results and len(results) > 0:
-                    best = results[0]
-                    return str(best['id']), media_type, (best.get('title') or best.get('name'))
-                else:
-                    logger.warning(f"  ⚠️ TMDb 未找到资源: {name_part} ({year_part}) 类型: {media_type}")
-        except Exception:
-            pass
+    # 确定最终用来判断类型的文本组合
+    combined_text_for_type = f"{main_dir_name or ''} {filename}"
+
+    # ★ 核心：精准确定媒体类型
+    if forced_media_type:
+        media_type = forced_media_type
+    elif has_season_subdirs or _check_tv_features(combined_text_for_type):
+        media_type = 'tv'
 
     # =================================================================
-    # ★★★ 3. AI 辅助识别 (兜底) ★★★
+    # 优先级 1: 从主目录名提取 TMDb ID (最稳)
     # =================================================================
-    if use_ai and ai_translator and not tmdb_id:
-        logger.info(f"  🤖 常规识别失败，尝试 AI 辅助识别: {filename}")
+    if main_dir_name:
+        match_tag_main = re.search(r'\{?tmdb(?:id)?[=\-](\d+)\}?', main_dir_name, re.IGNORECASE)
+        if match_tag_main:
+            tmdb_id = match_tag_main.group(1)
+            clean_name = re.sub(r'\{?tmdb(?:id)?[=\-]\d+\}?', '', main_dir_name, flags=re.IGNORECASE).strip()
+            match_title = re.match(r'^(.+?)\s*[\(\[]\d{4}[\)\]]', clean_name)
+            title = match_title.group(1).strip() if match_title else clean_name
+            return tmdb_id, media_type, title
+
+    # =================================================================
+    # 优先级 2: 从主目录名提取 Title (Year) 进行搜索
+    # =================================================================
+    if main_dir_name:
+        match_std_main = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', main_dir_name)
+        if match_std_main:
+            name_part = match_std_main.group(1).replace('.', ' ').strip()
+            year_part = match_std_main.group(2)
+            try:
+                if api_key:
+                    search_key = f"{name_part}_{year_part}_{media_type}"
+                    if search_key in _TMDB_SEARCH_CACHE:
+                        results = _TMDB_SEARCH_CACHE[search_key]
+                    else:
+                        results = tmdb.search_media(query=name_part, api_key=api_key, item_type=media_type, year=year_part)
+                        _TMDB_SEARCH_CACHE[search_key] = results
+
+                    if results and len(results) > 0:
+                        best = results[0]
+                        return str(best['id']), media_type, (best.get('title') or best.get('name'))
+            except Exception:
+                pass
+
+    # =================================================================
+    # 优先级 3: 兜底 - 从当前文件名提取 TMDb ID 或 Title (Year)
+    # =================================================================
+    if not is_same_name:
+        # 3.1 查文件名里的 TMDB ID
+        match_tag_file = re.search(r'\{?tmdb(?:id)?[=\-](\d+)\}?', filename, re.IGNORECASE)
+        if match_tag_file:
+            tmdb_id = match_tag_file.group(1)
+            clean_name = re.sub(r'\{?tmdb(?:id)?[=\-]\d+\}?', '', filename, flags=re.IGNORECASE).strip()
+            match_title = re.match(r'^(.+?)\s*[\(\[]\d{4}[\)\]]', clean_name)
+            title = match_title.group(1).strip() if match_title else clean_name
+            return tmdb_id, media_type, title
+
+        # 3.2 查文件名里的 Title (Year)
+        match_std_file = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', filename)
+        if match_std_file:
+            name_part = match_std_file.group(1).replace('.', ' ').strip()
+            year_part = match_std_file.group(2)
+            try:
+                if api_key:
+                    search_key = f"{name_part}_{year_part}_{media_type}"
+                    if search_key in _TMDB_SEARCH_CACHE:
+                        results = _TMDB_SEARCH_CACHE[search_key]
+                    else:
+                        results = tmdb.search_media(query=name_part, api_key=api_key, item_type=media_type, year=year_part)
+                        _TMDB_SEARCH_CACHE[search_key] = results
+
+                    if results and len(results) > 0:
+                        best = results[0]
+                        return str(best['id']), media_type, (best.get('title') or best.get('name'))
+            except Exception:
+                pass
+
+    # =================================================================
+    # ★★★ 优先级 4: AI 辅助识别 (终极兜底) ★★★
+    # =================================================================
+    if use_ai and ai_translator:
+        # 优先让 AI 识别主目录名，如果没有再识别文件名
+        target_ai_name = main_dir_name if main_dir_name else filename
+        logger.info(f"  🤖 常规识别失败，尝试 AI 辅助识别: {target_ai_name}")
         try:
-            ai_result = ai_translator.parse_media_filename(filename)
+            ai_result = ai_translator.parse_media_filename(target_ai_name)
             if ai_result and ai_result.get('title'):
                 ai_title = ai_result.get('title')
                 ai_year = ai_result.get('year')
-                ai_type = forced_media_type or ai_result.get('type') or 'movie'
-                
-                logger.info(f"  🤖 AI 解析结果: 标题='{ai_title}', 年份='{ai_year}', 类型='{ai_type}'")
+                ai_type = forced_media_type or ai_result.get('type') or media_type
                 
                 if api_key:
                     results = tmdb.search_media(query=ai_title, api_key=api_key, item_type=ai_type, year=ai_year)
                     if results and len(results) > 0:
                         best = results[0]
-                        final_id = str(best['id'])
-                        final_title = best.get('title') or best.get('name')
-                        logger.info(f"  ✅ AI 辅助搜索成功: {final_title} (ID:{final_id})")
-                        return final_id, ai_type, final_title
-                    else:
-                        logger.warning(f"  ⚠️ AI 提取后 TMDb 仍未找到资源: {ai_title} ({ai_year})")
+                        return str(best['id']), ai_type, (best.get('title') or best.get('name'))
         except Exception as e:
             logger.error(f"  ❌ AI 辅助识别出错: {e}")
+
+        # 如果主目录 AI 失败，且有文件名，再试一次文件名
+        if main_dir_name and not is_same_name:
+            logger.info(f"  🤖 主目录 AI 识别失败，尝试 AI 识别文件名: {filename}")
+            try:
+                ai_result = ai_translator.parse_media_filename(filename)
+                if ai_result and ai_result.get('title'):
+                    ai_title = ai_result.get('title')
+                    ai_year = ai_result.get('year')
+                    ai_type = forced_media_type or ai_result.get('type') or media_type
+                    
+                    if api_key:
+                        results = tmdb.search_media(query=ai_title, api_key=api_key, item_type=ai_type, year=ai_year)
+                        if results and len(results) > 0:
+                            best = results[0]
+                            return str(best['id']), ai_type, (best.get('title') or best.get('name'))
+            except Exception:
+                pass
 
     return None, None, None
 
@@ -2463,14 +2509,19 @@ def task_scan_and_organize_115(processor=None):
                     if active_tasks == 0:
                         task_cond.notify_all() # 所有任务完成，唤醒主线程
 
-        def process_single_item(item, name, is_folder, depth, forced_type):
+        def process_single_item(item, name, is_folder, depth, forced_type, main_dir_name=None, has_season_subdirs=False):
             """单个媒体项的识别与整理逻辑 (在子线程中运行)"""
             nonlocal processed_count, moved_to_unidentified
             item_id = item.get('fid') or item.get('file_id')
 
-            # 尝试识别当前项
+            # ★ 核心：将主目录名和子目录特征传递给识别引擎
             tmdb_id, media_type, title = _identify_media_enhanced(
-                name, forced_media_type=forced_type, ai_translator=ai_translator, use_ai=use_ai
+                name, 
+                main_dir_name=main_dir_name,
+                has_season_subdirs=has_season_subdirs,
+                forced_media_type=forced_type, 
+                ai_translator=ai_translator, 
+                use_ai=use_ai
             )
             
             if tmdb_id:
@@ -2490,8 +2541,8 @@ def task_scan_and_organize_115(processor=None):
                 # 识别失败
                 if is_folder:
                     logger.info(f"  📂 目录 '{name}' 无法直接识别，深入扫描子目录 (层级 {depth+1})...")
-                    # ★ 核心：将子目录扫描作为新任务提交给线程池
-                    submit_task(scan_directory, item_id, name, depth + 1)
+                    # ★ 核心：将当前目录名作为主目录名 (main_dir_name) 传递给下一层
+                    submit_task(scan_directory, item_id, name, depth + 1, main_dir_name)
                     
                     # 钻完出来后，把空壳子交给全局垃圾回收器处理
                     from handler.p115_service import P115DeleteBuffer
@@ -2522,7 +2573,7 @@ def task_scan_and_organize_115(processor=None):
                                 )
                         except: pass
 
-        def scan_directory(current_cid, current_name, depth=0):
+        def scan_directory(current_cid, current_name, depth=0, root_dir_name=None):
             """目录透视与任务分发逻辑 (在子线程中运行)"""
             if depth > 5: return
                 
@@ -2546,6 +2597,18 @@ def task_scan_and_organize_115(processor=None):
                 if not data: 
                     break 
 
+                # =================================================================
+                # ★ 预扫描：嗅探当前目录下是否包含类似季目录 (Season 1, S01 等)
+                # =================================================================
+                has_season_subdirs = False
+                for item in data:
+                    fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
+                    if str(fc_val) == '0':
+                        sub_name = item.get('fn') or item.get('n') or item.get('file_name')
+                        if sub_name and re.search(r'^(Season\s?\d+|S\d+|第[一二三四五六七八九十\d]+季)$', sub_name, re.IGNORECASE):
+                            has_season_subdirs = True
+                            break
+
                 for item in data:
                     name = item.get('fn') or item.get('n') or item.get('file_name')
                     if not name: continue
@@ -2555,21 +2618,17 @@ def task_scan_and_organize_115(processor=None):
 
                     if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
                         continue
-
-                    # ==========================================
-                    # 🚀 核心修复：删除了这里原本长达 40 行的 is_folder 探查逻辑
-                    # 不再提前调用 fs_files 去判断 is_empty_dir 和 is_shell_folder
-                    # 节省了海量的 API 请求和 0.5s 的排队时间
-                    # ==========================================
                     
                     forced_type = None
-                    # 仅做简单的正则猜测，不发网络请求
                     if is_folder and re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第[一二三四五六七八九十\d]+季)$', name, re.IGNORECASE):
                         forced_type = 'tv'
 
-                    # 直接将正常的媒体项提交给线程池并发处理
-                    # 如果是空目录或壳子目录，process_single_item 识别失败后会自动处理
-                    submit_task(process_single_item, item, name, is_folder, depth, forced_type)
+                    # ★ 确定传递下去的主目录名
+                    # 如果 depth == 0，说明当前扫描的是"待整理"根目录，里面的 item 就是主目录本身
+                    # 如果 depth > 0，说明当前扫描的是主目录内部，沿用传下来的 root_dir_name
+                    pass_root_name = name if depth == 0 else root_dir_name
+
+                    submit_task(process_single_item, item, name, is_folder, depth, forced_type, pass_root_name, has_season_subdirs)
 
                 if len(data) < limit:
                     break
@@ -2577,7 +2636,7 @@ def task_scan_and_organize_115(processor=None):
                 offset += limit
 
         # 启动初始扫描任务
-        submit_task(scan_directory, save_cid, save_name, 0)
+        submit_task(scan_directory, save_cid, save_name, 0, None)
 
         # ★ 阻塞主线程，直到所有子线程任务全部执行完毕
         with task_cond:

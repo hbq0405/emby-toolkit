@@ -566,7 +566,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         break
 
                 if res_json:
-                    # ★★★ 新增：神医返回数据 Size 校验机制 ★★★
+                    # ★★★ 神医返回数据 Size 校验机制 ★★★
                     syndrome_size = 0
                     if isinstance(res_json, list) and len(res_json) > 0:
                         syndrome_size = res_json[0].get("MediaSourceInfo", {}).get("Size", 0)
