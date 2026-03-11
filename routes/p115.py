@@ -161,7 +161,7 @@ def _check_qrcode_status():
         logger.error(f"检查二维码状态失败: {e}")
         return {"status": "error", "message": str(e)}
     
-# --- ★★★ 新增：经典扫码获取 Cookie 流程 (支持多端) ★★★ ---
+# --- 经典扫码获取 Cookie 流程 (支持多端) ---
 _cookie_qrcode_data = {
     "uid": None,
     "time": None,
@@ -819,7 +819,7 @@ def get_organize_records():
                     where_clauses.append("(original_name ILIKE %s OR renamed_name ILIKE %s)")
                     params.extend([f"%{search}%", f"%{search}%"])
                 
-                # ★ 新增：处理命中缓存的筛选
+                # 2. 处理命中缓存的筛选
                 if status == 'center_cached':
                     where_clauses.append("is_center_cached = TRUE")
                 elif status != 'all':
@@ -832,11 +832,11 @@ def get_organize_records():
                     
                 where_sql = "WHERE " + " AND ".join(where_clauses) if where_clauses else ""
                 
-                # 2. 获取总条数
+                # 3. 获取总条数
                 cursor.execute(f"SELECT COUNT(*) as count FROM p115_organize_records {where_sql}", tuple(params))
                 total = cursor.fetchone()['count']
                 
-                # 3. 获取分页数据
+                # 4. 获取分页数据
                 cursor.execute(f"""
                     SELECT * FROM p115_organize_records 
                     {where_sql} 
@@ -845,7 +845,7 @@ def get_organize_records():
                 """, tuple(params + [per_page, offset]))
                 items = cursor.fetchall()
                 
-                # 4. 获取顶部 Dashboard 统计面板数据
+                # 5. 获取顶部 Dashboard 统计面板数据
                 cursor.execute("SELECT COUNT(*) as total FROM p115_organize_records")
                 stat_total = cursor.fetchone()['total']
                 
@@ -858,7 +858,7 @@ def get_organize_records():
                 cursor.execute("SELECT COUNT(*) as this_week FROM p115_organize_records WHERE processed_at >= NOW() - INTERVAL '7 days'")
                 stat_week = cursor.fetchone()['this_week']
 
-                # ★ 新增：统计命中中心缓存的数量
+                # 6. 统计命中中心缓存的数量
                 cursor.execute("SELECT COUNT(*) as center_cached FROM p115_organize_records WHERE is_center_cached = TRUE")
                 stat_center_cached = cursor.fetchone()['center_cached']
 

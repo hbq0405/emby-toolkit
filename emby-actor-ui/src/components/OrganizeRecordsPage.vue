@@ -96,7 +96,7 @@
         :columns="columns"
         :data="processedTableData"
         :loading="loading"
-        :pagination="paginationProps"
+        :pagination="paginationReactive" 
         :bordered="false"
         v-model:checked-row-keys="checkedRowKeys"
         striped
@@ -187,7 +187,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, h } from 'vue';
+import { ref, onMounted, computed, h, reactive } from 'vue';
 import axios from 'axios';
 import {
   NTag, NButton, NSpace, NText, NIcon, NTooltip, NEllipsis, NInputNumber, useMessage, useDialog
@@ -436,11 +436,23 @@ const columns = computed(() => [
   }
 ]);
 
-const paginationProps = computed(() => ({
-  pageSize: itemsPerPage.value,
+const paginationReactive = reactive({
+  page: 1,
+  pageSize: 15,
   showSizePicker: true,
-  pageSizes: [15, 30, 50, 100],
-}));
+  pageSizes: [15, 30, 50, 100, { label: '全部显示', value: 99999 }],
+  onChange: (page) => {
+    paginationReactive.page = page;
+  },
+  onUpdatePageSize: (pageSize) => {
+    paginationReactive.pageSize = pageSize;
+    paginationReactive.page = 1;
+  },
+  // 优雅的提示语，告诉用户当前条数是折叠后的
+  prefix({ itemCount }) {
+    return `共 ${itemCount} 项 (剧集包按1项计)`;
+  }
+});
 
 const fetchRecords = async () => {
   loading.value = true;
@@ -449,7 +461,7 @@ const fetchRecords = async () => {
     const res = await axios.get('/api/p115/records', {
       params: {
         page: 1,
-        per_page: 5000, 
+        per_page: 5000, // 足够大的数值，拉取到前端合并
         search: searchQuery.value,
         status: statusFilter.value,
         cid: categoryFilter.value
@@ -457,6 +469,9 @@ const fetchRecords = async () => {
     });
     tableData.value = res.data.items;
     stats.value = res.data.stats;
+    
+    // 每次获取新数据后，重置回第一页
+    paginationReactive.page = 1;
   } catch (error) {
     message.error('获取整理记录失败');
   } finally {

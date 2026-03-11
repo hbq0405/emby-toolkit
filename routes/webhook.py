@@ -566,41 +566,65 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         break
 
                 if res_json:
-                    # 根据是否有缓存数据，显示不同的成功日志
-                    if media_data:
-                        logger.info(f"  ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
-                    else:
-                        logger.info(f"  ✅ [神医] 媒体信息提取成功！")
-
-                    # 如果数据不是来自本地缓存，则存入本地数据库
-                    if not is_from_local:
-                        try:
-                            json_str = json.dumps(res_json, ensure_ascii=False)
-                            with get_db_connection() as conn:
-                                with conn.cursor() as cursor:
-                                    cursor.execute("""
-                                        INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
-                                        VALUES (%s, %s::jsonb)
-                                        ON CONFLICT (sha1) DO UPDATE SET mediainfo_json = EXCLUDED.mediainfo_json
-                                    """, (sha1, json_str))
-                                    conn.commit()
-                            logger.info(f"  💾 [本地缓存] 媒体信息已备份至本地数据库。")
-                        except Exception as e_db:
-                            logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
+                    # ★★★ 新增：神医返回数据 Size 校验机制 ★★★
+                    syndrome_size = 0
+                    if isinstance(res_json, list) and len(res_json) > 0:
+                        syndrome_size = res_json[0].get("MediaSourceInfo", {}).get("Size", 0)
+                    elif isinstance(res_json, dict):
+                        syndrome_size = res_json.get("MediaSourceInfo", {}).get("Size", res_json.get("Size", 0))
                     
-                    # 执行反哺 (仅当中心服务器没有时)
-                    if need_upload and getattr(processor, 'p115_center', None):
-                        try:
-                            processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                            logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
-                        except Exception as e_up:
-                            logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
-                elif res_json == []:
-                    logger.warning(f"  ⚠️ [神医] 提取媒体信息超时（1分钟）。")
-                else:
-                    # 区分失败情况
-                    fail_type = "恢复" if media_data else "提取"
-                    logger.warning(f"  ⚠️ [神医] 媒体信息{fail_type}失败，返回数据无效。")
+                    file_size_115 = 0
+                    try:
+                        with get_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute("SELECT size FROM p115_filesystem_cache WHERE sha1 = %s", (sha1,))
+                                row = cursor.fetchone()
+                                if row and row['size']:
+                                    file_size_115 = row['size']
+                    except Exception as e_db:
+                        logger.warning(f"  ⚠️ [数据校验] 查询本地文件大小失败: {e_db}")
+
+                    # 误差校验 (大于 1% 即判定为脏数据)
+                    is_dirty_data = False
+                    if syndrome_size > 0 and file_size_115 > 0:
+                        error_margin = abs(syndrome_size - file_size_115) / file_size_115
+                        if error_margin > 0.01:
+                            logger.error(f"  🚨 [数据校验] 严重警告！神医返回的媒体大小({syndrome_size})与115真实大小({file_size_115})误差达 {error_margin*100:.2f}%！")
+                            logger.error(f"  🚨 [数据校验] 该数据可能属于同名异版文件，已强制丢弃，防止污染中心服务器！")
+                            is_dirty_data = True
+                            res_json = None
+                            need_upload = False
+
+                    if not is_dirty_data:
+                        # 根据是否有缓存数据，显示不同的成功日志
+                        if media_data:
+                            logger.info(f"  ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
+                        else:
+                            logger.info(f"  ✅ [神医] 媒体信息提取成功！")
+
+                        # 如果数据不是来自本地缓存，则存入本地数据库
+                        if not is_from_local:
+                            try:
+                                json_str = json.dumps(res_json, ensure_ascii=False)
+                                with get_db_connection() as conn:
+                                    with conn.cursor() as cursor:
+                                        cursor.execute("""
+                                            INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json)
+                                            VALUES (%s, %s::jsonb)
+                                            ON CONFLICT (sha1) DO UPDATE SET mediainfo_json = EXCLUDED.mediainfo_json
+                                        """, (sha1, json_str))
+                                        conn.commit()
+                                logger.info(f"  💾 [本地缓存] 媒体信息已备份至本地数据库。")
+                            except Exception as e_db:
+                                logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
+                        
+                        # 执行反哺 (仅当中心服务器没有时)
+                        if need_upload and getattr(processor, 'p115_center', None):
+                            try:
+                                processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
+                                logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
+                            except Exception as e_up:
+                                logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
         except Exception as e:
             logger.error(f"  ❌ [P115Center] 联动异常: {e}")
 
@@ -809,9 +833,22 @@ def emby_webhook():
                     real_root_item['cid'] = file_id
                     real_root_item['parent_id'] = file_id
 
-                # logger.info(f"  🚀 [MP上传] 转交 SmartOrganizer.execute 处理...")
-                # 复用 execute 逻辑
-                organizer.execute(real_root_item, target_cid)
+                # 延迟 30 秒执行，给 115 计算 SHA1 的时间，省下昂贵的 fs_get_info API 调用 ★★★
+                def _delayed_mp_organize(item, cid, t_id, m_type, m_title):
+                    logger.info(f"  ⏳ [MP上传] 30秒延迟结束，开始接管整理: {item.get('n')} ...")
+                    try:
+                        # 延迟执行时重新获取 client，防止跨线程失效
+                        delayed_client = P115Service.get_client()
+                        if delayed_client:
+                            delayed_organizer = SmartOrganizer(delayed_client, t_id, m_type, m_title)
+                            delayed_organizer.execute(item, cid)
+                    except Exception as e:
+                        logger.error(f"  ❌ [MP上传] 延迟整理执行失败: {e}", exc_info=True)
+
+                logger.info(f"  ⏳ [MP上传] 已将文件加入 30 秒延迟队列 (等待 115 生成 SHA1 指纹)...")
+                spawn_later(30.0, _delayed_mp_organize, real_root_item, target_cid, tmdb_id, media_type, title)
+                
+                return jsonify({"status": "delayed_processing"}), 200
                 
             else:
                 logger.info("  🚫 [MP上传] 未命中任何分类规则，保持原样。")

@@ -438,6 +438,7 @@ def init_db():
                         local_path TEXT,               -- 本地映射路径 (如果已同步到本地)
                         sha1 TEXT,
                         pick_code TEXT,
+                        size BIGINT DEFAULT 0,
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(), -- 最后同步时间
                         
                         -- 复合唯一约束：同一个父目录下不能有同名文件 (用于快速查找)
@@ -496,7 +497,8 @@ def init_db():
                         'p115_filesystem_cache': {
                             "local_path": "TEXT",
                             "sha1": "TEXT",
-                            "pick_code": "TEXT"
+                            "pick_code": "TEXT",
+                            "size": "BIGINT DEFAULT 0"
                         },
                         'p115_organize_records': {
                             "is_center_cached": "BOOLEAN DEFAULT FALSE",

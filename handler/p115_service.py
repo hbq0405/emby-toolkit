@@ -608,19 +608,17 @@ class P115CacheManager:
             logger.error(f"  ❌ 清理 115 DB 缓存失败: {e}")
 
     @staticmethod
-    def save_file_cache(fid, parent_id, name, sha1=None, pick_code=None, local_path=None):
-        """专门将文件(fc=1)的 SHA1、PC码 和 本地相对路径 存入本地数据库缓存"""
+    def save_file_cache(fid, parent_id, name, sha1=None, pick_code=None, local_path=None, size=0):
+        """专门将文件(fc=1)的 SHA1、PC码、本地相对路径和大小存入本地数据库缓存"""
         if not fid or not parent_id or not name: return
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # ★★★ 核心修复：先解除旧 ID 的绑定，防止文件在网盘移动后触发主键冲突 ★★★
                     cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s", (str(fid),))
                     
-                    # ★ 然后执行插入，利用 ON CONFLICT (parent_id, name) 处理同名洗版替换
                     cursor.execute("""
-                        INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, pick_code, local_path)
-                        VALUES (%s, %s, %s, %s, %s, %s)
+                        INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, pick_code, local_path, size)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s)
                         ON CONFLICT (parent_id, name)
                         DO UPDATE SET 
                             sha1 = CASE 
@@ -632,9 +630,13 @@ class P115CacheManager:
                                 ELSE COALESCE(EXCLUDED.pick_code, p115_filesystem_cache.pick_code) 
                             END,
                             local_path = COALESCE(EXCLUDED.local_path, p115_filesystem_cache.local_path),
+                            size = CASE 
+                                WHEN EXCLUDED.size > 0 THEN EXCLUDED.size 
+                                ELSE p115_filesystem_cache.size 
+                            END,
                             id = EXCLUDED.id,
                             updated_at = NOW()
-                    """, (str(fid), str(parent_id), str(name), sha1, pick_code, local_path))
+                    """, (str(fid), str(parent_id), str(name), sha1, pick_code, local_path, size))
                     conn.commit()
         except Exception as e:
             logger.error(f"  ❌ 写入 115 文件缓存失败: {e}")
@@ -2155,9 +2157,14 @@ class SmartOrganizer:
                                     file_local_path = os.path.join(relative_category_path, std_root_name, new_filename)
                                 
                                 file_local_path = file_local_path.replace('\\', '/')
+                                file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
 
                                 if pick_code and fid:
-                                    P115CacheManager.save_file_cache(fid, batch_target_cid, new_filename, sha1=file_sha1, pick_code=pick_code, local_path=file_local_path)
+                                    P115CacheManager.save_file_cache(
+                                        fid, batch_target_cid, new_filename, 
+                                        sha1=file_sha1, pick_code=pick_code, 
+                                        local_path=file_local_path, size=file_size 
+                                    )
                                     
                             elif is_sub:
                                 if config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True):
@@ -2967,16 +2974,13 @@ def task_full_sync_strm_and_subs(processor=None):
                                 # ==================================================
                                 fid = item.get('fid') or item.get('file_id')
                                 sha1 = item.get('sha1') or item.get('sha')
+                                file_size = _parse_115_size(item.get('fs') or item.get('size'))
                                 if pc and fid:
-                                    # 计算相对 local_path 并统一正斜杠
                                     file_local_path = os.path.join(rel_dir, name).replace('\\', '/')
                                     P115CacheManager.save_file_cache(
-                                        fid=fid, 
-                                        parent_id=pid, 
-                                        name=name, 
-                                        sha1=sha1, 
-                                        pick_code=pc, 
-                                        local_path=file_local_path
+                                        fid=fid, parent_id=pid, name=name, 
+                                        sha1=sha1, pick_code=pc, 
+                                        local_path=file_local_path, size=file_size 
                                     )
                                     
                             # 处理字幕下载
