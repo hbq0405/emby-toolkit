@@ -723,38 +723,27 @@ class MediaProcessor:
             except Exception as e:
                 logger.error(f"  🚫 [实时监控] 处理文件 '{file_path}' 失败: {e}")
 
-        # 2. ★★★ ID 级别去重与刷新 ★★★
+        # 2. ★★★ 目录级别去重与官方局部扫描 ★★★
         if folders_to_check:
-            logger.info(f"  🔍 [实时监控] 预处理完成。正在解析 {len(folders_to_check)} 个路径对应的 Emby 锚点...")
+            logger.info(f"  🚀 [实时监控] 预处理完成，正在向 Emby 发送 {len(folders_to_check)} 个目录的局部扫描指令...")
             
-            unique_anchor_map = {} # ID -> Name
-            fallback_paths = []
+            # 构造批量 Payload，一次性发给 Emby，效率极高
+            updates = [{"Path": folder, "UpdateType": "Created"} for folder in folders_to_check]
+            api_url = f"{self.emby_url.rstrip('/')}/Library/Media/Updated"
+            
+            try:
+                # 直接调用底层的 emby_client 发送批量请求
+                emby.emby_client.post(api_url, params={"api_key": self.emby_api_key}, json={"Updates": updates})
+                logger.info(f"  ✅ [实时监控] 批量入库通知已发送！Emby 将在几秒内完成这些目录的扫描入库。")
+            except Exception as e:
+                logger.error(f"  ❌ [实时监控] 发送批量入库通知失败: {e}")
+                
+                # 兜底：如果批量接口失败，降级为逐个通知
+                logger.info("  ➜ 尝试降级为逐个目录通知...")
+                for folder in folders_to_check:
+                    emby.refresh_library_by_path(folder, self.emby_url, self.emby_api_key)
+                    time.sleep(0.1)
 
-            # A. 解析路径到 ID
-            for folder_path in folders_to_check:
-                anchor_id, anchor_name = emby.find_nearest_library_anchor(folder_path, self.emby_url, self.emby_api_key)
-                if anchor_id:
-                    if anchor_id not in unique_anchor_map:
-                        unique_anchor_map[anchor_id] = anchor_name
-                        logger.debug(f"    ├─ 路径 '{os.path.basename(folder_path)}' -> 锚点 '{anchor_name}' (ID: {anchor_id})")
-                else:
-                    fallback_paths.append(folder_path)
-
-            # B. 刷新唯一的 ID
-            if unique_anchor_map:
-                logger.info(f"  🚀 [实时监控] 聚合完成，正在刷新 {len(unique_anchor_map)} 个 Emby 锚点...")
-                for anchor_id, anchor_name in unique_anchor_map.items():
-                    logger.info(f"  ➜ 正在刷新: '{anchor_name}' (ID: {anchor_id})")
-                    emby.refresh_item_by_id(anchor_id, self.emby_url, self.emby_api_key)
-                    time.sleep(0.2) # 稍微间隔
-
-            # C. 处理无法解析 ID 的路径 (回退到旧方法)
-            if fallback_paths:
-                logger.warning(f"  ⚠️ [实时监控] 有 {len(fallback_paths)} 个路径无法解析锚点，使用回退刷新...")
-                for path in fallback_paths:
-                    emby.refresh_library_by_path(path, self.emby_url, self.emby_api_key)
-
-            logger.info(f"  ✅ [实时监控] 批量预处理完成，等待Emby入库更新媒体资产数据...")
         else:
             logger.warning(f"  ⚠️ [实时监控] 未收集到有效的刷新目录，任务结束。")
 

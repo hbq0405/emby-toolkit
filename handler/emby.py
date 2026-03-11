@@ -858,28 +858,53 @@ def refresh_item_by_id(item_id: str, base_url: str, api_key: str) -> bool:
         return False
 
 # --- 最近锚点强制刷新版 ---
+# def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool:
+#     """
+#     最近锚点强制刷新版
+#     """
+#     # 1. 查找锚点
+#     logger.info(f"  🔍 [智能刷新] 正在为路径寻找最近的 Emby 锚点: {file_path}")
+#     found_id, found_name = find_nearest_library_anchor(file_path, base_url, api_key)
+
+#     # 2. 执行刷新
+#     if found_id:
+#         logger.info(f"  🚀 [智能刷新] 命中最近锚点: '{found_name}' (ID: {found_id})，执行强制刷新...")
+#         return refresh_item_by_id(found_id, base_url, api_key)
+#     else:
+#         # 回退逻辑
+#         logger.warning(f"  ⚠️ 未找到任何在库的父级目录，回退到系统通知接口...")
+#         api_url = f"{base_url.rstrip('/')}/Library/Media/Updated"
+#         payload = {"Updates": [{"Path": file_path, "UpdateType": "Modified"}]}
+#         try:
+#             emby_client.post(api_url, params={"api_key": api_key}, json=payload)
+#             return True
+#         except:
+#             return False
+
+# --- 局部扫描 ---
 def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool:
     """
-    最近锚点强制刷新版
+    【终极入库版】直接调用 Emby 的媒体库更新通知接口。
+    这是专门用于通知 Emby 扫描特定路径新文件的官方标准接口（Radarr/Sonarr 都在用）。
+    它会强制 Emby 立即扫描该目录，瞬间入库，且不消耗全库扫描的资源。
     """
-    # 1. 查找锚点
-    logger.info(f"  🔍 [智能刷新] 正在为路径寻找最近的 Emby 锚点: {file_path}")
-    found_id, found_name = find_nearest_library_anchor(file_path, base_url, api_key)
-
-    # 2. 执行刷新
-    if found_id:
-        logger.info(f"  🚀 [智能刷新] 命中最近锚点: '{found_name}' (ID: {found_id})，执行强制刷新...")
-        return refresh_item_by_id(found_id, base_url, api_key)
-    else:
-        # 回退逻辑
-        logger.warning(f"  ⚠️ 未找到任何在库的父级目录，回退到系统通知接口...")
-        api_url = f"{base_url.rstrip('/')}/Library/Media/Updated"
-        payload = {"Updates": [{"Path": file_path, "UpdateType": "Modified"}]}
-        try:
-            emby_client.post(api_url, params={"api_key": api_key}, json=payload)
+    logger.info(f"  🚀 [通知入库] 正在通知 Emby 局部扫描路径: {file_path}")
+    api_url = f"{base_url.rstrip('/')}/Library/Media/Updated"
+    
+    # UpdateType 使用 Created，明确告诉 Emby 这是新文件/新目录
+    payload = {"Updates": [{"Path": file_path, "UpdateType": "Created"}]}
+    
+    try:
+        response = emby_client.post(api_url, params={"api_key": api_key}, json=payload)
+        if response.status_code == 204:
+            logger.debug(f"  ✅ [通知入库] Emby 已接收扫描指令。")
             return True
-        except:
+        else:
+            logger.warning(f"  ⚠️ [通知入库] Emby 返回异常状态码: {response.status_code}")
             return False
+    except Exception as e:
+        logger.error(f"  ❌ [通知入库] 请求失败: {e}")
+        return False
 
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
 def get_all_persons_from_emby(
