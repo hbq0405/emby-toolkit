@@ -1879,7 +1879,11 @@ class SmartOrganizer:
 
         moved_count = 0
         move_groups = {}
-        junk_fids = [] # ★ 新增：用于收集花絮/样本视频的垃圾桶
+        unrecognized_fids = [] # ★ 终极垃圾桶：收集所有不符合要求的文件
+
+        # 确保 allowed_exts 有兜底，防止用户清空列表导致报错
+        if not allowed_exts:
+            allowed_exts = known_video_exts | {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
 
         for file_item in candidates:
             # 兼容 OpenAPI 键名
@@ -1888,17 +1892,21 @@ class SmartOrganizer:
             ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
             file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
             
-            # ★ 核心修改：垃圾分类逻辑
+            # =================================================================
+            # ★ 终极严格过滤逻辑：不在列表里的，统统移入未识别！
+            # =================================================================
+            # 1. 扩展名绝对白名单校验 (最高优先级)
+            if ext not in allowed_exts:
+                logger.debug(f"  🚫 扩展名 .{ext} 不在允许列表中，打入未识别: {file_name}")
+                if fid: unrecognized_fids.append(fid)
+                continue
+
+            # 2. 垃圾/花絮/样本校验 (仅针对视频)
             if ext in known_video_exts:
-                # 如果是视频，且被判定为花絮(OP/ED) 或 体积太小(样本)，扔进垃圾桶
                 if self._is_junk_file(file_name) or (0 < file_size < MIN_VIDEO_SIZE):
-                    if fid: junk_fids.append(fid)
+                    logger.debug(f"  🗑️ 判定为花絮或体积过小，打入未识别: {file_name}")
+                    if fid: unrecognized_fids.append(fid)
                     continue
-            else:
-                # 如果不是视频，且不在允许的扩展名列表里（比如 .txt, .jpg），留在原地等死
-                if ext not in allowed_exts: 
-                    continue
-            if ext in known_video_exts and 0 < file_size < MIN_VIDEO_SIZE: continue
 
             # 在重命名和查缓存前，如果缺失 SHA1，主动请求详情补齐 
             file_sha1 = file_item.get('sha1') or file_item.get('sha')
@@ -2216,11 +2224,12 @@ class SmartOrganizer:
                     P115CacheManager.delete_cid(batch_target_cid)
 
         # =================================================================
-        # ★★★ 终极清理：将收集到的花絮/样本视频移入未识别目录 ★★★
+        # ★★★ 终极清理：将所有不合规文件移入未识别目录 ★★★
         # =================================================================
-        if junk_fids and unidentified_cid:
-            logger.info(f"  🗑️ 发现 {len(junk_fids)} 个花絮/样本视频，正在移入未识别目录...")
-            self.client.fs_move(junk_fids, unidentified_cid)
+        if unrecognized_fids and unidentified_cid:
+            logger.info(f"  🗑️ 发现 {len(unrecognized_fids)} 个不合规文件(扩展名不符/花絮/样本)，正在移入未识别目录...")
+            # 同样传入列表，防止 115 API 报错
+            self.client.fs_move(unrecognized_fids, unidentified_cid)
 
         # 确定要检查的目录：如果是单文件，检查它的父目录；如果是文件夹，检查它自己
         dir_to_check = None
