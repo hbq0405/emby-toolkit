@@ -616,7 +616,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         break
 
                     # =========================================================
-                    # ★★★ 神医返回数据 Size 校验机制 (科学容错版) ★★★
+                    # ★★★ 神医返回数据 Size 校验机制 (百分比科学容错版) ★★★
                     # =========================================================
                     syndrome_size = 0
                     if isinstance(res_json, list) and len(res_json) > 0:
@@ -626,10 +626,11 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     
                     if syndrome_size > 0 and file_size_115 > 0:
                         diff = abs(syndrome_size - file_size_115)
-                        # ★ 科学校验：允许 5MB (5242880 字节) 的网络协议波动误差
-                        # 同名异版的差异通常在几百 MB 以上，5MB 足以完美区分
-                        if diff > 5242880:
-                            logger.error(f"  🚨 [数据校验] 严重警告！神医大小({syndrome_size})与115真实大小({file_size_115})相差 {diff/1024/1024:.2f} MB！")
+                        error_margin = diff / file_size_115
+                        
+                        # ★ 采用中心服务器作者建议：使用 1% (0.005) 的百分比容错率
+                        if error_margin > 0.01:
+                            logger.error(f"  🚨 [数据校验] 严重警告！神医大小({syndrome_size})与115真实大小({file_size_115})误差达 {error_margin*100:.3f}%！")
                             logger.error(f"  🚨 [数据校验] 判定为同名异版脏数据！正在调用神医接口清除错误缓存，强制重新提取...")
                             
                             emby.clear_item_media_info(item_id, emby_url, emby_key)
@@ -642,7 +643,8 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                             sleep(2) 
                             continue
                         elif diff > 0:
-                            logger.debug(f"  ℹ️ [数据校验] 存在 {diff} 字节的合理网络波动，校验通过。")
+                            # 打印出具体的微小误差，让你心里有数
+                            logger.debug(f"  ℹ️ [数据校验] 存在 {diff} 字节 ({error_margin*100:.4f}%) 的合理网络波动，校验通过。")
 
                     break
 
@@ -669,8 +671,8 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     
                     if need_upload and getattr(processor, 'p115_center', None):
                         try:
-                            # ★ 撤销传入 file_size_115，让中心服务器使用 JSON 内部的 Size 进行自洽校验
-                            processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
+                            # ★ 传入 file_size_115，让中心服务器校验
+                            processor.p115_center.upload_emby_mediainfo_data(sha1, res_json, size=file_size_115)
                             logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
                         except Exception as e_up:
                             logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
