@@ -142,8 +142,8 @@ class MediaProcessor:
         # =========================================================
         if P115_AVAILABLE and self.config.get("p115_mediainfo_center", True):
             machine_id = self.config.get("p115_machine_id", "")
-            auth_file_path = str(Path(__file__).resolve().parent / "web_app.py")
-            license_key = "5891de8a3f8781dbbc37d2c24e1f09eac01066b0816141fe98bb781225bd2d14"
+            auth_file_path = str(Path(__file__).resolve().parent / "extensions.py")
+            license_key = "650ad55de8fc0a81868754d39a2390c498ace7625f4d88d653ba0827132a02b3"
             
             try:
                 self.p115_center = P115Center(

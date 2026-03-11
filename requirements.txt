@@ -43,4 +43,4 @@ lxml
 
 # ---115 网盘支持 ---
 p115client>=0.0.8.4.6
-p115center-sdk==0.0.8
+p115center-sdk==0.0.11

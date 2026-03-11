@@ -508,6 +508,18 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                 need_upload = False
                 is_from_local = False
                 
+                # --- 提前查询 115 真实文件大小 (供中心服务器校验和本地严格比对使用) ---
+                file_size_115 = 0
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute("SELECT size FROM p115_filesystem_cache WHERE sha1 = %s", (sha1,))
+                            row = cursor.fetchone()
+                            if row and row['size']:
+                                file_size_115 = row['size']
+                except Exception as e_db:
+                    logger.warning(f"  ⚠️ [数据校验] 查询本地文件大小失败: {e_db}")
+
                 # --- 第一步：优先查询本地数据库缓存 ---
                 try:
                     with get_db_connection() as conn:
@@ -529,26 +541,17 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                 # --- 第二步：本地没有，再查中心服务器 ---
                 if not is_from_local and getattr(processor, 'p115_center', None):
                     logger.info(f"  ☁️ [P115Center] 本地无缓存，开始查询中心服务器 (SHA1: {sha1})")
-                    resp = processor.p115_center.download_emby_mediainfo_data([sha1])
+                    
+                    # ★ 核心修改 1：下载时带上 size 参数，让中心服务器直接拦截脏数据
+                    payload = [(sha1, file_size_115)] if file_size_115 > 0 else [sha1]
+                    resp = processor.p115_center.download_emby_mediainfo_data(payload)
                     media_data = resp.get(sha1)
                     
                     if media_data:
                         logger.info(f"  ☁️ [P115Center] 命中中心缓存，下发给神医恢复...")
                     else:
-                        logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医提取媒体信息...")
+                        logger.info(f"  ☁️ [P115Center] 中心无缓存(或校验不通过)，通知神医提取媒体信息...")
                         need_upload = True
-
-                # --- 提前查询 115 真实文件大小 (供后续循环内校验使用) ---
-                file_size_115 = 0
-                try:
-                    with get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            cursor.execute("SELECT size FROM p115_filesystem_cache WHERE sha1 = %s", (sha1,))
-                            row = cursor.fetchone()
-                            if row and row['size']:
-                                file_size_115 = row['size']
-                except Exception as e_db:
-                    logger.warning(f"  ⚠️ [数据校验] 查询本地文件大小失败: {e_db}")
 
                 # --- 第三步：轮询调用神医接口，死等纯净数据 ---
                 res_json = None
@@ -631,7 +634,11 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     # 执行反哺 (仅当中心服务器没有时)
                     if need_upload and getattr(processor, 'p115_center', None):
                         try:
-                            processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
+                            # ★ 核心修改 2：上传时带上 size 参数，让中心服务器严格校验
+                            if file_size_115 > 0:
+                                processor.p115_center.upload_emby_mediainfo_data(sha1, res_json, size=file_size_115)
+                            else:
+                                processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
                             logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
                         except Exception as e_up:
                             logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
