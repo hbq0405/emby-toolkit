@@ -64,7 +64,7 @@ MP_TEMP_DIR_LOCK = threading.Lock()
 MP_TRANSFER_QUEUE = {} 
 MP_TRANSFER_LOCK = threading.Lock()
 MP_TRANSFER_DEBOUNCER = None
-MP_TRANSFER_DEBOUNCE_TIME = 60.0
+MP_TRANSFER_DEBOUNCE_TIME = 120.0
 
 def _process_mp_transfer_queue():
     """处理 MP 转移防抖队列，执行目录级整理"""
@@ -79,7 +79,7 @@ def _process_mp_transfer_queue():
     client = P115Service.get_client()
     if not client: return
     
-    logger.info(f"  ⏳ [MP上传] 60秒防抖期结束，开始批量接管 {len(queue_copy)} 个目录的整理...")
+    logger.info(f"  ⏳ [MP上传] 120秒防抖期结束，开始批量接管 {len(queue_copy)} 个目录的整理...")
     
     for cid, info in queue_copy.items():
         try:
