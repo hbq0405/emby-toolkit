@@ -584,11 +584,10 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     elif isinstance(res_json, dict):
                         syndrome_size = res_json.get("MediaSourceInfo", {}).get("Size", res_json.get("Size", 0))
                     
-                    # 误差校验 (大于 1% 即判定为脏数据)
+                    # ★ 严格校验 (必须完全一致，0容错)
                     if syndrome_size > 0 and file_size_115 > 0:
-                        error_margin = abs(syndrome_size - file_size_115) / file_size_115
-                        if error_margin > 0.01:
-                            logger.error(f"  🚨 [数据校验] 严重警告！神医返回的媒体大小({syndrome_size})与115真实大小({file_size_115})误差达 {error_margin*100:.2f}%！")
+                        if syndrome_size != file_size_115:
+                            logger.error(f"  🚨 [数据校验] 严重警告！神医返回的媒体大小({syndrome_size})与115真实大小({file_size_115})不一致！")
                             logger.error(f"  🚨 [数据校验] 发现脏数据！正在调用神医接口清除错误缓存，强制重新提取...")
                             
                             # ★ 核心动作：调用新接口，清得毛都不剩
