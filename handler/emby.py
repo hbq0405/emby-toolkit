@@ -835,28 +835,6 @@ def find_nearest_library_anchor(file_path: str, base_url: str, api_key: str) -> 
         
     return None, None
 
-# --- 仅根据 ID 强制刷新 ---
-# def refresh_item_by_id(item_id: str, base_url: str, api_key: str) -> bool:
-#     """
-#     对指定 ID 执行强制递归刷新
-#     """
-#     refresh_url = f"{base_url.rstrip('/')}/Items/{item_id}/Refresh"
-#     refresh_params = {
-#         "api_key": api_key,
-#         "Recursive": "true", 
-#         "ImageRefreshMode": "Default",
-#         "MetadataRefreshMode": "Default",
-#         "ReplaceAllMetadata": "false",
-#         "ReplaceAllImages": "false"
-#     }
-    
-#     try:
-#         emby_client.post(refresh_url, params=refresh_params)
-#         return True
-#     except Exception as e:
-#         logger.error(f"  ❌ 刷新请求失败 (ID: {item_id}): {e}")
-#         return False
-
 # --- 仅根据 ID 强制刷新 (Token 提权极速版) ---
 def refresh_item_by_id(item_id: str, base_url: str, api_key: str) -> bool:
     """
