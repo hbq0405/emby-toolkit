@@ -1532,7 +1532,7 @@ class SmartOrganizer:
         return False
     
     def _execute_collection_breakdown(self, root_item, collection_movies):
-        """内部方法：拆解并独立整理合集包内的文件"""
+        """内部方法：拆解并独立整理合集包内的文件 (已升级批量模式)"""
         source_root_id = root_item.get('fid') or root_item.get('file_id')
         root_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '未知')
         unidentified_cid = None 
@@ -1551,7 +1551,6 @@ class SmartOrganizer:
                             break
             except: pass
             
-            # ★ 核心修复：如果不存在，必须主动创建！
             if not unidentified_cid:
                 try:
                     mk_res = self.client.fs_mkdir(unidentified_folder_name, save_cid)
@@ -1562,6 +1561,10 @@ class SmartOrganizer:
         try:
             sub_res = self.client.fs_files({'cid': source_root_id, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
             sub_items = sub_res.get('data', [])
+            
+            # ★ 新增：分组字典
+            grouped_sub_items = {}
+            unidentified_sub_fids = []
             
             for sub_item in sub_items:
                 sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name')
@@ -1620,26 +1623,35 @@ class SmartOrganizer:
                         except Exception as e:
                             logger.debug(f"    ├─ 搜索出错: {e}")
                 
-                # 4. 执行单体整理
+                # ★ 核心修改：不再立即执行，而是加入分组字典
                 if tmdb_id:
-                    logger.info(f"    ├─ 准备整理子项: {sub_name} -> ID:{tmdb_id}")
-                    try:
-                        organizer = SmartOrganizer(self.client, tmdb_id, sub_type, sub_title, self.ai_translator, self.use_ai)
-                        target_cid = organizer.get_target_cid()
-                        if organizer.execute(sub_item, target_cid):
-                            processed_count += 1
-                    except Exception as e:
-                        logger.error(f"    ❌ 处理子项失败: {e}")
+                    key = (tmdb_id, sub_type, sub_title)
+                    if key not in grouped_sub_items:
+                        grouped_sub_items[key] = []
+                    grouped_sub_items[key].append(sub_item)
                 else:
-                    logger.warning(f"    ⚠️ 无法识别合集子项: {sub_name}，移入未识别。")
-                    if unidentified_cid:
-                        try: 
-                            # ★ 核心修复：传入列表，确保移动成功
-                            self.client.fs_move([sub_id], unidentified_cid)
-                        except Exception as e: 
-                            logger.error(f"    ❌ 移入未识别失败: {e}")
+                    unidentified_sub_fids.append(sub_id)
             
-            # ★★★ 绝对安全防御：禁止直接删除，交由垃圾回收器检查是否为空 ★★★
+            # ★ 核心修改：遍历分组，批量执行
+            for (tmdb_id, sub_type, sub_title), items in grouped_sub_items.items():
+                logger.info(f"    ├─ 准备批量整理合集子项: {sub_title} -> ID:{tmdb_id} (共 {len(items)} 个文件)")
+                try:
+                    organizer = SmartOrganizer(self.client, tmdb_id, sub_type, sub_title, self.ai_translator, self.use_ai)
+                    target_cid_for_sub = organizer.get_target_cid()
+                    if organizer.execute(items, target_cid_for_sub):
+                        processed_count += len(items)
+                except Exception as e:
+                    logger.error(f"    ❌ 批量处理子项失败: {e}")
+            
+            # ★ 核心修改：批量移入未识别
+            if unidentified_sub_fids and unidentified_cid:
+                logger.warning(f"    ⚠️ 无法识别合集子项 {len(unidentified_sub_fids)} 个，批量移入未识别。")
+                try: 
+                    self.client.fs_move(unidentified_sub_fids, unidentified_cid)
+                except Exception as e: 
+                    logger.error(f"    ❌ 移入未识别失败: {e}")
+            
+            # 绝对安全防御：禁止直接删除，交由垃圾回收器检查是否为空
             from handler.p115_service import P115DeleteBuffer
             P115DeleteBuffer.add(fids=[], base_cids=[source_root_id])
             logger.info(f"  ⏳ [清理空目录] 已将拆解完毕的合集包交由垃圾回收器检查: {root_name}")
@@ -2570,15 +2582,20 @@ def task_scan_and_organize_115(processor=None):
         logger.info(f"  🔍 正在扫描主目录: {save_name} ...")
         
         # =================================================================
-        # ★★★ 核心重构：多线程并发任务池 ★★★
+        # ★★★ 核心重构：多线程并发任务池 (两阶段批量模式) ★★★
         # =================================================================
         processed_count = 0
         moved_to_unidentified = 0
         counter_lock = threading.Lock() # 计数器锁
 
-        executor = ThreadPoolExecutor(max_workers=15) # 开启 5 个并发线程
+        executor = ThreadPoolExecutor(max_workers=15) # 开启 15 个并发线程
         active_tasks = 0
         task_cond = threading.Condition()
+
+        # ★ 新增：用于收集第一阶段识别结果的容器
+        grouped_items = {} # 结构: {(tmdb_id, media_type, title): [item1, item2, ...]}
+        unidentified_items = []
+        group_lock = threading.Lock()
 
         def submit_task(func, *args):
             """安全提交任务到线程池"""
@@ -2601,29 +2618,20 @@ def task_scan_and_organize_115(processor=None):
                         task_cond.notify_all() # 所有任务完成，唤醒主线程
 
         def process_single_item(item, name, is_folder, depth, forced_type, main_dir_name=None, has_season_subdirs=False):
-            """单个媒体项的识别与整理逻辑 (在子线程中运行)"""
-            nonlocal processed_count, moved_to_unidentified
+            """单个媒体项的识别逻辑 (仅识别并分组，不执行整理)"""
             item_id = item.get('fid') or item.get('file_id')
 
-            # =================================================================
-            # ★ 终极防线：透视眼！
-            # 如果当前是目录，且光看名字不知道是电影还是剧集，
-            # 绝对不瞎猜！先发一个极速请求往目录里面看一眼，寻找剧集特征！
-            # =================================================================
             if is_folder and not forced_type:
                 try:
-                    # 极速探测目录内部特征 (只看前 100 个子项，耗时极短)
                     res = client.fs_files({'cid': item_id, 'limit': 100, 'record_open_time': 0, 'count_folders': 0})
                     for sub_item in res.get('data', []):
                         sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name', '')
-                        # 只要里面有 Season 目录，或者 S01E01 这种文件，立刻死死锁定为剧集！
                         if re.search(r'(?:Season\s?\d+|S\d{1,4}[ \.\-]*(?:E|P)\d{1,4}|EP?\d{1,4}|第[一二三四五六七八九十\d]+季)', sub_name, re.IGNORECASE):
                             forced_type = 'tv'
                             break
                 except Exception:
                     pass
 
-            # ★ 带着铁证（forced_type）去进行识别和 TMDb 查询
             tmdb_id, media_type, title = _identify_media_enhanced(
                 name, 
                 main_dir_name=main_dir_name,
@@ -2634,56 +2642,25 @@ def task_scan_and_organize_115(processor=None):
             )
             
             if tmdb_id:
-                logger.info(f"  ➜ 识别成功: {name} -> ID:{tmdb_id} ({media_type})")
-                try:
-                    organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
-                    target_cid = organizer.get_target_cid()
-                    
-                    if organizer.execute(item, target_cid):
-                        with counter_lock:
-                            processed_count += 1
-                            update_progress(50, f"正在并发极速整理... (已成功: {processed_count} | 未识别: {moved_to_unidentified})")
-                            
-                except Exception as e:
-                    logger.error(f"  ❌ 整理出错: {e}")
+                # ★ 核心修改：识别成功后，加入分组字典，等待第二阶段统一处理
+                with group_lock:
+                    key = (tmdb_id, media_type, title)
+                    if key not in grouped_items:
+                        grouped_items[key] = []
+                    grouped_items[key].append(item)
             else:
-                # 识别失败
                 if is_folder:
                     logger.info(f"  📂 目录 '{name}' 无法直接识别，深入扫描子目录 (层级 {depth+1})...")
                     submit_task(scan_directory, item_id, name, depth + 1, main_dir_name)
-                    
                     from handler.p115_service import P115DeleteBuffer
                     P115DeleteBuffer.add(fids=[], base_cids=[item_id])
-                    
-                    if unidentified_cid and depth == 0:
-                        try:
-                            client.fs_move(item_id, unidentified_cid)
-                            with counter_lock: 
-                                moved_to_unidentified += 1
-                                update_progress(50, f"正在并发极速整理... (已成功: {processed_count} | 未识别: {moved_to_unidentified})")
-                        except: pass
                 else:
-                    if unidentified_cid:
-                        try:
-                            # ★ 核心修复：传入列表 [item_id]，并捕获打印真实错误
-                            client.fs_move([item_id], unidentified_cid)
-                            with counter_lock: 
-                                moved_to_unidentified += 1
-                                update_progress(50, f"正在并发极速整理... (已成功: {processed_count} | 未识别: {moved_to_unidentified})")
-                            
-                            ext = name.split('.')[-1].lower() if '.' in name else ''
-                            if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
-                                pc = item.get('pc') or item.get('pick_code') 
-                                P115RecordManager.add_or_update_record(
-                                    item_id, name, 'unrecognized', 
-                                    target_cid=unidentified_cid, category_name="未识别", 
-                                    pick_code=pc 
-                                )
-                        except Exception as e:
-                            logger.error(f"  ❌ 移入未识别目录失败 ({name}): {e}")
+                    # ★ 核心修改：未识别文件也加入列表，等待批量移动
+                    with group_lock:
+                        unidentified_items.append(item)
 
         def scan_directory(current_cid, current_name, depth=0, root_dir_name=None):
-            """目录透视与任务分发逻辑 (在子线程中运行)"""
+            """目录透视与任务分发逻辑"""
             if depth > 5: return
                 
             offset = 0
@@ -2703,12 +2680,8 @@ def task_scan_and_organize_115(processor=None):
                         else: raise
 
                 data = res.get('data', [])
-                if not data: 
-                    break 
+                if not data: break 
 
-                # =================================================================
-                # ★ 预扫描：嗅探当前目录下是否包含类似季目录 (Season 1, S01 等)
-                # =================================================================
                 has_season_subdirs = False
                 for item in data:
                     fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
@@ -2728,16 +2701,9 @@ def task_scan_and_organize_115(processor=None):
                     if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
                         continue
 
-                    # =================================================================
-                    # ★★★ 核心防御：绝对禁止钻入蓝光/DVD原盘结构目录 ★★★
-                    # 原盘必须作为一个整体被识别(靠父目录名)。如果父目录识别失败，
-                    # 绝对不能钻进去把里面的 CERTIFICATE 或 .m2ts 拆散！
-                    # =================================================================
                     if is_folder and name.upper() in ['BDMV', 'CERTIFICATE', 'ANY!', 'VIDEO_TS', 'AUDIO_TS', 'PLAYLIST', 'CLIPINF', 'STREAM', 'BACKUP']:
-                        logger.warning(f"  🛑 [原盘防御] 拒绝深入扫描蓝光/DVD内部结构目录: {name}")
                         continue
                         
-                    # 顺手把原盘里的碎片文件也屏蔽掉，防止它们散落在外面被误杀
                     if not is_folder:
                         ext = name.split('.')[-1].lower() if '.' in name else ''
                         if ext in ['clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo']:
@@ -2747,25 +2713,78 @@ def task_scan_and_organize_115(processor=None):
                     if is_folder and re.search(r'^(Season\s?\d+|S\d+|Ep?\d+|第[一二三四五六七八九十\d]+季)$', name, re.IGNORECASE):
                         forced_type = 'tv'
 
-                    # ★ 确定传递下去的主目录名
-                    # 如果 depth == 0，说明当前扫描的是"待整理"根目录，里面的 item 就是主目录本身
-                    # 如果 depth > 0，说明当前扫描的是主目录内部，沿用传下来的 root_dir_name
                     pass_root_name = name if depth == 0 else root_dir_name
-
                     submit_task(process_single_item, item, name, is_folder, depth, forced_type, pass_root_name, has_season_subdirs)
 
-                if len(data) < limit:
-                    break
-                
+                if len(data) < limit: break
                 offset += limit
 
-        # 启动初始扫描任务
+        # =================================================================
+        # 阶段一：启动初始扫描任务，等待所有文件识别完毕
+        # =================================================================
         submit_task(scan_directory, save_cid, save_name, 0, None)
 
-        # ★ 阻塞主线程，直到所有子线程任务全部执行完毕
         with task_cond:
             while active_tasks > 0:
                 task_cond.wait()
+
+        # =================================================================
+        # 阶段二：并发执行批量整理 (将同一部剧的散落文件打包成一次请求)
+        # =================================================================
+        if grouped_items:
+            logger.info(f"  📦 扫描与识别完成，共分拣出 {len(grouped_items)} 个媒体组，开始并发批量整理...")
+            active_tasks = 0 # 重置计数器
+
+            def execute_group(tmdb_id, media_type, title, items):
+                nonlocal processed_count
+                try:
+                    organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
+                    target_cid = organizer.get_target_cid()
+                    # ★ 核心：直接传入列表，底层 execute 会自动打包处理
+                    if organizer.execute(items, target_cid):
+                        with counter_lock:
+                            processed_count += len(items)
+                            update_progress(80, f"正在并发极速整理... (已成功: {processed_count} | 未识别: {moved_to_unidentified})")
+                except Exception as e:
+                    logger.error(f"  ❌ 批量整理出错 (ID:{tmdb_id}): {e}")
+
+            for key, items in grouped_items.items():
+                submit_task(execute_group, key[0], key[1], key[2], items)
+
+            with task_cond:
+                while active_tasks > 0:
+                    task_cond.wait()
+
+        # =================================================================
+        # 阶段三：批量移入未识别目录
+        # =================================================================
+        if unidentified_items and unidentified_cid:
+            logger.info(f"  🗑️ 正在批量移入未识别目录 ({len(unidentified_items)} 个文件)...")
+            u_fids = [i.get('fid') or i.get('file_id') for i in unidentified_items]
+            
+            # 115 API fs_move 建议单次不超过 1000 个，这里按 500 切片
+            chunk_size = 500
+            for i in range(0, len(u_fids), chunk_size):
+                chunk_fids = u_fids[i:i+chunk_size]
+                chunk_items = unidentified_items[i:i+chunk_size]
+                try:
+                    client.fs_move(chunk_fids, unidentified_cid)
+                    moved_to_unidentified += len(chunk_fids)
+                    
+                    # 记录日志
+                    for item in chunk_items:
+                        name = item.get('fn') or item.get('n') or item.get('file_name', '')
+                        item_id = item.get('fid') or item.get('file_id')
+                        ext = name.split('.')[-1].lower() if '.' in name else ''
+                        if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                            pc = item.get('pc') or item.get('pick_code') 
+                            P115RecordManager.add_or_update_record(
+                                item_id, name, 'unrecognized', 
+                                target_cid=unidentified_cid, category_name="未识别", 
+                                pick_code=pc 
+                            )
+                except Exception as e:
+                    logger.error(f"  ❌ 批量移入未识别目录失败: {e}")
 
         executor.shutdown()
         final_msg = f"扫描结束！成功归类 {processed_count} 个，移入未识别 {moved_to_unidentified} 个。"
