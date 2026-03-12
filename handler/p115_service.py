@@ -1655,8 +1655,10 @@ class SmartOrganizer:
         is_batch = isinstance(root_item_or_items, list)
         
         if is_batch:
+            if not root_item_or_items: return True # 防御性检查：空列表直接返回
+            root_item = root_item_or_items[0]      # ★ 修复报错：取第一个元素作为代表项，供后续提取父目录ID使用
             root_name = "批量文件"
-            source_root_id = root_item_or_items[0].get('pid') or root_item_or_items[0].get('parent_id')
+            source_root_id = root_item.get('pid') or root_item.get('parent_id')
             is_source_file = True
             dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
         else:
