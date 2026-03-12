@@ -1916,13 +1916,7 @@ class SmartOrganizer:
         if not final_home_cid:
             logger.error(f"  ❌ 无法获取或创建目标目录 (已尝试所有手段)")
             return False
-
-        candidates = []
-        if is_source_file:
-            candidates.append(root_item)
-        else:
-            candidates = self._scan_files_recursively(source_root_id, max_depth=3)
-
+        
         if not candidates: return True
 
         moved_count = 0
