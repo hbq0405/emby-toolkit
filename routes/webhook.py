@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from flask import Blueprint, request, jsonify
 from typing import Optional, List
 from gevent import spawn_later, spawn, sleep
+from gevent.event import Event
 from gevent.lock import Semaphore
 
 import task_manager
@@ -60,26 +61,28 @@ SYNDROME_API_LOCK = Semaphore(1)
 # --- MP Webhook 专属防抖队列 (按目录独立防抖) ---
 MP_TRANSFER_INFO = {}       # 存放目录的元数据
 MP_TRANSFER_TIMERS = {}     # 存放每个目录独立的定时器
+MP_TRANSFER_EVENTS = {}     # 存放用于唤醒监控协程的事件对象
 MP_TRANSFER_LOCK = threading.Lock()
 
 def _process_single_mp_directory(dir_cid):
     """处理单个 MP 目录的整理 (独立触发)"""
     with MP_TRANSFER_LOCK:
-        # 弹出该目录的信息并清理定时器记录
+        # 弹出该目录的信息并清理定时器和事件记录
         info = MP_TRANSFER_INFO.pop(dir_cid, None)
         if dir_cid in MP_TRANSFER_TIMERS:
             del MP_TRANSFER_TIMERS[dir_cid]
+        if dir_cid in MP_TRANSFER_EVENTS:
+            del MP_TRANSFER_EVENTS[dir_cid]
             
     if not info: return
     
     client = P115Service.get_client()
     if not client: return
     
-    # 根据媒体类型输出不同的日志
     if info['media_type'] == 'movie':
-        logger.info(f"  ⏳ [MP上传] 电影 '{info['name']}' ，开始整理...")
+        logger.info(f"  ⏳ [MP上传] 电影 '{info['name']}' 开始整理...")
     else:
-        logger.info(f"  ⏳ [MP上传] 剧集目录 '{info['name']}' 已无后续集上传，开始整理...")
+        logger.info(f"  ⏳ [MP上传] 剧集目录 '{info['name']}' 全部上传完成，开始整理...")
     
     try:
         # 这里的 tmdb_id 和 media_type 绝对精准，因为是该目录专属的 info
@@ -103,31 +106,36 @@ def _process_single_mp_directory(dir_cid):
     except Exception as e:
         logger.error(f"  ❌ [MP上传] 目录整理失败: {e}", exc_info=True)
 
-def _monitor_mp_series_transfer(dir_cid, tmdb_id):
+def _monitor_mp_series_transfer(dir_cid, tmdb_id, wake_event):
     """
-    持续轮询监控剧集整理状态 (智能防抖)
+    持续轮询监控剧集整理状态 (智能防抖 + 唤醒打断)
     """
     app_config = config_manager.APP_CONFIG 
     max_retries = 60 # 最大监控 1 小时 (60 * 60秒)，防止 MP 卡死
     retries = 0
     
-    logger.info(f"  👀 [MP监控] 开始检查剧集 (TMDB:{tmdb_id}) 是否还有其他正在上传/整理的集...")
+    logger.info(f"  👀 [MP监控] 开始检查剧集 (TMDB:{tmdb_id}) 是否还有其他正在上传的集...")
     
     while retries < max_retries:
         try:
             is_busy = has_active_transfer_tasks_for_media(tmdb_id, app_config)
             
             if not is_busy:
-                logger.info(f"  ✅ [MP监控] 剧集 (TMDB:{tmdb_id}) 当前整理队列已清空，立即触发网盘接管！")
+                logger.info(f"  ✅ [MP监控] 剧集 (TMDB:{tmdb_id}) 当前上传队列已完成，开始整理...")
                 _process_single_mp_directory(dir_cid)
                 return # 任务完成，直接退出协程
             else:
-                logger.info(f"  ⏳ [MP监控] 剧集 (TMDB:{tmdb_id}) 仍在整理队列中，等待 60 秒后重试... ({retries+1}/{max_retries})")
+                logger.info(f"  ⏳ [MP监控] 剧集 (TMDB:{tmdb_id}) 仍在整理队列中，等待后续集上传完成... ({retries+1}/{max_retries})")
             
         except Exception as e:
             logger.error(f"  ❌ [MP监控] 轮询异常: {e}")
         
-        sleep(60)
+        # ★ 核心老六逻辑：不再死等 sleep(60)！
+        # 而是等待 wake_event。如果 60 秒内没有新 Webhook 唤醒它，它就超时醒来（兜底轮询）；
+        # 如果 60 秒内有新 Webhook 进来调用了 set()，它会【立刻】醒来进入下一轮循环查队列！
+        wake_event.wait(timeout=60)
+        wake_event.clear() # 醒来后重置状态，准备下一次睡眠
+        
         retries += 1
         
     logger.warning(f"  ⚠️ [MP监控] 剧集 (TMDB:{tmdb_id}) 监控超时 (1小时)，强制触发整理兜底。")
@@ -890,18 +898,23 @@ def emby_webhook():
                     # 电影：如果有定时器，杀掉重置
                     if dir_cid in MP_TRANSFER_TIMERS:
                         MP_TRANSFER_TIMERS[dir_cid].kill()
-                    logger.info(f"  📥 [MP上传] 收到电影文件: {target_item.get('name')}，跳过防抖，立即开始整理...")
+                    logger.info(f"  📥 [MP上传] 收到电影文件: {target_item.get('name')}，立即开始整理...")
                     MP_TRANSFER_TIMERS[dir_cid] = spawn(_process_single_mp_directory, dir_cid)
                     status_msg = "processing_immediately"
                 else:
-                    # 剧集：如果该目录的监控协程已经在跑了，就不管它，让它继续跑
+                    # 剧集：如果该目录的监控协程没在跑，启动它并传入 Event
                     if dir_cid not in MP_TRANSFER_TIMERS or MP_TRANSFER_TIMERS[dir_cid].dead:
-                        logger.info(f"  📥 [MP上传] 收到剧集文件: {target_item.get('name')}，启动后台轮询监控...")
-                        MP_TRANSFER_TIMERS[dir_cid] = spawn(_monitor_mp_series_transfer, dir_cid, tmdb_id)
+                        logger.info(f"  📥 [MP上传] 收到剧集文件: {target_item.get('name')}，启动后台队列监控...")
+                        wake_event = Event()
+                        MP_TRANSFER_EVENTS[dir_cid] = wake_event
+                        MP_TRANSFER_TIMERS[dir_cid] = spawn(_monitor_mp_series_transfer, dir_cid, tmdb_id, wake_event)
                         status_msg = "monitoring_started"
                     else:
-                        logger.info(f"  📥 [MP上传] 收到剧集文件: {target_item.get('name')}，监控任务运行中，无需重复启动。")
-                        status_msg = "monitoring_already_running"
+                        # ★ 核心老六逻辑：如果监控协程在跑（正在 sleep），立刻踢醒它！
+                        logger.info(f"  📥 [MP上传] 收到剧集后续文件: {target_item.get('name')}，检查是否全部上传完成...")
+                        if dir_cid in MP_TRANSFER_EVENTS:
+                            MP_TRANSFER_EVENTS[dir_cid].set() # 触发事件，打断 sleep(60)
+                        status_msg = "monitoring_woken_up"
                 
             return jsonify({"status": status_msg}), 200
 
