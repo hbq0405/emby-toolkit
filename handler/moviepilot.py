@@ -458,3 +458,34 @@ def delete_download_tasks(keyword: str, config: Dict[str, Any], hashes: list = N
     except Exception as e:
         logger.error(f"  ❌ [下载器清理] 执行出错: {e}")
         return False
+
+def has_active_transfer_tasks_for_media(tmdb_id: int, config: Dict[str, Any]) -> bool:
+    """
+    【状态查询】检查 MoviePilot 中是否还有该 TMDB ID 的活动整理任务。
+    用于 Webhook 智能防抖，防止 115 整理时删掉 MP 正在上传的目录。
+    """
+    try:
+        moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token:
+            logger.warning("  ➜ 无法获取 MP Token，默认判定为有活动任务以保护数据。")
+            return True
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        target_tmdb = int(tmdb_id)
+
+        # 仅检查整理队列 (正在转移、刮削中等)
+        tr_url = f"{moviepilot_url}/api/v1/transfer/queue"
+        tr_res = requests.get(tr_url, headers=headers, timeout=10)
+        if tr_res.status_code == 200:
+            tr_data = tr_res.json()
+            for item in tr_data:
+                media = item.get('media', {})
+                if media and media.get('tmdb_id') == target_tmdb:
+                    logger.debug(f"  ➜ [MP状态] 发现剧集 (TMDB:{target_tmdb}) 仍在整理队列中。")
+                    return True
+
+        return False
+    except Exception as e:
+        logger.error(f"  ➜ 检查 MP 整理队列失败: {e}")
+        return True
