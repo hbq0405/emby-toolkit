@@ -1650,18 +1650,28 @@ class SmartOrganizer:
             logger.error(f"  ❌ 拆解合集包失败: {e}")
             return False
 
-    def execute(self, root_item, target_cid):
-        # 兼容 OpenAPI 键名
-        root_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '未知')
-        source_root_id = root_item.get('fid') or root_item.get('file_id')
-        fc_val = root_item.get('fc') if root_item.get('fc') is not None else root_item.get('type')
-        is_source_file = str(fc_val) == '1'
-        dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+    def execute(self, root_item_or_items, target_cid):
+        # ★ 新增：判断传入的是单个文件还是批量文件列表
+        is_batch = isinstance(root_item_or_items, list)
+        
+        if is_batch:
+            root_name = "批量文件"
+            source_root_id = root_item_or_items[0].get('pid') or root_item_or_items[0].get('parent_id')
+            is_source_file = True
+            dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
+        else:
+            root_item = root_item_or_items
+            # 兼容 OpenAPI 键名
+            root_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '未知')
+            source_root_id = root_item.get('fid') or root_item.get('file_id')
+            fc_val = root_item.get('fc') if root_item.get('fc') is not None else root_item.get('type')
+            is_source_file = str(fc_val) == '1'
+            dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
 
         # =================================================================
-        # 1. 拦截合集包 (Collection Breakdown)
+        # 1. 拦截合集包 (Collection Breakdown) - 仅限单项传入时触发
         # =================================================================
-        if not is_source_file and re.search(r'(合集|部曲|系列|Collection|Pack|Trilogy|Quadrilogy|\d+-\d+)', root_name, re.IGNORECASE):
+        if not is_batch and not is_source_file and re.search(r'(合集|部曲|系列|Collection|Pack|Trilogy|Quadrilogy|\d+-\d+)', root_name, re.IGNORECASE):
             logger.info(f"  📦 检测到疑似合集包: {root_name}，正在验证...")
             collection_movies = []
             try:
@@ -1690,13 +1700,21 @@ class SmartOrganizer:
             return self._execute_collection_breakdown(root_item, collection_movies)
 
         # =================================================================
-        # 2. 提前获取候选文件列表
+        # 2. 提前获取候选文件列表 (支持批量合并)
         # =================================================================
         candidates = []
-        if is_source_file:
-            candidates.append(root_item)
+        if is_batch:
+            for item in root_item_or_items:
+                fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
+                if str(fc_val) == '1':
+                    candidates.append(item)
+                else:
+                    candidates.extend(self._scan_files_recursively(item.get('fid') or item.get('file_id'), max_depth=3))
         else:
-            candidates = self._scan_files_recursively(source_root_id, max_depth=3)
+            if is_source_file:
+                candidates.append(root_item)
+            else:
+                candidates = self._scan_files_recursively(source_root_id, max_depth=3)
 
         if not candidates: return True
 
@@ -3372,113 +3390,202 @@ def delete_115_files_by_webhook(item_path, pickcodes):
     except Exception as e:
         logger.error(f"  ❌ [深度删除] 执行异常: {e}", exc_info=True)
 
-def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num=None):
-    """手动纠错：移动文件、生成新STRM，并彻底清理旧空壳和旧STRM"""
-    client = P115Service.get_client()
-    if not client: raise Exception("115 客户端未初始化")
-        
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT file_id, original_name FROM p115_organize_records WHERE id = %s", (record_id,))
-                row = cursor.fetchone()
-                if not row: raise Exception("未找到该整理记录")
-                file_id = row['file_id']
-                original_name = row['original_name']
-    except Exception as e:
-        raise Exception(f"数据库查询失败: {e}")
+# ======================================================================
+# ★★★ 手动纠错缓冲队列 (实现批量重组与一次性刷新) ★★★
+# ======================================================================
+class ManualCorrectTaskQueue:
+    _lock = threading.Lock()
+    _tasks = {}  # 结构: {(tmdb_id, media_type, target_cid, season_num): [record_id1, record_id2, ...]}
+    _timer = None
 
-    # 1. 从本地缓存获取旧文件的精确信息
-    old_cache = None
+    @classmethod
+    def add(cls, record_id, tmdb_id, media_type, target_cid, season_num):
+        with cls._lock:
+            key = (tmdb_id, media_type, target_cid, season_num)
+            if key not in cls._tasks:
+                cls._tasks[key] = []
+            cls._tasks[key].append(record_id)
+
+            if cls._timer is not None:
+                cls._timer.kill()
+            from gevent import spawn_later
+            # 延迟 2 秒，收集前端并发发来的所有同批次请求
+            cls._timer = spawn_later(2.0, cls._execute_all)
+
+    @classmethod
+    def _execute_all(cls):
+        with cls._lock:
+            tasks = cls._tasks.copy()
+            cls._tasks.clear()
+            cls._timer = None
+
+        from gevent import spawn
+        for key, record_ids in tasks.items():
+            spawn(cls._process_batch, key, record_ids)
+
+    @classmethod
+    def _process_batch(cls, key, record_ids):
+        tmdb_id, media_type, target_cid, season_num = key
+        try:
+            _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_num)
+        except Exception as e:
+            logger.error(f"  ❌ 批量手动重组失败: {e}", exc_info=True)
+
+
+def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num=None):
+    """手动纠错入口：将任务加入缓冲队列，实现批量重组"""
+    ManualCorrectTaskQueue.add(record_id, tmdb_id, media_type, target_cid, season_num)
+    return True
+
+
+def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_num=None):
+    """真正的批量执行逻辑"""
+    client = P115Service.get_client()
+    if not client: return
+
+    # 1. 批量获取数据库记录
+    records = []
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT parent_id, pick_code, sha1, local_path FROM p115_filesystem_cache WHERE id = %s", (str(file_id),))
-                old_cache = cursor.fetchone()
+                cursor.execute("SELECT id, file_id, original_name FROM p115_organize_records WHERE id = ANY(%s)", (list(record_ids),))
+                records = cursor.fetchall()
+    except Exception as e:
+        logger.error(f"数据库查询失败: {e}")
+        return
+
+    if not records: return
+
+    # 2. 批量获取旧缓存
+    old_caches = {}
+    file_ids = [str(r['file_id']) for r in records]
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id, parent_id, pick_code, sha1, local_path FROM p115_filesystem_cache WHERE id = ANY(%s)", (list(file_ids),))
+                for row in cursor.fetchall():
+                    old_caches[str(row['id'])] = row
     except: pass
 
-    info_res = client.fs_get_info(file_id)
-    if not info_res or not info_res.get('state') or not info_res.get('data'):
-        raise Exception(f"无法在 115 中定位到该文件(ID:{file_id})，可能已被删除。")
-        
-    info_data = info_res['data']
-    old_pid = info_data.get('parent_id') or info_data.get('cid')
-    
-    # 补全 pick_code，确保能生成 STRM
-    pick_code = info_data.get('pick_code')
-    if not pick_code and old_cache:
-        pick_code = old_cache['pick_code']
-        
-    root_item = {
-        'fid': info_data.get('file_id') or file_id,
-        'file_id': info_data.get('file_id') or file_id,
-        'fn': original_name,
-        'fc': str(info_data.get('file_category', '1')), 
-        'pid': old_pid,
-        'pc': pick_code,
-        'pick_code': pick_code,
-        'sha1': info_data.get('sha1') or (old_cache['sha1'] if old_cache else None)
-    }
+    root_items = []
+    old_pids = set()
+    refresh_target_dirs = set()
+    config = get_config()
+    local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
 
-    title = original_name
+    for r in records:
+        file_id = str(r['file_id'])
+        original_name = r['original_name']
+        old_cache = old_caches.get(file_id)
+
+        info_res = client.fs_get_info(file_id)
+        if not info_res or not info_res.get('state') or not info_res.get('data'):
+            logger.warning(f"无法在 115 中定位到该文件(ID:{file_id})，可能已被删除。")
+            continue
+
+        info_data = info_res['data']
+        old_pid = info_data.get('parent_id') or info_data.get('cid')
+        if old_pid: old_pids.add(str(old_pid))
+
+        pick_code = info_data.get('pick_code')
+        if not pick_code and old_cache:
+            pick_code = old_cache['pick_code']
+
+        root_items.append({
+            'fid': info_data.get('file_id') or file_id,
+            'file_id': info_data.get('file_id') or file_id,
+            'fn': original_name,
+            'fc': str(info_data.get('file_category', '1')),
+            'pid': old_pid,
+            'pc': pick_code,
+            'pick_code': pick_code,
+            'sha1': info_data.get('sha1') or (old_cache['sha1'] if old_cache else None),
+            '_record_id': r['id'],
+            '_old_cache': old_cache,
+            '_info_data': info_data
+        })
+
+        # 收集需要刷新的本地旧目录
+        if local_root and old_cache and old_cache.get('local_path'):
+            old_file_rel_path = str(old_cache['local_path']).lstrip('\\/')
+            old_dir = os.path.abspath(os.path.dirname(os.path.join(local_root, old_file_rel_path)))
+            refresh_target_dirs.add(old_dir)
+
+    if not root_items: return
+
+    title = root_items[0]['fn']
     api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
     try:
         import handler.tmdb as tmdb
         if media_type == 'tv': details = tmdb.get_tv_details(tmdb_id, api_key)
         else: details = tmdb.get_movie_details(tmdb_id, api_key)
-        if details: title = details.get('title') or details.get('name') or original_name
+        if details: title = details.get('title') or details.get('name') or title
     except: pass
 
-    logger.info(f"  🛠️ [手动重组] 开始对 '{original_name}' 执行定向整理 -> ID:{tmdb_id}")
-    
-    # 2. 执行重组
+    logger.info(f"  🛠️ [批量手动重组] 开始对 {len(root_items)} 个文件执行定向整理 -> ID:{tmdb_id}")
+
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     if season_num is not None and str(season_num).strip():
         organizer.forced_season = int(season_num)
-        logger.info(f"  📌 [手动重组] 已强制指定季号: Season {organizer.forced_season}")
-    
-    success = organizer.execute(root_item, target_cid)
-    if not success: raise Exception("执行重组失败。")
+        logger.info(f"  📌 [批量手动重组] 已强制指定季号: Season {organizer.forced_season}")
 
-    # ★ 新增：查找并重组关联字幕
-    if old_pid and str(old_pid) != '0':
+    # ★ 核心：将列表直接传给 execute，底层会自动打包成一次 115 API 移动请求！
+    success = organizer.execute(root_items, target_cid)
+    if not success:
+        logger.error("执行批量重组失败。")
+        return
+
+    # ★ 查找并重组关联字幕 (批量)
+    sub_items = []
+    for old_pid in old_pids:
+        if str(old_pid) == '0': continue
         try:
-            # 获取视频当前的基础名（去掉后缀），用于匹配字幕
-            current_video_name = info_data.get('file_name') or original_name
-            video_base_name = current_video_name.rsplit('.', 1)[0] if '.' in current_video_name else current_video_name
-            
             sub_res = client.fs_files({'cid': old_pid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
             for item in sub_res.get('data', []):
                 if str(item.get('fc', '0')) == '1':
                     sub_name = item.get('fn') or item.get('n') or item.get('file_name', '')
                     ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
-                    # 如果是字幕文件，且文件名以视频基础名开头（完美兼容 .zh.srt 等语言后缀）
-                    if ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'] and sub_name.startswith(video_base_name):
-                        logger.info(f"  🔤 [手动重组] 发现关联字幕，跟随重组: {sub_name}")
-                        organizer.execute(item, target_cid)
+                    if ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
+                        # 检查是否匹配任何一个视频的基础名
+                        for r_item in root_items:
+                            v_name = r_item['_info_data'].get('file_name') or r_item['fn']
+                            v_base = v_name.rsplit('.', 1)[0] if '.' in v_name else v_name
+                            if sub_name.startswith(v_base):
+                                sub_items.append(item)
+                                break
         except Exception as e:
             logger.warning(f"  ⚠️ 查找关联字幕失败: {e}")
 
-    # 3. 本地擦屁股：精准删除旧的本地 STRM 和空目录
-    config = get_config()
-    local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
-    if local_root and old_cache and old_cache.get('local_path'):
-        try:
-            import shutil
-            # ★ 修复 1：强行剥离前导斜杠，防止 os.path.join 吞掉 local_root
+    if sub_items:
+        logger.info(f"  🔤 [批量手动重组] 发现 {len(sub_items)} 个关联字幕，跟随重组...")
+        organizer.execute(sub_items, target_cid)
+
+    # ★ 本地擦屁股：精准删除旧的本地 STRM 和空目录
+    if local_root:
+        import shutil
+        protected_dirs = {os.path.abspath(local_root)}
+        for rule in organizer.rules:
+            cat_path = rule.get('category_path') or rule.get('dir_name')
+            if cat_path:
+                protected_dirs.add(os.path.abspath(os.path.join(local_root, cat_path.lstrip('\\/'))))
+        protected_dirs.add(os.path.abspath(os.path.join(local_root, "未识别")))
+
+        for r_item in root_items:
+            old_cache = r_item['_old_cache']
+            if not old_cache or not old_cache.get('local_path'): continue
+
             old_file_rel_path = str(old_cache['local_path']).lstrip('\\/')
             old_strm_rel_path = os.path.splitext(old_file_rel_path)[0] + ".strm"
             old_strm_full_path = os.path.join(local_root, old_strm_rel_path)
-            
+
             if os.path.exists(old_strm_full_path):
                 os.remove(old_strm_full_path)
-                logger.info(f"  🧹 成功删除本地旧 STRM: {old_strm_full_path}")
-                
+                logger.debug(f"  🧹 删除本地旧 STRM: {old_strm_full_path}")
+
             old_mi_full_path = os.path.splitext(old_file_rel_path)[0] + "-mediainfo.json"
             if os.path.exists(old_mi_full_path):
                 os.remove(old_mi_full_path)
 
-            # 清理本地残留的旧字幕文件
             old_dir_full_path = os.path.dirname(old_strm_full_path)
             old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
             if os.path.exists(old_dir_full_path):
@@ -3487,73 +3594,66 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, s
                         sub_to_del = os.path.join(old_dir_full_path, f)
                         try:
                             os.remove(sub_to_del)
-                            logger.info(f"  🧹 成功删除本地旧字幕: {sub_to_del}")
                         except: pass
 
-            # 获取所有受保护的分类根目录，防止误删分类大类（如 /mnt/strm/电影）
-            protected_dirs = {os.path.abspath(local_root)}
-            for rule in organizer.rules:
-                cat_path = rule.get('category_path') or rule.get('dir_name')
-                if cat_path:
-                    protected_dirs.add(os.path.abspath(os.path.join(local_root, cat_path.lstrip('\\/'))))
-            protected_dirs.add(os.path.abspath(os.path.join(local_root, "未识别")))
-
-            # 向上递归清理本地空目录
-            old_dir = os.path.abspath(os.path.dirname(os.path.join(local_root, old_file_rel_path)))
-            refresh_target_dir = old_dir
-            
-            while old_dir and old_dir not in protected_dirs:
-                if os.path.exists(old_dir):
+        # 向上递归清理本地空目录
+        for old_dir in list(refresh_target_dirs):
+            curr_dir = old_dir
+            while curr_dir and curr_dir not in protected_dirs:
+                if os.path.exists(curr_dir):
                     has_media = False
-                    for root, _, files in os.walk(old_dir):
+                    for root, _, files in os.walk(curr_dir):
                         for f in files:
                             ext = f.split('.')[-1].lower()
-                            # 只要有这些文件，就认为目录还有用，不删 (加入 nfo 保护)
                             if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'nfo'}:
                                 has_media = True
                                 break
                         if has_media: break
-                    
+
                     if not has_media:
-                        shutil.rmtree(old_dir)
-                        logger.info(f"  🧹 本地旧目录已无媒体文件，执行删除: {old_dir}")
-                        old_dir = os.path.dirname(old_dir)
+                        shutil.rmtree(curr_dir)
+                        logger.info(f"  🧹 本地旧目录已无媒体文件，执行删除: {curr_dir}")
+                        curr_dir = os.path.dirname(curr_dir)
                     else:
                         break
                 else:
                     break
 
-            # 通知 Emby 刷新旧路径，防止出现重复媒体项
-            emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
-            emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
-            if emby_url and emby_api_key:
+        # ★ 批量通知 Emby 刷新旧路径 (去重后一次性通知)
+        emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+        emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+        if emby_url and emby_api_key:
+            from handler import emby
+            top_dirs = set()
+            for d in refresh_target_dirs:
+                top_dirs.add(d)
+            
+            for d in top_dirs:
+                target_to_refresh = d if os.path.exists(d) else os.path.dirname(d)
+                logger.info(f"  🔄 正在通知 Emby 刷新旧路径以清理失效媒体项: {target_to_refresh}")
                 try:
-                    from handler import emby
-                    logger.info(f"  🔄 正在通知 Emby 刷新旧路径以清理失效媒体项: {refresh_target_dir}")
-                    emby.refresh_library_by_path(refresh_target_dir, emby_url, emby_api_key)
+                    emby.refresh_library_by_path(target_to_refresh, emby_url, emby_api_key)
                 except Exception as e:
                     logger.warning(f"  ⚠️ 通知 Emby 刷新旧路径失败: {e}")
 
-        except Exception as e:
-            logger.warning(f"  ⚠️ 清理本地旧 STRM/目录 失败: {e}")
-
-    # ★ 4. 网盘擦屁股：直接移交全局垃圾回收器 (P115DeleteBuffer)
-    # ★ 修复 3：不仅清理直属父目录，还要把整个旧路径链条上的目录都交给回收器，解决剧集残留外层空壳的问题
+    # ★ 网盘擦屁股：直接移交全局垃圾回收器
     old_cids_to_check = set()
-    if info_data.get('paths'):
-        for p in info_data['paths']:
-            cid_val = str(p.get('file_id') or p.get('cid', ''))
-            if cid_val and cid_val != '0':
-                old_cids_to_check.add(cid_val)
-    elif old_pid and str(old_pid) != '0':
-        old_cids_to_check.add(str(old_pid))
+    for r_item in root_items:
+        info_data = r_item['_info_data']
+        if info_data.get('paths'):
+            for p in info_data['paths']:
+                cid_val = str(p.get('file_id') or p.get('cid', ''))
+                if cid_val and cid_val != '0':
+                    old_cids_to_check.add(cid_val)
+        elif r_item['pid'] and str(r_item['pid']) != '0':
+            old_cids_to_check.add(str(r_item['pid']))
 
     if old_cids_to_check:
         from handler.p115_service import P115DeleteBuffer
         logger.info(f"  ⏳ 已将网盘旧目录链条 ({len(old_cids_to_check)}个层级) 加入全局清理队列，稍后执行清理...")
         P115DeleteBuffer.add(fids=[], base_cids=list(old_cids_to_check))
 
-    # 5. 更新记录状态
+    # ★ 更新记录状态
     try:
         category_name = "未识别"
         for rule in organizer.rules:
@@ -3565,9 +3665,9 @@ def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, s
                 cursor.execute("""
                     UPDATE p115_organize_records 
                     SET status = 'success', tmdb_id = %s, media_type = %s, target_cid = %s, category_name = %s
-                    WHERE id = %s
-                """, (tmdb_id, media_type, target_cid, category_name, record_id))
+                    WHERE id = ANY(%s)
+                """, (tmdb_id, media_type, target_cid, category_name, list(record_ids)))
                 conn.commit()
     except Exception as e: pass
 
-    return True
+    logger.info(f"  ✅ [批量手动重组] {len(root_items)} 个文件处理完成！")
