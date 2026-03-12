@@ -2274,20 +2274,9 @@ class SmartOrganizer:
             dir_to_check = source_root_id
 
         if dir_to_check and str(dir_to_check) != '0':
-            config = get_config()
-            # 读取延迟删除开关 (使用 getattr 防御)
-            delay_delete = config.get(constants.CONFIG_OPTION_115_DELAY_DELETE, False)
-            
-            from gevent import spawn_later
-            
-            if delay_delete:
-                logger.info(f"  ⏳ [延迟清理] 已开启延迟删除空目录，30 分钟后将删除源目录: CID {dir_to_check}")
-                # 延迟 1800 秒 (30分钟) 后，推入全局垃圾回收器
-                spawn_later(1800.0, P115DeleteBuffer.add, [], [dir_to_check])
-            else:
-                logger.info(f"  ⏳ [清理空目录] 已将源目录交由全局垃圾回收器检查清理: CID {dir_to_check}")
-                # 立即推入全局垃圾回收器 (5秒后执行安全检查与连锅端)
-                P115DeleteBuffer.add(fids=[], base_cids=[dir_to_check])
+            logger.info(f"  ⏳ [清理空目录] 已将源目录交由全局垃圾回收器检查清理: CID {dir_to_check}")
+            # 立即推入全局垃圾回收器 (5秒后执行安全检查与连锅端)
+            P115DeleteBuffer.add(fids=[], base_cids=[dir_to_check])
 
         # --- 整理记录 ---
         if moved_count > 0 or keep_original:

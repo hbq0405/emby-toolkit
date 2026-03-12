@@ -419,12 +419,6 @@
                             <n-text depth="3" style="font-size:0.8em;">开启时，在线从中心服务器获取媒体信息数据。</n-text>
                         </template>
                     </n-form-item>
-                    <n-form-item label="延迟删除空目录" path="p115_delay_delete">
-                        <n-switch v-model:value="configModel.p115_delay_delete">
-                            <template #checked>延迟30分钟删除</template>
-                            <template #unchecked>立即删除</template>
-                        </n-switch>
-                    </n-form-item>
                     <n-form-item label="同步下载字幕" path="p115_download_subs">
                         <n-switch v-model:value="configModel.p115_download_subs">
                             <template #checked>下载到本地</template>
