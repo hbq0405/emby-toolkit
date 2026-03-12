@@ -79,7 +79,11 @@ def _process_single_mp_directory(dir_cid):
     client = P115Service.get_client()
     if not client: return
     
-    logger.info(f"  ⏳ [MP上传] 目录 '{info['name']}' 的 120 秒独立防抖期结束，开始接管整理...")
+    # 根据媒体类型输出不同的日志
+    if info['media_type'] == 'movie':
+        logger.info(f"  ⏳ [MP上传] 电影 '{info['name']}' 触发整理，开始接管...")
+    else:
+        logger.info(f"  ⏳ [MP上传] 剧集目录 '{info['name']}' 的 120 秒独立防抖期结束，开始接管整理...")
     
     try:
         # 这里的 tmdb_id 和 media_type 绝对精准，因为是该目录专属的 info
@@ -856,19 +860,27 @@ def emby_webhook():
                     'name': dir_name
                 }
                 
-                # 2. 如果该目录已经有定时器在跑，杀掉它（重置 120 秒）
+                # 2. 如果该目录已经有定时器在跑，杀掉它（重置）
                 if dir_cid in MP_TRANSFER_TIMERS:
                     MP_TRANSFER_TIMERS[dir_cid].kill()
                 
-                # 3. 为该目录单独启动一个新的 120 秒定时器
-                logger.info(f"  📥 [MP上传] 收到文件: {target_item.get('name')}，所属目录 '{dir_name}' 已刷新独立防抖倒计时...")
-                MP_TRANSFER_TIMERS[dir_cid] = spawn_later(
-                    MP_TRANSFER_DEBOUNCE_TIME, 
-                    _process_single_mp_directory, 
-                    dir_cid
-                )
+                # 3. 根据类型决定是否防抖
+                if media_type == 'movie':
+                    logger.info(f"  📥 [MP上传] 收到电影文件: {target_item.get('name')}，跳过防抖，立即开始整理...")
+                    # 电影直接启动，不延迟
+                    MP_TRANSFER_TIMERS[dir_cid] = spawn(_process_single_mp_directory, dir_cid)
+                    status_msg = "processing_immediately"
+                else:
+                    logger.info(f"  📥 [MP上传] 收到剧集文件: {target_item.get('name')}，所属目录 '{dir_name}' 已刷新独立防抖倒计时...")
+                    # 剧集延迟 120 秒，等待可能存在的其他分集上传完毕
+                    MP_TRANSFER_TIMERS[dir_cid] = spawn_later(
+                        MP_TRANSFER_DEBOUNCE_TIME, 
+                        _process_single_mp_directory, 
+                        dir_cid
+                    )
+                    status_msg = "queued_for_debounce"
                 
-            return jsonify({"status": "queued_for_debounce"}), 200
+            return jsonify({"status": status_msg}), 200
 
         except Exception as e:
             logger.error(f"  ❌ [MP上传] 处理失败: {e}", exc_info=True)
