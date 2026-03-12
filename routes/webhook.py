@@ -674,19 +674,14 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                             # 1. 清除旧的脏数据
                             emby.clear_item_media_info(item_id, emby_url, emby_key)
                             
-                            # 2. 发送伪装播放请求，强制它立刻去读取物理文件！
-                            emby.trigger_media_info_refresh(item_id, emby_url, emby_key, emby_user_id)
-                            
                             # 重置变量，利用 continue 进入下一轮循环
                             res_json = None
-                            media_data = None 
+                            media_data = None # ★ 必须置空，让神医去提取物理文件，而不是再次注入脏数据
                             is_from_local = False
-                            need_upload = True 
+                            need_upload = True # ★ 标记需要反哺中心服务器
                             
                             sleep(2) 
                             continue
-                        elif diff > 0:
-                            logger.debug(f"  ℹ️ [数据校验] 存在 {diff} 字节 ({error_margin*100:.4f}%) 的合理网络波动，校验通过。")
 
                     break
 
