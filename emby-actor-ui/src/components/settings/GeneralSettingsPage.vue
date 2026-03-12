@@ -1832,7 +1832,7 @@ const tableInfo = {
   'emby_users_extended': { cn: 'Emby用户扩展信息', isSharable: false },
   'p115_filesystem_cache': { cn: '115目录缓存', isSharable: false },
   'p115_mediainfo_cache': {cn: '媒体信息备份', isSharable: true },
-  'p115_organize_records': {cn: '115整理记录', isSharable: true }
+  'p115_organize_records': {cn: '115整理记录', isSharable: false }
 };
 const tableDependencies = {
   'emby_users': ['user_media_data', 'emby_users_extended'],
