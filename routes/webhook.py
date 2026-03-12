@@ -121,7 +121,7 @@ def _monitor_mp_series_transfer(dir_cid, tmdb_id, wake_event):
             is_busy = has_active_transfer_tasks_for_media(tmdb_id, app_config)
             
             if not is_busy:
-                logger.info(f"  ✅ [MP监控] 剧集 (TMDB:{tmdb_id}) 当前上传队列已完成，开始整理...")
+                logger.debug(f"  ✅ [MP监控] 剧集 (TMDB:{tmdb_id}) 当前上传队列已完成，开始整理...")
                 _process_single_mp_directory(dir_cid)
                 return # 任务完成，直接退出协程
             else:
