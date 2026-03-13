@@ -3873,9 +3873,8 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
 
 def task_sync_music_library(processor=None):
     """
-    音乐库全量同步任务：1:1 镜像目录结构并生成 STRM 
+    独立音乐库全量同步任务：增量生成 STRM + 自动清理失效文件
     """
-    # ★ 1. 引入任务管理器用于发送进度
     try:
         import task_manager
     except ImportError:
@@ -3889,6 +3888,7 @@ def task_sync_music_library(processor=None):
     from database import settings_db
     import constants
     import os
+    import shutil
     
     music_cid = settings_db.get_setting('p115_music_root_cid')
     music_root_name = settings_db.get_setting('p115_music_root_name') or "音乐库"
@@ -3896,6 +3896,7 @@ def task_sync_music_library(processor=None):
     
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
+    enable_cleanup = config.get(constants.CONFIG_OPTION_115_LOCAL_CLEANUP, False)
     
     if not music_cid or str(music_cid) == '0':
         msg = "未配置音乐库根目录，跳过同步。"
@@ -3910,6 +3911,7 @@ def task_sync_music_library(processor=None):
         return
 
     start_msg = f"=== 🎵 开始同步音乐库 [{music_root_name}] ==="
+    if enable_cleanup: start_msg += " [已开启本地清理]"
     logger.info(start_msg)
     update_progress(5, f"正在连接 115 获取 [{music_root_name}] 目录信息...")
 
@@ -3919,27 +3921,25 @@ def task_sync_music_library(processor=None):
         return
 
     audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
-    
     music_local_base = os.path.join(local_root, music_root_name)
     os.makedirs(music_local_base, exist_ok=True)
 
-    # ★ 2. 增加计数器
     files_generated = 0
+    files_skipped = 0
     dirs_scanned = 0
+    valid_local_files = set() # ★ 用于记录本次同步所有有效的本地文件路径
 
     def _recursive_sync(current_cid, current_local_path):
-        nonlocal files_generated, dirs_scanned
+        nonlocal files_generated, files_skipped, dirs_scanned
         
-        # ★ 3. 每次进入新目录，更新前端提示
         dirs_scanned += 1
         display_path = os.path.basename(current_local_path) or music_root_name
-        update_progress(50, f"正在扫描: {display_path} (已扫 {dirs_scanned} 个目录, 生成 {files_generated} 首)")
+        update_progress(50, f"正在扫描: {display_path} (已扫 {dirs_scanned} 个目录)")
         
         offset = 0
         limit = 1000
         
         while True:
-            # ★ 4. 支持前端手动终止任务
             if processor and getattr(processor, 'is_stop_requested', lambda: False)():
                 logger.info("音乐库同步任务被手动终止。")
                 update_progress(100, "任务已手动终止。")
@@ -3975,6 +3975,7 @@ def task_sync_music_library(processor=None):
                             strm_name = os.path.splitext(name)[0] + ".strm"
                             strm_path = os.path.join(current_local_path, strm_name)
                             
+                            # 生成 STRM 内容
                             if not etk_url.startswith('http'):
                                 rel_p = os.path.relpath(strm_path, local_root)
                                 content = os.path.join(etk_url, rel_p).replace('\\', '/')
@@ -3982,14 +3983,30 @@ def task_sync_music_library(processor=None):
                             else:
                                 content = f"{etk_url}/api/p115/play/{pc}/{name}"
                                 
-                            with open(strm_path, 'w', encoding='utf-8') as f:
-                                f.write(content)
-                            files_generated += 1
+                            # ==========================================
+                            # ★ 核心增量逻辑：比对旧内容，一致则跳过
+                            # ==========================================
+                            need_write = True
+                            if os.path.exists(strm_path):
+                                try:
+                                    with open(strm_path, 'r', encoding='utf-8') as f:
+                                        old_content = f.read().strip()
+                                        if old_content == content: 
+                                            need_write = False
+                                except Exception: pass
+                                            
+                            if need_write:
+                                with open(strm_path, 'w', encoding='utf-8') as f:
+                                    f.write(content)
+                                files_generated += 1
+                            else:
+                                files_skipped += 1
+                                
+                            # 记录有效文件路径，供后续清理使用
+                            valid_local_files.add(os.path.abspath(strm_path))
                             
-                            # ★ 5. 每生成 100 首，打印一次日志并更新前端，防止假死
-                            if files_generated % 100 == 0:
-                                logger.info(f"  🎵 已生成 {files_generated} 个 STRM...")
-                                update_progress(50, f"正在处理... (已扫 {dirs_scanned} 个目录, 生成 {files_generated} 首)")
+                            if (files_generated + files_skipped) % 200 == 0:
+                                logger.info(f"  🎵 进度: 新增/更新 {files_generated} 首, 跳过 {files_skipped} 首...")
                             
                             sha1 = item.get('sha1') or item.get('sha')
                             file_size = _parse_115_size(item.get('fs') or item.get('size'))
@@ -4008,9 +4025,62 @@ def task_sync_music_library(processor=None):
                 logger.error(f"同步音乐目录异常 (CID:{current_cid}): {e}")
                 break
 
+    # 1. 执行递归同步
     _recursive_sync(music_cid, music_local_base)
     
-    # ★ 6. 结束时发送 100% 进度和最终统计
-    end_msg = f"=== 🎵 音乐库同步完成！共扫描 {dirs_scanned} 个目录，生成/更新 {files_generated} 个 STRM 文件 ==="
+    # =================================================================
+    # ★ 2. 本地失效文件清理阶段
+    # =================================================================
+    cleaned_files = 0
+    cleaned_dirs = 0
+    
+    if enable_cleanup:
+        # 安全锁：如果本次拉取完全失败（没有任何有效文件），拒绝执行清理，防止误删
+        if not valid_local_files and files_generated == 0 and files_skipped == 0:
+            logger.warning("  ⚠️ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
+        else:
+            update_progress(90, "  🧹 正在比对并清理本地失效文件与空壳目录...")
+            
+            if os.path.exists(music_local_base):
+                # 1. 先清理失效的 STRM 文件
+                for root_dir, dirs, files in os.walk(music_local_base):
+                    for file in files:
+                        if file.lower().endswith('.strm'):
+                            file_path = os.path.abspath(os.path.join(root_dir, file))
+                            if file_path not in valid_local_files:
+                                try:
+                                    os.remove(file_path)
+                                    cleaned_files += 1
+                                    logger.debug(f"  🗑️ [清理] 删除失效文件: {file}")
+                                except Exception as e:
+                                    pass
+                
+                # 2. 自下而上扫描，清理空壳目录
+                for root_dir, dirs, files in os.walk(music_local_base, topdown=False):
+                    for d in dirs:
+                        dir_path = os.path.join(root_dir, d)
+                        if not os.path.exists(dir_path): continue
+                            
+                        # 检查该目录及其所有子目录中，是否还存在任何 .strm 文件
+                        has_strm = False
+                        for r, _, fs in os.walk(dir_path):
+                            if any(f.lower().endswith('.strm') for f in fs):
+                                has_strm = True
+                                break
+                                
+                        # 如果没有 STRM，判定为空壳目录，直接物理超度
+                        if not has_strm:
+                            try:
+                                shutil.rmtree(dir_path)
+                                cleaned_dirs += 1
+                                logger.debug(f"  🗑️ [清理] 删除无 STRM 的空壳目录: {dir_path}")
+                            except Exception as e:
+                                pass
+
+    # 3. 结束统计
+    end_msg = f"=== 🎵 音乐库同步完成！新增/更新: {files_generated} 首, 跳过: {files_skipped} 首 ==="
+    if enable_cleanup:
+        end_msg += f" | 清理失效文件: {cleaned_files} 个, 空目录: {cleaned_dirs} 个"
+        
     logger.info(end_msg)
-    update_progress(100, f"同步完成！共生成 {files_generated} 首歌曲。")
+    update_progress(100, f"同步完成！新增/更新 {files_generated} 首，跳过 {files_skipped} 首。")

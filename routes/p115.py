@@ -942,8 +942,15 @@ def handle_music_config():
 def trigger_music_sync():
     """触发音乐库全量同步"""
     from handler.p115_service import task_sync_music_library
-    import threading
-    threading.Thread(target=task_sync_music_library).start()
+    import task_manager # ★ 引入全局任务管理器
+    
+    # ★ 核心修复：使用 submit_task 提交任务，这样前端顶部才会弹出进度条！
+    task_manager.submit_task(
+        task_sync_music_library,
+        task_name="全量同步音乐库 STRM",
+        processor_type='media'
+    )
+    
     return jsonify({"success": True, "message": "音乐库同步任务已在后台启动"})
 
 @p115_bp.route('/music/upload', methods=['POST'])
