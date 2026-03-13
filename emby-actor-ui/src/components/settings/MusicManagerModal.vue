@@ -39,7 +39,9 @@
         </n-form-item>
       </n-form>
 
+      <!-- ★ 增加 ref，用于调用清空列表方法 -->
       <n-upload
+        ref="uploadRef"
         multiple
         directory-dnd
         :custom-request="handleUpload"
@@ -51,10 +53,17 @@
           </div>
           <n-text style="font-size: 16px">点击或者拖动文件/文件夹到该区域来上传</n-text>
           <n-p depth="3" style="margin: 8px 0 0 0">
-            支持批量上传文件夹，将自动在 115 和本地创建对应的目录结构并生成 STRM。
+            支持批量上传文件夹。上传成功后列表会显示<strong style="color: #18a058;">绿勾</strong>，失败显示<strong style="color: #d03050;">红叉</strong>。
           </n-p>
         </n-upload-dragger>
       </n-upload>
+      
+      <!-- ★ 增加清空列表按钮 -->
+      <n-space justify="end" style="margin-top: -10px;">
+        <n-button size="small" @click="clearUploadList" type="default" dashed>
+          清空上传列表
+        </n-button>
+      </n-space>
 
       <n-divider title-placement="left" style="margin: 0;">全局操作</n-divider>
 
@@ -90,16 +99,16 @@ const message = useMessage();
 
 const showModal = ref(false);
 const isSyncing = ref(false);
+const uploadRef = ref(null); // ★ 绑定 upload 组件
+
 const musicConfig = ref({
   p115_music_root_cid: '0',
   p115_music_root_name: ''
 });
 
-// 上传目标目录状态
 const uploadTargetCid = ref('0');
 const uploadTargetName = ref('');
 
-// 监听根目录变化，如果上传目标为空，则默认继承根目录
 watch(() => musicConfig.value.p115_music_root_cid, (newVal) => {
   if (newVal && newVal !== '0' && (!uploadTargetCid.value || uploadTargetCid.value === '0')) {
     uploadTargetCid.value = newVal;
@@ -107,7 +116,6 @@ watch(() => musicConfig.value.p115_music_root_cid, (newVal) => {
   }
 });
 
-// 暴露给父组件的方法
 const open = async () => {
   showModal.value = true;
   await loadConfig();
@@ -120,7 +128,6 @@ const updateFolder = async (cid, name) => {
     await axios.post('/api/p115/music/config', musicConfig.value);
     message.success('音乐库目录已保存');
     
-    // 如果上传目标为空，自动继承
     if (!uploadTargetCid.value || uploadTargetCid.value === '0') {
       uploadTargetCid.value = cid;
       uploadTargetName.value = name;
@@ -146,7 +153,6 @@ const loadConfig = async () => {
     const res = await axios.get('/api/p115/music/config');
     if (res.data.success) {
       musicConfig.value = res.data.data;
-      // 初始化上传目标
       if (!uploadTargetCid.value || uploadTargetCid.value === '0') {
         uploadTargetCid.value = musicConfig.value.p115_music_root_cid;
         uploadTargetName.value = musicConfig.value.p115_music_root_name;
@@ -157,29 +163,42 @@ const loadConfig = async () => {
   }
 };
 
+// ★ 清空上传列表方法
+const clearUploadList = () => {
+  if (uploadRef.value) {
+    uploadRef.value.clear();
+  }
+};
+
 const handleUpload = async ({ file, onFinish, onError, onProgress }) => {
   const formData = new FormData();
   formData.append('file', file.file);
-  // ★ 使用选择的上传目标目录
   formData.append('target_cid', uploadTargetCid.value);
   formData.append('relative_path', file.fullPath || file.name);
+
+  // ★ 优化：给个初始进度 10%，表示已进入后端流控排队队列
+  onProgress({ percent: 10 });
 
   try {
     const res = await axios.post('/api/p115/music/upload', formData, {
       headers: { 'Content-Type': 'multipart/form-data' },
-      onUploadProgress: ({ percent }) => {
-        onProgress({ percent: Math.ceil(percent) });
+      onUploadProgress: ({ loaded, total }) => {
+        // ★ 优化：将真实的上传进度映射到 10% ~ 95% 之间，留 5% 给后端生成 STRM 的时间
+        const percent = 10 + Math.floor((loaded / total) * 85);
+        onProgress({ percent });
       }
     });
+    
     if (res.data.success) {
-      message.success(res.data.message);
-      onFinish();
+      onProgress({ percent: 100 });
+      onFinish(); // ★ 调用这个，列表里就会打上绿色的勾！
+      // ★ 优化：取消单文件成功的弹窗，防止批量上传时满屏弹窗
     } else {
-      message.error(res.data.message);
-      onError();
+      message.error(`${file.name} 失败: ${res.data.message}`);
+      onError(); // ★ 调用这个，列表里就会标红打叉
     }
   } catch (e) {
-    message.error(`上传失败: ${e.response?.data?.message || e.message}`);
+    message.error(`${file.name} 失败: ${e.response?.data?.message || e.message}`);
     onError();
   }
 };
