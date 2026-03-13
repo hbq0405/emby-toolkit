@@ -628,6 +628,7 @@ def create_user_template(name, description, policy_json, default_expiration_days
                     (name, description, policy_json, default_expiration_days, source_emby_user_id, configuration_json, allow_unrestricted_subscriptions)
                 )
                 new_row = cursor.fetchone()
+                conn.commit()
                 if not new_row:
                     raise Exception("数据库 INSERT 后未能返回新模板的ID。")
                 return new_row['id']
@@ -656,6 +657,7 @@ def update_template_from_sync(template_id: int, new_policy_json: str, new_config
                     "UPDATE user_templates SET emby_policy_json = %s, emby_configuration_json = %s WHERE id = %s",
                     (new_policy_json, new_config_json, template_id)
                 )
+                conn.commit()
     except Exception as e:
         logger.error(f"同步更新模板 {template_id} 时出错: {e}", exc_info=True)
         raise
@@ -680,6 +682,7 @@ def delete_user_template(template_id: int) -> int:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("DELETE FROM user_templates WHERE id = %s", (template_id,))
+                conn.commit()
                 return cursor.rowcount
     except Exception as e:
         logger.error(f"删除模板 {template_id} 时出错: {e}", exc_info=True)
@@ -698,6 +701,7 @@ def update_user_template_details(template_id, name, description, default_expirat
                     """,
                     (name, description, default_expiration_days, allow_unrestricted_subscriptions, template_id)
                 )
+                conn.commit()
                 return cursor.rowcount
     except Exception as e:
         logger.error(f"更新模板 {template_id} 时出错: {e}", exc_info=True)
@@ -740,7 +744,7 @@ def create_invitation_links_batch(template_id, expiration_days, link_expires_in_
                 # 3. 执行批量插入
                 sql = "INSERT INTO invitations (token, template_id, expiration_days, expires_at, status) VALUES %s"
                 execute_values(cursor, sql, values_to_insert)
-                
+                conn.commit()
                 return tokens
     except Exception as e:
         logger.error(f"批量创建邀请链接时出错: {e}", exc_info=True)
@@ -773,6 +777,7 @@ def delete_invitation_link(invitation_id: int) -> int:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("DELETE FROM invitations WHERE id = %s", (invitation_id,))
+                conn.commit()
                 return cursor.rowcount
     except Exception as e:
         logger.error(f"删除邀请链接 {invitation_id} 时出错: {e}", exc_info=True)
@@ -819,6 +824,7 @@ def change_user_template_and_get_names(user_id: str, new_template_id: int) -> tu
                     ON CONFLICT (emby_user_id) DO UPDATE SET template_id = EXCLUDED.template_id;
                 """
                 cursor.execute(upsert_sql, (user_id, new_template_id))
+                conn.commit()
                 return user_name, new_template_name, dict(template_record)
     except Exception as e:
         logger.error(f"切换用户 {user_id} 模板时出错: {e}", exc_info=True)
@@ -830,6 +836,7 @@ def set_user_status_in_db(user_id: str, new_status: str):
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("UPDATE emby_users_extended SET status = %s WHERE emby_user_id = %s", (new_status, user_id))
+                conn.commit()
     except Exception as e:
         logger.error(f"更新用户 {user_id} 状态时出错: {e}", exc_info=True)
         raise
@@ -846,6 +853,7 @@ def set_user_expiration_in_db(user_id: str, expiration_date: Optional[str]):
                         (user_id,)
                     )
                 cursor.execute("UPDATE emby_users_extended SET expiration_date = %s WHERE emby_user_id = %s", (expiration_date, user_id))
+                conn.commit()
     except Exception as e:
         logger.error(f"更新用户 {user_id} 有效期时出错: {e}", exc_info=True)
         raise
@@ -856,6 +864,7 @@ def delete_user_from_db(user_id: str) -> int:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute("DELETE FROM emby_users WHERE id = %s", (user_id,))
+                conn.commit()
                 return cursor.rowcount
     except Exception as e:
         logger.error(f"从数据库删除用户 {user_id} 时出错: {e}", exc_info=True)
@@ -879,6 +888,7 @@ def update_user_image_tag(emby_user_id: str, new_tag: str):
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
                 cursor.execute(sql, (new_tag, emby_user_id))
+                conn.commit()
         return True
     except Exception as e:
         logger.error(f"更新用户 {emby_user_id} 头像 Tag 失败: {e}")
