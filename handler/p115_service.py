@@ -3873,8 +3873,18 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
 
 def task_sync_music_library(processor=None):
     """
-    独立音乐库全量同步任务：1:1 镜像目录结构并生成 STRM (硬编码音频扩展名，过滤附属文件)
+    音乐库全量同步任务：1:1 镜像目录结构并生成 STRM 
     """
+    # ★ 1. 引入任务管理器用于发送进度
+    try:
+        import task_manager
+    except ImportError:
+        task_manager = None
+
+    def update_progress(prog, msg):
+        if task_manager:
+            task_manager.update_status_from_thread(prog, msg)
+
     config = get_config()
     from database import settings_db
     import constants
@@ -3888,31 +3898,53 @@ def task_sync_music_library(processor=None):
     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
     
     if not music_cid or str(music_cid) == '0':
-        logger.warning("未配置音乐库根目录，跳过同步。")
+        msg = "未配置音乐库根目录，跳过同步。"
+        logger.warning(msg)
+        update_progress(100, msg)
         return
         
     if not local_root or not etk_url:
-        logger.error("未配置本地 STRM 根目录或 ETK 访问地址！")
+        msg = "未配置本地 STRM 根目录或 ETK 访问地址！"
+        logger.error(msg)
+        update_progress(100, msg)
         return
 
-    logger.info(f"=== 🎵 开始同步独立音乐库 [{music_root_name}] ===")
-    client = P115Service.get_client()
-    if not client: return
+    start_msg = f"=== 🎵 开始同步音乐库 [{music_root_name}] ==="
+    logger.info(start_msg)
+    update_progress(5, f"正在连接 115 获取 [{music_root_name}] 目录信息...")
 
-    # ★ 硬编码：只认这些纯正的音频文件
+    client = P115Service.get_client()
+    if not client: 
+        update_progress(100, "115 客户端未初始化，同步失败。")
+        return
+
     audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
     
     music_local_base = os.path.join(local_root, music_root_name)
     os.makedirs(music_local_base, exist_ok=True)
 
+    # ★ 2. 增加计数器
     files_generated = 0
+    dirs_scanned = 0
 
     def _recursive_sync(current_cid, current_local_path):
-        nonlocal files_generated
+        nonlocal files_generated, dirs_scanned
+        
+        # ★ 3. 每次进入新目录，更新前端提示
+        dirs_scanned += 1
+        display_path = os.path.basename(current_local_path) or music_root_name
+        update_progress(50, f"正在扫描: {display_path} (已扫 {dirs_scanned} 个目录, 生成 {files_generated} 首)")
+        
         offset = 0
         limit = 1000
         
         while True:
+            # ★ 4. 支持前端手动终止任务
+            if processor and getattr(processor, 'is_stop_requested', lambda: False)():
+                logger.info("音乐库同步任务被手动终止。")
+                update_progress(100, "任务已手动终止。")
+                return
+
             try:
                 res = client.fs_files({'cid': current_cid, 'limit': limit, 'offset': offset, 'record_open_time': 0})
                 data = res.get('data', [])
@@ -3927,10 +3959,7 @@ def task_sync_music_library(processor=None):
                         sub_local_path = os.path.join(current_local_path, name)
                         os.makedirs(sub_local_path, exist_ok=True)
                         
-                        # ★ 原生保存
                         P115CacheManager.save_cid(item_id, current_cid, name)
-                        
-                        # ★ 原生更新路径
                         rel_dir = os.path.relpath(sub_local_path, local_root).replace('\\', '/')
                         P115CacheManager.update_local_path(item_id, rel_dir)
                         
@@ -3939,7 +3968,6 @@ def task_sync_music_library(processor=None):
                     elif fc_val == '1': # 文件
                         ext = name.split('.')[-1].lower() if '.' in name else ''
                         
-                        # ★ 核心过滤：只有在白名单里的音频文件，才生成 STRM 和写入缓存
                         if ext in audio_exts:
                             pc = item.get('pc') or item.get('pick_code')
                             if not pc: continue
@@ -3947,10 +3975,9 @@ def task_sync_music_library(processor=None):
                             strm_name = os.path.splitext(name)[0] + ".strm"
                             strm_path = os.path.join(current_local_path, strm_name)
                             
-                            # 生成 STRM 内容
                             if not etk_url.startswith('http'):
-                                rel_path = os.path.relpath(strm_path, local_root)
-                                content = os.path.join(etk_url, rel_path).replace('\\', '/')
+                                rel_p = os.path.relpath(strm_path, local_root)
+                                content = os.path.join(etk_url, rel_p).replace('\\', '/')
                                 content = content[:-5] + f".{ext}" 
                             else:
                                 content = f"{etk_url}/api/p115/play/{pc}/{name}"
@@ -3959,7 +3986,11 @@ def task_sync_music_library(processor=None):
                                 f.write(content)
                             files_generated += 1
                             
-                            # ★ 缓存音频文件 (供联动删除精准定位)
+                            # ★ 5. 每生成 100 首，打印一次日志并更新前端，防止假死
+                            if files_generated % 100 == 0:
+                                logger.info(f"  🎵 已生成 {files_generated} 个 STRM...")
+                                update_progress(50, f"正在处理... (已扫 {dirs_scanned} 个目录, 生成 {files_generated} 首)")
+                            
                             sha1 = item.get('sha1') or item.get('sha')
                             file_size = _parse_115_size(item.get('fs') or item.get('size'))
                             rel_dir = os.path.relpath(current_local_path, local_root)
@@ -3970,9 +4001,6 @@ def task_sync_music_library(processor=None):
                                 sha1=sha1, pick_code=pc,
                                 local_path=file_local_path, size=file_size
                             )
-                        else:
-                            # 遇到 .jpg, .nfo, .txt 等附属文件，直接无视，不建 STRM 也不写数据库
-                            pass
                             
                 if len(data) < limit: break
                 offset += limit
@@ -3981,4 +4009,8 @@ def task_sync_music_library(processor=None):
                 break
 
     _recursive_sync(music_cid, music_local_base)
-    logger.info(f"=== 🎵 音乐库同步完成！共生成/更新 {files_generated} 个 STRM 文件 ===")
+    
+    # ★ 6. 结束时发送 100% 进度和最终统计
+    end_msg = f"=== 🎵 音乐库同步完成！共扫描 {dirs_scanned} 个目录，生成/更新 {files_generated} 个 STRM 文件 ==="
+    logger.info(end_msg)
+    update_progress(100, f"同步完成！共生成 {files_generated} 首歌曲。")
