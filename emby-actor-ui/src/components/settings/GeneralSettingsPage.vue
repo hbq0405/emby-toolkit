@@ -2307,16 +2307,13 @@ const confirmFolderSelection = () => {
     configModel.value.p115_media_root_cid = cid;
     configModel.value.p115_media_root_name = name;
   } else if (selectorContext.value === 'rule') {
-    currentRule.value.cid = cid;
-    currentRule.value.dir_name = name;
+    ruleManagerRef.value?.updateFolder(cid, name);
   } else if (selectorContext.value === 'share_transfer') {
     shareMountModalRef.value?.updateTransferFolder(cid, name);
   } else if (selectorContext.value === 'music_root') {
     musicModalRef.value?.updateFolder(cid, name);
   } else if (selectorContext.value === 'music_upload_target') { 
     musicModalRef.value?.updateUploadTarget(cid, name);
-  } else if (selectorContext.value === 'rule') {
-  ruleManagerRef.value?.updateFolder(cid, name);
   }
   
   message.success(`已选择: ${name}`);
