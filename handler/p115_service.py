@@ -1095,7 +1095,8 @@ class SmartOrganizer:
             )
 
             # 4. 演员提取
-            data['actor_ids'] = [cast.get('id') for cast in raw_details.get('credits', {}).get('cast', [])]
+            # 只取前 3 名主演，避免客串演员乱入导致规则匹配不准确
+            data['actor_ids'] = [cast.get('id') for cast in raw_details.get('credits', {}).get('cast', [])[:3]]
 
             # 补充标题日期供重命名
             data['title'] = raw_details.get('title') or raw_details.get('name')
