@@ -3823,9 +3823,11 @@ def task_sync_music_library(processor=None):
     独立音乐库全量同步任务：1:1 镜像目录结构并生成 STRM (包含完整 DB 缓存写入)
     """
     config = get_config()
-    # ★ 修复：直接从数据库读取音乐库 CID
     from database import settings_db
     music_cid = settings_db.get_setting('p115_music_root_cid')
+    # ★ 修复：获取真实的音乐库名称
+    music_root_name = settings_db.get_setting('p115_music_root_name') or "音乐库"
+    music_root_name = music_root_name.strip('/')
     
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
@@ -3838,12 +3840,14 @@ def task_sync_music_library(processor=None):
         logger.error("未配置本地 STRM 根目录或 ETK 访问地址！")
         return
 
-    logger.info("=== 🎵 开始同步独立音乐库 ===")
+    logger.info(f"=== 🎵 开始同步独立音乐库 [{music_root_name}] ===")
     client = P115Service.get_client()
     if not client: return
 
     audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
-    music_local_base = os.path.join(local_root, "音乐库")
+    
+    # ★ 修复：使用真实的音乐库名称创建本地基础目录
+    music_local_base = os.path.join(local_root, music_root_name)
     os.makedirs(music_local_base, exist_ok=True)
 
     files_generated = 0

@@ -1038,8 +1038,13 @@ def upload_music_file():
             ext = file.filename.split('.')[-1].lower()
             strm_name = os.path.splitext(file.filename)[0] + ".strm"
             
-            # 拼接完整的本地路径: 本地根目录 / 音乐库 / 目标子目录 / 拖拽的相对目录
-            local_dir = os.path.join(local_root, "音乐库", target_rel_path)
+            # ★ 修复：动态读取音乐库根目录名称，不再硬编码 "音乐库"
+            music_root_name = settings_db.get_setting('p115_music_root_name') or "音乐库"
+            music_root_name = music_root_name.strip('/')
+            
+            # 拼接完整的本地路径: 本地根目录 / 真实的音乐库名称 / 目标子目录 / 拖拽的相对目录
+            local_dir = os.path.join(local_root, music_root_name, target_rel_path)
+            
             if relative_path and '/' in relative_path:
                 clean_path = relative_path.strip('/')
                 local_dir = os.path.join(local_dir, os.path.dirname(clean_path))
