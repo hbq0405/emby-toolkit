@@ -137,7 +137,7 @@
         </n-radio-group>
         <template #feedback>
           <n-text depth="3" style="font-size: 12px;">
-            💡 <b>高阶玩法：</b>请将“追剧中”的规则拖拽到常规规则的<b>下方</b>，避免完结剧进入追剧目录！
+            💡 <b>高阶玩法：</b>请将“追剧中”的规则拖拽到常规分类的<b>上方</b>。这样连载时会被优先拦截到追剧目录，完结后该规则失效，剧集会自动回归常规分类！
           </n-text>
         </template>
       </n-form-item>
