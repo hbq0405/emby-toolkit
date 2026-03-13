@@ -206,15 +206,6 @@
                   <n-gi class="stat-block"><div class="stat-item"><div class="stat-item-label">今日剩余</div><div class="stat-item-value">{{ stats.subscriptions_card.quota.mp.available }}</div></div></n-gi>
                 </n-grid>
                 
-                <!-- NULLBR 配额 -->
-                <n-grid :cols="3" :x-gap="12" class="quota-grid" style="margin-top: 12px;">
-                  <n-gi class="quota-label-container">
-                    <n-icon size="18" color="#f0a020" style="margin-right: 6px"><FlashIcon /></n-icon>
-                    <span>NULLBR 配额</span>
-                  </n-gi>
-                  <n-gi class="stat-block"><div class="stat-item"><div class="stat-item-label">今日已用</div><div class="stat-item-value">{{ stats.subscriptions_card.quota.nullbr.consumed }}</div></div></n-gi>
-                  <n-gi class="stat-block"><div class="stat-item"><div class="stat-item-label">今日剩余</div><div class="stat-item-value">{{ stats.subscriptions_card.quota.nullbr.available }}</div></div></n-gi>
-                </n-grid>
               <n-divider />
   
               <!-- 发布组统计区 -->
@@ -412,10 +403,6 @@
             <span>MP 配额</span>
             <span>{{ stats.subscriptions_card.quota.mp.consumed }} 用 / {{ stats.subscriptions_card.quota.mp.available }} 余</span>
           </div>
-          <div class="mobile-row">
-            <span>NULLBR 配额</span>
-            <span>{{ stats.subscriptions_card.quota.nullbr.consumed }} 用 / {{ stats.subscriptions_card.quota.nullbr.available }} 余</span>
-          </div>
         </n-space>
       </n-card>
 
@@ -474,8 +461,7 @@ const stats = reactive({
     native_collections: { total: 0, count: 0, missing_items: 0 },
     custom_collections: { total: 0, count: 0, missing_items: 0 },
     quota: { 
-      mp: { available: 0, consumed: 0 },
-      nullbr: { available: 0, consumed: 0, total: 0 }
+      mp: { available: 0, consumed: 0 }
     }
   },
   release_group_ranking: [],
