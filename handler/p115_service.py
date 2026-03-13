@@ -4,6 +4,8 @@ import requests
 import os
 import hashlib
 import base64
+import hmac    
+from email.utils import formatdate 
 import json
 import re
 import threading
@@ -191,7 +193,7 @@ class P115OpenAPIClient:
 
     def upload_file_stream(self, file_stream, file_name, target_cid):
         """
-        完整的文件上传流程 (支持秒传、二次认证、OSS直传)
+        完整的文件上传流程 (支持秒传、二次认证、OSS直传带签名)
         """
         file_data = file_stream.read()
         file_size = len(file_data)
@@ -216,7 +218,7 @@ class P115OpenAPIClient:
             chunk_sha1.update(chunk)
             sign_val = chunk_sha1.hexdigest().upper()
             
-            time.sleep(0.5) # ★ 内部流控：防止二次认证请求过快
+            time.sleep(0.5) # 内部流控
             init_res = self.fs_upload_init(file_name, file_size, target_cid, file_sha1, preid, sign_key, sign_val)
             
         if not init_res.get('state'):
@@ -224,11 +226,13 @@ class P115OpenAPIClient:
             
         status = init_res['data'].get('status')
         
+        # 秒传成功
         if status == 2:
             return init_res['data']
             
+        # 非秒传，执行真实的 OSS 上传
         if status == 1:
-            time.sleep(0.5) # ★ 内部流控：防止获取凭证请求过快
+            time.sleep(0.5) # 内部流控
             token_res = self.fs_upload_get_token()
             if not token_res.get('state'):
                 raise Exception("获取上传凭证失败")
@@ -237,17 +241,49 @@ class P115OpenAPIClient:
             endpoint = t_data['endpoint']
             bucket = init_res['data']['bucket']
             object_key = init_res['data']['object']
+            callback_data = init_res['data']['callback']
             
             upload_url = f"https://{bucket}.{endpoint}/{object_key}"
+            
+            # ==========================================
+            # ★ 核心修复：手搓阿里云 OSS V1 签名算法
+            # ==========================================
+            date_gmt = formatdate(None, usegmt=True)
+            content_type = "application/octet-stream"
+            
             headers = {
+                "Date": date_gmt,
+                "Content-Type": content_type,
                 "x-oss-security-token": t_data['SecurityToken'],
-                "x-oss-callback": init_res['data']['callback']['callback'],
-                "x-oss-callback-var": init_res['data']['callback']['callback_var']
+                "x-oss-callback": callback_data['callback'],
+                "x-oss-callback-var": callback_data['callback_var']
             }
             
-            oss_res = requests.put(upload_url, data=file_data, headers=headers)
-            oss_res_data = oss_res.json()
+            # 1. 构造 CanonicalizedOSSHeaders (必须小写并按字典序排列)
+            oss_headers = {k.lower(): v for k, v in headers.items() if k.lower().startswith('x-oss-')}
+            canonicalized_oss_headers = ""
+            for k in sorted(oss_headers.keys()):
+                canonicalized_oss_headers += f"{k}:{oss_headers[k]}\n"
+                
+            # 2. 构造 StringToSign
+            canonicalized_resource = f"/{bucket}/{object_key}"
+            string_to_sign = f"PUT\n\n{content_type}\n{date_gmt}\n{canonicalized_oss_headers}{canonicalized_resource}"
             
+            # 3. 计算 HMAC-SHA1 签名
+            h = hmac.new(t_data['AccessKeySecret'].encode('utf-8'), string_to_sign.encode('utf-8'), hashlib.sha1)
+            signature = base64.b64encode(h.digest()).decode('utf-8')
+            
+            # 4. 组装最终的 Authorization 头
+            headers["Authorization"] = f"OSS {t_data['AccessKeyId']}:{signature}"
+            
+            # 5. 发起真实上传 (增加 timeout 到 300 秒，防止大文件上传超时)
+            oss_res = requests.put(upload_url, data=file_data, headers=headers, timeout=300)
+            
+            try:
+                oss_res_data = oss_res.json()
+            except Exception:
+                raise Exception(f"OSS上传失败，返回非JSON数据: {oss_res.text}")
+                
             if oss_res_data.get('state'):
                 return oss_res_data['data']
             else:
