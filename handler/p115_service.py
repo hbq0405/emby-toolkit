@@ -3651,7 +3651,7 @@ class ManualCorrectTaskQueue:
         try:
             _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_num)
         except Exception as e:
-            logger.error(f"  ❌ 批量手动重组失败: {e}", exc_info=True)
+            logger.error(f"  ❌ 批量重组失败: {e}", exc_info=True)
 
 
 def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num=None):
@@ -3744,12 +3744,12 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
         if details: title = details.get('title') or details.get('name') or title
     except: pass
 
-    logger.info(f"  🛠️ [批量手动重组] 开始对 {len(root_items)} 个文件执行定向整理 -> ID:{tmdb_id}")
+    logger.info(f"  🛠️ [批量重组] 开始对 {len(root_items)} 个文件执行定向整理 -> ID:{tmdb_id}")
 
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     if season_num is not None and str(season_num).strip():
         organizer.forced_season = int(season_num)
-        logger.info(f"  📌 [批量手动重组] 已强制指定季号: Season {organizer.forced_season}")
+        logger.info(f"  📌 [批量重组] 已强制指定季号: Season {organizer.forced_season}")
 
     # ★ 核心：将列表直接传给 execute，底层会自动打包成一次 115 API 移动请求！
     success = organizer.execute(root_items, target_cid)
@@ -3779,7 +3779,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
             logger.warning(f"  ⚠️ 查找关联字幕失败: {e}")
 
     if sub_items:
-        logger.info(f"  🔤 [批量手动重组] 发现 {len(sub_items)} 个关联字幕，跟随重组...")
+        logger.info(f"  🔤 [批量重组] 发现 {len(sub_items)} 个关联字幕，跟随重组...")
         organizer.execute(sub_items, target_cid)
 
     # ★ 本地擦屁股：精准删除旧的本地 STRM 和空目录
@@ -3892,7 +3892,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
                 conn.commit()
     except Exception as e: pass
 
-    logger.info(f"  ✅ [批量手动重组] {len(root_items)} 个文件处理完成！")
+    logger.info(f"  ✅ [批量重组] {len(root_items)} 个文件处理完成！")
 
 def task_sync_music_library(processor=None):
     """
