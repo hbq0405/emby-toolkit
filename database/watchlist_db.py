@@ -331,26 +331,6 @@ def get_watching_tmdb_ids() -> set:
         logger.error(f"  ➜ 从数据库获取正在追看/暂停的TMDB ID时出错: {e}", exc_info=True)
     return watching_ids
 
-def get_airing_series_tmdb_ids() -> set:
-    """
-    获取所有被标记为“正在连载”的剧集的 TMDb ID 集合。
-    这个函数直接查询 watchlist_is_airing = TRUE 的记录，简单、快速、准确。
-    """
-    airing_ids = set()
-    try:
-        with get_db_connection() as conn:
-            cursor = conn.cursor()
-            sql = "SELECT tmdb_id FROM media_metadata WHERE watchlist_is_airing = TRUE AND item_type = 'Series'"
-            cursor.execute(sql)
-            rows = cursor.fetchall()
-            for row in rows:
-                airing_ids.add(str(row['tmdb_id']))
-        logger.debug(f"  ➜ 通过 watchlist_is_airing 标志查询到 {len(airing_ids)} 个“连载中”的剧集。")
-        return airing_ids
-    except Exception as e:
-        logger.error(f"  ➜ 从数据库获取“连载中”剧集ID时出错: {e}", exc_info=True)
-        return set()
-    
 def remove_seasons_from_gaps_list(tmdb_id: str, seasons_to_remove: List[int]):
     """从指定项目的 watchlist_missing_info_json['seasons_with_gaps'] 列表中移除指定的季号。"""
     if not seasons_to_remove:

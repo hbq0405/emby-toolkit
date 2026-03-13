@@ -1129,17 +1129,6 @@ class SmartOrganizer:
         """
         if not self.raw_metadata: return False
 
-        # ★★★ 完美隔离逻辑 ★★★
-        target_status = getattr(self, 'target_watching_status', 'normal')
-        rule_status = rule.get('watching_status', 'all')
-        
-        if target_status == 'normal':
-            # 115日常整理：遇到专属状态规则(如"追剧中")直接跳过，只看普通规则
-            if rule_status != 'all': return False
-        else:
-            # 追剧大脑发令：只找对应状态的规则
-            if rule_status != target_status: return False
-
         # 1. 媒体类型
         if rule.get('media_type') and rule['media_type'] != 'all':
             if rule['media_type'] != self.media_type: return False
@@ -1244,18 +1233,31 @@ class SmartOrganizer:
             if vote_avg < float(rule['min_rating']):
                 return False
             
-        # ★ 11. 匹配演员
+        # ★ 11. 演员匹配 (只取前三主演，已加上 [:3] 切片)
         if rule.get('actors'):
-            # rule['actors'] 是前端传来的对象列表 [{'id': 123, 'name': 'xxx'}, ...]
             rule_actor_ids = [int(a['id']) for a in rule['actors'] if 'id' in a]
-            if not any(aid in self.raw_metadata.get('actor_ids', []) for aid in rule_actor_ids):
+            if not any(aid in self.raw_metadata.get('actor_ids', []) for aid in rule_actor_ids): 
+                return False
+
+        # ★ 12. 追剧状态匹配 (实时查库，利用从上到下的规则顺序自然分流)
+        if rule.get('watching_status') == 'watching' and self.media_type == 'tv':
+            try:
+                from database.watchlist_db import get_watching_tmdb_ids
+                # 获取所有正在追剧的 ID 集合
+                watching_ids = get_watching_tmdb_ids()
+                
+                # 如果当前剧集的 ID 不在集合里（说明已完结或未追踪）
+                # 直接返回 False，让它漏网，继续往下匹配常规规则！
+                if str(self.tmdb_id) not in watching_ids:
+                    return False
+            except Exception as e:
+                logger.warning(f"获取追剧状态失败: {e}")
                 return False
 
         return True
 
-    def get_target_cid(self, ignore_memory=False, target_watching_status='all'):
+    def get_target_cid(self, ignore_memory=False):
         """获取目标 CID：优先查历史整理记录（记忆手动纠错），其次遍历规则"""
-        self.target_watching_status = target_watching_status
         # ★★★ 1. 查历史记录 (记忆功能) ★★★
         if not ignore_memory:
             try:

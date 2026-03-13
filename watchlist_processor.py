@@ -1519,9 +1519,10 @@ class WatchlistProcessor:
         self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
 
         # ======================================================================
-        # ★★★ 115 目录自动流转联动 (大脑指挥官) ★★★
+        # ★★★ 追剧目录自动重组 (大脑指挥官) ★★★
         # ======================================================================
         try:
+            # 判断是否发生了关键的状态流转
             status_changed_to_watching = (old_status in [None, 'NONE'] and final_status in ['Watching', 'Pending'])
             status_changed_to_completed = (old_status in ['Watching', 'Paused', 'Pending'] and final_status == 'Completed')
 
@@ -1540,23 +1541,14 @@ class WatchlistProcessor:
                             record_ids = [row['id'] for row in cursor.fetchall()]
                     
                     if record_ids:
+                        # 实例化 Organizer，忽略记忆体，让它重新从上到下跑一遍规则！
                         organizer = SmartOrganizer(client, tmdb_id, 'tv', item_name)
-                        new_target_cid = None
                         
-                        if status_changed_to_watching:
-                            # 尝试寻找专属的 [追剧中] 分类
-                            new_target_cid = organizer.get_target_cid(ignore_memory=True, target_watching_status='watching')
-                        elif status_changed_to_completed:
-                            # 尝试寻找专属的 [已完结] 分类
-                            new_target_cid = organizer.get_target_cid(ignore_memory=True, target_watching_status='completed')
-                            
-                            # ★★★ 核心：如果没有配置专属的[已完结]分类，就让它“各回各家”！
-                            if not new_target_cid:
-                                logger.info(f"  🏠 [智能追剧] 未配置专属完结目录，回归常规分类...")
-                                new_target_cid = organizer.get_target_cid(ignore_memory=True, target_watching_status='normal')
+                        # ★ 极简调用，不传任何多余参数
+                        new_target_cid = organizer.get_target_cid(ignore_memory=True)
                         
                         if new_target_cid:
-                            logger.info(f"  🚚 [智能追剧] 计算出新目录 CID: {new_target_cid}，将 {len(record_ids)} 个文件加入重组队列。")
+                            logger.info(f"  🚚 [智能追剧] 重新匹配出新目录 CID: {new_target_cid}，将 {len(record_ids)} 个文件加入重组队列。")
                             for rid in record_ids:
                                 ManualCorrectTaskQueue.add(rid, tmdb_id, 'tv', new_target_cid, None)
         except Exception as e:

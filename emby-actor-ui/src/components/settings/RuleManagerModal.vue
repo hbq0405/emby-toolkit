@@ -44,7 +44,6 @@
                     <n-tag v-else-if="rule.media_type === 'tv'" size="tiny" type="success" :bordered="false">剧集</n-tag>
                     <n-tag v-else size="tiny" :bordered="false">混合</n-tag>
                     <n-tag v-if="rule.watching_status === 'watching'" size="tiny" type="warning" :bordered="false">追剧中</n-tag>
-                    <n-tag v-if="rule.watching_status === 'completed'" size="tiny" type="primary" :bordered="false">已完结</n-tag>
                   </div>
                   <div class="rule-desc">
                       <n-tag size="tiny" :bordered="false" type="warning" style="opacity: 0.8;">目录: {{ rule.dir_name }}</n-tag>
@@ -73,7 +72,6 @@
                   <n-tag v-else-if="rule.media_type === 'tv'" size="tiny" type="success" :bordered="false">剧集</n-tag>
                   <n-tag v-else size="tiny" :bordered="false">混合</n-tag>
                   <n-tag v-if="rule.watching_status === 'watching'" size="tiny" type="warning" :bordered="false">追剧中</n-tag>
-                  <n-tag v-if="rule.watching_status === 'completed'" size="tiny" type="primary" :bordered="false">已完结</n-tag>
                 </div>
                 <div class="rule-desc">
                     <n-tag size="tiny" :bordered="false" type="warning" style="opacity: 0.8;">目录: {{ rule.dir_name }}</n-tag>
@@ -132,12 +130,16 @@
         </n-radio-group>
       </n-form-item>
 
-      <n-form-item label="追剧状态" v-if="currentRule.media_type !== 'movie'">
+      <n-form-item label="追剧状态 (仅对剧集有效)">
         <n-radio-group v-model:value="currentRule.watching_status">
           <n-radio-button value="all">不限 (常规分类)</n-radio-button>
-          <n-radio-button value="watching">追剧中/待定</n-radio-button>
-          <n-radio-button value="completed">已完结</n-radio-button>
+          <n-radio-button value="watching">仅限 追剧中</n-radio-button>
         </n-radio-group>
+        <template #feedback>
+          <n-text depth="3" style="font-size: 12px;">
+            💡 <b>高阶玩法：</b>请将“追剧中”的规则拖拽到常规规则的<b>下方</b>，避免完结剧进入追剧目录！
+          </n-text>
+        </template>
       </n-form-item>
 
       <n-form-item label="包含演员">
