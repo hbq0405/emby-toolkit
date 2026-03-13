@@ -460,7 +460,7 @@
                           <span class="card-title">智能分类规则</span>
                           <n-button secondary type="primary" @click="ruleManagerRef?.open()">
                             <template #icon><n-icon :component="ListIcon" /></template>
-                            管理分类规则 ({{ sortingRules.length }})
+                            管理分类规则
                           </n-button>
                         </div>
                       </template>
@@ -1561,9 +1561,6 @@ import {
   CheckmarkCircleOutline as CheckIcon,
   CloseCircleOutline as CloseIcon,
   ListOutline as ListIcon, 
-  CreateOutline as EditIcon,
-  TrashOutline as DeleteIcon, 
-  Menu as DragHandleIcon,
   ColorWandOutline as ColorWandIcon,
   QrCodeOutline
 } from '@vicons/ionicons5';
