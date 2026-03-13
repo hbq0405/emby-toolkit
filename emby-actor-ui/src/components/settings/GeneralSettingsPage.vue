@@ -2617,40 +2617,6 @@ onMounted(async () => {
       }
     }
   });
-  loadSortingRules(); // 加载规则
-
-    try {
-        // 加载 TMDb 选项数据 (用于规则编辑)
-        const [mGenres, tGenres] = await Promise.all([
-             axios.get('/api/custom_collections/config/tmdb_movie_genres'),
-             axios.get('/api/custom_collections/config/tmdb_tv_genres')
-        ]);
-        rawMovieGenres.value = (mGenres.data || []).map(g => ({ label: g.name, value: g.id }));
-        rawTvGenres.value = (tGenres.data || []).map(g => ({ label: g.name, value: g.id }));
-
-        const sRes = await axios.get('/api/custom_collections/config/studios');
-        rawStudios.value = (sRes.data || []).map(s => {
-            const types = s.types || []; 
-            return {
-                label: s.label, value: s.value, 
-                is_movie: types.includes('movie'), is_tv: types.includes('tv')
-            };
-        });
-
-        const cRes = await axios.get('/api/custom_collections/config/tmdb_countries');
-        countryOptions.value = cRes.data;
-        
-        const lRes = await axios.get('/api/custom_collections/config/languages');
-        languageOptions.value = lRes.data;
-        
-        const kRes = await axios.get('/api/custom_collections/config/keywords');
-        keywordOptions.value = kRes.data;
-        
-        const rRes = await axios.get('/api/custom_collections/config/unified_ratings_options');
-        ratingOptions.value = (rRes.data || []).map(r => ({ label: r, value: r }));
-    } catch (e) {
-        console.error("加载选项失败", e);
-    }
 });
 onUnmounted(() => {
   componentIsMounted.value = false;

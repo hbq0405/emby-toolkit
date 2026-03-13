@@ -285,9 +285,10 @@ const renderPersonTag = ({ option, handleClose }) => {
 // 暴露给父组件
 defineExpose({
   open: async () => {
+    showRuleManagerModal.value = true;
+    // 模态框显示后再加载数据，避免打开慢
     await loadOptions();
     await loadSortingRules();
-    showRuleManagerModal.value = true;
   },
   updateFolder: (cid, name) => {
     currentRule.value.cid = cid;
