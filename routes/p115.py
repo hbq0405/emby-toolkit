@@ -949,7 +949,7 @@ def trigger_music_sync():
 @p115_bp.route('/music/upload', methods=['POST'])
 @admin_required
 def upload_music_file():
-    """上传音乐文件并生成 STRM (抗并发防延迟版)"""
+    """上传音乐文件并生成 STRM (调用原生 update_local_path 补充目录路径)"""
     if 'file' not in request.files:
         return jsonify({"success": False, "message": "没有文件"}), 400
         
@@ -964,66 +964,19 @@ def upload_music_file():
     from database import settings_db
     import constants
     import os
-    import time # 引入 time 用于重试休眠
+    import time
 
     client = P115Service.get_client()
     if not client:
         return jsonify({"success": False, "message": "115 客户端未初始化"}), 500
 
     try:
-        # 1. 动态创建拖拽的文件夹并写入缓存 (★ 增加缓存拦截与重试机制)
-        final_cid = target_cid
-        if relative_path and '/' in relative_path:
-            clean_path = relative_path.strip('/')
-            dir_parts = [p for p in clean_path.split('/')[:-1] if p]
-            
-            current_pid = target_cid
-            for part in dir_parts:
-                # ★ 优化 1：优先查本地缓存，极速放行，完美解决并发冲突
-                cached_cid = P115CacheManager.get_cid(current_pid, part)
-                if cached_cid:
-                    current_pid = cached_cid
-                    continue
-                
-                # 缓存没有，尝试创建
-                mk_res = client.fs_mkdir(part, current_pid)
-                if mk_res.get('state'):
-                    new_cid = mk_res.get('cid')
-                    P115CacheManager.save_cid(new_cid, current_pid, part)
-                    current_pid = new_cid
-                else:
-                    # ★ 优化 2：创建失败(可能已存在)，带重试机制的搜索，对抗 115 数据库延迟
-                    found = False
-                    for attempt in range(3): # 最多重试 3 次
-                        search_res = client.fs_files({'cid': current_pid, 'search_value': part, 'limit': 100})
-                        for item in search_res.get('data', []):
-                            if item.get('fn') == part and str(item.get('fc')) == '0':
-                                new_cid = item.get('fid')
-                                P115CacheManager.save_cid(new_cid, current_pid, part)
-                                current_pid = new_cid
-                                found = True
-                                break
-                        if found:
-                            break
-                        # 没搜到，等 1.5 秒让 115 后端同步一下再搜
-                        time.sleep(1.5)
-                        
-                    if not found: 
-                        raise Exception(f"无法创建或找到目录: {part} (115后端同步延迟)")
-            final_cid = current_pid
-
-        # 2. 执行上传
-        file_data = file.read()
-        file_size = len(file_data)
-        file.seek(0) 
-        
-        upload_res = client.upload_file_stream(file, file.filename, final_cid)
-        pick_code = upload_res.get('pick_code')
-        file_id = upload_res.get('file_id')
-        file_sha1 = upload_res.get('sha1')
-        
-        # 3. 计算目标目录相对于音乐库根目录的相对路径
+        # ==========================================
+        # 步骤 1：提前计算目标目录的基础相对路径
+        # ==========================================
         music_root_cid = settings_db.get_setting('p115_music_root_cid')
+        music_root_name = settings_db.get_setting('p115_music_root_name') or "音乐库"
+        music_root_name = music_root_name.strip('/')
         target_rel_path = ""
         
         if str(target_cid) != str(music_root_cid):
@@ -1043,7 +996,71 @@ def upload_music_file():
             else:
                 target_rel_path = "未分类上传"
 
-        # 4. 立即在本地生成 STRM 并写入文件缓存
+        base_local_path = os.path.join(music_root_name, target_rel_path).replace('\\', '/')
+
+        # ==========================================
+        # 步骤 2：动态创建拖拽的文件夹并写入缓存
+        # ==========================================
+        final_cid = target_cid
+        if relative_path and '/' in relative_path:
+            clean_path = relative_path.strip('/')
+            dir_parts = [p for p in clean_path.split('/')[:-1] if p]
+            
+            current_pid = target_cid
+            current_local_path = base_local_path
+            
+            for part in dir_parts:
+                current_local_path = os.path.join(current_local_path, part).replace('\\', '/')
+                
+                cached_cid = P115CacheManager.get_cid(current_pid, part)
+                if cached_cid:
+                    current_pid = cached_cid
+                    # ★ 使用原生方法更新路径
+                    P115CacheManager.update_local_path(cached_cid, current_local_path)
+                    continue
+                
+                mk_res = client.fs_mkdir(part, current_pid)
+                if mk_res.get('state'):
+                    new_cid = mk_res.get('cid')
+                    # ★ 原生保存 + 原生更新路径
+                    P115CacheManager.save_cid(new_cid, current_pid, part)
+                    P115CacheManager.update_local_path(new_cid, current_local_path)
+                    current_pid = new_cid
+                else:
+                    found = False
+                    for attempt in range(3):
+                        search_res = client.fs_files({'cid': current_pid, 'search_value': part, 'limit': 100})
+                        for item in search_res.get('data', []):
+                            if item.get('fn') == part and str(item.get('fc')) == '0':
+                                new_cid = item.get('fid')
+                                # ★ 原生保存 + 原生更新路径
+                                P115CacheManager.save_cid(new_cid, current_pid, part)
+                                P115CacheManager.update_local_path(new_cid, current_local_path)
+                                current_pid = new_cid
+                                found = True
+                                break
+                        if found: break
+                        time.sleep(1.5)
+                        
+                    if not found: 
+                        raise Exception(f"无法创建或找到目录: {part} (115后端同步延迟)")
+            final_cid = current_pid
+
+        # ==========================================
+        # 步骤 3：执行上传
+        # ==========================================
+        file_data = file.read()
+        file_size = len(file_data)
+        file.seek(0) 
+        
+        upload_res = client.upload_file_stream(file, file.filename, final_cid)
+        pick_code = upload_res.get('pick_code')
+        file_id = upload_res.get('file_id')
+        file_sha1 = upload_res.get('sha1')
+
+        # ==========================================
+        # 步骤 4：生成 STRM 并写入文件缓存
+        # ==========================================
         config = get_config()
         local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
         etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
@@ -1054,10 +1071,7 @@ def upload_music_file():
         if ext in audio_exts and local_root and etk_url and pick_code:
             strm_name = os.path.splitext(file.filename)[0] + ".strm"
             
-            music_root_name = settings_db.get_setting('p115_music_root_name') or "音乐库"
-            music_root_name = music_root_name.strip('/')
-            
-            local_dir = os.path.join(local_root, music_root_name, target_rel_path)
+            local_dir = os.path.join(local_root, base_local_path)
             
             if relative_path and '/' in relative_path:
                 clean_path = relative_path.strip('/')

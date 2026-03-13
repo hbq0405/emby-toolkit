@@ -3927,8 +3927,12 @@ def task_sync_music_library(processor=None):
                         sub_local_path = os.path.join(current_local_path, name)
                         os.makedirs(sub_local_path, exist_ok=True)
                         
-                        # ★ 缓存目录 (供联动删除溯源)
+                        # ★ 原生保存
                         P115CacheManager.save_cid(item_id, current_cid, name)
+                        
+                        # ★ 原生更新路径
+                        rel_dir = os.path.relpath(sub_local_path, local_root).replace('\\', '/')
+                        P115CacheManager.update_local_path(item_id, rel_dir)
                         
                         _recursive_sync(item_id, sub_local_path)
                         
