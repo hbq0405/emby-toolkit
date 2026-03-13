@@ -912,3 +912,113 @@ def correct_organize_record():
     except Exception as e:
         logger.error(f"  ❌ 手动重组失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
+    
+# ======================================================================
+# ★★★ 独立音乐库 API ★★★
+# ======================================================================
+
+@p115_bp.route('/music/config', methods=['GET', 'POST'])
+@admin_required
+def handle_music_config():
+    """获取/保存音乐库配置"""
+    if request.method == 'GET':
+        config = get_config()
+        return jsonify({
+            "success": True,
+            "data": {
+                "p115_music_root_cid": config.get('p115_music_root_cid', '0'),
+                "p115_music_root_name": config.get('p115_music_root_name', '')
+            }
+        })
+    
+    if request.method == 'POST':
+        data = request.json
+        settings_db.save_setting('p115_music_root_cid', data.get('p115_music_root_cid'))
+        settings_db.save_setting('p115_music_root_name', data.get('p115_music_root_name'))
+        return jsonify({"success": True, "message": "音乐库配置已保存"})
+
+@p115_bp.route('/music/sync', methods=['POST'])
+@admin_required
+def trigger_music_sync():
+    """触发音乐库全量同步"""
+    from handler.p115_service import task_sync_music_library
+    import threading
+    threading.Thread(target=task_sync_music_library).start()
+    return jsonify({"success": True, "message": "音乐库同步任务已在后台启动"})
+
+@p115_bp.route('/music/upload', methods=['POST'])
+@admin_required
+def upload_music_file():
+    """上传音乐文件并生成 STRM"""
+    if 'file' not in request.files:
+        return jsonify({"success": False, "message": "没有文件"}), 400
+        
+    file = request.files['file']
+    target_cid = request.form.get('target_cid')
+    relative_path = request.form.get('relative_path', '') # 用于处理文件夹上传
+    
+    if not target_cid or target_cid == '0':
+        return jsonify({"success": False, "message": "未配置音乐库目录"}), 400
+
+    client = P115Service.get_openapi_client()
+    if not client:
+        return jsonify({"success": False, "message": "115 客户端未初始化"}), 500
+
+    try:
+        # 1. 如果带有相对路径 (说明是上传的文件夹)，需要在 115 动态创建目录
+        final_cid = target_cid
+        if relative_path and '/' in relative_path:
+            dir_parts = relative_path.split('/')[:-1] # 去掉文件名
+            current_pid = target_cid
+            for part in dir_parts:
+                # 简单粗暴：直接尝试创建，如果存在 115 会返回已存在的 cid
+                mk_res = client.fs_mkdir(part, current_pid)
+                if mk_res.get('state'):
+                    current_pid = mk_res.get('cid')
+                else:
+                    # 如果创建失败(可能已存在)，需要搜索获取 cid
+                    search_res = client.fs_files({'cid': current_pid, 'search_value': part, 'limit': 100})
+                    found = False
+                    for item in search_res.get('data', []):
+                        if item.get('fn') == part and str(item.get('fc')) == '0':
+                            current_pid = item.get('fid')
+                            found = True
+                            break
+                    if not found: raise Exception(f"无法创建或找到目录: {part}")
+            final_cid = current_pid
+
+        # 2. 执行上传
+        upload_res = client.upload_file_stream(file, file.filename, final_cid)
+        pick_code = upload_res.get('pick_code')
+        
+        # 3. 立即在本地生成 STRM
+        config = get_config()
+        local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+        etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
+        
+        if local_root and etk_url and pick_code:
+            ext = file.filename.split('.')[-1].lower()
+            strm_name = os.path.splitext(file.filename)[0] + ".strm"
+            
+            # 拼接本地路径
+            local_dir = os.path.join(local_root, "音乐库")
+            if relative_path and '/' in relative_path:
+                local_dir = os.path.join(local_dir, os.path.dirname(relative_path))
+            os.makedirs(local_dir, exist_ok=True)
+            
+            strm_path = os.path.join(local_dir, strm_name)
+            
+            if not etk_url.startswith('http'):
+                rel_p = os.path.relpath(strm_path, local_root)
+                content = os.path.join(etk_url, rel_p).replace('\\', '/')
+                content = content[:-5] + f".{ext}"
+            else:
+                content = f"{etk_url}/api/p115/play/{pick_code}/{file.filename}"
+                
+            with open(strm_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+
+        return jsonify({"success": True, "message": f"{file.filename} 上传成功"})
+    except Exception as e:
+        logger.error(f"音乐上传失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": str(e)}), 500

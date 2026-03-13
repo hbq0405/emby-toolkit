@@ -488,7 +488,25 @@
                       </n-alert>
                     </n-card>
 
-                    <!-- ★ 卡片 3：第三方 STRM 兼容 -->
+                    <!-- ★ 卡片 3：独立音乐库管理 -->
+                    <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
+                      <template #header>
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <span class="card-title">音乐库管理</span>
+                          <n-button secondary type="primary" @click="musicModalRef?.open()">
+                            <template #icon>
+                              <n-icon :component="FolderIcon" />
+                            </template>
+                            打开音乐库
+                          </n-button>
+                        </div>
+                      </template>
+                      <n-alert type="success" :show-icon="true">
+                        专为无损音乐打造。支持直接上传文件夹、自动创建 115 目录并秒级生成本地 STRM 文件。
+                      </n-alert>
+                    </n-card>
+
+                    <!-- ★ 卡片 4：第三方 STRM 兼容 -->
                     <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -1394,6 +1412,11 @@
     </n-modal>
     <!-- ★ 引入自定义重命名模态框 -->
     <RenameConfigModal ref="renameModalRef" />
+    <!-- ★ 引入音乐库管理模态框 -->
+    <MusicManagerModal 
+      ref="musicModalRef" 
+      @open-folder-selector="cid => openFolderSelector('music_root', cid)" 
+    />
   </n-layout>
   
   <!-- 导出选项模态框 -->
@@ -1722,8 +1745,10 @@ import {
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
+import MusicManagerModal from './MusicManagerModal.vue'; 
 import axios from 'axios';
 const renameModalRef = ref(null);
+const musicModalRef = ref(null);
 const promptModalVisible = ref(false);
 const loadingPrompts = ref(false);
 const savingPrompts = ref(false);
@@ -2477,8 +2502,9 @@ const confirmFolderSelection = () => {
     currentRule.value.cid = cid;
     currentRule.value.dir_name = name;
   } else if (selectorContext.value === 'share_transfer') {
-    // ★ 调用子组件暴露的方法更新数据
     shareMountModalRef.value?.updateTransferFolder(cid, name);
+  } else if (selectorContext.value === 'music_root') { 
+    musicModalRef.value?.updateFolder(cid, name);
   }
   
   message.success(`已选择: ${name}`);

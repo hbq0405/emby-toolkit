@@ -2,6 +2,8 @@
 import logging
 import requests
 import os
+import hashlib
+import base64
 import json
 import re
 import threading
@@ -166,6 +168,100 @@ class P115OpenAPIClient:
         url = f"{self.base_url}/open/ufile/delete"
         fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
         return self._do_request("POST", url, data={"file_ids": fids_str})
+    
+    def fs_upload_init(self, file_name, file_size, target_cid, sha1, preid, sign_key=None, sign_val=None):
+        """文件上传初始化调度接口"""
+        url = f"{self.base_url}/open/upload/init"
+        data = {
+            "file_name": file_name,
+            "file_size": file_size,
+            "target": f"U_1_{target_cid}",
+            "fileid": sha1,
+            "preid": preid
+        }
+        if sign_key and sign_val:
+            data["sign_key"] = sign_key
+            data["sign_val"] = sign_val
+        return self._do_request("POST", url, data=data)
+
+    def fs_upload_get_token(self):
+        """获取上传凭证"""
+        url = f"{self.base_url}/open/upload/get_token"
+        return self._do_request("GET", url)
+
+    def upload_file_stream(self, file_stream, file_name, target_cid):
+        """
+        完整的文件上传流程 (支持秒传、二次认证、OSS直传)
+        file_stream: 类似 request.files['file'] 的文件流对象
+        """
+        # 1. 计算 SHA1 和 128K SHA1 (preid)
+        file_data = file_stream.read()
+        file_size = len(file_data)
+        
+        sha1_obj = hashlib.sha1()
+        sha1_obj.update(file_data)
+        file_sha1 = sha1_obj.hexdigest().upper()
+        
+        pre_sha1_obj = hashlib.sha1()
+        pre_sha1_obj.update(file_data[:131072]) # 128KB
+        preid = pre_sha1_obj.hexdigest().upper()
+        
+        # 2. 初始化上传
+        init_res = self.fs_upload_init(file_name, file_size, target_cid, file_sha1, preid)
+        
+        # 3. 处理二次认证 (status = 7)
+        if init_res.get('state') and init_res.get('data', {}).get('status') == 7:
+            sign_key = init_res['data']['sign_key']
+            sign_check = init_res['data']['sign_check']
+            # 解析区间，例如 "0-99"
+            start, end = map(int, sign_check.split('-'))
+            chunk = file_data[start:end+1]
+            
+            chunk_sha1 = hashlib.sha1()
+            chunk_sha1.update(chunk)
+            sign_val = chunk_sha1.hexdigest().upper()
+            
+            # 重新初始化
+            init_res = self.fs_upload_init(file_name, file_size, target_cid, file_sha1, preid, sign_key, sign_val)
+            
+        if not init_res.get('state'):
+            raise Exception(f"上传初始化失败: {init_res.get('message')}")
+            
+        status = init_res['data'].get('status')
+        
+        # 4. 秒传成功 (status = 2)
+        if status == 2:
+            return init_res['data']
+            
+        # 5. 非秒传，需要 OSS 上传 (status = 1)
+        if status == 1:
+            token_res = self.fs_upload_get_token()
+            if not token_res.get('state'):
+                raise Exception("获取上传凭证失败")
+                
+            t_data = token_res['data']
+            endpoint = t_data['endpoint']
+            bucket = init_res['data']['bucket']
+            object_key = init_res['data']['object']
+            
+            # 构造 OSS 上传 URL 和 Headers
+            upload_url = f"https://{bucket}.{endpoint}/{object_key}"
+            headers = {
+                "x-oss-security-token": t_data['SecurityToken'],
+                "x-oss-callback": init_res['data']['callback']['callback'],
+                "x-oss-callback-var": init_res['data']['callback']['callback_var']
+            }
+            
+            # 执行 PUT 上传
+            oss_res = requests.put(upload_url, data=file_data, headers=headers)
+            oss_res_data = oss_res.json()
+            
+            if oss_res_data.get('state'):
+                return oss_res_data['data']
+            else:
+                raise Exception(f"OSS上传失败: {oss_res_data}")
+                
+        raise Exception(f"未知的上传状态: {status}")
 
 
 # ======================================================================
@@ -3721,3 +3817,83 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
     except Exception as e: pass
 
     logger.info(f"  ✅ [批量手动重组] {len(root_items)} 个文件处理完成！")
+
+def task_sync_music_library(processor=None):
+    """
+    独立音乐库全量同步任务：1:1 镜像目录结构并生成 STRM
+    """
+    config = get_config()
+    music_cid = config.get('p115_music_root_cid')
+    local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+    etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
+    
+    if not music_cid or str(music_cid) == '0':
+        logger.warning("未配置音乐库根目录，跳过同步。")
+        return
+        
+    if not local_root or not etk_url:
+        logger.error("未配置本地 STRM 根目录或 ETK 访问地址！")
+        return
+
+    logger.info("=== 🎵 开始同步独立音乐库 ===")
+    client = P115Service.get_client()
+    if not client: return
+
+    # 音乐文件扩展名
+    audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
+    music_local_base = os.path.join(local_root, "音乐库")
+    os.makedirs(music_local_base, exist_ok=True)
+
+    files_generated = 0
+
+    def _recursive_sync(current_cid, current_local_path):
+        nonlocal files_generated
+        offset = 0
+        limit = 1000
+        
+        while True:
+            try:
+                res = client.fs_files({'cid': current_cid, 'limit': limit, 'offset': offset, 'record_open_time': 0})
+                data = res.get('data', [])
+                if not data: break
+                
+                for item in data:
+                    name = item.get('fn') or item.get('n') or item.get('file_name', '')
+                    fc_val = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
+                    
+                    if fc_val == '0': # 文件夹
+                        sub_cid = item.get('fid') or item.get('file_id')
+                        sub_local_path = os.path.join(current_local_path, name)
+                        os.makedirs(sub_local_path, exist_ok=True)
+                        _recursive_sync(sub_cid, sub_local_path)
+                    elif fc_val == '1': # 文件
+                        ext = name.split('.')[-1].lower() if '.' in name else ''
+                        if ext in audio_exts:
+                            pc = item.get('pc') or item.get('pick_code')
+                            if not pc: continue
+                            
+                            strm_name = os.path.splitext(name)[0] + ".strm"
+                            strm_path = os.path.join(current_local_path, strm_name)
+                            
+                            # 生成 STRM 内容
+                            if not etk_url.startswith('http'):
+                                # 挂载模式
+                                rel_path = os.path.relpath(strm_path, local_root)
+                                content = os.path.join(etk_url, rel_path).replace('\\', '/')
+                                content = content[:-5] + f".{ext}" # 替换回原扩展名
+                            else:
+                                # 302 直链模式
+                                content = f"{etk_url}/api/p115/play/{pc}/{name}"
+                                
+                            with open(strm_path, 'w', encoding='utf-8') as f:
+                                f.write(content)
+                            files_generated += 1
+                            
+                if len(data) < limit: break
+                offset += limit
+            except Exception as e:
+                logger.error(f"同步音乐目录异常 (CID:{current_cid}): {e}")
+                break
+
+    _recursive_sync(music_cid, music_local_base)
+    logger.info(f"=== 🎵 音乐库同步完成！共生成/更新 {files_generated} 个 STRM 文件 ===")
