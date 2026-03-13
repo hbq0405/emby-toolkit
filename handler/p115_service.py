@@ -3873,7 +3873,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
 
 def task_sync_music_library(processor=None):
     """
-    独立音乐库全量同步任务：增量生成 STRM + 自动清理失效文件
+    独立音乐库全量同步任务：增量生成 STRM + 下载附属文件(封面/歌词) + 自动清理
     """
     try:
         import task_manager
@@ -3897,6 +3897,8 @@ def task_sync_music_library(processor=None):
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
     enable_cleanup = config.get(constants.CONFIG_OPTION_115_LOCAL_CLEANUP, False)
+    # ★ 复用下载字幕的开关来控制是否下载音乐附属文件
+    download_aux = config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True) 
     
     if not music_cid or str(music_cid) == '0':
         msg = "未配置音乐库根目录，跳过同步。"
@@ -3921,16 +3923,20 @@ def task_sync_music_library(processor=None):
         return
 
     audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
+    # ★ 定义需要下载的附属文件扩展名
+    aux_exts = {'lrc', 'jpg', 'jpeg', 'png', 'nfo', 'txt', 'cue'}
+    
     music_local_base = os.path.join(local_root, music_root_name)
     os.makedirs(music_local_base, exist_ok=True)
 
     files_generated = 0
     files_skipped = 0
+    aux_downloaded = 0
     dirs_scanned = 0
-    valid_local_files = set() # ★ 用于记录本次同步所有有效的本地文件路径
+    valid_local_files = set() 
 
     def _recursive_sync(current_cid, current_local_path):
-        nonlocal files_generated, files_skipped, dirs_scanned
+        nonlocal files_generated, files_skipped, aux_downloaded, dirs_scanned
         
         dirs_scanned += 1
         display_path = os.path.basename(current_local_path) or music_root_name
@@ -3967,15 +3973,16 @@ def task_sync_music_library(processor=None):
                         
                     elif fc_val == '1': # 文件
                         ext = name.split('.')[-1].lower() if '.' in name else ''
+                        pc = item.get('pc') or item.get('pick_code')
+                        if not pc: continue
                         
+                        # ==========================================
+                        # 1. 处理音频文件 -> 生成 STRM
+                        # ==========================================
                         if ext in audio_exts:
-                            pc = item.get('pc') or item.get('pick_code')
-                            if not pc: continue
-                            
                             strm_name = os.path.splitext(name)[0] + ".strm"
                             strm_path = os.path.join(current_local_path, strm_name)
                             
-                            # 生成 STRM 内容
                             if not etk_url.startswith('http'):
                                 rel_p = os.path.relpath(strm_path, local_root)
                                 content = os.path.join(etk_url, rel_p).replace('\\', '/')
@@ -3983,9 +3990,6 @@ def task_sync_music_library(processor=None):
                             else:
                                 content = f"{etk_url}/api/p115/play/{pc}/{name}"
                                 
-                            # ==========================================
-                            # ★ 核心增量逻辑：比对旧内容，一致则跳过
-                            # ==========================================
                             need_write = True
                             if os.path.exists(strm_path):
                                 try:
@@ -4002,7 +4006,6 @@ def task_sync_music_library(processor=None):
                             else:
                                 files_skipped += 1
                                 
-                            # 记录有效文件路径，供后续清理使用
                             valid_local_files.add(os.path.abspath(strm_path))
                             
                             if (files_generated + files_skipped) % 200 == 0:
@@ -4019,68 +4022,86 @@ def task_sync_music_library(processor=None):
                                 local_path=file_local_path, size=file_size
                             )
                             
+                        # ==========================================
+                        # ★ 2. 处理附属文件 -> 直接下载到本地
+                        # ==========================================
+                        elif ext in aux_exts and download_aux:
+                            aux_path = os.path.join(current_local_path, name)
+                            if not os.path.exists(aux_path):
+                                try:
+                                    import requests
+                                    url_obj = client.download_url(pc, user_agent="Mozilla/5.0")
+                                    if url_obj:
+                                        headers = {"User-Agent": "Mozilla/5.0", "Cookie": P115Service.get_cookies()}
+                                        resp = requests.get(str(url_obj), stream=True, timeout=15, headers=headers)
+                                        resp.raise_for_status()
+                                        with open(aux_path, 'wb') as f:
+                                            for chunk in resp.iter_content(8192): f.write(chunk)
+                                        logger.info(f"  ⬇️ [增量] 下载音乐附属文件: {name}")
+                                        aux_downloaded += 1
+                                except Exception as e:
+                                    logger.error(f"  ❌ 下载音乐附属文件失败 [{name}]: {e}")
+                            
+                            # 无论是否刚刚下载，只要网盘里有，就加入有效名单，防止被清理
+                            valid_local_files.add(os.path.abspath(aux_path))
+                            
                 if len(data) < limit: break
                 offset += limit
             except Exception as e:
                 logger.error(f"同步音乐目录异常 (CID:{current_cid}): {e}")
                 break
 
-    # 1. 执行递归同步
     _recursive_sync(music_cid, music_local_base)
     
     # =================================================================
-    # ★ 2. 本地失效文件清理阶段
+    # ★ 本地失效文件清理阶段 (包含附属文件)
     # =================================================================
     cleaned_files = 0
     cleaned_dirs = 0
     
     if enable_cleanup:
-        # 安全锁：如果本次拉取完全失败（没有任何有效文件），拒绝执行清理，防止误删
         if not valid_local_files and files_generated == 0 and files_skipped == 0:
             logger.warning("  ⚠️ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
         else:
             update_progress(90, "  🧹 正在比对并清理本地失效文件与空壳目录...")
             
             if os.path.exists(music_local_base):
-                # 1. 先清理失效的 STRM 文件
+                # 1. 清理失效的 STRM 和 附属文件
                 for root_dir, dirs, files in os.walk(music_local_base):
                     for file in files:
-                        if file.lower().endswith('.strm'):
+                        ext = file.split('.')[-1].lower()
+                        # ★ 检查范围扩大：包含 strm 和所有附属扩展名
+                        if ext == 'strm' or ext in aux_exts:
                             file_path = os.path.abspath(os.path.join(root_dir, file))
                             if file_path not in valid_local_files:
                                 try:
                                     os.remove(file_path)
                                     cleaned_files += 1
                                     logger.debug(f"  🗑️ [清理] 删除失效文件: {file}")
-                                except Exception as e:
-                                    pass
+                                except Exception: pass
                 
-                # 2. 自下而上扫描，清理空壳目录
+                # 2. 自下而上扫描，清理空壳目录 (逻辑不变：只要没有 STRM 就连锅端)
                 for root_dir, dirs, files in os.walk(music_local_base, topdown=False):
                     for d in dirs:
                         dir_path = os.path.join(root_dir, d)
                         if not os.path.exists(dir_path): continue
                             
-                        # 检查该目录及其所有子目录中，是否还存在任何 .strm 文件
                         has_strm = False
                         for r, _, fs in os.walk(dir_path):
                             if any(f.lower().endswith('.strm') for f in fs):
                                 has_strm = True
                                 break
                                 
-                        # 如果没有 STRM，判定为空壳目录，直接物理超度
                         if not has_strm:
                             try:
                                 shutil.rmtree(dir_path)
                                 cleaned_dirs += 1
                                 logger.debug(f"  🗑️ [清理] 删除无 STRM 的空壳目录: {dir_path}")
-                            except Exception as e:
-                                pass
+                            except Exception: pass
 
-    # 3. 结束统计
-    end_msg = f"=== 🎵 音乐库同步完成！新增/更新: {files_generated} 首, 跳过: {files_skipped} 首 ==="
+    end_msg = f"=== 🎵 音乐库同步完成！新增/更新: {files_generated} 首, 下载附属: {aux_downloaded} 个 ==="
     if enable_cleanup:
         end_msg += f" | 清理失效文件: {cleaned_files} 个, 空目录: {cleaned_dirs} 个"
         
     logger.info(end_msg)
-    update_progress(100, f"同步完成！新增/更新 {files_generated} 首，跳过 {files_skipped} 首。")
+    update_progress(100, f"同步完成！生成 {files_generated} 首，下载 {aux_downloaded} 个附属文件。")
