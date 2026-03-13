@@ -2,7 +2,7 @@
   <n-modal v-model:show="showModal" preset="card" title="独立音乐库管理" style="width: 600px;">
     <n-space vertical :size="20">
       <n-alert type="success" :show-icon="true">
-        音乐库独立于影视分类规则。上传的音乐将自动在本地 <b>/音乐库</b> 目录下生成 1:1 的 STRM 文件结构。
+        音乐库独立于影视分类规则。上传的音乐将自动在本地STRM根目录下生成对应的 STRM 文件结构。
       </n-alert>
 
       <n-form label-placement="left" label-width="120">
