@@ -130,10 +130,10 @@
         </n-radio-group>
       </n-form-item>
 
-      <n-form-item label="追剧状态 (仅对剧集有效)">
+      <n-form-item label="追剧状态" v-if="currentRule.media_type === 'tv'">
         <n-radio-group v-model:value="currentRule.watching_status">
-          <n-radio-button value="all">不限 (常规分类)</n-radio-button>
-          <n-radio-button value="watching">仅限 追剧中</n-radio-button>
+          <n-radio-button value="all">常规分类</n-radio-button>
+          <n-radio-button value="watching">追剧中</n-radio-button>
         </n-radio-group>
         <template #feedback>
           <n-text depth="3" style="font-size: 12px;">
