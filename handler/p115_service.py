@@ -3820,7 +3820,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
 
 def task_sync_music_library(processor=None):
     """
-    独立音乐库全量同步任务：1:1 镜像目录结构并生成 STRM
+    独立音乐库全量同步任务：1:1 镜像目录结构并生成 STRM (包含完整 DB 缓存写入)
     """
     config = get_config()
     music_cid = config.get('p115_music_root_cid')
@@ -3839,7 +3839,6 @@ def task_sync_music_library(processor=None):
     client = P115Service.get_client()
     if not client: return
 
-    # 音乐文件扩展名
     audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
     music_local_base = os.path.join(local_root, "音乐库")
     os.makedirs(music_local_base, exist_ok=True)
@@ -3860,12 +3859,17 @@ def task_sync_music_library(processor=None):
                 for item in data:
                     name = item.get('fn') or item.get('n') or item.get('file_name', '')
                     fc_val = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
+                    item_id = item.get('fid') or item.get('file_id')
                     
                     if fc_val == '0': # 文件夹
-                        sub_cid = item.get('fid') or item.get('file_id')
                         sub_local_path = os.path.join(current_local_path, name)
                         os.makedirs(sub_local_path, exist_ok=True)
-                        _recursive_sync(sub_cid, sub_local_path)
+                        
+                        # ★ 1. 写入目录缓存 (供联动删除溯源使用)
+                        P115CacheManager.save_cid(item_id, current_cid, name)
+                        
+                        _recursive_sync(item_id, sub_local_path)
+                        
                     elif fc_val == '1': # 文件
                         ext = name.split('.')[-1].lower() if '.' in name else ''
                         if ext in audio_exts:
@@ -3877,17 +3881,27 @@ def task_sync_music_library(processor=None):
                             
                             # 生成 STRM 内容
                             if not etk_url.startswith('http'):
-                                # 挂载模式
                                 rel_path = os.path.relpath(strm_path, local_root)
                                 content = os.path.join(etk_url, rel_path).replace('\\', '/')
-                                content = content[:-5] + f".{ext}" # 替换回原扩展名
+                                content = content[:-5] + f".{ext}" 
                             else:
-                                # 302 直链模式
                                 content = f"{etk_url}/api/p115/play/{pc}/{name}"
                                 
                             with open(strm_path, 'w', encoding='utf-8') as f:
                                 f.write(content)
                             files_generated += 1
+                            
+                            # ★ 2. 写入文件缓存 (供联动删除精准定位)
+                            sha1 = item.get('sha1') or item.get('sha')
+                            file_size = _parse_115_size(item.get('fs') or item.get('size'))
+                            rel_dir = os.path.relpath(current_local_path, local_root)
+                            file_local_path = os.path.join(rel_dir, name).replace('\\', '/')
+                            
+                            P115CacheManager.save_file_cache(
+                                fid=item_id, parent_id=current_cid, name=name,
+                                sha1=sha1, pick_code=pc,
+                                local_path=file_local_path, size=file_size
+                            )
                             
                 if len(data) < limit: break
                 offset += limit

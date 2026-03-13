@@ -949,49 +949,64 @@ def trigger_music_sync():
 @p115_bp.route('/music/upload', methods=['POST'])
 @admin_required
 def upload_music_file():
-    """上传音乐文件并生成 STRM"""
+    """上传音乐文件并生成 STRM (包含 DB 缓存写入)"""
     if 'file' not in request.files:
         return jsonify({"success": False, "message": "没有文件"}), 400
         
     file = request.files['file']
     target_cid = request.form.get('target_cid')
-    relative_path = request.form.get('relative_path', '') # 用于处理文件夹上传
+    relative_path = request.form.get('relative_path', '') 
     
     if not target_cid or target_cid == '0':
         return jsonify({"success": False, "message": "未配置音乐库目录"}), 400
+
+    from handler.p115_service import P115Service, P115CacheManager, get_config
+    import constants
+    import os
 
     client = P115Service.get_openapi_client()
     if not client:
         return jsonify({"success": False, "message": "115 客户端未初始化"}), 500
 
     try:
-        # 1. 如果带有相对路径 (说明是上传的文件夹)，需要在 115 动态创建目录
+        # 1. 动态创建目录并写入缓存
         final_cid = target_cid
         if relative_path and '/' in relative_path:
-            dir_parts = relative_path.split('/')[:-1] # 去掉文件名
+            dir_parts = relative_path.split('/')[:-1] 
             current_pid = target_cid
             for part in dir_parts:
-                # 简单粗暴：直接尝试创建，如果存在 115 会返回已存在的 cid
                 mk_res = client.fs_mkdir(part, current_pid)
                 if mk_res.get('state'):
-                    current_pid = mk_res.get('cid')
+                    new_cid = mk_res.get('cid')
+                    # ★ 缓存新建的目录
+                    P115CacheManager.save_cid(new_cid, current_pid, part)
+                    current_pid = new_cid
                 else:
-                    # 如果创建失败(可能已存在)，需要搜索获取 cid
                     search_res = client.fs_files({'cid': current_pid, 'search_value': part, 'limit': 100})
                     found = False
                     for item in search_res.get('data', []):
                         if item.get('fn') == part and str(item.get('fc')) == '0':
-                            current_pid = item.get('fid')
+                            new_cid = item.get('fid')
+                            # ★ 缓存已存在的目录
+                            P115CacheManager.save_cid(new_cid, current_pid, part)
+                            current_pid = new_cid
                             found = True
                             break
                     if not found: raise Exception(f"无法创建或找到目录: {part}")
             final_cid = current_pid
 
         # 2. 执行上传
+        # 先读取文件内容以获取大小，供后续缓存使用
+        file_data = file.read()
+        file_size = len(file_data)
+        file.seek(0) # 重置指针供 upload_file_stream 读取
+        
         upload_res = client.upload_file_stream(file, file.filename, final_cid)
         pick_code = upload_res.get('pick_code')
+        file_id = upload_res.get('file_id')
+        file_sha1 = upload_res.get('sha1')
         
-        # 3. 立即在本地生成 STRM
+        # 3. 立即在本地生成 STRM 并写入文件缓存
         config = get_config()
         local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
         etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
@@ -1000,7 +1015,6 @@ def upload_music_file():
             ext = file.filename.split('.')[-1].lower()
             strm_name = os.path.splitext(file.filename)[0] + ".strm"
             
-            # 拼接本地路径
             local_dir = os.path.join(local_root, "音乐库")
             if relative_path and '/' in relative_path:
                 local_dir = os.path.join(local_dir, os.path.dirname(relative_path))
@@ -1017,6 +1031,16 @@ def upload_music_file():
                 
             with open(strm_path, 'w', encoding='utf-8') as f:
                 f.write(content)
+                
+            # ★ 缓存上传的文件 (供联动删除精准定位)
+            if file_id:
+                rel_dir = os.path.relpath(local_dir, local_root)
+                file_local_path = os.path.join(rel_dir, file.filename).replace('\\', '/')
+                P115CacheManager.save_file_cache(
+                    fid=file_id, parent_id=final_cid, name=file.filename,
+                    sha1=file_sha1, pick_code=pick_code,
+                    local_path=file_local_path, size=file_size
+                )
 
         return jsonify({"success": True, "message": f"{file.filename} 上传成功"})
     except Exception as e:
