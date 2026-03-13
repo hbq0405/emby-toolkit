@@ -75,35 +75,10 @@ class ActorDBManager:
                     last_updated_at = NOW();
             """
             cursor.execute(sql, (original_text, translated_text, engine_used))
+            cursor.connection.commit()
             logger.trace(f"  ➜ 翻译缓存存DB: '{original_text}' -> '{translated_text}' (引擎: {engine_used})")
         except Exception as e:
             logger.error(f"  ➜ DB保存翻译缓存失败 for '{original_text}': {e}", exc_info=True)
-
-    # 核心批量写入函数
-    def batch_upsert_actors_and_metadata(self, cursor: psycopg2.extensions.cursor, actors_list: List[Dict[str, Any]], emby_config: Dict[str, Any]) -> Dict[str, int]:
-        """
-        接收一个完整的演员列表，自动将数据分发到
-        person_identity_map 和 actor_metadata 两个表中。
-        这是所有演员数据写入的唯一入口。
-        """
-        if not actors_list:
-            return {}
-
-        logger.info(f"  ➜ [演员数据管家] 开始批量处理 {len(actors_list)} 位演员的写入任务...")
-        stats = {"INSERTED": 0, "UPDATED": 0, "UNCHANGED": 0, "SKIPPED": 0, "ERROR": 0}
-
-        for actor_data in actors_list:
-            # 直接调用下面已经很完善的单个演员处理函数
-            map_id, action = self.upsert_person(cursor, actor_data, emby_config)
-            
-            # 累加统计结果
-            if action in stats:
-                stats[action] += 1
-            else:
-                stats["ERROR"] += 1
-        
-        logger.info(f"  ➜ [演员数据管家] 批量写入完成。统计: {stats}")
-        return stats
 
     # 核心批量读取函数
     def get_full_actor_details_by_tmdb_ids(self, cursor: psycopg2.extensions.cursor, tmdb_ids: List[Any]) -> Dict[int, Dict[str, Any]]:
