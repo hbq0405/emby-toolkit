@@ -1415,7 +1415,7 @@
     <!-- ★ 引入音乐库管理模态框 -->
     <MusicManagerModal 
       ref="musicModalRef" 
-      @open-folder-selector="cid => openFolderSelector('music_root', cid)" 
+      @open-folder-selector="(context, cid) => openFolderSelector(context, cid)" 
     />
   </n-layout>
   
@@ -2503,8 +2503,10 @@ const confirmFolderSelection = () => {
     currentRule.value.dir_name = name;
   } else if (selectorContext.value === 'share_transfer') {
     shareMountModalRef.value?.updateTransferFolder(cid, name);
-  } else if (selectorContext.value === 'music_root') { 
+  } else if (selectorContext.value === 'music_root') {
     musicModalRef.value?.updateFolder(cid, name);
+  } else if (selectorContext.value === 'music_upload_target') { 
+    musicModalRef.value?.updateUploadTarget(cid, name);
   }
   
   message.success(`已选择: ${name}`);

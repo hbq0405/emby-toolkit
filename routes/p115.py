@@ -922,12 +922,12 @@ def correct_organize_record():
 def handle_music_config():
     """获取/保存音乐库配置"""
     if request.method == 'GET':
-        config = get_config()
+        # ★ 修复：直接从数据库读取，避免 get_config() 缓存不同步
         return jsonify({
             "success": True,
             "data": {
-                "p115_music_root_cid": config.get('p115_music_root_cid', '0'),
-                "p115_music_root_name": config.get('p115_music_root_name', '')
+                "p115_music_root_cid": settings_db.get_setting('p115_music_root_cid') or '0',
+                "p115_music_root_name": settings_db.get_setting('p115_music_root_name') or ''
             }
         })
     
@@ -949,7 +949,7 @@ def trigger_music_sync():
 @p115_bp.route('/music/upload', methods=['POST'])
 @admin_required
 def upload_music_file():
-    """上传音乐文件并生成 STRM (包含 DB 缓存写入)"""
+    """上传音乐文件并生成 STRM (支持自定义目标目录 + 完美还原层级)"""
     if 'file' not in request.files:
         return jsonify({"success": False, "message": "没有文件"}), 400
         
@@ -958,9 +958,10 @@ def upload_music_file():
     relative_path = request.form.get('relative_path', '') 
     
     if not target_cid or target_cid == '0':
-        return jsonify({"success": False, "message": "未配置音乐库目录"}), 400
+        return jsonify({"success": False, "message": "未选择上传目标目录"}), 400
 
     from handler.p115_service import P115Service, P115CacheManager, get_config
+    from database import settings_db
     import constants
     import os
 
@@ -969,16 +970,17 @@ def upload_music_file():
         return jsonify({"success": False, "message": "115 客户端未初始化"}), 500
 
     try:
-        # 1. 动态创建目录并写入缓存
+        # 1. 动态创建拖拽的文件夹并写入缓存
         final_cid = target_cid
         if relative_path and '/' in relative_path:
-            dir_parts = relative_path.split('/')[:-1] 
+            clean_path = relative_path.strip('/')
+            dir_parts = [p for p in clean_path.split('/')[:-1] if p]
+            
             current_pid = target_cid
             for part in dir_parts:
                 mk_res = client.fs_mkdir(part, current_pid)
                 if mk_res.get('state'):
                     new_cid = mk_res.get('cid')
-                    # ★ 缓存新建的目录
                     P115CacheManager.save_cid(new_cid, current_pid, part)
                     current_pid = new_cid
                 else:
@@ -987,7 +989,6 @@ def upload_music_file():
                     for item in search_res.get('data', []):
                         if item.get('fn') == part and str(item.get('fc')) == '0':
                             new_cid = item.get('fid')
-                            # ★ 缓存已存在的目录
                             P115CacheManager.save_cid(new_cid, current_pid, part)
                             current_pid = new_cid
                             found = True
@@ -996,17 +997,39 @@ def upload_music_file():
             final_cid = current_pid
 
         # 2. 执行上传
-        # 先读取文件内容以获取大小，供后续缓存使用
         file_data = file.read()
         file_size = len(file_data)
-        file.seek(0) # 重置指针供 upload_file_stream 读取
+        file.seek(0) 
         
         upload_res = client.upload_file_stream(file, file.filename, final_cid)
         pick_code = upload_res.get('pick_code')
         file_id = upload_res.get('file_id')
         file_sha1 = upload_res.get('sha1')
         
-        # 3. 立即在本地生成 STRM 并写入文件缓存
+        # 3. 计算目标目录相对于音乐库根目录的相对路径
+        music_root_cid = settings_db.get_setting('p115_music_root_cid')
+        target_rel_path = ""
+        
+        if str(target_cid) != str(music_root_cid):
+            # 向 115 请求目标目录的完整路径节点
+            dir_info = client.fs_files({'cid': target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+            path_nodes = dir_info.get('path', [])
+            
+            start_idx = -1
+            for i, node in enumerate(path_nodes):
+                if str(node.get('cid') or node.get('file_id')) == str(music_root_cid):
+                    start_idx = i + 1
+                    break
+                    
+            if start_idx != -1:
+                sub_folders = [str(p.get('name') or p.get('file_name')).strip() for p in path_nodes[start_idx:]]
+                if sub_folders:
+                    target_rel_path = os.path.join(*sub_folders)
+            else:
+                # 如果选择的目录不在音乐库根目录下，放入一个专门的文件夹防止散落
+                target_rel_path = "未分类上传"
+
+        # 4. 立即在本地生成 STRM 并写入文件缓存
         config = get_config()
         local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
         etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
@@ -1015,9 +1038,11 @@ def upload_music_file():
             ext = file.filename.split('.')[-1].lower()
             strm_name = os.path.splitext(file.filename)[0] + ".strm"
             
-            local_dir = os.path.join(local_root, "音乐库")
+            # 拼接完整的本地路径: 本地根目录 / 音乐库 / 目标子目录 / 拖拽的相对目录
+            local_dir = os.path.join(local_root, "音乐库", target_rel_path)
             if relative_path and '/' in relative_path:
-                local_dir = os.path.join(local_dir, os.path.dirname(relative_path))
+                clean_path = relative_path.strip('/')
+                local_dir = os.path.join(local_dir, os.path.dirname(clean_path))
             os.makedirs(local_dir, exist_ok=True)
             
             strm_path = os.path.join(local_dir, strm_name)
@@ -1032,7 +1057,6 @@ def upload_music_file():
             with open(strm_path, 'w', encoding='utf-8') as f:
                 f.write(content)
                 
-            # ★ 缓存上传的文件 (供联动删除精准定位)
             if file_id:
                 rel_dir = os.path.relpath(local_dir, local_root)
                 file_local_path = os.path.join(rel_dir, file.filename).replace('\\', '/')

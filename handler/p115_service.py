@@ -3823,7 +3823,10 @@ def task_sync_music_library(processor=None):
     独立音乐库全量同步任务：1:1 镜像目录结构并生成 STRM (包含完整 DB 缓存写入)
     """
     config = get_config()
-    music_cid = config.get('p115_music_root_cid')
+    # ★ 修复：直接从数据库读取音乐库 CID
+    from database import settings_db
+    music_cid = settings_db.get_setting('p115_music_root_cid')
+    
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
     
