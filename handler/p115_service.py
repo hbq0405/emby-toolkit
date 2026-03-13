@@ -1129,15 +1129,15 @@ class SmartOrganizer:
         """
         if not self.raw_metadata: return False
 
-        # 默认情况下，跳过所有设定了特定追剧状态的规则（它们只在状态流转时被触发）
-        target_status = getattr(self, 'target_watching_status', 'all')
+        # ★★★ 完美隔离逻辑 ★★★
+        target_status = getattr(self, 'target_watching_status', 'normal')
         rule_status = rule.get('watching_status', 'all')
         
-        if target_status == 'all':
-            # 普通整理模式：遇到专属状态规则直接跳过
+        if target_status == 'normal':
+            # 115日常整理：遇到专属状态规则(如"追剧中")直接跳过，只看普通规则
             if rule_status != 'all': return False
         else:
-            # 状态流转模式：只匹配对应的状态规则
+            # 追剧大脑发令：只找对应状态的规则
             if rule_status != target_status: return False
 
         # 1. 媒体类型
