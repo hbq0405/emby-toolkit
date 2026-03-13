@@ -1518,6 +1518,55 @@ class WatchlistProcessor:
                     logger.debug(f"  ➜ 已同步更新 S{latest_season_num} 的总集数为 {fake_total}")
         self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
 
+        # ======================================================================
+        # ★★★ 115 目录自动流转联动 (大脑指挥官) ★★★
+        # ======================================================================
+        try:
+            # 判断是否发生了关键的状态流转
+            status_changed_to_watching = (old_status in [None, 'NONE'] and final_status in ['Watching', 'Pending'])
+            status_changed_to_completed = (old_status in ['Watching', 'Paused', 'Pending'] and final_status == 'Completed')
+
+            if status_changed_to_watching or status_changed_to_completed:
+                logger.info(f"  🔄 [115联动] 检测到状态流转 ({old_status} -> {final_status})，准备重新评估 115 目录分类...")
+                
+                from handler.p115_service import P115Service, SmartOrganizer, ManualCorrectTaskQueue
+                from database.connection import get_db_connection
+                
+                client = P115Service.get_client()
+                if client:
+                    # 1. 查出该剧集在 115 整理记录中的所有 record_id
+                    record_ids = []
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute("SELECT id FROM p115_organize_records WHERE tmdb_id = %s", (str(tmdb_id),))
+                            record_ids = [row['id'] for row in cursor.fetchall()]
+                    
+                    if record_ids:
+                        # 2. 实例化 Organizer，重新计算目标目录
+                        # 注意：必须传入 ignore_memory=True，否则它会读取历史记录，导致永远移不走！
+                        organizer = SmartOrganizer(client, tmdb_id, 'tv', item_name)
+                        new_target_cid = None
+                        
+                        if status_changed_to_watching:
+                            # 尝试寻找专属的 [追剧中] 分类
+                            new_target_cid = organizer.get_target_cid(ignore_memory=True, target_watching_status='watching')
+                        elif status_changed_to_completed:
+                            # 尝试寻找专属的 [已完结] 分类
+                            new_target_cid = organizer.get_target_cid(ignore_memory=True, target_watching_status='completed')
+                            # 如果没有配置专属的 [已完结] 分类，则回退到普通分类 (如 [古装剧])
+                            if not new_target_cid:
+                                new_target_cid = organizer.get_target_cid(ignore_memory=True, target_watching_status='all')
+                        
+                        if new_target_cid:
+                            logger.info(f"  🚚 [115联动] 计算出新目录 CID: {new_target_cid}，将 {len(record_ids)} 个文件加入重组队列。")
+                            # 3. 将所有记录加入手动纠错缓冲队列（复用批量重组逻辑，自动完成网盘移动、本地STRM更新、Emby刷新）
+                            for rid in record_ids:
+                                ManualCorrectTaskQueue.add(rid, tmdb_id, 'tv', new_target_cid, None)
+                        else:
+                            logger.debug("  💤 [115联动] 未匹配到任何新分类规则，保持原目录不变。")
+        except Exception as e:
+            logger.error(f"  ❌ 触发 115 自动分类迁移失败: {e}", exc_info=True)
+
         # 更新季的活跃状态
         active_seasons = set()
         # 规则 A: 如果有明确的下一集待播，该集所属的季肯定是活跃的

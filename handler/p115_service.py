@@ -1060,12 +1060,12 @@ class SmartOrganizer:
             if self.media_type == 'tv':
                 raw_details = tmdb.get_tv_details(
                     self.tmdb_id, self.api_key,
-                    append_to_response="keywords,content_ratings,networks"
+                    append_to_response="keywords,content_ratings,networks,credits"
                 )
             else:
                 raw_details = tmdb.get_movie_details(
                     self.tmdb_id, self.api_key,
-                    append_to_response="keywords,release_dates"
+                    append_to_response="keywords,release_dates,credits"
                 )
 
             if not raw_details: return {}
@@ -1093,6 +1093,9 @@ class SmartOrganizer:
                 self.rating_map,
                 self.rating_priority
             )
+
+            # 4. 演员提取
+            data['actor_ids'] = [cast.get('id') for cast in raw_details.get('credits', {}).get('cast', [])]
 
             # 补充标题日期供重命名
             data['title'] = raw_details.get('title') or raw_details.get('name')
@@ -1124,6 +1127,17 @@ class SmartOrganizer:
         - 集合字段（工作室/关键词）：通过 Label 反查 Config 中的 ID 列表，再比对 TMDb ID
         """
         if not self.raw_metadata: return False
+
+        # 默认情况下，跳过所有设定了特定追剧状态的规则（它们只在状态流转时被触发）
+        target_status = getattr(self, 'target_watching_status', 'all')
+        rule_status = rule.get('watching_status', 'all')
+        
+        if target_status == 'all':
+            # 普通整理模式：遇到专属状态规则直接跳过
+            if rule_status != 'all': return False
+        else:
+            # 状态流转模式：只匹配对应的状态规则
+            if rule_status != target_status: return False
 
         # 1. 媒体类型
         if rule.get('media_type') and rule['media_type'] != 'all':
@@ -1228,11 +1242,19 @@ class SmartOrganizer:
             vote_avg = self.details.get('vote_average', 0)
             if vote_avg < float(rule['min_rating']):
                 return False
+            
+        # ★ 11. 匹配演员
+        if rule.get('actors'):
+            # rule['actors'] 是前端传来的对象列表 [{'id': 123, 'name': 'xxx'}, ...]
+            rule_actor_ids = [int(a['id']) for a in rule['actors'] if 'id' in a]
+            if not any(aid in self.raw_metadata.get('actor_ids', []) for aid in rule_actor_ids):
+                return False
 
         return True
 
-    def get_target_cid(self, ignore_memory=False):
+    def get_target_cid(self, ignore_memory=False, target_watching_status='all'):
         """获取目标 CID：优先查历史整理记录（记忆手动纠错），其次遍历规则"""
+        self.target_watching_status = target_watching_status
         # ★★★ 1. 查历史记录 (记忆功能) ★★★
         if not ignore_memory:
             try:
