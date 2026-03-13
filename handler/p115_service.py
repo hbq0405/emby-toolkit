@@ -192,9 +192,7 @@ class P115OpenAPIClient:
     def upload_file_stream(self, file_stream, file_name, target_cid):
         """
         完整的文件上传流程 (支持秒传、二次认证、OSS直传)
-        file_stream: 类似 request.files['file'] 的文件流对象
         """
-        # 1. 计算 SHA1 和 128K SHA1 (preid)
         file_data = file_stream.read()
         file_size = len(file_data)
         
@@ -203,17 +201,14 @@ class P115OpenAPIClient:
         file_sha1 = sha1_obj.hexdigest().upper()
         
         pre_sha1_obj = hashlib.sha1()
-        pre_sha1_obj.update(file_data[:131072]) # 128KB
+        pre_sha1_obj.update(file_data[:131072]) 
         preid = pre_sha1_obj.hexdigest().upper()
         
-        # 2. 初始化上传
         init_res = self.fs_upload_init(file_name, file_size, target_cid, file_sha1, preid)
         
-        # 3. 处理二次认证 (status = 7)
         if init_res.get('state') and init_res.get('data', {}).get('status') == 7:
             sign_key = init_res['data']['sign_key']
             sign_check = init_res['data']['sign_check']
-            # 解析区间，例如 "0-99"
             start, end = map(int, sign_check.split('-'))
             chunk = file_data[start:end+1]
             
@@ -221,7 +216,7 @@ class P115OpenAPIClient:
             chunk_sha1.update(chunk)
             sign_val = chunk_sha1.hexdigest().upper()
             
-            # 重新初始化
+            time.sleep(0.5) # ★ 内部流控：防止二次认证请求过快
             init_res = self.fs_upload_init(file_name, file_size, target_cid, file_sha1, preid, sign_key, sign_val)
             
         if not init_res.get('state'):
@@ -229,12 +224,11 @@ class P115OpenAPIClient:
             
         status = init_res['data'].get('status')
         
-        # 4. 秒传成功 (status = 2)
         if status == 2:
             return init_res['data']
             
-        # 5. 非秒传，需要 OSS 上传 (status = 1)
         if status == 1:
+            time.sleep(0.5) # ★ 内部流控：防止获取凭证请求过快
             token_res = self.fs_upload_get_token()
             if not token_res.get('state'):
                 raise Exception("获取上传凭证失败")
@@ -244,7 +238,6 @@ class P115OpenAPIClient:
             bucket = init_res['data']['bucket']
             object_key = init_res['data']['object']
             
-            # 构造 OSS 上传 URL 和 Headers
             upload_url = f"https://{bucket}.{endpoint}/{object_key}"
             headers = {
                 "x-oss-security-token": t_data['SecurityToken'],
@@ -252,7 +245,6 @@ class P115OpenAPIClient:
                 "x-oss-callback-var": init_res['data']['callback']['callback_var']
             }
             
-            # 执行 PUT 上传
             oss_res = requests.put(upload_url, data=file_data, headers=headers)
             oss_res_data = oss_res.json()
             
@@ -500,6 +492,11 @@ class P115Service:
                 self._check_openapi()
                 self._rate_limit()
                 return self._openapi.fs_delete(fids)
+            
+            def upload_file_stream(self, file_stream, file_name, target_cid):
+                self._check_openapi()
+                self._rate_limit() 
+                return self._openapi.upload_file_stream(file_stream, file_name, target_cid)
 
             def download_url(self, pick_code, user_agent=None):
                 if not self._cookie:

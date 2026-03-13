@@ -965,7 +965,8 @@ def upload_music_file():
     import constants
     import os
 
-    client = P115Service.get_openapi_client()
+    # ★ 修复：使用 get_client() 获取带有 _rate_limit 流控锁的包装器客户端
+    client = P115Service.get_client()
     if not client:
         return jsonify({"success": False, "message": "115 客户端未初始化"}), 500
 
@@ -978,6 +979,7 @@ def upload_music_file():
             
             current_pid = target_cid
             for part in dir_parts:
+                # ★ 这里的 fs_mkdir 和 fs_files 现在都会自动排队等待 0.5 秒了！
                 mk_res = client.fs_mkdir(part, current_pid)
                 if mk_res.get('state'):
                     new_cid = mk_res.get('cid')
@@ -996,7 +998,7 @@ def upload_music_file():
                     if not found: raise Exception(f"无法创建或找到目录: {part}")
             final_cid = current_pid
 
-        # 2. 执行上传
+        # 2. 执行上传 (现在也会自动排队过流控了)
         file_data = file.read()
         file_size = len(file_data)
         file.seek(0) 
