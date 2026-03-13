@@ -949,7 +949,7 @@ def trigger_music_sync():
 @p115_bp.route('/music/upload', methods=['POST'])
 @admin_required
 def upload_music_file():
-    """上传音乐文件并生成 STRM (支持自定义目标目录 + 完美还原层级 + 过滤附属文件)"""
+    """上传音乐文件并生成 STRM (抗并发防延迟版)"""
     if 'file' not in request.files:
         return jsonify({"success": False, "message": "没有文件"}), 400
         
@@ -964,13 +964,14 @@ def upload_music_file():
     from database import settings_db
     import constants
     import os
+    import time # 引入 time 用于重试休眠
 
     client = P115Service.get_client()
     if not client:
         return jsonify({"success": False, "message": "115 客户端未初始化"}), 500
 
     try:
-        # 1. 动态创建拖拽的文件夹并写入缓存
+        # 1. 动态创建拖拽的文件夹并写入缓存 (★ 增加缓存拦截与重试机制)
         final_cid = target_cid
         if relative_path and '/' in relative_path:
             clean_path = relative_path.strip('/')
@@ -978,22 +979,37 @@ def upload_music_file():
             
             current_pid = target_cid
             for part in dir_parts:
+                # ★ 优化 1：优先查本地缓存，极速放行，完美解决并发冲突
+                cached_cid = P115CacheManager.get_cid(current_pid, part)
+                if cached_cid:
+                    current_pid = cached_cid
+                    continue
+                
+                # 缓存没有，尝试创建
                 mk_res = client.fs_mkdir(part, current_pid)
                 if mk_res.get('state'):
                     new_cid = mk_res.get('cid')
                     P115CacheManager.save_cid(new_cid, current_pid, part)
                     current_pid = new_cid
                 else:
-                    search_res = client.fs_files({'cid': current_pid, 'search_value': part, 'limit': 100})
+                    # ★ 优化 2：创建失败(可能已存在)，带重试机制的搜索，对抗 115 数据库延迟
                     found = False
-                    for item in search_res.get('data', []):
-                        if item.get('fn') == part and str(item.get('fc')) == '0':
-                            new_cid = item.get('fid')
-                            P115CacheManager.save_cid(new_cid, current_pid, part)
-                            current_pid = new_cid
-                            found = True
+                    for attempt in range(3): # 最多重试 3 次
+                        search_res = client.fs_files({'cid': current_pid, 'search_value': part, 'limit': 100})
+                        for item in search_res.get('data', []):
+                            if item.get('fn') == part and str(item.get('fc')) == '0':
+                                new_cid = item.get('fid')
+                                P115CacheManager.save_cid(new_cid, current_pid, part)
+                                current_pid = new_cid
+                                found = True
+                                break
+                        if found:
                             break
-                    if not found: raise Exception(f"无法创建或找到目录: {part}")
+                        # 没搜到，等 1.5 秒让 115 后端同步一下再搜
+                        time.sleep(1.5)
+                        
+                    if not found: 
+                        raise Exception(f"无法创建或找到目录: {part} (115后端同步延迟)")
             final_cid = current_pid
 
         # 2. 执行上传
@@ -1027,16 +1043,14 @@ def upload_music_file():
             else:
                 target_rel_path = "未分类上传"
 
-        # 4. 立即在本地生成 STRM 并写入文件缓存 (★ 增加扩展名过滤)
+        # 4. 立即在本地生成 STRM 并写入文件缓存
         config = get_config()
         local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
         etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
         
-        # 定义允许生成 STRM 的音频扩展名
         audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
         ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
         
-        # ★ 只有音频文件才生成 STRM 和写入缓存
         if ext in audio_exts and local_root and etk_url and pick_code:
             strm_name = os.path.splitext(file.filename)[0] + ".strm"
             
@@ -1071,7 +1085,6 @@ def upload_music_file():
                     local_path=file_local_path, size=file_size
                 )
         else:
-            # 附属文件仅上传，不生成 STRM，不写缓存
             logger.debug(f"  🎵 附属文件已上传至网盘，跳过本地 STRM 生成: {file.filename}")
 
         return jsonify({"success": True, "message": f"{file.filename} 上传成功"})
