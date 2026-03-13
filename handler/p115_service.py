@@ -195,7 +195,8 @@ class P115OpenAPIClient:
         """
         完整的文件上传流程 (支持秒传、二次认证、OSS直传带签名与网络容错)
         """
-        import urllib.parse # ★ 引入 URL 编码库
+        import urllib.parse 
+        import json # ★ 确保引入 json
         
         file_data = file_stream.read()
         file_size = len(file_data)
@@ -239,9 +240,6 @@ class P115OpenAPIClient:
                 
             t_data = token_res['data']
             
-            # ==========================================
-            # ★ 核心修复 1：清理 endpoint，防止 internal 节点导致握手失败
-            # ==========================================
             raw_endpoint = t_data['endpoint'].replace('http://', '').replace('https://', '')
             clean_endpoint = raw_endpoint.replace('-internal', '')
             
@@ -249,7 +247,6 @@ class P115OpenAPIClient:
             object_key = init_res['data']['object'].lstrip('/')
             callback_data = init_res['data'].get('callback', {})
             
-            # 构造 URL，注意 object_key 必须进行 URL 编码，但保留斜杠
             encoded_object_key = urllib.parse.quote(object_key, safe='/')
             
             if 'aliyuncs.com' in clean_endpoint:
@@ -257,9 +254,6 @@ class P115OpenAPIClient:
             else:
                 upload_url = f"https://{clean_endpoint}/{encoded_object_key}"
             
-            # ==========================================
-            # ★ 核心修复 2：手搓阿里云 OSS V1 签名算法
-            # ==========================================
             date_gmt = formatdate(None, usegmt=True)
             content_type = "application/octet-stream"
             
@@ -270,17 +264,25 @@ class P115OpenAPIClient:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
             }
             
+            # ==========================================
+            # ★ 核心修复：将 callback 转换为 Base64 编码
+            # ==========================================
+            def _encode_cb(val):
+                if isinstance(val, dict):
+                    val = json.dumps(val, separators=(',', ':'))
+                return base64.b64encode(val.encode('utf-8') if isinstance(val, str) else val).decode('utf-8')
+
             if 'callback' in callback_data:
-                headers["x-oss-callback"] = callback_data['callback']
+                headers["x-oss-callback"] = _encode_cb(callback_data['callback'])
             if 'callback_var' in callback_data:
-                headers["x-oss-callback-var"] = callback_data['callback_var']
+                headers["x-oss-callback-var"] = _encode_cb(callback_data['callback_var'])
             
+            # 计算签名
             oss_headers = {k.lower(): v for k, v in headers.items() if k.lower().startswith('x-oss-')}
             canonicalized_oss_headers = ""
             for k in sorted(oss_headers.keys()):
                 canonicalized_oss_headers += f"{k}:{oss_headers[k]}\n"
                 
-            # 签名用的 resource 绝对不能被 URL 编码
             canonicalized_resource = f"/{bucket}/{object_key}"
             string_to_sign = f"PUT\n\n{content_type}\n{date_gmt}\n{canonicalized_oss_headers}{canonicalized_resource}"
             
@@ -289,9 +291,6 @@ class P115OpenAPIClient:
             
             headers["Authorization"] = f"OSS {t_data['AccessKeyId']}:{signature}"
             
-            # ==========================================
-            # ★ 核心修复 3：增加 HTTP 降级回退，对抗 gevent/SSL 握手重置问题
-            # ==========================================
             try:
                 oss_res = requests.put(upload_url, data=file_data, headers=headers, timeout=300)
             except requests.exceptions.ConnectionError as e:
@@ -304,8 +303,9 @@ class P115OpenAPIClient:
             except Exception:
                 raise Exception(f"OSS上传失败，返回非JSON数据: {oss_res.text}")
                 
-            if oss_res_data.get('state'):
-                return oss_res_data['data']
+            if oss_res_data.get('state') or oss_res_data.get('code') == 200:
+                # 115 的 callback 返回结构可能略有不同，只要有 state=True 或 code=200 就算成功
+                return oss_res_data.get('data', oss_res_data)
             else:
                 raise Exception(f"OSS上传失败: {oss_res_data}")
                 
