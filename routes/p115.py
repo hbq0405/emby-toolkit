@@ -949,7 +949,7 @@ def trigger_music_sync():
 @p115_bp.route('/music/upload', methods=['POST'])
 @admin_required
 def upload_music_file():
-    """上传音乐文件并生成 STRM (支持自定义目标目录 + 完美还原层级)"""
+    """上传音乐文件并生成 STRM (支持自定义目标目录 + 完美还原层级 + 过滤附属文件)"""
     if 'file' not in request.files:
         return jsonify({"success": False, "message": "没有文件"}), 400
         
@@ -965,7 +965,6 @@ def upload_music_file():
     import constants
     import os
 
-    # ★ 修复：使用 get_client() 获取带有 _rate_limit 流控锁的包装器客户端
     client = P115Service.get_client()
     if not client:
         return jsonify({"success": False, "message": "115 客户端未初始化"}), 500
@@ -979,7 +978,6 @@ def upload_music_file():
             
             current_pid = target_cid
             for part in dir_parts:
-                # ★ 这里的 fs_mkdir 和 fs_files 现在都会自动排队等待 0.5 秒了！
                 mk_res = client.fs_mkdir(part, current_pid)
                 if mk_res.get('state'):
                     new_cid = mk_res.get('cid')
@@ -998,7 +996,7 @@ def upload_music_file():
                     if not found: raise Exception(f"无法创建或找到目录: {part}")
             final_cid = current_pid
 
-        # 2. 执行上传 (现在也会自动排队过流控了)
+        # 2. 执行上传
         file_data = file.read()
         file_size = len(file_data)
         file.seek(0) 
@@ -1013,7 +1011,6 @@ def upload_music_file():
         target_rel_path = ""
         
         if str(target_cid) != str(music_root_cid):
-            # 向 115 请求目标目录的完整路径节点
             dir_info = client.fs_files({'cid': target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
             path_nodes = dir_info.get('path', [])
             
@@ -1028,23 +1025,22 @@ def upload_music_file():
                 if sub_folders:
                     target_rel_path = os.path.join(*sub_folders)
             else:
-                # 如果选择的目录不在音乐库根目录下，放入一个专门的文件夹防止散落
                 target_rel_path = "未分类上传"
 
-        # 4. 立即在本地生成 STRM 并写入文件缓存
+        # 4. 立即在本地生成 STRM 并写入文件缓存 (★ 增加扩展名过滤)
         config = get_config()
         local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
         etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
+        audio_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS)
+        ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
         
-        if local_root and etk_url and pick_code:
-            ext = file.filename.split('.')[-1].lower()
+        # ★ 只有音频文件才生成 STRM 和写入缓存
+        if ext in audio_exts and local_root and etk_url and pick_code:
             strm_name = os.path.splitext(file.filename)[0] + ".strm"
             
-            # ★ 修复：动态读取音乐库根目录名称，不再硬编码 "音乐库"
             music_root_name = settings_db.get_setting('p115_music_root_name') or "音乐库"
             music_root_name = music_root_name.strip('/')
             
-            # 拼接完整的本地路径: 本地根目录 / 真实的音乐库名称 / 目标子目录 / 拖拽的相对目录
             local_dir = os.path.join(local_root, music_root_name, target_rel_path)
             
             if relative_path and '/' in relative_path:
@@ -1072,6 +1068,9 @@ def upload_music_file():
                     sha1=file_sha1, pick_code=pick_code,
                     local_path=file_local_path, size=file_size
                 )
+        else:
+            # 附属文件仅上传，不生成 STRM，不写缓存
+            logger.debug(f"  🎵 附属文件已上传至网盘，跳过本地 STRM 生成: {file.filename}")
 
         return jsonify({"success": True, "message": f"{file.filename} 上传成功"})
     except Exception as e:
