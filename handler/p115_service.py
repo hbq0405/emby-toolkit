@@ -3817,12 +3817,14 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
 
 def task_sync_music_library(processor=None):
     """
-    独立音乐库全量同步任务：1:1 镜像目录结构并生成 STRM (包含完整 DB 缓存写入)
+    独立音乐库全量同步任务：1:1 镜像目录结构并生成 STRM (硬编码音频扩展名，过滤附属文件)
     """
     config = get_config()
     from database import settings_db
+    import constants
+    import os
+    
     music_cid = settings_db.get_setting('p115_music_root_cid')
-    # ★ 修复：获取真实的音乐库名称
     music_root_name = settings_db.get_setting('p115_music_root_name') or "音乐库"
     music_root_name = music_root_name.strip('/')
     
@@ -3841,9 +3843,9 @@ def task_sync_music_library(processor=None):
     client = P115Service.get_client()
     if not client: return
 
+    # ★ 硬编码：只认这些纯正的音频文件
     audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
     
-    # ★ 修复：使用真实的音乐库名称创建本地基础目录
     music_local_base = os.path.join(local_root, music_root_name)
     os.makedirs(music_local_base, exist_ok=True)
 
@@ -3869,13 +3871,15 @@ def task_sync_music_library(processor=None):
                         sub_local_path = os.path.join(current_local_path, name)
                         os.makedirs(sub_local_path, exist_ok=True)
                         
-                        # ★ 1. 写入目录缓存 (供联动删除溯源使用)
+                        # ★ 缓存目录 (供联动删除溯源)
                         P115CacheManager.save_cid(item_id, current_cid, name)
                         
                         _recursive_sync(item_id, sub_local_path)
                         
                     elif fc_val == '1': # 文件
                         ext = name.split('.')[-1].lower() if '.' in name else ''
+                        
+                        # ★ 核心过滤：只有在白名单里的音频文件，才生成 STRM 和写入缓存
                         if ext in audio_exts:
                             pc = item.get('pc') or item.get('pick_code')
                             if not pc: continue
@@ -3895,7 +3899,7 @@ def task_sync_music_library(processor=None):
                                 f.write(content)
                             files_generated += 1
                             
-                            # ★ 2. 写入文件缓存 (供联动删除精准定位)
+                            # ★ 缓存音频文件 (供联动删除精准定位)
                             sha1 = item.get('sha1') or item.get('sha')
                             file_size = _parse_115_size(item.get('fs') or item.get('size'))
                             rel_dir = os.path.relpath(current_local_path, local_root)
@@ -3906,6 +3910,9 @@ def task_sync_music_library(processor=None):
                                 sha1=sha1, pick_code=pc,
                                 local_path=file_local_path, size=file_size
                             )
+                        else:
+                            # 遇到 .jpg, .nfo, .txt 等附属文件，直接无视，不建 STRM 也不写数据库
+                            pass
                             
                 if len(data) < limit: break
                 offset += limit

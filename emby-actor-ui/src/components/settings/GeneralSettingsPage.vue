@@ -502,7 +502,7 @@
                         </div>
                       </template>
                       <n-alert type="success" :show-icon="true">
-                        专为无损音乐打造。支持直接上传文件夹、自动创建 115 目录并秒级生成本地 STRM 文件。
+                        简单音乐管理器，支持直接上传文件夹、自动创建 115 目录并同步生成本地 STRM 文件，全量生成音乐库STRM。
                       </n-alert>
                     </n-card>
 

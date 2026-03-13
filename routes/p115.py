@@ -1031,7 +1031,9 @@ def upload_music_file():
         config = get_config()
         local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
         etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
-        audio_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS)
+        
+        # 定义允许生成 STRM 的音频扩展名
+        audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
         ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
         
         # ★ 只有音频文件才生成 STRM 和写入缓存
