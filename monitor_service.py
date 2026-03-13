@@ -210,7 +210,7 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
                 content = f.read()
             
             # 如果没有“片头”字样，直接忽略，不消耗性能
-            if "片头" not in content:
+            if "IntroStart" not in content:
                 logger.trace(f"  ⏭️ [实时监控] 文件未包含'片头'信息，忽略更新: {os.path.basename(file_path)}")
                 continue
                 
