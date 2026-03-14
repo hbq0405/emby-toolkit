@@ -402,13 +402,80 @@ const computedStudioOptions = computed(() => {
   });
 });
 
+// 辅助函数：合并类型选项用于反查
+const genreOptions = computed(() => {
+  const map = new Map();
+  [...rawMovieGenres.value, ...rawTvGenres.value].forEach(g => { if (g && g.value) map.set(g.value, g); });
+  return Array.from(map.values());
+});
+
 const getRuleSummary = (rule) => {
   const parts = [];
+  
+  // 1. 演员
   if (rule.actors?.length) parts.push(`演员:${rule.actors.map(a=>a.name).join(',')}`);
+  
+  // 2. 直接显示中文的字段 (自定义集合)
   if (rule.studios?.length) parts.push(`工作室:${rule.studios.join(',')}`);
   if (rule.keywords?.length) parts.push(`关键词:${rule.keywords.join(',')}`);
   if (rule.ratings?.length) parts.push(`分级:${rule.ratings.join(',')}`);
-  if (rule.year_min || rule.year_max) parts.push(`年份`);
+
+  // 3. 需要反查 Label 的字段 (存储的是 ID/Code)
+  // 类型 (ID -> 中文)
+  if (rule.genres?.length) {
+      const names = rule.genres.map(id => {
+          const opt = genreOptions.value.find(o => o.value == id);
+          return opt ? opt.label : id;
+      });
+      parts.push(`类型:${names.join(',')}`);
+  }
+  
+  // 国家 (Code -> 中文)
+  if (rule.countries?.length) {
+      const names = rule.countries.map(code => {
+          const opt = countryOptions.value.find(o => o.value === code);
+          return opt ? opt.label : code;
+      });
+      parts.push(`国家:${names.join(',')}`);
+  }
+  
+  // 语言 (Code -> 中文)
+  if (rule.languages?.length) {
+      const names = rule.languages.map(code => {
+          const opt = languageOptions.value.find(o => o.value === code);
+          return opt ? opt.label : code;
+      });
+      parts.push(`语言:${names.join(',')}`);
+  }
+  
+  // 4. 数值范围字段
+  // 年份范围
+  if (rule.year_min || rule.year_max) {
+      if (rule.year_min && rule.year_max) {
+          parts.push(`年份:${rule.year_min}-${rule.year_max}`);
+      } else if (rule.year_min) {
+          parts.push(`年份:≥${rule.year_min}`);
+      } else if (rule.year_max) {
+          parts.push(`年份:≤${rule.year_max}`);
+      }
+  }
+
+  // 时长范围 
+  if (rule.runtime_min || rule.runtime_max) {
+      if (rule.runtime_min && rule.runtime_max) {
+          parts.push(`时长:${rule.runtime_min}-${rule.runtime_max}分`);
+      } else if (rule.runtime_min) {
+          parts.push(`时长:≥${rule.runtime_min}分`);
+      } else if (rule.runtime_max) {
+          parts.push(`时长:≤${rule.runtime_max}分`);
+      }
+  }
+
+  // 最低评分
+  if (rule.min_rating > 0) {
+      parts.push(`评分:≥${rule.min_rating}`);
+  }
+
   return parts.join(' + ') || '无条件';
 };
 </script>
