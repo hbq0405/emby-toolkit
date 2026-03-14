@@ -141,7 +141,7 @@ def add_item_to_watchlist(tmdb_id: str, item_name: str) -> bool:
                 WHERE parent_series_tmdb_id = %s;
             """
             cursor.execute(reset_children_sql, (tmdb_id,))
-            
+            conn.commit()
             return True
     except Exception as e:
         logger.error(f"  ➜ 添加 '{item_name}' 到追剧列表失败: {e}", exc_info=True)
