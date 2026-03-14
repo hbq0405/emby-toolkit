@@ -836,7 +836,6 @@ class P115RecordManager:
                         ON CONFLICT (file_id) 
                         DO UPDATE SET 
                             pick_code = EXCLUDED.pick_code,
-                            -- 注意：这里绝对不更新 original_name，始终保持第一次插入时的原名
                             status = EXCLUDED.status,
                             tmdb_id = EXCLUDED.tmdb_id,
                             media_type = EXCLUDED.media_type,
@@ -844,7 +843,7 @@ class P115RecordManager:
                             category_name = EXCLUDED.category_name,
                             renamed_name = EXCLUDED.renamed_name,
                             processed_at = NOW(),
-                            is_center_cached = EXCLUDED.is_center_cached
+                            is_center_cached = p115_organize_records.is_center_cached OR EXCLUDED.is_center_cached
                     """, (str(file_id), pick_code, str(original_name), str(status), str(tmdb_id) if tmdb_id else None, 
                           str(media_type) if media_type else None, str(target_cid) if target_cid else None, 
                           str(category_name) if category_name else None, str(renamed_name) if renamed_name else None, bool(is_center_cached)))
