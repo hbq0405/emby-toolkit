@@ -1193,17 +1193,31 @@
           </n-popover>
         </div>
 
+        <!-- 搜索栏 -->
+        <div style="padding: 8px 16px; border-bottom: 1px solid var(--n-divider-color); background-color: var(--n-color-modal);">
+          <n-input 
+            v-model:value="searchKeyword" 
+            placeholder="在当前目录下搜索文件夹 (回车搜索)" 
+            size="small" 
+            clearable 
+            @keyup.enter="handleSearchFolders"
+          >
+            <template #prefix><n-icon><SearchIcon /></n-icon></template>
+          </n-input>
+        </div>
+
         <!-- 文件夹列表 -->
         <div class="folder-list-container">
           <n-spin :show="loadingFolders">
             <div class="folder-list">
-              <n-empty v-if="folderList.length === 0 && !loadingFolders" description="空文件夹" size="small" style="padding: 40px 0;" />
+              <n-empty v-if="folderList.length === 0 && !loadingFolders" description="空文件夹或未搜到结果" size="small" style="padding: 40px 0;" />
               <div 
                 v-for="folder in folderList" 
                 :key="folder.id" 
                 class="folder-item"
-                @click="load115Folders(folder.id, folder.name)"
+                @click="enterFolder(folder)" 
               >
+                <!-- 注意上面改成了 @click="enterFolder(folder)" -->
                 <div class="folder-icon-wrapper">
                   <n-icon size="22" color="#ffca28"><FolderIcon /></n-icon>
                 </div>
@@ -1562,6 +1576,7 @@ import {
   CloseCircleOutline as CloseIcon,
   ListOutline as ListIcon, 
   ColorWandOutline as ColorWandIcon,
+  SearchOutline as SearchIcon,
   QrCodeOutline
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
@@ -1987,6 +2002,7 @@ const currentBrowserFolderName = ref('根目录');
 const newFolderName = ref('');
 const showCreateFolderInput = ref(false);
 const selectorContext = ref(''); 
+const searchKeyword = ref('');
 
 // ★★★ Cookie 扫码获取逻辑 ★★★
 const showCookieModal = ref(false);
@@ -2255,14 +2271,25 @@ const check115Status = async () => {
 const openFolderSelector = (context, initialCid = '0') => {
   selectorContext.value = context;
   showFolderPopover.value = true;
+  searchKeyword.value = ''; 
   const targetCid = (initialCid && initialCid !== '0') ? initialCid : '0';
   load115Folders(targetCid);
 };
 
-const load115Folders = async (cid, folderName = null) => {
+const enterFolder = (folder) => {
+  searchKeyword.value = '';
+  load115Folders(folder.id, folder.name);
+};
+
+const load115Folders = async (cid, folderName = null, isSearch = false) => {
   loadingFolders.value = true;
   try {
-    const res = await axios.get('/api/p115/dirs', { params: { cid } });
+    const params = { cid };
+    if (isSearch && searchKeyword.value) {
+      params.search = searchKeyword.value;
+    }
+    
+    const res = await axios.get('/api/p115/dirs', { params });
     if (res.data && res.data.success) {
       folderList.value = res.data.data;
       currentBrowserCid.value = cid;
@@ -2275,6 +2302,16 @@ const load115Folders = async (cid, folderName = null) => {
     loadingFolders.value = false;
   }
 };
+
+const handleSearchFolders = () => {
+  load115Folders(currentBrowserCid.value, currentBrowserFolderName.value, true);
+};
+
+watch(searchKeyword, (newVal) => {
+  if (!newVal && showFolderPopover.value) {
+    load115Folders(currentBrowserCid.value, currentBrowserFolderName.value);
+  }
+});
 
 const handleCreateFolder = async () => {
   if (!newFolderName.value) return;

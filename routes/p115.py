@@ -410,7 +410,7 @@ def get_115_status():
 @p115_bp.route('/dirs', methods=['GET'])
 @admin_required
 def list_115_directories():
-    """获取 115 目录列表"""
+    """获取 115 目录列表 (支持搜索)"""
     client = P115Service.get_client()
     if not client:
         return jsonify({"status": "error", "message": "无法初始化 115 客户端，请检查凭证"}), 500
@@ -419,9 +419,15 @@ def list_115_directories():
         cid = int(request.args.get('cid', 0))
     except:
         cid = 0
+        
+    # ★ 新增：获取搜索关键字
+    search_val = request.args.get('search', '').strip()
     
     try:
         request_payload = {'cid': cid, 'limit': 1000}
+        # ★ 新增：如果传了搜索词，加入 payload
+        if search_val:
+            request_payload['search_value'] = search_val
         
         resp = client.fs_files(request_payload)
         
@@ -431,7 +437,6 @@ def list_115_directories():
         data = resp.get('data', [])
         
         dirs = []
-        
         for item in data:
             # 官方文档：fc='0' 代表文件夹
             if str(item.get('fc')) == '0':
@@ -443,7 +448,6 @@ def list_115_directories():
         
         current_name = '根目录'
         if cid != 0 and resp.get('path'):
-            # path 数组中官方返回的是 file_name
             current_name = resp.get('path')[-1].get('file_name') or resp.get('path')[-1].get('fn', '未知目录')
                 
         return jsonify({
