@@ -1132,13 +1132,15 @@ class SmartOrganizer:
         if rule.get('media_type') and rule['media_type'] != 'all':
             if rule['media_type'] != self.media_type: return False
 
-        # 2. 类型 (Genres) - ID 匹配
+        # 2. 类型 (Genres) - ID 匹配 (★ 核心修改：只取第一个主要类型)
         if rule.get('genres'):
-            # rule['genres'] 存的是 ID 列表 (如 [16, 35])
-            # self.raw_metadata['genre_ids'] 是 TMDb ID 列表
-            # 只要有一个交集就算命中
             rule_ids = [int(x) for x in rule['genres']]
-            if not any(gid in self.raw_metadata['genre_ids'] for gid in rule_ids): return False
+            # 获取 TMDb 返回的第一个类型作为主类型
+            primary_genre_id = self.raw_metadata['genre_ids'][0] if self.raw_metadata.get('genre_ids') else None
+            
+            # 如果没有类型，或者主类型不在规则允许的列表中，则不匹配
+            if not primary_genre_id or primary_genre_id not in rule_ids: 
+                return False
 
         # 3. 国家 (Countries) - Code 匹配
         if rule.get('countries'):

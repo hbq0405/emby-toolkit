@@ -298,6 +298,15 @@
                       </n-space>
                     </n-form-item>
 
+                    <n-form-item label="自定义 AppID (可选)" path="p115_app_id">
+                      <n-input v-model:value="configModel.p115_app_id" placeholder="默认: 100196261" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          如果你在 115 开放平台申请了应用，可填入自己的 AppID。留空则使用 ETK 默认 ID。修改后需重新扫码授权。
+                        </n-text>
+                      </template>
+                    </n-form-item>
+
                     <!-- ★★★ 分离配置: Cookie (播放用) - 纯展示 ★★★ -->
                     <n-form-item label="Cookie (播放专用)">
                       <n-space vertical :size="8" style="width: 100%;">

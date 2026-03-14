@@ -60,7 +60,8 @@ CONFIG_OPTION_115_ENABLE_SYNC_DELETE = "p115_enable_sync_delete" # 是否联动�
 CONFIG_OPTION_115_DOWNLOAD_SUBS = "p115_download_subs"           # 是否下载字幕文件
 CONFIG_OPTION_115_LOCAL_CLEANUP = "p115_local_cleanup"           # 是否启用本地清理功能
 DB_KEY_115_RENAME_CONFIG = "p115_rename_config"                  # 重命名配置模块
-CONFIG_OPTION_115_MEDIAINFO_CENTER = "p115_mediainfo_center" # 分布式媒体信息
+CONFIG_OPTION_115_MEDIAINFO_CENTER = "p115_mediainfo_center"     # 分布式媒体信息
+CONFIG_OPTION_115_APP_ID = "p115_app_id"                         # 115 自定义 AppID
 
 # ==============================================================================
 # ✨ 通知服务 (Notification Services)

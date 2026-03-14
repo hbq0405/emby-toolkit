@@ -48,13 +48,21 @@ def _generate_pkce_pair():
 def _generate_qrcode():
     """生成115扫码登录二维码 (OAuth 2.0 + PKCE 新版API)"""
     try:
+        # 读取自定义 AppID
+        config = get_config()
+        client_id = config.get(constants.CONFIG_OPTION_115_APP_ID)
+        if not client_id or not client_id.strip():
+            client_id = "100196261" # 默认兜底
+        else:
+            client_id = client_id.strip()
+
         # 1. 生成 PKCE 密钥对
         verifier, challenge = _generate_pkce_pair()
         
         # 2. 调用获取二维码接口
         url = "https://passportapi.115.com/open/authDeviceCode"
         payload = {
-            "client_id": "100196261",  # 115开发者后台的AppID
+            "client_id": client_id,  # ★ 使用动态 AppID
             "code_challenge": challenge,
             "code_challenge_method": "sha256"
         }
