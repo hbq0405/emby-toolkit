@@ -1530,6 +1530,57 @@ class SmartOrganizer:
 
         return info, is_center
 
+    def _build_name_from_format(self, format_array, is_tv=False, season_num=None, original_title=None, video_info=None):
+        """解析乐高轨道生成名称 (支持目录和文件)"""
+        if not format_array: return ""
+        
+        evaluated = []
+        for raw_id in format_array:
+            block = raw_id.rsplit('_', 1)[0] if re.search(r'_\d+$', raw_id) else raw_id
+            val = None
+            is_sep = False
+            
+            if block == 'title_zh': val = self.details.get('title') or self.original_title
+            elif block == 'title_en': val = original_title or self.details.get('original_title') or self.original_title
+            elif block == 'year': val = f"({self.details.get('date', '')[:4]})" if self.details.get('date') else None
+            elif block == 'year_pure': val = self.details.get('date', '')[:4] if self.details.get('date') else None
+            elif block == 'tmdb_bracket': val = f"{{tmdb={self.tmdb_id}}}"
+            elif block == 'tmdb_square': val = f"[tmdbid={self.tmdb_id}]"
+            elif block == 'tmdb_dash': val = f"tmdb-{self.tmdb_id}"
+            elif block == 's_e' and is_tv: val = f"S{season_num:02d}E01" # 目录不需要E，这里主要给文件用
+            elif block == 'season_name_en' and is_tv: val = f"Season {season_num:02d}" if season_num else None
+            elif block == 'season_name_zh' and is_tv: val = f"第{season_num}季" if season_num else None
+            elif block == 'season_name_s' and is_tv: val = f"S{season_num:02d}" if season_num else None
+            elif video_info and block in video_info: val = video_info.get(block)
+            elif block.startswith('sep_'):
+                is_sep = True
+                if block == 'sep_slash': val = '/'
+                elif block.startswith('sep_dash_space'): val = ' - '
+                elif block.startswith('sep_middot_space'): val = ' · '
+                elif block.startswith('sep_middot'): val = '·'
+                elif block.startswith('sep_dot'): val = '.'
+                elif block.startswith('sep_dash'): val = '-'
+                elif block.startswith('sep_underline'): val = '_'
+                elif block.startswith('sep_space'): val = ' '
+
+            if val: evaluated.append({'val': str(val).strip() if not is_sep else val, 'is_sep': is_sep})
+
+        # 智能消除多余分隔符
+        final_parts = []
+        for i, item in enumerate(evaluated):
+            if item['is_sep']:
+                has_content_before = any(not x['is_sep'] for x in evaluated[:i])
+                has_content_after = any(not x['is_sep'] for x in evaluated[i+1:])
+                is_last_sep_in_group = True
+                if i + 1 < len(evaluated) and evaluated[i+1]['is_sep']:
+                    is_last_sep_in_group = False
+                if has_content_before and has_content_after and is_last_sep_in_group:
+                    final_parts.append(item['val'])
+            else:
+                final_parts.append(item['val'])
+
+        return "".join(final_parts)
+
     def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
         if '.' not in original_name: return original_name, None
@@ -1973,7 +2024,7 @@ class SmartOrganizer:
                     logger.error(f"  ❌ [智能纠错] 纠错失败: {e}")
 
         # =================================================================
-        # 4. 计算最终的目录名称和路径
+        # 4. 计算最终的目录名称和路径 (支持 / 多级目录)
         # =================================================================
         title = self.details.get('title') or self.original_title
         original_title = self.details.get('original_title') or title
@@ -1983,20 +2034,19 @@ class SmartOrganizer:
         cfg = self.rename_config
         keep_original = cfg.get('keep_original_name', False)
         
+        # ★ 必须保留 safe_title 的计算，供后续文件重命名使用
+        base_title = original_title if cfg.get('main_title_lang', 'zh') == 'original' else title
+        safe_title = re.sub(r'[\\/:*?"<>|]', '', base_title).strip()
+
         if keep_original:
             std_root_name = root_name
-            safe_title = root_name
+            safe_title = root_name # 如果保留原名，safe_title 也退化为原名
         else:
-            base_title = original_title if cfg.get('main_title_lang') == 'original' else title
-            safe_title = re.sub(r'[\\/:*?"<>|]', '', base_title).strip()
-            
-            std_root_name = safe_title
-            if cfg.get('main_year_en', True) and year:
-                std_root_name += f" ({year})"
-                
-            main_tmdb_fmt = cfg.get('main_tmdb_fmt', '{tmdb=ID}')
-            if main_tmdb_fmt != 'none':
-                std_root_name += f" {main_tmdb_fmt.replace('ID', str(self.tmdb_id))}"
+            # ★ 使用新的乐高引擎生成主目录名 (可能包含 /)
+            main_format = cfg.get('main_dir_format', ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'])
+            std_root_name = self._build_name_from_format(main_format, is_tv=(self.media_type=='tv'), original_title=original_title)
+            # 兜底防空
+            if not std_root_name: std_root_name = safe_title
 
         config = get_config()
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
@@ -2004,7 +2054,7 @@ class SmartOrganizer:
         known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
         MIN_VIDEO_SIZE = 10 * 1024 * 1024
 
-        # ★ 新增：获取“未识别”目录的 CID，准备接收垃圾文件
+        # 获取“未识别”目录的 CID
         unidentified_cid = None
         save_cid = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
         if save_cid and str(save_cid) != '0':
@@ -2022,85 +2072,60 @@ class SmartOrganizer:
         final_home_cid = None
         current_parent_cid = dest_parent_cid
         
-        # ★★★ 核心修复：最多尝试 2 次。第一次用记忆体，失败则回退到规则匹配重试 ★★★
+        # ★★★ 核心升级：支持 / 分层创建多级目录 ★★★
+        dir_parts = [p.strip() for p in std_root_name.split('/') if p.strip()]
+        
         for attempt in range(2):
-            final_home_cid = P115CacheManager.get_cid(current_parent_cid, std_root_name)
-
-            # 缓存自愈：如果缓存的 CID 竟然等于源文件夹的 CID，且目标父目录不是源父目录，说明缓存串线了！
-            source_parent_cid = str(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
-            if final_home_cid and str(final_home_cid) == str(source_root_id) and str(current_parent_cid) != source_parent_cid:
-                logger.warning(f"  ⚠️ 检测到缓存串线 (目标目录与源目录重合)，正在强制清除错误缓存并重建...")
-                P115CacheManager.delete_cid(final_home_cid)
-                final_home_cid = None
-
-            if final_home_cid:
-                logger.info(f"  ⚡ [缓存命中] 主目录: {std_root_name}")
-            else:
-                mk_res = self.client.fs_mkdir(std_root_name, current_parent_cid)
-                if mk_res.get('state'):
-                    final_home_cid = mk_res.get('cid')
-                    P115CacheManager.save_cid(final_home_cid, current_parent_cid, std_root_name)
-                    logger.info(f"  🆕 创建新主目录并缓存: {std_root_name}")
-                else:
-                    try:
-                        search_res = self.client.fs_files({'cid': current_parent_cid, 'search_value': std_root_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
-                        if search_res.get('data'):
-                            for item in search_res['data']:
-                                item_name = item.get('fn') or item.get('n') or item.get('file_name')
-                                item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                                item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid')) 
-                                
-                                if item_name == std_root_name and str(item_fc) == '0' and item_pid == str(current_parent_cid):
-                                    final_home_cid = item.get('fid') or item.get('file_id')
-                                    P115CacheManager.save_cid(final_home_cid, current_parent_cid, std_root_name)
-                                    logger.info(f"  📂 成功查找到已存在主目录并永久缓存: {std_root_name}")
-                                    break
-                    except Exception as e:
-                        logger.warning(f"  ⚠️ 115模糊查找异常: {e}")
-
-                    if not final_home_cid:
-                        logger.warning(f"  ⚠️ 115搜索失效，启动全量遍历查找老目录: '{std_root_name}' ...")
-                        offset = 0
-                        limit = 1000
-                        while True:
-                            try:
-                                res = self.client.fs_files({'cid': current_parent_cid, 'limit': limit, 'offset': offset, 'type': 0, 'record_open_time': 0, 'count_folders': 0})
-                                data = res.get('data', [])
-                                if not data: break 
-                                
-                                for item in data:
-                                    item_name = item.get('fn') or item.get('n') or item.get('file_name')
-                                    item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                                    if item_name == std_root_name and str(item_fc) == '0':
-                                        final_home_cid = item.get('fid') or item.get('file_id')
-                                        P115CacheManager.save_cid(final_home_cid, current_parent_cid, std_root_name)
-                                        logger.info(f"  📂 成功查找到已存在主目录并永久缓存: {std_root_name}")
-                                        break
-                                        
-                                if final_home_cid: break 
-                                offset += limit 
-                            except Exception as e:
-                                logger.error(f"遍历查找失败: {e}")
-                                break
-
-            if final_home_cid:
-                break # 成功获取，跳出重试循环
+            success_chain = True
+            temp_parent_cid = current_parent_cid
+            
+            # 逐级检查/创建目录
+            for part_name in dir_parts:
+                part_cid = P115CacheManager.get_cid(temp_parent_cid, part_name)
                 
-            # 如果失败了，且是第一次尝试，触发记忆体失效回退机制
+                # 缓存自愈检查
+                if part_cid and str(part_cid) == str(source_root_id) and str(temp_parent_cid) != str(root_item.get('pid') or root_item.get('parent_id')):
+                    P115CacheManager.delete_cid(part_cid)
+                    part_cid = None
+
+                if not part_cid:
+                    mk_res = self.client.fs_mkdir(part_name, temp_parent_cid)
+                    if mk_res.get('state'):
+                        part_cid = mk_res.get('cid')
+                        P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
+                    else:
+                        # 模糊查找兜底
+                        try:
+                            search_res = self.client.fs_files({'cid': temp_parent_cid, 'search_value': part_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
+                            for item in search_res.get('data', []):
+                                if item.get('fn') == part_name and str(item.get('fc', item.get('type'))) == '0':
+                                    part_cid = item.get('fid') or item.get('file_id')
+                                    P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
+                                    break
+                        except: pass
+                
+                if part_cid:
+                    temp_parent_cid = part_cid
+                else:
+                    success_chain = False
+                    break
+            
+            if success_chain:
+                final_home_cid = temp_parent_cid
+                break # 成功获取最终层级，跳出重试循环
+                
+            # 失败回退逻辑
             if attempt == 0:
                 fallback_cid = self.get_target_cid(ignore_memory=True)
                 if fallback_cid and str(fallback_cid) != str(current_parent_cid):
-                    logger.warning(f"  ⚠️ 目标父目录(CID:{current_parent_cid})可能已被手动删除失效！正在抛弃记忆体，回退到规则匹配目录(CID:{fallback_cid})重试...")
-                    # 清理失效的缓存
                     P115CacheManager.delete_cid(current_parent_cid)
-                    # 更新变量，准备下一次循环
                     current_parent_cid = fallback_cid
-                    target_cid = fallback_cid # ★ 同步更新 target_cid，保证后续写记录时能刷新记忆体！
+                    target_cid = fallback_cid 
                 else:
-                    break # 没有备用 CID，或者备用 CID 和当前一样，彻底没救了
+                    break
 
         if not final_home_cid:
-            logger.error(f"  ❌ 无法获取或创建目标目录 (已尝试所有手段)")
+            logger.error(f"  ❌ 无法获取或创建目标目录链 (已尝试所有手段)")
             return False
         
         if not candidates: return True
@@ -2188,11 +2213,10 @@ class SmartOrganizer:
                 real_target_cid = final_home_cid
                 s_name = None
                 if self.media_type == 'tv' and season_num is not None:
-                    season_fmt = cfg.get('season_fmt', 'Season {02}')
-                    if '{02}' in season_fmt:
-                        s_name = season_fmt.replace('{02}', f"{season_num:02d}")
-                    else:
-                        s_name = season_fmt.replace('{1}', f"{season_num}")
+                    # ★ 使用新的乐高引擎生成季目录名
+                    season_format = cfg.get('season_dir_format', ['season_name_en'])
+                    s_name = self._build_name_from_format(season_format, is_tv=True, season_num=season_num)
+                    if not s_name: s_name = f"Season {season_num:02d}" # 兜底
                         
                     s_cid = P115CacheManager.get_cid(final_home_cid, s_name)
                     
