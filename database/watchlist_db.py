@@ -180,6 +180,7 @@ def update_watchlist_item_status(tmdb_id: str, new_status: str) -> bool:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             cursor.execute(sql, tuple(values))
+            conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
         logger.error(f"  ➜ 更新追剧状态 {tmdb_id} 失败: {e}", exc_info=True)
@@ -215,6 +216,7 @@ def remove_item_from_watchlist(tmdb_id: str) -> bool:
             cursor = conn.cursor()
             # 传入两次 tmdb_id
             cursor.execute(sql, (tmdb_id, tmdb_id))
+            conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
         logger.error(f"  ➜ 从追剧列表移除项目 {tmdb_id} 时失败: {e}", exc_info=True)
