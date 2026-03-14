@@ -420,30 +420,37 @@ def list_115_directories():
     except:
         cid = 0
         
-    # ★ 新增：获取搜索关键字
     search_val = request.args.get('search', '').strip()
     
     try:
         request_payload = {'cid': cid, 'limit': 1000}
-        # ★ 新增：如果传了搜索词，加入 payload
+        
+        # 智能切换 115 底层接口
         if search_val:
             request_payload['search_value'] = search_val
-        
-        resp = client.fs_files(request_payload)
+            resp = client.fs_search(request_payload) # 调用专门的搜索接口
+        else:
+            resp = client.fs_files(request_payload)  # 调用普通的列表接口
         
         if not resp.get('state'):
-            return jsonify({"success": False, "message": resp.get('error_msg', '获取失败')}), 500
+            return jsonify({"success": False, "message": resp.get('error_msg', resp.get('message', '获取失败'))}), 500
             
         data = resp.get('data', [])
         
         dirs = []
         for item in data:
-            # 官方文档：fc='0' 代表文件夹
-            if str(item.get('fc')) == '0':
+            # ★★★ 核心修复：兼容 fs_files 和 fs_search 的字段名差异 ★★★
+            # fs_files 用 fc, fid, fn, pid
+            # fs_search 用 file_category, file_id, file_name, parent_id
+            
+            item_type = str(item.get('fc') if item.get('fc') is not None else item.get('file_category'))
+            
+            # '0' 代表文件夹
+            if item_type == '0':
                 dirs.append({
-                    "id": str(item.get('fid')),
-                    "name": item.get('fn'),
-                    "parent_id": item.get('pid')
+                    "id": str(item.get('fid') or item.get('file_id')),
+                    "name": item.get('fn') or item.get('file_name'),
+                    "parent_id": item.get('pid') or item.get('parent_id') or str(cid)
                 })
         
         current_name = '根目录'
