@@ -285,6 +285,7 @@ def update_resubscribe_item_status(item_id: str, new_status: str) -> bool:
             cursor = conn.cursor()
             sql = "UPDATE resubscribe_index SET status = %s WHERE tmdb_id = %s AND item_type = %s AND season_number = %s"
             cursor.execute(sql, (new_status, key_tuple[0], key_tuple[1], key_tuple[2]))
+            conn.commit()
             return cursor.rowcount > 0
     except Exception as e:
         logger.error(f"  ➜ 更新项目 {item_id} 状态时失败: {e}", exc_info=True)

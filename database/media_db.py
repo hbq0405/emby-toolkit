@@ -202,6 +202,7 @@ def ensure_media_record_exists(media_info_list: List[Dict[str, Any]]):
                     })
 
                 execute_batch(cursor, sql, data_for_batch)
+                conn.commit()
                 logger.info(f"  ➜ [元数据注册] 成功，影响了 {cursor.rowcount} 行。")
 
     except Exception as e:
@@ -468,6 +469,7 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
                     })
 
                 execute_batch(cursor, sql, data_for_batch)
+                conn.commit()
                 logger.info(f"  ➜ [追剧联动] 成功为剧集 {series_title} 智能同步了 {len(data_for_batch)} 个子项目的元数据(含集数)和在库状态。")
 
     except Exception as e:
