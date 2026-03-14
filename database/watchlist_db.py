@@ -122,18 +122,19 @@ def add_item_to_watchlist(tmdb_id: str, item_name: str) -> bool:
             cursor = conn.cursor()
             
             # 1. 插入或更新 Series 本身
+            # ★★★ 核心修复：初始状态必须是 'NONE'，这样才能完美触发 NONE -> Watching 的 115 联动！
             upsert_sql = """
                 INSERT INTO media_metadata (tmdb_id, item_type, title, watching_status, force_ended, paused_until)
-                VALUES (%s, 'Series', %s, 'Completed', FALSE, NULL)
+                VALUES (%s, 'Series', %s, 'NONE', FALSE, NULL)
                 ON CONFLICT (tmdb_id, item_type) 
                 DO UPDATE SET 
-                    watching_status = 'Completed',
+                    watching_status = 'NONE',
                     force_ended = FALSE,
                     paused_until = NULL;
             """
             cursor.execute(upsert_sql, (tmdb_id, item_name))
             
-            # 2. ★★★ 关键修复：重置该剧集下所有子项的状态为 NONE ★★★
+            # 2. 重置该剧集下所有子项的状态为 NONE
             # 这样子项就会自动继承父级的 'Watching' 状态，避免旧的 'Completed' 状态干扰
             reset_children_sql = """
                 UPDATE media_metadata
