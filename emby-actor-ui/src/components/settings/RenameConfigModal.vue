@@ -180,8 +180,10 @@ const allBlocks = [
   { id: 'year_pure', label: '纯年份 2008' },
   { id: 's_e', label: '季集号 (S01E01)' },
   { id: 'season_name_en', label: '季名 (Season 01)' },
+  { id: 'season_name_en_no0', label: '季名 (Season 1)' },
   { id: 'season_name_zh', label: '季名 (第1季)' },
   { id: 'season_name_s', label: '季名 (S01)' },
+  { id: 'season_name_s_no0', label: '季名 (S1)' },
   { id: 'resolution', label: '分辨率' },
   { id: 'source', label: '来源 (WEB-DL等)' },
   { id: 'stream', label: '流媒体 (NF等)' },
@@ -290,8 +292,10 @@ const buildName = (mockData, formatArray, isTv) => {
     else if (blockId === 'year_pure') val = mockData.year;
     else if (blockId === 's_e' && isTv) val = `S0${mockData.s}E0${mockData.e}`;
     else if (blockId === 'season_name_en' && isTv) val = `Season 0${mockData.s}`;
+    else if (blockId === 'season_name_en_no0' && isTv) val = `Season ${mockData.s}`;
     else if (blockId === 'season_name_zh' && isTv) val = `第${mockData.s}季`;
     else if (blockId === 'season_name_s' && isTv) val = `S0${mockData.s}`;
+    else if (blockId === 'season_name_s_no0' && isTv) val = `S${mockData.s}`;
     else if (blockId === 'tmdb_bracket') val = `{tmdb=${mockData.tmdb}}`;
     else if (blockId === 'tmdb_square') val = `[tmdbid=${mockData.tmdb}]`;
     else if (blockId === 'tmdb_dash') val = `tmdb-${mockData.tmdb}`;

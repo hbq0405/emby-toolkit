@@ -1554,8 +1554,10 @@ class SmartOrganizer:
                 e_val = episode_num if episode_num is not None else 1
                 val = f"S{s_val:02d}E{e_val:02d}" 
             elif block == 'season_name_en' and is_tv: val = f"Season {season_num:02d}" if season_num else None
+            elif block == 'season_name_en_no0' and is_tv: val = f"Season {season_num}" if season_num else None
             elif block == 'season_name_zh' and is_tv: val = f"第{season_num}季" if season_num else None
             elif block == 'season_name_s' and is_tv: val = f"S{season_num:02d}" if season_num else None
+            elif block == 'season_name_s_no0' and is_tv: val = f"S{season_num}" if season_num else None
             elif video_info and block in video_info: val = video_info.get(block)
             elif block.startswith('sep_'):
                 is_sep = True
