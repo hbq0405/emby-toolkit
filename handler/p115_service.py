@@ -2750,11 +2750,14 @@ def task_scan_and_organize_115(processor=None):
         moved_to_unidentified = 0
         counter_lock = threading.Lock() # 计数器锁
 
-        executor = ThreadPoolExecutor(max_workers=5) # 开启 5 个并发线程
+        # ★ 读取前端配置的并发数，默认 3
+        max_workers = int(config.get(constants.CONFIG_OPTION_115_MAX_WORKERS, 3))
+        executor = ThreadPoolExecutor(max_workers=max_workers) 
+        
         active_tasks = 0
         task_cond = threading.Condition()
 
-        # ★ 新增：用于收集第一阶段识别结果的容器
+        # ★ 用于收集第一阶段识别结果的容器
         grouped_items = {} # 结构: {(tmdb_id, media_type, title): [item1, item2, ...]}
         unidentified_items = []
         group_lock = threading.Lock()

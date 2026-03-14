@@ -327,6 +327,15 @@
                       </template>
                     </n-form-item>
 
+                    <n-form-item label="API 并发线程数" path="p115_max_workers">
+                      <n-input-number v-model:value="configModel.p115_max_workers" :min="1" :max="20" :step="1" placeholder="3" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          控制扫描和整理时的并发数量。如果经常提示“请求达到上限”，请调低此值（建议 3-5）。
+                        </n-text>
+                      </template>
+                    </n-form-item>
+
                     <n-form-item label="STRM 链接地址" path="etk_server_url">
                         <n-input v-model:value="configModel.etk_server_url" placeholder="http://192.168.X.X:5257" />
                         <template #feedback>

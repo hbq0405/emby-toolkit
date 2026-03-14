@@ -49,6 +49,7 @@ CONFIG_OPTION_115_SAVE_PATH_CID = "p115_save_path_cid"           # 115转存/上
 CONFIG_OPTION_115_SAVE_PATH_NAME = "p115_save_path_name"         # 115转存/上传的目标目录名称
 CONFIG_OPTION_115_MEDIA_ROOT_NAME = "p115_media_root_name"       # 网盘媒体库根目录名称
 CONFIG_OPTION_115_INTERVAL = "p115_request_interval"             # API请求间隔
+CONFIG_OPTION_115_MAX_WORKERS = "p115_max_workers"               # API并发线程数
 CONFIG_OPTION_115_ENABLE_ORGANIZE = "p115_enable_organize"       # 智能整理总开关
 CONFIG_OPTION_115_EXTENSIONS = "p115_extensions"                 # 115转存/上传的文件扩展名列表
 DB_KEY_115_SORTING_RULES = "p115_sorting_rules"                  # 存储 115 分类规则的数据库键名

@@ -1564,6 +1564,32 @@ class MediaProcessor:
         self.processed_items_cache[item_id] = item_name
         
         logger.debug(f"  ➜ 已将 '{item_name}' 标记为已处理 (数据库 & 内存)。")
+
+        # 3. ★★★ 自动校准：移交深度清理大杀器 (解决重组换目录导致的僵尸数据) ★★★
+        try:
+            # 查找同名但 ID 不同的历史记录
+            cursor.execute("SELECT item_id FROM processed_log WHERE item_name = %s AND item_id != %s", (item_name, item_id))
+            potential_zombies = cursor.fetchall()
+            
+            for zombie in potential_zombies:
+                z_id = zombie['item_id']
+                # 验证是否真的在 Emby 中消失了 (静默查一下，只查 Id 字段最快)
+                details = emby.get_emby_item_details(z_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="Id", silent_404=True)
+                
+                if not details:
+                    logger.info(f"  🧹 [自动校准] 发现已失效的僵尸记录: {item_name} (旧ID: {z_id})，准备移交深度清理大杀器...")
+                    
+                    # 查一下它的 item_type，供大杀器使用
+                    cursor.execute("SELECT item_type FROM media_metadata WHERE emby_item_ids_json @> %s::jsonb LIMIT 1", (json.dumps([z_id]),))
+                    type_row = cursor.fetchone()
+                    z_type = type_row['item_type'] if type_row else 'Movie' # 默认兜底
+                    
+                    # ★★★ 核心：使用 spawn 异步调用大杀器，完美避开当前数据库事务的行锁死锁！★★★
+                    from gevent import spawn
+                    spawn(maintenance_db.cleanup_deleted_media_item, z_id, item_name, z_type)
+                    
+        except Exception as e:
+            logger.warning(f"  ⚠️ [自动校准] 尝试清理旧日志时出错: {e}")
     # --- 清除已处理记录 ---
     def clear_processed_log(self):
         """
