@@ -1201,6 +1201,7 @@
             size="small" 
             clearable 
             @keyup.enter="handleSearchFolders"
+            @clear="handleClearSearch" 
           >
             <template #prefix><n-icon><SearchIcon /></n-icon></template>
           </n-input>
@@ -2277,7 +2278,7 @@ const openFolderSelector = (context, initialCid = '0') => {
 };
 
 const enterFolder = (folder) => {
-  searchKeyword.value = '';
+  searchKeyword.value = ''; 
   load115Folders(folder.id, folder.name);
 };
 
@@ -2304,14 +2305,17 @@ const load115Folders = async (cid, folderName = null, isSearch = false) => {
 };
 
 const handleSearchFolders = () => {
-  load115Folders(currentBrowserCid.value, currentBrowserFolderName.value, true);
+  if (!searchKeyword.value) {
+    load115Folders(currentBrowserCid.value, currentBrowserFolderName.value);
+  } else {
+    load115Folders(currentBrowserCid.value, currentBrowserFolderName.value, true);
+  }
 };
 
-watch(searchKeyword, (newVal) => {
-  if (!newVal && showFolderPopover.value) {
-    load115Folders(currentBrowserCid.value, currentBrowserFolderName.value);
-  }
-});
+const handleClearSearch = () => {
+  searchKeyword.value = '';
+  load115Folders(currentBrowserCid.value, currentBrowserFolderName.value);
+};
 
 const handleCreateFolder = async () => {
   if (!newFolderName.value) return;
