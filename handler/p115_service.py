@@ -1530,8 +1530,8 @@ class SmartOrganizer:
 
         return info, is_center
 
-    def _build_name_from_format(self, format_array, is_tv=False, season_num=None, original_title=None, video_info=None):
-        """解析乐高轨道生成名称 (支持目录和文件)"""
+    def _build_name_from_format(self, format_array, is_tv=False, season_num=None, episode_num=None, original_title=None, video_info=None, safe_title=None):
+        """解析乐高轨道生成名称 (支持目录和文件，自动过滤特殊字符)"""
         if not format_array: return ""
         
         evaluated = []
@@ -1540,14 +1540,18 @@ class SmartOrganizer:
             val = None
             is_sep = False
             
-            if block == 'title_zh': val = self.details.get('title') or self.original_title
+            # 优先使用传入的 safe_title，防止文件名包含 \/:*?"<>| 导致报错
+            if block == 'title_zh': val = safe_title if safe_title else (self.details.get('title') or self.original_title)
             elif block == 'title_en': val = original_title or self.details.get('original_title') or self.original_title
             elif block == 'year': val = f"({self.details.get('date', '')[:4]})" if self.details.get('date') else None
             elif block == 'year_pure': val = self.details.get('date', '')[:4] if self.details.get('date') else None
             elif block == 'tmdb_bracket': val = f"{{tmdb={self.tmdb_id}}}"
             elif block == 'tmdb_square': val = f"[tmdbid={self.tmdb_id}]"
             elif block == 'tmdb_dash': val = f"tmdb-{self.tmdb_id}"
-            elif block == 's_e' and is_tv: val = f"S{season_num:02d}E01" # 目录不需要E，这里主要给文件用
+            elif block == 's_e' and is_tv: 
+                s_val = season_num if season_num is not None else 1
+                e_val = episode_num if episode_num is not None else 1
+                val = f"S{s_val:02d}E{e_val:02d}" 
             elif block == 'season_name_en' and is_tv: val = f"Season {season_num:02d}" if season_num else None
             elif block == 'season_name_zh' and is_tv: val = f"第{season_num}季" if season_num else None
             elif block == 'season_name_s' and is_tv: val = f"S{season_num:02d}" if season_num else None
@@ -1583,7 +1587,7 @@ class SmartOrganizer:
 
     def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
-        if '.' not in original_name: return original_name, None
+        if '.' not in original_name: return original_name, None, False
 
         parts = original_name.rsplit('.', 1)
         name_body = parts[0]
@@ -1602,10 +1606,6 @@ class SmartOrganizer:
 
         cfg = self.rename_config
         
-        # 默认乐高轨道 (加入了连接符)
-        default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
-        file_format = cfg.get('file_format', default_format)
-
         # 提取视频信息字典 (基于文件名的猜测)
         search_name = original_name
         if is_sub and lang_suffix and name_body.endswith(lang_suffix):
@@ -1616,93 +1616,46 @@ class SmartOrganizer:
         enable_smart_rename = cfg.get('enable_smart_rename', False)
         is_center_cached = False
         
-        if not is_sub and enable_smart_rename: # 字幕文件不需要查视频流
+        if not is_sub and enable_smart_rename:
             sha1 = file_node.get('sha1') or file_node.get('sha')
             if sha1:
-                # 传入 video_info 供内部比对打印日志
                 real_info, is_center_cached = self._fetch_and_parse_mediainfo(sha1, video_info)
                 if real_info:
                     for k, v in real_info.items():
-                        if v: # 只要真实数据有值，无脑覆盖文件名的猜测
-                            video_info[k] = v
+                        if v: video_info[k] = v
                     
-        # 解析季集号 (支持到9999集)
+        # 解析季集号
         season_num = None
         episode_num = None
         if is_tv:
-            # ★★★ 核心修复：增强正则，支持 EP, Episode, E，并加上 re.IGNORECASE ★★★
             pattern = r'(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})|(?:ep|e|episode)[ \.\-]*?(\d{1,4})|第(\d{1,4})[集话]'
             match = re.search(pattern, original_name, re.IGNORECASE)
             if match:
                 s, e, ep_only, zh_ep = match.groups()
-                # 如果没有提取到季号(s)，一律按第 1 季处理
                 season_num = int(s) if s else 1
                 episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
 
-            # 如果外部强制指定了季号，直接覆盖！
             if hasattr(self, 'forced_season') and self.forced_season is not None:
                 season_num = int(self.forced_season)
-                # 兜底：如果连集数都没匹配到，给个默认值 1，防止后续报错
-                if episode_num is None:
-                    episode_num = 1
+                if episode_num is None: episode_num = 1
 
-        # 组装乐高积木
-        evaluated = []
-        for block in file_format:
-            val = None
-            is_sep = False
-            
-            if block == 'title_zh': val = new_base_name
-            elif block == 'title_en' and original_title: val = original_title
-            elif block == 'year': val = f"({year})" if year else None
-            elif block == 'tmdb':
-                # 废弃独立的文件TMDb格式，直接复用主目录的格式配置
-                tmdb_fmt = cfg.get('file_tmdb_fmt')
-                if not tmdb_fmt or tmdb_fmt == 'none':
-                    tmdb_fmt = cfg.get('main_tmdb_fmt', '{tmdb=ID}')
-                val = tmdb_fmt.replace('ID', str(self.tmdb_id)) if tmdb_fmt != 'none' else None
-            elif block == 's_e': 
-                # 只要提取到了集数，不管是不是剧集，都强制输出，防止同名碰撞！
-                if episode_num is not None:
-                    s_val = season_num if season_num is not None else 1
-                    val = f"S{s_val:02d}E{episode_num:02d}"
-                else:
-                    val = None
-            elif block == 'original_name': val = name_body
-            elif block == 'stream': val = video_info.get('stream')
-            elif block.startswith('sep_'):
-                is_sep = True
-                if block.startswith('sep_dash_space'): val = ' - '
-                elif block.startswith('sep_middot_space'): val = ' · '
-                elif block.startswith('sep_middot'): val = '·'
-                elif block.startswith('sep_dot'): val = '.'
-                elif block.startswith('sep_dash'): val = '-'
-                elif block.startswith('sep_underline'): val = '_'
-                elif block.startswith('sep_space'): val = ' '
-            elif block in video_info: val = video_info.get(block)
+        # ★★★ 核心升级：直接调用统一乐高引擎生成文件名 ★★★
+        default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
+        file_format = cfg.get('file_format', default_format)
 
-            if val:
-                evaluated.append({'val': str(val).strip() if not is_sep else val, 'is_sep': is_sep})
+        core_name = self._build_name_from_format(
+            file_format, 
+            is_tv=is_tv, 
+            season_num=season_num, 
+            episode_num=episode_num, 
+            original_title=original_title, 
+            video_info=video_info,
+            safe_title=new_base_name # 传入过滤过特殊字符的标题
+        )
 
-        # ★ 智能消除算法：移除多余的、悬空的分隔符
-        final_parts = []
-        for i, item in enumerate(evaluated):
-            if item['is_sep']:
-                # 检查前面是否有实质内容
-                has_content_before = any(not x['is_sep'] for x in evaluated[:i])
-                # 检查后面是否有实质内容
-                has_content_after = any(not x['is_sep'] for x in evaluated[i+1:])
-                # 检查后面紧挨着的是不是也是连接符 (如果是连续连接符，只保留最后一个)
-                is_last_sep_in_group = True
-                if i + 1 < len(evaluated) and evaluated[i+1]['is_sep']:
-                    is_last_sep_in_group = False
-                
-                if has_content_before and has_content_after and is_last_sep_in_group:
-                    final_parts.append(item['val'])
-            else:
-                final_parts.append(item['val'])
+        # 兜底：如果轨道配空了，用原名
+        if not core_name: core_name = name_body
 
-        core_name = "".join(final_parts)
         new_name = f"{core_name}{lang_suffix}.{ext}"
         return new_name, season_num, is_center_cached
 
