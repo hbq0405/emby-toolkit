@@ -2750,7 +2750,7 @@ def task_scan_and_organize_115(processor=None):
         moved_to_unidentified = 0
         counter_lock = threading.Lock() # 计数器锁
 
-        executor = ThreadPoolExecutor(max_workers=15) # 开启 15 个并发线程
+        executor = ThreadPoolExecutor(max_workers=5) # 开启 5 个并发线程
         active_tasks = 0
         task_cond = threading.Condition()
 
