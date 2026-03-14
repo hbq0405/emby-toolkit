@@ -1577,7 +1577,7 @@ class MediaProcessor:
                 details = emby.get_emby_item_details(z_id, self.emby_url, self.emby_api_key, self.emby_user_id, fields="Id", silent_404=True)
                 
                 if not details:
-                    logger.info(f"  🧹 [自动校准] 发现已失效的僵尸记录: {item_name} (旧ID: {z_id})，准备移交深度清理大杀器...")
+                    logger.info(f"  🧹 [自动校准] 发现已失效的僵尸记录: {item_name} (旧ID: {z_id})，准备深度清理...")
                     
                     # 查一下它的 item_type，供大杀器使用
                     cursor.execute("SELECT item_type FROM media_metadata WHERE emby_item_ids_json @> %s::jsonb LIMIT 1", (json.dumps([z_id]),))
