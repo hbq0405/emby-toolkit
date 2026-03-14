@@ -1657,7 +1657,23 @@ class SmartOrganizer:
         if not core_name: core_name = name_body
 
         new_name = f"{core_name}{lang_suffix}.{ext}"
-        return new_name, season_num, is_center_cached
+        
+        # ★★★ 核心修复：在这里利用齐全的 video_info 生成季目录名称 ★★★
+        s_name = None
+        if is_tv and season_num is not None:
+            season_format = cfg.get('season_dir_format', ['season_name_en'])
+            s_name = self._build_name_from_format(
+                season_format, 
+                is_tv=True, 
+                season_num=season_num, 
+                original_title=original_title, 
+                video_info=video_info, # ★ 关键：把视频信息传进去！
+                safe_title=new_base_name
+            )
+            if not s_name: s_name = f"Season {season_num:02d}"
+
+        # ★ 返回值增加 s_name
+        return new_name, season_num, s_name, is_center_cached
 
     def _scan_files_recursively(self, cid, depth=0, max_depth=3, current_rel_path=""):
         all_files = []
@@ -2159,18 +2175,14 @@ class SmartOrganizer:
                             break
                     real_target_cid = current_parent
             else:
-                new_filename, season_num, is_center_cached = self._rename_file_node(
+                new_filename, season_num, s_name, is_center_cached = self._rename_file_node(
                     file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title
                 )
 
                 real_target_cid = final_home_cid
-                s_name = None
-                if self.media_type == 'tv' and season_num is not None:
-                    # ★ 使用新的乐高引擎生成季目录名
-                    season_format = cfg.get('season_dir_format', ['season_name_en'])
-                    s_name = self._build_name_from_format(season_format, is_tv=True, season_num=season_num)
-                    if not s_name: s_name = f"Season {season_num:02d}" # 兜底
-                        
+                
+                # ★ 直接使用返回的 s_name 创建/查找季目录
+                if self.media_type == 'tv' and season_num is not None and s_name:
                     s_cid = P115CacheManager.get_cid(final_home_cid, s_name)
                     
                     if s_cid:
