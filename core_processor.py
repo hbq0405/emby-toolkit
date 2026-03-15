@@ -479,6 +479,30 @@ class MediaProcessor:
                     logger.error("  ➜ [实时监控] 无法获取 TMDb 详情，中止处理。")
                     return None
                 
+                # 提取 TMDb 官方中文别名
+                current_title = details.get("title") if item_type == "Movie" else details.get("name")
+                if current_title and not utils.contains_chinese(current_title):
+                    chinese_alias = None
+                    alt_titles_data = details.get("alternative_titles", {})
+                    alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
+                    
+                    for alt in alt_list:
+                        alt_title = alt.get("title", "")
+                        if utils.contains_chinese(alt_title):
+                            chinese_alias = alt_title
+                            iso_country = alt.get("iso_3166_1", "").upper()
+                            if iso_country in ["CN", "TW", "HK", "SG"]:
+                                break # 找到最正宗的，直接跳出
+                    
+                    if chinese_alias:
+                        logger.info(f"  ➜ [实时监控] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")
+                        if item_type == "Movie":
+                            details["title"] = chinese_alias
+                        else:
+                            details["name"] = chinese_alias
+                            if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                aggregated_tmdb_data["series_details"]["name"] = chinese_alias
+                
                 # --- 标题与简介 AI 翻译 ---
                 if self.ai_translator:
                     
@@ -553,36 +577,11 @@ class MediaProcessor:
                                     aggregated_tmdb_data["series_details"]["name"] = current_title
                             logger.info(f"  ➜ [实时监控] 命中本地中文标题缓存，跳过AI翻译。")
                         
-                        # 逻辑 B: 执行翻译
-                        else:
-                            current_title = details.get("title") if item_type == "Movie" else details.get("name")
-                            if current_title and not utils.contains_chinese(current_title):
-                                # ★★★ 新增：优先检查 TMDb 别名 (Alternative Titles) ★★★
-                                chinese_alias = None
-                                alt_titles_data = details.get("alternative_titles", {})
-                                alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
-                                
-                                for alt in alt_list:
-                                    alt_title = alt.get("title", "")
-                                    if utils.contains_chinese(alt_title):
-                                        chinese_alias = alt_title
-                                        # 优先取官方中文区的别名
-                                        iso_country = alt.get("iso_3166_1", "").upper()
-                                        if iso_country in ["CN", "TW", "HK", "SG"]:
-                                            break # 找到最正宗的，直接跳出
-                                
-                                if chinese_alias:
-                                    logger.info(f"  ➜ [实时监控] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'，跳过 AI 翻译。")
-                                    if item_type == "Movie":
-                                        details["title"] = chinese_alias
-                                    else:
-                                        details["name"] = chinese_alias
-                                        if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
-                                            aggregated_tmdb_data["series_details"]["name"] = chinese_alias
-                                else:
-                                    logger.info(f"  ➜ [实时监控] 检测到标题为纯外文 ('{current_title}')，准备进行 AI 翻译...")
-                                    
-                                    release_date = details.get("release_date") if item_type == "Movie" else details.get("first_air_date")
+                        # 如果标题存在且不包含中文，则尝试翻译
+                        elif current_title and not utils.contains_chinese(current_title):
+                            logger.info(f"  ➜ [实时监控] 检测到标题为纯外文 ('{current_title}')，准备进行 AI 翻译...")
+                            
+                            release_date = details.get("release_date") if item_type == "Movie" else details.get("first_air_date")
                             year_str = release_date[:4] if release_date else ""
                             
                             translated_title = self.ai_translator.translate_title(
@@ -2081,6 +2080,31 @@ class MediaProcessor:
                 except Exception as e:
                     logger.warning(f"  ➜ 从 TMDb API 获取数据失败: {e}")
 
+            # 提取 TMDb 官方中文别名
+            if fresh_data:
+                current_title = fresh_data.get("title") if item_type == "Movie" else fresh_data.get("name")
+                if current_title and not utils.contains_chinese(current_title):
+                    chinese_alias = None
+                    alt_titles_data = fresh_data.get("alternative_titles", {})
+                    alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
+                    
+                    for alt in alt_list:
+                        alt_title = alt.get("title", "")
+                        if utils.contains_chinese(alt_title):
+                            chinese_alias = alt_title
+                            iso_country = alt.get("iso_3166_1", "").upper()
+                            if iso_country in ["CN", "TW", "HK", "SG"]:
+                                break # 找到最正宗的，直接跳出
+                    
+                    if chinese_alias:
+                        logger.info(f"  ➜ [完整模式] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")
+                        if item_type == "Movie":
+                            fresh_data["title"] = chinese_alias
+                        else:
+                            fresh_data["name"] = chinese_alias
+                            if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                aggregated_tmdb_data["series_details"]["name"] = chinese_alias
+
             # 4. 填充骨架 (Data Mapping)
             if fresh_data:
                 # --- A. 基础字段直接覆盖 (通用) ---
@@ -2335,30 +2359,8 @@ class MediaProcessor:
                         else:
                             current_title = tmdb_details_for_extra.get("title") if item_type == "Movie" else tmdb_details_for_extra.get("name")
                             if current_title and not utils.contains_chinese(current_title):
-                                # ★★★ 新增：优先检查 TMDb 别名 (Alternative Titles) ★★★
-                                chinese_alias = None
-                                alt_titles_data = tmdb_details_for_extra.get("alternative_titles", {})
-                                alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
-                                
-                                for alt in alt_list:
-                                    alt_title = alt.get("title", "")
-                                    if utils.contains_chinese(alt_title):
-                                        chinese_alias = alt_title
-                                        iso_country = alt.get("iso_3166_1", "").upper()
-                                        if iso_country in ["CN", "TW", "HK", "SG"]:
-                                            break # 找到最正宗的，直接跳出
-                                
-                                if chinese_alias:
-                                    logger.info(f"  ➜ [完整模式] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'，跳过 AI 翻译。")
-                                    if item_type == "Movie": 
-                                        tmdb_details_for_extra["title"] = chinese_alias
-                                    else: 
-                                        tmdb_details_for_extra["name"] = chinese_alias
-                                        if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
-                                            aggregated_tmdb_data["series_details"]["name"] = chinese_alias
-                                else:
-                                    logger.info(f"  ➜ [完整模式] 正在调用 AI 翻译标题: {current_title}")
-                                    release_date = tmdb_details_for_extra.get("release_date") or tmdb_details_for_extra.get("first_air_date")
+                                logger.info(f"  ➜ [完整模式] 正在调用 AI 翻译标题: {current_title}")
+                                release_date = tmdb_details_for_extra.get("release_date") or tmdb_details_for_extra.get("first_air_date")
                                 year_str = release_date[:4] if release_date else ""
                                 
                                 trans_title = self.ai_translator.translate_title(current_title, media_type=item_type, year=year_str)
