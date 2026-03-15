@@ -472,12 +472,12 @@ def main_app_start():
         except Exception as e:
             logger.warning(f"  ⚠️ 向量预加载失败 (不影响启动): {e}")
 
-    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
         # 这行代码会启动一个后台死循环，每隔 30 分钟刷新一次数据
         # 且第一次会立即执行，起到“预热”的作用
         RecommendationEngine.start_auto_refresh_loop()
     else:
-        logger.debug("  ❌ 虚拟库功能未启用，跳过向量预加载以节省内存。")
+        logger.debug("  ❌ 向量未启用，跳过向量预加载以节省内存。")
     
     def run_proxy_server():
         if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
