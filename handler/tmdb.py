@@ -211,7 +211,7 @@ def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] =
     return details
 
 # --- 获取电视剧某一季的详细信息 ---
-def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append_to_response: Optional[str] = "credits", item_name: Optional[str] = None, language: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append_to_response: Optional[str] = "credits", item_name: Optional[str] = None, language: Optional[str] = None, include_image_language: Optional[str] = None) -> Optional[Dict[str, Any]]:
     """
     【已升级】获取电视剧某一季的详细信息，并支持 item_name 用于日志。
     ★ 修复：支持自定义 language 参数，用于获取英文兜底数据。
@@ -222,6 +222,8 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
         "language": language or DEFAULT_LANGUAGE,
         "append_to_response": append_to_response
     }
+    if include_image_language is not None:
+        params["include_image_language"] = include_image_language
     
     item_name_for_log = f"'{item_name}' " if item_name else ""
     # 只有当不是默认语言时才打印详细日志，避免刷屏
@@ -290,7 +292,6 @@ def aggregate_full_series_data_from_tmdb(
         logger.error(f"  ➜ 聚合失败：无法获取顶层剧集 {tv_id} 的详情。")
         return None
     
-    # (此处省略补全主演员表的代码，保持原样即可)
     if series_details.get('aggregate_credits'):
         agg_cast = series_details['aggregate_credits'].get('cast', [])
         mapped_cast = []
@@ -306,13 +307,34 @@ def aggregate_full_series_data_from_tmdb(
 
     logger.info(f"  ➜ 成功获取剧集 '{series_details.get('name')}' 的顶层信息，共 {len(series_details.get('seasons', []))} 季。")
 
+    # ★★★ 新增：确定图片语言偏好，用于季海报 ★★★
+    orig_lang = series_details.get("original_language", "en")
+    lang_pref = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE, 'zh')
+    
+    if lang_pref == 'zh':
+        img_lang_param = "zh-CN,zh-TW,zh,en,null"
+    else:
+        if orig_lang != 'en':
+            img_lang_param = f"{orig_lang},en,null,zh-CN,zh-TW,zh"
+        else:
+            img_lang_param = "en,null,zh-CN,zh-TW,zh"
+
     # --- 步骤 2: 定义智能获取函数 ---
     def _fetch_season_smart(tvid, s_num):
         """内部函数：获取季数据，如果简介缺失则自动获取英文版补全"""
-        # 1. 获取默认语言 (通常是中文)
-        data_zh = get_season_details_tmdb(tvid, s_num, api_key)
+        # 1. 获取默认语言 (通常是中文)，★ 附加 images 请求
+        data_zh = get_season_details_tmdb(
+            tvid, s_num, api_key, 
+            append_to_response="credits,images", 
+            include_image_language=img_lang_param
+        )
         if not data_zh: 
             return None
+            
+        # ★ 核心修复：用偏好语言的海报覆盖默认海报
+        if "images" in data_zh and "posters" in data_zh["images"] and data_zh["images"]["posters"]:
+            best_poster = data_zh["images"]["posters"][0]["file_path"]
+            data_zh["poster_path"] = best_poster
         
         # 2. 检查是否有空简介
         # 只有当默认语言是中文时才检查

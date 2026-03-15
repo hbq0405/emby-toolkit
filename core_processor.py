@@ -685,7 +685,8 @@ class MediaProcessor:
                 # 5: 下载图片
                 self.download_images_from_tmdb(
                     tmdb_id=tmdb_id,
-                    item_type=item_type
+                    item_type=item_type,
+                    aggregated_tmdb_data=aggregated_tmdb_data
                 )
 
             else:
@@ -3882,7 +3883,7 @@ class MediaProcessor:
             return False
     
     # --- 从 TMDb 直接下载图片 (用于实时监控/预处理) ---
-    def download_images_from_tmdb(self, tmdb_id: str, item_type: str) -> bool:
+    def download_images_from_tmdb(self, tmdb_id: str, item_type: str, aggregated_tmdb_data: Optional[Dict[str, Any]] = None) -> bool:
         """
         直接从 TMDb API 获取并下载图片到本地 override 目录。
         """
@@ -4007,12 +4008,20 @@ class MediaProcessor:
 
             # --- D. 剧集季海报 ---
             if item_type == "Series":
-                seasons = tmdb_data.get("seasons", [])
-                for season in seasons:
-                    s_num = season.get("season_number")
-                    s_poster = season.get("poster_path")
-                    if s_num is not None and s_poster:
-                        downloads.append((s_poster, f"season-{s_num}.jpg"))
+                # ★ 优先从已聚合的数据中提取季海报 (因为那里已经应用了语言偏好)
+                if aggregated_tmdb_data and "seasons_details" in aggregated_tmdb_data:
+                    for season in aggregated_tmdb_data["seasons_details"]:
+                        s_num = season.get("season_number")
+                        s_poster = season.get("poster_path")
+                        if s_num is not None and s_poster:
+                            downloads.append((s_poster, f"season-{s_num}.jpg"))
+                else:
+                    seasons = tmdb_data.get("seasons", [])
+                    for season in seasons:
+                        s_num = season.get("season_number")
+                        s_poster = season.get("poster_path")
+                        if s_num is not None and s_poster:
+                            downloads.append((s_poster, f"season-{s_num}.jpg"))
 
             # 5. 执行下载
             base_image_url = "https://image.tmdb.org/t/p/original"
