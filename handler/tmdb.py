@@ -217,7 +217,6 @@ def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append
     ★ 修复：支持自定义 language 参数，用于获取英文兜底数据。
     """
     endpoint = f"/tv/{tv_id}/season/{season_number}"
-    # ★★★ 修改点：优先使用传入的 language，否则使用默认值 ★★★
     params = {
         "language": language or DEFAULT_LANGUAGE,
         "append_to_response": append_to_response
@@ -286,7 +285,7 @@ def aggregate_full_series_data_from_tmdb(
     logger.info(f"  ➜ 开始为剧集 ID {tv_id} 并发聚合 TMDB 数据 (并发数: {max_workers})...")
     
     # --- 步骤 1: 获取顶层剧集详情 ---
-    series_details = get_tv_details(tv_id, api_key, append_to_response="credits,aggregate_credits,keywords,external_ids,content_ratings")
+    series_details = get_tv_details(tv_id, api_key, append_to_response="credits,aggregate_credits,keywords,external_ids,content_ratings,alternative_titles")
     
     if not series_details:
         logger.error(f"  ➜ 聚合失败：无法获取顶层剧集 {tv_id} 的详情。")
@@ -307,7 +306,6 @@ def aggregate_full_series_data_from_tmdb(
 
     logger.info(f"  ➜ 成功获取剧集 '{series_details.get('name')}' 的顶层信息，共 {len(series_details.get('seasons', []))} 季。")
 
-    # ★★★ 新增：确定图片语言偏好，用于季海报 ★★★
     orig_lang = series_details.get("original_language", "en")
     lang_pref = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE, 'zh')
     
@@ -331,7 +329,6 @@ def aggregate_full_series_data_from_tmdb(
         if not data_zh: 
             return None
             
-        # ★ 核心修复：用偏好语言的海报覆盖默认海报
         if "images" in data_zh and "posters" in data_zh["images"] and data_zh["images"]["posters"]:
             best_poster = data_zh["images"]["posters"][0]["file_path"]
             data_zh["poster_path"] = best_poster
