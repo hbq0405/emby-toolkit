@@ -1932,7 +1932,7 @@ class SmartOrganizer:
         # =================================================================
         # ★★★ 3. 智能类型纠错嗅探 (Movie -> TV) ★★★
         # =================================================================
-        if self.media_type == 'movie':
+        if self.media_type == 'movie' and not getattr(self, 'is_manual_correct', False):
             is_actually_tv = False
             for c in candidates:
                 c_name = c.get('fn') or c.get('n') or c.get('file_name', '')
@@ -3744,6 +3744,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
     logger.info(f"  🛠️ [批量重组] 开始对 {len(root_items)} 个文件执行定向整理 -> ID:{tmdb_id}")
 
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
+    organizer.is_manual_correct = True
     if season_num is not None and str(season_num).strip():
         organizer.forced_season = int(season_num)
         logger.info(f"  📌 [批量重组] 已强制指定季号: Season {organizer.forced_season}")
