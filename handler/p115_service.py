@@ -2458,17 +2458,34 @@ class SmartOrganizer:
             # 同样传入列表，防止 115 API 报错
             self.client.fs_move(unrecognized_fids, unidentified_cid)
 
-        # 确定要检查的目录：如果是单文件，检查它的父目录；如果是文件夹，检查它自己
-        dir_to_check = None
-        if is_source_file:
-            dir_to_check = root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid')
+        # =================================================================
+        # ★ 精准收集所有涉及的源目录和父目录，交由垃圾回收器
+        # =================================================================
+        cids_to_check = set()
+        if is_batch:
+            for item in root_item_or_items:
+                fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
+                if str(fc_val) == '0': 
+                    # 如果是文件夹，检查它自己，也检查它的父级
+                    cids_to_check.add(item.get('fid') or item.get('file_id'))
+                    cids_to_check.add(item.get('pid') or item.get('parent_id') or item.get('cid'))
+                else: 
+                    # 如果是文件，检查它的父级
+                    cids_to_check.add(item.get('pid') or item.get('parent_id') or item.get('cid'))
         else:
-            dir_to_check = source_root_id
+            if is_source_file:
+                cids_to_check.add(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+            else:
+                cids_to_check.add(source_root_id)
+                cids_to_check.add(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
 
-        if dir_to_check and str(dir_to_check) != '0':
-            logger.info(f"  ⏳ [清理空目录] 已将源目录交由全局垃圾回收器检查清理: CID {dir_to_check}")
-            # 立即推入全局垃圾回收器 (5秒后执行安全检查与连锅端)
-            P115DeleteBuffer.add(fids=[], base_cids=[dir_to_check])
+        # 过滤掉空的和 '0' (根目录)
+        valid_cids_to_check = [str(cid) for cid in cids_to_check if cid and str(cid) != '0']
+
+        if valid_cids_to_check:
+            logger.info(f"  ⏳ [清理空目录] 已将 {len(valid_cids_to_check)} 个源目录交由全局垃圾回收器检查清理...")
+            from handler.p115_service import P115DeleteBuffer
+            P115DeleteBuffer.add(fids=[], base_cids=valid_cids_to_check)
 
         # --- 整理记录 ---
         if moved_count > 0 or keep_original:
