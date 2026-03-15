@@ -852,7 +852,7 @@ def proxy_all(path):
                                 real_115_url = _get_cached_115_url(pick_code, player_ua, client_ip)
                                 break # <--- 找到直链就跳出循环
             except Exception as e:
-                logger.error(f"[STREAM] 获取 115 直链失败: {e}")
+                logger.error(f"  ❌ [STREAM] 获取 115 直链失败: {e}")
             
             # 如果获取到 115 直链，直接 302 重定向！不要用 Python 中转流！
             # 这样 Infuse 等播放器会自己去连 115，完美支持拖动进度条，且不消耗服务器带宽。
