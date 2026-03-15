@@ -861,7 +861,7 @@ def proxy_all(path):
                 return redirect(real_115_url, code=302)
             
             # 如果获取失败，回退到原来的转发方式
-            logger.info(f"[STREAM] 回退到转发模式")
+            logger.info(f"  ➜ [STREAM] 回退到转发模式")
             target_url = f"{base_url}/{path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
