@@ -1059,12 +1059,12 @@ class SmartOrganizer:
             if self.media_type == 'tv':
                 raw_details = tmdb.get_tv_details(
                     self.tmdb_id, self.api_key,
-                    append_to_response="keywords,content_ratings,networks,credits"
+                    append_to_response="keywords,content_ratings,networks,credits,alternative_titles"
                 )
             else:
                 raw_details = tmdb.get_movie_details(
                     self.tmdb_id, self.api_key,
-                    append_to_response="keywords,release_dates,credits"
+                    append_to_response="keywords,release_dates,credits,alternative_titles"
                 )
 
             if not raw_details: return {}
@@ -1098,7 +1098,27 @@ class SmartOrganizer:
             data['actor_ids'] = [cast.get('id') for cast in raw_details.get('credits', {}).get('cast', [])[:3]]
 
             # 补充标题日期供重命名
-            data['title'] = raw_details.get('title') or raw_details.get('name')
+            current_title = raw_details.get('title') or raw_details.get('name')
+            
+            # ★★★ 新增：如果标题不是中文，尝试从别名中寻找中文名 ★★★
+            if current_title and not utils.contains_chinese(current_title):
+                chinese_alias = None
+                alt_titles_data = raw_details.get("alternative_titles", {})
+                alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
+                
+                for alt in alt_list:
+                    alt_title = alt.get("title", "")
+                    if utils.contains_chinese(alt_title):
+                        chinese_alias = alt_title
+                        iso_country = alt.get("iso_3166_1", "").upper()
+                        if iso_country in ["CN", "TW", "HK", "SG"]:
+                            break # 找到最正宗的，直接跳出
+                
+                if chinese_alias:
+                    logger.info(f"  ➜ [115整理] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")
+                    current_title = chinese_alias
+
+            data['title'] = current_title
             data['original_title'] = raw_details.get('original_title') or raw_details.get('original_name') or data['title']
             date_str = raw_details.get('release_date') or raw_details.get('first_air_date')
             data['date'] = date_str
