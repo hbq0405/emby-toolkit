@@ -1523,7 +1523,7 @@ class WatchlistProcessor:
         # ======================================================================
         try:
             # 判断是否发生了关键的状态流转
-            status_changed_to_watching = (old_status in [None, 'NONE'] and final_status in ['Watching', 'Pending'])
+            status_changed_to_watching = (old_status in [None, 'NONE'] and final_status in ['Watching', 'Paused', 'Pending'])
             status_changed_to_completed = (old_status in ['Watching', 'Paused', 'Pending'] and final_status == 'Completed')
 
             if status_changed_to_watching or status_changed_to_completed:
