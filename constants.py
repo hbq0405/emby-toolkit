@@ -45,8 +45,10 @@ DEFAULT_MONITOR_EXCLUDE_REFRESH_DELAY = 0 # 默认不延迟
 # ✨ 115 网盘配置 (115 Cloud Drive) 
 # ==============================================================================
 CONFIG_SECTION_115 = "115"
-CONFIG_OPTION_115_SAVE_PATH_CID = "p115_save_path_cid"           # 115转存/上传的目标目录CID
-CONFIG_OPTION_115_SAVE_PATH_NAME = "p115_save_path_name"         # 115转存/上传的目标目录名称
+CONFIG_OPTION_115_SAVE_PATH_CID = "p115_save_path_cid"           # 待整理目录CID
+CONFIG_OPTION_115_SAVE_PATH_NAME = "p115_save_path_name"         # 待整理目录名称
+CONFIG_OPTION_115_UNRECOGNIZED_CID = "p115_unrecognized_cid"     # 未识别目录CID
+CONFIG_OPTION_115_UNRECOGNIZED_NAME = "p115_unrecognized_name"   # 未识别目录名称
 CONFIG_OPTION_115_MEDIA_ROOT_NAME = "p115_media_root_name"       # 网盘媒体库根目录名称
 CONFIG_OPTION_115_INTERVAL = "p115_request_interval"             # API请求间隔
 CONFIG_OPTION_115_MAX_WORKERS = "p115_max_workers"               # API并发线程数

@@ -1736,23 +1736,26 @@ class SmartOrganizer:
         
         # 获取或创建未识别目录 CID
         config = get_config()
-        save_cid = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
-        unidentified_folder_name = "未识别"
-        if save_cid and str(save_cid) != '0':
-            try:
-                search_res = self.client.fs_files({'cid': save_cid, 'search_value': unidentified_folder_name, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
-                if search_res.get('data'):
-                    for item in search_res['data']:
-                        if item.get('fn') == unidentified_folder_name and str(item.get('fc')) == '0':
-                            unidentified_cid = item.get('fid')
-                            break
-            except: pass
-            
-            if not unidentified_cid:
+        unidentified_cid = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID)
+        
+        if not unidentified_cid or str(unidentified_cid) == '0':
+            save_cid = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
+            unidentified_folder_name = "未识别"
+            if save_cid and str(save_cid) != '0':
                 try:
-                    mk_res = self.client.fs_mkdir(unidentified_folder_name, save_cid)
-                    if mk_res.get('state'): unidentified_cid = mk_res.get('cid')
+                    search_res = self.client.fs_files({'cid': save_cid, 'search_value': unidentified_folder_name, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                    if search_res.get('data'):
+                        for item in search_res['data']:
+                            if item.get('fn') == unidentified_folder_name and str(item.get('fc')) == '0':
+                                unidentified_cid = item.get('fid')
+                                break
                 except: pass
+                
+                if not unidentified_cid:
+                    try:
+                        mk_res = self.client.fs_mkdir(unidentified_folder_name, save_cid)
+                        if mk_res.get('state'): unidentified_cid = mk_res.get('cid')
+                    except: pass
 
         processed_count = 0
         try:
@@ -2027,17 +2030,18 @@ class SmartOrganizer:
         MIN_VIDEO_SIZE = 10 * 1024 * 1024
 
         # 获取“未识别”目录的 CID
-        unidentified_cid = None
-        save_cid = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
-        if save_cid and str(save_cid) != '0':
-            try:
-                search_res = self.client.fs_files({'cid': save_cid, 'search_value': '未识别', 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
-                if search_res.get('data'):
-                    for item in search_res['data']:
-                        if item.get('fn') == '未识别' and str(item.get('fc')) == '0':
-                            unidentified_cid = item.get('fid')
-                            break
-            except: pass
+        unidentified_cid = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID)
+        if not unidentified_cid or str(unidentified_cid) == '0':
+            save_cid = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
+            if save_cid and str(save_cid) != '0':
+                try:
+                    search_res = self.client.fs_files({'cid': save_cid, 'search_value': '未识别', 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                    if search_res.get('data'):
+                        for item in search_res['data']:
+                            if item.get('fn') == '未识别' and str(item.get('fc')) == '0':
+                                unidentified_cid = item.get('fid')
+                                break
+                except: pass
 
         logger.info(f"  🚀 [115] 开始整理: {root_name} -> {std_root_name}")
 
@@ -2742,25 +2746,28 @@ def task_scan_and_organize_115(processor=None):
         save_name = str(save_val)
 
         # 1. 准备 '未识别' 目录
-        unidentified_folder_name = "未识别"
-        unidentified_cid = None
-        try:
-            search_res = client.fs_files({
-                'cid': save_cid, 'search_value': unidentified_folder_name, 'limit': 1,
-                'record_open_time': 0, 'count_folders': 0
-            })
-            if search_res.get('data'):
-                for item in search_res['data']:
-                    if item.get('fn') == unidentified_folder_name and str(item.get('fc')) == '0':
-                        unidentified_cid = item.get('fid')
-                        break
-        except: pass
-
-        if not unidentified_cid:
+        unidentified_cid = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID)
+        unidentified_folder_name = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_NAME, "未识别")
+        
+        if not unidentified_cid or str(unidentified_cid) == '0':
+            unidentified_folder_name = "未识别"
             try:
-                mk_res = client.fs_mkdir(unidentified_folder_name, save_cid)
-                if mk_res.get('state'): unidentified_cid = mk_res.get('cid')
+                search_res = client.fs_files({
+                    'cid': save_cid, 'search_value': unidentified_folder_name, 'limit': 1,
+                    'record_open_time': 0, 'count_folders': 0
+                })
+                if search_res.get('data'):
+                    for item in search_res['data']:
+                        if item.get('fn') == unidentified_folder_name and str(item.get('fc')) == '0':
+                            unidentified_cid = item.get('fid')
+                            break
             except: pass
+
+            if not unidentified_cid:
+                try:
+                    mk_res = client.fs_mkdir(unidentified_folder_name, save_cid)
+                    if mk_res.get('state'): unidentified_cid = mk_res.get('cid')
+                except: pass
 
         logger.info(f"  🔍 正在扫描主目录: {save_name} ...")
         
@@ -2884,7 +2891,7 @@ def task_scan_and_organize_115(processor=None):
                     fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
                     is_folder = str(fc_val) == '0'
 
-                    if str(item_id) == str(unidentified_cid) or name == unidentified_folder_name:
+                    if str(item_id) == str(unidentified_cid) or (not config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID) and name == '未识别'):
                         continue
 
                     if is_folder and name.upper() in ['BDMV', 'CERTIFICATE', 'ANY!', 'VIDEO_TS', 'AUDIO_TS', 'PLAYLIST', 'CLIPINF', 'STREAM', 'BACKUP']:

@@ -399,6 +399,22 @@
                       </template>
                     </n-form-item>
 
+                    <n-form-item label="未识别目录" path="p115_unrecognized_cid">
+                      <n-input-group>
+                        <n-input 
+                          :value="configModel.p115_unrecognized_name || configModel.p115_unrecognized_cid" 
+                          placeholder="选择未识别目录" readonly 
+                          @click="openFolderSelector('unrecognized_path', configModel.p115_unrecognized_cid)"
+                        >
+                          <template #prefix><n-icon :component="FolderIcon" /></template>
+                        </n-input>
+                        <n-button type="primary" ghost @click="openFolderSelector('unrecognized_path', configModel.p115_unrecognized_cid)">选择</n-button>
+                      </n-input-group>
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">无法识别或不符合规则的文件将被移入此固定目录</n-text>
+                      </template>
+                    </n-form-item>
+
                     <n-form-item label="网盘媒体库根目录" path="p115_media_root_cid">
                       <n-input-group>
                         <n-input 
@@ -2362,6 +2378,9 @@ const confirmFolderSelection = () => {
   if (selectorContext.value === 'save_path') {
     configModel.value.p115_save_path_cid = cid;
     configModel.value.p115_save_path_name = name;
+  } else if (selectorContext.value === 'unrecognized_path') {
+    configModel.value.p115_unrecognized_cid = cid;
+    configModel.value.p115_unrecognized_name = name;
   } else if (selectorContext.value === 'media_root') {
     configModel.value.p115_media_root_cid = cid;
     configModel.value.p115_media_root_name = name;
