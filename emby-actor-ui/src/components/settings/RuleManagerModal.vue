@@ -120,8 +120,21 @@
         </n-input-group>
       </n-form-item>
       
-      <n-divider title-placement="left" style="font-size: 12px; color: #999;">匹配条件 (满足所有勾选条件时命中)</n-divider>
+      <n-divider title-placement="left" style="font-size: 12px; color: #999;">匹配条件</n-divider>
       
+      <n-form-item label="匹配逻辑">
+        <n-radio-group v-model:value="currentRule.match_mode">
+          <n-radio-button value="and">满足所有 (AND)</n-radio-button>
+          <n-radio-button value="or">满足任一 (OR)</n-radio-button>
+        </n-radio-group>
+        <template #feedback>
+          <n-text depth="3" style="font-size: 12px;">
+            <b>AND:</b> 必须同时满足下方所有勾选的条件。<br/>
+            <b>OR:</b> 只要满足下方任意一个条件即可命中。
+          </n-text>
+        </template>
+      </n-form-item>
+
       <n-form-item label="媒体类型">
         <n-radio-group v-model:value="currentRule.media_type">
           <n-radio-button value="all">不限</n-radio-button>
@@ -336,7 +349,7 @@ const saveSortingRules = async () => {
 
 const addRule = () => {
   currentRule.value = { 
-    id: Date.now(), name: '', cid: '', enabled: true, 
+    id: Date.now(), name: '', cid: '', enabled: true, match_mode: 'and',
     media_type: 'all', genres: [], countries: [], languages: [], 
     studios: [], keywords: [], ratings: [], actors: [], watching_status: 'all',
     year_min: null, year_max: null, runtime_min: null, runtime_max: null, min_rating: 0
@@ -476,7 +489,8 @@ const getRuleSummary = (rule) => {
       parts.push(`评分:≥${rule.min_rating}`);
   }
 
-  return parts.join(' + ') || '无条件';
+  const joinChar = rule.match_mode === 'or' ? ' OR ' : ' AND ';
+  return parts.join(joinChar) || '无条件';
 };
 </script>
 

@@ -1122,60 +1122,71 @@ class SmartOrganizer:
 
     def _match_rule(self, rule):
         """
-        规则匹配逻辑：
-        - 标准字段：直接比对 ID/Code
-        - 集合字段（工作室/关键词）：通过 Label 反查 Config 中的 ID 列表，再比对 TMDb ID
+        规则匹配逻辑 (支持 AND / OR 复合匹配)
         """
         if not self.raw_metadata: return False
 
-        # 1. 媒体类型
+        # ==========================================
+        # 1. 绝对前置过滤条件 (必须满足，无视 AND/OR)
+        # ==========================================
+        # 媒体类型 (电影/剧集) 是硬性分类，必须优先满足
         if rule.get('media_type') and rule['media_type'] != 'all':
             if rule['media_type'] != self.media_type: return False
 
-        # 2. 类型 (Genres) - ID 匹配 (恢复为匹配所有类型)
+        # 追剧状态也是硬性分类
+        if rule.get('watching_status') == 'watching' and self.media_type == 'tv':
+            try:
+                from database.watchlist_db import get_watching_tmdb_ids
+                watching_ids = get_watching_tmdb_ids()
+                if str(self.tmdb_id) not in watching_ids:
+                    return False
+            except Exception as e:
+                logger.warning(f"获取追剧状态失败: {e}")
+                return False
+
+        # ==========================================
+        # 2. 动态条件匹配 (根据 match_mode 决定 AND 或 OR)
+        # ==========================================
+        match_mode = rule.get('match_mode', 'and')
+        conditions_configured = 0  # 记录配置了多少个条件
+        conditions_met = 0         # 记录满足了多少个条件
+
+        def _evaluate(is_match):
+            nonlocal conditions_configured, conditions_met
+            conditions_configured += 1
+            if is_match:
+                conditions_met += 1
+
+        # 2.1 类型 (Genres)
         if rule.get('genres'):
             rule_ids = [int(x) for x in rule['genres']]
             tmdb_genre_ids = self.raw_metadata.get('genre_ids', [])
-            
-            # 如果 TMDb 返回的类型列表中，没有任何一个在规则允许的列表中，则不匹配
-            if not any(gid in rule_ids for gid in tmdb_genre_ids):
-                return False
+            _evaluate(any(gid in rule_ids for gid in tmdb_genre_ids))
 
-        # 3. 国家 (Countries) - Code 匹配
+        # 2.2 国家 (Countries)
         if rule.get('countries'):
-            # rule['countries'] 存的是 Code (如 ['US', 'CN'])
-            # 只匹配第一个主要国家，避免合拍片误判 
             current_countries = self.raw_metadata.get('country_codes', [])
-            # 获取列表中的第一个国家作为主要国家
             primary_country = current_countries[0] if current_countries else None
-            
-            # 如果没有国家信息，或者主要国家不在规则允许的列表中，则不匹配
-            if not primary_country or primary_country not in rule['countries']:
-                return False
+            _evaluate(primary_country in rule['countries'])
 
-        # 4. 语言 (Languages) - Code 匹配
+        # 2.3 语言 (Languages)
         if rule.get('languages'):
-            if self.raw_metadata['lang_code'] not in rule['languages']: return False
+            _evaluate(self.raw_metadata.get('lang_code') in rule['languages'])
 
-        # 5. 工作室 (Studios) - Label -> ID 匹配
+        # 2.4 工作室 (Studios)
         if rule.get('studios'):
-            # rule['studios'] 存的是 Label (如 ['漫威', 'Netflix'])
-            # 我们需要遍历这些 Label，去 self.studio_map 里找对应的 ID
             target_ids = set()
             for label in rule['studios']:
-                # 找到配置项
                 config_item = next((item for item in self.studio_map if item['label'] == label), None)
                 if config_item:
                     target_ids.update(config_item.get('company_ids', []))
                     target_ids.update(config_item.get('network_ids', []))
 
-            # 检查 TMDb 的 company/network ID 是否在 target_ids 中
-            has_company = any(cid in target_ids for cid in self.raw_metadata['company_ids'])
-            has_network = any(nid in target_ids for nid in self.raw_metadata['network_ids'])
+            has_company = any(cid in target_ids for cid in self.raw_metadata.get('company_ids', []))
+            has_network = any(nid in target_ids for nid in self.raw_metadata.get('network_ids', []))
+            _evaluate(has_company or has_network)
 
-            if not (has_company or has_network): return False
-
-        # 6. 关键词 (Keywords) - Label -> ID 匹配
+        # 2.5 关键词 (Keywords)
         if rule.get('keywords'):
             target_ids = set()
             for label in rule['keywords']:
@@ -1183,78 +1194,69 @@ class SmartOrganizer:
                 if config_item:
                     target_ids.update(config_item.get('ids', []))
 
-            # 兼容字符串/数字 ID
-            tmdb_kw_ids = [int(k) for k in self.raw_metadata['keyword_ids']]
+            tmdb_kw_ids = [int(k) for k in self.raw_metadata.get('keyword_ids', [])]
             target_ids_int = [int(k) for k in target_ids]
+            _evaluate(any(kid in target_ids_int for kid in tmdb_kw_ids))
 
-            if not any(kid in target_ids_int for kid in tmdb_kw_ids): return False
-
-        # 7. 分级 (Rating) - Label 匹配
+        # 2.6 分级 (Rating)
         if rule.get('ratings'):
-            if self.raw_metadata['rating_label'] not in rule['ratings']: return False
+            _evaluate(self.raw_metadata.get('rating_label') in rule['ratings'])
 
-        # 8. 年份 (Year) 
+        # 2.7 年份 (Year)
         year_min = rule.get('year_min')
         year_max = rule.get('year_max')
-        
         if year_min or year_max:
             current_year = self.raw_metadata.get('year', 0)
-            
-            # 如果获取不到年份，且设置了年份限制，则视为不匹配
-            if current_year == 0: return False
-            
-            if year_min and current_year < int(year_min): return False
-            if year_max and current_year > int(year_max): return False
+            if current_year == 0:
+                _evaluate(False)
+            else:
+                is_y_match = True
+                if year_min and current_year < int(year_min): is_y_match = False
+                if year_max and current_year > int(year_max): is_y_match = False
+                _evaluate(is_y_match)
 
-        # 9. 时长 (Runtime) 
-        # 逻辑：电影取 runtime，剧集取 episode_run_time (列表取平均或第一个)
+        # 2.8 时长 (Runtime)
         run_min = rule.get('runtime_min')
         run_max = rule.get('runtime_max')
-
         if run_min or run_max:
             current_runtime = 0
             if self.media_type == 'movie':
                 current_runtime = self.details.get('runtime') or 0
             else:
-                # 剧集时长通常是一个列表 [45, 60]，取第一个作为参考
                 runtimes = self.details.get('episode_run_time', [])
                 if runtimes and len(runtimes) > 0:
                     current_runtime = runtimes[0]
 
-            # 如果获取不到时长，且设置了限制，视为不匹配
-            if current_runtime == 0: return False
+            if current_runtime == 0:
+                _evaluate(False)
+            else:
+                is_r_match = True
+                if run_min and current_runtime < int(run_min): is_r_match = False
+                if run_max and current_runtime > int(run_max): is_r_match = False
+                _evaluate(is_r_match)
 
-            if run_min and current_runtime < int(run_min): return False
-            if run_max and current_runtime > int(run_max): return False
-
-        # 10. 评分 (Min Rating) - 数值比较
+        # 2.9 评分 (Min Rating)
         if rule.get('min_rating') and float(rule['min_rating']) > 0:
             vote_avg = self.details.get('vote_average', 0)
-            if vote_avg < float(rule['min_rating']):
-                return False
-            
-        # ★ 11. 演员匹配 (只取前三主演，已加上 [:3] 切片)
+            _evaluate(vote_avg >= float(rule['min_rating']))
+
+        # 2.10 演员 (Actors)
         if rule.get('actors'):
             rule_actor_ids = [int(a['id']) for a in rule['actors'] if 'id' in a]
-            if not any(aid in self.raw_metadata.get('actor_ids', []) for aid in rule_actor_ids): 
-                return False
+            _evaluate(any(aid in self.raw_metadata.get('actor_ids', []) for aid in rule_actor_ids))
 
-        # ★ 12. 追剧状态匹配 (实时查库，利用从上到下的规则顺序自然分流)
-        if rule.get('watching_status') == 'watching' and self.media_type == 'tv':
-            try:
-                from database.watchlist_db import get_watching_tmdb_ids
-                # 获取所有正在追剧的 ID 集合
-                watching_ids = get_watching_tmdb_ids()
-                
-                # 如果当前剧集的 ID 不在集合里（说明已完结或未追踪）
-                # 直接返回 False，让它漏网，继续往下匹配常规规则！
-                if str(self.tmdb_id) not in watching_ids:
-                    return False
-            except Exception as e:
-                logger.warning(f"获取追剧状态失败: {e}")
-                return False
+        # ==========================================
+        # 3. 最终结果判定
+        # ==========================================
+        if conditions_configured == 0:
+            return True # 没有配置任何条件，默认命中（兜底规则）
 
-        return True
+        if match_mode == 'or':
+            # OR 模式：只要满足了任意一个条件，就算命中
+            return conditions_met > 0
+        else: 
+            # AND 模式：必须满足所有配置的条件
+            return conditions_met == conditions_configured
 
     def get_target_cid(self, ignore_memory=False):
         """获取目标 CID：优先查历史整理记录（记忆手动纠错），其次遍历规则"""
