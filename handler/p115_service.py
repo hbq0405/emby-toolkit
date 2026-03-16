@@ -1674,19 +1674,27 @@ class SmartOrganizer:
                         if v: video_info[k] = v
                     
         # 解析季集号
-        season_num = None
-        episode_num = None
-        if is_tv:
-            pattern = r'(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})|(?:ep|e|episode)[ \.\-]*?(\d{1,4})|第(\d{1,4})[集话]'
+        # ★ 优先使用 Webhook 强塞进来的精准数据
+        season_num = file_node.get('_forced_season')
+        episode_num = file_node.get('_forced_episode')
+        
+        if is_tv and (season_num is None or episode_num is None):
+            # ★ 修复正则边界漏洞：前面必须是开头、空格、点、横杠、下划线或括号，防止 Sortie.2006 被识别为 E2006
+            pattern = r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})\b|(?:^|[ \.\-\_\[\(])(?:ep|e|episode)[ \.\-]*?(\d{1,4})\b|第(\d{1,4})[集话]'
             match = re.search(pattern, original_name, re.IGNORECASE)
             if match:
-                s, e, ep_only, zh_ep = match.groups()
-                season_num = int(s) if s else 1
-                episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
+                s = match.group(1)
+                e = match.group(2)
+                ep_only = match.group(3)
+                zh_ep = match.group(4)
+                if season_num is None:
+                    season_num = int(s) if s else 1
+                if episode_num is None:
+                    episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
 
-            if hasattr(self, 'forced_season') and self.forced_season is not None:
-                season_num = int(self.forced_season)
-                if episode_num is None: episode_num = 1
+        if hasattr(self, 'forced_season') and self.forced_season is not None:
+            season_num = int(self.forced_season)
+            if episode_num is None: episode_num = 1
 
         # ★★★ 核心升级：直接调用统一乐高引擎生成文件名 ★★★
         default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
@@ -1993,7 +2001,7 @@ class SmartOrganizer:
                     break
                 
                 # 2. 标准特征 (EP01, S01E01)
-                if re.search(r'(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}|(?:ep|episode)[ \.\-]*\d{1,4}|第\d{1,4}[集话]', c_name, re.IGNORECASE):
+                if re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|e|episode)[ \.\-]*\d{1,4}\b|第\d{1,4}[集话]', c_name, re.IGNORECASE):
                     is_actually_tv = True
                     break
                 
@@ -2657,8 +2665,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
     else:
         # 将主目录名和文件名拼在一起，寻找剧集特征
         combined_text = f"{main_dir_name or ''} {filename}"
-        # 只要包含 S01、EP01、第x季、Season 等字眼，立刻锁定为剧集
-        if has_season_subdirs or re.search(r'(?:S\d{1,4}[ \.\-]*(?:E|P)\d{1,4}|EP?\d{1,4}|第[一二三四五六七八九十\d]+季|Season)', combined_text, re.IGNORECASE):
+        if has_season_subdirs or re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|e|episode)[ \.\-]*\d{1,4}\b|第[一二三四五六七八九十\d]+季|Season', combined_text, re.IGNORECASE):
             media_type = 'tv'
 
     # 辅助函数：用已锁定的类型去 TMDb 查官方标题

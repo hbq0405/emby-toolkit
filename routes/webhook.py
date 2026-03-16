@@ -58,18 +58,17 @@ STREAM_CHECK_SEMAPHORE = Semaphore(5) # 限制并发预检的数量，防止大�
 SYNDROME_API_LOCK = Semaphore(1)
 
 def _process_single_mp_file(file_info):
-    """处理 MP 单文件上传 (直接整理，不轮询)"""
+    """处理 MP 单文件上传 (直接整理，不轮询，精准传参)"""
     client = P115Service.get_client()
     if not client: return
 
-    logger.info(f"  ⏳ [MP单文件] 开始整理: {file_info['name']} -> ID:{file_info['tmdb_id']}")
+    logger.info(f"  ⏳ [MP上传] 开始整理: {file_info['name']} -> ID:{file_info['tmdb_id']}")
 
     try:
         organizer = SmartOrganizer(client, file_info['tmdb_id'], file_info['media_type'], file_info['title'])
         target_cid = organizer.get_target_cid()
 
         if target_cid:
-            # 构造代表单文件的 node，直接交给 organizer 处理
             file_node = {
                 'fid': file_info['file_id'],
                 'file_id': file_info['file_id'],
@@ -79,7 +78,9 @@ def _process_single_mp_file(file_info):
                 'type': '1',
                 'pid': file_info['parent_id'],
                 'pc': file_info['pickcode'],
-                'pick_code': file_info['pickcode']
+                'pick_code': file_info['pickcode'],
+                '_forced_season': file_info.get('season_num'),   
+                '_forced_episode': file_info.get('episode_num')  
             }
             logger.info(f"  🚀 [MP上传] 接管文件整理: {file_info['name']}")
             organizer.execute(file_node, target_cid)
@@ -808,6 +809,7 @@ def emby_webhook():
         try:
             transfer_info = data.get("data", {}).get("transferinfo", {})
             media_info = data.get("data", {}).get("mediainfo", {})
+            meta_info = data.get("data", {}).get("meta", {}) # ★ 提取 meta 信息
             
             target_item = transfer_info.get("target_item", {})
             target_dir = transfer_info.get("target_diritem", {})
@@ -817,13 +819,14 @@ def emby_webhook():
             file_name = target_item.get("name")
             file_type = target_item.get("type") # 'file'
             pickcode = target_item.get("pickcode")
-            
-            # 提取父目录 ID (用于构建 file_node 和后续底层的空目录清理)
             dir_cid = target_dir.get("fileid")
             
             tmdb_id = media_info.get("tmdb_id")
             media_type_cn = media_info.get("type") 
             title = media_info.get("title")
+            
+            begin_season = meta_info.get("begin_season")
+            begin_episode = meta_info.get("begin_episode")
             
             if not tmdb_id or not file_id:
                 logger.warning("  ⚠️ MP 通知缺少 tmdb_id 或 file_id，无法处理。")
@@ -831,7 +834,7 @@ def emby_webhook():
 
             media_type = 'tv' if media_type_cn == '电视剧' else 'movie'
             
-            # 只处理文件类型的通知
+            # 极速单文件处理
             if file_type == 'file':
                 file_info = {
                     'file_id': file_id,
@@ -840,9 +843,11 @@ def emby_webhook():
                     'pickcode': pickcode,
                     'tmdb_id': tmdb_id,
                     'media_type': media_type,
-                    'title': title
+                    'title': title,
+                    'season_num': begin_season,
+                    'episode_num': begin_episode
                 }
-                logger.info(f"  📥 [MP上传] 收到视频: {file_name}，开始整理...")
+                logger.info(f"  📥 [MP上传] 收到文件: {file_name}，开始整理...")
                 spawn(_process_single_mp_file, file_info)
                 return jsonify({"status": "processing_single_file"}), 200
             else:
