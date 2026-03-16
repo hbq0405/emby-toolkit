@@ -3921,8 +3921,8 @@ class MediaProcessor:
             
             if lang_pref == 'zh':
                 # 策略 A: 严格中文优先
-                search_strategies.append(("zh-CN,zh-HK,zh-SG", "简体/港澳新中文"))
-                search_strategies.append(("zh-TW,zh", "繁体/通用中文"))
+                search_strategies.append(("zh-CN", "简体中文"))
+                search_strategies.append(("zh-TW,zh,zh-HK,zh-SG", "繁体/通用中文"))
                 search_strategies.append(("en,null", "英文/无文字"))
                 if orig_lang not in ['zh', 'cn', 'tw', 'hk', 'en']:
                     search_strategies.append((f"{orig_lang}", f"原语言({orig_lang})"))
