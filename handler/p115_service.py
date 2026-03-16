@@ -867,10 +867,31 @@ class P115DeleteBuffer:
             if fids:
                 cls._fids_to_delete.update(fids)
             if base_cids:
-                if isinstance(base_cids, (list, set)):
-                    cls._cids_to_check.update(base_cids)
-                else:
-                    cls._cids_to_check.add(base_cids)
+                expanded_cids = set()
+                cids_to_process = base_cids if isinstance(base_cids, (list, set)) else [base_cids]
+                
+                for cid in cids_to_process:
+                    if not cid or str(cid) == '0': continue
+                    expanded_cids.add(str(cid))
+                    
+                # ★ 核心修复 1：自动向上溯源，把所有父级目录也加进来检查，防止遗留空壳父目录
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            for cid in list(expanded_cids):
+                                trace_pid = str(cid)
+                                for _ in range(5): # 向上追溯 5 层足够了
+                                    cursor.execute("SELECT parent_id FROM p115_filesystem_cache WHERE id = %s", (trace_pid,))
+                                    row = cursor.fetchone()
+                                    if row and row['parent_id'] and str(row['parent_id']) != '0':
+                                        trace_pid = str(row['parent_id'])
+                                        expanded_cids.add(trace_pid)
+                                    else:
+                                        break
+                except Exception as e:
+                    logger.debug(f"  ⚠️ 溯源父目录失败: {e}")
+                    
+                cls._cids_to_check.update(expanded_cids)
 
             # ★ 核心防抖：每次有新文件整理完，刷新倒计时
             cls._last_add_time = time.time()
@@ -944,9 +965,9 @@ class P115DeleteBuffer:
                 if rule.get('cid'): protected_cids.add(str(rule['cid']))
 
         # 3. 检查空目录
-        configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
-        allowed_exts = set(e.lower() for e in configured_exts)
-        media_exts = allowed_exts | {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg'}
+        # ★ 核心修复 2：严格定义能保住目录的“核心媒体文件”。排除字幕、NFO、图片等。
+        # 只要目录里没有这些核心视频/音频，哪怕有一堆海报和字幕，也直接连锅端！
+        core_media_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg'}
 
         empty_cids_to_delete = []
 
@@ -963,8 +984,9 @@ class P115DeleteBuffer:
                         for item in res.get('data', []):
                             if str(item.get('fc')) == '1':
                                 ext = str(item.get('fn', '')).split('.')[-1].lower()
-                                if ext in media_exts:
+                                if ext in core_media_exts:
                                     item_size = _parse_115_size(item.get('fs') or item.get('size'))
+                                    # 视频文件大于 10MB 才算数，防止 sample.mp4 保住目录
                                     if item_size == 0 or item_size > 10 * 1024 * 1024:
                                         media_count += 1
                             elif str(item.get('fc')) == '0':
@@ -978,7 +1000,7 @@ class P115DeleteBuffer:
             count_media(cid)
             if media_count == 0:
                 empty_cids_to_delete.append(cid)
-                logger.info(f"  🗑️ 判定为空目录，加入待清理队列: CID {cid}")
+                logger.info(f"  🗑️ 判定为空目录(无核心媒体文件)，加入待清理队列: CID {cid}")
 
         # 4. 批量删除空目录
         if empty_cids_to_delete:
