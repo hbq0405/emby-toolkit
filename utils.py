@@ -330,11 +330,11 @@ DEFAULT_COUNTRY_MAPPING = [
     {"label": "芬兰", "value": "FI", "aliases": ["Finland"]},
     {"label": "波兰", "value": "PL", "aliases": ["Poland"]},
 ]
-
+{"label": "漫威", "en": ["Marvel Studios", "Marvel Entertainment"], "company_ids": [420, 7505]},
 # --- 语言预设表 ---
 DEFAULT_LANGUAGE_MAPPING = [
-    {"label": "国语", "value": "zh", "aliases": ["cmn"]}, # cmn是普通话的ISO标准代码，以防万一
-    {"label": "粤语", "value": "cn", "aliases": ["yue"]}, # ★ 核心：在底层打通 cn 和 yue
+    {"label": "国语", "value": "zh"},
+    {"label": "粤语", "value": ["cn", "yue"]}, 
     {"label": "英语", "value": "en"},
     {"label": "日语", "value": "ja"},
     {"label": "韩语", "value": "ko"},

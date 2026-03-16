@@ -1011,6 +1011,8 @@ class SmartOrganizer:
         self.keyword_map = settings_db.get_setting('keyword_mapping') or utils.DEFAULT_KEYWORD_MAPPING
         self.rating_map = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
         self.rating_priority = settings_db.get_setting('rating_priority') or utils.DEFAULT_RATING_PRIORITY
+        self.country_map = settings_db.get_setting('country_mapping') or utils.DEFAULT_COUNTRY_MAPPING
+        self.language_map = settings_db.get_setting('language_mapping') or utils.DEFAULT_LANGUAGE_MAPPING
 
         self.raw_metadata = self._fetch_raw_metadata()
         self.details = self.raw_metadata
@@ -1185,12 +1187,36 @@ class SmartOrganizer:
 
         # 2.2 国家 (Countries)
         if rule.get('countries'):
+            target_codes = set()
+            for item in rule['countries']:
+                # 尝试在映射表中找中文标签
+                mapping = next((m for m in self.country_map if m['label'] == item), None)
+                if mapping:
+                    target_codes.add(mapping['value'])
+                    if 'aliases' in mapping:
+                        target_codes.update(mapping['aliases'])
+                else:
+                    # 兼容旧规则（直接存了代码的情况）
+                    target_codes.add(item)
+            
             current_countries = self.raw_metadata.get('country_codes', [])
-            _evaluate(any(c in rule['countries'] for c in current_countries))
+            _evaluate(any(c in target_codes for c in current_countries))
 
         # 2.3 语言 (Languages)
         if rule.get('languages'):
-            _evaluate(self.raw_metadata.get('lang_code') in rule['languages'])
+            target_codes = set()
+            for item in rule['languages']:
+                # 尝试在映射表中找中文标签
+                mapping = next((m for m in self.language_map if m['label'] == item), None)
+                if mapping:
+                    target_codes.add(mapping['value'])
+                    if 'aliases' in mapping:
+                        target_codes.update(mapping['aliases'])
+                else:
+                    # 兼容旧规则（直接存了代码的情况）
+                    target_codes.add(item)
+                    
+            _evaluate(self.raw_metadata.get('lang_code') in target_codes)
 
         # 2.4 工作室 (Studios)
         if rule.get('studios'):
@@ -2554,6 +2580,9 @@ class SmartOrganizer:
                 cids_to_check.add(source_root_id)
                 cids_to_check.add(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
 
+        if final_home_cid and str(final_home_cid) != '0':
+            cids_to_check.add(final_home_cid)
+        
         # 过滤掉空的和 '0' (根目录)
         valid_cids_to_check = [str(cid) for cid in cids_to_check if cid and str(cid) != '0']
 

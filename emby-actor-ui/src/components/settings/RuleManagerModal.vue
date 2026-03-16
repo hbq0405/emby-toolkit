@@ -325,8 +325,8 @@ const loadOptions = async () => {
     rawMovieGenres.value = (mGenres.data || []).map(g => ({ label: g.name, value: g.id }));
     rawTvGenres.value = (tGenres.data || []).map(g => ({ label: g.name, value: g.id }));
     rawStudios.value = (sRes.data || []).map(s => ({ label: s.label, value: s.value, is_movie: (s.types||[]).includes('movie'), is_tv: (s.types||[]).includes('tv') }));
-    countryOptions.value = cRes.data;
-    languageOptions.value = lRes.data;
+    countryOptions.value = (cRes.data || []).map(c => ({ label: c.label, value: c.label }));
+    languageOptions.value = (lRes.data || []).map(l => ({ label: l.label, value: l.label }));
     keywordOptions.value = kRes.data;
     ratingOptions.value = (rRes.data || []).map(r => ({ label: r, value: r }));
   } catch (e) { console.error("加载选项失败", e); }
