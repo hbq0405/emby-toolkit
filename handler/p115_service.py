@@ -1186,8 +1186,7 @@ class SmartOrganizer:
         # 2.2 国家 (Countries)
         if rule.get('countries'):
             current_countries = self.raw_metadata.get('country_codes', [])
-            primary_country = current_countries[0] if current_countries else None
-            _evaluate(primary_country in rule['countries'])
+            _evaluate(any(c in rule['countries'] for c in current_countries))
 
         # 2.3 语言 (Languages)
         if rule.get('languages'):
