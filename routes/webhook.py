@@ -62,7 +62,7 @@ def _process_single_mp_file(file_info):
     client = P115Service.get_client()
     if not client: return
 
-    logger.info(f"  ⏳ [MP上传] 开始整理: {file_info['name']} -> ID:{file_info['tmdb_id']}")
+    # logger.info(f"  ⏳ [MP上传] 开始整理: {file_info['name']} -> ID:{file_info['tmdb_id']}")
 
     try:
         organizer = SmartOrganizer(client, file_info['tmdb_id'], file_info['media_type'], file_info['title'])
@@ -82,7 +82,7 @@ def _process_single_mp_file(file_info):
                 '_forced_season': file_info.get('season_num'),   
                 '_forced_episode': file_info.get('episode_num')  
             }
-            logger.info(f"  🚀 [MP上传] 接管文件整理: {file_info['name']}")
+            # logger.info(f"  🚀 [MP上传] 接管文件整理: {file_info['name']}")
             organizer.execute(file_node, target_cid)
         else:
             logger.info(f"  🚫 [MP上传] 文件 '{file_info['name']}' 未命中任何分类规则，保持原样。")
@@ -847,7 +847,7 @@ def emby_webhook():
                     'season_num': begin_season,
                     'episode_num': begin_episode
                 }
-                logger.info(f"  📥 [MP上传] 收到文件: {file_name}，开始整理...")
+                logger.info(f"  🚀 [MP上传] 收到文件: {file_name}，开始整理...")
                 spawn(_process_single_mp_file, file_info)
                 return jsonify({"status": "processing_single_file"}), 200
             else:
