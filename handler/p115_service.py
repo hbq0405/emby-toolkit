@@ -2318,7 +2318,6 @@ class SmartOrganizer:
                     if conflict_fids_to_delete:
                         logger.warning(f"  ⚠️ [同名覆盖] 目标目录发现 {len(conflict_fids_to_delete)} 个同名旧文件，正在批量删除以腾出空间...")
                         self.client.fs_delete(conflict_fids_to_delete)
-                        from handler.p115_service import P115CacheManager
                         P115CacheManager.delete_files(conflict_fids_to_delete)
                     
                     # 执行重命名 (N 次 API 请求，115 不支持批量重命名，这和原来保持一致)
