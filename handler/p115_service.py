@@ -2247,13 +2247,6 @@ class SmartOrganizer:
             # 记录已占用的文件名
             seen_new_filenames.add(new_filename)
 
-            if new_filename != file_name:
-                ren_res = self.client.fs_rename((fid, new_filename))
-                if ren_res.get('state'):
-                    logger.info(f"  ✏️ [重命名] {file_name} -> {new_filename}")
-                else:
-                    logger.warning(f"  ⚠️ [重命名失败] {file_name} -> {new_filename}, 原因: {ren_res.get('error_msg', ren_res)}")
-
             # 暂存入分组字典
             file_item['_new_filename'] = new_filename
             file_item['_season_num'] = season_num
@@ -2279,6 +2272,65 @@ class SmartOrganizer:
                 if items and items[0].get('_s_name'):
                     display_target = f"{std_root_name} - {items[0]['_s_name']}"
                 logger.info(f"  📁 [批量移动] 成功将 {len(fids)} 个文件移动至 -> {display_target}")
+                
+                # =================================================================
+                # ★ 批量同名覆盖与重命名逻辑 (完美解决 (1) 冲突，且最小化 API 请求)
+                # =================================================================
+                try:
+                    # 获取目标目录当前的所有文件 (仅 1 次 API 请求)
+                    existing_res = self.client.fs_files({'cid': batch_target_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
+                    existing_files = existing_res.get('data', [])
+                    
+                    # 建立 FID -> 当前真实名称 的映射 (找回移动后可能被 115 加上 (1) 的文件)
+                    fid_to_current_name = {
+                        str(e.get('fid') or e.get('file_id')): (e.get('fn') or e.get('n') or e.get('file_name'))
+                        for e in existing_files if str(e.get('fc') or e.get('type')) == '1'
+                    }
+                    
+                    # 建立 名称 -> FID 的映射 (用于寻找占用完美名字的旧文件)
+                    existing_name_to_fid = {
+                        (e.get('fn') or e.get('n') or e.get('file_name')): str(e.get('fid') or e.get('file_id'))
+                        for e in existing_files if str(e.get('fc') or e.get('type')) == '1'
+                    }
+                    
+                    # 收集需要被删除的旧文件 FID (用于批量删除)
+                    conflict_fids_to_delete = []
+                    # 收集需要被重命名的新文件 (用于逐个重命名)
+                    items_to_rename = []
+                    
+                    for file_item in items:
+                        fid = str(file_item.get('fid') or file_item.get('file_id'))
+                        new_filename = file_item['_new_filename']
+                        current_name_in_115 = fid_to_current_name.get(fid, file_item.get('fn'))
+                        
+                        if current_name_in_115 != new_filename:
+                            # 如果完美名字被别人占用了，且那个人不是我自己
+                            if new_filename in existing_name_to_fid:
+                                conflict_fid = existing_name_to_fid[new_filename]
+                                if conflict_fid != fid:
+                                    conflict_fids_to_delete.append(conflict_fid)
+                                    # 从字典移除，防止多个文件重名时重复添加同一个 FID
+                                    del existing_name_to_fid[new_filename] 
+                            
+                            items_to_rename.append((fid, current_name_in_115, new_filename))
+                    
+                    # 执行批量删除 (仅 1 次 API 请求，瞬间秒杀所有旧版文件)
+                    if conflict_fids_to_delete:
+                        logger.warning(f"  ⚠️ [同名覆盖] 目标目录发现 {len(conflict_fids_to_delete)} 个同名旧文件，正在批量删除以腾出空间...")
+                        self.client.fs_delete(conflict_fids_to_delete)
+                        from handler.p115_service import P115CacheManager
+                        P115CacheManager.delete_files(conflict_fids_to_delete)
+                    
+                    # 执行重命名 (N 次 API 请求，115 不支持批量重命名，这和原来保持一致)
+                    for fid, current_name, new_name in items_to_rename:
+                        ren_res = self.client.fs_rename((fid, new_name))
+                        if ren_res.get('state'):
+                            logger.info(f"  ✏️ [重命名] {current_name} -> {new_name}")
+                        else:
+                            logger.warning(f"  ⚠️ [重命名失败] {current_name} -> {new_name}, 原因: {ren_res.get('error_msg', ren_res)}")
+                            
+                except Exception as e:
+                    logger.error(f"  ❌ [同名覆盖] 处理重命名逻辑失败: {e}")
                 
                 # 2. 移动成功后，遍历该批次文件，生成 STRM 和记录日志
                 for file_item in items:
