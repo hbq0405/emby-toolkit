@@ -242,6 +242,9 @@ DEFAULT_KEYWORD_MAPPING = [
     {"label": "仙侠", "en": ["xianxia"], "ids": [234890]},
     {"label": "恐怖", "en": ["horror", "clown", "macabre"], "ids": [315058, 3199, 162810]},
     {"label": "惊悚", "en": ["thriller", "gruesome"], "ids": [10526, 186416]},
+    {"label": "赛车", "en": ["car race", "street-race"], "ids": [830, 9666]},
+    {"label": "怪物", "en": ["cmonster"], "ids": [1299]},
+    {"label": "特工", "en": ["secret agent"], "ids": [4289]},
 ]
 
 # --- 工作室预设表 ---
