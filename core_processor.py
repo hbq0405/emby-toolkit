@@ -3921,14 +3921,17 @@ class MediaProcessor:
             
             if lang_pref == 'zh':
                 # 策略 A: 严格中文优先
-                search_strategies.append(("zh-CN", "简体中文"))
-                search_strategies.append(("zh,zh-TW", "繁体中文"))
+                search_strategies.append(("zh-CN,zh-HK,zh-SG", "简体/港澳新中文"))
+                search_strategies.append(("zh-TW,zh", "繁体/通用中文"))
                 search_strategies.append(("en,null", "英文/无文字"))
-                search_strategies.append((f"{orig_lang}", f"原语言({orig_lang})"))
+                if orig_lang not in ['zh', 'cn', 'tw', 'hk', 'en']:
+                    search_strategies.append((f"{orig_lang}", f"原语言({orig_lang})"))
             else:
                 # 策略 B: 原语言优先
-                # 例如：韩国电影(ko)，这里就会先找 ko 的海报
-                if orig_lang != 'en':
+                # 核心修复：港片/台片原语言通常是 cn(粤语) 或 zh，但海报标签通常是 zh-HK, zh-TW, zh-CN, zh
+                if orig_lang in ['zh', 'cn', 'tw', 'hk']:
+                    search_strategies.append(("zh-CN,zh-HK,zh-TW,zh,cn", f"原语言(中文系/{orig_lang})"))
+                elif orig_lang != 'en':
                     search_strategies.append((orig_lang, f"原语言({orig_lang})"))
                 
                 # 2. 第二顺位：英文/无文字 (高质量通用图)
@@ -3936,7 +3939,8 @@ class MediaProcessor:
                 search_strategies.append(("en,null", "英文/无文字"))
                 
                 # 3. 第三顺位：中文兜底
-                search_strategies.append(("zh-CN,zh-TW,zh", "中文兜底"))
+                if orig_lang not in ['zh', 'cn', 'tw', 'hk']:
+                    search_strategies.append(("zh-CN,zh-HK,zh-TW,zh", "中文兜底"))
 
             tmdb_data = None
             used_strategy = ""
