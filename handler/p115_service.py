@@ -2575,18 +2575,20 @@ class SmartOrganizer:
             for item in root_item_or_items:
                 fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
                 if str(fc_val) == '0': 
-                    # 如果是文件夹，检查它自己，也检查它的父级
                     cids_to_check.add(item.get('fid') or item.get('file_id'))
                     cids_to_check.add(item.get('pid') or item.get('parent_id') or item.get('cid'))
                 else: 
-                    # 如果是文件，检查它的父级
                     cids_to_check.add(item.get('pid') or item.get('parent_id') or item.get('cid'))
         else:
-            if is_source_file:
-                cids_to_check.add(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+            # ★ 核心拦截：如果带有免死金牌，直接跳过收集，彻底切断与垃圾回收器的联系！
+            if not root_item.get('_skip_gc'):
+                if is_source_file:
+                    cids_to_check.add(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+                else:
+                    cids_to_check.add(source_root_id)
+                    cids_to_check.add(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
             else:
-                cids_to_check.add(source_root_id)
-                cids_to_check.add(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+                logger.info("  🛡️ [MP上传] 单文件跳过源目录垃圾回收检查。")
 
         if final_home_cid and str(final_home_cid) != '0':
             cids_to_check.add(final_home_cid)

@@ -80,7 +80,8 @@ def _process_single_mp_file(file_info):
                 'pc': file_info['pickcode'],
                 'pick_code': file_info['pickcode'],
                 '_forced_season': file_info.get('season_num'),   
-                '_forced_episode': file_info.get('episode_num')  
+                '_forced_episode': file_info.get('episode_num'),
+                '_skip_gc': True  
             }
             # logger.info(f"  🚀 [MP上传] 接管文件整理: {file_info['name']}")
             organizer.execute(file_node, target_cid)
