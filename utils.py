@@ -330,7 +330,6 @@ DEFAULT_COUNTRY_MAPPING = [
     {"label": "芬兰", "value": "FI", "aliases": ["Finland"]},
     {"label": "波兰", "value": "PL", "aliases": ["Poland"]},
 ]
-{"label": "漫威", "en": ["Marvel Studios", "Marvel Entertainment"], "company_ids": [420, 7505]},
 # --- 语言预设表 ---
 DEFAULT_LANGUAGE_MAPPING = [
     {"label": "国语", "value": "zh"},
