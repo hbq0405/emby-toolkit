@@ -3924,7 +3924,7 @@ class MediaProcessor:
                 search_strategies.append(("zh-CN", "简体中文"))
                 search_strategies.append(("zh,zh-TW", "繁体中文"))
                 search_strategies.append(("en,null", "英文/无文字"))
-                search_strategies.append(("original_language", "原语言"))
+                search_strategies.append(("orig_lang", "原语言({orig_lang})"))
             else:
                 # 策略 B: 原语言优先
                 # 例如：韩国电影(ko)，这里就会先找 ko 的海报
