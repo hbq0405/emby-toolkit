@@ -1190,14 +1190,7 @@ class SmartOrganizer:
 
         # 2.3 语言 (Languages)
         if rule.get('languages'):
-            target_langs = list(rule['languages'])
-            # ★ 核心修复：打通 TMDB 粤语历史遗留代码 (cn) 与标准代码 (yue)
-            if 'yue' in target_langs and 'cn' not in target_langs:
-                target_langs.append('cn')
-            elif 'cn' in target_langs and 'yue' not in target_langs:
-                target_langs.append('yue')
-                
-            _evaluate(self.raw_metadata.get('lang_code') in target_langs)
+            _evaluate(self.raw_metadata.get('lang_code') in rule['languages'])
 
         # 2.4 工作室 (Studios)
         if rule.get('studios'):
