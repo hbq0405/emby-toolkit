@@ -250,8 +250,18 @@ def api_save_config():
         
         logger.info(f"  ➜ 收到新的配置数据，准备全面净化并保存...")
 
-        # ▼▼▼ 核心修正：全面净化逻辑 ▼▼▼
-        
+        # =====================================================================
+        # ★★★ 核心修复：拦截并剔除数据库专属的巨型 JSON 配置 ★★★
+        # 防止这些巨无霸被写入 config.ini 导致保存卡死一两分钟！
+        # =====================================================================
+        keys_to_exclude = [
+            "p115_sorting_rules", 
+            "p115_rename_config"
+        ]
+        for key in keys_to_exclude:
+            new_config_data.pop(key, None)
+        # =====================================================================
+
         # 1. 提取Emby连接信息，准备获取“白名单”
         emby_url = new_config_data.get('emby_server_url')
         emby_api_key = new_config_data.get('emby_api_key')
