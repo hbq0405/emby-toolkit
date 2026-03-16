@@ -102,6 +102,7 @@
         striped
         size="small"
         :row-key="row => row.id"
+        :row-class-name="rowClassName"
       />
     </n-card>
 
@@ -124,7 +125,6 @@
           </n-text>
         </n-form-item>
 
-        <!-- ★ 新增：批量操作模式选择 (仅多选时显示) -->
         <n-form-item v-if="editForm.ids.length > 1" label="批量模式" path="batch_mode">
           <n-radio-group v-model:value="editForm.batch_mode">
             <n-radio-button value="reclassify">保持原ID重新分类</n-radio-button>
@@ -150,7 +150,6 @@
           </n-radio-group>
         </n-form-item>
 
-        <!-- 季号输入框 (仅剧集模式显示，且在重新分类模式下禁用) -->
         <n-form-item v-if="editForm.media_type === 'tv'" label="季号 (Season)" path="season_num">
           <n-input-number 
             v-model:value="editForm.season_num" 
@@ -241,7 +240,7 @@ const editForm = ref({
   media_type: 'movie',
   season_num: null, 
   target_cid: null,
-  batch_mode: 'merge' // 新增：批量操作模式
+  batch_mode: 'merge'
 });
 
 // 提取季号的正则工具
@@ -283,6 +282,12 @@ const processedTableData = computed(() => {
       const season = getSeason(first.renamed_name || first.original_name);
       const seriesName = getSeriesName(first.renamed_name || first.original_name);
       
+      // ★ 新增：给子节点打上 isChild 标记，方便渲染时区分
+      const markedChildren = children.sort((a, b) => a.original_name.localeCompare(b.original_name)).map(child => ({
+        ...child,
+        isChild: true 
+      }));
+
       result.push({
         id: `group_${key}`,
         isGroup: true,
@@ -294,7 +299,7 @@ const processedTableData = computed(() => {
         target_cid: first.target_cid,
         category_name: first.category_name,
         processed_at: first.processed_at,
-        children: children.sort((a, b) => a.original_name.localeCompare(b.original_name))
+        children: markedChildren
       });
     } else {
       result.push(children[0]);
@@ -308,6 +313,11 @@ const processedTableData = computed(() => {
 const realSelectedIds = computed(() => {
   return checkedRowKeys.value.filter(key => !String(key).startsWith('group_'));
 });
+
+// ★ 新增：为子节点行添加专属 class，用于弱化背景色
+const rowClassName = (row) => {
+  return row.isChild ? 'is-child-row' : '';
+};
 
 // 表格列定义
 const columns = computed(() => [
@@ -329,7 +339,9 @@ const columns = computed(() => [
         type: isSuccess ? 'success' : 'warning',
         bordered: false,
         size: 'small',
-        round: true
+        round: true,
+        // ★ 新增：如果是子节点，标签稍微缩小变淡，突出父节点
+        style: row.isChild ? 'transform: scale(0.85); opacity: 0.85;' : ''
       }, {
         icon: () => h(NIcon, { component: isSuccess ? CheckmarkCircleIcon : HelpCircleIcon }),
         default: () => isSuccess ? '已整理' : '未识别'
@@ -340,8 +352,13 @@ const columns = computed(() => [
     title: '名称演变 (原文件 ➔ 整理后)',
     key: 'name_evolution',
     render(row) {
+      // ★ 新增：如果是子节点，增加左侧缩进和树形边框线
+      const childStyle = row.isChild 
+        ? 'padding-left: 20px; border-left: 2px solid rgba(144, 147, 153, 0.25); margin-left: 6px;' 
+        : '';
+
       return h('div', { 
-        style: 'display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 300px;' 
+        style: `display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 300px; ${childStyle}` 
       }, [
         h(NText, { 
           strong: row.isGroup, 
@@ -448,7 +465,6 @@ const paginationReactive = reactive({
     paginationReactive.pageSize = pageSize;
     paginationReactive.page = 1;
   },
-  // 优雅的提示语，告诉用户当前条数是折叠后的
   prefix({ itemCount }) {
     return `共 ${itemCount} 项 (剧集包按1项计)`;
   }
@@ -461,7 +477,7 @@ const fetchRecords = async () => {
     const res = await axios.get('/api/p115/records', {
       params: {
         page: 1,
-        per_page: 5000, // 足够大的数值，拉取到前端合并
+        per_page: 5000, 
         search: searchQuery.value,
         status: statusFilter.value,
         cid: categoryFilter.value
@@ -469,8 +485,6 @@ const fetchRecords = async () => {
     });
     tableData.value = res.data.items;
     stats.value = res.data.stats;
-    
-    // 每次获取新数据后，重置回第一页
     paginationReactive.page = 1;
   } catch (error) {
     message.error('获取整理记录失败');
@@ -520,7 +534,7 @@ const openEditModal = (row) => {
     media_type: row.media_type || 'movie',
     season_num: defaultSeason,
     target_cid: row.target_cid || null,
-    batch_mode: 'merge' // 单个文件默认 merge
+    batch_mode: 'merge'
   };
   showEditModal.value = true;
 };
@@ -529,7 +543,6 @@ const openBatchEditModal = () => {
   const ids = realSelectedIds.value;
   if (!ids.length) return;
   
-  // ★ 智能预判：如果选中的文件都已经有 TMDb ID，则默认选中“保持原ID重新分类”
   const selectedRows = tableData.value.filter(row => ids.includes(row.id));
   const allHaveTmdbId = selectedRows.every(row => row.tmdb_id);
 
@@ -566,7 +579,6 @@ const submitCorrection = async () => {
         target_cid: editForm.value.target_cid
       };
 
-      // ★ 核心逻辑：如果是批量重新分类，从原表格数据中提取各自的 TMDb ID
       if (isBatchReclassify) {
         const row = tableData.value.find(r => r.id === id);
         if (!row || !row.tmdb_id) {
@@ -576,7 +588,6 @@ const submitCorrection = async () => {
         payload.media_type = row.media_type || 'movie';
         payload.season_num = null; 
       } else {
-        // 否则使用表单填写的统一 ID
         payload.tmdb_id = editForm.value.tmdb_id;
         payload.media_type = editForm.value.media_type;
         payload.season_num = editForm.value.season_num;
@@ -662,5 +673,17 @@ onMounted(() => {
 .stat-card:hover {
   transform: translateY(-2px);
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* ★ 新增：弱化子节点行的背景色，使其看起来像附属品 */
+:deep(.is-child-row td) {
+  background-color: rgba(0, 0, 0, 0.015) !important;
+}
+
+/* 适配暗黑模式下的子节点弱化背景 */
+@media (prefers-color-scheme: dark) {
+  :deep(.is-child-row td) {
+    background-color: rgba(255, 255, 255, 0.02) !important;
+  }
 }
 </style>
