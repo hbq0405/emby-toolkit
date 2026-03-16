@@ -59,12 +59,10 @@ SYNDROME_API_LOCK = Semaphore(1)
 
 def _process_single_mp_file(file_info):
     """处理 MP 单文件上传 (直接整理，不轮询，精准传参)"""
-    logger.info(f"  ⏳ [MP上传] 等待 115 后端数据同步 (3秒)...")
-    sleep(3)
     client = P115Service.get_client()
     if not client: return
 
-    logger.info(f"  ⏳ [MP上传] 开始整理: {file_info['name']} -> ID:{file_info['tmdb_id']}")
+    # logger.info(f"  ⏳ [MP上传] 开始整理: {file_info['name']} -> ID:{file_info['tmdb_id']}")
 
     try:
         organizer = SmartOrganizer(client, file_info['tmdb_id'], file_info['media_type'], file_info['title'])
@@ -850,7 +848,7 @@ def emby_webhook():
                     'season_num': begin_season,
                     'episode_num': begin_episode
                 }
-                logger.info(f"  🚀 [MP上传] 收到文件: {file_name}")
+                logger.info(f"  🚀 [MP上传] 收到文件: {file_name}，开始整理...")
                 spawn(_process_single_mp_file, file_info)
                 return jsonify({"status": "processing_single_file"}), 200
             else:
