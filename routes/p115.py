@@ -507,7 +507,7 @@ def create_115_directory():
 def handle_sorting_rules():
     """管理 115 分类规则"""
     if request.method == 'GET':
-        raw_rules = settings_db.get_setting(constants.DB_KEY_115_SORTING_RULES)
+        raw_rules = settings_db.get_setting('p115_sorting_rules')
         rules = []
         if raw_rules:
             if isinstance(raw_rules, list):
@@ -588,7 +588,7 @@ def handle_sorting_rules():
                         if not rule.get('category_path'):
                             rule['category_path'] = rule.get('dir_name', '')
         
-        settings_db.save_setting(constants.DB_KEY_115_SORTING_RULES, rules)
+        settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
 
@@ -774,7 +774,7 @@ def replace_strm_files():
 def handle_rename_config():
     """管理 115 自定义重命名独立配置"""
     if request.method == 'GET':
-        config = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {}
+        config = settings_db.get_setting('p115_rename_config') or {}
         # 提供默认值，确保前端始终有完整的数据结构
         defaults = {
             "keep_original_name": False,   
@@ -791,7 +791,7 @@ def handle_rename_config():
     
     if request.method == 'POST':
         new_config = request.json
-        settings_db.save_setting(constants.DB_KEY_115_RENAME_CONFIG, new_config)
+        settings_db.save_setting('p115_rename_config', new_config)
         return jsonify({"success": True, "message": "重命名规则已保存"})
     
 @p115_bp.route('/custom_strm_regex', methods=['GET', 'POST'])

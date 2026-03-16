@@ -937,7 +937,7 @@ class P115DeleteBuffer:
         save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
         if save_path: protected_cids.add(str(save_path))
         
-        raw_rules = settings_db.get_setting(constants.DB_KEY_115_SORTING_RULES)
+        raw_rules = settings_db.get_setting('p115_sorting_rules')
         if raw_rules:
             rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
             for rule in rules:
@@ -1016,13 +1016,13 @@ class SmartOrganizer:
 
         self.raw_metadata = self._fetch_raw_metadata()
         self.details = self.raw_metadata
-        self.rename_config = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {
+        self.rename_config = settings_db.get_setting('p115_rename_config') or {
             "main_title_lang": "zh", "main_year_en": True, "main_tmdb_fmt": "{tmdb=ID}",
             "season_fmt": "Season {02}", "file_title_lang": "zh", "file_year_en": False,
             "file_tmdb_fmt": "none", "file_params_en": True, "file_sep": " - ",
             "strm_url_fmt": "standard"
         }
-        raw_rules = settings_db.get_setting(constants.DB_KEY_115_SORTING_RULES)
+        raw_rules = settings_db.get_setting('p115_sorting_rules')
         self.rules = []
         
         if raw_rules:
@@ -2438,7 +2438,7 @@ class SmartOrganizer:
                                             relative_category_path = category_rule.get('dir_name', '未识别')
                                             
                                         category_rule['category_path'] = relative_category_path
-                                        settings_db.save_setting(constants.DB_KEY_115_SORTING_RULES, self.rules)
+                                        settings_db.save_setting('p115_sorting_rules', self.rules)
                                         
                                     except Exception as e:
                                         relative_category_path = category_rule.get('dir_name', '未识别')
@@ -3116,7 +3116,7 @@ def task_sync_115_directory_tree(processor=None):
         update_progress(100, "115 客户端未初始化，任务结束。")
         return
 
-    raw_rules = settings_db.get_setting(constants.DB_KEY_115_SORTING_RULES)
+    raw_rules = settings_db.get_setting('p115_sorting_rules')
     if not raw_rules: 
         update_progress(100, "未配置分类规则，无需同步。")
         return
@@ -3278,14 +3278,14 @@ def task_full_sync_strm_and_subs(processor=None):
         client = P115Service.get_client()
         if not client: return
 
-        raw_rules = settings_db.get_setting(constants.DB_KEY_115_SORTING_RULES)
+        raw_rules = settings_db.get_setting('p115_sorting_rules')
         if not raw_rules: 
             update_progress(100, "错误：未配置分类规则！")
             return
         rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
 
         # 获取重命名配置，用于判断 STRM 直链是否需要带文件名
-        rename_config = settings_db.get_setting(constants.DB_KEY_115_RENAME_CONFIG) or {}
+        rename_config = settings_db.get_setting('p115_rename_config') or {}
 
         # =================================================================
         # 阶段 1: 加载规则与本地目录树缓存到内存 (耗时: 毫秒级)
@@ -3624,7 +3624,7 @@ class WebhookDeleteBuffer:
             save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
             if save_path: protected_cids.add(str(save_path))
 
-            raw_rules = settings_db.get_setting(constants.DB_KEY_115_SORTING_RULES)
+            raw_rules = settings_db.get_setting('p115_sorting_rules')
             if raw_rules:
                 rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
                 for rule in rules:

@@ -250,18 +250,6 @@ def api_save_config():
         
         logger.info(f"  ➜ 收到新的配置数据，准备全面净化并保存...")
 
-        # =====================================================================
-        # ★★★ 核心修复：拦截并剔除数据库专属的巨型 JSON 配置 ★★★
-        # 防止这些巨无霸被写入 config.ini 导致保存卡死一两分钟！
-        # =====================================================================
-        keys_to_exclude = [
-            "p115_sorting_rules", 
-            "p115_rename_config"
-        ]
-        for key in keys_to_exclude:
-            new_config_data.pop(key, None)
-        # =====================================================================
-
         # 1. 提取Emby连接信息，准备获取“白名单”
         emby_url = new_config_data.get('emby_server_url')
         emby_api_key = new_config_data.get('emby_api_key')
@@ -297,8 +285,6 @@ def api_save_config():
                     logger.info(f"配置净化 (虚拟库): 已自动移除 {len(removed_ids)} 个无效ID: {removed_ids}。")
                 new_config_data['proxy_native_view_selection'] = cleaned_ids
         
-        # ▲▲▲ 净化逻辑结束 ▲▲▲
-
         save_config_and_reload(new_config_data)  
         
         logger.debug("API /api/config (POST): 全面净化后的配置已成功传递给保存函数。")
