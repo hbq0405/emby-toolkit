@@ -94,21 +94,23 @@
       <!-- Tab 4: 原语言 -->
       <n-tab-pane name="languages" tab="原语言">
         <n-alert type="info" :bordered="false" class="mb-4">
-          配置语言代码映射。用于筛选器的语言选项。
+          配置语言代码映射。用于筛选器的语言选项。<b>别名</b>可用于兼容TMDb的历史遗留代码（如 cn 和 yue）。
         </n-alert>
         <div class="list-header">
           <div class="col-handle"></div>
           <div class="col-label">中文名称</div>
           <div class="col-en">ISO 代码 (如 en)</div>
-          <div class="col-empty"></div>
+          <!-- ★★★ 核心修改：把 col-empty 换成别名输入框 ★★★ -->
+          <div class="col-extra">英文别名 (逗号分隔)</div>
           <div class="col-action">操作</div>
         </div>
         <div ref="languageListRef" class="sortable-list">
           <div v-for="(item, index) in languageList" :key="item.id" class="list-item">
             <div class="col-handle drag-handle"><n-icon :component="DragIcon" /></div>
-            <div class="col-label"><n-input v-model:value="item.label" placeholder="例如：英语" /></div>
-            <div class="col-en"><n-input v-model:value="item.value" placeholder="en" /></div>
-            <div class="col-empty"></div>
+            <div class="col-label"><n-input v-model:value="item.label" placeholder="例如：粤语" /></div>
+            <div class="col-en"><n-input v-model:value="item.value" placeholder="cn" /></div>
+            <!-- ★★★ 核心修改：绑定 item.aliases ★★★ -->
+            <div class="col-extra"><n-input v-model:value="item.aliases" placeholder="yue, cmn" /></div>
             <div class="col-action">
               <n-button circle text type="error" @click="removeItem(languageList, index)"><n-icon :component="DeleteIcon" /></n-button>
             </div>
@@ -337,11 +339,9 @@ const processBackendData = (data, type) => {
   return list.map(item => {
     const base = { id: generateId(), label: item.label || '' };
     
-    if (type === 'country') {
+    if (type === 'country' || type === 'language') {
       base.value = item.value || '';
       base.aliases = Array.isArray(item.aliases) ? item.aliases.join(', ') : (item.aliases || '');
-    } else if (type === 'language') {
-      base.value = item.value || '';
     } else if (type === 'simple') {
       // simple logic
     } else if (type === 'studio') {
@@ -380,11 +380,9 @@ const processFrontendData = (list, type) => {
     if (!item.label || !item.label.trim()) return null;
     const base = { label: item.label.trim() };
 
-    if (type === 'country') {
+    if (type === 'country' || type === 'language') {
       base.value = item.value ? item.value.trim() : '';
       base.aliases = item.aliases ? item.aliases.split(',').map(s => s.trim()).filter(s => s) : [];
-    } else if (type === 'language') {
-      base.value = item.value ? item.value.trim() : '';
     } else if (type === 'simple') {
       // simple logic
     } else if (type === 'studio') {
@@ -498,10 +496,8 @@ const fetchData = async () => {
 
 const addItem = (list, type = 'normal') => {
   const item = { id: generateId(), label: '' };
-  if (type === 'country') {
+  if (type === 'country' || type === 'language') {
     item.value = ''; item.aliases = '';
-  } else if (type === 'language') {
-    item.value = '';
   } else if (type === 'simple') {
     // 仅需要 label
   } else if (list === studioList) { 

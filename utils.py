@@ -242,6 +242,9 @@ DEFAULT_KEYWORD_MAPPING = [
     {"label": "仙侠", "en": ["xianxia"], "ids": [234890]},
     {"label": "恐怖", "en": ["horror", "clown", "macabre"], "ids": ["315058", "3199", "162810"]},
     {"label": "惊悚", "en": ["thriller", "gruesome"], "ids": ["10526", "186416"]},
+    {"label": "赛车", "en": ["car race", "street-race"], "company_ids": ["830", "9666"]},
+    {"label": "怪物", "en": ["cmonster"], "company_ids": [1299]},
+    {"label": "特工", "en": ["secret agent"], "company_ids": [4289]},
 ]
 
 # --- 工作室预设表 ---
@@ -330,10 +333,11 @@ DEFAULT_COUNTRY_MAPPING = [
     {"label": "芬兰", "value": "FI", "aliases": ["Finland"]},
     {"label": "波兰", "value": "PL", "aliases": ["Poland"]},
 ]
+
 # --- 语言预设表 ---
 DEFAULT_LANGUAGE_MAPPING = [
-    {"label": "国语", "value": "zh"},
-    {"label": "粤语", "value": ["cn", "yue"]}, 
+    {"label": "国语", "value": "zh", "aliases": ["cmn"]}, 
+    {"label": "粤语", "value": "cn", "aliases": ["yue"]},
     {"label": "英语", "value": "en"},
     {"label": "日语", "value": "ja"},
     {"label": "韩语", "value": "ko"},
