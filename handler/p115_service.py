@@ -3383,6 +3383,7 @@ def task_full_sync_strm_and_subs(processor=None):
         # =================================================================
         # 阶段 2: 分类目录级全局拉取 (耗时: 秒级/分钟级)
         # =================================================================
+        sync_has_errors = False
         valid_local_files = set()
         files_generated = 0
         subs_downloaded = 0
@@ -3409,6 +3410,10 @@ def task_full_sync_strm_and_subs(processor=None):
                     try:
                         # ★ 核心：指定 cid 并传入 type，强制 115 在该分类下进行全局递归检索！
                         res = client.fs_files({'cid': target_cid, 'type': f_type, 'limit': limit, 'offset': offset, 'record_open_time': 0})
+                        if not res.get('state') and res.get('code'):
+                            logger.error(f"  ❌ API 返回异常状态 (可能触发流控): {res}")
+                            sync_has_errors = True
+                            break
                         data = res.get('data', [])
                         if not data: break
                         
@@ -3513,6 +3518,7 @@ def task_full_sync_strm_and_subs(processor=None):
                         
                     except Exception as e:
                         logger.error(f"  ❌ 全局拉取异常 (cid={target_cid}, type={f_type}): {e}")
+                        sync_has_errors = True
                         break
 
         logger.info(f"  ✅ 增量同步完成！新增/更新 STRM: {files_generated} 个, 下载字幕: {subs_downloaded} 个。")
@@ -3521,8 +3527,9 @@ def task_full_sync_strm_and_subs(processor=None):
         # 阶段 3: 本地失效文件清理 (耗时: 秒级)
         # =================================================================
         if enable_cleanup:
-            # 安全锁：如果本次拉取完全失败（没有任何有效文件），拒绝执行清理，防止误删
-            if not valid_local_files and files_generated == 0:
+            if sync_has_errors:
+                logger.warning("  🛑 致命警告：本次同步过程中发生 API 异常或触发 115 流控！为防止灾难性误删，已强制跳过本地清理阶段！")
+            elif not valid_local_files and files_generated == 0:
                 logger.warning("  ⚠️ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
             else:
                 update_progress(90, "  🧹 正在比对并清理本地失效文件与空壳目录...")
@@ -4088,9 +4095,10 @@ def task_sync_music_library(processor=None):
     aux_downloaded = 0
     dirs_scanned = 0
     valid_local_files = set() 
+    sync_has_errors = False
 
     def _recursive_sync(current_cid, current_local_path):
-        nonlocal files_generated, files_skipped, aux_downloaded, dirs_scanned
+        nonlocal files_generated, files_skipped, aux_downloaded, dirs_scanned, sync_has_errors
         
         dirs_scanned += 1
         display_path = os.path.basename(current_local_path) or music_root_name
@@ -4107,6 +4115,10 @@ def task_sync_music_library(processor=None):
 
             try:
                 res = client.fs_files({'cid': current_cid, 'limit': limit, 'offset': offset, 'record_open_time': 0})
+                if not res.get('state') and res.get('code'):
+                    logger.error(f"  ❌ API 返回异常状态 (可能触发流控): {res}")
+                    sync_has_errors = True
+                    break
                 data = res.get('data', [])
                 if not data: break
                 
@@ -4203,6 +4215,7 @@ def task_sync_music_library(processor=None):
                 offset += limit
             except Exception as e:
                 logger.error(f"同步音乐目录异常 (CID:{current_cid}): {e}")
+                sync_has_errors = True
                 break
 
     _recursive_sync(music_cid, music_local_base)
@@ -4214,7 +4227,9 @@ def task_sync_music_library(processor=None):
     cleaned_dirs = 0
     
     if enable_cleanup:
-        if not valid_local_files and files_generated == 0 and files_skipped == 0:
+        if sync_has_errors:
+            logger.warning("  🛑 致命警告：音乐库同步过程中发生 API 异常或触发流控！为防止灾难性误删，已强制跳过本地清理阶段！")
+        elif not valid_local_files and files_generated == 0 and files_skipped == 0:
             logger.warning("  ⚠️ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
         else:
             update_progress(90, "  🧹 正在比对并清理本地失效文件与空壳目录...")
