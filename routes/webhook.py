@@ -44,7 +44,7 @@ webhook_bp = Blueprint('webhook_bp', __name__)
 # --- 模块级变量 ---
 WEBHOOK_BATCH_QUEUE = collections.deque()
 WEBHOOK_BATCH_LOCK = threading.Lock()
-WEBHOOK_BATCH_DEBOUNCE_TIME = 5
+WEBHOOK_BATCH_DEBOUNCE_TIME = 30
 WEBHOOK_BATCH_DEBOUNCER = None
 
 UPDATE_DEBOUNCE_TIMERS = {}
@@ -477,12 +477,49 @@ def _enqueue_webhook_event(item_id, item_name, item_type):
         else:
             logger.debug("  ➜ [队列] 批量处理计时器运行中，等待合并。")
 
+def _dispatch_item(item_id, item_name, item_type):
+    """
+    智能分发媒体项：
+    - 电影 (Movie)：直接交由核心处理器处理，跳过队列，加快入库速度。
+    - 剧集/分集 (Series/Episode)：进入防抖队列，合并处理，避免整剧入库时 TG 通知轰炸。
+    """
+    if item_type == 'Movie':
+        logger.info(f"  ➜ [分发] 电影 '{item_name}' 跳过防抖队列，直接分派处理任务。")
+        
+        # 1. 检查是否已处理
+        is_already_processed = item_id in extensions.media_processor_instance.processed_items_cache
+
+        # 2. 检查数据库是否在线 (处理“僵尸数据”)
+        if is_already_processed:
+            is_online_in_db = media_db.is_emby_id_in_library(item_id)
+            if not is_online_in_db:
+                logger.info(f"  ➜ ⚠️ 缓存命中 '{item_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
+                if item_id in extensions.media_processor_instance.processed_items_cache:
+                    del extensions.media_processor_instance.processed_items_cache[item_id]
+                is_already_processed = False
+        
+        task_name_prefix = "Webhook追更" if is_already_processed else "Webhook入库"
+        
+        # 直接提交给任务管理器，不经过 WEBHOOK_BATCH_QUEUE
+        task_manager.submit_task(
+            _handle_full_processing_flow,
+            task_name=f"{task_name_prefix}: {item_name}",
+            processor_type='media',
+            item_id=item_id,
+            force_full_update=False,
+            new_episode_ids=None,
+            is_new_item=not is_already_processed
+        )
+    else:
+        # 剧集、分集等进入防抖队列，等待合并
+        _enqueue_webhook_event(item_id, item_name, item_type)
+
 def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=None):
     """
     预检视频流数据 + P115Center 神医联动 (完美闭环版)
     """
     if item_type not in ['Movie', 'Episode']:
-        _enqueue_webhook_event(item_id, item_name, item_type)
+        _dispatch_item(item_id, item_name, item_type)
         return
 
     logger.info(f"  ➜ [预检] 开始处理 '{item_name}' (ID:{item_id}) 的媒体信息...")
@@ -670,7 +707,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
             logger.error(f"  ❌ [P115Center] 联动异常: {e}")
 
     # =========================================================
-    # 2. 走原来的物理文件检查逻辑 (此时神医应该已经生成了文件)
+    # 2. 物理文件检查逻辑 
     # =========================================================
     for i in range(STREAM_CHECK_MAX_RETRIES):
         try:
@@ -682,8 +719,9 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     has_valid_video_stream = True
             
             if has_valid_video_stream:
-                logger.info(f"  ➜ [预检] 成功检测到 '{item_name}' 的媒体信息文件，加入处理队列。")
-                _enqueue_webhook_event(item_id, item_name, item_type)
+                logger.info(f"  ➜ [预检] 成功检测到 '{item_name}' 的媒体信息文件，准备分发。")
+                # ★ 修改：改为调用智能分发
+                _dispatch_item(item_id, item_name, item_type)
                 return
             
             logger.debug(f"  ➜ [预检] '{item_name}' 暂无媒体信息文件，等待神医提取 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
@@ -694,8 +732,9 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
             sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
     # 超时强制入库
-    logger.warning(f"  ➜ [预检] 超时！未检测到 '{item_name}' 的媒体信息文件。强制加入队列。")
-    _enqueue_webhook_event(item_id, item_name, item_type)
+    logger.warning(f"  ➜ [预检] 超时！未检测到 '{item_name}' 的媒体信息文件。强制分发。")
+    # ★ 修改：改为调用智能分发
+    _dispatch_item(item_id, item_name, item_type)
 
 # --- Webhook 路由 ---
 @webhook_bp.route('/webhook/emby', methods=['POST'])
