@@ -288,13 +288,24 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
             # 逻辑分支 1: 剧集 / 季
             # ==================================================================
             if item_type == 'Series' or item_type == 'Season':
-                # 1. ID 和 季号 修正
-                if item_type == 'Season' and season_number is None:
-                    season_info = media_db.get_media_details(str(tmdb_id), 'Season')
-                    if season_info:
-                        season_number = season_info.get('season_number')
-                        parent_id = season_info.get('parent_series_tmdb_id')
-                        if parent_id: tmdb_id = parent_id 
+                # 1. ★★★ 核心修复：ID 和 季号 修正 ★★★
+                if item_type == 'Season':
+                    # 尝试从请求中获取父剧集 ID (统一订阅页面传过来的是 series_tmdb_id 或 parent_series_tmdb_id)
+                    parent_id = req.get('series_tmdb_id') or req.get('parent_series_tmdb_id')
+                    
+                    # 如果请求里没有，去数据库查 (说明传入的 tmdb_id 可能是季 ID)
+                    if not parent_id:
+                        season_info = media_db.get_media_details(str(tmdb_id), 'Season')
+                        if season_info:
+                            parent_id = season_info.get('parent_series_tmdb_id')
+                            if season_number is None:
+                                season_number = season_info.get('season_number')
+                    
+                    # 如果找到了父剧集 ID，且与当前 tmdb_id 不同，说明传入的是季 ID
+                    # 必须将其替换为父剧集 ID，因为后续的 check_series_completion 和 MP 订阅都需要剧集 ID
+                    if parent_id and str(parent_id) != str(tmdb_id):
+                        logger.debug(f"  ➜ [ID修正] 将季 ID {tmdb_id} 替换为父剧集 ID {parent_id}")
+                        tmdb_id = parent_id
                 
                 # 2. 处理单季订阅 (最常见情况)
                 if season_number is not None:
@@ -367,6 +378,7 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                 # 更新数据库状态 (Series 类型在 _subscribe_full_series_with_logic 里处理了)
                 if item_type != 'Series':
                     # 如果是季，需要构建正确的 ID (例如 tmdbid_S1)
+                    # 这里的 tmdb_id 已经被修正为 Series ID，所以需要重新构建 Season ID
                     target_id_for_update = str(tmdb_id)
                     if item_type == 'Season' and season_number is not None:
                          # 尝试查询真实的季 ID，查不到则用拼接 ID
