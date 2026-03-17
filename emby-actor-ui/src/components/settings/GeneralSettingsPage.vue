@@ -395,7 +395,7 @@
                         <n-button type="primary" ghost @click="openFolderSelector('save_path', configModel.p115_save_path_cid)">选择</n-button>
                       </n-input-group>
                       <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">MP下载或NULLBR转存的初始目录</n-text>
+                        <n-text depth="3" style="font-size:0.8em;">MP下载或网盘转存的初始目录</n-text>
                       </template>
                     </n-form-item>
 

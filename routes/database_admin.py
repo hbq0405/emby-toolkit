@@ -13,7 +13,6 @@ import config_manager
 import task_manager
 import constants
 from database import log_db, maintenance_db, settings_db
-import handler.nullbr as nullbr_handler
 
 # 导入共享模块
 import extensions
