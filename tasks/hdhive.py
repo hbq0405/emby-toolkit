@@ -24,7 +24,7 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
     share_url = unlock_data.get("url")
     access_code = unlock_data.get("access_code")
     
-    match = re.search(r'115\.com/s/([a-zA-Z0-9]+)', share_url)
+    match = re.search(r'(?:115\.com|115cdn\.com)/s/([a-zA-Z0-9]+)', share_url)
     if not match:
         logger.error(f"  ❌ 无法从链接中提取 115 分享码: {share_url}")
         return False
