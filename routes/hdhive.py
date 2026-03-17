@@ -83,3 +83,23 @@ def trigger_download():
     ).start()
     
     return jsonify({"success": True, "message": f"已向 115 发送转存指令，后台正在处理！"})
+
+@hdhive_bp.route('/checkin', methods=['POST'])
+@admin_required
+def trigger_checkin():
+    """触发影巢签到"""
+    data = request.json
+    is_gambler = data.get('is_gambler', False)
+    
+    api_key = settings_db.get_setting('hdhive_api_key')
+    if not api_key:
+        return jsonify({"success": False, "message": "请先配置影巢 API Key"}), 400
+        
+    client = HDHiveClient(api_key)
+    res = client.checkin(is_gambler)
+    
+    if res.get("success"):
+        return jsonify({"success": True, "message": res.get("message", "签到成功！")})
+    else:
+        # 可能是已经签到过了，或者其他错误
+        return jsonify({"success": False, "message": res.get("message", "签到失败")})

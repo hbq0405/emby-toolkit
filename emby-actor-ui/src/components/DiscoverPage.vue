@@ -16,22 +16,36 @@
           </n-space>
         </n-space>
         
-        <!-- ★ 终极修复：放弃花里胡哨的动画，直接用 v-if 暴力渲染 -->
         <div v-if="hdhiveUserInfo" style="margin-top: 16px;">
           <n-divider style="margin: 12px 0;" />
-          <n-space align="center" :size="24" :wrap="isMobile">
-            <n-tag type="success" :bordered="false">
-              <template #icon><n-icon :component="PersonIcon" /></template>
-              用户: {{ hdhiveUserInfo.nickname || '未知用户' }}
-            </n-tag>
-            <n-tag type="warning" :bordered="false">
-              <template #icon><n-icon :component="StarIcon" /></template>
-              积分: {{ hdhiveUserInfo.user_meta?.points || 0 }}
-            </n-tag>
-            <n-tag type="info" :bordered="false" v-if="hdhiveQuotaInfo">
-              <template #icon><n-icon :component="TicketIcon" /></template>
-              今日剩余请求: {{ hdhiveQuotaInfo.endpoint_remaining ?? '无限' }}
-            </n-tag>
+          <n-space align="center" justify="space-between" :wrap="isMobile">
+            <!-- 左侧：用户信息 -->
+            <n-space align="center" :size="24">
+              <n-tag type="success" :bordered="false">
+                <template #icon><n-icon :component="PersonIcon" /></template>
+                用户: {{ hdhiveUserInfo.nickname || '未知用户' }}
+              </n-tag>
+              <n-tag type="warning" :bordered="false">
+                <template #icon><n-icon :component="StarIcon" /></template>
+                积分: {{ hdhiveUserInfo.user_meta?.points || '未知 (需Premium)' }}
+              </n-tag>
+              <n-tag type="info" :bordered="false" v-if="hdhiveQuotaInfo">
+                <template #icon><n-icon :component="TicketIcon" /></template>
+                今日剩余请求: {{ hdhiveQuotaInfo.endpoint_remaining ?? '无限' }}
+              </n-tag>
+            </n-space>
+            
+            <!-- 右侧：签到按钮 -->
+            <n-space align="center">
+              <n-button size="small" type="primary" secondary @click="doHDHiveCheckin(false)" :loading="checkingIn">
+                <template #icon><n-icon><CalendarIcon/></n-icon></template>
+                每日签到
+              </n-button>
+              <n-button size="small" type="error" secondary @click="doHDHiveCheckin(true)" :loading="checkingIn">
+                <template #icon><n-icon><DiceIcon/></n-icon></template>
+                赌狗签到
+              </n-button>
+            </n-space>
           </n-space>
         </div>
       </n-card>
@@ -366,15 +380,16 @@
       </n-space>
     </n-modal>
 
-    <!-- ★★★ 新增：影巢资源列表模态框 ★★★ -->
+    <!-- ★★★ 影巢资源列表模态框 ★★★ -->
     <n-modal v-model:show="showHDHiveResourceModal" preset="card" :title="`影巢资源: ${currentHDHiveMedia?.title || currentHDHiveMedia?.name}`" style="width: 800px; max-width: 95%;">
       <n-spin :show="loadingHDHiveResources">
         <n-empty v-if="hdhiveResources.length === 0 && !loadingHDHiveResources" description="影巢暂无该资源，请尝试使用 MoviePilot 常规订阅。" />
         <n-space vertical v-else>
-          <n-card v-for="res in hdhiveResources" :key="res.slug" size="small" hoverable style="background: #1e1e24; border-color: #333;">
+          <n-card v-for="res in hdhiveResources" :key="res.slug" size="small" hoverable>
             <div style="display: flex; justify-content: space-between; align-items: center;">
               <div>
-                <div style="font-weight: bold; font-size: 15px; margin-bottom: 4px; color: #e0e0e0;">{{ res.title || '未命名资源' }}</div>
+                <!-- 去掉写死的白色字体 -->
+                <div style="font-weight: bold; font-size: 15px; margin-bottom: 4px;">{{ res.title || '未命名资源' }}</div>
                 <n-space size="small" style="font-size: 12px;">
                   <n-tag size="small" type="info" :bordered="false">{{ res.share_size || '未知大小' }}</n-tag>
                   <n-tag size="small" type="success" :bordered="false" v-if="res.video_resolution?.length">{{ res.video_resolution.join(', ') }}</n-tag>
@@ -412,8 +427,7 @@ import {
   NInputNumber, NSpin, NGrid, NGi, NButton, NThing, useMessage, NIcon, 
   NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4, NH3, NTooltip, NModal, NTag
 } from 'naive-ui';
-// ★ 引入 ListIcon
-import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon, ListOutline as ListIcon, CloudDownloadOutline as CloudDownloadIcon, PersonOutline as PersonIcon, TicketOutline as TicketIcon } from '@vicons/ionicons5';
+import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon, ListOutline as ListIcon, CloudDownloadOutline as CloudDownloadIcon, PersonOutline as PersonIcon, TicketOutline as TicketIcon, CalendarOutline as CalendarIcon } from '@vicons/ionicons5';
 const authStore = useAuthStore();
 const message = useMessage();
 const router = useRouter(); 
@@ -724,6 +738,28 @@ const fetchHDHiveConfig = async () => {
     }
   } catch (e) {
     console.error("获取影巢配置失败", e);
+  }
+};
+
+const checkingIn = ref(false);
+
+const doHDHiveCheckin = async (isGambler) => {
+  if (!hdhiveApiKey.value) return message.warning("请先配置 API Key");
+  
+  checkingIn.value = true;
+  try {
+    const res = await axios.post('/api/hdhive/checkin', { is_gambler: isGambler });
+    if (res.data.success) {
+      // 签到成功，弹出后端返回的 message（里面包含本次获得的积分）
+      message.success(res.data.message, { duration: 5000 });
+    } else {
+      // 可能是已经签到过了
+      message.warning(res.data.message);
+    }
+  } catch (e) {
+    message.error("签到请求失败");
+  } finally {
+    checkingIn.value = false;
   }
 };
 

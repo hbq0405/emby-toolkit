@@ -135,3 +135,17 @@ class HDHiveClient:
         except Exception as e:
             logger.error(f"HDHive 获取配额失败: {e}")
             return None
+        
+    def checkin(self, is_gambler=False):
+        """
+        每日签到 (支持赌狗模式)
+        """
+        try:
+            url = f"{self.BASE_URL}/checkin"
+            payload = {"is_gambler": is_gambler}
+            # 签到接口是 POST 请求
+            res = requests.post(url, headers=self.headers, json=payload, timeout=10).json()
+            return res
+        except Exception as e:
+            logger.error(f"HDHive 签到失败: {e}")
+            return {"success": False, "message": str(e)}
