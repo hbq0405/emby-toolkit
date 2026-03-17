@@ -1061,7 +1061,7 @@ def emby_webhook():
     else:
         original_item_name = raw_name
     
-    trigger_types = ["Movie", "Series", "Season", "Episode", "BoxSet", "Audio"]
+    trigger_types = ["Movie", "Series", "Season", "Episode", "BoxSet"]
     if not (original_item_id and original_item_type in trigger_types):
         logger.debug(f"  ➜ Webhook事件 '{event_type}' (项目: {original_item_name}, 类型: {original_item_type}) 被忽略。")
         return jsonify({"status": "event_ignored_no_id_or_wrong_type"}), 200
@@ -1142,27 +1142,6 @@ def emby_webhook():
             if lib_id not in allowed_libs and original_item_type != "Audio":
                 logger.trace(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' (ID: {lib_id}) 不在处理范围内，已跳过。")
                 return jsonify({"status": "ignored_library"}), 200
-
-    # ======================================================================
-    # ★★★ 处理音乐 (Audio) 入库事件 ★★★
-    # ======================================================================
-    if event_type in ["item.add", "library.new"] and original_item_type == "Audio":
-        logger.info(f"  🎵 [音乐入库] 检测到音频文件 '{original_item_name}'，直接触发神医提取媒体信息...")
-        processor = extensions.media_processor_instance
-        
-        def _trigger_audio_info():
-            # 稍微等 2 秒，确保 Emby 数据库已经把这个条目完全落盘
-            sleep(2)
-            emby.trigger_media_info_refresh(
-                original_item_id, 
-                processor.emby_url, 
-                processor.emby_api_key, 
-                processor.emby_user_id
-            )
-            
-        # 异步触发，绝不阻塞 Webhook 主线程
-        spawn(_trigger_audio_info)
-        return jsonify({"status": "audio_media_info_triggered", "item_id": original_item_id}), 202
 
     # ======================================================================
     # ★★★ 处理视频入库事件 (原有的逻辑保持不变) ★★★
