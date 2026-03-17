@@ -332,12 +332,12 @@
 
     <div ref="sentinel" style="height: 50px;"></div>
     
-    <!-- ★★★ 修改：季选择模态框 (加入影巢按钮) ★★★ -->
+    <!-- ★★★ 季选择模态框 (加入影巢按钮) ★★★ -->
     <n-modal v-model:show="showSeasonModal" preset="card" title="选择要订阅的季" style="width: 600px; max-width: 95%;">
       <n-spin :show="loadingSeasons">
         <div v-if="seasonList.length === 0 && !loadingSeasons" style="text-align: center; color: #888; padding: 20px;">未找到季信息</div>
         <n-space vertical v-else>
-          <n-card v-for="season in seasonList" :key="season.id" size="small" style="background: #222;">
+          <n-card v-for="season in seasonList" :key="season.id" size="small" hoverable>
             <div style="display: flex; align-items: center; gap: 12px;">
               <img v-if="season.poster_path" :src="`https://image.tmdb.org/t/p/w92${season.poster_path}`" style="width: 40px; border-radius: 4px;" />
               <div v-else style="width: 40px; height: 60px; background: #333; border-radius: 4px;"></div>
@@ -348,67 +348,24 @@
               <div style="display: flex; gap: 8px; align-items: center;">
                 <n-tag v-if="season.in_library" type="success" size="small">已入库</n-tag>
                 <template v-else>
-                  <!-- MP 常规订阅按钮 -->
+                  <!-- 仅保留 MP 常规订阅按钮 -->
                   <n-button size="small" type="primary" secondary @click="submitSeasonSubscription(season)" :loading="subscribingSeasonId === season.id" :disabled="season.subscription_status === 'SUBSCRIBED' || season.subscription_status === 'WANTED'">
                     <template #icon><n-icon><LightningIcon/></n-icon></template> MP订阅
-                  </n-button>
-                  <!-- 影巢秒传按钮 -->
-                  <n-button size="small" color="#f0a020" @click="openHDHiveResourceModal(currentSeriesForSearch, season.season_number)">
-                    <template #icon><n-icon><CloudDownloadIcon/></n-icon></template> 影巢秒传
                   </n-button>
                 </template>
               </div>
             </div>
           </n-card>
           <n-divider style="margin: 12px 0;" />
-          <n-button block type="primary" @click="submitAllSeasonsSubscription" :loading="subscribingAllSeasons">一键提交整剧到 MoviePilot</n-button>
-        </n-space>
-      </n-spin>
-    </n-modal>
-
-    <!-- ★★★ 新增：电影订阅方式选择模态框 ★★★ -->
-    <n-modal v-model:show="showMovieChoiceModal" preset="card" title="选择获取方式" style="width: 400px;">
-      <n-space vertical size="large">
-        <n-button block type="primary" size="large" secondary @click="submitMovieToMP">
-          <template #icon><n-icon size="20"><LightningIcon/></n-icon></template>
-          提交到 MoviePilot (常规挂机)
-        </n-button>
-        <n-button block color="#f0a020" size="large" secondary @click="openHDHiveResourceModal(currentMovieForChoice, null)">
-          <template #icon><n-icon size="20"><CloudDownloadIcon/></n-icon></template>
-          从 影巢 (HDHive) 极速秒传
-        </n-button>
-      </n-space>
-    </n-modal>
-
-    <!-- ★★★ 影巢资源列表模态框 ★★★ -->
-    <n-modal v-model:show="showHDHiveResourceModal" preset="card" :title="`影巢资源: ${currentHDHiveMedia?.title || currentHDHiveMedia?.name}`" style="width: 800px; max-width: 95%;">
-      <n-spin :show="loadingHDHiveResources">
-        <n-empty v-if="hdhiveResources.length === 0 && !loadingHDHiveResources" description="影巢暂无该资源，请尝试使用 MoviePilot 常规订阅。" />
-        <n-space vertical v-else>
-          <n-card v-for="res in hdhiveResources" :key="res.slug" size="small" hoverable>
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <div>
-                <!-- 去掉写死的白色字体 -->
-                <div style="font-weight: bold; font-size: 15px; margin-bottom: 4px;">{{ res.title || '未命名资源' }}</div>
-                <n-space size="small" style="font-size: 12px;">
-                  <n-tag size="small" type="info" :bordered="false">{{ res.share_size || '未知大小' }}</n-tag>
-                  <n-tag size="small" type="success" :bordered="false" v-if="res.video_resolution?.length">{{ res.video_resolution.join(', ') }}</n-tag>
-                  <n-tag size="small" type="warning" :bordered="false" v-if="res.source?.length">{{ res.source.join(', ') }}</n-tag>
-                  <span style="color: #888;" v-if="res.remark">{{ res.remark }}</span>
-                </n-space>
-              </div>
-              <div style="flex-shrink: 0; margin-left: 16px; text-align: right;">
-                <div style="font-size: 12px; color: #f0a020; margin-bottom: 4px;">
-                  <span v-if="res.already_owned">已解锁</span>
-                  <span v-else-if="res.unlock_points === 0 || res.unlock_points === null">免费</span>
-                  <span v-else>需 {{ res.unlock_points }} 积分</span>
-                </div>
-                <n-button type="primary" color="#f0a020" size="small" @click="downloadFromHDHive(res)" :loading="downloadingSlug === res.slug">
-                  一键转存
-                </n-button>
-              </div>
-            </div>
-          </n-card>
+          <n-space vertical>
+            <n-button block type="primary" @click="submitAllSeasonsSubscription" :loading="subscribingAllSeasons">
+              一键提交整剧到 MoviePilot
+            </n-button>
+            <n-button block color="#f0a020" secondary @click="openHDHiveResourceModal(currentSeriesForSearch, null)">
+              <template #icon><n-icon><CloudDownloadIcon/></n-icon></template>
+              从 影巢 (HDHive) 搜索整剧资源
+            </n-button>
+          </n-space>
         </n-space>
       </n-spin>
     </n-modal>
