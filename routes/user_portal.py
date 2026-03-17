@@ -53,6 +53,8 @@ def request_subscription():
     
     db_tmdb_id = tmdb_id # 默认用于数据库操作的 ID
     series_tmdb_id = tmdb_id # 默认的剧集 ID
+    series_name = item_name # 默认剧名
+    parent_media_info = None # 用于存储父剧集信息
     
     try:
         if item_type == 'Movie':
@@ -66,9 +68,10 @@ def request_subscription():
             }
         elif item_type == 'Series':
             details = tmdb.get_tv_details(int(tmdb_id), tmdb_api_key)
+            series_name = details.get('title') or details.get('name') or item_name
             media_info = {
                 'tmdb_id': tmdb_id, 'item_type': item_type,
-                'title': details.get('title') or details.get('name') or item_name,
+                'title': series_name,
                 'original_title': details.get('original_title') or details.get('original_name'),
                 'release_date': details.get('release_date') or details.get('first_air_date'),
                 'poster_path': details.get('poster_path'), 'overview': details.get('overview')
@@ -76,6 +79,7 @@ def request_subscription():
         elif item_type == 'Season':
             # 如果是季，tmdb_id 传过来的是父剧集的 ID
             details = tmdb.get_tv_details(int(tmdb_id), tmdb_api_key)
+            series_name = details.get('title') or details.get('name') or item_name
             season_details = next((s for s in details.get('seasons', []) if s['season_number'] == season_number), {})
             
             # 确定季的真实 ID，如果没有则用拼接 ID
@@ -84,7 +88,8 @@ def request_subscription():
             media_info = {
                 'tmdb_id': db_tmdb_id, 
                 'item_type': 'Season',
-                'title': season_details.get('name') or f"{details.get('name')} 第 {season_number} 季",
+                # ★★★ 强制拼接父剧名，防止 UI 显示 "未知剧集 第 1 季" ★★★
+                'title': f"{series_name} 第 {season_number} 季",
                 'release_date': season_details.get('air_date'),
                 'poster_path': season_details.get('poster_path') or details.get('poster_path'),
                 'parent_series_tmdb_id': tmdb_id,
@@ -92,11 +97,30 @@ def request_subscription():
                 'overview': season_details.get('overview')
             }
             
+            # ★★★ 构建父剧集信息，用于占位 ★★★
+            parent_media_info = {
+                'tmdb_id': tmdb_id,
+                'item_type': 'Series',
+                'title': series_name,
+                'original_title': details.get('original_title') or details.get('original_name'),
+                'release_date': details.get('first_air_date'),
+                'poster_path': details.get('poster_path'),
+                'overview': details.get('overview')
+            }
+            
         if not details:
             raise ValueError("无法从TMDb获取媒体详情")
     except Exception as e:
         logger.error(f"用户 {emby_username} 请求订阅时，获取TMDb详情失败 (ID: {tmdb_id}): {e}")
         return jsonify({"status": "error", "message": "无法获取媒体详情，请稍后再试。"}), 500
+
+    # ★★★ 核心修复：如果是季，必须先确保父剧集在数据库中存在占位符 ★★★
+    if item_type == 'Season' and parent_media_info:
+        request_db.set_media_status_none(
+            tmdb_ids=[tmdb_id],
+            item_type='Series',
+            media_info_list=[parent_media_info]
+        )
 
     if is_vip or is_emby_admin:
         log_user_type = "管理员" if is_emby_admin else "VIP 用户"
@@ -133,7 +157,6 @@ def request_subscription():
             new_status_for_frontend = 'approved'
 
     else:
-        # --- ★★★ 普通用户通道终极改造 ★★★ ---
         existing_status = request_db.get_global_request_status_by_tmdb_id(db_tmdb_id)
         if existing_status:
             message = "该项目正在等待审核。" if existing_status == 'pending' else "该项目已在订阅队列中。"
@@ -162,15 +185,14 @@ def request_subscription():
             logger.error(f"  ➜ 发送管理员审核通知时出错: {e}", exc_info=True)
 
     # 1. 【核心】后端直接触发“订阅直通车”
-    # 只有状态为 approved (即管理员/VIP且已上映) 时才立即触发
     if new_status_for_frontend == 'approved':
         logger.info(f"  ➜ [直通车] 为管理员/VIP '{emby_username}' 立即触发订阅任务: {media_info['title']}")
         
-        # 对于季，直通车任务需要的是父剧集的 ID
+        # ★★★ 核心修复：强制传递父剧集名称给 MP ★★★
         req_item = {
             'tmdb_id': series_tmdb_id if item_type == 'Season' else db_tmdb_id,
             'item_type': item_type,
-            'title': media_info['title'],
+            'title': series_name if item_type == 'Season' else media_info['title'],
             'user_id': emby_user_id,
             'season_number': season_number
         }
@@ -185,9 +207,7 @@ def request_subscription():
 
     # 2. 推荐池处理
     if new_status_for_frontend in ['approved', 'pending'] and item_type == 'Movie':
-        # 先移除
         settings_db.remove_item_from_recommendation_pool(db_tmdb_id)
-        # 再异步补货 (发后即忘)
         threading.Thread(target=check_and_replenish_pool).start()
 
     try:

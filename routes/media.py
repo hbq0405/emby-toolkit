@@ -491,11 +491,10 @@ def api_unified_subscription_status():
                     mp_tmdb_id = tmdb_id
                     mp_season = None
                     
+                    media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
+                    details = media_details_map.get(tmdb_id, {})
+                    
                     if item_type == 'Season':
-                        # 这里可能需要重新查一次详情，或者复用上面的 current_details 如果存在
-                        # 为安全起见，重新查一次或优化逻辑。这里简单处理：
-                        media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
-                        details = media_details_map.get(tmdb_id, {})
                         if details.get('parent_series_tmdb_id'):
                             mp_tmdb_id = details['parent_series_tmdb_id']
                             mp_season = details.get('season_number')
@@ -508,6 +507,13 @@ def api_unified_subscription_status():
                         }
                         if mp_season is not None:
                             payload['season'] = mp_season
+                            # ★★★ 核心修复：补充剧集名称 ★★★
+                            series_name = media_db.get_series_title_by_tmdb_id(str(mp_tmdb_id))
+                            if series_name:
+                                payload['name'] = series_name
+                        elif item_type == 'Movie':
+                            payload['name'] = details.get('title', '')
+                            
                         moviepilot.subscribe_with_custom_payload(payload, config)
                     else:
                         logger.info(f"  ➜ [状态同步] 已通知 MP 恢复搜索: {mp_tmdb_id}")
