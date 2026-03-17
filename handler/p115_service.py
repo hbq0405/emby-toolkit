@@ -1440,7 +1440,7 @@ class SmartOrganizer:
 
         return info_dict
 
-    def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None):
+    def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None, pre_fetched_mediainfo=None):
         """
         通过 SHA1 获取真实的媒体信息，并转换为乐高重命名参数
         """
@@ -1462,7 +1462,13 @@ class SmartOrganizer:
         except Exception as e:
             pass
 
-        # 2. 本地没有，尝试查 P115Center 中心服务器
+        # 2. ★ 本地没有，优先查批量预获取的字典 (瞬间读取，无网络延迟)
+        if not raw_json and pre_fetched_mediainfo and sha1 in pre_fetched_mediainfo:
+            raw_json = pre_fetched_mediainfo[sha1]
+            is_center = True
+            data_source = "中心服务器(批量)"
+
+        # 3. 兜底：尝试查 P115Center 中心服务器 (单次查询)
         if not raw_json:
             try:
                 import extensions
@@ -1472,7 +1478,7 @@ class SmartOrganizer:
                     if resp and sha1 in resp:
                         raw_json = resp[sha1]
                         is_center = True
-                        data_source = "中心服务器"
+                        data_source = "中心服务器(单次)"
             except Exception:
                 pass
 
@@ -1634,7 +1640,7 @@ class SmartOrganizer:
 
         return "".join(final_parts)
 
-    def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None):
+    def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
         if '.' not in original_name: return original_name, None, False
 
@@ -1668,7 +1674,8 @@ class SmartOrganizer:
         if not is_sub and enable_smart_rename:
             sha1 = file_node.get('sha1') or file_node.get('sha')
             if sha1:
-                real_info, is_center_cached = self._fetch_and_parse_mediainfo(sha1, video_info)
+                # ★ 将预获取的字典传进去
+                real_info, is_center_cached = self._fetch_and_parse_mediainfo(sha1, video_info, pre_fetched_mediainfo)
                 if real_info:
                     for k, v in real_info.items():
                         if v: video_info[k] = v
@@ -2167,6 +2174,44 @@ class SmartOrganizer:
         # ★ 新增：用于记录本批次已经生成的目标文件名，防止同名冲突
         seen_new_filenames = set()
 
+        # 批量预查询中心服务器
+        pre_fetched_mediainfo = {}
+        if cfg.get('enable_smart_rename', False) and not keep_original:
+            video_sha1s = []
+            for file_item in candidates:
+                file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
+                ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+                if ext in known_video_exts:
+                    sha1 = file_item.get('sha1') or file_item.get('sha')
+                    if sha1: video_sha1s.append(sha1)
+            
+            if video_sha1s:
+                # 先查本地缓存，剔除已有的，只查缺失的
+                local_cached_sha1s = set()
+                try:
+                    from database.connection import get_db_connection
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute("SELECT sha1 FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", (list(video_sha1s),))
+                            for row in cursor.fetchall():
+                                local_cached_sha1s.add(row['sha1'])
+                except Exception: pass
+                
+                missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
+                if missing_sha1s:
+                    logger.info(f"  🌐 [批量查询] 准备向中心服务器查询 {len(missing_sha1s)} 个文件的媒体信息...")
+                    try:
+                        import extensions
+                        processor = extensions.media_processor_instance
+                        if processor and getattr(processor, 'p115_center', None):
+                            # ★ 核心：一次性传入整个列表！
+                            resp = processor.p115_center.download_emby_mediainfo_data(missing_sha1s)
+                            if resp:
+                                pre_fetched_mediainfo = resp
+                                logger.info(f"  ✅ [批量查询] 成功获取 {len(resp)} 个文件的媒体信息。")
+                    except Exception as e:
+                        logger.warning(f"  ⚠️ [批量查询] 中心服务器查询失败: {e}")
+
         # 确保 allowed_exts 有兜底，防止用户清空列表导致报错
         if not allowed_exts:
             allowed_exts = known_video_exts | {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
@@ -2237,7 +2282,8 @@ class SmartOrganizer:
                     real_target_cid = current_parent
             else:
                 new_filename, season_num, s_name, is_center_cached = self._rename_file_node(
-                    file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title
+                    file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
+                    pre_fetched_mediainfo=pre_fetched_mediainfo 
                 )
 
                 real_target_cid = final_home_cid
