@@ -4,36 +4,37 @@
   <div>
     <n-page-header title="影视探索" subtitle="发现您感兴趣的下一部作品" />
       <!-- ★★★ 新增：影巢 (HDHive) 配置与信息面板 ★★★ -->
-      <n-card class="dashboard-card" style="margin-top: 16px; background: linear-gradient(145deg, #1a1a24 0%, #14141c 100%); border: 1px solid #333;">
-        <n-space align="center" justify="space-between" :wrap="isMobile">
-          <n-space align="center">
-            <n-icon :component="CloudDownloadIcon" size="28" color="#f0a020" />
-            <span style="font-weight: bold; font-size: 16px; color: #f0a020;">影巢 (HDHive) 极速秒传</span>
-          </n-space>
-          <n-space align="center">
-            <n-input v-model:value="hdhiveApiKey" type="password" placeholder="输入 X-API-Key" show-password-on="click" style="width: 250px;" />
-            <n-button type="primary" color="#f0a020" @click="saveHDHiveConfig" :loading="savingHdhive">保存并连接</n-button>
-          </n-space>
+      <n-card class="dashboard-card" style="margin-top: 16px;">
+      <n-space align="center" justify="space-between" :wrap="isMobile">
+        <n-space align="center">
+          <n-icon :component="CloudDownloadIcon" size="28" color="#f0a020" />
+          <span style="font-weight: bold; font-size: 16px; color: #f0a020;">影巢 (HDHive) 极速秒传</span>
         </n-space>
-        
-        <n-collapse-transition :show="!!hdhiveUserInfo">
-          <n-divider style="margin: 12px 0;" />
-          <n-space align="center" :size="24" :wrap="isMobile">
-            <n-tag type="success" :bordered="false">
-              <template #icon><n-icon :component="PersonIcon" /></template>
-              用户: {{ hdhiveUserInfo?.nickname }}
-            </n-tag>
-            <n-tag type="warning" :bordered="false">
-              <template #icon><n-icon :component="StarIcon" /></template>
-              积分: {{ hdhiveUserInfo?.user_meta?.points || 0 }}
-            </n-tag>
-            <n-tag type="info" :bordered="false" v-if="hdhiveQuotaInfo">
-              <template #icon><n-icon :component="TicketIcon" /></template>
-              本周免费额度: {{ hdhiveQuotaInfo.remaining === -1 ? '无限' : hdhiveQuotaInfo.remaining }} / {{ hdhiveQuotaInfo.limit === 0 ? '无限' : hdhiveQuotaInfo.limit }}
-            </n-tag>
-          </n-space>
-        </n-collapse-transition>
-      </n-card>
+        <n-space align="center">
+          <n-input v-model:value="hdhiveApiKey" type="password" placeholder="输入 X-API-Key" show-password-on="click" style="width: 250px;" />
+          <n-button type="primary" color="#f0a020" @click="saveHDHiveConfig" :loading="savingHdhive">保存并连接</n-button>
+        </n-space>
+      </n-space>
+      
+      <!-- ★ 修复：更严谨的判断条件，确保有真实数据才展开 -->
+      <n-collapse-transition :show="hdhiveUserInfo && hdhiveUserInfo.id !== undefined">
+        <n-divider style="margin: 12px 0;" />
+        <n-space align="center" :size="24" :wrap="isMobile">
+          <n-tag type="success" :bordered="false">
+            <template #icon><n-icon :component="PersonIcon" /></template>
+            用户: {{ hdhiveUserInfo?.nickname }}
+          </n-tag>
+          <n-tag type="warning" :bordered="false">
+            <template #icon><n-icon :component="StarIcon" /></template>
+            积分: {{ hdhiveUserInfo?.user_meta?.points || 0 }}
+          </n-tag>
+          <n-tag type="info" :bordered="false" v-if="hdhiveQuotaInfo">
+            <template #icon><n-icon :component="TicketIcon" /></template>
+            本周免费额度: {{ hdhiveQuotaInfo.remaining === -1 ? '无限' : hdhiveQuotaInfo.remaining }} / {{ hdhiveQuotaInfo.limit === 0 ? '无限' : hdhiveQuotaInfo.limit }}
+          </n-tag>
+        </n-space>
+      </n-collapse-transition>
+    </n-card>
       <n-grid :x-gap="24" :y-gap="24" :cols="isMobile ? 1 : 2" style="margin-top: 24px;">
         <!-- 左侧筛选面板 (占1列) -->
         <n-gi :span="1">
