@@ -191,8 +191,9 @@
                           :loading="subscribingId === currentRecommendation.id"
                           style="margin-top: 24px;"
                         >
-                          <template #icon><n-icon :component="HeartOutline" /></template>
-                          想看这个
+                          <!-- ★ 修改：根据类型显示不同图标和文字 -->
+                          <template #icon><n-icon :component="currentRecommendation.media_type === 'tv' ? ListIcon : HeartOutline" /></template>
+                          {{ currentRecommendation.media_type === 'tv' ? '选择季' : '想看这个' }}
                         </n-button>
                     </div>
                 </div>
@@ -252,15 +253,17 @@
                 </div>
 
                 <div class="actions-container">
+                  <!-- ★ 核心修改：剧集始终显示列表图标，电影未入库时显示心形图标 -->
                   <div 
-                    v-if="!media.in_library && ((isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE'))"
+                    v-if="media.media_type === 'tv' || (!media.in_library && ((isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE')))"
                     class="action-btn"
                     @click.stop="handleSubscribe(media)"
-                    :title="isPrivilegedUser ? '订阅' : '想看'"
+                    :title="media.media_type === 'tv' ? '选择季' : (isPrivilegedUser ? '订阅' : '想看')"
                   >
                     <n-spin :show="subscribingId === media.id" size="small">
                       <n-icon size="18" color="#fff" class="shadow-icon">
-                        <LightningIcon v-if="isPrivilegedUser && media.subscription_status === 'REQUESTED'" color="#f0a020" />
+                        <ListIcon v-if="media.media_type === 'tv'" />
+                        <LightningIcon v-else-if="isPrivilegedUser && media.subscription_status === 'REQUESTED'" color="#f0a020" />
                         <HeartOutline v-else />
                       </n-icon>
                     </n-spin>
@@ -282,6 +285,50 @@
     </div>
 
     <div ref="sentinel" style="height: 50px;"></div>
+    
+    <!-- ★★★ 新增：季选择模态框 ★★★ -->
+    <n-modal v-model:show="showSeasonModal" preset="card" title="选择要订阅的季" style="width: 500px; max-width: 90%;">
+      <n-spin :show="loadingSeasons">
+        <div v-if="seasonList.length === 0 && !loadingSeasons" style="text-align: center; color: #888; padding: 20px;">
+          未找到季信息
+        </div>
+        
+        <n-space vertical v-else>
+          <n-button 
+            v-for="season in seasonList" 
+            :key="season.id" 
+            block 
+            secondary
+            style="justify-content: space-between; height: auto; padding: 10px;"
+            :disabled="season.in_library || season.subscription_status === 'SUBSCRIBED' || season.subscription_status === 'WANTED'"
+            @click="submitSeasonSubscription(season)"
+          >
+            <div style="display: flex; align-items: center; gap: 12px; text-align: left; width: 100%;">
+              <img v-if="season.poster_path" :src="`https://image.tmdb.org/t/p/w92${season.poster_path}`" style="width: 40px; border-radius: 4px; flex-shrink: 0;" />
+              <div v-else style="width: 40px; height: 60px; background: #333; border-radius: 4px; flex-shrink: 0;"></div>
+              <div style="flex-grow: 1; min-width: 0;">
+                <div style="font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ season.name }}</div>
+                <div style="font-size: 12px; color: #888;">{{ season.episode_count }} 集 <span v-if="season.air_date">· {{ season.air_date }}</span></div>
+              </div>
+              <div style="flex-shrink: 0; margin-left: 8px;">
+                <n-tag v-if="season.in_library" type="success" size="small">已入库</n-tag>
+                <n-tag v-else-if="season.subscription_status === 'SUBSCRIBED'" type="info" size="small">已订阅</n-tag>
+                <n-tag v-else-if="season.subscription_status === 'WANTED'" type="primary" size="small">待订阅</n-tag>
+                <n-tag v-else-if="season.subscription_status === 'REQUESTED'" type="warning" size="small">待审核</n-tag>
+                <n-button v-else size="small" type="primary" @click.stop="submitSeasonSubscription(season)" :loading="subscribingSeasonId === season.id">
+                  订阅
+                </n-button>
+              </div>
+            </div>
+          </n-button>
+          <n-divider style="margin: 12px 0;" />
+          <n-button block type="primary" @click="submitAllSeasonsSubscription" :loading="subscribingAllSeasons">
+            一键订阅所有缺失季
+          </n-button>
+        </n-space>
+      </n-spin>
+    </n-modal>
+    
   </div>
   </n-layout>
 </template>
@@ -294,9 +341,10 @@ import { useAuthStore } from '../stores/auth';
 import { 
   NPageHeader, NCard, NSpace, NRadioGroup, NRadioButton, NSelect,
   NInputNumber, NSpin, NGrid, NGi, NButton, NThing, useMessage, NIcon, 
-  NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4, NH3, NTooltip
+  NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4, NH3, NTooltip, NModal, NTag
 } from 'naive-ui';
-import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon } from '@vicons/ionicons5';
+// ★ 引入 ListIcon
+import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon, ListOutline as ListIcon } from '@vicons/ionicons5';
 
 const authStore = useAuthStore();
 const message = useMessage();
@@ -360,6 +408,14 @@ const isMobile = ref(false);
 const checkMobile = () => {
   isMobile.value = window.innerWidth < 768;
 };
+
+// ★★★ 季选择模态框相关状态 ★★★
+const showSeasonModal = ref(false);
+const loadingSeasons = ref(false);
+const seasonList = ref([]);
+const currentSeriesForSearch = ref(null);
+const subscribingSeasonId = ref(null);
+const subscribingAllSeasons = ref(false);
 
 const studioLabel = computed(() => {
   return mediaType.value === 'movie' ? '出品公司' : '播出平台';
@@ -574,7 +630,32 @@ const updateMediaStatus = (mediaId, newStatus) => {
   }
 };
 
+// ★★★ 核心修改：处理订阅逻辑，剧集弹出模态框 ★★★
 const handleSubscribe = async (media) => {
+  // 1. 如果是剧集，弹出季选择模态框
+  if (media.media_type === 'tv' || mediaType.value === 'tv') {
+    currentSeriesForSearch.value = media;
+    showSeasonModal.value = true;
+    loadingSeasons.value = true;
+    seasonList.value = [];
+    try {
+      // 调用后端接口获取季信息及本地状态
+      const res = await axios.get(`/api/discover/tmdb/tv/${media.id}`);
+      if (res.data && res.data.seasons) {
+        seasonList.value = res.data.seasons
+          .filter(s => s.season_number > 0)
+          .sort((a, b) => a.season_number - b.season_number);
+      }
+    } catch (e) {
+      message.warning("获取季信息失败");
+      seasonList.value = [];
+    } finally {
+      loadingSeasons.value = false;
+    }
+    return;
+  }
+
+  // 2. 如果是电影，走原来的直接订阅逻辑
   if (subscribingId.value === media.id) return;
 
   const originalStatus = media.subscription_status || 'NONE';
@@ -591,11 +672,9 @@ const handleSubscribe = async (media) => {
   updateMediaStatus(media.id, optimisticStatus);
 
   try {
-    const itemTypeForApi = (media.media_type === 'tv' ? 'Series' : 'Movie') || (mediaType.value === 'movie' ? 'Movie' : 'Series');
-    
     const portalResponse = await axios.post('/api/portal/subscribe', {
       tmdb_id: media.id,
-      item_type: itemTypeForApi,
+      item_type: 'Movie',
       item_name: media.title || media.name,
     });
 
@@ -629,6 +708,61 @@ const handleSubscribe = async (media) => {
     message.error(error.response?.data?.message || '提交请求失败');
   } finally {
     subscribingId.value = null;
+  }
+};
+
+// ★★★ 提交单季订阅 ★★★
+const submitSeasonSubscription = async (season) => {
+  subscribingSeasonId.value = season.id;
+  try {
+    const portalResponse = await axios.post('/api/portal/subscribe', {
+      tmdb_id: currentSeriesForSearch.value.id, // 传剧集ID
+      item_type: 'Season',
+      season_number: season.season_number,
+      season_tmdb_id: season.id,
+      item_name: `${currentSeriesForSearch.value.title || currentSeriesForSearch.value.name} 第 ${season.season_number} 季`
+    });
+    message.success(portalResponse.data.message);
+    // 更新模态框内该季的状态
+    season.subscription_status = portalResponse.data.status === 'approved' ? 'SUBSCRIBED' : 'REQUESTED';
+  } catch (error) {
+    message.error(error.response?.data?.message || '订阅失败');
+  } finally {
+    subscribingSeasonId.value = null;
+  }
+};
+
+// ★★★ 一键订阅所有缺失季 ★★★
+const submitAllSeasonsSubscription = async () => {
+  subscribingAllSeasons.value = true;
+  try {
+    const missingSeasons = seasonList.value.filter(s => !s.in_library && s.subscription_status !== 'SUBSCRIBED' && s.subscription_status !== 'WANTED');
+    if (missingSeasons.length === 0) {
+      message.info("所有季均已入库或已订阅");
+      return;
+    }
+    
+    // 直接提交整剧订阅，后端会自动遍历并订阅所有缺失季
+    const portalResponse = await axios.post('/api/portal/subscribe', {
+      tmdb_id: currentSeriesForSearch.value.id,
+      item_type: 'Series',
+      item_name: currentSeriesForSearch.value.title || currentSeriesForSearch.value.name
+    });
+    message.success("一键订阅已提交");
+    
+    // 更新模态框内状态
+    missingSeasons.forEach(s => {
+      s.subscription_status = portalResponse.data.status === 'approved' ? 'SUBSCRIBED' : 'REQUESTED';
+    });
+    
+    // 更新外部卡片状态
+    updateMediaStatus(currentSeriesForSearch.value.id, portalResponse.data.status === 'approved' ? 'SUBSCRIBED' : 'REQUESTED');
+    
+    setTimeout(() => { showSeasonModal.value = false; }, 1000);
+  } catch (error) {
+    message.error(error.response?.data?.message || '一键订阅失败');
+  } finally {
+    subscribingAllSeasons.value = false;
   }
 };
 

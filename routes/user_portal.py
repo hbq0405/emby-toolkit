@@ -29,6 +29,7 @@ def request_subscription():
     """
     【V9 - 终极统一版】
     - 普通用户的请求状态为 REQUESTED，VIP/管理员的请求状态为 WANTED。
+    - 支持直接订阅单季 (Season)。
     """
     data = request.json
     emby_user_id = session['emby_user_id']
@@ -40,32 +41,62 @@ def request_subscription():
     tmdb_id = str(data.get('tmdb_id'))
     item_type = data.get('item_type')
     item_name = data.get('item_name') # 仅作为备用
+    season_number = data.get('season_number')
+    season_tmdb_id = str(data.get('season_tmdb_id', ''))
 
     message = ""
     new_status_for_frontend = None
 
-    # ★★★ 核心修改：无论是谁，我们都需要先获取媒体的详细信息 ★★★
     config = config_manager.APP_CONFIG
     tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
     details = None
+    
+    db_tmdb_id = tmdb_id # 默认用于数据库操作的 ID
+    series_tmdb_id = tmdb_id # 默认的剧集 ID
+    
     try:
         if item_type == 'Movie':
             details = tmdb.get_movie_details(int(tmdb_id), tmdb_api_key)
+            media_info = {
+                'tmdb_id': tmdb_id, 'item_type': item_type,
+                'title': details.get('title') or details.get('name') or item_name,
+                'original_title': details.get('original_title') or details.get('original_name'),
+                'release_date': details.get('release_date') or details.get('first_air_date'),
+                'poster_path': details.get('poster_path'), 'overview': details.get('overview')
+            }
         elif item_type == 'Series':
             details = tmdb.get_tv_details(int(tmdb_id), tmdb_api_key)
+            media_info = {
+                'tmdb_id': tmdb_id, 'item_type': item_type,
+                'title': details.get('title') or details.get('name') or item_name,
+                'original_title': details.get('original_title') or details.get('original_name'),
+                'release_date': details.get('release_date') or details.get('first_air_date'),
+                'poster_path': details.get('poster_path'), 'overview': details.get('overview')
+            }
+        elif item_type == 'Season':
+            # 如果是季，tmdb_id 传过来的是父剧集的 ID
+            details = tmdb.get_tv_details(int(tmdb_id), tmdb_api_key)
+            season_details = next((s for s in details.get('seasons', []) if s['season_number'] == season_number), {})
+            
+            # 确定季的真实 ID，如果没有则用拼接 ID
+            db_tmdb_id = season_tmdb_id if season_tmdb_id else f"{tmdb_id}_S{season_number}"
+            
+            media_info = {
+                'tmdb_id': db_tmdb_id, 
+                'item_type': 'Season',
+                'title': season_details.get('name') or f"{details.get('name')} 第 {season_number} 季",
+                'release_date': season_details.get('air_date'),
+                'poster_path': season_details.get('poster_path') or details.get('poster_path'),
+                'parent_series_tmdb_id': tmdb_id,
+                'season_number': season_number,
+                'overview': season_details.get('overview')
+            }
+            
         if not details:
             raise ValueError("无法从TMDb获取媒体详情")
     except Exception as e:
         logger.error(f"用户 {emby_username} 请求订阅时，获取TMDb详情失败 (ID: {tmdb_id}): {e}")
         return jsonify({"status": "error", "message": "无法获取媒体详情，请稍后再试。"}), 500
-
-    media_info = {
-        'tmdb_id': tmdb_id, 'item_type': item_type,
-        'title': details.get('title') or details.get('name') or item_name,
-        'original_title': details.get('original_title') or details.get('original_name'),
-        'release_date': details.get('release_date') or details.get('first_air_date'),
-        'poster_path': details.get('poster_path'), 'overview': None
-    }
 
     if is_vip or is_emby_admin:
         log_user_type = "管理员" if is_emby_admin else "VIP 用户"
@@ -80,12 +111,12 @@ def request_subscription():
                 if release_date_obj > date.today():
                     is_released = False
             except (ValueError, TypeError):
-                logger.warning(f"无法解析媒体 {tmdb_id} 的发行日期 '{release_date_str}'，将按已发行处理。")
+                logger.warning(f"无法解析媒体 {db_tmdb_id} 的发行日期 '{release_date_str}'，将按已发行处理。")
 
         if not is_released:
             logger.info(f"  ➜ 【{log_user_type}-待发行通道】'{emby_username}' 请求的项目尚未发行，状态将设置为 PENDING_RELEASE...")
             request_db.set_media_status_pending_release(
-                tmdb_ids=[tmdb_id], item_type=item_type,
+                tmdb_ids=[db_tmdb_id], item_type=item_type,
                 source={"type": "user_request", "user_id": emby_user_id, "user_type": log_user_type},
                 media_info_list=[media_info]
             )
@@ -94,7 +125,7 @@ def request_subscription():
         else:
             logger.info(f"  ➜ 【{log_user_type}-待订阅通道】'{emby_username}' 的订阅请求将直接加入待订阅队列...")
             request_db.set_media_status_wanted(
-                tmdb_ids=[tmdb_id], item_type=item_type,
+                tmdb_ids=[db_tmdb_id], item_type=item_type,
                 source={"type": "user_request", "user_id": emby_user_id, "user_type": log_user_type},
                 media_info_list=[media_info]
             )
@@ -103,13 +134,13 @@ def request_subscription():
 
     else:
         # --- ★★★ 普通用户通道终极改造 ★★★ ---
-        existing_status = request_db.get_global_request_status_by_tmdb_id(tmdb_id)
+        existing_status = request_db.get_global_request_status_by_tmdb_id(db_tmdb_id)
         if existing_status:
             message = "该项目正在等待审核。" if existing_status == 'pending' else "该项目已在订阅队列中。"
             return jsonify({"status": existing_status, "message": message}), 200
         
         request_db.set_media_status_requested(
-            tmdb_ids=[tmdb_id], item_type=item_type,
+            tmdb_ids=[db_tmdb_id], item_type=item_type,
             source={"type": "user_request", "user_id": emby_user_id},
             media_info_list=[media_info]
         )
@@ -122,7 +153,7 @@ def request_subscription():
                 notification_text = (
                     f"🔔 *新的订阅审核请求*\n\n"
                     f"用户 *{emby_username}* 提交了想看请求：\n"
-                    f"*{item_name}*\n\n"
+                    f"*{media_info['title']}*\n\n"
                     f"请前往管理后台审核。"
                 )
                 for admin_id in admin_chat_ids:
@@ -133,20 +164,21 @@ def request_subscription():
     # 1. 【核心】后端直接触发“订阅直通车”
     # 只有状态为 approved (即管理员/VIP且已上映) 时才立即触发
     if new_status_for_frontend == 'approved':
-        logger.info(f"  ➜ [直通车] 为管理员/VIP '{emby_username}' 立即触发订阅任务: {item_name}")
+        logger.info(f"  ➜ [直通车] 为管理员/VIP '{emby_username}' 立即触发订阅任务: {media_info['title']}")
         
+        # 对于季，直通车任务需要的是父剧集的 ID
         req_item = {
-            'tmdb_id': tmdb_id,
+            'tmdb_id': series_tmdb_id if item_type == 'Season' else db_tmdb_id,
             'item_type': item_type,
-            'title': item_name,
+            'title': media_info['title'],
             'user_id': emby_user_id,
-            'season_number': data.get('season_number')
+            'season_number': season_number
         }
         
         # 提交任务
         task_manager.submit_task(
             task_function=task_manual_subscribe_batch,
-            task_name=f"立即订阅: {item_name}",
+            task_name=f"立即订阅: {media_info['title']}",
             processor_type='media',
             subscribe_requests=[req_item]
         )
@@ -154,14 +186,14 @@ def request_subscription():
     # 2. 推荐池处理
     if new_status_for_frontend in ['approved', 'pending'] and item_type == 'Movie':
         # 先移除
-        settings_db.remove_item_from_recommendation_pool(tmdb_id)
+        settings_db.remove_item_from_recommendation_pool(db_tmdb_id)
         # 再异步补货 (发后即忘)
         threading.Thread(target=check_and_replenish_pool).start()
 
     try:
         user_chat_id = user_db.get_user_telegram_chat_id(emby_user_id)
         if user_chat_id and not (is_vip or is_emby_admin):
-            message_text = f"🔔 *您的订阅请求已提交*\n\n您想看的 *{item_name}* 已进入待审队列，管理员处理后会通知您。"
+            message_text = f"🔔 *您的订阅请求已提交*\n\n您想看的 *{media_info['title']}* 已进入待审队列，管理员处理后会通知您。"
             send_telegram_message(user_chat_id, message_text)
     except Exception as e:
         logger.error(f"发送订阅请求提交通知时出错: {e}")

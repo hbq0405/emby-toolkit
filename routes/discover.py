@@ -10,6 +10,7 @@ from tasks.discover import task_update_daily_theme, task_replenish_recommendatio
 import task_manager
 import config_manager
 import constants
+from database.connection import get_db_connection # ★ 新增导入
 
 discover_bp = Blueprint('discover_bp', __name__, url_prefix='/api/discover')
 logger = logging.getLogger(__name__)
@@ -643,11 +644,32 @@ def trigger_recommendation_update():
 @discover_bp.route('/tmdb/tv/<int:tv_id>', methods=['GET'])
 @any_login_required
 def get_tmdb_tv_details_proxy(tv_id):
-    """获取 TMDb 剧集季列表"""
+    """
+    获取 TMDb 剧集季列表，并附加本地数据库中的在库和订阅状态。
+    """
     api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
     try:
-        # 只需要基础信息和季列表，不需要 credits 等重数据
+        # 1. 获取 TMDb 基础信息
         details = tmdb.get_tv_details(tv_id, api_key, append_to_response=None)
+        
+        # 2. 从本地数据库获取该剧集所有季的状态
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT season_number, in_library, subscription_status 
+                FROM media_metadata 
+                WHERE parent_series_tmdb_id = %s AND item_type = 'Season'
+            """, (str(tv_id),))
+            # 转换为字典，方便后续查找
+            local_seasons = {row['season_number']: dict(row) for row in cursor.fetchall()}
+        
+        # 3. 将本地状态附加到 TMDb 的季列表中
+        for season in details.get('seasons', []):
+            s_num = season['season_number']
+            local_data = local_seasons.get(s_num, {})
+            season['in_library'] = local_data.get('in_library', False)
+            season['subscription_status'] = local_data.get('subscription_status', 'NONE')
+            
         return jsonify(details)
     except Exception as e:
         logger.error(f"获取 TMDb TV 详情失败: {e}")
