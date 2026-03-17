@@ -82,8 +82,7 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
             'fid': target_item.get('fid') or target_item.get('file_id'),
             'fn': receive_title,
             'fc': target_item.get('fc') if target_item.get('fc') is not None else target_item.get('file_category', '1'),
-            'pid': save_cid,
-            '_skip_gc': True # 打上免死金牌，防止被垃圾回收器误删
+            'pid': save_cid
         }
         
         organizer = SmartOrganizer(
