@@ -103,7 +103,6 @@
       <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error">{{ error }}</n-alert></div>
       <div v-else-if="filteredItems.length > 0">
         
-        <!-- ★★★ Grid 容器 ★★★ -->
         <div class="responsive-grid">
           <div 
             v-for="(item, i) in renderedItems" 
@@ -111,7 +110,6 @@
             class="grid-item"
           >
             <n-card class="dashboard-card series-card" :bordered="false">
-              <!-- 绝对定位元素 -->
               <n-checkbox
                 :checked="selectedItems.some(sel => sel.tmdb_id === item.tmdb_id && sel.item_type === item.item_type)"
                 @update:checked="(checked, event) => toggleSelection(item, event, i)"
@@ -126,17 +124,14 @@
                 </n-tooltip>
               </div>
 
-              <!-- ★★★ 核心修复：必须有这个 card-inner-layout 包裹层，才能实现左右布局 ★★★ -->
               <div class="card-inner-layout">
                 
-                <!-- 左侧：海报 -->
                 <div class="card-poster-container">
                   <n-image lazy :src="getPosterUrl(item.poster_path)" class="card-poster" object-fit="cover">
                     <template #placeholder><div class="poster-placeholder"><n-icon :component="TvIcon" size="32" /></div></template>
                   </n-image>
                 </div>
 
-                <!-- 右侧：内容 -->
                 <div class="card-content-container">
                   <div class="card-header">
                     <n-ellipsis class="card-title" :tooltip="{ style: { maxWidth: '300px' } }">{{ item.title }}</n-ellipsis>
@@ -168,43 +163,34 @@
                     </n-space>
                   </div>
                   
-                  <!-- 底部按钮 -->
                   <div class="card-actions">
-                  <!-- 待审核 -->
                   <template v-if="item.subscription_status === 'REQUESTED'">
                     <n-tooltip><template #trigger><n-button @click="() => subscribeItem(item)" type="primary" ghost circle size="small"><template #icon><n-icon :component="SubscribedIcon" /></template></n-button></template>批准</n-tooltip>
                     <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost circle size="small"><template #icon><n-icon :component="IgnoredIcon" /></template></n-button></template>忽略</n-tooltip>
                   </template>
                   
-                  <!-- 待订阅 -->
                   <template v-if="item.subscription_status === 'WANTED'">
                     <n-tooltip><template #trigger><n-button @click="() => subscribeItem(item)" type="primary" ghost circle size="small"><template #icon><n-icon :component="SubscribedIcon" /></template></n-button></template>订阅</n-tooltip>
                     <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost circle size="small"><template #icon><n-icon :component="IgnoredIcon" /></template></n-button></template>忽略</n-tooltip>
                   </template>
 
-                  <!-- 已订阅 / 未上映 -->
                   <template v-else-if="item.subscription_status === 'SUBSCRIBED' || item.subscription_status === 'PENDING_RELEASE'">
                     <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost circle size="small"><template #icon><n-icon :component="IgnoredIcon" /></template></n-button></template>取消订阅</n-tooltip>
                   </template>
 
-                  <!-- 已暂停 -->
                   <template v-else-if="item.subscription_status === 'PAUSED'">
                     <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'SUBSCRIBED')" type="primary" ghost circle size="small"><template #icon><n-icon :component="SubscribedIcon" /></template></n-button></template>恢复</n-tooltip>
                     <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'IGNORED')" type="error" ghost circle size="small"><template #icon><n-icon :component="IgnoredIcon" /></template></n-button></template>取消</n-tooltip>
                   </template>
 
-                  <!-- 已忽略 -->
                   <template v-else-if="item.subscription_status === 'IGNORED'">
                     <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'WANTED', true)" type="primary" ghost circle size="small"><template #icon><n-icon :component="WantedIcon" /></template></n-button></template>取消忽略</n-tooltip>
                   </template>
 
-                  <!-- 通用 -->
-                  <n-tooltip><template #trigger><n-button text @click="handleNullbrSearch(item)"><template #icon><n-icon :component="CloudDownloadIcon" size="18" /></template></n-button></template>NULLBR</n-tooltip>
                   <n-tooltip><template #trigger><n-button text tag="a" :href="getTMDbLink(item)" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>TMDb</n-tooltip>
               </div>
                 </div>
               </div>
-              <!-- 布局结束 -->
 
             </n-card>
           </div>
@@ -216,7 +202,6 @@
       </div>
       <div v-else class="center-container"><n-empty :description="emptyStateDescription" size="huge" /></div>
     </div>
-    <!-- ★★★ 新增：底部悬浮批量操作栏 ★★★ -->
     <transition name="slide-up">
       <div v-if="selectedItems.length > 0" class="floating-action-bar">
         <div class="fab-content">
@@ -228,10 +213,7 @@
           </div>
           
           <div class="fab-right">
-            <!-- 直接复用之前的批量操作逻辑，这里把 Dropdown 拆解成按钮组，或者继续用 Dropdown 也可以 -->
-            <!-- 方案 A: 直接显示常用按钮 (推荐) -->
             <n-space>
-               <!-- 根据当前 filterStatus 显示不同的按钮 -->
                <template v-if="filterStatus === 'REQUESTED' || filterStatus === 'WANTED'">
                   <n-button type="primary" @click="handleBatchAction('subscribe')">
                     批量订阅
@@ -260,7 +242,6 @@
                   <n-button type="primary" ghost @click="handleBatchAction('unignore')">
                     取消忽略
                   </n-button>
-                  <!-- 物理删除选中项 -->
                   <n-popconfirm @positive-click="handleBatchDelete">
                     <template #trigger>
                       <n-button type="error">物理删除选中</n-button>
@@ -281,59 +262,9 @@
         <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
           <li>新片，采用“搜索 N 天 -> 暂停 M 天”的循环机制，大幅降低 MoviePilot 搜索压力。</li>
           <li>老片，采用“搜索 N 天 -> 取消订阅 -> 复活”</li>
-          <li>仅使用 NULLBR 时，请勿把统一订阅处理任务执行间隔小于8小时，以免封号</li>
         </n-alert>
 
-        <!-- 订阅源配置置顶 -->
-        <n-form-item label="订阅源">
-          <n-space vertical style="width: 100%">
-             <n-checkbox-group v-model:value="selectedSources">
-                <n-space>
-                  <n-checkbox value="mp" label="MoviePilot" />
-                  <n-checkbox value="nullbr" label="NULLBR" />
-                </n-space>
-             </n-checkbox-group>
-             
-             <!-- 仅当选择了两个源时，才显示优先级配置 -->
-             <n-card 
-               v-if="selectedSources.includes('mp') && selectedSources.includes('nullbr')"
-               size="small" 
-               embedded 
-               :bordered="false" 
-               style="background: rgba(128,128,128,0.05); margin-top: 8px;"
-             >
-                <div style="display: flex; align-items: center;">
-                   <span style="margin-right: 12px; font-weight: 500; flex-shrink: 0;">优先模式</span>
-                   <n-radio-group v-model:value="strategyConfig.sub_priority" name="sub_priority_group">
-                      <n-space>
-                         <n-radio value="mp">MP 优先</n-radio>
-                         <n-radio value="nullbr">NULLBR 优先</n-radio>
-                      </n-space>
-                   </n-radio-group>
-                </div>
-
-                <div style="margin-top: 8px; font-size: 12px; color: var(--n-text-color-3);">
-                   <template v-if="strategyConfig.sub_priority === 'mp'">
-                      <b>逻辑:</b> 先提交 MP 订阅 -> 若 N 天后未入库(超时) -> 尝试 NULLBR 下载 -> 成功则取消 MP。
-                   </template>
-                   <template v-else>
-                      <b>逻辑:</b> 先尝试 NULLBR 下载 -> 若成功则<b>跳过</b> MP 订阅 -> 若失败则回退提交 MP 订阅。<br/>
-                   </template>
-                </div>
-             </n-card>
-             <!-- 单选时的提示 -->
-             <div v-else-if="selectedSources.length === 1" style="font-size: 12px; color: gray; margin-top: 4px;">
-                当前模式: 仅使用 {{ selectedSources[0] === 'mp' ? 'MoviePilot' : 'NULLBR' }}
-             </div>
-             <div v-else style="font-size: 12px; color: var(--n-error-color); margin-top: 4px;">
-                请至少选择一个订阅源
-             </div>
-          </n-space>
-        </n-form-item>
-        
-        <!-- MP订阅策略分组 -->
         <n-card 
-          v-if="selectedSources.includes('mp')"
           title="MP订阅策略" 
           size="small" 
           embedded 
@@ -373,23 +304,20 @@
       <template #footer>
         <n-space justify="end">
           <n-button @click="showStrategyModal = false">取消</n-button>
-          <n-button type="primary" @click="saveStrategyConfig" :loading="savingStrategy" :disabled="selectedSources.length === 0">保存配置</n-button>
+          <n-button type="primary" @click="saveStrategyConfig" :loading="savingStrategy">保存配置</n-button>
         </n-space>
       </template>
     </n-modal>
-    <NullbrSearchModal ref="nullbrModalRef" />
   </n-layout>
 </template>
 
 <script setup>
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
-import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NCheckboxGroup, NRadio } from 'naive-ui';
-import NullbrSearchModal from './modals/NullbrSearchModal.vue';
-import { FilmOutline as FilmIcon, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon, CloudDownloadOutline as CloudDownloadIcon, CloseOutline as CloseIcon } from '@vicons/ionicons5';
+import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NCheckboxGroup, NRadio, NForm, NFormItem, NInputNumber, NModal, NPopconfirm } from 'naive-ui';
+import { FilmOutline as FilmIcon, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon, CloseOutline as CloseIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
 
-// 图标定义
 const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 512 512", width: "18", height: "18" }, [
   h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" })
 ]);
@@ -408,7 +336,6 @@ let observer = null;
 const selectedItems = ref([]);
 const lastSelectedIndex = ref(null);
 
-// 筛选和排序状态
 const searchQuery = ref('');
 const filterStatus = ref('REQUESTED');
 const filterType = ref('all');
@@ -424,22 +351,8 @@ const strategyConfig = ref({
   movie_pause_days: 7,
   delay_subscription_days: 0,
   timeout_revive_days: 0,
-  enable_nullbr: false,
-  enable_mp: true, 
-  sub_priority: 'mp',
 });
-// 新增：用于绑定 Checkbox Group 的数组
-const selectedSources = ref(['mp']);
 
-const nullbrModalRef = ref(null);
-
-const handleNullbrSearch = (item) => {
-  if (nullbrModalRef.value) {
-    nullbrModalRef.value.open(item);
-  }
-};
-
-// 加载配置
 const loadStrategyConfig = async () => {
   try {
     const res = await axios.get('/api/subscription/strategy');
@@ -450,42 +363,16 @@ const loadStrategyConfig = async () => {
       movie_pause_days: 7,
       delay_subscription_days: 0,
       timeout_revive_days: 0,
-      enable_nullbr: false,
-      enable_mp: true, 
-      sub_priority: 'mp', 
       ...res.data 
     };
-
-    // 初始化 checkbox 状态
-    const sources = [];
-    if (strategyConfig.value.enable_mp !== false) sources.push('mp'); // 兼容旧数据，默认有mp
-    if (strategyConfig.value.enable_nullbr) sources.push('nullbr');
-    selectedSources.value = sources;
-    
   } catch (e) {
     message.error('加载策略配置失败');
   }
 };
 
-// 监听 selectedSources 变化，自动锁定优先级
-watch(selectedSources, (newVal) => {
-  if (newVal.length === 1) {
-    if (newVal.includes('mp')) {
-      strategyConfig.value.sub_priority = 'mp';
-    } else if (newVal.includes('nullbr')) {
-      strategyConfig.value.sub_priority = 'nullbr';
-    }
-  }
-});
-
-// 保存配置
 const saveStrategyConfig = async () => {
   savingStrategy.value = true;
   try {
-    // 将 checkbox 状态同步回 config 对象
-    strategyConfig.value.enable_mp = selectedSources.value.includes('mp');
-    strategyConfig.value.enable_nullbr = selectedSources.value.includes('nullbr');
-
     await axios.post('/api/subscription/strategy', strategyConfig.value);
     message.success('策略配置已保存');
     showStrategyModal.value = false;
@@ -504,7 +391,7 @@ const typeFilterOptions = [
 const sortKeyOptions = computed(() => [
   { 
     label: filterStatus.value === 'SUBSCRIBED' ? '按订阅时间' : '按请求时间', 
-    value: 'first_requested_at' // value 保持不变，作为排序逻辑的 key
+    value: 'first_requested_at' 
   },
   { label: '按媒体名称', value: 'title' },
   { label: '按发行日期', value: 'release_date' },
@@ -707,7 +594,6 @@ const handleBatchAction = (key) => {
       title: '批量恢复', 
       content: `确定要立即唤醒选中的 ${selectedItems.value.length} 个媒体项并重新开始搜索吗？`, 
       endpoint: '/api/subscription/status',
-      // 恢复 = 设置为 SUBSCRIBED
       getParams: () => ({ requests: selectedItems.value.map(item => ({...item, new_status: 'SUBSCRIBED'})) }),
       optimistic_status: 'SUBSCRIBED'
     },
@@ -858,9 +744,7 @@ const formatSources = (sources) => {
   return `来源: ${typeText}${detail ? ` - ${detail}` : ''}`;
 };
 
-// ★★★ 新增：处理一键清空逻辑 ★★★
 const handleClearAllIgnored = async () => {
-  // 1. 获取当前筛选出的所有项目的 ID
   const itemsToDelete = filteredItems.value.map(item => ({
     tmdb_id: item.tmdb_id,
     item_type: item.item_type
@@ -869,25 +753,20 @@ const handleClearAllIgnored = async () => {
   if (itemsToDelete.length === 0) return;
 
   try {
-    isLoading.value = true; // 显示加载状态
+    isLoading.value = true; 
     
-    // 2. 发送请求
     const response = await axios.post('/api/media/batch_delete', {
       items: itemsToDelete
     });
 
     message.success(response.data.message || '删除成功');
 
-    // 3. 更新本地数据 (Optimistic UI Update)
-    // 创建一个 Set 用于快速查找已删除的 ID
     const deletedKeys = new Set(itemsToDelete.map(i => `${i.tmdb_id}-${i.item_type}`));
     
-    // 从 rawItems 中移除这些项
     rawItems.value = rawItems.value.filter(item => 
       !deletedKeys.has(`${item.tmdb_id}-${item.item_type}`)
     );
     
-    // 清空选择
     selectedItems.value = [];
 
   } catch (err) {
@@ -898,7 +777,6 @@ const handleClearAllIgnored = async () => {
 };
 
 const handleBatchDelete = async () => {
-  // 1. 从 rawItems 中找到所有被选中的完整对象
   const itemsToDelete = rawItems.value.filter(item => 
     selectedItems.value.some(sel => sel.tmdb_id === item.tmdb_id && sel.item_type === item.item_type)
   );
@@ -906,9 +784,8 @@ const handleBatchDelete = async () => {
   if (itemsToDelete.length === 0) return;
 
   try {
-    isLoading.value = true; // 显示加载转圈
+    isLoading.value = true; 
     
-    // 2. 发送请求给后端
     const response = await axios.post('/api/media/batch_delete', {
       items: itemsToDelete.map(item => ({
         tmdb_id: item.tmdb_id,
@@ -918,22 +795,18 @@ const handleBatchDelete = async () => {
 
     message.success(response.data.message || `成功删除 ${itemsToDelete.length} 条记录`);
 
-    // 3. 更新本地数据 (无需刷新页面)
-    // 创建一个 Set 方便快速查找
     const deletedKeys = new Set(itemsToDelete.map(i => `${i.tmdb_id}-${i.item_type}`));
     
-    // 从原始列表中移除已删除的项
     rawItems.value = rawItems.value.filter(item => 
       !deletedKeys.has(`${item.tmdb_id}-${item.item_type}`)
     );
     
-    // 4. 清空选择状态
     selectedItems.value = [];
 
   } catch (err) {
     message.error(err.response?.data?.error || '批量删除失败');
   } finally {
-    isLoading.value = false; // 隐藏加载转圈
+    isLoading.value = false; 
   }
 };
 
@@ -967,17 +840,14 @@ const fetchData = async (autoSwitchTab = false) => {
     const response = await axios.get('/api/subscriptions/all');
     rawItems.value = response.data;
 
-    // ★★★ 新增：自动切换到第一个有内容的标签页 ★★★
     if (autoSwitchTab) {
       for (const status of TAB_PRIORITY) {
-        // 检查当前状态是否有对应的媒体项
         const hasItem = rawItems.value.some(item => item.subscription_status === status);
         if (hasItem) {
           filterStatus.value = status;
-          break; // 找到优先级最高的有内容的标签后，立即停止
+          break; 
         }
       }
-      // 如果所有状态都没数据，默认会停留在初始值（通常是 REQUESTED 或 WANTED）
     }
 
   } catch (err) {
@@ -991,19 +861,14 @@ const isAllSelected = computed(() => {
   return filteredItems.value.length > 0 && selectedItems.value.length === filteredItems.value.length;
 });
 
-// 判断是否半选 (选中了一些但没全选)
 const isIndeterminate = computed(() => {
   return selectedItems.value.length > 0 && selectedItems.value.length < filteredItems.value.length;
 });
 
-// 处理全选/取消全选
 const handleSelectAll = () => {
   if (isAllSelected.value) {
-    // 如果已全选，则清空
     selectedItems.value = [];
   } else {
-    // 否则，将当前筛选出的所有项加入选择
-    // 注意：只选择当前 filteredItems (即符合搜索和筛选条件的)，而不是 rawItems
     selectedItems.value = filteredItems.value.map(item => ({
       tmdb_id: item.tmdb_id,
       item_type: item.item_type
@@ -1012,12 +877,10 @@ const handleSelectAll = () => {
   }
 };
 
-// 清空选择
 const clearSelection = () => {
   selectedItems.value = [];
 };
 
-// ★★★ 新增：移动端检测 ★★★
 const isMobile = ref(false);
 const checkMobile = () => {
   isMobile.value = window.innerWidth < 768;
@@ -1026,7 +889,6 @@ const checkMobile = () => {
 onMounted(() => {
   checkMobile();
   window.addEventListener('resize', checkMobile);
-  // 传入 true，表示这是首次加载，需要自动判断标签页
   fetchData(true); 
   
   loadStrategyConfig();
@@ -1044,7 +906,6 @@ onBeforeUnmount(() => {
   if (observer) observer.disconnect();
 });
 
-// ★★★ 新增：状态筛选器的选项 (供手机端 Select 使用) ★★★
 const statusOptions = [
   { label: '待审核', value: 'REQUESTED' },
   { label: '待订阅', value: 'WANTED' },
@@ -1061,11 +922,9 @@ watch(loaderRef, (newEl, oldEl) => {
 </script>
 
 <style scoped>
-/* 页面基础 */
 .watchlist-page, .unified-subscriptions-page { padding: 0 10px; }
 .center-container { display: flex; justify-content: center; align-items: center; height: calc(100vh - 200px); }
 
-/* ★★★ Grid 布局 ★★★ */
 .responsive-grid {
   display: grid;
   gap: 16px;
@@ -1077,14 +936,12 @@ watch(loaderRef, (newEl, oldEl) => {
   min-width: 0;
 }
 
-/* ★★★ 卡片容器 ★★★ */
 .series-card {
   cursor: pointer;
   transition: transform 0.2s ease-in-out, box-shadow 0.2s ease-in-out;
   height: 100%;
   position: relative;
   
-  /* ★★★ 核心 1：设定基准字号，所有内部元素都将基于此缩放 ★★★ */
   font-size: calc(14px * var(--card-scale, 1)); 
   
   border-radius: calc(12px * var(--card-scale, 1));
@@ -1101,8 +958,6 @@ watch(loaderRef, (newEl, oldEl) => {
   outline-offset: -2px;
 }
 
-/* ★★★ 核心 2：强制 Naive UI 组件跟随缩放 ★★★ */
-/* 这段代码强制卡片内的所有文本、按钮、标签都继承上面的 font-size */
 .series-card :deep(.n-card__content),
 .series-card :deep(.n-button),
 .series-card :deep(.n-tag),
@@ -1111,12 +966,10 @@ watch(loaderRef, (newEl, oldEl) => {
   font-size: inherit !important; 
 }
 
-/* 调整图标大小以适应缩放 */
 .series-card :deep(.n-icon) {
   font-size: 1.2em !important; 
 }
 
-/* 恢复内边距 */
 .series-card.dashboard-card > :deep(.n-card__content) {
   padding: calc(10px * var(--card-scale, 1)) !important; 
   display: flex !important;
@@ -1124,23 +977,18 @@ watch(loaderRef, (newEl, oldEl) => {
   height: 100% !important;
 }
 
-/* ★★★ 内部布局：左右拉伸 ★★★ */
 .card-inner-layout {
   display: flex;
   flex-direction: row;
   height: 100%;
   width: 100%;
-  /* 关键：让海报和内容等高 */
   align-items: stretch; 
   gap: calc(12px * var(--card-scale, 1));
 }
 
-/* ★★★ 海报区域 ★★★ */
 .card-poster-container {
   flex-shrink: 0; 
-  /* 宽度随比例缩放 */
   width: calc(130px * var(--card-scale, 1));
-  /* 关键：高度设为 100%，让它自动填满父容器（父容器高度由右侧文字撑开） */
   height: auto; 
   min-height: 100%; 
   
@@ -1160,7 +1008,6 @@ watch(loaderRef, (newEl, oldEl) => {
 .card-poster :deep(img) {
   width: 100%;
   height: 100%;
-  /* 关键：Cover 模式，确保填满且不变形 */
   object-fit: cover !important; 
   display: block;
   border-radius: 0 !important;
@@ -1176,7 +1023,6 @@ watch(loaderRef, (newEl, oldEl) => {
   color: var(--n-text-color-disabled);
 }
 
-/* ★★★ 内容区域 ★★★ */
 .card-content-container {
   flex-grow: 1;
   display: flex;
@@ -1202,7 +1048,6 @@ watch(loaderRef, (newEl, oldEl) => {
 
 .card-title {
   font-weight: 600;
-  /* 标题稍微大一点 */
   font-size: 1.1em !important; 
   line-height: 1.3;
   display: -webkit-box;
@@ -1216,20 +1061,18 @@ watch(loaderRef, (newEl, oldEl) => {
   flex-grow: 1;
   display: flex;
   flex-direction: column;
-  gap: 4px; /* 元素间距 */
+  gap: 4px; 
 }
 
 .last-checked-text, .next-episode-text, .info-text {
   display: flex;
   align-items: center;
   gap: 4px;
-  /* 辅助文字稍微小一点 */
   font-size: 0.9em !important; 
   line-height: 1.4;
   opacity: 0.8;
 }
 
-/* ★★★ 底部按钮区域 ★★★ */
 .card-actions, .card-actions-bottom {
   margin-top: auto; 
   padding-top: calc(8px * var(--card-scale, 1));
@@ -1240,14 +1083,12 @@ watch(loaderRef, (newEl, oldEl) => {
   gap: calc(8px * var(--card-scale, 1));
 }
 
-/* 强制按钮变小以适应 */
 .card-actions :deep(.n-button) {
   padding: 0 6px;
-  height: 24px; /* 强制限制高度，防止撑开 */
+  height: 24px; 
   font-size: 0.9em !important;
 }
 
-/* 复选框 */
 .card-checkbox {
   position: absolute;
   top: 6px;
@@ -1283,7 +1124,6 @@ watch(loaderRef, (newEl, oldEl) => {
   visibility: visible; 
 }
 
-/* 信息网格 (ResubscribePage用) */
 .meta-info-grid {
   display: flex;
   flex-direction: column;
@@ -1298,7 +1138,6 @@ watch(loaderRef, (newEl, oldEl) => {
   display: block;
 }
 
-/* 印章样式 */
 .poster-stamp {
   position: absolute;
   top: 50%;
@@ -1321,7 +1160,6 @@ watch(loaderRef, (newEl, oldEl) => {
 .stamp-subscribed { border-color: #2080f0; color: #2080f0; transform: translate(-50%, -50%) rotate(-5deg); }
 .stamp-auto { border-color: #8a2be2; color: #8a2be2; transform: translate(-50%, -50%) rotate(5deg); }
 
-/* 状态文字颜色 */
 .reason-text-wrapper { display: flex; align-items: center; gap: 4px; font-size: 0.9em !important; font-weight: 500; }
 .text-needed { color: #d03050; }
 .text-ignored { color: #999; text-decoration: line-through; }
@@ -1334,7 +1172,6 @@ watch(loaderRef, (newEl, oldEl) => {
   justify-content: center;
   align-items: center;
 }
-/* ★★★ 底部悬浮操作栏样式 ★★★ */
 .floating-action-bar {
   position: fixed;
   bottom: 24px;
@@ -1347,10 +1184,10 @@ watch(loaderRef, (newEl, oldEl) => {
 }
 
 .fab-content {
-  background-color: rgba(30, 30, 30, 0.95); /* 深色背景 */
+  background-color: rgba(30, 30, 30, 0.95); 
   backdrop-filter: blur(10px);
   border: 1px solid rgba(255, 255, 255, 0.1);
-  border-radius: 50px; /* 圆角胶囊形状 */
+  border-radius: 50px; 
   padding: 12px 24px;
   display: flex;
   justify-content: space-between;
@@ -1376,7 +1213,6 @@ watch(loaderRef, (newEl, oldEl) => {
   margin: 0 4px;
 }
 
-/* 动画效果 */
 .slide-up-enter-active,
 .slide-up-leave-active {
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
@@ -1385,12 +1221,11 @@ watch(loaderRef, (newEl, oldEl) => {
 .slide-up-enter-from,
 .slide-up-leave-to {
   opacity: 0;
-  transform: translate(-50%, 20px); /* 从下方滑入 */
+  transform: translate(-50%, 20px); 
 }
-/* 手机端适配 */
 @media (max-width: 768px) {
   .responsive-grid {
-    grid-template-columns: 1fr; /* 强制单列 */
+    grid-template-columns: 1fr; 
     gap: 12px;
   }
   
@@ -1404,14 +1239,12 @@ watch(loaderRef, (newEl, oldEl) => {
     flex: 1;
   }
   
-  /* 底部按钮栏：靠右对齐，紧凑排列 */
   .card-actions {
     justify-content: flex-end; 
     gap: 8px;
     padding-top: 8px;
   }
   
-  /* 悬浮操作栏适配 */
   .floating-action-bar {
     min-width: auto;
     width: 90%;

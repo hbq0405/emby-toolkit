@@ -11,7 +11,6 @@ import config_manager
 import constants
 import handler.tmdb as tmdb
 import handler.moviepilot as moviepilot
-import handler.nullbr as nullbr_handler
 import task_manager
 from handler import telegram
 from database import settings_db, request_db, user_db, media_db, watchlist_db
@@ -410,9 +409,6 @@ def task_auto_subscribe(processor):
     movie_search_window = int(strategy_config.get('movie_search_window_days', 1))     # 默认搜索1天
     movie_pause_days = int(strategy_config.get('movie_pause_days', 7))                # 默认暂停7天
     timeout_revive_days = int(strategy_config.get('timeout_revive_days', 0))          # 默认不复活超时订阅
-    enable_nullbr = strategy_config.get('enable_nullbr', False)                       # 默认不启用 NULLBR 
-    enable_mp = strategy_config.get('enable_mp', True)                                # 默认启用 MP 订阅
-    sub_priority = strategy_config.get('sub_priority', 'mp')                          # 默认 MP 优先
     
     # 2. 读取请求延迟配置
     try:
@@ -424,7 +420,7 @@ def task_auto_subscribe(processor):
         # ======================================================================
         # 阶段 1 - 清理超时订阅 
         # ======================================================================
-        if enable_mp and movie_search_window > 0:
+        if movie_search_window > 0:
             logger.info(f"  ➜ 正在检查超过 {movie_search_window} 天仍未入库的订阅...")
             task_manager.update_status_from_thread(2, "正在清理超时订阅...")
             
@@ -434,7 +430,6 @@ def task_auto_subscribe(processor):
                 logger.warning(f"  ➜ 发现 {len(stale_items)} 个超时订阅，准备处理。")
                 cancelled_ids_map = {} 
                 cancelled_for_report = []
-                fallback_success_report = [] 
 
                 for item in stale_items:
                     tmdb_id_to_cancel = item['tmdb_id']
@@ -449,17 +444,6 @@ def task_auto_subscribe(processor):
                         else:
                             logger.error(f"  ➜ 无法取消季《{item['title']}》，因为它缺少父剧集ID。")
                             continue
-                    
-                    is_fallback_success = False
-
-                    # ★★★ NULLBR 兜底逻辑 ★★★
-                    if enable_nullbr and item_type == 'Movie':
-                        logger.info(f"  🚑 尝试对《{title}》执行 NULLBR 兜底搜索...")
-                        if nullbr_handler.auto_download_best_resource(tmdb_id_to_cancel, 'movie', title):
-                            logger.info(f"  ✅ 《{title}》NULLBR 兜底推送成功！")
-                            is_fallback_success = True
-                        else:
-                            logger.info(f"  ❌ 《{title}》NULLBR 未找到合适资源。")
 
                     # --- 取消 MP 订阅 ---
                     success = moviepilot.cancel_subscription(
@@ -470,20 +454,6 @@ def task_auto_subscribe(processor):
                     )
                     
                     if success:
-                        # ★★★ 如果兜底成功 ★★★
-                        if is_fallback_success:
-                            logger.info(f"  ➜ 《{title}》 已通过NULLBR兜底下载，取消MP订阅。")
-                            fallback_success_report.append(f"《{title}》") # 加入成功报告
-                            # 将其标记为 IGNORED，理由是“NULLBR兜底成功”，这样就不会再被当作超时订阅处理了
-                            request_db.set_media_status_ignored(
-                                tmdb_ids=[tmdb_id_to_cancel],
-                                item_type=item_type,
-                                source={"type": "nullbr_fallback", "reason": "stale_timeout_recovered"},
-                                ignore_reason="NULLBR兜底成功"
-                            )
-                            continue # 跳过后续的 IGNORED 更新
-
-                        # ★★★ 如果兜底失败或未启用 ★★★
                         if item_type not in cancelled_ids_map:
                             cancelled_ids_map[item_type] = []
                         cancelled_ids_map[item_type].append(item['tmdb_id'])
@@ -499,7 +469,7 @@ def task_auto_subscribe(processor):
                         
                         cancelled_for_report.append(f"《{display_title}》")
 
-                # 1. 批量更新数据库状态 (仅针对未兜底成功的项目)
+                # 1. 批量更新数据库状态 
                 for item_type, tmdb_ids in cancelled_ids_map.items():
                     if tmdb_ids:
                         request_db.set_media_status_ignored(
@@ -509,7 +479,7 @@ def task_auto_subscribe(processor):
                             ignore_reason="订阅超时"
                         )
                 
-                # 2. 发送取消通知 (原有逻辑)
+                # 2. 发送取消通知
                 if cancelled_for_report:
                     admin_chat_ids = user_db.get_admin_telegram_chat_ids()
                     if admin_chat_ids:
@@ -519,26 +489,14 @@ def task_auto_subscribe(processor):
                         for admin_id in admin_chat_ids:
                             telegram.send_telegram_message(admin_id, message_text, disable_notification=True)
 
-                # 3. 发送兜底成功通知 
-                if fallback_success_report:
-                    admin_chat_ids = user_db.get_admin_telegram_chat_ids()
-                    if admin_chat_ids:
-                        items_list_str = "\n".join([f"· `{item}`" for item in fallback_success_report])
-                        message_text = (f"🚑 *NULLBR 兜底成功通知*\n\n"
-                                        f"下列老片因订阅超时被取消，但成功通过 NULLBR 找到资源并推送下载：\n{items_list_str}")
-                        for admin_id in admin_chat_ids:
-                            telegram.send_telegram_message(admin_id, message_text, disable_notification=True)
-
             else:
                 logger.info("  ➜ 未发现超时订阅。")
-        else:
-            logger.info("  ➜ MP订阅未启用或配置无效，跳过清理超时订阅。")
 
         # ======================================================================
         # 阶段 2 - 电影间歇性订阅搜索
         # ======================================================================
         # 仅当配置有效时执行
-        if enable_mp and movie_protection_days > 0 and movie_pause_days > 0:
+        if movie_protection_days > 0 and movie_pause_days > 0:
             logger.info(f"  ➜ [策略] 执行电影间歇性订阅搜索维护...")
             
             # 2.1 复活 (Revive: PAUSED -> SUBSCRIBED)
@@ -594,8 +552,7 @@ def task_auto_subscribe(processor):
                 if paused_ids:
                     request_db.update_movie_status_paused(paused_ids, pause_days=movie_pause_days)
                     logger.info(f"  💤 成功暂停 {len(paused_ids)} 部暂无资源的新片 (MP状态->S)。")
-        else:
-            logger.info("  ➜ MP订阅未启用或电影保护/暂停配置无效，跳过电影间歇性订阅维护。")
+        
         # ======================================================================
         # 阶段 3 - 超时订阅复活 (轮回机制)
         # ======================================================================
@@ -699,66 +656,11 @@ def task_auto_subscribe(processor):
                      parsed_name, _ = parse_series_title_and_season(raw_title, tmdb_api_key)
                      series_name = parsed_name if parsed_name else raw_title
                 
-                # 更新 title 变量为剧集标题，供后续 NULLBR 使用 
+                # 更新 title 变量为剧集标题
                 if series_name:
                     title = series_name
 
-            # 决定是否使用 NULLBR  
-            use_nullbr = False
-            if enable_nullbr and sub_priority == 'nullbr':
-                # 检查完结状态
-                proceed_with_nullbr = True
-                if item_type in ['Series', 'Season']:
-                    target_tmdb_id = int(parent_tmdb_id or tmdb_id)
-                    is_ended = check_series_completion(target_tmdb_id, tmdb_api_key, season_number=season_number, series_name=title)
-                    if not is_ended:
-                        logger.info(f"  ➜ 剧集《{title}》尚未完结 (连载中)，跳过 NULLBR 搜索，交由 MP 进行追更订阅。")
-                        proceed_with_nullbr = False
-                
-                if proceed_with_nullbr:
-                    use_nullbr = True
-
-            # 执行 NULLBR 逻辑
-            nullbr_handled = False
-            if use_nullbr:
-                logger.info(f"  ➜ [策略] 使用 NULLBR 进行搜索《{title}》...")
-                
-                success = False
-                media_type_api = 'tv' if item_type in ['Series', 'Season'] else 'movie'
-                
-                if media_type_api == 'movie':
-                    success = nullbr_handler.auto_download_best_resource(tmdb_id, 'movie', title)
-                
-                elif media_type_api == 'tv':
-                    if parent_tmdb_id and season_number is not None:
-                        success = nullbr_handler.auto_download_best_resource(
-                            tmdb_id=parent_tmdb_id, media_type='tv', title=title, season_number=int(season_number)
-                        )
-                    else:
-                        logger.warning(f"  ⚠️ 无法获取《{title}》的 SeriesID 或季号，跳过 NULLBR 搜索。")
-
-                if success:
-                    logger.info(f"  ✅ 《{title}》NULLBR 下载成功。")
-                    # 标记为 IGNORED (NULLBR直下)
-                    request_db.set_media_status_ignored(
-                        tmdb_ids=[tmdb_id],
-                        item_type=item_type,
-                        source={"type": "sub_priority", "reason": "downloaded_by_nullbr"},
-                        ignore_reason="NULLBR直下"
-                    )
-                    subscription_details.append({'source': 'NULLBR', 'item': f"{title} (直下)"})
-                    nullbr_handled = True
-                else:
-                    logger.info(f"  ❌ NULLBR 未找到合适资源，回退到 MP 订阅流程。")
-
-            if nullbr_handled:
-                continue
-
             # --- MoviePilot 订阅 ---
-            if not enable_mp:
-                logger.debug(f"  ➜ MP订阅开关关闭，跳过《{title}》的 MP 流程。")
-                continue
-
             #  检查配额
             if settings_db.get_subscription_quota() <= 0:
                 quota_exhausted = True

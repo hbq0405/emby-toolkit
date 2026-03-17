@@ -19,7 +19,6 @@ import UserManagementPage from '../components/UserManagementPage.vue';
 import DiscoverPage from '../components/DiscoverPage.vue';
 import UserCenterPage from '../components/UserCenterPage.vue'
 import SetupPage from '../components/Setup.vue';
-import NullbrPage from '../components/NullbrPage.vue';
 import EmbyStatsPage from '../components/EmbyStatsPage.vue';
 import OrganizeRecordsPage from '../components/OrganizeRecordsPage.vue';
 
@@ -180,15 +179,6 @@ const routes = [
     name: 'Discover',
     component: DiscoverPage,
     meta: { requiresAuth: true }, // 必须登录才能访问
-  },
-  {
-    path: '/nullbr',
-    name: 'Nullbr',
-    component: NullbrPage,
-    meta: { 
-      requiresAuth: true,
-      adminOnly: true 
-    },
   },
 ];
 

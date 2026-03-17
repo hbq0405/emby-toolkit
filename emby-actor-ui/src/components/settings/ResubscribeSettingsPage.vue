@@ -389,14 +389,6 @@
                 
                 <!-- 模式 A: 洗版设置 -->
                 <div v-if="currentRule.rule_type === 'resubscribe'">
-                  <!-- 订阅源选择 -->
-                  <n-form-item label="订阅来源">
-                    <n-radio-group v-model:value="currentRule.resubscribe_source" name="subSourceGroup">
-                      <n-radio-button value="moviepilot">MoviePilot</n-radio-button>
-                      <n-radio-button value="nullbr">NULLBR</n-radio-button>
-                    </n-radio-group>
-                  </n-form-item>
-
                   <!-- 缺集洗版整季开关 -->
                   <n-form-item label="缺集处理策略 (仅剧集)">
                     <n-space vertical>
@@ -404,15 +396,12 @@
                         <n-switch v-model:value="currentRule.resubscribe_entire_season" />
                         <span class="tip">开启：洗版整季 / 关闭：仅补缺失集</span>
                       </n-space>
-                      <div class="tip" v-if="currentRule.resubscribe_source === 'moviepilot'">
-                        MP模式下：关闭此项将移除 best_version 参数，MP 会自动尝试补齐缺集。
-                      </div>
-                      <div class="tip" v-else>
-                        NULLBR模式下：关闭此项将按集号精准搜索资源，开启则搜索整季包。
+                      <div class="tip">
+                        关闭此项将移除 best_version 参数，MP 会自动尝试补齐缺集。
                       </div>
                     </n-space>
                   </n-form-item>
-                  <n-form-item label="自定义洗版" v-if="currentRule.resubscribe_source === 'moviepilot'">
+                  <n-form-item label="自定义洗版">
                     <n-space vertical>
                       <n-space align="center">
                         <n-switch 

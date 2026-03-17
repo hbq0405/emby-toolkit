@@ -250,7 +250,6 @@ import {
   FilmOutline as DiscoverIcon,
   ArchiveOutline as UnifiedSubIcon,
   PricetagOutline as TagIcon,
-  CloudDownloadOutline as NullbrIcon,
   CompassOutline,
   ReaderOutline,
   LibraryOutline, 
@@ -258,7 +257,7 @@ import {
   SettingsOutline,
   ArchiveOutline,
   BookOutline as HelpIcon,
-  MenuOutline, // 引入菜单图标
+  MenuOutline, 
   Moon as MoonIcon,
   Sunny as SunnyIcon,
   PieChartOutline as EmbyStatsIcon,
@@ -443,8 +442,7 @@ const menuOptions = computed(() => {
     // --- 管理员专属 ---
     if (authStore.isAdmin) {
         discoveryGroup.children.push(
-            { label: '播放统计', key: 'EmbyStats', icon: renderIcon(EmbyStatsIcon) },
-            { label: 'NULLBR', key: 'Nullbr', icon: renderIcon(NullbrIcon) }
+            { label: '播放统计', key: 'EmbyStats', icon: renderIcon(EmbyStatsIcon) }
         );
     }
   }

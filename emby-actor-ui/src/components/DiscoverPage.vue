@@ -40,7 +40,6 @@
               </n-space>
               <n-space align="center">
                 <label>风格:</label>
-                <!-- 新增的“包含/排除”切换器 -->
                 <n-radio-group v-model:value="genreFilterMode" :disabled="isSearchMode">
                   <n-radio-button value="include" label="包含" />
                   <n-radio-button value="exclude" label="排除" />
@@ -150,10 +149,9 @@
             </n-space>
           </n-card>
         </n-gi>
-        <!-- ★★★ 右侧“每日推荐”面板 ★★★ -->
+        <!-- 右侧“每日推荐”面板 -->
         <n-gi :span="1" v-if="!isMobile">
           <n-card :bordered="false" class="dashboard-card recommendation-card">
-            <!-- ★ 1. 修改卡片头，加入“换一个”按钮 -->
             <template #header>
               <span class="card-title">
                 {{ recommendationThemeName === '每日推荐' ? '每日推荐' : `今日主题：${recommendationThemeName}` }} ✨
@@ -171,32 +169,21 @@
             </template>
             <n-skeleton v-if="isPoolLoading" text :repeat="8" />
               <div v-if="!isPoolLoading && currentRecommendation" class="recommendation-content">
-                <!-- 新的布局容器 -->
                 <div class="recommendation-grid">
-                    <!-- ★ 左栏：海报 -->
                     <div class="poster-column">
                         <img :src="`https://image.tmdb.org/t/p/w500${currentRecommendation.poster_path}`" class="recommendation-poster" />
                     </div>
-
-                    <!-- ★ 右栏：所有信息 -->
                     <div class="details-column">
-                        <!-- 标题 -->
                         <n-h3 style="margin-top: 0; margin-bottom: 8px;">{{ currentRecommendation.title }}</n-h3>
-                        
-                        <!-- 评分和年份 -->
                         <n-space align="center" size="small" style="color: #888; margin-bottom: 16px;">
                             <n-icon :component="StarIcon" color="#f7b824" />
                             <span>{{ currentRecommendation.vote_average?.toFixed(1) }}</span>
                             <span>·</span>
                             <span>{{ new Date(currentRecommendation.release_date).getFullYear() }}</span>
                         </n-space>
-
-                        <!-- 简介 -->
                         <n-ellipsis :line-clamp="4" :tooltip="false" class="overview-text">
                             {{ currentRecommendation.overview }}
                         </n-ellipsis>
-
-                        <!-- “想看这个”按钮 -->
                         <n-button 
                           type="primary" 
                           block 
@@ -209,8 +196,6 @@
                         </n-button>
                     </div>
                 </div>
-
-                <!-- 演员列表 (现在放在布局容器下方) -->
                 <div v-if="currentRecommendation.cast && currentRecommendation.cast.length > 0">
                     <n-divider style="margin-top: 24px; margin-bottom: 16px;" />
                     <n-h4 style="margin: 0 0 16px 0;">主要演员</n-h4>
@@ -234,8 +219,6 @@
 
     <!-- 结果展示区域 -->
     <n-spin :show="loading && results.length === 0">
-      
-      <!-- ★★★ 核心修改：使用 CSS Grid 容器替代 n-grid ★★★ -->
       <div class="responsive-grid">
         <div 
           v-for="media in results" 
@@ -243,13 +226,9 @@
           class="grid-item"
         >
           <n-card class="dashboard-card media-card" content-style="padding: 0; position: relative;" @click="handleClickCard(media)">
-            
-            <!-- 海报容器 (包含所有元素) -->
             <div class="poster-wrapper">
-              <!-- 图片源保持 w300 或 w500 均可，视卡片大小而定 -->
               <img :src="media.poster_path ? `https://image.tmdb.org/t/p/w300${media.poster_path}` : '/default-poster.png'" class="media-poster" @error="onImageError">
               
-              <!-- 1. 状态缎带 -->
               <div v-if="media.in_library" class="ribbon ribbon-green"><span>已入库</span></div>
               <div v-else-if="media.subscription_status === 'SUBSCRIBED'" class="ribbon ribbon-blue"><span>已订阅</span></div>
               <div v-else-if="media.subscription_status === 'PAUSED'" class="ribbon ribbon-blue"><span>已暂停</span></div>
@@ -258,12 +237,10 @@
               <div v-else-if="media.subscription_status === 'PENDING_RELEASE'" class="ribbon ribbon-grey"><span>未发行</span></div>
               <div v-else-if="media.subscription_status === 'IGNORED'" class="ribbon ribbon-dark"><span>已忽略</span></div>
 
-              <!-- 2. 评分角标 -->
               <div v-if="media.vote_average" class="rating-badge">
                 {{ media.vote_average.toFixed(1) }}
               </div>
 
-              <!-- 3. 底部遮罩信息区 (上浮式) -->
               <div class="overlay-info">
                 <div class="text-content">
                   <div class="media-title" :title="media.title || media.name">{{ media.title || media.name }}</div>
@@ -274,22 +251,7 @@
                   </div>
                 </div>
 
-                <!-- 4. 交互图标区域 (修改为 Flex 布局以容纳两个按钮) -->
                 <div class="actions-container">
-                  
-                  <!-- ★★★ 新增：NULLBR 搜索按钮 (仅未入库显示) ★★★ -->
-                  <div 
-                    v-if="!media.in_library && isPrivilegedUser"
-                    class="action-btn"
-                    @click.stop="handleNullbrSearch(media)"
-                    title="NULLBR 搜资源"
-                  >
-                    <n-icon size="18" color="#fff" class="shadow-icon">
-                      <CloudDownloadIcon />
-                    </n-icon>
-                  </div>
-
-                  <!-- 原有的订阅/想看按钮 -->
                   <div 
                     v-if="!media.in_library && ((isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE'))"
                     class="action-btn"
@@ -303,7 +265,6 @@
                       </n-icon>
                     </n-spin>
                   </div>
-
                 </div>
               </div>
 
@@ -311,7 +272,6 @@
           </n-card>
         </div>
       </div>
-
     </n-spin>
 
     <div v-if="isLoadingMore" style="text-align: center; padding: 20px;">
@@ -322,32 +282,6 @@
     </div>
 
     <div ref="sentinel" style="height: 50px;"></div>
-    <!-- 季选择模态框 -->
-    <n-modal v-model:show="showSeasonModal" preset="card" title="选择要搜索的季" style="width: 400px; max-width: 90%;">
-      <n-spin :show="loadingSeasons">
-        <div v-if="seasonList.length === 0 && !loadingSeasons" style="text-align: center; color: #888; padding: 20px;">
-          未找到季信息，将搜索整剧
-          <div style="margin-top: 10px;">
-             <n-button size="small" @click="selectSeasonAndSearch(null)">直接搜索整剧</n-button>
-          </div>
-        </div>
-        
-        <n-space vertical v-else>
-          <n-button 
-            v-for="season in seasonList" 
-            :key="season.id" 
-            block 
-            secondary
-            style="justify-content: space-between; height: auto; padding: 10px;"
-            @click="selectSeasonAndSearch(season)"
-          >
-            <span>{{ season.name }}</span>
-            <n-tag size="small" :bordered="false" type="info">{{ season.episode_count }} 集</n-tag>
-          </n-button>
-        </n-space>
-      </n-spin>
-    </n-modal>
-    <NullbrSearchModal ref="nullbrModalRef" />
   </div>
   </n-layout>
 </template>
@@ -362,10 +296,8 @@ import {
   NInputNumber, NSpin, NGrid, NGi, NButton, NThing, useMessage, NIcon, 
   NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4, NH3, NTooltip
 } from 'naive-ui';
-import NullbrSearchModal from './modals/NullbrSearchModal.vue';
-import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon, CloudDownloadOutline as CloudDownloadIcon } from '@vicons/ionicons5';
+import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon } from '@vicons/ionicons5';
 
-// ... (所有顶部的 import 和 ref 定义保持不变) ...
 const authStore = useAuthStore();
 const message = useMessage();
 const router = useRouter(); 
@@ -374,7 +306,6 @@ const isPrivilegedUser = computed(() => {
 });
 const embyServerUrl = ref('');
 const embyServerId = ref('');
-// ★ 新增：注册重定向 URL
 const registrationRedirectUrl = ref('');
 
 const loading = ref(false);
@@ -388,24 +319,21 @@ const languageOptions = ref([]);
 const selectedLanguage = ref(null);
 const keywordOptions = ref([]); 
 const selectedKeywords = ref([]); 
-const allStudios = ref([]); // 存储后端返回的原始完整列表
+const allStudios = ref([]); 
 const selectedStudios = ref([]);
 const studioOptions = computed(() => {
   if (!allStudios.value || allStudios.value.length === 0) return [];
 
   return allStudios.value
     .filter(item => {
-      // 如果后端返回了 types 字段，则根据当前媒体类型过滤
-      // types: ['movie', 'tv']
       if (item.types && Array.isArray(item.types)) {
         return item.types.includes(mediaType.value);
       }
-      // 兼容旧数据：如果没有 types 字段，默认全部显示
       return true;
     })
     .map(item => ({
       label: item.label,
-      value: item.value // 这里的值是中文 Label，后端会根据 Label 查 ID
+      value: item.value 
     }));
 });
 const genreFilterMode = ref('include'); 
@@ -428,92 +356,25 @@ const isLoadingMore = ref(false);
 const searchQuery = ref('');
 const isSearchMode = computed(() => searchQuery.value.trim() !== '');
 const sentinel = ref(null);
-const showSeasonModal = ref(false);
-const loadingSeasons = ref(false);
-const seasonList = ref([]);
-const currentSeriesForSearch = ref(null);
 const isMobile = ref(false);
 const checkMobile = () => {
   isMobile.value = window.innerWidth < 768;
-};
-const nullbrModalRef = ref(null);
-
-const handleNullbrSearch = async (media) => {
-  // 1. 如果是电影，直接打开搜索，不需要选季
-  if (media.media_type === 'movie' || mediaType.value === 'movie') {
-    if (nullbrModalRef.value) {
-      nullbrModalRef.value.open({
-        tmdb_id: media.id,
-        title: media.title || media.name,
-        media_type: 'movie'
-      });
-    }
-    return;
-  }
-
-  // 2. 如果是剧集，先弹出季选择框
-  currentSeriesForSearch.value = media;
-  showSeasonModal.value = true;
-  loadingSeasons.value = true;
-  seasonList.value = [];
-
-  try {
-    // 调用刚才在后端新增的接口
-    const res = await axios.get(`/api/discover/tmdb/tv/${media.id}`);
-    
-    if (res.data && res.data.seasons) {
-      // 过滤掉第0季(特别篇)，并按季号排序
-      seasonList.value = res.data.seasons
-        .filter(s => s.season_number > 0)
-        .sort((a, b) => a.season_number - b.season_number);
-    }
-  } catch (e) {
-    message.warning("获取季信息失败，请尝试直接搜索");
-    seasonList.value = [];
-  } finally {
-    loadingSeasons.value = false;
-  }
-};
-
-// ★★★ 新增：选中季后触发搜索 ★★★
-const selectSeasonAndSearch = (season) => {
-  showSeasonModal.value = false;
-  
-  if (!currentSeriesForSearch.value) return;
-  
-  if (nullbrModalRef.value) {
-    const item = {
-      tmdb_id: currentSeriesForSearch.value.id,
-      title: currentSeriesForSearch.value.name,
-      media_type: 'tv',
-      // ★ 关键：如果选了季，传入 season_number；没选(null)则不传
-      season_number: season ? season.season_number : null 
-    };
-    
-    // 如果是整剧搜索(season为null)，title保持原样
-    // 如果是分季搜索，NullbrSearchModal 内部会处理，或者我们在这里也可以拼一下 title 方便显示
-    // 但 NullbrSearchModal 内部逻辑是：有 season_number 就搜分季接口
-    
-    nullbrModalRef.value.open(item);
-  }
 };
 
 const studioLabel = computed(() => {
   return mediaType.value === 'movie' ? '出品公司' : '播出平台';
 });
 
-// 将 genre_ids 转换为中文名称字符串
 const getGenreNames = (genreIds) => {
   if (!genreIds || genreIds.length === 0 || genres.value.length === 0) return '';
   
   return genreIds
     .map(id => genres.value.find(g => g.id === id)?.name)
-    .filter(Boolean) // 过滤掉没找到的
-    .slice(0, 2)    // 卡片空间有限，最多显示前两个类型
+    .filter(Boolean) 
+    .slice(0, 2)    
     .join(' / ');
 };
 
-// ... (所有 fetch* 和其他辅助函数保持不变) ...
 const getYear = (media) => {
   const dateStr = media.release_date || media.first_air_date;
   if (!dateStr) return '';
@@ -521,8 +382,8 @@ const getYear = (media) => {
 };
 const genreOptions = computed(() => {
   return genres.value.map(item => ({
-    label: item.name, // 显示的文字 (例如: 动作)
-    value: item.id    // 绑定的值 (例如: 28)
+    label: item.name, 
+    value: item.id    
   }));
 });
 const fetchGenres = async () => {  
@@ -563,7 +424,6 @@ const fetchKeywords = async () => {
 const fetchStudios = async () => {
   try {
     const response = await axios.get('/api/discover/config/studios');
-    // ★★★ 修改 2: 将数据存入 allStudios，而不是直接给 studioOptions ★★★
     allStudios.value = response.data;
   } catch (error) {
     message.error('加载工作室列表失败');
@@ -571,9 +431,7 @@ const fetchStudios = async () => {
 };
 const fetchRatings = async () => {
   try {
-    // 调用你之前写好的接口，获取 ['全年龄', '成人', '限制级'...]
     const response = await axios.get('/api/custom_collections/config/unified_ratings_options');
-    // 转换为 n-select 需要的格式
     ratingOptions.value = response.data.map(label => ({
       label: label,
       value: label
@@ -631,7 +489,6 @@ const fetchEmbyConfig = async () => {
     const response = await axios.get('/api/config');
     embyServerUrl.value = response.data.emby_server_url;
     embyServerId.value = response.data.emby_server_id;
-    // ★ 获取 emby_public_url
     registrationRedirectUrl.value = response.data.emby_public_url;
   } catch (error) {
     console.error('获取 Emby 配置失败:', error);
@@ -700,19 +557,15 @@ const fetchRecommendationPool = async () => {
   }
 };
 
-// 定义更新状态的辅助函数 (放在 handleSubscribe 上面)
 const updateMediaStatus = (mediaId, newStatus) => {
-  // 1. 更新结果列表 (results)
   const index = results.value.findIndex(m => m.id === mediaId);
   if (index !== -1) {
-    // ★ 关键点：创建一个新对象来替换旧对象，确保 Vue 能检测到变化
     results.value[index] = { 
       ...results.value[index], 
       subscription_status: newStatus 
     };
   }
 
-  // 2. 更新每日推荐 (currentRecommendation)
   if (currentRecommendation.value && currentRecommendation.value.id === mediaId) {
     currentRecommendation.value = {
       ...currentRecommendation.value,
@@ -726,7 +579,6 @@ const handleSubscribe = async (media) => {
 
   const originalStatus = media.subscription_status || 'NONE';
 
-  // 2. 状态拦截
   if (originalStatus === 'SUBSCRIBED' || originalStatus === 'PENDING_RELEASE') {
     return;
   }
@@ -734,13 +586,11 @@ const handleSubscribe = async (media) => {
     return;
   }
 
-  // 3. 乐观更新 (点击瞬间变图标)
   subscribingId.value = media.id;
   const optimisticStatus = isPrivilegedUser.value ? 'WANTED' : 'REQUESTED';
   updateMediaStatus(media.id, optimisticStatus);
 
   try {
-    // 4. 发送请求
     const itemTypeForApi = (media.media_type === 'tv' ? 'Series' : 'Movie') || (mediaType.value === 'movie' ? 'Movie' : 'Series');
     
     const portalResponse = await axios.post('/api/portal/subscribe', {
@@ -751,29 +601,22 @@ const handleSubscribe = async (media) => {
 
     message.success(portalResponse.data.message);
     
-    // ★★★ 核心修复开始 ★★★
-    // 不要盲目信任后端返回的 status，因为它可能是旧的或者空的。
-    // 如果是普通用户，且请求成功了，那么状态一定是 'REQUESTED'。
     let finalStatus = portalResponse.data.status;
 
     if (!isPrivilegedUser.value) {
-      // 强制修正普通用户的状态
       finalStatus = 'REQUESTED';
     } else {
-      // 特权用户如果后端没返回有效状态，兜底为 WANTED
       if (!finalStatus || finalStatus === 'NONE') {
         finalStatus = 'WANTED';
       }
     }
     
-    // 如果是管理员/VIP，后端会自动触发订阅，前端直接显示“已订阅”即可 ★★★
     if (isPrivilegedUser.value && finalStatus === 'approved') {
         updateMediaStatus(media.id, 'SUBSCRIBED');
     } else {
         updateMediaStatus(media.id, finalStatus);
     }
 
-    // 移除每日推荐
     if (currentRecommendation.value && currentRecommendation.value.id === media.id) {
       const poolIndex = recommendationPool.value.findIndex(item => item.id === media.id);
       if (poolIndex !== -1) { recommendationPool.value.splice(poolIndex, 1); }
@@ -781,7 +624,6 @@ const handleSubscribe = async (media) => {
     }
 
   } catch (error) {
-    // 6. 错误回滚
     console.error(error);
     updateMediaStatus(media.id, originalStatus);
     message.error(error.response?.data?.message || '提交请求失败');
@@ -790,16 +632,12 @@ const handleSubscribe = async (media) => {
   }
 };
 
-// ... (所有剩余的辅助函数和生命周期钩子保持不变) ...
 const onImageError = (e) => { e.target.src = '/default-avatar.png'; };
 const handleClickCard = (media) => {
-  // ★ 修改后的跳转逻辑
   if (media.in_library && media.emby_item_id && embyServerId.value) {
-    // 优先使用 registrationRedirectUrl，如果没有则使用 embyServerUrl
     let baseUrl = registrationRedirectUrl.value || embyServerUrl.value;
 
     if (baseUrl) {
-      // 去除末尾斜杠，防止双斜杠
       baseUrl = baseUrl.replace(/\/+$/, '');
       const embyDetailUrl = `${baseUrl}/web/index.html#!/item?id=${media.emby_item_id}&serverId=${embyServerId.value}`;
       window.open(embyDetailUrl, '_blank');
@@ -854,32 +692,24 @@ onMounted(() => {
   if (sentinel.value) { observer.observe(sentinel.value); }
 });
 onUnmounted(() => { 
-  // ★★★ 新增：移除监听 ★★★
   window.removeEventListener('resize', checkMobile);
   if (observer) { observer.disconnect(); } 
 });
 </script>
 
 <style scoped>
-/* ★★★ 核心布局：响应式 Grid ★★★ */
 .responsive-grid {
   display: grid;
-  gap: 16px; /* 卡片间距 */
+  gap: 16px; 
   margin-top: 24px;
-  /* 
-     自动填充列数 
-     minmax(150px, 1fr): 卡片最小 150px，最大自动拉伸
-     150px 是一个适合竖向海报的宽度，手机上能显示2列，大屏能显示很多列
-  */
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
 }
 
 .grid-item {
-  min-width: 0; /* 防止内容溢出 */
+  min-width: 0; 
   height: 100%;
 }
 
-/* 卡片基础 */
 .media-card {
   cursor: pointer;
   transition: transform 0.2s ease, box-shadow 0.2s ease;
@@ -887,7 +717,7 @@ onUnmounted(() => {
   box-shadow: 0 2px 4px rgba(0,0,0,0.1);
   overflow: hidden;
   height: 100%;
-  background-color: #222; /* 深色底，防止图片加载闪烁 */
+  background-color: #222; 
   display: flex;
   flex-direction: column;
 }
@@ -897,11 +727,10 @@ onUnmounted(() => {
   z-index: 10;
 }
 
-/* 海报区域 */
 .poster-wrapper {
   position: relative;
   width: 100%;
-  aspect-ratio: 2 / 3; /* 强制保持海报比例 */
+  aspect-ratio: 2 / 3; 
   overflow: hidden;
 }
 .media-poster {
@@ -915,19 +744,17 @@ onUnmounted(() => {
   transform: scale(1.05);
 }
 
-/* ★★★ 底部遮罩信息区 (上浮式) ★★★ */
 .overlay-info {
   position: absolute;
   bottom: 0;
   left: 0;
   right: 0;
-  /* 渐变背景，保证文字清晰 */
   background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, rgba(0,0,0,0.6) 50%, transparent 100%);
   padding: 40px 8px 8px 8px; 
   display: flex;
   justify-content: space-between;
   align-items: flex-end;
-  pointer-events: none; /* 让点击穿透 */
+  pointer-events: none; 
 }
 
 .text-content {
@@ -954,11 +781,11 @@ onUnmounted(() => {
   color: rgba(255, 255, 255, 0.85);
   font-size: 0.8em;
   text-shadow: 0 1px 2px rgba(0,0,0,0.8);
-  overflow: hidden; /* 整体超出隐藏 */
+  overflow: hidden; 
 }
 
 .media-year {
-  flex-shrink: 0; /* 年份不压缩 */
+  flex-shrink: 0; 
 }
 
 .media-dot {
@@ -969,15 +796,13 @@ onUnmounted(() => {
 .media-genres {
   white-space: nowrap;
   overflow: hidden;
-  text-overflow: ellipsis; /* 类型太长时显示省略号 */
+  text-overflow: ellipsis; 
 }
 
-/* 稍微调整标题间距 */
 .media-title {
-  margin-bottom: 1px; /* 压缩一下行间距 */
+  margin-bottom: 1px; 
 }
 
-/* 评分角标 */
 .rating-badge {
   position: absolute;
   top: 6px;
@@ -994,10 +819,9 @@ onUnmounted(() => {
 }
 .actions-container {
   display: flex;
-  gap: 8px; /* 按钮之间的间距 */
+  gap: 8px; 
   align-items: center;
 }
-/* 交互按钮 (无背景纯图标版) */
 .action-btn {
   pointer-events: auto;
   width: 30px;
@@ -1013,18 +837,14 @@ onUnmounted(() => {
 }
 
 .action-btn:hover {
-  /* 悬停时只放大，不显示背景 */
   transform: scale(1.2);
   background-color: transparent;
 }
 
-/* 加强阴影，确保在白色海报上也能看清 */
 .shadow-icon {
-  /* 之前的阴影较淡，现在加深并扩散一点 */
   filter: drop-shadow(0 0 3px rgba(0,0,0,0.9));
 }
 
-/* ★★★ 缎带系统 (适配竖版卡片) ★★★ */
 .ribbon {
   position: absolute;
   top: -3px;
@@ -1051,7 +871,6 @@ onUnmounted(() => {
   transform: rotate(-45deg);
 }
 
-/* 缎带颜色 */
 .ribbon-green span { background-color: #67c23a; }
 .ribbon-blue span { background-color: #409eff; }
 .ribbon-purple span { background-color: #722ed1; }
@@ -1059,22 +878,19 @@ onUnmounted(() => {
 .ribbon-grey span { background-color: #909399; }
 .ribbon-dark span { background-color: #303133; }
 
-/* ★★★ “每日推荐”的专属样式 ★★★ */
 .recommendation-content {
   display: flex;
   flex-direction: column;
   height: 100%;
 }
 
-/* 1. 两栏布局的网格容器 */
 .recommendation-grid {
   display: flex;
-  gap: 24px; /* 控制左右两栏的间距 */
+  gap: 24px; 
 }
 
-/* 2. 左栏：海报 */
 .poster-column {
-  flex-shrink: 0; /* 防止海报被压缩 */
+  flex-shrink: 0; 
 }
 .recommendation-poster {
   width: 150px;
@@ -1085,20 +901,16 @@ onUnmounted(() => {
   display: block;
 }
 
-/* 3. 右栏：详情信息 */
 .details-column {
   display: flex;
-  flex-direction: column; /* 让右栏内部的元素垂直排列 */
-  min-width: 0; /* 防止 flex 布局溢出 */
+  flex-direction: column; 
+  min-width: 0; 
 }
 
-/* 4. 简介文本样式 */
 .overview-text {
-  flex-grow: 1; /* ★ 核心：让简介部分占据所有剩余空间，将按钮推到底部 */
-  /* 如果简介内容过少，按钮不会紧贴着它，而是会被推到卡片底部 */
+  flex-grow: 1; 
 }
 
-/* 5. 演员列表区域的样式 (基本不变) */
 .actor-list-container {
   display: flex;
   gap: 16px;
@@ -1112,7 +924,6 @@ onUnmounted(() => {
 .actor-list-container::-webkit-scrollbar-thumb { background: #555; border-radius: 3px; }
 .actor-list-container::-webkit-scrollbar-thumb:hover { background: #777; }
 
-/* 6. 单个演员卡片的样式 (不变) */
 .actor-card {
   flex-shrink: 0;
   width: 90px;
@@ -1140,7 +951,6 @@ onUnmounted(() => {
   overflow: hidden;
   text-overflow: ellipsis;
 }
-/* ★ 新增：用于在任务运行时禁用图标点击的样式 ★ */
 .action-icon.is-disabled {
   cursor: not-allowed;
   pointer-events: none;

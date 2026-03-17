@@ -13,7 +13,6 @@ from collections import defaultdict
 import task_manager
 import handler.emby as emby
 import handler.moviepilot as moviepilot
-import handler.nullbr as nullbr_handler
 import constants  
 from database import resubscribe_db, settings_db, maintenance_db, request_db, queries_db, media_db
 
@@ -1147,71 +1146,6 @@ def _execute_resubscribe(processor, task_name: str, target):
             else:
                 logger.error(f"  ➜ 提交订阅到 MoviePilot 失败: {item_name}")                
                 if i < total - 1: time.sleep(delay)
-
-        # =======================================================
-        # 场景 B: NULLBR 订阅
-        # =======================================================
-        elif sub_source == 'nullbr':
-            logger.info(f"  ➜ [NULLBR] 使用 NULLBR 源进行洗版/补货...")
-            
-            success = False
-            
-            if item_type == 'Movie':
-                # 电影直接搜
-                success = nullbr_handler.auto_download_best_resource(
-                    tmdb_id=tmdb_id, media_type='movie', title=item_name
-                )
-            
-            elif item_type == 'Season':
-                season_num = item.get('season_number')
-                
-                # ★★★ 核心逻辑修复：直接从 item 获取缺集信息 ★★★
-                missing_eps = item.get('missing_episodes', [])
-
-                if is_entire_season:
-                    # 模式 1: 强制整季搜索 (不传 episode_number)
-                    logger.info(f"  ➜ [NULLBR] 规则设定为整季洗版: S{season_num}")
-                    success = nullbr_handler.auto_download_best_resource(
-                        tmdb_id=tmdb_id, media_type='tv', title=item_name, season_number=season_num
-                    )
-                elif missing_eps:
-                    # 模式 2: 精准补集 (有缺集数据)
-                    logger.info(f"  ➜ [NULLBR] 执行精准补集: {missing_eps}")
-                    any_success = False
-                    
-                    for ep_num in missing_eps:
-                        if processor.is_stop_requested(): break
-                        
-                        ep_title = f"{item_name} E{ep_num}"
-                        # 调用 NULLBR 单集搜索
-                        if nullbr_handler.auto_download_best_resource(
-                            tmdb_id=tmdb_id, 
-                            media_type='tv', 
-                            title=ep_title, 
-                            season_number=season_num, 
-                            episode_number=ep_num # 传递集号
-                        ):
-                            any_success = True
-                            logger.info(f"    ✅ 第 {ep_num} 集推送成功")
-                            time.sleep(1.5) # 避免请求过快
-                        else:
-                            logger.warning(f"    ❌ 第 {ep_num} 集未找到资源")
-                            
-                    success = any_success
-                else:
-                    # 模式 3: 既没开启整季，也没缺集数据 (可能是画质洗版而非缺集洗版)
-                    # 这种情况下，默认回退到整季搜索
-                    logger.info(f"  ➜ [NULLBR] 无缺集信息，执行整季洗版: S{season_num}")
-                    success = nullbr_handler.auto_download_best_resource(
-                        tmdb_id=tmdb_id, media_type='tv', title=item_name, season_number=season_num
-                    )
-
-            if success:
-                settings_db.decrement_subscription_quota()
-                resubscribed_count += 1
-                resubscribe_db.update_resubscribe_item_status(item_id, 'subscribed')
-            
-            if i < total - 1: time.sleep(delay)
 
     final_message = f"任务完成！成功提交 {resubscribed_count} 个订阅，删除 {deleted_count} 个媒体项。"
     task_manager.update_status_from_thread(100, final_message)
