@@ -3,6 +3,37 @@
   <n-layout :content-style="{ padding: isMobile ? '12px' : '24px' }">
   <div>
     <n-page-header title="影视探索" subtitle="发现您感兴趣的下一部作品" />
+      <!-- ★★★ 新增：影巢 (HDHive) 配置与信息面板 ★★★ -->
+      <n-card class="dashboard-card" style="margin-top: 16px; background: linear-gradient(145deg, #1a1a24 0%, #14141c 100%); border: 1px solid #333;">
+        <n-space align="center" justify="space-between" :wrap="isMobile">
+          <n-space align="center">
+            <n-icon :component="CloudDownloadIcon" size="28" color="#f0a020" />
+            <span style="font-weight: bold; font-size: 16px; color: #f0a020;">影巢 (HDHive) 极速秒传</span>
+          </n-space>
+          <n-space align="center">
+            <n-input v-model:value="hdhiveApiKey" type="password" placeholder="输入 X-API-Key" show-password-on="click" style="width: 250px;" />
+            <n-button type="primary" color="#f0a020" @click="saveHDHiveConfig" :loading="savingHdhive">保存并连接</n-button>
+          </n-space>
+        </n-space>
+        
+        <n-collapse-transition :show="!!hdhiveUserInfo">
+          <n-divider style="margin: 12px 0;" />
+          <n-space align="center" :size="24" :wrap="isMobile">
+            <n-tag type="success" :bordered="false">
+              <template #icon><n-icon :component="PersonIcon" /></template>
+              用户: {{ hdhiveUserInfo?.nickname }}
+            </n-tag>
+            <n-tag type="warning" :bordered="false">
+              <template #icon><n-icon :component="StarIcon" /></template>
+              积分: {{ hdhiveUserInfo?.user_meta?.points || 0 }}
+            </n-tag>
+            <n-tag type="info" :bordered="false" v-if="hdhiveQuotaInfo">
+              <template #icon><n-icon :component="TicketIcon" /></template>
+              本周免费额度: {{ hdhiveQuotaInfo.remaining === -1 ? '无限' : hdhiveQuotaInfo.remaining }} / {{ hdhiveQuotaInfo.limit === 0 ? '无限' : hdhiveQuotaInfo.limit }}
+            </n-tag>
+          </n-space>
+        </n-collapse-transition>
+      </n-card>
       <n-grid :x-gap="24" :y-gap="24" :cols="isMobile ? 1 : 2" style="margin-top: 24px;">
         <!-- 左侧筛选面板 (占1列) -->
         <n-gi :span="1">
@@ -286,45 +317,82 @@
 
     <div ref="sentinel" style="height: 50px;"></div>
     
-    <!-- ★★★ 新增：季选择模态框 ★★★ -->
-    <n-modal v-model:show="showSeasonModal" preset="card" title="选择要订阅的季" style="width: 500px; max-width: 90%;">
+    <!-- ★★★ 修改：季选择模态框 (加入影巢按钮) ★★★ -->
+    <n-modal v-model:show="showSeasonModal" preset="card" title="选择要订阅的季" style="width: 600px; max-width: 95%;">
       <n-spin :show="loadingSeasons">
-        <div v-if="seasonList.length === 0 && !loadingSeasons" style="text-align: center; color: #888; padding: 20px;">
-          未找到季信息
-        </div>
-        
+        <div v-if="seasonList.length === 0 && !loadingSeasons" style="text-align: center; color: #888; padding: 20px;">未找到季信息</div>
         <n-space vertical v-else>
-          <n-button 
-            v-for="season in seasonList" 
-            :key="season.id" 
-            block 
-            secondary
-            style="justify-content: space-between; height: auto; padding: 10px;"
-            :disabled="season.in_library || season.subscription_status === 'SUBSCRIBED' || season.subscription_status === 'WANTED'"
-            @click="submitSeasonSubscription(season)"
-          >
-            <div style="display: flex; align-items: center; gap: 12px; text-align: left; width: 100%;">
-              <img v-if="season.poster_path" :src="`https://image.tmdb.org/t/p/w92${season.poster_path}`" style="width: 40px; border-radius: 4px; flex-shrink: 0;" />
-              <div v-else style="width: 40px; height: 60px; background: #333; border-radius: 4px; flex-shrink: 0;"></div>
-              <div style="flex-grow: 1; min-width: 0;">
-                <div style="font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ season.name }}</div>
+          <n-card v-for="season in seasonList" :key="season.id" size="small" style="background: #222;">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <img v-if="season.poster_path" :src="`https://image.tmdb.org/t/p/w92${season.poster_path}`" style="width: 40px; border-radius: 4px;" />
+              <div v-else style="width: 40px; height: 60px; background: #333; border-radius: 4px;"></div>
+              <div style="flex-grow: 1;">
+                <div style="font-weight: bold;">{{ season.name }}</div>
                 <div style="font-size: 12px; color: #888;">{{ season.episode_count }} 集 <span v-if="season.air_date">· {{ season.air_date }}</span></div>
               </div>
-              <div style="flex-shrink: 0; margin-left: 8px;">
+              <div style="display: flex; gap: 8px; align-items: center;">
                 <n-tag v-if="season.in_library" type="success" size="small">已入库</n-tag>
-                <n-tag v-else-if="season.subscription_status === 'SUBSCRIBED'" type="info" size="small">已订阅</n-tag>
-                <n-tag v-else-if="season.subscription_status === 'WANTED'" type="primary" size="small">待订阅</n-tag>
-                <n-tag v-else-if="season.subscription_status === 'REQUESTED'" type="warning" size="small">待审核</n-tag>
-                <n-button v-else size="small" type="primary" @click.stop="submitSeasonSubscription(season)" :loading="subscribingSeasonId === season.id">
-                  订阅
+                <template v-else>
+                  <!-- MP 常规订阅按钮 -->
+                  <n-button size="small" type="primary" secondary @click="submitSeasonSubscription(season)" :loading="subscribingSeasonId === season.id" :disabled="season.subscription_status === 'SUBSCRIBED' || season.subscription_status === 'WANTED'">
+                    <template #icon><n-icon><LightningIcon/></n-icon></template> MP订阅
+                  </n-button>
+                  <!-- 影巢秒传按钮 -->
+                  <n-button size="small" color="#f0a020" @click="openHDHiveResourceModal(currentSeriesForSearch, season.season_number)">
+                    <template #icon><n-icon><CloudDownloadIcon/></n-icon></template> 影巢秒传
+                  </n-button>
+                </template>
+              </div>
+            </div>
+          </n-card>
+          <n-divider style="margin: 12px 0;" />
+          <n-button block type="primary" @click="submitAllSeasonsSubscription" :loading="subscribingAllSeasons">一键提交整剧到 MoviePilot</n-button>
+        </n-space>
+      </n-spin>
+    </n-modal>
+
+    <!-- ★★★ 新增：电影订阅方式选择模态框 ★★★ -->
+    <n-modal v-model:show="showMovieChoiceModal" preset="card" title="选择获取方式" style="width: 400px;">
+      <n-space vertical size="large">
+        <n-button block type="primary" size="large" secondary @click="submitMovieToMP">
+          <template #icon><n-icon size="20"><LightningIcon/></n-icon></template>
+          提交到 MoviePilot (常规挂机)
+        </n-button>
+        <n-button block color="#f0a020" size="large" secondary @click="openHDHiveResourceModal(currentMovieForChoice, null)">
+          <template #icon><n-icon size="20"><CloudDownloadIcon/></n-icon></template>
+          从 影巢 (HDHive) 极速秒传
+        </n-button>
+      </n-space>
+    </n-modal>
+
+    <!-- ★★★ 新增：影巢资源列表模态框 ★★★ -->
+    <n-modal v-model:show="showHDHiveResourceModal" preset="card" :title="`影巢资源: ${currentHDHiveMedia?.title || currentHDHiveMedia?.name}`" style="width: 800px; max-width: 95%;">
+      <n-spin :show="loadingHDHiveResources">
+        <n-empty v-if="hdhiveResources.length === 0 && !loadingHDHiveResources" description="影巢暂无该资源，请尝试使用 MoviePilot 常规订阅。" />
+        <n-space vertical v-else>
+          <n-card v-for="res in hdhiveResources" :key="res.slug" size="small" hoverable style="background: #1e1e24; border-color: #333;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <div>
+                <div style="font-weight: bold; font-size: 15px; margin-bottom: 4px; color: #e0e0e0;">{{ res.title || '未命名资源' }}</div>
+                <n-space size="small" style="font-size: 12px;">
+                  <n-tag size="small" type="info" :bordered="false">{{ res.share_size || '未知大小' }}</n-tag>
+                  <n-tag size="small" type="success" :bordered="false" v-if="res.video_resolution?.length">{{ res.video_resolution.join(', ') }}</n-tag>
+                  <n-tag size="small" type="warning" :bordered="false" v-if="res.source?.length">{{ res.source.join(', ') }}</n-tag>
+                  <span style="color: #888;" v-if="res.remark">{{ res.remark }}</span>
+                </n-space>
+              </div>
+              <div style="flex-shrink: 0; margin-left: 16px; text-align: right;">
+                <div style="font-size: 12px; color: #f0a020; margin-bottom: 4px;">
+                  <span v-if="res.already_owned">已解锁</span>
+                  <span v-else-if="res.actual_unlock_points === 0">免费</span>
+                  <span v-else>需 {{ res.actual_unlock_points }} 积分</span>
+                </div>
+                <n-button type="primary" color="#f0a020" size="small" @click="downloadFromHDHive(res)" :loading="downloadingSlug === res.slug">
+                  一键转存
                 </n-button>
               </div>
             </div>
-          </n-button>
-          <n-divider style="margin: 12px 0;" />
-          <n-button block type="primary" @click="submitAllSeasonsSubscription" :loading="subscribingAllSeasons">
-            一键订阅所有缺失季
-          </n-button>
+          </n-card>
         </n-space>
       </n-spin>
     </n-modal>
@@ -344,8 +412,7 @@ import {
   NInput, NInputGroup, NSkeleton, NEllipsis, NEmpty, NDivider, NH4, NH3, NTooltip, NModal, NTag
 } from 'naive-ui';
 // ★ 引入 ListIcon
-import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon, ListOutline as ListIcon } from '@vicons/ionicons5';
-
+import { Heart, HeartOutline, HourglassOutline, Star as StarIcon, FlashOutline as LightningIcon, DiceOutline as DiceIcon, ListOutline as ListIcon, CloudDownloadOutline as CloudDownloadIcon, PersonOutline as PersonIcon, TicketOutline as TicketIcon } from '@vicons/ionicons5';
 const authStore = useAuthStore();
 const message = useMessage();
 const router = useRouter(); 
@@ -630,16 +697,124 @@ const updateMediaStatus = (mediaId, newStatus) => {
   }
 };
 
-// ★★★ 核心修改：处理订阅逻辑，剧集弹出模态框 ★★★
+// ★★★ 影巢相关状态 ★★★
+const hdhiveApiKey = ref('');
+const hdhiveUserInfo = ref(null);
+const hdhiveQuotaInfo = ref(null);
+const savingHdhive = ref(false);
+
+const showMovieChoiceModal = ref(false);
+const currentMovieForChoice = ref(null);
+
+const showHDHiveResourceModal = ref(false);
+const loadingHDHiveResources = ref(false);
+const hdhiveResources = ref([]);
+const currentHDHiveMedia = ref(null);
+const downloadingSlug = ref(null);
+
+// ★★★ 影巢 API 调用逻辑 ★★★
+const fetchHDHiveConfig = async () => {
+  try {
+    const res = await axios.get('/api/hdhive/config');
+    if (res.data.success) {
+      hdhiveApiKey.value = res.data.api_key;
+      hdhiveUserInfo.value = res.data.user_info;
+      hdhiveQuotaInfo.value = res.data.quota_info;
+    }
+  } catch (e) {
+    console.error("获取影巢配置失败", e);
+  }
+};
+
+const saveHDHiveConfig = async () => {
+  if (!hdhiveApiKey.value) return message.warning("请输入 API Key");
+  savingHdhive.value = true;
+  try {
+    const res = await axios.post('/api/hdhive/config', { api_key: hdhiveApiKey.value });
+    if (res.data.success) {
+      message.success(res.data.message);
+      hdhiveUserInfo.value = res.data.user_info;
+      hdhiveQuotaInfo.value = res.data.quota_info;
+    } else {
+      message.error(res.data.message);
+    }
+  } catch (e) {
+    message.error("保存失败");
+  } finally {
+    savingHdhive.value = false;
+  }
+};
+
+// 打开影巢资源列表弹窗
+const openHDHiveResourceModal = async (media, seasonNumber = null) => {
+  if (!hdhiveApiKey.value) {
+    message.warning("请先在页面顶部配置影巢 API Key！");
+    return;
+  }
+  
+  showMovieChoiceModal.value = false; // 如果是从电影弹窗来的，关掉它
+  currentHDHiveMedia.value = media;
+  showHDHiveResourceModal.value = true;
+  loadingHDHiveResources.value = true;
+  hdhiveResources.value = [];
+  
+  try {
+    const params = {
+      tmdb_id: media.id,
+      media_type: media.media_type || mediaType.value
+    };
+    if (seasonNumber !== null) {
+      params.season = seasonNumber;
+    }
+    
+    const res = await axios.get('/api/hdhive/resources', { params });
+    if (res.data.success) {
+      hdhiveResources.value = res.data.data;
+    } else {
+      message.error(res.data.message);
+    }
+  } catch (e) {
+    message.error("获取影巢资源失败");
+  } finally {
+    loadingHDHiveResources.value = false;
+  }
+};
+
+// 触发影巢下载
+const downloadFromHDHive = async (resource) => {
+  downloadingSlug.value = resource.slug;
+  try {
+    const payload = {
+      slug: resource.slug,
+      tmdb_id: currentHDHiveMedia.value.id,
+      media_type: currentHDHiveMedia.value.media_type || mediaType.value,
+      title: currentHDHiveMedia.value.title || currentHDHiveMedia.value.name
+    };
+    const res = await axios.post('/api/hdhive/download', payload);
+    if (res.data.success) {
+      message.success(res.data.message);
+      // 刷新一下用户信息以更新积分
+      fetchHDHiveConfig();
+      setTimeout(() => { showHDHiveResourceModal.value = false; }, 1500);
+    } else {
+      message.error(res.data.message);
+    }
+  } catch (e) {
+    message.error("触发下载失败");
+  } finally {
+    downloadingSlug.value = null;
+  }
+};
+
+// ★★★ 改造原有的 handleSubscribe ★★★
 const handleSubscribe = async (media) => {
-  // 1. 如果是剧集，弹出季选择模态框
+  // 1. 如果是剧集，弹出季选择模态框 (逻辑不变，模板里已经加了影巢按钮)
   if (media.media_type === 'tv' || mediaType.value === 'tv') {
     currentSeriesForSearch.value = media;
     showSeasonModal.value = true;
     loadingSeasons.value = true;
     seasonList.value = [];
     try {
-      // 调用后端接口获取季信息及本地状态
       const res = await axios.get(`/api/discover/tmdb/tv/${media.id}`);
       if (res.data && res.data.seasons) {
         seasonList.value = res.data.seasons
@@ -655,18 +830,18 @@ const handleSubscribe = async (media) => {
     return;
   }
 
-  // 2. 如果是电影，走原来的直接订阅逻辑
+  // 2. 如果是电影，弹出选择模态框 (MP or 影巢)
+  currentMovieForChoice.value = media;
+  showMovieChoiceModal.value = true;
+};
+
+// 电影：提交到 MP 的实际逻辑 (从原 handleSubscribe 拆分出来)
+const submitMovieToMP = async () => {
+  const media = currentMovieForChoice.value;
+  showMovieChoiceModal.value = false;
+  
   if (subscribingId.value === media.id) return;
-
   const originalStatus = media.subscription_status || 'NONE';
-
-  if (originalStatus === 'SUBSCRIBED' || originalStatus === 'PENDING_RELEASE') {
-    return;
-  }
-  if (!isPrivilegedUser.value && (originalStatus === 'REQUESTED' || originalStatus === 'WANTED')) {
-    return;
-  }
-
   subscribingId.value = media.id;
   const optimisticStatus = isPrivilegedUser.value ? 'WANTED' : 'REQUESTED';
   updateMediaStatus(media.id, optimisticStatus);
@@ -677,33 +852,20 @@ const handleSubscribe = async (media) => {
       item_type: 'Movie',
       item_name: media.title || media.name,
     });
-
     message.success(portalResponse.data.message);
-    
     let finalStatus = portalResponse.data.status;
-
-    if (!isPrivilegedUser.value) {
-      finalStatus = 'REQUESTED';
-    } else {
-      if (!finalStatus || finalStatus === 'NONE') {
-        finalStatus = 'WANTED';
-      }
-    }
+    if (!isPrivilegedUser.value) finalStatus = 'REQUESTED';
+    else if (!finalStatus || finalStatus === 'NONE') finalStatus = 'WANTED';
     
-    if (isPrivilegedUser.value && finalStatus === 'approved') {
-        updateMediaStatus(media.id, 'SUBSCRIBED');
-    } else {
-        updateMediaStatus(media.id, finalStatus);
-    }
+    if (isPrivilegedUser.value && finalStatus === 'approved') updateMediaStatus(media.id, 'SUBSCRIBED');
+    else updateMediaStatus(media.id, finalStatus);
 
     if (currentRecommendation.value && currentRecommendation.value.id === media.id) {
       const poolIndex = recommendationPool.value.findIndex(item => item.id === media.id);
-      if (poolIndex !== -1) { recommendationPool.value.splice(poolIndex, 1); }
+      if (poolIndex !== -1) recommendationPool.value.splice(poolIndex, 1);
       pickRandomRecommendation();
     }
-
   } catch (error) {
-    console.error(error);
     updateMediaStatus(media.id, originalStatus);
     message.error(error.response?.data?.message || '提交请求失败');
   } finally {
@@ -818,6 +980,7 @@ onMounted(() => {
   fetchStudios();
   fetchRatings();
   fetchEmbyConfig(); 
+  fetchHDHiveConfig();
   fetchRecommendationPool();
   resetAndFetch();
   observer = new IntersectionObserver((entries) => {
