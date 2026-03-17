@@ -30,7 +30,7 @@
             </n-tag>
             <n-tag type="info" :bordered="false" v-if="hdhiveQuotaInfo">
               <template #icon><n-icon :component="TicketIcon" /></template>
-              本周免费额度: {{ hdhiveQuotaInfo.remaining === -1 ? '无限' : hdhiveQuotaInfo.remaining }} / {{ hdhiveQuotaInfo.limit === 0 ? '无限' : hdhiveQuotaInfo.limit }}
+              今日剩余请求: {{ hdhiveQuotaInfo.endpoint_remaining ?? '无限' }}
             </n-tag>
           </n-space>
         </div>
@@ -385,8 +385,8 @@
               <div style="flex-shrink: 0; margin-left: 16px; text-align: right;">
                 <div style="font-size: 12px; color: #f0a020; margin-bottom: 4px;">
                   <span v-if="res.already_owned">已解锁</span>
-                  <span v-else-if="res.actual_unlock_points === 0">免费</span>
-                  <span v-else>需 {{ res.actual_unlock_points }} 积分</span>
+                  <span v-else-if="res.unlock_points === 0 || res.unlock_points === null">免费</span>
+                  <span v-else>需 {{ res.unlock_points }} 积分</span>
                 </div>
                 <n-button type="primary" color="#f0a020" size="small" @click="downloadFromHDHive(res)" :loading="downloadingSlug === res.slug">
                   一键转存

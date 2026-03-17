@@ -104,21 +104,30 @@ class HDHiveClient:
             return None
         
     def get_user_info(self):
-        """获取当前用户信息 (积分等)"""
+        """获取当前用户信息 (兼容普通用户和 Premium 用户)"""
         try:
             url = f"{self.BASE_URL}/me"
-            res = requests.get(url, headers=self.headers, timeout=10).json()
-            if res.get("success"):
-                return res.get("data")
+            res = requests.get(url, headers=self.headers, timeout=10)
+            
+            # ★ 核心修复：如果返回 403，说明是普通用户，没有权限调用 /me 接口
+            if res.status_code == 403:
+                return {
+                    "nickname": "普通用户", 
+                    "user_meta": {"points": "未知 (需Premium)"}
+                }
+                
+            data = res.json()
+            if data.get("success"):
+                return data.get("data")
             return None
         except Exception as e:
             logger.error(f"HDHive 获取用户信息失败: {e}")
             return None
 
-    def get_weekly_quota(self):
-        """获取每周免费额度"""
+    def get_quota(self):
+        """获取每日 API 配额 (所有用户可用)"""
         try:
-            url = f"{self.BASE_URL}/vip/weekly-free-quota"
+            url = f"{self.BASE_URL}/quota"
             res = requests.get(url, headers=self.headers, timeout=10).json()
             if res.get("success"):
                 return res.get("data")

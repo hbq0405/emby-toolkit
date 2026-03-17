@@ -19,7 +19,7 @@ def handle_config():
         if api_key:
             client = HDHiveClient(api_key)
             user_info = client.get_user_info()
-            quota_info = client.get_weekly_quota()
+            quota_info = client.get_quota() # ★ 改用普通配额接口
             
         return jsonify({
             "success": True, 
@@ -33,9 +33,10 @@ def handle_config():
         settings_db.save_setting('hdhive_api_key', api_key)
         
         client = HDHiveClient(api_key)
-        user_info = client.get_user_info()
-        if user_info:
-            quota_info = client.get_weekly_quota()
+        # ★ 核心修复：使用 ping 接口来验证 Key 是否有效，因为 ping 是所有用户都能用的
+        if client.ping():
+            user_info = client.get_user_info()
+            quota_info = client.get_quota() # ★ 改用普通配额接口
             return jsonify({
                 "success": True, 
                 "message": "API Key 保存成功！",
