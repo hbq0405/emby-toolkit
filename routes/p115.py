@@ -975,7 +975,7 @@ def trigger_music_sync():
 @p115_bp.route('/music/upload', methods=['POST'])
 @admin_required
 def upload_music_file():
-    """上传音乐文件并生成 STRM (调用原生 update_local_path 补充目录路径)"""
+    """上传音乐文件并生成 STRM (附属文件直接存本地，不传网盘)"""
     if 'file' not in request.files:
         return jsonify({"success": False, "message": "没有文件"}), 400
         
@@ -992,20 +992,23 @@ def upload_music_file():
     import os
     import time
 
-    client = P115Service.get_client()
-    if not client:
-        return jsonify({"success": False, "message": "115 客户端未初始化"}), 500
-
     try:
         # ==========================================
-        # 步骤 1：提前计算目标目录的基础相对路径
+        # 步骤 1：提前判断文件类型与计算本地基础路径
         # ==========================================
+        audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
+        ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
+        is_audio = ext in audio_exts
+
         music_root_cid = settings_db.get_setting('p115_music_root_cid')
         music_root_name = settings_db.get_setting('p115_music_root_name') or "音乐库"
         music_root_name = music_root_name.strip('/')
         target_rel_path = ""
         
-        if str(target_cid) != str(music_root_cid):
+        # 如果是音频文件，需要用到 client 来查路径；如果是附属文件，尽量不调 API
+        client = P115Service.get_client()
+        
+        if str(target_cid) != str(music_root_cid) and client:
             dir_info = client.fs_files({'cid': target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
             path_nodes = dir_info.get('path', [])
             
@@ -1024,9 +1027,36 @@ def upload_music_file():
 
         base_local_path = os.path.join(music_root_name, target_rel_path).replace('\\', '/')
 
+        # 提前计算最终的本地绝对路径目录
+        config = get_config()
+        local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+        local_dir = os.path.join(local_root, base_local_path) if local_root else ""
+        
+        if relative_path and '/' in relative_path and local_dir:
+            clean_path = relative_path.strip('/')
+            local_dir = os.path.join(local_dir, os.path.dirname(clean_path))
+
         # ==========================================
+        # ★ 核心优化：如果是附属文件，直接存本地，不走 115
+        # ==========================================
+        if not is_audio:
+            if not local_root:
+                return jsonify({"success": False, "message": "未配置本地 STRM 根目录，无法保存附属文件"}), 400
+                
+            os.makedirs(local_dir, exist_ok=True)
+            local_file_path = os.path.join(local_dir, file.filename)
+            file.save(local_file_path) # Flask 原生方法直接保存文件
+            
+            logger.info(f"  🖼️ [本地直存] 附属文件已直接保存到本地 STRM 目录: {local_file_path}")
+            return jsonify({"success": True, "message": f"{file.filename} 已直接保存到本地"})
+
+        # ==========================================
+        # 以下为音频文件的原有逻辑 (走 115 上传)
+        # ==========================================
+        if not client:
+            return jsonify({"success": False, "message": "115 客户端未初始化"}), 500
+
         # 步骤 2：动态创建拖拽的文件夹并写入缓存
-        # ==========================================
         final_cid = target_cid
         if relative_path and '/' in relative_path:
             clean_path = relative_path.strip('/')
@@ -1041,14 +1071,12 @@ def upload_music_file():
                 cached_cid = P115CacheManager.get_cid(current_pid, part)
                 if cached_cid:
                     current_pid = cached_cid
-                    # ★ 使用原生方法更新路径
                     P115CacheManager.update_local_path(cached_cid, current_local_path)
                     continue
                 
                 mk_res = client.fs_mkdir(part, current_pid)
                 if mk_res.get('state'):
                     new_cid = mk_res.get('cid')
-                    # ★ 原生保存 + 原生更新路径
                     P115CacheManager.save_cid(new_cid, current_pid, part)
                     P115CacheManager.update_local_path(new_cid, current_local_path)
                     current_pid = new_cid
@@ -1059,7 +1087,6 @@ def upload_music_file():
                         for item in search_res.get('data', []):
                             if item.get('fn') == part and str(item.get('fc')) == '0':
                                 new_cid = item.get('fid')
-                                # ★ 原生保存 + 原生更新路径
                                 P115CacheManager.save_cid(new_cid, current_pid, part)
                                 P115CacheManager.update_local_path(new_cid, current_local_path)
                                 current_pid = new_cid
@@ -1072,9 +1099,7 @@ def upload_music_file():
                         raise Exception(f"无法创建或找到目录: {part} (115后端同步延迟)")
             final_cid = current_pid
 
-        # ==========================================
         # 步骤 3：执行上传
-        # ==========================================
         file_data = file.read()
         file_size = len(file_data)
         file.seek(0) 
@@ -1084,26 +1109,12 @@ def upload_music_file():
         file_id = upload_res.get('file_id')
         file_sha1 = upload_res.get('sha1')
 
-        # ==========================================
         # 步骤 4：生成 STRM 并写入文件缓存
-        # ==========================================
-        config = get_config()
-        local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
         etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
         
-        audio_exts = {'mp3', 'flac', 'wav', 'ape', 'm4a', 'aac', 'ogg', 'wma', 'alac'}
-        ext = file.filename.split('.')[-1].lower() if '.' in file.filename else ''
-        
-        if ext in audio_exts and local_root and etk_url and pick_code:
+        if local_root and etk_url and pick_code:
             strm_name = os.path.splitext(file.filename)[0] + ".strm"
-            
-            local_dir = os.path.join(local_root, base_local_path)
-            
-            if relative_path and '/' in relative_path:
-                clean_path = relative_path.strip('/')
-                local_dir = os.path.join(local_dir, os.path.dirname(clean_path))
             os.makedirs(local_dir, exist_ok=True)
-            
             strm_path = os.path.join(local_dir, strm_name)
             
             if not etk_url.startswith('http'):
@@ -1124,8 +1135,6 @@ def upload_music_file():
                     sha1=file_sha1, pick_code=pick_code,
                     local_path=file_local_path, size=file_size
                 )
-        else:
-            logger.debug(f"  🎵 附属文件已上传至网盘，跳过本地 STRM 生成: {file.filename}")
 
         return jsonify({"success": True, "message": f"{file.filename} 上传成功"})
     except Exception as e:
