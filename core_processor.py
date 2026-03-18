@@ -4033,6 +4033,9 @@ class MediaProcessor:
             success_count = 0
             import requests
             
+            # ★ 获取系统配置的代理
+            proxies = config_manager.get_proxies_for_requests()
+            
             for tmdb_path, local_name in downloads:
                 if not tmdb_path: continue
                 full_url = f"{base_image_url}{tmdb_path}"
@@ -4042,7 +4045,8 @@ class MediaProcessor:
                     continue
 
                 try:
-                    resp = requests.get(full_url, timeout=15)
+                    # ★ 在请求中加入 proxies 参数
+                    resp = requests.get(full_url, timeout=15, proxies=proxies)
                     if resp.status_code == 200:
                         with open(save_path, 'wb') as f:
                             f.write(resp.content)
