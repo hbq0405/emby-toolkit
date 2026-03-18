@@ -376,12 +376,12 @@ class SchedulerManager:
                     if resp.get("success") and resp.get("is_pro"):
                         config_manager.APP_CONFIG['is_pro_active'] = True
                         config_manager.APP_CONFIG['pro_expire_time'] = resp.get("expire_time", "")
-                        logger.debug("  💎 Pro 状态有效。")
+                        # logger.debug("  💎 Pro 状态有效。")
                     else:
                         config_manager.APP_CONFIG['is_pro_active'] = False
                         logger.warning(f"  ⚠️ Pro 状态已失效或过期！已降级为免费版。原因: {resp.get('msg')}")
                 except Exception as e:
-                    logger.debug(f"  ⚠️ 连接验证服务器失败，暂时保持当前状态。")
+                    pass
 
         try:
             self.scheduler.add_job(
@@ -391,9 +391,9 @@ class SchedulerManager:
                 name="Pro状态检查",
                 replace_existing=True
             )
-            logger.trace("  ➜ 已成功设置'Pro状态每日查岗'任务，执行计划: 每天 03:00。")
+            # logger.trace("  ➜ 已成功设置'Pro状态检查'任务，执行计划: 每天 03:00。")
         except Exception as e:
-            logger.error(f"设置'Pro状态查岗'任务失败: {e}")
+            logger.error(f"设置'Pro状态检查'任务失败: {e}")
 
 # 创建一个全局单例，方便在其他地方调用
 scheduler_manager = SchedulerManager()
