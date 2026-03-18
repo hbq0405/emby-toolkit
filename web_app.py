@@ -227,35 +227,25 @@ def initialize_processors():
         # =========================================================
         # ★★★ Pro 版本在线验证逻辑 ★★★
         # =========================================================
-        # 默认设为普通版
         config_manager.APP_CONFIG['is_pro_active'] = False 
         
-        # 从数据库读取用户填写的卡密
-        license_key = settings_db.get_setting("pro_license_key")
-        
-        if license_key:
-            logger.info("  ➜ 检测到 Pro 激活码，正在连接云端验证...")
+        if server_id_local:
+            logger.info("  ➜ 正在连接云端验证 Pro 授权状态...")
             try:
                 import requests
-                # 替换为你自己的 CF Worker 域名
-                verify_url = "https://auth.55565576.xyz/" 
-                payload = {
-                    "license_key": license_key.strip(),
-                    "server_id": server_id_local
-                }
-                # 设置 5 秒超时，防止 CF 抽风导致启动卡死
+                verify_url = "https://auth.55565576.xyz" 
+                # ★ 启动时只查岗，不消耗卡密
+                payload = {"action": "check", "server_id": server_id_local}
                 resp = requests.post(verify_url, json=payload, timeout=5).json()
                 
                 if resp.get("success") and resp.get("is_pro"):
-                        config_manager.APP_CONFIG['is_pro_active'] = True
-                        config_manager.APP_CONFIG['pro_expire_time'] = resp.get("expire_time", "2099-12-31T23:59:59Z")
-                        logger.info("  💎 Pro 验证通过！已解锁全部功能。")
+                    config_manager.APP_CONFIG['is_pro_active'] = True
+                    config_manager.APP_CONFIG['pro_expire_time'] = resp.get("expire_time", "")
+                    logger.info("  💎 Pro 高级版验证通过！已解锁全部功能。")
                 else:
-                    logger.warning(f"  ⚠️ Pro 验证失败: {resp.get('msg')}。已降级为免费基础版。")
+                    logger.info("  ➜ 当前运行版本: 免费基础版 (支持升级 Pro 解锁 0 带宽消耗直链)")
             except Exception as e:
                 logger.error(f"  ❌ Pro 验证服务器连接失败: {e}。已降级为免费基础版。")
-        else:
-            logger.info("  ➜ 当前运行版本: 免费基础版 (升级 Pro 解锁 302 反代)")
 
     # 初始化 media_processor_instance_local
     try:

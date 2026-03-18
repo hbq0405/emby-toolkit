@@ -366,13 +366,13 @@ class SchedulerManager:
             pass
 
         def verify_pro_status_background():
-            license_key = settings_db.get_setting("pro_license_key")
             server_id = extensions.EMBY_SERVER_ID
-            if license_key and server_id:
+            if server_id:
                 try:
                     import requests
-                    verify_url = "https://auth.55565576.xyz" # 你的 CF Worker 域名
-                    resp = requests.post(verify_url, json={"license_key": license_key, "server_id": server_id}, timeout=10).json()
+                    verify_url = "https://auth.55565576.xyz" 
+                    payload = {"action": "check", "server_id": server_id}
+                    resp = requests.post(verify_url, json=payload, timeout=10).json()
                     if resp.get("success") and resp.get("is_pro"):
                         config_manager.APP_CONFIG['is_pro_active'] = True
                         config_manager.APP_CONFIG['pro_expire_time'] = resp.get("expire_time", "")

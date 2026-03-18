@@ -502,6 +502,7 @@ def activate_pro():
     
     try:
         payload = {
+            "action": "activate",  # ★ 告诉 CF 这是在充值
             "license_key": license_key,
             "server_id": server_id
         }
@@ -529,4 +530,48 @@ def activate_pro():
             
     except Exception as e:
         logger.error(f"激活请求异常: {e}")
+        return jsonify({"success": False, "message": "连接验证服务器失败，请检查网络"}), 500
+
+@system_bp.route('/system/transfer_pro', methods=['POST'])
+@admin_required
+def transfer_pro():
+    """处理前端发来的 Pro 换绑请求"""
+    data = request.json
+    license_key = data.get('license_key', '').strip()
+    
+    if not license_key:
+        return jsonify({"success": False, "message": "请输入曾使用过的激活码"}), 400
+        
+    server_id = extensions.EMBY_SERVER_ID
+    if not server_id:
+        return jsonify({"success": False, "message": "无法获取本机 Server ID，请确保 Emby 连接正常"}), 500
+
+    verify_url = "https://auth.55565576.xyz"  # 你的 CF Worker 域名
+    
+    try:
+        payload = {
+            "action": "transfer",  # ★ 告诉 CF 这是在换绑
+            "license_key": license_key,
+            "server_id": server_id
+        }
+        logger.info(f"正在向云端请求设备换绑, 凭证: {license_key}")
+        
+        resp = requests.post(verify_url, json=payload, timeout=10)
+        result = resp.json()
+        
+        if result.get("success") and result.get("is_pro"):
+            settings_db.save_setting("pro_license_key", license_key)
+            expire_time = result.get("expire_time", "2099-12-31T23:59:59Z")
+            settings_db.save_setting("pro_expire_time", expire_time)
+            
+            config_manager.APP_CONFIG['is_pro_active'] = True
+            config_manager.APP_CONFIG['pro_expire_time'] = expire_time
+            
+            logger.info(f"💎 Pro 设备换绑成功！到期时间: {expire_time}")
+            return jsonify({"success": True, "message": result.get("msg", "换绑成功！")})
+        else:
+            return jsonify({"success": False, "message": result.get("msg", "换绑失败")}), 400
+            
+    except Exception as e:
+        logger.error(f"换绑请求异常: {e}")
         return jsonify({"success": False, "message": "连接验证服务器失败，请检查网络"}), 500

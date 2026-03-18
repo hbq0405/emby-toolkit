@@ -39,19 +39,20 @@
                       </div>
                       
                       <!-- 按钮状态 -->
-                      <n-button
-                        v-if="!configModel?.is_pro_active"
-                        type="warning"
-                        size="large"
-                        strong
-                        @click="showProModal = true"
-                      >
-                        <template #icon><n-icon><DiamondIcon /></n-icon></template>
-                        升级 Pro
-                      </n-button>
-                      <n-tag v-else type="warning" size="large" round :bordered="false" style="font-weight: bold; font-size: 14px; padding: 0 15px;">
-                        已激活
-                      </n-tag>
+                      <n-space align="center">
+                        <n-tag v-if="configModel?.is_pro_active" type="warning" size="large" round :bordered="false" style="font-weight: bold; font-size: 14px; padding: 0 15px;">
+                          已激活
+                        </n-tag>
+                        <n-button
+                          type="warning"
+                          size="large"
+                          strong
+                          @click="showProModal = true"
+                        >
+                          <template #icon><n-icon><DiamondIcon /></n-icon></template>
+                          {{ configModel?.is_pro_active ? '续期 Pro' : '升级 Pro' }}
+                        </n-button>
+                      </n-space>
                     </div>
                   </n-card>
                 </n-gi>
@@ -1619,68 +1620,82 @@
       </n-space>
     </template>
   </n-modal>
-  <!-- ★★★ 新增：Pro 激活模态框 ★★★ -->
-  <n-modal v-model:show="showProModal" preset="card" title="💎 升级 Pro 高级版" style="width: 500px;">
-    <n-space vertical :size="20">
-      
-      <!-- 套餐选择 -->
-      <n-radio-group v-model:value="proTier" name="pro_tier_group" style="width: 100%;">
-        <n-grid :cols="3" :x-gap="12">
-          <n-gi>
-            <n-radio-button value="month" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
-              <div style="font-size: 16px; font-weight: bold;">月付</div>
-              <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥8</div>
-            </n-radio-button>
-          </n-gi>
-          <n-gi>
-            <n-radio-button value="year" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
-              <div style="font-size: 16px; font-weight: bold;">年付</div>
-              <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥68</div>
-            </n-radio-button>
-          </n-gi>
-          <n-gi>
-            <n-radio-button value="lifetime" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
-              <div style="font-size: 16px; font-weight: bold;">终身</div>
-              <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥188 （含部署）</div>
-            </n-radio-button>
-          </n-gi>
-        </n-grid>
-      </n-radio-group>
+  <!-- ★★★ Pro 激活模态框 ★★★ -->
+  <n-modal v-model:show="showProModal" preset="card" :title="isTransferMode ? '🔄 换绑 Pro 设备' : (configModel?.is_pro_active ? '💎 续期 Pro 高级版' : '💎 升级 Pro 高级版')" style="width: 500px;">
+      <n-space vertical :size="20">
+        
+        <!-- 正常激活/续期模式显示的 UI -->
+        <template v-if="!isTransferMode">
+          <n-radio-group v-model:value="proTier" name="pro_tier_group" style="width: 100%;">
+            <n-grid :cols="3" :x-gap="12">
+              <n-gi>
+                <n-radio-button value="month" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
+                  <div style="font-size: 16px; font-weight: bold;">月付</div>
+                  <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥8</div>
+                </n-radio-button>
+              </n-gi>
+              <n-gi>
+                <n-radio-button value="year" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
+                  <div style="font-size: 16px; font-weight: bold;">年付</div>
+                  <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥68</div>
+                </n-radio-button>
+              </n-gi>
+              <n-gi>
+                <n-radio-button value="lifetime" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
+                  <div style="font-size: 16px; font-weight: bold;">终身</div>
+                  <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥188(含部署)</div>
+                </n-radio-button>
+              </n-gi>
+            </n-grid>
+          </n-radio-group>
 
-      <!-- 收款码与提示 -->
-      <div style="text-align: center; background: #fafafa; padding: 15px; border-radius: 8px; border: 1px dashed #eee;">
-        <n-image width="180" src="/img/wechat_pay.png" fallback-src="https://via.placeholder.com/180?text=WeChat+Pay" />
-        <div style="margin-top: 10px; font-size: 14px;">
-          请使用微信扫码支付 <b style="color: #d03050; font-size: 18px;">￥{{ proPrice }}</b>
+          <div style="text-align: center; background: #fafafa; padding: 15px; border-radius: 8px; border: 1px dashed #eee;">
+            <n-image width="180" src="/img/wechat_pay.png" fallback-src="https://via.placeholder.com/180?text=WeChat+Pay" />
+            <div style="margin-top: 10px; font-size: 14px;">
+              请使用微信扫码支付 <b style="color: #d03050; font-size: 18px;">￥{{ proPrice }}</b>
+            </div>
+            <div style="margin-top: 8px; font-size: 13px; color: #666;">
+              支付成功后，请截图发送给 TG: <a href="https://t.me/hbq0405" target="_blank" style="color: var(--n-primary-color); font-weight: bold;">@https://t.me/hbq0405</a> 索取激活码。
+            </div>
+          </div>
+        </template>
+
+        <!-- 换绑模式显示的 UI -->
+        <template v-else>
+          <n-alert type="info" :show-icon="true">
+            如果您重装了 Emby 导致 Server ID 变更，可以在此输入您<b>最后一次购买/使用过</b>的激活码。<br/>
+            系统将自动把剩余的 Pro 时长转移到当前新设备上。
+          </n-alert>
+        </template>
+
+        <n-divider style="margin: 0;" />
+
+        <n-form-item :label="isTransferMode ? '请输入曾用过的激活码：' : '请输入获取到的激活码：'">
+          <n-input
+            v-model:value="licenseKey"
+            placeholder="例如: ETK-M-A1B2C3D4"
+            size="large"
+            clearable
+            @keyup.enter="handleActivatePro"
+          />
+        </n-form-item>
+
+        <!-- 模式切换按钮 -->
+        <div style="text-align: center; font-size: 13px; color: #888;">
+          <a v-if="!isTransferMode && !configModel?.is_pro_active" @click="isTransferMode = true" style="cursor: pointer; color: var(--n-primary-color); text-decoration: underline;">重装了 Emby？点击这里换绑设备</a>
+          <a v-if="isTransferMode" @click="isTransferMode = false" style="cursor: pointer; color: var(--n-primary-color); text-decoration: underline;">返回激活/续期</a>
         </div>
-        <div style="margin-top: 8px; font-size: 13px; color: #666;">
-          支付成功后，请截图发送给 TG: <a href="https://t.me/hbq0405" target="_blank" style="color: var(--n-primary-color); font-weight: bold;">@https://t.me/hbq0405</a> 索取激活码。
-        </div>
-      </div>
-
-      <n-divider style="margin: 0;" />
-
-      <!-- 激活码输入 -->
-      <n-form-item label="请输入获取到的激活码：">
-        <n-input
-          v-model:value="licenseKey"
-          placeholder="例如: ETK-A1B2-C3D4"
-          size="large"
-          clearable
-          @keyup.enter="handleActivatePro"
-        />
-      </n-form-item>
-    </n-space>
-
-    <template #footer>
-      <n-space justify="end">
-        <n-button @click="showProModal = false">取消</n-button>
-        <n-button type="warning" @click="handleActivatePro" :loading="isActivating" :disabled="!licenseKey">
-          验证并激活
-        </n-button>
       </n-space>
-    </template>
-  </n-modal>
+
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showProModal = false">取消</n-button>
+          <n-button type="warning" @click="handleActivatePro" :loading="isActivating" :disabled="!licenseKey">
+            {{ isTransferMode ? '确认换绑' : '验证并激活' }}
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
 </template>
 
 <script setup>
@@ -1912,6 +1927,7 @@ const showProModal = ref(false);
 const licenseKey = ref('');
 const isActivating = ref(false);
 const proTier = ref('year'); // 默认选中年付
+const isTransferMode = ref(false);
 
 const proPrice = computed(() => {
   if (proTier.value === 'month') return '8.00';
@@ -1927,28 +1943,46 @@ const handleActivatePro = async () => {
   }
   isActivating.value = true;
   try {
-    const response = await axios.post('/api/system/activate_pro', {
+    const wasProBefore = configModel.value?.is_pro_active;
+    
+    // ★ 智能判断请求哪个接口
+    const endpoint = isTransferMode.value ? '/api/system/transfer_pro' : '/api/system/activate_pro';
+
+    const response = await axios.post(endpoint, {
       license_key: licenseKey.value.trim()
     });
     
     if (response.data.success) {
       showProModal.value = false;
-      dialog.success({
-        title: '🎉 激活成功',
-        content: '感谢您的支持！Pro 高级功能已解锁。系统将在 3 秒后自动重启以加载 302 反代服务...',
-        positiveText: '好的',
-        closable: false,
-        maskClosable: false,
-        onPositiveClick: () => {}
-      });
       
-      // ★ 核心：调用现成的重启函数，完美实现热重载 302 服务
-      setTimeout(() => {
-        triggerRestart();
-      }, 3000);
+      // 如果是换绑，或者首次激活，都需要重启容器加载 302 服务
+      if (isTransferMode.value || !wasProBefore) {
+        dialog.success({
+          title: isTransferMode.value ? '🎉 换绑成功' : '🎉 激活成功',
+          content: 'Pro 高级功能已就绪。系统将在 3 秒后自动重启以加载 302 反代服务...',
+          positiveText: '好的',
+          closable: false,
+          maskClosable: false,
+          onPositiveClick: () => {}
+        });
+        
+        setTimeout(() => {
+          triggerRestart();
+        }, 3000);
+      } else {
+        // 续期：直接刷新页面
+        dialog.success({
+          title: '🎉 续期成功',
+          content: '感谢您的持续支持！您的 Pro 高级版有效期已成功延长。',
+          positiveText: '好的',
+          onPositiveClick: () => {
+            window.location.reload(); 
+          }
+        });
+      }
       
     } else {
-      message.error(response.data.message || '激活失败，请检查激活码');
+      message.error(response.data.message || '操作失败，请检查激活码');
     }
   } catch (error) {
     message.error(error.response?.data?.message || '连接验证服务器失败，请检查网络');
