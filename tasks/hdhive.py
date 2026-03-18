@@ -77,12 +77,15 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
             logger.warning(f"  ⚠️ 未能精准定位到文件 '{receive_title}'，将交由全局定时扫描任务处理。")
             return True
 
-        # 构造 root_item 触发 SmartOrganizer
+        # 构造 root_item 触发 SmartOrganizer (补全 pc, sha1, fs 等生成 STRM 必需的关键信息)
         root_item = {
             'fid': target_item.get('fid') or target_item.get('file_id'),
             'fn': receive_title,
             'fc': target_item.get('fc') if target_item.get('fc') is not None else target_item.get('file_category', '1'),
-            'pid': save_cid
+            'pid': save_cid,
+            'pc': target_item.get('pc') or target_item.get('pick_code'),
+            'sha1': target_item.get('sha1') or target_item.get('sha'),
+            'fs': target_item.get('fs') or target_item.get('size')
         }
         
         organizer = SmartOrganizer(
