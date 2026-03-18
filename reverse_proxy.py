@@ -788,7 +788,7 @@ def proxy_all(path):
         # ====================================================================
         # ★★★ 拦截 H: 视频流请求 (stream.mkv, stream.mp4, original.mp4 等) ★★★
         # ====================================================================
-        if '/videos/' in path and ('/stream.' in path or '/original.' in path):
+        if '/videos/' in path and ('/stream' in path or '/original' in path):
             # logger.info(f"[STREAM] 进入视频流拦截，path={path}")
             
             # 检测浏览器客户端
@@ -796,7 +796,7 @@ def proxy_all(path):
             client_name = request.headers.get('X-Emby-Client', '').lower()
             is_browser = 'mozilla' in user_agent or 'chrome' in user_agent or 'safari' in user_agent
             native_clients = ['androidtv', 'infuse', 'emby for ios', 'emby for android', 'emby theater', 'senplayer']
-            if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent:
+            if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent or 'applecoremedia' in user_agent:
                 is_browser = False
             
             # 浏览器直接转发给 Emby 服务端，不做 302 重定向（115 直链存在跨域问题）
@@ -912,7 +912,7 @@ def proxy_all(path):
                     
                     # 排除已知的本地播放器 (它们伪装了 UA，但可以通过 Client 或特定关键字识别)
                     native_clients = ['androidtv', 'infuse', 'emby for ios', 'emby for android', 'emby theater', 'senplayer']
-                    if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent:
+                    if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent or 'applecoremedia' in user_agent:
                         is_browser = False
                     
                     # logger.info(f"  🔍 客户端名称: {client_name}, User-Agent: {user_agent[:50]}, 是否浏览器: {is_browser}")
@@ -946,6 +946,7 @@ def proxy_all(path):
                                     
                                     source['RemoteUrl'] = proxy_play_url
                                     source['Path'] = proxy_play_url
+                                    source['DirectStreamUrl'] = proxy_play_url  
                                     source['IsRemote'] = True
                                     source.pop('TranscodingUrl', None)
                                     source['Protocol'] = 'Http'
