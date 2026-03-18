@@ -782,13 +782,14 @@ def proxy_all(path):
     # --- 2. HTTP 代理逻辑 ---
     try:
         full_path = f'/{path}'
+        path_lower = path.lower()
         # ===== 调试日志：打印所有请求路径 =====
-        # logger.info(f"[PROXY] 请求路径: {full_path}")
+        logger.info(f"[PROXY] 请求路径: {full_path}")
         
         # ====================================================================
         # ★★★ 拦截 H: 视频流请求 (stream, original, Download 等) ★★★
         # ====================================================================
-        if ('/videos/' in path and ('/stream' in path or '/original' in path)) or ('/Items/' in path and '/Download' in path):
+        if ('/videos/' in path_lower and ('/stream' in path_lower or '/original' in path_lower)) or ('/items/' in path_lower and '/download' in path_lower):
             
             # 检测浏览器客户端
             user_agent = request.headers.get('User-Agent', '').lower()
