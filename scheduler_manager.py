@@ -14,6 +14,7 @@ import config_manager # 导入配置管理器以读取配置
 import constants      # 导入常量以获取时区
 import extensions     # 导入 extensions 以获取共享的处理器实例
 import task_manager   # 导入 task_manager 以提交任务
+from database import settings_db
 from tasks.core import get_task_registry
 
 logger = logging.getLogger(__name__)
@@ -219,6 +220,7 @@ class SchedulerManager:
         self.update_high_freq_task_chain_job()
         self.update_low_freq_task_chain_job()
         self.update_daily_theme_job()
+        self.update_pro_status_check_job()
 
     def _update_single_task_chain_job(self, job_id: str, job_name: str, task_key: str, enabled_key: str, cron_key: str, sequence_key: str, runtime_key: str):
         """
@@ -351,6 +353,47 @@ class SchedulerManager:
             logger.trace(f"  ➜ 已成功设置'{task_description}'任务，执行计划: 每天 00:05。")
         except ValueError as e:
             logger.error(f"设置'{task_description}'任务失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
+
+    def update_pro_status_check_job(self):
+        """每天凌晨 3 点查岗，验证 Pro 状态是否过期"""
+        if not self.scheduler.running:
+            return
+
+        job_id = 'pro_status_check_job'
+        try:
+            self.scheduler.remove_job(job_id)
+        except JobLookupError:
+            pass
+
+        def verify_pro_status_background():
+            license_key = settings_db.get_setting("pro_license_key")
+            server_id = extensions.EMBY_SERVER_ID
+            if license_key and server_id:
+                try:
+                    import requests
+                    verify_url = "https://auth.55565576.xyz" # 你的 CF Worker 域名
+                    resp = requests.post(verify_url, json={"license_key": license_key, "server_id": server_id}, timeout=10).json()
+                    if resp.get("success") and resp.get("is_pro"):
+                        config_manager.APP_CONFIG['is_pro_active'] = True
+                        config_manager.APP_CONFIG['pro_expire_time'] = resp.get("expire_time", "")
+                        logger.debug("  💎 Pro 状态有效。")
+                    else:
+                        config_manager.APP_CONFIG['is_pro_active'] = False
+                        logger.warning(f"  ⚠️ Pro 状态已失效或过期！已降级为免费版。原因: {resp.get('msg')}")
+                except Exception as e:
+                    logger.debug(f"  ⚠️ 连接验证服务器失败，暂时保持当前状态。")
+
+        try:
+            self.scheduler.add_job(
+                func=verify_pro_status_background,
+                trigger=CronTrigger.from_crontab('0 3 * * *', timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=job_id,
+                name="Pro状态检查",
+                replace_existing=True
+            )
+            logger.trace("  ➜ 已成功设置'Pro状态每日查岗'任务，执行计划: 每天 03:00。")
+        except Exception as e:
+            logger.error(f"设置'Pro状态查岗'任务失败: {e}")
 
 # 创建一个全局单例，方便在其他地方调用
 scheduler_manager = SchedulerManager()
