@@ -688,13 +688,8 @@ def play_115_video(pick_code, filename=None):
         return '', 200
 
     try:
+        # ★ 必须使用客户端最真实的 UA，否则 115 CDN 会因为 UA 不匹配报 403 导致播放器回退中转！
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
-        
-        # ★ 核心修复 3：115 CDN 会无情封杀 AppleCoreMedia 和 Infuse 的 UA 导致 403
-        # 强制伪装成标准的 Mac Safari 浏览器，骗过 115 CDN
-        ua_lower = player_ua.lower()
-        if 'applecoremedia' in ua_lower or 'infuse' in ua_lower or 'emby' in ua_lower or 'ios' in ua_lower:
-            player_ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15'
         
         # 尝试从缓存获取
         real_url = _get_cached_115_url(pick_code, player_ua)
@@ -703,6 +698,7 @@ def play_115_video(pick_code, filename=None):
             # 如果解析太快被拦截了，给播放器返回 429 告知稍后再试
             return "Too Many Requests - 115 API Protection", 429
             
+        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
         # ★ 核心修复 4：为 302 重定向增加跨域允许头，防止 iOS 严格的安全策略拦截
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'

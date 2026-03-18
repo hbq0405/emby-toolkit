@@ -857,11 +857,11 @@ def proxy_all(path):
             # 如果获取到 115 直链，直接 302 重定向！不要用 Python 中转流！
             # 这样 Infuse 等播放器会自己去连 115，完美支持拖动进度条，且不消耗服务器带宽。
             if real_115_url:
-                #logger.info(f"  ✅ 已 302 重定向到 115 直链")
+                logger.info(f"  🚀 [302重定向] 视频流请求拦截成功，已重定向至 115 直链！")
                 return redirect(real_115_url, code=302)
             
             # 如果获取失败，回退到原来的转发方式
-            logger.info(f"  ➜ [STREAM] 回退到转发模式")
+            logger.info(f"  ➜ 获取 115 直链失败，回退到服务器中转模式！")
             target_url = f"{base_url}/{path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
@@ -878,7 +878,7 @@ def proxy_all(path):
                     client_ip = request.headers.get('X-Real-IP', request.remote_addr)
                     real_115_url = _get_cached_115_url(pick_code, player_ua, client_ip)
                     if real_115_url:
-                        # logger.info(f"  ✅ 已 302 跳转重定向到 115 直链")
+                        logger.info(f"  🚀 [302跳转] 视频流请求拦截成功，已重定向至 115 直链！")
                         return redirect(real_115_url, code=302)
             
             excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
