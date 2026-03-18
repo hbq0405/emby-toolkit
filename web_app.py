@@ -255,7 +255,7 @@ def initialize_processors():
             except Exception as e:
                 logger.error(f"  ❌ Pro 验证服务器连接失败: {e}。已降级为免费基础版。")
         else:
-            logger.info("  ➜ 当前运行版本: 免费基础版 (支持升级 Pro 解锁 0 带宽消耗直链)")
+            logger.info("  ➜ 当前运行版本: 免费基础版 (升级 Pro 解锁 302 反代)")
 
     # 初始化 media_processor_instance_local
     try:

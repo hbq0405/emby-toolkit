@@ -23,26 +23,22 @@
                   <n-card :bordered="false" class="dashboard-card" style="background: linear-gradient(135deg, #fffcf8 0%, #fff 100%); border: 1px solid #ffe5c4;">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
                       <div>
-                        <div style="font-size: 18px; font-weight: bold; color: #d48806; display: flex; align-items: center; gap: 8px;">
-                          <n-icon size="24"><component :is="membershipIcon" /></n-icon>
-                          Emby Toolkit {{ configModel?.is_pro_active ? membershipText : '免费基础版' }}
+                        <!-- 动态图标和标题 -->
+                        <div style="font-size: 18px; font-weight: bold; display: flex; align-items: center; gap: 8px;" :style="{ color: proStatusInfo.color }">
+                          <span style="font-size: 22px;">{{ proStatusInfo.icon }}</span>
+                          Emby Toolkit {{ proStatusInfo.text }}
                         </div>
+                        
+                        <!-- 动态描述和到期时间 -->
                         <div style="font-size: 13px; color: #888; margin-top: 6px;">
-                          <template v-if="configModel?.is_pro_active">
-                            <template v-if="membershipLevel === 'lifetime'">💎 尊贵的终身 VIP，您已解锁 ETK 全部功能！</template>
-                            <template v-else-if="membershipLevel === 'year'">☀️ 尊贵的年卡 VIP，您已解锁 ETK 全部功能！</template>
-                            <template v-else-if="membershipLevel === 'month'">🌙 尊贵的月卡 VIP，您已解锁 ETK 全部功能！</template>
-                            <template v-else>💎 尊贵的 Pro 用户，您已解锁 ETK 全部功能！</template>
-                            <br/>
-                            <span style="color: #d48806; font-weight: bold; margin-top: 4px; display: inline-block;">
-                              {{ configModel?.pro_expire_time?.startsWith('2099') ? '有效期：终身 VIP' : '到期时间：' + configModel?.pro_expire_time?.split('T')[0] }}
-                            </span>
-                          </template>
-                          <template v-else>
-                            升级 Pro 版，解锁 302 反代 (虚拟库)。
-                          </template>
+                          {{ proStatusInfo.desc }}<br/>
+                          <span v-if="configModel?.is_pro_active" style="color: #d48806; font-weight: bold; margin-top: 4px; display: inline-block;">
+                            {{ configModel?.pro_expire_time?.startsWith('2099') ? '到期时间：永久有效' : '到期时间：' + configModel?.pro_expire_time?.split('T')[0] }}
+                          </span>
                         </div>
                       </div>
+                      
+                      <!-- 按钮状态 -->
                       <n-button
                         v-if="!configModel?.is_pro_active"
                         type="warning"
@@ -53,7 +49,7 @@
                         <template #icon><n-icon><DiamondIcon /></n-icon></template>
                         升级 Pro
                       </n-button>
-                      <n-tag v-else type="warning" size="large" round :bordered="false" style="font-weight: bold;">
+                      <n-tag v-else type="warning" size="large" round :bordered="false" style="font-weight: bold; font-size: 14px; padding: 0 15px;">
                         已激活
                       </n-tag>
                     </div>
@@ -698,7 +694,7 @@
                 <!-- ########## 右侧卡片: 虚拟库 (反向代理) ########## -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
-                    <template #header><span class="card-title">302反代(Pro)</span></template>
+                    <template #header><span class="card-title">302反代</span></template>
                     
                     <!-- 同样使用紧凑双列 -->
                     <n-grid cols="1 m:2" :x-gap="12" :y-gap="12" responsive="screen">
@@ -1717,9 +1713,7 @@ import {
   ColorWandOutline as ColorWandIcon,
   SearchOutline as SearchIcon,
   QrCodeOutline,
-  DiamondOutline as DiamondIcon,
-  SunnyOutline as SunIcon,
-  MoonOutline as MoonIcon
+  DiamondOutline as DiamondIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
@@ -1927,32 +1921,6 @@ const proPrice = computed(() => {
   return '0.00';
 });
 
-// ★★★ 新增：根据密钥判断用户等级 ★★★
-const membershipLevel = computed(() => {
-  if (!configModel.value?.is_pro_active) return 'none';
-  const key = configModel.value?.pro_license_key || '';
-  if (key.startsWith('ETK-L-')) return 'lifetime';  // 终身卡
-  if (key.startsWith('ETK-Y-')) return 'year';      // 年卡
-  if (key.startsWith('ETK-M-')) return 'month';    // 月卡
-  return 'unknown';
-});
-
-// 根据等级获取对应的图标组件
-const membershipIcon = computed(() => {
-  if (membershipLevel.value === 'lifetime') return DiamondIcon;
-  if (membershipLevel.value === 'year') return SunIcon;    // 年付 = 太阳
-  if (membershipLevel.value === 'month') return MoonIcon; // 月付 = 月亮
-  return DiamondIcon;
-});
-
-// 根据等级获取显示文字
-const membershipText = computed(() => {
-  if (membershipLevel.value === 'lifetime') return '终身 VIP';
-  if (membershipLevel.value === 'year') return '年卡 VIP';
-  if (membershipLevel.value === 'month') return '月卡 VIP';
-  return 'Pro 高级版';
-});
-
 const handleActivatePro = async () => {
   if (!licenseKey.value.trim()) {
     message.warning('请输入激活码');
@@ -1989,6 +1957,25 @@ const handleActivatePro = async () => {
     isActivating.value = false;
   }
 };
+
+// ★★★ 智能判断 Pro 用户的尊贵等级 ★★★
+const proStatusInfo = computed(() => {
+  if (!configModel.value?.is_pro_active) {
+    return { icon: '💎', text: '免费基础版', color: '#888', desc: '升级 Pro 版，彻底解锁 Infuse / Senplayer 完美 302 直链 (0 服务器带宽消耗) 及 AI 批量翻译特权。' };
+  }
+  
+  const key = configModel.value.pro_license_key || '';
+  
+  if (key.includes('-L-')) {
+    return { icon: '💎', text: 'Pro 终身高级版', color: '#d48806', desc: '尊贵的终身 Pro 用户，您已永久解锁全部高级特权！' };
+  } else if (key.includes('-Y-')) {
+    return { icon: '☀️', text: 'Pro 年费高级版', color: '#d48806', desc: '尊贵的年费 Pro 用户，您已解锁全部高级特权！' };
+  } else if (key.includes('-M-')) {
+    return { icon: '🌙', text: 'Pro 月费高级版', color: '#d48806', desc: '尊贵的月费 Pro 用户，您已解锁全部高级特权！' };
+  } else {
+    return { icon: '💎', text: 'Pro 高级版', color: '#d48806', desc: '尊贵的 Pro 用户，您已解锁全部高级特权！' };
+  }
+});
 
 const isInvalidUserId = computed(() => {
   if (!configModel.value || !configModel.value.emby_user_id) return false;

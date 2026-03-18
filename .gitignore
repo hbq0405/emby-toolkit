@@ -8,7 +8,7 @@ local_data/
 processed_media_log.txt
 translation_cache.json
 # C extensions
-#*.so
+*.so
 
 # Distribution / packaging
 .Python

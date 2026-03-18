@@ -69,7 +69,6 @@ COPY web_app.py \
      monitor_service.py \
      ./
 
-COPY pyarmor_runtime_000000/ ./pyarmor_runtime_000000/
 COPY handler/ ./handler/
 COPY database/ ./database/
 COPY tasks/ ./tasks/
@@ -78,6 +77,10 @@ COPY services/ ./services/
 COPY routes/ ./routes/
 COPY templates/ ./templates/
 COPY docker/entrypoint.sh /entrypoint.sh
+
+# 将核心文件编译为 .pyc 字节码，并删除明文源码
+RUN python -m compileall -b reverse_proxy.py routes/p115.py && \
+    rm reverse_proxy.py routes/p115.py
 
 # 从前端构建阶段拷贝编译好的静态文件
 COPY --from=frontend-build /app/emby-actor-ui/dist/. /app/static/

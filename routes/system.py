@@ -62,8 +62,8 @@ def api_get_config():
             current_config['emby_server_id'] = extensions.EMBY_SERVER_ID
             custom_theme = config_manager.load_custom_theme()
             current_config['custom_theme'] = custom_theme
-            pro_license_key = settings_db.get_setting("pro_license_key")
-            current_config['pro_license_key'] = pro_license_key or ""
+            
+            current_config['pro_license_key'] = settings_db.get_setting("pro_license_key") or ""
             
             logger.trace(f"API /api/config (GET): 成功加载并返回配置。")
             return jsonify(current_config)
