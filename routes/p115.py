@@ -608,7 +608,7 @@ def _get_cached_115_url(pick_code, user_agent, client_ip=None):
     if cache_key in _url_cache:
         cached_data = _url_cache[cache_key]
         if now < cached_data["expire_at"]:
-            logger.info(f"  ⚡ [115直链] 命中内存缓存，极速下发 -> {cached_data['name']}")
+            logger.info(f"  ⚡ [115直链] 命中内存缓存 -> {cached_data['name']}")
             return cached_data["url"]
         else:
             del _url_cache[cache_key]
@@ -642,7 +642,7 @@ def _get_cached_115_url(pick_code, user_agent, client_ip=None):
                         if path_name: display_name = path_name
                 except: pass
 
-                logger.info(f"  ▶️ [115直链] 首次请求直链成功 -> {display_name}")
+                logger.info(f"  ▶️ [115直链] 请求直链成功 -> {display_name}")
                 
                 _url_cache[cache_key] = {"url": direct_url, "name": display_name, "expire_at": now + 7200}
                 return direct_url

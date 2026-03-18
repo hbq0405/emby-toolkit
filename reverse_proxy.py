@@ -782,9 +782,8 @@ def proxy_all(path):
     # --- 2. HTTP 代理逻辑 ---
     try:
         full_path = f'/{path}'
-        path_lower = path.lower()
         # ===== 调试日志：打印所有请求路径 =====
-        logger.info(f"[PROXY] 请求路径: {full_path}")
+        # logger.info(f"[PROXY] 请求路径: {full_path}")
         
         # ====================================================================
         # ★★★ 拦截 H: 视频流请求 (stream, original, Download 等) ★★★
@@ -854,12 +853,12 @@ def proxy_all(path):
                 logger.error(f"  ❌ [STREAM] 获取 115 直链失败: {e}")
             
             if real_115_url:
-                logger.info(f"  🚀 [302重定向] 视频流请求拦截成功，已重定向至 115 直链！")
+                logger.info(f"  🚀 [302重定向] 已重定向至 115 直链！")
                 response = redirect(real_115_url, code=302)
                 response.headers['Access-Control-Allow-Origin'] = '*'
                 return response
             
-            logger.warning(f"  ⚠️ [STREAM] 警告：获取 115 直链失败，被迫回退到服务器中转模式！(将消耗服务器上行带宽)")
+            logger.warning(f"  ⚠️ 警告：获取 115 直链失败，回退到服务器中转模式！")
             target_url = f"{base_url}/{path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
