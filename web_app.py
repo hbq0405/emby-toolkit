@@ -224,6 +224,38 @@ def initialize_processors():
             else:
                 logger.error("❌ 无法连接 Emby 且本地无缓存 Server ID，部分功能可能受限。")
 
+        # =========================================================
+        # ★★★ Pro 版本在线验证逻辑 ★★★
+        # =========================================================
+        # 默认设为普通版
+        config_manager.APP_CONFIG['is_pro_active'] = False 
+        
+        # 从数据库读取用户填写的卡密
+        license_key = settings_db.get_setting("pro_license_key")
+        
+        if license_key:
+            logger.info("  ➜ 检测到 Pro 激活码，正在连接云端验证...")
+            try:
+                import requests
+                # 替换为你自己的 CF Worker 域名
+                verify_url = "https://auth.55565576.xyz/" 
+                payload = {
+                    "license_key": license_key.strip(),
+                    "server_id": server_id_local
+                }
+                # 设置 5 秒超时，防止 CF 抽风导致启动卡死
+                resp = requests.post(verify_url, json=payload, timeout=5).json()
+                
+                if resp.get("success") and resp.get("is_pro"):
+                    config_manager.APP_CONFIG['is_pro_active'] = True
+                    logger.info("  💎 Pro 高级版验证通过！已解锁极速 302 直链等高级功能。")
+                else:
+                    logger.warning(f"  ⚠️ Pro 验证失败: {resp.get('msg')}。已降级为免费基础版。")
+            except Exception as e:
+                logger.error(f"  ❌ Pro 验证服务器连接失败: {e}。已降级为免费基础版。")
+        else:
+            logger.info("  ➜ 当前运行版本: 免费基础版 (支持升级 Pro 解锁 0 带宽消耗直链)")
+
     # 初始化 media_processor_instance_local
     try:
         media_processor_instance_local = MediaProcessor(
@@ -481,6 +513,11 @@ def main_app_start():
     
     def run_proxy_server():
         if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
+            # ★★★ 不是 Pro 直接不启动反代服务 ★★★
+            if not config_manager.APP_CONFIG.get('is_pro_active', False):
+                logger.warning("  ⚠️ [免费版限制] 302 反向代理与虚拟库功能为 Pro 高级版专属！反代服务未启动。")
+                return
+
             try:
                 internal_proxy_port = 7758
                 external_port = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_PORT, 8097)

@@ -18,6 +18,37 @@
             <!-- ================== 标签页 1: 通用设置 ================== -->
             <n-tab-pane name="general" tab="通用设置">
               <n-grid cols="1 l:3" :x-gap="24" :y-gap="24" responsive="screen">
+                <!-- ★★★ 新增：Pro 状态专属卡片 (横跨整行) ★★★ -->
+                <n-gi span="1 l:3">
+                  <n-card :bordered="false" class="dashboard-card" style="background: linear-gradient(135deg, #fffcf8 0%, #fff 100%); border: 1px solid #ffe5c4;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
+                      <div>
+                        <div style="font-size: 18px; font-weight: bold; color: #d48806; display: flex; align-items: center; gap: 8px;">
+                          <n-icon size="24"><DiamondIcon /></n-icon>
+                          Emby Toolkit {{ configModel?.is_pro_active ? 'Pro 高级版' : '免费基础版' }}
+                        </div>
+                        <div style="font-size: 13px; color: #888; margin-top: 6px;">
+                          {{ configModel?.is_pro_active 
+                            ? '💎 尊贵的 Pro 用户，您已解锁 115 极速直链 (0 带宽消耗) 等全部高级特权，感谢您的支持！' 
+                            : '升级 Pro 版，彻底解锁 Infuse / Senplayer 完美 302 直链 (0 服务器带宽消耗) 及 AI 批量翻译特权。' }}
+                        </div>
+                      </div>
+                      <n-button
+                        v-if="!configModel?.is_pro_active"
+                        type="warning"
+                        size="large"
+                        strong
+                        @click="showProModal = true"
+                      >
+                        <template #icon><n-icon><DiamondIcon /></n-icon></template>
+                        升级 Pro
+                      </n-button>
+                      <n-tag v-else type="warning" size="large" round :bordered="false" style="font-weight: bold;">
+                        已激活
+                      </n-tag>
+                    </div>
+                  </n-card>
+                </n-gi>
                 <!-- 左侧列 -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
@@ -1582,6 +1613,45 @@
       </n-space>
     </template>
   </n-modal>
+  <!-- ★★★ 新增：Pro 激活模态框 ★★★ -->
+    <n-modal v-model:show="showProModal" preset="card" title="💎 激活 Pro 高级版" style="width: 450px;">
+      <n-space vertical :size="20">
+        <n-alert type="warning" :show-icon="false" style="text-align: center; background-color: #fffbe6; border: 1px solid #ffe58f;">
+          <div style="font-size: 16px; font-weight: bold; margin-bottom: 10px; color: #d48806;">解锁终极观影体验</div>
+          <div style="font-size: 13px; color: #666; line-height: 1.8; text-align: left; display: inline-block;">
+            ✅ <b>Infuse / Senplayer 完美 302 直链</b> (0 带宽消耗)<br/>
+            ✅ <b>AI 批量翻译</b> 与智能剧情润色<br/>
+            ✅ <b>多版本洗版去重</b> 与资产保护<br/>
+            ✅ 专属售后支持与后续高级功能更新
+          </div>
+        </n-alert>
+
+        <n-form-item label="请输入您的 Pro 激活码：">
+          <n-input
+            v-model:value="licenseKey"
+            placeholder="例如: ETK-A1B2-C3D4"
+            size="large"
+            clearable
+            @keyup.enter="handleActivatePro"
+          />
+        </n-form-item>
+
+        <div style="text-align: center; font-size: 13px; color: #888;">
+          还没有激活码？ 
+          <!-- 这里换成你的发卡网链接，或者打赏说明页面的链接 -->
+          <a href="https://你的发卡网链接.com" target="_blank" style="color: var(--n-primary-color); text-decoration: underline; font-weight: bold;">点击获取</a>
+        </div>
+      </n-space>
+
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showProModal = false">取消</n-button>
+          <n-button type="warning" @click="handleActivatePro" :loading="isActivating" :disabled="!licenseKey">
+            立即激活
+          </n-button>
+        </n-space>
+      </template>
+    </n-modal>
 </template>
 
 <script setup>
@@ -1612,7 +1682,8 @@ import {
   ListOutline as ListIcon, 
   ColorWandOutline as ColorWandIcon,
   SearchOutline as SearchIcon,
-  QrCodeOutline
+  QrCodeOutline,
+  DiamondOutline as DiamondIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
@@ -1807,6 +1878,42 @@ const embyUserIdRegex = /^[a-f0-9]{32}$/i;
 const isCleaningOffline = ref(false);
 const isClearingVectors = ref(false);
 const isTestingAI = ref(false);
+// ★★★ Pro 激活相关状态与逻辑 ★★★
+const showProModal = ref(false);
+const licenseKey = ref('');
+const isActivating = ref(false);
+
+const handleActivatePro = async () => {
+  if (!licenseKey.value.trim()) {
+    message.warning('请输入激活码');
+    return;
+  }
+  isActivating.value = true;
+  try {
+    // 调用我们在后端写的激活接口
+    const response = await axios.post('/api/system/activate_pro', {
+      license_key: licenseKey.value.trim()
+    });
+    
+    if (response.data.success) {
+      dialog.success({
+        title: '🎉 激活成功',
+        content: response.data.message || '感谢您的支持！Pro 高级功能已全部解锁。',
+        positiveText: '立即体验',
+        onPositiveClick: () => {
+          window.location.reload(); // 刷新页面，让 configModel 重新加载，显示已激活状态
+        }
+      });
+      showProModal.value = false;
+    } else {
+      message.error(response.data.message || '激活失败，请检查激活码');
+    }
+  } catch (error) {
+    message.error(error.response?.data?.message || '连接验证服务器失败，请检查网络');
+  } finally {
+    isActivating.value = false;
+  }
+};
 const isInvalidUserId = computed(() => {
   if (!configModel.value || !configModel.value.emby_user_id) return false;
   return configModel.value.emby_user_id.trim() !== '' && !embyUserIdRegex.test(configModel.value.emby_user_id);

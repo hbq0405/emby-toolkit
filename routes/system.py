@@ -480,3 +480,47 @@ def api_reset_ai_prompts():
     except Exception as e:
         logger.error(f"  ❌ 重置 AI 提示词失败: {e}", exc_info=True)
         return jsonify({"error": "重置失败"}), 500
+
+@system_bp.route('/system/activate_pro', methods=['POST'])
+@admin_required
+def activate_pro():
+    """处理前端发来的 Pro 激活请求"""
+    data = request.json
+    license_key = data.get('license_key', '').strip()
+    
+    if not license_key:
+        return jsonify({"success": False, "message": "请输入激活码"}), 400
+        
+    server_id = extensions.EMBY_SERVER_ID
+    if not server_id:
+        return jsonify({"success": False, "message": "无法获取本机 Server ID，请确保 Emby 连接正常"}), 500
+
+    verify_url = "https://auth.55565576.xyz"  # 你的 CF Worker 域名
+    
+    try:
+        payload = {
+            "license_key": license_key,
+            "server_id": server_id
+        }
+        logger.info(f"正在向云端验证激活码: {license_key}")
+        
+        # 请求 CF Worker
+        resp = requests.post(verify_url, json=payload, timeout=10)
+        result = resp.json()
+        
+        if result.get("success") and result.get("is_pro"):
+            # 1. 验证通过，保存卡密到本地数据库
+            settings_db.save_setting("pro_license_key", license_key)
+            
+            # 2. 更新内存状态，立即生效，无需重启
+            config_manager.APP_CONFIG['is_pro_active'] = True
+            
+            logger.info("💎 Pro 高级版激活成功！")
+            return jsonify({"success": True, "message": result.get("msg", "激活成功！")})
+        else:
+            # 验证失败
+            return jsonify({"success": False, "message": result.get("msg", "激活码无效或已被使用")}), 400
+            
+    except Exception as e:
+        logger.error(f"激活请求异常: {e}")
+        return jsonify({"success": False, "message": "连接验证服务器失败，请检查网络"}), 500
