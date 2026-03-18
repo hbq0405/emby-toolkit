@@ -789,7 +789,9 @@ def proxy_all(path):
         # ====================================================================
         # ★★★ 拦截 H: 视频流请求 (stream, original, Download 等) ★★★
         # ====================================================================
-        if ('/videos/' in path_lower and ('/stream' in path_lower or '/original' in path_lower)) or ('/items/' in path_lower and '/download' in path_lower):
+        full_path_lower = full_path.lower() # ★ 核心修复 1：使用带前导斜杠的 full_path
+        
+        if ('/videos/' in full_path_lower and ('/stream' in full_path_lower or '/original' in full_path_lower)) or ('/items/' in full_path_lower and '/download' in full_path_lower):
             
             # 检测浏览器客户端
             user_agent = request.headers.get('User-Agent', '').lower()
@@ -813,8 +815,9 @@ def proxy_all(path):
                 return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
             
             # 客户端才做 302 重定向
-            parts = path.split('/')
-            item_id = parts[2] if len(parts) > 2 else ''
+            # ★ 核心修复 2：使用正则精准提取 item_id，彻底无视路径前缀差异
+            match = re.search(r'/(?:videos|items)/(\d+)/', full_path_lower)
+            item_id = match.group(1) if match else ''
             play_session_id = request.args.get('PlaySessionId', '')
             
             real_115_url = None
