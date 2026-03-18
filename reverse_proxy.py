@@ -931,9 +931,18 @@ def proxy_all(path):
                                     pick_code = media_db.get_pickcode_by_emby_id(item_id)
                                     
                                 if pick_code:
-                                    # ★ 修复：不再提前请求 115 直链，而是伪造一个指向代理的 URL
-                                    # 让客户端真正播放时再去请求，避免详情页触发提取直链
-                                    proxy_play_url = strm_url if '/api/p115/play/' in strm_url else f"/api/p115/play/{pick_code}"
+                                    # ★ 修复 1：提取原始文件名和后缀，Infuse/iOS 强依赖后缀名识别格式
+                                    original_path = source.get('Path', '')
+                                    filename = os.path.basename(original_path) if original_path else "video.mp4"
+                                    if '.' not in filename:
+                                        filename += ".mp4"
+                                        
+                                    # ★ 修复 2：必须使用绝对路径，Emby iOS 客户端无法解析相对路径的 RemoteUrl
+                                    host = request.headers.get('Host')
+                                    scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
+                                    base_proxy_url = f"{scheme}://{host}"
+                                    
+                                    proxy_play_url = strm_url if '/api/p115/play/' in strm_url else f"{base_proxy_url}/api/p115/play/{pick_code}/{filename}"
                                     
                                     source['RemoteUrl'] = proxy_play_url
                                     source['Path'] = proxy_play_url
