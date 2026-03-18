@@ -241,9 +241,9 @@ def initialize_processors():
                 if resp.get("success") and resp.get("is_pro"):
                     config_manager.APP_CONFIG['is_pro_active'] = True
                     config_manager.APP_CONFIG['pro_expire_time'] = resp.get("expire_time", "")
-                    logger.info("  💎 Pro 高级版验证通过！已解锁全部功能。")
+                    logger.info("  💎 Pro 验证通过！已解锁全部功能。")
                 else:
-                    logger.info("  ➜ 当前运行版本: 免费基础版 (支持升级 Pro 解锁 0 带宽消耗直链)")
+                    logger.info("  ➜ 当前运行版本: 免费基础版 (升级 Pro 解锁 302 反代)")
             except Exception as e:
                 logger.error(f"  ❌ Pro 验证服务器连接失败: {e}。已降级为免费基础版。")
 
