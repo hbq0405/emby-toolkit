@@ -99,6 +99,7 @@ RELEASE_GROUPS: Dict[str, List[str]] = {
               '❀拨雪寻春❀', '沸羊羊(?:制作|字幕组)', '(?:桜|樱)都字幕组'],
     "青蛙": ['FROG(?:E|Web|)'],
     "ubits": ['UB(?:its|WEB|TV)'],
+    "影巢": ['HiveWeb'],
 }
 
 def normalize_full_width_chars(text: str) -> str:
