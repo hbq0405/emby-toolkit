@@ -1960,19 +1960,19 @@ const handleActivatePro = async () => {
 // ★★★ 智能判断 Pro 用户的尊贵等级 ★★★
 const proStatusInfo = computed(() => {
   if (!configModel.value?.is_pro_active) {
-    return { icon: '💎', text: '免费基础版', color: '#888', desc: '升级 Pro 版，彻底解锁 Infuse / Senplayer 完美 302 直链 (0 服务器带宽消耗) 及 AI 批量翻译特权。' };
+    return { icon: '💎', text: '免费基础版', color: '#888', desc: '升级 Pro 版，解锁  302 直链 (虚拟库)。' };
   }
   
   const key = configModel.value.pro_license_key || '';
   
   if (key.includes('-L-')) {
-    return { icon: '💎', text: 'Pro 终身高级版', color: '#d48806', desc: '尊贵的终身 Pro 用户，您已永久解锁全部高级特权！' };
+    return { icon: '💎', text: 'Pro 终身高级版', color: '#d48806', desc: '尊贵的终身 Pro 用户，您已永久解锁全部功能！' };
   } else if (key.includes('-Y-')) {
-    return { icon: '☀️', text: 'Pro 年费高级版', color: '#d48806', desc: '尊贵的年费 Pro 用户，您已解锁全部高级特权！' };
+    return { icon: '☀️', text: 'Pro 年费高级版', color: '#d48806', desc: '尊贵的年费 Pro 用户，您已解锁全部功能！' };
   } else if (key.includes('-M-')) {
-    return { icon: '🌙', text: 'Pro 月费高级版', color: '#d48806', desc: '尊贵的月费 Pro 用户，您已解锁全部高级特权！' };
+    return { icon: '🌙', text: 'Pro 月费高级版', color: '#d48806', desc: '尊贵的月费 Pro 用户，您已解锁全部功能！' };
   } else {
-    return { icon: '💎', text: 'Pro 高级版', color: '#d48806', desc: '尊贵的 Pro 用户，您已解锁全部高级特权！' };
+    return { icon: '💎', text: 'Pro 高级版', color: '#d48806', desc: '尊贵的 Pro 用户，您已解锁全部功能！' };
   }
 });
 
