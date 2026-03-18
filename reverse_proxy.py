@@ -786,22 +786,20 @@ def proxy_all(path):
         # logger.info(f"[PROXY] 请求路径: {full_path}")
         
         # ====================================================================
-        # ★★★ 拦截 H: 视频流请求 (stream.mkv, stream.mp4, original.mp4 等) ★★★
+        # ★★★ 拦截 H: 视频流请求 (stream, original, Download 等) ★★★
         # ====================================================================
         if ('/videos/' in path and ('/stream' in path or '/original' in path)) or ('/Items/' in path and '/Download' in path):
-            # logger.info(f"[STREAM] 进入视频流拦截，path={path}")
             
             # 检测浏览器客户端
             user_agent = request.headers.get('User-Agent', '').lower()
             client_name = request.headers.get('X-Emby-Client', '').lower()
             is_browser = 'mozilla' in user_agent or 'chrome' in user_agent or 'safari' in user_agent
-            native_clients = ['androidtv', 'infuse', 'emby for ios', 'emby for android', 'emby theater', 'senplayer']
+            native_clients = ['androidtv', 'infuse', 'emby for ios', 'emby for android', 'emby theater', 'senplayer', 'applecoremedia']
             if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent or 'applecoremedia' in user_agent:
                 is_browser = False
             
             # 浏览器直接转发给 Emby 服务端，不做 302 重定向（115 直链存在跨域问题）
             if is_browser:
-                # logger.info(f"[STREAM] 识别为浏览器，直接转发给 Emby 服务端，不做 302 重定向")
                 base_url, api_key = _get_real_emby_url_and_key()
                 target_url = f"{base_url}/{path.lstrip('/')}"
                 forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
@@ -839,29 +837,25 @@ def proxy_all(path):
                     for source in data.get('MediaSources', []):
                         strm_url = source.get('Path', '')
                         if isinstance(strm_url, str):
-                            # ★ 实时万能解析第三方 STRM 链接
                             pick_code = extract_pickcode_from_strm_url(strm_url)
-                            
                             if not pick_code:
-                                # 挂载模式兜底：通过 item_id 查库获取 PC 码
                                 pick_code = media_db.get_pickcode_by_emby_id(item_id)
                             
                             if pick_code:
                                 player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
                                 client_ip = request.headers.get('X-Real-IP', request.remote_addr)
                                 real_115_url = _get_cached_115_url(pick_code, player_ua, client_ip)
-                                break # <--- 找到直链就跳出循环
+                                break 
             except Exception as e:
                 logger.error(f"  ❌ [STREAM] 获取 115 直链失败: {e}")
             
-            # 如果获取到 115 直链，直接 302 重定向！不要用 Python 中转流！
-            # 这样 Infuse 等播放器会自己去连 115，完美支持拖动进度条，且不消耗服务器带宽。
             if real_115_url:
                 logger.info(f"  🚀 [302重定向] 视频流请求拦截成功，已重定向至 115 直链！")
-                return redirect(real_115_url, code=302)
+                response = redirect(real_115_url, code=302)
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
             
-            # 如果获取失败，回退到原来的转发方式
-            logger.info(f"  ➜ 获取 115 直链失败，回退到服务器中转模式！")
+            logger.warning(f"  ⚠️ [STREAM] 警告：获取 115 直链失败，被迫回退到服务器中转模式！(将消耗服务器上行带宽)")
             target_url = f"{base_url}/{path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc
@@ -879,93 +873,14 @@ def proxy_all(path):
                     real_115_url = _get_cached_115_url(pick_code, player_ua, client_ip)
                     if real_115_url:
                         logger.info(f"  🚀 [302跳转] 视频流请求拦截成功，已重定向至 115 直链！")
-                        return redirect(real_115_url, code=302)
+                        response = redirect(real_115_url, code=302)
+                        response.headers['Access-Control-Allow-Origin'] = '*'
+                        return response
             
             excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
             response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_resp_headers]
             return Response(resp.content, resp.status_code, response_headers)
         
-        # ====================================================================
-        # ★★★ 终极拦截 G: PlaybackInfo 智能劫持 (完美兼容版) ★★★
-        # ====================================================================
-        if 'PlaybackInfo' in path:
-            try:
-                base_url, api_key = _get_real_emby_url_and_key()
-                target_url = f"{base_url}/{path.lstrip('/')}"
-                
-                client_name = request.headers.get('X-Emby-Client', '').lower()
-                user_agent = request.headers.get('User-Agent', '').lower()
-
-                forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
-                forward_headers['Host'] = urlparse(base_url).netloc
-                forward_params = request.args.copy()
-                forward_params['api_key'] = api_key
-                
-                resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), timeout=10)
-                
-                if resp.status_code == 200 and 'application/json' in resp.headers.get('Content-Type', ''):
-                    data = resp.json()
-                    modified = False
-                    
-                    # 【修复核心】先判断是否为浏览器，再决定是否获取115直链
-                    is_browser = 'mozilla' in user_agent or 'chrome' in user_agent or 'safari' in user_agent
-                    
-                    # 排除已知的本地播放器 (它们伪装了 UA，但可以通过 Client 或特定关键字识别)
-                    native_clients = ['androidtv', 'infuse', 'emby for ios', 'emby for android', 'emby theater', 'senplayer']
-                    if any(nc in client_name for nc in native_clients) or 'infuse' in user_agent or 'dalvik' in user_agent or 'applecoremedia' in user_agent:
-                        is_browser = False
-                    
-                    # logger.info(f"  🔍 客户端名称: {client_name}, User-Agent: {user_agent[:50]}, 是否浏览器: {is_browser}")
-                    
-                    # 只有非浏览器才进行劫持
-                    if not is_browser:
-                        for source in data.get('MediaSources', []):
-                            strm_url = source.get('Path', '')
-                            if isinstance(strm_url, str):
-                                # ★ 实时万能解析第三方 STRM 链接
-                                pick_code = extract_pickcode_from_strm_url(strm_url)
-
-                                if not pick_code:
-                                    # 挂载模式兜底：从请求路径提取 item_id 查库
-                                    item_id = path.split('/')[2]
-                                    pick_code = media_db.get_pickcode_by_emby_id(item_id)
-                                    
-                                if pick_code:
-                                    # ★ 修复 1：提取原始文件名和后缀，Infuse/iOS 强依赖后缀名识别格式
-                                    original_path = source.get('Path', '')
-                                    filename = os.path.basename(original_path) if original_path else "video.mp4"
-                                    if '.' not in filename:
-                                        filename += ".mp4"
-                                        
-                                    # ★ 修复 2：必须使用绝对路径，Emby iOS 客户端无法解析相对路径的 RemoteUrl
-                                    host = request.headers.get('Host')
-                                    scheme = request.headers.get('X-Forwarded-Proto', request.scheme)
-                                    base_proxy_url = f"{scheme}://{host}"
-                                    
-                                    proxy_play_url = strm_url if '/api/p115/play/' in strm_url else f"{base_proxy_url}/api/p115/play/{pick_code}/{filename}"
-                                    
-                                    source['RemoteUrl'] = proxy_play_url
-                                    source['Path'] = proxy_play_url
-                                    source['DirectStreamUrl'] = proxy_play_url  
-                                    source['IsRemote'] = True
-                                    source.pop('TranscodingUrl', None)
-                                    source['Protocol'] = 'Http'
-                                    source['SupportsDirectPlay'] = True
-                                    source['SupportsDirectStream'] = True
-                                    source['SupportsTranscoding'] = False
-                                    modified = True
-                    # else: 浏览器直接跳过，不获取115直链
-                            
-                    if modified:
-                        return Response(json.dumps(data), status=200, mimetype='application/json')
-                        
-                excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
-                response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_resp_headers]
-                return Response(resp.content, resp.status_code, response_headers)
-                
-            except Exception as e:
-                logger.error(f"  ❌ PlaybackInfo 劫持异常: {e}")
-
         # --- 拦截 A: 虚拟项目海报图片 ---
         if path.startswith('emby/Items/') and '/Images/Primary' in path:
             item_id = path.split('/')[2]
