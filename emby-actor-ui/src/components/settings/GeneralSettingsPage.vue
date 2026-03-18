@@ -1957,6 +1957,7 @@ const handleActivatePro = async () => {
     isActivating.value = false;
   }
 };
+
 const isInvalidUserId = computed(() => {
   if (!configModel.value || !configModel.value.emby_user_id) return false;
   return configModel.value.emby_user_id.trim() !== '' && !embyUserIdRegex.test(configModel.value.emby_user_id);
