@@ -2,15 +2,6 @@
   <n-layout content-style="padding: 24px;">
     <n-page-header title="查看更新">
       <template #extra>
-        <n-tooltip>
-          <template #trigger>
-            <n-button @click="showSponsorModal = true" type="primary" ghost>
-              <template #icon><n-icon :component="CafeIcon" /></template>
-              请我喝杯奶茶
-            </n-button>
-          </template>
-          用爱发电不易，您的支持是项目前进的最大动力！
-        </n-tooltip>
         <n-button tag="a" :href="`https://github.com/${githubRepo}/issues`" target="_blank" secondary>
           <template #icon><n-icon :component="LogoGithub" /></template>
           反馈问题
@@ -50,23 +41,6 @@
         </n-list-item>
       </n-list>
     </div>
-
-    <!-- 支持开发者 模态框 -->
-    <n-modal v-model:show="showSponsorModal" preset="card" style="width: 90%; max-width: 400px;" title="支持开发者" :bordered="false">
-      <div class="sponsor-content">
-        <n-p>
-          用ai发电也不易，喝杯奶茶行不行！
-        </n-p>
-        <n-p>
-          您的支持，哪怕是一点点，都是我持续更新的最大动力。感谢您的慷慨！
-        </n-p>
-        <n-divider />
-        <div class="qr-code-item">
-          <n-image width="200" src="/img/wechat_pay.png" />
-          <n-text strong style="margin-top: 10px;">推荐使用微信支付</n-text>
-        </div>
-      </div>
-    </n-modal>
 
     <!-- ▼▼▼【优化后】更新进度模态框 ▼▼▼ -->
     <n-modal
@@ -118,7 +92,6 @@ const githubRepo = computed(() => `${githubRepoOwner}/${githubRepoName}`);
 
 const isLoading = ref(false);
 const error = ref(null);
-const showSponsorModal = ref(false);
 
 // --- 更新状态相关的响应式变量 ---
 const isUpdating = ref(false);

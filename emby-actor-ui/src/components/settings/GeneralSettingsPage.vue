@@ -1641,8 +1641,7 @@
           <n-gi>
             <n-radio-button value="lifetime" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
               <div style="font-size: 16px; font-weight: bold;">终身</div>
-              <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥188</div>
-              <div style="font-size: 12px; color: #888;">(含部署指导)</div>
+              <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥188 （含部署）</div>
             </n-radio-button>
           </n-gi>
         </n-grid>
