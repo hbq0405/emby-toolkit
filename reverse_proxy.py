@@ -788,7 +788,7 @@ def proxy_all(path):
         # ====================================================================
         # ★★★ 拦截 H: 视频流请求 (stream.mkv, stream.mp4, original.mp4 等) ★★★
         # ====================================================================
-        if '/videos/' in path and ('/stream' in path or '/original' in path):
+        if ('/videos/' in path and ('/stream' in path or '/original' in path)) or ('/Items/' in path and '/Download' in path):
             # logger.info(f"[STREAM] 进入视频流拦截，path={path}")
             
             # 检测浏览器客户端
