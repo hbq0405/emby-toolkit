@@ -509,13 +509,16 @@ def activate_pro():
         result = resp.json()
         
         if result.get("success") and result.get("is_pro"):
-            # 1. 验证通过，保存卡密到本地数据库
+            # 1. 验证通过，保存卡密和到期时间到本地数据库
             settings_db.save_setting("pro_license_key", license_key)
+            expire_time = result.get("expire_time", "2099-12-31T23:59:59Z")
+            settings_db.save_setting("pro_expire_time", expire_time)
             
-            # 2. 更新内存状态，立即生效，无需重启
+            # 2. 更新内存状态
             config_manager.APP_CONFIG['is_pro_active'] = True
+            config_manager.APP_CONFIG['pro_expire_time'] = expire_time
             
-            logger.info("💎 Pro 高级版激活成功！")
+            logger.info(f"💎 Pro 高级版激活成功！到期时间: {expire_time}")
             return jsonify({"success": True, "message": result.get("msg", "激活成功！")})
         else:
             # 验证失败

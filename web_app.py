@@ -247,8 +247,9 @@ def initialize_processors():
                 resp = requests.post(verify_url, json=payload, timeout=5).json()
                 
                 if resp.get("success") and resp.get("is_pro"):
-                    config_manager.APP_CONFIG['is_pro_active'] = True
-                    logger.info("  💎 Pro 高级版验证通过！已解锁极速 302 直链等高级功能。")
+                        config_manager.APP_CONFIG['is_pro_active'] = True
+                        config_manager.APP_CONFIG['pro_expire_time'] = resp.get("expire_time", "2099-12-31T23:59:59Z")
+                        logger.info("  💎 Pro 高级版验证通过！已解锁极速 302 直链等高级功能。")
                 else:
                     logger.warning(f"  ⚠️ Pro 验证失败: {resp.get('msg')}。已降级为免费基础版。")
             except Exception as e:

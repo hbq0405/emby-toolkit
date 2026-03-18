@@ -28,9 +28,15 @@
                           Emby Toolkit {{ configModel?.is_pro_active ? 'Pro 高级版' : '免费基础版' }}
                         </div>
                         <div style="font-size: 13px; color: #888; margin-top: 6px;">
-                          {{ configModel?.is_pro_active 
-                            ? '💎 尊贵的 Pro 用户，您已解锁 115 极速直链 (0 带宽消耗) 等全部高级特权，感谢您的支持！' 
-                            : '升级 Pro 版，彻底解锁 Infuse / Senplayer 完美 302 直链 (0 服务器带宽消耗) 及 AI 批量翻译特权。' }}
+                          <template v-if="configModel?.is_pro_active">
+                            💎 尊贵的 Pro 用户，您已解锁 ETK 全部功能！<br/>
+                            <span style="color: #d48806; font-weight: bold; margin-top: 4px; display: inline-block;">
+                              {{ configModel?.pro_expire_time?.startsWith('2099') ? '有效期：终身 VIP' : '到期时间：' + configModel?.pro_expire_time?.split('T')[0] }}
+                            </span>
+                          </template>
+                          <template v-else>
+                            升级 Pro 版，解锁 302 反代 (虚拟库)。
+                          </template>
                         </div>
                       </div>
                       <n-button
@@ -1614,44 +1620,68 @@
     </template>
   </n-modal>
   <!-- ★★★ 新增：Pro 激活模态框 ★★★ -->
-    <n-modal v-model:show="showProModal" preset="card" title="💎 激活 Pro 高级版" style="width: 450px;">
-      <n-space vertical :size="20">
-        <n-alert type="warning" :show-icon="false" style="text-align: center; background-color: #fffbe6; border: 1px solid #ffe58f;">
-          <div style="font-size: 16px; font-weight: bold; margin-bottom: 10px; color: #d48806;">解锁终极观影体验</div>
-          <div style="font-size: 13px; color: #666; line-height: 1.8; text-align: left; display: inline-block;">
-            ✅ <b>Infuse / Senplayer 完美 302 直链</b> (0 带宽消耗)<br/>
-            ✅ <b>AI 批量翻译</b> 与智能剧情润色<br/>
-            ✅ <b>多版本洗版去重</b> 与资产保护<br/>
-            ✅ 专属售后支持与后续高级功能更新
-          </div>
-        </n-alert>
+  <n-modal v-model:show="showProModal" preset="card" title="💎 升级 Pro 高级版" style="width: 500px;">
+    <n-space vertical :size="20">
+      
+      <!-- 套餐选择 -->
+      <n-radio-group v-model:value="proTier" name="pro_tier_group" style="width: 100%;">
+        <n-grid :cols="3" :x-gap="12">
+          <n-gi>
+            <n-radio-button value="month" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
+              <div style="font-size: 16px; font-weight: bold;">月付</div>
+              <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥8</div>
+            </n-radio-button>
+          </n-gi>
+          <n-gi>
+            <n-radio-button value="year" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
+              <div style="font-size: 16px; font-weight: bold;">年付</div>
+              <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥68</div>
+            </n-radio-button>
+          </n-gi>
+          <n-gi>
+            <n-radio-button value="lifetime" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
+              <div style="font-size: 16px; font-weight: bold;">终身</div>
+              <div style="color: #d48806; font-size: 18px; margin-top: 4px;">￥188</div>
+              <div style="font-size: 12px; color: #888;">(含部署指导)</div>
+            </n-radio-button>
+          </n-gi>
+        </n-grid>
+      </n-radio-group>
 
-        <n-form-item label="请输入您的 Pro 激活码：">
-          <n-input
-            v-model:value="licenseKey"
-            placeholder="例如: ETK-A1B2-C3D4"
-            size="large"
-            clearable
-            @keyup.enter="handleActivatePro"
-          />
-        </n-form-item>
-
-        <div style="text-align: center; font-size: 13px; color: #888;">
-          还没有激活码？ 
-          <!-- 这里换成你的发卡网链接，或者打赏说明页面的链接 -->
-          <a href="https://你的发卡网链接.com" target="_blank" style="color: var(--n-primary-color); text-decoration: underline; font-weight: bold;">点击获取</a>
+      <!-- 收款码与提示 -->
+      <div style="text-align: center; background: #fafafa; padding: 15px; border-radius: 8px; border: 1px dashed #eee;">
+        <n-image width="180" src="/img/wechat_pay.png" fallback-src="https://via.placeholder.com/180?text=WeChat+Pay" />
+        <div style="margin-top: 10px; font-size: 14px;">
+          请使用微信扫码支付 <b style="color: #d03050; font-size: 18px;">￥{{ proPrice }}</b>
         </div>
-      </n-space>
+        <div style="margin-top: 8px; font-size: 13px; color: #666;">
+          支付成功后，请截图发送给 TG: <a href="https://t.me/hbq0405" target="_blank" style="color: var(--n-primary-color); font-weight: bold;">@https://t.me/hbq0405</a> 索取激活码。
+        </div>
+      </div>
 
-      <template #footer>
-        <n-space justify="end">
-          <n-button @click="showProModal = false">取消</n-button>
-          <n-button type="warning" @click="handleActivatePro" :loading="isActivating" :disabled="!licenseKey">
-            立即激活
-          </n-button>
-        </n-space>
-      </template>
-    </n-modal>
+      <n-divider style="margin: 0;" />
+
+      <!-- 激活码输入 -->
+      <n-form-item label="请输入获取到的激活码：">
+        <n-input
+          v-model:value="licenseKey"
+          placeholder="例如: ETK-A1B2-C3D4"
+          size="large"
+          clearable
+          @keyup.enter="handleActivatePro"
+        />
+      </n-form-item>
+    </n-space>
+
+    <template #footer>
+      <n-space justify="end">
+        <n-button @click="showProModal = false">取消</n-button>
+        <n-button type="warning" @click="handleActivatePro" :loading="isActivating" :disabled="!licenseKey">
+          验证并激活
+        </n-button>
+      </n-space>
+    </template>
+  </n-modal>
 </template>
 
 <script setup>
@@ -1882,6 +1912,14 @@ const isTestingAI = ref(false);
 const showProModal = ref(false);
 const licenseKey = ref('');
 const isActivating = ref(false);
+const proTier = ref('year'); // 默认选中年付
+
+const proPrice = computed(() => {
+  if (proTier.value === 'month') return '8.00';
+  if (proTier.value === 'year') return '68.00';
+  if (proTier.value === 'lifetime') return '188.00';
+  return '0.00';
+});
 
 const handleActivatePro = async () => {
   if (!licenseKey.value.trim()) {
@@ -1890,21 +1928,26 @@ const handleActivatePro = async () => {
   }
   isActivating.value = true;
   try {
-    // 调用我们在后端写的激活接口
     const response = await axios.post('/api/system/activate_pro', {
       license_key: licenseKey.value.trim()
     });
     
     if (response.data.success) {
+      showProModal.value = false;
       dialog.success({
         title: '🎉 激活成功',
-        content: response.data.message || '感谢您的支持！Pro 高级功能已全部解锁。',
-        positiveText: '立即体验',
-        onPositiveClick: () => {
-          window.location.reload(); // 刷新页面，让 configModel 重新加载，显示已激活状态
-        }
+        content: '感谢您的支持！Pro 高级功能已解锁。系统将在 3 秒后自动重启以加载 302 反代服务...',
+        positiveText: '好的',
+        closable: false,
+        maskClosable: false,
+        onPositiveClick: () => {}
       });
-      showProModal.value = false;
+      
+      // ★ 核心：调用现成的重启函数，完美实现热重载 302 服务
+      setTimeout(() => {
+        triggerRestart();
+      }, 3000);
+      
     } else {
       message.error(response.data.message || '激活失败，请检查激活码');
     }
