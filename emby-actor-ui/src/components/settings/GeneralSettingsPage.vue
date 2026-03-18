@@ -24,12 +24,16 @@
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
                       <div>
                         <div style="font-size: 18px; font-weight: bold; color: #d48806; display: flex; align-items: center; gap: 8px;">
-                          <n-icon size="24"><DiamondIcon /></n-icon>
-                          Emby Toolkit {{ configModel?.is_pro_active ? 'Pro 高级版' : '免费基础版' }}
+                          <n-icon size="24"><component :is="membershipIcon" /></n-icon>
+                          Emby Toolkit {{ configModel?.is_pro_active ? membershipText : '免费基础版' }}
                         </div>
                         <div style="font-size: 13px; color: #888; margin-top: 6px;">
                           <template v-if="configModel?.is_pro_active">
-                            💎 尊贵的 Pro 用户，您已解锁 ETK 全部功能！<br/>
+                            <template v-if="membershipLevel === 'lifetime'">💎 尊贵的终身 VIP，您已解锁 ETK 全部功能！</template>
+                            <template v-else-if="membershipLevel === 'year'">☀️ 尊贵的年卡 VIP，您已解锁 ETK 全部功能！</template>
+                            <template v-else-if="membershipLevel === 'month'">🌙 尊贵的月卡 VIP，您已解锁 ETK 全部功能！</template>
+                            <template v-else>💎 尊贵的 Pro 用户，您已解锁 ETK 全部功能！</template>
+                            <br/>
                             <span style="color: #d48806; font-weight: bold; margin-top: 4px; display: inline-block;">
                               {{ configModel?.pro_expire_time?.startsWith('2099') ? '有效期：终身 VIP' : '到期时间：' + configModel?.pro_expire_time?.split('T')[0] }}
                             </span>
@@ -694,7 +698,7 @@
                 <!-- ########## 右侧卡片: 虚拟库 (反向代理) ########## -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
-                    <template #header><span class="card-title">302反代</span></template>
+                    <template #header><span class="card-title">302反代(Pro)</span></template>
                     
                     <!-- 同样使用紧凑双列 -->
                     <n-grid cols="1 m:2" :x-gap="12" :y-gap="12" responsive="screen">
@@ -1713,7 +1717,9 @@ import {
   ColorWandOutline as ColorWandIcon,
   SearchOutline as SearchIcon,
   QrCodeOutline,
-  DiamondOutline as DiamondIcon
+  DiamondOutline as DiamondIcon,
+  SunnyOutline as SunIcon,
+  MoonOutline as MoonIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
@@ -1919,6 +1925,32 @@ const proPrice = computed(() => {
   if (proTier.value === 'year') return '68.00';
   if (proTier.value === 'lifetime') return '188.00';
   return '0.00';
+});
+
+// ★★★ 新增：根据密钥判断用户等级 ★★★
+const membershipLevel = computed(() => {
+  if (!configModel.value?.is_pro_active) return 'none';
+  const key = configModel.value?.pro_license_key || '';
+  if (key.startsWith('ETK-L-')) return 'lifetime';  // 终身卡
+  if (key.startsWith('ETK-Y-')) return 'year';      // 年卡
+  if (key.startsWith('ETK-M-')) return 'month';    // 月卡
+  return 'unknown';
+});
+
+// 根据等级获取对应的图标组件
+const membershipIcon = computed(() => {
+  if (membershipLevel.value === 'lifetime') return DiamondIcon;
+  if (membershipLevel.value === 'year') return SunIcon;    // 年付 = 太阳
+  if (membershipLevel.value === 'month') return MoonIcon; // 月付 = 月亮
+  return DiamondIcon;
+});
+
+// 根据等级获取显示文字
+const membershipText = computed(() => {
+  if (membershipLevel.value === 'lifetime') return '终身 VIP';
+  if (membershipLevel.value === 'year') return '年卡 VIP';
+  if (membershipLevel.value === 'month') return '月卡 VIP';
+  return 'Pro 高级版';
 });
 
 const handleActivatePro = async () => {
