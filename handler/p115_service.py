@@ -1303,29 +1303,56 @@ class SmartOrganizer:
             # AND 模式：必须满足所有配置的条件
             return conditions_met == conditions_configured
 
-    def get_target_cid(self, ignore_memory=False):
+    def get_target_cid(self, ignore_memory=False, season_num=None):
         """获取目标 CID：优先查历史整理记录（记忆手动纠错），其次遍历规则"""
-        # ★★★ 1. 查历史记录 (记忆功能) ★★★
+        # ★★★ 1. 查历史记录 (记忆功能 - 升级为分季隔离版) ★★★
         if not ignore_memory:
             try:
                 from database.connection import get_db_connection
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        # 查找该 tmdb_id 最近一次成功的整理记录
-                        cursor.execute("""
-                            SELECT target_cid, category_name 
-                            FROM p115_organize_records 
-                            WHERE tmdb_id = %s AND status = 'success' 
-                            ORDER BY processed_at DESC LIMIT 1
-                        """, (str(self.tmdb_id),))
-                        row = cursor.fetchone()
-                        if row and row['target_cid']:
-                            logger.info(f"  🧠 [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {row['target_cid']})")
-                            return row['target_cid']
+                        if self.media_type == 'tv' and season_num is not None:
+                            # 查找该剧最近的 50 条记录，寻找属于该季的专属记忆
+                            cursor.execute("""
+                                SELECT target_cid, category_name, renamed_name, original_name 
+                                FROM p115_organize_records 
+                                WHERE tmdb_id = %s AND status = 'success' 
+                                ORDER BY processed_at DESC LIMIT 50
+                            """, (str(self.tmdb_id),))
+                            rows = cursor.fetchall()
+                            import re
+                            for row in rows:
+                                name_to_check = row['renamed_name'] or row['original_name'] or ""
+                                m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', name_to_check)
+                                m2 = re.search(r'Season\s*(\d{1,4})\b', name_to_check, re.IGNORECASE)
+                                m3 = re.search(r'第(\d{1,4})季', name_to_check)
+                                s_val = None
+                                if m1: s_val = int(m1.group(1))
+                                elif m2: s_val = int(m2.group(1))
+                                elif m3: s_val = int(m3.group(1))
+                                
+                                if s_val == season_num:
+                                    logger.info(f"  🧠 [分季记忆体] 发现该剧 S{season_num} 曾被手动整理过，沿用专属分类: {row['category_name']} (CID: {row['target_cid']})")
+                                    return row['target_cid']
+                            
+                            # 如果没找到该季的记忆，绝不使用其他季的记忆兜底，直接放行给规则引擎！
+                            logger.debug(f"  🧠 [分季记忆体] 未找到 S{season_num} 的专属记忆，将使用规则引擎进行分配。")
+                        else:
+                            # 电影或未提供季号的兜底逻辑
+                            cursor.execute("""
+                                SELECT target_cid, category_name 
+                                FROM p115_organize_records 
+                                WHERE tmdb_id = %s AND status = 'success' 
+                                ORDER BY processed_at DESC LIMIT 1
+                            """, (str(self.tmdb_id),))
+                            row = cursor.fetchone()
+                            if row and row['target_cid']:
+                                logger.info(f"  🧠 [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {row['target_cid']})")
+                                return row['target_cid']
             except Exception as e:
                 logger.warning(f"  ⚠️ 查询历史整理记录失败: {e}")
 
-        # 2. 遍历规则 (原有逻辑)
+        # 2. 遍历规则 
         for rule in self.rules:
             if not rule.get('enabled', True): continue
             if self._match_rule(rule):
@@ -3012,7 +3039,7 @@ def task_scan_and_organize_115(processor=None):
         active_tasks = 0
         task_cond = threading.Condition()
 
-        # ★ 用于收集第一阶段识别结果的容器
+        # ★ 用于收集第一阶段识别结果的容器 (升级为分季隔离)
         grouped_items = {} # 结构: {(tmdb_id, media_type, title): [item1, item2, ...]}
         unidentified_items = []
         group_lock = threading.Lock()
@@ -3061,10 +3088,26 @@ def task_scan_and_organize_115(processor=None):
                 use_ai=use_ai
             )
             
+            # 尝试提取季号，用于分季隔离
+            season_num = None
+            if media_type == 'tv':
+                import re
+                name_to_check = main_dir_name if main_dir_name else name
+                m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', name_to_check)
+                m2 = re.search(r'Season\s*(\d{1,4})\b', name_to_check, re.IGNORECASE)
+                m3 = re.search(r'第(\d{1,4})季', name_to_check)
+                if m1: season_num = int(m1.group(1))
+                elif m2: season_num = int(m2.group(1))
+                elif m3: season_num = int(m3.group(1))
+                
+                if not season_num and main_dir_name:
+                    m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', name)
+                    if m1: season_num = int(m1.group(1))
+
             if tmdb_id:
-                # ★ 核心修改：识别成功后，加入分组字典，等待第二阶段统一处理
+                # 加入 season_num 作为分组 Key
                 with group_lock:
-                    key = (tmdb_id, media_type, title)
+                    key = (tmdb_id, media_type, title, season_num)
                     if key not in grouped_items:
                         grouped_items[key] = []
                     grouped_items[key].append(item)
@@ -3075,7 +3118,7 @@ def task_scan_and_organize_115(processor=None):
                     from handler.p115_service import P115DeleteBuffer
                     P115DeleteBuffer.add(fids=[], base_cids=[item_id])
                 else:
-                    # ★ 核心修改：未识别文件也加入列表，等待批量移动
+                    # 未识别文件也加入列表，等待批量移动
                     with group_lock:
                         unidentified_items.append(item)
 
@@ -3160,11 +3203,15 @@ def task_scan_and_organize_115(processor=None):
             global_processed_count = 0
             progress_lock = threading.Lock()
 
-            def execute_group(tmdb_id, media_type, title, items):
+            def execute_group(tmdb_id, media_type, title, season_num, items):
                 nonlocal processed_count, global_processed_count
                 try:
                     organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
-                    target_cid = organizer.get_target_cid()
+                    
+                    # ★ 如果提取到了季号，强制赋给 organizer，并传给记忆体
+                    if season_num is not None:
+                        organizer.forced_season = season_num
+                    target_cid = organizer.get_target_cid(season_num=season_num)
                     
                     # ★ 新增：定义进度回调函数 (对讲机)
                     def item_progress_callback():
@@ -3183,7 +3230,7 @@ def task_scan_and_organize_115(processor=None):
                     logger.error(f"  ❌ 批量整理出错 (ID:{tmdb_id}): {e}")
 
             for key, items in grouped_items.items():
-                submit_task(execute_group, key[0], key[1], key[2], items)
+                submit_task(execute_group, key[0], key[1], key[2], key[3], items)
 
             with task_cond:
                 while active_tasks > 0:
