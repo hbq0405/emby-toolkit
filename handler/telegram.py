@@ -1,4 +1,8 @@
 # 文件: handler/telegram.py
+import json
+import threading
+import extensions
+from tasks.core import get_task_registry
 import requests
 import logging
 from datetime import datetime
@@ -72,8 +76,8 @@ def escape_markdown(text: str) -> str:
     return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
 
 # --- 通用的 Telegram 文本消息发送函数 ---
-def send_telegram_message(chat_id: str, text: str, disable_notification: bool = False):
-    """通用的 Telegram 文本消息发送函数。"""
+def send_telegram_message(chat_id: str, text: str, disable_notification: bool = False, reply_markup: dict = None):
+    """通用的 Telegram 文本消息发送函数，支持内联键盘。"""
     bot_token = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
     if not bot_token or not chat_id:
         return False
@@ -92,6 +96,11 @@ def send_telegram_message(chat_id: str, text: str, disable_notification: bool = 
         'disable_web_page_preview': True,
         'disable_notification': disable_notification,
     }
+    
+    # 支持传入键盘标记
+    if reply_markup:
+        payload['reply_markup'] = reply_markup
+
     try:
         proxies = get_proxies_for_requests()
         response = requests.post(api_url, json=payload, timeout=15, proxies=proxies)
@@ -283,7 +292,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         logger.error(f"发送媒体通知时发生严重错误: {e}", exc_info=True)
 
 # ======================================================================
-# ★★★ 新增：Telegram 机器人交互监听 (长轮询) ★★★
+# ★★★ Telegram 机器人交互监听 (长轮询) ★★★
 # ======================================================================
 import re
 import time
@@ -293,6 +302,78 @@ from handler.p115_service import P115Service
 # 全局变量控制轮询线程
 _tg_polling_thread = None
 _tg_polling_active = False
+
+def _execute_task_from_tg(chat_id: str, task_key: str):
+    """在后台线程中执行选定的任务"""
+    registry = get_task_registry(context='all')
+    task_info = registry.get(task_key)
+    
+    if not task_info:
+        send_telegram_message(chat_id, escape_markdown("❌ 任务不存在或已失效。"))
+        return
+
+    task_function, task_description, processor_type = task_info[:3]
+    
+    # 获取对应的处理器实例
+    target_processor = None
+    if processor_type == 'media':
+        target_processor = extensions.media_processor_instance
+    elif processor_type == 'watchlist':
+        target_processor = extensions.watchlist_processor_instance
+    elif processor_type == 'actor':
+        target_processor = extensions.actor_subscription_processor_instance
+
+    if not target_processor:
+        send_telegram_message(chat_id, escape_markdown(f"❌ 无法获取 {processor_type} 处理器实例。"))
+        return
+
+    send_telegram_message(chat_id, escape_markdown(f"🚀 任务已启动：*{task_description}*\n请在系统日志或任务中心查看进度。"))
+    logger.info(f"  ➜ [TG交互] 管理员 {chat_id} 触发了任务: {task_description}")
+
+    # 包装执行逻辑，处理特殊参数
+    def run_wrapper():
+        try:
+            tasks_requiring_force_flag = ['role-translation', 'enrich-aliases', 'populate-metadata']
+            if task_key in tasks_requiring_force_flag:
+                task_function(target_processor, force_full_update=False)
+            else:
+                task_function(target_processor)
+            
+            send_telegram_message(chat_id, escape_markdown(f"✅ 任务执行完毕：*{task_description}*"))
+        except Exception as e:
+            logger.error(f"TG触发任务 '{task_description}' 失败: {e}", exc_info=True)
+            send_telegram_message(chat_id, escape_markdown(f"❌ 任务执行失败：*{task_description}*\n错误信息: {str(e)}"))
+
+    # 启动独立线程执行任务，避免阻塞 TG 轮询
+    threading.Thread(target=run_wrapper, name=f"TG_Task_{task_key}", daemon=True).start()
+
+def _handle_callback_query(callback_query: dict):
+    """处理内联键盘的按钮点击事件"""
+    query_id = callback_query.get('id')
+    from_user = callback_query.get('from', {})
+    chat_id = str(from_user.get('id', ''))
+    data = callback_query.get('data', '')
+
+    bot_token = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN)
+    
+    # 1. 权限校验
+    admin_ids = [str(aid) for aid in user_db.get_admin_telegram_chat_ids()]
+    if chat_id not in admin_ids:
+        logger.warning(f"  ⚠️ [TG交互] 收到未授权用户 ({chat_id}) 的回调请求，已拒绝。")
+        return
+
+    # 2. 响应 Callback Query (消除按钮上的加载圈圈)
+    if bot_token and query_id:
+        answer_url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+        try:
+            requests.post(answer_url, json={'callback_query_id': query_id}, proxies=get_proxies_for_requests(), timeout=5)
+        except Exception:
+            pass
+
+    # 3. 处理任务触发逻辑
+    if data.startswith('run_task_'):
+        task_key = data.replace('run_task_', '')
+        _execute_task_from_tg(chat_id, task_key)
 
 def _handle_incoming_message(message: dict):
     """处理接收到的单条消息"""
@@ -307,6 +388,35 @@ def _handle_incoming_message(message: dict):
     
     if chat_id not in admin_ids and chat_id != global_channel:
         logger.warning(f"  ⚠️ [TG交互] 收到未授权用户 ({chat_id}) 的消息，已忽略。")
+        return
+
+    # ★★★ 新增：处理 /tasks 或 /menu 指令，生成任务菜单 ★★★
+    if text.lower() in ['/tasks', '/menu', '菜单', '任务']:
+        registry = get_task_registry(context='all')
+        keyboard = []
+        row = []
+        
+        # 遍历注册表生成按钮 (每行2个按钮)
+        for key, info in registry.items():
+            # 过滤掉任务链本身，只显示具体任务
+            if key in ['task-chain-high-freq', 'task-chain-low-freq']:
+                continue
+                
+            desc = info[1]
+            row.append({"text": desc, "callback_data": f"run_task_{key}"})
+            
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+            
+        reply_markup = {"inline_keyboard": keyboard}
+        send_telegram_message(
+            chat_id, 
+            escape_markdown("🛠️ *系统任务控制台*\n请点击下方按钮执行对应任务："), 
+            reply_markup=reply_markup
+        )
         return
 
     # 2. 识别链接类型
@@ -411,34 +521,37 @@ def _telegram_polling_worker():
     
     while _tg_polling_active:
         try:
-            params = {'timeout': 30, 'allowed_updates': ['message']}
+            # ★★★ 修改：允许接收 message 和 callback_query ★★★
+            params = {'timeout': 30, 'allowed_updates': ['message', 'callback_query']}
             if offset:
                 params['offset'] = offset
                 
             proxies = get_proxies_for_requests()
-            # 使用长轮询，timeout 设为 30 秒
             response = requests.get(api_url, params=params, timeout=40, proxies=proxies)
             
             if response.status_code == 200:
                 data = response.json()
                 if data.get('ok'):
                     for update in data.get('result', []):
-                        # 更新 offset，确保不重复处理
                         offset = update['update_id'] + 1
                         
+                        # ★★★ 修改：分发不同类型的更新 ★★★
                         if 'message' in update:
                             _handle_incoming_message(update['message'])
+                        elif 'callback_query' in update:
+                            _handle_callback_query(update['callback_query'])
+                            
             elif response.status_code == 401 or response.status_code == 404:
                 logger.error("  ❌ Telegram Bot Token 无效，停止轮询。")
                 break
                 
         except requests.exceptions.Timeout:
-            pass # 正常的长轮询超时，继续下一次循环
+            pass 
         except Exception as e:
             logger.debug(f"  ⚠️ Telegram 轮询网络异常 (将自动重试): {e}")
-            time.sleep(5) # 出错时休眠 5 秒防死循环
+            time.sleep(5) 
             
-        time.sleep(1) # 基础循环间隔
+        time.sleep(1)
 
 def start_telegram_bot():
     """启动 Telegram 机器人监听"""
