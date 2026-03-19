@@ -846,8 +846,8 @@ def refresh_item_by_id(item_id: str, base_url: str, api_key: str) -> bool:
     # 基础参数 (不带 api_key)
     refresh_params = {
         "Recursive": "true", 
-        "ImageRefreshMode": "Default",
-        "MetadataRefreshMode": "Default",
+        "ImageRefreshMode": "ValidationOnly",
+        "MetadataRefreshMode": "ValidationOnly",
         "ReplaceAllMetadata": "false",
         "ReplaceAllImages": "false"
     }
