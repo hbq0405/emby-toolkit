@@ -1351,11 +1351,11 @@ class SmartOrganizer:
                                 elif m3: s_val = int(m3.group(1))
                                 
                                 if s_val == season_num:
-                                    logger.info(f"  🧠 [分季记忆体] 发现该剧 S{season_num} 曾被手动整理过，沿用专属分类: {row['category_name']} (CID: {row['target_cid']})")
+                                    logger.info(f"  🧠 [分季记忆体] 发现该剧 '第 {season_num} 季' 曾被整理过，沿用专属分类: {row['category_name']} (CID: {row['target_cid']})")
                                     return row['target_cid']
                             
                             # 如果没找到该季的记忆，绝不使用其他季的记忆兜底，直接放行给规则引擎！
-                            logger.debug(f"  🧠 [分季记忆体] 未找到 S{season_num} 的专属记忆，将使用规则引擎进行分配。")
+                            logger.debug(f"  🧠 [分季记忆体] 未找到 '第 {season_num} 季' 的专属记忆，将使用规则引擎进行分配。")
                         else:
                             # 电影或未提供季号的兜底逻辑
                             cursor.execute("""
