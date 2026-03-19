@@ -66,7 +66,17 @@ def _process_single_mp_file(file_info):
 
     try:
         organizer = SmartOrganizer(client, file_info['tmdb_id'], file_info['media_type'], file_info['title'])
-        target_cid = organizer.get_target_cid()
+        
+        # ★ 核心修复：提取并传递季号给记忆体，实现分季隔离
+        season_num = file_info.get('season_num')
+        if season_num is not None and str(season_num).isdigit():
+            season_num = int(season_num)
+            organizer.forced_season = season_num # 强制锁定 organizer 的季号
+        else:
+            season_num = None
+            
+        # ★ 将季号传给记忆体
+        target_cid = organizer.get_target_cid(season_num=season_num)
 
         if target_cid:
             file_node = {
@@ -79,11 +89,10 @@ def _process_single_mp_file(file_info):
                 'pid': file_info['parent_id'],
                 'pc': file_info['pickcode'],
                 'pick_code': file_info['pickcode'],
-                '_forced_season': file_info.get('season_num'),   
+                '_forced_season': season_num,   
                 '_forced_episode': file_info.get('episode_num'),
                 '_skip_gc': True  
             }
-            # logger.info(f"  🚀 [MP上传] 接管文件整理: {file_info['name']}")
             organizer.execute(file_node, target_cid)
         else:
             logger.info(f"  🚫 [MP上传] 文件 '{file_info['name']}' 未命中任何分类规则，保持原样。")
