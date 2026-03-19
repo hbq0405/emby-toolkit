@@ -1915,7 +1915,7 @@ class SmartOrganizer:
             logger.error(f"  ❌ 拆解合集包失败: {e}")
             return False
 
-    def execute(self, root_item_or_items, target_cid):
+    def execute(self, root_item_or_items, target_cid, progress_callback=None):
         # ★ 新增：判断传入的是单个文件还是批量文件列表
         is_batch = isinstance(root_item_or_items, list)
         
@@ -2242,6 +2242,7 @@ class SmartOrganizer:
             if ext not in allowed_exts:
                 logger.debug(f"  🚫 扩展名 .{ext} 不在允许列表中，打入未识别: {file_name}")
                 if fid: unrecognized_fids.append(fid)
+                if progress_callback: progress_callback()
                 continue
 
             # 2. 垃圾/花絮/样本校验 (仅针对视频)
@@ -2249,6 +2250,7 @@ class SmartOrganizer:
                 if self._is_junk_file(file_name) or (0 < file_size < MIN_VIDEO_SIZE):
                     logger.debug(f"  🗑️ 判定为花絮或体积过小，打入未识别: {file_name}")
                     if fid: unrecognized_fids.append(fid)
+                    if progress_callback: progress_callback()
                     continue
 
             # 在重命名和查缓存前，如果缺失 SHA1，主动请求详情补齐 
@@ -2640,6 +2642,8 @@ class SmartOrganizer:
                             
                         except Exception as e:
                             logger.error(f"  ❌ 生成 STRM 文件失败: {e}", exc_info=True)
+                    if progress_callback:
+                        progress_callback()
             else:
                 err_msg = str(move_res.get('error_msg', move_res))
                 logger.error(f"  ❌ [批量移动失败] 目标CID:{batch_target_cid}, 包含 {len(fids)} 个文件, 原因: {err_msg}")
@@ -2647,6 +2651,9 @@ class SmartOrganizer:
                 if '不存在' in err_msg or move_res.get('code') in [20004, 70004]:
                     logger.warning(f"  🧹 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {batch_target_cid}")
                     P115CacheManager.delete_cid(batch_target_cid)
+                if progress_callback:
+                    for _ in items:
+                        progress_callback()
 
         # =================================================================
         # ★★★ 终极清理：将所有不合规文件移入未识别目录 ★★★
@@ -3125,17 +3132,31 @@ def task_scan_and_organize_115(processor=None):
         if grouped_items:
             logger.info(f"  📦 扫描与识别完成，共分拣出 {len(grouped_items)} 个媒体组，开始并发批量整理...")
             active_tasks = 0 # 重置计数器
+            
+            # ★ 新增：计算总文件数和进度锁
+            total_items_to_process = sum(len(items) for items in grouped_items.values())
+            global_processed_count = 0
+            progress_lock = threading.Lock()
 
             def execute_group(tmdb_id, media_type, title, items):
-                nonlocal processed_count
+                nonlocal processed_count, global_processed_count
                 try:
                     organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
                     target_cid = organizer.get_target_cid()
-                    # ★ 核心：直接传入列表，底层 execute 会自动打包处理
-                    if organizer.execute(items, target_cid):
+                    
+                    # ★ 新增：定义进度回调函数 (对讲机)
+                    def item_progress_callback():
+                        nonlocal global_processed_count
+                        with progress_lock:
+                            global_processed_count += 1
+                            # 进度从 20% 到 95% 平滑过渡
+                            prog = 20 + int((global_processed_count / total_items_to_process) * 75)
+                            update_progress(prog, f"正在极速整理... ({global_processed_count}/{total_items_to_process})")
+
+                    # ★ 核心：将对讲机传给底层执行器
+                    if organizer.execute(items, target_cid, progress_callback=item_progress_callback):
                         with counter_lock:
                             processed_count += len(items)
-                            update_progress(80, f"正在并发极速整理... (已成功: {processed_count} | 未识别: {moved_to_unidentified})")
                 except Exception as e:
                     logger.error(f"  ❌ 批量整理出错 (ID:{tmdb_id}): {e}")
 
