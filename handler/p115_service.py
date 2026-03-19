@@ -2216,6 +2216,138 @@ class SmartOrganizer:
         if not allowed_exts:
             allowed_exts = known_video_exts | {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
 
+        # =================================================================
+        # ★★★ 核心性能修复：内存级目录缓存 ★★★
+        # 解决超大季/超多集整理时，频繁查询本地DB和请求115 API导致的严重卡死问题
+        # =================================================================
+        memory_dir_cache = {}
+        
+        # 提前拉取目标主目录下的现有文件夹，填充到内存缓存中 (只需 1 次 API 请求)
+        if final_home_cid:
+            try:
+                existing_dirs_res = self.client.fs_files({'cid': final_home_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
+                for item in existing_dirs_res.get('data', []):
+                    if str(item.get('fc') or item.get('type')) == '0':
+                        d_name = item.get('fn') or item.get('n') or item.get('file_name')
+                        d_id = item.get('fid') or item.get('file_id')
+                        if d_name and d_id:
+                            memory_dir_cache[f"{final_home_cid}_{d_name}"] = d_id
+            except Exception as e:
+                pass
+
+        for file_item in candidates:
+            # 兼容 OpenAPI 键名
+            fid = file_item.get('fid') or file_item.get('file_id')
+            file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
+            ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+            file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
+            
+            # 1. 扩展名绝对白名单校验 (最高优先级)
+            if ext not in allowed_exts:
+                logger.debug(f"  🚫 扩展名 .{ext} 不在允许列表中，打入未识别: {file_name}")
+                if fid: unrecognized_fids.append(fid)
+                continue
+
+            # 2. 垃圾/花絮/样本校验 (仅针对视频)
+            if ext in known_video_exts:
+                if self._is_junk_file(file_name) or (0 < file_size < MIN_VIDEO_SIZE):
+                    logger.debug(f"  🗑️ 判定为花絮或体积过小，打入未识别: {file_name}")
+                    if fid: unrecognized_fids.append(fid)
+                    continue
+
+            # 在重命名和查缓存前，如果缺失 SHA1，主动请求详情补齐 
+            file_sha1 = file_item.get('sha1') or file_item.get('sha')
+            if not file_sha1 and fid and ext in known_video_exts:
+                try:
+                    info_res = self.client.fs_get_info(fid)
+                    if info_res.get('state') and info_res.get('data'):
+                        fetched_sha1 = info_res['data'].get('sha1')
+                        if fetched_sha1:
+                            file_item['sha1'] = fetched_sha1 
+                except Exception:
+                    pass
+
+            if keep_original:
+                new_filename = file_name
+                season_num = None
+                s_name = None
+                is_center_cached = False
+                real_target_cid = final_home_cid
+                
+                # 1:1 复刻原始目录架构
+                rel_path = file_item.get('rel_path', '')
+                if rel_path:
+                    current_parent = final_home_cid
+                    for part in rel_path.split('/'):
+                        if not part: continue
+                        
+                        # ★ 优先查内存缓存
+                        cache_key = f"{current_parent}_{part}"
+                        part_cid = memory_dir_cache.get(cache_key)
+                        
+                        if not part_cid:
+                            part_cid = P115CacheManager.get_cid(current_parent, part)
+                            
+                        if not part_cid:
+                            mk_res = self.client.fs_mkdir(part, current_parent)
+                            if mk_res.get('state'):
+                                part_cid = mk_res.get('cid')
+                            else:
+                                try:
+                                    s_search = self.client.fs_files({'cid': current_parent, 'search_value': part, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
+                                    for s_item in s_search.get('data', []):
+                                        if s_item.get('fn') == part and str(s_item.get('fc', s_item.get('type'))) == '0':
+                                            part_cid = s_item.get('fid') or s_item.get('file_id')
+                                            break
+                                except: pass
+                        if part_cid:
+                            P115CacheManager.save_cid(part_cid, current_parent, part)
+                            memory_dir_cache[cache_key] = part_cid # ★ 写入内存缓存
+                            current_parent = part_cid
+                        else:
+                            break
+                    real_target_cid = current_parent
+            else:
+                new_filename, season_num, s_name, is_center_cached = self._rename_file_node(
+                    file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
+                    pre_fetched_mediainfo=pre_fetched_mediainfo 
+                )
+
+                real_target_cid = final_home_cid
+                
+                # ★ 直接使用返回的 s_name 创建/查找季目录
+                if self.media_type == 'tv' and season_num is not None and s_name:
+                    cache_key = f"{final_home_cid}_{s_name}"
+                    s_cid = memory_dir_cache.get(cache_key) # ★ 优先查内存缓存
+                    
+                    if not s_cid:
+                        s_cid = P115CacheManager.get_cid(final_home_cid, s_name)
+                    
+                    if s_cid:
+                        real_target_cid = s_cid
+                        memory_dir_cache[cache_key] = s_cid # 顺手存入内存
+                    else:
+                        s_mk = self.client.fs_mkdir(s_name, final_home_cid)
+                        s_cid = s_mk.get('cid') if s_mk.get('state') else None
+                        
+                        if not s_cid: 
+                            try:
+                                s_search = self.client.fs_files({'cid': final_home_cid, 'search_value': s_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
+                                for item in s_search.get('data', []):
+                                    item_name = item.get('fn') or item.get('n') or item.get('file_name')
+                                    item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
+                                    item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid'))
+                                    
+                                    if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
+                                        s_cid = item.get('fid') or item.get('file_id')
+                                        break
+                            except: pass
+                        
+                        if s_cid:
+                            P115CacheManager.save_cid(s_cid, final_home_cid, s_name)
+                            memory_dir_cache[cache_key] = s_cid # ★ 写入内存缓存
+                            real_target_cid = s_cid
+
         for file_item in candidates:
             # 兼容 OpenAPI 键名
             fid = file_item.get('fid') or file_item.get('file_id')
