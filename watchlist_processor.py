@@ -1577,11 +1577,12 @@ class WatchlistProcessor:
                         with get_db_connection() as conn:
                             with conn.cursor() as cursor:
                                 # ★ 核心优雅点 2：提取 original_name 和 renamed_name 用于精准判断季号
-                                cursor.execute("SELECT id, original_name, renamed_name FROM p115_organize_records WHERE tmdb_id = %s", (str(tmdb_id),))
+                                cursor.execute("SELECT id, original_name, renamed_name, target_cid FROM p115_organize_records WHERE tmdb_id = %s", (str(tmdb_id),))
                                 all_records = cursor.fetchall()
                         
                         for row in all_records:
                             name_to_check = row['renamed_name'] or row['original_name'] or ""
+                            target_cid = row['target_cid']
                             s_num = None
 
                             # 提取季号正则 (兼容 S01E01, Season 1, 第1季)
@@ -1605,11 +1606,13 @@ class WatchlistProcessor:
                             organizer = SmartOrganizer(client, tmdb_id, 'tv', item_name)
                             new_target_cid = organizer.get_target_cid(ignore_memory=True)
                             
-                            if new_target_cid:
+                            if new_target_cid != target_cid:
                                 logger.info(f"  🚚 [智能追剧] 重新匹配出新目录 CID: {new_target_cid}，精准锁定 {len(records_to_process)} 个在播/最新季文件加入重组队列 (目标季: {list(target_seasons_for_move)})。")
                                 for rid, s_num in records_to_process:
                                     # ★ 核心优雅点 4：传入明确的 s_num，防止 115 模块乱套
                                     ManualCorrectTaskQueue.add(rid, tmdb_id, 'tv', new_target_cid, s_num)
+                            else:
+                                logger.info("  ➜ 文件已在分类目录，跳过重组")
         except Exception as e:
             logger.error(f"  ❌ 触发 115 自动分类迁移失败: {e}", exc_info=True)
 

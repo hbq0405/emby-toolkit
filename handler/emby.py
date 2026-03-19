@@ -274,7 +274,7 @@ def _login_and_get_token() -> tuple[Optional[str], Optional[str]]:
         user_id = data.get("User", {}).get("Id")
         
         if access_token and user_id:
-            logger.info("  ➜ [自动登录] 成功，已获取并缓存了新的管理员 AccessToken。")
+            logger.debug("  ➜ [自动登录] 成功，已获取并缓存了新的管理员 AccessToken。")
             # 成功获取后，存入缓存
             _admin_token_cache['access_token'] = access_token
             _admin_token_cache['user_id'] = user_id
@@ -297,7 +297,7 @@ def get_admin_access_token() -> tuple[Optional[str], Optional[str]]:
         return _admin_token_cache['access_token'], _admin_token_cache['user_id']
     
     # 2. 缓存未命中，执行登录
-    logger.info("  ➜ [自动登录] 缓存未命中，正在执行首次登录以获取 AccessToken...")
+    logger.debug("  ➜ [自动登录] 缓存未命中，正在执行首次登录以获取 AccessToken...")
     return _login_and_get_token()
 
 # ✨✨✨ 快速获取指定类型的项目总数，不获取项目本身 ✨✨✨
