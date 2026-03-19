@@ -486,13 +486,21 @@ class MediaProcessor:
                     alt_titles_data = details.get("alternative_titles", {})
                     alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
                     
+                    priority_map = {"CN": 1, "SG": 2, "TW": 3, "HK": 4}
+                    best_priority = 99
+                    
                     for alt in alt_list:
                         alt_title = alt.get("title", "")
                         if utils.contains_chinese(alt_title):
-                            chinese_alias = alt_title
                             iso_country = alt.get("iso_3166_1", "").upper()
-                            if iso_country in ["CN", "TW", "HK", "SG"]:
-                                break # 找到最正宗的，直接跳出
+                            current_priority = priority_map.get(iso_country, 5)
+                            
+                            if current_priority < best_priority:
+                                chinese_alias = alt_title
+                                best_priority = current_priority
+                                
+                            if best_priority == 1:
+                                break
                     
                     if chinese_alias:
                         logger.info(f"  ➜ [实时监控] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")
@@ -2089,13 +2097,21 @@ class MediaProcessor:
                     alt_titles_data = fresh_data.get("alternative_titles", {})
                     alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
                     
+                    priority_map = {"CN": 1, "SG": 2, "TW": 3, "HK": 4}
+                    best_priority = 99
+                    
                     for alt in alt_list:
                         alt_title = alt.get("title", "")
                         if utils.contains_chinese(alt_title):
-                            chinese_alias = alt_title
                             iso_country = alt.get("iso_3166_1", "").upper()
-                            if iso_country in ["CN", "TW", "HK", "SG"]:
-                                break # 找到最正宗的，直接跳出
+                            current_priority = priority_map.get(iso_country, 5)
+                            
+                            if current_priority < best_priority:
+                                chinese_alias = alt_title
+                                best_priority = current_priority
+                                
+                            if best_priority == 1:
+                                break
                     
                     if chinese_alias:
                         logger.info(f"  ➜ [完整模式] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")

@@ -1102,19 +1102,28 @@ class SmartOrganizer:
             # 补充标题日期供重命名
             current_title = raw_details.get('title') or raw_details.get('name')
             
-            # ★★★ 新增：如果标题不是中文，尝试从别名中寻找中文名 ★★★
+            # ★★★ 如果标题不是中文，尝试从别名中寻找中文名 ★★★
             if current_title and not utils.contains_chinese(current_title):
                 chinese_alias = None
                 alt_titles_data = raw_details.get("alternative_titles", {})
                 alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
                 
+                # ★ 优先级映射：数字越小优先级越高 (CN/SG 简体优先)
+                priority_map = {"CN": 1, "SG": 2, "TW": 3, "HK": 4}
+                best_priority = 99
+                
                 for alt in alt_list:
                     alt_title = alt.get("title", "")
                     if utils.contains_chinese(alt_title):
-                        chinese_alias = alt_title
                         iso_country = alt.get("iso_3166_1", "").upper()
-                        if iso_country in ["CN", "TW", "HK", "SG"]:
-                            break # 找到最正宗的，直接跳出
+                        current_priority = priority_map.get(iso_country, 5) # 其他包含中文的地区优先级为5
+                        
+                        if current_priority < best_priority:
+                            chinese_alias = alt_title
+                            best_priority = current_priority
+                            
+                        if best_priority == 1:
+                            break # 找到最高优先级(CN)，直接跳出
                 
                 if chinese_alias:
                     logger.info(f"  ➜ [115整理] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")
