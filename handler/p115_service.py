@@ -1678,7 +1678,7 @@ class SmartOrganizer:
         episode_num = file_node.get('_forced_episode')
         
         if is_tv and (season_num is None or episode_num is None):
-            # ★ 修复正则边界漏洞：前面必须是开头、空格、点、横杠、下划线或括号，防止 Sortie.2006 被识别为 E2006
+            # 1. 标准特征匹配 (S01E01, EP01, 第1集)
             pattern = r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})\b|(?:^|[ \.\-\_\[\(])(?:ep|e|episode)[ \.\-]*?(\d{1,4})\b|第(\d{1,4})[集话]'
             match = re.search(pattern, original_name, re.IGNORECASE)
             if match:
@@ -1690,10 +1690,32 @@ class SmartOrganizer:
                     season_num = int(s) if s else 1
                 if episode_num is None:
                     episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
+            else:
+                # 2. ★ 纯数字兜底 (绝对安全：因为外层有 if is_tv 保护，绝不会把电影当成剧集)
+                name_without_ext = original_name.rsplit('.', 1)[0]
+                
+                # 策略A：文件名就是纯数字 (如 "01.mp4")
+                if name_without_ext.isdigit():
+                    if episode_num is None: episode_num = int(name_without_ext)
+                else:
+                    # 策略B：剔除年份、分辨率等干扰项后，寻找独立的数字
+                    clean_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', name_without_ext)
+                    
+                    # 优先找末尾的数字 (如 "白夜追凶 - 02")
+                    end_match = re.search(r'(?:^|[ \.\-\_\[\(])(\d{1,4})(?:[\]\)]|\s*)$', clean_name)
+                    if end_match:
+                        if episode_num is None: episode_num = int(end_match.group(1))
+                    else:
+                        # 找中间被明显分隔的数字 (如 "白夜追凶 02 1080p")
+                        mid_match = re.search(r'(?:^|[ \-\_\[\(])(\d{1,4})(?:[ \.\-\_\]\)]|$)', clean_name)
+                        if mid_match:
+                            if episode_num is None: episode_num = int(mid_match.group(1))
+                
+                if season_num is None:
+                    season_num = 1
 
         if hasattr(self, 'forced_season') and self.forced_season is not None:
             season_num = int(self.forced_season)
-            if episode_num is None: episode_num = 1
 
         # ★★★ 核心升级：直接调用统一乐高引擎生成文件名 ★★★
         default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
