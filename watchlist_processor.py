@@ -1406,18 +1406,27 @@ class WatchlistProcessor:
                         if season_info:
                             current_season_total = season_info.get('episode_count', 0)
 
+                    # ==============================================================================
+                    # ★★★ 核心修复：兜底逻辑也要“不见兔子不撒鹰” ★★★
+                    # 如果 TMDb 认为的“当前正在播出的季 (last_s_num)”在本地根本不存在，
+                    # 说明用户根本没开始追这一季，直接判定为完结！
+                    # ==============================================================================
+                    has_local_last_season = last_s_num in emby_seasons if last_s_num else False
+
+                    if not has_local_last_season:
+                        final_status = STATUS_COMPLETED
+                        paused_until_date = None
+                        logger.info(f"  zzz [判定-未入库] 虽本季尚未播完，但本地无该季 (S{last_s_num}) 任何文件，判定为“已完结”。")
+                    
                     # 2. 核心判断：
                     # 条件：状态是“连载中” AND (当前季总集数 > 0) AND (已播集号 < 总集数)
                     # 只要满足这个条件，说明这季还没播完，绝对不能判完结。
-                    if new_tmdb_status == "Returning Series" and last_e_num and current_season_total > 0 and last_e_num < current_season_total:
+                    elif new_tmdb_status == "Returning Series" and last_e_num and current_season_total > 0 and last_e_num < current_season_total:
                         final_status = STATUS_WATCHING
                         paused_until_date = None
                         logger.info(f"  🛡️ [判定-连载中] 虽无未来排期，但本季尚未播完 (进度: S{last_s_num} - {last_e_num}/{current_season_total})，判定为数据滞后，保持“追剧中”。")
                     
                     # 否则 -> 判定完结
-                    # 包含情况：
-                    # 1. Status 是 Ended/Canceled (直接完结)
-                    # 2. Status 是 Returning，但已播集数 >= 总集数 (本季完结 -> 视为完结，等待后续复活逻辑)
                     else:
                         final_status = STATUS_COMPLETED
                         paused_until_date = None
