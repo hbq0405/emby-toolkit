@@ -464,18 +464,21 @@ def _trigger_images_update_task(item_id, item_name, update_description, sync_tim
 
 def _enqueue_webhook_event(item_id, item_name, item_type):
     """
-    将事件加入批量处理队列，并管理防抖计时器。
+    将事件加入批量处理队列，并管理防抖计时器 (滑动窗口防抖)。
     """
     global WEBHOOK_BATCH_DEBOUNCER
     with WEBHOOK_BATCH_LOCK:
         WEBHOOK_BATCH_QUEUE.append((item_id, item_name, item_type))
         logger.debug(f"  ➜ [队列] 项目 '{item_name}' ({item_type}) 已加入处理队列。当前积压: {len(WEBHOOK_BATCH_QUEUE)}")
         
-        if WEBHOOK_BATCH_DEBOUNCER is None or WEBHOOK_BATCH_DEBOUNCER.ready():
-            logger.info(f"  ➜ [队列] 启动批量处理计时器，将在 {WEBHOOK_BATCH_DEBOUNCE_TIME} 秒后执行。")
-            WEBHOOK_BATCH_DEBOUNCER = spawn_later(WEBHOOK_BATCH_DEBOUNCE_TIME, _process_batch_webhook_events)
-        else:
-            logger.debug("  ➜ [队列] 批量处理计时器运行中，等待合并。")
+        # ★★★ 核心修复：滑动窗口防抖 ★★★
+        # 只要有新文件进来，就无情地杀掉旧的计时器，重新开始 30 秒倒计时！
+        if WEBHOOK_BATCH_DEBOUNCER is not None:
+            WEBHOOK_BATCH_DEBOUNCER.kill()
+            logger.debug("  ➜ [队列] 检测到连续入库，已重置批量处理计时器。")
+            
+        logger.info(f"  ➜ [队列] 启动批量处理计时器，将在 {WEBHOOK_BATCH_DEBOUNCE_TIME} 秒后执行。")
+        WEBHOOK_BATCH_DEBOUNCER = spawn_later(WEBHOOK_BATCH_DEBOUNCE_TIME, _process_batch_webhook_events)
 
 def _dispatch_item(item_id, item_name, item_type):
     """
