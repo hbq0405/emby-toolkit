@@ -998,14 +998,13 @@ def get_config():
     return config_manager.APP_CONFIG
 
 class SmartOrganizer:
-    def __init__(self, client, tmdb_id, media_type, original_title, ai_translator=None, use_ai=False, season_num=None):
+    def __init__(self, client, tmdb_id, media_type, original_title, ai_translator=None, use_ai=False):
         self.client = client
         self.tmdb_id = tmdb_id
         self.media_type = media_type
         self.original_title = original_title
-        self.ai_translator = ai_translator
+        self.ai_translator = ai_translator # 新增
         self.use_ai = use_ai
-        self.season_num = season_num 
         self.api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
 
         self.studio_map = settings_db.get_setting('studio_mapping') or utils.DEFAULT_STUDIO_MAPPING
@@ -1156,43 +1155,13 @@ class SmartOrganizer:
         if rule.get('media_type') and rule['media_type'] != 'all':
             if rule['media_type'] != self.media_type: return False
 
-        # ★★★ 核心优化：长寿剧大迁徙终结者 ★★★
         # 追剧状态也是硬性分类
         if rule.get('watching_status') == 'watching' and self.media_type == 'tv':
             try:
-                from database.connection import get_db_connection
-                
-                # 1. 先查这部剧是不是在追剧列表中
-                is_series_watching = False
-                with get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        cursor.execute("SELECT watching_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (str(self.tmdb_id),))
-                        row = cursor.fetchone()
-                        if row and row['watching_status'] in ['Watching', 'Paused', 'Pending']:
-                            is_series_watching = True
-                
-                if not is_series_watching:
-                    return False # 剧集本身都没在追，直接不匹配
-                
-                # 2. 如果剧集在追，进一步判断当前处理的【季】是不是活跃季！
-                # 如果我们知道当前正在处理哪一季 (self.season_num)
-                if self.season_num is not None:
-                    with get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            # 查一下这个季在数据库里是不是活跃的
-                            cursor.execute("""
-                                SELECT watching_status 
-                                FROM media_metadata 
-                                WHERE parent_series_tmdb_id = %s AND season_number = %s AND item_type = 'Season'
-                            """, (str(self.tmdb_id), self.season_num))
-                            s_row = cursor.fetchone()
-                            
-                            # 如果这个季的状态是 NONE (非活跃)，说明它是老季！
-                            # 老季绝对不能进入连载目录，直接返回 False！
-                            if not s_row or s_row['watching_status'] == 'NONE':
-                                logger.debug(f"  🛡️ [防迁徙保护] S{self.season_num} 是已完结的老季，拒绝进入连载目录！")
-                                return False
-                            
+                from database.watchlist_db import get_watching_tmdb_ids
+                watching_ids = get_watching_tmdb_ids()
+                if str(self.tmdb_id) not in watching_ids:
+                    return False
             except Exception as e:
                 logger.warning(f"获取追剧状态失败: {e}")
                 return False
@@ -2266,10 +2235,24 @@ class SmartOrganizer:
             allowed_exts = known_video_exts | {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
 
         # =================================================================
-        # ★★★ 内存级目录缓存 ★★★
+        # ★★★ 核心性能修复：内存级目录缓存 ★★★
+        # 解决超大季/超多集整理时，频繁查询本地DB和请求115 API导致的严重卡死问题
         # =================================================================
         memory_dir_cache = {}
         
+        # 提前拉取目标主目录下的现有文件夹，填充到内存缓存中 (只需 1 次 API 请求)
+        if final_home_cid:
+            try:
+                existing_dirs_res = self.client.fs_files({'cid': final_home_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
+                for item in existing_dirs_res.get('data', []):
+                    if str(item.get('fc') or item.get('type')) == '0':
+                        d_name = item.get('fn') or item.get('n') or item.get('file_name')
+                        d_id = item.get('fid') or item.get('file_id')
+                        if d_name and d_id:
+                            memory_dir_cache[f"{final_home_cid}_{d_name}"] = d_id
+            except Exception as e:
+                pass
+
         for file_item in candidates:
             # 兼容 OpenAPI 键名
             fid = file_item.get('fid') or file_item.get('file_id')
@@ -2353,64 +2336,51 @@ class SmartOrganizer:
                 new_filename, season_num, s_name, is_center_cached = self._rename_file_node(
                     file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
                     pre_fetched_mediainfo=pre_fetched_mediainfo,
-                    local_pre_fetched_mediainfo=local_pre_fetched_mediainfo 
+                    local_pre_fetched_mediainfo=local_pre_fetched_mediainfo # ★ 传入本地字典
                 )
 
-                # ★ 核心修改：为当前文件单独计算目标主目录 (传入 season_num)
-                # 只有在非手动纠错模式下，才动态计算目标目录（防止长寿剧大迁徙）
-                if getattr(self, 'is_manual_correct', False):
-                    file_target_cid = dest_parent_cid
-                else:
-                    temp_organizer = SmartOrganizer(self.client, self.tmdb_id, self.media_type, self.original_title, season_num=season_num)
-                    temp_organizer.rules = self.rules # 继承规则
-                    file_target_cid = temp_organizer.get_target_cid(ignore_memory=True) # 忽略记忆体，强制重新计算
-                    
-                    # 如果没匹配到新规则，就用原来的 dest_parent_cid 兜底
-                    if not file_target_cid:
-                        file_target_cid = dest_parent_cid
-                
-                real_target_cid = file_target_cid
+                real_target_cid = final_home_cid
                 
                 # ★ 直接使用返回的 s_name 创建/查找季目录
                 if self.media_type == 'tv' and season_num is not None and s_name:
-                    cache_key = f"{file_target_cid}_{s_name}"
+                    cache_key = f"{final_home_cid}_{s_name}"
                     s_cid = memory_dir_cache.get(cache_key) # ★ 优先查内存缓存
                     
                     # ★ 如果缓存里存的是 'FAILED'，说明之前尝试过且失败了，直接跳过，防止 API 风暴
                     if s_cid == 'FAILED':
-                        real_target_cid = file_target_cid
+                        real_target_cid = final_home_cid
                     else:
                         if not s_cid:
-                            s_cid = P115CacheManager.get_cid(file_target_cid, s_name)
+                            s_cid = P115CacheManager.get_cid(final_home_cid, s_name)
                         
                         if s_cid:
                             real_target_cid = s_cid
                             memory_dir_cache[cache_key] = s_cid # 顺手存入内存
                         else:
-                            s_mk = self.client.fs_mkdir(s_name, file_target_cid)
+                            s_mk = self.client.fs_mkdir(s_name, final_home_cid)
                             s_cid = s_mk.get('cid') if s_mk.get('state') else None
                             
                             if not s_cid: 
                                 try:
-                                    s_search = self.client.fs_files({'cid': file_target_cid, 'search_value': s_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
+                                    s_search = self.client.fs_files({'cid': final_home_cid, 'search_value': s_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
                                     for item in s_search.get('data', []):
                                         item_name = item.get('fn') or item.get('n') or item.get('file_name')
                                         item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
                                         item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid'))
                                         
-                                        if item_name == s_name and str(item_fc) == '0' and item_pid == str(file_target_cid):
+                                        if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
                                             s_cid = item.get('fid') or item.get('file_id')
                                             break
                                 except: pass
                             
                             if s_cid:
-                                P115CacheManager.save_cid(s_cid, file_target_cid, s_name)
+                                P115CacheManager.save_cid(s_cid, final_home_cid, s_name)
                                 memory_dir_cache[cache_key] = s_cid # ★ 写入内存缓存
                                 real_target_cid = s_cid
                             else:
                                 # ★ 核心防御：如果创建和搜索都失败了，标记为 FAILED，同批次不再重试！
                                 memory_dir_cache[cache_key] = 'FAILED'
-                                real_target_cid = file_target_cid
+                                real_target_cid = final_home_cid
 
             # =================================================================
             # ★★★ 核心修复：严格去重逻辑 (防多版本/洗版残留冲突) ★★★
@@ -2526,8 +2496,7 @@ class SmartOrganizer:
                         try:
                             category_name = "未识别"
                             for rule in self.rules:
-                                # ★ 修复：使用实际移动的 batch_target_cid
-                                if str(rule.get('cid')) == str(batch_target_cid):
+                                if str(rule.get('cid')) == str(target_cid):
                                     category_name = rule.get('dir_name', '未识别')
                                     break
                             from handler.p115_service import P115RecordManager
@@ -2537,7 +2506,7 @@ class SmartOrganizer:
                                 status='success',
                                 tmdb_id=self.tmdb_id,
                                 media_type=self.media_type,
-                                target_cid=batch_target_cid, 
+                                target_cid=target_cid,
                                 category_name=category_name,
                                 renamed_name=new_filename,
                                 is_center_cached=is_center_cached if not keep_original else False,
@@ -2553,12 +2522,12 @@ class SmartOrganizer:
                         try:
                             category_name = None
                             for rule in self.rules:
-                                if rule.get('cid') == str(batch_target_cid):
+                                if rule.get('cid') == str(target_cid):
                                     category_name = rule.get('dir_name', '未识别')
                                     break
                             if not category_name: category_name = "未识别"
 
-                            category_rule = next((r for r in self.rules if str(r.get('cid')) == str(batch_target_cid)), None)
+                            category_rule = next((r for r in self.rules if str(r.get('cid')) == str(target_cid)), None)
                             relative_category_path = "未识别"
                             
                             if category_rule:
@@ -2567,7 +2536,7 @@ class SmartOrganizer:
                                 else:
                                     media_root_cid = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID, '0'))
                                     try:
-                                        dir_info = self.client.fs_files({'cid': batch_target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                                        dir_info = self.client.fs_files({'cid': target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
                                         path_nodes = dir_info.get('path', [])
                                         start_idx = 0
                                         found_root = False
@@ -4046,7 +4015,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
 
     logger.info(f"  🛠️ [批量重组] 开始对 {len(root_items)} 个文件执行定向整理 -> ID:{tmdb_id}")
 
-    organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False, season_num=season_num)
+    organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     organizer.is_manual_correct = True
     if season_num is not None and str(season_num).strip():
         organizer.forced_season = int(season_num)

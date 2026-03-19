@@ -1543,46 +1543,23 @@ class WatchlistProcessor:
                 
                 client = P115Service.get_client()
                 if client:
-                    # ★★★ 核心优化：按季查出所有整理记录 ★★★
-                    records_by_season = {}
+                    record_ids = []
                     with get_db_connection() as conn:
                         with conn.cursor() as cursor:
-                            # 关联 media_metadata 表，查出每个文件对应的季号
-                            # 注意：p115_organize_records 里存了 renamed_name，我们可以从中提取季号
-                            cursor.execute("SELECT id, renamed_name, target_cid FROM p115_organize_records WHERE tmdb_id = %s", (str(tmdb_id),))
-                            for row in cursor.fetchall():
-                                r_id = row['id']
-                                r_name = row['renamed_name']
-                                r_cid = row['target_cid']
-                                
-                                # 从重命名后的文件名中提取季号 (如 S01E01)
-                                import re
-                                s_match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})', r_name)
-                                s_num = int(s_match.group(1)) if s_match else 1 # 默认第1季
-                                
-                                if s_num not in records_by_season:
-                                    records_by_season[s_num] = []
-                                records_by_season[s_num].append((r_id, r_cid))
+                            cursor.execute("SELECT id FROM p115_organize_records WHERE tmdb_id = %s", (str(tmdb_id),))
+                            record_ids = [row['id'] for row in cursor.fetchall()]
                     
-                    if records_by_season:
-                        # 遍历每一季，分别评估目标目录
-                        for s_num, records in records_by_season.items():
-                            # 实例化 Organizer，传入当前季号！
-                            organizer = SmartOrganizer(client, tmdb_id, 'tv', item_name, season_num=s_num)
-                            
-                            # 极简调用，不传任何多余参数，忽略记忆体
-                            new_target_cid = organizer.get_target_cid(ignore_memory=True)
-                            
-                            if new_target_cid:
-                                # 检查这一季的文件是不是已经在目标目录里了
-                                ids_to_move = [r_id for r_id, old_cid in records if str(old_cid) != str(new_target_cid)]
-                                
-                                if ids_to_move:
-                                    logger.info(f"  🚚 [智能追剧] S{s_num} 匹配出新目录 CID: {new_target_cid}，将 {len(ids_to_move)} 个文件加入重组队列。")
-                                    for rid in ids_to_move:
-                                        ManualCorrectTaskQueue.add(rid, tmdb_id, 'tv', new_target_cid, s_num)
-                                else:
-                                    logger.debug(f"  ✅ [智能追剧] S{s_num} 已在正确目录，无需移动。")
+                    if record_ids:
+                        # 实例化 Organizer，忽略记忆体，让它重新从上到下跑一遍规则！
+                        organizer = SmartOrganizer(client, tmdb_id, 'tv', item_name)
+                        
+                        # ★ 极简调用，不传任何多余参数
+                        new_target_cid = organizer.get_target_cid(ignore_memory=True)
+                        
+                        if new_target_cid:
+                            logger.info(f"  🚚 [智能追剧] 重新匹配出新目录 CID: {new_target_cid}，将 {len(record_ids)} 个文件加入重组队列。")
+                            for rid in record_ids:
+                                ManualCorrectTaskQueue.add(rid, tmdb_id, 'tv', new_target_cid, None)
         except Exception as e:
             logger.error(f"  ❌ 触发 115 自动分类迁移失败: {e}", exc_info=True)
 
