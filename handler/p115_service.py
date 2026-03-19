@@ -1461,7 +1461,7 @@ class SmartOrganizer:
             data_source = "中心服务器(批量)"
 
         # 3. 兜底：尝试查 P115Center 中心服务器 (单次查询)
-        if not raw_json:
+        if not raw_json and pre_fetched_mediainfo is None:
             try:
                 import extensions
                 processor = extensions.media_processor_instance
