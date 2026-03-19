@@ -1650,7 +1650,7 @@
           </n-radio-group>
 
           <div style="text-align: center; background: #fafafa; padding: 15px; border-radius: 8px; border: 1px dashed #eee;">
-            <n-image width="180" src="/img/wechat_pay.png" fallback-src="https://via.placeholder.com/180?text=WeChat+Pay" />
+            <n-image width="180" src="/img/wechat_pay.jpg" fallback-src="https://via.placeholder.com/180?text=WeChat+Pay" />
             <div style="margin-top: 10px; font-size: 14px;">
               请使用微信扫码支付 <b style="color: #d03050; font-size: 18px;">￥{{ proPrice }}</b>
             </div>
