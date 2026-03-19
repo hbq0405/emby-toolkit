@@ -482,7 +482,10 @@ def main_app_start():
         logger.error(f"启动实时监控服务失败: {e}", exc_info=True)
 
     # 启动 Telegram 机器人交互监听
-    telegram.start_telegram_bot()
+    if config_manager.APP_CONFIG.get('is_pro_active', False):
+        telegram.start_telegram_bot()
+    else:
+        logger.info("  ⚠️ [免费版限制] Telegram 机器人交互菜单与指令功能为 Pro 高级版专属！交互监听未启动。")
 
     def warmup_vector_cache():
         try:
