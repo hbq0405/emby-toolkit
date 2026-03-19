@@ -2,7 +2,6 @@
 import json
 import threading
 import extensions
-from tasks.core import get_task_registry
 import requests
 import logging
 from datetime import datetime
@@ -305,6 +304,7 @@ _tg_polling_active = False
 
 def _execute_task_from_tg(chat_id: str, task_key: str):
     """在后台线程中执行选定的任务"""
+    from tasks.core import get_task_registry
     registry = get_task_registry(context='all')
     task_info = registry.get(task_key)
     
@@ -392,6 +392,7 @@ def _handle_incoming_message(message: dict):
 
     # ★★★ 新增：处理 /tasks 或 /menu 指令，生成任务菜单 ★★★
     if text.lower() in ['/tasks', '/menu', '菜单', '任务']:
+        from tasks.core import get_task_registry
         registry = get_task_registry(context='all')
         keyboard = []
         row = []
