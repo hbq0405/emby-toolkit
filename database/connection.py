@@ -471,7 +471,8 @@ def init_db():
                         target_cid TEXT,               -- 目标分类CID
                         category_name TEXT,            -- 目标分类名称
                         processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        is_center_cached BOOLEAN DEFAULT FALSE
+                        is_center_cached BOOLEAN DEFAULT FALSE,
+                        season_number INTEGER
                     )
                 """)
 
@@ -502,7 +503,8 @@ def init_db():
                         },
                         'p115_organize_records': {
                             "is_center_cached": "BOOLEAN DEFAULT FALSE",
-                            "pick_code": "TEXT UNIQUE"
+                            "pick_code": "TEXT UNIQUE",
+                            "season_number": "INTEGER"
                         },
                         'emby_users': {
                             "policy_json": "JSONB"  
@@ -560,6 +562,39 @@ def init_db():
 
                 except Exception as e_alter:
                     logger.error(f"  ➜ [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
+
+                # ======================================================================
+                # ★★★ 存量数据清洗：为旧的 115 整理记录提取并写入季号 ★★★
+                # ======================================================================
+                try:
+                    cursor.execute("SELECT id, original_name, renamed_name FROM p115_organize_records WHERE media_type = 'tv' AND season_number IS NULL")
+                    records_to_upgrade = cursor.fetchall()
+                    
+                    if records_to_upgrade:
+                        logger.info(f"  ➜ [数据清洗] 发现 {len(records_to_upgrade)} 条旧的 115 整理记录缺少季号，正在执行正则提取与升级...")
+                        import re
+                        update_data = []
+                        for row in records_to_upgrade:
+                            name_to_check = row['renamed_name'] or row['original_name'] or ""
+                            s_num = None
+                            
+                            m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', name_to_check)
+                            m2 = re.search(r'Season\s*(\d{1,4})\b', name_to_check, re.IGNORECASE)
+                            m3 = re.search(r'第(\d{1,4})季', name_to_check)
+
+                            if m1: s_num = int(m1.group(1))
+                            elif m2: s_num = int(m2.group(1))
+                            elif m3: s_num = int(m3.group(1))
+                            
+                            if s_num is not None:
+                                update_data.append((s_num, row['id']))
+                        
+                        if update_data:
+                            from psycopg2.extras import execute_batch
+                            execute_batch(cursor, "UPDATE p115_organize_records SET season_number = %s WHERE id = %s", update_data)
+                            logger.info(f"  ➜ [数据清洗] 成功为 {len(update_data)} 条记录补充了季号！")
+                except Exception as e_clean:
+                    logger.error(f"  ➜ [数据清洗] 提取季号时出错: {e_clean}")
                 
                 # ======================================================================
                 # ★★★ 统一创建验证所有索引 ★★★

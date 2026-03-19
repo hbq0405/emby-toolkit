@@ -809,30 +809,25 @@ class P115CacheManager:
 # ======================================================================
 class P115RecordManager:
     @staticmethod
-    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None, is_center_cached=False, pick_code=None):
+    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None, is_center_cached=False, pick_code=None, season_number=None):
         """添加或更新整理记录（基于 file_id 和 pick_code 唯一约束，智能继承原名）"""
         if not file_id or not original_name: return
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # ★ 核心逻辑 1：如果提供了 PC 码，先查前世今生
                     if pick_code:
                         cursor.execute("SELECT file_id, original_name FROM p115_organize_records WHERE pick_code = %s", (pick_code,))
                         row = cursor.fetchone()
                         if row:
                             old_file_id = row['file_id']
-                            # 强制继承最开始的原始文件名！
                             original_name = row['original_name'] 
-                            
-                            # 如果 file_id 变了 (网盘内移动/复制导致)，删掉旧记录，给新记录腾出 PC 码的唯一约束位置
                             if str(old_file_id) != str(file_id):
                                 cursor.execute("DELETE FROM p115_organize_records WHERE file_id = %s", (old_file_id,))
 
-                    # ★ 核心逻辑 2：执行插入或更新
                     cursor.execute("""
                         INSERT INTO p115_organize_records 
-                        (file_id, pick_code, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at, is_center_cached)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s)
+                        (file_id, pick_code, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at, is_center_cached, season_number)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s)
                         ON CONFLICT (file_id) 
                         DO UPDATE SET 
                             pick_code = EXCLUDED.pick_code,
@@ -843,10 +838,11 @@ class P115RecordManager:
                             category_name = EXCLUDED.category_name,
                             renamed_name = EXCLUDED.renamed_name,
                             processed_at = NOW(),
-                            is_center_cached = p115_organize_records.is_center_cached OR EXCLUDED.is_center_cached
+                            is_center_cached = p115_organize_records.is_center_cached OR EXCLUDED.is_center_cached,
+                            season_number = EXCLUDED.season_number
                     """, (str(file_id), pick_code, str(original_name), str(status), str(tmdb_id) if tmdb_id else None, 
                           str(media_type) if media_type else None, str(target_cid) if target_cid else None, 
-                          str(category_name) if category_name else None, str(renamed_name) if renamed_name else None, bool(is_center_cached)))
+                          str(category_name) if category_name else None, str(renamed_name) if renamed_name else None, bool(is_center_cached), season_number))
                     conn.commit()
         except Exception as e:
             logger.error(f"  ❌ 写入 115 整理记录失败: {e}")
@@ -2572,7 +2568,8 @@ class SmartOrganizer:
                                 category_name=category_name,
                                 renamed_name=new_filename,
                                 is_center_cached=is_center_cached if not keep_original else False,
-                                pick_code=pick_code 
+                                pick_code=pick_code,
+                                season_number=season_num 
                             )
                         except Exception as e:
                             logger.error(f"  ❌ 记录文件整理日志失败: {e}")
