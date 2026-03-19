@@ -1033,3 +1033,23 @@ def get_season_emby_id(parent_tmdb_id: str, season_number: int) -> Optional[str]
     except Exception as e:
         logger.error(f"DB: 查询季 Emby ID 失败 (TMDb: {parent_tmdb_id}, S{season_number}): {e}")
         return None
+    
+def get_season_watching_status(parent_tmdb_id: str, season_number: int) -> Optional[str]:
+    """
+    【分季隔离专用】获取指定剧集特定季的真实追剧状态。
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    SELECT watching_status 
+                    FROM media_metadata 
+                    WHERE parent_series_tmdb_id = %s 
+                      AND item_type = 'Season' 
+                      AND season_number = %s
+                """, (str(parent_tmdb_id), int(season_number)))
+                row = cursor.fetchone()
+                return row['watching_status'] if row else None
+    except Exception as e:
+        logger.error(f"  ➜ 从数据库获取季状态时出错 (TMDb: {parent_tmdb_id}, S{season_number}): {e}")
+        return None

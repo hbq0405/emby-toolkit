@@ -1155,13 +1155,32 @@ class SmartOrganizer:
         if rule.get('media_type') and rule['media_type'] != 'all':
             if rule['media_type'] != self.media_type: return False
 
-        # 追剧状态也是硬性分类
+        # ★★★ 核心修复：追剧状态的分季隔离判定 ★★★
         if rule.get('watching_status') == 'watching' and self.media_type == 'tv':
             try:
-                from database.watchlist_db import get_watching_tmdb_ids
-                watching_ids = get_watching_tmdb_ids()
-                if str(self.tmdb_id) not in watching_ids:
-                    return False
+                from database.watchlist_db import get_watching_tmdb_ids, get_season_watching_status
+                
+                # 尝试获取当前正在处理的季号 (由外部传入并绑定在 self 上)
+                season_num = getattr(self, 'forced_season', None)
+                
+                if season_num is not None:
+                    # 如果明确知道是哪一季，去数据库查这一季的真实状态！
+                    season_status = get_season_watching_status(self.tmdb_id, season_num)
+                    if season_status:
+                        # 如果数据库里有这一季的记录，严格按这一季的状态来判断
+                        if season_status not in ['Watching', 'Paused', 'Pending']:
+                            logger.debug(f"  🛑 [规则拦截] S{season_num} 真实状态为 '{season_status}'，不满足跟播条件，拒绝命中。")
+                            return False
+                    else:
+                        # 兜底：如果数据库还没这一季的记录，退化为查整部剧的状态
+                        watching_ids = get_watching_tmdb_ids()
+                        if str(self.tmdb_id) not in watching_ids:
+                            return False
+                else:
+                    # 没提取到季号(比如只有剧集主目录)，按老规矩查整部剧的状态
+                    watching_ids = get_watching_tmdb_ids()
+                    if str(self.tmdb_id) not in watching_ids:
+                        return False
             except Exception as e:
                 logger.warning(f"获取追剧状态失败: {e}")
                 return False
