@@ -1440,7 +1440,7 @@ class SmartOrganizer:
 
         return info_dict
 
-    def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None, pre_fetched_mediainfo=None):
+    def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None):
         """
         通过 SHA1 获取真实的媒体信息，并转换为乐高重命名参数
         """
@@ -1450,19 +1450,11 @@ class SmartOrganizer:
         is_center = False
         data_source = "本地缓存"
 
-        # 1. 先查本地数据库
-        try:
-            from database.connection import get_db_connection
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s", (sha1,))
-                    row = cursor.fetchone()
-                    if row and row['mediainfo_json']:
-                        raw_json = row['mediainfo_json'] if isinstance(row['mediainfo_json'], list) else json.loads(row['mediainfo_json'])
-        except Exception as e:
-            pass
+        # 1. ★ 核心优化：直接从内存字典读取本地缓存，彻底消除数据库 I/O 瓶颈！
+        if local_pre_fetched_mediainfo and sha1 in local_pre_fetched_mediainfo:
+            raw_json = local_pre_fetched_mediainfo[sha1]
 
-        # 2. ★ 本地没有，优先查批量预获取的字典 (瞬间读取，无网络延迟)
+        # 2. 本地没有，优先查批量预获取的字典 (瞬间读取，无网络延迟)
         if not raw_json and pre_fetched_mediainfo and sha1 in pre_fetched_mediainfo:
             raw_json = pre_fetched_mediainfo[sha1]
             is_center = True
@@ -1640,7 +1632,7 @@ class SmartOrganizer:
 
         return "".join(final_parts)
 
-    def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None):
+    def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
         if '.' not in original_name: return original_name, None, False
 
@@ -1674,8 +1666,8 @@ class SmartOrganizer:
         if not is_sub and enable_smart_rename:
             sha1 = file_node.get('sha1') or file_node.get('sha')
             if sha1:
-                # ★ 将预获取的字典传进去
-                real_info, is_center_cached = self._fetch_and_parse_mediainfo(sha1, video_info, pre_fetched_mediainfo)
+                # ★ 将预获取的两个字典都传进去
+                real_info, is_center_cached = self._fetch_and_parse_mediainfo(sha1, video_info, pre_fetched_mediainfo, local_pre_fetched_mediainfo)
                 if real_info:
                     for k, v in real_info.items():
                         if v: video_info[k] = v
@@ -2174,8 +2166,10 @@ class SmartOrganizer:
         # ★ 新增：用于记录本批次已经生成的目标文件名，防止同名冲突
         seen_new_filenames = set()
 
-        # 批量预查询中心服务器
+        # 批量预查询中心服务器与本地数据库
         pre_fetched_mediainfo = {}
+        local_pre_fetched_mediainfo = {} # ★ 新增：本地预获取字典
+        
         if cfg.get('enable_smart_rename', False) and not keep_original:
             video_sha1s = []
             for file_item in candidates:
@@ -2192,9 +2186,12 @@ class SmartOrganizer:
                     from database.connection import get_db_connection
                     with get_db_connection() as conn:
                         with conn.cursor() as cursor:
-                            cursor.execute("SELECT sha1 FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", (list(video_sha1s),))
+                            # ★ 核心优化：直接把 json 也查出来放进内存！
+                            cursor.execute("SELECT sha1, mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", (list(video_sha1s),))
                             for row in cursor.fetchall():
                                 local_cached_sha1s.add(row['sha1'])
+                                if row['mediainfo_json']:
+                                    local_pre_fetched_mediainfo[row['sha1']] = row['mediainfo_json'] if isinstance(row['mediainfo_json'], list) else json.loads(row['mediainfo_json'])
                 except Exception: pass
                 
                 missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
@@ -2204,7 +2201,6 @@ class SmartOrganizer:
                         import extensions
                         processor = extensions.media_processor_instance
                         if processor and getattr(processor, 'p115_center', None):
-                            # ★ 核心：一次性传入整个列表！
                             resp = processor.p115_center.download_emby_mediainfo_data(missing_sha1s)
                             if resp:
                                 pre_fetched_mediainfo = resp
@@ -2285,6 +2281,10 @@ class SmartOrganizer:
                         cache_key = f"{current_parent}_{part}"
                         part_cid = memory_dir_cache.get(cache_key)
                         
+                        # ★ 失败记忆体拦截
+                        if part_cid == 'FAILED':
+                            break
+                            
                         if not part_cid:
                             part_cid = P115CacheManager.get_cid(current_parent, part)
                             
@@ -2305,12 +2305,14 @@ class SmartOrganizer:
                             memory_dir_cache[cache_key] = part_cid # ★ 写入内存缓存
                             current_parent = part_cid
                         else:
+                            memory_dir_cache[cache_key] = 'FAILED' # ★ 写入失败记忆体
                             break
                     real_target_cid = current_parent
             else:
                 new_filename, season_num, s_name, is_center_cached = self._rename_file_node(
                     file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
-                    pre_fetched_mediainfo=pre_fetched_mediainfo 
+                    pre_fetched_mediainfo=pre_fetched_mediainfo,
+                    local_pre_fetched_mediainfo=local_pre_fetched_mediainfo # ★ 传入本地字典
                 )
 
                 real_target_cid = final_home_cid
@@ -2320,132 +2322,41 @@ class SmartOrganizer:
                     cache_key = f"{final_home_cid}_{s_name}"
                     s_cid = memory_dir_cache.get(cache_key) # ★ 优先查内存缓存
                     
-                    if not s_cid:
-                        s_cid = P115CacheManager.get_cid(final_home_cid, s_name)
-                    
-                    if s_cid:
-                        real_target_cid = s_cid
-                        memory_dir_cache[cache_key] = s_cid # 顺手存入内存
+                    # ★ 如果缓存里存的是 'FAILED'，说明之前尝试过且失败了，直接跳过，防止 API 风暴
+                    if s_cid == 'FAILED':
+                        real_target_cid = final_home_cid
                     else:
-                        s_mk = self.client.fs_mkdir(s_name, final_home_cid)
-                        s_cid = s_mk.get('cid') if s_mk.get('state') else None
-                        
-                        if not s_cid: 
-                            try:
-                                s_search = self.client.fs_files({'cid': final_home_cid, 'search_value': s_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
-                                for item in s_search.get('data', []):
-                                    item_name = item.get('fn') or item.get('n') or item.get('file_name')
-                                    item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                                    item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid'))
-                                    
-                                    if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
-                                        s_cid = item.get('fid') or item.get('file_id')
-                                        break
-                            except: pass
+                        if not s_cid:
+                            s_cid = P115CacheManager.get_cid(final_home_cid, s_name)
                         
                         if s_cid:
-                            P115CacheManager.save_cid(s_cid, final_home_cid, s_name)
-                            memory_dir_cache[cache_key] = s_cid # ★ 写入内存缓存
                             real_target_cid = s_cid
-
-        for file_item in candidates:
-            # 兼容 OpenAPI 键名
-            fid = file_item.get('fid') or file_item.get('file_id')
-            file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
-            ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
-            file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
-            
-            # 1. 扩展名绝对白名单校验 (最高优先级)
-            if ext not in allowed_exts:
-                logger.debug(f"  🚫 扩展名 .{ext} 不在允许列表中，打入未识别: {file_name}")
-                if fid: unrecognized_fids.append(fid)
-                continue
-
-            # 2. 垃圾/花絮/样本校验 (仅针对视频)
-            if ext in known_video_exts:
-                if self._is_junk_file(file_name) or (0 < file_size < MIN_VIDEO_SIZE):
-                    logger.debug(f"  🗑️ 判定为花絮或体积过小，打入未识别: {file_name}")
-                    if fid: unrecognized_fids.append(fid)
-                    continue
-
-            # 在重命名和查缓存前，如果缺失 SHA1，主动请求详情补齐 
-            file_sha1 = file_item.get('sha1') or file_item.get('sha')
-            if not file_sha1 and fid and ext in known_video_exts:
-                try:
-                    info_res = self.client.fs_get_info(fid)
-                    if info_res.get('state') and info_res.get('data'):
-                        fetched_sha1 = info_res['data'].get('sha1')
-                        if fetched_sha1:
-                            file_item['sha1'] = fetched_sha1 
-                except Exception:
-                    pass
-
-            if keep_original:
-                new_filename = file_name
-                season_num = None
-                s_name = None
-                is_center_cached = False
-                real_target_cid = final_home_cid
-                
-                # 1:1 复刻原始目录架构
-                rel_path = file_item.get('rel_path', '')
-                if rel_path:
-                    current_parent = final_home_cid
-                    for part in rel_path.split('/'):
-                        if not part: continue
-                        part_cid = P115CacheManager.get_cid(current_parent, part)
-                        if not part_cid:
-                            mk_res = self.client.fs_mkdir(part, current_parent)
-                            if mk_res.get('state'):
-                                part_cid = mk_res.get('cid')
-                            else:
+                            memory_dir_cache[cache_key] = s_cid # 顺手存入内存
+                        else:
+                            s_mk = self.client.fs_mkdir(s_name, final_home_cid)
+                            s_cid = s_mk.get('cid') if s_mk.get('state') else None
+                            
+                            if not s_cid: 
                                 try:
-                                    s_search = self.client.fs_files({'cid': current_parent, 'search_value': part, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
-                                    for s_item in s_search.get('data', []):
-                                        if s_item.get('fn') == part and str(s_item.get('fc', s_item.get('type'))) == '0':
-                                            part_cid = s_item.get('fid') or s_item.get('file_id')
+                                    s_search = self.client.fs_files({'cid': final_home_cid, 'search_value': s_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
+                                    for item in s_search.get('data', []):
+                                        item_name = item.get('fn') or item.get('n') or item.get('file_name')
+                                        item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
+                                        item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid'))
+                                        
+                                        if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
+                                            s_cid = item.get('fid') or item.get('file_id')
                                             break
                                 except: pass
-                        if part_cid:
-                            P115CacheManager.save_cid(part_cid, current_parent, part)
-                            current_parent = part_cid
-                        else:
-                            break
-                    real_target_cid = current_parent
-            else:
-                new_filename, season_num, s_name, is_center_cached = self._rename_file_node(
-                    file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
-                    pre_fetched_mediainfo=pre_fetched_mediainfo 
-                )
-
-                real_target_cid = final_home_cid
-                
-                # ★ 直接使用返回的 s_name 创建/查找季目录
-                if self.media_type == 'tv' and season_num is not None and s_name:
-                    s_cid = P115CacheManager.get_cid(final_home_cid, s_name)
-                    
-                    if s_cid:
-                        real_target_cid = s_cid
-                    else:
-                        s_mk = self.client.fs_mkdir(s_name, final_home_cid)
-                        s_cid = s_mk.get('cid') if s_mk.get('state') else None
-                        
-                        if not s_cid: 
-                            try:
-                                s_search = self.client.fs_files({'cid': final_home_cid, 'search_value': s_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
-                                for item in s_search.get('data', []):
-                                    item_name = item.get('fn') or item.get('n') or item.get('file_name')
-                                    item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                                    item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid'))
-                                    
-                                    if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
-                                        s_cid = item.get('fid') or item.get('file_id')
-                                        break
-                            except: pass
-                        
-                        if s_cid:
-                            P115CacheManager.save_cid(s_cid, final_home_cid, s_name)
-                            real_target_cid = s_cid
+                            
+                            if s_cid:
+                                P115CacheManager.save_cid(s_cid, final_home_cid, s_name)
+                                memory_dir_cache[cache_key] = s_cid # ★ 写入内存缓存
+                                real_target_cid = s_cid
+                            else:
+                                # ★ 核心防御：如果创建和搜索都失败了，标记为 FAILED，同批次不再重试！
+                                memory_dir_cache[cache_key] = 'FAILED'
+                                real_target_cid = final_home_cid
 
             # =================================================================
             # ★★★ 核心修复：严格去重逻辑 (防多版本/洗版残留冲突) ★★★
