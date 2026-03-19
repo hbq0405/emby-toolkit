@@ -1164,29 +1164,36 @@ class SmartOrganizer:
         if rule.get('media_type') and rule['media_type'] != 'all':
             if rule['media_type'] != self.media_type: return False
 
-        # ★★★ 核心修复：追剧状态的分季隔离判定 ★★★
+        # ★★★ 核心重构：追剧状态的主动判定与分季隔离 ★★★
         if rule.get('watching_status') == 'watching' and self.media_type == 'tv':
             try:
                 from database.watchlist_db import get_watching_tmdb_ids, get_season_watching_status
                 
-                # 尝试获取当前正在处理的季号 (由外部传入并绑定在 self 上)
                 season_num = getattr(self, 'forced_season', None)
                 
                 if season_num is not None:
-                    # 如果明确知道是哪一季，去数据库查这一季的真实状态！
+                    # 1. 优先查本地数据库 (速度最快)
                     season_status = get_season_watching_status(self.tmdb_id, season_num)
+                    
                     if season_status:
-                        # 如果数据库里有这一季的记录，严格按这一季的状态来判断
+                        # 数据库有记录，严格按记录执行
                         if season_status not in ['Watching', 'Paused', 'Pending']:
-                            logger.debug(f"  🛑 [规则拦截] S{season_num} 真实状态为 '{season_status}'，不满足跟播条件，拒绝命中。")
+                            logger.debug(f"  🛑 [规则拦截] '第 {season_num} 季' 真实状态为 '{season_status}'，跳过连载规则。")
                             return False
                     else:
-                        # 兜底：如果数据库还没这一季的记录，退化为查整部剧的状态
-                        watching_ids = get_watching_tmdb_ids()
-                        if str(self.tmdb_id) not in watching_ids:
+                        # 2. ★★★ 核心优化：数据库没记录(首次入库)，主动向 TMDb 查连载状态！★★★
+                        from tasks.helpers import evaluate_season_airing_status
+                        logger.info(f"  🔍 该剧首次入库，正在向 TMDb 实时查询 '第 {season_num} 季' 的连载状态...")
+                        is_airing = evaluate_season_airing_status(self.tmdb_id, season_num, self.api_key)
+                        
+                        if is_airing:
+                            logger.info(f"  ✅ [连载判定] 确认 '第 {season_num} 季' 正在连载，命中连载规则！")
+                            # 既然是连载，就让它继续往下走，命中规则
+                        else:
+                            logger.debug(f"  🛑 [连载判定] 确认 '第 {season_num} 季' 已完结，跳过连载规则。")
                             return False
                 else:
-                    # 没提取到季号(比如只有剧集主目录)，按老规矩查整部剧的状态
+                    # 没提取到季号，退化为查整部剧的状态
                     watching_ids = get_watching_tmdb_ids()
                     if str(self.tmdb_id) not in watching_ids:
                         return False

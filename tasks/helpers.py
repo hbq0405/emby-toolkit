@@ -1659,3 +1659,68 @@ def translate_tmdb_metadata_recursively(
 
     if translated_count > 0:
         logger.info(f"  ➜ [AI翻译] 本次新翻译了 {translated_count} 条数据 ({item_name})。")
+
+def evaluate_season_airing_status(tmdb_id: str, season_number: int, api_key: str) -> bool:
+    """
+    【主动连载判定 - 严丝合缝版】
+    实时向 TMDb 查询指定季是否正在连载/待播。
+    逻辑严格对齐 watchlist_processor._process_one_series，拒绝缓冲期，防止目录反复横跳。
+    """
+    if not api_key or not tmdb_id or season_number is None:
+        return False
+
+    try:
+        # 1. 获取该季详情
+        season_details = get_tv_season_details(tmdb_id, season_number, api_key)
+        if not season_details:
+            return False
+
+        episodes = season_details.get('episodes', [])
+        tmdb_episode_count = len(episodes) # 预检直接用列表长度最稳
+        
+        if tmdb_episode_count == 0:
+            return False
+
+        today = datetime.now(timezone.utc).date()
+        last_aired_ep_num = 0
+        
+        # 2. 规则一：是否有明确的未来待播集？
+        for ep in episodes:
+            air_date_str = ep.get('air_date')
+            if air_date_str:
+                try:
+                    air_date = datetime.strptime(air_date_str, '%Y-%m-%d').date()
+                    # 严格大于今天才算待播。今天播出的，在核心逻辑里算作已播(<= today)
+                    if air_date > today:
+                        return True
+                    else:
+                        # 记录已播出的最大集号
+                        last_aired_ep_num = max(last_aired_ep_num, ep.get('episode_number', 0))
+                except ValueError:
+                    continue
+
+        # 3. 规则二：是否未播完？(TMDb 数据滞后判定)
+        # 官方声明该季有 N 集，但目前已播出的集号小于 N，说明还在连载
+        official_count = season_details.get('episode_count', tmdb_episode_count)
+        if 0 < last_aired_ep_num < official_count:
+            return True
+
+        # 4. 规则三：新剧保护 (模拟 Auto Pending 逻辑)
+        # 如果总集数很少(<=3)，且最后一集刚播不久(<=30天)，核心逻辑会将其判为 Pending(活跃)
+        if official_count <= 3:
+            last_ep = episodes[-1]
+            last_air_date_str = last_ep.get('air_date')
+            if last_air_date_str:
+                try:
+                    last_air_date = datetime.strptime(last_air_date_str, '%Y-%m-%d').date()
+                    if 0 <= (today - last_air_date).days <= 30:
+                        return True # 满足新剧待定条件，算作活跃，放进连载目录
+                except ValueError:
+                    pass
+
+        # 5. 都不满足，说明彻彻底底完结了
+        return False
+
+    except Exception as e:
+        logger.warning(f"  ⚠️ 预检连载状态失败 (TMDb:{tmdb_id} S{season_number}): {e}")
+        return False
