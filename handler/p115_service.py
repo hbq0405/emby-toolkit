@@ -1907,7 +1907,8 @@ class SmartOrganizer:
                 tmdb_id, sub_type, sub_title = _identify_media_enhanced(
                     sub_name, 
                     ai_translator=self.ai_translator, 
-                    use_ai=self.use_ai
+                    use_ai=self.use_ai,
+                    is_folder=(str(sub_item.get('fc')) == '0') 
                 )
                 
                 # 2. 模糊匹配 (仅当有官方合集列表时)
@@ -2822,12 +2823,13 @@ def _parse_115_size(size_val):
         pass
     return 0
 
-def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=False, forced_media_type=None, ai_translator=None, use_ai=False):
+def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=False, forced_media_type=None, ai_translator=None, use_ai=False, is_folder=False):
     """
     【绝对正确版】识别逻辑：
     1. 先定类型：综合主目录、子目录特征、文件名，判断是 Movie 还是 TV。
-    2. 再提 ID：优先从主目录提取 {tmdb=xxx}，其次提取 Title (Year)，最后看文件名。
-    3. 定向查询：用确定的类型 + ID/名称 向 TMDb 发起查询。
+    2. 再提 ID：优先从主目录/文件名提取 {tmdb=xxx}。
+    3. 目录拦截：如果是目录且没有显式 ID，直接返回 None，强制深入扫描子目录！
+    4. 定向查询：用确定的类型 + 提取的 Title (Year) 向 TMDb 发起查询。
     """
     tmdb_id = None
     media_type = 'movie' # 默认兜底
@@ -2865,30 +2867,42 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
     # ★ 第二步：按优先级提取信息并定向查询
     # =================================================================
     
-    # 优先级 1: 从主目录名提取 TMDb ID
-    if main_dir_name:
-        match_tag_main = re.search(r'\{?tmdb(?:id)?[=\-](\d+)\}?', main_dir_name, re.IGNORECASE)
-        if match_tag_main:
-            tmdb_id = match_tag_main.group(1)
-            clean_name = re.sub(r'\{?tmdb(?:id)?[=\-]\d+\}?', '', main_dir_name, flags=re.IGNORECASE).strip()
-            match_title = re.match(r'^(.+?)\s*[\(\[]\d{4}[\)\]]', clean_name)
-            fallback_title = match_title.group(1).strip() if match_title else clean_name
-            
-            # 用锁定的类型去查标题
-            official_title = _fetch_title_by_id(tmdb_id, media_type)
-            return tmdb_id, media_type, official_title or fallback_title
+    # 优先级 1: 显式 TMDb ID (最高优先级，绝不误判)
+    tmdb_regex = r'(?:tmdb|tmdbid)[=\-_]*(\d+)'
+    
+    # 1.1 优先从 filename 提取
+    match_id_file = re.search(tmdb_regex, filename, re.IGNORECASE)
+    if match_id_file:
+        tmdb_id = match_id_file.group(1)
+        clean_name = re.sub(r'\[.*?\]|\{.*?\}|\(.*?\)', '', filename).strip()
+        official_title = _fetch_title_by_id(tmdb_id, media_type)
+        return tmdb_id, media_type, official_title or clean_name or filename
 
-    # 优先级 2: 从主目录名提取 Title (Year) 进行搜索
+    # 1.2 其次从 main_dir_name 提取
     if main_dir_name:
-        match_std_main = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', main_dir_name)
-        if match_std_main:
-            name_part = match_std_main.group(1).replace('.', ' ').strip()
-            # ★ 核心修复：剔除 S01, Season 1 等干扰字符，还原纯净剧名
-            name_part = re.sub(r'(?i)\s*s\d{1,4}(?:e\d{1,4})?\b.*$', '', name_part).strip()
-            name_part = re.sub(r'(?i)\s*season\s*\d{1,4}\b.*$', '', name_part).strip()
-            name_part = re.sub(r'(?i)\s*第[一二三四五六七八九十\d]+季.*$', '', name_part).strip()
-            
-            year_part = match_std_main.group(2)
+        match_id_dir = re.search(tmdb_regex, main_dir_name, re.IGNORECASE)
+        if match_id_dir:
+            tmdb_id = match_id_dir.group(1)
+            clean_name = re.sub(r'\[.*?\]|\{.*?\}|\(.*?\)', '', main_dir_name).strip()
+            official_title = _fetch_title_by_id(tmdb_id, media_type)
+            return tmdb_id, media_type, official_title or clean_name or main_dir_name
+
+    # ★★★ 核心拦截：如果是目录，且没有显式 ID，直接返回 None，强制深入扫描子目录！★★★
+    if is_folder:
+        return None, None, None
+
+    # 优先级 2: 提取 Title (Year) 进行搜索 (仅限文件)
+    def _search_by_title_year(text):
+        # 剔除 S01E01 等干扰字符
+        clean_text = re.sub(r'(?i)\s*s\d{1,4}(?:e\d{1,4})?\b.*$', '', text).strip()
+        clean_text = re.sub(r'(?i)\s*ep?\d{1,4}\b.*$', '', clean_text).strip()
+        clean_text = re.sub(r'(?i)\s*season\s*\d{1,4}\b.*$', '', clean_text).strip()
+        clean_text = re.sub(r'(?i)\s*第[一二三四五六七八九十\d]+季.*$', '', clean_text).strip()
+
+        match_std = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', clean_text)
+        if match_std:
+            name_part = match_std.group(1).replace('.', ' ').strip()
+            year_part = match_std.group(2)
             try:
                 if api_key:
                     search_key = f"{name_part}_{year_part}_{media_type}"
@@ -2904,43 +2918,16 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                         return str(best['id']), media_type, (best.get('title') or best.get('name'))
             except Exception:
                 pass
+        return None
 
-    # 优先级 3: 兜底 - 从当前文件名提取 TMDb ID 或 Title (Year)
-    if not is_same_name:
-        match_tag_file = re.search(r'\{?tmdb(?:id)?[=\-](\d+)\}?', filename, re.IGNORECASE)
-        if match_tag_file:
-            tmdb_id = match_tag_file.group(1)
-            clean_name = re.sub(r'\{?tmdb(?:id)?[=\-]\d+\}?', '', filename, flags=re.IGNORECASE).strip()
-            match_title = re.match(r'^(.+?)\s*[\(\[]\d{4}[\)\]]', clean_name)
-            fallback_title = match_title.group(1).strip() if match_title else clean_name
-            
-            official_title = _fetch_title_by_id(tmdb_id, media_type)
-            return tmdb_id, media_type, official_title or fallback_title
+    # 2.1 优先从 filename 搜索
+    res = _search_by_title_year(filename)
+    if res: return res
 
-        match_std_file = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', filename)
-        if match_std_file:
-            name_part = match_std_file.group(1).replace('.', ' ').strip()
-            # ★ 核心修复：剔除 S01E22, EP01 等干扰字符，还原纯净剧名
-            name_part = re.sub(r'(?i)\s*s\d{1,4}(?:e\d{1,4})?\b.*$', '', name_part).strip()
-            name_part = re.sub(r'(?i)\s*ep?\d{1,4}\b.*$', '', name_part).strip()
-            name_part = re.sub(r'(?i)\s*season\s*\d{1,4}\b.*$', '', name_part).strip()
-            name_part = re.sub(r'(?i)\s*第[一二三四五六七八九十\d]+季.*$', '', name_part).strip()
-            
-            year_part = match_std_file.group(2)
-            try:
-                if api_key:
-                    search_key = f"{name_part}_{year_part}_{media_type}"
-                    if search_key in _TMDB_SEARCH_CACHE:
-                        results = _TMDB_SEARCH_CACHE[search_key]
-                    else:
-                        results = tmdb.search_media(query=name_part, api_key=api_key, item_type=media_type, year=year_part)
-                        _TMDB_SEARCH_CACHE[search_key] = results
-
-                    if results and len(results) > 0:
-                        best = results[0]
-                        return str(best['id']), media_type, (best.get('title') or best.get('name'))
-            except Exception:
-                pass
+    # 2.2 其次从 main_dir_name 搜索
+    if main_dir_name and not is_same_name:
+        res = _search_by_title_year(main_dir_name)
+        if res: return res
 
     # =================================================================
     # ★ 第三步：AI 辅助识别 (终极兜底 + 记忆体优化)
@@ -2952,7 +2939,6 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             # 1. 查 AI 记忆体
             if target_name in _AI_PARSE_CACHE:
                 ai_result = _AI_PARSE_CACHE[target_name]
-                # logger.debug(f"  🤖 [AI缓存命中] 无需消耗 Token: {target_name}")
             else:
                 logger.info(f"  🤖 常规识别失败，消耗 Token 请求 AI 解析: {target_name}")
                 try:
@@ -2983,7 +2969,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                         logger.debug(f"  🤖 AI 提取了标题 '{ai_title}'，但在 TMDb 未搜索到结果。")
             return None
 
-        # 优先尝试主目录 (如果有 50 个文件，这里只会调 1 次 AI)
+        # 优先尝试主目录
         res = _do_ai_search(target_ai_name)
         if res: return res
         
@@ -3128,7 +3114,8 @@ def task_scan_and_organize_115(processor=None):
                 has_season_subdirs=has_season_subdirs,
                 forced_media_type=forced_type, 
                 ai_translator=ai_translator, 
-                use_ai=use_ai
+                use_ai=use_ai,
+                is_folder=is_folder  
             )
             
             # 尝试提取季号，用于分季隔离
