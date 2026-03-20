@@ -839,18 +839,18 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                         logger.info(f"  ➜ 已级联标记该剧集下的 {cursor.rowcount} 个子项(季/集)为离线。")
 
                     if target_item_type_for_full_cleanup == 'Series':
-                        # 同时重置 Series 本身以及其下属所有 Season 的追剧状态
+                        # 同时重置 Series 和 Season 的状态，但【绝对保留】已完结(Completed)状态！
                         sql_reset_watchlist = """
                             UPDATE media_metadata
                             SET watching_status = 'NONE'
                             WHERE (
                                 (tmdb_id = %s AND item_type = 'Series') OR 
                                 (parent_series_tmdb_id = %s AND item_type = 'Season')
-                            ) AND watching_status != 'NONE'
+                            ) AND watching_status NOT IN ('NONE', 'Completed')
                         """
                         cursor.execute(sql_reset_watchlist, (target_tmdb_id_for_full_cleanup, target_tmdb_id_for_full_cleanup))
                         if cursor.rowcount > 0:
-                            logger.info(f"  ➜ 已将该剧集及其所有季从智能追剧列表移除 (共重置 {cursor.rowcount} 条记录)。")
+                            logger.info(f"  ➜ 已将该剧集及其所有季从活跃追剧列表移除 (保留了已完结状态，共重置 {cursor.rowcount} 条记录)。")
 
                     if target_item_type_for_full_cleanup == 'Movie':
                         cursor.execute("DELETE FROM resubscribe_index WHERE tmdb_id = %s AND item_type = 'Movie'", (target_tmdb_id_for_full_cleanup,))
