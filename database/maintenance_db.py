@@ -130,8 +130,7 @@ def get_stats_system() -> dict:
         (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NOT NULL) AS actor_mappings_linked,
         (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NULL) AS actor_mappings_unlinked,
         (SELECT COUNT(*) FROM translation_cache) AS translation_cache_count,
-        -- ★ 核心修复：按媒体名称去重统计，完美治愈强迫症！
-        (SELECT COUNT(DISTINCT item_name) FROM processed_log) AS processed_log_count,
+        (SELECT COUNT(*) FROM processed_log) AS processed_log_count,
         (SELECT COUNT(*) FROM failed_log) AS failed_log_count
     """
     return _execute_single_row_query(sql)

@@ -2883,6 +2883,11 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
         match_std_main = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', main_dir_name)
         if match_std_main:
             name_part = match_std_main.group(1).replace('.', ' ').strip()
+            # ★ 核心修复：剔除 S01, Season 1 等干扰字符，还原纯净剧名
+            name_part = re.sub(r'(?i)\s*s\d{1,4}(?:e\d{1,4})?\b.*$', '', name_part).strip()
+            name_part = re.sub(r'(?i)\s*season\s*\d{1,4}\b.*$', '', name_part).strip()
+            name_part = re.sub(r'(?i)\s*第[一二三四五六七八九十\d]+季.*$', '', name_part).strip()
+            
             year_part = match_std_main.group(2)
             try:
                 if api_key:
@@ -2915,6 +2920,12 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
         match_std_file = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', filename)
         if match_std_file:
             name_part = match_std_file.group(1).replace('.', ' ').strip()
+            # ★ 核心修复：剔除 S01E22, EP01 等干扰字符，还原纯净剧名
+            name_part = re.sub(r'(?i)\s*s\d{1,4}(?:e\d{1,4})?\b.*$', '', name_part).strip()
+            name_part = re.sub(r'(?i)\s*ep?\d{1,4}\b.*$', '', name_part).strip()
+            name_part = re.sub(r'(?i)\s*season\s*\d{1,4}\b.*$', '', name_part).strip()
+            name_part = re.sub(r'(?i)\s*第[一二三四五六七八九十\d]+季.*$', '', name_part).strip()
+            
             year_part = match_std_file.group(2)
             try:
                 if api_key:
