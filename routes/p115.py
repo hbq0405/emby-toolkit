@@ -1131,59 +1131,8 @@ def upload_music_file():
         return jsonify({"success": False, "message": str(e)}), 500
     
 # ======================================================================
-# ★★★ 实时未识别文件与回收站 API ★★★
+# ★★★ 全局清理与回收站 API ★★★
 # ======================================================================
-
-@p115_bp.route('/unrecognized/live', methods=['GET'])
-@admin_required
-def get_live_unrecognized_files():
-    """实时获取网盘【未识别】目录下的视频文件"""
-    config = get_config()
-    un_cid = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID)
-    
-    if not un_cid or str(un_cid) == '0':
-        return jsonify({"success": False, "message": "未配置未识别目录，请先在基础设置中配置。"})
-
-    client = P115Service.get_client()
-    if not client:
-        return jsonify({"success": False, "message": "115客户端未初始化"})
-
-    try:
-        # type=4 表示只获取视频文件，过滤掉图片、NFO等垃圾
-        res = client.fs_files({'cid': un_cid, 'limit': 1000, 'type': 4, 'record_open_time': 0})
-        if not res.get('state'):
-            return jsonify({"success": False, "message": res.get('error_msg', '获取失败')})
-            
-        files = []
-        for item in res.get('data', []):
-            files.append({
-                "id": item.get('fid') or item.get('file_id'),
-                "name": item.get('fn') or item.get('n') or item.get('file_name'),
-                "size": item.get('fs') or item.get('size', 0),
-                "date": item.get('te') or item.get('t', ''),
-                "pick_code": item.get('pc') or item.get('pick_code')
-            })
-            
-        return jsonify({"success": True, "data": files})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
-
-@p115_bp.route('/files/delete', methods=['POST'])
-@admin_required
-def delete_live_files():
-    """直接删除网盘物理文件"""
-    fids = request.json.get('fids', [])
-    if not fids:
-        return jsonify({"success": False, "message": "未提供文件ID"}), 400
-        
-    client = P115Service.get_client()
-    try:
-        res = client.fs_delete(fids)
-        if res.get('state'):
-            return jsonify({"success": True, "message": f"成功删除 {len(fids)} 个文件"})
-        return jsonify({"success": False, "message": res.get('error_msg', '删除失败')}), 500
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)}), 500
 
 @p115_bp.route('/recycle_bin/empty', methods=['POST'])
 @admin_required
@@ -1195,29 +1144,65 @@ def empty_recycle_bin():
     try:
         res = client.rb_del() # 不传 tid 即为清空全部
         if res.get('state'):
-            return jsonify({"success": True, "message": "回收站已清空！"})
+            return jsonify({"success": True, "message": "回收站已彻底清空！"})
         return jsonify({"success": False, "message": res.get('error_msg', '清空失败')}), 500
     except Exception as e:
         return jsonify({"success": False, "message": str(e)}), 500
 
-@p115_bp.route('/unrecognized/organize', methods=['POST'])
+@p115_bp.route('/unrecognized/empty', methods=['POST'])
 @admin_required
-def organize_live_files():
-    """手动整理实时未识别文件"""
-    data = request.json
-    fids = data.get('fids')
-    tmdb_id = data.get('tmdb_id')
-    media_type = data.get('media_type')
-    target_cid = data.get('target_cid')
-    season_num = data.get('season_num')
+def empty_unrecognized_files():
+    """一键清空未识别目录物理文件及本地记录"""
+    config = get_config()
+    un_cid = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID)
     
-    if not all([fids, tmdb_id, media_type, target_cid]):
-        return jsonify({"success": False, "message": "缺少必要参数！"}), 400
-        
+    if not un_cid or str(un_cid) == '0':
+        return jsonify({"success": False, "message": "未配置未识别目录，无法执行清空。"})
+
+    client = P115Service.get_client()
+    if not client:
+        return jsonify({"success": False, "message": "115客户端未初始化"}), 500
+
     try:
-        from handler.p115_service import manual_organize_live_files
-        manual_organize_live_files(fids, tmdb_id, media_type, target_cid, season_num)
-        return jsonify({"success": True, "message": "整理成功！文件已移动并生成 STRM。"})
+        # 1. 循环获取未识别目录下的所有文件/文件夹
+        offset = 0
+        limit = 1000
+        fids_to_delete = []
+        
+        while True:
+            res = client.fs_files({'cid': un_cid, 'limit': limit, 'offset': offset, 'record_open_time': 0})
+            if not res.get('state'): break
+            items = res.get('data', [])
+            if not items: break
+            
+            fids_to_delete.extend([item.get('fid') or item.get('file_id') for item in items])
+            if len(items) < limit: break
+            offset += limit
+            
+        # 2. 分批删除网盘物理文件 (防止 URL 过长报错)
+        deleted_count = 0
+        if fids_to_delete:
+            chunk_size = 500
+            for i in range(0, len(fids_to_delete), chunk_size):
+                chunk = fids_to_delete[i:i+chunk_size]
+                del_res = client.fs_delete(chunk)
+                if del_res.get('state'):
+                    deleted_count += len(chunk)
+                else:
+                    logger.error(f"  ❌ 清空未识别物理文件失败: {del_res}")
+        
+        # 3. 清理本地数据库中的未识别记录
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("DELETE FROM p115_organize_records WHERE status = 'unrecognized'")
+                db_deleted = cursor.rowcount
+                conn.commit()
+                
+        return jsonify({
+            "success": True, 
+            "message": f"清空完毕！删除了 {deleted_count} 个网盘文件，清理了 {db_deleted} 条本地记录。"
+        })
     except Exception as e:
-        logger.error(f"  ❌ 实时文件整理失败: {e}", exc_info=True)
+        logger.error(f"  ❌ 清空未识别目录异常: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500

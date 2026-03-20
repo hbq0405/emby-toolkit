@@ -1,7 +1,7 @@
 <!-- src/components/OrganizeRecordsPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
-    <!-- 顶部统计仪表盘 (恢复占满整行，大气！) -->
+    <!-- 顶部统计仪表盘 (占满整行，大气！) -->
     <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:5" responsive="screen" style="margin-bottom: 24px;">
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="总处理记录"><template #prefix><n-icon :component="LayersIcon" color="#2080f0" /></template>{{ stats.total || 0 }}</n-statistic></n-card></n-gi>
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="识别成功"><template #prefix><n-icon :component="CheckmarkCircleIcon" color="#18a058" /></template>{{ stats.success || 0 }}</n-statistic></n-card></n-gi>
@@ -11,108 +11,73 @@
     </n-grid>
 
     <n-card class="dashboard-card" :bordered="false" size="small">
-      <n-tabs v-model:value="activeTab" type="line" animated @update:value="handleTabChange">
-        
-        <!-- ★ 核心修改：将清空回收站按钮放在 Tabs 的右侧后缀区域 -->
-        <template #suffix>
+      <!-- ★ 核心修改：将全局清理按钮放在卡片头部右侧 -->
+      <template #header>
+        <n-text strong style="font-size: 16px;">历史整理记录</n-text>
+      </template>
+      <template #header-extra>
+        <n-space>
+          <n-button type="warning" size="small" strong @click="handleEmptyUnrecognized" :loading="emptyingUnrecognized">
+            <template #icon><n-icon :component="TrashIcon" /></template>
+            清空未识别
+          </n-button>
           <n-button type="error" size="small" strong @click="handleEmptyRecycleBin" :loading="emptyingBin">
             <template #icon><n-icon :component="TrashBinIcon" /></template>
             清空 115 回收站
           </n-button>
-        </template>
+        </n-space>
+      </template>
 
-        <!-- Tab 1: 历史整理记录 (数据库) -->
-        <n-tab-pane name="records" tab="历史整理记录">
-          <n-space style="margin-bottom: 20px;" align="center" justify="space-between">
-            <n-space>
-              <n-input v-model:value="searchQuery" placeholder="搜索原文件名、新文件名..." clearable @keyup.enter="handleFilter" @clear="handleFilter" style="width: 300px;">
-                <template #prefix><n-icon :component="SearchIcon" /></template>
-              </n-input>
-              <n-select v-model:value="statusFilter" :options="statusOptions" style="width: 140px;" @update:value="handleFilter" />
-              <n-select v-model:value="categoryFilter" :options="categoryOptions" placeholder="所有分类" clearable style="width: 160px;" @update:value="handleFilter" />
-            </n-space>
-            <n-space>
-              <n-button type="primary" :disabled="!realSelectedIds.length" @click="openBatchEditModal('db')">
-                <template #icon><n-icon :component="SparklesIcon" /></template>
-                批量重组 ({{ realSelectedIds.length }})
-              </n-button>
-              <n-button type="error" :disabled="!realSelectedIds.length" @click="batchDeleteRecords">
-                <template #icon><n-icon :component="TrashIcon" /></template>
-                删除记录
-              </n-button>
-              <n-button type="primary" secondary @click="fetchRecords">
-                <template #icon><n-icon :component="RefreshIcon" /></template>
-                刷新
-              </n-button>
-            </n-space>
-          </n-space>
+      <!-- 搜索与过滤工具栏 -->
+      <n-space style="margin-bottom: 20px;" align="center" justify="space-between">
+        <n-space>
+          <n-input v-model:value="searchQuery" placeholder="搜索原文件名、新文件名..." clearable @keyup.enter="handleFilter" @clear="handleFilter" style="width: 300px;">
+            <template #prefix><n-icon :component="SearchIcon" /></template>
+          </n-input>
+          <n-select v-model:value="statusFilter" :options="statusOptions" style="width: 140px;" @update:value="handleFilter" />
+          <n-select v-model:value="categoryFilter" :options="categoryOptions" placeholder="所有分类" clearable style="width: 160px;" @update:value="handleFilter" />
+        </n-space>
+        
+        <n-space>
+          <n-button type="primary" :disabled="!realSelectedIds.length" @click="openBatchEditModal">
+            <template #icon><n-icon :component="SparklesIcon" /></template>
+            批量重组 ({{ realSelectedIds.length }})
+          </n-button>
+          <n-button type="error" :disabled="!realSelectedIds.length" @click="batchDelete">
+            <template #icon><n-icon :component="TrashIcon" /></template>
+            删除记录
+          </n-button>
+          <n-button type="primary" secondary @click="fetchRecords">
+            <template #icon><n-icon :component="RefreshIcon" /></template>
+            刷新
+          </n-button>
+        </n-space>
+      </n-space>
 
-          <n-data-table
-            :columns="columns"
-            :data="processedTableData"
-            :loading="loading"
-            :pagination="paginationReactive" 
-            :bordered="false"
-            v-model:checked-row-keys="checkedRowKeys"
-            striped
-            size="small"
-            :row-key="row => row.id"
-            :row-class-name="rowClassName"
-          />
-        </n-tab-pane>
-
-        <!-- Tab 2: 实时未识别文件 (直连网盘) -->
-        <n-tab-pane name="unrecognized" tab="未识别文件 (实时网盘)">
-          <n-alert type="warning" style="margin-bottom: 16px;">
-            此处显示的是 115 网盘【未识别】目录中真实的视频文件。删除操作将直接销毁网盘物理文件！
-          </n-alert>
-          
-          <n-space style="margin-bottom: 20px;" align="center" justify="space-between">
-            <n-space>
-              <n-input v-model:value="liveSearchQuery" placeholder="在当前列表中搜索..." clearable style="width: 300px;">
-                <template #prefix><n-icon :component="SearchIcon" /></template>
-              </n-input>
-            </n-space>
-            <n-space>
-              <n-button type="primary" :disabled="!liveCheckedKeys.length" @click="openBatchEditModal('live')">
-                <template #icon><n-icon :component="SparklesIcon" /></template>
-                手动整理 ({{ liveCheckedKeys.length }})
-              </n-button>
-              <n-button type="error" :disabled="!liveCheckedKeys.length" @click="batchDeleteLiveFiles">
-                <template #icon><n-icon :component="TrashIcon" /></template>
-                彻底删除文件
-              </n-button>
-              <n-button type="primary" secondary @click="fetchLiveUnrecognized">
-                <template #icon><n-icon :component="RefreshIcon" /></template>
-                获取最新
-              </n-button>
-            </n-space>
-          </n-space>
-
-          <n-data-table
-            :columns="liveColumns"
-            :data="filteredLiveFiles"
-            :loading="liveLoading"
-            :bordered="false"
-            v-model:checked-row-keys="liveCheckedKeys"
-            striped
-            size="small"
-            :row-key="row => row.id"
-          />
-        </n-tab-pane>
-
-      </n-tabs>
+      <!-- 数据表格 -->
+      <n-data-table
+        :columns="columns"
+        :data="processedTableData"
+        :loading="loading"
+        :pagination="paginationReactive" 
+        :bordered="false"
+        v-model:checked-row-keys="checkedRowKeys"
+        striped
+        size="small"
+        :row-key="row => row.id"
+        :row-class-name="rowClassName"
+      />
     </n-card>
 
-    <!-- 手动整理 / 纠错模态框 (复用) -->
+    <!-- 手动整理 / 纠错模态框 -->
     <n-modal v-model:show="showEditModal" preset="card" style="width: 500px;" title="手动整理 / 纠错" :bordered="false">
       <template #header-extra>
-        <n-tag :type="editForm.source === 'live' ? 'success' : 'info'" size="small">
-          {{ editForm.source === 'live' ? '网盘实时整理' : '历史记录重组' }}
+        <n-tag :type="editForm.status === 'success' ? 'info' : 'warning'" size="small">
+          {{ editForm.ids.length > 1 ? '批量重组' : (editForm.status === 'success' ? '纠正信息' : '手动识别') }}
         </n-tag>
       </template>
       
-      <n-alert type="info" style="margin-bottom: 16px;">
+      <n-alert v-if="editForm.status === 'success' || editForm.ids.length > 1" type="info" style="margin-bottom: 16px;">
         更改此项将触发 115 网盘和本地 STRM 的物理移动与重命名。
       </n-alert>
       
@@ -123,7 +88,7 @@
           </n-text>
         </n-form-item>
 
-        <n-form-item v-if="editForm.ids.length > 1 && editForm.source === 'db'" label="批量模式" path="batch_mode">
+        <n-form-item v-if="editForm.ids.length > 1" label="批量模式" path="batch_mode">
           <n-radio-group v-model:value="editForm.batch_mode">
             <n-radio-button value="reclassify">保持原ID重新分类</n-radio-button>
             <n-radio-button value="merge">合并为同一影视</n-radio-button>
@@ -175,7 +140,7 @@
           <n-button @click="showEditModal = false">取消</n-button>
           <n-button type="primary" :loading="submitting" @click="submitCorrection">
             <template #icon><n-icon :component="SparklesIcon" /></template>
-            开始执行
+            开始重组
           </n-button>
         </n-space>
       </template>
@@ -187,7 +152,7 @@
 import { ref, onMounted, computed, h, reactive } from 'vue';
 import axios from 'axios';
 import {
-  NTag, NButton, NSpace, NText, NIcon, NTooltip, NEllipsis, NInputNumber, useMessage, useDialog, NTabs, NTabPane, NAlert, NRadioGroup, NRadioButton
+  NTag, NButton, NSpace, NText, NIcon, NTooltip, NEllipsis, NInputNumber, useMessage, useDialog, NAlert, NRadioGroup, NRadioButton
 } from 'naive-ui';
 import {
   LayersOutline as LayersIcon,
@@ -207,24 +172,18 @@ import {
 const message = useMessage();
 const dialog = useDialog();
 
-// 全局状态
-const activeTab = ref('records');
-const emptyingBin = ref(false);
-
-// --- 历史记录 (DB) 状态 ---
+// 状态变量
 const loading = ref(false);
+const submitting = ref(false);
+const emptyingBin = ref(false);
+const emptyingUnrecognized = ref(false);
+
 const tableData = ref([]);
 const checkedRowKeys = ref([]);
 const searchQuery = ref('');
 const statusFilter = ref('all');
 const categoryFilter = ref(null);
 const stats = ref({ total: 0, success: 0, unrecognized: 0, thisWeek: 0 });
-
-// --- 实时未识别 (Live) 状态 ---
-const liveLoading = ref(false);
-const liveFiles = ref([]);
-const liveCheckedKeys = ref([]);
-const liveSearchQuery = ref('');
 
 // 选项数据
 const statusOptions = [
@@ -237,9 +196,7 @@ const categoryOptions = ref([{ label: '所有分类', value: null }]);
 
 // 模态框数据
 const showEditModal = ref(false);
-const submitting = ref(false);
 const editForm = ref({
-  source: 'db', // 'db' 或 'live'
   ids: [],
   original_name: '',
   status: '',
@@ -250,15 +207,6 @@ const editForm = ref({
   batch_mode: 'merge'
 });
 
-// 工具函数
-const formatSize = (bytes) => {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
-};
-
 const getSeriesName = (name) => {
   if (!name) return '未知剧集';
   const matchStd = name.match(/^(.*?)\s*-\s*S\d{2}E\d{2}/i);
@@ -267,7 +215,6 @@ const getSeriesName = (name) => {
   return matchOrig ? matchOrig[1].replace(/[\.\-_]/g, ' ').trim() : '未知剧集';
 };
 
-// --- 历史记录表格逻辑 ---
 const processedTableData = computed(() => {
   const groups = {};
   const result = [];
@@ -361,7 +308,7 @@ const columns = computed(() => [
     title: '操作', key: 'actions', width: 120, align: 'center', fixed: 'right',
     render(row) {
       return h(NSpace, { justify: 'center' }, () => [
-        h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'primary', ghost: true, circle: true, onClick: () => openEditModal('db', row) }, { icon: () => h(NIcon, { component: EditIcon }) }), default: () => row.isGroup ? '整季批量纠错' : (row.status === 'success' ? '修改整理分类/纠错' : '手动分配ID整理') }),
+        h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'primary', ghost: true, circle: true, onClick: () => openEditModal(row) }, { icon: () => h(NIcon, { component: EditIcon }) }), default: () => row.isGroup ? '整季批量纠错' : (row.status === 'success' ? '修改整理分类/纠错' : '手动分配ID整理') }),
         h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'error', ghost: true, circle: true, onClick: () => deleteRecord(row) }, { icon: () => h(NIcon, { component: TrashIcon }) }), default: () => row.isGroup ? '整季批量删除记录' : '删除此记录 (仅删除记录不删文件)' })
       ]);
     }
@@ -375,30 +322,6 @@ const paginationReactive = reactive({
   prefix({ itemCount }) { return `共 ${itemCount} 项 (剧集包按1项计)`; }
 });
 
-// --- 实时未识别表格逻辑 ---
-const filteredLiveFiles = computed(() => {
-  if (!liveSearchQuery.value) return liveFiles.value;
-  const q = liveSearchQuery.value.toLowerCase();
-  return liveFiles.value.filter(f => f.name.toLowerCase().includes(q));
-});
-
-const liveColumns = [
-  { type: 'selection', fixed: 'left' },
-  { title: '文件名', key: 'name', render(row) { return h(NText, { strong: true }, { default: () => row.name }); } },
-  { title: '文件大小', key: 'size', width: 120, render(row) { return formatSize(row.size); } },
-  { title: '网盘修改时间', key: 'date', width: 180 },
-  {
-    title: '操作', key: 'actions', width: 120, align: 'center', fixed: 'right',
-    render(row) {
-      return h(NSpace, { justify: 'center' }, () => [
-        h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'primary', ghost: true, circle: true, onClick: () => openEditModal('live', row) }, { icon: () => h(NIcon, { component: EditIcon }) }), default: () => '手动整理此文件' }),
-        h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'error', ghost: true, circle: true, onClick: () => deleteLiveFile(row) }, { icon: () => h(NIcon, { component: TrashIcon }) }), default: () => '彻底删除网盘文件' })
-      ]);
-    }
-  }
-];
-
-// --- API 请求 ---
 const fetchRecords = async () => {
   loading.value = true;
   checkedRowKeys.value = [];
@@ -410,19 +333,6 @@ const fetchRecords = async () => {
   } catch (error) { message.error('获取整理记录失败'); } finally { loading.value = false; }
 };
 
-const fetchLiveUnrecognized = async () => {
-  liveLoading.value = true;
-  liveCheckedKeys.value = [];
-  try {
-    const res = await axios.get('/api/p115/unrecognized/live');
-    if (res.data.success) {
-      liveFiles.value = res.data.data;
-    } else {
-      message.warning(res.data.message);
-    }
-  } catch (error) { message.error('获取实时未识别文件失败'); } finally { liveLoading.value = false; }
-};
-
 const fetchCategories = async () => {
   try {
     const res = await axios.get('/api/p115/sorting_rules');
@@ -431,15 +341,9 @@ const fetchCategories = async () => {
   } catch (error) { console.error('获取分类规则失败', error); }
 };
 
-// --- 交互逻辑 ---
-const handleTabChange = (val) => {
-  if (val === 'unrecognized' && liveFiles.value.length === 0) {
-    fetchLiveUnrecognized();
-  }
-};
-
 const handleFilter = () => { fetchRecords(); };
 
+// --- 全局清理操作 ---
 const handleEmptyRecycleBin = () => {
   dialog.error({
     title: '清空回收站',
@@ -450,51 +354,68 @@ const handleEmptyRecycleBin = () => {
       emptyingBin.value = true;
       try {
         const res = await axios.post('/api/p115/recycle_bin/empty');
-        if (res.data.success) message.success('回收站已彻底清空！');
+        if (res.data.success) message.success(res.data.message);
         else message.error(res.data.message);
       } catch (error) { message.error('清空失败'); } finally { emptyingBin.value = false; }
     }
   });
 };
 
-const openEditModal = (source, row) => {
+const handleEmptyUnrecognized = () => {
+  dialog.warning({
+    title: '清空未识别',
+    content: '警告：此操作将彻底删除 115 网盘【未识别】目录下的所有物理文件，并同步抹除本地数据库中的未识别记录。确定要继续吗？',
+    positiveText: '确认清空',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      emptyingUnrecognized.value = true;
+      try {
+        const res = await axios.post('/api/p115/unrecognized/empty');
+        if (res.data.success) {
+          message.success(res.data.message);
+          fetchRecords(); // 刷新列表，未识别记录应该消失了
+        } else {
+          message.error(res.data.message);
+        }
+      } catch (error) { message.error('清空失败'); } finally { emptyingUnrecognized.value = false; }
+    }
+  });
+};
+
+// --- 模态框与编辑逻辑 ---
+const openEditModal = (row) => {
   let ids = [row.id];
-  let name = source === 'db' ? row.original_name : row.name;
-  let defaultSeason = source === 'db' ? (row.season_number || null) : null;
+  let name = row.original_name;
+  let defaultSeason = row.season_number || null;
   
-  if (source === 'db' && row.isGroup) {
+  if (row.isGroup) {
     ids = row.children.map(c => c.id);
     name = `[整季批量操作] ${row.original_name}`;
   }
 
   editForm.value = {
-    source: source,
     ids: ids,
     original_name: name,
-    status: source === 'db' ? row.status : 'unrecognized',
-    tmdb_id: source === 'db' ? (row.tmdb_id || '') : '',
-    media_type: source === 'db' ? (row.media_type || 'movie') : 'movie',
+    status: row.status,
+    tmdb_id: row.tmdb_id || '',
+    media_type: row.media_type || 'movie',
     season_num: defaultSeason,
-    target_cid: source === 'db' ? (row.target_cid || null) : null,
+    target_cid: row.target_cid || null,
     batch_mode: 'merge'
   };
   showEditModal.value = true;
 };
 
-const openBatchEditModal = (source) => {
-  const ids = source === 'db' ? realSelectedIds.value : liveCheckedKeys.value;
+const openBatchEditModal = () => {
+  const ids = realSelectedIds.value;
   if (!ids.length) return;
   
-  let allHaveTmdbId = false;
-  if (source === 'db') {
-    const selectedRows = tableData.value.filter(row => ids.includes(row.id));
-    allHaveTmdbId = selectedRows.every(row => row.tmdb_id);
-  }
+  const selectedRows = tableData.value.filter(row => ids.includes(row.id));
+  const allHaveTmdbId = selectedRows.every(row => row.tmdb_id);
 
   editForm.value = {
-    source: source,
     ids: ids,
-    original_name: `[批量操作] 已选中 ${ids.length} 个文件`,
+    original_name: `[全局批量操作] 已选中 ${ids.length} 个文件`,
     status: 'unrecognized',
     tmdb_id: '',
     media_type: 'movie',
@@ -506,58 +427,38 @@ const openBatchEditModal = (source) => {
 };
 
 const submitCorrection = async () => {
-  const { source, ids, batch_mode, tmdb_id, target_cid, media_type, season_num } = editForm.value;
-  const isBatchReclassify = ids.length > 1 && batch_mode === 'reclassify' && source === 'db';
+  const isBatchReclassify = editForm.value.ids.length > 1 && editForm.value.batch_mode === 'reclassify';
 
-  if (!isBatchReclassify && !tmdb_id) { message.warning('TMDb ID 不能为空！'); return; }
-  if (!target_cid) { message.warning('目标分类不能为空！'); return; }
+  if (!isBatchReclassify && !editForm.value.tmdb_id) { message.warning('TMDb ID 不能为空！'); return; }
+  if (!editForm.value.target_cid) { message.warning('目标分类不能为空！'); return; }
 
   submitting.value = true;
   try {
-    if (source === 'db') {
-      const promises = ids.map(id => {
-        let payload = { id: id, target_cid: target_cid };
-        if (isBatchReclassify) {
-          const row = tableData.value.find(r => r.id === id);
-          payload.tmdb_id = row.tmdb_id;
-          payload.media_type = row.media_type || 'movie';
-          payload.season_num = row.season_number || null; 
-        } else {
-          payload.tmdb_id = tmdb_id;
-          payload.media_type = media_type;
-          payload.season_num = season_num;
-        }
-        return axios.post('/api/p115/records/correct', payload);
-      });
-      await Promise.all(promises);
-      message.success(`成功发送 ${promises.length} 个重组指令！`);
-      checkedRowKeys.value = [];
-      fetchRecords();
-    } else {
-      // 实时网盘文件整理 (批量发送一次请求)
-      const res = await axios.post('/api/p115/unrecognized/organize', {
-        fids: ids,
-        tmdb_id: tmdb_id,
-        media_type: media_type,
-        target_cid: target_cid,
-        season_num: season_num
-      });
-      if (res.data.success) {
-        message.success(res.data.message);
-        liveCheckedKeys.value = [];
-        fetchLiveUnrecognized();
-        fetchRecords(); // 刷新历史记录，因为整理成功后会写入记录
+    const promises = editForm.value.ids.map(id => {
+      let payload = { id: id, target_cid: editForm.value.target_cid };
+      if (isBatchReclassify) {
+        const row = tableData.value.find(r => r.id === id);
+        payload.tmdb_id = row.tmdb_id;
+        payload.media_type = row.media_type || 'movie';
+        payload.season_num = row.season_number || null; 
       } else {
-        throw new Error(res.data.message);
+        payload.tmdb_id = editForm.value.tmdb_id;
+        payload.media_type = editForm.value.media_type;
+        payload.season_num = editForm.value.season_num;
       }
-    }
+      return axios.post('/api/p115/records/correct', payload);
+    });
+    
+    await Promise.all(promises);
+    message.success(`成功发送 ${promises.length} 个重组指令！`);
     showEditModal.value = false;
+    checkedRowKeys.value = [];
+    fetchRecords();
   } catch (error) {
-    message.error(error.message || '操作失败，请检查后端日志');
+    message.error(error.message || '部分或全部操作失败，请检查后端日志');
   } finally { submitting.value = false; }
 };
 
-// --- 删除逻辑 ---
 const deleteRecord = (row) => {
   let ids = [row.id];
   let text = `确定要删除记录 "${row.original_name}" 吗？`;
@@ -576,7 +477,7 @@ const deleteRecord = (row) => {
   });
 };
 
-const batchDeleteRecords = () => {
+const batchDelete = () => {
   const ids = realSelectedIds.value;
   if (!ids.length) return;
   dialog.warning({
@@ -588,39 +489,6 @@ const batchDeleteRecords = () => {
         message.success(`成功删除 ${ids.length} 条记录`);
         checkedRowKeys.value = [];
         fetchRecords();
-      } catch (error) { message.error('批量删除失败'); }
-    }
-  });
-};
-
-const deleteLiveFile = (row) => {
-  dialog.error({
-    title: '彻底删除网盘文件', content: `确定要删除物理文件 "${row.name}" 吗？文件将被移入 115 回收站。`,
-    positiveText: '删除', negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        const res = await axios.post('/api/p115/files/delete', { fids: [row.id] });
-        if (res.data.success) { message.success('文件已删除'); fetchLiveUnrecognized(); }
-        else message.error(res.data.message);
-      } catch (error) { message.error('删除失败'); }
-    }
-  });
-};
-
-const batchDeleteLiveFiles = () => {
-  const ids = liveCheckedKeys.value;
-  if (!ids.length) return;
-  dialog.error({
-    title: '批量删除网盘文件', content: `确定要删除选中的 ${ids.length} 个物理文件吗？文件将被移入 115 回收站。`,
-    positiveText: '删除', negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        const res = await axios.post('/api/p115/files/delete', { fids: ids });
-        if (res.data.success) {
-          message.success(`成功删除 ${ids.length} 个文件`);
-          liveCheckedKeys.value = [];
-          fetchLiveUnrecognized();
-        } else message.error(res.data.message);
       } catch (error) { message.error('批量删除失败'); }
     }
   });
