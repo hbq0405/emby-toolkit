@@ -3016,6 +3016,12 @@ def task_scan_and_organize_115(processor=None):
     use_ai = config.get(constants.CONFIG_OPTION_AI_RECOGNITION, False)
     ai_translator = processor.ai_translator if processor and hasattr(processor, 'ai_translator') else None
 
+    configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
+    allowed_exts = set(e.lower() for e in configured_exts)
+    if not allowed_exts:
+        # 兜底默认白名单（视频+字幕）
+        allowed_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
+
     if not cid_val or str(cid_val) == '0':
         logger.error("  ⚠️ 未配置待整理目录，跳过。")
         return
@@ -3199,6 +3205,12 @@ def task_scan_and_organize_115(processor=None):
                         
                     if not is_folder:
                         ext = name.split('.')[-1].lower() if '.' in name else ''
+                        if ext not in allowed_exts:
+                            with group_lock:
+                                unidentified_items.append(item)
+                            continue
+                            
+                        # 过滤蓝光原盘的特殊无用文件
                         if ext in ['clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo']:
                             continue
 
