@@ -1,26 +1,26 @@
 <!-- src/components/OrganizeRecordsPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
-    <!-- 顶部统计仪表盘与全局操作 -->
-    <n-space justify="space-between" align="center" style="margin-bottom: 24px;">
-      <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:5" responsive="screen" style="flex: 1;">
-        <n-gi><n-card class="stat-card" size="small"><n-statistic label="总处理记录"><template #prefix><n-icon :component="LayersIcon" color="#2080f0" /></template>{{ stats.total || 0 }}</n-statistic></n-card></n-gi>
-        <n-gi><n-card class="stat-card" size="small"><n-statistic label="识别成功"><template #prefix><n-icon :component="CheckmarkCircleIcon" color="#18a058" /></template>{{ stats.success || 0 }}</n-statistic></n-card></n-gi>
-        <n-gi><n-card class="stat-card" size="small"><n-statistic label="未识别 / 失败"><template #prefix><n-icon :component="HelpCircleIcon" color="#f0a020" /></template>{{ stats.unrecognized || 0 }}</n-statistic></n-card></n-gi>
-        <n-gi><n-card class="stat-card" size="small"><n-statistic label="本周处理"><template #prefix><n-icon :component="TrendingUpIcon" color="#d03050" /></template>{{ stats.thisWeek || 0 }}</n-statistic></n-card></n-gi>
-        <n-gi><n-card class="stat-card" size="small"><n-statistic label="命中中心缓存"><template #prefix><n-icon :component="CloudDoneIcon" color="#18a058" /></template>{{ stats.center_cached || 0 }}</n-statistic></n-card></n-gi>
-      </n-grid>
-      
-      <!-- 全局清空回收站按钮 -->
-      <n-button type="error" size="large" strong @click="handleEmptyRecycleBin" :loading="emptyingBin">
-        <template #icon><n-icon :component="TrashBinIcon" /></template>
-        清空 115 回收站
-      </n-button>
-    </n-space>
+    <!-- 顶部统计仪表盘 (恢复占满整行，大气！) -->
+    <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:5" responsive="screen" style="margin-bottom: 24px;">
+      <n-gi><n-card class="stat-card" size="small"><n-statistic label="总处理记录"><template #prefix><n-icon :component="LayersIcon" color="#2080f0" /></template>{{ stats.total || 0 }}</n-statistic></n-card></n-gi>
+      <n-gi><n-card class="stat-card" size="small"><n-statistic label="识别成功"><template #prefix><n-icon :component="CheckmarkCircleIcon" color="#18a058" /></template>{{ stats.success || 0 }}</n-statistic></n-card></n-gi>
+      <n-gi><n-card class="stat-card" size="small"><n-statistic label="未识别 / 失败"><template #prefix><n-icon :component="HelpCircleIcon" color="#f0a020" /></template>{{ stats.unrecognized || 0 }}</n-statistic></n-card></n-gi>
+      <n-gi><n-card class="stat-card" size="small"><n-statistic label="本周处理"><template #prefix><n-icon :component="TrendingUpIcon" color="#d03050" /></template>{{ stats.thisWeek || 0 }}</n-statistic></n-card></n-gi>
+      <n-gi><n-card class="stat-card" size="small"><n-statistic label="命中中心缓存"><template #prefix><n-icon :component="CloudDoneIcon" color="#18a058" /></template>{{ stats.center_cached || 0 }}</n-statistic></n-card></n-gi>
+    </n-grid>
 
     <n-card class="dashboard-card" :bordered="false" size="small">
       <n-tabs v-model:value="activeTab" type="line" animated @update:value="handleTabChange">
         
+        <!-- ★ 核心修改：将清空回收站按钮放在 Tabs 的右侧后缀区域 -->
+        <template #suffix>
+          <n-button type="error" size="small" strong @click="handleEmptyRecycleBin" :loading="emptyingBin">
+            <template #icon><n-icon :component="TrashBinIcon" /></template>
+            清空 115 回收站
+          </n-button>
+        </template>
+
         <!-- Tab 1: 历史整理记录 (数据库) -->
         <n-tab-pane name="records" tab="历史整理记录">
           <n-space style="margin-bottom: 20px;" align="center" justify="space-between">
