@@ -2087,7 +2087,8 @@ class SmartOrganizer:
                 
                 # 3. 动漫特征 (剔除干扰后，寻找纯数字序号)
                 clean_c_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', c_name)
-                if re.search(r'(?:-\s*|\[|【)(\d{2,4})(?:\s+|\]|】)', clean_c_name): 
+                # ★ 核心修复：严格匹配 [01] 或 【01】 或前后带空格的 - 01，防止误伤压制组编号
+                if re.search(r'(?:\s-\s+)(\d{2,4})(?:\s|$)|\[(\d{2,4})\]|【(\d{2,4})】', clean_c_name): 
                     is_actually_tv = True
                     break
             
