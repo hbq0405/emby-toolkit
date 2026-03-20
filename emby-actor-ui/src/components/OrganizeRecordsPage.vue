@@ -243,14 +243,7 @@ const editForm = ref({
   batch_mode: 'merge'
 });
 
-// 提取季号的正则工具
-const getSeason = (name) => {
-  if (!name) return '未知季';
-  const match = name.match(/S(\d{1,2})/i) || name.match(/Season\s*(\d{1,2})/i) || name.match(/第(\d+)季/);
-  return match ? `第 ${parseInt(match[1])} 季` : '未知季';
-};
-
-// 提取剧名的工具函数
+// 提取剧名的工具函数 (保留用于提取剧集包的标题)
 const getSeriesName = (name) => {
   if (!name) return '未知剧集';
   const matchStd = name.match(/^(.*?)\s*-\s*S\d{2}E\d{2}/i);
@@ -266,8 +259,10 @@ const processedTableData = computed(() => {
 
   tableData.value.forEach(item => {
     if (item.media_type === 'tv' && item.tmdb_id && item.status === 'success') {
-      const season = getSeason(item.renamed_name || item.original_name);
-      const key = `tv_${item.tmdb_id}_${item.target_cid}_${season}`;
+      // ★ 核心修改：直接使用数据库返回的 season_number 进行分组
+      const seasonNum = item.season_number || 'unknown';
+      const key = `tv_${item.tmdb_id}_${item.target_cid}_${seasonNum}`;
+      
       if (!groups[key]) groups[key] = [];
       groups[key].push(item);
     } else {
@@ -279,10 +274,10 @@ const processedTableData = computed(() => {
     const children = groups[key];
     if (children.length > 1) {
       const first = children[0];
-      const season = getSeason(first.renamed_name || first.original_name);
+      // ★ 核心修改：直接使用数据库返回的 season_number 渲染标题
+      const seasonText = first.season_number ? `第 ${first.season_number} 季` : '未知季';
       const seriesName = getSeriesName(first.renamed_name || first.original_name);
       
-      // ★ 新增：给子节点打上 isChild 标记，方便渲染时区分
       const markedChildren = children.sort((a, b) => a.original_name.localeCompare(b.original_name)).map(child => ({
         ...child,
         isChild: true 
@@ -291,7 +286,7 @@ const processedTableData = computed(() => {
       result.push({
         id: `group_${key}`,
         isGroup: true,
-        original_name: `📺 ${seriesName} | ${season} | 共 ${children.length} 集`,
+        original_name: `📺 ${seriesName} | ${seasonText} | 共 ${children.length} 集`,
         renamed_name: `支持整季批量纠错 / 批量删除`,
         status: 'success',
         media_type: 'tv',
@@ -299,6 +294,7 @@ const processedTableData = computed(() => {
         target_cid: first.target_cid,
         category_name: first.category_name,
         processed_at: first.processed_at,
+        season_number: first.season_number, // ★ 将季号存入父节点，方便编辑时读取
         children: markedChildren
       });
     } else {
@@ -314,7 +310,6 @@ const realSelectedIds = computed(() => {
   return checkedRowKeys.value.filter(key => !String(key).startsWith('group_'));
 });
 
-// ★ 新增：为子节点行添加专属 class，用于弱化背景色
 const rowClassName = (row) => {
   return row.isChild ? 'is-child-row' : '';
 };
@@ -340,7 +335,6 @@ const columns = computed(() => [
         bordered: false,
         size: 'small',
         round: true,
-        // ★ 新增：如果是子节点，标签稍微缩小变淡，突出父节点
         style: row.isChild ? 'transform: scale(0.85); opacity: 0.85;' : ''
       }, {
         icon: () => h(NIcon, { component: isSuccess ? CheckmarkCircleIcon : HelpCircleIcon }),
@@ -352,7 +346,6 @@ const columns = computed(() => [
     title: '名称演变 (原文件 ➔ 整理后)',
     key: 'name_evolution',
     render(row) {
-      // ★ 新增：如果是子节点，增加左侧缩进和树形边框线
       const childStyle = row.isChild 
         ? 'padding-left: 20px; border-left: 2px solid rgba(144, 147, 153, 0.25); margin-left: 6px;' 
         : '';
@@ -514,16 +507,12 @@ const handleFilter = () => {
 const openEditModal = (row) => {
   let ids = [row.id];
   let name = row.original_name;
-  let defaultSeason = null;
+  // ★ 核心修改：直接读取数据库传来的 season_number
+  let defaultSeason = row.season_number || null;
   
   if (row.isGroup) {
     ids = row.children.map(c => c.id);
     name = `[整季批量操作] ${row.original_name}`;
-    const match = row.original_name.match(/第 (\d+) 季/);
-    if (match) defaultSeason = parseInt(match[1]);
-  } else if (row.media_type === 'tv') {
-    const match = row.renamed_name?.match(/S(\d{1,2})E/i) || row.original_name?.match(/S(\d{1,2})/i);
-    if (match) defaultSeason = parseInt(match[1]);
   }
 
   editForm.value = {
@@ -586,7 +575,8 @@ const submitCorrection = async () => {
         }
         payload.tmdb_id = row.tmdb_id;
         payload.media_type = row.media_type || 'movie';
-        payload.season_num = null; 
+        // ★ 核心修改：批量重分类时，保持原有的季号
+        payload.season_num = row.season_number || null; 
       } else {
         payload.tmdb_id = editForm.value.tmdb_id;
         payload.media_type = editForm.value.media_type;
