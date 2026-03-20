@@ -170,6 +170,13 @@ class P115OpenAPIClient:
         url = f"{self.base_url}/open/ufile/delete"
         fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
         return self._do_request("POST", url, data={"file_ids": fids_str})
+
+    def rb_del(self, tids=None):
+        url = f"{self.base_url}/open/rb/del"
+        data = {}
+        if tids:
+            data['tid'] = ",".join([str(t) for t in tids]) if isinstance(tids, list) else str(tids)
+        return self._do_request("POST", url, data=data)
     
     def fs_upload_init(self, file_name, file_size, target_cid, sha1, preid, sign_key=None, sign_val=None):
         """文件上传初始化调度接口"""
@@ -548,6 +555,11 @@ class P115Service:
                 self._check_openapi()
                 self._rate_limit()
                 return self._openapi.fs_delete(fids)
+            
+            def rb_del(self, tids=None):
+                self._check_openapi()
+                self._rate_limit()
+                return self._openapi.rb_del(tids)
             
             def upload_file_stream(self, file_stream, file_name, target_cid):
                 self._check_openapi()
@@ -4496,3 +4508,46 @@ def task_sync_music_library(processor=None):
         
     logger.info(end_msg)
     update_progress(100, f"同步完成！生成 {files_generated} 首，下载 {aux_downloaded} 个附属文件。")
+
+def manual_organize_live_files(fids, tmdb_id, media_type, target_cid, season_num=None):
+    """直接对网盘实时文件进行手动整理"""
+    client = P115Service.get_client()
+    if not client: raise Exception("115客户端未初始化")
+
+    root_items = []
+    for fid in fids:
+        info_res = client.fs_get_info(fid)
+        if info_res and info_res.get('state') and info_res.get('data'):
+            data = info_res['data']
+            root_items.append({
+                'fid': data.get('file_id'),
+                'file_id': data.get('file_id'),
+                'fn': data.get('file_name'),
+                'fc': str(data.get('file_category', '1')),
+                'pid': data.get('parent_id'),
+                'pc': data.get('pick_code'),
+                'pick_code': data.get('pick_code'),
+                'sha1': data.get('sha1')
+            })
+
+    if not root_items: raise Exception("无法从网盘获取文件信息，文件可能已被删除")
+
+    title = root_items[0]['fn']
+    api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+    try:
+        import handler.tmdb as tmdb
+        if media_type == 'tv': details = tmdb.get_tv_details(tmdb_id, api_key)
+        else: details = tmdb.get_movie_details(tmdb_id, api_key)
+        if details: title = details.get('title') or details.get('name') or title
+    except: pass
+
+    logger.info(f"  🛠️ [实时重组] 开始对 {len(root_items)} 个未识别文件执行定向整理 -> ID:{tmdb_id}")
+
+    organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
+    organizer.is_manual_correct = True
+    if season_num is not None and str(season_num).strip():
+        organizer.forced_season = int(season_num)
+
+    success = organizer.execute(root_items, target_cid)
+    if not success: raise Exception("执行整理失败，请检查日志")
+    return True
