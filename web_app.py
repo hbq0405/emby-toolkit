@@ -230,7 +230,7 @@ def initialize_processors():
         config_manager.APP_CONFIG['is_pro_active'] = False 
         
         if server_id_local:
-            logger.info("  ➜ 正在连接云端验证 Pro 授权状态...")
+            logger.info("  ➜ 正在验证 Pro 授权状态...")
             try:
                 import requests
                 verify_url = "https://auth.55565576.xyz" 
@@ -254,7 +254,7 @@ def initialize_processors():
             ai_translator=shared_ai_translator,
             douban_api=shared_douban_api 
         )
-        logger.trace("  ->核心处理器 实例已创建/更新。")
+        logger.trace("  ➜ 核心处理器 实例已创建/更新。")
     except Exception as e:
         logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
         media_processor_instance_local = None

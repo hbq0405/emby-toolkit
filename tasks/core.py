@@ -213,10 +213,10 @@ def get_task_registry(context: str = 'all'):
         'contribute-mediainfo': (task_contribute_mediainfo_to_center, "分享媒体信息", 'media', False),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
-        'add-all-series-to-watchlist': (task_add_all_series_to_watchlist, "一键扫描全库剧集", 'watchlist', False),
+        'add-all-series-to-watchlist': (task_add_all_series_to_watchlist, "扫描全库剧集", 'watchlist', False),
         'process_all_custom_collections': (task_process_all_custom_collections, "生成所有自建合集", 'media', False),
         'process-single-custom-collection': (process_single_custom_collection, "生成单个自建合集", 'media', False),
-        'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描媒体重复项", 'media', False),
+        'scan-cleanup-issues': (task_scan_for_cleanup_issues, "扫描重复媒体", 'media', False),
         'resubscribe-library': (task_resubscribe_library, "媒体订阅删除", 'media', False),
         'update-daily-theme': (task_update_daily_theme, "更新每日主题", 'media', False),
         'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),
