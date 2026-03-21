@@ -535,6 +535,10 @@ def task_auto_subscribe(processor):
                         except ValueError:
                             continue
 
+                    # 移除时区信息以便与本地时间进行比较
+                    if last_sub_time.tzinfo is not None:
+                        last_sub_time = last_sub_time.replace(tzinfo=None)
+
                     # 如果订阅时间早于超时阈值，说明可能超时了
                     if last_sub_time < timeout_threshold:
                         tmdb_id = item.get('tmdb_id')
