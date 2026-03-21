@@ -390,17 +390,49 @@ def _handle_incoming_message(message: dict):
         logger.warning(f"  ⚠️ [TG交互] 收到未授权用户 ({chat_id}) 的消息，已忽略。")
         return
 
-    # ★★★ 新增：处理 /tasks 或 /menu 指令，生成任务菜单 ★★★
-    if text.lower() in ['/tasks', '/menu', '菜单', '任务']:
+    # ★★★ 处理 /start 指令，生成底部固定的一键唤出按钮 ★★★
+    if text.lower() == '/start':
+        reply_markup = {
+            "keyboard": [
+                [{"text": "🛠️ 任务菜单"}] # 这里定义底部按钮的文字
+            ],
+            "resize_keyboard": True,   # 调整按钮大小适应屏幕
+            "is_persistent": True      # 始终显示在底部
+        }
+        send_telegram_message(
+            chat_id, 
+            escape_markdown("✅ 欢迎！已为您生成底部快捷按钮，点击【🛠️ 任务菜单】即可一键唤出控制台。"), 
+            reply_markup=reply_markup
+        )
+        return
+
+    # ★★★ 处理菜单指令，并自定义显示的任务 ★★★
+    if text.lower() in ['/tasks', '/menu', '菜单', '任务', '🛠️ 任务菜单']:
         from tasks.core import get_task_registry
         registry = get_task_registry(context='all')
+        
+        # ==========================================
+        # ⚙️ 在这里自定义你想在菜单中显示的任务 Key！
+        # Key 必须和 tasks/core.py 中 full_registry 里的名字一模一样
+        # ==========================================
+        allowed_tasks = [
+            'task-chain-high-freq',       # 高频刷新任务链
+            'task-chain-low-freq',        # 低频维护任务链
+            'scan-organize-115',          # 网盘文件整理
+            'process-watchlist',          # 刷新智能追剧
+            'system-auto-update',         # 系统自动更新
+            'sync-person-map',            # 同步演员数据
+            'populate-metadata',          # 同步媒体数据
+            'scan-cleanup-issues',        # 扫描重复媒体
+        ]
+        
         keyboard = []
         row = []
         
         # 遍历注册表生成按钮 (每行2个按钮)
         for key, info in registry.items():
-            # 过滤掉任务链本身，只显示具体任务
-            if key in ['task-chain-high-freq', 'task-chain-low-freq']:
+            # ★ 核心过滤逻辑：只显示在 allowed_tasks 列表里的任务
+            if key not in allowed_tasks:
                 continue
                 
             desc = info[1]
