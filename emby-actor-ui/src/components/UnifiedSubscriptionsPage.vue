@@ -303,7 +303,7 @@
               <n-input-number v-model:value="strategyConfig.download_timeout_hours" :min="0" />
               <template #feedback>
                 下载队列中超过 N 小时未完成的任务，将自动删除并重新订阅。<br/>
-                <b>同时会尝试排除原超时种子的发布组</b>。0 表示关闭此功能。
+                <b>同时会尝试排除原超时种子</b>。0 表示关闭此功能。
               </template>
             </n-form-item>
         </n-card>
