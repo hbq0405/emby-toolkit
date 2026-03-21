@@ -293,21 +293,21 @@
                         <n-tag v-else type="warning" size="small" round>未检查</n-tag>
                       </div>
                     </template>
-                    <template #header-extra>
-                      <n-space align="center" :size="12">
-                        <n-button type="warning" size="small" @click="openWebAuthModal">
-                          <template #icon><n-icon :component="DiamondIcon" /></template>
-                          网页授权
-                        </n-button>
-                        <n-button type="primary" size="small" @click="openQrcodeModal">
-                          <template #icon><n-icon :component="QrCodeOutline" /></template>
-                          扫码登录
-                        </n-button>
-                        <n-button size="small" secondary type="success" @click="check115Status" :loading="loading115Info">
-                          检查连通性
-                        </n-button>
-                      </n-space>
-                    </template>
+
+                    <!-- ★★★ 按钮单独一行 ★★★ -->
+                    <n-space align="center" :size="12" style="margin-bottom: 16px;">
+                      <n-button type="warning" size="small" @click="openWebAuthModal">
+                        <template #icon><n-icon :component="DiamondIcon" /></template>
+                        网页授权
+                      </n-button>
+                      <n-button type="primary" size="small" @click="openQrcodeModal">
+                        <template #icon><n-icon :component="QrCodeOutline" /></template>
+                        扫码登录
+                      </n-button>
+                      <n-button size="small" secondary type="success" @click="check115Status" :loading="loading115Info">
+                        检查连通性
+                      </n-button>
+                    </n-space>
 
                     <!-- ★★★ 新增：用户信息展示卡片 ★★★ -->
                     <div v-if="p115Info && p115Info.user_info" style="margin-bottom: 16px; padding: 12px; background: var(--n-action-color); border-radius: 8px; display: flex; align-items: center; gap: 12px;">
