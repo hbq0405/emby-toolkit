@@ -298,6 +298,14 @@
                 <b>0 表示不复活 (默认)</b>。适用于给老片或冷门资源第二次机会。
               </template>
             </n-form-item>
+
+            <n-form-item label="下载超时重订 (小时)">
+              <n-input-number v-model:value="strategyConfig.download_timeout_hours" :min="0" />
+              <template #feedback>
+                下载队列中超过 N 小时未完成的任务，将自动删除并重新订阅。<br/>
+                <b>同时会尝试排除原超时种子的发布组</b>。0 表示关闭此功能。
+              </template>
+            </n-form-item>
         </n-card>
       </n-form>
       
@@ -351,6 +359,7 @@ const strategyConfig = ref({
   movie_pause_days: 7,
   delay_subscription_days: 0,
   timeout_revive_days: 0,
+  download_timeout_hours: 0,
 });
 
 const loadStrategyConfig = async () => {
@@ -363,12 +372,9 @@ const loadStrategyConfig = async () => {
       movie_pause_days: 7,
       delay_subscription_days: 0,
       timeout_revive_days: 0,
+      download_timeout_hours: 0,
       ...res.data 
     };
-  } catch (e) {
-    message.error('加载策略配置失败');
-  }
-};
 
 const saveStrategyConfig = async () => {
   savingStrategy.value = true;

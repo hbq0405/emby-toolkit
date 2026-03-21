@@ -1,7 +1,8 @@
 # tasks/subscriptions.py
 # 智能订阅模块
 import time
-from datetime import datetime
+import re
+from datetime import datetime, timedelta
 import logging
 from typing import List, Dict
 from concurrent.futures import ThreadPoolExecutor, as_completed 
@@ -503,6 +504,100 @@ def task_auto_subscribe(processor):
 
             else:
                 logger.info("  ➜ 未发现超时订阅。")
+
+        # ======================================================================
+        # 阶段 1.5 - 清理下载超时并重新订阅
+        # ======================================================================
+        download_timeout_hours = int(strategy_config.get('download_timeout_hours', 0))
+        if download_timeout_hours > 0:
+            logger.info(f"  ➜ [策略] 检查下载超时超过 {download_timeout_hours} 小时的任务...")
+            task_manager.update_status_from_thread(5, "正在检查下载超时任务...")
+            
+            downloading_tasks = moviepilot.get_downloading_tasks(config)
+            if downloading_tasks:
+                all_subs = media_db.get_all_subscriptions()
+                now = datetime.now()
+                timeout_threshold = now - timedelta(hours=download_timeout_hours)
+
+                for item in all_subs:
+                    if item.get('subscription_status') != 'SUBSCRIBED':
+                        continue
+
+                    last_sub_str = item.get('last_subscribed_at')
+                    if not last_sub_str:
+                        continue
+
+                    try:
+                        last_sub_time = datetime.strptime(last_sub_str, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        continue
+
+                    # 如果订阅时间早于超时阈值，说明可能超时了
+                    if last_sub_time < timeout_threshold:
+                        tmdb_id = item.get('tmdb_id')
+                        item_type = item.get('item_type')
+                        season_num = item.get('season_number')
+
+                        # 确定要比对的真实 TMDb ID
+                        target_tmdb_id = int(item.get('parent_series_tmdb_id') or tmdb_id)
+
+                        for task in downloading_tasks:
+                            task_media = task.get('media', {})
+                            if not task_media:
+                                continue
+
+                            task_tmdbid = task_media.get('tmdb_id') or task_media.get('tmdbid')
+                            task_season = task_media.get('season')
+
+                            # 匹配 TMDb ID 和 季号
+                            if str(task_tmdbid) == str(target_tmdb_id):
+                                if item_type == 'Season' and str(task_season) != str(season_num):
+                                    continue
+
+                                task_hash = task.get('hash')
+                                torrent_name = task.get('name') or task.get('title') or ""
+
+                                logger.warning(f"  ➜ 发现超时下载任务: 《{torrent_name}》 (已订阅超过 {download_timeout_hours} 小时)")
+
+                                # 1. 提取发布组 (尝试匹配 -GROUP 或 [GROUP])
+                                exclude_keyword = ""
+                                match = re.search(r'-([A-Za-z0-9_]+)$', torrent_name)
+                                if match:
+                                    group = match.group(1)
+                                    # 排除常见的非发布组后缀
+                                    if group.lower() not in ['1080p', '2160p', '4k', 'dl', 'web', 'rip', 'x264', 'x265', 'hevc']:
+                                        exclude_keyword = group
+                                if not exclude_keyword:
+                                    match = re.search(r'^\[([^\]]+)\]', torrent_name)
+                                    if match:
+                                        exclude_keyword = match.group(1)
+
+                                # 2. 删除下载器中的任务
+                                if moviepilot.delete_download_tasks("dummy", config, hashes=[task_hash]):
+                                    logger.info(f"    - 已删除超时下载任务: {task_hash[:8]}...")
+
+                                    # 3. 更新 MP 订阅规则，排除该发布组
+                                    sub_info = moviepilot.get_subscription_by_mediaid(str(target_tmdb_id), season_num if item_type == 'Season' else None, config)
+                                    if sub_info and sub_info.get('id'):
+                                        if exclude_keyword:
+                                            current_exclude = sub_info.get('exclude') or ""
+                                            exclude_list = [e.strip() for e in current_exclude.split(',') if e.strip()]
+                                            if exclude_keyword not in exclude_list:
+                                                exclude_list.append(exclude_keyword)
+                                                sub_info['exclude'] = ",".join(exclude_list)
+                                                if moviepilot.update_subscription(sub_info, config):
+                                                    logger.info(f"    - 已更新订阅规则，排除发布组/关键词: {exclude_keyword}")
+
+                                        # 4. 触发重新搜索
+                                        moviepilot.search_subscription(sub_info['id'], config)
+                                        logger.info(f"    - 已触发重新搜索")
+
+                                        # 5. 更新本地订阅时间，防止无限循环
+                                        request_db.set_media_status_subscribed(
+                                            tmdb_ids=[tmdb_id],
+                                            item_type=item_type
+                                        )
+                                break # 跳出内层循环，处理下一个 item
 
         # ======================================================================
         # 阶段 2 - 电影间歇性订阅搜索
