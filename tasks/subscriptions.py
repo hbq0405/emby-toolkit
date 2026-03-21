@@ -588,7 +588,9 @@ def task_auto_subscribe(processor):
                                 # 去除扩展名，保留纯净的种子名称作为排除词
                                 clean_torrent_name = re.sub(r'\.(mkv|mp4|ts|avi|torrent)$', '', torrent_name, flags=re.IGNORECASE).strip()
                                 if clean_torrent_name:
-                                    exclude_keywords.add(clean_torrent_name)
+                                    # ★★★ 核心修复：转义正则特殊字符，防止 MP 将其作为正则代码执行而导致匹配失败 ★★★
+                                    escaped_name = re.escape(clean_torrent_name)
+                                    exclude_keywords.add(escaped_name)
 
                                 # 2. 删除下载器中的任务
                                 if moviepilot.delete_download_tasks("dummy", config, hashes=[task_hash]):
