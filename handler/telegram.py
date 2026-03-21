@@ -545,7 +545,7 @@ def _setup_bot_commands(bot_token: str):
             commands.append({"command": cmd_name, "description": f"🚀 {desc}"})
 
     # 在菜单最下方追加“查看所有任务”的备选命令
-    commands.append({"command": "all_tasks", "description": "📋 查看所有可用任务 (备选)"})
+    commands.append({"command": "all_tasks", "description": "📋 查看所有可用任务"})
 
     api_url = f"https://api.telegram.org/bot{bot_token}/setMyCommands"
     payload = {"commands": commands}
@@ -554,7 +554,7 @@ def _setup_bot_commands(bot_token: str):
         proxies = get_proxies_for_requests()
         response = requests.post(api_url, json=payload, timeout=10, proxies=proxies)
         if response.status_code == 200:
-            logger.info("  ➜ 成功注册 Telegram 机器人快捷菜单 (常用任务直达)。")
+            logger.trace("  ➜ 成功注册 Telegram 机器人快捷菜单。")
         else:
             logger.warning(f"  ⚠️ 注册 Telegram 菜单命令失败: {response.text}")
     except Exception as e:
