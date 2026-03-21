@@ -295,6 +295,10 @@
                     </template>
                     <template #header-extra>
                       <n-space align="center" :size="12">
+                        <n-button type="warning" size="small" @click="openWebAuthModal">
+                          <template #icon><n-icon :component="DiamondIcon" /></template>
+                          网页授权
+                        </n-button>
                         <n-button type="primary" size="small" @click="openQrcodeModal">
                           <template #icon><n-icon :component="QrCodeOutline" /></template>
                           扫码登录
@@ -1229,6 +1233,43 @@
       </div>
       <template #footer>
         <n-button @click="closeQrcodeModal" v-if="qrcodeStatus !== 'success'">关闭</n-button>
+      </template>
+    </n-modal>
+    <!-- ★★★ 115 网页授权登录弹窗 (授权码模式) ★★★ -->
+    <n-modal v-model:show="showWebAuthModal" preset="card" title="115 网页授权登录 (推荐)" style="width: 450px;" :mask-closable="false">
+      <n-space vertical :size="16">
+        <n-alert type="success" :show-icon="true">
+          此模式采用官方标准 OAuth 2.0 授权码流程，<b>稳定性极高，不易掉授权，不易触发流控</b>。
+        </n-alert>
+        
+        <div style="text-align: center; padding: 10px 0;">
+          <n-button type="primary" size="large" tag="a" href="https://115.55565576.xyz/login" target="_blank" style="width: 100%;">
+            第一步：点击前往 115 官网登录授权
+          </n-button>
+          <div style="font-size: 12px; color: #888; margin-top: 8px;">
+            (将在新标签页打开，授权成功后会生成一段代码)
+          </div>
+        </div>
+
+        <n-divider style="margin: 0;" />
+
+        <n-form-item label="第二步：粘贴获取到的授权码">
+          <n-input 
+            v-model:value="webAuthCode" 
+            type="textarea" 
+            placeholder="请粘贴以 eyJ... 开头的 Base64 授权码" 
+            :rows="4" 
+          />
+        </n-form-item>
+      </n-space>
+      
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showWebAuthModal = false">取消</n-button>
+          <n-button type="primary" @click="submitWebAuthCode" :loading="isSubmittingWebAuth" :disabled="!webAuthCode">
+            保存授权码
+          </n-button>
+        </n-space>
       </template>
     </n-modal>
     <!-- ★★★ 移植：115 目录选择器 Modal ★★★ -->
@@ -2412,6 +2453,42 @@ const closeQrcodeModal = () => {
   showQrcodeModal.value = false;
   qrcodeUrl.value = '';
   qrcodeStatus.value = 'idle';
+};
+
+// ★★★ 网页授权 (授权码模式) 逻辑 ★★★
+const showWebAuthModal = ref(false);
+const webAuthCode = ref('');
+const isSubmittingWebAuth = ref(false);
+
+const openWebAuthModal = () => {
+  webAuthCode.value = '';
+  showWebAuthModal.value = true;
+};
+
+const submitWebAuthCode = async () => {
+  if (!webAuthCode.value.trim()) {
+    message.warning('请粘贴授权码');
+    return;
+  }
+  
+  isSubmittingWebAuth.value = true;
+  try {
+    const res = await axios.post('/api/p115/auth_code_login', {
+      auth_code: webAuthCode.value.trim()
+    });
+    
+    if (res.data && res.data.success) {
+      message.success(res.data.message);
+      showWebAuthModal.value = false;
+      check115Status(); // 刷新状态显示
+    } else {
+      message.error(res.data?.message || '授权失败');
+    }
+  } catch (e) {
+    message.error('提交失败: ' + (e.response?.data?.message || e.message));
+  } finally {
+    isSubmittingWebAuth.value = false;
+  }
 };
 
 // ★★★ 自定义 STRM 正则状态与逻辑 ★★★

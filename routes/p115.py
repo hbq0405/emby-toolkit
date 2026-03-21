@@ -4,6 +4,7 @@ from flask import redirect
 import threading
 from datetime import datetime, timedelta
 import json
+import base64
 import os
 import re
 import time
@@ -313,6 +314,36 @@ def check_qrcode_status():
         return jsonify({"success": True, "status": "waiting", "message": "等待扫码..."})
     else:
         return jsonify({"success": False, "status": "error", "message": status.get('message', '检查状态失败')}), 500
+
+# --- 网页授权码模式登录 API ---
+@p115_bp.route('/auth_code_login', methods=['POST'])
+@admin_required
+def auth_code_login():
+    """接收 CF Worker 传回的 Base64 授权码并保存"""
+    data = request.json.get('auth_code', '').strip()
+    if not data:
+        return jsonify({"success": False, "message": "授权码不能为空"}), 400
+        
+    try:
+        # 1. Base64 解码
+        decoded_bytes = base64.b64decode(data)
+        token_data = json.loads(decoded_bytes.decode('utf-8'))
+        
+        access_token = token_data.get('access_token')
+        refresh_token = token_data.get('refresh_token')
+
+        if access_token and refresh_token:
+            # 2. 保存到数据库
+            from handler.p115_service import save_115_tokens
+            save_115_tokens(access_token, refresh_token)
+            logger.info(f"  ✅ [115] 网页授权成功！Token 已保存。")
+            return jsonify({"success": True, "message": "授权成功！Token 已保存。"})
+        else:
+            return jsonify({"success": False, "message": "无效的授权码格式：缺少 token"}), 400
+            
+    except Exception as e:
+        logger.error(f"解析授权码失败: {e}")
+        return jsonify({"success": False, "message": f"解析授权码失败，请确保复制完整: {str(e)}"}), 400
 
 # --- 简单的令牌桶/计数器限流器 ---
 class RateLimiter:
