@@ -507,6 +507,28 @@ def _handle_incoming_message(message: dict):
         logger.error(f"  ❌ [TG交互] 处理链接失败: {e}", exc_info=True)
         send_telegram_message(chat_id, f"❌ *系统异常*：处理链接时发生错误。")
 
+def _setup_bot_commands(bot_token: str):
+    """
+    向 Telegram 注册机器人的命令菜单 (生成输入框左侧的 Menu 按钮)
+    """
+    api_url = f"https://api.telegram.org/bot{bot_token}/setMyCommands"
+    # 定义你想要在菜单中显示的命令
+    payload = {
+        "commands": [
+            {"command": "menu", "description": "🛠️ 唤出系统任务控制台"},
+            {"command": "tasks", "description": "📋 查看所有可用任务"}
+        ]
+    }
+    try:
+        proxies = get_proxies_for_requests()
+        response = requests.post(api_url, json=payload, timeout=10, proxies=proxies)
+        if response.status_code == 200:
+            logger.info("  ➜ 成功注册 Telegram 机器人快捷菜单 (Menu 按钮)。")
+        else:
+            logger.warning(f"  ⚠️ 注册 Telegram 菜单命令失败: {response.text}")
+    except Exception as e:
+        logger.error(f"  ⚠️ 注册 Telegram 菜单命令时发生网络异常: {e}")
+
 def _telegram_polling_worker():
     """后台轮询线程"""
     global _tg_polling_active
@@ -514,6 +536,11 @@ def _telegram_polling_worker():
     if not bot_token:
         logger.info("  ➜ 未配置 Telegram Bot Token，交互功能未启动。")
         return
+
+    # ==========================================
+    # ★★★ 新增：启动时自动向 TG 注册菜单按钮 ★★★
+    _setup_bot_commands(bot_token)
+    # ==========================================
 
     api_url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
     offset = None
