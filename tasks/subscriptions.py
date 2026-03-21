@@ -573,15 +573,22 @@ def task_auto_subscribe(processor):
                                     continue
 
                                 task_hash = task.get('hash')
-                                torrent_name = task.get('name') or task.get('title') or ""
+                                
+                                # MP的下载列表中，'title' 是原始种子名，'name' 是洗白后的媒体名
+                                raw_title = task.get('title', '')
+                                clean_media_name = task.get('name', '')
+                                
+                                # 优先使用 title 作为种子名来精准排除
+                                torrent_name = raw_title if raw_title else clean_media_name
 
-                                logger.warning(f"  ➜ 发现超时下载任务: 《{torrent_name}》 (已订阅超过 {download_timeout_hours} 小时)")
+                                logger.warning(f"  ➜ 发现超时下载任务: 《{clean_media_name}》 (已订阅超过 {download_timeout_hours} 小时)")
 
                                 # 1. 提取要排除的关键词（直接使用完整的种子名称，防止重复下载同一个死种）
                                 exclude_keywords = set()
-                                clean_name = re.sub(r'\.(mkv|mp4|ts|avi|torrent)$', '', torrent_name, flags=re.IGNORECASE).strip()
-                                if clean_name:
-                                    exclude_keywords.add(clean_name)
+                                # 去除扩展名，保留纯净的种子名称作为排除词
+                                clean_torrent_name = re.sub(r'\.(mkv|mp4|ts|avi|torrent)$', '', torrent_name, flags=re.IGNORECASE).strip()
+                                if clean_torrent_name:
+                                    exclude_keywords.add(clean_torrent_name)
 
                                 # 2. 删除下载器中的任务
                                 if moviepilot.delete_download_tasks("dummy", config, hashes=[task_hash]):
