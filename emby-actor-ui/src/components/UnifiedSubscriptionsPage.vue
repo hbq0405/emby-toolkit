@@ -375,6 +375,10 @@ const loadStrategyConfig = async () => {
       download_timeout_hours: 0,
       ...res.data 
     };
+  } catch (e) {
+    message.error('加载策略配置失败');
+  }
+};
 
 const saveStrategyConfig = async () => {
   savingStrategy.value = true;
