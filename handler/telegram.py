@@ -390,61 +390,43 @@ def _handle_incoming_message(message: dict):
         logger.warning(f"  ⚠️ [TG交互] 收到未授权用户 ({chat_id}) 的消息，已忽略。")
         return
 
-    # ★★★ 处理 /start 指令，顺便清除之前生成的底部大按钮 ★★★
-    if text.lower() == '/start':
-        reply_markup = {"remove_keyboard": True} # 告诉 TG 删掉底部大按钮
-        send_telegram_message(
-            chat_id, 
-            escape_markdown("✅ 欢迎使用！底部大按钮已清除。请点击左下角 'M' 按钮或输入 /menu 唤出任务控制台。"), 
-            reply_markup=reply_markup
-        )
-        return
-
-    # ★★★ 处理菜单指令，并自定义显示的任务 ★★★
-    if text.lower() in ['/tasks', '/menu', '菜单', '任务']:
+    # ★★★ 处理 M 菜单发来的命令 ★★★
+    if text.startswith('/'):
+        cmd = text[1:].lower() # 去掉斜杠，提取命令内容 (例如 all_tasks 或 scan_organize_115)
+        
         from tasks.core import get_task_registry
         registry = get_task_registry(context='all')
-        
-        # ==========================================
-        # ⚙️ 在这里自定义你想在菜单中显示的任务 Key！
-        # Key 必须和 tasks/core.py 中 full_registry 里的名字一模一样
-        # ==========================================
-        allowed_tasks = [
-            'task-chain-high-freq',       # 高频刷新任务链
-            'task-chain-low-freq',        # 低频维护任务链
-            'scan-organize-115',          # 网盘文件整理
-            'sync-115-directory-tree',    # 同步网盘目录
-            'process-watchlist',          # 刷新智能追剧
-            'system-auto-update',         # 系统自动更新
-            'sync-person-map',            # 同步演员数据
-            # 你可以随时在这里添加或删除需要的任务 Key
-        ]
-        
-        keyboard = []
-        row = []
-        
-        # 遍历注册表生成按钮 (每行2个按钮)
-        for key, info in registry.items():
-            # ★ 核心过滤逻辑：只显示在 allowed_tasks 列表里的任务
-            if key not in allowed_tasks:
-                continue
-                
-            desc = info[1]
-            row.append({"text": desc, "callback_data": f"run_task_{key}"})
-            
-            if len(row) == 2:
+
+        # 1. 如果点击的是“查看所有可用任务”
+        if cmd in ['all_tasks', 'tasks', 'menu']:
+            keyboard = []
+            row = []
+            # 遍历注册表生成所有任务的按钮
+            for key, info in registry.items():
+                desc = info[1]
+                row.append({"text": desc, "callback_data": f"run_task_{key}"})
+                if len(row) == 2:
+                    keyboard.append(row)
+                    row = []
+            if row:
                 keyboard.append(row)
-                row = []
-        if row:
-            keyboard.append(row)
-            
-        reply_markup = {"inline_keyboard": keyboard}
-        send_telegram_message(
-            chat_id, 
-            escape_markdown("🛠️ *系统任务控制台*\n请点击下方按钮执行对应任务："), 
-            reply_markup=reply_markup
-        )
-        return
+                
+            reply_markup = {"inline_keyboard": keyboard}
+            send_telegram_message(
+                chat_id, 
+                escape_markdown("📋 *所有可用任务列表*\n请点击下方按钮执行对应任务："), 
+                reply_markup=reply_markup
+            )
+            return
+
+        # 2. 如果点击的是常用任务 (直接执行)
+        # 我们需要把命令 (如 scan_organize_115) 匹配回原来的 task_key (如 scan-organize-115)
+        for key in registry.keys():
+            expected_cmd = key.replace('-', '_').lower()
+            if cmd == expected_cmd:
+                # 匹配成功，直接调用后台执行函数！
+                _execute_task_from_tg(chat_id, key)
+                return
 
     # 2. 识别链接类型
     is_magnet = text.lower().startswith('magnet:?')
@@ -536,20 +518,43 @@ def _handle_incoming_message(message: dict):
 def _setup_bot_commands(bot_token: str):
     """
     向 Telegram 注册机器人的命令菜单 (生成输入框左侧的 Menu 按钮)
+    将常用任务直接注册为快捷命令。
     """
+    from tasks.core import get_task_registry
+    registry = get_task_registry(context='all')
+
+    # ==========================================
+    # ⚙️ 在这里自定义你想在 M 菜单中直接显示的常用任务 Key！
+    # ==========================================
+    allowed_tasks = [
+        'task-chain-high-freq',       # 高频刷新任务链
+        'task-chain-low-freq',        # 低频维护任务链
+        'scan-organize-115',          # 网盘文件整理
+        'populate-metadata',          # 同步媒体数据
+        'process-watchlist',          # 刷新智能追剧
+        'scan-cleanup-issues',        # 扫描重复媒体
+        'system-auto-update',         # 系统自动更新
+    ]
+
+    commands = []
+    for key in allowed_tasks:
+        if key in registry:
+            desc = registry[key][1]
+            # Telegram 命令只允许小写字母、数字和下划线，所以把横杠替换为下划线
+            cmd_name = key.replace('-', '_').lower()
+            commands.append({"command": cmd_name, "description": f"🚀 {desc}"})
+
+    # 在菜单最下方追加“查看所有任务”的备选命令
+    commands.append({"command": "all_tasks", "description": "📋 查看所有可用任务 (备选)"})
+
     api_url = f"https://api.telegram.org/bot{bot_token}/setMyCommands"
-    # 定义你想要在菜单中显示的命令
-    payload = {
-        "commands": [
-            {"command": "menu", "description": "🛠️ 唤出系统任务控制台"},
-            {"command": "tasks", "description": "📋 查看所有可用任务"}
-        ]
-    }
+    payload = {"commands": commands}
+    
     try:
         proxies = get_proxies_for_requests()
         response = requests.post(api_url, json=payload, timeout=10, proxies=proxies)
         if response.status_code == 200:
-            logger.info("  ➜ 成功注册 Telegram 机器人快捷菜单 (Menu 按钮)。")
+            logger.info("  ➜ 成功注册 Telegram 机器人快捷菜单 (常用任务直达)。")
         else:
             logger.warning(f"  ⚠️ 注册 Telegram 菜单命令失败: {response.text}")
     except Exception as e:
