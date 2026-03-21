@@ -988,10 +988,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 tmdb_last_date = None
                 if tmdb_details:
                     if item_type == 'Movie': 
-                        tmdb_date = tmdb_details.get('release_date')
+                        tmdb_date = tmdb_details.get('release_date') or None  # 强制过滤空字符串
                     elif item_type == 'Series': 
-                        tmdb_date = tmdb_details.get('first_air_date')
-                        tmdb_last_date = tmdb_details.get('last_air_date')
+                        tmdb_date = tmdb_details.get('first_air_date') or None # 强制过滤空字符串
+                        tmdb_last_date = tmdb_details.get('last_air_date') or None # 强制过滤空字符串
                 
                 final_release_date = emby_date or tmdb_date
                 # 提取全量分级数据
@@ -1042,8 +1042,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     "asset_details_json": json.dumps(asset_details_list, ensure_ascii=False),
                     "rating": item.get('CommunityRating'),
                     "date_added": item.get('DateCreated') or None,
-                    "release_date": final_release_date,
-                    "last_air_date": tmdb_last_date,
+                    "release_date": final_release_date or None,  # 双保险：确保绝不传入 ""
+                    "last_air_date": tmdb_last_date or None,     # 双保险：确保绝不传入 ""
                     "genres_json": json.dumps(final_genres_list, ensure_ascii=False),
                     "production_companies_json": json.dumps(fmt_companies, ensure_ascii=False), 
                     "networks_json": json.dumps(fmt_networks, ensure_ascii=False),
@@ -1221,7 +1221,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             ep_asset_details_list.append(details)
 
                         # 提取分集发行日期 
-                        ep_release_date = emby_ep.get('PremiereDate')
+                        ep_release_date = emby_ep.get('PremiereDate') or None # 强制过滤空字符串
                         if not ep_release_date and tmdb_ep_info:
                             ep_release_date = tmdb_ep_info.get('air_date') or None
                         child_record = {
