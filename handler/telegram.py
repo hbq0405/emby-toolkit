@@ -576,7 +576,7 @@ def _telegram_polling_worker():
     api_url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
     offset = None
     
-    logger.info("  🚀 Telegram 机器人交互监听已启动！")
+    logger.trace("  🚀 Telegram 机器人交互监听已启动！")
     
     while _tg_polling_active:
         try:
