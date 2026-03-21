@@ -469,7 +469,11 @@ def get_downloading_tasks(config: Dict[str, Any]) -> list:
         headers = {"Authorization": f"Bearer {access_token}"}
         res = requests.get(f"{moviepilot_url}/api/v1/download/", headers=headers, timeout=15)
         if res.status_code == 200:
-            return res.json()
+            data = res.json()
+            # 🪄 魔法日志：打印 MP 返回的下载队列完整数据
+            import json
+            logger.info(f"  🪄 [魔法日志] MP 下载队列完整数据: {json.dumps(data, ensure_ascii=False)}")
+            return data
         return []
     except Exception as e:
         logger.error(f"  ➜ 获取 MP 下载队列失败: {e}")
