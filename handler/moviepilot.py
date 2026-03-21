@@ -475,21 +475,25 @@ def get_downloading_tasks(config: Dict[str, Any]) -> list:
         logger.error(f"  ➜ 获取 MP 下载队列失败: {e}")
         return []
 
-def get_subscription_by_mediaid(tmdb_id: str, season: Optional[int], config: Dict[str, Any]) -> dict:
-    """根据 TMDb ID 获取单条订阅详情"""
+def get_subscription_by_tmdbid(tmdb_id: int, season: Optional[int], config: Dict[str, Any]) -> dict:
+    """根据 TMDb ID 获取单条订阅详情 (通过遍历所有订阅实现，更可靠)"""
     try:
         moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
         access_token = _get_access_token(config)
         if not access_token: return {}
 
         headers = {"Authorization": f"Bearer {access_token}"}
-        params = {}
-        if season is not None:
-            params['season'] = season
-
-        res = requests.get(f"{moviepilot_url}/api/v1/subscribe/media/tmdb:{tmdb_id}", headers=headers, params=params, timeout=15)
+        res = requests.get(f"{moviepilot_url}/api/v1/subscribe/", headers=headers, timeout=15)
+        
         if res.status_code == 200:
-            return res.json()
+            subs = res.json()
+            for sub in subs:
+                if str(sub.get('tmdbid')) == str(tmdb_id):
+                    if season is not None:
+                        if str(sub.get('season')) == str(season):
+                            return sub
+                    else:
+                        return sub
         return {}
     except Exception as e:
         logger.error(f"  ➜ 获取 MP 订阅详情失败: {e}")

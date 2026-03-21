@@ -592,8 +592,10 @@ def task_auto_subscribe(processor):
                                     logger.info(f"    - 已删除超时下载任务: {task_hash[:8]}...")
 
                                     # 3. 更新 MP 订阅规则，排除该发布组
-                                    sub_info = moviepilot.get_subscription_by_mediaid(str(target_tmdb_id), season_num if item_type == 'Season' else None, config)
+                                    sub_info = moviepilot.get_subscription_by_tmdbid(target_tmdb_id, season_num if item_type == 'Season' else None, config)
+                                    
                                     if sub_info and sub_info.get('id'):
+                                        # 剧集未完结时，订阅通常还在，直接更新现有订阅
                                         if exclude_keywords:
                                             current_exclude = sub_info.get('exclude') or ""
                                             exclude_list = [e.strip() for e in current_exclude.split(',') if e.strip()]
@@ -606,17 +608,41 @@ def task_auto_subscribe(processor):
                                             if added_any:
                                                 sub_info['exclude'] = ",".join(exclude_list)
                                                 if moviepilot.update_subscription(sub_info, config):
-                                                    logger.info(f"    - 已更新订阅规则，排除发布组/关键词: {', '.join(exclude_keywords)}")
+                                                    logger.info(f"    - 已更新现有订阅规则，排除发布组/关键词: {', '.join(exclude_keywords)}")
 
                                         # 4. 触发重新搜索
                                         moviepilot.search_subscription(sub_info['id'], config)
                                         logger.info(f"    - 已触发重新搜索")
+                                    else:
+                                        # 电影或已完结剧集，MP 会在下载开始后删除订阅，因此需要重新提交
+                                        logger.info(f"    - MP 中订阅已自动移除(正常现象)，正在重新提交订阅并追加排除规则...")
+                                        
+                                        payload = {
+                                            "tmdbid": int(target_tmdb_id),
+                                            "type": "电影" if item_type == 'Movie' else "电视剧"
+                                        }
+                                        
+                                        if item_type == 'Season' and season_num is not None:
+                                            payload['season'] = int(season_num)
+                                            series_name = media_db.get_series_title_by_tmdb_id(str(target_tmdb_id))
+                                            if series_name:
+                                                payload['name'] = series_name
+                                        elif item_type == 'Movie':
+                                            payload['name'] = item.get('title', '')
+                                            
+                                        if exclude_keywords:
+                                            payload['exclude'] = ",".join(exclude_keywords)
+                                            
+                                        if moviepilot.subscribe_with_custom_payload(payload, config):
+                                            logger.info(f"    - 重新订阅成功，并已排除发布组: {', '.join(exclude_keywords)}")
+                                        else:
+                                            logger.error(f"    - 重新订阅失败！")
 
-                                        # 5. 更新本地订阅时间，防止无限循环
-                                        request_db.set_media_status_subscribed(
-                                            tmdb_ids=[tmdb_id],
-                                            item_type=item_type
-                                        )
+                                    # 5. 更新本地订阅时间，防止无限循环
+                                    request_db.set_media_status_subscribed(
+                                        tmdb_ids=[tmdb_id],
+                                        item_type=item_type
+                                    )
                                 break # 跳出内层循环，处理下一个 item
 
         # ======================================================================
