@@ -390,24 +390,18 @@ def _handle_incoming_message(message: dict):
         logger.warning(f"  ⚠️ [TG交互] 收到未授权用户 ({chat_id}) 的消息，已忽略。")
         return
 
-    # ★★★ 处理 /start 指令，生成底部固定的一键唤出按钮 ★★★
+    # ★★★ 处理 /start 指令，顺便清除之前生成的底部大按钮 ★★★
     if text.lower() == '/start':
-        reply_markup = {
-            "keyboard": [
-                [{"text": "🛠️ 任务菜单"}] # 这里定义底部按钮的文字
-            ],
-            "resize_keyboard": True,   # 调整按钮大小适应屏幕
-            "is_persistent": True      # 始终显示在底部
-        }
+        reply_markup = {"remove_keyboard": True} # 告诉 TG 删掉底部大按钮
         send_telegram_message(
             chat_id, 
-            escape_markdown("✅ 欢迎！已为您生成底部快捷按钮，点击【🛠️ 任务菜单】即可一键唤出控制台。"), 
+            escape_markdown("✅ 欢迎使用！底部大按钮已清除。请点击左下角 'M' 按钮或输入 /menu 唤出任务控制台。"), 
             reply_markup=reply_markup
         )
         return
 
     # ★★★ 处理菜单指令，并自定义显示的任务 ★★★
-    if text.lower() in ['/tasks', '/menu', '菜单', '任务', '🛠️ 任务菜单']:
+    if text.lower() in ['/tasks', '/menu', '菜单', '任务']:
         from tasks.core import get_task_registry
         registry = get_task_registry(context='all')
         
@@ -419,11 +413,11 @@ def _handle_incoming_message(message: dict):
             'task-chain-high-freq',       # 高频刷新任务链
             'task-chain-low-freq',        # 低频维护任务链
             'scan-organize-115',          # 网盘文件整理
+            'sync-115-directory-tree',    # 同步网盘目录
             'process-watchlist',          # 刷新智能追剧
             'system-auto-update',         # 系统自动更新
             'sync-person-map',            # 同步演员数据
-            'populate-metadata',          # 同步媒体数据
-            'scan-cleanup-issues',        # 扫描重复媒体
+            # 你可以随时在这里添加或删除需要的任务 Key
         ]
         
         keyboard = []
