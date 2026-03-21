@@ -527,10 +527,13 @@ def task_auto_subscribe(processor):
                     if not last_sub_str:
                         continue
 
-                    try:
-                        last_sub_time = datetime.strptime(last_sub_str, "%Y-%m-%d %H:%M:%S")
-                    except ValueError:
-                        continue
+                    if isinstance(last_sub_str, datetime):
+                        last_sub_time = last_sub_str
+                    else:
+                        try:
+                            last_sub_time = datetime.strptime(last_sub_str, "%Y-%m-%d %H:%M:%S")
+                        except ValueError:
+                            continue
 
                     # 如果订阅时间早于超时阈值，说明可能超时了
                     if last_sub_time < timeout_threshold:
