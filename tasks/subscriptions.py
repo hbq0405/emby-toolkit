@@ -577,30 +577,17 @@ def task_auto_subscribe(processor):
 
                                 logger.warning(f"  ➜ 发现超时下载任务: 《{torrent_name}》 (已订阅超过 {download_timeout_hours} 小时)")
 
-                                # 1. 提取原始发布组 (直接从文件名提取，不使用字典映射)
+                                # 1. 提取要排除的关键词（直接使用完整的种子名称，防止重复下载同一个死种）
                                 exclude_keywords = set()
-                                clean_name = re.sub(r'\.(mkv|mp4|ts|avi|torrent)$', '', torrent_name, flags=re.IGNORECASE)
-                                
-                                # 尝试匹配后缀 -GROUP 或 @GROUP
-                                match = re.search(r'[-@]([A-Za-z0-9_]+)$', clean_name)
-                                if match:
-                                    group = match.group(1)
-                                else:
-                                    # 尝试匹配前缀 [GROUP]
-                                    match = re.search(r'^\[([^\]]+)\]', clean_name)
-                                    group = match.group(1) if match else None
-
-                                if group:
-                                    # 过滤掉常见的非发布组技术词汇
-                                    invalid_groups = {'1080p', '2160p', '4k', '8k', 'dl', 'web', 'webdl', 'web-dl', 'rip', 'webrip', 'bdrip', 'brrip', 'dvdrip', 'x264', 'x265', 'h264', 'h265', 'hevc', 'avc', 'aac', 'ac3', 'dts', 'dtshd', 'truehd', 'atmos', 'remux', 'bluray', 'sdr', 'hdr', 'hdr10', 'dovi'}
-                                    if group.lower() not in invalid_groups:
-                                        exclude_keywords.add(group)
+                                clean_name = re.sub(r'\.(mkv|mp4|ts|avi|torrent)$', '', torrent_name, flags=re.IGNORECASE).strip()
+                                if clean_name:
+                                    exclude_keywords.add(clean_name)
 
                                 # 2. 删除下载器中的任务
                                 if moviepilot.delete_download_tasks("dummy", config, hashes=[task_hash]):
                                     logger.info(f"    - 已删除超时下载任务: {task_hash[:8]}...")
 
-                                    # 3. 更新 MP 订阅规则，排除该发布组
+                                    # 3. 更新 MP 订阅规则，排除该死种
                                     sub_info = moviepilot.get_subscription_by_tmdbid(target_tmdb_id, season_num if item_type == 'Season' else None, config)
                                     
                                     if sub_info and sub_info.get('id'):
@@ -617,7 +604,7 @@ def task_auto_subscribe(processor):
                                             if added_any:
                                                 sub_info['exclude'] = ",".join(exclude_list)
                                                 if moviepilot.update_subscription(sub_info, config):
-                                                    logger.info(f"    - 已更新现有订阅规则，排除发布组: {', '.join(exclude_keywords)}")
+                                                    logger.info(f"    - 已更新现有订阅规则，排除死种: {', '.join(exclude_keywords)}")
 
                                         # 4. 触发重新搜索
                                         moviepilot.search_subscription(sub_info['id'], config)
@@ -643,7 +630,7 @@ def task_auto_subscribe(processor):
                                             payload['exclude'] = ",".join(exclude_keywords)
                                             
                                         if moviepilot.subscribe_with_custom_payload(payload, config):
-                                            logger.info(f"    - 重新订阅成功，并已排除发布组: {', '.join(exclude_keywords)}")
+                                            logger.info(f"    - 重新订阅成功，并已排除死种: {', '.join(exclude_keywords)}")
                                         else:
                                             logger.error(f"    - 重新订阅失败！")
 
