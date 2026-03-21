@@ -583,14 +583,17 @@ def task_auto_subscribe(processor):
 
                                 logger.warning(f"  ➜ 发现超时下载任务: 《{clean_media_name}》 (已订阅超过 {download_timeout_hours} 小时)")
 
-                                # 1. 提取要排除的关键词（直接使用完整的种子名称，防止重复下载同一个死种）
+                                # 1. 提取要排除的关键词（去除容易引起正则错误的括号，保留核心文件名）
                                 exclude_keywords = set()
-                                # 去除扩展名，保留纯净的种子名称作为排除词
+                                # 去除扩展名
                                 clean_torrent_name = re.sub(r'\.(mkv|mp4|ts|avi|torrent)$', '', torrent_name, flags=re.IGNORECASE).strip()
+                                # 去除开头的 [xxx] 或 【xxx】 这种容易让 MP 正则引擎懵逼的符号
+                                clean_torrent_name = re.sub(r'^\[[^\]]+\]|^【[^】]+】', '', clean_torrent_name).strip()
+                                # 去除开头可能残留的点或空格 (例如 "[狂怒].Fury" 变成 "Fury")
+                                clean_torrent_name = clean_torrent_name.lstrip('. ')
+                                
                                 if clean_torrent_name:
-                                    # ★★★ 核心修复：转义正则特殊字符，防止 MP 将其作为正则代码执行而导致匹配失败 ★★★
-                                    escaped_name = re.escape(clean_torrent_name)
-                                    exclude_keywords.add(escaped_name)
+                                    exclude_keywords.add(clean_torrent_name)
 
                                 # 2. 删除下载器中的任务
                                 if moviepilot.delete_download_tasks("dummy", config, hashes=[task_hash]):
