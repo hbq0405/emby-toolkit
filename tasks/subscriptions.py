@@ -15,7 +15,7 @@ import handler.moviepilot as moviepilot
 import task_manager
 from handler import telegram
 from database import settings_db, request_db, user_db, media_db, watchlist_db
-from .helpers import is_movie_subscribable, check_series_completion, parse_series_title_and_season, should_mark_as_pending, _extract_exclusion_keywords_from_filename, get_keywords_by_group_name
+from .helpers import is_movie_subscribable, check_series_completion, parse_series_title_and_season, should_mark_as_pending
 
 logger = logging.getLogger(__name__)
 
@@ -516,7 +516,9 @@ def task_auto_subscribe(processor):
             downloading_tasks = moviepilot.get_downloading_tasks(config)
             if downloading_tasks:
                 all_subs = media_db.get_all_subscriptions()
-                now = datetime.now()
+                
+                # 获取带本地时区的当前时间
+                now = datetime.now().astimezone()
                 timeout_threshold = now - timedelta(hours=download_timeout_hours)
 
                 for item in all_subs:
@@ -527,19 +529,28 @@ def task_auto_subscribe(processor):
                     if not last_sub_str:
                         continue
 
+                    # 健壮的时间解析：处理带毫秒和时区的字符串 (如 2026-03-21 17:51:17.554 +0800)
                     if isinstance(last_sub_str, datetime):
                         last_sub_time = last_sub_str
+                        if last_sub_time.tzinfo is None:
+                            last_sub_time = last_sub_time.astimezone()
                     else:
                         try:
-                            last_sub_time = datetime.strptime(last_sub_str, "%Y-%m-%d %H:%M:%S")
-                        except ValueError:
-                            continue
+                            # 尝试标准化 ISO 格式
+                            clean_str = str(last_sub_str).replace(" ", "T", 1)
+                            if " +" in clean_str or " -" in clean_str:
+                                clean_str = clean_str.replace(" +", "+").replace(" -", "-")
+                            if re.search(r'[+-]\d{4}$', clean_str):
+                                clean_str = clean_str[:-2] + ":" + clean_str[-2:]
+                            last_sub_time = datetime.fromisoformat(clean_str)
+                        except Exception:
+                            try:
+                                # 降级处理：去掉毫秒和时区，当做本地时间
+                                last_sub_time = datetime.strptime(str(last_sub_str).split('.')[0], "%Y-%m-%d %H:%M:%S").astimezone()
+                            except Exception:
+                                continue
 
-                    # 移除时区信息以便与本地时间进行比较
-                    if last_sub_time.tzinfo is not None:
-                        last_sub_time = last_sub_time.replace(tzinfo=None)
-
-                    # 如果订阅时间早于超时阈值，说明可能超时了
+                    # 如果订阅时间早于超时阈值，说明超时了
                     if last_sub_time < timeout_threshold:
                         tmdb_id = item.get('tmdb_id')
                         item_type = item.get('item_type')
@@ -566,26 +577,24 @@ def task_auto_subscribe(processor):
 
                                 logger.warning(f"  ➜ 发现超时下载任务: 《{torrent_name}》 (已订阅超过 {download_timeout_hours} 小时)")
 
-                                # 1. 提取发布组
+                                # 1. 提取原始发布组 (直接从文件名提取，不使用字典映射)
                                 exclude_keywords = set()
-                                # 使用 helpers 中的正则提取已知发布组
-                                group_names = _extract_exclusion_keywords_from_filename(torrent_name)
-                                for g in group_names:
-                                    for alias in get_keywords_by_group_name(g):
-                                        # MP 的 exclude 通常不支持复杂正则，只添加纯文本别名
-                                        if '(' not in alias and '[' not in alias and '\\' not in alias:
-                                            exclude_keywords.add(alias)
+                                clean_name = re.sub(r'\.(mkv|mp4|ts|avi|torrent)$', '', torrent_name, flags=re.IGNORECASE)
                                 
-                                # 兜底：直接提取后缀或前缀
-                                match = re.search(r'-([A-Za-z0-9_]+)$', torrent_name)
+                                # 尝试匹配后缀 -GROUP 或 @GROUP
+                                match = re.search(r'[-@]([A-Za-z0-9_]+)$', clean_name)
                                 if match:
                                     group = match.group(1)
-                                    if group.lower() not in ['1080p', '2160p', '4k', 'dl', 'web', 'rip', 'x264', 'x265', 'hevc']:
+                                else:
+                                    # 尝试匹配前缀 [GROUP]
+                                    match = re.search(r'^\[([^\]]+)\]', clean_name)
+                                    group = match.group(1) if match else None
+
+                                if group:
+                                    # 过滤掉常见的非发布组技术词汇
+                                    invalid_groups = {'1080p', '2160p', '4k', '8k', 'dl', 'web', 'webdl', 'web-dl', 'rip', 'webrip', 'bdrip', 'brrip', 'dvdrip', 'x264', 'x265', 'h264', 'h265', 'hevc', 'avc', 'aac', 'ac3', 'dts', 'dtshd', 'truehd', 'atmos', 'remux', 'bluray', 'sdr', 'hdr', 'hdr10', 'dovi'}
+                                    if group.lower() not in invalid_groups:
                                         exclude_keywords.add(group)
-                                if not exclude_keywords:
-                                    match = re.search(r'^\[([^\]]+)\]', torrent_name)
-                                    if match:
-                                        exclude_keywords.add(match.group(1))
 
                                 # 2. 删除下载器中的任务
                                 if moviepilot.delete_download_tasks("dummy", config, hashes=[task_hash]):
@@ -608,7 +617,7 @@ def task_auto_subscribe(processor):
                                             if added_any:
                                                 sub_info['exclude'] = ",".join(exclude_list)
                                                 if moviepilot.update_subscription(sub_info, config):
-                                                    logger.info(f"    - 已更新现有订阅规则，排除发布组/关键词: {', '.join(exclude_keywords)}")
+                                                    logger.info(f"    - 已更新现有订阅规则，排除发布组: {', '.join(exclude_keywords)}")
 
                                         # 4. 触发重新搜索
                                         moviepilot.search_subscription(sub_info['id'], config)
