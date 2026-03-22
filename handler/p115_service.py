@@ -4155,80 +4155,82 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
         organizer.execute(sub_items, target_cid)
 
     # ★ 本地擦屁股：精准删除旧的本地 STRM 和空目录
-    if local_root:
-        import shutil
-        protected_dirs = {os.path.abspath(local_root)}
-        for rule in organizer.rules:
-            cat_path = rule.get('category_path') or rule.get('dir_name')
-            if cat_path:
-                protected_dirs.add(os.path.abspath(os.path.join(local_root, cat_path.lstrip('\\/'))))
-        protected_dirs.add(os.path.abspath(os.path.join(local_root, "未识别")))
+        if local_root:
+            import shutil
+            protected_dirs = {os.path.abspath(local_root)}
+            for rule in organizer.rules:
+                cat_path = rule.get('category_path') or rule.get('dir_name')
+                if cat_path:
+                    protected_dirs.add(os.path.abspath(os.path.join(local_root, cat_path.lstrip('\\/'))))
+            protected_dirs.add(os.path.abspath(os.path.join(local_root, "未识别")))
 
-        for r_item in root_items:
-            old_cache = r_item['_old_cache']
-            if not old_cache or not old_cache.get('local_path'): continue
+            deleted_strm_paths = [] # ★ 新增：收集被删除的 STRM 绝对路径
 
-            old_file_rel_path = str(old_cache['local_path']).lstrip('\\/')
-            old_strm_rel_path = os.path.splitext(old_file_rel_path)[0] + ".strm"
-            old_strm_full_path = os.path.join(local_root, old_strm_rel_path)
+            for r_item in root_items:
+                old_cache = r_item['_old_cache']
+                if not old_cache or not old_cache.get('local_path'): continue
 
-            if os.path.exists(old_strm_full_path):
-                os.remove(old_strm_full_path)
-                logger.debug(f"  🧹 删除本地旧 STRM: {old_strm_full_path}")
+                old_file_rel_path = str(old_cache['local_path']).lstrip('\\/')
+                old_strm_rel_path = os.path.splitext(old_file_rel_path)[0] + ".strm"
+                old_strm_full_path = os.path.join(local_root, old_strm_rel_path)
 
-            old_mi_full_path = os.path.splitext(old_file_rel_path)[0] + "-mediainfo.json"
-            if os.path.exists(old_mi_full_path):
-                os.remove(old_mi_full_path)
+                # 无论文件是否还在硬盘上，只要缓存里有，我们就通知 Emby 删掉它
+                deleted_strm_paths.append(old_strm_full_path)
 
-            old_dir_full_path = os.path.dirname(old_strm_full_path)
-            old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
-            if os.path.exists(old_dir_full_path):
-                for f in os.listdir(old_dir_full_path):
-                    if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
-                        sub_to_del = os.path.join(old_dir_full_path, f)
-                        try:
-                            os.remove(sub_to_del)
-                        except: pass
+                if os.path.exists(old_strm_full_path):
+                    os.remove(old_strm_full_path)
+                    logger.debug(f"  🧹 删除本地旧 STRM: {old_strm_full_path}")
 
-        # 向上递归清理本地空目录
-        for old_dir in list(refresh_target_dirs):
-            curr_dir = old_dir
-            while curr_dir and curr_dir not in protected_dirs:
-                if os.path.exists(curr_dir):
-                    has_media = False
-                    for root, _, files in os.walk(curr_dir):
-                        for f in files:
-                            ext = f.split('.')[-1].lower()
-                            if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'nfo'}:
-                                has_media = True
-                                break
+                old_mi_full_path = os.path.splitext(old_file_rel_path)[0] + "-mediainfo.json"
+                if os.path.exists(old_mi_full_path):
+                    os.remove(old_mi_full_path)
+
+                old_dir_full_path = os.path.dirname(old_strm_full_path)
+                old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
+                if os.path.exists(old_dir_full_path):
+                    for f in os.listdir(old_dir_full_path):
+                        if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
+                            sub_to_del = os.path.join(old_dir_full_path, f)
+                            try:
+                                os.remove(sub_to_del)
+                            except: pass
+
+            # 向上递归清理本地空目录
+            for old_dir in list(refresh_target_dirs):
+                curr_dir = old_dir
+                while curr_dir and curr_dir not in protected_dirs:
+                    if os.path.exists(curr_dir):
+                        has_media = False
+                        for root, _, files in os.walk(curr_dir):
+                            for f in files:
+                                ext = f.split('.')[-1].lower()
+                                if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'nfo'}:
+                                    has_media = True
+                                    break
                         if has_media: break
 
-                    if not has_media:
-                        shutil.rmtree(curr_dir)
-                        logger.info(f"  🧹 本地旧目录已无媒体文件，执行删除: {curr_dir}")
-                        curr_dir = os.path.dirname(curr_dir)
+                        if not has_media:
+                            shutil.rmtree(curr_dir)
+                            logger.info(f"  🧹 本地旧目录已无媒体文件，执行删除: {curr_dir}")
+                            curr_dir = os.path.dirname(curr_dir)
+                        else:
+                            break
                     else:
                         break
-                else:
-                    break
 
-        # ★ 批量通知 Emby 刷新旧路径 (去重后一次性通知)
-        emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
-        emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
-        if emby_url and emby_api_key:
-            from handler import emby
-            top_dirs = set()
-            for d in refresh_target_dirs:
-                top_dirs.add(d)
-            
-            for d in top_dirs:
-                target_to_refresh = d if os.path.exists(d) else os.path.dirname(d)
-                logger.info(f"  🔄 正在通知 Emby 刷新旧路径以清理失效媒体项: {target_to_refresh}")
+            # ★ 批量极速通知 Emby 移除旧文件
+            emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+            emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+            if emby_url and emby_api_key and deleted_strm_paths:
+                from handler import emby
+                # 去重，防止同一个文件发多次
+                unique_deleted_paths = list(set(deleted_strm_paths))
+                logger.info(f"  ⚡ 正在向 Emby 发送 {len(unique_deleted_paths)} 个旧文件的极速移除通知...")
                 try:
-                    emby.refresh_library_by_path(target_to_refresh, emby_url, emby_api_key)
+                    # ★ 传入 update_type="Deleted"
+                    emby.notify_emby_file_changes(unique_deleted_paths, emby_url, emby_api_key, update_type="Deleted")
                 except Exception as e:
-                    logger.warning(f"  ⚠️ 通知 Emby 刷新旧路径失败: {e}")
+                    logger.warning(f"  ⚠️ 极速通知 Emby 移除旧文件失败: {e}")
 
     # ★ 网盘擦屁股：直接移交全局垃圾回收器
     old_cids_to_check = set()

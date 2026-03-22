@@ -292,45 +292,42 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
             logger.error(f"  ❌ [实时监控] 处理媒体信息更新失败 {file_path}: {e}")
 
 def _handle_batch_file_task(processor, file_paths: List[str]):
+    """
+    处理实时监控触发的文件刮削任务。
+    现在 `processor.process_file_actively_batch` 内部已经会调用 `emby.notify_emby_file_changes`。
+    """
     valid_files = _wait_for_files_stability(file_paths)
     if not valid_files: return
     processor.process_file_actively_batch(valid_files)
 
 def _handle_batch_refresh_only_task(file_paths: List[str]):
+    """
+    处理命中排除路径的文件，直接通知 Emby 进行轻量级刷新。
+    """
     valid_files = _wait_for_files_stability(file_paths)
     if not valid_files: return
-    parent_dirs = set()
-    for f in valid_files:
-        parent_dirs.add(os.path.dirname(f))
     
-    _refresh_parent_dirs(parent_dirs, "新增/修改")
-
-def _refresh_parent_dirs(parent_dirs: Set[str], action_type: str):
     config = config_manager.APP_CONFIG
-    if not config.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
-        return
-
     base_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
     api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
     delay_seconds = config.get(constants.CONFIG_OPTION_MONITOR_EXCLUDE_REFRESH_DELAY, 0)
 
     if not base_url or not api_key:
-        logger.error(f"  ❌ [实时监控-{action_type}] 无法执行刷新：Emby 配置缺失。")
+        logger.error(f"  ❌ [实时监控-排除路径] 无法执行刷新：Emby 配置缺失。")
         return
 
     if delay_seconds > 0:
-        logger.info(f"  ⏳ [实时监控-{action_type}] 命中排除路径，等待 {delay_seconds} 秒后通知 Emby 刷新...")
+        logger.info(f"  ⏳ [实时监控-排除路径] 命中排除路径，等待 {delay_seconds} 秒后通知 Emby 刷新...")
         time.sleep(delay_seconds)
-        if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+        # 再次检查监控是否被禁用，防止长时间等待后状态改变
+        if not config.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
+            logger.info("  ➜ [实时监控-排除路径] 监控已禁用，跳过刷新。")
             return
 
-    logger.info(f"  🔄 [实时监控-{action_type}] 正在通知 Emby 刷新 {len(parent_dirs)} 个排除目录...")
-    for folder_path in parent_dirs:
-        try:
-            emby.refresh_library_by_path(folder_path, base_url, api_key)
-            logger.info(f"    └─ 已通知刷新: {folder_path}")
-        except Exception as e:
-            logger.error(f"    ❌ 刷新目录失败 {folder_path}: {e}")
+    logger.info(f"  ⚡ [实时监控-排除路径] 正在向 Emby 发送 {len(valid_files)} 个文件的极速入库通知 (命中排除路径)。")
+    # ★★★ 核心修改：直接调用极速通知接口，传入具体文件路径 ★★★
+    emby.notify_emby_file_changes(valid_files, base_url, api_key)
+    logger.info(f"  ✅ [实时监控-排除路径] 批量极速通知完成！Emby 将仅针对这些文件进行秒级入库。")
 
 def _wait_for_files_stability(file_paths: List[str]) -> List[str]:
     """
