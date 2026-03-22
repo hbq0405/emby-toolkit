@@ -794,6 +794,57 @@ def refresh_emby_item_metadata(item_emby_id: str,
         logger.error(f"  - 刷新请求时发生网络错误: {e}")
         return False
 
+def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
+    """
+    【内部辅助】向上逐级查找 Emby 中已存在的父目录，并对其触发精准的局部刷新。
+    """
+    current_path = target_dir
+    
+    # 最多向上找 4 级 (文件 -> 电影目录 -> 分类目录 -> 媒体库根目录)，防止扫到太顶层
+    for _ in range(4):
+        if not current_path or current_path == '/' or current_path == '\\':
+            break
+            
+        # 查询 Emby 中是否存在这个路径
+        api_url = f"{base_url.rstrip('/')}/Items"
+        params = {
+            "api_key": api_key,
+            "Recursive": "true",
+            "Path": current_path,
+            "Fields": "Id,Path,Name"
+        }
+        
+        try:
+            resp = emby_client.get(api_url, params=params)
+            if resp.status_code == 200:
+                items = resp.json().get("Items", [])
+                if items:
+                    # 找到了 Emby 认识的父目录！
+                    target_id = items[0].get("Id")
+                    target_name = items[0].get("Name", current_path)
+                    
+                    logger.info(f"  🎯 [定点扫描] 找到已存在的父目录: '{target_name}'，准备扫描...")
+                    
+                    # 对这个特定的父目录触发刷新
+                    refresh_url = f"{base_url.rstrip('/')}/Items/{target_id}/Refresh"
+                    refresh_params = {
+                        "api_key": api_key,
+                        "Recursive": "true",
+                        "MetadataRefreshMode": "Default",
+                        "ImageRefreshMode": "Default"
+                    }
+                    emby_client.post(refresh_url, params=refresh_params)
+                    logger.info(f"  🚀 [局部刷新] 已对 '{target_name}' 触发秒级扫描，Emby 正在干活！")
+                    return True
+        except Exception as e:
+            pass # 忽略查询错误，继续向上找
+            
+        # 向上退一级 (例如从 /strm/电影/超级英雄/奇异博士 退到 /strm/电影/超级英雄)
+        current_path = os.path.dirname(current_path)
+        
+    logger.warning(f"  ⚠️ [局部刷新] 未能在 Emby 中找到 {target_dir} 的有效父目录，将依赖 90 秒自动扫描。")
+    return False
+
 # --- 极速轻量级文件变更通知 ---
 def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str, update_type: str = "Created") -> bool:
     """
@@ -810,7 +861,6 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
     updates = [{"Path": path, "UpdateType": update_type} for path in file_paths]
     payload = {"Updates": updates}
     
-    # 将 UpdateType 转换为友好的中文
     action_map = {
         "Created": "新增",
         "Modified": "修改",
@@ -823,15 +873,13 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
         emby_client.post(api_url, params={"api_key": api_key}, json=payload)
         logger.info(f"  ⚡ [极速通知] 已通知 Emby 有 {len(file_paths)} 个文件{action_zh}。")
         
-        # =================================================================
-        # ★★★ 核心修复：拿鞭子抽它，打破 90 秒摸鱼机制 ★★★
-        # Emby 收到 Updated 通知后，默认会启动一个 90 秒的防抖定时器。
-        # 发送一个全局 Refresh 指令，强制 Emby 立刻清空队列并秒级入库！
-        # =================================================================
-        force_url = f"{base_url.rstrip('/')}/Library/Refresh"
-        emby_client.post(force_url, params={"api_key": api_key})
-        #logger.info(f"  🚀 [极速通知] 已发送强制唤醒指令，Emby 摸鱼计时器已被打断，立即开始干活！")
+        # 2. ★★★ 局部精准刷新 (打断 90 秒摸鱼) ★★★
+        # 提取所有文件所在的目录，去重 (防止批量入库时重复刷新同一个父目录)
+        dirs_to_refresh = set(os.path.dirname(p) for p in file_paths if p)
         
+        for d in dirs_to_refresh:
+            _force_refresh_directory_tree(d, base_url, api_key)
+            
         return True
     except Exception as e:
         logger.error(f"  ❌ [极速通知] 发送文件{action_zh}通知失败: {e}")
