@@ -823,7 +823,7 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
                     target_id = items[0].get("Id")
                     target_name = items[0].get("Name", current_path)
                     
-                    logger.info(f"  🎯 [定点扫描] 找到已存在的父目录: '{target_name}'，准备扫描...")
+                    #logger.info(f"  🎯 [定点扫描] 找到已存在的父目录: '{target_name}'，准备扫描...")
                     
                     # 对这个特定的父目录触发刷新
                     refresh_url = f"{base_url.rstrip('/')}/Items/{target_id}/Refresh"
@@ -831,10 +831,12 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
                         "api_key": api_key,
                         "Recursive": "true",
                         "MetadataRefreshMode": "Default",
-                        "ImageRefreshMode": "Default"
+                        "ImageRefreshMode": "Default",
+                        "ReplaceAllImages": "false",
+                        "ReplaceAllMetadata": "false"
                     }
                     emby_client.post(refresh_url, params=refresh_params)
-                    logger.info(f"  🚀 [局部刷新] 已对 '{target_name}' 触发秒级扫描，Emby 正在干活！")
+                    logger.info(f"  🚀 [定点扫描] 已对 '{target_name}' 触发立即扫描！")
                     return True
         except Exception as e:
             pass # 忽略查询错误，继续向上找
