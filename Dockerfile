@@ -69,7 +69,6 @@ COPY web_app.py \
      monitor_service.py \
      ./
 
-COPY pyarmor_runtime_000000/ ./pyarmor_runtime_000000/
 COPY handler/ ./handler/
 COPY database/ ./database/
 COPY tasks/ ./tasks/
