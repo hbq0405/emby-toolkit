@@ -704,28 +704,15 @@ class MediaProcessor:
             # 步骤 6: 通知 Emby 刷新 (可选)
             # =========================================================
             
-            # ★★★ 智能计算需要刷新的根路径 ★★★
-            # 默认刷新当前文件所在的父目录 (适用于电影 / 平铺的剧集)
-            path_to_refresh = folder_path
-            
-            # 如果是剧集，且父目录看起来像 "Season X"，则向上取一级，刷新剧集根目录
-            # 这样可以合并同一部剧不同季的刷新请求
-            if item_type == "Series":
-                folder_name = os.path.basename(folder_path)
-                # 匹配 Season 1, S01, Specials 等常见季目录名
-                if re.match(r'^(Season|S)\s*\d+|Specials', folder_name, re.IGNORECASE):
-                    path_to_refresh = os.path.dirname(folder_path)
-                    logger.debug(f"  ➜ [实时监控] 识别为剧集季目录，将刷新范围扩大至剧集根目录: {os.path.basename(path_to_refresh)}")
-
             if not skip_refresh:
-                logger.info(f"  ➜ [实时监控] 通知 Emby 刷新目录: {path_to_refresh}")
-                emby.refresh_library_by_path(path_to_refresh, self.emby_url, self.emby_api_key)
-                logger.info(f"  ✅ [实时监控] 预处理完成，等待Emby入库更新媒体资产数据...")
+                logger.info(f"  ⚡ [实时监控] 极速通知 Emby 单文件入库: {os.path.basename(file_path)}")
+                emby.notify_emby_file_changes([file_path], self.emby_url, self.emby_api_key)
+                logger.info(f"  ✅ [实时监控] 预处理完成，Emby 将进行秒级精准入库...")
             else:
-                logger.info(f"  ➜ [实时监控] 缓存已生成，等待统一刷新...")
+                logger.info(f"  ➜ [实时监控] 缓存已生成，等待批量极速通知...")
             
-            # 返回计算出的最优刷新路径
-            return path_to_refresh
+            # ★★★ 核心修改：直接返回具体的文件路径，不再返回父目录 ★★★
+            return file_path
 
         except Exception as e:
             logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
@@ -734,62 +721,38 @@ class MediaProcessor:
     # --- 批量实时监控处理 ---
     def process_file_actively_batch(self, file_paths: List[str]):
         """
-        实时监控（批量版）：
-        针对短时间内涌入的多个文件，先逐个生成覆盖缓存，最后统一刷新 Emby。
-        ★ 优化：将所有路径解析为 Emby 锚点 ID 后再去重刷新，避免同一库重复刷新。
+        实时监控（批量版 - 极速优化）：
+        针对短时间内涌入的多个文件，先逐个生成覆盖缓存，最后统一通过轻量级接口通知 Emby。
+        彻底解决大剧集库刷新卡死、重复补图的问题。
         """
         if not file_paths:
             return
 
         logger.info(f"  📥 [实时监控] 收到 {len(file_paths)} 个新任务，开始批量预处理...")
         
-        folders_to_check = set()
+        valid_files_to_notify = set()
         
         # 1. 循环处理每个文件 (只生成缓存，不刷新)
         for i, file_path in enumerate(file_paths):
             try:
                 logger.info(f"  ➜ [实时监控] ({i+1}/{len(file_paths)}) 正在处理: {os.path.basename(file_path)}")
-                # process_file_actively 返回的是建议刷新的父目录路径
-                folder = self.process_file_actively(file_path, skip_refresh=True)
-                if folder:
-                    folders_to_check.add(folder)
+                # 现在返回的是具体的文件路径
+                processed_file = self.process_file_actively(file_path, skip_refresh=True)
+                if processed_file:
+                    valid_files_to_notify.add(processed_file)
             except Exception as e:
                 logger.error(f"  🚫 [实时监控] 处理文件 '{file_path}' 失败: {e}")
 
-        # 2. ★★★ ID 级别去重与刷新 ★★★
-        if folders_to_check:
-            logger.info(f"  🔍 [实时监控] 预处理完成。正在解析 {len(folders_to_check)} 个路径对应的 Emby 锚点...")
+        # 2. ★★★ 极速批量通知 Emby ★★★
+        if valid_files_to_notify:
+            logger.info(f"  🚀 [实时监控] 预处理完成，正在向 Emby 发送 {len(valid_files_to_notify)} 个文件的极速入库通知...")
             
-            unique_anchor_map = {} # ID -> Name
-            fallback_paths = []
-
-            # A. 解析路径到 ID
-            for folder_path in folders_to_check:
-                anchor_id, anchor_name = emby.find_nearest_library_anchor(folder_path, self.emby_url, self.emby_api_key)
-                if anchor_id:
-                    if anchor_id not in unique_anchor_map:
-                        unique_anchor_map[anchor_id] = anchor_name
-                        logger.debug(f"    ├─ 路径 '{os.path.basename(folder_path)}' -> 锚点 '{anchor_name}' (ID: {anchor_id})")
-                else:
-                    fallback_paths.append(folder_path)
-
-            # B. 刷新唯一的 ID
-            if unique_anchor_map:
-                logger.info(f"  🚀 [实时监控] 聚合完成，正在刷新 {len(unique_anchor_map)} 个 Emby 锚点...")
-                for anchor_id, anchor_name in unique_anchor_map.items():
-                    logger.info(f"  ➜ 正在刷新: '{anchor_name}' (ID: {anchor_id})")
-                    emby.refresh_item_by_id(anchor_id, self.emby_url, self.emby_api_key)
-                    time.sleep(0.2) # 稍微间隔
-
-            # C. 处理无法解析 ID 的路径 (回退到旧方法)
-            if fallback_paths:
-                logger.warning(f"  ⚠️ [实时监控] 有 {len(fallback_paths)} 个路径无法解析锚点，使用回退刷新...")
-                for path in fallback_paths:
-                    emby.refresh_library_by_path(path, self.emby_url, self.emby_api_key)
-
-            logger.info(f"  ✅ [实时监控] 批量预处理完成，等待Emby入库更新媒体资产数据...")
+            # 直接把所有文件路径打包发给 Emby 的轻量级接口
+            emby.notify_emby_file_changes(list(valid_files_to_notify), self.emby_url, self.emby_api_key)
+            
+            logger.info(f"  ✅ [实时监控] 批量极速通知完成！Emby 将仅针对这些文件进行秒级入库，绝不触发全剧集扫描。")
         else:
-            logger.warning(f"  ⚠️ [实时监控] 未收集到有效的刷新目录，任务结束。")
+            logger.warning(f"  ⚠️ [实时监控] 未收集到有效的文件路径，任务结束。")
 
     def _refresh_lib_guid_map(self):
         """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""

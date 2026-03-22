@@ -903,6 +903,30 @@ def refresh_library_by_path(file_path: str, base_url: str, api_key: str) -> bool
         except:
             return False
 
+# --- 极速轻量级文件变更通知 ---
+def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str) -> bool:
+    """
+    【极速轻量级刷新】
+    利用 Emby 的 /Library/Media/Updated 接口，直接通知底层文件系统变更。
+    Emby 会像自带的实时监控一样，仅针对这些具体文件进行极速入库，绝不触发全库/全剧集扫描！
+    """
+    if not file_paths: 
+        return True
+        
+    api_url = f"{base_url.rstrip('/')}/Library/Media/Updated"
+    
+    # 构造 Payload，告诉 Emby 这些是新创建或修改的文件
+    updates = [{"Path": path, "UpdateType": "Created"} for path in file_paths]
+    payload = {"Updates": updates}
+    
+    try:
+        emby_client.post(api_url, params={"api_key": api_key}, json=payload)
+        logger.info(f"  ⚡ [极速通知] 已成功向 Emby 发送 {len(file_paths)} 个文件的精准入库通知。")
+        return True
+    except Exception as e:
+        logger.error(f"  ❌ [极速通知] 发送文件变更通知失败: {e}")
+        return False
+
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
 def get_all_persons_from_emby(
     base_url: str, 
