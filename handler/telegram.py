@@ -524,9 +524,10 @@ def _setup_bot_commands(bot_token: str):
     registry = get_task_registry(context='all')
 
     # ==========================================
-    # ⚙️ 在这里自定义你想在 M 菜单中直接显示的常用任务 Key！
+    # ★★★ 修改：从数据库/配置中读取 TG 菜单任务列表 ★★★
     # ==========================================
-    allowed_tasks = [
+    # 默认的常用任务列表（当用户未在前端配置时使用）
+    default_tasks = [
         'task-chain-high-freq',       # 高频刷新任务链
         'task-chain-low-freq',        # 低频维护任务链
         'scan-organize-115',          # 网盘文件整理
@@ -535,6 +536,13 @@ def _setup_bot_commands(bot_token: str):
         'scan-cleanup-issues',        # 扫描重复媒体
         'system-auto-update',         # 系统自动更新
     ]
+    
+    # 从 APP_CONFIG 中获取前端保存的配置，如果没有则使用默认值
+    allowed_tasks = APP_CONFIG.get('tg_menu_tasks', default_tasks)
+    
+    # 如果前端传过来的是空列表（用户清空了菜单），我们也需要处理
+    if allowed_tasks is None:
+        allowed_tasks = default_tasks
 
     commands = []
     for key in allowed_tasks:

@@ -12,6 +12,7 @@
       <!-- 卡片 1: 高频刷新任务链 -->
       <!-- ======================================================================= -->
       <n-card v-if="!isMobile" :bordered="false" class="dashboard-card">
+        <!-- ... 保持原有高频任务链代码不变 ... -->
         <template #header>
           <span class="card-title">高频刷新任务链</span>
         </template>
@@ -20,8 +21,6 @@
         </template>
         
         <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
-          
-          <!-- 左侧列：配置区域 -->
           <n-gi span="1">
             <n-space vertical>
               <n-space align="center" justify="space-between">
@@ -65,7 +64,6 @@
             </n-space>
           </n-gi>
 
-          <!-- 右侧列：显示当前执行顺序 -->
           <n-gi span="2">
             <n-text strong>当前执行流程</n-text>
             <div class="flowchart-wrapper">
@@ -80,16 +78,13 @@
             </div>
           </n-gi>
         </n-grid>
-        <n-alert title="任务建议" type="info" style="margin-top: 24px;">
-          此任务链适合放置需要频繁更新的任务，以保证数据的时效性。<br/>
-          <b>建议顺序：</b> [刷新智能追剧] -> [刷新演员订阅] -> [刷新原生合集] -> [刷新自建合集] -> [统一订阅处理] 
-        </n-alert>
       </n-card>
 
       <!-- ======================================================================= -->
       <!-- 卡片 2: 低频维护任务链 -->
       <!-- ======================================================================= -->
       <n-card v-if="!isMobile" :bordered="false" class="dashboard-card">
+        <!-- ... 保持原有低频任务链代码不变 ... -->
         <template #header>
           <span class="card-title">低频维护任务链</span>
         </template>
@@ -98,8 +93,6 @@
         </template>
         
         <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
-          
-          <!-- 左侧列：配置区域 -->
           <n-gi span="1">
             <n-space vertical>
               <n-space align="center" justify="space-between">
@@ -141,7 +134,6 @@
             </n-space>
           </n-gi>
 
-          <!-- 右侧列：显示当前执行顺序 -->
           <n-gi span="2">
             <n-text strong>当前执行流程</n-text>
             <div class="flowchart-wrapper">
@@ -156,10 +148,43 @@
             </div>
           </n-gi>
         </n-grid>
-        <n-alert title="任务建议" type="warning" style="margin-top: 24px;">
-          此任务链适合放置消耗资源较多，例如全量扫描、封面生成和数据清理等。<br/>
-          <b>建议任务：</b> [同步媒体数据]、[同步演员数据]、[演员数据补充]、[中文化角色名]、[中文化演员名]、[全量刷洗剧集]等。
-        </n-alert>
+      </n-card>
+
+      <!-- ======================================================================= -->
+      <!-- ★★★ 新增：卡片 3: Telegram 菜单配置 ★★★ -->
+      <!-- ======================================================================= -->
+      <n-card v-if="!isMobile" :bordered="false" class="dashboard-card">
+        <template #header>
+          <span class="card-title">Telegram 快捷菜单</span>
+        </template>
+        <template #header-extra>
+          <n-text depth="3">配置显示在 TG 机器人输入框左侧 Menu 按钮中的快捷任务 (保存后需重启应用生效)</n-text>
+        </template>
+        
+        <n-grid cols="1 l:3" :x-gap="24" :y-gap="16" responsive="screen">
+          <n-gi span="1">
+            <n-space vertical>
+              <n-button type="default" @click="showTgMenuConfigModal = true" style="width: 100%;">
+                <template #icon><n-icon :component="Settings24Regular" /></template>
+                配置 TG 菜单任务
+              </n-button>
+            </n-space>
+          </n-gi>
+
+          <n-gi span="2">
+            <n-text strong>当前 TG 菜单列表</n-text>
+            <div class="flowchart-wrapper">
+              <div v-if="enabledTgMenuTasks.length > 0" class="flowchart-container">
+                <div v-for="task in enabledTgMenuTasks" :key="task.key" class="flowchart-node" style="background-color: var(--n-action-color);">
+                  /{{ task.key.replace(/-/g, '_').toLowerCase() }} - {{ task.name }}
+                </div>
+              </div>
+              <div v-else class="flowchart-container empty">
+                <n-text depth="3">暂未配置任何 TG 菜单任务...</n-text>
+              </div>
+            </div>
+          </n-gi>
+        </n-grid>
       </n-card>
 
       <!-- 保存按钮（通用） -->
@@ -168,7 +193,7 @@
           保存所有配置
         </n-button>
 
-      <!-- 卡片 3: 临时任务 -->
+      <!-- 卡片 4: 临时任务 -->
       <n-card :bordered="false" class="dashboard-card">
         <template #header>
           <span class="card-title">临时任务</span>
@@ -176,7 +201,6 @@
         <template #header-extra>
           <n-text depth="3">用于需要立即手动执行的场景</n-text>
         </template>
-        <!-- 修改 Grid 响应式断点，手机端单列 -->
         <n-grid cols="1 m:2 l:5" :x-gap="24" :y-gap="16" responsive="screen">
           <n-gi v-for="task in availableTasksForManualRun" :key="task.key">
             <div class="temp-task-item">
@@ -197,23 +221,12 @@
     <!-- ======================================================================= -->
 
     <!-- 高频任务链配置模态框 -->
-    <n-modal
-      v-model:show="showHighFreqChainConfigModal"
-      class="custom-card"
-      preset="card"
-      title="配置高频刷新任务链"
-      style="width: 90%; max-width: 600px;"
-      :mask-closable="false"
-    >
-      <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
-        请勾选需要定时执行的任务，并拖动调整顺序。
-      </n-alert>
+    <n-modal v-model:show="showHighFreqChainConfigModal" class="custom-card" preset="card" title="配置高频刷新任务链" style="width: 90%; max-width: 600px;" :mask-closable="false">
+      <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">请勾选需要定时执行的任务，并拖动调整顺序。</n-alert>
       <div class="task-chain-list" ref="draggableContainerHighFreq">
         <div v-for="task in configuredHighFreqTaskSequence" :key="task.key" class="task-chain-item" :data-key="task.key">
           <n-icon :component="Drag24Regular" class="drag-handle" />
-          <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">
-            {{ task.name }}
-          </n-checkbox>
+          <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">{{ task.name }}</n-checkbox>
         </div>
       </div>
       <template #footer>
@@ -225,23 +238,12 @@
     </n-modal>
 
     <!-- 低频任务链配置模态框 -->
-    <n-modal
-      v-model:show="showLowFreqChainConfigModal"
-      class="custom-card"
-      preset="card"
-      title="配置低频维护任务链"
-      style="width: 90%; max-width: 600px;"
-      :mask-closable="false"
-    >
-      <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
-        请勾选需要定时执行的任务，并拖动调整顺序。
-      </n-alert>
+    <n-modal v-model:show="showLowFreqChainConfigModal" class="custom-card" preset="card" title="配置低频维护任务链" style="width: 90%; max-width: 600px;" :mask-closable="false">
+      <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">请勾选需要定时执行的任务，并拖动调整顺序。</n-alert>
       <div class="task-chain-list" ref="draggableContainerLowFreq">
         <div v-for="task in configuredLowFreqTaskSequence" :key="task.key" class="task-chain-item" :data-key="task.key">
           <n-icon :component="Drag24Regular" class="drag-handle" />
-          <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">
-            {{ task.name }}
-          </n-checkbox>
+          <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">{{ task.name }}</n-checkbox>
         </div>
       </div>
       <template #footer>
@@ -252,20 +254,33 @@
       </template>
     </n-modal>
 
+    <!-- ★★★ 新增：TG 菜单配置模态框 ★★★ -->
+    <n-modal v-model:show="showTgMenuConfigModal" class="custom-card" preset="card" title="配置 Telegram 快捷菜单" style="width: 90%; max-width: 600px;" :mask-closable="false">
+      <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
+        请勾选需要在 Telegram 机器人菜单中显示的任务，并拖动调整顺序。<br/>
+        注意：Telegram 限制菜单命令最多显示 100 个，建议只保留常用任务。
+      </n-alert>
+      <div class="task-chain-list" ref="draggableContainerTgMenu">
+        <div v-for="task in configuredTgMenuSequence" :key="task.key" class="task-chain-item" :data-key="task.key">
+          <n-icon :component="Drag24Regular" class="drag-handle" />
+          <n-checkbox v-model:checked="task.enabled" style="flex-grow: 1;">{{ task.name }}</n-checkbox>
+        </div>
+      </div>
+      <template #footer>
+        <n-space justify="end">
+          <n-button @click="showTgMenuConfigModal = false">取消</n-button>
+          <n-button type="primary" @click="saveTgMenuConfig">保存</n-button>
+        </n-space>
+      </template>
+    </n-modal>
+
     <!-- 通用模式选择模态框 -->
-    <n-modal
-      v-model:show="showSyncModeModal"
-      preset="dialog"
-      title="选择处理模式"
-      :mask-closable="false"
-    >
+    <n-modal v-model:show="showSyncModeModal" preset="dialog" title="选择处理模式" :mask-closable="false">
       <n-text>您希望如何执行此任务？</n-text>
       <template #action>
         <n-button @click="showSyncModeModal = false">取消</n-button>
         <n-button @click="runTaskFromModal(false)">快速模式（增量）</n-button>
-        <n-button type="warning" @click="runTaskFromModal(true)">
-          深度模式 (全量)
-        </n-button>
+        <n-button type="warning" @click="runTaskFromModal(true)">深度模式 (全量)</n-button>
       </template>
     </n-modal>
   </n-layout>
@@ -291,6 +306,17 @@ const DUAL_MODE_TASKS = [
   'role-translation',    
   'populate-metadata',
   'enrich-aliases'
+];
+
+// 默认的 TG 菜单任务（用于初始化）
+const DEFAULT_TG_TASKS = [
+  'task-chain-high-freq',
+  'task-chain-low-freq',
+  'scan-organize-115',
+  'populate-metadata',
+  'process-watchlist',
+  'scan-cleanup-issues',
+  'system-auto-update'
 ];
 
 // --- Composable Hooks ---
@@ -321,6 +347,12 @@ const configuredLowFreqTaskSequence = ref([]);
 const draggableContainerLowFreq = ref(null);
 let sortableInstanceLowFreq = null;
 
+// ★★★ 新增：TG 菜单配置状态 ★★★
+const showTgMenuConfigModal = ref(false);
+const configuredTgMenuSequence = ref([]);
+const draggableContainerTgMenu = ref(null);
+let sortableInstanceTgMenu = null;
+
 // 手动执行任务模态框状态
 const showSyncModeModal = ref(false);
 const taskToRunInModal = ref(null);
@@ -334,6 +366,12 @@ const enabledHighFreqTaskChain = computed(() => {
 const enabledLowFreqTaskChain = computed(() => {
   if (!configuredLowFreqTaskSequence.value) return [];
   return configuredLowFreqTaskSequence.value.filter(t => t.enabled);
+});
+
+// ★★★ 新增：TG 菜单 Computed ★★★
+const enabledTgMenuTasks = computed(() => {
+  if (!configuredTgMenuSequence.value) return [];
+  return configuredTgMenuSequence.value.filter(t => t.enabled);
 });
 
 
@@ -359,13 +397,7 @@ const runTaskFromModal = async (isDeepMode) => {
   isTriggeringTask.value = taskIdentifier;
 
   try {
-    const payload = { task_name: taskIdentifier };
-
-    // 关键改动：这里不再需要检查任务是否在列表中
-    // 因为能调用这个函数的任务，在 triggerTaskNow 中已经被 DUAL_MODE_TASKS 过滤过了。
-    // 所以我们可以直接、无条件地添加 force_full_update 参数。
-    payload.force_full_update = isDeepMode;
-
+    const payload = { task_name: taskIdentifier, force_full_update: isDeepMode };
     const response = await axios.post('/api/tasks/run', payload);
     message.success(response.data.message || '任务已成功提交！');
   } catch (error) {
@@ -377,24 +409,18 @@ const runTaskFromModal = async (isDeepMode) => {
   }
 };
 
-/**
- * 触发一个任务。
- * 对于双模式任务，会弹出选择框；其他任务则直接运行。
- */
 const triggerTaskNow = async (taskIdentifier) => {
   if (isBackgroundTaskRunning.value) {
     message.warning('已有后台任务正在运行，请稍后再试。');
     return;
   }
 
-  // ▼▼▼ 使用共享的常量进行判断 ▼▼▼
   if (DUAL_MODE_TASKS.includes(taskIdentifier)) {
     taskToRunInModal.value = taskIdentifier; 
     showSyncModeModal.value = true;
-    return; // 拦截执行，等待用户选择模式
+    return; 
   }
 
-  // 对于非双模式任务，按原方式直接执行
   isTriggeringTask.value = taskIdentifier;
   try {
     const response = await axios.post('/api/tasks/run', { task_name: taskIdentifier });
@@ -410,13 +436,14 @@ const triggerTaskNow = async (taskIdentifier) => {
 // --- Logic ---
 const savePageConfig = async () => {
   if (configModel.value) {
-    // 保存高频和低频两个任务序列
+    // 保存高频、低频和 TG 菜单三个序列
     configModel.value.task_chain_sequence = enabledHighFreqTaskChain.value.map(t => t.key);
     configModel.value.task_chain_low_freq_sequence = enabledLowFreqTaskChain.value.map(t => t.key);
+    configModel.value.tg_menu_tasks = enabledTgMenuTasks.value.map(t => t.key);
   }
   const success = await handleSaveConfig();
   if (success) {
-    message.success('配置已成功保存！');
+    message.success('配置已成功保存！(TG 菜单更新可能需要重启应用生效)');
   } else {
     message.error(configError.value || '配置保存失败。');
   }
@@ -432,19 +459,25 @@ const saveLowFreqTaskChainConfig = () => {
   message.info('低频任务链顺序已更新，请点击页面底部的“保存所有配置”按钮以生效。');
 };
 
-const initializeSequence = (savedSequenceKeys, targetConfiguredSequence) => {
-  if (!availableTasksForChain.value.length) return;
+const saveTgMenuConfig = () => {
+  showTgMenuConfigModal.value = false;
+  message.info('TG 菜单顺序已更新，请点击页面底部的“保存所有配置”按钮以生效。');
+};
+
+// ★★★ 修改：增加 sourceTasks 参数，以便复用逻辑 ★★★
+const initializeSequence = (savedSequenceKeys, targetConfiguredSequence, sourceTasks) => {
+  if (!sourceTasks || sourceTasks.length === 0) return;
 
   const savedSequenceSet = new Set(savedSequenceKeys);
 
   const enabledTasks = savedSequenceKeys
     .map(key => {
-      const task = availableTasksForChain.value.find(t => t.key === key);
+      const task = sourceTasks.find(t => t.key === key);
       return task ? { ...task, enabled: true } : null;
     })
     .filter(Boolean);
 
-  const disabledTasks = availableTasksForChain.value
+  const disabledTasks = sourceTasks
     .filter(task => !savedSequenceSet.has(task.key))
     .map(task => ({ ...task, enabled: false }));
 
@@ -467,7 +500,6 @@ const initializeSortable = (container, sequenceRef, instanceRef) => {
   return null;
 };
 
-// ★★★ 新增：移动端检测 ★★★
 const isMobile = ref(false);
 const checkMobile = () => {
   isMobile.value = window.innerWidth < 768;
@@ -506,15 +538,35 @@ watch(showLowFreqChainConfigModal, (newValue) => {
   }
 });
 
-watch([configModel, availableTasksForChain], ([newConfig, newTasks]) => {
-  if (newConfig && newTasks.length > 0) {
-    initializeSequence(newConfig.task_chain_sequence || [], configuredHighFreqTaskSequence);
-    initializeSequence(newConfig.task_chain_low_freq_sequence || [], configuredLowFreqTaskSequence);
+// ★★★ 新增：监听 TG 菜单模态框 ★★★
+watch(showTgMenuConfigModal, (newValue) => {
+  if (newValue) {
+    nextTick(() => {
+      sortableInstanceTgMenu = initializeSortable(draggableContainerTgMenu.value, configuredTgMenuSequence, sortableInstanceTgMenu);
+    });
+  } else if (sortableInstanceTgMenu) {
+    sortableInstanceTgMenu.destroy();
+    sortableInstanceTgMenu = null;
+  }
+});
+
+// ★★★ 修改：统一初始化三个列表 ★★★
+watch([configModel, availableTasksForChain, availableTasksForManualRun], ([newConfig, chainTasks, allTasks]) => {
+  if (newConfig) {
+    if (chainTasks.length > 0) {
+      initializeSequence(newConfig.task_chain_sequence || [], configuredHighFreqTaskSequence, chainTasks);
+      initializeSequence(newConfig.task_chain_low_freq_sequence || [], configuredLowFreqTaskSequence, chainTasks);
+    }
+    if (allTasks.length > 0) {
+      // TG 菜单使用 allTasks (包含所有任务)，如果没有配置则使用默认值
+      initializeSequence(newConfig.tg_menu_tasks || DEFAULT_TG_TASKS, configuredTgMenuSequence, allTasks);
+    }
   }
 }, { immediate: true, deep: true });
 </script>
 
 <style scoped>
+/* ... 保持原有样式不变 ... */
 .center-container {
   display: flex;
   justify-content: center;
@@ -570,7 +622,7 @@ watch([configModel, availableTasksForChain], ([newConfig, newTasks]) => {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 8px 28px; /* 垂直间隙8px，水平间隙28px为箭头留出空间 */
+  gap: 8px 28px; 
 }
 .flowchart-container.empty {
   justify-content: center;
@@ -602,7 +654,6 @@ watch([configModel, availableTasksForChain], ([newConfig, newTasks]) => {
   opacity: 0.5;
 }
 
-/* 响应式设计 */
 @media (max-width: 1200px) {
   .flowchart-container {
     flex-direction: column;
