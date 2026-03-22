@@ -1226,15 +1226,17 @@ class SmartOrganizer:
                     # 1. 优先查本地数据库 (速度最快)
                     season_status = get_season_watching_status(self.tmdb_id, season_num)
                     
-                    if season_status:
-                        # 数据库有记录，严格按记录执行
-                        if season_status not in ['Watching', 'Paused', 'Pending']:
-                            logger.debug(f"  🛑 [规则拦截] '第 {season_num} 季' 真实状态为 '{season_status}'，跳过连载规则。")
-                            return False
+                    if season_status in ['Watching', 'Paused', 'Pending']:
+                        # 明确在追，直接放行，无需查 TMDb
+                        pass 
+                    elif season_status == 'Completed':
+                        # 明确完结，直接拦截
+                        logger.debug(f"  🛑 [规则拦截] '第 {season_num} 季' 真实状态为 'Completed'，跳过连载规则。")
+                        return False
                     else:
-                        # 2. ★★★ 核心优化：数据库没记录(首次入库)，主动向 TMDb 查连载状态！★★★
+                        # 状态是 'NONE'、空值、或者其他未知状态，主动向 TMDb 查连载状态！
                         from tasks.helpers import evaluate_season_airing_status
-                        logger.info(f"  🔍 该剧首次入库，正在向 TMDb 实时查询 '第 {season_num} 季' 的连载状态...")
+                        logger.info(f"  🔍 数据库状态为 '{season_status or '空'}'，正在向 TMDb 实时查询 '第 {season_num} 季' 的连载状态...")
                         is_airing = evaluate_season_airing_status(self.tmdb_id, season_num, self.api_key)
                         
                         if is_airing:
