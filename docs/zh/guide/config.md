@@ -151,3 +151,27 @@
 | --- | --- |
 | `telegram_bot_token` | Bot Token |
 | `telegram_channel_id` | 频道/群组 ID |
+
+## 115 网盘
+
+| Key | 说明 |
+| --- | --- |
+| `p115_save_path_cid` | 待整理目录 CID |
+| `p115_save_path_name` | 待整理目录名称 |
+| `p115_unrecognized_cid` | 未识别目录 CID |
+| `p115_unrecognized_name` | 未识别目录名称 |
+| `p115_media_root_cid` | 媒体库根目录 CID |
+| `p115_media_root_name` | 媒体库根目录名称 |
+| `p115_request_interval` | API 请求间隔（秒） |
+| `p115_max_workers` | 最大并发线程数 |
+| `p115_enable_organize` | 启用智能整理 |
+| `p115_extensions` | 允许的文件扩展名列表 |
+| `p115_download_subs` | 下载字幕文件 |
+| `p115_local_cleanup` | 启用本地清理 |
+| `p115_mediainfo_center` | 分布式媒体信息服务器 |
+| `p115_app_id` | 自定义 App ID |
+| `local_strm_root` | 本地 STRM 根目录 |
+| `etk_server_url` | ETK 服务器地址（STRM 直链用） |
+| `p115_enable_sync_delete` | 联动删除网盘文件 |
+
+> **提示**：更多 115 网盘功能使用说明，请参阅 [115 网盘集成](/zh/guide/p115) 详细文档。

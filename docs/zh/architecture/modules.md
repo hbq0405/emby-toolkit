@@ -27,3 +27,10 @@
 - **数据库层**：`database/` 目录，表结构初始化与 CRUD 封装。
 - **外部数据源**：`handler/` 目录，封装 TMDb、豆瓣、MoviePilot、Telegram 等外部接口。
 - **封面服务**：`services/cover_generator/` 提供样式化封面生成。
+
+## 115 网盘集成
+
+- **115 服务**：`handler/p115_service.py`，提供 115 网盘 API 封装、智能整理引擎、STRM 生成器。
+- **115 路由**：`routes/p115.py`，提供扫码登录、直链播放、目录管理、分类规则配置等 API。
+- **文件系统缓存**：`database/` 中的 `p115_filesystem_cache` 表，缓存网盘目录结构提升查询性能。
+- **整理记录**：`database/` 中的 `p115_organize_records` 表，记录文件整理历史与手动纠错信息。
