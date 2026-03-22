@@ -30,6 +30,9 @@ _TMDB_METADATA_CACHE = {}
 _TMDB_SEARCH_CACHE = {}
 _AI_PARSE_CACHE = {}
 
+# 全局直链缓存池，供反向代理和Web路由共享 
+_DIRECT_URL_CACHE = {}
+
 def get_115_tokens():
     """唯一真理：只从独立数据库获取 Token 和 Cookie"""
     auth_data = settings_db.get_setting('p115_auth_tokens')
@@ -570,8 +573,25 @@ class P115Service:
                 if not self._cookie:
                     raise Exception("未配置 115 Cookie，无法获取播放直链")
                 
+                # ============================================================
+                # ★ 核心修复：将直链缓存下沉到服务层，让反向代理和 Web 路由共享缓存！
+                # 必须将 user_agent 加入缓存键，因为 115 CDN 严格绑定 UA！
+                # ============================================================
+                cache_key = (pick_code, user_agent)
+                now = time.time()
+                
+                if cache_key in _DIRECT_URL_CACHE:
+                    cached_data = _DIRECT_URL_CACHE[cache_key]
+                    if now < cached_data['expire_at']:
+                        logger.info(f"  ⚡ [底层缓存] 命中直链缓存 -> {pick_code[:8]}... (UA: {str(user_agent)[:15]}...)")
+                        return cached_data['url']
+
                 with P115Service._downurl_lock:
-                    # ★ 专门针对 downurl 的严格流控 (最少 1.5 秒)
+                    # 获取到锁后，双重检查缓存（防止并发排队的线程重复请求）
+                    if cache_key in _DIRECT_URL_CACHE and now < _DIRECT_URL_CACHE[cache_key]['expire_at']:
+                        return _DIRECT_URL_CACHE[cache_key]['url']
+
+                    # 专门针对 downurl 的严格流控 (最少 1.5 秒)
                     current_time = time.time()
                     elapsed = current_time - P115Service._last_downurl_time
                     if elapsed < 1.5:
@@ -580,10 +600,17 @@ class P115Service:
                     try:
                         res = self._cookie.download_url(pick_code, user_agent)
                         P115Service._last_downurl_time = time.time()
+                        
+                        # ★ 写入全局缓存，有效期 2 小时 (7200秒)
+                        if res:
+                            _DIRECT_URL_CACHE[cache_key] = {
+                                'url': str(res),
+                                'expire_at': time.time() + 7200
+                            }
                         return res
                     except Exception as e:
                         err_str = str(e)
-                        # ★ 如果触发 405 风控，强制熔断 10 秒
+                        # 如果触发 405 风控，强制熔断 10 秒
                         if '405' in err_str or 'Method Not Allowed' in err_str:
                             logger.error("  🛑 [熔断] 获取直链触发 115 WAF 风控 (405)，强制休眠 10 秒...")
                             P115Service._last_downurl_time = time.time() + 10
