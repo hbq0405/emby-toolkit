@@ -595,6 +595,20 @@ def handle_sorting_rules():
         rules = request.json
         if not isinstance(rules, list):
             rules = []
+            
+        # ★ 优化：获取旧规则，用于对比，避免重复请求 115 API
+        raw_old_rules = settings_db.get_setting('p115_sorting_rules')
+        old_rules_dict = {}
+        if raw_old_rules:
+            if isinstance(raw_old_rules, list):
+                old_rules_dict = {str(r.get('id')): r for r in raw_old_rules if r.get('id')}
+            elif isinstance(raw_old_rules, str):
+                try:
+                    parsed = json.loads(raw_old_rules)
+                    if isinstance(parsed, list):
+                        old_rules_dict = {str(r.get('id')): r for r in parsed if r.get('id')}
+                except Exception:
+                    pass
         
         # ★★★ 修复：精准计算基于 p115_media_root_cid 的相对层级路径 ★★★
         client = P115Service.get_client()
@@ -604,12 +618,23 @@ def handle_sorting_rules():
             media_root_cid = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID, '0'))
             
             for rule in rules:
+                rule_id = str(rule.get('id', ''))
                 cid = rule.get('cid')
-                if cid and str(cid) != '0':
+                
+                # ★ 核心优化：检查是否需要重新计算路径
+                need_recalc = True
+                if rule_id and rule_id in old_rules_dict:
+                    old_rule = old_rules_dict[rule_id]
+                    # 如果 cid 没变，且旧的 category_path 存在，则直接复用，跳过网络请求
+                    if str(old_rule.get('cid')) == str(cid) and old_rule.get('category_path'):
+                        rule['category_path'] = old_rule.get('category_path')
+                        need_recalc = False
+                
+                if need_recalc and cid and str(cid) != '0':
                     try:
                         payload = {'cid': cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0}
-                        if hasattr(client, 'fs_files_app'):
-                            dir_info = client.fs_files(payload)
+                        # 顺手修复了原代码中 hasattr 判断可能导致 dir_info 未定义的潜在 Bug
+                        dir_info = client.fs_files(payload)
                             
                         path_nodes = dir_info.get('path', [])
                         
@@ -651,6 +676,13 @@ def handle_sorting_rules():
                         logger.warning(f"  ⚠️ 获取规则 '{rule.get('name')}' 路径失败: {e}")
                         if not rule.get('category_path'):
                             rule['category_path'] = rule.get('dir_name', '')
+                elif not need_recalc:
+                    # 不需要重新计算，静默跳过
+                    pass
+                else:
+                    # 兜底：没有 cid 或者 cid 为 0
+                    if not rule.get('category_path'):
+                        rule['category_path'] = rule.get('dir_name', '')
         
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
