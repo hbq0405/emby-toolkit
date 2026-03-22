@@ -4036,12 +4036,12 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
     client = P115Service.get_client()
     if not client: return
 
-    # 1. 批量获取数据库记录
+    # 1. 批量获取数据库记录 (增加 renamed_name)
     records = []
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("SELECT id, file_id, original_name FROM p115_organize_records WHERE id = ANY(%s)", (list(record_ids),))
+                cursor.execute("SELECT id, file_id, original_name, renamed_name FROM p115_organize_records WHERE id = ANY(%s)", (list(record_ids),))
                 records = cursor.fetchall()
     except Exception as e:
         logger.error(f"数据库查询失败: {e}")
@@ -4057,8 +4057,10 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
             with conn.cursor() as cursor:
                 cursor.execute("SELECT id, parent_id, pick_code, sha1, local_path FROM p115_filesystem_cache WHERE id = ANY(%s)", (list(file_ids),))
                 for row in cursor.fetchall():
-                    old_caches[str(row['id'])] = row
-    except: pass
+                    # ★ 核心修复：强制转换为标准 dict，脱离数据库连接绑定！
+                    old_caches[str(row['id'])] = dict(row) 
+    except Exception as e: 
+        logger.error(f"获取旧缓存失败: {e}")
 
     root_items = []
     old_pids = set()
@@ -4095,14 +4097,11 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
             'sha1': info_data.get('sha1') or (old_cache['sha1'] if old_cache else None),
             '_record_id': r['id'],
             '_old_cache': old_cache,
-            '_info_data': info_data
+            '_info_data': info_data,
+            '_renamed_name': r.get('renamed_name'),
+            '_original_name': r.get('original_name'),
+            '_old_pid': old_pid
         })
-
-        # 收集需要刷新的本地旧目录
-        if local_root and old_cache and old_cache.get('local_path'):
-            old_file_rel_path = str(old_cache['local_path']).lstrip('\\/')
-            old_dir = os.path.abspath(os.path.dirname(os.path.join(local_root, old_file_rel_path)))
-            refresh_target_dirs.add(old_dir)
 
     if not root_items: return
 
@@ -4154,83 +4153,133 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
         logger.info(f"  🔤 [批量重组] 发现 {len(sub_items)} 个关联字幕，跟随重组...")
         organizer.execute(sub_items, target_cid)
 
-    # ★ 本地擦屁股：精准删除旧的本地 STRM 和空目录
-        if local_root:
-            import shutil
-            protected_dirs = {os.path.abspath(local_root)}
-            for rule in organizer.rules:
-                cat_path = rule.get('category_path') or rule.get('dir_name')
-                if cat_path:
-                    protected_dirs.add(os.path.abspath(os.path.join(local_root, cat_path.lstrip('\\/'))))
-            protected_dirs.add(os.path.abspath(os.path.join(local_root, "未识别")))
+    # =================================================================
+    # ★ 本地擦屁股：精准删除旧的本地 STRM 和空目录 (双重保险推导版)
+    # =================================================================
+    if local_root:
+        import shutil
+        protected_dirs = {os.path.abspath(local_root)}
+        for rule in organizer.rules:
+            cat_path = rule.get('category_path') or rule.get('dir_name')
+            if cat_path:
+                protected_dirs.add(os.path.abspath(os.path.join(local_root, cat_path.lstrip('\\/'))))
+        protected_dirs.add(os.path.abspath(os.path.join(local_root, "未识别")))
 
-            deleted_strm_paths = [] # ★ 新增：收集被删除的 STRM 绝对路径
+        deleted_strm_paths = [] 
+        
+        # 提前查出所有 old_pid 对应的目录 local_path (用于保险2)
+        old_pid_to_local_path = {}
+        if old_pids:
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT id, local_path FROM p115_filesystem_cache WHERE id = ANY(%s)", (list(old_pids),))
+                        for row in cursor.fetchall():
+                            if row['local_path']:
+                                old_pid_to_local_path[str(row['id'])] = row['local_path']
+            except Exception as e: 
+                logger.error(f"获取父目录缓存失败: {e}")
 
-            for r_item in root_items:
-                old_cache = r_item['_old_cache']
-                if not old_cache or not old_cache.get('local_path'): continue
-
+        for r_item in root_items:
+            old_strm_full_path = None
+            old_file_rel_path = None
+            
+            old_cache = r_item['_old_cache']
+            
+            # 策略 1：直接使用文件自身的 local_path (最精准)
+            if old_cache and old_cache.get('local_path'):
                 old_file_rel_path = str(old_cache['local_path']).lstrip('\\/')
                 old_strm_rel_path = os.path.splitext(old_file_rel_path)[0] + ".strm"
                 old_strm_full_path = os.path.join(local_root, old_strm_rel_path)
+                logger.debug(f"  🔍 [推导] 策略1命中: {old_strm_full_path}")
+                
+            # 策略 2：使用父目录的 local_path + 历史文件名 拼接推导 (兜底)
+            elif r_item['_old_pid'] and str(r_item['_old_pid']) in old_pid_to_local_path:
+                dir_local_path = str(old_pid_to_local_path[str(r_item['_old_pid'])]).lstrip('\\/')
+                # 优先用重命名后的名字，没有就用原名
+                file_name = r_item['_renamed_name'] or r_item['_original_name']
+                if file_name:
+                    old_file_rel_path = os.path.join(dir_local_path, file_name)
+                    old_strm_rel_path = os.path.splitext(old_file_rel_path)[0] + ".strm"
+                    old_strm_full_path = os.path.join(local_root, old_strm_rel_path)
+                    logger.debug(f"  🔍 [推导] 策略2命中: {old_strm_full_path}")
 
-                # 无论文件是否还在硬盘上，只要缓存里有，我们就通知 Emby 删掉它
+            if old_strm_full_path:
                 deleted_strm_paths.append(old_strm_full_path)
-
+                
                 if os.path.exists(old_strm_full_path):
-                    os.remove(old_strm_full_path)
-                    logger.debug(f"  🧹 删除本地旧 STRM: {old_strm_full_path}")
+                    try:
+                        os.remove(old_strm_full_path)
+                        logger.info(f"  🧹 [清理] 成功删除本地旧 STRM: {old_strm_full_path}")
+                    except Exception as e:
+                        logger.warning(f"  ⚠️ 删除旧 STRM 失败: {e}")
+                else:
+                    logger.debug(f"  ⚠️ [清理] 旧 STRM 不存在，跳过物理删除: {old_strm_full_path}")
 
-                old_mi_full_path = os.path.splitext(old_file_rel_path)[0] + "-mediainfo.json"
-                if os.path.exists(old_mi_full_path):
-                    os.remove(old_mi_full_path)
+                # 删除同名的 mediainfo.json
+                if old_file_rel_path:
+                    old_mi_full_path = os.path.splitext(os.path.join(local_root, old_file_rel_path))[0] + "-mediainfo.json"
+                    if os.path.exists(old_mi_full_path):
+                        try:
+                            os.remove(old_mi_full_path)
+                            logger.debug(f"  🧹 [清理] 成功删除旧 mediainfo: {old_mi_full_path}")
+                        except: pass
 
+                # 删除同名的字幕文件
                 old_dir_full_path = os.path.dirname(old_strm_full_path)
-                old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
-                if os.path.exists(old_dir_full_path):
-                    for f in os.listdir(old_dir_full_path):
-                        if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
-                            sub_to_del = os.path.join(old_dir_full_path, f)
-                            try:
-                                os.remove(sub_to_del)
-                            except: pass
+                if old_file_rel_path:
+                    old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
+                    if os.path.exists(old_dir_full_path):
+                        for f in os.listdir(old_dir_full_path):
+                            if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
+                                sub_to_del = os.path.join(old_dir_full_path, f)
+                                try:
+                                    os.remove(sub_to_del)
+                                    logger.debug(f"  🧹 [清理] 成功删除旧字幕: {sub_to_del}")
+                                except: pass
+                                
+                # 收集需要检查空目录的路径
+                refresh_target_dirs.add(old_dir_full_path)
+            else:
+                logger.warning(f"  ⚠️ [推导失败] 无法推导出文件 {r_item['fn']} 的旧本地路径，跳过清理。")
 
-            # 向上递归清理本地空目录
-            for old_dir in list(refresh_target_dirs):
-                curr_dir = old_dir
-                while curr_dir and curr_dir not in protected_dirs:
-                    if os.path.exists(curr_dir):
-                        has_media = False
-                        for root, _, files in os.walk(curr_dir):
-                            for f in files:
-                                ext = f.split('.')[-1].lower()
-                                if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'nfo'}:
-                                    has_media = True
-                                    break
+        # 向上递归清理本地空目录
+        for old_dir in list(refresh_target_dirs):
+            curr_dir = old_dir
+            while curr_dir and curr_dir not in protected_dirs:
+                if os.path.exists(curr_dir):
+                    has_media = False
+                    for root, _, files in os.walk(curr_dir):
+                        for f in files:
+                            ext = f.split('.')[-1].lower()
+                            if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'nfo'}:
+                                has_media = True
+                                break
                         if has_media: break
 
-                        if not has_media:
+                    if not has_media:
+                        try:
                             shutil.rmtree(curr_dir)
-                            logger.info(f"  🧹 本地旧目录已无媒体文件，执行删除: {curr_dir}")
-                            curr_dir = os.path.dirname(curr_dir)
-                        else:
-                            break
+                            logger.info(f"  🧹 [清理] 本地旧目录已无媒体文件，执行删除: {curr_dir}")
+                        except Exception as e:
+                            logger.warning(f"  ⚠️ 删除空目录失败: {e}")
+                        curr_dir = os.path.dirname(curr_dir)
                     else:
                         break
+                else:
+                    break
 
-            # ★ 批量极速通知 Emby 移除旧文件
-            emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
-            emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
-            if emby_url and emby_api_key and deleted_strm_paths:
-                from handler import emby
-                # 去重，防止同一个文件发多次
-                unique_deleted_paths = list(set(deleted_strm_paths))
-                logger.info(f"  ⚡ 正在向 Emby 发送 {len(unique_deleted_paths)} 个旧文件的极速移除通知...")
-                try:
-                    # ★ 传入 update_type="Deleted"
-                    emby.notify_emby_file_changes(unique_deleted_paths, emby_url, emby_api_key, update_type="Deleted")
-                except Exception as e:
-                    logger.warning(f"  ⚠️ 极速通知 Emby 移除旧文件失败: {e}")
+        # ★ 批量极速通知 Emby 移除旧文件
+        emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+        emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+        if emby_url and emby_api_key and deleted_strm_paths:
+            from handler import emby
+            unique_deleted_paths = list(set(deleted_strm_paths))
+            logger.info(f"  ⚡ 正在向 Emby 发送 {len(unique_deleted_paths)} 个旧文件的极速移除通知...")
+            try:
+                emby.notify_emby_file_changes(unique_deleted_paths, emby_url, emby_api_key, update_type="Deleted")
+            except Exception as e:
+                logger.warning(f"  ⚠️ 极速通知 Emby 移除旧文件失败: {e}")
 
     # ★ 网盘擦屁股：直接移交全局垃圾回收器
     old_cids_to_check = set()
