@@ -260,6 +260,88 @@ class AITranslator:
         except Exception as e:
             logger.error(f"  ➜ [标题翻译] 翻译失败: {e}")
             return None
+        
+    def batch_translate_overviews(self, overviews_dict: Dict[str, str], context_title: str = "") -> Dict[str, str]:
+        """
+        批量翻译剧情简介。
+        :param overviews_dict: 字典格式 { "ID": "英文简介内容" }
+        :return: 字典格式 { "ID": "中文简介内容" }
+        """
+        if not overviews_dict:
+            return {}
+
+        raw_prompt = self._get_prompt("batch_overview_translation")
+        system_prompt = raw_prompt.format(context_title=context_title)
+        user_prompt = json.dumps(overviews_dict, ensure_ascii=False)
+
+        try:
+            response_content = ""
+            if self.provider == 'openai' and self.client:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    response_format={"type": "json_object"}, temperature=0.3
+                )
+                response_content = resp.choices[0].message.content
+            elif self.provider == 'zhipuai' and self.client:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    response_format={"type": "json_object"}, temperature=0.3
+                )
+                response_content = resp.choices[0].message.content
+            elif self.provider == 'gemini' and self.client:
+                config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.3, system_instruction=system_prompt)
+                resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
+                response_content = resp.text
+
+            result = _safe_json_loads(response_content)
+            return result if isinstance(result, dict) else {}
+
+        except Exception as e:
+            logger.error(f"  ➜ [批量简介翻译] 翻译失败: {e}")
+            return {}
+
+    def batch_translate_titles(self, titles_dict: Dict[str, str], media_type: str = "Episode") -> Dict[str, str]:
+        """
+        批量翻译标题。
+        :param titles_dict: 字典格式 { "ID": "英文标题内容" }
+        :return: 字典格式 { "ID": "中文标题内容" }
+        """
+        if not titles_dict:
+            return {}
+
+        raw_prompt = self._get_prompt("batch_title_translation")
+        system_prompt = raw_prompt.format(media_type=media_type)
+        user_prompt = json.dumps(titles_dict, ensure_ascii=False)
+
+        try:
+            response_content = ""
+            if self.provider == 'openai' and self.client:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    response_format={"type": "json_object"}, temperature=0.3
+                )
+                response_content = resp.choices[0].message.content
+            elif self.provider == 'zhipuai' and self.client:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    response_format={"type": "json_object"}, temperature=0.3
+                )
+                response_content = resp.choices[0].message.content
+            elif self.provider == 'gemini' and self.client:
+                config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.3, system_instruction=system_prompt)
+                resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
+                response_content = resp.text
+
+            result = _safe_json_loads(response_content)
+            return result if isinstance(result, dict) else {}
+
+        except Exception as e:
+            logger.error(f"  ➜ [批量标题翻译] 翻译失败: {e}")
+            return {}
 
     def parse_media_filename(self, filename: str) -> Optional[Dict[str, str]]:
         """

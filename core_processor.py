@@ -745,12 +745,12 @@ class MediaProcessor:
 
         # 2. ★★★ 极速批量通知 Emby ★★★
         if valid_files_to_notify:
-            logger.info(f"  🚀 [实时监控] 预处理完成，正在向 Emby 发送 {len(valid_files_to_notify)} 个文件的极速入库通知...")
+            #logger.info(f"  🚀 [实时监控] 预处理完成，正在向 Emby 发送 {len(valid_files_to_notify)} 个文件的极速入库通知...")
             
             # 直接把所有文件路径打包发给 Emby 的轻量级接口
             emby.notify_emby_file_changes(list(valid_files_to_notify), self.emby_url, self.emby_api_key)
             
-            logger.info(f"  ✅ [实时监控] 批量极速通知完成！Emby 将仅针对这些文件进行秒级入库，绝不触发全剧集扫描。")
+            logger.info(f"  ✅ [实时监控] 通知Emby处理新增视频，等待视频流数据...")
         else:
             logger.warning(f"  ⚠️ [实时监控] 未收集到有效的文件路径，任务结束。")
 

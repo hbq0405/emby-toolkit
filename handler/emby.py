@@ -810,12 +810,20 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
     updates = [{"Path": path, "UpdateType": update_type} for path in file_paths]
     payload = {"Updates": updates}
     
+    # 将 UpdateType 转换为友好的中文
+    action_map = {
+        "Created": "新增",
+        "Modified": "修改",
+        "Deleted": "删除"
+    }
+    action_zh = action_map.get(update_type, update_type)
+    
     try:
         emby_client.post(api_url, params={"api_key": api_key}, json=payload)
-        logger.info(f"  ⚡ [极速通知] 已成功向 Emby 发送 {len(file_paths)} 个文件的精准变更通知 ({update_type})。")
+        logger.info(f"  ⚡ [极速通知] 已通知 Emby 有 {len(file_paths)} 个文件{action_zh}。")
         return True
     except Exception as e:
-        logger.error(f"  ❌ [极速通知] 发送文件变更通知失败: {e}")
+        logger.error(f"  ❌ [极速通知] 发送文件{action_zh}通知失败: {e}")
         return False
 
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨

@@ -1545,120 +1545,136 @@ def translate_tmdb_metadata_recursively(
     item_name: str = ""
 ):
     """
-    通用辅助函数：递归翻译 TMDb 数据的简介 (Overview) 和标题。
+    【批量优化版】递归翻译 TMDb 数据的简介 (Overview) 和标题。
     包含：Movie, Series (Show), Season, Episode 四个层级。
     
     核心逻辑：
-    1. 遍历每一层级的数据 (主条目、季、集)。
-    2. 获取该层级对象自己的 'id' (tmdb_id)。
-    3. 调用 media_db.get_local_translation_info(id, type) 检查本地数据库。
-    4. 如果本地有中文 -> 回填并跳过 AI。
-    5. 如果本地无中文 -> 调用 AI 翻译。
+    1. 遍历所有层级，收集需要翻译的标题和简介。
+    2. 检查本地数据库缓存，命中则直接回填。
+    3. 将未命中的条目打包，分批发送给 AI 进行批量翻译。
+    4. 将 AI 返回的结果回填到原始数据中。
     """
     if not ai_translator or not tmdb_data:
         return
 
+    # 用于收集待翻译条目的字典
+    # 结构: { "tmdb_id_str": {"type": "Episode", "title": "...", "overview": "...", "ref": data_dict} }
+    pending_items = {}
     translated_count = 0
 
-    # --- 内部通用处理函数 ---
-    def _process_single_item(data_dict: Dict, context_title: str, specific_item_type: str):
-        """
-        处理单个条目（不论是电影、剧集、季还是集），逻辑统一：
-        查库(使用该条目的ID) -> 回填 OR 翻译
-        """
-        nonlocal translated_count
-        
-        # 1. 获取当前条目特定的 TMDb ID
-        # Movie/Series/Season/Episode 对象里都有 'id' 字段
+    # --- 1. 收集与缓存检查阶段 ---
+    def _collect_single_item(data_dict: Dict, specific_item_type: str):
         current_tmdb_id = data_dict.get('id')
         if not current_tmdb_id:
             return
 
-        # 确定标题字段名 (Movie用title, 其他用name)
+        tmdb_id_str = str(current_tmdb_id)
         title_key = 'title' if specific_item_type == 'Movie' else 'name'
         
-        # -------------------------------------------------------
-        # 2. 数据库缓存检查 (优先使用本地中文数据)
-        # -------------------------------------------------------
-        # ★★★ 关键：使用当前条目的 ID 和 类型 去查询 ★★★
-        local_info = media_db.get_local_translation_info(str(current_tmdb_id), specific_item_type)
+        # 检查本地缓存
+        local_info = media_db.get_local_translation_info(tmdb_id_str, specific_item_type)
         
-        # 检查本地是否有有效的中文简介
-        if local_info and local_info.get('overview') and utils.contains_chinese(local_info['overview']):
-            # [回填] 将数据库里的中文覆盖到当前的 data_dict 中
-            data_dict['overview'] = local_info['overview']
-            
-            # [回填] 顺便把标题也回填了 (如果数据库标题也是中文)
-            if local_info.get('title') and utils.contains_chinese(local_info['title']):
-                data_dict[title_key] = local_info['title']
-            
-            # 打印日志 (这就对应你截图里看到的 "翻译跳过")
-            logger.debug(f"    ├─ [无需翻译] : {context_title} ({specific_item_type})")
-            return # 本地有数据，直接结束，不走 AI
+        needs_title_trans = False
+        needs_overview_trans = False
         
-        # -------------------------------------------------------
-        # 3. AI 翻译逻辑 (本地无数据或为英文时执行)
-        # -------------------------------------------------------
-        
-        # A. 翻译简介 (Overview)
+        # 检查简介
         overview = data_dict.get('overview')
         if overview and not utils.contains_chinese(overview):
-            logger.debug(f"    ├─ [AI翻译] 正在翻译简介: {context_title}...")
-            trans_overview = ai_translator.translate_overview(overview, title=context_title)
-            if trans_overview:
-                data_dict['overview'] = trans_overview
-                translated_count += 1
+            if local_info and local_info.get('overview') and utils.contains_chinese(local_info['overview']):
+                data_dict['overview'] = local_info['overview']
+                logger.debug(f"    ├─ [缓存命中] 简介: {specific_item_type} ID:{tmdb_id_str}")
+            else:
+                needs_overview_trans = True
 
-        # B. 翻译标题 (Title/Name)
-        # 通常只翻译分集标题，或者为了美观翻译季标题，电影/剧集主标题通常 TMDb 会有
-        # 如果需要强制翻译所有英文标题，可以去掉 specific_item_type == 'Episode' 的限制
+        # 检查标题 (通常只翻译 Episode，或者强制翻译所有)
         current_title = data_dict.get(title_key)
         if specific_item_type == 'Episode' and current_title and not utils.contains_chinese(current_title):
-            logger.debug(f"    ├─ [AI翻译] 正在翻译标题: {current_title} ...")
-            trans_title = ai_translator.translate_title(current_title, media_type=specific_item_type)
-            if trans_title:
-                data_dict[title_key] = trans_title
-                translated_count += 1
+            if local_info and local_info.get('title') and utils.contains_chinese(local_info['title']):
+                data_dict[title_key] = local_info['title']
+                logger.debug(f"    ├─ [缓存命中] 标题: {specific_item_type} ID:{tmdb_id_str}")
+            else:
+                needs_title_trans = True
 
-    # --- 递归遍历逻辑 ---
+        # 如果需要翻译，加入待处理队列
+        if needs_title_trans or needs_overview_trans:
+            pending_items[tmdb_id_str] = {
+                "type": specific_item_type,
+                "title_key": title_key,
+                "title": current_title if needs_title_trans else None,
+                "overview": overview if needs_overview_trans else None,
+                "ref": data_dict # 保存引用，方便后续直接修改
+            }
 
-    # Case 1: 电影 (单层结构)
+    # --- 遍历收集 ---
     if item_type == 'Movie':
-        _process_single_item(tmdb_data, item_name, 'Movie')
+        _collect_single_item(tmdb_data, 'Movie')
 
-    # Case 2: 剧集 (嵌套结构: Show -> Seasons -> Episodes)
     elif item_type == 'Series':
-        # A. 处理剧集本身 (Show)
-        # 有时候 tmdb_data 是一层包装，详情在 series_details 里，视你上游代码而定
-        # 这里假设 tmdb_data 就是 show details 或者包含它
         series_details = tmdb_data.get('series_details', tmdb_data)
-        series_name = series_details.get('name') or series_details.get('title') or item_name
-        
-        # 递归调用：类型为 Series
-        _process_single_item(series_details, series_name, 'Series')
+        _collect_single_item(series_details, 'Series')
 
-        # B. 处理分季 (Seasons)
         seasons = tmdb_data.get("seasons_details", [])
         for season in seasons:
-            s_num = season.get("season_number", "?")
-            season_id = season.get("id") # 获取季的 ID
-            
-            # 递归调用：类型为 Season，传入季 ID
-            _process_single_item(season, f"{series_name} S{s_num}", 'Season')
+            _collect_single_item(season, 'Season')
 
-        # C. 处理分集 (Episodes)
         episodes_container = tmdb_data.get("episodes_details", {})
-        # 兼容 list 或 dict 格式
         episodes_list = episodes_container.values() if isinstance(episodes_container, dict) else episodes_container
-        
         for ep in episodes_list:
-            s_num = ep.get("season_number")
-            e_num = ep.get("episode_number")
-            # 递归调用：类型为 Episode，内部会获取 ep['id']
-            _process_single_item(ep, f"{series_name} S{s_num}E{e_num}", 'Episode')
+            _collect_single_item(ep, 'Episode')
+
+    # --- 2. 批量翻译阶段 ---
+    if not pending_items:
+        return
+
+    logger.info(f"  ➜ [AI批量翻译] 共收集到 {len(pending_items)} 个条目需要翻译，准备分批提交...")
+
+    # 提取需要翻译的字典
+    overviews_to_translate = {k: v["overview"] for k, v in pending_items.items() if v["overview"]}
+    titles_to_translate = {k: v["title"] for k, v in pending_items.items() if v["title"]}
+
+    BATCH_SIZE = 20 # 每批处理的数量，防止超出 AI 上下文限制
+
+    # 批量翻译简介
+    if overviews_to_translate:
+        items_list = list(overviews_to_translate.items())
+        for i in range(0, len(items_list), BATCH_SIZE):
+            batch_dict = dict(items_list[i:i+BATCH_SIZE])
+            logger.debug(f"    ├─ 正在批量翻译简介 (批次 {i//BATCH_SIZE + 1}, 数量: {len(batch_dict)})...")
+            
+            # 调用 AI
+            trans_results = ai_translator.batch_translate_overviews(batch_dict, context_title=item_name)
+            
+            # 回填结果
+            for tmdb_id_str, trans_text in trans_results.items():
+                if trans_text and utils.contains_chinese(trans_text):
+                    pending_items[tmdb_id_str]["ref"]['overview'] = trans_text
+                    translated_count += 1
+            
+            import time
+            time.sleep(1) # 避免触发频率限制
+
+    # 批量翻译标题
+    if titles_to_translate:
+        items_list = list(titles_to_translate.items())
+        for i in range(0, len(items_list), BATCH_SIZE):
+            batch_dict = dict(items_list[i:i+BATCH_SIZE])
+            logger.debug(f"    ├─ 正在批量翻译标题 (批次 {i//BATCH_SIZE + 1}, 数量: {len(batch_dict)})...")
+            
+            # 调用 AI
+            trans_results = ai_translator.batch_translate_titles(batch_dict, media_type="Episode")
+            
+            # 回填结果
+            for tmdb_id_str, trans_text in trans_results.items():
+                if trans_text and utils.contains_chinese(trans_text):
+                    title_key = pending_items[tmdb_id_str]["title_key"]
+                    pending_items[tmdb_id_str]["ref"][title_key] = trans_text
+                    translated_count += 1
+            
+            import time
+            time.sleep(1)
 
     if translated_count > 0:
-        logger.info(f"  ➜ [AI翻译] 本次新翻译了 {translated_count} 条数据 ({item_name})。")
+        logger.info(f"  ➜ [AI批量翻译] 本次成功翻译了 {translated_count} 项数据 ({item_name})。")
 
 def evaluate_season_airing_status(tmdb_id: str, season_number: int, api_key: str) -> bool:
     """
