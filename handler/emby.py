@@ -851,18 +851,12 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
 def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str, update_type: str = "Created") -> bool:
     """
     【极速轻量级刷新】
-    利用 Emby 的 /Library/Media/Updated 接口，直接通知底层文件系统变更。
-    支持 Created, Modified, Deleted。
+    直接提取文件所在目录，向上寻根并触发 Emby 的局部精准扫描。
+    彻底抛弃 Emby 带有 90 秒延迟的 Updated 队列接口。
     """
     if not file_paths: 
         return True
         
-    api_url = f"{base_url.rstrip('/')}/Library/Media/Updated"
-    
-    # 构造 Payload，传入指定的 UpdateType
-    updates = [{"Path": path, "UpdateType": update_type} for path in file_paths]
-    payload = {"Updates": updates}
-    
     action_map = {
         "Created": "新增",
         "Modified": "修改",
@@ -871,20 +865,18 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
     action_zh = action_map.get(update_type, update_type)
     
     try:
-        # 1. 提交变更路径到 Emby 的等待队列
-        emby_client.post(api_url, params={"api_key": api_key}, json=payload)
-        #logger.info(f"  ⚡ [极速通知] 已通知 Emby 有 {len(file_paths)} 个文件{action_zh}。")
-        
-        # 2. ★★★ 局部精准刷新 (打断 90 秒摸鱼) ★★★
-        # 提取所有文件所在的目录，去重 (防止批量入库时重复刷新同一个父目录)
+        # 直接提取所有文件所在的目录，去重 (防止批量入库时重复刷新同一个父目录)
         dirs_to_refresh = set(os.path.dirname(p) for p in file_paths if p)
         
+        logger.info(f"  ⚡ [极速通知] 收到 {len(file_paths)} 个文件{action_zh}请求，准备对 {len(dirs_to_refresh)} 个父目录触发精准扫描...")
+        
+        # 直接拿鞭子抽，让 Emby 扫目录
         for d in dirs_to_refresh:
             _force_refresh_directory_tree(d, base_url, api_key)
             
         return True
     except Exception as e:
-        logger.error(f"  ❌ [极速通知] 发送文件{action_zh}通知失败: {e}")
+        logger.error(f"  ❌ [极速通知] 触发扫描失败: {e}")
         return False
 
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
