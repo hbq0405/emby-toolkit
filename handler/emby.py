@@ -819,8 +819,19 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
     action_zh = action_map.get(update_type, update_type)
     
     try:
+        # 1. 提交变更路径到 Emby 的等待队列
         emby_client.post(api_url, params={"api_key": api_key}, json=payload)
         logger.info(f"  ⚡ [极速通知] 已通知 Emby 有 {len(file_paths)} 个文件{action_zh}。")
+        
+        # =================================================================
+        # ★★★ 核心修复：拿鞭子抽它，打破 90 秒摸鱼机制 ★★★
+        # Emby 收到 Updated 通知后，默认会启动一个 90 秒的防抖定时器。
+        # 发送一个全局 Refresh 指令，强制 Emby 立刻清空队列并秒级入库！
+        # =================================================================
+        force_url = f"{base_url.rstrip('/')}/Library/Refresh"
+        emby_client.post(force_url, params={"api_key": api_key})
+        #logger.info(f"  🚀 [极速通知] 已发送强制唤醒指令，Emby 摸鱼计时器已被打断，立即开始干活！")
+        
         return True
     except Exception as e:
         logger.error(f"  ❌ [极速通知] 发送文件{action_zh}通知失败: {e}")
