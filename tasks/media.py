@@ -2031,12 +2031,15 @@ def task_backup_mediainfo(processor):
     logger.info("--- 开始执行媒体信息备份任务 ---")
     
     task_manager.update_status_from_thread(0, "正在扫描需要备份的媒体项，请稍候...")
+    time.sleep(1)  # 增加短暂停顿，确保前端能渲染出初始状态
     
     items = media_db.get_missing_mediainfo_assets()
     total = len(items)
     
     if total == 0:
+        logger.info("  ✅ 所有媒体信息均已备份，无需处理。")
         task_manager.update_status_from_thread(100, "所有媒体信息均已备份，无需处理")
+        time.sleep(1)  # 增加短暂停顿，确保前端能渲染出完成状态
         return
 
     logger.info(f"  ➜ 共扫描到 {total} 个项目需要补充 SHA1 或备份媒体信息...")
@@ -2246,10 +2249,13 @@ def task_restore_mediainfo(processor):
     """
     logger.info("--- 开始执行媒体信息还原任务 ---")
     task_manager.update_status_from_thread(0, "正在扫描本地媒体库目录...")
+    time.sleep(1)  # 增加短暂停顿，确保前端能渲染出初始状态
     
     local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     if not local_root or not os.path.exists(local_root):
+        logger.warning("  🚫 未配置本地媒体库目录或目录不存在。")
         task_manager.update_status_from_thread(100, "未配置本地媒体库目录或目录不存在")
+        time.sleep(1)
         return
         
     # 1. 收集所有需要恢复的 strm 文件路径
@@ -2266,7 +2272,9 @@ def task_restore_mediainfo(processor):
                     
     total = len(strm_files_to_restore)
     if total == 0:
+        logger.info("  ✅ 本地媒体库完整，无需还原媒体信息。")
         task_manager.update_status_from_thread(100, "本地媒体库完整，无需还原媒体信息")
+        time.sleep(1)  # 增加短暂停顿，确保前端能渲染出完成状态
         return
         
     logger.info(f"  ➜ 发现 {total} 个缺失媒体信息的媒体项，准备还原...")
