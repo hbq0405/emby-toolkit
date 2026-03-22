@@ -750,7 +750,7 @@ class MediaProcessor:
             # 直接把所有文件路径打包发给 Emby 的轻量级接口
             emby.notify_emby_file_changes(list(valid_files_to_notify), self.emby_url, self.emby_api_key)
             
-            logger.info(f"  ✅ [实时监控] 通知Emby处理新增视频，等待视频流数据...")
+            logger.info(f"  ✅ [实时监控] 预处理完成，等待视频流数据...")
         else:
             logger.warning(f"  ⚠️ [实时监控] 未收集到有效的文件路径，任务结束。")
 
