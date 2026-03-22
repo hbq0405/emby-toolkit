@@ -151,11 +151,11 @@
       </n-card>
 
       <!-- ======================================================================= -->
-      <!-- ★★★ 新增：卡片 3: Telegram 菜单配置 ★★★ -->
+      <!-- ★★★ 卡片 3: Telegram 菜单配置 ★★★ -->
       <!-- ======================================================================= -->
       <n-card v-if="!isMobile" :bordered="false" class="dashboard-card">
         <template #header>
-          <span class="card-title">Telegram 快捷菜单</span>
+          <span class="card-title">Telegram 快捷菜单（Pro）</span>
         </template>
         <template #header-extra>
           <n-text depth="3">配置显示在 TG 机器人输入框左侧 Menu 按钮中的快捷任务 (保存后需重启应用生效)</n-text>
