@@ -615,7 +615,7 @@ class P115Service:
                                     if path_name: display_name = path_name
                             except: pass
 
-                            logger.info(f"  ▶️ [115] 请求直链成功 -> {display_name}")
+                            logger.info(f"  ✅ [115] 请求直链成功 -> {display_name}")
 
                             # ★ 将文件名一起存入缓存
                             _DIRECT_URL_CACHE[cache_key] = {
