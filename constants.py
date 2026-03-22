@@ -69,6 +69,16 @@ CONFIG_OPTION_115_APP_ID = "p115_app_id"                         # 115 自定义
 CONFIG_SECTION_TELEGRAM = "Telegram"
 CONFIG_OPTION_TELEGRAM_BOT_TOKEN = "telegram_bot_token"
 CONFIG_OPTION_TELEGRAM_CHANNEL_ID = "telegram_channel_id"
+CONFIG_OPTION_TELEGRAM_MENU_TASKS = "tg_menu_tasks"
+DEFAULT_TELEGRAM_MENU_TASKS = [
+    'task-chain-high-freq',       # 高频刷新任务链
+    'task-chain-low-freq',        # 低频维护任务链
+    'scan-organize-115',          # 网盘文件整理
+    'populate-metadata',          # 同步媒体数据
+    'process-watchlist',          # 刷新智能追剧
+    'scan-cleanup-issues',        # 扫描重复媒体
+    'system-auto-update',         # 系统自动更新
+]
 
 # ==============================================================================
 # ✨ 反向代理配置 (Reverse Proxy)
