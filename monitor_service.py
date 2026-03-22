@@ -152,10 +152,26 @@ def process_batch_queue():
             files_to_scrape.append(file_path)
 
     if files_to_scrape:
-        logger.info(f"  🚀 [实时监控] 准备预处理 {len(files_to_scrape)} 个新增/修改的文件...")
-        # 彻底废除“选代表”逻辑，实打实地将所有文件送入处理队列！
-        # 完美解决平铺目录下多文件同时入库导致的漏刮削问题。
-        threading.Thread(target=_handle_batch_file_task, args=(processor, files_to_scrape)).start()
+        grouped_files = {}
+        for file_path in files_to_scrape:
+            parent_dir = os.path.dirname(file_path)
+            if parent_dir not in grouped_files: 
+                grouped_files[parent_dir] = []
+            grouped_files[parent_dir].append(file_path)
+
+        representative_files = []
+        logger.info(f"  🚀 [实时监控] 准备刮削 {len(files_to_scrape)} 个文件，聚合为 {len(grouped_files)} 个任务组。")
+
+        for parent_dir, files in grouped_files.items():
+            rep_file = files[0]
+            representative_files.append(rep_file)
+            folder_name = os.path.basename(parent_dir)
+            if len(files) > 1:
+                logger.info(f"    ├─ [刮削] 目录 '{folder_name}' 含 {len(files)} 个文件，选取代表: {os.path.basename(rep_file)}")
+            else:
+                logger.info(f"    ├─ [刮削] 目录 '{folder_name}' 单文件: {os.path.basename(rep_file)}")
+
+        threading.Thread(target=_handle_batch_file_task, args=(processor, representative_files)).start()
 
     if files_to_refresh_only:
         logger.info(f"  🚀 [实时监控] 发现 {len(files_to_refresh_only)} 个文件命中排除路径，将跳过刮削直接刷新 Emby。")
@@ -311,7 +327,7 @@ def _handle_batch_refresh_only_task(file_paths: List[str]):
     logger.info(f"  ⚡ [实时监控-排除路径] 正在向 Emby 发送 {len(valid_files)} 个文件的极速入库通知 (命中排除路径)。")
     # ★★★ 核心修改：直接调用极速通知接口，传入具体文件路径 ★★★
     emby.notify_emby_file_changes(valid_files, base_url, api_key)
-    logger.info(f"  ✅ [实时监控-排除路径] 通知完成！Emby 将处理新增视频。")
+    logger.info(f"  ✅ [实时监控-排除路径] 批量极速通知完成！Emby 将仅针对这些文件进行秒级入库。")
 
 def _wait_for_files_stability(file_paths: List[str]) -> List[str]:
     """

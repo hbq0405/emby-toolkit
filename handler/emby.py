@@ -873,7 +873,7 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
     try:
         # 1. 提交变更路径到 Emby 的等待队列
         emby_client.post(api_url, params={"api_key": api_key}, json=payload)
-        logger.info(f"  ⚡ [极速通知] 已通知 Emby 有 {len(file_paths)} 个文件{action_zh}。")
+        #logger.info(f"  ⚡ [极速通知] 已通知 Emby 有 {len(file_paths)} 个文件{action_zh}。")
         
         # 2. ★★★ 局部精准刷新 (打断 90 秒摸鱼) ★★★
         # 提取所有文件所在的目录，去重 (防止批量入库时重复刷新同一个父目录)
