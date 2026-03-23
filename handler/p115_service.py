@@ -1943,7 +1943,7 @@ class SmartOrganizer:
                 return True
         return False
     
-    def _execute_collection_breakdown(self, root_item, collection_movies):
+    def _execute_collection_breakdown(self, root_item, collection_movies, skip_gc=False):
         """内部方法：拆解并独立整理合集包内的文件 (已升级批量模式)"""
         source_root_id = root_item.get('fid') or root_item.get('file_id')
         root_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '未知')
@@ -2067,10 +2067,10 @@ class SmartOrganizer:
                 except Exception as e: 
                     logger.error(f"    ❌ 移入未识别失败: {e}")
             
-            # 绝对安全防御：禁止直接删除，交由垃圾回收器检查是否为空
-            from handler.p115_service import P115DeleteBuffer
-            P115DeleteBuffer.add(check_save_path=True)
-            logger.info(f"  ⏳ [清理空目录] 已将拆解完毕的合集包交由垃圾回收器检查: {root_name}")
+            if not skip_gc:
+                from handler.p115_service import P115DeleteBuffer
+                P115DeleteBuffer.add(check_save_path=True)
+                logger.info(f"  ⏳ [清理空目录] 已将拆解完毕的合集包交由垃圾回收器检查: {root_name}")
             
             return processed_count > 0
             
@@ -2078,7 +2078,7 @@ class SmartOrganizer:
             logger.error(f"  ❌ 拆解合集包失败: {e}")
             return False
 
-    def execute(self, root_item_or_items, target_cid, progress_callback=None):
+    def execute(self, root_item_or_items, target_cid, progress_callback=None, skip_gc=False):
         # ★ 新增：判断传入的是单个文件还是批量文件列表
         is_batch = isinstance(root_item_or_items, list)
         
@@ -2127,7 +2127,7 @@ class SmartOrganizer:
                 logger.info(f"  📦 确认为官方合集包，包含 {len(collection_movies)} 部电影，启动精确拆解模式...")
             else:
                 logger.info(f"  📦 未找到官方合集信息 (可能是民间自制包)，启动基于文件名的暴力拆解模式...")
-            return self._execute_collection_breakdown(root_item, collection_movies)
+            return self._execute_collection_breakdown(root_item, collection_movies, skip_gc=skip_gc)
 
         # =================================================================
         # 2. 提前获取候选文件列表 (支持批量合并)
@@ -2831,12 +2831,15 @@ class SmartOrganizer:
         # =================================================================
         # ★ 极简垃圾回收：直接通知缓冲队列检查“待整理”目录
         # =================================================================
-        if not (not is_batch and root_item.get('_skip_gc')):
-            logger.info(f"  ⏳ [清理空目录] 整理完毕，已通知全局垃圾回收器检查待整理目录...")
-            from handler.p115_service import P115DeleteBuffer
-            P115DeleteBuffer.add(check_save_path=True)
+        if not skip_gc:
+            if not (not is_batch and root_item.get('_skip_gc')):
+                logger.info(f"  ⏳ [清理空目录] 整理完毕，已通知全局垃圾回收器检查待整理目录...")
+                from handler.p115_service import P115DeleteBuffer
+                P115DeleteBuffer.add(check_save_path=True)
+            else:
+                logger.info("  🛡️ [MP上传] 单文件跳过垃圾回收检查。")
         else:
-            logger.info("  🛡️ [MP上传] 单文件跳过垃圾回收检查。")
+            logger.debug("  ⏳ [清理空目录] 批量任务模式，跳过单次垃圾回收检查，等待统一清理。")
 
         # --- 整理记录 ---
         if moved_count > 0 or keep_original:
@@ -3294,8 +3297,8 @@ def task_scan_and_organize_115(processor=None):
                             prog = 20 + int((global_processed_count / total_items_to_process) * 75)
                             update_progress(prog, f"正在极速整理... ({global_processed_count}/{total_items_to_process})")
 
-                    # 批量移动
-                    if organizer.execute(files, target_cid, progress_callback=item_progress_callback):
+                    # 批量移动 (★ 传入 skip_gc=True)
+                    if organizer.execute(files, target_cid, progress_callback=item_progress_callback, skip_gc=True):
                         with counter_lock:
                             processed_count += len(files)
                 except Exception as e:
