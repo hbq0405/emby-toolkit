@@ -1053,3 +1053,42 @@ def get_season_watching_status(parent_tmdb_id: str, season_number: int) -> Optio
     except Exception as e:
         logger.error(f"  ➜ 从数据库获取季状态时出错 (TMDb: {parent_tmdb_id}, S{season_number}): {e}")
         return None
+    
+def get_series_deletion_info(tmdb_id: str) -> tuple:
+    """
+    获取剧集的 Emby ID 以及当前在库的所有季号。
+    用于判断删除单季时是否需要连同剧集外壳一起删除。
+    
+    Returns:
+        tuple: (series_emby_id: Optional[str], in_library_seasons: List[int])
+    """
+    series_emby_id = None
+    in_library_seasons = []
+    
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 1. 获取剧集本身的 Emby ID
+                cursor.execute("""
+                    SELECT emby_item_ids_json 
+                    FROM media_metadata 
+                    WHERE tmdb_id = %s AND item_type = 'Series'
+                """, (tmdb_id,))
+                row = cursor.fetchone()
+                if row and row.get('emby_item_ids_json'):
+                    series_emby_id = row['emby_item_ids_json'][0]
+                    
+                # 2. 获取所有在库的季号
+                cursor.execute("""
+                    SELECT season_number 
+                    FROM media_metadata 
+                    WHERE parent_series_tmdb_id = %s 
+                      AND item_type = 'Season' 
+                      AND in_library = TRUE
+                """, (tmdb_id,))
+                in_library_seasons = [r['season_number'] for r in cursor.fetchall() if r.get('season_number') is not None]
+                
+    except Exception as e:
+        logger.error(f"DB: 获取剧集 {tmdb_id} 删除评估信息失败: {e}", exc_info=True)
+        
+    return series_emby_id, in_library_seasons

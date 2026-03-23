@@ -934,17 +934,35 @@ class WatchlistProcessor:
             
             # 3. 检查是否需要删除旧文件 (Emby)
             if watchlist_cfg.get('auto_delete_old_files', False):
-                logger.info(f"  🗑️ [自动清理] 检测到“删除 Emby 旧文件”已开启，正在查找并删除 S{season_number}...")
+                logger.info(f"  🗑️ [自动清理] 检测到“删除 Emby 旧文件”已开启，正在评估删除范围...")
                 try:
-                    target_season_id = watchlist_db.get_season_emby_id(tmdb_id, season_number)
-                    if target_season_id:
-                        if emby.delete_item(target_season_id, self.emby_url, self.emby_api_key, self.emby_user_id):
-                            logger.info(f"  ✅ [自动清理] 已成功从 Emby 删除 S{season_number} (ID: {target_season_id})。")
+                    # 调用 DB 层获取剧集 Emby ID 和所有在库的季
+                    series_emby_id, in_library_seasons = watchlist_db.get_series_deletion_info(tmdb_id)
+                    
+                    # 过滤掉当前准备删除的季，看看还有没有剩下的季 (包括 SP/第0季)
+                    other_seasons = [s for s in in_library_seasons if s != season_number]
+
+                    if not other_seasons and series_emby_id:
+                        # 只有这一季，直接删除整部剧，防止留下空壳
+                        logger.info(f"  🗑️ [自动清理] 剧集下无其他在库季，准备直接删除整部剧集 (Emby ID: {series_emby_id})...")
+                        if emby.delete_item(series_emby_id, self.emby_url, self.emby_api_key, self.emby_user_id):
+                            logger.info(f"  ✅ [自动清理] 已成功从 Emby 删除整部剧集。")
                             time.sleep(2)
                         else:
-                            logger.error(f"  ❌ [自动清理] 删除 S{season_number} 失败，将继续执行洗版订阅。")
+                            logger.error(f"  ❌ [自动清理] 删除整部剧集失败，将继续执行洗版订阅。")
                     else:
-                        logger.warning(f"  ⚠️ [自动清理] 数据库中未找到 S{season_number} 的 Emby ID，跳过删除。")
+                        # 还有其他季，仅删除当前季
+                        target_season_id = watchlist_db.get_season_emby_id(tmdb_id, season_number)
+                        if target_season_id:
+                            logger.info(f"  🗑️ [自动清理] 剧集下还有其他季 {other_seasons}，仅删除 S{season_number} (Emby ID: {target_season_id})...")
+                            if emby.delete_item(target_season_id, self.emby_url, self.emby_api_key, self.emby_user_id):
+                                logger.info(f"  ✅ [自动清理] 已成功从 Emby 删除 S{season_number}。")
+                                time.sleep(2)
+                            else:
+                                logger.error(f"  ❌ [自动清理] 删除 S{season_number} 失败，将继续执行洗版订阅。")
+                        else:
+                            logger.warning(f"  ⚠️ [自动清理] 数据库中未找到 S{season_number} 的 Emby ID，跳过删除。")
+
                 except Exception as e:
                     logger.error(f"  ❌ [自动清理] 执行删除逻辑时出错: {e}")
             
