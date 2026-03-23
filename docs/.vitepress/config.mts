@@ -57,6 +57,7 @@ export default defineConfig({
             { text: 'Web 控制台', link: '/zh/guide/web-ui' },
             { text: '任务与调度', link: '/zh/guide/scheduler' },
             { text: '实时监控', link: '/zh/guide/monitor' },
+            { text: '115网盘', link: '/zh/guide/p115' },
             { text: '反向代理与虚拟库', link: '/zh/guide/reverse-proxy' },
             { text: 'Webhook 接入', link: '/zh/guide/webhook' },
             { text: '智能追剧', link: '/zh/guide/watchlist' },
