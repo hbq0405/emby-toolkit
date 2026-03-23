@@ -293,17 +293,13 @@
                         <n-tag v-else type="warning" size="small" round>未检查</n-tag>
                       </div>
                     </template>
-
-                    <!-- ★★★ 按钮单独一行 ★★★ -->
-                    <n-space align="center" :size="12" style="margin-bottom: 16px;">
-                      <n-button type="warning" size="small" @click="startWebAuth" :loading="isWebAuthing">
-                          <template #icon><n-icon :component="DiamondIcon" /></template>
-                          登录授权
-                      </n-button>
-                      <n-button size="small" secondary type="success" @click="check115Status" :loading="loading115Info">
-                        检查连通性
-                      </n-button>
-                    </n-space>
+                    <template #header-extra>
+                      <n-space align="center" :size="12">
+                        <n-button size="small" secondary type="success" @click="check115Status" :loading="loading115Info">
+                          检查连通性
+                        </n-button>
+                      </n-space>
+                    </template>
 
                     <!-- ★★★ 用户信息展示卡片 ★★★ -->
                     <div v-if="p115Info && p115Info.user_info" style="margin-bottom: 16px; padding: 12px; background: var(--n-action-color); border-radius: 8px; display: flex; align-items: center; gap: 12px;">
@@ -319,7 +315,7 @@
                       </div>
                     </div>
 
-                    <!-- ★★★ 分离配置: Access Token (管理用) - 纯展示 ★★★ -->
+                    <!-- : Access Token (管理用) -  -->
                     <n-form-item label="OpenAPI 授权">
                       <n-space vertical :size="8" style="width: 100%;">
                         <n-space align="center" justify="space-between">
@@ -329,6 +325,10 @@
                             </template>
                             {{ p115Info?.has_token ? '已授权 (自动续期中)' : '未授权 (请扫码)' }}
                           </n-tag>
+                          <n-button type="warning" size="small" @click="startWebAuth" :loading="isWebAuthing">
+                              <template #icon><n-icon :component="DiamondIcon" /></template>
+                              登录授权
+                          </n-button>
                         </n-space>
                         <n-text depth="3" style="font-size:0.8em;">
                           用于网盘整理。请点击上方“登录授权”获取授权。
