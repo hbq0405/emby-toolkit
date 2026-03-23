@@ -1054,16 +1054,16 @@ class P115DeleteBuffer:
             # ★ 只要没有媒体文件（哪怕里面有一堆 nfo 和 jpg），统统判定为空目录！
             if media_count == 0:
                 empty_cids_to_delete.append(cid)
-                logger.info(f"  🗑️ 判定为空壳目录，加入待清理队列: CID {cid}")
+                logger.debug(f"  🗑️ 判定为空目录，加入待清理队列: CID {cid}")
 
         # 4. 批量删除空目录
         if empty_cids_to_delete:
-            logger.info(f"  💥 [批量清理] 正在向 115 发送批量删除空壳目录指令 ({len(empty_cids_to_delete)} 个)...")
+            logger.debug(f"  💥 [批量清理] 正在向 115 发送批量删除空目录指令 ({len(empty_cids_to_delete)} 个)...")
             success_cids = _safe_batch_delete(empty_cids_to_delete, is_dir=True)
             if success_cids:
                 for cid in success_cids:
                     P115CacheManager.delete_cid(cid)
-                logger.info(f"  🧹 [批量清理] 成功连锅端删除了 {len(success_cids)} 个空壳目录。")
+                logger.info(f"  🧹 [批量清理] 成功删除了 {len(success_cids)} 个空目录。")
 
     @classmethod
     def flush(cls):
