@@ -903,17 +903,18 @@ class P115RecordManager:
             logger.error(f"  ❌ 写入 115 整理记录失败: {e}")
 
 # ======================================================================
-# ★★★ 115 全局批量删除缓冲队列 (防流控 + 绝对防御版) ★★★
+# ★★★ 115 全局批量删除缓冲队列 (极简暴力清理版) ★★★
 # ======================================================================
 class P115DeleteBuffer:
     _lock = threading.Lock()
     _fids_to_delete = set()
     _cids_to_check = set()
+    _check_save_path = False # ★ 新增：是否检查待整理根目录
     _timer = None
-    _last_add_time = 0  # ★ 新增：记录最后一次添加任务的时间
+    _last_add_time = 0
 
     @classmethod
-    def add(cls, fids, base_cids=None):
+    def add(cls, fids=None, base_cids=None, check_save_path=False):
         with cls._lock:
             if fids:
                 cls._fids_to_delete.update(fids)
@@ -922,6 +923,8 @@ class P115DeleteBuffer:
                     cls._cids_to_check.update(base_cids)
                 else:
                     cls._cids_to_check.add(base_cids)
+            if check_save_path:
+                cls._check_save_path = True
 
             # ★ 核心防抖：每次有新文件整理完，刷新倒计时
             cls._last_add_time = time.time()
@@ -933,22 +936,47 @@ class P115DeleteBuffer:
         with cls._lock:
             now = time.time()
             # ★ 智能防抖：如果距离最后一次整理还不到 10 秒，说明大部队还在干活，继续等！
-            # 这能完美解决 115 后端数据同步延迟导致的“假装非空”问题
             if now - cls._last_add_time < 10.0:
                 cls._timer = spawn_later(10.0 - (now - cls._last_add_time), cls._check_and_flush)
                 return
             
             fids = list(cls._fids_to_delete)
             cids = list(cls._cids_to_check)
+            check_save = cls._check_save_path
+            
             cls._fids_to_delete.clear()
             cls._cids_to_check.clear()
+            cls._check_save_path = False
             cls._timer = None
-
-        if not fids and not cids:
-            return
 
         client = P115Service.get_client()
         if not client: return
+
+        # =================================================================
+        # ★ 核心修改：直接拉取“待整理”目录下的所有一级子目录加入死刑检查名单
+        # =================================================================
+        config = get_config()
+        if check_save:
+            save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
+            unidentified_name = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_NAME, "未识别")
+            if save_path and str(save_path) != '0':
+                try:
+                    res = client.fs_files({'cid': save_path, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
+                    for item in res.get('data', []):
+                        if str(item.get('fc') or item.get('type')) == '0':
+                            sub_name = item.get('fn') or item.get('n') or item.get('file_name')
+                            sub_cid = item.get('fid') or item.get('file_id')
+                            # 排除“未识别”目录，其他的全部拉进去检查
+                            if sub_name != unidentified_name and sub_cid:
+                                cids.append(sub_cid)
+                except Exception as e:
+                    logger.error(f"  ❌ 获取待整理目录子项失败: {e}")
+
+        # 去重
+        cids = list(set(cids))
+
+        if not fids and not cids:
+            return
 
         def _safe_batch_delete(ids, is_dir=False):
             if not ids: return []
@@ -960,20 +988,18 @@ class P115DeleteBuffer:
                 if resp.get('state'):
                     return ids
                 
-                # ★ 流控熔断机制
                 if resp.get('code') in [770004, 990001]:
-                    logger.error(f"  🛑 [触发流控] 115 API 提示达到访问上限 ({resp.get('code')})，立即终止本次删除任务，保护账号！")
+                    logger.error(f"  🛑 [触发流控] 115 API 提示达到访问上限 ({resp.get('code')})，立即终止本次删除任务！")
                     return [] 
 
                 logger.error(f"  ❌ [批量销毁] 115 删除{item_type}失败 (第 {attempt + 1}/{max_retries} 次): {resp}")
                 if attempt < max_retries - 1:
                     time.sleep(3)
             
-            # ★ 核心修改：重试3次全失败后，直接放弃，不再降级为逐个删除！
-            logger.warning(f"  ⚠️ [批量销毁] 批量删除彻底失败，放弃本次清理，等待下次任务回收或手动删除。")
+            logger.warning(f"  ⚠️ [批量销毁] 批量删除彻底失败，放弃本次清理。")
             return []
 
-        # 1. 删除文件
+        # 1. 删除明确指定的文件
         if fids:
             logger.info(f"  💥 [批量销毁] 缓冲期结束，正在删除 {len(fids)} 个文件...")
             success_fids = _safe_batch_delete(fids, is_dir=False)
@@ -981,7 +1007,6 @@ class P115DeleteBuffer:
                 P115CacheManager.delete_files(success_fids)
 
         # 2. 获取免死金牌名单
-        config = get_config()
         protected_cids = {'0'}
         media_root = config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID)
         if media_root: protected_cids.add(str(media_root))
@@ -1007,7 +1032,6 @@ class P115DeleteBuffer:
             media_count = 0
             def count_media(current_cid):
                 nonlocal media_count
-                # ★ 增加重试机制，防止网络波动导致误判为非空
                 for attempt in range(3):
                     try:
                         res = client.fs_files({'cid': current_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
@@ -1020,25 +1044,26 @@ class P115DeleteBuffer:
                                         media_count += 1
                             elif str(item.get('fc')) == '0':
                                 count_media(item.get('fid'))
-                        return # 成功则退出重试
+                        return 
                     except Exception as e:
                         if attempt == 2:
-                            media_count += 999 # 彻底失败才假装有文件
+                            media_count += 999 
                         time.sleep(1)
 
             count_media(cid)
+            # ★ 只要没有媒体文件（哪怕里面有一堆 nfo 和 jpg），统统判定为空目录！
             if media_count == 0:
                 empty_cids_to_delete.append(cid)
-                logger.info(f"  🗑️ 判定为空目录，加入待清理队列: CID {cid}")
+                logger.info(f"  🗑️ 判定为空壳目录，加入待清理队列: CID {cid}")
 
         # 4. 批量删除空目录
         if empty_cids_to_delete:
-            logger.info(f"  💥 [批量清理] 正在向 115 发送批量删除空目录指令 ({len(empty_cids_to_delete)} 个)...")
+            logger.info(f"  💥 [批量清理] 正在向 115 发送批量删除空壳目录指令 ({len(empty_cids_to_delete)} 个)...")
             success_cids = _safe_batch_delete(empty_cids_to_delete, is_dir=True)
             if success_cids:
                 for cid in success_cids:
                     P115CacheManager.delete_cid(cid)
-                logger.info(f"  🧹 [批量清理] 成功删除 {len(success_cids)} 个空目录。")
+                logger.info(f"  🧹 [批量清理] 成功连锅端删除了 {len(success_cids)} 个空壳目录。")
 
     @classmethod
     def flush(cls):
@@ -2044,7 +2069,7 @@ class SmartOrganizer:
             
             # 绝对安全防御：禁止直接删除，交由垃圾回收器检查是否为空
             from handler.p115_service import P115DeleteBuffer
-            P115DeleteBuffer.add(fids=[], base_cids=[source_root_id])
+            P115DeleteBuffer.add(check_save_path=True)
             logger.info(f"  ⏳ [清理空目录] 已将拆解完毕的合集包交由垃圾回收器检查: {root_name}")
             
             return processed_count > 0
@@ -2804,38 +2829,14 @@ class SmartOrganizer:
             self.client.fs_move(unrecognized_fids, unidentified_cid)
 
         # =================================================================
-        # ★ 精准收集所有涉及的源目录和父目录，交由垃圾回收器
+        # ★ 极简垃圾回收：直接通知缓冲队列检查“待整理”目录
         # =================================================================
-        cids_to_check = set()
-        if is_batch:
-            for item in root_item_or_items:
-                fc_val = item.get('fc') if item.get('fc') is not None else item.get('type')
-                if str(fc_val) == '0': 
-                    cids_to_check.add(item.get('fid') or item.get('file_id'))
-                    cids_to_check.add(item.get('pid') or item.get('parent_id') or item.get('cid'))
-                else: 
-                    cids_to_check.add(item.get('pid') or item.get('parent_id') or item.get('cid'))
-        else:
-            # ★ 核心拦截：如果带有免死金牌，直接跳过收集，彻底切断与垃圾回收器的联系！
-            if not root_item.get('_skip_gc'):
-                if is_source_file:
-                    cids_to_check.add(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
-                else:
-                    cids_to_check.add(source_root_id)
-                    cids_to_check.add(root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
-            else:
-                logger.info("  🛡️ [MP上传] 单文件跳过源目录垃圾回收检查。")
-
-        if final_home_cid and str(final_home_cid) != '0':
-            cids_to_check.add(final_home_cid)
-        
-        # 过滤掉空的和 '0' (根目录)
-        valid_cids_to_check = [str(cid) for cid in cids_to_check if cid and str(cid) != '0']
-
-        if valid_cids_to_check:
-            logger.info(f"  ⏳ [清理空目录] 已将 {len(valid_cids_to_check)} 个源目录交由全局垃圾回收器检查清理...")
+        if not (not is_batch and root_item.get('_skip_gc')):
+            logger.info(f"  ⏳ [清理空目录] 整理完毕，已通知全局垃圾回收器检查待整理目录...")
             from handler.p115_service import P115DeleteBuffer
-            P115DeleteBuffer.add(fids=[], base_cids=valid_cids_to_check)
+            P115DeleteBuffer.add(check_save_path=True)
+        else:
+            logger.info("  🛡️ [MP上传] 单文件跳过垃圾回收检查。")
 
         # --- 整理记录 ---
         if moved_count > 0 or keep_original:
@@ -3338,6 +3339,10 @@ def task_scan_and_organize_115(processor=None):
                 except Exception as e:
                     logger.error(f"  ❌ 批量移入未识别目录失败: {e}")
 
+        # ★ 任务结束前，触发一次全局待整理目录清理
+        from handler.p115_service import P115DeleteBuffer
+        P115DeleteBuffer.add(check_save_path=True)
+        
         executor.shutdown()
         final_msg = f"扫描结束！成功归类 {processed_count} 个，移入未识别 {moved_to_unidentified} 个。"
         logger.info(f"=== {final_msg} ===")
