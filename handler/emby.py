@@ -836,7 +836,7 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
                         "ReplaceAllMetadata": "false"
                     }
                     emby_client.post(refresh_url, params=refresh_params)
-                    logger.info(f"  🚀 [定点扫描] 已对 '{target_name}' 触发立即扫描！")
+                    logger.info(f"  🚀 [定点扫描] 已通知 Emby 对 '{target_name}' 立即扫描！")
                     return True
         except Exception as e:
             pass # 忽略查询错误，继续向上找
@@ -844,7 +844,7 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
         # 向上退一级 (例如从 /strm/电影/超级英雄/奇异博士 退到 /strm/电影/超级英雄)
         current_path = os.path.dirname(current_path)
         
-    logger.warning(f"  ⚠️ [局部刷新] 未能在 Emby 中找到 {target_dir} 的有效父目录，将依赖 90 秒自动扫描。")
+    logger.warning(f"  ⚠️ [定点扫描] 未能在 Emby 中找到 {target_dir} 的有效父目录，将等待 90 秒后自动扫描。")
     return False
 
 # --- 极速轻量级文件变更通知 ---
@@ -868,7 +868,7 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
         # 直接提取所有文件所在的目录，去重 (防止批量入库时重复刷新同一个父目录)
         dirs_to_refresh = set(os.path.dirname(p) for p in file_paths if p)
         
-        logger.info(f"  ⚡ [极速通知] 收到 {len(file_paths)} 个文件{action_zh}请求，准备对 {len(dirs_to_refresh)} 个父目录触发精准扫描...")
+        #logger.info(f"  ⚡ [极速通知] 收到 {len(file_paths)} 个文件{action_zh}请求，准备对 {len(dirs_to_refresh)} 个父目录触发精准扫描...")
         
         # 直接拿鞭子抽，让 Emby 扫目录
         for d in dirs_to_refresh:
