@@ -323,15 +323,14 @@
                             <template #icon>
                               <n-icon :component="p115Info?.has_token ? CheckIcon : CloseIcon" />
                             </template>
-                            {{ p115Info?.has_token ? '已授权 (自动续期中)' : '未授权 (请扫码)' }}
+                            {{ p115Info?.has_token ? '已授权' : '未授权 (请登录)' }}
                           </n-tag>
                           <n-button type="warning" size="small" @click="startWebAuth" :loading="isWebAuthing">
-                              <template #icon><n-icon :component="DiamondIcon" /></template>
-                              登录授权
+                            {{ p115Info?.has_token ? '重新登录' : '登录授权' }}
                           </n-button>
                         </n-space>
                         <n-text depth="3" style="font-size:0.8em;">
-                          用于网盘整理。请点击上方“登录授权”获取授权。
+                          用于网盘整理。请点击“登录授权”获取授权。
                         </n-text>
                       </n-space>
                     </n-form-item>
@@ -1717,7 +1716,6 @@ import {
   ListOutline as ListIcon, 
   ColorWandOutline as ColorWandIcon,
   SearchOutline as SearchIcon,
-  QrCodeOutline,
   DiamondOutline as DiamondIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
