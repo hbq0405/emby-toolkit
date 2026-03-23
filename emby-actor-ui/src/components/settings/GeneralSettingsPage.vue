@@ -331,7 +331,7 @@
                           </n-tag>
                         </n-space>
                         <n-text depth="3" style="font-size:0.8em;">
-                          用于网盘整理。请点击右上角“扫码登录”获取授权。
+                          用于网盘整理。请点击上方“登录授权”获取授权。
                         </n-text>
                       </n-space>
                     </n-form-item>
