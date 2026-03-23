@@ -169,7 +169,6 @@
 | `p115_download_subs` | 下载字幕文件 |
 | `p115_local_cleanup` | 启用本地清理 |
 | `p115_mediainfo_center` | 分布式媒体信息服务器 |
-| `p115_app_id` | 自定义 App ID |
 | `local_strm_root` | 本地 STRM 根目录 |
 | `etk_server_url` | ETK 服务器地址（STRM 直链用） |
 | `p115_enable_sync_delete` | 联动删除网盘文件 |

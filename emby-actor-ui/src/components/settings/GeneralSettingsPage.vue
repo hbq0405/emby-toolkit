@@ -298,18 +298,14 @@
                     <n-space align="center" :size="12" style="margin-bottom: 16px;">
                       <n-button type="warning" size="small" @click="startWebAuth" :loading="isWebAuthing">
                           <template #icon><n-icon :component="DiamondIcon" /></template>
-                          网页授权
-                        </n-button>
-                      <n-button type="primary" size="small" @click="openQrcodeModal">
-                        <template #icon><n-icon :component="QrCodeOutline" /></template>
-                        扫码登录
+                          登录授权
                       </n-button>
                       <n-button size="small" secondary type="success" @click="check115Status" :loading="loading115Info">
                         检查连通性
                       </n-button>
                     </n-space>
 
-                    <!-- ★★★ 新增：用户信息展示卡片 ★★★ -->
+                    <!-- ★★★ 用户信息展示卡片 ★★★ -->
                     <div v-if="p115Info && p115Info.user_info" style="margin-bottom: 16px; padding: 12px; background: var(--n-action-color); border-radius: 8px; display: flex; align-items: center; gap: 12px;">
                       <n-avatar :src="p115Info.user_info.user_face_m" round size="large" />
                       <div style="flex: 1; overflow: hidden;">
@@ -338,15 +334,6 @@
                           用于网盘整理。请点击右上角“扫码登录”获取授权。
                         </n-text>
                       </n-space>
-                    </n-form-item>
-
-                    <n-form-item label="自定义 AppID (可选)" path="p115_app_id">
-                      <n-input v-model:value="configModel.p115_app_id" placeholder="默认: ETK" />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          如果你在 115 开放平台申请了应用，可填入自己的 AppID。留空则使用 ETK 默认 ID。修改后需重新扫码授权。
-                        </n-text>
-                      </template>
                     </n-form-item>
 
                     <!-- ★★★ 分离配置: Cookie (播放用) - 纯展示 ★★★ -->
@@ -2345,77 +2332,6 @@ const saveManualCookie = async () => {
   } catch (e) {
     message.error('保存失败: ' + (e.response?.data?.message || e.message));
   }
-};
-
-// ★★★ 115 扫码登录 Modal 逻辑 ★★★
-const showQrcodeModal = ref(false);
-const qrcodeUrl = ref('');
-const qrcodeStatus = ref('idle'); // idle, waiting, success, expired, error
-const qrcodeLoading = ref(false);
-const qrcodePolling = ref(null);
-
-const openQrcodeModal = async () => {
-  showQrcodeModal.value = true;
-  qrcodeStatus.value = 'loading';
-  qrcodeLoading.value = true;
-  
-  try {
-    const res = await axios.post('/api/p115/qrcode');
-    if (res.data && res.data.success) {
-      qrcodeUrl.value = res.data.data.qrcode;
-      qrcodeStatus.value = 'waiting';
-      startPolling();
-    } else {
-      qrcodeStatus.value = 'error';
-      message.error(res.data?.message || '获取二维码失败');
-    }
-  } catch (e) {
-    qrcodeStatus.value = 'error';
-    message.error('获取二维码失败: ' + (e.response?.data?.message || e.message));
-  } finally {
-    qrcodeLoading.value = false;
-  }
-};
-
-const startPolling = () => {
-  // 每2秒检查一次二维码状态
-  qrcodePolling.value = setInterval(async () => {
-    try {
-      const res = await axios.get('/api/p115/qrcode/status');
-      const data = res.data;
-      
-      if (data.status === 'success') {
-        qrcodeStatus.value = 'success';
-        message.success('登录成功！授权已自动保存');
-        stopPolling();
-        setTimeout(() => {
-          showQrcodeModal.value = false;
-          check115Status(); // 刷新状态显示
-        }, 1500);
-      } else if (data.status === 'expired') {
-        qrcodeStatus.value = 'expired';
-        message.warning('二维码已过期');
-        stopPolling();
-      }
-      // waiting 状态继续轮询
-    } catch (e) {
-      console.error('检查二维码状态失败', e);
-    }
-  }, 2000);
-};
-
-const stopPolling = () => {
-  if (qrcodePolling.value) {
-    clearInterval(qrcodePolling.value);
-    qrcodePolling.value = null;
-  }
-};
-
-const closeQrcodeModal = () => {
-  stopPolling();
-  showQrcodeModal.value = false;
-  qrcodeUrl.value = '';
-  qrcodeStatus.value = 'idle';
 };
 
 // ★★★ 全自动网页授权 (授权码模式) 逻辑 ★★★
