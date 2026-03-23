@@ -804,6 +804,11 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
     for _ in range(4):
         if not current_path or current_path == '/' or current_path == '\\':
             break
+
+        if not os.path.exists(current_path):
+            #logger.debug(f"  👻 [防僵尸] 物理目录已不存在，强制向上追溯: {current_path}")
+            current_path = os.path.dirname(current_path)
+            continue
             
         # 查询 Emby 中是否存在这个路径
         api_url = f"{base_url.rstrip('/')}/Items"
