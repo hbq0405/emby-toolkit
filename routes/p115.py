@@ -488,81 +488,80 @@ def handle_sorting_rules():
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
-# ★ 收紧限流器，专门对付 Emby 的并发探测 (1秒1次即可，保护 115 账号)
-api_limiter = RateLimiter(max_requests=1, period=1)
+# 实例化限流器：建议 2 秒内最多允许 3 次解析请求（针对 115 比较稳妥）
+api_limiter = RateLimiter(max_requests=3, period=2)
+# 全局解析锁：确保同一时间只有一个线程在请求 115 API，防止并发冲突
 fetch_lock = threading.Lock()
+
+# 用于存储已解析的 URL，格式改为: { cache_key: {"url": direct_url, "expire_at": timestamp} }
 _url_cache = {}
 
 def _get_cached_115_url(pick_code, user_agent, client_ip=None):
     """
-    带缓存的 115 直链获取器 (智能区分真实播放与后台刮削)
+    带缓存的 115 直链获取器 (修复 TTL 和 负面缓存 问题)
     """
-    # ★ 恢复 UA 隔离：确保刮削器和播放器获取各自专属的直链，防止 403！
-    cache_key = (pick_code, user_agent) 
+    cache_key = (pick_code, user_agent, client_ip)
     now = time.time()
     
-    # 1. 先检查缓存及是否过期 (无锁极速读取)
+    # 1. 先检查缓存及是否过期
     if cache_key in _url_cache:
         cached_data = _url_cache[cache_key]
         if now < cached_data["expire_at"]:
-            return cached_data["url"]
+            cached_url = cached_data["url"]
+            if cached_url:
+                # 缓存命中且有效，直接返回（静默，不打印日志）
+                return cached_url
+            else:
+                # 命中短期的“失败缓存”，防止疯狂重试打死 115 API
+                return None
         else:
+            # 缓存已过期，清理掉
             del _url_cache[cache_key]
     
-    # =================================================================
-    # ★ 智能识别 Emby 后台刮削 (Lavf/ffmpeg)
-    # =================================================================
-    is_scanner = user_agent and 'Lavf' in user_agent
-    
-    # 如果是后台刮削，且触发了流控，直接瞬间返回 None，绝不阻塞 Flask 线程！
-    if is_scanner:
-        if not api_limiter.consume():
-            return None # 静默拦截，防止 2 万集并发把日志撑爆
-    
+    # 缓存未命中或已过期，需要请求 115 API
     client = P115Service.get_client()
     if not client: 
-        _url_cache[cache_key] = {"url": None, "name": pick_code, "expire_at": now + 10}
+        # 客户端未初始化，防刷缓存 10 秒
+        _url_cache[cache_key] = {"url": None, "expire_at": now + 10}
         return None
     
-    # 使用锁：即使并发进来，也只有一个能去查 115 API
+    # 使用锁：即使缓存失效，多个请求同时进来，也只有一个能去查 115 API
     with fetch_lock:
         now = time.time()
+        # 二次检查缓存（可能在锁等待期间被其他线程填充）
         if cache_key in _url_cache and now < _url_cache[cache_key]["expire_at"]:
-            return _url_cache[cache_key]["url"]
+            cached_url = _url_cache[cache_key]["url"]
+            if cached_url:
+                logger.info(f"  📥 [115直链] 命中缓存: {pick_code[:8]}...")
+                return cached_url
+        
+        # 这里的限流逻辑：如果令牌不足，直接等待或返回
+        if not api_limiter.consume():
+            logger.warning(f"  ⚠️ [流控] 请求过快，已拦截 pick_code: {pick_code}")
+            time.sleep(0.5) # 稍微强制延迟，缓解压力
+            return None # 触发流控不写入缓存，让客户端稍后重试即可
             
         try:
+            # 增加一个小随机延迟，模拟人为行为
             time.sleep(0.1) 
             
+            # 使用 POST 方法获取直链
             url_obj = client.download_url(pick_code, user_agent=user_agent)
-            direct_url = str(url_obj) if url_obj else None
-            
-            if direct_url:
-                display_name = pick_code[:8] + "..."
-                try:
-                    from urllib.parse import urlparse, parse_qs, unquote
-                    parsed = urlparse(direct_url)
-                    qs = parse_qs(parsed.query)
-                    if 'file' in qs: display_name = unquote(qs['file'][0])
-                    elif 'filename' in qs: display_name = unquote(qs['filename'][0])
-                    else:
-                        path_name = unquote(os.path.basename(parsed.path))
-                        if path_name: display_name = path_name
-                except: pass
-
-                # 定制化日志输出
-                if is_scanner:
-                    logger.info(f"  🎬 [115直链] 提取媒体信息 -> {display_name}")
-                else:
-                    logger.info(f"  ▶️ [115直链] 用户开始播放 -> {display_name}")
-                
-                _url_cache[cache_key] = {"url": direct_url, "name": display_name, "expire_at": now + 7200}
+            if url_obj:
+                direct_url = str(url_obj)
+                # 首次获取日志
+                logger.info(f"  🎬 [115直链] 获取成功: {url_obj.name}")
+                # 存入缓存，115 直链通常几小时失效，这里设置缓存 2 小时 (7200秒)
+                _url_cache[cache_key] = {"url": direct_url, "expire_at": now + 7200}
                 return direct_url
             else:
-                _url_cache[cache_key] = {"url": None, "name": pick_code, "expire_at": now + 10}
+                # 获取失败，存入短期负面缓存 (10秒)，防止播放器疯狂重试导致 115 封号
+                _url_cache[cache_key] = {"url": None, "expire_at": now + 10}
                 return None
         except Exception as e:
             logger.error(f"  ❌ 获取 115 直链 API 报错: {e}")
-            _url_cache[cache_key] = {"url": None, "name": pick_code, "expire_at": now + 10}
+            # 异常也存入短期负面缓存 (10秒)
+            _url_cache[cache_key] = {"url": None, "expire_at": now + 10}
             return None
 
 # 保留原来的 lru_cache 装饰器作为备用（用于 play_115_video 直接调用）
@@ -574,8 +573,7 @@ def _get_cached_115_url_legacy(pick_code, user_agent, client_ip=None):
     return _get_cached_115_url(pick_code, user_agent, client_ip)
 
 @p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) # 允许 HEAD 请求，加速客户端嗅探
-@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
-def play_115_video(pick_code, filename=None):
+def play_115_video(pick_code):
     """
     终极极速 302 直链解析服务 (带内存缓存版)
     """
