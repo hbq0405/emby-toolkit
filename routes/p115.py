@@ -488,98 +488,29 @@ def handle_sorting_rules():
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
-# ★ 收紧限流器，专门对付 Emby 的并发探测 (1秒1次即可，保护 115 账号)
-api_limiter = RateLimiter(max_requests=1, period=1)
-fetch_lock = threading.Lock()
-_url_cache = {}
-
-def _get_cached_115_url(pick_code, user_agent, client_ip=None):
-    """
-    带缓存的 115 直链获取器
-    """
-    cache_key = (pick_code, user_agent) 
-    now = time.time()
-    
-    # 1. 先检查缓存及是否过期 (无锁极速读取)
-    if cache_key in _url_cache:
-        cached_data = _url_cache[cache_key]
-        if now < cached_data["expire_at"]:
-            logger.info(f"  ⚡ [115直链] 命中内存缓存 -> {cached_data['name']}")
-            return cached_data["url"]
-        else:
-            del _url_cache[cache_key]
-    
-    client = P115Service.get_client()
-    if not client: 
-        return None
-    
-    # 使用锁：即使并发进来，也只有一个能去查 115 API
-    with fetch_lock:
-        now = time.time()
-        if cache_key in _url_cache and now < _url_cache[cache_key]["expire_at"]:
-            return _url_cache[cache_key]["url"]
-            
-        try:
-            time.sleep(0.1) 
-            
-            url_obj = client.download_url(pick_code, user_agent=user_agent)
-            direct_url = str(url_obj) if url_obj else None
-            
-            if direct_url:
-                display_name = pick_code[:8] + "..."
-                try:
-                    from urllib.parse import urlparse, parse_qs, unquote
-                    parsed = urlparse(direct_url)
-                    qs = parse_qs(parsed.query)
-                    if 'file' in qs: display_name = unquote(qs['file'][0])
-                    elif 'filename' in qs: display_name = unquote(qs['filename'][0])
-                    else:
-                        path_name = unquote(os.path.basename(parsed.path))
-                        if path_name: display_name = path_name
-                except: pass
-
-                logger.info(f"  ▶️ [115直链] 请求直链成功 -> {display_name}")
-                
-                _url_cache[cache_key] = {"url": direct_url, "name": display_name, "expire_at": now + 7200}
-                return direct_url
-            else:
-                _url_cache[cache_key] = {"url": None, "name": pick_code, "expire_at": now + 10}
-                return None
-        except Exception as e:
-            logger.error(f"  ❌ 获取 115 直链 API 报错: {e}")
-            return None
-
-# 保留原来的 lru_cache 装饰器作为备用（用于 play_115_video 直接调用）
-@lru_cache(maxsize=2048)
-def _get_cached_115_url_legacy(pick_code, user_agent, client_ip=None):
-    """
-    带缓存的 115 直链获取器（旧版本，保留兼容性）
-    """
-    return _get_cached_115_url(pick_code, user_agent, client_ip)
-
-@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) # 允许 HEAD 请求，加速客户端嗅探
+@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) 
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (带内存缓存版)
+    终极极速 302 直链解析服务 (底层已实现全局缓存和防并发)
     """
     if request.method == 'HEAD':
-        # HEAD 请求通常是播放器嗅探，直接返回 200 或简单处理，不触发解析
         return '', 200
 
     try:
-        # ★ 必须使用客户端最真实的 UA，否则 115 CDN 会因为 UA 不匹配报 403 导致播放器回退中转！
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
-        # 尝试从缓存获取
-        real_url = _get_cached_115_url(pick_code, player_ua)
+        client = P115Service.get_client()
+        if not client:
+            return "115 Client not initialized", 500
+            
+        # ★ 直接调用底层，底层已经实现了完美的全局缓存和防并发锁
+        real_url = client.download_url(pick_code, user_agent=player_ua)
         
         if not real_url:
-            # 如果解析太快被拦截了，给播放器返回 429 告知稍后再试
             return "Too Many Requests - 115 API Protection", 429
             
         logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
-        # ★ 核心修复 4：为 302 重定向增加跨域允许头，防止 iOS 严格的安全策略拦截
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
