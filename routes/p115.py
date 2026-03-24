@@ -487,87 +487,29 @@ def handle_sorting_rules():
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
-@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD', 'OPTIONS']) 
-@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD', 'OPTIONS'])
+@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) 
+@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (智能代理防劫持版)
+    终极极速 302 直链解析服务 (底层已实现全局缓存和防并发)
     """
-    if request.method == 'OPTIONS':
-        response = current_app.make_default_options_response()
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Range, User-Agent, Accept'
-        return response
+    if request.method == 'HEAD':
+        return '', 200
 
     try:
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
-        player_ua_lower = player_ua.lower()
         
-        from handler.p115_service import P115Service
         client = P115Service.get_client()
         if not client:
             return "115 Client not initialized", 500
             
-        # 获取 115 真实直链 (绑定了当前请求的 UA)
+        # ★ 直接调用底层，底层已经实现了完美的全局缓存和防并发锁
         real_url = client.download_url(pick_code, user_agent=player_ua)
         
         if not real_url:
             return "Too Many Requests - 115 API Protection", 429
-
-        # =================================================================
-        # ★ 核心逻辑：智能 UA 路由 (解决 Infuse/Emby 播放报错/回退转码)
-        # =================================================================
-        # 真正的底层播放器，它们会老老实实处理 302，且不会再把 URL 移交给别人导致 UA 突变
-        final_players = ['applecoremedia', 'exoplayer', 'lavf', 'vlc', 'mpv', 'potplayer', 'kodi', 'xbmc']
-        
-        is_final_player = any(p in player_ua_lower for p in final_players)
-        
-        # 桌面端纯浏览器也是 Final Player (排除移动端伪装)
-        if 'mozilla' in player_ua_lower and not any(x in player_ua_lower for x in ['iphone', 'ipad', 'android', 'mobile', 'tv']):
-            is_final_player = True
-
-        # 如果是探测器/第三方播放器外壳 (Infuse/Emby/Senplayer)，或者是一个 HEAD 请求
-        if not is_final_player or request.method == 'HEAD':
-            logger.info(f"  🕵️ [智能代理] 拦截外壳探测，启动代理模式防劫持 -> UA: {player_ua[:30]}...")
             
-            headers = {"User-Agent": player_ua}
-            if "Range" in request.headers:
-                headers["Range"] = request.headers["Range"]
-                
-            try:
-                if request.method == 'HEAD':
-                    req = requests.head(real_url, headers=headers, timeout=10, allow_redirects=True)
-                    resp = Response(status=req.status_code)
-                else:
-                    req = requests.get(real_url, headers=headers, stream=True, timeout=10, allow_redirects=True)
-                    
-                    # 使用生成器确保连接安全释放
-                    def generate():
-                        try:
-                            for chunk in req.iter_content(chunk_size=1024*1024):
-                                yield chunk
-                        finally:
-                            req.close()
-                            
-                    resp = Response(stream_with_context(generate()), status=req.status_code)
-                    
-                # 完美透传 115 的 Header (尤其是 Content-Length 和 Content-Range)
-                excluded_headers = ['content-encoding', 'transfer-encoding', 'connection']
-                for k, v in req.headers.items():
-                    if k.lower() not in excluded_headers:
-                        resp.headers[k] = v
-                        
-                resp.headers['Access-Control-Allow-Origin'] = '*'
-                return resp
-            except Exception as e:
-                logger.error(f"  ❌ 代理请求失败: {e}")
-                return str(e), 500
-
-        # =================================================================
-        # 真正的底层播放器来拉取视频流了，直接 302 重定向！
-        # =================================================================
-        logger.info(f"  🚀 [302重定向] 底层播放器请求直链，已放行！(UA: {player_ua[:30]}...)")
+        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
