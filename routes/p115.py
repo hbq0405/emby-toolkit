@@ -495,8 +495,9 @@ _url_cache = {}
 
 def _get_cached_115_url(pick_code, user_agent, client_ip=None):
     """
-    带缓存的 115 直链获取器
+    带缓存的 115 直链获取器 (智能区分真实播放与后台刮削)
     """
+    # ★ 恢复 UA 隔离：确保刮削器和播放器获取各自专属的直链，防止 403！
     cache_key = (pick_code, user_agent) 
     now = time.time()
     
@@ -504,13 +505,23 @@ def _get_cached_115_url(pick_code, user_agent, client_ip=None):
     if cache_key in _url_cache:
         cached_data = _url_cache[cache_key]
         if now < cached_data["expire_at"]:
-            logger.info(f"  ⚡ [115直链] 命中内存缓存 -> {cached_data['name']}")
             return cached_data["url"]
         else:
             del _url_cache[cache_key]
     
+    # =================================================================
+    # ★ 智能识别 Emby 后台刮削 (Lavf/ffmpeg)
+    # =================================================================
+    is_scanner = user_agent and 'Lavf' in user_agent
+    
+    # 如果是后台刮削，且触发了流控，直接瞬间返回 None，绝不阻塞 Flask 线程！
+    if is_scanner:
+        if not api_limiter.consume():
+            return None # 静默拦截，防止 2 万集并发把日志撑爆
+    
     client = P115Service.get_client()
     if not client: 
+        _url_cache[cache_key] = {"url": None, "name": pick_code, "expire_at": now + 10}
         return None
     
     # 使用锁：即使并发进来，也只有一个能去查 115 API
@@ -538,7 +549,11 @@ def _get_cached_115_url(pick_code, user_agent, client_ip=None):
                         if path_name: display_name = path_name
                 except: pass
 
-                logger.info(f"  ▶️ [115直链] 请求直链成功 -> {display_name}")
+                # 定制化日志输出
+                if is_scanner:
+                    logger.info(f"  🎬 [115直链] 提取媒体信息 -> {display_name}")
+                else:
+                    logger.info(f"  ▶️ [115直链] 用户开始播放 -> {display_name}")
                 
                 _url_cache[cache_key] = {"url": direct_url, "name": display_name, "expire_at": now + 7200}
                 return direct_url
@@ -547,6 +562,7 @@ def _get_cached_115_url(pick_code, user_agent, client_ip=None):
                 return None
         except Exception as e:
             logger.error(f"  ❌ 获取 115 直链 API 报错: {e}")
+            _url_cache[cache_key] = {"url": None, "name": pick_code, "expire_at": now + 10}
             return None
 
 # 保留原来的 lru_cache 装饰器作为备用（用于 play_115_video 直接调用）
@@ -568,7 +584,6 @@ def play_115_video(pick_code, filename=None):
         return '', 200
 
     try:
-        # ★ 必须使用客户端最真实的 UA，否则 115 CDN 会因为 UA 不匹配报 403 导致播放器回退中转！
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
         # 尝试从缓存获取
@@ -578,11 +593,7 @@ def play_115_video(pick_code, filename=None):
             # 如果解析太快被拦截了，给播放器返回 429 告知稍后再试
             return "Too Many Requests - 115 API Protection", 429
             
-        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
-        # ★ 核心修复 4：为 302 重定向增加跨域允许头，防止 iOS 严格的安全策略拦截
-        response = redirect(real_url, code=302)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return response
+        return redirect(real_url, code=302)
         
     except Exception as e:
         logger.error(f"  ❌ 直链解析发生异常: {e}")
