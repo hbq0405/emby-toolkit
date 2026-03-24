@@ -488,62 +488,41 @@ def handle_sorting_rules():
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
-@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD', 'OPTIONS']) 
-@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD', 'OPTIONS'])
+@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) 
+@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
-    # 1. 处理跨域预检请求 (解决网页端播放报错)
-    if request.method == 'OPTIONS':
-        return '', 204, {
-            'Access-Control-Allow-Origin': '*',
-            'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
-            'Access-Control-Allow-Headers': 'User-Agent, Range, Accept'
-        }
-
+    """
+    终极极速 302 直链解析服务 (底层已实现全局缓存和防并发)
+    """
     if request.method == 'HEAD':
         return '', 200
 
     try:
-        # 2. 强制伪装标准浏览器 UA，防止苹果播放器丢 UA 导致 115 报 403
-        player_ua = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+
+        # ★ 核心修复 3：115 CDN 会无情封杀 AppleCoreMedia 和 Infuse 的 UA 导致 403
+        # 强制伪装成标准的 Mac Safari 浏览器，骗过 115 CDN
+        ua_lower = player_ua.lower()
+        if 'applecoremedia' in ua_lower or 'infuse' in ua_lower or 'emby' in ua_lower or 'ios' in ua_lower:
+            player_ua = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15'
         
         client = P115Service.get_client()
         if not client:
             return "115 Client not initialized", 500
             
-        # 3. 引入与 reverse_proxy.py 完全一致的 15 次重试与防风控逻辑
-        max_retries = 15 
-        retry_count = 0
-        real_url = None
-
-        while retry_count < max_retries:
-            try:
-                real_url = client.download_url(pick_code, user_agent=player_ua)
-                if real_url:
-                    break 
-                else:
-                    logger.warning(f"  ⚠️ [STRM直链] 未拿到直链，1.5秒后重试 ({retry_count+1}/{max_retries})...")
-                    time.sleep(1.5)
-            except Exception as e:
-                err_str = str(e)
-                if '405' in err_str or 'Method Not Allowed' in err_str:
-                    logger.warning(f"  🛑 [STRM直链] 触发 115 风控，休眠 10 秒后继续尝试 ({retry_count+1}/{max_retries})...")
-                    time.sleep(10)
-                else:
-                    logger.warning(f"  ⚠️ [STRM直链] 发生异常: {e}，2秒后重试 ({retry_count+1}/{max_retries})...")
-                    time.sleep(2)
-            retry_count += 1
-
+        # ★ 直接调用底层，底层已经实现了完美的全局缓存和防并发锁
+        real_url = client.download_url(pick_code, user_agent=player_ua)
+        
         if not real_url:
-            logger.error(f"  ❌ [STRM直链] 达到最大重试次数，获取直链失败！")
             return "Too Many Requests - 115 API Protection", 429
             
-        logger.info(f"  🚀 [STRM直链] 客户端请求直链成功，已放行！")
+        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
         
     except Exception as e:
-        logger.error(f"  ❌ 直链解析发生致命异常: {e}")
+        logger.error(f"  ❌ 直链解析发生异常: {e}")
         return str(e), 500
     
 @p115_bp.route('/replace_strm', methods=['POST'])
