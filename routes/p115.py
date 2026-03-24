@@ -491,25 +491,25 @@ def handle_sorting_rules():
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (底层已实现全局缓存和防并发)
+    终极极速 302 直链解析服务 (已切换为 OpenAPI 接口)
     """
     if request.method == 'HEAD':
         return '', 200
 
     try:
+        # ★ 核心：获取播放器的真实 UA
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
         client = P115Service.get_client()
         if not client:
             return "115 Client not initialized", 500
             
-        # ★ 直接调用底层，底层已经实现了完美的全局缓存和防并发锁
-        real_url = client.download_url(pick_code, user_agent=player_ua)
+        # ★ 调用 OpenAPI 直链接口，并透传播放器 UA
+        real_url = client.openapi_downurl(pick_code, user_agent=player_ua)
         
         if not real_url:
-            return "Too Many Requests - 115 API Protection", 429
+            return "Failed to get download URL or Rate Limited", 404
             
-        #logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
