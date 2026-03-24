@@ -488,110 +488,32 @@ def handle_sorting_rules():
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
-# 实例化限流器：建议 2 秒内最多允许 3 次解析请求（针对 115 比较稳妥）
-api_limiter = RateLimiter(max_requests=3, period=2)
-# 全局解析锁：确保同一时间只有一个线程在请求 115 API，防止并发冲突
-fetch_lock = threading.Lock()
-
-# 用于存储已解析的 URL，格式改为: { cache_key: {"url": direct_url, "expire_at": timestamp} }
-_url_cache = {}
-
-def _get_cached_115_url(pick_code, user_agent, client_ip=None):
+@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) 
+@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
+def play_115_video(pick_code, filename=None):
     """
-    带缓存的 115 直链获取器 (修复 TTL 和 负面缓存 问题)
-    """
-    cache_key = (pick_code, user_agent, client_ip)
-    now = time.time()
-    
-    # 1. 先检查缓存及是否过期
-    if cache_key in _url_cache:
-        cached_data = _url_cache[cache_key]
-        if now < cached_data["expire_at"]:
-            cached_url = cached_data["url"]
-            if cached_url:
-                # 缓存命中且有效，直接返回（静默，不打印日志）
-                return cached_url
-            else:
-                # 命中短期的“失败缓存”，防止疯狂重试打死 115 API
-                return None
-        else:
-            # 缓存已过期，清理掉
-            del _url_cache[cache_key]
-    
-    # 缓存未命中或已过期，需要请求 115 API
-    client = P115Service.get_client()
-    if not client: 
-        # 客户端未初始化，防刷缓存 10 秒
-        _url_cache[cache_key] = {"url": None, "expire_at": now + 10}
-        return None
-    
-    # 使用锁：即使缓存失效，多个请求同时进来，也只有一个能去查 115 API
-    with fetch_lock:
-        now = time.time()
-        # 二次检查缓存（可能在锁等待期间被其他线程填充）
-        if cache_key in _url_cache and now < _url_cache[cache_key]["expire_at"]:
-            cached_url = _url_cache[cache_key]["url"]
-            if cached_url:
-                logger.info(f"  📥 [115直链] 命中缓存: {pick_code[:8]}...")
-                return cached_url
-        
-        # 这里的限流逻辑：如果令牌不足，直接等待或返回
-        if not api_limiter.consume():
-            logger.warning(f"  ⚠️ [流控] 请求过快，已拦截 pick_code: {pick_code}")
-            time.sleep(0.5) # 稍微强制延迟，缓解压力
-            return None # 触发流控不写入缓存，让客户端稍后重试即可
-            
-        try:
-            # 增加一个小随机延迟，模拟人为行为
-            time.sleep(0.1) 
-            
-            # 使用 POST 方法获取直链
-            url_obj = client.download_url(pick_code, user_agent=user_agent)
-            if url_obj:
-                direct_url = str(url_obj)
-                # 首次获取日志
-                logger.info(f"  🎬 [115直链] 获取成功: {url_obj.name}")
-                # 存入缓存，115 直链通常几小时失效，这里设置缓存 2 小时 (7200秒)
-                _url_cache[cache_key] = {"url": direct_url, "expire_at": now + 7200}
-                return direct_url
-            else:
-                # 获取失败，存入短期负面缓存 (10秒)，防止播放器疯狂重试导致 115 封号
-                _url_cache[cache_key] = {"url": None, "expire_at": now + 10}
-                return None
-        except Exception as e:
-            logger.error(f"  ❌ 获取 115 直链 API 报错: {e}")
-            # 异常也存入短期负面缓存 (10秒)
-            _url_cache[cache_key] = {"url": None, "expire_at": now + 10}
-            return None
-
-# 保留原来的 lru_cache 装饰器作为备用（用于 play_115_video 直接调用）
-@lru_cache(maxsize=2048)
-def _get_cached_115_url_legacy(pick_code, user_agent, client_ip=None):
-    """
-    带缓存的 115 直链获取器（旧版本，保留兼容性）
-    """
-    return _get_cached_115_url(pick_code, user_agent, client_ip)
-
-@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) # 允许 HEAD 请求，加速客户端嗅探
-def play_115_video(pick_code):
-    """
-    终极极速 302 直链解析服务 (带内存缓存版)
+    终极极速 302 直链解析服务 (底层已实现全局缓存和防并发)
     """
     if request.method == 'HEAD':
-        # HEAD 请求通常是播放器嗅探，直接返回 200 或简单处理，不触发解析
         return '', 200
 
     try:
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
-        # 尝试从缓存获取
-        real_url = _get_cached_115_url(pick_code, player_ua)
+        client = P115Service.get_client()
+        if not client:
+            return "115 Client not initialized", 500
+            
+        # ★ 直接调用底层，底层已经实现了完美的全局缓存和防并发锁
+        real_url = client.download_url(pick_code, user_agent=player_ua)
         
         if not real_url:
-            # 如果解析太快被拦截了，给播放器返回 429 告知稍后再试
             return "Too Many Requests - 115 API Protection", 429
             
-        return redirect(real_url, code=302)
+        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
+        response = redirect(real_url, code=302)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        return response
         
     except Exception as e:
         logger.error(f"  ❌ 直链解析发生异常: {e}")
