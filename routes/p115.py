@@ -500,6 +500,21 @@ def play_115_video(pick_code, filename=None):
     try:
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
+        # =====================================================================
+        # ★★★ 核心修复：解决苹果设备及第三方播放器 UA 篡改导致的 403 播放失败问题 ★★★
+        # =====================================================================
+        ua_lower = player_ua.lower()
+        # 如果 UA 中还没有 AppleCoreMedia，但属于苹果生态或常见第三方播放器
+        if 'applecoremedia' not in ua_lower:
+            apple_keywords = [
+                'iphone', 'ipad', 'mac os', 'appletv', 
+                'emby for ios', 'infuse', 'fileball', 'vidhub', 'senplayer'
+            ]
+            if any(k in ua_lower for k in apple_keywords):
+                # 强制将申请直链的 UA 篡改为 AppleCoreMedia，以迎合 AVPlayer 的底层请求行为
+                # 115 CDN 通常支持前缀匹配，所以使用基础版本号即可兼容所有 iOS 版本
+                player_ua = 'AppleCoreMedia/1.0.0'
+        
         client = P115Service.get_client()
         if not client:
             return "115 Client not initialized", 500
@@ -510,7 +525,10 @@ def play_115_video(pick_code, filename=None):
         if not real_url:
             return "Too Many Requests - 115 API Protection", 429
             
-        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
+        # ★ 核心修复：强制将 115 的 HTTP 直链转换为 HTTPS，满足苹果 ATS 安全要求，防止被系统拦截
+        real_url = str(real_url).replace('http://', 'https://')
+            
+        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！(最终UA: {player_ua.split('/')[0]})")
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
