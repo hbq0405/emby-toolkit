@@ -581,7 +581,7 @@ class P115Service:
                     cached_data = _DIRECT_URL_CACHE[cache_key]
                     if now < cached_data['expire_at']:
                         # ★ 提取缓存里的文件名打印
-                        display_name = cached_data.get('name', pick_code[:8])
+                        #display_name = cached_data.get('name', pick_code[:8])
                         #logger.info(f"  ⚡ [直链缓存] 命中直链 -> {display_name} (UA: {str(user_agent)[:15]}...)")
                         return cached_data['url']
 
