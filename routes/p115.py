@@ -498,14 +498,14 @@ def play_115_video(pick_code, filename=None):
 
     try:
         # ★ 核心：获取播放器的真实 UA
-        player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+        safe_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/116.0.0.0 Safari/537.36"
         
         client = P115Service.get_client()
         if not client:
             return "115 Client not initialized", 500
             
         # ★ 调用 OpenAPI 直链接口，并透传播放器 UA
-        real_url = client.openapi_downurl(pick_code, user_agent=player_ua)
+        real_url = client.openapi_downurl(pick_code, user_agent=safe_ua)
         
         if not real_url:
             return "Failed to get download URL or Rate Limited", 404
