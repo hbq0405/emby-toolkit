@@ -494,9 +494,6 @@ def play_115_video(pick_code, filename=None):
     """
     终极极速 302 直链解析服务 (底层已实现全局缓存和防并发)
     """
-    if request.method == 'HEAD':
-        return '', 200
-
     try:
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
