@@ -573,22 +573,8 @@ class P115Service:
                 if not self._cookie:
                     raise Exception("未配置 115 Cookie，无法获取播放直链")
                 
-                cache_key = (pick_code, user_agent)
-                now = time.time()
-                
-                # 1. 查缓存
-                if cache_key in _DIRECT_URL_CACHE:
-                    cached_data = _DIRECT_URL_CACHE[cache_key]
-                    if now < cached_data['expire_at']:
-                        # ★ 提取缓存里的文件名打印
-                        display_name = cached_data.get('name', pick_code[:8])
-                        logger.info(f"  ⚡ [直链缓存] 命中直链 -> {display_name} (UA: {str(user_agent)[:15]}...)")
-                        return cached_data['url']
-
                 with P115Service._downurl_lock:
-                    if cache_key in _DIRECT_URL_CACHE and now < _DIRECT_URL_CACHE[cache_key]['expire_at']:
-                        return _DIRECT_URL_CACHE[cache_key]['url']
-
+                    # ★ 专门针对 downurl 的严格流控 (最少 1.5 秒)
                     current_time = time.time()
                     elapsed = current_time - P115Service._last_downurl_time
                     if elapsed < 1.5:
@@ -597,36 +583,10 @@ class P115Service:
                     try:
                         res = self._cookie.download_url(pick_code, user_agent)
                         P115Service._last_downurl_time = time.time()
-                        
-                        if res:
-                            direct_url = str(res)
-                            display_name = pick_code[:8] + "..."
-                            
-                            # ★ 从 115 返回的直链 URL 中反向解析出真实文件名
-                            try:
-                                from urllib.parse import urlparse, parse_qs, unquote
-                                import os
-                                parsed = urlparse(direct_url)
-                                qs = parse_qs(parsed.query)
-                                if 'file' in qs: display_name = unquote(qs['file'][0])
-                                elif 'filename' in qs: display_name = unquote(qs['filename'][0])
-                                else:
-                                    path_name = unquote(os.path.basename(parsed.path))
-                                    if path_name: display_name = path_name
-                            except: pass
-
-                            logger.info(f"  ✅ [115] 请求直链成功 -> {display_name}")
-
-                            # ★ 将文件名一起存入缓存
-                            _DIRECT_URL_CACHE[cache_key] = {
-                                'url': direct_url,
-                                'name': display_name,
-                                'expire_at': time.time() + 7200
-                            }
-                            return direct_url
-                        return None
+                        return res
                     except Exception as e:
                         err_str = str(e)
+                        # ★ 如果触发 405 风控，强制熔断 10 秒
                         if '405' in err_str or 'Method Not Allowed' in err_str:
                             logger.error("  🛑 [熔断] 获取直链触发 115 WAF 风控 (405)，强制休眠 10 秒...")
                             P115Service._last_downurl_time = time.time() + 10
