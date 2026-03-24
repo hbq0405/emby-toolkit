@@ -1,6 +1,5 @@
 # routes/p115.py
 import logging
-from flask import redirect
 import threading
 from datetime import datetime, timedelta
 import json
@@ -9,7 +8,7 @@ import os
 import re
 import time
 import requests
-from flask import Blueprint, jsonify, request, redirect
+from flask import Blueprint, jsonify, request, redirect, Response, stream_with_context, current_app
 from extensions import admin_required
 from database import settings_db
 from handler.p115_service import P115Service, get_config
@@ -488,32 +487,79 @@ def handle_sorting_rules():
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
-@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) 
-@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
+@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD', 'OPTIONS']) 
+@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD', 'OPTIONS'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (底层已实现全局缓存和防并发)
+    终极极速 302 直链解析服务 (带智能 UA 探测代理防穿透与强制 HTTPS)
     """
-    # ❌ 删除了这里的 if request.method == 'HEAD': return '', 200
-    # 必须让 HEAD 请求也重定向到 115 CDN，否则播放器无法获取真实文件大小，会导致回退转码或播放失败
+    if request.method == 'OPTIONS':
+        response = current_app.make_default_options_response()
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Range, User-Agent, Accept'
+        return response
 
     try:
-        # 获取真实的播放器 UA (115 CDN 会严格校验请求直链的 UA 和实际下载的 UA 是否一致)
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
         client = P115Service.get_client()
         if not client:
             return "115 Client not initialized", 500
             
-        # ★ 直接调用底层，底层已经实现了完美的全局缓存和防并发锁
         real_url = client.download_url(pick_code, user_agent=player_ua)
         
         if not real_url:
             return "Too Many Requests - 115 API Protection", 429
             
-        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！(Method: {request.method})")
+        # ★ 修复 1：强制 HTTPS。防止 iOS/Android 底层播放器因 ATS 策略阻断 HTTP 明文请求
+        if real_url.startswith("http://"):
+            real_url = real_url.replace("http://", "https://", 1)
+            
+        # =================================================================
+        # ★ 修复 2：智能 UA 探测代理 (解决 Infuse/Emby客户端 播放报错/回退转码)
+        # =================================================================
+        is_prober = False
+        # 常见的第三方播放器外壳/探测器 UA 关键字
+        prober_keywords = ['infuse', 'fileball', 'filebox', 'vidhub', 'okhttp', 'dalvik']
+        player_ua_lower = player_ua.lower()
         
-        # Flask 的 redirect 会自动处理 GET 和 HEAD，HEAD 请求下会自动丢弃 body 仅保留 Headers
+        if any(kw in player_ua_lower for kw in prober_keywords):
+            # 排除真正的系统底层播放器，防止误判
+            if not any(player_kw in player_ua_lower for player_kw in ['exoplayer', 'applecoremedia', 'lavf', 'vlc', 'mpv', 'potplayer']):
+                is_prober = True
+
+        if is_prober:
+            logger.info(f"  🕵️ [直链代理] 检测到客户端探测行为 ({player_ua[:30]}...)，启动轻量级代理防 302 穿透...")
+            try:
+                headers = {'User-Agent': player_ua}
+                if 'Range' in request.headers:
+                    headers['Range'] = request.headers['Range']
+                    
+                if request.method == 'HEAD':
+                    req = requests.head(real_url, headers=headers, timeout=10)
+                    response = current_app.response_class(status=req.status_code)
+                else:
+                    req = requests.get(real_url, headers=headers, stream=True, timeout=10)
+                    response = Response(stream_with_context(req.iter_content(chunk_size=1024*1024)), 
+                                    status=req.status_code)
+                
+                # 透传 115 的关键 Header 给播放器
+                excluded_headers = ['content-encoding', 'transfer-encoding', 'connection']
+                for name, value in req.headers.items():
+                    if name.lower() not in excluded_headers:
+                        response.headers[name] = value
+                        
+                response.headers['Access-Control-Allow-Origin'] = '*'
+                return response
+            except Exception as e:
+                logger.error(f"  ❌ 代理探测请求失败: {e}")
+                return str(e), 500
+
+        # =================================================================
+        # 真正的底层播放器来拉取视频流了，直接 302 重定向，此时 UA 完美匹配 115！
+        # =================================================================
+        logger.info(f"  🚀 [302重定向] 播放器请求直链，已放行！(UA: {player_ua[:30]}...)")
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
