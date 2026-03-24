@@ -255,28 +255,47 @@ def handle_get_views():
         return "Internal Proxy Error", 500
 
 def handle_get_mimicked_library_details(user_id, mimicked_id):
+    """
+    【终极修复】iOS 强类型解析救星：狸猫换太子
+    不自己构造简陋的 JSON，去真实 Emby 获取真实合集的完整 JSON，只替换 ID 和 Name。
+    """
     try:
         real_db_id = from_mimicked_id(mimicked_id)
         coll = custom_collection_db.get_custom_collection_by_id(real_db_id)
         if not coll: return "Not Found", 404
 
-        real_server_id = extensions.EMBY_SERVER_ID
         real_emby_collection_id = coll.get('emby_collection_id')
-        image_tags = {"Primary": real_emby_collection_id} if real_emby_collection_id else {}
-        
-        definition = coll.get('definition_json') or {}
-        item_type_from_db = definition.get('item_type', 'Movie')
-        collection_type = "mixed"
-        if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
-             authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-             collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+        if not real_emby_collection_id:
+            return "Not Found", 404
 
-        fake_library_details = {
-            "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
-            "Type": "CollectionFolder",
-            "CollectionType": collection_type, "IsFolder": True, "ImageTags": image_tags,
-        }
-        return Response(json.dumps(fake_library_details), mimetype='application/json')
+        # 1. 向真实的 Emby 请求真实合集的详情
+        base_url, api_key = _get_real_emby_url_and_key()
+        
+        # 兼容 iOS 有时把 UserId 放在路径，有时放在参数里的老六行为
+        if user_id:
+            target_url = f"{base_url}/emby/Users/{user_id}/Items/{real_emby_collection_id}"
+        else:
+            target_url = f"{base_url}/emby/Items/{real_emby_collection_id}"
+
+        params = {'api_key': api_key}
+        resp = requests.get(target_url, params=params, timeout=10)
+        
+        if resp.status_code == 200:
+            real_data = resp.json()
+            
+            # 2. 狸猫换太子：把真实合集的 ID 和名字，替换成我们虚拟库的
+            real_data['Id'] = mimicked_id
+            real_data['Name'] = coll['name']
+            
+            # 强制修正类型，防止 iOS 把它当成普通合集(BoxSet)导致 UI 错乱
+            real_data['Type'] = "CollectionFolder" 
+            real_data['IsFolder'] = True
+            
+            return Response(json.dumps(real_data), mimetype='application/json')
+        else:
+            logger.error(f"获取真实合集详情失败，状态码: {resp.status_code}")
+            return "Internal Server Error", 500
+
     except Exception as e:
         logger.error(f"获取伪造库详情时出错: {e}", exc_info=True)
         return "Internal Server Error", 500
@@ -983,11 +1002,14 @@ def proxy_all(path):
             if user_id_match:
                 return handle_get_latest_items(user_id_match.group(1), request.args)
 
-        # --- 拦截 D: 虚拟库详情 ---
-        details_match = MIMICKED_ITEM_DETAILS_RE.search(full_path)
-        if details_match:
-            user_id = details_match.group(1)
-            mimicked_id = details_match.group(2)
+        # --- 拦截 D: 虚拟库详情 (增强版拦截) ---
+        # 修复 iOS 有时不带 /Users/xxx，直接请求 /emby/Items/-900001 的老六行为
+        details_match = re.search(r'/Items/(-(\d+))(?:$|\?)', full_path)
+        if details_match and '/Images/' not in full_path and '/PlaybackInfo' not in full_path:
+            mimicked_id = details_match.group(1)
+            # 尝试从路径或参数获取 user_id
+            user_id_match = re.search(r'/Users/([^/]+)/', full_path)
+            user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
             return handle_get_mimicked_library_details(user_id, mimicked_id)
 
         # --- 拦截 E: 虚拟库图片 ---
@@ -997,16 +1019,17 @@ def proxy_all(path):
                 return handle_get_mimicked_library_image(path)
         
         # --- 拦截 F: 虚拟库内容浏览 (Items) ---
-        parent_id = request.args.get("ParentId")
+        # 修复 iOS 传参大小写问题 (有时传 ParentId，有时传 parentId)
+        parent_id = request.args.get("ParentId") or request.args.get("parentId")
+        
         if parent_id and is_mimicked_id(parent_id):
-            # 1. 处理核心的内容列表请求 (严格匹配结尾，防止误伤 Filters 等子路径)
+            # 1. 处理核心的内容列表请求 (严格匹配结尾，防止误伤 Filters)
             user_id_match = re.search(r'emby/Users/([^/]+)/Items$', path)
             if user_id_match:
                 user_id = user_id_match.group(1)
                 return handle_get_mimicked_library_items(user_id, parent_id, request.args)
 
-            # 2. 处理所有其他带有虚拟 ParentId 的请求 (如 /Filters, /Genres, /NextUp 等)
-            # 【修复】必须拦截！否则虚拟 ID 会泄露给真实 Emby 导致 400/404 报错，从而使 iOS 客户端崩溃
+            # 2. 处理所有其他带有虚拟 ParentId 的请求 (如 /Filters, /Genres 等)
             return handle_mimicked_library_metadata_endpoint(path, parent_id, request.args)
 
         # 兜底逻辑
