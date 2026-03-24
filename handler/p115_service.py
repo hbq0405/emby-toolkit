@@ -629,7 +629,7 @@ class P115Service:
                                     if path_name: display_name = path_name
                             except: pass
 
-                            logger.info(f"  ✅ [115] 请求直链成功 -> {display_name}")
+                            logger.info(f"  ✅ [Cookie] 请求直链成功 -> {display_name}")
 
                             # ★ 将文件名一起存入缓存
                             _DIRECT_URL_CACHE[cache_key] = {
@@ -672,7 +672,7 @@ class P115Service:
                             if file_info and 'url' in file_info and 'url' in file_info['url']:
                                 direct_url = file_info['url']['url']
                                 display_name = file_info.get('file_name', pick_code)
-                                logger.info(f"  ✅ [115 OpenAPI] 请求直链成功 -> {display_name}")
+                                logger.info(f"  ✅ [OpenAPI] 请求直链成功 -> {display_name}")
                                 _DIRECT_URL_CACHE[cache_key] = {
                                     'url': direct_url,
                                     'name': display_name,
