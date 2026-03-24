@@ -155,12 +155,11 @@ class P115OpenAPIClient:
         return self._do_request("GET", url, params=params)
     
     def fs_downurl(self, pick_code, user_agent=None):
-        """OpenAPI 获取下载直链 (根据文档要求使用 POST 和 form-data)"""
+        """OpenAPI 获取下载直链"""
         url = f"{self.base_url}/open/ufile/downurl"
         headers = {}
         if user_agent:
             headers["User-Agent"] = user_agent
-        # 使用 data=... 发送 form-data 格式
         return self._do_request("POST", url, data={"pick_code": str(pick_code)}, headers=headers)
 
     def fs_get_info(self, file_id):
@@ -652,12 +651,9 @@ class P115Service:
             def openapi_downurl(self, pick_code, user_agent=None):
                 """使用 OpenAPI 获取直链 (带缓存和 UA 透传)"""
                 self._check_openapi()
-                
-                # 缓存 Key 绑定 UA，防止不同播放器串号导致 403
                 cache_key = (f"openapi_{pick_code}", user_agent)
                 now = time.time()
                 
-                # 1. 查缓存
                 if cache_key in _DIRECT_URL_CACHE:
                     cached_data = _DIRECT_URL_CACHE[cache_key]
                     if now < cached_data['expire_at']:
@@ -668,33 +664,25 @@ class P115Service:
                         return _DIRECT_URL_CACHE[cache_key]['url']
 
                     self._rate_limit()
-                    
                     try:
                         res = self._openapi.fs_downurl(pick_code, user_agent)
                         if res and res.get('state') and res.get('data'):
-                            # 115 返回的 data 是一个以动态 file_id 为 key 的字典，提取第一个元素
                             data_dict = res['data']
                             file_info = next(iter(data_dict.values()), None)
-                            
                             if file_info and 'url' in file_info and 'url' in file_info['url']:
                                 direct_url = file_info['url']['url']
                                 display_name = file_info.get('file_name', pick_code)
-                                
                                 logger.info(f"  ✅ [115 OpenAPI] 请求直链成功 -> {display_name}")
-
-                                # 存入缓存 (2小时)
                                 _DIRECT_URL_CACHE[cache_key] = {
                                     'url': direct_url,
                                     'name': display_name,
                                     'expire_at': time.time() + 7200 
                                 }
                                 return direct_url
-                        
-                        logger.error(f"  ❌ [115 OpenAPI] 获取直链失败: {res}")
                         return None
                     except Exception as e:
-                        logger.error(f"  ❌ [115 OpenAPI] 获取直链异常: {e}")
-                        raise e
+                        logger.warning(f"  ⚠️ [115 OpenAPI] 获取直链异常: {e}")
+                        return None
 
             def request(self, *args, **kwargs):
                 self._rate_limit()

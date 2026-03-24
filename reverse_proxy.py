@@ -901,37 +901,39 @@ def proxy_all(path):
                 if not client:
                     return "115 Client not initialized", 500
 
-                # ★ 日志说人话
-                #logger.info(f"  ⏳ [115] 检测到 115 文件: {display_name}, 准备获取直链...")
-                max_retries = 15 
+                max_retries = 10 
                 retry_count = 0
+                use_openapi = True # 优先使用 OpenAPI
 
                 while retry_count < max_retries:
                     try:
-                        real_115_url = client.openapi_downurl(pick_code, user_agent=player_ua)
+                        if use_openapi:
+                            real_115_url = client.openapi_downurl(pick_code, user_agent=player_ua)
+                        else:
+                            real_115_url = client.download_url(pick_code, user_agent=player_ua)
+                            
                         if real_115_url:
                             break 
                         else:
-                            logger.warning(f"  ⚠️ [115] 未拿到直链，1.5秒后重试 ({retry_count+1}/{max_retries})...")
-                            time.sleep(1.5)
+                            logger.warning(f"  ⚠️ [115反代] {'OpenAPI' if use_openapi else 'Cookie'} 未拿到直链，切换接口重试 ({retry_count+1}/{max_retries})...")
                     except Exception as e:
                         err_str = str(e)
                         if '405' in err_str or 'Method Not Allowed' in err_str:
-                            logger.warning(f"  🛑 [115] 触发 115 风控，休眠 10 秒后继续尝试 ({retry_count+1}/{max_retries})...")
-                            time.sleep(10)
+                            logger.warning(f"  🛑 [115反代] 触发 115 风控，切换接口重试 ({retry_count+1}/{max_retries})...")
                         else:
-                            logger.warning(f"  ⚠️ [115] 发生异常: {e}，2秒后重试 ({retry_count+1}/{max_retries})...")
-                            time.sleep(2)
+                            logger.warning(f"  ⚠️ [115反代] 发生异常: {e}，切换接口重试 ({retry_count+1}/{max_retries})...")
+                    
+                    # 核心：切换接口，轮流尝试
+                    use_openapi = not use_openapi
                     retry_count += 1
+                    time.sleep(1.0) # 稍微休眠一下防止请求过频
 
                 if real_115_url:
-                    # ★ 日志说人话
-                    #logger.info(f"  ▶️ [302] 已重定向！")
                     response = redirect(real_115_url, code=302)
                     response.headers['Access-Control-Allow-Origin'] = '*'
                     return response
                 else:
-                    logger.error(f"  💀 [致命错误] 115失败，拒绝回退中转，直接掐断请求！")
+                    logger.error(f"  💀 [致命错误] 115双接口均失败，拒绝回退中转，直接掐断请求！")
                     return Response("Failed to get 115 direct link after retries. Proxy fallback is disabled.", status=503)
 
             # ====================================================================
