@@ -509,7 +509,7 @@ def play_115_video(pick_code, filename=None):
         if not real_url:
             return "Too Many Requests - 115 API Protection", 429
             
-        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
+        #logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
