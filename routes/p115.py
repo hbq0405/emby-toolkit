@@ -494,10 +494,11 @@ def play_115_video(pick_code, filename=None):
     """
     终极极速 302 直链解析服务 (底层已实现全局缓存和防并发)
     """
-    if request.method == 'HEAD':
-        return '', 200
+    # ❌ 删除了这里的 if request.method == 'HEAD': return '', 200
+    # 必须让 HEAD 请求也重定向到 115 CDN，否则播放器无法获取真实文件大小，会导致回退转码或播放失败
 
     try:
+        # 获取真实的播放器 UA (115 CDN 会严格校验请求直链的 UA 和实际下载的 UA 是否一致)
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
         client = P115Service.get_client()
@@ -510,7 +511,9 @@ def play_115_video(pick_code, filename=None):
         if not real_url:
             return "Too Many Requests - 115 API Protection", 429
             
-        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！")
+        logger.info(f"  🚀 [302重定向] 客户端请求直链成功，已放行！(Method: {request.method})")
+        
+        # Flask 的 redirect 会自动处理 GET 和 HEAD，HEAD 请求下会自动丢弃 body 仅保留 Headers
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
