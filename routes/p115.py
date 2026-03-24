@@ -494,8 +494,11 @@ def play_115_video(pick_code, filename=None):
     """
     终极极速 302 直链解析服务 (底层已实现全局缓存和防并发)
     """
+    if request.method == 'HEAD':
+        return '', 200
+
     try:
-        player_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
         client = P115Service.get_client()
         if not client:
