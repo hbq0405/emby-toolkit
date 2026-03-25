@@ -1199,12 +1199,28 @@ def task_monitor_115_life_events(processor=None):
                     import shutil
                     shutil.rmtree(full_local_path)
                     deleted_count += 1
-                    logger.info(f"  🗑️ [事件] 连锅端删除失效目录: {file_name}")
+                    logger.info(f"  🗑️ [事件] 删除失效目录: {file_name}")
                     _notify_emby(os.path.dirname(full_local_path))
             
             # 清理数据库
-            if is_folder: P115CacheManager.delete_cid(file_id)
-            else: P115CacheManager.delete_files([file_id])
+            if is_folder: 
+                P115CacheManager.delete_cid(file_id)
+            else: 
+                P115CacheManager.delete_files([file_id])
+                
+                # =========================================================
+                # ★ 新增：同步删除历史整理记录 (优先通过 PC 码，无 PC 码则通过 FID)
+                # =========================================================
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            if pick_code:
+                                cursor.execute("DELETE FROM p115_organize_records WHERE pick_code = %s", (pick_code,))
+                            else:
+                                cursor.execute("DELETE FROM p115_organize_records WHERE file_id = %s", (str(file_id),))
+                            conn.commit()
+                except Exception as e:
+                    logger.error(f"  ❌ [事件] 清理 115 历史整理记录失败: {e}")
 
         # ==========================================
         # 分支 2：新增、移入、改名、同目录移动
