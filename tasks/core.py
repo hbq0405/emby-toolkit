@@ -25,7 +25,7 @@ from .discover import task_update_daily_theme
 from .resubscribe import task_update_resubscribe_cache, task_resubscribe_library
 from .vector_tasks import task_generate_embeddings
 from .system_update import task_check_and_update_container
-from handler.p115_service import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events
+from .p115 import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events
 
 logger = logging.getLogger(__name__)
 

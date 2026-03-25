@@ -792,7 +792,7 @@ def handle_music_config():
 @admin_required
 def trigger_music_sync():
     """触发音乐库全量同步"""
-    from handler.p115_service import task_sync_music_library
+    from tasks.p115 import task_sync_music_library
     import task_manager # ★ 引入全局任务管理器
     
     # ★ 核心修复：使用 submit_task 提交任务，这样前端顶部才会弹出进度条！

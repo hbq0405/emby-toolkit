@@ -29,7 +29,7 @@ from croniter import croniter
 from scheduler_manager import scheduler_manager
 from reverse_proxy import proxy_app
 from handler import telegram
-from handler.p115_service import LifeEventMonitorDaemon
+from tasks.p115 import LifeEventMonitorDaemon
 import logging
 from gevent import spawn_later # Added for debouncing
 # --- 导入蓝图 ---
