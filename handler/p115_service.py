@@ -4693,44 +4693,59 @@ def task_monitor_115_life_events(processor=None):
         return None
 
     try:
-        res = client.life_list(limit=100)
+        # 改用 life_list2 (recent_operations)，这是网页版首页时间轴的真实接口，最准确
+        res = client.life_list2(limit=100)
         if res.get('state'):
             records = res.get('data', {}).get('list', [])
             
+            if records:
+                # 仅在 DEBUG 级别打印一条样本，出问题时极度有用 (可在控制台查看)
+                logger.debug(f"  🔍 [调试] 115 事件样本: {json.dumps(records[0], ensure_ascii=False)}")
+            
             for record in records:
                 relation_id = record.get('relation_id')
-                # 网页版接口返回的是字符串，如 'upload_file', 'delete_file'
-                b_type = str(record.get('behavior_type', ''))
                 
-                # 定义我们关心的事件类型
-                add_types = ['upload_file', 'upload_image_file', 'move_file', 'move_image_file', 'receive_files']
-                del_types = ['delete_file']
+                # 1. 提取动作类型 (双重提取：防字符串，防数字)
+                b_type_str = str(record.get('behavior_type', '')).lower()
+                b_type_int = -1
+                try:
+                    b_type_int = int(record.get('behavior_type', -1))
+                except:
+                    pass
                 
-                if b_type not in add_types and b_type not in del_types:
+                # 2. 动作判定 (涵盖所有已知的新增和删除标识)
+                is_add = b_type_str in ['upload_file', 'upload_image_file', 'move_file', 'move_image_file', 'receive_files'] or b_type_int in [1, 4]
+                is_del = b_type_str in ['delete_file', 'del_file', 'delete'] or b_type_int in [7]
+                
+                if not is_add and not is_del:
                     continue
                 
+                # 3. 提取文件详情 (双重提取：防嵌套，防平铺)
                 detail_str = record.get('detail', '{}')
                 try:
                     detail = json.loads(detail_str) if isinstance(detail_str, str) else detail_str
                 except:
                     detail = {}
 
-                file_id = detail.get('file_id') or detail.get('fid')
-                file_name = detail.get('file_name') or detail.get('fn', '')
-                parent_id = str(detail.get('parent_id') or detail.get('pid') or detail.get('cid', ''))
-                pick_code = detail.get('pick_code') or detail.get('pc')
+                file_id = detail.get('file_id') or detail.get('fid') or record.get('file_id') or record.get('fid')
+                file_name = detail.get('file_name') or detail.get('fn') or record.get('file_name') or record.get('fn') or ''
+                parent_id = str(detail.get('parent_id') or detail.get('pid') or detail.get('cid') or record.get('parent_id') or record.get('pid') or '')
+                pick_code = detail.get('pick_code') or detail.get('pc') or record.get('pick_code') or record.get('pc')
                 
+                if not file_id:
+                    continue
+
                 ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
                 
                 # --- 处理新增/移动/转存事件 ---
-                if b_type in add_types:
+                if is_add:
                     if ext not in allowed_exts:
-                        events_to_delete.append({"relation_id": relation_id, "behavior_type": b_type})
+                        events_to_delete.append({"relation_id": relation_id, "behavior_type": record.get('behavior_type')})
                         continue
                         
                     rel_dir = resolve_local_dir(parent_id)
                     if not rel_dir:
-                        events_to_delete.append({"relation_id": relation_id, "behavior_type": b_type})
+                        events_to_delete.append({"relation_id": relation_id, "behavior_type": record.get('behavior_type')})
                         continue
                         
                     current_local_path = os.path.join(local_root, rel_dir)
@@ -4782,10 +4797,10 @@ def task_monitor_115_life_events(processor=None):
                             except Exception as e:
                                 logger.error(f"  ❌ 下载字幕失败: {e}")
 
-                    events_to_delete.append({"relation_id": relation_id, "behavior_type": b_type})
+                    events_to_delete.append({"relation_id": relation_id, "behavior_type": record.get('behavior_type')})
 
                 # --- 处理删除事件 ---
-                elif b_type in del_types:
+                elif is_del:
                     try:
                         with get_db_connection() as conn:
                             with conn.cursor() as cursor:
@@ -4834,7 +4849,7 @@ def task_monitor_115_life_events(processor=None):
                     except Exception as e:
                         logger.error(f"  ❌ 处理删除事件异常: {e}")
                         
-                    events_to_delete.append({"relation_id": relation_id, "behavior_type": b_type})
+                    events_to_delete.append({"relation_id": relation_id, "behavior_type": record.get('behavior_type')})
 
     except Exception as e:
         logger.error(f"  ❌ 获取生活事件异常: {e}")
