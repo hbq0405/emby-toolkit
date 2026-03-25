@@ -757,14 +757,14 @@ def emby_webhook():
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     # ★★★            魔法日志 - START            ★★★
     # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-    try:
-        import json
-        # 使用 WARNING 级别和醒目的 emoji，让它在日志中脱颖而出
-        logger.warning("✨✨✨ [魔法日志] 收到原始 Emby Webhook 负载，内容如下: ✨✨✨")
-        # 将整个 JSON 数据格式化后打印出来
-        logger.warning(json.dumps(data, indent=2, ensure_ascii=False))
-    except Exception as e:
-        logger.error(f"[魔法日志] 记录原始 Webhook 时出错: {e}")
+    # try:
+    #     import json
+    #     # 使用 WARNING 级别和醒目的 emoji，让它在日志中脱颖而出
+    #     logger.warning("✨✨✨ [魔法日志] 收到原始 Emby Webhook 负载，内容如下: ✨✨✨")
+    #     # 将整个 JSON 数据格式化后打印出来
+    #     logger.warning(json.dumps(data, indent=2, ensure_ascii=False))
+    # except Exception as e:
+    #     logger.error(f"[魔法日志] 记录原始 Webhook 时出错: {e}")
     # # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
     # # ★★★             魔法日志 - END             ★★★
     # # ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
@@ -853,7 +853,7 @@ def emby_webhook():
     # ======================================================================
     # ★★★ 处理 MoviePilot transfer.complete 事件 ★★★
     # ======================================================================
-    if mp_event_type == "transfer.complete":
+    if mp_event_type in ["transfer.complete", "transfer.subtitle.complete"]:
         nb_config = get_config()
         if not nb_config.get(constants.CONFIG_OPTION_115_ENABLE_ORGANIZE, False):
             logger.debug("  🚫 智能整理未开启，忽略 MP 通知。")
@@ -900,7 +900,11 @@ def emby_webhook():
                     'season_num': begin_season,
                     'episode_num': begin_episode
                 }
-                logger.info(f"  🚀 [MP上传] 收到文件: {file_name}，开始整理...")
+                
+                # ★ 区分日志前缀，方便排错
+                log_prefix = "MP字幕上传" if mp_event_type == "transfer.subtitle.complete" else "MP视频上传"
+                logger.info(f"  🚀 [{log_prefix}] 收到文件: {file_name}，开始整理...")
+                
                 spawn(_process_single_mp_file, file_info)
                 return jsonify({"status": "processing_single_file"}), 200
             else:
