@@ -195,9 +195,11 @@ class P115OpenAPIClient:
             data['tid'] = ",".join([str(t) for t in tids]) if isinstance(tids, list) else str(tids)
         return self._do_request("POST", url, data=data)
     
-    def life_behavior_detail(self, behavior_type, offset=0, limit=100):
+    def life_behavior_detail(self, behavior_type="", offset=0, limit=100):
         url = f"{self.base_url}/android/behavior/detail"
-        params = {"type": str(behavior_type), "offset": offset, "limit": limit}
+        params = {"offset": offset, "limit": limit}
+        if behavior_type:
+            params["type"] = str(behavior_type)
         return self._do_request("GET", url, params=params)
     
     def fs_upload_init(self, file_name, file_size, target_cid, sha1, preid, sign_key=None, sign_val=None):
@@ -4668,11 +4670,10 @@ def task_monitor_115_life_events(processor=None):
     added_count = 0
     deleted_count = 0
 
-    # 辅助函数：推导本地路径 (复用全量同步的逻辑)
+    # 辅助函数：推导本地路径
     def resolve_local_dir(pid):
         pid = str(pid)
         if pid in cid_to_rel_path: return cid_to_rel_path[pid]
-        # 查本地数据库缓存向上追溯
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -4691,20 +4692,20 @@ def task_monitor_115_life_events(processor=None):
         except: pass
         return None
 
-    # 3. 遍历获取事件
-    for b_type in event_types:
-        try:
-            res = client.life_behavior_detail(b_type, limit=100)
-            if not res.get('state'): continue
-            
+    # ★★★ 核心修改 1：不传 type，全量拉取最近的 100 条事件，在本地过滤 ★★★
+    try:
+        res = client.life_behavior_detail(behavior_type="", limit=100)
+        if res.get('state'):
             records = res.get('data', {}).get('list', [])
-            if not records: continue
-
+            
             for record in records:
                 relation_id = record.get('relation_id')
-                behavior_type = record.get('behavior_type')
+                b_type = int(record.get('behavior_type', 0))
                 
-                # 提取文件信息 (115 的 detail 字段通常包含 JSON 字符串)
+                # 只处理我们关心的事件：2(上传), 6(移动), 14(转存), 22(删除)
+                if b_type not in [2, 6, 14, 22]:
+                    continue
+                
                 detail_str = record.get('detail', '{}')
                 try:
                     detail = json.loads(detail_str) if isinstance(detail_str, str) else detail_str
@@ -4721,18 +4722,14 @@ def task_monitor_115_life_events(processor=None):
                 # --- 处理新增/移动/转存事件 (2, 6, 14) ---
                 if b_type in [2, 6, 14]:
                     if ext not in allowed_exts:
-                        # 非媒体文件，直接标记删除事件
-                        events_to_delete.append({"relation_id": relation_id, "behavior_type": str(behavior_type)})
+                        events_to_delete.append({"relation_id": relation_id, "behavior_type": str(b_type)})
                         continue
                         
-                    # 判断是否在我们的监控目录下
                     rel_dir = resolve_local_dir(parent_id)
                     if not rel_dir:
-                        # 不在监控目录下，忽略，但标记删除事件
-                        events_to_delete.append({"relation_id": relation_id, "behavior_type": str(behavior_type)})
+                        events_to_delete.append({"relation_id": relation_id, "behavior_type": str(b_type)})
                         continue
                         
-                    # 生成 STRM
                     current_local_path = os.path.join(local_root, rel_dir)
                     os.makedirs(current_local_path, exist_ok=True)
                     
@@ -4752,7 +4749,6 @@ def task_monitor_115_life_events(processor=None):
                         with open(strm_path, 'w', encoding='utf-8') as f:
                             f.write(content)
                         
-                        # 写入本地 DB 缓存
                         file_local_path = os.path.join(rel_dir, file_name).replace('\\', '/')
                         P115CacheManager.save_file_cache(
                             fid=file_id, parent_id=parent_id, name=file_name,
@@ -4762,7 +4758,6 @@ def task_monitor_115_life_events(processor=None):
                         added_count += 1
                         logger.info(f"  ✨ [增量事件] 新增 STRM: {file_name}")
                         
-                        # 主动通知 Emby 扫描
                         try:
                             from monitor_service import enqueue_file_actively
                             enqueue_file_actively(strm_path)
@@ -4784,49 +4779,67 @@ def task_monitor_115_life_events(processor=None):
                             except Exception as e:
                                 logger.error(f"  ❌ 下载字幕失败: {e}")
 
-                    events_to_delete.append({"relation_id": relation_id, "behavior_type": str(behavior_type)})
+                    events_to_delete.append({"relation_id": relation_id, "behavior_type": str(b_type)})
 
                 # --- 处理删除事件 (22) ---
                 elif b_type == 22:
-                    # 删除事件可能没有完整的 parent_id，我们需要查本地数据库
                     try:
                         with get_db_connection() as conn:
                             with conn.cursor() as cursor:
-                                cursor.execute("SELECT local_path FROM p115_filesystem_cache WHERE id = %s", (file_id,))
+                                # ★★★ 核心修改 2：支持文件夹的连锅端删除 ★★★
+                                cursor.execute("SELECT local_path, name FROM p115_filesystem_cache WHERE id = %s", (file_id,))
                                 row = cursor.fetchone()
                                 if row and row['local_path']:
                                     local_file_rel = row['local_path']
+                                    full_local_path = os.path.join(local_root, local_file_rel)
                                     
-                                    # 删除本地 STRM
-                                    strm_rel = os.path.splitext(local_file_rel)[0] + ".strm"
-                                    strm_full = os.path.join(local_root, strm_rel)
-                                    if os.path.exists(strm_full):
-                                        os.remove(strm_full)
-                                        deleted_count += 1
-                                        logger.info(f"  🗑️ [增量事件] 删除失效 STRM: {strm_rel}")
-                                        
-                                        # 通知 Emby
-                                        emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
-                                        emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
-                                        if emby_url and emby_api_key:
-                                            from handler import emby
-                                            emby.notify_emby_file_changes([strm_full], emby_url, emby_api_key, update_type="Deleted")
+                                    # 判断是文件还是目录
+                                    db_ext = row['name'].split('.')[-1].lower() if '.' in row['name'] else ''
                                     
-                                    # 删除本地字幕
-                                    sub_full = os.path.join(local_root, local_file_rel)
-                                    if os.path.exists(sub_full) and sub_full.split('.')[-1].lower() in known_sub_exts:
-                                        os.remove(sub_full)
-                                        
-                                    # 清理数据库缓存
-                                    cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s", (file_id,))
+                                    if db_ext in known_video_exts:
+                                        # 是视频文件，删 STRM
+                                        strm_full = os.path.splitext(full_local_path)[0] + ".strm"
+                                        if os.path.exists(strm_full):
+                                            os.remove(strm_full)
+                                            deleted_count += 1
+                                            logger.info(f"  🗑️ [增量事件] 删除失效 STRM: {os.path.basename(strm_full)}")
+                                            
+                                            emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+                                            emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+                                            if emby_url and emby_api_key:
+                                                from handler import emby
+                                                emby.notify_emby_file_changes([strm_full], emby_url, emby_api_key, update_type="Deleted")
+                                                
+                                    elif db_ext in known_sub_exts:
+                                        # 是字幕文件
+                                        if os.path.exists(full_local_path):
+                                            os.remove(full_local_path)
+                                            logger.info(f"  🗑️ [增量事件] 删除失效字幕: {row['name']}")
+                                    else:
+                                        # ★ 是目录！直接物理超度整个文件夹！
+                                        if os.path.exists(full_local_path) and os.path.isdir(full_local_path):
+                                            import shutil
+                                            shutil.rmtree(full_local_path)
+                                            deleted_count += 1
+                                            logger.info(f"  🗑️ [增量事件] 连锅端删除失效目录: {row['name']}")
+                                            
+                                            # 通知 Emby 扫描父目录以清理库
+                                            emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+                                            emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+                                            if emby_url and emby_api_key:
+                                                from handler import emby
+                                                emby.notify_emby_file_changes([os.path.dirname(full_local_path)], emby_url, emby_api_key, update_type="Deleted")
+                                    
+                                    # 清理数据库缓存 (如果是目录，连带子项一起删)
+                                    cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s OR parent_id = %s", (file_id, file_id))
                                     conn.commit()
                     except Exception as e:
                         logger.error(f"  ❌ 处理删除事件异常: {e}")
                         
-                    events_to_delete.append({"relation_id": relation_id, "behavior_type": str(behavior_type)})
+                    events_to_delete.append({"relation_id": relation_id, "behavior_type": str(b_type)})
 
-        except Exception as e:
-            logger.error(f"  ❌ 获取生活事件异常 (Type: {b_type}): {e}")
+    except Exception as e:
+        logger.error(f"  ❌ 获取生活事件异常: {e}")
 
     # 4. 批量清空已处理的事件
     if events_to_delete:
