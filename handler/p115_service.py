@@ -195,13 +195,6 @@ class P115OpenAPIClient:
             data['tid'] = ",".join([str(t) for t in tids]) if isinstance(tids, list) else str(tids)
         return self._do_request("POST", url, data=data)
     
-    def life_behavior_detail(self, behavior_type="", offset=0, limit=100):
-        url = f"{self.base_url}/android/behavior/detail"
-        params = {"offset": offset, "limit": limit}
-        if behavior_type:
-            params["type"] = str(behavior_type)
-        return self._do_request("GET", url, params=params)
-    
     def fs_upload_init(self, file_name, file_size, target_cid, sha1, preid, sign_key=None, sign_val=None):
         """文件上传初始化调度接口"""
         url = f"{self.base_url}/open/upload/init"
@@ -408,6 +401,12 @@ class P115CookieClient:
         payload = {'share_code': share_code, 'receive_code': receive_code, 'cid': cid}
         r = self.request(url, method='POST', data=payload)
         return r.json() if hasattr(r, 'json') else r
+
+    def life_list(self, offset=0, limit=100):
+        url = "https://life.115.com/api/1.0/web/1.0/life/life_list"
+        params = {"offset": offset, "limit": limit}
+        r = self.request(url, method='GET', params=params)
+        return r.json() if hasattr(r, 'json') else r
     
     def life_batch_delete(self, delete_data_list):
         url = "https://life.115.com/api/1.0/web/1.0/life/life_batch_delete"
@@ -592,10 +591,11 @@ class P115Service:
                 self._rate_limit()
                 return self._openapi.rb_del(tids)
             
-            def life_behavior_detail(self, behavior_type, offset=0, limit=100):
-                self._check_openapi()
+            def life_list(self, offset=0, limit=100):
                 self._rate_limit()
-                return self._openapi.life_behavior_detail(behavior_type, offset, limit)
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法获取生活事件")
+                return self._cookie.life_list(offset, limit)
 
             def life_batch_delete(self, delete_data_list):
                 self._rate_limit()
@@ -4694,7 +4694,7 @@ def task_monitor_115_life_events(processor=None):
 
     # ★★★ 核心修改 1：不传 type，全量拉取最近的 100 条事件，在本地过滤 ★★★
     try:
-        res = client.life_behavior_detail(behavior_type="", limit=100)
+        res = client.life_list(limit=100)
         if res.get('state'):
             records = res.get('data', {}).get('list', [])
             
@@ -4786,18 +4786,16 @@ def task_monitor_115_life_events(processor=None):
                     try:
                         with get_db_connection() as conn:
                             with conn.cursor() as cursor:
-                                # ★★★ 核心修改 2：支持文件夹的连锅端删除 ★★★
+                                # 支持文件夹的连锅端删除
                                 cursor.execute("SELECT local_path, name FROM p115_filesystem_cache WHERE id = %s", (file_id,))
                                 row = cursor.fetchone()
                                 if row and row['local_path']:
                                     local_file_rel = row['local_path']
                                     full_local_path = os.path.join(local_root, local_file_rel)
                                     
-                                    # 判断是文件还是目录
                                     db_ext = row['name'].split('.')[-1].lower() if '.' in row['name'] else ''
                                     
                                     if db_ext in known_video_exts:
-                                        # 是视频文件，删 STRM
                                         strm_full = os.path.splitext(full_local_path)[0] + ".strm"
                                         if os.path.exists(strm_full):
                                             os.remove(strm_full)
@@ -4811,26 +4809,23 @@ def task_monitor_115_life_events(processor=None):
                                                 emby.notify_emby_file_changes([strm_full], emby_url, emby_api_key, update_type="Deleted")
                                                 
                                     elif db_ext in known_sub_exts:
-                                        # 是字幕文件
                                         if os.path.exists(full_local_path):
                                             os.remove(full_local_path)
                                             logger.info(f"  🗑️ [增量事件] 删除失效字幕: {row['name']}")
                                     else:
-                                        # ★ 是目录！直接物理超度整个文件夹！
+                                        # 是目录！直接物理超度整个文件夹！
                                         if os.path.exists(full_local_path) and os.path.isdir(full_local_path):
                                             import shutil
                                             shutil.rmtree(full_local_path)
                                             deleted_count += 1
                                             logger.info(f"  🗑️ [增量事件] 连锅端删除失效目录: {row['name']}")
                                             
-                                            # 通知 Emby 扫描父目录以清理库
                                             emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
                                             emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
                                             if emby_url and emby_api_key:
                                                 from handler import emby
                                                 emby.notify_emby_file_changes([os.path.dirname(full_local_path)], emby_url, emby_api_key, update_type="Deleted")
                                     
-                                    # 清理数据库缓存 (如果是目录，连带子项一起删)
                                     cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s OR parent_id = %s", (file_id, file_id))
                                     conn.commit()
                     except Exception as e:
