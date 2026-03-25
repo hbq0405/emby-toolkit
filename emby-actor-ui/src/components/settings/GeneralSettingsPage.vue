@@ -472,13 +472,13 @@
                             <template #unchecked>仅转存</template>
                         </n-switch>
                     </n-form-item>
-                    <n-form-item label="增量事件监控 (秒级同步)" path="p115_life_monitor_enabled">
+                    <n-form-item label="生活事件监控" path="p115_life_monitor_enabled">
                         <n-switch v-model:value="configModel.p115_life_monitor_enabled">
                             <template #checked>开启监控</template>
                             <template #unchecked>关闭监控</template>
                         </n-switch>
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">通过读取115操作记录实现秒级增量生成STRM，极大降低API请求。</n-text>
+                            <n-text depth="3" style="font-size:0.8em;">通过115操作记录实现增量生成STRM。</n-text>
                         </template>
                     </n-form-item>
                     <n-form-item label="事件检查间隔 (分钟)" path="p115_life_monitor_interval" v-if="configModel.p115_life_monitor_enabled">
