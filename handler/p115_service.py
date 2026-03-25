@@ -1869,17 +1869,18 @@ class SmartOrganizer:
         
         if is_tv and (season_num is None or episode_num is None):
             # 1. 标准特征匹配 (S01E01, EP01, 第1集)
-            pattern = r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})\b|(?:^|[ \.\-\_\[\(])(?:ep|e|episode)[ \.\-]*?(\d{1,4})\b|第(\d{1,4})[集话]'
+            pattern = r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话]'
             match = re.search(pattern, original_name, re.IGNORECASE)
             if match:
                 s = match.group(1)
                 e = match.group(2)
                 ep_only = match.group(3)
-                zh_ep = match.group(4)
+                e_only = match.group(4)
+                zh_ep = match.group(5)
                 if season_num is None:
                     season_num = int(s) if s else 1
                 if episode_num is None:
-                    episode_num = int(e) if e else (int(ep_only) if ep_only else int(zh_ep))
+                    episode_num = int(e) if e else (int(ep_only) if ep_only else (int(e_only) if e_only else int(zh_ep)))
             else:
                 # 2. ★ 纯数字兜底 (绝对安全：因为外层有 if is_tv 保护，绝不会把电影当成剧集)
                 name_without_ext = original_name.rsplit('.', 1)[0]
@@ -2213,7 +2214,7 @@ class SmartOrganizer:
                     break
                 
                 # 2. 标准特征 (EP01, S01E01)
-                if re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|e|episode)[ \.\-]*\d{1,4}\b|第\d{1,4}[集话]', c_name, re.IGNORECASE):
+                if re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第\d{1,4}[集话]', c_name, re.IGNORECASE):
                     is_actually_tv = True
                     break
                 
@@ -2958,7 +2959,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
     else:
         # 将主目录名和文件名拼在一起，寻找剧集特征
         combined_text = f"{main_dir_name or ''} {filename}"
-        if has_season_subdirs or re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|e|episode)[ \.\-]*\d{1,4}\b|第[一二三四五六七八九十\d]+季|Season', combined_text, re.IGNORECASE):
+        if has_season_subdirs or re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第[一二三四五六七八九十\d]+季|Season', combined_text, re.IGNORECASE):
             media_type = 'tv'
 
     # 辅助函数：用已锁定的类型去 TMDb 查官方标题
@@ -3236,7 +3237,7 @@ def task_scan_and_organize_115(processor=None):
                     current_top_name = top_level_name if top_level_name else name
 
                     # 剧集特征嗅探
-                    is_tv_hint = bool(re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|e|episode)[ \.\-]*\d{1,4}\b|第[一二三四五六七八九十\d]+季', name, re.IGNORECASE))
+                    is_tv_hint = bool(re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第[一二三四五六七八九十\d]+季', name, re.IGNORECASE))
                     is_season_dir = is_folder and bool(re.search(r'^(Season\s?\d+|S\d+|第[一二三四五六七八九十\d]+季)$', name, re.IGNORECASE))
 
                     if is_folder:
