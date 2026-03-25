@@ -410,17 +410,14 @@ class P115CookieClient:
         return r.json() if hasattr(r, 'json') else r
     
     def life_behavior_detail(self, payload=None):
-        if payload is None:
-            payload = {}
-        if self.webapi and hasattr(self.webapi, 'life_behavior_detail'):
-            return self.webapi.life_behavior_detail(payload)
-        
-        # 兜底：手动调用 WebAPI
+        # ★ 彻底抛弃第三方库，直接用原生 requests，加上严格的 timeout 防止卡死！
         url = "https://webapi.115.com/behavior/detail"
         params = {"limit": 100, "offset": 0}
         if isinstance(payload, dict): 
             params.update(payload)
-        r = self.request(url, method='GET', params=params)
+        
+        # 强制加上 timeout=15，如果 15 秒没响应直接报错，绝不卡死线程
+        r = self.request(url, method='GET', params=params, timeout=15)
         return r.json() if hasattr(r, 'json') else r
 
 
@@ -4697,18 +4694,11 @@ def task_monitor_115_life_events(processor=None):
         return None
 
     try:
-        # ★ 核心修改：调用 Cookie 接口获取生活事件
+        # 调用 Cookie 接口获取生活事件
         res = client.life_behavior_detail({"limit": 100, "offset": 0})
-        
-        # 🪄 魔法日志 1：打印原始响应结构（截断前1000字符防刷屏）
-        logger.info(f"  🪄 [魔法日志] 115 生活事件原始响应: {json.dumps(res, ensure_ascii=False)[:1000]}...")
         
         if res.get('state'):
             records = res.get('data', {}).get('list', [])
-            
-            if records:
-                # 🪄 魔法日志 2：打印第一条记录的完整结构
-                logger.info(f"  🪄 [魔法日志] 第一条记录完整结构: {json.dumps(records[0], ensure_ascii=False)}")
             
             # 辅助函数：通知 Emby
             def _notify_emby(path):
@@ -4721,11 +4711,11 @@ def task_monitor_115_life_events(processor=None):
                     except: pass
 
             for record in records:
-                # WebAPI 的 ID 字段可能是 id 也可能是 relation_id
-                relation_id = record.get('relation_id') or record.get('id')
+                # ★ 适配魔法日志：WebAPI 的键名是 id 和 type
+                relation_id = record.get('id')
                 
                 try:
-                    b_type = int(record.get('behavior_type', 0))
+                    b_type = int(record.get('type', 0))
                 except:
                     continue
                 
@@ -4733,24 +4723,13 @@ def task_monitor_115_life_events(processor=None):
                 if b_type not in [2, 6, 14, 22]:
                     continue
                 
-                # ★ 核心修改：WebAPI 的 detail 可能是字典，也可能是 JSON 字符串
-                detail_raw = record.get('detail', {})
-                if isinstance(detail_raw, str):
-                    try:
-                        detail = json.loads(detail_raw)
-                    except:
-                        detail = {}
-                else:
-                    detail = detail_raw
-                    
-                # 🪄 魔法日志 3：打印解析后的 detail
-                logger.info(f"  🪄 [魔法日志] 解析后的 detail: {detail}")
-
-                # 兼容 WebAPI 和 ProAPI 的字段名差异
-                file_id = str(detail.get('file_id') or detail.get('fid') or '')
-                file_name = detail.get('file_name') or detail.get('fn') or ''
-                parent_id = str(detail.get('parent_id') or detail.get('pid') or detail.get('cid') or '')
-                pick_code = detail.get('pick_code') or detail.get('pc')
+                # ★ 适配魔法日志：数据是扁平的，没有 detail 嵌套了！
+                file_id = str(record.get('file_id') or '')
+                file_name = record.get('file_name') or ''
+                parent_id = str(record.get('parent_id') or '')
+                pick_code = record.get('pick_code') or ''
+                file_sha1 = record.get('sha1') or ''
+                file_size = record.get('file_size') or 0
                 
                 if not file_id:
                     continue
@@ -4825,7 +4804,7 @@ def task_monitor_115_life_events(processor=None):
                                     cursor.execute("""
                                         INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, pick_code, local_path, size)
                                         VALUES (%s, %s, %s, %s, %s, %s, %s)
-                                    """, (file_id, parent_id, file_name, detail.get('sha1'), pick_code, file_local_path, detail.get('size', 0)))
+                                    """, (file_id, parent_id, file_name, file_sha1, pick_code, file_local_path, file_size))
                                     
                                     added_count += 1
                                     logger.info(f"  ✨ [增量事件] 新增 STRM: {file_name}")
@@ -4868,8 +4847,8 @@ def task_monitor_115_life_events(processor=None):
 
                         conn.commit()
                         
-                # 加入待清空列表
-                events_to_delete.append({"relation_id": relation_id, "behavior_type": str(record.get('behavior_type'))})
+                # ★ 映射回 life_batch_delete 需要的格式
+                events_to_delete.append({"relation_id": relation_id, "behavior_type": str(b_type)})
 
     except Exception as e:
         logger.error(f"  ❌ 获取生活事件异常: {e}", exc_info=True)
