@@ -2458,15 +2458,30 @@ class SmartOrganizer:
                 
                 missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
                 if missing_sha1s:
-                    logger.info(f"  🌐 [批量查询] 准备向中心服务器查询 {len(missing_sha1s)} 个文件的媒体信息...")
+                    req_count = len(missing_sha1s)
+                    logger.info(f"  🌐 [批量查询] 准备向中心服务器查询 {req_count} 个文件的媒体信息...")
                     try:
                         import extensions
                         processor = extensions.media_processor_instance
                         if processor and getattr(processor, 'p115_center', None):
                             resp = processor.p115_center.download_emby_mediainfo_data(missing_sha1s)
-                            if resp:
-                                pre_fetched_mediainfo = resp
-                                logger.info(f"  ✅ [批量查询] 成功获取 {len(resp)} 个文件的媒体信息。")
+                            
+                            if isinstance(resp, dict):
+                                # ★ 核心优化：过滤掉可能返回的空值/None，只统计真正有数据的命中项
+                                valid_hits = {k: v for k, v in resp.items() if v}
+                                hit_count = len(valid_hits)
+                                
+                                if hit_count > 0:
+                                    pre_fetched_mediainfo = valid_hits
+                                    if hit_count == req_count:
+                                        logger.info(f"  ✅ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
+                                    else:
+                                        logger.info(f"  ✅ [批量查询] 部分命中：成功获取 {hit_count}/{req_count} 个文件的媒体信息。")
+                                else:
+                                    logger.info(f"  ☁️ [批量查询] 中心服务器暂无这 {req_count} 个文件的媒体信息。")
+                            else:
+                                logger.warning(f"  ⚠️ [批量查询] 中心服务器返回数据格式异常。")
+                                
                     except Exception as e:
                         logger.warning(f"  ⚠️ [批量查询] 中心服务器查询失败: {e}")
 
