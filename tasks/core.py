@@ -199,12 +199,12 @@ def get_task_registry(context: str = 'all'):
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         'generate_embeddings': (task_generate_embeddings, "生成媒体向量", 'media', True),
-        'sync_ratings_to_emby': (task_sync_ratings_to_emby, "同步分级数据", 'media', True),
         'refresh_completed_series': (task_refresh_completed_series, "全量刷新剧集", 'watchlist', True),
         'execute-auto-tagging-rules': (task_execute_auto_tagging_rules, "自动打标规则", 'media', True),
         'scan-monitor-folders': (task_scan_monitor_folders, "扫描监控目录", 'media', True),
         'restore-cache-from-db': (task_restore_local_cache_from_db, "恢复覆盖缓存", 'media', True),
         'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', True),
+        'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', True),
         'scan-organize-115': (task_scan_and_organize_115, "网盘文件整理", 'media', True),
         'full-sync-strm': (task_full_sync_strm_and_subs, "全量生成STRM", 'media', True),
         'monitor-115-life-events': (task_monitor_115_life_events, "增量生成STRM", 'media', True),
@@ -222,7 +222,7 @@ def get_task_registry(context: str = 'all'):
         'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),
         'scan_old_seasons_backfill': (task_scan_old_seasons_backfill, "扫描缺季的剧", 'watchlist', False),
         'contribute-mediainfo': (task_contribute_mediainfo_to_center, "分享媒体信息", 'media', False),
-        'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', False),
+        'sync_ratings_to_emby': (task_sync_ratings_to_emby, "同步分级数据", 'media', False),
     }
 
     if context == 'chain':
