@@ -579,6 +579,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
             # 3. 补全 SHA1 (内部自带 115 API 兜底)
             # =========================================================
             if not sha1 and pc:
+                logger.debug(f"  🔍 [路径解析] 成功提取SHA1: {sha1}")
                 sha1 = processor._get_sha1_by_pickcode(pc)
             
             if sha1:
