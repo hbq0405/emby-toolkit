@@ -2422,7 +2422,24 @@ class SmartOrganizer:
                 ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
                 if ext in known_video_exts:
                     sha1 = file_item.get('sha1') or file_item.get('sha')
-                    if sha1: video_sha1s.append(sha1)
+                    
+                    # =========================================================
+                    # ★ 核心修复：在收集阶段，如果发现缺失 SHA1，提前主动请求补齐！
+                    # =========================================================
+                    if not sha1:
+                        fid = file_item.get('fid') or file_item.get('file_id')
+                        if fid:
+                            try:
+                                info_res = self.client.fs_get_info(fid)
+                                if info_res.get('state') and info_res.get('data'):
+                                    sha1 = info_res['data'].get('sha1')
+                                    if sha1:
+                                        file_item['sha1'] = sha1 # 存回字典，供后续主循环直接使用
+                            except Exception:
+                                pass
+                                
+                    if sha1: 
+                        video_sha1s.append(sha1)
             
             if video_sha1s:
                 # 先查本地缓存，剔除已有的，只查缺失的
