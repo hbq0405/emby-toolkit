@@ -29,6 +29,7 @@ from croniter import croniter
 from scheduler_manager import scheduler_manager
 from reverse_proxy import proxy_app
 from handler import telegram
+from handler.p115_service import LifeEventMonitorDaemon
 import logging
 from gevent import spawn_later # Added for debouncing
 # --- 导入蓝图 ---
@@ -126,13 +127,16 @@ def save_config_and_reload(new_config: Dict[str, Any]):
         
         scheduler_manager.update_all_scheduled_jobs()
         
-        # ★★★ 新增：重启监控服务以应用新配置 ★★★
+        # 重启监控服务以应用新配置
         if monitor_service_instance:
             monitor_service_instance.stop()
         
         if extensions.media_processor_instance:
             monitor_service_instance = MonitorService(config_manager.APP_CONFIG, extensions.media_processor_instance)
             monitor_service_instance.start()
+
+        # 动态刷新 115 生活事件守护进程
+        LifeEventMonitorDaemon.start_or_update()
         
         logger.info("  ✅ 新配置重新初始化完毕。")
         
@@ -472,6 +476,12 @@ def main_app_start():
     initialize_processors()
     task_manager.start_task_worker_if_not_running()
     scheduler_manager.start()
+
+    # 启动时唤醒 115 生活事件守护进程
+    try:
+        LifeEventMonitorDaemon.start_or_update()
+    except Exception as e:
+        logger.error(f"启动 115 生活事件守护进程失败: {e}")
 
     # 启动实时监控服务
     try:

@@ -4905,3 +4905,47 @@ def task_monitor_115_life_events(processor=None):
             logger.error(f"  ❌ 清空生活事件异常: {e}")
 
     update_progress(100, f"=== 增量检查完成！新增: {added_count}, 删除: {deleted_count} ===")
+
+# ======================================================================
+# ★★★ 后台守护线程：定时触发生活事件监控 ★★★
+# ======================================================================
+class LifeEventMonitorDaemon:
+    _timer = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def start_or_update(cls):
+        with cls._lock:
+            if cls._timer:
+                cls._timer.cancel()
+                cls._timer = None
+                
+            config = get_config()
+            if config.get(constants.CONFIG_OPTION_115_LIFE_MONITOR_ENABLED, False):
+                interval_mins = config.get(constants.CONFIG_OPTION_115_LIFE_MONITOR_INTERVAL, 5)
+                interval_secs = max(5, interval_mins) * 60 # 最少 5 分钟
+                
+                logger.info(f"  ⏱️ [守护进程] 115 生活事件监控已启动，间隔: {interval_mins} 分钟。")
+                cls._schedule_next(interval_secs)
+
+    @classmethod
+    def _schedule_next(cls, interval_secs):
+        cls._timer = threading.Timer(interval_secs, cls._run_task, args=(interval_secs,))
+        cls._timer.daemon = True
+        cls._timer.start()
+
+    @classmethod
+    def _run_task(cls, interval_secs):
+        # ★ 增加心跳日志，证明守护线程活着
+        logger.info("  💓 [守护进程] 定时触发 115 生活事件监控...")
+        try:
+            task_monitor_115_life_events()
+        except Exception as e:
+            logger.error(f"生活事件监控守护线程异常: {e}")
+        finally:
+            with cls._lock:
+                if get_config().get(constants.CONFIG_OPTION_115_LIFE_MONITOR_ENABLED, False):
+                    cls._schedule_next(interval_secs)
+
+# 在模块加载时尝试启动守护进程
+LifeEventMonitorDaemon.start_or_update()
