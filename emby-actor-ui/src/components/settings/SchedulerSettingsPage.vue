@@ -176,7 +176,7 @@
             <div class="flowchart-wrapper">
               <div v-if="enabledTgMenuTasks.length > 0" class="flowchart-container">
                 <div v-for="task in enabledTgMenuTasks" :key="task.key" class="flowchart-node" style="background-color: var(--n-action-color);">
-                  /{{ task.key.replace(/-/g, '_').toLowerCase() }} - {{ task.name }}
+                  {{ task.name }}
                 </div>
               </div>
               <div v-else class="flowchart-container empty">
