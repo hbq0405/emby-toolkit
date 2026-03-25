@@ -53,17 +53,21 @@ def clean_character_name_static(character_name: Optional[str]) -> str:
     suffix_pattern = r'(\s*(?:饰演|饰|配音|配))+$'
     name = re.sub(suffix_pattern, '', name).strip()
 
-    # 处理中外对照：“中文 + 英文”形式，只保留中文部分
-    match = re.search(r'[a-zA-Z]', name)
-    if match:
-        # 如果找到了英文字母，取它之前的所有内容
-        first_letter_index = match.start()
-        chinese_part = name[:first_letter_index].strip()
+    # 处理中外对照：“中文+英文” 或 “英文+中文” 形式，只保留中文部分
+    if re.search(r'[\u4e00-\u9fa5]', name) and re.search(r'[a-zA-Z]', name):
+        # 1. 优先尝试按常见分隔符 (/, |) 拆分 (例如 "ShenWang/王忱")
+        if '/' in name or '|' in name:
+            parts = re.split(r'[/|]', name)
+            for part in parts:
+                # 找到包含中文的那一部分
+                if re.search(r'[\u4e00-\u9fa5]', part):
+                    # 提取出中文部分后，剔除可能残留的英文字母，并清理首尾空格
+                    return re.sub(r'[a-zA-Z]', '', part).strip()
         
-        # 只有当截取出来的部分确实包含中文时，才进行截断。
-        # 这可以防止 "Kevin" 这种纯英文名字被错误地清空。
-        if re.search(r'[\u4e00-\u9fa5]', chinese_part):
-            return chinese_part
+        # 2. 如果没有明显分隔符 (例如 "ShenWang王忱" 或 "王忱 ShenWang")
+        # 直接暴力剔除所有英文字母，并压缩多余的空格
+        clean_name = re.sub(r'[a-zA-Z]', '', name)
+        return re.sub(r'\s+', ' ', clean_name).strip()
 
     # 如果只有外文，或清理后是英文，保留原值，等待后续翻译流程
     return name.strip()
