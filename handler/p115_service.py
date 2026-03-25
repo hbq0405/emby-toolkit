@@ -4622,6 +4622,7 @@ def task_monitor_115_life_events(processor=None):
     """
     读取 115 生活事件，对比本地缓存，增量生成/删除 STRM。
     支持目录递归扫描，完美处理“移动整个文件夹”的场景。
+    全面接入 P115CacheManager，逻辑更严密。
     """
     config = get_config()
     if not config.get(constants.CONFIG_OPTION_115_LIFE_MONITOR_ENABLED, False):
@@ -4700,11 +4701,11 @@ def task_monitor_115_life_events(processor=None):
                 emby.notify_emby_file_changes([path], emby_url, emby_api_key, update_type="Deleted")
             except: pass
 
-    # ★ 核心处理逻辑 (抽离出来以便递归调用)
+    # ★ 核心处理逻辑 (全面接入 P115CacheManager)
     def process_node(file_id, file_name, parent_id, pick_code, is_folder, b_type, file_sha1, file_size):
         nonlocal added_count, deleted_count
         
-        # 1. 获取旧状态 (利用 P115CacheManager 现成的方法)
+        # 1. 获取旧状态
         old_local_path = P115CacheManager.get_local_path(file_id)
         
         # 2. 获取新状态
@@ -4738,20 +4739,41 @@ def task_monitor_115_life_events(processor=None):
                     logger.info(f"  🗑️ [事件] 连锅端删除失效目录: {file_name}")
                     _notify_emby(os.path.dirname(full_local_path))
             
-            # ★ 统一交给 CacheManager 清理数据库
-            if is_folder:
-                P115CacheManager.delete_cid(file_id)
-            else:
-                P115CacheManager.delete_files([file_id])
+            # 清理数据库
+            if is_folder: P115CacheManager.delete_cid(file_id)
+            else: P115CacheManager.delete_files([file_id])
 
         # ==========================================
-        # 分支 2 & 3：新增、移入、改名、同目录移动
-        # (因为 CacheManager 是 UPSERT 逻辑，所以新增和更新可以合并处理！)
+        # 分支 2：新增、移入、改名、同目录移动
         # ==========================================
         elif new_rel_dir:
+            file_local_path = os.path.join(new_rel_dir, file_name).replace('\\', '/')
+            
+            # ★ 核心逻辑 1：如果路径完全没变，说明是 MP/TG 实时处理过的，直接跳过！
+            if old_local_path == file_local_path:
+                return
+                
+            # ★ 核心逻辑 2：如果以前存在，且路径变了 (移动/改名)，需要先删掉旧的本地文件！
+            if old_local_path and old_local_path != file_local_path:
+                old_full_path = os.path.join(local_root, old_local_path)
+                old_ext = old_local_path.split('.')[-1].lower() if '.' in old_local_path else ''
+                
+                if old_ext in known_video_exts:
+                    old_strm = os.path.splitext(old_full_path)[0] + ".strm"
+                    if os.path.exists(old_strm): 
+                        os.remove(old_strm)
+                        _notify_emby(old_strm)
+                elif old_ext in known_sub_exts:
+                    if os.path.exists(old_full_path): os.remove(old_full_path)
+                elif is_folder:
+                    if os.path.exists(old_full_path) and os.path.isdir(old_full_path):
+                        import shutil
+                        shutil.rmtree(old_full_path)
+                        _notify_emby(os.path.dirname(old_full_path))
+
+            # 开始生成新文件/目录
             ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
             current_local_path = os.path.join(local_root, new_rel_dir)
-            file_local_path = os.path.join(new_rel_dir, file_name).replace('\\', '/')
             
             if not is_folder and ext in allowed_exts:
                 os.makedirs(current_local_path, exist_ok=True)
@@ -4772,20 +4794,20 @@ def task_monitor_115_life_events(processor=None):
                     with open(strm_path, 'w', encoding='utf-8') as f:
                         f.write(content)
                     
-                    # ★ 统一交给 CacheManager 写入/更新文件缓存
                     P115CacheManager.save_file_cache(
                         fid=file_id, parent_id=parent_id, name=file_name, 
                         sha1=file_sha1, pick_code=pick_code, 
                         local_path=file_local_path, size=file_size
                     )
                     
-                    if not old_local_path: # 只有以前不在的才算新增
-                        added_count += 1
-                        logger.info(f"  ✨ [事件] 新增 STRM: {file_name}")
-                        try:
-                            from monitor_service import enqueue_file_actively
-                            enqueue_file_actively(strm_path)
-                        except: pass
+                    added_count += 1
+                    action_str = "移动/改名" if old_local_path else "新增"
+                    logger.info(f"  ✨ [事件] {action_str} STRM: {file_name}")
+                    
+                    try:
+                        from monitor_service import enqueue_file_actively
+                        enqueue_file_actively(strm_path)
+                    except: pass
 
                 elif ext in known_sub_exts and download_subs and pick_code:
                     sub_path = os.path.join(current_local_path, file_name)
@@ -4805,7 +4827,6 @@ def task_monitor_115_life_events(processor=None):
             else:
                 # 是目录，或者是不在白名单的文件，当做目录/空壳记录
                 os.makedirs(os.path.join(current_local_path, file_name), exist_ok=True)
-                # ★ 统一交给 CacheManager 写入/更新目录缓存
                 P115CacheManager.save_cid(file_id, parent_id, file_name)
                 P115CacheManager.update_local_path(file_id, file_local_path)
 
@@ -4816,7 +4837,6 @@ def task_monitor_115_life_events(processor=None):
         
         # 2. 如果是目录，且不是删除事件，则拉取里面的所有文件！
         if is_folder and b_type != 22:
-            #logger.info(f"  📂 [魔法日志] 发现目录事件，正在递归拉取子文件: {file_name}")
             try:
                 offset = 0
                 while True:
@@ -4834,7 +4854,7 @@ def task_monitor_115_life_events(processor=None):
                         c_sha1 = item.get('sha1') or item.get('sha')
                         c_size = _parse_115_size(item.get('fs') or item.get('size'))
                         
-                        # 递归调用 (子文件继承父目录的事件类型，比如父目录是移动，子文件也算移动)
+                        # 递归调用
                         process_recursive(c_fid, c_fname, c_pid, c_pc, c_is_folder, b_type, c_sha1, c_size)
                         
                     if len(items) < 1000: break
@@ -4845,14 +4865,8 @@ def task_monitor_115_life_events(processor=None):
     try:
         res = client.life_behavior_detail({"limit": 100, "offset": 0})
         
-        # 🪄 魔法日志 1：打印原始响应结构
-        #logger.info(f"  🪄 [魔法日志] 115 生活事件原始响应: {json.dumps(res, ensure_ascii=False)[:1000]}...")
-        
         if res.get('state'):
             records = res.get('data', {}).get('list', [])
-            
-            # if records:
-            #     logger.info(f"  🪄 [魔法日志] 第一条记录完整结构: {json.dumps(records[0], ensure_ascii=False)}")
 
             for record in records:
                 relation_id = record.get('id')
@@ -4870,18 +4884,15 @@ def task_monitor_115_life_events(processor=None):
                 file_sha1 = record.get('sha1') or ''
                 file_size = record.get('file_size') or 0
                 
-                # ★ 核心：判断是不是目录 (file_category == 0)
                 fc = str(record.get('file_category', '1'))
                 is_folder = (fc == '0')
                 
                 if not file_id: continue
 
-                # logger.info(f"  🪄 [魔法日志] 准备处理事件 -> 类型:{b_type}, 名称:{file_name}, 是目录:{is_folder}")
-
                 # ★ 调用递归处理函数
                 process_recursive(file_id, file_name, parent_id, pick_code, is_folder, b_type, file_sha1, file_size)
                         
-                # ★ 核心修复：将数字 type 映射为 Life API 需要的字符串 behavior_type
+                # 映射为 Life API 需要的字符串
                 TYPE_MAP = {2: "upload_file", 6: "move_file", 14: "receive_files", 22: "delete_file"}
                 b_type_str = TYPE_MAP.get(b_type, str(b_type))
                 
@@ -4893,7 +4904,6 @@ def task_monitor_115_life_events(processor=None):
     # 4. 批量清空已处理的事件
     if events_to_delete:
         try:
-            # logger.info(f"  🪄 [魔法日志] 准备清空的事件 Payload: {events_to_delete[:2]}...")
             chunk_size = 50
             for i in range(0, len(events_to_delete), chunk_size):
                 chunk = events_to_delete[i:i+chunk_size]
@@ -4904,7 +4914,7 @@ def task_monitor_115_life_events(processor=None):
         except Exception as e:
             logger.error(f"  ❌ 清空生活事件异常: {e}")
 
-    update_progress(100, f"=== 增量检查完成！新增: {added_count}, 删除: {deleted_count} ===")
+    update_progress(100, f"=== 增量检查完成！新增/移动: {added_count}, 删除: {deleted_count} ===")
 
 # ======================================================================
 # ★★★ 后台守护线程：定时触发生活事件监控 ★★★
@@ -4946,6 +4956,3 @@ class LifeEventMonitorDaemon:
             with cls._lock:
                 if get_config().get(constants.CONFIG_OPTION_115_LIFE_MONITOR_ENABLED, False):
                     cls._schedule_next(interval_secs)
-
-# 在模块加载时尝试启动守护进程
-LifeEventMonitorDaemon.start_or_update()
