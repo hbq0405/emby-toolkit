@@ -3829,8 +3829,12 @@ class MediaProcessor:
             # --- 分集图片逻辑 ---
             if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_BACKUP_EPISODE_IMAGE, False):
                 children_to_process = []
-                # 获取所有子项信息，用于查找
-                all_children = emby.get_series_children(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, series_name_for_log=item_name_for_log) or []
+                # 获取所有子项信息，用于查找 (增加 ImageTags 字段请求)
+                all_children = emby.get_series_children(
+                    item_id, self.emby_url, self.emby_api_key, self.emby_user_id, 
+                    series_name_for_log=item_name_for_log,
+                    fields="Id,Name,ParentIndexNumber,IndexNumber,Overview,ImageTags"
+                ) or []
                 
                 if episode_ids_to_sync:
                     # 模式一：只处理指定的分集
@@ -3845,7 +3849,15 @@ class MediaProcessor:
                     if self.is_stop_requested():
                         logger.warning(f"  🚫 {log_prefix} 收到停止信号，中止子项目图片下载。")
                         return False
+                    
                     child_type, child_id = child.get("Type"), child.get("Id")
+                    
+                    # ★★★ 优雅处理：检查该分集/季是否真的有独立图片 ★★★
+                    # 如果没有 Primary 标签，说明 Emby 只是在用父级海报占位，直接跳过，避免触发 500 错误和重试耗时
+                    if "Primary" not in child.get("ImageTags", {}):
+                        # logger.trace(f"  ➜ {log_prefix} {child_type} (ID:{child_id}) 暂无独立封面，优雅跳过。")
+                        continue
+
                     if child_type == "Season":
                         season_number = child.get("IndexNumber")
                         if season_number is not None:

@@ -76,10 +76,10 @@ class EmbyAPIClient:
                 response = self.session.request(method, url, **kwargs)
                 return response
             except requests.exceptions.RetryError:
-                logger.error(f"Emby API 请求重试多次后失败: {url}")
+                logger.error(f"  ➜ Emby API 请求重试多次后失败: {url}")
                 raise
             except Exception as e:
-                logger.error(f"Emby API 请求异常: {e} | URL: {url}")
+                logger.error(f"  ➜ Emby API 请求异常: {e} | URL: {url}")
                 raise
 
     def get(self, url, **kwargs):
@@ -1145,7 +1145,7 @@ def download_emby_image(
     if image_tag:
         params["tag"] = image_tag
 
-    logger.trace(f"准备下载图片: 类型='{image_type}', 从 URL: {image_url}")
+    logger.trace(f"  ➜ 准备下载图片: 类型='{image_type}', 从 URL: {image_url}")
     
     try:
         with emby_client.get(image_url, params=params, stream=True) as r:
@@ -1153,16 +1153,16 @@ def download_emby_image(
             os.makedirs(os.path.dirname(save_path), exist_ok=True)
             with open(save_path, 'wb') as f:
                 shutil.copyfileobj(r.raw, f)
-        logger.trace(f"成功下载图片并保存到: {save_path}")
+        logger.trace(f"  ➜ 成功下载图片并保存到: {save_path}")
         return True
     except requests.exceptions.RequestException as e:
         if hasattr(e, 'response') and e.response is not None and e.response.status_code == 404:
             logger.trace(f"图片类型 '{image_type}' 在 Emby 项目 '{item_id}' 中不存在。")
         else:
-            logger.error(f"下载图片时发生网络错误: {e}")
+            logger.error(f"  ➜ 下载图片时发生网络错误: {e}")
         return False
     except Exception as e:
-        logger.error(f"保存图片到 '{save_path}' 时发生未知错误: {e}")
+        logger.error(f"  ➜ 保存图片到 '{save_path}' 时发生未知错误: {e}")
         return False
 
 # --- 获取所有合集 ---
