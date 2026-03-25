@@ -527,25 +527,29 @@ class P115Service:
                         time.sleep(interval - elapsed)
                     P115Service._last_request_time = time.time()
 
-            def _is_link_valid(self, url, user_agent):
-                """发送 HEAD 请求探测直链是否存活，耗时极短 (通常 < 100ms)"""
+            def _is_link_valid(self, url, user_agent, use_cookie=False):
+                """发送带 Range 的 GET 请求探测直链，完美模拟播放器且极省带宽"""
                 try:
-                    headers = {"User-Agent": user_agent or "Mozilla/5.0"}
-                    # 如果有 Cookie，带上更稳妥
-                    if self._cookie and hasattr(self._cookie, 'cookie_str'):
+                    headers = {
+                        "User-Agent": user_agent or "Mozilla/5.0",
+                        "Range": "bytes=0-0"  # 核心：只请求第1个字节，防止下载整个文件
+                    }
+                    
+                    # 只有明确要求使用 Cookie 的直链，才塞入 Cookie
+                    if use_cookie and self._cookie and hasattr(self._cookie, 'cookie_str'):
                         headers["Cookie"] = self._cookie.cookie_str
 
-                    # 使用 HEAD 请求，只获取响应头，不下载实体数据，极省带宽
-                    resp = requests.head(url, headers=headers, timeout=2.5, allow_redirects=True)
+                    # 使用 GET 请求，兼容所有视频 CDN
+                    resp = requests.get(url, headers=headers, timeout=3.0, allow_redirects=True)
                     
-                    # 200(OK) 或 206(Partial Content，流媒体常见) 均代表存活
+                    # 200(OK) 或 206(Partial Content) 均代表链接健康存活
                     if resp.status_code in (200, 206, 302):
                         return True
                         
                     logger.warning(f"  ⚠️ [直链检测] 缓存直链已失效 (HTTP {resp.status_code})，准备重新获取...")
                     return False
                 except Exception as e:
-                    logger.warning(f"  ⚠️ [直链检测] 探测缓存直链超时或异常 ({e})，视为失效...")
+                    logger.warning(f"  ⚠️ [直链检测] 探测异常 ({e})，视为失效...")
                     return False
 
             def get_user_info(self):
@@ -616,11 +620,10 @@ class P115Service:
                     cached_data = _DIRECT_URL_CACHE[cache_key]
                     if now < cached_data['expire_at']:
                         cached_url = cached_data['url']
-                        # ★ 核心修改：返回前先探活
-                        if self._is_link_valid(cached_url, user_agent):
+                        # ★ 明确告知探活器：这是 Cookie 链接，必须带 Cookie 探测！
+                        if self._is_link_valid(cached_url, user_agent, use_cookie=True):
                             return cached_url
                         else:
-                            # 探活失败，立刻从缓存中剔除
                             with P115Service._downurl_lock:
                                 _DIRECT_URL_CACHE.pop(cache_key, None)
 
@@ -684,8 +687,8 @@ class P115Service:
                     cached_data = _DIRECT_URL_CACHE[cache_key]
                     if now < cached_data['expire_at']:
                         cached_url = cached_data['url']
-                        # ★ 核心修改：返回前先探活
-                        if self._is_link_valid(cached_url, user_agent):
+                        # ★ 明确告知探活器：这是 OpenAPI 链接，靠 URL 签名鉴权，不要带 Cookie！
+                        if self._is_link_valid(cached_url, user_agent, use_cookie=False):
                             return cached_url
                         else:
                             with P115Service._downurl_lock:
