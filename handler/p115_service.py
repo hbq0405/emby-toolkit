@@ -195,11 +195,6 @@ class P115OpenAPIClient:
             data['tid'] = ",".join([str(t) for t in tids]) if isinstance(tids, list) else str(tids)
         return self._do_request("POST", url, data=data)
     
-    def life_behavior_detail(self, behavior_type, offset=0, limit=100):
-        url = f"{self.base_url}/android/behavior/detail"
-        params = {"type": str(behavior_type), "offset": offset, "limit": limit}
-        return self._do_request("GET", url, params=params)
-    
     def fs_upload_init(self, file_name, file_size, target_cid, sha1, preid, sign_key=None, sign_val=None):
         """文件上传初始化调度接口"""
         url = f"{self.base_url}/open/upload/init"
@@ -413,6 +408,20 @@ class P115CookieClient:
         payload = {"delete_data": json.dumps(delete_data_list)}
         r = self.request(url, method='POST', data=payload)
         return r.json() if hasattr(r, 'json') else r
+    
+    def life_behavior_detail(self, payload=None):
+        if payload is None:
+            payload = {}
+        if self.webapi and hasattr(self.webapi, 'life_behavior_detail'):
+            return self.webapi.life_behavior_detail(payload)
+        
+        # 兜底：手动调用 WebAPI
+        url = "https://webapi.115.com/behavior/detail"
+        params = {"limit": 100, "offset": 0}
+        if isinstance(payload, dict): 
+            params.update(payload)
+        r = self.request(url, method='GET', params=params)
+        return r.json() if hasattr(r, 'json') else r
 
 
 # ======================================================================
@@ -590,10 +599,11 @@ class P115Service:
                 self._rate_limit()
                 return self._openapi.rb_del(tids)
             
-            def life_behavior_detail(self, behavior_type, offset=0, limit=100):
-                self._check_openapi()
+            def life_behavior_detail(self, payload=None):
                 self._rate_limit()
-                return self._openapi.life_behavior_detail(behavior_type, offset, limit)
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法获取生活事件")
+                return self._cookie.life_behavior_detail(payload)
 
             def life_batch_delete(self, delete_data_list):
                 self._rate_limit()
@@ -4660,19 +4670,14 @@ def task_monitor_115_life_events(processor=None):
             target_cids.add(cid)
             cid_to_rel_path[cid] = r.get('category_path') or r.get('dir_name', '未识别')
 
-    # 2. 关注的事件类型
-    # 2: 上传, 6: 移动, 14: 接收(转存), 22: 删除
-    event_types = [2, 6, 14, 22]
-    
     events_to_delete = [] # 收集处理成功的事件用于批量删除
     added_count = 0
     deleted_count = 0
 
-    # 辅助函数：推导本地路径 (复用全量同步的逻辑)
+    # 辅助函数：推导本地路径
     def resolve_local_dir(pid):
         pid = str(pid)
         if pid in cid_to_rel_path: return cid_to_rel_path[pid]
-        # 查本地数据库缓存向上追溯
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -4692,12 +4697,18 @@ def task_monitor_115_life_events(processor=None):
         return None
 
     try:
-        # 调用我们在 P115OpenAPIClient 中添加的 life_behavior_detail 方法
-        # 不传 behavior_type，拉取所有最新事件
-        res = client.life_behavior_detail(behavior_type="", limit=100)
+        # ★ 核心修改：调用 Cookie 接口获取生活事件
+        res = client.life_behavior_detail({"limit": 100, "offset": 0})
+        
+        # 🪄 魔法日志 1：打印原始响应结构（截断前1000字符防刷屏）
+        logger.info(f"  🪄 [魔法日志] 115 生活事件原始响应: {json.dumps(res, ensure_ascii=False)[:1000]}...")
         
         if res.get('state'):
             records = res.get('data', {}).get('list', [])
+            
+            if records:
+                # 🪄 魔法日志 2：打印第一条记录的完整结构
+                logger.info(f"  🪄 [魔法日志] 第一条记录完整结构: {json.dumps(records[0], ensure_ascii=False)}")
             
             # 辅助函数：通知 Emby
             def _notify_emby(path):
@@ -4710,26 +4721,32 @@ def task_monitor_115_life_events(processor=None):
                     except: pass
 
             for record in records:
-                relation_id = record.get('relation_id')
+                # WebAPI 的 ID 字段可能是 id 也可能是 relation_id
+                relation_id = record.get('relation_id') or record.get('id')
                 
-                # proapi 接口返回的 behavior_type 是数字
                 try:
                     b_type = int(record.get('behavior_type', 0))
                 except:
                     continue
                 
-                # 2:上传文件, 6:移动文件, 14:接收文件, 22:删除文件
-                # 注意：在 115 中，删除文件夹触发的是 6 (移动到回收站)
+                # 2:上传, 6:移动, 14:接收(转存), 22:删除
                 if b_type not in [2, 6, 14, 22]:
                     continue
                 
-                # proapi 的文件信息藏在 detail 这个 JSON 字符串里
-                detail_str = record.get('detail', '{}')
-                try:
-                    detail = json.loads(detail_str) if isinstance(detail_str, str) else detail_str
-                except:
-                    detail = {}
+                # ★ 核心修改：WebAPI 的 detail 可能是字典，也可能是 JSON 字符串
+                detail_raw = record.get('detail', {})
+                if isinstance(detail_raw, str):
+                    try:
+                        detail = json.loads(detail_raw)
+                    except:
+                        detail = {}
+                else:
+                    detail = detail_raw
+                    
+                # 🪄 魔法日志 3：打印解析后的 detail
+                logger.info(f"  🪄 [魔法日志] 解析后的 detail: {detail}")
 
+                # 兼容 WebAPI 和 ProAPI 的字段名差异
                 file_id = str(detail.get('file_id') or detail.get('fid') or '')
                 file_name = detail.get('file_name') or detail.get('fn') or ''
                 parent_id = str(detail.get('parent_id') or detail.get('pid') or detail.get('cid') or '')
@@ -4740,17 +4757,17 @@ def task_monitor_115_life_events(processor=None):
 
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        # 1. 获取旧状态 (以前在不在本地库里？)
+                        # 1. 获取旧状态
                         cursor.execute("SELECT local_path, name FROM p115_filesystem_cache WHERE id = %s", (file_id,))
                         old_record = cursor.fetchone()
 
-                        # 2. 获取新状态 (现在在不在监控目录里？)
+                        # 2. 获取新状态
                         new_rel_dir = None
-                        if b_type != 22: # 如果不是彻底删除，就去推导新路径
+                        if b_type != 22: 
                             new_rel_dir = resolve_local_dir(parent_id)
 
                         # ==========================================
-                        # 状态机分支 1：以前在，现在不在了 (被移到回收站、被彻底删除、被移出监控目录)
+                        # 状态机分支 1：以前在，现在不在了
                         # ==========================================
                         if old_record and not new_rel_dir:
                             local_file_rel = old_record['local_path']
@@ -4769,7 +4786,6 @@ def task_monitor_115_life_events(processor=None):
                                     os.remove(full_local_path)
                                     logger.info(f"  🗑️ [增量事件] 删除失效字幕: {old_record['name']}")
                             else:
-                                # 是目录！直接物理超度整个文件夹！
                                 if os.path.exists(full_local_path) and os.path.isdir(full_local_path):
                                     import shutil
                                     shutil.rmtree(full_local_path)
@@ -4777,16 +4793,14 @@ def task_monitor_115_life_events(processor=None):
                                     logger.info(f"  🗑️ [增量事件] 连锅端删除失效目录: {old_record['name']}")
                                     _notify_emby(os.path.dirname(full_local_path))
                             
-                            # 清理数据库缓存
                             cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s OR parent_id = %s", (file_id, file_id))
 
                         # ==========================================
-                        # 状态机分支 2：以前不在，现在在了 (新上传、从外面移进来)
+                        # 状态机分支 2：以前不在，现在在了
                         # ==========================================
                         elif not old_record and new_rel_dir:
                             ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
                             
-                            # 如果有扩展名且在允许列表里，当做文件处理
                             if ext in allowed_exts:
                                 current_local_path = os.path.join(local_root, new_rel_dir)
                                 os.makedirs(current_local_path, exist_ok=True)
@@ -4836,7 +4850,6 @@ def task_monitor_115_life_events(processor=None):
                                         except Exception as e:
                                             logger.error(f"  ❌ 下载字幕失败: {e}")
                                             
-                            # 如果没有扩展名，或者不在允许列表里，当做目录（空壳）处理
                             else:
                                 current_local_path = os.path.join(local_root, new_rel_dir, file_name)
                                 os.makedirs(current_local_path, exist_ok=True)
@@ -4847,7 +4860,7 @@ def task_monitor_115_life_events(processor=None):
                                 """, (file_id, parent_id, file_name, file_local_path))
 
                         # ==========================================
-                        # 状态机分支 3：以前在，现在还在 (在监控目录内改名或移动)
+                        # 状态机分支 3：以前在，现在还在 (改名或移动)
                         # ==========================================
                         elif old_record and new_rel_dir:
                             file_local_path = os.path.join(new_rel_dir, file_name).replace('\\', '/')
@@ -4855,8 +4868,7 @@ def task_monitor_115_life_events(processor=None):
 
                         conn.commit()
                         
-                # 无论如何，处理完这个记录后，加入待清空列表
-                # 注意：清空接口要求 behavior_type 是字符串，所以这里强转一下
+                # 加入待清空列表
                 events_to_delete.append({"relation_id": relation_id, "behavior_type": str(record.get('behavior_type'))})
 
     except Exception as e:
@@ -4865,7 +4877,6 @@ def task_monitor_115_life_events(processor=None):
     # 4. 批量清空已处理的事件
     if events_to_delete:
         try:
-            # 115 接口限制，分批删除
             chunk_size = 50
             for i in range(0, len(events_to_delete), chunk_size):
                 chunk = events_to_delete[i:i+chunk_size]
