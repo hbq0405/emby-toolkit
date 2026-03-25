@@ -35,7 +35,7 @@ RELEASE_GROUPS: Dict[str, List[str]] = {
     "0ff": ['FF(?:(?:A|WE)B|CD|E(?:DU|B)|TV)'],
     "1pt": [],
     "52pt": [],
-    "观众": ['Audies', 'AD(?:Audio|E(?:book|)|Music|Web)'],
+    "观众": ['Audies', r'\bAD(?:Audio|E(?:book|)|Music|Web)\b'],
     "azusa": [],
     "备胎": ['BeiTai'],
     "学校": ['Bts(?:CHOOL|HD|PAD|TV)', 'Zone'],
