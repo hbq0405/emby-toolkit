@@ -4709,18 +4709,24 @@ def task_monitor_115_life_events(processor=None):
         if res.get('state'):
             records = res.get('data', {}).get('list', [])
             
+            # 辅助函数：通知 Emby
+            def _notify_emby(path):
+                emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+                emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+                if emby_url and emby_api_key:
+                    try:
+                        from handler import emby
+                        emby.notify_emby_file_changes([path], emby_url, emby_api_key, update_type="Deleted")
+                    except: pass
+
             for record in records:
                 relation_id = record.get('relation_id')
                 b_type_str = str(record.get('behavior_type', '')).lower()
                 
-                # 动作判定
-                is_add = b_type_str in ['upload_file', 'upload_image_file', 'move_file', 'move_image_file', 'receive_files']
-                is_del = b_type_str in ['delete_file', 'del_file', 'delete']
-                
-                if not is_add and not is_del:
+                # 过滤掉无关事件 (比如修改密码、登录等)
+                if b_type_str not in ['upload_file', 'upload_image_file', 'move_file', 'move_image_file', 'receive_files', 'delete_file', 'del_file', 'delete']:
                     continue
                 
-                # ★ 核心修改：遍历 items 数组，提取文件信息
                 items = record.get('items', [])
                 if not items:
                     continue
@@ -4730,128 +4736,135 @@ def task_monitor_115_life_events(processor=None):
                     file_name = item.get('file_name') or item.get('fn') or ''
                     parent_id = str(item.get('parent_id') or item.get('pid') or item.get('cid') or '')
                     pick_code = item.get('pick_code') or item.get('pc')
+                    file_category = int(item.get('file_category', 1)) # 0:目录, 1:文件
                     
                     if not file_id:
                         continue
 
-                    ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
-                    
-                    # --- 处理新增/移动/转存事件 ---
-                    if is_add:
-                        if ext not in allowed_exts:
-                            events_to_delete.append({"relation_id": relation_id, "behavior_type": record.get('behavior_type')})
-                            continue
-                            
-                        rel_dir = resolve_local_dir(parent_id)
-                        if not rel_dir:
-                            events_to_delete.append({"relation_id": relation_id, "behavior_type": record.get('behavior_type')})
-                            continue
-                            
-                        current_local_path = os.path.join(local_root, rel_dir)
-                        os.makedirs(current_local_path, exist_ok=True)
-                        
-                        if ext in known_video_exts and pick_code:
-                            strm_name = os.path.splitext(file_name)[0] + ".strm"
-                            strm_path = os.path.join(current_local_path, strm_name)
-                            
-                            if not etk_url.startswith('http'):
-                                rel_p = os.path.relpath(strm_path, local_root)
-                                content = os.path.join(etk_url, rel_p).replace('\\', '/')
-                                content = content[:-5] + f".{ext}"
-                            else:
-                                content = f"{etk_url}/api/p115/play/{pick_code}"
-                                if rename_config.get('strm_url_fmt') == 'with_name':
-                                    content = f"{content}/{file_name}"
-                                    
-                            with open(strm_path, 'w', encoding='utf-8') as f:
-                                f.write(content)
-                            
-                            file_local_path = os.path.join(rel_dir, file_name).replace('\\', '/')
-                            P115CacheManager.save_file_cache(
-                                fid=file_id, parent_id=parent_id, name=file_name,
-                                sha1=item.get('sha1'), pick_code=pick_code,
-                                local_path=file_local_path, size=item.get('file_size', 0)
-                            )
-                            added_count += 1
-                            logger.info(f"  ✨ [增量事件] 新增 STRM: {file_name}")
-                            
-                            try:
-                                from monitor_service import enqueue_file_actively
-                                enqueue_file_actively(strm_path)
-                            except: pass
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            # 1. 获取旧状态 (以前在不在本地库里？)
+                            cursor.execute("SELECT local_path, name FROM p115_filesystem_cache WHERE id = %s", (file_id,))
+                            old_record = cursor.fetchone()
 
-                        elif ext in known_sub_exts and download_subs and pick_code:
-                            sub_path = os.path.join(current_local_path, file_name)
-                            if not os.path.exists(sub_path):
-                                try:
-                                    url_obj = client.download_url(pick_code, user_agent="Mozilla/5.0")
-                                    if url_obj:
-                                        import requests
-                                        headers = {"User-Agent": "Mozilla/5.0", "Cookie": P115Service.get_cookies()}
-                                        resp = requests.get(str(url_obj), stream=True, timeout=15, headers=headers)
-                                        resp.raise_for_status()
-                                        with open(sub_path, 'wb') as f:
-                                            for chunk in resp.iter_content(8192): f.write(chunk)
-                                        logger.info(f"  ⬇️ [增量事件] 下载字幕: {file_name}")
-                                except Exception as e:
-                                    logger.error(f"  ❌ 下载字幕失败: {e}")
+                            # 2. 获取新状态 (现在在不在监控目录里？)
+                            # 如果是彻底删除事件，强制视为不在监控目录
+                            new_rel_dir = None
+                            if b_type_str not in ['delete_file', 'del_file', 'delete']:
+                                new_rel_dir = resolve_local_dir(parent_id)
 
-                        events_to_delete.append({"relation_id": relation_id, "behavior_type": record.get('behavior_type')})
+                            # ==========================================
+                            # 状态机分支 1：以前在，现在不在了 (被移到回收站、被彻底删除、被移出监控目录)
+                            # ==========================================
+                            if old_record and not new_rel_dir:
+                                local_file_rel = old_record['local_path']
+                                full_local_path = os.path.join(local_root, local_file_rel)
+                                db_ext = old_record['name'].split('.')[-1].lower() if '.' in old_record['name'] else ''
+                                
+                                if db_ext in known_video_exts:
+                                    strm_full = os.path.splitext(full_local_path)[0] + ".strm"
+                                    if os.path.exists(strm_full):
+                                        os.remove(strm_full)
+                                        deleted_count += 1
+                                        logger.info(f"  🗑️ [增量事件] 删除失效 STRM: {os.path.basename(strm_full)}")
+                                        _notify_emby(strm_full)
+                                elif db_ext in known_sub_exts:
+                                    if os.path.exists(full_local_path):
+                                        os.remove(full_local_path)
+                                        logger.info(f"  🗑️ [增量事件] 删除失效字幕: {old_record['name']}")
+                                else:
+                                    # 是目录！直接物理超度整个文件夹！
+                                    if os.path.exists(full_local_path) and os.path.isdir(full_local_path):
+                                        import shutil
+                                        shutil.rmtree(full_local_path)
+                                        deleted_count += 1
+                                        logger.info(f"  🗑️ [增量事件] 连锅端删除失效目录: {old_record['name']}")
+                                        _notify_emby(os.path.dirname(full_local_path))
+                                
+                                # 清理数据库缓存
+                                cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s OR parent_id = %s", (file_id, file_id))
 
-                    # --- 处理删除事件 ---
-                    elif is_del:
-                        try:
-                            with get_db_connection() as conn:
-                                with conn.cursor() as cursor:
-                                    # 支持文件夹的连锅端删除
-                                    cursor.execute("SELECT local_path, name FROM p115_filesystem_cache WHERE id = %s", (file_id,))
-                                    row = cursor.fetchone()
-                                    if row and row['local_path']:
-                                        local_file_rel = row['local_path']
-                                        full_local_path = os.path.join(local_root, local_file_rel)
+                            # ==========================================
+                            # 状态机分支 2：以前不在，现在在了 (新上传、从外面移进来)
+                            # ==========================================
+                            elif not old_record and new_rel_dir:
+                                if file_category == 1: # 是文件
+                                    ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+                                    if ext in allowed_exts:
+                                        current_local_path = os.path.join(local_root, new_rel_dir)
+                                        os.makedirs(current_local_path, exist_ok=True)
                                         
-                                        db_ext = row['name'].split('.')[-1].lower() if '.' in row['name'] else ''
-                                        
-                                        if db_ext in known_video_exts:
-                                            strm_full = os.path.splitext(full_local_path)[0] + ".strm"
-                                            if os.path.exists(strm_full):
-                                                os.remove(strm_full)
-                                                deleted_count += 1
-                                                logger.info(f"  🗑️ [增量事件] 删除失效 STRM: {os.path.basename(strm_full)}")
-                                                
-                                                emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
-                                                emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
-                                                if emby_url and emby_api_key:
-                                                    from handler import emby
-                                                    emby.notify_emby_file_changes([strm_full], emby_url, emby_api_key, update_type="Deleted")
+                                        if ext in known_video_exts and pick_code:
+                                            strm_name = os.path.splitext(file_name)[0] + ".strm"
+                                            strm_path = os.path.join(current_local_path, strm_name)
+                                            
+                                            if not etk_url.startswith('http'):
+                                                rel_p = os.path.relpath(strm_path, local_root)
+                                                content = os.path.join(etk_url, rel_p).replace('\\', '/')
+                                                content = content[:-5] + f".{ext}"
+                                            else:
+                                                content = f"{etk_url}/api/p115/play/{pick_code}"
+                                                if rename_config.get('strm_url_fmt') == 'with_name':
+                                                    content = f"{content}/{file_name}"
                                                     
-                                        elif db_ext in known_sub_exts:
-                                            if os.path.exists(full_local_path):
-                                                os.remove(full_local_path)
-                                                logger.info(f"  🗑️ [增量事件] 删除失效字幕: {row['name']}")
-                                        else:
-                                            # 是目录！直接物理超度整个文件夹！
-                                            if os.path.exists(full_local_path) and os.path.isdir(full_local_path):
-                                                import shutil
-                                                shutil.rmtree(full_local_path)
-                                                deleted_count += 1
-                                                logger.info(f"  🗑️ [增量事件] 连锅端删除失效目录: {row['name']}")
-                                                
-                                                emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
-                                                emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
-                                                if emby_url and emby_api_key:
-                                                    from handler import emby
-                                                    emby.notify_emby_file_changes([os.path.dirname(full_local_path)], emby_url, emby_api_key, update_type="Deleted")
-                                        
-                                        cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s OR parent_id = %s", (file_id, file_id))
-                                        conn.commit()
-                        except Exception as e:
-                            logger.error(f"  ❌ 处理删除事件异常: {e}")
+                                            with open(strm_path, 'w', encoding='utf-8') as f:
+                                                f.write(content)
+                                            
+                                            file_local_path = os.path.join(new_rel_dir, file_name).replace('\\', '/')
+                                            cursor.execute("""
+                                                INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, pick_code, local_path, size)
+                                                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                                            """, (file_id, parent_id, file_name, item.get('sha1'), pick_code, file_local_path, item.get('file_size', 0)))
+                                            
+                                            added_count += 1
+                                            logger.info(f"  ✨ [增量事件] 新增 STRM: {file_name}")
+                                            try:
+                                                from monitor_service import enqueue_file_actively
+                                                enqueue_file_actively(strm_path)
+                                            except: pass
+
+                                        elif ext in known_sub_exts and download_subs and pick_code:
+                                            sub_path = os.path.join(current_local_path, file_name)
+                                            if not os.path.exists(sub_path):
+                                                try:
+                                                    url_obj = client.download_url(pick_code, user_agent="Mozilla/5.0")
+                                                    if url_obj:
+                                                        import requests
+                                                        headers = {"User-Agent": "Mozilla/5.0", "Cookie": P115Service.get_cookies()}
+                                                        resp = requests.get(str(url_obj), stream=True, timeout=15, headers=headers)
+                                                        resp.raise_for_status()
+                                                        with open(sub_path, 'wb') as f:
+                                                            for chunk in resp.iter_content(8192): f.write(chunk)
+                                                        logger.info(f"  ⬇️ [增量事件] 下载字幕: {file_name}")
+                                                except Exception as e:
+                                                    logger.error(f"  ❌ 下载字幕失败: {e}")
+                                                    
+                                elif file_category == 0: # 是目录
+                                    # 只是在本地建个空壳，防止路径不存在。里面的文件会有单独的事件触发
+                                    current_local_path = os.path.join(local_root, new_rel_dir, file_name)
+                                    os.makedirs(current_local_path, exist_ok=True)
+                                    file_local_path = os.path.join(new_rel_dir, file_name).replace('\\', '/')
+                                    cursor.execute("""
+                                        INSERT INTO p115_filesystem_cache (id, parent_id, name, local_path)
+                                        VALUES (%s, %s, %s, %s)
+                                    """, (file_id, parent_id, file_name, file_local_path))
+
+                            # ==========================================
+                            # 状态机分支 3：以前在，现在还在 (在监控目录内改名或移动)
+                            # ==========================================
+                            elif old_record and new_rel_dir:
+                                # 简单粗暴：如果名字或路径变了，直接把旧的删了，让全量同步去补（或者等下一次事件）
+                                # 这里为了安全起见，我们只更新数据库路径，物理文件的移动交给全量同步去兜底
+                                file_local_path = os.path.join(new_rel_dir, file_name).replace('\\', '/')
+                                cursor.execute("UPDATE p115_filesystem_cache SET parent_id=%s, name=%s, local_path=%s WHERE id=%s", (parent_id, file_name, file_local_path, file_id))
+
+                            conn.commit()
                             
-                        events_to_delete.append({"relation_id": relation_id, "behavior_type": record.get('behavior_type')})
+                # 无论如何，处理完这个记录后，加入待清空列表
+                events_to_delete.append({"relation_id": relation_id, "behavior_type": record.get('behavior_type')})
 
     except Exception as e:
-        logger.error(f"  ❌ 获取生活事件异常: {e}")
+        logger.error(f"  ❌ 获取生活事件异常: {e}", exc_info=True)
 
     # 4. 批量清空已处理的事件
     if events_to_delete:
