@@ -407,6 +407,12 @@ class P115CookieClient:
         params = {"offset": offset, "limit": limit}
         r = self.request(url, method='GET', params=params)
         return r.json() if hasattr(r, 'json') else r
+
+    def life_list2(self, offset=0, limit=100):
+        url = "https://life.115.com/api/1.0/web/1.0/life/recent_operations"
+        params = {"offset": offset, "limit": limit}
+        r = self.request(url, method='GET', params=params)
+        return r.json() if hasattr(r, 'json') else r
     
     def life_batch_delete(self, delete_data_list):
         url = "https://life.115.com/api/1.0/web/1.0/life/life_batch_delete"
@@ -596,6 +602,12 @@ class P115Service:
                 if not self._cookie:
                     raise Exception("未配置 115 Cookie，无法获取生活事件")
                 return self._cookie.life_list(offset, limit)
+            
+            def life_list2(self, offset=0, limit=100):
+                self._rate_limit()
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法获取生活事件")
+                return self._cookie.life_list2(offset, limit)
 
             def life_batch_delete(self, delete_data_list):
                 self._rate_limit()
