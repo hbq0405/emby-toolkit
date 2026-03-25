@@ -194,7 +194,7 @@ class P115OpenAPIClient:
         if tids:
             data['tid'] = ",".join([str(t) for t in tids]) if isinstance(tids, list) else str(tids)
         return self._do_request("POST", url, data=data)
-
+    
     def life_behavior_detail(self, behavior_type, offset=0, limit=100):
         url = f"{self.base_url}/android/behavior/detail"
         params = {"type": str(behavior_type), "offset": offset, "limit": limit}
@@ -406,18 +406,6 @@ class P115CookieClient:
         payload = {'share_code': share_code, 'receive_code': receive_code, 'cid': cid}
         r = self.request(url, method='POST', data=payload)
         return r.json() if hasattr(r, 'json') else r
-
-    def life_list(self, offset=0, limit=100):
-        url = "https://life.115.com/api/1.0/web/1.0/life/life_list"
-        params = {"offset": offset, "limit": limit}
-        r = self.request(url, method='GET', params=params)
-        return r.json() if hasattr(r, 'json') else r
-
-    def life_list2(self, offset=0, limit=100):
-        url = "https://life.115.com/api/1.0/web/1.0/life/recent_operations"
-        params = {"offset": offset, "limit": limit}
-        r = self.request(url, method='GET', params=params)
-        return r.json() if hasattr(r, 'json') else r
     
     def life_batch_delete(self, delete_data_list):
         url = "https://life.115.com/api/1.0/web/1.0/life/life_batch_delete"
@@ -602,17 +590,10 @@ class P115Service:
                 self._rate_limit()
                 return self._openapi.rb_del(tids)
             
-            def life_list(self, offset=0, limit=100):
+            def life_behavior_detail(self, behavior_type, offset=0, limit=100):
+                self._check_openapi()
                 self._rate_limit()
-                if not self._cookie:
-                    raise Exception("未配置 115 Cookie，无法获取生活事件")
-                return self._cookie.life_list(offset, limit)
-            
-            def life_list2(self, offset=0, limit=100):
-                self._rate_limit()
-                if not self._cookie:
-                    raise Exception("未配置 115 Cookie，无法获取生活事件")
-                return self._cookie.life_list2(offset, limit)
+                return self._openapi.life_behavior_detail(behavior_type, offset, limit)
 
             def life_batch_delete(self, delete_data_list):
                 self._rate_limit()
@@ -4687,10 +4668,11 @@ def task_monitor_115_life_events(processor=None):
     added_count = 0
     deleted_count = 0
 
-    # 辅助函数：推导本地路径
+    # 辅助函数：推导本地路径 (复用全量同步的逻辑)
     def resolve_local_dir(pid):
         pid = str(pid)
         if pid in cid_to_rel_path: return cid_to_rel_path[pid]
+        # 查本地数据库缓存向上追溯
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
