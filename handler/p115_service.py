@@ -527,31 +527,6 @@ class P115Service:
                         time.sleep(interval - elapsed)
                     P115Service._last_request_time = time.time()
 
-            def _is_link_valid(self, url, user_agent, use_cookie=False):
-                """发送带 Range 的 GET 请求探测直链，完美模拟播放器且极省带宽"""
-                try:
-                    headers = {
-                        "User-Agent": user_agent or "Mozilla/5.0",
-                        "Range": "bytes=0-0"  # 核心：只请求第1个字节，防止下载整个文件
-                    }
-                    
-                    # 只有明确要求使用 Cookie 的直链，才塞入 Cookie
-                    if use_cookie and self._cookie and hasattr(self._cookie, 'cookie_str'):
-                        headers["Cookie"] = self._cookie.cookie_str
-
-                    # 使用 GET 请求，兼容所有视频 CDN
-                    resp = requests.get(url, headers=headers, timeout=3.0, allow_redirects=True)
-                    
-                    # 200(OK) 或 206(Partial Content) 均代表链接健康存活
-                    if resp.status_code in (200, 206, 302):
-                        return True
-                        
-                    logger.warning(f"  ⚠️ [直链检测] 缓存直链已失效 (HTTP {resp.status_code})，准备重新获取...")
-                    return False
-                except Exception as e:
-                    logger.warning(f"  ⚠️ [直链检测] 探测异常 ({e})，视为失效...")
-                    return False
-
             def get_user_info(self):
                 self._rate_limit()
                 if self._openapi: return self._openapi.get_user_info()
@@ -608,29 +583,24 @@ class P115Service:
                 self._rate_limit() 
                 return self._openapi.upload_file_stream(file_stream, file_name, target_cid)
 
-            def download_url(self, pick_code, user_agent=None, force_refresh=False):
+            def download_url(self, pick_code, user_agent=None):
                 if not self._cookie:
                     raise Exception("未配置 115 Cookie，无法获取播放直链")
                 
                 cache_key = (pick_code, user_agent)
                 now = time.time()
                 
-                # 1. 查缓存并探活
-                if not force_refresh and cache_key in _DIRECT_URL_CACHE:
+                # 1. 查缓存
+                if cache_key in _DIRECT_URL_CACHE:
                     cached_data = _DIRECT_URL_CACHE[cache_key]
                     if now < cached_data['expire_at']:
-                        cached_url = cached_data['url']
-                        # ★ 明确告知探活器：这是 Cookie 链接，必须带 Cookie 探测！
-                        if self._is_link_valid(cached_url, user_agent, use_cookie=True):
-                            return cached_url
-                        else:
-                            with P115Service._downurl_lock:
-                                _DIRECT_URL_CACHE.pop(cache_key, None)
+                        # ★ 提取缓存里的文件名打印
+                        #display_name = cached_data.get('name', pick_code[:8])
+                        #logger.info(f"  ⚡ [直链缓存] 命中直链 -> {display_name} (UA: {str(user_agent)[:15]}...)")
+                        return cached_data['url']
 
-                # 2. 重新获取直链
                 with P115Service._downurl_lock:
-                    # 双重检查锁
-                    if not force_refresh and cache_key in _DIRECT_URL_CACHE and now < _DIRECT_URL_CACHE[cache_key]['expire_at']:
+                    if cache_key in _DIRECT_URL_CACHE and now < _DIRECT_URL_CACHE[cache_key]['expire_at']:
                         return _DIRECT_URL_CACHE[cache_key]['url']
 
                     current_time = time.time()
@@ -646,6 +616,7 @@ class P115Service:
                             direct_url = str(res)
                             display_name = pick_code[:8] + "..."
                             
+                            # ★ 从 115 返回的直链 URL 中反向解析出真实文件名
                             try:
                                 from urllib.parse import urlparse, parse_qs, unquote
                                 import os
@@ -660,10 +631,11 @@ class P115Service:
 
                             logger.info(f"  ✅ [Cookie] 请求直链成功 -> {display_name}")
 
+                            # ★ 将文件名一起存入缓存
                             _DIRECT_URL_CACHE[cache_key] = {
                                 'url': direct_url,
                                 'name': display_name,
-                                'expire_at': time.time() + 7200
+                                'expire_at': time.time() + 300
                             }
                             return direct_url
                         return None
@@ -676,27 +648,19 @@ class P115Service:
                             P115Service._last_downurl_time = time.time()
                         raise e
                     
-            def openapi_downurl(self, pick_code, user_agent=None, force_refresh=False):
-                """使用 OpenAPI 获取直链 (带缓存、探活和 UA 透传)"""
+            def openapi_downurl(self, pick_code, user_agent=None):
+                """使用 OpenAPI 获取直链 (带缓存和 UA 透传)"""
                 self._check_openapi()
                 cache_key = (f"openapi_{pick_code}", user_agent)
                 now = time.time()
                 
-                # 1. 查缓存并探活
-                if not force_refresh and cache_key in _DIRECT_URL_CACHE:
+                if cache_key in _DIRECT_URL_CACHE:
                     cached_data = _DIRECT_URL_CACHE[cache_key]
                     if now < cached_data['expire_at']:
-                        cached_url = cached_data['url']
-                        # ★ 明确告知探活器：这是 OpenAPI 链接，靠 URL 签名鉴权，不要带 Cookie！
-                        if self._is_link_valid(cached_url, user_agent, use_cookie=False):
-                            return cached_url
-                        else:
-                            with P115Service._downurl_lock:
-                                _DIRECT_URL_CACHE.pop(cache_key, None)
+                        return cached_data['url']
 
-                # 2. 重新获取直链
                 with P115Service._downurl_lock:
-                    if not force_refresh and cache_key in _DIRECT_URL_CACHE and now < _DIRECT_URL_CACHE[cache_key]['expire_at']:
+                    if cache_key in _DIRECT_URL_CACHE and now < _DIRECT_URL_CACHE[cache_key]['expire_at']:
                         return _DIRECT_URL_CACHE[cache_key]['url']
 
                     self._rate_limit()
@@ -712,7 +676,7 @@ class P115Service:
                                 _DIRECT_URL_CACHE[cache_key] = {
                                     'url': direct_url,
                                     'name': display_name,
-                                    'expire_at': time.time() + 7200 
+                                    'expire_at': time.time() + 300 
                                 }
                                 return direct_url
                         return None
