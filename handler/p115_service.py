@@ -4692,7 +4692,6 @@ def task_monitor_115_life_events(processor=None):
         except: pass
         return None
 
-    # ★★★ 核心修改 1：不传 type，全量拉取最近的 100 条事件，在本地过滤 ★★★
     try:
         res = client.life_list(limit=100)
         if res.get('state'):
@@ -4700,10 +4699,14 @@ def task_monitor_115_life_events(processor=None):
             
             for record in records:
                 relation_id = record.get('relation_id')
-                b_type = int(record.get('behavior_type', 0))
+                # 网页版接口返回的是字符串，如 'upload_file', 'delete_file'
+                b_type = str(record.get('behavior_type', ''))
                 
-                # 只处理我们关心的事件：2(上传), 6(移动), 14(转存), 22(删除)
-                if b_type not in [2, 6, 14, 22]:
+                # 定义我们关心的事件类型
+                add_types = ['upload_file', 'upload_image_file', 'move_file', 'move_image_file', 'receive_files']
+                del_types = ['delete_file']
+                
+                if b_type not in add_types and b_type not in del_types:
                     continue
                 
                 detail_str = record.get('detail', '{}')
@@ -4719,15 +4722,15 @@ def task_monitor_115_life_events(processor=None):
                 
                 ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
                 
-                # --- 处理新增/移动/转存事件 (2, 6, 14) ---
-                if b_type in [2, 6, 14]:
+                # --- 处理新增/移动/转存事件 ---
+                if b_type in add_types:
                     if ext not in allowed_exts:
-                        events_to_delete.append({"relation_id": relation_id, "behavior_type": str(b_type)})
+                        events_to_delete.append({"relation_id": relation_id, "behavior_type": b_type})
                         continue
                         
                     rel_dir = resolve_local_dir(parent_id)
                     if not rel_dir:
-                        events_to_delete.append({"relation_id": relation_id, "behavior_type": str(b_type)})
+                        events_to_delete.append({"relation_id": relation_id, "behavior_type": b_type})
                         continue
                         
                     current_local_path = os.path.join(local_root, rel_dir)
@@ -4779,10 +4782,10 @@ def task_monitor_115_life_events(processor=None):
                             except Exception as e:
                                 logger.error(f"  ❌ 下载字幕失败: {e}")
 
-                    events_to_delete.append({"relation_id": relation_id, "behavior_type": str(b_type)})
+                    events_to_delete.append({"relation_id": relation_id, "behavior_type": b_type})
 
-                # --- 处理删除事件 (22) ---
-                elif b_type == 22:
+                # --- 处理删除事件 ---
+                elif b_type in del_types:
                     try:
                         with get_db_connection() as conn:
                             with conn.cursor() as cursor:
@@ -4831,7 +4834,7 @@ def task_monitor_115_life_events(processor=None):
                     except Exception as e:
                         logger.error(f"  ❌ 处理删除事件异常: {e}")
                         
-                    events_to_delete.append({"relation_id": relation_id, "behavior_type": str(b_type)})
+                    events_to_delete.append({"relation_id": relation_id, "behavior_type": b_type})
 
     except Exception as e:
         logger.error(f"  ❌ 获取生活事件异常: {e}")
