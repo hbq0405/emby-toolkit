@@ -195,6 +195,11 @@ class P115OpenAPIClient:
             data['tid'] = ",".join([str(t) for t in tids]) if isinstance(tids, list) else str(tids)
         return self._do_request("POST", url, data=data)
     
+    def life_behavior_detail(self, behavior_type, offset=0, limit=100):
+        url = f"{self.base_url}/android/behavior/detail"
+        params = {"type": str(behavior_type), "offset": offset, "limit": limit}
+        return self._do_request("GET", url, params=params)
+    
     def fs_upload_init(self, file_name, file_size, target_cid, sha1, preid, sign_key=None, sign_val=None):
         """文件上传初始化调度接口"""
         url = f"{self.base_url}/open/upload/init"
@@ -401,6 +406,13 @@ class P115CookieClient:
         payload = {'share_code': share_code, 'receive_code': receive_code, 'cid': cid}
         r = self.request(url, method='POST', data=payload)
         return r.json() if hasattr(r, 'json') else r
+    
+    def life_batch_delete(self, delete_data_list):
+        url = "https://life.115.com/api/1.0/web/1.0/life/life_batch_delete"
+        # 115 要求 delete_data 是一个 JSON 字符串
+        payload = {"delete_data": json.dumps(delete_data_list)}
+        r = self.request(url, method='POST', data=payload)
+        return r.json() if hasattr(r, 'json') else r
 
 
 # ======================================================================
@@ -577,6 +589,17 @@ class P115Service:
                 self._check_openapi()
                 self._rate_limit()
                 return self._openapi.rb_del(tids)
+            
+            def life_behavior_detail(self, behavior_type, offset=0, limit=100):
+                self._check_openapi()
+                self._rate_limit()
+                return self._openapi.life_behavior_detail(behavior_type, offset, limit)
+
+            def life_batch_delete(self, delete_data_list):
+                self._rate_limit()
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法删除生活事件")
+                return self._cookie.life_batch_delete(delete_data_list)
             
             def upload_file_stream(self, file_stream, file_name, target_cid):
                 self._check_openapi()
@@ -4584,3 +4607,283 @@ def task_sync_music_library(processor=None):
         
     logger.info(end_msg)
     update_progress(100, f"同步完成！生成 {files_generated} 首，下载 {aux_downloaded} 个附属文件。")
+
+# ======================================================================
+# ★★★ 115 生活事件增量监控 (秒级同步 STRM) ★★★
+# ======================================================================
+def task_monitor_115_life_events(processor=None):
+    """
+    读取 115 生活事件，对比本地缓存，增量生成/删除 STRM。
+    处理完毕后清空已处理的事件。
+    """
+    config = get_config()
+    if not config.get(constants.CONFIG_OPTION_115_LIFE_MONITOR_ENABLED, False):
+        logger.debug("  💤 115 生活事件监控未开启，跳过。")
+        return
+
+    client = P115Service.get_client()
+    if not client:
+        return
+
+    try:
+        import task_manager
+    except ImportError:
+        task_manager = None
+
+    def update_progress(prog, msg):
+        if task_manager: task_manager.update_status_from_thread(prog, msg)
+        logger.info(msg)
+
+    update_progress(5, "=== 🚀 开始检查 115 增量生活事件 ===")
+
+    # 1. 准备基础数据 (规则、本地路径等)
+    local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+    etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
+    download_subs = config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True)
+    rename_config = settings_db.get_setting('p115_rename_config') or {}
+    
+    known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
+    known_sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
+    allowed_exts = set(e.lower() for e in config.get(constants.CONFIG_OPTION_115_EXTENSIONS, []))
+    if not allowed_exts: allowed_exts = known_video_exts | known_sub_exts
+
+    raw_rules = settings_db.get_setting('p115_sorting_rules')
+    if not raw_rules: return
+    rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
+    
+    # 获取所有受监控的分类目录 CID
+    target_cids = set()
+    cid_to_rel_path = {}
+    for r in rules:
+        if r.get('enabled', True) and r.get('cid') and str(r['cid']) != '0':
+            cid = str(r['cid'])
+            target_cids.add(cid)
+            cid_to_rel_path[cid] = r.get('category_path') or r.get('dir_name', '未识别')
+
+    # 2. 关注的事件类型
+    # 2: 上传, 6: 移动, 14: 接收(转存), 22: 删除
+    event_types = [2, 6, 14, 22]
+    
+    events_to_delete = [] # 收集处理成功的事件用于批量删除
+    added_count = 0
+    deleted_count = 0
+
+    # 辅助函数：推导本地路径 (复用全量同步的逻辑)
+    def resolve_local_dir(pid):
+        pid = str(pid)
+        if pid in cid_to_rel_path: return cid_to_rel_path[pid]
+        # 查本地数据库缓存向上追溯
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    parts = []
+                    curr = pid
+                    while curr:
+                        cursor.execute("SELECT parent_id, name FROM p115_filesystem_cache WHERE id = %s", (curr,))
+                        row = cursor.fetchone()
+                        if not row: break
+                        parts.append(row['name'])
+                        curr = str(row['parent_id'])
+                        if curr in cid_to_rel_path:
+                            parts.append(cid_to_rel_path[curr])
+                            parts.reverse()
+                            return os.path.join(*parts)
+        except: pass
+        return None
+
+    # 3. 遍历获取事件
+    for b_type in event_types:
+        try:
+            res = client.life_behavior_detail(b_type, limit=100)
+            if not res.get('state'): continue
+            
+            records = res.get('data', {}).get('list', [])
+            if not records: continue
+
+            for record in records:
+                relation_id = record.get('relation_id')
+                behavior_type = record.get('behavior_type')
+                
+                # 提取文件信息 (115 的 detail 字段通常包含 JSON 字符串)
+                detail_str = record.get('detail', '{}')
+                try:
+                    detail = json.loads(detail_str) if isinstance(detail_str, str) else detail_str
+                except:
+                    detail = {}
+
+                file_id = detail.get('file_id') or detail.get('fid')
+                file_name = detail.get('file_name') or detail.get('fn', '')
+                parent_id = str(detail.get('parent_id') or detail.get('pid') or detail.get('cid', ''))
+                pick_code = detail.get('pick_code') or detail.get('pc')
+                
+                ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+                
+                # --- 处理新增/移动/转存事件 (2, 6, 14) ---
+                if b_type in [2, 6, 14]:
+                    if ext not in allowed_exts:
+                        # 非媒体文件，直接标记删除事件
+                        events_to_delete.append({"relation_id": relation_id, "behavior_type": str(behavior_type)})
+                        continue
+                        
+                    # 判断是否在我们的监控目录下
+                    rel_dir = resolve_local_dir(parent_id)
+                    if not rel_dir:
+                        # 不在监控目录下，忽略，但标记删除事件
+                        events_to_delete.append({"relation_id": relation_id, "behavior_type": str(behavior_type)})
+                        continue
+                        
+                    # 生成 STRM
+                    current_local_path = os.path.join(local_root, rel_dir)
+                    os.makedirs(current_local_path, exist_ok=True)
+                    
+                    if ext in known_video_exts and pick_code:
+                        strm_name = os.path.splitext(file_name)[0] + ".strm"
+                        strm_path = os.path.join(current_local_path, strm_name)
+                        
+                        if not etk_url.startswith('http'):
+                            rel_p = os.path.relpath(strm_path, local_root)
+                            content = os.path.join(etk_url, rel_p).replace('\\', '/')
+                            content = content[:-5] + f".{ext}"
+                        else:
+                            content = f"{etk_url}/api/p115/play/{pick_code}"
+                            if rename_config.get('strm_url_fmt') == 'with_name':
+                                content = f"{content}/{file_name}"
+                                
+                        with open(strm_path, 'w', encoding='utf-8') as f:
+                            f.write(content)
+                        
+                        # 写入本地 DB 缓存
+                        file_local_path = os.path.join(rel_dir, file_name).replace('\\', '/')
+                        P115CacheManager.save_file_cache(
+                            fid=file_id, parent_id=parent_id, name=file_name,
+                            sha1=detail.get('sha1'), pick_code=pick_code,
+                            local_path=file_local_path, size=detail.get('size', 0)
+                        )
+                        added_count += 1
+                        logger.info(f"  ✨ [增量事件] 新增 STRM: {file_name}")
+                        
+                        # 主动通知 Emby 扫描
+                        try:
+                            from monitor_service import enqueue_file_actively
+                            enqueue_file_actively(strm_path)
+                        except: pass
+
+                    elif ext in known_sub_exts and download_subs and pick_code:
+                        sub_path = os.path.join(current_local_path, file_name)
+                        if not os.path.exists(sub_path):
+                            try:
+                                url_obj = client.download_url(pick_code, user_agent="Mozilla/5.0")
+                                if url_obj:
+                                    import requests
+                                    headers = {"User-Agent": "Mozilla/5.0", "Cookie": P115Service.get_cookies()}
+                                    resp = requests.get(str(url_obj), stream=True, timeout=15, headers=headers)
+                                    resp.raise_for_status()
+                                    with open(sub_path, 'wb') as f:
+                                        for chunk in resp.iter_content(8192): f.write(chunk)
+                                    logger.info(f"  ⬇️ [增量事件] 下载字幕: {file_name}")
+                            except Exception as e:
+                                logger.error(f"  ❌ 下载字幕失败: {e}")
+
+                    events_to_delete.append({"relation_id": relation_id, "behavior_type": str(behavior_type)})
+
+                # --- 处理删除事件 (22) ---
+                elif b_type == 22:
+                    # 删除事件可能没有完整的 parent_id，我们需要查本地数据库
+                    try:
+                        with get_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute("SELECT local_path FROM p115_filesystem_cache WHERE id = %s", (file_id,))
+                                row = cursor.fetchone()
+                                if row and row['local_path']:
+                                    local_file_rel = row['local_path']
+                                    
+                                    # 删除本地 STRM
+                                    strm_rel = os.path.splitext(local_file_rel)[0] + ".strm"
+                                    strm_full = os.path.join(local_root, strm_rel)
+                                    if os.path.exists(strm_full):
+                                        os.remove(strm_full)
+                                        deleted_count += 1
+                                        logger.info(f"  🗑️ [增量事件] 删除失效 STRM: {strm_rel}")
+                                        
+                                        # 通知 Emby
+                                        emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+                                        emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+                                        if emby_url and emby_api_key:
+                                            from handler import emby
+                                            emby.notify_emby_file_changes([strm_full], emby_url, emby_api_key, update_type="Deleted")
+                                    
+                                    # 删除本地字幕
+                                    sub_full = os.path.join(local_root, local_file_rel)
+                                    if os.path.exists(sub_full) and sub_full.split('.')[-1].lower() in known_sub_exts:
+                                        os.remove(sub_full)
+                                        
+                                    # 清理数据库缓存
+                                    cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s", (file_id,))
+                                    conn.commit()
+                    except Exception as e:
+                        logger.error(f"  ❌ 处理删除事件异常: {e}")
+                        
+                    events_to_delete.append({"relation_id": relation_id, "behavior_type": str(behavior_type)})
+
+        except Exception as e:
+            logger.error(f"  ❌ 获取生活事件异常 (Type: {b_type}): {e}")
+
+    # 4. 批量清空已处理的事件
+    if events_to_delete:
+        try:
+            # 115 接口限制，分批删除
+            chunk_size = 50
+            for i in range(0, len(events_to_delete), chunk_size):
+                chunk = events_to_delete[i:i+chunk_size]
+                del_res = client.life_batch_delete(chunk)
+                if not del_res.get('state'):
+                    logger.warning(f"  ⚠️ 清空生活事件失败: {del_res}")
+            logger.debug(f"  🧹 成功清空 {len(events_to_delete)} 条已处理的生活事件。")
+        except Exception as e:
+            logger.error(f"  ❌ 清空生活事件异常: {e}")
+
+    update_progress(100, f"=== 增量检查完成！新增: {added_count}, 删除: {deleted_count} ===")
+
+
+# ======================================================================
+# ★★★ 后台守护线程：定时触发生活事件监控 ★★★
+# ======================================================================
+class LifeEventMonitorDaemon:
+    _timer = None
+    _lock = threading.Lock()
+
+    @classmethod
+    def start_or_update(cls):
+        with cls._lock:
+            if cls._timer:
+                cls._timer.cancel()
+                cls._timer = None
+                
+            config = get_config()
+            if config.get(constants.CONFIG_OPTION_115_LIFE_MONITOR_ENABLED, False):
+                interval_mins = config.get(constants.CONFIG_OPTION_115_LIFE_MONITOR_INTERVAL, 5)
+                interval_secs = max(5, interval_mins) * 60 # 最少 5 分钟
+                
+                logger.info(f"  ⏱️ [守护进程] 115 生活事件监控已启动，间隔: {interval_mins} 分钟。")
+                cls._schedule_next(interval_secs)
+
+    @classmethod
+    def _schedule_next(cls, interval_secs):
+        cls._timer = threading.Timer(interval_secs, cls._run_task, args=(interval_secs,))
+        cls._timer.daemon = True
+        cls._timer.start()
+
+    @classmethod
+    def _run_task(cls, interval_secs):
+        try:
+            task_monitor_115_life_events()
+        except Exception as e:
+            logger.error(f"生活事件监控守护线程异常: {e}")
+        finally:
+            with cls._lock:
+                # 运行完后安排下一次
+                if get_config().get(constants.CONFIG_OPTION_115_LIFE_MONITOR_ENABLED, False):
+                    cls._schedule_next(interval_secs)
+
+# 在模块加载时尝试启动守护进程
+LifeEventMonitorDaemon.start_or_update()

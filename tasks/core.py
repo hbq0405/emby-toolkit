@@ -25,7 +25,7 @@ from .discover import task_update_daily_theme
 from .resubscribe import task_update_resubscribe_cache, task_resubscribe_library
 from .vector_tasks import task_generate_embeddings
 from .system_update import task_check_and_update_container
-from handler.p115_service import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs
+from handler.p115_service import task_scan_and_organize_115, task_sync_115_directory_tree, task_full_sync_strm_and_subs, task_monitor_115_life_events
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +208,7 @@ def get_task_registry(context: str = 'all'):
         'scan-organize-115': (task_scan_and_organize_115, "网盘文件整理", 'media', True),
         'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', True),
         'full-sync-strm': (task_full_sync_strm_and_subs, "全量生成STRM", 'media', True),
+        'monitor-115-life-events': (task_monitor_115_life_events, "增量生成STRM", 'media', True),
         'backup-mediainfo': (task_backup_mediainfo, "备份媒体信息", 'media', True),
         'restore_mediainfo': (task_restore_mediainfo, "还原媒体信息", 'media', True),
         'contribute-mediainfo': (task_contribute_mediainfo_to_center, "分享媒体信息", 'media', False),

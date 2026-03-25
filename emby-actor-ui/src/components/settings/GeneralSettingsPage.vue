@@ -472,6 +472,21 @@
                             <template #unchecked>仅转存</template>
                         </n-switch>
                     </n-form-item>
+                    <n-form-item label="增量事件监控 (秒级同步)" path="p115_life_monitor_enabled">
+                        <n-switch v-model:value="configModel.p115_life_monitor_enabled">
+                            <template #checked>开启监控</template>
+                            <template #unchecked>关闭监控</template>
+                        </n-switch>
+                        <template #feedback>
+                            <n-text depth="3" style="font-size:0.8em;">通过读取115操作记录实现秒级增量生成STRM，极大降低API请求。</n-text>
+                        </template>
+                    </n-form-item>
+                    <n-form-item label="事件检查间隔 (分钟)" path="p115_life_monitor_interval" v-if="configModel.p115_life_monitor_enabled">
+                        <n-input-number v-model:value="configModel.p115_life_monitor_interval" :min="5" :step="1" placeholder="5" style="width: 100%;" />
+                        <template #feedback>
+                            <n-text depth="3" style="font-size:0.8em;">最短5分钟。过短可能触发风控。</n-text>
+                        </template>
+                    </n-form-item>
                     <n-form-item label="媒体信息中心化" path="p115_mediainfo_center">
                         <n-switch v-model:value="configModel.p115_mediainfo_center">
                             <template #checked>共享媒体信息</template>
