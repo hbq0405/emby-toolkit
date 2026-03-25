@@ -62,7 +62,6 @@ CONFIG_OPTION_115_DOWNLOAD_SUBS = "p115_download_subs"           # 是否下载�
 CONFIG_OPTION_115_LOCAL_CLEANUP = "p115_local_cleanup"           # 是否启用本地清理功能
 CONFIG_OPTION_115_MEDIAINFO_CENTER = "p115_mediainfo_center"     # 分布式媒体信息
 CONFIG_OPTION_115_LIFE_MONITOR_ENABLED = "p115_life_monitor_enabled" # 是否开启生活事件监控
-CONFIG_OPTION_115_LIFE_MONITOR_INTERVAL = "p115_life_monitor_interval" # 监控间隔(分钟)
 
 # ==============================================================================
 # ✨ 通知服务 (Notification Services)

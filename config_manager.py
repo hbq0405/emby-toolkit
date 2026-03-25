@@ -124,7 +124,6 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_115_LOCAL_CLEANUP: (constants.CONFIG_SECTION_115, 'boolean', False),
     constants.CONFIG_OPTION_115_MEDIAINFO_CENTER: (constants.CONFIG_SECTION_115, "boolean", False),
     constants.CONFIG_OPTION_115_LIFE_MONITOR_ENABLED: (constants.CONFIG_SECTION_115, "boolean", False),
-    constants.CONFIG_OPTION_115_LIFE_MONITOR_INTERVAL: (constants.CONFIG_SECTION_115, "int", 5),
 
     # [LocalDataSource]
     constants.CONFIG_OPTION_LOCAL_DATA_PATH: (constants.CONFIG_SECTION_LOCAL_DATA, 'string', ""),
