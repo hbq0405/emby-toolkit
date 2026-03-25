@@ -527,6 +527,27 @@ class P115Service:
                         time.sleep(interval - elapsed)
                     P115Service._last_request_time = time.time()
 
+            def _is_link_valid(self, url, user_agent):
+                """发送 HEAD 请求探测直链是否存活，耗时极短 (通常 < 100ms)"""
+                try:
+                    headers = {"User-Agent": user_agent or "Mozilla/5.0"}
+                    # 如果有 Cookie，带上更稳妥
+                    if self._cookie and hasattr(self._cookie, 'cookie_str'):
+                        headers["Cookie"] = self._cookie.cookie_str
+
+                    # 使用 HEAD 请求，只获取响应头，不下载实体数据，极省带宽
+                    resp = requests.head(url, headers=headers, timeout=2.5, allow_redirects=True)
+                    
+                    # 200(OK) 或 206(Partial Content，流媒体常见) 均代表存活
+                    if resp.status_code in (200, 206, 302):
+                        return True
+                        
+                    logger.warning(f"  ⚠️ [直链检测] 缓存直链已失效 (HTTP {resp.status_code})，准备重新获取...")
+                    return False
+                except Exception as e:
+                    logger.warning(f"  ⚠️ [直链检测] 探测缓存直链超时或异常 ({e})，视为失效...")
+                    return False
+
             def get_user_info(self):
                 self._rate_limit()
                 if self._openapi: return self._openapi.get_user_info()
@@ -583,24 +604,30 @@ class P115Service:
                 self._rate_limit() 
                 return self._openapi.upload_file_stream(file_stream, file_name, target_cid)
 
-            def download_url(self, pick_code, user_agent=None):
+            def download_url(self, pick_code, user_agent=None, force_refresh=False):
                 if not self._cookie:
                     raise Exception("未配置 115 Cookie，无法获取播放直链")
                 
                 cache_key = (pick_code, user_agent)
                 now = time.time()
                 
-                # 1. 查缓存
-                if cache_key in _DIRECT_URL_CACHE:
+                # 1. 查缓存并探活
+                if not force_refresh and cache_key in _DIRECT_URL_CACHE:
                     cached_data = _DIRECT_URL_CACHE[cache_key]
                     if now < cached_data['expire_at']:
-                        # ★ 提取缓存里的文件名打印
-                        #display_name = cached_data.get('name', pick_code[:8])
-                        #logger.info(f"  ⚡ [直链缓存] 命中直链 -> {display_name} (UA: {str(user_agent)[:15]}...)")
-                        return cached_data['url']
+                        cached_url = cached_data['url']
+                        # ★ 核心修改：返回前先探活
+                        if self._is_link_valid(cached_url, user_agent):
+                            return cached_url
+                        else:
+                            # 探活失败，立刻从缓存中剔除
+                            with P115Service._downurl_lock:
+                                _DIRECT_URL_CACHE.pop(cache_key, None)
 
+                # 2. 重新获取直链
                 with P115Service._downurl_lock:
-                    if cache_key in _DIRECT_URL_CACHE and now < _DIRECT_URL_CACHE[cache_key]['expire_at']:
+                    # 双重检查锁
+                    if not force_refresh and cache_key in _DIRECT_URL_CACHE and now < _DIRECT_URL_CACHE[cache_key]['expire_at']:
                         return _DIRECT_URL_CACHE[cache_key]['url']
 
                     current_time = time.time()
@@ -616,7 +643,6 @@ class P115Service:
                             direct_url = str(res)
                             display_name = pick_code[:8] + "..."
                             
-                            # ★ 从 115 返回的直链 URL 中反向解析出真实文件名
                             try:
                                 from urllib.parse import urlparse, parse_qs, unquote
                                 import os
@@ -629,9 +655,8 @@ class P115Service:
                                     if path_name: display_name = path_name
                             except: pass
 
-                            logger.info(f"  ✅ [Cookie] 请求直链成功 -> {display_name}")
+                            logger.info(f"  ✅ [Cookie] 请求新直链成功 -> {display_name}")
 
-                            # ★ 将文件名一起存入缓存
                             _DIRECT_URL_CACHE[cache_key] = {
                                 'url': direct_url,
                                 'name': display_name,
@@ -648,19 +673,27 @@ class P115Service:
                             P115Service._last_downurl_time = time.time()
                         raise e
                     
-            def openapi_downurl(self, pick_code, user_agent=None):
-                """使用 OpenAPI 获取直链 (带缓存和 UA 透传)"""
+            def openapi_downurl(self, pick_code, user_agent=None, force_refresh=False):
+                """使用 OpenAPI 获取直链 (带缓存、探活和 UA 透传)"""
                 self._check_openapi()
                 cache_key = (f"openapi_{pick_code}", user_agent)
                 now = time.time()
                 
-                if cache_key in _DIRECT_URL_CACHE:
+                # 1. 查缓存并探活
+                if not force_refresh and cache_key in _DIRECT_URL_CACHE:
                     cached_data = _DIRECT_URL_CACHE[cache_key]
                     if now < cached_data['expire_at']:
-                        return cached_data['url']
+                        cached_url = cached_data['url']
+                        # ★ 核心修改：返回前先探活
+                        if self._is_link_valid(cached_url, user_agent):
+                            return cached_url
+                        else:
+                            with P115Service._downurl_lock:
+                                _DIRECT_URL_CACHE.pop(cache_key, None)
 
+                # 2. 重新获取直链
                 with P115Service._downurl_lock:
-                    if cache_key in _DIRECT_URL_CACHE and now < _DIRECT_URL_CACHE[cache_key]['expire_at']:
+                    if not force_refresh and cache_key in _DIRECT_URL_CACHE and now < _DIRECT_URL_CACHE[cache_key]['expire_at']:
                         return _DIRECT_URL_CACHE[cache_key]['url']
 
                     self._rate_limit()
@@ -672,7 +705,7 @@ class P115Service:
                             if file_info and 'url' in file_info and 'url' in file_info['url']:
                                 direct_url = file_info['url']['url']
                                 display_name = file_info.get('file_name', pick_code)
-                                logger.info(f"  ✅ [OpenAPI] 请求直链成功 -> {display_name}")
+                                logger.info(f"  ✅ [OpenAPI] 请求新直链成功 -> {display_name}")
                                 _DIRECT_URL_CACHE[cache_key] = {
                                     'url': direct_url,
                                     'name': display_name,
