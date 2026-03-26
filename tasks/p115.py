@@ -1204,13 +1204,46 @@ def task_monitor_115_life_events(processor=None):
             
             # 清理数据库
             if is_folder: 
-                P115CacheManager.delete_cid(file_id)
-            else: 
-                P115CacheManager.delete_files([file_id])
+                # 1. 递归找出本地缓存中所有子孙节点的 FID 和 PC 码
+                descendant_fids = []
+                descendant_pcs = []
+                cids_to_check = [str(file_id)]
                 
-                # =========================================================
-                # ★ 新增：同步删除历史整理记录 (优先通过 PC 码，无 PC 码则通过 FID)
-                # =========================================================
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            # 广度优先遍历，扒出所有子孙
+                            while cids_to_check:
+                                current_cid = cids_to_check.pop(0)
+                                cursor.execute("SELECT id, pick_code FROM p115_filesystem_cache WHERE parent_id = %s", (current_cid,))
+                                for row in cursor.fetchall():
+                                    fid = str(row['id'])
+                                    pc = row['pick_code']
+                                    descendant_fids.append(fid)
+                                    if pc: descendant_pcs.append(pc)
+                                    cids_to_check.append(fid) # 把子节点也加进去继续往下查
+                                    
+                            # 2. 批量删除整理记录 (斩草除根)
+                            if descendant_pcs:
+                                cursor.execute("DELETE FROM p115_organize_records WHERE pick_code = ANY(%s)", (descendant_pcs,))
+                            if descendant_fids:
+                                cursor.execute("DELETE FROM p115_organize_records WHERE file_id = ANY(%s)", (descendant_fids,))
+                                
+                            # 3. 批量删除缓存表中的所有子孙节点
+                            if descendant_fids:
+                                cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = ANY(%s)", (descendant_fids,))
+                            
+                            # 4. 最后删除目录本身的缓存
+                            cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s", (str(file_id),))
+                            
+                        conn.commit()
+                        if descendant_fids:
+                            logger.info(f"  🧹 [事件] 级联清理完成: 移除了 {len(descendant_fids)} 个子文件的缓存与整理记录。")
+                except Exception as e:
+                    logger.error(f"  ❌ [事件] 级联清理目录缓存与记录失败: {e}")
+            else: 
+                # 单文件删除逻辑
+                P115CacheManager.delete_files([file_id])
                 try:
                     with get_db_connection() as conn:
                         with conn.cursor() as cursor:
