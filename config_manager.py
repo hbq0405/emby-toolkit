@@ -110,6 +110,7 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_115_MEDIA_ROOT_NAME: (constants.CONFIG_SECTION_115, 'string', "根目录"),
     constants.CONFIG_OPTION_115_INTERVAL: (constants.CONFIG_SECTION_115, 'float', 1.0),
     constants.CONFIG_OPTION_115_MAX_WORKERS: (constants.CONFIG_SECTION_115, 'int', 3),
+    constants.CONFIG_OPTION_115_PLAYBACK_API_PRIORITY: (constants.CONFIG_SECTION_115, 'string', 'openapi'),
     constants.CONFIG_OPTION_115_ENABLE_ORGANIZE: (constants.CONFIG_SECTION_115, 'boolean', False),
     constants.CONFIG_OPTION_115_MIN_VIDEO_SIZE: (constants.CONFIG_SECTION_115, 'int', 10),
     constants.CONFIG_OPTION_115_EXTENSIONS: (constants.CONFIG_SECTION_115, 'list', [

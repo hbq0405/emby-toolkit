@@ -52,6 +52,7 @@ CONFIG_OPTION_115_UNRECOGNIZED_NAME = "p115_unrecognized_name"   # 未识别目�
 CONFIG_OPTION_115_MEDIA_ROOT_NAME = "p115_media_root_name"       # 网盘媒体库根目录名称
 CONFIG_OPTION_115_INTERVAL = "p115_request_interval"             # API请求间隔
 CONFIG_OPTION_115_MAX_WORKERS = "p115_max_workers"               # API并发线程数
+CONFIG_OPTION_115_PLAYBACK_API_PRIORITY = "p115_playback_api_priority" # 播放接口优先级
 CONFIG_OPTION_115_ENABLE_ORGANIZE = "p115_enable_organize"       # 智能整理总开关
 CONFIG_OPTION_115_MIN_VIDEO_SIZE = "p115_min_video_size"         # 忽略小视频体积(MB)
 CONFIG_OPTION_115_EXTENSIONS = "p115_extensions"                 # 115转存/上传的文件扩展名列表
