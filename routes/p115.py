@@ -502,7 +502,7 @@ def play_115_video(pick_code, filename=None):
         
         client = P115Service.get_client()
         if not client:
-            return "115 Client not initialized", 500
+            return jsonify({"success": False, "message": "115 Client not initialized"}), 500
             
         max_retries = 4
         real_url = None
@@ -518,6 +518,7 @@ def play_115_video(pick_code, filename=None):
                     real_url = client.download_url(pick_code, user_agent=player_ua)
                     
                 if real_url:
+                    logger.info(f"Successfully got URL: {real_url}")
                     break
             except Exception as e:
                 logger.warning(f"  ⚠️ [直链解析] {'OpenAPI' if use_openapi else 'Cookie'} 接口异常: {e}")
@@ -527,15 +528,15 @@ def play_115_video(pick_code, filename=None):
             time.sleep(0.5)
         
         if not real_url:
-            return "Failed to get download URL or Rate Limited", 404
+            logger.error("Failed to get download URL or Rate Limited")
+            return jsonify({"success": False, "message": "Failed to get download URL or Rate Limited"}), 404
             
-        response = redirect(real_url, code=302)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return response
+        logger.info(f"Returning URL: {real_url}")
+        return jsonify({"success": True, "url": real_url})
         
     except Exception as e:
         logger.error(f"  ❌ 直链解析发生异常: {e}")
-        return str(e), 500
+        return jsonify({"success": False, "message": str(e)}), 500
     
 @p115_bp.route('/replace_strm', methods=['POST'])
 @admin_required
