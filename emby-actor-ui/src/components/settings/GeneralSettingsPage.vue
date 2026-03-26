@@ -2452,7 +2452,7 @@ const openLocalFolderSelector = (targetField, isArray = false) => {
 const fetchLocalFolders = async (path) => {
     loadingLocalFolders.value = true
     try {
-        const res = await axios.get('/api/system/directories', { params: { path } })
+        const res = await axios.get('/api/p115/system/directories', { params: { path } })
         if (res.data.code === 200) {
             localFolders.value = res.data.data
             if (res.data.current_path !== undefined) {
