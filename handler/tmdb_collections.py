@@ -445,7 +445,10 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     # ======================================================================
 
     # 4. 执行缺失订阅 (无论分支 A 还是 B，都要做这一步)
-    _subscribe_missing_for_single_collection(tmdb_coll_name, all_parts)
+    config = settings_db.get_setting('native_collections_config') or {}
+    is_auto_sub_enabled = config.get('auto_sub_enabled', False)
+    if is_auto_sub_enabled:
+        _subscribe_missing_for_single_collection(tmdb_coll_name, all_parts)
 
 def _subscribe_missing_for_single_collection(collection_name: str, all_parts: List[Dict]):
     """
