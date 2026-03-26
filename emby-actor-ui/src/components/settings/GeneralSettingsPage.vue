@@ -332,7 +332,6 @@
                                 {{ p115Info?.has_token ? '重新登录' : '登录授权' }}
                               </n-button>
                             </n-space>
-                            <n-text depth="3" style="font-size:0.8em;">用于网盘整理。</n-text>
                           </n-space>
                         </n-form-item>
                       </n-gi>
@@ -352,7 +351,6 @@
                                 {{ p115Info?.has_cookie ? '重新获取' : '扫码获取' }}
                               </n-button>
                             </n-space>
-                            <n-text depth="3" style="font-size:0.8em;">用于反代302播放防封禁。</n-text>
                           </n-space>
                         </n-form-item>
                       </n-gi>
@@ -360,27 +358,18 @@
                       <n-gi>
                         <n-form-item label="API 请求间隔 (秒)" path="p115_request_interval">
                           <n-input-number v-model:value="configModel.p115_request_interval" :min="0.1" :step="0.1" placeholder="0.5" style="width: 100%;" />
-                          <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">建议保持 0.5 秒以上。</n-text>
-                          </template>
                         </n-form-item>
                       </n-gi>
 
                       <n-gi>
                         <n-form-item label="API 并发线程数" path="p115_max_workers">
                           <n-input-number v-model:value="configModel.p115_max_workers" :min="1" :max="20" :step="1" placeholder="3" style="width: 100%;" />
-                          <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">控制扫描和整理时的并发数量。</n-text>
-                          </template>
                         </n-form-item>
                       </n-gi>
 
                       <n-gi span="1 s:2">
                         <n-form-item label="STRM 链接地址" path="etk_server_url">
-                            <n-input v-model:value="configModel.etk_server_url" placeholder="http://192.168.X.X:5257" />
-                            <template #feedback>
-                                <n-text depth="3" style="font-size:0.8em;">将写入 .strm 文件中，Emby 必须能访问此地址，支持http或挂载路径。</n-text>
-                            </template>
+                          <n-input v-model:value="configModel.etk_server_url" placeholder="http://192.168.X.X:5257" />
                         </n-form-item>
                       </n-gi>
 
@@ -394,9 +383,6 @@
                             placeholder="输入扩展名并回车 (如 mkv)"
                             :options="[]" 
                           />
-                          <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">只有包含在列表中的文件类型才会被整理。</n-text>
-                          </template>
                         </n-form-item>
                       </n-gi>
 
@@ -405,9 +391,6 @@
                             <n-button @click="openReplaceStrmModal" type="warning" ghost style="width: 100%;">
                                 批量替换本地 STRM 链接
                             </n-button>
-                            <template #feedback>
-                                <n-text depth="3" style="font-size:0.8em;">支持普通字符串替换和正则表达式替换，可用于更换 IP、端口或链接结构。</n-text>
-                            </template>
                         </n-form-item>
                       </n-gi>
                     </n-grid>
@@ -421,7 +404,7 @@
                     
                     <!-- ★ 内部使用 Grid 实现两列布局 ★ -->
                     <n-grid cols="1 s:2" :x-gap="16" :y-gap="0" responsive="screen">
-                      <n-gi span="1 s:2">
+                      <n-gi span="1 s:1">
                         <n-form-item label="待整理目录" path="p115_save_path_cid">
                           <n-input-group>
                             <n-input 
@@ -433,13 +416,10 @@
                             </n-input>
                             <n-button type="primary" ghost @click="openFolderSelector('save_path', configModel.p115_save_path_cid)">选择</n-button>
                           </n-input-group>
-                          <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">MP下载或网盘转存的初始目录</n-text>
-                          </template>
                         </n-form-item>
                       </n-gi>
 
-                      <n-gi span="1 s:2">
+                      <n-gi span="1 s:1">
                         <n-form-item label="未识别目录" path="p115_unrecognized_cid">
                           <n-input-group>
                             <n-input 
@@ -451,13 +431,10 @@
                             </n-input>
                             <n-button type="primary" ghost @click="openFolderSelector('unrecognized_path', configModel.p115_unrecognized_cid)">选择</n-button>
                           </n-input-group>
-                          <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">无法识别或不符合规则的文件将被移入此固定目录</n-text>
-                          </template>
                         </n-form-item>
                       </n-gi>
 
-                      <n-gi span="1 s:2">
+                      <n-gi span="1 s:1">
                         <n-form-item label="网盘媒体库根目录" path="p115_media_root_cid">
                           <n-input-group>
                             <n-input 
@@ -469,18 +446,12 @@
                             </n-input>
                             <n-button type="primary" ghost @click="openFolderSelector('media_root', configModel.p115_media_root_cid)">选择</n-button>
                           </n-input-group>
-                          <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">整理目标主目录，分类规则的目录都在它下面</n-text>
-                          </template>
                         </n-form-item>
                       </n-gi>
 
-                      <n-gi span="1 s:2">
+                      <n-gi span="1 s:1">
                         <n-form-item label="本地 STRM 根目录" path="local_strm_root">
-                            <n-input v-model:value="configModel.local_strm_root" placeholder="例如: /mnt/media" />
-                            <template #feedback>
-                                <n-text depth="3" style="font-size:0.8em;">ETK 自动在此目录生成与网盘对应的 .strm 文件</n-text>
-                            </template>
+                          <n-input v-model:value="configModel.local_strm_root" placeholder="例如: /mnt/media" />
                         </n-form-item>
                       </n-gi>
                       
@@ -503,9 +474,6 @@
                             >
                                 <template #suffix>MB</template>
                             </n-input-number>
-                            <template #feedback>
-                                <n-text depth="3" style="font-size:0.8em;">小于此体积将被判定为花絮/样本。</n-text>
-                            </template>
                         </n-form-item>
                       </n-gi>
 
@@ -515,9 +483,6 @@
                                 <template #checked>开启监控</template>
                                 <template #unchecked>关闭监控</template>
                             </n-switch>
-                            <template #feedback>
-                                <n-text depth="3" style="font-size:0.8em;">通过115操作记录实现增量生成STRM。</n-text>
-                            </template>
                         </n-form-item>
                       </n-gi>
 
@@ -526,9 +491,6 @@
                             <n-input-number v-model:value="configModel.p115_life_monitor_interval" :min="5" :step="1" placeholder="5" style="width: 100%;">
                               <template #suffix>分钟</template>
                             </n-input-number>
-                            <template #feedback>
-                                <n-text depth="3" style="font-size:0.8em;">最短5分钟。过短可能触发风控。</n-text>
-                            </template>
                         </n-form-item>
                       </n-gi>
 
@@ -538,9 +500,6 @@
                                 <template #checked>共享媒体信息</template>
                                 <template #unchecked>本地媒体信息</template>
                             </n-switch>
-                            <template #feedback>
-                                <n-text depth="3" style="font-size:0.8em;">在线从中心服务器获取媒体信息数据。</n-text>
-                            </template>
                         </n-form-item>
                       </n-gi>
 
@@ -550,9 +509,6 @@
                                 <template #checked>下载到本地</template>
                                 <template #unchecked>跳过字幕</template>
                             </n-switch>
-                            <template #feedback>
-                                <n-text depth="3" style="font-size:0.8em;">自动将 115 上的字幕文件下载到本地。</n-text>
-                            </template>
                         </n-form-item>
                       </n-gi>
 
@@ -562,9 +518,6 @@
                                 <template #checked>清理失效文件</template>
                                 <template #unchecked>保留本地文件</template>
                             </n-switch>
-                            <template #feedback>
-                                <n-text depth="3" style="font-size:0.8em;">自动删除本地存在但网盘已不存在的文件。</n-text>
-                            </template>
                         </n-form-item>
                       </n-gi>
 
@@ -574,9 +527,6 @@
                                 <template #checked>删除网盘源文件</template>
                                 <template #unchecked>仅移除本地缓存</template>
                             </n-switch>
-                            <template #feedback>
-                                <n-text depth="3" style="font-size:0.8em;"><strong style="color:#d03050;">高危操作，手抖党慎开！</strong></n-text>
-                            </template>
                         </n-form-item>
                       </n-gi>
                     </n-grid>
