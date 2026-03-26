@@ -369,22 +369,22 @@
                           </n-button>
                         </n-space>
                         <n-text depth="3" style="font-size:0.8em;">
-                          用于TG、影巢转存和备用视频播放。
+                          用于TG、影巢转存和视频播放。
                         </n-text>
                       </n-space>
                     </n-form-item>
 
                     <n-form-item label="播放接口" path="p115_playback_api_priority">
-                          <n-radio-group v-model:value="configModel.p115_playback_api_priority" name="api_priority_group">
-                            <n-space>
-                              <n-radio value="openapi">优先 OpenAPI</n-radio>
-                              <n-radio value="cookie">优先 Cookie</n-radio>
-                            </n-space>
-                          </n-radio-group>
-                          <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">决定反向代理获取直链时首次尝试的接口，失败会自动回退到另一个。</n-text>
-                          </template>
-                        </n-form-item>
+                      <n-radio-group v-model:value="configModel.p115_playback_api_priority" name="api_priority_group">
+                        <n-space>
+                          <n-radio value="openapi">优先 OpenAPI</n-radio>
+                          <n-radio value="cookie">优先 Cookie</n-radio>
+                        </n-space>
+                      </n-radio-group>
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">获取直链时首次尝试的接口，失败会自动回退到另一个。</n-text>
+                      </template>
+                    </n-form-item>
 
                     <n-form-item label="API 请求间隔 (秒)" path="p115_request_interval">
                       <n-input-number v-model:value="configModel.p115_request_interval" :min="0.1" :step="0.1" placeholder="0.5" />
