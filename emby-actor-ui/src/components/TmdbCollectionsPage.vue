@@ -554,7 +554,8 @@ const handleAutoCompleteChange = async (value) => {
   try {
     // 发送 JSON 对象
     await axios.post('/api/collections/settings', {
-      auto_complete_enabled: value
+      auto_complete_enabled: value,
+      auto_sub_enabled: value
     });
     autoCompleteEnabled.value = value;
     autoSubEnabled.value = value;

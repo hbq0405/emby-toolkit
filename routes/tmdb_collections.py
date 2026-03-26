@@ -125,6 +125,7 @@ def api_get_collection_settings():
         # 2. 确保返回给前端的数据包含默认字段 (防止前端报错)
         default_config = {
             "auto_complete_enabled": False,
+            "auto_sub_enabled": False,
             # 未来可以在这里加更多默认值，例如:
             # "exclude_genres": [],
             # "min_rating": 0
