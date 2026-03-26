@@ -410,7 +410,7 @@
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card" style="height: 100%;">
                     <template #header><span class="card-title">整理与路径</span></template>
-                    
+                    <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
                     <n-form-item label="待整理目录" path="p115_save_path_cid">
                       <n-input-group>
                         <n-input 
@@ -465,7 +465,7 @@
                             <n-text depth="3" style="font-size:0.8em;">ETK 自动在此目录生成与网盘对应的 .strm 文件</n-text>
                         </template>
                     </n-form-item>
-
+                    </n-grid>
                     <n-form-item label="智能整理开关" path="p115_enable_organize">
                         <n-switch v-model:value="configModel.p115_enable_organize">
                             <template #checked>整理并生成STRM</template>
