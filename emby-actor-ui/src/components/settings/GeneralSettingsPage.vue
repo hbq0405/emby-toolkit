@@ -18,7 +18,6 @@
             <!-- ================== 标签页 1: 通用设置 ================== -->
             <n-tab-pane name="general" tab="通用设置">
               <n-grid cols="1 l:3" :x-gap="24" :y-gap="24" responsive="screen">
-                <!-- ★★★ 新增：Pro 状态专属卡片 (横跨整行) ★★★ -->
                 <n-gi span="1 l:3">
                   <n-card :bordered="false" class="dashboard-card" style="background: linear-gradient(135deg, #fffcf8 0%, #fff 100%); border: 1px solid #ffe5c4;">
                     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 16px;">
@@ -129,33 +128,44 @@
                     </n-form-item>
 
                     <n-form-item label="监控路径" path="monitor_paths">
-                      <n-select
-                        v-model:value="configModel.monitor_paths"
-                        multiple
-                        filterable
-                        tag
-                        :show-arrow="false"
-                        placeholder="输入路径并回车"
-                        :options="[]" 
-                      />
+                      <n-input-group>
+                        <n-select
+                          v-model:value="configModel.monitor_paths"
+                          multiple
+                          filterable
+                          tag
+                          :show-arrow="false"
+                          placeholder="输入路径并回车，或点击右侧选择"
+                          :options="[]" 
+                          style="flex: 1;"
+                        />
+                        <n-button type="primary" ghost @click="openLocalFolderSelector('monitor_paths', true)">
+                          <template #icon><n-icon :component="FolderIcon" /></template>
+                        </n-button>
+                      </n-input-group>
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          输入路径后<b>按回车</b>添加。请保持和 Emby 媒体库路径映射一致。
+                          请保持和 Emby 媒体库路径映射一致。
                         </n-text>
                       </template>
                     </n-form-item>
 
-                    <!-- 排除路径 -->
                     <n-form-item label="排除路径" path="monitor_exclude_dirs">
-                      <n-select
-                        v-model:value="configModel.monitor_exclude_dirs"
-                        multiple
-                        filterable
-                        tag
-                        :show-arrow="false"
-                        placeholder="输入路径并回车"
-                        :options="[]" 
-                      />
+                      <n-input-group>
+                        <n-select
+                          v-model:value="configModel.monitor_exclude_dirs"
+                          multiple
+                          filterable
+                          tag
+                          :show-arrow="false"
+                          placeholder="输入路径并回车，或点击右侧选择"
+                          :options="[]" 
+                          style="flex: 1;"
+                        />
+                        <n-button type="primary" ghost @click="openLocalFolderSelector('monitor_exclude_dirs', true)">
+                          <template #icon><n-icon :component="FolderIcon" /></template>
+                        </n-button>
+                      </n-input-group>
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
                           命中这些路径的文件将<b>跳过刮削流程</b>，仅刷新。<br/>
@@ -239,7 +249,16 @@
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">数据源与API</span></template>
                     <n-form-item label="本地数据源路径" path="local_data_path">
-                      <n-input v-model:value="configModel.local_data_path" placeholder="神医TMDB缓存目录 (cache和override的上层)" />
+                      <n-input-group>
+                        <n-input 
+                          v-model:value="configModel.local_data_path" 
+                          placeholder="神医TMDB缓存目录 (cache和override的上层)" 
+                          @click="openLocalFolderSelector('local_data_path', false)"
+                        >
+                          <template #prefix><n-icon :component="FolderIcon" /></template>
+                        </n-input>
+                        <n-button type="primary" ghost @click="openLocalFolderSelector('local_data_path', false)">选择</n-button>
+                      </n-input-group>
                     </n-form-item>
                     <n-form-item label="TMDB API Key" path="tmdb_api_key">
                       <n-input type="password" show-password-on="mousedown" v-model:value="configModel.tmdb_api_key" placeholder="输入你的 TMDB API Key" />
@@ -463,11 +482,11 @@
                         <n-input 
                           v-model:value="configModel.local_strm_root" 
                           placeholder="例如: /mnt/media" 
-                          @click="openLocalFolderSelector"
+                          @click="openLocalFolderSelector('local_strm_root', false)"
                         >
                           <template #prefix><n-icon :component="FolderIcon" /></template>
                         </n-input>
-                        <n-button type="primary" ghost @click="openLocalFolderSelector">选择</n-button>
+                        <n-button type="primary" ghost @click="openLocalFolderSelector('local_strm_root', false)">选择</n-button>
                       </n-input-group>
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">ETK 自动在此目录生成与网盘对应的 .strm 文件</n-text>
@@ -2406,21 +2425,34 @@ const showLocalFolderModal = ref(false)
 const currentLocalPath = ref('')
 const localFolders = ref([])
 const loadingLocalFolders = ref(false)
+const currentLocalTargetField = ref('')
+const isCurrentLocalTargetArray = ref(false)
 
-// 打开本地目录浏览器
-const openLocalFolderSelector = () => {
-    // 如果已有配置，从配置的路径开始；否则从根目录开始
-    currentLocalPath.value = configModel.value.local_strm_root || '/'
+// 打开本地目录浏览器 (增强版)
+const openLocalFolderSelector = (targetField, isArray = false) => {
+    currentLocalTargetField.value = targetField
+    isCurrentLocalTargetArray.value = isArray
+    
+    // 决定初始路径
+    let startPath = '/'
+    if (!isArray && configModel.value[targetField]) {
+        startPath = configModel.value[targetField]
+    } else if (isArray && configModel.value[targetField] && configModel.value[targetField].length > 0) {
+        // 如果是数组且有值，取最后一个值的父目录作为起点，方便连续添加
+        const lastPath = configModel.value[targetField][configModel.value[targetField].length - 1]
+        startPath = lastPath.substring(0, lastPath.lastIndexOf('/')) || '/'
+    }
+    
+    currentLocalPath.value = startPath
     showLocalFolderModal.value = true
     fetchLocalFolders(currentLocalPath.value)
 }
 
-// 获取本地目录列表
+// 获取本地目录列表 (保持不变)
 const fetchLocalFolders = async (path) => {
     loadingLocalFolders.value = true
     try {
-        // 调用我们刚才写的后端 API
-        const res = await axios.get('/api/p115/system/directories', { params: { path } })
+        const res = await axios.get('/api/system/directories', { params: { path } })
         if (res.data.code === 200) {
             localFolders.value = res.data.data
             if (res.data.current_path !== undefined) {
@@ -2442,16 +2474,35 @@ const fetchLocalFolders = async (path) => {
     }
 }
 
-// 点击列表中的文件夹
+// 点击列表中的文件夹 (保持不变)
 const selectLocalFolder = (folder) => {
     fetchLocalFolders(folder.path)
 }
 
-// 确认选择
+// 确认选择 (增强版)
 const confirmLocalFolder = () => {
-    configModel.value.local_strm_root = currentLocalPath.value
+    const field = currentLocalTargetField.value
+    const path = currentLocalPath.value
+    
+    if (isCurrentLocalTargetArray.value) {
+        // 如果是多选数组 (如 monitor_paths)
+        if (!configModel.value[field]) {
+            configModel.value[field] = []
+        }
+        // 防止重复添加
+        if (!configModel.value[field].includes(path)) {
+            configModel.value[field].push(path)
+            message.success(`已追加路径: ${path}`)
+        } else {
+            message.warning('该路径已存在列表中')
+        }
+    } else {
+        // 如果是单选字符串 (如 local_strm_root)
+        configModel.value[field] = path
+        message.success(`已选择路径: ${path}`)
+    }
+    
     showLocalFolderModal.value = false
-    message.success(`已选择路径: ${currentLocalPath.value}`)
 }
 
 // ★★★ 全自动网页授权 (授权码模式) 逻辑 ★★★
