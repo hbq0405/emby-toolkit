@@ -53,6 +53,7 @@ CONFIG_OPTION_115_MEDIA_ROOT_NAME = "p115_media_root_name"       # 网盘媒体�
 CONFIG_OPTION_115_INTERVAL = "p115_request_interval"             # API请求间隔
 CONFIG_OPTION_115_MAX_WORKERS = "p115_max_workers"               # API并发线程数
 CONFIG_OPTION_115_ENABLE_ORGANIZE = "p115_enable_organize"       # 智能整理总开关
+CONFIG_OPTION_115_MIN_VIDEO_SIZE = "p115_min_video_size"         # 忽略小视频体积(MB)
 CONFIG_OPTION_115_EXTENSIONS = "p115_extensions"                 # 115转存/上传的文件扩展名列表
 CONFIG_OPTION_115_MEDIA_ROOT_CID = "p115_media_root_cid"         # 115网盘媒体库根目录CID
 CONFIG_OPTION_LOCAL_STRM_ROOT = "local_strm_root"                # 本地生成.strm的根目录

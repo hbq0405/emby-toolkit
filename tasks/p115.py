@@ -1288,6 +1288,14 @@ def task_monitor_115_life_events(processor=None):
             current_local_path = os.path.join(local_root, new_rel_dir)
             
             if not is_folder and ext in allowed_exts:
+                if ext in known_video_exts:
+                    min_size_mb = int(config.get(constants.CONFIG_OPTION_115_MIN_VIDEO_SIZE, 10))
+                    MIN_VIDEO_SIZE = min_size_mb * 1024 * 1024
+                    # 确保 file_size 是整数
+                    safe_file_size = int(file_size) if str(file_size).isdigit() else 0
+                    if 0 < safe_file_size < MIN_VIDEO_SIZE:
+                        logger.debug(f"  🗑️ [事件] 视频体积过小 ({safe_file_size} 字节)，判定为花絮/样本/广告，忽略生成 STRM: {file_name}")
+                        return # 直接跳过，不生成 STRM，也不记录缓存
                 os.makedirs(current_local_path, exist_ok=True)
                 
                 if ext in known_video_exts and pick_code:

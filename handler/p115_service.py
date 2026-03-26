@@ -2325,7 +2325,8 @@ class SmartOrganizer:
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
         allowed_exts = set(e.lower() for e in configured_exts)
         known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
-        MIN_VIDEO_SIZE = 10 * 1024 * 1024
+        min_size_mb = int(config.get(constants.CONFIG_OPTION_115_MIN_VIDEO_SIZE, 10))
+        MIN_VIDEO_SIZE = min_size_mb * 1024 * 1024
 
         # 获取“未识别”目录的 CID
         unidentified_cid = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID)

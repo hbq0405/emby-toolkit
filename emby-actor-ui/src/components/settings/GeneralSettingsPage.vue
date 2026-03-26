@@ -472,6 +472,19 @@
                             <template #unchecked>仅转存</template>
                         </n-switch>
                     </n-form-item>
+                    <n-form-item label="忽略小视频" path="p115_min_video_size">
+                        <n-input-number 
+                            v-model:value="configModel.p115_min_video_size" 
+                            :min="0" 
+                            :step="10" 
+                            style="width: 150px;"
+                        >
+                            <template #suffix>MB</template>
+                        </n-input-number>
+                        <template #feedback>
+                            <n-text depth="3" style="font-size:0.8em;">小于此体积的视频将被判定为花絮/样本/广告，打入未识别目录 (设为0则不忽略)。</n-text>
+                        </template>
+                    </n-form-item>
                     <n-form-item label="生活事件监控" path="p115_life_monitor_enabled">
                         <n-switch v-model:value="configModel.p115_life_monitor_enabled">
                             <template #checked>开启监控</template>
