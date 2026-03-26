@@ -906,7 +906,11 @@ def proxy_all(path):
                 
                 # ★ 动态读取配置，决定首次尝试的接口
                 api_priority = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_PLAYBACK_API_PRIORITY, 'openapi')
-                use_openapi = (api_priority == 'openapi')
+                # 只要配置的不是 cookie，就默认走 openapi
+                use_openapi = (api_priority != 'cookie') 
+                
+                # 打印调试信息，确认配置是否生效
+                logger.debug(f"  🔍 [直链分发] 读取到配置: '{api_priority}'，本次首选 OpenAPI: {use_openapi}")
 
                 while retry_count < max_retries:
                     try:
