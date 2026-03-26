@@ -407,7 +407,6 @@
                 </n-gi>
 
                 <!-- 中间：路径配置 -->
-                <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card" style="height: 100%;">
                     <template #header><span class="card-title">整理与路径</span></template>
@@ -538,7 +537,6 @@
                     </n-form-item>
                   </n-card>
                 </n-gi>
-                </n-grid>
                 <!-- 右侧：分类规则与重命名 -->
                 <n-gi>
                   <n-space vertical :size="24" style="height: 100%;">
