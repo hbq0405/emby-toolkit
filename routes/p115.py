@@ -494,7 +494,11 @@ def play_115_video(pick_code, filename=None):
     终极极速 302 直链解析服务 (双接口轮流尝试版)
     """
     if request.method == 'HEAD':
-        return '', 200
+        response = Response('', status=200)
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Headers'] = 'Range'
+        response.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range'
+        return response
 
     try:
         # 恢复获取真实 UA
@@ -529,8 +533,16 @@ def play_115_video(pick_code, filename=None):
         if not real_url:
             return "Failed to get download URL or Rate Limited", 404
             
+        # 创建响应，增加更多CORS支持
         response = redirect(real_url, code=302)
+        
+        # 设置完整的CORS响应头
         response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Range, User-Agent'
+        response.headers['Access-Control-Expose-Headers'] = 'Content-Length, Content-Range, Accept-Ranges'
+        response.headers['Access-Control-Max-Age'] = '3600'
+        
         return response
         
     except Exception as e:
