@@ -1049,3 +1049,50 @@ def empty_unrecognized_files():
     except Exception as e:
         logger.error(f"  ❌ 清空未识别目录异常: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
+
+@p115_bp.route('/system/directories', methods=['GET'])
+@admin_required
+def get_local_directories():
+    """获取本地服务器/容器内的物理目录列表"""
+    path = request.args.get('path', '').strip()
+    
+    try:
+        # 1. 如果没有传路径，返回根目录
+        if not path:
+            if os.name == 'nt': # Windows 系统，返回盘符
+                import string
+                from ctypes import windll
+                drives = []
+                bitmask = windll.kernel32.GetLogicalDrives()
+                for letter in string.ascii_uppercase:
+                    if bitmask & 1:
+                        drives.append({'name': f"{letter}:\\", 'path': f"{letter}:\\", 'is_parent': False})
+                    bitmask >>= 1
+                return jsonify({'code': 200, 'data': drives, 'current_path': ''})
+            else: # Linux/Docker 系统，返回根目录 /
+                path = '/'
+
+        # 2. 检查路径是否存在且为目录
+        if not os.path.exists(path) or not os.path.isdir(path):
+            return jsonify({'code': 404, 'message': '目录不存在或不是文件夹'}), 404
+
+        directories = []
+        
+        # 3. 添加 "返回上一级" 选项 (如果不在根目录)
+        parent_path = os.path.dirname(path)
+        if parent_path and parent_path != path:
+            directories.append({'name': '.. [返回上一级]', 'path': parent_path, 'is_parent': True})
+
+        # 4. 遍历当前目录下的所有文件夹
+        for item in sorted(os.listdir(path)):
+            item_path = os.path.join(path, item)
+            # 忽略隐藏文件夹和没有权限的文件夹，只显示目录
+            if os.path.isdir(item_path) and not item.startswith('.'):
+                directories.append({'name': item, 'path': item_path, 'is_parent': False})
+
+        return jsonify({'code': 200, 'data': directories, 'current_path': path})
+
+    except PermissionError:
+        return jsonify({'code': 403, 'message': '没有权限访问该目录，请检查 Docker 映射或系统权限'}), 403
+    except Exception as e:
+        return jsonify({'code': 500, 'message': str(e)}), 500

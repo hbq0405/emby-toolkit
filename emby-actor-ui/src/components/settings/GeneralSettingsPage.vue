@@ -459,10 +459,19 @@
                     </n-form-item>
 
                     <n-form-item label="本地 STRM 根目录" path="local_strm_root">
-                        <n-input v-model:value="configModel.local_strm_root" placeholder="例如: /mnt/media" />
-                        <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">ETK 自动在此目录生成与网盘对应的 .strm 文件</n-text>
-                        </template>
+                      <n-input-group>
+                        <n-input 
+                          v-model:value="configModel.local_strm_root" 
+                          placeholder="例如: /mnt/media" 
+                          @click="openLocalFolderSelector"
+                        >
+                          <template #prefix><n-icon :component="FolderIcon" /></template>
+                        </n-input>
+                        <n-button type="primary" ghost @click="openLocalFolderSelector">选择</n-button>
+                      </n-input-group>
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">ETK 自动在此目录生成与网盘对应的 .strm 文件</n-text>
+                      </template>
                     </n-form-item>
                     
                     <n-form-item label="智能整理开关" path="p115_enable_organize">
@@ -1331,6 +1340,38 @@
         </div>
       </div>
     </n-modal>
+
+    <!-- ★★★ 本地物理目录选择器弹窗 ★★★ -->
+    <n-modal v-model:show="showLocalFolderModal" preset="card" title="选择本地路径" style="width: 600px; max-width: 95vw;">
+      <n-spin :show="loadingLocalFolders">
+        <n-space vertical>
+          <!-- 顶部路径输入与刷新 -->
+          <n-input-group>
+            <n-input v-model:value="currentLocalPath" placeholder="当前路径" @keyup.enter="fetchLocalFolders(currentLocalPath)" />
+            <n-button type="primary" @click="fetchLocalFolders(currentLocalPath)">
+              <template #icon><n-icon :component="RefreshIcon" /></template>
+            </n-button>
+          </n-input-group>
+          
+          <!-- 目录列表 -->
+          <n-list hoverable clickable bordered style="max-height: 400px; overflow-y: auto; border-radius: 6px;">
+            <n-list-item v-for="folder in localFolders" :key="folder.path" @click="selectLocalFolder(folder)">
+              <template #prefix>
+                <n-icon :component="folder.is_parent ? ArrowUpIcon : FolderIcon" size="22" :color="folder.is_parent ? '#888' : '#f0a020'" />
+              </template>
+              <span :style="{ fontWeight: folder.is_parent ? 'bold' : 'normal' }">{{ folder.name }}</span>
+            </n-list-item>
+            <n-empty v-if="localFolders.length === 0" description="空目录或无权限访问" style="margin-top: 30px; margin-bottom: 30px;" />
+          </n-list>
+          
+          <!-- 底部按钮 -->
+          <div style="display: flex; justify-content: flex-end; gap: 12px; margin-top: 16px;">
+            <n-button @click="showLocalFolderModal = false">取消</n-button>
+            <n-button type="primary" @click="confirmLocalFolder">确定选择此目录</n-button>
+          </div>
+        </n-space>
+      </n-spin>
+    </n-modal>
     
     <!-- ★ 引入自定义重命名模态框 -->
     <RenameConfigModal ref="renameModalRef" />
@@ -1742,7 +1783,9 @@ import {
   ListOutline as ListIcon, 
   ColorWandOutline as ColorWandIcon,
   SearchOutline as SearchIcon,
-  DiamondOutline as DiamondIcon
+  DiamondOutline as DiamondIcon,
+  ArrowUpOutline as ArrowUpIcon,
+  RefreshOutline as RefreshIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
@@ -2357,6 +2400,59 @@ const saveManualCookie = async () => {
     message.error('保存失败: ' + (e.response?.data?.message || e.message));
   }
 };
+
+// --- 本地目录浏览器状态 ---
+const showLocalFolderModal = ref(false)
+const currentLocalPath = ref('')
+const localFolders = ref([])
+const loadingLocalFolders = ref(false)
+
+// 打开本地目录浏览器
+const openLocalFolderSelector = () => {
+    // 如果已有配置，从配置的路径开始；否则从根目录开始
+    currentLocalPath.value = configModel.value.local_strm_root || '/'
+    showLocalFolderModal.value = true
+    fetchLocalFolders(currentLocalPath.value)
+}
+
+// 获取本地目录列表
+const fetchLocalFolders = async (path) => {
+    loadingLocalFolders.value = true
+    try {
+        // 调用我们刚才写的后端 API
+        const res = await axios.get('/api/p115/system/directories', { params: { path } })
+        if (res.data.code === 200) {
+            localFolders.value = res.data.data
+            if (res.data.current_path !== undefined) {
+                currentLocalPath.value = res.data.current_path
+            }
+        } else {
+            message.error(res.data.message || '获取目录失败')
+        }
+    } catch (error) {
+        if (error.response && error.response.status === 403) {
+            message.error('没有权限访问该目录！')
+        } else if (error.response && error.response.status === 404) {
+            message.error('目录不存在！')
+        } else {
+            message.error('请求目录失败: ' + (error.response?.data?.message || error.message))
+        }
+    } finally {
+        loadingLocalFolders.value = false
+    }
+}
+
+// 点击列表中的文件夹
+const selectLocalFolder = (folder) => {
+    fetchLocalFolders(folder.path)
+}
+
+// 确认选择
+const confirmLocalFolder = () => {
+    configModel.value.local_strm_root = currentLocalPath.value
+    showLocalFolderModal.value = false
+    message.success(`已选择路径: ${currentLocalPath.value}`)
+}
 
 // ★★★ 全自动网页授权 (授权码模式) 逻辑 ★★★
 const isWebAuthing = ref(false);
