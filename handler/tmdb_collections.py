@@ -7,7 +7,7 @@ from datetime import datetime
 import concurrent.futures
 
 # 导入数据访问层和外部 API 处理器
-from database import custom_collection_db, tmdb_collection_db, media_db, request_db
+from database import tmdb_collection_db, media_db, request_db, settings_db
 import handler.emby as emby
 import handler.tmdb as tmdb
 import config_manager
@@ -126,7 +126,10 @@ def sync_and_subscribe_native_collections(progress_callback=None):
         progress_callback(100, "原生合集扫描完成！")
     
     # 扫描完开始检查缺失标记待订阅
-    subscribe_all_missing_in_native_collections()
+    config = settings_db.get_setting('native_collections_config') or {}
+    is_auto_sub_enabled = config.get('auto_sub_enabled', False)
+    if is_auto_sub_enabled:
+        subscribe_all_missing_in_native_collections()
 
 def subscribe_all_missing_in_native_collections():
     """

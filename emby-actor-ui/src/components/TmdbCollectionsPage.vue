@@ -43,7 +43,26 @@
                     </n-switch>
                   </div>
                 </template>
-                开启后，当单部电影入库时，会自动检测其所属系列，<br>并自动订阅该系列中缺失的其他影片。
+                开启后，当单部电影入库时，会自动检测其所属系列,并检查缺失。
+              </n-tooltip>
+            </div>
+            <div style="display: flex; align-items: center; margin-right: 12px;">
+              <n-tooltip trigger="hover">
+                <template #trigger>
+                  <div style="display: flex; align-items: center;">
+                    <n-text depth="3" style="margin-right: 8px; font-size: 12px;">自动订阅缺失</n-text>
+                    <n-switch 
+                      :value="autoSubEnabled" 
+                      @update:value="handleAutoCompleteChange" 
+                      :loading="isUpdatingSettings"
+                      size="small"
+                    >
+                      <template #checked>开启</template>
+                      <template #unchecked>关闭</template>
+                    </n-switch>
+                  </div>
+                </template>
+                开启后，自动订阅该系列中缺失的其他影片。
               </n-tooltip>
             </div>
             <n-tooltip>
@@ -514,6 +533,7 @@ const loadCachedData = async () => {
 
 /// ★★★ 1. 状态变量 ★★★
 const autoCompleteEnabled = ref(false);
+const autoSubEnabled = ref(false);
 const isUpdatingSettings = ref(false);
 
 // ★★★ 2. 加载设置 ★★★
@@ -522,6 +542,7 @@ const loadSettings = async () => {
     const response = await axios.get('/api/collections/settings');
     // 后端现在返回的是整个对象 { auto_complete_enabled: true, ... }
     autoCompleteEnabled.value = response.data.auto_complete_enabled;
+    autoSubEnabled.value = response.data.auto_sub_enabled;
   } catch (e) {
     console.error("加载合集设置失败", e);
   }
@@ -536,6 +557,7 @@ const handleAutoCompleteChange = async (value) => {
       auto_complete_enabled: value
     });
     autoCompleteEnabled.value = value;
+    autoSubEnabled.value = value;
     if (value) {
       message.success("已开启电影入库实时检查所属合集");
     } else {
@@ -544,6 +566,7 @@ const handleAutoCompleteChange = async (value) => {
   } catch (e) {
     message.error("保存设置失败");
     autoCompleteEnabled.value = !value;
+    autoSubEnabled.value = !value;
   } finally {
     isUpdatingSettings.value = false;
   }
