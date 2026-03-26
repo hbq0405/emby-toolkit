@@ -369,7 +369,7 @@
                           </n-button>
                         </n-space>
                         <n-text depth="3" style="font-size:0.8em;">
-                          用于TG和影巢转存。
+                          用于TG、影巢转存和备用视频播放。
                         </n-text>
                       </n-space>
                     </n-form-item>
