@@ -53,7 +53,7 @@
                     <n-text depth="3" style="margin-right: 8px; font-size: 12px;">自动订阅缺失</n-text>
                     <n-switch 
                       :value="autoSubEnabled" 
-                      @update:value="handleAutoCompleteChange" 
+                      @update:value="handleAutoSubChange" 
                       :loading="isUpdatingSettings"
                       size="small"
                     >
@@ -549,13 +549,15 @@ const loadSettings = async () => {
 };
 
 // ★★★ 3. 保存设置 ★★★
+
+// 处理“自动发现合集”开关
 const handleAutoCompleteChange = async (value) => {
   isUpdatingSettings.value = true;
   try {
-    // 发送 JSON 对象
+    // 发送 JSON 对象，注意保持另一个设置的原值
     await axios.post('/api/collections/settings', {
       auto_complete_enabled: value,
-      auto_sub_enabled: value
+      auto_sub_enabled: autoSubEnabled.value 
     });
     autoCompleteEnabled.value = value;
     if (value) {
@@ -563,6 +565,22 @@ const handleAutoCompleteChange = async (value) => {
     } else {
       message.info("已关闭电影入库实时检查所属合集");
     }
+  } catch (e) {
+    message.error("保存设置失败");
+  } finally {
+    isUpdatingSettings.value = false;
+  }
+};
+
+// 处理“自动订阅缺失”开关
+const handleAutoSubChange = async (value) => {
+  isUpdatingSettings.value = true;
+  try {
+    // 发送 JSON 对象，注意保持另一个设置的原值
+    await axios.post('/api/collections/settings', {
+      auto_complete_enabled: autoCompleteEnabled.value,
+      auto_sub_enabled: value 
+    });
     autoSubEnabled.value = value;
     if (value) {
       message.success("已开启自动订阅缺失");
@@ -571,8 +589,6 @@ const handleAutoCompleteChange = async (value) => {
     }
   } catch (e) {
     message.error("保存设置失败");
-    autoCompleteEnabled.value = !value;
-    autoSubEnabled.value = !value;
   } finally {
     isUpdatingSettings.value = false;
   }
