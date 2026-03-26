@@ -506,7 +506,9 @@ def play_115_video(pick_code, filename=None):
             
         max_retries = 4
         real_url = None
-        use_openapi = True # 优先使用 OpenAPI
+        config = get_config()
+        api_priority = config.get(constants.CONFIG_OPTION_115_PLAYBACK_API_PRIORITY, 'openapi')
+        use_openapi = (api_priority != 'cookie')
         
         for i in range(max_retries):
             try:
