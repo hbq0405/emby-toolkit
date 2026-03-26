@@ -349,13 +349,13 @@
                           </n-button>
                         </n-space>
                         <n-text depth="3" style="font-size:0.8em;">
-                          用于网盘整理。请点击“登录授权”获取授权。
+                          用于网盘整理和视频播放。请点击“登录授权”获取授权。
                         </n-text>
                       </n-space>
                     </n-form-item>
 
                     <!-- ★★★ 分离配置: Cookie (播放用) - 纯展示 ★★★ -->
-                    <n-form-item label="Cookie (转存用)">
+                    <n-form-item label="Cookie">
                       <n-space vertical :size="8" style="width: 100%;">
                         <n-space align="center" justify="space-between">
                           <n-tag :type="p115Info?.has_cookie ? 'success' : 'default'" size="small">
@@ -369,7 +369,7 @@
                           </n-button>
                         </n-space>
                         <n-text depth="3" style="font-size:0.8em;">
-                          用于反代302播放，解决官方接口 403 封禁问题。
+                          用于TG和影巢转存。
                         </n-text>
                       </n-space>
                     </n-form-item>
