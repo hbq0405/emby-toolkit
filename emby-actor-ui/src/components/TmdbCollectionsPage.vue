@@ -558,11 +558,16 @@ const handleAutoCompleteChange = async (value) => {
       auto_sub_enabled: value
     });
     autoCompleteEnabled.value = value;
-    autoSubEnabled.value = value;
     if (value) {
       message.success("已开启电影入库实时检查所属合集");
     } else {
       message.info("已关闭电影入库实时检查所属合集");
+    }
+    autoSubEnabled.value = value;
+    if (value) {
+      message.success("已开启自动订阅缺失");
+    } else {
+      message.info("已关闭自动订阅缺失");
     }
   } catch (e) {
     message.error("保存设置失败");
