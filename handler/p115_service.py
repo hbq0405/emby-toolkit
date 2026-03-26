@@ -452,7 +452,7 @@ class P115Service:
             if cls._openapi_client is None or getattr(cls._openapi_client, 'access_token', None) != token:
                 try:
                     cls._openapi_client = P115OpenAPIClient(token)
-                    logger.info("  🚀 [115] OpenAPI 客户端已初始化/更新 (整理用)")
+                    logger.info("  🚀 [115] OpenAPI 客户端已初始化")
                 except Exception as e:
                     logger.error(f"  ❌ 115 OpenAPI 客户端初始化失败: {e}")
                     cls._openapi_client = None
@@ -474,7 +474,7 @@ class P115Service:
                 try:
                     cls._cookie_client = P115CookieClient(cookie)
                     cls._cookie_cache = cookie
-                    logger.info("  🚀 [115] Cookie 客户端已初始化 (播放用)")
+                    logger.info("  🚀 [115] Cookie 客户端已初始化")
                 except Exception as e:
                     logger.error(f"  ❌ 115 Cookie 客户端初始化失败: {e}")
                     cls._cookie_client = None
