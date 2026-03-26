@@ -965,7 +965,6 @@ class MediaProcessor:
         - 修复了 ID=0 的脏数据问题。
         - 修复了回流时因类型不匹配导致无法标记入库的问题。
         - 【修复】多版本支持：现在会遍历并保存电影和分集的所有版本(MediaSources/Versions)的资产、SHA1和提取码。
-        - 【修复】指纹保护：当媒体离线(in_library=False)时，坚决保护 SHA1、提取码和资产路径等历史指纹不被空数组清空。
         """
         if not item_details_from_emby:
             logger.error("  ➜ 写入元数据缓存失败：缺少 Emby 详情数据。")
