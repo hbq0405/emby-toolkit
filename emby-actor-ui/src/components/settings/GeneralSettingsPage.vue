@@ -355,7 +355,7 @@
                     </n-form-item>
 
                     <!-- ★★★ 分离配置: Cookie (播放用) - 纯展示 ★★★ -->
-                    <n-form-item label="Cookie (播放专用)">
+                    <n-form-item label="Cookie (转存用)">
                       <n-space vertical :size="8" style="width: 100%;">
                         <n-space align="center" justify="space-between">
                           <n-tag :type="p115Info?.has_cookie ? 'success' : 'default'" size="small">
