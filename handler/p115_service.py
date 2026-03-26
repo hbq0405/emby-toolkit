@@ -2938,7 +2938,7 @@ class SmartOrganizer:
         # ★★★ 终极清理：将所有不合规文件移入未识别目录 ★★★
         # =================================================================
         if unrecognized_fids and unidentified_cid:
-            logger.info(f"  🗑️ 发现 {len(unrecognized_fids)} 个不合规文件(扩展名不符/花絮/样本)，正在移入未识别目录...")
+            logger.info(f"  🗑️ 发现 {len(unrecognized_fids)} 个不合规文件(扩展名不符/花絮/样本/广告)，正在移入未识别目录...")
             # 同样传入列表，防止 115 API 报错
             self.client.fs_move(unrecognized_fids, unidentified_cid)
 
