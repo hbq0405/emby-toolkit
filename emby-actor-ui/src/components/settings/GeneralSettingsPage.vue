@@ -334,8 +334,18 @@
                       </div>
                     </div>
 
-                    <!-- : Access Token (管理用) -  -->
-                    <n-form-item label="OpenAPI 授权">
+                    <!-- 授权方式选择 -->
+                    <n-form-item label="授权方式" path="p115_auth_method">
+                      <n-radio-group v-model:value="configModel.p115_auth_method" name="auth_method_group">
+                        <n-space>
+                          <n-radio value="web">网页登录授权 (推荐)</n-radio>
+                          <n-radio value="qrcode">自定义 AppID 扫码</n-radio>
+                        </n-space>
+                      </n-radio-group>
+                    </n-form-item>
+
+                    <!-- 方式一：网页登录授权 -->
+                    <n-form-item label="登录授权" v-if="configModel.p115_auth_method === 'web' || !configModel.p115_auth_method">
                       <n-space vertical :size="8" style="width: 100%;">
                         <n-space align="center" justify="space-between">
                           <n-tag :type="p115Info?.has_token ? 'success' : 'default'" size="small">
@@ -344,7 +354,7 @@
                             </template>
                             {{ p115Info?.has_token ? '已授权' : '未授权 (请登录)' }}
                           </n-tag>
-                          <n-button type="warning" size="small" @click="startWebAuth" :loading="isWebAuthing">
+                          <n-button size="small" type="warning" @click="startWebAuth" :loading="isWebAuthing">
                             {{ p115Info?.has_token ? '重新登录' : '登录授权' }}
                           </n-button>
                         </n-space>
@@ -354,7 +364,32 @@
                       </n-space>
                     </n-form-item>
 
-                    <!-- ★★★ 分离配置: Cookie (播放用) - 纯展示 ★★★ -->
+                    <!-- 方式二：自定义 AppID 扫码 -->
+                    <n-form-item label="扫码授权" path="p115_app_id" v-if="configModel.p115_auth_method === 'qrcode'">
+                      <n-space vertical :size="8" style="width: 100%;">
+                        <n-space align="center" justify="space-between">
+                          <n-tag :type="p115Info?.has_token ? 'success' : 'default'" size="small">
+                            <template #icon>
+                              <n-icon :component="p115Info?.has_token ? CheckIcon : CloseIcon" />
+                            </template>
+                            {{ p115Info?.has_token ? '已授权' : '未授权 (请扫码)' }}
+                          </n-tag>
+                          <n-button size="small" type="primary" @click="handleOpenQrcodeModal">
+                            {{ p115Info?.has_token ? '重新扫码' : '扫码授权' }}
+                          </n-button>
+                        </n-space>
+                        <n-input-group>
+                          <n-input v-model:value="configModel.p115_app_id" placeholder="先保存自定义AppID再扫码" />
+                        </n-input-group>
+                        <template #feedback>
+                          <n-text depth="3" style="font-size:0.8em;">
+                            请先填写 AppID 并点击底部保存设置，然后再扫码授权。
+                          </n-text>
+                        </template>
+                      </n-space>
+                    </n-form-item>
+
+                    <!--  Cookie  -->
                     <n-form-item label="Cookie">
                       <n-space vertical :size="8" style="width: 100%;">
                         <n-space align="center" justify="space-between">
@@ -399,7 +434,7 @@
                       <n-input-number v-model:value="configModel.p115_max_workers" :min="1" :max="20" :step="1" placeholder="3" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          控制扫描和整理时的并发数量。如果经常提示“请求达到上限”，请调低此值（建议 3-5）。
+                          控制扫描和整理时的并发数量。如果出现异常，调低此值。
                         </n-text>
                       </template>
                     </n-form-item>
@@ -407,7 +442,7 @@
                     <n-form-item label="STRM 链接地址" path="etk_server_url">
                         <n-input v-model:value="configModel.etk_server_url" placeholder="http://192.168.X.X:5257" />
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">将写入 .strm 文件中，Emby 必须能访问此地址，支持http或挂载路径。</n-text>
+                            <n-text depth="3" style="font-size:0.8em;">支持http或挂载路径。</n-text>
                         </template>
                     </n-form-item>
 
@@ -431,7 +466,7 @@
                             批量替换本地 STRM 链接
                         </n-button>
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">支持普通字符串替换和正则表达式替换，可用于更换 IP、端口或链接结构。</n-text>
+                            <n-text depth="3" style="font-size:0.8em;">支持普通字符串替换和正则表达式替换。</n-text>
                         </template>
                     </n-form-item>
                   </n-card>
@@ -572,7 +607,7 @@
                             <template #unchecked>仅移除本地缓存</template>
                         </n-switch>
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">在 Emby 中删除媒体时，将同时触发 115 网盘上的文件删除。<strong style="color:#d03050; margin-left:4px;">高危操作，手抖党慎开！</strong></n-text>
+                            <n-text depth="3" style="font-size:0.8em;">在 Emby 中删除媒体时，将同时删除 115 网盘上的文件。</n-text>
                         </template>
                     </n-form-item>
                   </n-card>
@@ -2517,6 +2552,83 @@ const confirmLocalFolder = () => {
     showLocalFolderModal.value = false
 }
 
+// ★★★ 115 扫码授权 Modal 逻辑 ★★★
+const showQrcodeModal = ref(false);
+const qrcodeUrl = ref('');
+const qrcodeStatus = ref('idle'); // idle, waiting, success, expired, error
+const qrcodeLoading = ref(false);
+const qrcodePolling = ref(null);
+const handleOpenQrcodeModal = () => {
+  if (!configModel.value.p115_app_id || !configModel.value.p115_app_id.trim()) {
+    message.warning('请先填写自定义 AppID 并点击底部保存设置，然后再扫码授权！');
+    return;
+  }
+  openQrcodeModal();
+};
+const openQrcodeModal = async () => {
+  showQrcodeModal.value = true;
+  qrcodeStatus.value = 'loading';
+  qrcodeLoading.value = true;
+  
+  try {
+    const res = await axios.post('/api/p115/qrcode');
+    if (res.data && res.data.success) {
+      qrcodeUrl.value = res.data.data.qrcode;
+      qrcodeStatus.value = 'waiting';
+      startPolling();
+    } else {
+      qrcodeStatus.value = 'error';
+      message.error(res.data?.message || '获取二维码失败');
+    }
+  } catch (e) {
+    qrcodeStatus.value = 'error';
+    message.error('获取二维码失败: ' + (e.response?.data?.message || e.message));
+  } finally {
+    qrcodeLoading.value = false;
+  }
+};
+
+const startPolling = () => {
+  // 每2秒检查一次二维码状态
+  qrcodePolling.value = setInterval(async () => {
+    try {
+      const res = await axios.get('/api/p115/qrcode/status');
+      const data = res.data;
+      
+      if (data.status === 'success') {
+        qrcodeStatus.value = 'success';
+        message.success('登录成功！授权已自动保存');
+        stopPolling();
+        setTimeout(() => {
+          showQrcodeModal.value = false;
+          check115Status(); // 刷新状态显示
+        }, 1500);
+      } else if (data.status === 'expired') {
+        qrcodeStatus.value = 'expired';
+        message.warning('二维码已过期');
+        stopPolling();
+      }
+      // waiting 状态继续轮询
+    } catch (e) {
+      console.error('检查二维码状态失败', e);
+    }
+  }, 2000);
+};
+
+const stopPolling = () => {
+  if (qrcodePolling.value) {
+    clearInterval(qrcodePolling.value);
+    qrcodePolling.value = null;
+  }
+};
+
+const closeQrcodeModal = () => {
+  stopPolling();
+  showQrcodeModal.value = false;
+  qrcodeUrl.value = '';
+  qrcodeStatus.value = 'idle';
+};
+
 // ★★★ 全自动网页授权 (授权码模式) 逻辑 ★★★
 const isWebAuthing = ref(false);
 let webAuthPolling = null;
@@ -3029,7 +3141,7 @@ onMounted(async () => {
   unwatchGlobal = watch(loadingConfig, (isLoading) => {
     if (!isLoading && componentIsMounted.value && configModel.value) {
       check115Status();
-      
+      if (!configModel.value.p115_auth_method) configModel.value.p115_auth_method = 'web';
       if (configModel.value.emby_server_url && configModel.value.emby_api_key) {
         fetchEmbyLibrariesInternal();
       }
