@@ -98,8 +98,17 @@ def trigger_checkin():
     client = HDHiveClient(api_key)
     res = client.checkin(is_gambler)
     
+    # 影巢 API 即使是“已签到”，顶层 success 也是 true
+    # 真实的提示信息在 data.message 里，本次是否成功在 data.checked_in 里
     if res.get("success"):
-        return jsonify({"success": True, "message": res.get("message", "签到成功！")})
+        res_data = res.get("data", {})
+        # 优先取 data.message，如果没有再取顶层 message
+        real_message = res_data.get("message") or res.get("message", "签到请求成功")
+        
+        # 如果 checked_in 为 false，说明今天已经签到过了，虽然请求成功，但其实是 warning 级别
+        if res_data.get("checked_in") is False:
+            return jsonify({"success": False, "message": real_message})
+        else:
+            return jsonify({"success": True, "message": real_message})
     else:
-        # 可能是已经签到过了，或者其他错误
         return jsonify({"success": False, "message": res.get("message", "签到失败")})

@@ -757,6 +757,8 @@ const doHDHiveCheckin = async (isGambler) => {
     if (res.data.success) {
       // 签到成功，弹出后端返回的 message（里面包含本次获得的积分）
       message.success(res.data.message, { duration: 5000 });
+      // ★ 签到成功后，刷新一下用户信息，让积分变动实时显示出来
+      fetchHDHiveConfig(); 
     } else {
       // 可能是已经签到过了
       message.warning(res.data.message);
