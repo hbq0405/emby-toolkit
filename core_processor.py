@@ -71,6 +71,22 @@ def extract_tag_names(item_data):
             if t: tags_set.add(str(t))
     return list(tags_set)
 
+def is_valid_tmdb_id(tmdb_id) -> bool:
+    """
+    严格校验 TMDb ID 是否有效。
+    拦截 None, '', '0', 'None', 'null' 以及非纯数字。
+    """
+    if not tmdb_id:
+        return False
+    id_str = str(tmdb_id).strip()
+    if id_str in ['0', 'None', 'null', '']:
+        return False
+    if not id_str.isdigit():
+        return False
+    if int(id_str) <= 0:
+        return False
+    return True
+
 def _read_local_json(file_path: str) -> Optional[Dict[str, Any]]:
     if not os.path.exists(file_path):
         logger.warning(f"本地元数据文件不存在: {file_path}")
@@ -199,9 +215,11 @@ class MediaProcessor:
                 match = re.search(tmdb_regex, filename, re.IGNORECASE)
 
             if match:
-                tmdb_id = match.group(1)
-                logger.info(f"  ➜ [实时监控] 成功提取 TMDb ID: {tmdb_id}")
-            else:
+                temp_id = match.group(1)
+                if is_valid_tmdb_id(temp_id):
+                    tmdb_id = temp_id
+                    logger.info(f"  ➜ [实时监控] 成功提取 TMDb ID: {tmdb_id}")
+            if not tmdb_id:
                 # 优化：先尝试从目录名提取搜索信息
                 def is_season_folder(name: str) -> bool:
                     return bool(re.match(r'^(Season|S)\s*\d+|Specials', name, re.IGNORECASE))
@@ -249,7 +267,8 @@ class MediaProcessor:
                     logger.warning(f"  ➜ [实时监控] 搜索失败，无法处理: {search_query}")
                     return None
 
-            if not tmdb_id: return None
+            if not is_valid_tmdb_id(tmdb_id): 
+                return None
 
             # 确定类型
             is_series = bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
@@ -1080,7 +1099,8 @@ class MediaProcessor:
             if item_type == "Movie":
                 movie_record = source_data_package.copy()
                 movie_record['item_type'] = 'Movie'
-                movie_record['tmdb_id'] = str(movie_record.get('id'))
+                movie_id = movie_record.get('id')
+                movie_record['tmdb_id'] = str(movie_id) if movie_id else ""
                 movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
                 movie_record['rating'] = movie_record.get('vote_average')
                 
@@ -1241,7 +1261,7 @@ class MediaProcessor:
 
                 # 构建 Series 记录
                 series_record = {
-                    "item_type": "Series", "tmdb_id": str(series_details.get('id')), "title": series_details.get('name'),
+                    "item_type": "Series", "tmdb_id": str(series_details.get('id')) if series_details.get('id') else "", "title": series_details.get('name'),
                     "original_title": series_details.get('original_name'), "overview": series_details.get('overview'),
                     "release_date": series_details.get('first_air_date'), 
                     "last_air_date": series_details.get('last_air_date'),
@@ -1480,8 +1500,10 @@ class MediaProcessor:
             ]
             data_for_batch = []
             for record in records_to_upsert:
-                # 再次检查 ID，防止漏网之鱼
-                if not record.get('tmdb_id') or str(record.get('tmdb_id')) == '0':
+                # 再次检查 ID，防止漏网之鱼 (使用严格校验)
+                rec_id = record.get('tmdb_id')
+                if not is_valid_tmdb_id(rec_id):
+                    logger.warning(f"  ➜ [入库拦截] 发现无效的 TMDb ID: '{rec_id}'，已丢弃该条记录。")
                     continue
 
                 db_row_complete = {col: record.get(col) for col in all_possible_columns}
@@ -2010,8 +2032,8 @@ class MediaProcessor:
         all_emby_people_for_count = item_details_from_emby.get("People", [])
         original_emby_actor_count = len([p for p in all_emby_people_for_count if p.get("Type") == "Actor"])
 
-        if not tmdb_id:
-            logger.error(f"  ➜ '{item_name_for_log}' 缺少 TMDb ID，无法处理。")
+        if not is_valid_tmdb_id(tmdb_id):
+            logger.error(f"  ➜ '{item_name_for_log}' 缺少有效的 TMDb ID (当前值: {tmdb_id})，跳过处理。")
             return False
         if not self.local_data_path:
             logger.error(f"  ➜ '{item_name_for_log}' 处理失败：未在配置中设置“本地数据源路径”。")

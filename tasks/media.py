@@ -24,6 +24,22 @@ from extensions import UPDATING_METADATA
 
 logger = logging.getLogger(__name__)
 
+def is_valid_tmdb_id(tmdb_id) -> bool:
+    """
+    严格校验 TMDb ID 是否有效。
+    拦截 None, '', '0', 'None', 'null' 以及非纯数字。
+    """
+    if not tmdb_id:
+        return False
+    id_str = str(tmdb_id).strip()
+    if id_str in ['0', 'None', 'null', '']:
+        return False
+    if not id_str.isdigit():
+        return False
+    if int(id_str) <= 0:
+        return False
+    return True
+
 # ★★★ 中文化角色名 ★★★
 def task_role_translation(processor, force_full_update: bool = False):
     """
@@ -581,7 +597,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
             emby_id_to_lib_id[item_id] = item.get('_SourceLibraryId')
             
             item_type = item.get("Type")
-            tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+            raw_tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+            
+            # ★ 严格校验 TMDb ID
+            tmdb_id = raw_tmdb_id if is_valid_tmdb_id(raw_tmdb_id) else None
 
             # 1. 记录所有扫描到的 ID (用于反向检测离线)
             if item_type in ["Movie", "Series", "Season", "Episode"]:
@@ -946,7 +965,14 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
             for item_group in batch_item_groups:
                 if not item_group: continue
                 item = item_group[0]
-                tmdb_id_str = str(item.get("ProviderIds", {}).get("Tmdb"))
+                
+                # ★ 严格校验，防止 str(None) 变成 "None"
+                raw_tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+                if not is_valid_tmdb_id(raw_tmdb_id):
+                    logger.warning(f"  ➜ [批量同步拦截] 发现无效的 TMDb ID: '{raw_tmdb_id}'，跳过该项目: {item.get('Name')}")
+                    continue
+                    
+                tmdb_id_str = str(raw_tmdb_id)
                 item_type = item.get("Type")
 
                 full_aggregated_data = tmdb_details_map.get(tmdb_id_str)
