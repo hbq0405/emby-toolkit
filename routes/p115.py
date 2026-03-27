@@ -690,61 +690,83 @@ def handle_sorting_rules():
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
+_115_url_cache = {}
+
 @p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) 
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (双接口轮流尝试版)
+    终极极速 302 直链解析服务 (纯净响应版，专治 Emby 客户端报错转码)
     """
     try:
-        # 获取客户端真实的 User-Agent (115 的下载链接是绑定 UA 的，必须透传)
-        # 给一个更标准的默认 UA，防止某些播放器不带 UA 导致 115 拒绝生成链接
-        default_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        player_ua = request.headers.get('User-Agent', default_ua)
+        # 1. 获取客户端真实的 User-Agent
+        player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
-        client = P115Service.get_client()
-        if not client:
-            return "115 Client not initialized", 500
+        # 2. 检查缓存
+        cache_key = f"{pick_code}_{player_ua}"
+        current_time = time.time()
+        cached_data = _115_url_cache.get(cache_key)
+        
+        if cached_data and current_time < cached_data['expire']:
+            real_url = cached_data['url']
+        else:
+            # 3. 缓存失效，请求 115 接口
+            client = P115Service.get_client()
+            if not client:
+                return "115 Client not initialized", 500
+                
+            max_retries = 3
+            real_url = None
+            config = get_config()
+            api_priority = config.get(constants.CONFIG_OPTION_115_PLAYBACK_API_PRIORITY, 'openapi')
+            use_openapi = (api_priority != 'cookie')
             
-        max_retries = 3 # 稍微减少重试次数，加快响应速度，防止播放器超时
-        real_url = None
-        config = get_config()
-        api_priority = config.get(constants.CONFIG_OPTION_115_PLAYBACK_API_PRIORITY, 'openapi')
-        use_openapi = (api_priority != 'cookie')
-        
-        for i in range(max_retries):
-            try:
-                if use_openapi:
-                    real_url = client.openapi_downurl(pick_code, user_agent=player_ua)
-                else:
-                    real_url = client.download_url(pick_code, user_agent=player_ua)
-                    
-                if real_url:
-                    break
-            except Exception as e:
-                logger.warning(f"  ⚠️ [直链解析] {'OpenAPI' if use_openapi else 'Cookie'} 接口异常: {e}")
+            for i in range(max_retries):
+                try:
+                    if use_openapi:
+                        real_url = client.openapi_downurl(pick_code, user_agent=player_ua)
+                    else:
+                        real_url = client.download_url(pick_code, user_agent=player_ua)
+                        
+                    if real_url:
+                        break
+                except Exception as e:
+                    logger.warning(f"  ⚠️ [直链解析] {'OpenAPI' if use_openapi else 'Cookie'} 接口异常: {e}")
+                
+                use_openapi = not use_openapi
+                time.sleep(0.2)
             
-            # 核心：如果没拿到，切换布尔值，下一次循环就换另一个接口
-            use_openapi = not use_openapi
-            time.sleep(0.2) # 缩短等待时间，避免播放器握手超时
-        
-        if not real_url:
-            return "Failed to get download URL or Rate Limited", 404
+            if not real_url:
+                return "Failed to get download URL or Rate Limited", 404
+                
+            # 写入缓存 (缓存 2 小时)
+            _115_url_cache[cache_key] = {
+                "url": real_url,
+                "expire": current_time + 7200 
+            }
             
-        # 执行 302 重定向
-        response = redirect(real_url, code=302)
+        # ★★★ 核心修复：构造纯净的 302 响应，抛弃 Flask 的 redirect() ★★★
+        headers = {
+            'Location': real_url,
+            'Access-Control-Allow-Origin': '*',
+            'Cache-Control': 'no-cache, no-store, must-revalidate',
+            'Connection': 'keep-alive'
+        }
         
-        # ★★★ 核心修复：添加对播放器友好的 Headers ★★★
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Accept-Ranges'] = 'bytes' # 告诉播放器支持拖拽探测
-        
-        # 禁用缓存：因为 115 的直链是绑定 IP 和 UA 的，且有过期时间。
-        # 如果被浏览器/播放器缓存了 302 结果，换个设备播放就会报 403 错误。
-        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
-        response.headers['Pragma'] = 'no-cache'
-        response.headers['Expires'] = '0'
-        
-        return response
+        # 智能伪装 Content-Type，坚决不能让 Emby 看到 text/html
+        if filename:
+            ext = filename.split('.')[-1].lower()
+            if ext == 'mkv':
+                headers['Content-Type'] = 'video/x-matroska'
+            elif ext == 'mp4':
+                headers['Content-Type'] = 'video/mp4'
+            else:
+                headers['Content-Type'] = 'application/octet-stream'
+        else:
+            headers['Content-Type'] = 'application/octet-stream'
+
+        # 返回空字符串 Body，状态码 302，附带纯净 Headers
+        return '', 302, headers
         
     except Exception as e:
         logger.error(f"  ❌ 直链解析发生异常: {e}")
