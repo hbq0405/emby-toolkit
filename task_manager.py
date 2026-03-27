@@ -137,12 +137,16 @@ def start_task_worker_if_not_running():
 
 def submit_task(task_function: Callable, task_name: str, processor_type: ProcessorType = 'media', *args, **kwargs) -> bool:
     """
-    【V2 - 公共接口】将一个任务提交到通用队列中。
-    新增 processor_type 参数，用于精确指定任务所需的处理器。
+    【V3 - 防抱死公共接口】将一个任务提交到通用队列中。
     """
-    from logger_setup import frontend_log_queue # 延迟导入以避免循环
+    from logger_setup import frontend_log_queue 
 
-    with task_lock:
+    # ★ 尝试获取锁，最多等 2 秒。如果拿不到，说明系统卡死了！
+    if not task_lock.acquire(timeout=2.0):
+        logger.error(f"任务 '{task_name}' 提交失败：系统底盘锁死！请点击前端的【强制停止】按钮触发紧急制动。")
+        return False
+
+    try:
         if background_task_status["is_running"]:
             logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
             return False
@@ -150,11 +154,12 @@ def submit_task(task_function: Callable, task_name: str, processor_type: Process
         frontend_log_queue.clear()
         logger.trace(f"  ➜ 任务 '{task_name}' 已提交到队列，并已清空前端日志。")
         
-        # ★★★ 核心修复：将 processor_type 加入任务信息元组 ★★★
         task_info = (task_function, task_name, processor_type, args, kwargs)
         task_queue.put(task_info)
         start_task_worker_if_not_running()
         return True
+    finally:
+        task_lock.release() # 确保锁一定会被释放
 
 def stop_task_worker():
     """【公共接口】停止工人线程，用于应用退出。"""
@@ -178,6 +183,51 @@ def clear_task_queue():
             except Queue.Empty:
                 break
         logger.info("任务队列已清空。")
+
+def emergency_stop():
+    """
+    【V3 - ABS 防抱死紧急刹车系统】
+    当常规停止信号失效，任务卡死导致系统瘫痪时，调用此函数强行重置。
+    """
+    global background_task_status, task_worker_thread
+
+    logger.warning("🚨 触发终极刹车系统！正在强行介入...")
+
+    # 1. 踩下所有处理器的常规刹车踏板
+    for proc in [extensions.media_processor_instance,
+                 extensions.watchlist_processor_instance,
+                 extensions.actor_subscription_processor_instance]:
+        if proc:
+            proc.signal_stop()
+
+    # 2. 拔掉油门：清空排队的任务
+    clear_task_queue()
+
+    # 3. 强行篡改 UI 状态面板
+    background_task_status.update({
+        "is_running": False,
+        "current_action": "无",
+        "progress": 0,
+        "message": "已强制重置，等待新任务"
+    })
+
+    # 4. 核心科技：强行撬开死锁！
+    # 如果旧工人卡死了，这把锁会被永远霸占。我们直接把它撬开。
+    if task_lock.locked():
+        try:
+            task_lock.release()
+            logger.warning("  ⚠️ 已强行释放被卡死的任务锁！")
+        except RuntimeError:
+            pass # 锁可能刚好被释放了，忽略报错
+
+    # 5. 弹射座椅：抛弃旧的僵尸线程
+    # 将 worker_thread 设为 None，下次提交任务时，系统会自动孵化一个全新的健康工人
+    with task_worker_lock:
+        if task_worker_thread and task_worker_thread.is_alive():
+            logger.warning("  🧟 发现无响应的僵尸线程，已将其抛弃。")
+        task_worker_thread = None
+
+    logger.info("  ✅ 紧急制动执行完毕，系统已恢复就绪状态。")
 
 def trigger_115_organize_task():
     """
