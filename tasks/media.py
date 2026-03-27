@@ -1985,8 +1985,12 @@ def task_restore_local_cache_from_db(processor):
                         seasons_rows = cursor.fetchall()
                         seasons_data = []
                         for s_row in seasons_rows:
+                            # ★ 拦截临时内部ID，不写入 JSON 缓存
+                            if not str(s_row['tmdb_id']).isdigit():
+                                continue
+                                
                             s_data = {
-                                "id": int(s_row['tmdb_id']) if str(s_row['tmdb_id']).isdigit() else str(s_row['tmdb_id']),
+                                "id": int(s_row['tmdb_id']),
                                 "name": s_row['title'],
                                 "overview": s_row['overview'],
                                 "season_number": s_row['season_number'],
@@ -2001,12 +2005,16 @@ def task_restore_local_cache_from_db(processor):
                         episodes_data = {} 
                         
                         for e_row in episodes_rows:
+                            # ★ 拦截临时内部ID，不写入 JSON 缓存
+                            if not str(e_row['tmdb_id']).isdigit():
+                                continue
+                                
                             s_num = e_row['season_number']
                             e_num = e_row['episode_number']
                             key = f"S{s_num}E{e_num}"
                             
                             e_data = {
-                                "id": int(e_row['tmdb_id']) if str(e_row['tmdb_id']).isdigit() else str(e_row['tmdb_id']),
+                                "id": int(e_row['tmdb_id']),
                                 "name": e_row['title'],
                                 "overview": e_row['overview'],
                                 "season_number": s_num,
