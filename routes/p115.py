@@ -696,18 +696,17 @@ def play_115_video(pick_code, filename=None):
     """
     终极极速 302 直链解析服务 (双接口轮流尝试版)
     """
-    if request.method == 'HEAD':
-        return '', 200
-
     try:
-        # 恢复获取真实 UA
-        player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+        # 获取客户端真实的 User-Agent (115 的下载链接是绑定 UA 的，必须透传)
+        # 给一个更标准的默认 UA，防止某些播放器不带 UA 导致 115 拒绝生成链接
+        default_ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        player_ua = request.headers.get('User-Agent', default_ua)
         
         client = P115Service.get_client()
         if not client:
             return "115 Client not initialized", 500
             
-        max_retries = 4
+        max_retries = 3 # 稍微减少重试次数，加快响应速度，防止播放器超时
         real_url = None
         config = get_config()
         api_priority = config.get(constants.CONFIG_OPTION_115_PLAYBACK_API_PRIORITY, 'openapi')
@@ -727,13 +726,24 @@ def play_115_video(pick_code, filename=None):
             
             # 核心：如果没拿到，切换布尔值，下一次循环就换另一个接口
             use_openapi = not use_openapi
-            time.sleep(0.5)
+            time.sleep(0.2) # 缩短等待时间，避免播放器握手超时
         
         if not real_url:
             return "Failed to get download URL or Rate Limited", 404
             
+        # 执行 302 重定向
         response = redirect(real_url, code=302)
+        
+        # ★★★ 核心修复：添加对播放器友好的 Headers ★★★
         response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Accept-Ranges'] = 'bytes' # 告诉播放器支持拖拽探测
+        
+        # 禁用缓存：因为 115 的直链是绑定 IP 和 UA 的，且有过期时间。
+        # 如果被浏览器/播放器缓存了 302 结果，换个设备播放就会报 403 错误。
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        
         return response
         
     except Exception as e:
