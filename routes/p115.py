@@ -690,25 +690,17 @@ def handle_sorting_rules():
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
-@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD', 'OPTIONS']) 
-@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD', 'OPTIONS'])
+@p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) 
+@p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (修复 HEAD 探测与 OPTIONS 跨域)
+    终极极速 302 直链解析服务 (双接口轮流尝试版)
     """
     if request.method == 'HEAD':
         return '', 200
 
-    # 1. 核心修复：处理 OPTIONS 跨域预检请求 (第三方播放器/苹果设备必需)
-    if request.method == 'OPTIONS':
-        response = Response()
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, HEAD, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = 'Range, Content-Type, Authorization'
-        return response
-
     try:
-        # 透传真实 UA，底层 P115Service 会自动处理缓存
+        # 恢复获取真实 UA
         player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
         
         client = P115Service.get_client()
@@ -733,13 +725,13 @@ def play_115_video(pick_code, filename=None):
             except Exception as e:
                 logger.warning(f"  ⚠️ [直链解析] {'OpenAPI' if use_openapi else 'Cookie'} 接口异常: {e}")
             
+            # 核心：如果没拿到，切换布尔值，下一次循环就换另一个接口
             use_openapi = not use_openapi
             time.sleep(0.5)
         
         if not real_url:
             return "Failed to get download URL or Rate Limited", 404
             
-        # 执行 302 重定向
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
