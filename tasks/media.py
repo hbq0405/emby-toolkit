@@ -1903,7 +1903,7 @@ def task_restore_local_cache_from_db(processor):
                 SELECT * FROM media_metadata 
                 WHERE item_type IN ('Movie', 'Series') 
                   AND tmdb_id IS NOT NULL 
-                  AND tmdb_id != '0'
+                  AND tmdb_id NOT IN ('0', 'None', 'null', '')
             """)
             items_to_restore = [dict(row) for row in cursor.fetchall()]
 
@@ -1986,7 +1986,7 @@ def task_restore_local_cache_from_db(processor):
                         seasons_data = []
                         for s_row in seasons_rows:
                             s_data = {
-                                "id": int(s_row['tmdb_id']) if s_row['tmdb_id'].isdigit() else 0,
+                                "id": int(s_row['tmdb_id']) if str(s_row['tmdb_id']).isdigit() else str(s_row['tmdb_id']),
                                 "name": s_row['title'],
                                 "overview": s_row['overview'],
                                 "season_number": s_row['season_number'],
@@ -2006,7 +2006,7 @@ def task_restore_local_cache_from_db(processor):
                             key = f"S{s_num}E{e_num}"
                             
                             e_data = {
-                                "id": int(e_row['tmdb_id']) if e_row['tmdb_id'].isdigit() else 0,
+                                "id": int(e_row['tmdb_id']) if str(e_row['tmdb_id']).isdigit() else str(e_row['tmdb_id']),
                                 "name": e_row['title'],
                                 "overview": e_row['overview'],
                                 "season_number": s_num,
