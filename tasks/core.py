@@ -199,7 +199,6 @@ def get_task_registry(context: str = 'all'):
         'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', True),
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
-        'generate_embeddings': (task_generate_embeddings, "生成媒体向量", 'media', True),
         'refresh_completed_series': (task_refresh_completed_series, "全量刷新剧集", 'watchlist', True),
         'execute-auto-tagging-rules': (task_execute_auto_tagging_rules, "自动打标规则", 'media', True),
         'scan-monitor-folders': (task_scan_monitor_folders, "扫描监控目录", 'media', True),
@@ -223,6 +222,7 @@ def get_task_registry(context: str = 'all'):
         'manual_subscribe_batch': (task_manual_subscribe_batch, "手动订阅处理", 'media', False),
         'scan_old_seasons_backfill': (task_scan_old_seasons_backfill, "扫描缺季的剧", 'watchlist', False),
         'contribute-mediainfo': (task_contribute_mediainfo_to_center, "分享媒体信息", 'media', False),
+        'generate_embeddings': (task_generate_embeddings, "生成媒体向量", 'media', False),
     }
 
     if context == 'chain':
