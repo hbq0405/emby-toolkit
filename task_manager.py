@@ -48,34 +48,29 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
     """【工人专用】通用后台任务执行器。"""
     global background_task_status
     
-    # 1. 仅在更新状态时加锁 (瞬间完成)
     with task_lock:
         if not processor:
             logger.error(f"任务 '{task_name}' 无法启动：对应的处理器未初始化。")
             return
 
         processor.clear_stop_signal()
+
         background_task_status.update({
             "is_running": True, "current_action": task_name, "last_action": task_name,
             "progress": 0, "message": f"{task_name} 初始化..."
         })
-        
-    logger.info(f"  ➜ 后台任务 '{task_name}' 开始执行")
+        logger.info(f"  ➜ 后台任务 '{task_name}' 开始执行")
 
-    task_completed_normally = False
-    try:
-        if processor.is_stop_requested():
-            raise InterruptedError("任务被取消")
+        task_completed_normally = False
+        try:
+            if processor.is_stop_requested():
+                raise InterruptedError("任务被取消")
 
-        # 2. ★★★ 核心修复：在无锁状态下执行耗时任务！★★★
-        # 这样就不会阻塞其他任务（如 Webhook）进入队列了
-        task_function(processor, *args, **kwargs)
-        
-        if not processor.is_stop_requested():
-            task_completed_normally = True
-    finally:
-        # 3. 任务结束后，再次加锁更新状态
-        with task_lock:
+            task_function(processor, *args, **kwargs)
+            
+            if not processor.is_stop_requested():
+                task_completed_normally = True
+        finally:
             final_message = "未知结束状态"
             current_progress = background_task_status["progress"]
 
@@ -85,8 +80,11 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
                 final_message = "处理完成。"
                 current_progress = 100
             
+            update_status_from_thread(current_progress, final_message)
+            logger.info(f"  ✅ 后台任务 '{task_name}' 结束，最终状态: {final_message}")
+
             background_task_status.update({
-                "is_running": False, "current_action": "无", "progress": current_progress, "message": final_message
+                "is_running": False, "current_action": "无", "progress": 0, "message": "等待任务"
             })
             processor.clear_stop_signal()
             logger.trace(f"后台任务 '{task_name}' 状态已重置。")
@@ -139,35 +137,24 @@ def start_task_worker_if_not_running():
 
 def submit_task(task_function: Callable, task_name: str, processor_type: ProcessorType = 'media', *args, **kwargs) -> bool:
     """
-    【V3 - 防抱死公共接口】将一个任务提交到通用队列中。
+    【V2 - 公共接口】将一个任务提交到通用队列中。
+    新增 processor_type 参数，用于精确指定任务所需的处理器。
     """
-    from logger_setup import frontend_log_queue 
+    from logger_setup import frontend_log_queue # 延迟导入以避免循环
 
-    # 尝试获取锁，最多等 2 秒
-    if not task_lock.acquire(timeout=2.0):
-        logger.error(f"任务 '{task_name}' 提交失败：系统底盘锁死！")
-        return False
-
-    try:
-        # ★★★ 核心修复：允许 Webhook 和 TG 任务排队，拒绝重复的手动任务 ★★★
-        is_webhook_or_tg = "webhook" in task_name.lower() or "tg" in task_name.lower()
-        
-        if background_task_status["is_running"] and not is_webhook_or_tg:
+    with task_lock:
+        if background_task_status["is_running"]:
             logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
             return False
 
-        # 只有手动触发的任务才清空前端日志，Webhook 默默排队不打扰用户
-        if not is_webhook_or_tg:
-            frontend_log_queue.clear()
-            
-        logger.trace(f"  ➜ 任务 '{task_name}' 已提交到队列。")
+        frontend_log_queue.clear()
+        logger.trace(f"  ➜ 任务 '{task_name}' 已提交到队列，并已清空前端日志。")
         
+        # ★★★ 核心修复：将 processor_type 加入任务信息元组 ★★★
         task_info = (task_function, task_name, processor_type, args, kwargs)
         task_queue.put(task_info)
         start_task_worker_if_not_running()
         return True
-    finally:
-        task_lock.release()
 
 def stop_task_worker():
     """【公共接口】停止工人线程，用于应用退出。"""
@@ -191,51 +178,6 @@ def clear_task_queue():
             except Queue.Empty:
                 break
         logger.info("任务队列已清空。")
-
-def emergency_stop():
-    """
-    【V3 - ABS 防抱死紧急刹车系统】
-    当常规停止信号失效，任务卡死导致系统瘫痪时，调用此函数强行重置。
-    """
-    global background_task_status, task_worker_thread
-
-    logger.warning("🚨 触发终极刹车系统！正在强行介入...")
-
-    # 1. 踩下所有处理器的常规刹车踏板
-    for proc in [extensions.media_processor_instance,
-                 extensions.watchlist_processor_instance,
-                 extensions.actor_subscription_processor_instance]:
-        if proc:
-            proc.signal_stop()
-
-    # 2. 拔掉油门：清空排队的任务
-    clear_task_queue()
-
-    # 3. 强行篡改 UI 状态面板
-    background_task_status.update({
-        "is_running": False,
-        "current_action": "无",
-        "progress": 0,
-        "message": "已强制重置，等待新任务"
-    })
-
-    # 4. 核心科技：强行撬开死锁！
-    # 如果旧工人卡死了，这把锁会被永远霸占。我们直接把它撬开。
-    if task_lock.locked():
-        try:
-            task_lock.release()
-            logger.warning("  ⚠️ 已强行释放被卡死的任务锁！")
-        except RuntimeError:
-            pass # 锁可能刚好被释放了，忽略报错
-
-    # 5. 弹射座椅：抛弃旧的僵尸线程
-    # 将 worker_thread 设为 None，下次提交任务时，系统会自动孵化一个全新的健康工人
-    with task_worker_lock:
-        if task_worker_thread and task_worker_thread.is_alive():
-            logger.warning("  🧟 发现无响应的僵尸线程，已将其抛弃。")
-        task_worker_thread = None
-
-    logger.info("  ✅ 紧急制动执行完毕，系统已恢复就绪状态。")
 
 def trigger_115_organize_task():
     """

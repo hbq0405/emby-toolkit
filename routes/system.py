@@ -32,28 +32,8 @@ def api_get_task_status():
     status_data['logs'] = list(frontend_log_queue)
     return jsonify(status_data)
 
-last_stop_request_time = 0
 @system_bp.route('/trigger_stop_task', methods=['POST'])
 def api_handle_trigger_stop_task():
-    global last_stop_request_time
-    import time
-    
-    current_time = time.time()
-    
-    # ★ 核心逻辑：如果距离上次点击不到 3 秒，触发紧急刹车！
-    if current_time - last_stop_request_time < 3.0:
-        logger.warning("  ➜ API: 检测到连续点击停止按钮，触发紧急制动！")
-        try:
-            task_manager.emergency_stop()
-        except AttributeError:
-            logger.error("emergency_stop 未在 task_manager 中定义，请确保已添加该函数。")
-            
-        last_stop_request_time = 0  # 重置时间
-        return jsonify({"message": "已触发紧急制动，系统状态已强行重置！"}), 200
-        
-    # 记录本次点击时间
-    last_stop_request_time = current_time
-
     logger.debug("API (Blueprint): Received request to stop current task.")
     stopped_any = False
     if extensions.media_processor_instance:
@@ -67,8 +47,7 @@ def api_handle_trigger_stop_task():
         stopped_any = True
 
     if stopped_any:
-        # 顺便改一下提示语，告诉用户有这个隐藏功能
-        return jsonify({"message": "已发送停止请求。若任务卡死，请在3秒内再次点击强制重置。"}), 200
+        return jsonify({"message": "已发送停止任务请求。"}), 200
     else:
         return jsonify({"error": "核心处理器未就绪"}), 503
 
