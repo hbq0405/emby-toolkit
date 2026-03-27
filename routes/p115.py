@@ -696,6 +696,9 @@ def play_115_video(pick_code, filename=None):
     """
     终极极速 302 直链解析服务 (修复 HEAD 探测与 OPTIONS 跨域)
     """
+    if request.method == 'HEAD':
+        return '', 200
+
     # 1. 核心修复：处理 OPTIONS 跨域预检请求 (第三方播放器/苹果设备必需)
     if request.method == 'OPTIONS':
         response = Response()
