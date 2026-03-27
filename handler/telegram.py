@@ -612,6 +612,63 @@ def _telegram_polling_worker():
             
         time.sleep(1)
 
+def send_hdhive_checkin_notification(checkin_res: dict, user_info: dict):
+    """
+    发送影巢签到结果的 Telegram 通知卡片
+    """
+    res_data = checkin_res.get("data", {})
+    message_text = res_data.get("message") or checkin_res.get("message", "签到请求成功")
+    # 判断是否真正签到成功 (success 为 true 且 checked_in 不为 false)
+    is_success = checkin_res.get("success", False) and res_data.get("checked_in") is not False
+
+    # 提取奖励积分 (正则匹配 "获得 X 积分")
+    import re
+    reward_match = re.search(r'获得\s*(-?\d+)\s*积分', message_text)
+    reward = reward_match.group(1) if reward_match else "0"
+
+    # 提取用户信息
+    nickname = user_info.get("nickname", "未知")
+    created_at = user_info.get("created_at", "未知")
+    user_meta = user_info.get("user_meta", {})
+    points = user_meta.get("points", 0)
+    signin_days_total = user_meta.get("signin_days_total", 0)
+
+    status_icon = "✅" if is_success else "⚠️"
+    status_title = "影巢签到成功" if is_success else "影巢签到提示"
+    status_text = "签到成功" if is_success else "今日已签到或失败"
+
+    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # 构造 MarkdownV2 文本 (完美复刻群友的排版)
+    text = (
+        f"【{status_icon} *{escape_markdown(status_title)}*】\n"
+        f"📢 *执行结果*\n"
+        f"\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\n"
+        f"🕒 *时间*: `{escape_markdown(current_time)}`\n"
+        f"📍 *方式*: 定时触发\n"
+        f"✨ *状态*: {escape_markdown(status_text)}\n\n"
+        f"📊 *签到信息*\n"
+        f"💬 *消息*: {escape_markdown(message_text)}\n"
+        f"🎁 *奖励*: {escape_markdown(reward)}\n"
+        f"\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\-\n"
+        f"👤 *用户信息*\n"
+        f"👤 *昵称*: {escape_markdown(nickname)}\n"
+        f"💰 *积分*: {escape_markdown(str(points))}\n"
+        f"📅 *累计签到天数*: {escape_markdown(str(signin_days_total))}\n"
+        f"⏱ *加入时间*: `{escape_markdown(created_at)}`"
+    )
+
+    # 发送给频道和所有管理员
+    global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+    admin_ids = set(user_db.get_admin_telegram_chat_ids())
+
+    if global_channel_id:
+        send_telegram_message(global_channel_id, text)
+
+    for admin_id in admin_ids:
+        if str(admin_id) != str(global_channel_id):
+            send_telegram_message(admin_id, text)
+
 def start_telegram_bot():
     """启动 Telegram 机器人监听"""
     global _tg_polling_thread, _tg_polling_active

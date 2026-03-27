@@ -4,6 +4,7 @@ import time
 import logging
 from handler.hdhive_client import HDHiveClient
 from handler.p115_service import P115Service, SmartOrganizer, get_config
+from handler.telegram import send_hdhive_checkin_notification
 from database import settings_db
 import task_manager
 import constants
@@ -153,8 +154,11 @@ def task_hdhive_auto_checkin(processor):
     task_manager.update_status_from_thread(50, "正在发送签到请求...")
 
     try:
-        # 默认使用普通签到，避免赌狗模式把用户的积分扣光（群友要是扣光了又要骂娘了）
+        # 1. 发送签到请求
         res = client.checkin(is_gambler=False)
+        
+        # 2. ★ 新增：签到完顺便拉取一下最新的用户信息，为了在通知里展示最新积分
+        user_info = client.get_user_info() or {}
 
         if res.get("success"):
             res_data = res.get("data", {})
@@ -170,6 +174,12 @@ def task_hdhive_auto_checkin(processor):
             error_msg = res.get("message", "签到失败")
             logger.warning(f"  ⚠️ 影巢签到失败: {error_msg}")
             task_manager.update_status_from_thread(-1, f"签到失败: {error_msg}")
+
+        # 3. ★ 新增：触发 Telegram 通知
+        try:
+            send_hdhive_checkin_notification(res, user_info)
+        except Exception as e:
+            logger.error(f"  ⚠️ 发送影巢签到通知失败: {e}")
 
     except Exception as e:
         logger.error(f"  ❌ 影巢自动签到发生异常: {e}", exc_info=True)
