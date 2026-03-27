@@ -21,12 +21,24 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
         logger.error("  ❌ 影巢资源解锁失败，可能积分不足或资源已失效。")
         return False
         
-    share_url = unlock_data.get("url")
+    share_url = unlock_data.get("url") or ""
+    full_url = unlock_data.get("full_url") or ""
     access_code = unlock_data.get("access_code")
     
-    match = re.search(r'(?:115\.com|115cdn\.com|anxia\.com)/s/([a-zA-Z0-9]+)', share_url)
+    # ★★★ 提取码兜底逻辑 ★★★
+    # 如果 API 没有直接返回 access_code，尝试从 URL 参数中正则提取 (如 ?password=n832 或 ?pwd=n832)
+    if not access_code:
+        pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', full_url + "&" + share_url, re.IGNORECASE)
+        if pwd_match:
+            access_code = pwd_match.group(1)
+            
+    # 确保 access_code 不是 None，防止后续报错
+    access_code = access_code or ""
+    
+    # 提取分享码 (同时从 share_url 和 full_url 中找，增加容错率)
+    match = re.search(r'(?:115\.com|115cdn\.com|anxia\.com)/s/([a-zA-Z0-9]+)', share_url + " " + full_url)
     if not match:
-        logger.error(f"  ❌ 无法从链接中提取 115 分享码: {share_url}")
+        logger.error(f"  ❌ 无法从链接中提取 115 分享码: {share_url} | {full_url}")
         return False
         
     share_code = match.group(1)
