@@ -42,7 +42,7 @@ def api_handle_trigger_stop_task():
     
     # ★ 核心逻辑：如果距离上次点击不到 3 秒，触发紧急刹车！
     if current_time - last_stop_request_time < 3.0:
-        logger.warning("API: 检测到连续点击停止按钮，触发紧急制动！")
+        logger.warning("  ➜ API: 检测到连续点击停止按钮，触发紧急制动！")
         try:
             task_manager.emergency_stop()
         except AttributeError:
