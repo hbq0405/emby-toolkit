@@ -4,6 +4,8 @@ import time
 import logging
 from handler.hdhive_client import HDHiveClient
 from handler.p115_service import P115Service, SmartOrganizer, get_config
+from database import settings_db
+import task_manager
 import constants
 
 logger = logging.getLogger(__name__)
@@ -133,3 +135,42 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
     except Exception as e:
         logger.error(f"  ❌ 转存或整理过程中发生异常: {e}", exc_info=True)
         return False
+    
+def task_hdhive_auto_checkin(processor):
+    """
+    后台任务：影巢自动签到
+    """
+    logger.info("--- 开始执行影巢自动签到任务 ---")
+    task_manager.update_status_from_thread(0, "正在读取影巢配置...")
+
+    api_key = settings_db.get_setting('hdhive_api_key')
+    if not api_key:
+        logger.info("  ➜ 未配置影巢 API Key，跳过自动签到。")
+        task_manager.update_status_from_thread(100, "未配置 API Key，跳过")
+        return
+
+    client = HDHiveClient(api_key)
+    task_manager.update_status_from_thread(50, "正在发送签到请求...")
+
+    try:
+        # 默认使用普通签到，避免赌狗模式把用户的积分扣光（群友要是扣光了又要骂娘了）
+        res = client.checkin(is_gambler=False)
+
+        if res.get("success"):
+            res_data = res.get("data", {})
+            real_message = res_data.get("message") or res.get("message", "签到请求成功")
+
+            if res_data.get("checked_in") is False:
+                logger.info(f"  ➜ 影巢签到: {real_message}")
+                task_manager.update_status_from_thread(100, f"已签到: {real_message}")
+            else:
+                logger.info(f"  ✅ 影巢签到成功: {real_message}")
+                task_manager.update_status_from_thread(100, f"签到成功: {real_message}")
+        else:
+            error_msg = res.get("message", "签到失败")
+            logger.warning(f"  ⚠️ 影巢签到失败: {error_msg}")
+            task_manager.update_status_from_thread(-1, f"签到失败: {error_msg}")
+
+    except Exception as e:
+        logger.error(f"  ❌ 影巢自动签到发生异常: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, "签到异常")
