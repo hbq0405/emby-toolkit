@@ -190,16 +190,31 @@ class TGUserBotManager:
 
     def send_login_code(self):
         cfg = self._get_config()
-        if not cfg['phone']: raise Exception("未配置手机号")
+        phone = cfg['phone'].strip()
+        if not phone: 
+            raise Exception("未配置手机号")
+        if not phone.startswith('+'):
+            raise Exception("手机号格式错误，必须以 '+' 号开头，例如: +8613800138000")
         
+        # 确保后台服务已启动
+        if not self.is_running or not self.loop or not self.client:
+            logger.info("  ➜ [UserBot] 正在唤醒后台服务以发送验证码...")
+            self.start()
+            import time
+            time.sleep(1.5) # 给线程一点时间初始化 loop 和 client
+            
+        if not self.loop or not self.client:
+            raise Exception("UserBot 服务启动失败，请检查 API ID 和 Hash 是否正确")
+
         async def _send():
-            if not self.client.is_connected(): await self.client.connect()
-            res = await self.client.send_code_request(cfg['phone'])
+            if not self.client.is_connected(): 
+                await self.client.connect()
+            res = await self.client.send_code_request(phone)
             self.phone_code_hash = res.phone_code_hash
             return True
             
         future = asyncio.run_coroutine_threadsafe(_send(), self.loop)
-        return future.result(timeout=10)
+        return future.result(timeout=15) # 增加超时时间，防止代理连接慢
 
     def submit_login_code(self, code):
         cfg = self._get_config()

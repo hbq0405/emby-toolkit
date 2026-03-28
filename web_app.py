@@ -137,6 +137,14 @@ def save_config_and_reload(new_config: Dict[str, Any]):
 
         # 动态刷新 115 生活事件守护进程
         LifeEventMonitorDaemon.start_or_update()
+
+        # 动态刷新 TG UserBot 监听服务
+        if config_manager.APP_CONFIG.get('is_pro_active', False):
+            try:
+                from handler.tg_userbot import TGUserBotManager
+                TGUserBotManager.get_instance().start()
+            except Exception as e:
+                logger.error(f"重启 TG UserBot 失败: {e}")
         
         logger.info("  ✅ 新配置重新初始化完毕。")
         

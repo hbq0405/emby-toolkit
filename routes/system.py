@@ -585,10 +585,13 @@ def tg_userbot_status():
 @system_bp.route('/api/tg_userbot/send_code', methods=['POST'])
 def tg_userbot_send_code():
     try:
+        from handler.tg_userbot import TGUserBotManager
         TGUserBotManager.get_instance().send_login_code()
         return jsonify({"success": True, "message": "验证码已发送到您的 Telegram 客户端"})
     except Exception as e:
-        return jsonify({"success": False, "message": str(e)})
+        import logging
+        logging.getLogger(__name__).error(f"发送验证码失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": f"发送失败: {str(e)}"})
 
 @system_bp.route('/api/tg_userbot/login', methods=['POST'])
 def tg_userbot_login():
