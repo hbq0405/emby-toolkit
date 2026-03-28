@@ -55,8 +55,11 @@ class TGUserBotManager:
         if not cfg['enabled'] or not cfg['api_id'] or not cfg['api_hash']:
             return
 
-        if self.is_running:
-            self.stop()
+        # ★ 核心修复：如果线程已经活着，绝对不能重复启动，防止 Event Loop 冲突！
+        if self.is_running and self.thread and self.thread.is_alive():
+            return
+
+        self.stop() # 确保旧的残骸清理干净
 
         self.is_running = True
         self.thread = threading.Thread(target=self._run_loop, daemon=True, name="TG_UserBot_Thread")
@@ -332,7 +335,7 @@ def _process_tg_queue():
                         threading.Timer(3.0, task_manager.trigger_115_organize_task).start()
                     except: pass
                 else:
-                    err = res.get('error_msg', '未知错误') if res else '无响应'
+                    err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
                     logger.error(f"  ❌ [UserBot] 转存失败: {err}")
 
         except Exception as e:

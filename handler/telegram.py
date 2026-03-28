@@ -540,7 +540,7 @@ def _handle_incoming_message(message: dict):
                     threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
                 except: pass
             else:
-                err = res.get('error_msg', '未知错误') if res else '无响应'
+                err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
                 if not is_auto_forward: send_telegram_message(chat_id, escape_markdown(f"❌ *离线提交失败*：{err}"))
 
     except Exception as e:
