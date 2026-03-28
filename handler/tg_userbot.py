@@ -229,31 +229,45 @@ class TGUserBotManager:
             raise Exception("UserBot 服务启动失败，请检查 API ID 和 Hash 是否正确")
 
         async def _send():
-            if not self.client.is_connected(): 
-                await self.client.connect()
-            # 发送验证码请求
-            res = await self.client.send_code_request(phone)
-            self.phone_code_hash = res.phone_code_hash
-            return True
+            try:
+                logger.info(f"  ➜ [UserBot] 正在向 TG 服务器请求发送验证码至 {phone}...")
+                if not self.client.is_connected(): 
+                    await self.client.connect()
+                # 发送验证码请求
+                res = await self.client.send_code_request(phone)
+                self.phone_code_hash = res.phone_code_hash
+                logger.info("  ✅ [UserBot] 验证码发送请求已成功响应！")
+                return True
+            except Exception as e:
+                logger.error(f"  ❌ [UserBot] 发送验证码被 TG 拒绝: {e}")
+                raise e
             
-        # 跨线程调用 asyncio 协程
+        # 跨线程调用 asyncio 协程，将超时时间放宽到 60 秒，给 TG 充分的响应时间
         future = asyncio.run_coroutine_threadsafe(_send(), self.loop)
-        return future.result(timeout=15)
+        return future.result(timeout=60)
 
     def submit_login_code(self, code):
         cfg = self._get_config()
         async def _submit():
             try:
+                logger.info("  ➜ [UserBot] 正在向 TG 服务器提交验证码...")
                 await self.client.sign_in(cfg['phone'], code, phone_code_hash=self.phone_code_hash)
+                logger.info("  ✅ [UserBot] 验证码校验通过！")
                 return {"success": True}
             except SessionPasswordNeededError:
                 if not cfg['password']:
                     return {"success": False, "need_2fa": True, "msg": "需要两步验证密码，请在配置中填写后重试"}
+                logger.info("  ➜ [UserBot] 正在提交两步验证密码...")
                 await self.client.sign_in(password=cfg['password'])
+                logger.info("  ✅ [UserBot] 两步验证密码校验通过！")
                 return {"success": True}
+            except Exception as e:
+                logger.error(f"  ❌ [UserBot] 提交验证码失败: {e}")
+                raise e
                 
+        # 同样放宽到 60 秒
         future = asyncio.run_coroutine_threadsafe(_submit(), self.loop)
-        return future.result(timeout=15)
+        return future.result(timeout=60)
 
     def logout(self):
         async def _logout():
