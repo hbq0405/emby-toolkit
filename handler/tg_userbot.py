@@ -46,7 +46,7 @@ class TGUserBotManager:
             'api_hash': cfg.get(constants.CONFIG_OPTION_TG_USER_API_HASH, ''),
             'phone': cfg.get(constants.CONFIG_OPTION_TG_USER_PHONE, ''),
             'password': cfg.get(constants.CONFIG_OPTION_TG_USER_2FA, ''),
-            'channels': cfg.get(constants.CONFIG_OPTION_TG_MONITOR_CHANNELS, [])
+            'channels': cfg.get(constants.CONFIG_OPTION_TG_MONITOR_CHANNELS) or []
         }
 
     def start(self):
@@ -140,7 +140,11 @@ class TGUserBotManager:
     async def _handle_message(self, event):
         """处理收到的消息 (在 asyncio 线程中运行)"""
         cfg = self._get_config()
-        monitor_channels = [c.replace('@', '').strip().lower() for c in cfg['channels'] if c.strip()]
+        
+        # ★ 修复：增加安全检查，防止 cfg['channels'] 为 None
+        raw_channels = cfg.get('channels') or []
+        monitor_channels = [c.replace('@', '').strip().lower() for c in raw_channels if c and c.strip()]
+        
         if not monitor_channels:
             return
 
