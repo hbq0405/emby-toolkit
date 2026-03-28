@@ -87,9 +87,7 @@ class TGUserBotManager:
         
         cfg = self._get_config()
         try:
-            # ==========================================
-            # ★★★ 代理小助手 (适配 Telethon 格式) ★★★
-            # ==========================================
+            # --- 代理设置 ---
             telethon_proxy = None
             app_cfg = config_manager.APP_CONFIG
             if app_cfg.get(constants.CONFIG_OPTION_NETWORK_PROXY_ENABLED) and app_cfg.get(constants.CONFIG_OPTION_NETWORK_HTTP_PROXY):
@@ -97,52 +95,42 @@ class TGUserBotManager:
                 try:
                     from urllib.parse import urlparse
                     parsed = urlparse(proxy_url)
-                    
-                    # 转换协议名称为 Telethon 认识的格式
                     scheme = parsed.scheme.lower()
-                    if scheme in ['http', 'https']:
-                        p_type = 'http'
-                    elif scheme == 'socks5':
-                        p_type = 'socks5'
-                    elif scheme == 'socks4':
-                        p_type = 'socks4'
-                    else:
-                        p_type = 'http'
-
+                    p_type = 'socks5' if scheme == 'socks5' else ('socks4' if scheme == 'socks4' else 'http')
                     telethon_proxy = {
                         'proxy_type': p_type,
                         'addr': parsed.hostname,
                         'port': parsed.port
                     }
-                    # 如果代理有账号密码
                     if parsed.username and parsed.password:
                         telethon_proxy['username'] = parsed.username
                         telethon_proxy['password'] = parsed.password
-                        
                     logger.info(f"  🌐 [UserBot] 已加载网络代理: {p_type}://{parsed.hostname}:{parsed.port}")
                 except Exception as e:
-                    logger.warning(f"  ⚠️ [UserBot] 解析代理 URL 失败，将尝试直连: {e}")
+                    logger.warning(f"  ⚠️ [UserBot] 解析代理 URL 失败: {e}")
 
-            # 初始化客户端，传入 proxy 参数
             self.client = TelegramClient(
                 self.session_path, 
                 int(cfg['api_id']), 
                 cfg['api_hash'], 
                 loop=self.loop,
-                proxy=telethon_proxy  # ★ 传入解析好的代理
+                proxy=telethon_proxy
             )
             
-            # 注册消息监听器
             @self.client.on(events.NewMessage())
             async def handler(event):
                 await self._handle_message(event)
 
-            self.client.start(phone=lambda: None, code_callback=lambda: None) # 阻止控制台要求输入
+            # ★★★ 终极修复：绝对不能用 start()，改为手动 connect() 并保持运行 ★★★
+            async def _daemon():
+                await self.client.connect()
+                logger.info("  🚀 [UserBot] Telegram 客户端已连接，等待授权或监听中...")
+                await self.client.run_until_disconnected()
+
+            self.loop.run_until_complete(_daemon())
             
-            logger.info("  🚀 [UserBot] Telegram 频道监听服务已在后台启动。")
-            self.loop.run_until_complete(self.client.disconnected)
         except Exception as e:
-            logger.error(f"  ❌ [UserBot] 运行异常: {e}")
+            logger.error(f"  ❌ [UserBot] 运行异常: {e}", exc_info=True)
         finally:
             self.is_running = False
             self.loop.close()
@@ -204,18 +192,18 @@ class TGUserBotManager:
 
     def send_login_code(self):
         cfg = self._get_config()
-        phone = cfg['phone'].strip()
+        phone = cfg['phone'].strip() if cfg['phone'] else ''
         if not phone: 
             raise Exception("未配置手机号")
         if not phone.startswith('+'):
             raise Exception("手机号格式错误，必须以 '+' 号开头，例如: +8613800138000")
         
-        # 确保后台服务已启动
+        # 如果后台线程没跑起来，主动拉起
         if not self.is_running or not self.loop or not self.client:
             logger.info("  ➜ [UserBot] 正在唤醒后台服务以发送验证码...")
             self.start()
             import time
-            time.sleep(1.5) # 给线程一点时间初始化 loop 和 client
+            time.sleep(2.5) # 给线程一点时间初始化网络连接
             
         if not self.loop or not self.client:
             raise Exception("UserBot 服务启动失败，请检查 API ID 和 Hash 是否正确")
@@ -223,12 +211,14 @@ class TGUserBotManager:
         async def _send():
             if not self.client.is_connected(): 
                 await self.client.connect()
+            # 发送验证码请求
             res = await self.client.send_code_request(phone)
             self.phone_code_hash = res.phone_code_hash
             return True
             
+        # 跨线程调用 asyncio 协程
         future = asyncio.run_coroutine_threadsafe(_send(), self.loop)
-        return future.result(timeout=15) # 增加超时时间，防止代理连接慢
+        return future.result(timeout=15)
 
     def submit_login_code(self, code):
         cfg = self._get_config()
