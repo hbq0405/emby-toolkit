@@ -507,7 +507,7 @@ def main_app_start():
         from handler.tg_userbot import TGUserBotManager
         TGUserBotManager.get_instance().start()
     else:
-        logger.info("  ⚠️ [免费版限制] Telegram 机器人交互菜单与指令功能为 Pro 高级版专属！交互监听未启动。")
+        logger.info("  ⚠️ [免费版限制] Telegram 机器人交互菜单与订阅功能为 Pro 专属！交互监听未启动。")
 
     def warmup_vector_cache():
         try:
