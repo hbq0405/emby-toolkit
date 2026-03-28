@@ -37,33 +37,6 @@ def api_get_collections_status():
         return jsonify({"error": "读取合集时发生服务器内部错误"}), 500
 
 # ======================================================================
-# 写入操作 (Write Operations) - 负责触发媒体状态变更
-# ======================================================================
-
-@collections_bp.route('/subscribe_missing', methods=['POST'])
-@admin_required
-def api_subscribe_missing_movies():
-    """
-    【V3 - 新架构核心】一键订阅所有原生合集中的缺失电影。
-    """
-    logger.info("API: 收到一键订阅所有原生合集缺失电影的请求。")
-    try:
-        # ★★★ 核心修改: 调用 handler 函数来执行订阅，并返回结果 ★★★
-        result = collections_handler.subscribe_all_missing_in_native_collections()
-        
-        message = f"操作完成！成功将 {result['subscribed_count']} 部电影加入订阅队列。"
-        if result['skipped_count'] > 0:
-            message += f" 因未发行或已订阅等原因跳过了 {result['skipped_count']} 部。"
-        if result['quota_exceeded']:
-            message += " 每日订阅配额已用尽，部分订阅可能未完成。"
-
-        return jsonify({"message": message, "count": result['subscribed_count']}), 200
-
-    except Exception as e:
-        logger.error(f"执行一键订阅时发生严重错误: {e}", exc_info=True)
-        return jsonify({"error": "服务器在处理一键订阅时发生内部错误"}), 500
-    
-# ======================================================================
 # ★★★ 删除合集路由 ★★★
 # ======================================================================
 @collections_bp.route('/<emby_collection_id>', methods=['DELETE'])
