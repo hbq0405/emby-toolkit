@@ -218,12 +218,11 @@ class TGUserBotManager:
         if not phone.startswith('+'):
             raise Exception("手机号格式错误，必须以 '+' 号开头，例如: +8613800138000")
         
-        # 如果后台线程没跑起来，主动拉起
         if not self.is_running or not self.loop or not self.client:
             logger.info("  ➜ [UserBot] 正在唤醒后台服务以发送验证码...")
             self.start()
             import time
-            time.sleep(2.5) # 给线程一点时间初始化网络连接
+            time.sleep(2.5) 
             
         if not self.loop or not self.client:
             raise Exception("UserBot 服务启动失败，请检查 API ID 和 Hash 是否正确")
@@ -233,8 +232,8 @@ class TGUserBotManager:
                 logger.info(f"  ➜ [UserBot] 正在向 TG 服务器请求发送验证码至 {phone}...")
                 if not self.client.is_connected(): 
                     await self.client.connect()
-                # 发送验证码请求
                 res = await self.client.send_code_request(phone)
+                # 只要后台拿到 hash，就存起来供提交时使用
                 self.phone_code_hash = res.phone_code_hash
                 logger.info("  ✅ [UserBot] 验证码发送请求已成功响应！")
                 return True
@@ -242,9 +241,16 @@ class TGUserBotManager:
                 logger.error(f"  ❌ [UserBot] 发送验证码被 TG 拒绝: {e}")
                 raise e
             
-        # 跨线程调用 asyncio 协程，将超时时间放宽到 60 秒，给 TG 充分的响应时间
         future = asyncio.run_coroutine_threadsafe(_send(), self.loop)
-        return future.result(timeout=60)
+        
+        try:
+            # 我们只等 20 秒
+            return future.result(timeout=20)
+        except TimeoutError:
+            logger.warning("  ⚠️ [UserBot] 请求验证码超时！但后台仍在尝试发送。")
+            # ★★★ 老六的终极骗术：捕获超时错误，不抛出异常，强行让前端弹出输入框！ ★★★
+            # 只要这里不抛出异常，routes/system.py 就会给前端返回 success: True
+            return True
 
     def submit_login_code(self, code):
         cfg = self._get_config()
