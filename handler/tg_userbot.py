@@ -185,12 +185,24 @@ class TGUserBotManager:
         tmdb_match = re.search(r'TMDB ID[:：\s]*(\d+)', text, re.IGNORECASE)
         link_match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', text, re.IGNORECASE)
         pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', text, re.IGNORECASE)
+
+        # =================================================================
+        # ★ 终极增强版：解析季号和集号 (完美支持 S01E10, S1 E10, 第1季第10集 等)
+        # =================================================================
+        season_number = None
+        episode_number = None
         
-        # ★ 新增：解析季号和集号 (例如 S01E10)
-        season_match = re.search(r'S(\d{1,2})E\d{1,4}', text, re.IGNORECASE)
-        ep_match = re.search(r'S\d{1,2}E(\d{1,4})', text, re.IGNORECASE)
-        season_number = int(season_match.group(1)) if season_match else None
-        episode_number = int(ep_match.group(1)) if ep_match else None
+        # 优先匹配标准 S01E10 格式
+        se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
+        if se_match:
+            season_number = int(se_match.group(1))
+            episode_number = int(se_match.group(2))
+        else:
+            # 备用匹配：第x季 第x集
+            s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
+            e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)?', text, re.IGNORECASE)
+            if s_match: season_number = int(s_match.group(1))
+            if e_match: episode_number = int(e_match.group(1))
 
         if tmdb_match and link_match:
             tmdb_id = tmdb_match.group(1)
@@ -313,11 +325,30 @@ def _process_tg_queue():
             try:
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
+                        # 1. 查电影的订阅状态
                         cursor.execute("SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (tmdb_id,))
                         row = cursor.fetchone()
-                        if row and row['subscription_status'] in ['PAUSED', 'SUBSCRIBED', 'PENDING_RELEASE']:
+                        if row and row['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
                             should_process = True
                         
+                        # 2. 查剧集（季条目）的订阅状态
+                        # 逻辑：刚订阅的季是没有追剧状态的，所以必须查季的 subscription_status
+                        # 注意：频道发的通常是剧集主ID，所以用 parent_series_tmdb_id 匹配
+                        if not should_process:
+                            cursor.execute("""
+                                SELECT subscription_status 
+                                FROM media_metadata 
+                                WHERE (tmdb_id = %s OR parent_series_tmdb_id = %s) 
+                                  AND item_type = 'Season'
+                            """, (tmdb_id, tmdb_id))
+                            rows = cursor.fetchall()
+                            for r in rows:
+                                if r['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
+                                    should_process = True
+                                    break
+                        
+                        # 3. 查剧集（剧条目）的追剧状态
+                        # 逻辑：只要入库1集，订阅状态就没了，此时需要查 watching_status
                         if not should_process:
                             cursor.execute("SELECT watching_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
                             row = cursor.fetchone()
@@ -328,11 +359,11 @@ def _process_tg_queue():
                 continue
 
             if not should_process:
-                logger.debug(f"  ⏭️ [UserBot] 资源 (TMDB: {tmdb_id}) 不在订阅列表中，已忽略。")
+                logger.debug(f"  ⏭️ [UserBot] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
                 continue
 
             # =================================================================
-            # ★★★ 核心新增：精准去重逻辑 (只有未入库的集才转存) ★★★
+            # ★★★ 精准去重逻辑 (只有未入库的集才转存) ★★★
             # =================================================================
             if season_number is not None and episode_number is not None:
                 from database import media_db
