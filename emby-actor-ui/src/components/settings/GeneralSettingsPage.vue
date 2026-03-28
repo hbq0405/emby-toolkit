@@ -1159,7 +1159,7 @@
 
                     <n-divider title-placement="left" style="margin-top: 15px;">UserBot 频道监听 (Pro)</n-divider>
                     <n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;">
-                      此功能使用您的个人账号监听频道。请自行前往 my.telegram.org 申请 API ID。滥用可能导致封号，请谨慎使用！
+                      自动转发监听的频道消息到你的机器人，根据订阅选择性转存。
                     </n-alert>
 
                     <n-form-item-grid-item label="启用 UserBot 监听" path="tg_user_enabled">
