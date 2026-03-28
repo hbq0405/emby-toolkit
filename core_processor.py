@@ -130,6 +130,7 @@ def _aggregate_series_cast_from_tmdb_data(series_data: Dict[str, Any], all_episo
     
     logger.info(f"  ➜ 共为 '{series_data.get('name')}' 聚合了 {len(full_aggregated_cast)} 位独立演员。")
     return full_aggregated_cast
+
 class MediaProcessor:
     def __init__(self, config: Dict[str, Any], ai_translator=None, douban_api=None):
         # ★★★ 然后，从这个 config 字典里，解析出所有需要的属性 ★★★
@@ -1627,7 +1628,7 @@ class MediaProcessor:
             watchlist_proc.add_series_to_watchlist(item_details)
         except Exception as e_watchlist:
             logger.error(f"  ➜ 在自动添加 '{item_name_for_log}' 到追剧列表时发生错误: {e_watchlist}", exc_info=True)
-
+    
     def signal_stop(self):
         self._stop_event.set()
 
@@ -1641,6 +1642,7 @@ class MediaProcessor:
     def is_stop_requested(self) -> bool:
         return self._stop_event.is_set()
 
+    # --- 加载已处理记录 ---
     def _load_processed_log_from_db(self) -> Dict[str, str]:
         log_dict = {}
         try:
@@ -1664,7 +1666,7 @@ class MediaProcessor:
             logger.error(f"从数据库读取已处理记录失败: {e}", exc_info=True)
         return log_dict
 
-    # 在本地缓存中查找豆瓣JSON文件
+    # --- 在本地缓存中查找豆瓣JSON文件 ---
     def _find_local_douban_json(self, imdb_id: Optional[str], douban_id: Optional[str], douban_cache_dir: str) -> Optional[str]:
         """根据 IMDb ID 或 豆瓣 ID 在本地缓存目录中查找对应的豆瓣JSON文件。"""
         if not os.path.exists(douban_cache_dir):
@@ -1690,7 +1692,7 @@ class MediaProcessor:
                             return os.path.join(dir_path, filename)
         return None
 
-    # ✨ 封装了“优先本地缓存，失败则在线获取”的逻辑
+    # --- 获取豆瓣数据（演员+评分） 封装了“优先本地缓存，失败则在线获取”的逻辑 ---
     def _get_douban_data_with_local_cache(self, media_info: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[float]]:
         """
         【V3 - 最终版】获取豆瓣数据（演员+评分）。优先本地缓存，失败则回退到功能完整的在线API路径。
@@ -3270,7 +3272,7 @@ class MediaProcessor:
         logger.info("手动编辑-翻译完成。")
         return translated_cast
     
-    # ✨✨✨手动处理✨✨✨
+    # --- 手动处理 ---
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
         """
         【V2.5 - 终极修复版】
@@ -4663,7 +4665,7 @@ class MediaProcessor:
         except Exception as e_list:
             logger.error(f"  ➜ {log_prefix} 遍历并更新季/集文件时发生错误: {e_list}", exc_info=True)
 
-    # 提取标签
+    # --- 提取标签 ---
     def extract_tag_names(item_data):
         """
         兼容新旧版 Emby API 提取标签名。
@@ -4923,7 +4925,6 @@ class MediaProcessor:
 
         except Exception as e:
             logger.error(f"  ➜ {log_prefix} 为 '{item_name_for_log}' 更新覆盖缓存文件时发生错误: {e}", exc_info=True)
-
 
     def close(self):
         if self.douban_api: self.douban_api.close()
