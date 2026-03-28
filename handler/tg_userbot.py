@@ -65,10 +65,20 @@ class TGUserBotManager:
     def stop(self):
         """停止后台线程"""
         self.is_running = False
-        if self.client and self.loop:
-            asyncio.run_coroutine_threadsafe(self.client.disconnect(), self.loop)
-        if self.thread:
+        if self.client and self.loop and self.loop.is_running():
+            try:
+                # 优雅地断开连接，设置超时防止卡死
+                asyncio.run_coroutine_threadsafe(self.client.disconnect(), self.loop).result(timeout=3)
+            except Exception:
+                pass
+                
+        if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2)
+            
+        # ★★★ 核心修复：必须彻底清空旧实例和事件循环！
+        # 否则下次 start 时复用旧实例会导致 Event Loop 冲突崩溃
+        self.client = None
+        self.loop = None
 
     def _run_loop(self):
         """在独立线程中运行 asyncio 事件循环"""

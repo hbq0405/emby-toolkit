@@ -378,11 +378,12 @@ def _handle_callback_query(callback_query: dict):
 def _handle_incoming_message(message: dict):
     """处理接收到的单条消息"""
     chat_id = str(message.get('chat', {}).get('id', ''))
-    text = message.get('text', '').strip()
+    text = message.get('text', '') or message.get('caption', '') # 兼容带图片的 caption
+    text = text.strip()
     if not chat_id or not text:
         return
 
-    # 1. 权限校验：只允许管理员发送指令
+    # 1. 权限校验：只允许管理员发送指令 (或者来自全局频道)
     admin_ids = [str(aid) for aid in user_db.get_admin_telegram_chat_ids()]
     global_channel = str(APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID, ''))
     
@@ -392,59 +393,103 @@ def _handle_incoming_message(message: dict):
 
     # ★★★ 处理 M 菜单发来的命令 ★★★
     if text.startswith('/'):
-        cmd = text[1:].lower() # 去掉斜杠，提取命令内容 (例如 all_tasks 或 scan_organize_115)
-        
+        cmd = text[1:].lower()
         from tasks.core import get_task_registry
         registry = get_task_registry(context='all')
 
-        # 1. 如果点击的是“查看所有可用任务”
         if cmd in ['all_tasks', 'tasks', 'menu']:
             keyboard = []
             row = []
-            # 遍历注册表生成所有任务的按钮
             for key, info in registry.items():
                 desc = info[1]
                 row.append({"text": desc, "callback_data": f"run_task_{key}"})
                 if len(row) == 2:
                     keyboard.append(row)
                     row = []
-            if row:
-                keyboard.append(row)
-                
+            if row: keyboard.append(row)
             reply_markup = {"inline_keyboard": keyboard}
-            send_telegram_message(
-                chat_id, 
-                escape_markdown("📋 *所有可用任务列表*\n请点击下方按钮执行对应任务："), 
-                reply_markup=reply_markup
-            )
+            send_telegram_message(chat_id, escape_markdown("📋 *所有可用任务列表*\n请点击下方按钮执行对应任务："), reply_markup=reply_markup)
             return
 
-        # 2. 如果点击的是常用任务 (直接执行)
-        # 我们需要把命令 (如 scan_organize_115) 匹配回原来的 task_key (如 scan-organize-115)
         for key in registry.keys():
             expected_cmd = key.replace('-', '_').lower()
             if cmd == expected_cmd:
-                # 匹配成功，直接调用后台执行函数！
                 _execute_task_from_tg(chat_id, key)
                 return
 
     # 2. 识别链接类型
     is_magnet = text.lower().startswith('magnet:?')
     is_ed2k = text.lower().startswith('ed2k://')
-    # ★ 修复：兼容 115.com 和 115cdn.com
     is_115_share = re.search(r'115(?:cdn)?\.com/s/', text, re.IGNORECASE) is not None
 
     if not (is_magnet or is_ed2k or is_115_share):
         return
 
-    logger.info(f"  📥 [TG交互] 收到来自 {chat_id} 的资源链接，准备处理...")
-    # ★ 修复：使用 escape_markdown 转义特殊字符
-    send_telegram_message(chat_id, escape_markdown("⏳ *收到链接，正在提交至 115...*"), disable_notification=True)
+    # =================================================================
+    # ★★★ 核心新增：区分手动与自动转发，并进行数据库校验 ★★★
+    # =================================================================
+    is_auto_forward = False
+    forward_from_chat = message.get('forward_from_chat', {})
+    source_username = forward_from_chat.get('username', '')
+    source_id = str(forward_from_chat.get('id', ''))
+    
+    monitor_channels = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_MONITOR_CHANNELS) or []
+    
+    # 判断是否来自监听频道
+    for channel in monitor_channels:
+        clean_channel = channel.replace('@', '').strip()
+        if clean_channel and (clean_channel == source_username or clean_channel == source_id):
+            is_auto_forward = True
+            break
 
-    # 3. 获取 115 客户端和目标目录
+    if is_115_share and is_auto_forward:
+        # 尝试提取 TMDB ID
+        tmdb_match = re.search(r'TMDB ID[:：\s]*(\d+)', text, re.IGNORECASE)
+        tmdb_id = tmdb_match.group(1) if tmdb_match else None
+        
+        if not tmdb_id:
+            logger.debug(f"  ⏭️ [TG自动订阅] 收到频道转发，但未提取到 TMDB ID，跳过。")
+            return
+            
+        # 查库校验
+        should_process = False
+        from database.connection import get_db_connection
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # 检查电影订阅状态
+                    cursor.execute("SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (tmdb_id,))
+                    row = cursor.fetchone()
+                    if row and row['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE']:
+                        should_process = True
+                    
+                    # 检查剧集追剧状态
+                    if not should_process:
+                        cursor.execute("SELECT watching_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
+                        row = cursor.fetchone()
+                        if row and row['watching_status'] in ['Watching', 'Paused', 'Pending']:
+                            should_process = True
+        except Exception as e:
+            logger.error(f"  ❌ [TG自动订阅] 查库失败: {e}")
+            return
+            
+        if not should_process:
+            logger.debug(f"  ⏭️ [TG自动订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
+            return
+        else:
+            logger.info(f"  🎯 [TG自动订阅] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
+            # 既然是自动订阅命中的，就不发“收到链接”的提示打扰用户了
+    else:
+        # 手动发送的链接，正常提示
+        logger.info(f"  📥 [TG交互] 收到来自 {chat_id} 的手动资源链接，准备处理...")
+        send_telegram_message(chat_id, escape_markdown("⏳ *收到链接，正在提交至 115...*"), disable_notification=True)
+
+    # =================================================================
+    # 3. 获取 115 客户端和目标目录 (原有逻辑)
+    # =================================================================
     client = P115Service.get_client()
     if not client:
-        send_telegram_message(chat_id, "❌ *提交失败*：115 客户端未初始化，请检查配置。")
+        if not is_auto_forward: send_telegram_message(chat_id, "❌ *提交失败*：115 客户端未初始化，请检查配置。")
         return
         
     target_cid = APP_CONFIG.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID, '0')
@@ -452,68 +497,55 @@ def _handle_incoming_message(message: dict):
     try:
         # --- 处理 115 分享链接转存 ---
         if is_115_share:
-            # ★ 修复：兼容 115cdn.com 的正则提取
             share_code_match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', text, re.IGNORECASE)
             share_code = share_code_match.group(1) if share_code_match else None
             
-            # 提取接收码 (密码)
             receive_code = ""
             pwd_match = re.search(r'(?:访问码|提取码|密码|password)[:：=\s]*([a-zA-Z0-9]{4})', text, re.IGNORECASE)
-            if pwd_match:
-                receive_code = pwd_match.group(1)
+            if pwd_match: receive_code = pwd_match.group(1)
 
             if not share_code:
-                send_telegram_message(chat_id, escape_markdown("❌ *解析失败*：未找到有效的 115 分享码。"))
+                if not is_auto_forward: send_telegram_message(chat_id, escape_markdown("❌ *解析失败*：未找到有效的 115 分享码。"))
                 return
 
             res = client.share_import(share_code, receive_code, target_cid)
             
             if res and res.get('state'):
-                send_telegram_message(chat_id, escape_markdown("✅ *分享链接转存成功！*\n系统已自动触发整理任务。"))
+                msg = "✅ *自动订阅转存成功！*\n系统已自动触发整理任务。" if is_auto_forward else "✅ *分享链接转存成功！*\n系统已自动触发整理任务。"
+                send_telegram_message(chat_id, escape_markdown(msg))
                 
-                # ★★★ 新增：自动唤醒整理任务 ★★★
                 try:
                     import task_manager
-                    # 延迟 5 秒触发，给 115 服务器一点反应时间
                     threading.Timer(5.0, task_manager.trigger_115_organize_task).start()
                     logger.info("  ➜ [TG交互] 已启动 115 整理任务。")
                 except Exception as e:
                     logger.error(f"  ⚠️ 唤醒整理任务失败: {e}")
-                    
             else:
                 err = res.get('error_msg', '未知错误') if res else '无响应'
-                send_telegram_message(chat_id, escape_markdown(f"❌ *转存失败*：{err}"))
+                if not is_auto_forward: send_telegram_message(chat_id, escape_markdown(f"❌ *转存失败*：{err}"))
+                logger.error(f"  ❌ [TG交互] 转存失败: {err}")
 
         # --- 处理磁力/ED2K 离线下载 ---
         if is_magnet or is_ed2k:
-            # 提取纯链接，防止用户发了一段话里面夹着链接
             link_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
             target_url = link_match.group(1) if link_match else text
 
-            payload = {
-                "url[0]": target_url,
-                "wp_path_id": target_cid
-            }
+            payload = {"url[0]": target_url, "wp_path_id": target_cid}
             res = client.offline_add_urls(payload)
             
             if res and res.get('state'):
-                send_telegram_message(chat_id, escape_markdown("✅ *离线任务提交成功！*\n系统将在后台自动监控并整理入库。"))
-                
-                # ★★★ 新增：对于离线任务，由于下载需要时间，我们触发一次整理任务去“碰碰运气”
-                # 如果是秒传的，马上就能整理出来；如果没下完，整理任务会自动跳过。
+                if not is_auto_forward: send_telegram_message(chat_id, escape_markdown("✅ *离线任务提交成功！*\n系统将在后台自动监控并整理入库。"))
                 try:
                     import task_manager
                     threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
-                    logger.info("  ➜ [TG交互] 已启动 115 整理任务 (离线秒传检测)。")
-                except Exception as e:
-                    pass
+                except: pass
             else:
                 err = res.get('error_msg', '未知错误') if res else '无响应'
-                send_telegram_message(chat_id, escape_markdown(f"❌ *离线提交失败*：{err}"))
+                if not is_auto_forward: send_telegram_message(chat_id, escape_markdown(f"❌ *离线提交失败*：{err}"))
 
     except Exception as e:
         logger.error(f"  ❌ [TG交互] 处理链接失败: {e}", exc_info=True)
-        send_telegram_message(chat_id, f"❌ *系统异常*：处理链接时发生错误。")
+        if not is_auto_forward: send_telegram_message(chat_id, f"❌ *系统异常*：处理链接时发生错误。")
 
 def _setup_bot_commands(bot_token: str):
     """
