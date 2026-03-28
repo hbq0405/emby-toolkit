@@ -185,18 +185,26 @@ class TGUserBotManager:
         tmdb_match = re.search(r'TMDB ID[:：\s]*(\d+)', text, re.IGNORECASE)
         link_match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', text, re.IGNORECASE)
         pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', text, re.IGNORECASE)
+        
+        # ★ 新增：解析季号和集号 (例如 S01E10)
+        season_match = re.search(r'S(\d{1,2})E\d{1,4}', text, re.IGNORECASE)
+        ep_match = re.search(r'S\d{1,2}E(\d{1,4})', text, re.IGNORECASE)
+        season_number = int(season_match.group(1)) if season_match else None
+        episode_number = int(ep_match.group(1)) if ep_match else None
 
         if tmdb_match and link_match:
             tmdb_id = tmdb_match.group(1)
             share_code = link_match.group(1)
             receive_code = pwd_match.group(1) if pwd_match else ""
             
-            logger.info(f"  📥 [UserBot] 监听到频道资源 -> TMDB: {tmdb_id}, 准备推入处理队列...")
+            logger.info(f"  📥 [UserBot] 监听到频道资源 -> TMDB: {tmdb_id} (S{season_number}E{episode_number}), 准备推入处理队列...")
             # 推入队列，交由 gevent 协程处理
             tg_task_queue.put({
                 "tmdb_id": tmdb_id,
                 "share_code": share_code,
-                "receive_code": receive_code
+                "receive_code": receive_code,
+                "season_number": season_number,
+                "episode_number": episode_number
             })
 
     # ==========================================
@@ -298,6 +306,8 @@ def _process_tg_queue():
             tmdb_id = task['tmdb_id']
             share_code = task['share_code']
             receive_code = task['receive_code']
+            season_number = task.get('season_number')
+            episode_number = task.get('episode_number')
 
             should_process = False
             try:
@@ -305,7 +315,7 @@ def _process_tg_queue():
                     with conn.cursor() as cursor:
                         cursor.execute("SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (tmdb_id,))
                         row = cursor.fetchone()
-                        if row and row['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE']:
+                        if row and row['subscription_status'] in ['PAUSED', 'SUBSCRIBED', 'PENDING_RELEASE']:
                             should_process = True
                         
                         if not should_process:
@@ -320,6 +330,16 @@ def _process_tg_queue():
             if not should_process:
                 logger.debug(f"  ⏭️ [UserBot] 资源 (TMDB: {tmdb_id}) 不在订阅列表中，已忽略。")
                 continue
+
+            # =================================================================
+            # ★★★ 核心新增：精准去重逻辑 (只有未入库的集才转存) ★★★
+            # =================================================================
+            if season_number is not None and episode_number is not None:
+                from database import media_db
+                local_seasons = media_db.get_series_local_children_info(tmdb_id)
+                if season_number in local_seasons and episode_number in local_seasons[season_number]:
+                    logger.info(f"  ⏭️ [UserBot] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
+                    continue
 
             logger.info(f"  🎯 [UserBot] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
             client = P115Service.get_client()
