@@ -83,6 +83,7 @@ DEFAULT_TELEGRAM_MENU_TASKS = [
     'scan-cleanup-issues',        # 扫描重复媒体
     'system-auto-update',         # 系统自动更新
 ]
+CONFIG_OPTION_TELEGRAM_MONITOR_CHANNELS = "telegram_monitor_channels" # 监听的频道ID或用户名列表
 
 # ==============================================================================
 # ✨ 反向代理配置 (Reverse Proxy)

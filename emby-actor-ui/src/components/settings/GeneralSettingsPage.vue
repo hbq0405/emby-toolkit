@@ -1138,50 +1138,43 @@
                   </n-card>
                 </n-gi>
 
-                <!-- 卡片 4: 通知设置 (右下) -->
+                <!-- 卡片 4: Telegram 设置 (右下) -->
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
-                    <template #header><span class="card-title">通知设置</span></template>
+                    <template #header><span class="card-title">Telegram 设置</span></template>
                     
-                    <!-- ★★★ 新增：测试按钮区域 ★★★ -->
                     <template #header-extra>
-                      <n-button 
-                        size="tiny" 
-                        type="primary" 
-                        ghost 
-                        @click="testTelegram" 
-                        :loading="isTestingTelegram"
-                        :disabled="!configModel.telegram_bot_token || !configModel.telegram_channel_id"
-                      >
+                      <n-button size="tiny" type="primary" ghost @click="testTelegram" :loading="isTestingTelegram" :disabled="!configModel.telegram_bot_token || !configModel.telegram_channel_id">
                         发送测试
                       </n-button>
                     </template>
-                    <!-- ★★★ 结束新增 ★★★ -->
 
                     <n-form-item-grid-item label="Telegram Bot Token" path="telegram_bot_token">
-                      <n-input 
-                        v-model:value="configModel.telegram_bot_token" 
-                        type="password" 
-                        show-password-on="click"
-                        placeholder="从 @BotFather 获取" 
-                      />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          用于发送通知的 Telegram 机器人令牌。
-                        </n-text>
-                      </template>
+                      <n-input v-model:value="configModel.telegram_bot_token" type="password" show-password-on="click" placeholder="从 @BotFather 获取" />
                     </n-form-item-grid-item>
+                    
                     <n-form-item-grid-item label="全局通知频道 ID" path="telegram_channel_id">
-                      <n-input 
-                        v-model:value="configModel.telegram_channel_id" 
-                        placeholder="例如: -100123456789" 
+                      <n-input v-model:value="configModel.telegram_channel_id" placeholder="例如: -100123456789" />
+                    </n-form-item-grid-item>
+
+                    <!-- 新增：监听频道列表 -->
+                    <n-form-item-grid-item label="资源频道监听白名单 (TG订阅)" path="telegram_monitor_channels">
+                      <n-select
+                        v-model:value="configModel.telegram_monitor_channels"
+                        multiple
+                        filterable
+                        tag
+                        placeholder="输入频道ID或用户名并回车 (如 @hdtv115)"
+                        :options="[]" 
                       />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          用于发送全局入库等通知的公开频道或群组的 Chat ID。
+                          将资源频道的帖子<b>转发</b>给机器人，若来源在此名单中，将自动解析 TMDB ID 并转存。<br/>
+                          支持频道 Username (如 hdtv115) 或 Channel ID (如 -100123...)。
                         </n-text>
                       </template>
                     </n-form-item-grid-item>
+
                   </n-card>
                 </n-gi>
 

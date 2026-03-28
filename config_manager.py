@@ -184,6 +184,7 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN: (constants.CONFIG_SECTION_TELEGRAM, 'password', ""),
     constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID: (constants.CONFIG_SECTION_TELEGRAM, 'string', ""),
     constants.CONFIG_OPTION_TELEGRAM_MENU_TASKS: (constants.CONFIG_SECTION_TELEGRAM, 'list', constants.DEFAULT_TELEGRAM_MENU_TASKS),
+    constants.CONFIG_OPTION_TELEGRAM_MONITOR_CHANNELS: (constants.CONFIG_SECTION_TELEGRAM, 'list', []),
 }
 
 # --- 全局配置字典 ---
