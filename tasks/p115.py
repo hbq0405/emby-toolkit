@@ -692,7 +692,8 @@ def task_full_sync_strm_and_subs(processor=None):
                                 safe_file_size = int(file_size) if str(file_size).isdigit() else 0
                                 
                                 if 0 < safe_file_size < MIN_VIDEO_SIZE:
-                                    logger.debug(f"  🗑️ [全量同步] 视频体积过小 ({safe_file_size} 字节)，判定为花絮/样本/广告，跳过生成 STRM: {name}")
+                                    size_mb = safe_file_size / (1024 * 1024)
+                                    logger.debug(f"  🗑️ [全量同步] 视频体积过小 ({size_mb:.2f} MB)，判定为花絮/样本/广告，跳过生成 STRM: {name}")
                                     continue # 直接跳过当前文件，不生成 STRM 也不写缓存
                                 strm_name = os.path.splitext(name)[0] + ".strm"
                                 strm_path = os.path.join(current_local_path, strm_name)
@@ -1302,7 +1303,8 @@ def task_monitor_115_life_events(processor=None):
                     # 确保 file_size 是整数
                     safe_file_size = int(file_size) if str(file_size).isdigit() else 0
                     if 0 < safe_file_size < MIN_VIDEO_SIZE:
-                        logger.debug(f"  🗑️ [事件] 视频体积过小 ({safe_file_size} 字节)，判定为花絮/样本/广告，忽略生成 STRM: {file_name}")
+                        size_mb = safe_file_size / (1024 * 1024)
+                        logger.debug(f"  🗑️ [事件] 视频体积过小 ({size_mb:.2f} MB)，判定为花絮/样本/广告，忽略生成 STRM: {file_name}")
                         return # 直接跳过，不生成 STRM，也不记录缓存
                 os.makedirs(current_local_path, exist_ok=True)
                 
