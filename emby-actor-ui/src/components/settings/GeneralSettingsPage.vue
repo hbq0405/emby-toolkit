@@ -1157,12 +1157,12 @@
                       <n-input v-model:value="configModel.telegram_channel_id" placeholder="例如: -100123456789" />
                     </n-form-item-grid-item>
 
-                    <n-divider title-placement="left" style="margin-top: 15px;">UserBot 频道监听 (Pro)</n-divider>
+                    <n-divider title-placement="left" style="margin-top: 15px;">订阅频道 (Pro)</n-divider>
                     <n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;">
                       自动转发监听的频道消息到你的机器人，根据订阅选择性转存。
                     </n-alert>
 
-                    <n-form-item-grid-item label="启用 UserBot 监听" path="tg_user_enabled">
+                    <n-form-item-grid-item label="启用监听" path="tg_user_enabled">
                       <n-switch v-model:value="configModel.tg_user_enabled" />
                     </n-form-item-grid-item>
 
