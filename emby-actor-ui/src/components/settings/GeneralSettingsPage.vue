@@ -1157,23 +1157,57 @@
                       <n-input v-model:value="configModel.telegram_channel_id" placeholder="例如: -100123456789" />
                     </n-form-item-grid-item>
 
-                    <!-- 新增：监听频道列表 -->
-                    <n-form-item-grid-item label="资源频道监听白名单 (TG订阅)" path="telegram_monitor_channels">
-                      <n-select
-                        v-model:value="configModel.telegram_monitor_channels"
-                        multiple
-                        filterable
-                        tag
-                        placeholder="输入频道ID或用户名并回车 (如 @hdtv115)"
-                        :options="[]" 
-                      />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          将资源频道的帖子<b>转发</b>给机器人，若来源在此名单中，将自动解析 TMDB ID 并转存。<br/>
-                          支持频道 Username (如 hdtv115) 或 Channel ID (如 -100123...)。
-                        </n-text>
-                      </template>
+                    <n-divider title-placement="left" style="margin-top: 15px;">UserBot 频道监听 (Pro)</n-divider>
+                    <n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;">
+                      此功能使用您的个人账号监听频道。请自行前往 my.telegram.org 申请 API ID。滥用可能导致封号，请谨慎使用！
+                    </n-alert>
+
+                    <n-form-item-grid-item label="启用 UserBot 监听" path="tg_user_enabled">
+                      <n-switch v-model:value="configModel.tg_user_enabled" />
                     </n-form-item-grid-item>
+
+                    <template v-if="configModel.tg_user_enabled">
+                      <n-form-item-grid-item label="API ID" path="tg_user_api_id">
+                        <n-input v-model:value="configModel.tg_user_api_id" placeholder="例如: 1234567" />
+                      </n-form-item-grid-item>
+                      <n-form-item-grid-item label="API Hash" path="tg_user_api_hash">
+                        <n-input v-model:value="configModel.tg_user_api_hash" type="password" show-password-on="click" />
+                      </n-form-item-grid-item>
+                      <n-form-item-grid-item label="手机号 (带国家代码)" path="tg_user_phone">
+                        <n-input v-model:value="configModel.tg_user_phone" placeholder="例如: +8613800138000" />
+                      </n-form-item-grid-item>
+                      <n-form-item-grid-item label="两步验证密码 (2FA)" path="tg_user_2fa">
+                        <n-input v-model:value="configModel.tg_user_2fa" type="password" show-password-on="click" placeholder="如果没有设置请留空" />
+                      </n-form-item-grid-item>
+                      
+                      <n-form-item-grid-item label="监听频道白名单" path="tg_monitor_channels">
+                        <n-select v-model:value="configModel.tg_monitor_channels" multiple filterable tag placeholder="输入频道 Username 或 ID 并回车 (如 hdtv115)" :options="[]" />
+                      </n-form-item-grid-item>
+
+                      <!-- 登录交互区 -->
+                      <n-form-item-grid-item label="账号授权状态">
+                        <n-space align="center">
+                          <n-tag :type="userBotStatus === 'authorized' ? 'success' : 'error'">
+                            {{ userBotStatus === 'authorized' ? '已登录 (监听中)' : '未登录' }}
+                          </n-tag>
+                          
+                          <n-button v-if="userBotStatus !== 'authorized'" type="primary" size="small" @click="sendUserBotCode" :loading="isSendingCode">
+                            获取验证码
+                          </n-button>
+                          <n-button v-else type="error" ghost size="small" @click="logoutUserBot">
+                            注销账号
+                          </n-button>
+                        </n-space>
+                      </n-form-item-grid-item>
+
+                      <!-- 验证码输入框 (点击获取验证码后显示) -->
+                      <n-form-item-grid-item v-if="showCodeInput" label="输入验证码">
+                        <n-input-group>
+                          <n-input v-model:value="userBotCode" placeholder="输入 TG 收到的验证码" />
+                          <n-button type="primary" @click="submitUserBotCode" :loading="isSubmittingCode">登录</n-button>
+                        </n-input-group>
+                      </n-form-item-grid-item>
+                    </template>
 
                   </n-card>
                 </n-gi>
@@ -2830,6 +2864,68 @@ const handleCreateFolder = async () => {
   }
 };
 
+// --- UserBot 逻辑 ---
+const userBotStatus = ref('unauthorized');
+const showCodeInput = ref(false);
+const userBotCode = ref('');
+const isSendingCode = ref(false);
+const isSubmittingCode = ref(false);
+
+const checkUserBotStatus = async () => {
+  try {
+    const res = await axios.get('/api/tg_userbot/status');
+    if (res.data.success) {
+      userBotStatus.value = res.data.data.status;
+    }
+  } catch (e) {}
+};
+
+const sendUserBotCode = async () => {
+  // 必须先保存配置，后端才能拿到最新的 API_ID 和 Phone
+  await save(); 
+  isSendingCode.value = true;
+  try {
+    const res = await axios.post('/api/tg_userbot/send_code');
+    if (res.data.success) {
+      message.success(res.data.message);
+      showCodeInput.value = true;
+    } else {
+      message.error(res.data.message);
+    }
+  } catch (e) {
+    message.error(e.response?.data?.message || '请求失败');
+  } finally {
+    isSendingCode.value = false;
+  }
+};
+
+const submitUserBotCode = async () => {
+  if (!userBotCode.value) return message.warning('请输入验证码');
+  isSubmittingCode.value = true;
+  try {
+    const res = await axios.post('/api/tg_userbot/login', { code: userBotCode.value });
+    if (res.data.success) {
+      message.success(res.data.message);
+      showCodeInput.value = false;
+      checkUserBotStatus();
+    } else {
+      message.error(res.data.message);
+    }
+  } catch (e) {
+    message.error(e.response?.data?.message || '登录失败');
+  } finally {
+    isSubmittingCode.value = false;
+  }
+};
+
+const logoutUserBot = async () => {
+  try {
+    await axios.post('/api/tg_userbot/logout');
+    message.success('已注销');
+    checkUserBotStatus();
+  } catch (e) {}
+};
+
 const confirmFolderSelection = () => {
   const cid = currentBrowserCid.value;
   const name = cid === '0' ? '/' : currentBrowserFolderName.value;
@@ -3154,6 +3250,7 @@ onMounted(async () => {
       }
     }
   });
+  checkUserBotStatus();
 });
 onUnmounted(() => {
   componentIsMounted.value = false;

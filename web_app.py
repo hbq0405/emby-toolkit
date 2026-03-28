@@ -494,6 +494,9 @@ def main_app_start():
     # 启动 Telegram 机器人交互监听
     if config_manager.APP_CONFIG.get('is_pro_active', False):
         telegram.start_telegram_bot()
+        # 启动 UserBot 频道监听 ★★★
+        from handler.tg_userbot import TGUserBotManager
+        TGUserBotManager.get_instance().start()
     else:
         logger.info("  ⚠️ [免费版限制] Telegram 机器人交互菜单与指令功能为 Pro 高级版专属！交互监听未启动。")
 

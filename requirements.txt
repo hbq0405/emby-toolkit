@@ -44,3 +44,7 @@ lxml
 # ---115 网盘支持 ---
 p115client>=0.0.8.4.6
 p115center-sdk==0.0.12
+
+# --- TG Bot ---
+telethon==1.33.1
+python-socks[asyncio]==2.4.3
