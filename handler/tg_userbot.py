@@ -6,7 +6,7 @@ import threading
 import queue
 import logging
 from telethon import TelegramClient, events
-from telethon.errors import SessionPasswordNeededError
+from telethon.errors import SessionPasswordNeededError, AuthKeyUnregisteredError
 
 import config_manager
 import constants
@@ -121,11 +121,31 @@ class TGUserBotManager:
             async def handler(event):
                 await self._handle_message(event)
 
-            # ★★★ 终极修复：绝对不能用 start()，改为手动 connect() 并保持运行 ★★★
             async def _daemon():
                 await self.client.connect()
-                logger.info("  🚀 [UserBot] Telegram 客户端已连接，等待授权或监听中...")
-                await self.client.run_until_disconnected()
+                
+                try:
+                    is_auth = await self.client.is_user_authorized()
+                except AuthKeyUnregisteredError:
+                    logger.error("  ❌ [UserBot] 登录凭证已失效 (AuthKeyUnregistered)。已自动清理，请在前端重新登录！")
+                    if self.client:
+                        await self.client.disconnect()
+                    if os.path.exists(self.session_path):
+                        os.remove(self.session_path)
+                    return # 退出当前 daemon，等待前端重新触发 start()
+
+                if is_auth:
+                    logger.info("  🚀 [UserBot] Telegram 客户端已授权，开始监听频道消息...")
+                    await self.client.run_until_disconnected()
+                else:
+                    logger.info("  ⏳ [UserBot] Telegram 客户端已连接，等待前端输入验证码授权...")
+                    # 保持协程存活，等待前端调用登录接口
+                    while self.is_running:
+                        if await self.client.is_user_authorized():
+                            logger.info("  🚀 [UserBot] 授权成功，开始监听频道消息...")
+                            await self.client.run_until_disconnected()
+                            break
+                        await asyncio.sleep(2)
 
             self.loop.run_until_complete(_daemon())
             
