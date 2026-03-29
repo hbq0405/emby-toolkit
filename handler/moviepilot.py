@@ -452,7 +452,7 @@ def delete_download_tasks(keyword: str, config: Dict[str, Any], hashes: list = N
             return True
         else:
             # 即使没删掉（比如任务早就不在了），也到此为止，绝不搜索关键词
-            logger.info(f"  ℹ️ [下载器清理] 提供的 Hash 均未在下载器中找到活跃任务，无需操作。")
+            logger.info(f"  ➜ [下载器清理] 提供的 Hash 均未在下载器中找到活跃任务，无需操作。")
             return True
 
     except Exception as e:

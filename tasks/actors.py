@@ -304,7 +304,7 @@ def task_actor_translation(processor):
                 
                 if original_name == translated_name:
                     # 如果翻译结果和原文一样，说明AI认为不需要翻译，或者翻译失败
-                    logger.info(f"    - ℹ️ [跳过] 原名: '{original_name}' -> 结果与原文相同 (未变)")
+                    logger.info(f"  ➜ [跳过] 原名: '{original_name}' -> 结果与原文相同 (未变)")
                     continue
                 # -----------------------------------
 
