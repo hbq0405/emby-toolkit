@@ -260,15 +260,50 @@
         
         <n-divider title-placement="left">电影订阅策略 (剧集由智能追剧策略管理)</n-divider>
         <n-form-item label="电影订阅优先通道">
-              <n-radio-group v-model:value="strategyConfig.subscription_priority">
-                <n-radio-button value="mp">MoviePilot 优先</n-radio-button>
-                <n-radio-button value="hdhive">影巢 (HDHive) 优先</n-radio-button>
-              </n-radio-group>
-              <template #feedback>
-                <b>影巢优先：</b>电影优先去影巢检索，成功则直接 115 秒传整理，失败或无资源再交由 MP 兜底。<br/>
-                <span style="color: var(--n-warning-color);">* 注：因影巢API限制，剧集固定走 MP 或 TG 频道，此选项仅对电影生效。</span>
-              </template>
-            </n-form-item>
+          <n-radio-group v-model:value="strategyConfig.subscription_priority">
+            <n-radio-button value="mp">MoviePilot 优先</n-radio-button>
+            <n-radio-button value="hdhive">影巢 (HDHive) 优先</n-radio-button>
+          </n-radio-group>
+          <template #feedback>
+            <b>影巢优先：</b>电影优先去影巢检索，成功则直接 115 秒传整理，失败或无资源再交由 MP 兜底。<br/>
+            <span style="color: var(--n-warning-color);">* 注：因影巢API限制，剧集固定走 MP 或 TG 频道，此选项仅对电影生效。</span>
+          </template>
+        </n-form-item>
+        <!-- 影巢专属过滤策略 (仅在选中影巢时显示) -->
+        <n-collapse-transition :show="strategyConfig.subscription_priority === 'hdhive'">
+          <div style="padding: 12px; background-color: rgba(240, 160, 32, 0.05); border-radius: 8px; border: 1px dashed var(--n-warning-color); margin-bottom: 24px;">
+            <n-text depth="3" style="display: block; margin-bottom: 12px; font-size: 12px;">
+              <n-icon :component="SettingsIcon" /> 影巢资源筛选规则 (防止误扣高额积分或下载超大合集)
+            </n-text>
+            
+            <n-grid :x-gap="12" :y-gap="0" :cols="2">
+              <n-grid-item>
+                <n-form-item label="仅白嫖 (免费/已解锁)">
+                  <n-switch v-model:value="strategyConfig.hdhive_free_only" size="small" />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item>
+                <n-form-item label="分辨率偏好">
+                  <n-select v-model:value="strategyConfig.hdhive_resolution" size="small" :options="[{label:'不限制', value:'All'}, {label:'仅 4K', value:'4K'}, {label:'仅 1080p', value:'1080p'}]" />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item>
+                <n-form-item label="最大允许积分">
+                  <n-input-number v-model:value="strategyConfig.hdhive_max_points" size="small" :min="0" :disabled="strategyConfig.hdhive_free_only">
+                    <template #suffix>分</template>
+                  </n-input-number>
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item>
+                <n-form-item label="最大允许体积 (防合集)">
+                  <n-input-number v-model:value="strategyConfig.hdhive_max_size_gb" size="small" :min="1">
+                    <template #suffix>GB</template>
+                  </n-input-number>
+                </n-form-item>
+              </n-grid-item>
+            </n-grid>
+          </div>
+        </n-collapse-transition>
         <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
           <li>新片，采用“搜索 N 天 -> 暂停 M 天”的循环机制，大幅降低 MoviePilot 搜索压力。</li>
           <li>老片，采用“搜索 N 天 -> 取消订阅 -> 复活”</li>
@@ -370,7 +405,11 @@ const strategyConfig = ref({
   delay_subscription_days: 0,
   timeout_revive_days: 0,
   download_timeout_hours: 0,
-  subscription_priority: 'mp'
+  subscription_priority: 'mp',
+  hdhive_free_only: false,
+  hdhive_max_points: 10,
+  hdhive_max_size_gb: 120,
+  hdhive_resolution: 'All'
 });
 
 const loadStrategyConfig = async () => {

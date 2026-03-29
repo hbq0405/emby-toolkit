@@ -42,6 +42,21 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "sub_kor": ["KOR", "韩字", "韩文", "Korean"],   
     "sub_yue": ["CHT", "繁中", "繁体", "Cantonese"], 
 }
+# 解析影巢返回的体积字符串
+def _parse_size_to_gb(size_str):
+    """将影巢返回的体积字符串 (如 '58.3 GB', '1.77TB') 转换为 GB 浮点数"""
+    if not size_str:
+        return 0.0
+    size_str = size_str.upper().replace(' ', '')
+    match = re.search(r'([\d\.]+)([A-Z]+)', size_str)
+    if not match:
+        return 0.0
+    val = float(match.group(1))
+    unit = match.group(2)
+    if 'TB' in unit: return val * 1024
+    if 'GB' in unit: return val
+    if 'MB' in unit: return val / 1024
+    return 0.0
 
 # ★★★ 内部辅助函数：处理整部剧集的精细化订阅 ★★★
 # ==============================================================================
@@ -858,7 +873,7 @@ def task_auto_subscribe(processor):
                 # 电影逻辑：影巢优先 -> MP 兜底
                 # ==========================================
                 if subscription_priority == 'hdhive':
-                    logger.info(f"  ➜ [策略] 电影《{title}》启用影巢优先，正在检索影巢资源...")
+                    logger.info(f"  ➜ [策略] 电影《{title}》启用影巢优先，正在检索并筛选资源...")
                     hdhive_api_key = settings_db.get_setting('hdhive_api_key')
                     
                     if hdhive_api_key:
@@ -866,17 +881,65 @@ def task_auto_subscribe(processor):
                         resources = hd_client.get_resources(tmdb_id, 'movie')
                         
                         if resources:
-                            # 取第一个资源（通常是默认最优或最新）
-                            target_resource = resources[0]
-                            slug = target_resource.get('slug')
-                            if slug:
-                                logger.info(f"  ➜ 影巢找到资源，准备解锁并转存 115...")
-                                # 调用 hdhive.py 中的核心转存整理任务
-                                success = task_download_from_hdhive(hdhive_api_key, slug, tmdb_id, 'movie', title)
-                                if success:
-                                    logger.info(f"  ✅ 影巢秒传成功！已跳过 MoviePilot 订阅。")
-                                else:
-                                    logger.warning(f"  ⚠️ 影巢转存失败，准备降级到 MoviePilot 兜底...")
+                            # --- ★★★ 智能漏斗：开始过滤资源 ★★★ ---
+                            valid_resources = []
+                            
+                            # 读取过滤配置
+                            hd_free_only = strategy_config.get('hdhive_free_only', False)
+                            hd_max_points = strategy_config.get('hdhive_max_points', 10)
+                            hd_max_size = strategy_config.get('hdhive_max_size_gb', 120)
+                            hd_res = strategy_config.get('hdhive_resolution', 'All')
+                            
+                            for r in resources:
+                                r_title = r.get('title', '未知标题')
+                                
+                                # 1. 计算实际消耗积分 (如果已解锁，则视为 0 分)
+                                is_unlocked = r.get('is_unlocked', False)
+                                raw_points = r.get('unlock_points') or 0
+                                effective_points = 0 if is_unlocked else raw_points
+                                
+                                # 积分过滤
+                                if hd_free_only and effective_points > 0:
+                                    continue
+                                if effective_points > hd_max_points:
+                                    continue
+                                    
+                                # 2. 体积过滤 (防大合集)
+                                size_gb = _parse_size_to_gb(r.get('share_size'))
+                                if size_gb > hd_max_size:
+                                    logger.debug(f"  ➜ 过滤掉超大资源: {r_title} ({size_gb:.1f}GB > {hd_max_size}GB)")
+                                    continue
+                                    
+                                # 3. 分辨率过滤
+                                if hd_res != 'All':
+                                    res_list = r.get('video_resolution', [])
+                                    if hd_res not in res_list:
+                                        continue
+                                        
+                                # 记录有效积分和体积，方便后续排序
+                                r['_effective_points'] = effective_points
+                                r['_size_gb'] = size_gb
+                                valid_resources.append(r)
+                            
+                            # --- ★★★ 智能排序：选出最优解 ★★★ ---
+                            if valid_resources:
+                                # 排序规则：优先选积分最少的(白嫖优先) -> 积分相同时，选体积最大的(画质更好)
+                                valid_resources.sort(key=lambda x: (x['_effective_points'], -x['_size_gb']))
+                                
+                                target_resource = valid_resources[0]
+                                slug = target_resource.get('slug')
+                                
+                                logger.info(f"  🎯 筛选出最优影巢资源: {target_resource.get('title')} "
+                                            f"(体积: {target_resource['_size_gb']:.1f}GB, 需积分: {target_resource['_effective_points']})")
+                                
+                                if slug:
+                                    success = task_download_from_hdhive(hdhive_api_key, slug, tmdb_id, 'movie', title)
+                                    if success:
+                                        logger.info(f"  ✅ 影巢秒传成功！已跳过 MoviePilot 订阅。")
+                                    else:
+                                        logger.warning(f"  ⚠️ 影巢转存失败，准备降级到 MoviePilot 兜底...")
+                            else:
+                                logger.info(f"  ➜ 影巢有资源，但没有符合你设置的过滤条件 (积分/体积/分辨率)，准备降级到 MoviePilot 兜底...")
                         else:
                             logger.info(f"  ➜ 影巢未找到电影《{title}》的资源，准备降级到 MoviePilot 兜底...")
                     else:

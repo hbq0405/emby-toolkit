@@ -594,18 +594,27 @@ def api_get_subscription_strategy():
         from database import settings_db
         config = settings_db.get_setting('subscription_strategy_config')
         
-        # 如果数据库为空，返回默认值
+        # 默认配置
+        default_config = {
+            'movie_protection_days': 180,
+            'movie_search_window_days': 1,
+            'movie_pause_days': 7,
+            'delay_subscription_days': 30,
+            'subscription_priority': 'mp',
+            'hdhive_free_only': False,       # 仅限免费
+            'hdhive_max_points': 10,         # 最大允许积分
+            'hdhive_max_size_gb': 120,       # 最大允许体积(GB)，防合集
+            'hdhive_resolution': 'All'       # 分辨率要求 (All, 4K, 1080p)
+        }
+        
         if not config:
-            config = {
-                'movie_protection_days': 180,
-                'movie_search_window_days': 1,
-                'movie_pause_days': 7,
-                'delay_subscription_days': 30,
-                'subscription_priority': 'mp'
-            }
+            config = default_config
         else:
-            if 'subscription_priority' not in config:
-                config['subscription_priority'] = 'mp'
+            # 兼容老数据，补全缺失字段
+            for k, v in default_config.items():
+                if k not in config:
+                    config[k] = v
+                
         return jsonify(config)
     except Exception as e:
         logger.error(f"获取订阅策略失败: {e}")
