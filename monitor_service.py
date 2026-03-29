@@ -450,7 +450,7 @@ def resume_queue_processing():
     """恢复监控队列处理 (开闸放水)"""
     global IS_PROCESSING_PAUSED, DEBOUNCE_TIMER
     IS_PROCESSING_PAUSED = False
-    logger.info("  ▶️ [实时监控] 队列抑制已解除，恢复处理。")
+    logger.info("  ➜ [实时监控] 队列抑制已解除，恢复处理。")
     
     # 开闸后，如果池子里有水，立刻触发处理
     with QUEUE_LOCK:
