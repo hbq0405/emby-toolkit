@@ -1480,11 +1480,11 @@ def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], ratin
             )
             
             if not items: 
-                logger.info(f"  媒体库 {lib_id} 为空或无法访问。")
+                logger.info(f"  ➜ 媒体库 {lib_id} 为空或无法访问。")
                 continue
 
             total_items = len(items)
-            logger.info(f"  媒体库 {lib_id} 扫描到 {total_items} 个项目，开始过滤...")
+            logger.info(f"  ➜ 媒体库 {lib_id} 扫描到 {total_items} 个项目，开始过滤...")
             
             processed_count = 0
             skipped_count = 0
@@ -1518,11 +1518,11 @@ def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], ratin
                 if success:
                     processed_count += 1
 
-            logger.info(f"  媒体库 {lib_id} 处理完成: 打标 {processed_count} 个, 跳过 {skipped_count} 个 (不符分级)。")
+            logger.info(f"  ➜ 媒体库 {lib_id} 处理完成: 打标 {processed_count} 个, 跳过 {skipped_count} 个 (不符分级)。")
         
         task_manager.update_status_from_thread(100, "所有选定库批量打标完成")
     except Exception as e:
-        logger.error(f"批量打标任务失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量打标任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务异常中止")
 
 def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str], rating_filters: Optional[List[str]] = None):
