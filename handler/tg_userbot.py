@@ -180,42 +180,65 @@ class TGUserBotManager:
         if not text:
             return
 
-        # 解析 TMDB ID 和 115 链接
+        # =================================================================
+        # ★ 修复：分别解析 115 链接和磁力/ED2K 链接
+        # =================================================================
+        
+        # 1. 解析 115 频道资源
         tmdb_match = re.search(r'TMDB ID[:：\s]*(\d+)', text, re.IGNORECASE)
         link_match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', text, re.IGNORECASE)
         pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', text, re.IGNORECASE)
 
-        # =================================================================
-        # ★ 终极增强版：解析季号和集号 (完美支持 S01E10, S1 E10, 第1季第10集 等)
-        # =================================================================
+        # 解析季号和集号 (完美支持 S01E10, S1 E10, 第1季第10集 等)
         season_number = None
         episode_number = None
         
-        # 优先匹配标准 S01E10 格式
         se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
         if se_match:
             season_number = int(se_match.group(1))
             episode_number = int(se_match.group(2))
         else:
-            # 备用匹配：第x季 第x集
             s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
             e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)?', text, re.IGNORECASE)
             if s_match: season_number = int(s_match.group(1))
             if e_match: episode_number = int(e_match.group(1))
 
+        # 2. 解析磁力/ED2K 链接
+        is_magnet = text.lower().startswith('magnet:?')
+        is_ed2k = text.lower().startswith('ed2k://')
+        magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
+
+        # =================================================================
+        # ★ 核心分流逻辑
+        # =================================================================
+        
+        # 情况 A：这是频道发的 115 资源（带 TMDB ID）
         if tmdb_match and link_match:
             tmdb_id = tmdb_match.group(1)
             share_code = link_match.group(1)
             receive_code = pwd_match.group(1) if pwd_match else ""
             
-            logger.info(f"  📥 [TG订阅] 监听到频道资源 -> TMDB: {tmdb_id} (S{season_number}E{episode_number}), 准备推入处理队列...")
-            # 推入队列，交由 gevent 协程处理
+            logger.info(f"  📥 [UserBot] 监听到频道资源 -> TMDB: {tmdb_id} (S{season_number}E{episode_number}), 准备推入处理队列...")
+            
+            # 推入队列，交由 gevent 协程处理 (type='115_share')
             tg_task_queue.put({
+                "type": "115_share",
                 "tmdb_id": tmdb_id,
                 "share_code": share_code,
                 "receive_code": receive_code,
                 "season_number": season_number,
                 "episode_number": episode_number
+            })
+            
+        # 情况 B：这是你手动发的磁力链或 ED2K
+        elif is_magnet or is_ed2k or magnet_ed2k_match:
+            target_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else text
+            logger.info(f"  📥 [UserBot] 收到手动离线下载请求 -> {target_url[:30]}...")
+            
+            # 推入队列，交由 gevent 协程处理 (type='offline_download')
+            tg_task_queue.put({
+                "type": "offline_download",
+                "url": target_url
             })
 
     # ==========================================
@@ -310,75 +333,80 @@ class TGUserBotManager:
 # ★★★ ETK 侧的消费者协程 (处理队列中的任务) ★★★
 # =================================================================
 def _process_tg_queue():
-    """死循环读取队列，执行查库和 115 转存 (在 gevent 协程中运行)"""
+    """死循环读取队列，执行查库和 115 转存/离线下载 (在 gevent 协程中运行)"""
     while True:
         try:
             task = tg_task_queue.get() # 阻塞等待
-            tmdb_id = task['tmdb_id']
-            share_code = task['share_code']
-            receive_code = task['receive_code']
-            season_number = task.get('season_number')
-            episode_number = task.get('episode_number')
-
-            should_process = False
-            try:
-                with get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        # 1. 查电影的订阅状态
-                        cursor.execute("SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (tmdb_id,))
-                        row = cursor.fetchone()
-                        if row and row['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
-                            should_process = True
-                        
-                        # 2. 查剧集（季条目）的订阅状态
-                        # 逻辑：刚订阅的季是没有追剧状态的，所以必须查季的 subscription_status
-                        # 注意：频道发的通常是剧集主ID，所以用 parent_series_tmdb_id 匹配
-                        if not should_process:
-                            cursor.execute("""
-                                SELECT subscription_status 
-                                FROM media_metadata 
-                                WHERE (tmdb_id = %s OR parent_series_tmdb_id = %s) 
-                                  AND item_type = 'Season'
-                            """, (tmdb_id, tmdb_id))
-                            rows = cursor.fetchall()
-                            for r in rows:
-                                if r['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
-                                    should_process = True
-                                    break
-                        
-                        # 3. 查剧集（剧条目）的追剧状态
-                        # 逻辑：只要入库1集，订阅状态就没了，此时需要查 watching_status
-                        if not should_process:
-                            cursor.execute("SELECT watching_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
-                            row = cursor.fetchone()
-                            if row and row['watching_status'] in ['Watching', 'Paused', 'Pending']:
-                                should_process = True
-            except Exception as e:
-                logger.error(f"  ❌ [TG订阅] 查库失败: {e}")
-                continue
-
-            if not should_process:
-                logger.debug(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
-                continue
-
-            # =================================================================
-            # ★★★ 精准去重逻辑 (只有未入库的集才转存) ★★★
-            # =================================================================
-            if season_number is not None and episode_number is not None:
-                from database import media_db
-                local_seasons = media_db.get_series_local_children_info(tmdb_id)
-                if season_number in local_seasons and episode_number in local_seasons[season_number]:
-                    logger.info(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
-                    continue
-
-            logger.info(f"  🎯 [TG订阅] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
+            task_type = task.get('type')
+            
             client = P115Service.get_client()
             target_cid = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID, '0')
             
-            if client:
+            if not client:
+                logger.error("  ❌ [UserBot] 115 客户端未初始化，无法执行任务。")
+                continue
+
+            # =================================================================
+            # ★ 任务类型 A：处理 115 频道分享链接 (带查库去重)
+            # =================================================================
+            if task_type == "115_share":
+                tmdb_id = task['tmdb_id']
+                share_code = task['share_code']
+                receive_code = task['receive_code']
+                season_number = task.get('season_number')
+                episode_number = task.get('episode_number')
+
+                should_process = False
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            # 1. 查电影
+                            cursor.execute("SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (tmdb_id,))
+                            row = cursor.fetchone()
+                            if row and row['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
+                                should_process = True
+                            
+                            # 2. 查剧集（季条目）
+                            if not should_process:
+                                cursor.execute("""
+                                    SELECT subscription_status 
+                                    FROM media_metadata 
+                                    WHERE (tmdb_id = %s OR parent_series_tmdb_id = %s) 
+                                      AND item_type = 'Season'
+                                """, (tmdb_id, tmdb_id))
+                                rows = cursor.fetchall()
+                                for r in rows:
+                                    if r['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
+                                        should_process = True
+                                        break
+                            
+                            # 3. 查剧集（剧条目）
+                            if not should_process:
+                                cursor.execute("SELECT watching_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
+                                row = cursor.fetchone()
+                                if row and row['watching_status'] in ['Watching', 'Paused', 'Pending']:
+                                    should_process = True
+                except Exception as e:
+                    logger.error(f"  ❌ [UserBot] 查库失败: {e}")
+                    continue
+
+                if not should_process:
+                    logger.debug(f"  ⏭️ [UserBot] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
+                    continue
+
+                # 精准去重逻辑
+                if season_number is not None and episode_number is not None:
+                    from database import media_db
+                    local_seasons = media_db.get_series_local_children_info(tmdb_id)
+                    if season_number in local_seasons and episode_number in local_seasons[season_number]:
+                        logger.info(f"  ⏭️ [UserBot] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
+                        continue
+
+                logger.info(f"  🎯 [UserBot] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
+                
                 res = client.share_import(share_code, receive_code, target_cid)
                 if res and res.get('state'):
-                    logger.info(f"  ✅ [TG订阅] 资源转存成功！正在触发整理...")
+                    logger.info(f"  ✅ [UserBot] 资源转存成功！正在触发整理...")
                     try:
                         import task_manager
                         import threading
@@ -386,10 +414,29 @@ def _process_tg_queue():
                     except: pass
                 else:
                     err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
-                    logger.error(f"  ❌ [TG订阅] 转存失败: {err}")
+                    logger.error(f"  ❌ [UserBot] 转存失败: {err}")
+
+            # =================================================================
+            # ★ 任务类型 B：处理手动发送的磁力/ED2K 离线下载
+            # =================================================================
+            elif task_type == "offline_download":
+                target_url = task['url']
+                payload = {"url[0]": target_url, "wp_path_id": target_cid}
+                
+                res = client.offline_add_urls(payload)
+                if res and res.get('state'):
+                    logger.info(f"  ✅ [UserBot] 离线下载任务提交成功！")
+                    try:
+                        import task_manager
+                        import threading
+                        threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
+                    except: pass
+                else:
+                    err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
+                    logger.error(f"  ❌ [UserBot] 离线提交失败: {err}")
 
         except Exception as e:
-            logger.error(f"  ❌ [TG订阅] 队列处理异常: {e}")
+            logger.error(f"  ❌ [UserBot] 队列处理异常: {e}")
 
 # 启动消费者协程
 spawn(_process_tg_queue)
