@@ -517,7 +517,7 @@ def _process_tg_queue():
                     continue
 
                 if not should_process:
-                    logger.debug(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
+                    logger.info(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
                     continue
 
                 # -----------------------------------------------------------
