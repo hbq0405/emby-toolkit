@@ -49,24 +49,20 @@ class TGUserBotManager:
             'channels': cfg.get(constants.CONFIG_OPTION_TG_MONITOR_CHANNELS) or []
         }
 
-    def start(self, force_restart=False):
+    def start(self):
         """启动后台线程"""
         cfg = self._get_config()
-        
-        # 如果开关被关了，或者关键配置没了，直接停止并退出
         if not cfg['enabled'] or not cfg['api_id'] or not cfg['api_hash']:
             if self.is_running:
-                logger.info("  🛑 [UserBot] 监听已在配置中关闭，正在停止服务...")
+                logger.info("  🛑 [TG订阅] 监听已在配置中关闭，正在停止服务...")
                 self.stop()
             return
 
-        # 如果没有强制重启，且线程活着，就忽略 (防止获取验证码时重复启动)
-        if not force_restart and self.is_running and self.thread and self.thread.is_alive():
+        # ★ 绝对安全锁：只要线程活着，绝不重复启动，防止 asyncio 炸膛！
+        if self.is_running and self.thread and self.thread.is_alive():
             return
 
-        if self.is_running:
-            logger.info("  🔄 [UserBot] 正在应用新配置，重启监听服务...")
-            self.stop() # 确保旧的残骸清理干净
+        self.stop() # 确保旧的残骸清理干净
 
         self.is_running = True
         self.thread = threading.Thread(target=self._run_loop, daemon=True, name="TG_UserBot_Thread")
