@@ -143,9 +143,16 @@ def save_config_and_reload(new_config: Dict[str, Any]):
         if config_manager.APP_CONFIG.get('is_pro_active', False):
             try:
                 from handler.tg_userbot import TGUserBotManager
-                TGUserBotManager.get_instance().start()
+                # ★ 传入 force_restart=True，使用特权钥匙强制热重载
+                TGUserBotManager.get_instance().start(force_restart=True)
             except Exception as e:
                 logger.error(f"重启 TG UserBot 失败: {e}")
+        else:
+            # 如果 Pro 掉了，或者开关被关了，彻底停掉它
+            try:
+                from handler.tg_userbot import TGUserBotManager
+                TGUserBotManager.get_instance().stop()
+            except: pass
         
         logger.info("  ✅ 新配置重新初始化完毕。")
         
