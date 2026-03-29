@@ -376,7 +376,7 @@ def _handle_callback_query(callback_query: dict):
         _execute_task_from_tg(chat_id, task_key)
 
 def _handle_incoming_message(message: dict):
-    """处理接收到的单条消息"""
+    """处理接收到的单条消息 (纯手动遥控器模式)"""
     chat_id = str(message.get('chat', {}).get('id', ''))
     text = message.get('text', '') or message.get('caption', '') # 兼容带图片的 caption
     text = text.strip()
@@ -426,70 +426,14 @@ def _handle_incoming_message(message: dict):
         return
 
     # =================================================================
-    # ★★★ 核心新增：区分手动与自动转发，并进行数据库校验 ★★★
+    # ★ 纯手动处理逻辑 (不再包含任何自动订阅和查库代码)
     # =================================================================
-    is_auto_forward = False
-    forward_from_chat = message.get('forward_from_chat', {})
-    source_username = forward_from_chat.get('username', '')
-    source_id = str(forward_from_chat.get('id', ''))
-    
-    monitor_channels = APP_CONFIG.get(constants.CONFIG_OPTION_TG_MONITOR_CHANNELS) or []
-    
-    # 判断是否来自监听频道
-    for channel in monitor_channels:
-        clean_channel = channel.replace('@', '').strip()
-        if clean_channel and (clean_channel == source_username or clean_channel == source_id):
-            is_auto_forward = True
-            break
+    logger.info(f"  📥 [TG交互] 收到来自 {chat_id} 的手动资源链接，准备处理...")
+    send_telegram_message(chat_id, escape_markdown("⏳ *收到链接，正在提交至 115...*"), disable_notification=True)
 
-    if is_115_share and is_auto_forward:
-        # 尝试提取 TMDB ID
-        tmdb_match = re.search(r'TMDB ID[:：\s]*(\d+)', text, re.IGNORECASE)
-        tmdb_id = tmdb_match.group(1) if tmdb_match else None
-        
-        if not tmdb_id:
-            logger.debug(f"  ⏭️ [TG自动订阅] 收到频道转发，但未提取到 TMDB ID，跳过。")
-            return
-            
-        # 查库校验
-        should_process = False
-        from database.connection import get_db_connection
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    # 检查电影订阅状态
-                    cursor.execute("SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (tmdb_id,))
-                    row = cursor.fetchone()
-                    if row and row['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE']:
-                        should_process = True
-                    
-                    # 检查剧集追剧状态
-                    if not should_process:
-                        cursor.execute("SELECT watching_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
-                        row = cursor.fetchone()
-                        if row and row['watching_status'] in ['Watching', 'Paused', 'Pending']:
-                            should_process = True
-        except Exception as e:
-            logger.error(f"  ❌ [TG自动订阅] 查库失败: {e}")
-            return
-            
-        if not should_process:
-            logger.debug(f"  ⏭️ [TG自动订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
-            return
-        else:
-            logger.info(f"  🎯 [TG自动订阅] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
-            # 既然是自动订阅命中的，就不发“收到链接”的提示打扰用户了
-    else:
-        # 手动发送的链接，正常提示
-        logger.info(f"  📥 [TG交互] 收到来自 {chat_id} 的手动资源链接，准备处理...")
-        send_telegram_message(chat_id, escape_markdown("⏳ *收到链接，正在提交至 115...*"), disable_notification=True)
-
-    # =================================================================
-    # 3. 获取 115 客户端和目标目录 (原有逻辑)
-    # =================================================================
     client = P115Service.get_client()
     if not client:
-        if not is_auto_forward: send_telegram_message(chat_id, "❌ *提交失败*：115 客户端未初始化，请检查配置。")
+        send_telegram_message(chat_id, "❌ *提交失败*：115 客户端未初始化，请检查配置。")
         return
         
     target_cid = APP_CONFIG.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID, '0')
@@ -505,24 +449,21 @@ def _handle_incoming_message(message: dict):
             if pwd_match: receive_code = pwd_match.group(1)
 
             if not share_code:
-                if not is_auto_forward: send_telegram_message(chat_id, escape_markdown("❌ *解析失败*：未找到有效的 115 分享码。"))
+                send_telegram_message(chat_id, escape_markdown("❌ *解析失败*：未找到有效的 115 分享码。"))
                 return
 
             res = client.share_import(share_code, receive_code, target_cid)
             
             if res and res.get('state'):
-                msg = "✅ *自动订阅转存成功！*\n系统已自动触发整理任务。" if is_auto_forward else "✅ *分享链接转存成功！*\n系统已自动触发整理任务。"
-                send_telegram_message(chat_id, escape_markdown(msg))
-                
+                send_telegram_message(chat_id, escape_markdown("✅ *分享链接转存成功！*\n系统已自动触发整理任务。"))
                 try:
                     import task_manager
                     threading.Timer(5.0, task_manager.trigger_115_organize_task).start()
-                    logger.info("  ➜ [TG交互] 已启动 115 整理任务。")
                 except Exception as e:
                     logger.error(f"  ⚠️ 唤醒整理任务失败: {e}")
             else:
-                err = res.get('error_msg', '未知错误') if res else '无响应'
-                if not is_auto_forward: send_telegram_message(chat_id, escape_markdown(f"❌ *转存失败*：{err}"))
+                err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
+                send_telegram_message(chat_id, escape_markdown(f"❌ *转存失败*：{err}"))
                 logger.error(f"  ❌ [TG交互] 转存失败: {err}")
 
         # --- 处理磁力/ED2K 离线下载 ---
@@ -534,18 +475,18 @@ def _handle_incoming_message(message: dict):
             res = client.offline_add_urls(payload)
             
             if res and res.get('state'):
-                if not is_auto_forward: send_telegram_message(chat_id, escape_markdown("✅ *离线任务提交成功！*\n系统将在后台自动监控并整理入库。"))
+                send_telegram_message(chat_id, escape_markdown("✅ *离线任务提交成功！*\n系统将在后台自动监控并整理入库。"))
                 try:
                     import task_manager
                     threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
                 except: pass
             else:
                 err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
-                if not is_auto_forward: send_telegram_message(chat_id, escape_markdown(f"❌ *离线提交失败*：{err}"))
+                send_telegram_message(chat_id, escape_markdown(f"❌ *离线提交失败*：{err}"))
 
     except Exception as e:
         logger.error(f"  ❌ [TG交互] 处理链接失败: {e}", exc_info=True)
-        if not is_auto_forward: send_telegram_message(chat_id, f"❌ *系统异常*：处理链接时发生错误。")
+        send_telegram_message(chat_id, f"❌ *系统异常*：处理链接时发生错误。")
 
 def _setup_bot_commands(bot_token: str):
     """

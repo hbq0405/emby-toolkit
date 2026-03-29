@@ -161,7 +161,6 @@ class TGUserBotManager:
         """处理收到的消息 (在 asyncio 线程中运行)"""
         cfg = self._get_config()
         
-        # ★ 修复：增加安全检查，防止 cfg['channels'] 为 None
         raw_channels = cfg.get('channels') or []
         monitor_channels = [c.replace('@', '').strip().lower() for c in raw_channels if c and c.strip()]
         
@@ -172,8 +171,24 @@ class TGUserBotManager:
         chat_username = getattr(chat, 'username', '') or ''
         chat_id = str(getattr(chat, 'id', ''))
 
-        # 检查是否在白名单中
-        if chat_username.lower() not in monitor_channels and chat_id not in monitor_channels:
+        # =================================================================
+        # ★ 终极增强版白名单匹配逻辑 (解决带不带 -100 的玄学问题)
+        # =================================================================
+        matched = False
+        for c in monitor_channels:
+            # 清理用户填写的配置 (去掉 -100 前缀)
+            c_clean = c.replace('-100', '') if c.startswith('-100') else c
+            # 清理 TG 实际返回的 ID (去掉 -100 前缀)
+            chat_id_clean = chat_id.replace('-100', '') if chat_id.startswith('-100') else chat_id
+            
+            # 只要 Username 匹配，或者原始 ID 匹配，或者清理后的纯数字 ID 匹配，都算通过！
+            if chat_username.lower() == c_clean or chat_id == c or chat_id_clean == c_clean:
+                matched = True
+                break
+
+        if not matched:
+            # 如果你想知道为什么某个频道没被监听到，可以把下面这行注释打开看日志
+            logger.debug(f"  [UserBot 忽略] 收到消息 -> Username: {chat_username}, ID: {chat_id}")
             return
 
         text = event.raw_text
