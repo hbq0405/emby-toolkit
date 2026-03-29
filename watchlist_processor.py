@@ -63,6 +63,7 @@ class WatchlistProcessor:
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
         self.local_data_path = self.config.get("local_data_path", "")
+        self.p115_enable_organize = self.config.get("p115_enable_organize", False)
         self.ai_translator = ai_translator
         self.douban_api = douban_api
         self._stop_event = threading.Event()
@@ -1568,68 +1569,69 @@ class WatchlistProcessor:
         # ======================================================================
         # ★★★ 追剧目录自动重组 (大脑指挥官 - 优雅在播季限定版) ★★★
         # ======================================================================
-        try:
-            # 判断是否发生了关键的状态流转
-            status_changed_to_watching = (old_status in [None, 'NONE'] and final_status in ['Watching', 'Paused', 'Pending'])
-            status_changed_to_completed = (old_status in ['Watching', 'Paused', 'Pending'] and final_status == 'Completed')
+        if self.p115_enable_organize:
+            try:
+                # 判断是否发生了关键的状态流转
+                status_changed_to_watching = (old_status in [None, 'NONE'] and final_status in ['Watching', 'Paused', 'Pending'])
+                status_changed_to_completed = (old_status in ['Watching', 'Paused', 'Pending'] and final_status == 'Completed')
 
-            if status_changed_to_watching or status_changed_to_completed:
-                logger.info(f"  🔄 [智能追剧] 检测到状态流转 ({old_status} -> {final_status})，准备重新评估 115 目录分类...")
-                
-                target_seasons_for_move = set(active_seasons)
-                valid_local_seasons = [s for s in emby_seasons.keys() if s > 0]
-                if valid_local_seasons:
-                    target_seasons_for_move.add(max(valid_local_seasons))
-
-                if not target_seasons_for_move:
-                    logger.debug("  ⚠️ [智能追剧] 未找到有效的目标季，跳过重组。")
-                else:
-                    from handler.p115_service import P115Service, SmartOrganizer, ManualCorrectTaskQueue
-                    from database.connection import get_db_connection
+                if status_changed_to_watching or status_changed_to_completed:
+                    logger.info(f"  🔄 [智能追剧] 检测到状态流转 ({old_status} -> {final_status})，准备重新评估 115 目录分类...")
                     
-                    client = P115Service.get_client()
-                    if client:
-                        # 1. 提前计算出新的目标目录 CID
-                        organizer = SmartOrganizer(client, tmdb_id, 'tv', item_name)
-                        new_target_cid = organizer.get_target_cid(ignore_memory=True)
+                    target_seasons_for_move = set(active_seasons)
+                    valid_local_seasons = [s for s in emby_seasons.keys() if s > 0]
+                    if valid_local_seasons:
+                        target_seasons_for_move.add(max(valid_local_seasons))
+
+                    if not target_seasons_for_move:
+                        logger.debug("  ⚠️ [智能追剧] 未找到有效的目标季，跳过重组。")
+                    else:
+                        from handler.p115_service import P115Service, SmartOrganizer, ManualCorrectTaskQueue
+                        from database.connection import get_db_connection
                         
-                        if new_target_cid:
-                            records_to_process = []
-                            skipped_count = 0
+                        client = P115Service.get_client()
+                        if client:
+                            # 1. 提前计算出新的目标目录 CID
+                            organizer = SmartOrganizer(client, tmdb_id, 'tv', item_name)
+                            new_target_cid = organizer.get_target_cid(ignore_memory=True)
                             
-                            with get_db_connection() as conn:
-                                with conn.cursor() as cursor:
-                                    # ★ 核心优化 1：直接查出 season_number 和 target_cid
-                                    cursor.execute("SELECT id, season_number, target_cid FROM p115_organize_records WHERE tmdb_id = %s", (str(tmdb_id),))
-                                    all_records = cursor.fetchall()
-                            
-                            for row in all_records:
-                                s_num = row['season_number']
-                                current_cid = row['target_cid']
+                            if new_target_cid:
+                                records_to_process = []
+                                skipped_count = 0
                                 
-                                # ★ 核心优化 2：如果当前目录已经等于目标目录，静默跳过！(防原地摩擦)
-                                if str(current_cid) == str(new_target_cid):
-                                    skipped_count += 1
-                                    continue
+                                with get_db_connection() as conn:
+                                    with conn.cursor() as cursor:
+                                        # ★ 核心优化 1：直接查出 season_number 和 target_cid
+                                        cursor.execute("SELECT id, season_number, target_cid FROM p115_organize_records WHERE tmdb_id = %s", (str(tmdb_id),))
+                                        all_records = cursor.fetchall()
+                                
+                                for row in all_records:
+                                    s_num = row['season_number']
+                                    current_cid = row['target_cid']
+                                    
+                                    # ★ 核心优化 2：如果当前目录已经等于目标目录，静默跳过！(防原地摩擦)
+                                    if str(current_cid) == str(new_target_cid):
+                                        skipped_count += 1
+                                        continue
 
-                                # ★ 核心优化 3：直接使用数据库里的季号，告别正则！
-                                if s_num and s_num in target_seasons_for_move:
-                                    records_to_process.append((row['id'], s_num))
-                                elif not s_num and len(target_seasons_for_move) == 1:
-                                    # 兜底：如果实在没有季号(如花絮)，但目标季只有一个，兜底带上
-                                    records_to_process.append((row['id'], list(target_seasons_for_move)[0]))
+                                    # ★ 核心优化 3：直接使用数据库里的季号，告别正则！
+                                    if s_num and s_num in target_seasons_for_move:
+                                        records_to_process.append((row['id'], s_num))
+                                    elif not s_num and len(target_seasons_for_move) == 1:
+                                        # 兜底：如果实在没有季号(如花絮)，但目标季只有一个，兜底带上
+                                        records_to_process.append((row['id'], list(target_seasons_for_move)[0]))
 
-                            if records_to_process:
-                                logger.info(f"  🚚 [智能追剧] 重新匹配出新目录 CID: {new_target_cid}，精准锁定 {len(records_to_process)} 个需要移动的文件加入重组队列 (目标季: {list(target_seasons_for_move)})。")
-                                for rid, s_num in records_to_process:
-                                    ManualCorrectTaskQueue.add(rid, tmdb_id, 'tv', new_target_cid, s_num)
-                            else:
-                                if skipped_count > 0:
-                                    logger.info(f"  ✅ [智能追剧] 目标季的文件已在正确目录 (CID: {new_target_cid})，无需移动，跳过重组。")
+                                if records_to_process:
+                                    logger.info(f"  🚚 [智能追剧] 重新匹配出新目录 CID: {new_target_cid}，精准锁定 {len(records_to_process)} 个需要移动的文件加入重组队列 (目标季: {list(target_seasons_for_move)})。")
+                                    for rid, s_num in records_to_process:
+                                        ManualCorrectTaskQueue.add(rid, tmdb_id, 'tv', new_target_cid, s_num)
                                 else:
-                                    logger.debug("  ⚠️ [智能追剧] 未找到需要移动的文件。")
-        except Exception as e:
-            logger.error(f"  ❌ 触发 115 自动分类迁移失败: {e}", exc_info=True)
+                                    if skipped_count > 0:
+                                        logger.info(f"  ✅ [智能追剧] 目标季的文件已在正确目录 (CID: {new_target_cid})，无需移动，跳过重组。")
+                                    else:
+                                        logger.debug("  ⚠️ [智能追剧] 未找到需要移动的文件。")
+            except Exception as e:
+                logger.error(f"  ❌ 触发 115 自动分类迁移失败: {e}", exc_info=True)
 
         # 调用 DB 模块进行批量更新 (使用上面提前算好的 active_seasons)
         watchlist_db.sync_seasons_watching_status(tmdb_id, list(active_seasons), final_status)
