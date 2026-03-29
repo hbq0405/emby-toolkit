@@ -541,7 +541,7 @@ def _process_tg_queue():
                 item_type = task.get('item_type', 'movie')
                 
                 if not tmdb_id and title:
-                    logger.debug(f"  🧠 [TG订阅] 缺失 TMDB ID，正在通过 TMDb 接口反查: {title} ({year}), 严格限定类型: {'剧集' if item_type=='tv' else '电影'}...")
+                    logger.debug(f"  ➜ [TG订阅] 缺失 TMDB ID，正在通过 TMDb 接口反查: {title} ({year}), 严格限定类型: {'剧集' if item_type=='tv' else '电影'}...")
                     from handler import tmdb
                     api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
                     

@@ -1537,13 +1537,13 @@ class SmartOrganizer:
                                     history_cid = str(row['target_cid'])
                                     # ★ 核心修复：校验记忆是否失效
                                     if _is_cid_valid_in_rules(history_cid):
-                                        logger.info(f"  🧠 [分季记忆体] 发现该剧 '第 {season_num} 季' 曾被整理过，沿用专属分类: {row['category_name']} (CID: {history_cid})")
+                                        logger.info(f"  ➜ [分季记忆体] 发现该剧 '第 {season_num} 季' 曾被整理过，沿用专属分类: {row['category_name']} (CID: {history_cid})")
                                         return history_cid
                                     else:
                                         logger.warning(f"  ➜ [分季记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
                                         break # 记忆失效，跳出循环走规则
                             
-                            logger.debug(f"  🧠 [分季记忆体] 未找到 '第 {season_num} 季' 的有效专属记忆，将使用规则引擎进行分配。")
+                            logger.debug(f"  ➜ [分季记忆体] 未找到 '第 {season_num} 季' 的有效专属记忆，将使用规则引擎进行分配。")
                         else:
                             # 电影或未提供季号的兜底逻辑
                             cursor.execute("""
@@ -1557,7 +1557,7 @@ class SmartOrganizer:
                                 history_cid = str(row['target_cid'])
                                 # ★ 核心修复：校验记忆是否失效
                                 if _is_cid_valid_in_rules(history_cid):
-                                    logger.info(f"  🧠 [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {history_cid})")
+                                    logger.info(f"  ➜ [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {history_cid})")
                                     return history_cid
                                 else:
                                     logger.warning(f"  ➜ [记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
@@ -1810,7 +1810,7 @@ class SmartOrganizer:
                     corrected_items.append(f"{k}: '{guessed_info.get(k, '空')}' -> '{v}'")
             
             if corrected_items:
-                logger.info(f"  ✨ [智能重命名] 成功利用 {data_source} 补全/纠错文件参数: {', '.join(corrected_items)}")
+                logger.info(f"  ➜ [智能重命名] 成功利用 {data_source} 补全/纠错文件参数: {', '.join(corrected_items)}")
 
         return info, is_center
 
@@ -2202,7 +2202,7 @@ class SmartOrganizer:
         # 1. 拦截合集包 (Collection Breakdown) - 仅限单项传入时触发
         # =================================================================
         if not is_batch and not is_source_file and re.search(r'(合集|部曲|系列|Collection|Pack|Trilogy|Quadrilogy|\d+-\d+)', root_name, re.IGNORECASE):
-            logger.info(f"  📦 检测到疑似合集包: {root_name}，正在验证...")
+            logger.info(f"  ➜ 检测到疑似合集包: {root_name}，正在验证...")
             collection_movies = []
             try:
                 res_c = tmdb.get_collection_details(int(self.tmdb_id), self.api_key)
@@ -2224,9 +2224,9 @@ class SmartOrganizer:
                 except: pass
 
             if collection_movies:
-                logger.info(f"  📦 确认为官方合集包，包含 {len(collection_movies)} 部电影，启动精确拆解模式...")
+                logger.info(f"  ➜ 确认为官方合集包，包含 {len(collection_movies)} 部电影，启动精确拆解模式...")
             else:
-                logger.info(f"  📦 未找到官方合集信息 (可能是民间自制包)，启动基于文件名的暴力拆解模式...")
+                logger.info(f"  ➜ 未找到官方合集信息 (可能是民间自制包)，启动基于文件名的暴力拆解模式...")
             return self._execute_collection_breakdown(root_item, collection_movies, skip_gc=skip_gc)
 
         # =================================================================
