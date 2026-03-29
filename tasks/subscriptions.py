@@ -1061,7 +1061,7 @@ def task_auto_subscribe(processor):
                 logger.error(f"为用户 {user_id} 发送自动订阅的合并失败通知时出错: {e}")
 
         if subscription_details:
-            header = f"  ➜ *统一订阅任务完成，成功处理 {len(subscription_details)} 项:*"
+            header = f"  ✅ *统一订阅任务完成，成功处理 {len(subscription_details)} 项:*"
             
             item_lines = []
             for detail in subscription_details:
