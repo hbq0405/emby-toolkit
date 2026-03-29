@@ -280,14 +280,34 @@ class TGUserBotManager:
         if episode_number is not None and season_number is None:
             season_number = 1
 
-        # 8. 精准判定媒体类型 (防张冠李戴)
-        item_type = 'movie'
-        if season_number is not None or episode_number is not None:
+        # 8. 精准判定媒体类型 (防张冠李戴 - 优先级隔离版)
+        item_type = 'movie' # 默认兜底为电影
+        
+        # 优先级 1: 明确的标题前缀 (最高优先级，直接秒杀)
+        if re.search(r'(?:📺|🖥️)?\s*(?:电视剧|剧集|动漫|番剧)[:：]', text):
             item_type = 'tv'
-        elif re.search(r'(电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|第\d+季|第\d+集|更新至)', text, re.IGNORECASE):
-            item_type = 'tv'
-        elif re.search(r'(电影|Movie)', text, re.IGNORECASE):
+        elif re.search(r'(?:🎬|🎥|🎞️)?\s*电影[:：]', text):
             item_type = 'movie'
+            
+        # 优先级 2: 季号和集号特征 (只要带 S01E01 或 更新至X集，绝对是剧集)
+        elif season_number is not None or episode_number is not None:
+            item_type = 'tv'
+            
+        # 优先级 3: 标签特征 (只在 #标签 里找，防止被简介误伤)
+        else:
+            tags = " ".join(re.findall(r'#\w+', text))
+            if re.search(r'#(?:电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|剧集|动画)', tags, re.IGNORECASE):
+                item_type = 'tv'
+            elif re.search(r'#(?:电影|Movie)', tags, re.IGNORECASE):
+                item_type = 'movie'
+                
+            # 优先级 4: 头部文本特征 (只看前8行，坚决不看简介)
+            else:
+                header_text = "\n".join(text.split('\n')[:8])
+                if re.search(r'(电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|剧集)', header_text, re.IGNORECASE):
+                    item_type = 'tv'
+                elif re.search(r'(电影|Movie)', header_text, re.IGNORECASE):
+                    item_type = 'movie'
 
         # 9. 解析磁力/ED2K 链接
         is_magnet = text.lower().startswith('magnet:?')
