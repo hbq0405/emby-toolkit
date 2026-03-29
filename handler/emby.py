@@ -375,32 +375,32 @@ def get_emby_item_details(item_id: str, emby_server_url: str, emby_api_key: str,
             f"成功获取Emby项目 '{item_data.get('Name', item_id)}' (ID: {item_id}) 的详情。")
 
         if not item_data.get('Name') or not item_data.get('Type'):
-            logger.warning(f"Emby项目 {item_id} 返回的数据缺少Name或Type字段。")
+            logger.warning(f"  ➜ Emby项目 {item_id} 返回的数据缺少Name或Type字段。")
 
         return item_data
 
     except requests.exceptions.HTTPError as e:
         if e.response.status_code == 404:
             if silent_404:
-                logger.debug(f"Emby API未找到项目ID: {item_id} (预期内的 404，已忽略)。")
+                logger.debug(f"  ➜ Emby API未找到项目ID: {item_id} (预期内的 404，已忽略)。")
             else:
-                logger.warning(f"Emby API未找到项目ID: {item_id} (UserID: {user_id})。URL: {e.request.url}")
+                logger.warning(f"  ➜ Emby API未找到项目ID: {item_id} (UserID: {user_id})。URL: {e.request.url}")
         elif e.response.status_code == 401 or e.response.status_code == 403:
             logger.error(
-                f"获取Emby项目详情时发生认证/授权错误 (ItemID: {item_id}, UserID: {user_id}): {e.response.status_code} - {e.response.text[:200]}. URL: {e.request.url}. 请检查API Key和UserID权限。")
+                f"  ➜ 获取Emby项目详情时发生认证/授权错误 (ItemID: {item_id}, UserID: {user_id}): {e.response.status_code} - {e.response.text[:200]}. URL: {e.request.url}. 请检查API Key和UserID权限。")
         else:
             logger.error(
-                f"获取Emby项目详情时发生HTTP错误 (ItemID: {item_id}, UserID: {user_id}): {e.response.status_code} - {e.response.text[:200]}. URL: {e.request.url}")
+                f"  ➜ 获取Emby项目详情时发生HTTP错误 (ItemID: {item_id}, UserID: {user_id}): {e.response.status_code} - {e.response.text[:200]}. URL: {e.request.url}")
         return None
     except requests.exceptions.RequestException as e:
         url_requested = e.request.url if e.request else url
         logger.error(
-            f"获取Emby项目详情时发生请求错误 (ItemID: {item_id}, UserID: {user_id}): {e}. URL: {url_requested}")
+            f"  ➜ 获取Emby项目详情时发生请求错误 (ItemID: {item_id}, UserID: {user_id}): {e}. URL: {url_requested}")
         return None
     except Exception as e:
         import traceback
         logger.error(
-            f"获取Emby项目详情时发生未知错误 (ItemID: {item_id}, UserID: {user_id}): {e}\n{traceback.format_exc()}")
+            f"  ➜ 获取Emby项目详情时发生未知错误 (ItemID: {item_id}, UserID: {user_id}): {e}\n{traceback.format_exc()}")
         return None
     
 # ✨✨✨ 更新一个 Person 条目本身的信息 ✨✨✨
