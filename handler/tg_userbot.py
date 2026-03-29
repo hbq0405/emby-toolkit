@@ -251,6 +251,20 @@ class TGUserBotManager:
             if s_match: season_number = int(s_match.group(1))
             if e_match: episode_number = int(e_match.group(1))
 
+        # =================================================================
+        # ★ 史诗级增强：精准判定媒体类型 (防张冠李戴)
+        # =================================================================
+        item_type = 'movie' # 默认兜底为电影
+        
+        # 如果提取到了季号或集号，百分之百是剧集
+        if season_number is not None or episode_number is not None:
+            item_type = 'tv'
+        # 否则通过文本中的特征标签来判定
+        elif re.search(r'(电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|第\d+季|第\d+集)', text, re.IGNORECASE):
+            item_type = 'tv'
+        elif re.search(r'(电影|Movie)', text, re.IGNORECASE):
+            item_type = 'movie'
+
         # 7. 解析磁力/ED2K 链接
         is_magnet = text.lower().startswith('magnet:?')
         is_ed2k = text.lower().startswith('ed2k://')
@@ -262,13 +276,14 @@ class TGUserBotManager:
         
         # 情况 A：找到了目标链接 (115 或 中间页)，且 (有 TMDB ID 或 有标题)
         if target_link and (tmdb_id or title):
-            logger.info(f"  📥 [UserBot] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 准备推入处理队列...")
+            logger.info(f"  📥 [TG订阅] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 判定类型: {'剧集' if item_type=='tv' else '电影'}, 准备推入处理队列...")
             
             tg_task_queue.put({
                 "type": "115_share_complex",
                 "tmdb_id": tmdb_id,
                 "title": title,
                 "year": year,
+                "item_type": item_type, # <--- ★ 把判定好的类型传给队列
                 "target_link": target_link,
                 "receive_code": receive_code,
                 "season_number": season_number,
@@ -278,7 +293,7 @@ class TGUserBotManager:
         # 情况 B：手动发的磁力链或 ED2K
         elif is_magnet or is_ed2k or magnet_ed2k_match:
             target_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else text
-            logger.info(f"  📥 [UserBot] 收到手动离线下载请求 -> {target_url[:30]}...")
+            logger.info(f"  📥 [TG订阅] 收到手动离线下载请求 -> {target_url[:30]}...")
             
             tg_task_queue.put({
                 "type": "offline_download",
@@ -389,7 +404,7 @@ def _process_tg_queue():
             target_cid = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID, '0')
             
             if not client:
-                logger.error("  ❌ [UserBot] 115 客户端未初始化，无法执行任务。")
+                logger.error("  ❌ [TG订阅] 115 客户端未初始化，无法执行任务。")
                 continue
 
             # =================================================================
@@ -410,7 +425,7 @@ def _process_tg_queue():
                 share_code = None
                 
                 if 'hdhive.com' in target_link:
-                    logger.info(f"  🕵️‍♂️ [UserBot] 检测到 HDHive 中间页，正在追踪真实 115 链接...")
+                    logger.info(f"  🕵️‍♂️ [TG订阅] 检测到 HDHive 中间页，正在追踪真实 115 链接...")
                     try:
                         # 模拟浏览器访问，允许重定向，抓取最终落地的 URL
                         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
@@ -428,12 +443,12 @@ def _process_tg_queue():
                             pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', real_url, re.IGNORECASE)
                             if pwd_match and not receive_code:
                                 receive_code = pwd_match.group(1)
-                            logger.info(f"  🎯 [UserBot] 追踪成功！真实 Share Code: {share_code}")
+                            logger.info(f"  🎯 [TG订阅] 追踪成功！真实 Share Code: {share_code}")
                         else:
-                            logger.error(f"  ❌ [UserBot] 追踪失败，未能从中间页提取到 115 链接。")
+                            logger.error(f"  ❌ [TG订阅] 追踪失败，未能从中间页提取到 115 链接。")
                             continue
                     except Exception as e:
-                        logger.error(f"  ❌ [UserBot] 请求中间页失败: {e}")
+                        logger.error(f"  ❌ [TG订阅] 请求中间页失败: {e}")
                         continue
                 else:
                     # 普通 115 链接，直接提取
@@ -441,31 +456,28 @@ def _process_tg_queue():
                     if match: share_code = match.group(1)
 
                 if not share_code:
-                    logger.error("  ❌ [UserBot] 无法获取有效的 115 Share Code，任务终止。")
+                    logger.error("  ❌ [TG订阅] 无法获取有效的 115 Share Code，任务终止。")
                     continue
 
                 # -----------------------------------------------------------
                 # 2. 最强大脑：缺失 TMDB ID 时自动反查
                 # -----------------------------------------------------------
+                item_type = task.get('item_type', 'movie')
+                
                 if not tmdb_id and title:
-                    logger.info(f"  🧠 [UserBot] 缺失 TMDB ID，正在通过 TMDb 接口反查: {title} ({year})...")
+                    logger.info(f"  🧠 [TG订阅] 缺失 TMDB ID，正在通过 TMDb 接口反查: {title} ({year}), 严格限定类型: {'剧集' if item_type=='tv' else '电影'}...")
                     from handler import tmdb
                     api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
                     
-                    # 优先搜剧集 (因为通常发出来的都是剧)
-                    results = tmdb.search_media(title, api_key, item_type='tv', year=year)
+                    # ★ 核心修复：不再盲目双搜，直接使用前面判定好的类型进行精准搜索
+                    results = tmdb.search_media(title, api_key, item_type=item_type, year=year)
+                    
                     if results:
                         tmdb_id = str(results[0]['id'])
-                        logger.info(f"  ✅ [UserBot] 反查成功！匹配到剧集 TMDB ID: {tmdb_id}")
+                        logger.info(f"  ✅ [TG订阅] 反查成功！精准匹配到 TMDB ID: {tmdb_id}")
                     else:
-                        # 搜不到再搜电影
-                        results = tmdb.search_media(title, api_key, item_type='movie', year=year)
-                        if results:
-                            tmdb_id = str(results[0]['id'])
-                            logger.info(f"  ✅ [UserBot] 反查成功！匹配到电影 TMDB ID: {tmdb_id}")
-                        else:
-                            logger.warning(f"  ⚠️ [UserBot] 反查失败，TMDb 未找到相关条目，任务终止。")
-                            continue
+                        logger.warning(f"  ⚠️ [TG订阅] 反查失败，TMDb 未找到该{'剧集' if item_type=='tv' else '电影'}，任务终止。")
+                        continue
 
                 if not tmdb_id:
                     continue
@@ -501,11 +513,11 @@ def _process_tg_queue():
                                 if row and row['watching_status'] in ['Watching', 'Paused', 'Pending']:
                                     should_process = True
                 except Exception as e:
-                    logger.error(f"  ❌ [UserBot] 查库失败: {e}")
+                    logger.error(f"  ❌ [TG订阅] 查库失败: {e}")
                     continue
 
                 if not should_process:
-                    logger.debug(f"  ⏭️ [UserBot] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
+                    logger.debug(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
                     continue
 
                 # -----------------------------------------------------------
@@ -515,17 +527,17 @@ def _process_tg_queue():
                     from database import media_db
                     local_seasons = media_db.get_series_local_children_info(tmdb_id)
                     if season_number in local_seasons and episode_number in local_seasons[season_number]:
-                        logger.info(f"  ⏭️ [UserBot] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
+                        logger.info(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
                         continue
 
                 # -----------------------------------------------------------
                 # 5. 执行转存
                 # -----------------------------------------------------------
-                logger.info(f"  🎯 [UserBot] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
+                logger.info(f"  🎯 [TG订阅] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
                 
                 res = client.share_import(share_code, receive_code, target_cid)
                 if res and res.get('state'):
-                    logger.info(f"  ✅ [UserBot] 资源转存成功！正在触发整理...")
+                    logger.info(f"  ✅ [TG订阅] 资源转存成功！正在触发整理...")
                     try:
                         import task_manager
                         import threading
@@ -533,7 +545,7 @@ def _process_tg_queue():
                     except: pass
                 else:
                     err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
-                    logger.error(f"  ❌ [UserBot] 转存失败: {err}")
+                    logger.error(f"  ❌ [TG订阅] 转存失败: {err}")
 
             # =================================================================
             # ★ 任务类型 B：处理手动发送的磁力/ED2K 离线下载 (保持不变)
@@ -544,7 +556,7 @@ def _process_tg_queue():
                 
                 res = client.offline_add_urls(payload)
                 if res and res.get('state'):
-                    logger.info(f"  ✅ [UserBot] 离线下载任务提交成功！")
+                    logger.info(f"  ✅ [TG订阅] 离线下载任务提交成功！")
                     try:
                         import task_manager
                         import threading
@@ -552,10 +564,10 @@ def _process_tg_queue():
                     except: pass
                 else:
                     err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
-                    logger.error(f"  ❌ [UserBot] 离线提交失败: {err}")
+                    logger.error(f"  ❌ [TG订阅] 离线提交失败: {err}")
 
         except Exception as e:
-            logger.error(f"  ❌ [UserBot] 队列处理异常: {e}")
+            logger.error(f"  ❌ [TG订阅] 队列处理异常: {e}")
 
 # 启动消费者协程
 spawn(_process_tg_queue)
