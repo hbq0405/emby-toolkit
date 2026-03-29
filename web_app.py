@@ -249,7 +249,7 @@ def initialize_processors():
                 verify_url = "https://auth.55565576.xyz" 
                 # ★ 启动时只查岗，不消耗卡密
                 payload = {"action": "check", "server_id": server_id_local}
-                resp = requests.post(verify_url, json=payload, timeout=5).json()
+                resp = requests.post(verify_url, json=payload, timeout=10).json()
                 
                 if resp.get("success") and resp.get("is_pro"):
                     config_manager.APP_CONFIG['is_pro_active'] = True
