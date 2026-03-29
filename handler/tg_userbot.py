@@ -171,24 +171,16 @@ class TGUserBotManager:
         chat_username = getattr(chat, 'username', '') or ''
         chat_id = str(getattr(chat, 'id', ''))
 
-        # =================================================================
-        # ★ 终极增强版白名单匹配逻辑 (解决带不带 -100 的玄学问题)
-        # =================================================================
+        # 白名单匹配逻辑
         matched = False
         for c in monitor_channels:
-            # 清理用户填写的配置 (去掉 -100 前缀)
             c_clean = c.replace('-100', '') if c.startswith('-100') else c
-            # 清理 TG 实际返回的 ID (去掉 -100 前缀)
             chat_id_clean = chat_id.replace('-100', '') if chat_id.startswith('-100') else chat_id
-            
-            # 只要 Username 匹配，或者原始 ID 匹配，或者清理后的纯数字 ID 匹配，都算通过！
             if chat_username.lower() == c_clean or chat_id == c or chat_id_clean == c_clean:
                 matched = True
                 break
 
         if not matched:
-            # 如果你想知道为什么某个频道没被监听到，可以把下面这行注释打开看日志
-            logger.debug(f"  [UserBot 忽略] 收到消息 -> Username: {chat_username}, ID: {chat_id}")
             return
 
         text = event.raw_text
@@ -196,18 +188,57 @@ class TGUserBotManager:
             return
 
         # =================================================================
-        # ★ 修复：分别解析 115 链接和磁力/ED2K 链接
+        # ★ 史诗级增强：透视隐藏链接 & 提取标题年份
         # =================================================================
         
-        # 1. 解析 115 频道资源
-        tmdb_match = re.search(r'TMDB ID[:：\s]*(\d+)', text, re.IGNORECASE)
-        link_match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', text, re.IGNORECASE)
-        pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', text, re.IGNORECASE)
+        # 1. 提取所有隐藏的超链接 (Markdown/HTML 里的 <a> 标签)
+        hidden_urls = []
+        if event.message.entities:
+            for entity in event.message.entities:
+                if hasattr(entity, 'url') and entity.url:
+                    hidden_urls.append(entity.url)
 
-        # 解析季号和集号 (完美支持 S01E10, S1 E10, 第1季第10集 等)
+        # 2. 寻找目标链接 (明文 115 或 隐藏的 115/hdhive 中间页)
+        target_link = None
+        link_match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', text, re.IGNORECASE)
+        if link_match:
+            target_link = link_match.group(0)
+        else:
+            for url in hidden_urls:
+                if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/115/' in url:
+                    target_link = url
+                    break
+
+        # 3. 提取 TMDB ID (如果有)
+        tmdb_id = None
+        tmdb_match = re.search(r'TMDB ID[:：\s]*(\d+)', text, re.IGNORECASE)
+        if tmdb_match:
+            tmdb_id = tmdb_match.group(1)
+
+        # 4. 提取标题和年份 (用于没有 TMDB ID 时的反查)
+        # 匹配类似 "匹兹堡医护前线 (2025)" 或 "📺 电视剧：冬日的什么呀 (2026)"
+        title = None
+        year = None
+        title_match = re.search(r'(?:电视剧|电影|名称)[:：\s]*([^\n]+?)\s*\((\d{4})\)', text)
+        if not title_match:
+            # 尝试匹配第一行
+            title_match = re.search(r'^([^\n]+?)\s*\((\d{4})\)', text)
+            
+        if title_match:
+            title = title_match.group(1).strip()
+            # 去掉可能包含的 emoji 或前缀
+            title = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', title).strip()
+            year = title_match.group(2)
+
+        # 5. 提取密码
+        receive_code = ""
+        pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', text, re.IGNORECASE)
+        if pwd_match:
+            receive_code = pwd_match.group(1)
+
+        # 6. 提取季号和集号
         season_number = None
         episode_number = None
-        
         se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
         if se_match:
             season_number = int(se_match.group(1))
@@ -218,7 +249,7 @@ class TGUserBotManager:
             if s_match: season_number = int(s_match.group(1))
             if e_match: episode_number = int(e_match.group(1))
 
-        # 2. 解析磁力/ED2K 链接
+        # 7. 解析磁力/ED2K 链接
         is_magnet = text.lower().startswith('magnet:?')
         is_ed2k = text.lower().startswith('ed2k://')
         magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
@@ -227,30 +258,26 @@ class TGUserBotManager:
         # ★ 核心分流逻辑
         # =================================================================
         
-        # 情况 A：这是频道发的 115 资源（带 TMDB ID）
-        if tmdb_match and link_match:
-            tmdb_id = tmdb_match.group(1)
-            share_code = link_match.group(1)
-            receive_code = pwd_match.group(1) if pwd_match else ""
+        # 情况 A：找到了目标链接 (115 或 中间页)，且 (有 TMDB ID 或 有标题)
+        if target_link and (tmdb_id or title):
+            logger.info(f"  📥 [UserBot] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 准备推入处理队列...")
             
-            logger.info(f"  📥 [UserBot] 监听到频道资源 -> TMDB: {tmdb_id} (S{season_number}E{episode_number}), 准备推入处理队列...")
-            
-            # 推入队列，交由 gevent 协程处理 (type='115_share')
             tg_task_queue.put({
-                "type": "115_share",
+                "type": "115_share_complex",
                 "tmdb_id": tmdb_id,
-                "share_code": share_code,
+                "title": title,
+                "year": year,
+                "target_link": target_link,
                 "receive_code": receive_code,
                 "season_number": season_number,
                 "episode_number": episode_number
             })
             
-        # 情况 B：这是你手动发的磁力链或 ED2K
+        # 情况 B：手动发的磁力链或 ED2K
         elif is_magnet or is_ed2k or magnet_ed2k_match:
             target_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else text
             logger.info(f"  📥 [UserBot] 收到手动离线下载请求 -> {target_url[:30]}...")
             
-            # 推入队列，交由 gevent 协程处理 (type='offline_download')
             tg_task_queue.put({
                 "type": "offline_download",
                 "url": target_url
@@ -349,6 +376,8 @@ class TGUserBotManager:
 # =================================================================
 def _process_tg_queue():
     """死循环读取队列，执行查库和 115 转存/离线下载 (在 gevent 协程中运行)"""
+    import requests # 确保引入 requests
+    
     while True:
         try:
             task = tg_task_queue.get() # 阻塞等待
@@ -362,26 +391,95 @@ def _process_tg_queue():
                 continue
 
             # =================================================================
-            # ★ 任务类型 A：处理 115 频道分享链接 (带查库去重)
+            # ★ 任务类型 A：处理 115 频道分享链接 (支持隐藏链接、中间页、无 TMDB ID)
             # =================================================================
-            if task_type == "115_share":
-                tmdb_id = task['tmdb_id']
-                share_code = task['share_code']
-                receive_code = task['receive_code']
+            if task_type == "115_share_complex":
+                tmdb_id = task.get('tmdb_id')
+                title = task.get('title')
+                year = task.get('year')
+                target_link = task.get('target_link')
+                receive_code = task.get('receive_code', '')
                 season_number = task.get('season_number')
                 episode_number = task.get('episode_number')
 
+                # -----------------------------------------------------------
+                # 1. 追踪弹：解析真实的 115 Share Code
+                # -----------------------------------------------------------
+                share_code = None
+                
+                if 'hdhive.com' in target_link:
+                    logger.info(f"  🕵️‍♂️ [UserBot] 检测到 HDHive 中间页，正在追踪真实 115 链接...")
+                    try:
+                        # 模拟浏览器访问，允许重定向，抓取最终落地的 URL
+                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                        resp = requests.get(target_link, headers=headers, allow_redirects=True, timeout=15)
+                        real_url = resp.url
+                        
+                        # 从最终 URL 或页面内容中提取 115 码
+                        match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', real_url)
+                        if not match:
+                            match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', resp.text)
+                            
+                        if match:
+                            share_code = match.group(1)
+                            # 顺便看看重定向 URL 里有没有带密码
+                            pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', real_url, re.IGNORECASE)
+                            if pwd_match and not receive_code:
+                                receive_code = pwd_match.group(1)
+                            logger.info(f"  🎯 [UserBot] 追踪成功！真实 Share Code: {share_code}")
+                        else:
+                            logger.error(f"  ❌ [UserBot] 追踪失败，未能从中间页提取到 115 链接。")
+                            continue
+                    except Exception as e:
+                        logger.error(f"  ❌ [UserBot] 请求中间页失败: {e}")
+                        continue
+                else:
+                    # 普通 115 链接，直接提取
+                    match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', target_link)
+                    if match: share_code = match.group(1)
+
+                if not share_code:
+                    logger.error("  ❌ [UserBot] 无法获取有效的 115 Share Code，任务终止。")
+                    continue
+
+                # -----------------------------------------------------------
+                # 2. 最强大脑：缺失 TMDB ID 时自动反查
+                # -----------------------------------------------------------
+                if not tmdb_id and title:
+                    logger.info(f"  🧠 [UserBot] 缺失 TMDB ID，正在通过 TMDb 接口反查: {title} ({year})...")
+                    from handler import tmdb
+                    api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+                    
+                    # 优先搜剧集 (因为通常发出来的都是剧)
+                    results = tmdb.search_media(title, api_key, item_type='tv', year=year)
+                    if results:
+                        tmdb_id = str(results[0]['id'])
+                        logger.info(f"  ✅ [UserBot] 反查成功！匹配到剧集 TMDB ID: {tmdb_id}")
+                    else:
+                        # 搜不到再搜电影
+                        results = tmdb.search_media(title, api_key, item_type='movie', year=year)
+                        if results:
+                            tmdb_id = str(results[0]['id'])
+                            logger.info(f"  ✅ [UserBot] 反查成功！匹配到电影 TMDB ID: {tmdb_id}")
+                        else:
+                            logger.warning(f"  ⚠️ [UserBot] 反查失败，TMDb 未找到相关条目，任务终止。")
+                            continue
+
+                if not tmdb_id:
+                    continue
+
+                # -----------------------------------------------------------
+                # 3. 查库校验 (复用之前的完美逻辑)
+                # -----------------------------------------------------------
                 should_process = False
                 try:
                     with get_db_connection() as conn:
                         with conn.cursor() as cursor:
-                            # 1. 查电影
                             cursor.execute("SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (tmdb_id,))
                             row = cursor.fetchone()
                             if row and row['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
                                 should_process = True
                             
-                            # 2. 查剧集（季条目）
                             if not should_process:
                                 cursor.execute("""
                                     SELECT subscription_status 
@@ -395,7 +493,6 @@ def _process_tg_queue():
                                         should_process = True
                                         break
                             
-                            # 3. 查剧集（剧条目）
                             if not should_process:
                                 cursor.execute("SELECT watching_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
                                 row = cursor.fetchone()
@@ -409,7 +506,9 @@ def _process_tg_queue():
                     logger.debug(f"  ⏭️ [UserBot] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
                     continue
 
-                # 精准去重逻辑
+                # -----------------------------------------------------------
+                # 4. 精准去重逻辑
+                # -----------------------------------------------------------
                 if season_number is not None and episode_number is not None:
                     from database import media_db
                     local_seasons = media_db.get_series_local_children_info(tmdb_id)
@@ -417,6 +516,9 @@ def _process_tg_queue():
                         logger.info(f"  ⏭️ [UserBot] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
                         continue
 
+                # -----------------------------------------------------------
+                # 5. 执行转存
+                # -----------------------------------------------------------
                 logger.info(f"  🎯 [UserBot] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
                 
                 res = client.share_import(share_code, receive_code, target_cid)
@@ -432,7 +534,7 @@ def _process_tg_queue():
                     logger.error(f"  ❌ [UserBot] 转存失败: {err}")
 
             # =================================================================
-            # ★ 任务类型 B：处理手动发送的磁力/ED2K 离线下载
+            # ★ 任务类型 B：处理手动发送的磁力/ED2K 离线下载 (保持不变)
             # =================================================================
             elif task_type == "offline_download":
                 target_url = task['url']
