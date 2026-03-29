@@ -235,7 +235,7 @@ class CoverGeneratorService:
             safe_rating_limit = config_limit # 应用配置的限制
 
         if safe_rating_limit is not None:
-            logger.trace(f"  🛡️ 媒体库 '{library_name}' 将应用分级限制: 等级 <= {safe_rating_limit}")
+            logger.trace(f"  ➜ 媒体库 '{library_name}' 将应用分级限制: 等级 <= {safe_rating_limit}")
 
         # ======================================================================
         # 策略 A: 实时筛选类合集 (Filter / AI Recommendation)

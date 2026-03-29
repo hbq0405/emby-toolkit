@@ -641,7 +641,7 @@ def task_full_sync_strm_and_subs(processor=None):
         for idx, target_cid in enumerate(target_cids):
             category_name = cid_to_rel_path.get(target_cid, "未知分类")
             base_prog = 10 + int((idx / total_targets) * 80)
-            update_progress(base_prog, f"  🌐 正在全局拉取分类 [{category_name}] 下的所有文件...")
+            update_progress(base_prog, f"  ➜ 正在全局拉取分类 [{category_name}] 下的所有文件...")
             
             for f_type in fetch_types:
                 type_name = "视频" if f_type == 4 else "文档/字幕"
@@ -720,7 +720,7 @@ def task_full_sync_strm_and_subs(processor=None):
                                             if old_content == content: 
                                                 need_write = False
                                             else:
-                                                logger.debug(f"  🔄 [更新] 内容不一致触发覆盖 -> 旧: [{old_content}] | 新: [{content}]")
+                                                logger.debug(f"  ➜ [更新] 内容不一致触发覆盖 -> 旧: [{old_content}] | 新: [{content}]")
                                     except Exception as e: pass
                                             
                                 if need_write:

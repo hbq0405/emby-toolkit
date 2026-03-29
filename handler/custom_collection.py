@@ -815,7 +815,7 @@ class RecommendationEngine:
         """
         【类方法】强制刷新缓存 (执行数据库读取和矩阵构建)
         """
-        logger.info("  🔄 [向量引擎] 开始后台刷新向量缓存...")
+        logger.info("  ➜ [向量引擎] 开始后台刷新向量缓存...")
         start_t = time.time()
         
         try:

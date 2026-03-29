@@ -86,7 +86,7 @@ def refresh_115_token(failed_token=None):
                     P115Service._openapi_client.access_token = new_access_token
                     P115Service._openapi_client.headers["Authorization"] = f"Bearer {new_access_token}"
                 
-                logger.info(f"  🔄 [115] Token 自动续期成功！有效时长 {hours} 小时。")
+                logger.info(f"  ➜ [115] Token 自动续期成功！有效时长 {hours} 小时。")
                 return True
             else:
                 logger.error(f"  ➜ Token 续期失败: {resp.get('message')}，可能需要重新扫码")
@@ -497,7 +497,7 @@ class P115Service:
         with cls._lock:
             cls._cookie_client = None
             cls._cookie_cache = None
-            logger.info("  🔄 [115] Cookie 客户端已重置，下次请求将重新初始化")
+            logger.info("  ➜ [115] Cookie 客户端已重置，下次请求将重新初始化")
 
     @classmethod
     def get_client(cls):
@@ -2479,7 +2479,7 @@ class SmartOrganizer:
                 missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
                 if missing_sha1s:
                     req_count = len(missing_sha1s)
-                    logger.info(f"  🌐 [批量查询] 准备向中心服务器查询 {req_count} 个文件的媒体信息...")
+                    logger.info(f"  ➜ [批量查询] 准备向中心服务器查询 {req_count} 个文件的媒体信息...")
                     try:
                         import extensions
                         processor = extensions.media_processor_instance
@@ -2745,7 +2745,7 @@ class SmartOrganizer:
                     for fid, current_name, new_name in items_to_rename:
                         ren_res = self.client.fs_rename((fid, new_name))
                         if ren_res.get('state'):
-                            logger.info(f"  ✏️ [重命名] {current_name} -> {new_name}")
+                            logger.info(f"  ➜ [重命名] {current_name} -> {new_name}")
                         else:
                             logger.warning(f"  ➜ [重命名失败] {current_name} -> {new_name}, 原因: {ren_res.get('error_msg', ren_res)}")
                             
@@ -2970,7 +2970,7 @@ class SmartOrganizer:
                 from handler.p115_service import P115DeleteBuffer
                 P115DeleteBuffer.add(check_save_path=True)
             else:
-                logger.info("  🛡️ [MP上传] 单文件跳过垃圾回收检查。")
+                logger.info("  ➜ [MP上传] 单文件跳过垃圾回收检查。")
         else:
             logger.debug("  ➜ [清理空目录] 批量任务模式，跳过单次垃圾回收检查，等待统一清理。")
 
@@ -3573,7 +3573,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
         emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
         if emby_url and emby_api_key and old_strm_paths_for_emby:
             from handler import emby
-            logger.info(f"  🔄 正在通知 Emby 极速扫描旧路径以清理失效媒体项...")
+            logger.info(f"  ➜ 正在通知 Emby 极速扫描旧路径以清理失效媒体项...")
             try:
                 # 传入 update_type="Deleted"，复用我们刚写的极速向上寻根扫描逻辑
                 emby.notify_emby_file_changes(old_strm_paths_for_emby, emby_url, emby_api_key, update_type="Deleted")
