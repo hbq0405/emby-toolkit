@@ -433,7 +433,7 @@ def _handle_incoming_message(message: dict):
     source_username = forward_from_chat.get('username', '')
     source_id = str(forward_from_chat.get('id', ''))
     
-    monitor_channels = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_MONITOR_CHANNELS) or []
+    monitor_channels = APP_CONFIG.get(constants.CONFIG_OPTION_TG_MONITOR_CHANNELS) or []
     
     # 判断是否来自监听频道
     for channel in monitor_channels:
