@@ -420,33 +420,62 @@ def _process_tg_queue():
                 episode_number = task.get('episode_number')
 
                 # -----------------------------------------------------------
-                # 1. 追踪弹：解析真实的 115 Share Code
+                # 1. 追踪弹：解析真实的 115 Share Code (穿甲增强版)
                 # -----------------------------------------------------------
                 share_code = None
                 
                 if 'hdhive.com' in target_link:
-                    logger.info(f"  🕵️‍♂️ [TG订阅] 检测到 HDHive 中间页，正在追踪真实 115 链接...")
+                    logger.info(f"  🕵️‍♂️ [TG订阅] 检测到 HDHive 中间页，正在发射穿甲追踪弹...")
                     try:
-                        # 模拟浏览器访问，允许重定向，抓取最终落地的 URL
-                        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-                        resp = requests.get(target_link, headers=headers, allow_redirects=True, timeout=15)
-                        real_url = resp.url
+                        import urllib.parse
+                        import requests
                         
-                        # 从最终 URL 或页面内容中提取 115 码
-                        match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', real_url)
-                        if not match:
-                            match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', resp.text)
+                        # 伪装成真实浏览器
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
+                        }
+                        
+                        # 尝试自动携带系统里配置的 HDHive Cookie (如果有的话)
+                        cookie_str = ""
+                        for k, v in config_manager.APP_CONFIG.items():
+                            if 'hdhive' in k.lower() and 'cookie' in k.lower() and isinstance(v, str):
+                                cookie_str = v
+                                break
+                        if cookie_str:
+                            headers['Cookie'] = cookie_str
+                            
+                        # 发起请求
+                        resp = requests.get(target_link, headers=headers, allow_redirects=True, timeout=15)
+                        
+                        # 1. 尝试从最终重定向的 URL 和 源码中提取 115 码
+                        match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', resp.url)
+                        if not match: match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', resp.text)
+                        if not match: match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', urllib.parse.unquote(resp.text))
                             
                         if match:
                             share_code = match.group(1)
-                            # 顺便看看重定向 URL 里有没有带密码
-                            pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', real_url, re.IGNORECASE)
+                            
+                            # 2. 顺藤摸瓜，把隐藏的提取码(密码)也扒出来！
+                            pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', resp.url, re.IGNORECASE)
+                            if not pwd_match: pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', resp.text, re.IGNORECASE)
+                            if not pwd_match: pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', urllib.parse.unquote(resp.text), re.IGNORECASE)
+                            
                             if pwd_match and not receive_code:
                                 receive_code = pwd_match.group(1)
-                            logger.info(f"  🎯 [TG订阅] 追踪成功！真实 Share Code: {share_code}")
+                                
+                            logger.info(f"  🎯 [TG订阅] 追踪成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
                         else:
-                            logger.error(f"  ❌ [TG订阅] 追踪失败，未能从中间页提取到 115 链接。")
+                            # 智能诊断失败原因
+                            if 'Just a moment' in resp.text or resp.status_code in [403, 503]:
+                                logger.error(f"  ❌ [TG订阅] 追踪失败：被 HDHive 的 Cloudflare 5秒盾拦截！")
+                            elif '登录' in resp.text or '/login' in resp.url:
+                                logger.error(f"  ❌ [TG订阅] 追踪失败：HDHive 提示需要登录！请在 ETK 设置中配置 HDHive Cookie。")
+                            else:
+                                logger.error(f"  ❌ [TG订阅] 追踪失败：页面中未找到 115 链接。HTTP 状态码: {resp.status_code}")
                             continue
+                            
                     except Exception as e:
                         logger.error(f"  ❌ [TG订阅] 请求中间页失败: {e}")
                         continue
