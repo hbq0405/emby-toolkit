@@ -181,6 +181,8 @@ class TGUserBotManager:
                 break
 
         if not matched:
+            # 如果你想知道为什么某个频道没被监听到，可以把下面这行注释打开看日志
+            logger.debug(f"  [UserBot 忽略] 收到消息 -> Username: {chat_username}, ID: {chat_id}")
             return
 
         text = event.raw_text
