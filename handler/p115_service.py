@@ -1498,7 +1498,16 @@ class SmartOrganizer:
 
     def get_target_cid(self, ignore_memory=False, season_num=None):
         """获取目标 CID：优先查历史整理记录（记忆手动纠错），其次遍历规则"""
-        # ★★★ 1. 查历史记录 (记忆功能 - 升级为分季隔离版) ★★★
+        
+        # 辅助函数：校验历史 CID 是否仍在当前启用的规则中
+        def _is_cid_valid_in_rules(check_cid):
+            if not check_cid: return False
+            for r in self.rules:
+                if str(r.get('cid')) == str(check_cid) and r.get('enabled', True):
+                    return True
+            return False
+
+        # ★★★ 1. 查历史记录 (记忆功能 - 升级为分季隔离 + 规则校验版) ★★★
         if not ignore_memory:
             try:
                 from database.connection import get_db_connection
@@ -1525,11 +1534,16 @@ class SmartOrganizer:
                                 elif m3: s_val = int(m3.group(1))
                                 
                                 if s_val == season_num:
-                                    logger.info(f"  🧠 [分季记忆体] 发现该剧 '第 {season_num} 季' 曾被整理过，沿用专属分类: {row['category_name']} (CID: {row['target_cid']})")
-                                    return row['target_cid']
+                                    history_cid = str(row['target_cid'])
+                                    # ★ 核心修复：校验记忆是否失效
+                                    if _is_cid_valid_in_rules(history_cid):
+                                        logger.info(f"  🧠 [分季记忆体] 发现该剧 '第 {season_num} 季' 曾被整理过，沿用专属分类: {row['category_name']} (CID: {history_cid})")
+                                        return history_cid
+                                    else:
+                                        logger.warning(f"  ⚠️ [分季记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
+                                        break # 记忆失效，跳出循环走规则
                             
-                            # 如果没找到该季的记忆，绝不使用其他季的记忆兜底，直接放行给规则引擎！
-                            logger.debug(f"  🧠 [分季记忆体] 未找到 '第 {season_num} 季' 的专属记忆，将使用规则引擎进行分配。")
+                            logger.debug(f"  🧠 [分季记忆体] 未找到 '第 {season_num} 季' 的有效专属记忆，将使用规则引擎进行分配。")
                         else:
                             # 电影或未提供季号的兜底逻辑
                             cursor.execute("""
@@ -1540,12 +1554,17 @@ class SmartOrganizer:
                             """, (str(self.tmdb_id),))
                             row = cursor.fetchone()
                             if row and row['target_cid']:
-                                logger.info(f"  🧠 [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {row['target_cid']})")
-                                return row['target_cid']
+                                history_cid = str(row['target_cid'])
+                                # ★ 核心修复：校验记忆是否失效
+                                if _is_cid_valid_in_rules(history_cid):
+                                    logger.info(f"  🧠 [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {history_cid})")
+                                    return history_cid
+                                else:
+                                    logger.warning(f"  ⚠️ [记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
             except Exception as e:
                 logger.warning(f"  ⚠️ 查询历史整理记录失败: {e}")
 
-        # 2. 遍历规则 
+        # 2. 遍历规则
         for rule in self.rules:
             if not rule.get('enabled', True): continue
             if self._match_rule(rule):
