@@ -487,6 +487,23 @@
           </div>
         </div>
 
+        <!-- TG频道追更 -->
+        <div class="setting-item">
+          <div class="setting-icon"><n-icon :component="PaperPlaneIcon" /></div>
+          <div class="setting-content">
+            <div class="setting-header">
+              <div class="setting-label">TG 频道追更</div>
+              <n-switch v-model:value="watchlistConfig.tg_channel_tracking" size="small">
+                <template #checked>开启</template>
+                <template #unchecked>关闭</template>
+              </n-switch>
+            </div>
+            <div class="setting-desc">
+              开启后，未完结的剧集将跳过 MoviePilot 订阅，已完结剧集仍会通过 MP 洗版订阅。
+            </div>
+          </div>
+        </div>
+
         <!-- === 右侧列：订阅与洗版 === -->
         <div class="settings-col">
           
@@ -618,7 +635,7 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress, useThemeVars, NPopover, NInputNumber, NSwitch, NCollapseTransition, NText } from 'naive-ui';
-import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon, AlbumsOutline as CollectionsIcon, SettingsOutline as SettingsIcon, HourglassOutline as PendingIcon, TimerOutline as TimerIcon, RefreshCircleOutline as RefreshIcon, GitNetworkOutline as GapIcon, RepeatOutline as MPSyncIcon, CloudDownloadOutline as BackfillIcon, EarthOutline as DoubanIcon} from '@vicons/ionicons5';
+import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon, AlbumsOutline as CollectionsIcon, SettingsOutline as SettingsIcon, HourglassOutline as PendingIcon, TimerOutline as TimerIcon, RefreshCircleOutline as RefreshIcon, GitNetworkOutline as GapIcon, RepeatOutline as MPSyncIcon, CloudDownloadOutline as BackfillIcon, EarthOutline as DoubanIcon, PaperPlaneOutline as PaperPlaneIcon } from '@vicons/ionicons5';
 import { format, parseISO } from 'date-fns';
 import { useConfig } from '../composables/useConfig.js';
 
@@ -679,7 +696,8 @@ const watchlistConfig = ref({
   auto_delete_mp_history: false,     
   auto_delete_download_tasks: false,
   sync_mp_subscription: false,
-  revival_check_days: 365
+  revival_check_days: 365,
+  tg_channel_tracking: false
 });
 
 const openConfigModal = async () => {
@@ -702,7 +720,8 @@ const openConfigModal = async () => {
          auto_delete_download_tasks: data.auto_delete_download_tasks ?? false,
          enable_backfill: data.enable_backfill ?? false,
          sync_mp_subscription: data.sync_mp_subscription ?? false,
-         revival_check_days: data.revival_check_days ?? 365
+         revival_check_days: data.revival_check_days ?? 365,
+         tg_channel_tracking: data.tg_channel_tracking ?? false
        };
     }
   } catch (e) {
