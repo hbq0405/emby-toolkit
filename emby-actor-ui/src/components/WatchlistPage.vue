@@ -468,7 +468,24 @@
             </div>
           <n-divider style="margin: 0" />
 
-            <!-- 3. 豆瓣辅助修正 -->
+          <!-- 3.TG频道追更 -->
+          <div class="setting-item">
+            <div class="setting-icon"><n-icon :component="PaperPlaneIcon" /></div>
+            <div class="setting-content">
+              <div class="setting-header">
+                <div class="setting-label">TG 频道追更</div>
+                <n-switch v-model:value="watchlistConfig.tg_channel_tracking" size="small">
+                  <template #checked>开启</template>
+                  <template #unchecked>关闭</template>
+                </n-switch>
+              </div>
+              <div class="setting-desc">
+                开启后，未完结的剧集将跳过 MoviePilot 订阅，已完结剧集仍会通过 MP 洗版订阅。
+              </div>
+            </div>
+          </div>  
+          <n-divider style="margin: 0" />
+          <!-- 4. 豆瓣辅助修正 -->
             <div class="setting-item">
               <div class="setting-icon"><n-icon :component="DoubanIcon" /></div>
               <div class="setting-content">
@@ -483,23 +500,6 @@
                   当 TMDb 集数数据滞后或错误时，尝试从豆瓣获取准确的总集数并锁定。
                 </div>
               </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- TG频道追更 -->
-        <div class="setting-item">
-          <div class="setting-icon"><n-icon :component="PaperPlaneIcon" /></div>
-          <div class="setting-content">
-            <div class="setting-header">
-              <div class="setting-label">TG 频道追更</div>
-              <n-switch v-model:value="watchlistConfig.tg_channel_tracking" size="small">
-                <template #checked>开启</template>
-                <template #unchecked>关闭</template>
-              </n-switch>
-            </div>
-            <div class="setting-desc">
-              开启后，未完结的剧集将跳过 MoviePilot 订阅，已完结剧集仍会通过 MP 洗版订阅。
             </div>
           </div>
         </div>
