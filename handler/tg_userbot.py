@@ -251,18 +251,34 @@ class TGUserBotManager:
             title = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', title).strip()
             year = title_match.group(2)
 
-        # 7. 提取季号和集号
+        # 7. 提取季号和集号 (泥石流级增强版)
         season_number = None
         episode_number = None
+        
+        # 规则 A: 标准 S01E01 或 S1 EP10
         se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
         if se_match:
             season_number = int(se_match.group(1))
             episode_number = int(se_match.group(2))
         else:
+            # 规则 B: 第x季 第x集
             s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
-            e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)?', text, re.IGNORECASE)
+            e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)', text, re.IGNORECASE)
             if s_match: season_number = int(s_match.group(1))
             if e_match: episode_number = int(e_match.group(1))
+            
+            # 规则 C: 应对群魔乱舞的合集包 (更新至X集, 全X集, 1-X集)
+            # 提取这种描述中的“最大集号”作为进度标识
+            if episode_number is None:
+                bulk_match = re.search(r'(?:更新至|全|至)(?:第)?\s*(\d{1,4})\s*(?:集|话)|(?:^|\s)\d{1,3}-(\d{1,4})(?:集|话)?', text)
+                if bulk_match:
+                    ep_str = bulk_match.group(1) or bulk_match.group(2)
+                    if ep_str:
+                        episode_number = int(ep_str)
+
+        # ★ 兜底神技：国产剧/韩剧通常不写季号，如果提取到了集号但没季号，默认第一季！
+        if episode_number is not None and season_number is None:
+            season_number = 1
 
         # 8. 精准判定媒体类型 (防张冠李戴)
         item_type = 'movie'
