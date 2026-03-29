@@ -62,7 +62,7 @@ def _process_single_mp_file(file_info):
     client = P115Service.get_client()
     if not client: return
 
-    # logger.info(f"  ⏳ [MP上传] 开始整理: {file_info['name']} -> ID:{file_info['tmdb_id']}")
+    # logger.info(f"  ➜ [MP上传] 开始整理: {file_info['name']} -> ID:{file_info['tmdb_id']}")
 
     try:
         organizer = SmartOrganizer(client, file_info['tmdb_id'], file_info['media_type'], file_info['title'])
@@ -97,7 +97,7 @@ def _process_single_mp_file(file_info):
         else:
             logger.info(f"  🚫 [MP上传] 文件 '{file_info['name']}' 未命中任何分类规则，保持原样。")
     except Exception as e:
-        logger.error(f"  ❌ [MP上传] 整理失败: {e}", exc_info=True)
+        logger.error(f"  ➜ [MP上传] 整理失败: {e}", exc_info=True)
 
 def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None, is_new_item: bool = True):
     """
@@ -423,7 +423,7 @@ def _process_batch_webhook_events():
             
             # ★★★ 优化核心：如果不在线，直接踢出缓存，视为新项目重跑 ★★★
             if not is_online_in_db:
-                logger.info(f"  ➜ ⚠️ 缓存命中 '{parent_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
+                logger.info(f"  ➜ ➜ 缓存命中 '{parent_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
                 
                 # 从内存缓存中移除
                 if parent_id in extensions.media_processor_instance.processed_items_cache:
@@ -505,7 +505,7 @@ def _dispatch_item(item_id, item_name, item_type):
         if is_already_processed:
             is_online_in_db = media_db.is_emby_id_in_library(item_id)
             if not is_online_in_db:
-                logger.info(f"  ➜ ⚠️ 缓存命中 '{item_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
+                logger.info(f"  ➜ ➜ 缓存命中 '{item_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
                 if item_id in extensions.media_processor_instance.processed_items_cache:
                     del extensions.media_processor_instance.processed_items_cache[item_id]
                 is_already_processed = False
@@ -565,7 +565,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
             pc, sha1 = processor._extract_115_fingerprints(file_path)
             
             if pc or sha1:
-                logger.debug(f"  🔍 [路径解析] 成功提取指纹 -> PC: {pc}, SHA1: {sha1}")
+                logger.debug(f"  ➜ [路径解析] 成功提取指纹 -> PC: {pc}, SHA1: {sha1}")
             else:
                 # =========================================================
                 # 2. 养子 (数据库兜底) - 通过 Emby ID 查 PC 码
@@ -573,14 +573,14 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                 if item_id:
                     pc = media_db.get_pickcode_by_emby_id(item_id)
                     if pc:
-                        logger.debug(f"  🔍 [数据库兜底] 成功通过 Emby ID ({item_id}) 查到 PC 码。")
+                        logger.debug(f"  ➜ [数据库兜底] 成功通过 Emby ID ({item_id}) 查到 PC 码。")
 
             # =========================================================
             # 3. 补全 SHA1 (内部自带 115 API 兜底)
             # =========================================================
             if not sha1 and pc:
                 sha1 = processor._get_sha1_by_pickcode(pc)
-                logger.debug(f"  🔍 [路径解析] 成功提取SHA1: {sha1}")
+                logger.debug(f"  ➜ [路径解析] 成功提取SHA1: {sha1}")
             
             if sha1:
                 media_data = None
@@ -597,7 +597,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                             if row and row['size']:
                                 file_size_115 = row['size']
                 except Exception as e_db:
-                    logger.warning(f"  ⚠️ [数据校验] 查询本地文件大小失败: {e_db}")
+                    logger.warning(f"  ➜ [数据校验] 查询本地文件大小失败: {e_db}")
 
                 # --- 第一步：优先查询本地数据库缓存 ---
                 try:
@@ -610,25 +610,25 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                                 if isinstance(media_data, str):
                                     media_data = json.loads(media_data)
                                 is_from_local = True
-                                logger.info(f"  💾 [本地缓存] 命中本地数据库 (SHA1: {sha1})，下发给神医恢复...")
+                                logger.info(f"  ➜ [本地缓存] 命中本地数据库 (SHA1: {sha1})，下发给神医恢复...")
                                 # 更新命中次数
                                 cursor.execute("UPDATE p115_mediainfo_cache SET hit_count = hit_count + 1 WHERE sha1 = %s", (sha1,))
                                 conn.commit()
                 except Exception as e_db:
-                    logger.warning(f"  ⚠️ [本地缓存] 查询本地数据库失败: {e_db}")
+                    logger.warning(f"  ➜ [本地缓存] 查询本地数据库失败: {e_db}")
 
                 # --- 第二步：本地没有，再查中心服务器 ---
                 if not is_from_local and getattr(processor, 'p115_center', None):
-                    logger.info(f"  ☁️ [P115Center] 本地无缓存，开始查询中心服务器 (SHA1: {sha1})")
+                    logger.info(f"  ➜ [P115Center] 本地无缓存，开始查询中心服务器 (SHA1: {sha1})")
                     
                     # ★ 撤销传入 file_size_115，防止中心服务器因 HTTP 波动拒收
                     resp = processor.p115_center.download_emby_mediainfo_data([sha1])
                     media_data = resp.get(sha1)
                     
                     if media_data:
-                        logger.info(f"  ☁️ [P115Center] 命中中心缓存，下发给神医恢复...")
+                        logger.info(f"  ➜ [P115Center] 命中中心缓存，下发给神医恢复...")
                     else:
-                        logger.info(f"  ☁️ [P115Center] 中心无缓存，通知神医提取媒体信息...")
+                        logger.info(f"  ➜ [P115Center] 中心无缓存，通知神医提取媒体信息...")
                         need_upload = True
 
                 # --- 第三步：轮询调用神医接口，死等纯净数据 ---
@@ -646,7 +646,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                         sleep(1)
                         
                     if res_json == []:
-                        logger.info(f"  ⏳ [神医] 已触发媒体信息提取，等待数据返回... ({poll_attempt+1}/{max_api_polls})")
+                        logger.info(f"  ➜ [神医] 已触发媒体信息提取，等待数据返回... ({poll_attempt+1}/{max_api_polls})")
                         sleep(5) 
                         continue
                     elif not res_json:
@@ -686,9 +686,9 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
 
                 if res_json:
                     if media_data:
-                        logger.info(f"  ✅ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
+                        logger.info(f"  ➜ [神医] 媒体信息恢复成功！(数据源: {'本地数据库' if is_from_local else '中心服务器'})")
                     else:
-                        logger.info(f"  ✅ [神医] 媒体信息提取成功！")
+                        logger.info(f"  ➜ [神医] 媒体信息提取成功！")
 
                     if not is_from_local:
                         try:
@@ -701,9 +701,9 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                                         ON CONFLICT (sha1) DO UPDATE SET mediainfo_json = EXCLUDED.mediainfo_json
                                     """, (sha1, json_str))
                                     conn.commit()
-                            logger.info(f"  💾 [本地缓存] 媒体信息已备份至本地数据库。")
+                            logger.info(f"  ➜ [本地缓存] 媒体信息已备份至本地数据库。")
                         except Exception as e_db:
-                            logger.warning(f"  ⚠️ [本地缓存] 写入数据库失败: {e_db}")
+                            logger.warning(f"  ➜ [本地缓存] 写入数据库失败: {e_db}")
                     
                     if need_upload and getattr(processor, 'p115_center', None):
                         try:
@@ -712,12 +712,12 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                                 processor.p115_center.upload_emby_mediainfo_data(sha1, res_json, size=syndrome_size)
                             else:
                                 processor.p115_center.upload_emby_mediainfo_data(sha1, res_json)
-                            logger.info(f"  ☁️ [P115Center] 成功将媒体信息反哺至中心服务器。")
+                            logger.info(f"  ➜ [P115Center] 成功将媒体信息反哺至中心服务器。")
                         except Exception as e_up:
-                            logger.warning(f"  ⚠️ [P115Center] 反哺中心服务器失败: {e_up}")
+                            logger.warning(f"  ➜ [P115Center] 反哺中心服务器失败: {e_up}")
 
         except Exception as e:
-            logger.error(f"  ❌ [P115Center] 联动异常: {e}")
+            logger.error(f"  ➜ [P115Center] 联动异常: {e}")
 
     # =========================================================
     # 2. 物理文件检查逻辑 
@@ -812,20 +812,20 @@ def emby_webhook():
 
                 # ★ 数据库兜底：如果万能提取器没拿到，查库 (此时数据库还没被删，完美拿到 PC！)
                 if not pickcodes and original_item_id:
-                    logger.debug(f"  🔍 [深度删除] 未从描述中提取到 PC 码，尝试通过 Emby ID ({original_item_id}) 查库...")
+                    logger.debug(f"  ➜ [深度删除] 未从描述中提取到 PC 码，尝试通过 Emby ID ({original_item_id}) 查库...")
                     db_pc = media_db.get_pickcode_by_emby_id(original_item_id)
                     if db_pc:
                         pickcodes.append(db_pc)
-                        logger.debug(f"  ✅ [深度删除] 成功从数据库查到 PC 码: {db_pc}")
+                        logger.debug(f"  ➜ [深度删除] 成功从数据库查到 PC 码: {db_pc}")
 
                 if pickcodes and item_path:
-                    logger.info(f"  🎯 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
+                    logger.info(f"  ➜ 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
                     from handler.p115_service import delete_115_files_by_webhook
                     spawn(delete_115_files_by_webhook, item_path, pickcodes)
                 else:
-                    logger.warning("  ⚠️ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
+                    logger.warning("  ➜ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
             except Exception as e:
-                logger.error(f"  ❌ 解析深度删除通知失败: {e}", exc_info=True)
+                logger.error(f"  ➜ 解析深度删除通知失败: {e}", exc_info=True)
         else:
             logger.debug("  🚫 联动删除未开启，跳过网盘清理。")
 
@@ -834,7 +834,7 @@ def emby_webhook():
         # --------------------------------------------------------
         if original_item_id:
             try:
-                logger.info(f"  🧹 [深度删除] 开始清理本地数据库与缓存: {original_item_name} ({original_item_type})")
+                logger.info(f"  ➜ [深度删除] 开始清理本地数据库与缓存: {original_item_name} ({original_item_type})")
                 
                 # 1. 清理主媒体库记录 (★ 所有层级均生效，删一集就清理一集的记录)
                 # ★ 修复：日志和内存缓存的清理已下沉到此函数内部，利用其完善的多版本善后逻辑，防止误清理
@@ -846,7 +846,7 @@ def emby_webhook():
                 )
 
             except Exception as e:
-                logger.error(f"  ❌ [深度删除] 清理本地数据库与缓存失败: {e}", exc_info=True)
+                logger.error(f"  ➜ [深度删除] 清理本地数据库与缓存失败: {e}", exc_info=True)
 
         # 深度删除处理完毕，直接返回 200，不再往下走
         return jsonify({"status": "deep_delete_processed"}), 200
@@ -882,7 +882,7 @@ def emby_webhook():
             begin_episode = meta_info.get("begin_episode")
             
             if not tmdb_id or not file_id:
-                logger.warning("  ⚠️ MP 通知缺少 tmdb_id 或 file_id，无法处理。")
+                logger.warning("  ➜ MP 通知缺少 tmdb_id 或 file_id，无法处理。")
                 return jsonify({"status": "ignored_missing_data"}), 200
 
             media_type = 'tv' if media_type_cn == '电视剧' else 'movie'
@@ -903,7 +903,7 @@ def emby_webhook():
                 
                 # ★ 区分日志前缀，方便排错
                 log_prefix = "MP字幕上传" if mp_event_type == "transfer.subtitle.complete" else "MP视频上传"
-                logger.info(f"  🚀 [{log_prefix}] 收到文件: {file_name}，开始整理...")
+                logger.info(f"  ➜ [{log_prefix}] 收到文件: {file_name}，开始整理...")
                 
                 spawn(_process_single_mp_file, file_info)
                 return jsonify({"status": "processing_single_file"}), 200
@@ -912,7 +912,7 @@ def emby_webhook():
                 return jsonify({"status": "ignored_not_file"}), 200
 
         except Exception as e:
-            logger.error(f"  ❌ [MP上传] 处理失败: {e}", exc_info=True)
+            logger.error(f"  ➜ [MP上传] 处理失败: {e}", exc_info=True)
             return jsonify({"status": "error", "message": str(e)}), 500
         
     logger.debug(f"  ➜ 收到Emby Webhook: {event_type}")
@@ -1109,10 +1109,10 @@ def emby_webhook():
                 )
                 
                 if not details:
-                    logger.info(f"  🗑️ 合集 '{collection_name}' (ID: {collection_id}) 已在 Emby 中消失 (可能是变空自动删除)，同步删除本地记录...")
+                    logger.info(f"  ➜ 合集 '{collection_name}' (ID: {collection_id}) 已在 Emby 中消失 (可能是变空自动删除)，同步删除本地记录...")
                     tmdb_collection_db.delete_native_collection_by_emby_id(collection_id)
                 else:
-                    logger.debug(f"  ✅ 合集 '{collection_name}' 依然存在，无需操作。")
+                    logger.debug(f"  ➜ 合集 '{collection_name}' 依然存在，无需操作。")
 
             task_manager.submit_task(
                 _check_collection_survival_task,

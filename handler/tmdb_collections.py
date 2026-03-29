@@ -354,7 +354,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     # 1. 查询 TMDb 详情 (获取 belongs_to_collection)
     movie_details = tmdb.get_movie_details(movie_tmdb_id, tmdb_api_key)
     if not movie_details:
-        logger.warning(f"  ⚠️ 无法从 TMDb 获取电影《{movie_name}》的详情，跳过检查。")
+        logger.warning(f"  ➜ 无法从 TMDb 获取电影《{movie_name}》的详情，跳过检查。")
         return
 
     collection_info = movie_details.get('belongs_to_collection')
@@ -398,7 +398,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     
     if local_collection:
         # --- 分支 A: 本地已有该合集 ---
-        logger.info(f"  ✅  TMDb 合集 '{tmdb_coll_name}' 已在数据库中，跳过 Emby 反查，仅更新 TMDb 列表。")
+        logger.info(f"  ➜  TMDb 合集 '{tmdb_coll_name}' 已在数据库中，跳过 Emby 反查，仅更新 TMDb 列表。")
         
         # 虽然跳过了 Emby 查找，但我们还是更新一下数据库里的 all_tmdb_ids
         # 万一 TMDb 刚刚给这个合集加了新续集呢？
@@ -425,7 +425,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
             for p_coll in parent_collections:
                 p_provider_ids = p_coll.get("ProviderIds", {})
                 if str(p_provider_ids.get("Tmdb", "")) == tmdb_coll_id:
-                    logger.info(f"  ✅ Emby 已生成 TMDb 合集 '{p_coll.get('Name')}' (ID: {p_coll.get('Id')})，正在写入数据库...")
+                    logger.info(f"  ➜ Emby 已生成 TMDb 合集 '{p_coll.get('Name')}' (ID: {p_coll.get('Id')})，正在写入数据库...")
                     
                     tmdb_collection_db.upsert_native_collection({
                         'emby_collection_id': p_coll.get('Id'),
@@ -441,7 +441,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
                 logger.info(f"  ➜ Emby 尚未生成 TMDb 合集 '{tmdb_coll_name}'，本次仅执行订阅检查。")
 
         except Exception as e:
-            logger.warning(f"  ⚠️ 尝试反查 Emby 合集失败: {e}")
+            logger.warning(f"  ➜ 尝试反查 Emby 合集失败: {e}")
     # ======================================================================
 
     # 4. 执行缺失订阅 (无论分支 A 还是 B，都要做这一步)

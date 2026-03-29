@@ -831,7 +831,7 @@ class RecommendationEngine:
                 all_data = cursor.fetchall()
             
             if not all_data:
-                logger.warning("  ⚠️ [向量引擎] 数据库为空，无法刷新缓存。")
+                logger.warning("  ➜ [向量引擎] 数据库为空，无法刷新缓存。")
                 return
 
             ids, vectors, titles, types = [], [], [], []
@@ -855,10 +855,10 @@ class RecommendationEngine:
             cls._cache_titles = titles
             cls._cache_types = types
             
-            logger.info(f"  ✅ [向量引擎] 缓存刷新完成。共 {len(ids)} 条，耗时 {time.time() - start_t:.2f}s。")
+            logger.info(f"  ➜ [向量引擎] 缓存刷新完成。共 {len(ids)} 条，耗时 {time.time() - start_t:.2f}s。")
 
         except Exception as e:
-            logger.error(f"  ❌ [向量引擎] 刷新缓存失败: {e}", exc_info=True)
+            logger.error(f"  ➜ [向量引擎] 刷新缓存失败: {e}", exc_info=True)
 
     @classmethod
     def start_auto_refresh_loop(cls):
@@ -871,7 +871,7 @@ class RecommendationEngine:
         cls._is_refreshing_loop_running = True
         
         def loop():
-            logger.info("  🚀 [向量引擎] 自动刷新守护线程已启动。")
+            logger.info("  ➜ [向量引擎] 自动刷新守护线程已启动。")
             cls.refresh_cache()
             
             while True:

@@ -119,7 +119,7 @@ def delete_native_collection_by_emby_id(emby_collection_id: str):
             deleted_count = cursor.rowcount
             conn.commit()
             if deleted_count > 0:
-                logger.info(f"  ✅ [同步删除] 已从数据库移除原生合集记录 (Emby ID: {emby_collection_id})")
+                logger.info(f"  ➜ [同步删除] 已从数据库移除原生合集记录 (Emby ID: {emby_collection_id})")
             else:
                 logger.debug(f"  ➜ [同步删除] 数据库中未找到 Emby ID 为 {emby_collection_id} 的合集，无需删除。")
             return deleted_count > 0

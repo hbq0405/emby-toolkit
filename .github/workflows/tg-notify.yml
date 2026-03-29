@@ -14,14 +14,14 @@ jobs:
           TELEGRAM_TO: ${{ secrets.TELEGRAM_TO }}
           # 这里拼接你要发送的消息内容
           MESSAGE_TEXT: |
-            🚀 **新版本发布啦！**
+            ➜ **新版本发布啦！**
             
             📦 **项目**: ${{ github.repository }}
             🏷 **版本**: ${{ github.event.release.tag_name }}
             👤 **发布者**: ${{ github.event.release.author.login }}
             🔗 **直达链接**: [点击查看 Release](${{ github.event.release.html_url }})
             
-            📝 **更新日志**:
+            ➜ **更新日志**:
             ${{ github.event.release.body }}
             
         run: |
@@ -41,7 +41,7 @@ jobs:
 
           # 3. 判断是否成功获取到 ID，如果成功则执行置顶操作
           if [ "$MESSAGE_ID" != "null" ] && [ -n "$MESSAGE_ID" ]; then
-            echo "✅ 消息发送成功，Message ID: $MESSAGE_ID，准备置顶..."
+            echo "➜ 消息发送成功，Message ID: $MESSAGE_ID，准备置顶..."
             
             curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_TOKEN}/pinChatMessage" \
               -H "Content-Type: application/json" \
@@ -53,6 +53,6 @@ jobs:
               
             echo "📌 置顶完成！"
           else
-            echo "❌ 发送失败或无法获取 Message ID: $RESPONSE"
+            echo "➜ 发送失败或无法获取 Message ID: $RESPONSE"
             exit 1
           fi

@@ -199,7 +199,7 @@ def task_process_all_custom_collections(processor):
                     custom_collection_db.update_custom_collection_sync_results(collection_id, update_data)
                     
                     if is_deleted:
-                        logger.info(f"  ✅ 合集 '{collection_name}' 已清理完毕。")
+                        logger.info(f"  ➜ 合集 '{collection_name}' 已清理完毕。")
                     else:
                         logger.info(f"  ➜ 合集 '{collection_name}' 在 Emby 中不存在，无需清理。")
                         

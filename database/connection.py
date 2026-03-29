@@ -32,9 +32,9 @@ def _init_pool():
                 password=cfg.get(constants.CONFIG_OPTION_DB_PASSWORD),
                 dbname=cfg.get(constants.CONFIG_OPTION_DB_NAME)
             )
-            logger.info("  ✅ PostgreSQL 线程安全连接池初始化成功 (Max: 50)")
+            logger.info("  ➜ PostgreSQL 线程安全连接池初始化成功 (Max: 50)")
         except Exception as e:
-            logger.error(f"  ❌ 初始化数据库连接池失败: {e}", exc_info=True)
+            logger.error(f"  ➜ 初始化数据库连接池失败: {e}", exc_info=True)
             raise
 
 @contextmanager

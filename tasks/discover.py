@@ -134,7 +134,7 @@ def task_update_daily_theme(processor):
         settings_db.save_setting('recommendation_theme_index', today_theme_index)
         settings_db.save_setting('recommendation_pool_page', page_to_fetch - 1)
         
-        logger.debug(f"  ✅ 每日推荐池已更新为【{today_theme_name}】主题，共找到 {len(recommendation_pool)} 部电影。下次将推荐下一个主题。")
+        logger.debug(f"  ➜ 每日推荐池已更新为【{today_theme_name}】主题，共找到 {len(recommendation_pool)} 部电影。下次将推荐下一个主题。")
 
     except Exception as e:
         logger.error(f"  ➜ 每日推荐(主题轮换)更新任务执行失败: {e}", exc_info=True)
@@ -264,7 +264,7 @@ def task_replenish_recommendation_pool(processor):
             updated_pool = current_pool + replenishment_list
             settings_db.save_setting('recommendation_pool', updated_pool)
             settings_db.save_setting('recommendation_pool_page', next_page_to_fetch)
-            logger.debug(f"  ✅ 推荐池补充成功！为主题【{current_theme_name}】新增 {len(replenishment_list)} 部电影，当前总数 {len(updated_pool)}。下次将从第 {next_page_to_fetch + 1} 页开始。")
+            logger.debug(f"  ➜ 推荐池补充成功！为主题【{current_theme_name}】新增 {len(replenishment_list)} 部电影，当前总数 {len(updated_pool)}。下次将从第 {next_page_to_fetch + 1} 页开始。")
         else:
             logger.debug("  ➜ 未能成功获取任何电影详情，本次补充列表为空。")
 

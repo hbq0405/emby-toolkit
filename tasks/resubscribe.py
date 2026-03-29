@@ -847,7 +847,7 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
             else:
                 logger.warning(f"  ⚠ 虽然检测到发布组 {detected_group_names}，但无法生成对应的正则关键词。")
         else:
-            logger.info(f"  ✅ 未找到预分析的发布组，不添加排除规则。")
+            logger.info(f"  ➜ 未找到预分析的发布组，不添加排除规则。")
 
     if not rule:
         return payload

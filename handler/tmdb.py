@@ -710,9 +710,9 @@ def get_tmdb_id_by_imdb_id(imdb_id: str, api_key: str, media_type: str) -> Optio
     }
     
     try:
-        # ✅ 修复：获取代理配置
+        # ➜ 修复：获取代理配置
         proxies = config_manager.get_proxies_for_requests()
-        # ✅ 修复：使用全局 session (带重试功能) 并传入 proxies
+        # ➜ 修复：使用全局 session (带重试功能) 并传入 proxies
         resp = tmdb_session.get(url, params=params, proxies=proxies, timeout=15)
         
         if resp.status_code == 200:

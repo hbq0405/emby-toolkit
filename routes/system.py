@@ -450,7 +450,7 @@ def api_get_ai_prompts():
         
         return jsonify(final_prompts)
     except Exception as e:
-        logger.error(f"  ❌ 获取 AI 提示词失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取 AI 提示词失败: {e}", exc_info=True)
         return jsonify({"error": "获取提示词失败"}), 500
 
 @system_bp.route('/ai/prompts', methods=['POST'])
@@ -465,10 +465,10 @@ def api_save_ai_prompts():
             return jsonify({"error": "无效的数据格式"}), 400
             
         settings_db.save_setting('ai_user_prompts', new_prompts)
-        logger.info("  ✅ 用户自定义 AI 提示词已保存。")
+        logger.info("  ➜ 用户自定义 AI 提示词已保存。")
         return jsonify({"message": "提示词已保存"})
     except Exception as e:
-        logger.error(f"  ❌ 保存 AI 提示词失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 保存 AI 提示词失败: {e}", exc_info=True)
         return jsonify({"error": "保存失败"}), 500
 
 @system_bp.route('/ai/prompts/reset', methods=['POST'])
@@ -482,7 +482,7 @@ def api_reset_ai_prompts():
         logger.info("  ➜ AI 提示词已重置为默认值。")
         return jsonify({"message": "已恢复默认提示词", "prompts": utils.DEFAULT_AI_PROMPTS})
     except Exception as e:
-        logger.error(f"  ❌ 重置 AI 提示词失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 重置 AI 提示词失败: {e}", exc_info=True)
         return jsonify({"error": "重置失败"}), 500
 
 @system_bp.route('/system/activate_pro', methods=['POST'])
@@ -523,7 +523,7 @@ def activate_pro():
             config_manager.APP_CONFIG['is_pro_active'] = True
             config_manager.APP_CONFIG['pro_expire_time'] = expire_time
             
-            logger.info(f"  💎 Pro 激活成功！到期时间: {expire_time}")
+            logger.info(f"  ➜ Pro 激活成功！到期时间: {expire_time}")
             return jsonify({"success": True, "message": result.get("msg", "激活成功！")})
         else:
             # 验证失败
@@ -568,7 +568,7 @@ def transfer_pro():
             config_manager.APP_CONFIG['is_pro_active'] = True
             config_manager.APP_CONFIG['pro_expire_time'] = expire_time
             
-            logger.info(f"  💎 Pro 设备换绑成功！到期时间: {expire_time}")
+            logger.info(f"  ➜ Pro 设备换绑成功！到期时间: {expire_time}")
             return jsonify({"success": True, "message": result.get("msg", "换绑成功！")})
         else:
             return jsonify({"success": False, "message": result.get("msg", "换绑失败")}), 400

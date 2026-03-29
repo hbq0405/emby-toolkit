@@ -145,7 +145,7 @@ def _wait_for_items_recovery(processor, item_ids: list, max_retries=6, interval=
     if not item_ids:
         return True
 
-    logger.info(f"  ⏳ 开始轮询监控 {len(item_ids)} 个项目的修复进度 (最大等待 {max_retries*interval}秒)...")
+    logger.info(f"  ➜ 开始轮询监控 {len(item_ids)} 个项目的修复进度 (最大等待 {max_retries*interval}秒)...")
     
     # 使用集合来管理还需要等待的ID，修复一个移除一个
     pending_ids = set(item_ids)
@@ -186,15 +186,15 @@ def _wait_for_items_recovery(processor, item_ids: list, max_retries=6, interval=
                 pass # 网络错误暂时忽略，下次重试
         
         if not pending_ids:
-            logger.info(f"  ✅ 所有目标项目媒体信息均已提取完成 (耗时 {i*interval}秒)！")
+            logger.info(f"  ➜ 所有目标项目媒体信息均已提取完成 (耗时 {i*interval}秒)！")
             return True
             
         if i % 2 == 0: # 每20秒打印一次进度
-            logger.info(f"  ⏳ 等待神医提取媒体信息中... 剩余 {len(pending_ids)}/{len(item_ids)} 个项目 (轮询 {i+1}/{max_retries})")
+            logger.info(f"  ➜ 等待神医提取媒体信息中... 剩余 {len(pending_ids)}/{len(item_ids)} 个项目 (轮询 {i+1}/{max_retries})")
             
         time.sleep(interval)
 
-    logger.warning(f"  ⚠️ 等待超时！仍有 {len(pending_ids)} 个项目未获取到完整信息，将强制继续处理。")
+    logger.warning(f"  ➜ 等待超时！仍有 {len(pending_ids)} 个项目未获取到完整信息，将强制继续处理。")
     return False
 
 # --- 重新处理单个项目 ---
@@ -259,7 +259,7 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
                         _wait_for_items_recovery(processor, ids_to_heal, max_retries=6, interval=10)
                         
             except Exception as e_heal:
-                logger.warning(f"  ⚠️ 流程出现小插曲 (不影响后续重扫): {e_heal}")
+                logger.warning(f"  ➜ 流程出现小插曲 (不影响后续重扫): {e_heal}")
         else:
             task_manager.update_status_from_thread(10, "跳过媒体信息提取，直接开始刮削...")
 
@@ -1385,10 +1385,10 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
         logger.info("  ➜ [自动维护] 正在清理废弃的内部ID兜底记录...")
         cleaned_zombies = media_db.cleanup_offline_internal_ids()
         if cleaned_zombies > 0:
-            logger.info(f"  🧹 [大扫除] 成功物理删除了 {cleaned_zombies} 条已废弃的内部ID记录 (如 xxx-S1E1)。")
+            logger.info(f"  ➜ [大扫除] 成功物理删除了 {cleaned_zombies} 条已废弃的内部ID记录 (如 xxx-S1E1)。")
             
         final_msg = f"同步完成！新增/更新: {total_updated_count} 个媒体项, 标记离线: {total_offline_count} 个媒体项。"
-        logger.info(f"  ✅ {final_msg}")
+        logger.info(f"  ➜ {final_msg}")
         task_manager.update_status_from_thread(100, final_msg)
 
     except Exception as e:
@@ -1648,7 +1648,7 @@ def task_scan_monitor_folders(processor):
 
     for root_path in monitor_paths:
         if not os.path.exists(root_path):
-            logger.warning(f"  ⚠️ 监控路径不存在: {root_path}")
+            logger.warning(f"  ➜ 监控路径不存在: {root_path}")
             continue
 
         logger.info(f"  ➜ 正在扫描目录: {root_path}")
@@ -1735,7 +1735,7 @@ def task_scan_monitor_folders(processor):
                         skipped_exists_count += 1
                         continue
 
-                    logger.info(f"  🔍 发现未入库文件: {filename} (ID: {target_id})，触发检查...")
+                    logger.info(f"  ➜ 发现未入库文件: {filename} (ID: {target_id})，触发检查...")
                     try:
                         processor.process_file_actively(file_path)
                         processed_in_this_run.add(target_id)
@@ -1837,7 +1837,7 @@ def task_restore_local_cache_from_db(processor):
                                         
                                 db_actors.sort(key=lambda x: x.get('order', 999))
                     except Exception as e_actor:
-                        logger.warning(f"  ⚠️ 解析演员数据失败 ({title}): {e_actor}")
+                        logger.warning(f"  ➜ 解析演员数据失败 ({title}): {e_actor}")
 
                 # --- B. 重建主 Payload ---
                 payload = reconstruct_metadata_from_db(item, db_actors)
@@ -1914,7 +1914,7 @@ def task_restore_local_cache_from_db(processor):
                 logger.error(f"  🚫 恢复项目 '{title}' 失败: {e_item}")
 
         final_msg = f"恢复完成！成功生成 {success_count}/{total} 个项目的本地缓存文件。"
-        logger.info(f"  ✅ {final_msg}")
+        logger.info(f"  ➜ {final_msg}")
         task_manager.update_status_from_thread(100, final_msg)
 
     except Exception as e:
@@ -1938,7 +1938,7 @@ def task_backup_mediainfo(processor):
     total = len(items)
     
     if total == 0:
-        logger.info("  ✅ 所有媒体信息均已备份，无需处理。")
+        logger.info("  ➜ 所有媒体信息均已备份，无需处理。")
         task_manager.update_status_from_thread(100, "所有媒体信息均已备份，无需处理")
         time.sleep(1)  # 增加短暂停顿，确保前端能渲染出完成状态
         return
@@ -2040,11 +2040,11 @@ def task_backup_mediainfo(processor):
                         sha1s[idx] = current_sha1
                         needs_db_update = True
                         sha1_fixed_count += 1
-                        logger.info(f"  ✅ 成功通过本地路径匹配获取 SHA1: {current_sha1}")
+                        logger.info(f"  ➜ 成功通过本地路径匹配获取 SHA1: {current_sha1}")
                     
                     # 阶段 1: 补齐缺失的 SHA1 (如果万能提取器没拿到 SHA1，再调 API)
                     if not current_sha1 and actual_pc:
-                        logger.info(f"  🔍 [{title}] 缺失 SHA1，正在通过本地计算 FID 并请求 115 API 补齐 (PC: {actual_pc})...")
+                        logger.info(f"  ➜ [{title}] 缺失 SHA1，正在通过本地计算 FID 并请求 115 API 补齐 (PC: {actual_pc})...")
                         fid = None
                         try:
                             # 优先使用 p115pickcode 库本地计算，无需查库，速度极快
@@ -2070,9 +2070,9 @@ def task_backup_mediainfo(processor):
                                         sha1s[idx] = current_sha1
                                         needs_db_update = True
                                         sha1_fixed_count += 1
-                                        logger.info(f"  ✅ 成功获取 SHA1: {current_sha1}")
+                                        logger.info(f"  ➜ 成功获取 SHA1: {current_sha1}")
                             except Exception as e:
-                                logger.warning(f"  ⚠️ 获取 SHA1 失败: {e}")
+                                logger.warning(f"  ➜ 获取 SHA1 失败: {e}")
                                 
                     # 阶段 2: 备份媒体信息到指纹库 & 缺失检查
                     if current_path and not current_path.startswith('http'):
@@ -2105,7 +2105,7 @@ def task_backup_mediainfo(processor):
                                 processor.log_db_manager.save_to_failed_log(
                                     cursor, target_emby_id, log_title, reason, target_log_type, score=0.0
                                 )
-                                logger.warning(f"  ⚠️ [{log_title}] 缺失本地 JSON，已标记为待复核: {reason}")
+                                logger.warning(f"  ➜ [{log_title}] 缺失本地 JSON，已标记为待复核: {reason}")
                         else:
                             # 文件存在，如果有 SHA1 且未缓存，则备份
                             if current_sha1 and not media_db.is_mediainfo_cached(current_sha1):
@@ -2122,9 +2122,9 @@ def task_backup_mediainfo(processor):
                                         
                                         if cursor.rowcount > 0:
                                             mediainfo_backed_up_count += 1
-                                            logger.info(f"  💾 [{log_title}] 媒体信息已成功备份至数据库。")
+                                            logger.info(f"  ➜ [{log_title}] 媒体信息已成功备份至数据库。")
                                 except Exception as e:
-                                    logger.warning(f"  ⚠️ 读取本地 JSON 失败 {mediainfo_path}: {e}")
+                                    logger.warning(f"  ➜ 读取本地 JSON 失败 {mediainfo_path}: {e}")
                 
                 if needs_db_update:
                     media_db.update_media_sha1_and_pc_json(tmdb_id, item_type, sha1s, pcs)
@@ -2135,7 +2135,7 @@ def task_backup_mediainfo(processor):
             conn.commit()
             
         msg = f"备份任务完成！补齐 SHA1: {sha1_fixed_count} 个，成功备份媒体信息: {mediainfo_backed_up_count} 个。"
-        logger.info(f"  ✅ {msg}")
+        logger.info(f"  ➜ {msg}")
         task_manager.update_status_from_thread(100, msg)
         
     except Exception as e:
@@ -2173,7 +2173,7 @@ def task_restore_mediainfo(processor):
                     
     total = len(strm_files_to_restore)
     if total == 0:
-        logger.info("  ✅ 本地媒体库完整，无需还原媒体信息。")
+        logger.info("  ➜ 本地媒体库完整，无需还原媒体信息。")
         task_manager.update_status_from_thread(100, "本地媒体库完整，无需还原媒体信息")
         time.sleep(1)  # 增加短暂停顿，确保前端能渲染出完成状态
         return
@@ -2199,7 +2199,7 @@ def task_restore_mediainfo(processor):
                 content = f.read().strip()
                 strm_content_path = content.replace('\\', '/')
         except Exception as e:
-            logger.warning(f"  ⚠️ 读取 STRM 失败 {strm_path}: {e}")
+            logger.warning(f"  ➜ 读取 STRM 失败 {strm_path}: {e}")
             failed_count += 1
             continue
 
@@ -2220,9 +2220,9 @@ def task_restore_mediainfo(processor):
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(mediainfo, f, ensure_ascii=False)
                 restored_count += 1
-                logger.debug(f"  ✅ 成功还原媒体信息: {filename}")
+                logger.debug(f"  ➜ 成功还原媒体信息: {filename}")
             except Exception as e:
-                logger.error(f"  ❌ 写入 JSON 失败 {json_path}: {e}")
+                logger.error(f"  ➜ 写入 JSON 失败 {json_path}: {e}")
                 failed_count += 1
         else:
             failed_count += 1
@@ -2231,7 +2231,7 @@ def task_restore_mediainfo(processor):
         time.sleep(0.005)
             
     msg = f"还原任务完成！成功还原: {restored_count} 个，未找到备份: {failed_count} 个。"
-    logger.info(f"  ✅ {msg}")
+    logger.info(f"  ➜ {msg}")
     task_manager.update_status_from_thread(100, msg)
 
 def task_contribute_mediainfo_to_center(processor):
@@ -2288,7 +2288,7 @@ def task_contribute_mediainfo_to_center(processor):
                 if not resp.get(item['sha1']):
                     missing_in_center.append(item)
         except Exception as e:
-            logger.warning(f"  ⚠️ 批量查询中心服务器失败: {e}")
+            logger.warning(f"  ➜ 批量查询中心服务器失败: {e}")
             time.sleep(2)
             
     total_missing = len(missing_in_center)
@@ -2327,12 +2327,12 @@ def task_contribute_mediainfo_to_center(processor):
             if extracted_data:
                 # 加入批量上传队列
                 payload_batch.append((sha1, extracted_data))
-                logger.debug(f"  ⏳ [加入队列] {title} (当前队列: {len(payload_batch)}/{UPLOAD_BATCH_SIZE})")
+                logger.debug(f"  ➜ [加入队列] {title} (当前队列: {len(payload_batch)}/{UPLOAD_BATCH_SIZE})")
             else:
-                logger.debug(f"  ⚠️ [提取失败] {title} 无法获取媒体信息")
+                logger.debug(f"  ➜ [提取失败] {title} 无法获取媒体信息")
                 
         except Exception as e:
-            logger.warning(f"  ❌ 提取 {title} 时发生异常: {e}")
+            logger.warning(f"  ➜ 提取 {title} 时发生异常: {e}")
             
         # 稍微限速，保护本地 Emby
         time.sleep(0.5) 
@@ -2340,16 +2340,16 @@ def task_contribute_mediainfo_to_center(processor):
         # 2. 达到批量阈值，或已经是最后一个项目时，执行批量上传
         is_last_item = (i == total_missing - 1)
         if len(payload_batch) >= UPLOAD_BATCH_SIZE or (is_last_item and payload_batch):
-            logger.info(f"  🚀 [批量反哺] 正在将 {len(payload_batch)} 条媒体信息打包上传至中心服务器...")
+            logger.info(f"  ➜ [批量反哺] 正在将 {len(payload_batch)} 条媒体信息打包上传至中心服务器...")
             try:
                 # 调用中心服务器的批量上传接口
                 processor.p115_center.upload_emby_mediainfo_data_bulk(payload_batch)
                 
                 success_count += len(payload_batch)
-                logger.info(f"  ✅ [批量反哺] 成功上传 {len(payload_batch)} 条数据！")
+                logger.info(f"  ➜ [批量反哺] 成功上传 {len(payload_batch)} 条数据！")
                 
             except Exception as e:
-                logger.error(f"  ❌ [批量反哺] 批量上传失败: {e}")
+                logger.error(f"  ➜ [批量反哺] 批量上传失败: {e}")
             finally:
                 # 清空队列，准备下一批
                 payload_batch = []

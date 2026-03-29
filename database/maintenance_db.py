@@ -587,9 +587,9 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                 
                 if item_id in processor.processed_items_cache:
                     del processor.processed_items_cache[item_id]
-                    logger.debug(f"  🧹 [深度删除] 已精准抹除该版本的专属日志与内存缓存: EmbyID {item_id}")
+                    logger.debug(f"  ➜ [深度删除] 已精准抹除该版本的专属日志与内存缓存: EmbyID {item_id}")
         except Exception as e:
-            logger.error(f"  ❌ 清理专属日志缓存失败: {e}")
+            logger.error(f"  ➜ 清理专属日志缓存失败: {e}")
         # ======================================================================
         # 辅助函数：执行外科手术式移除，并返回剩余的 ID 数量
         # ★ 核心重构：在 Python 内存中精准定位索引并同步剔除四个数组的元素 ★
@@ -887,7 +887,7 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                             has_remaining_items = cursor.fetchone()
                             
                             if not has_remaining_items:
-                                logger.info(f"  🗑️ 原生合集 '{c_name}' (ID: {c_id}) 内所有媒体均已离线，正在自动清理该合集记录...")
+                                logger.info(f"  ➜ 原生合集 '{c_name}' (ID: {c_id}) 内所有媒体均已离线，正在自动清理该合集记录...")
                                 cursor.execute("DELETE FROM collections_info WHERE emby_collection_id = %s", (c_id,))
                     
                     # ======================================================================
@@ -903,7 +903,7 @@ def cleanup_deleted_media_item(item_id: str, item_name: str, item_type: str, ser
                                 spawn(RecommendationEngine.refresh_cache)
                                 logger.debug(f"  ➜ [智能推荐] 检测到顶层媒体完全删除，已触发向量缓存刷新。")
                         except Exception as e:
-                            logger.error(f"  ❌ 刷新向量缓存失败: {e}", exc_info=True)
+                            logger.error(f"  ➜ 刷新向量缓存失败: {e}", exc_info=True)
 
                     logger.info(f"--- 对 TMDB ID: {target_tmdb_id_for_full_cleanup} 的完全清理已完成 ---")
 
@@ -987,7 +987,7 @@ def clear_all_vectors() -> int:
             cursor.execute("UPDATE media_metadata SET overview_embedding = NULL WHERE overview_embedding IS NOT NULL")
             count = cursor.rowcount
             conn.commit()
-            logger.info(f"  ✅ 已清空 {count} 条向量数据。")
+            logger.info(f"  ➜ 已清空 {count} 条向量数据。")
             return count
     except Exception as e:
         logger.error(f"清空向量数据失败: {e}", exc_info=True)

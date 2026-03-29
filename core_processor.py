@@ -168,12 +168,12 @@ class MediaProcessor:
                     license=license_key,
                     file_path=auth_file_path
                 )
-                logger.info("  ✅ P115Center SDK 初始化成功，已启用神医媒体信息中心化同步功能。")
+                logger.info("  ➜ P115Center SDK 初始化成功，已启用神医媒体信息中心化同步功能。")
             except Exception as e:
                 logger.error(f"P115Center SDK 初始化失败: {e}")
                 self.p115_center = None
         else:
-            # ✅ 如果开关关闭或依赖缺失，直接设为 None
+            # ➜ 如果开关关闭或依赖缺失，直接设为 None
             self.p115_center = None
             
         logger.trace("核心处理器初始化完成。")
@@ -727,7 +727,7 @@ class MediaProcessor:
             if not skip_refresh:
                 logger.info(f"  ⚡ [实时监控] 极速通知 Emby 单文件入库: {os.path.basename(file_path)}")
                 emby.notify_emby_file_changes([file_path], self.emby_url, self.emby_api_key)
-                logger.info(f"  ✅ [实时监控] 预处理完成，Emby 将进行秒级精准入库...")
+                logger.info(f"  ➜ [实时监控] 预处理完成，Emby 将进行秒级精准入库...")
             else:
                 logger.info(f"  ➜ [实时监控] 缓存已生成，等待批量极速通知...")
             
@@ -748,7 +748,7 @@ class MediaProcessor:
         if not file_paths:
             return
 
-        logger.info(f"  📥 [实时监控] 收到 {len(file_paths)} 个新任务，开始批量预处理...")
+        logger.info(f"  ➜ [实时监控] 收到 {len(file_paths)} 个新任务，开始批量预处理...")
         
         valid_files_to_notify = set()
         
@@ -765,14 +765,14 @@ class MediaProcessor:
 
         # 2. ★★★ 极速批量通知 Emby ★★★
         if valid_files_to_notify:
-            #logger.info(f"  🚀 [实时监控] 预处理完成，正在向 Emby 发送 {len(valid_files_to_notify)} 个文件的极速入库通知...")
+            #logger.info(f"  ➜ [实时监控] 预处理完成，正在向 Emby 发送 {len(valid_files_to_notify)} 个文件的极速入库通知...")
             
             # 直接把所有文件路径打包发给 Emby 的轻量级接口
             emby.notify_emby_file_changes(list(valid_files_to_notify), self.emby_url, self.emby_api_key)
             
-            logger.info(f"  ✅ [实时监控] 预处理完成，等待视频流数据...")
+            logger.info(f"  ➜ [实时监控] 预处理完成，等待视频流数据...")
         else:
-            logger.warning(f"  ⚠️ [实时监控] 未收集到有效的文件路径，任务结束。")
+            logger.warning(f"  ➜ [实时监控] 未收集到有效的文件路径，任务结束。")
 
     def _refresh_lib_guid_map(self):
         """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""
@@ -862,7 +862,7 @@ class MediaProcessor:
                     db_local_path = row['local_path']
                     # 只要 Emby 的绝对路径以数据库的相对路径结尾，就是 100% 命中！
                     if normalized_path.endswith(db_local_path):
-                        logger.debug(f"  🎯 [挂载模式] 路径命中: {db_local_path}")
+                        logger.debug(f"  ➜ [挂载模式] 路径命中: {db_local_path}")
                         return row['pick_code'], row['sha1']
                         
                 # 2. 降级方案：三级目录联合匹配 (兼容以前没有写入 local_path 的老数据)
@@ -940,7 +940,7 @@ class MediaProcessor:
         except Exception: pass
 
         # 2. 查不到？现场算 FID 调 API 查！(专治第三方 STRM)
-        logger.trace(f"  🔍 未在本地数据库找到 SHA1，尝试通过 115api 获取...")
+        logger.trace(f"  ➜ 未在本地数据库找到 SHA1，尝试通过 115api 获取...")
         try:
             to_id_func = None
             try:
@@ -962,10 +962,10 @@ class MediaProcessor:
                     if info_res and info_res.get('state'):
                         sha1 = info_res['data'].get('sha1')
                         if sha1:
-                            logger.info(f"  ✅ 成功通过 115 API 实时获取到 SHA1: {sha1}")
+                            logger.info(f"  ➜ 成功通过 115 API 实时获取到 SHA1: {sha1}")
                             return sha1
         except Exception as e:
-            logger.trace(f"  ⚠️ 实时获取 SHA1 失败: {e}")
+            logger.trace(f"  ➜ 实时获取 SHA1 失败: {e}")
 
         return None
 
@@ -1739,7 +1739,7 @@ class MediaProcessor:
         )
 
         if match_info_result.get("error") or not match_info_result.get("id"):
-            logger.warning(f"  ❌ 在线匹配豆瓣ID失败 for '{item_name}': {match_info_result.get('message', '未找到ID')}")
+            logger.warning(f"  ➜ 在线匹配豆瓣ID失败 for '{item_name}': {match_info_result.get('message', '未找到ID')}")
             return [], None
 
         douban_id = match_info_result["id"]
@@ -2609,7 +2609,7 @@ class MediaProcessor:
                 logger.error(f"写入待复核日志时再次发生错误: {log_e}")
             return False
 
-        logger.trace(f"  ✅ 处理完成 '{item_name_for_log}'")
+        logger.trace(f"  ➜ 处理完成 '{item_name_for_log}'")
         return True
 
     # --- 核心处理器 ---

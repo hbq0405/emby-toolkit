@@ -30,7 +30,7 @@ def task_generate_all_covers(processor):
             return
 
         if not cover_config.get("enabled"):
-            logger.info("  ⚠️ 封面生成器未启用，跳过封面生成任务。")
+            logger.info("  ➜ 封面生成器未启用，跳过封面生成任务。")
             task_manager.update_status_from_thread(100, "任务跳过：封面生成器未启用。")
             return
 
@@ -143,7 +143,7 @@ def task_generate_all_custom_collection_covers(processor):
         # 1. 读取封面生成器的配置
         cover_config = settings_db.get_setting('cover_generator_config') or {}
         if not cover_config.get("enabled"):
-            logger.info("  ⚠️ 封面生成器未启用，跳过自建合集封面生成任务。")
+            logger.info("  ➜ 封面生成器未启用，跳过自建合集封面生成任务。")
             task_manager.update_status_from_thread(100, "任务跳过：封面生成器未启用。")
             return
 

@@ -226,7 +226,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             f"{media_icon} *{escaped_title}* {notification_title}\n\n"
             f"{episode_info_text}"
             f"⏰ *时间*: `{current_time}`\n"
-            f"📝 *剧情*: {escaped_overview}"
+            f"➜ *剧情*: {escaped_overview}"
         )
         
         # --- 5. 查询订阅者 ---
@@ -274,7 +274,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         # --- 8. 发送个人订阅到货通知 ---
         if subscriber_chat_ids:
             personal_caption_map = {
-                'new': f"✅ *您的订阅已入库*\n\n{caption}",
+                'new': f"➜ *您的订阅已入库*\n\n{caption}",
                 'update': f"🔄 *您的订阅已更新*\n\n{caption}"
             }
             personal_caption = personal_caption_map.get(notification_type, caption)
@@ -309,7 +309,7 @@ def _execute_task_from_tg(chat_id: str, task_key: str):
     task_info = registry.get(task_key)
     
     if not task_info:
-        send_telegram_message(chat_id, escape_markdown("❌ 任务不存在或已失效。"))
+        send_telegram_message(chat_id, escape_markdown("➜ 任务不存在或已失效。"))
         return
 
     task_function, task_description, processor_type = task_info[:3]
@@ -324,10 +324,10 @@ def _execute_task_from_tg(chat_id: str, task_key: str):
         target_processor = extensions.actor_subscription_processor_instance
 
     if not target_processor:
-        send_telegram_message(chat_id, escape_markdown(f"❌ 无法获取 {processor_type} 处理器实例。"))
+        send_telegram_message(chat_id, escape_markdown(f"➜ 无法获取 {processor_type} 处理器实例。"))
         return
 
-    send_telegram_message(chat_id, escape_markdown(f"🚀 任务已启动：*{task_description}*\n请在系统日志或任务中心查看进度。"))
+    send_telegram_message(chat_id, escape_markdown(f"➜ 任务已启动：*{task_description}*\n请在系统日志或任务中心查看进度。"))
     logger.info(f"  ➜ [TG交互] 管理员 {chat_id} 触发了任务: {task_description}")
 
     # 包装执行逻辑，处理特殊参数
@@ -339,10 +339,10 @@ def _execute_task_from_tg(chat_id: str, task_key: str):
             else:
                 task_function(target_processor)
             
-            send_telegram_message(chat_id, escape_markdown(f"✅ 任务执行完毕：*{task_description}*"))
+            send_telegram_message(chat_id, escape_markdown(f"➜ 任务执行完毕：*{task_description}*"))
         except Exception as e:
             logger.error(f"TG触发任务 '{task_description}' 失败: {e}", exc_info=True)
-            send_telegram_message(chat_id, escape_markdown(f"❌ 任务执行失败：*{task_description}*\n错误信息: {str(e)}"))
+            send_telegram_message(chat_id, escape_markdown(f"➜ 任务执行失败：*{task_description}*\n错误信息: {str(e)}"))
 
     # 启动独立线程执行任务，避免阻塞 TG 轮询
     threading.Thread(target=run_wrapper, name=f"TG_Task_{task_key}", daemon=True).start()
@@ -359,7 +359,7 @@ def _handle_callback_query(callback_query: dict):
     # 1. 权限校验
     admin_ids = [str(aid) for aid in user_db.get_admin_telegram_chat_ids()]
     if chat_id not in admin_ids:
-        logger.warning(f"  ⚠️ [TG交互] 收到未授权用户 ({chat_id}) 的回调请求，已拒绝。")
+        logger.warning(f"  ➜ [TG交互] 收到未授权用户 ({chat_id}) 的回调请求，已拒绝。")
         return
 
     # 2. 响应 Callback Query (消除按钮上的加载圈圈)
@@ -388,7 +388,7 @@ def _handle_incoming_message(message: dict):
     global_channel = str(APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID, ''))
     
     if chat_id not in admin_ids and chat_id != global_channel:
-        logger.warning(f"  ⚠️ [TG交互] 收到未授权用户 ({chat_id}) 的消息，已忽略。")
+        logger.warning(f"  ➜ [TG交互] 收到未授权用户 ({chat_id}) 的消息，已忽略。")
         return
 
     # ★★★ 处理 M 菜单发来的命令 ★★★
@@ -428,12 +428,12 @@ def _handle_incoming_message(message: dict):
     # =================================================================
     # ★ 纯手动处理逻辑 (不再包含任何自动订阅和查库代码)
     # =================================================================
-    logger.info(f"  📥 [TG交互] 收到来自 {chat_id} 的手动资源链接，准备处理...")
-    send_telegram_message(chat_id, escape_markdown("⏳ *收到链接，正在提交至 115...*"), disable_notification=True)
+    logger.info(f"  ➜ [TG交互] 收到来自 {chat_id} 的手动资源链接，准备处理...")
+    send_telegram_message(chat_id, escape_markdown("➜ *收到链接，正在提交至 115...*"), disable_notification=True)
 
     client = P115Service.get_client()
     if not client:
-        send_telegram_message(chat_id, "❌ *提交失败*：115 客户端未初始化，请检查配置。")
+        send_telegram_message(chat_id, "➜ *提交失败*：115 客户端未初始化，请检查配置。")
         return
         
     target_cid = APP_CONFIG.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID, '0')
@@ -449,22 +449,22 @@ def _handle_incoming_message(message: dict):
             if pwd_match: receive_code = pwd_match.group(1)
 
             if not share_code:
-                send_telegram_message(chat_id, escape_markdown("❌ *解析失败*：未找到有效的 115 分享码。"))
+                send_telegram_message(chat_id, escape_markdown("➜ *解析失败*：未找到有效的 115 分享码。"))
                 return
 
             res = client.share_import(share_code, receive_code, target_cid)
             
             if res and res.get('state'):
-                send_telegram_message(chat_id, escape_markdown("✅ *分享链接转存成功！*\n系统已自动触发整理任务。"))
+                send_telegram_message(chat_id, escape_markdown("➜ *分享链接转存成功！*\n系统已自动触发整理任务。"))
                 try:
                     import task_manager
                     threading.Timer(5.0, task_manager.trigger_115_organize_task).start()
                 except Exception as e:
-                    logger.error(f"  ⚠️ 唤醒整理任务失败: {e}")
+                    logger.error(f"  ➜ 唤醒整理任务失败: {e}")
             else:
                 err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
-                send_telegram_message(chat_id, escape_markdown(f"❌ *转存失败*：{err}"))
-                logger.error(f"  ❌ [TG交互] 转存失败: {err}")
+                send_telegram_message(chat_id, escape_markdown(f"➜ *转存失败*：{err}"))
+                logger.error(f"  ➜ [TG交互] 转存失败: {err}")
 
         # --- 处理磁力/ED2K 离线下载 ---
         if is_magnet or is_ed2k:
@@ -475,18 +475,18 @@ def _handle_incoming_message(message: dict):
             res = client.offline_add_urls(payload)
             
             if res and res.get('state'):
-                send_telegram_message(chat_id, escape_markdown("✅ *离线任务提交成功！*\n系统将在后台自动监控并整理入库。"))
+                send_telegram_message(chat_id, escape_markdown("➜ *离线任务提交成功！*\n系统将在后台自动监控并整理入库。"))
                 try:
                     import task_manager
                     threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
                 except: pass
             else:
                 err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
-                send_telegram_message(chat_id, escape_markdown(f"❌ *离线提交失败*：{err}"))
+                send_telegram_message(chat_id, escape_markdown(f"➜ *离线提交失败*：{err}"))
 
     except Exception as e:
-        logger.error(f"  ❌ [TG交互] 处理链接失败: {e}", exc_info=True)
-        send_telegram_message(chat_id, f"❌ *系统异常*：处理链接时发生错误。")
+        logger.error(f"  ➜ [TG交互] 处理链接失败: {e}", exc_info=True)
+        send_telegram_message(chat_id, f"➜ *系统异常*：处理链接时发生错误。")
 
 def _setup_bot_commands(bot_token: str):
     """
@@ -515,7 +515,7 @@ def _setup_bot_commands(bot_token: str):
             desc = registry[key][1]
             # Telegram 命令只允许小写字母、数字和下划线，所以把横杠替换为下划线
             cmd_name = key.replace('-', '_').lower()
-            commands.append({"command": cmd_name, "description": f"🚀 {desc}"})
+            commands.append({"command": cmd_name, "description": f"➜ {desc}"})
 
     # 在菜单最下方追加“查看所有任务”的备选命令
     commands.append({"command": "all_tasks", "description": "📋 查看所有可用任务"})
@@ -529,9 +529,9 @@ def _setup_bot_commands(bot_token: str):
         if response.status_code == 200:
             logger.trace("  ➜ 成功注册 Telegram 机器人快捷菜单。")
         else:
-            logger.warning(f"  ⚠️ 注册 Telegram 菜单命令失败: {response.text}")
+            logger.warning(f"  ➜ 注册 Telegram 菜单命令失败: {response.text}")
     except Exception as e:
-        logger.error(f"  ⚠️ 注册 Telegram 菜单命令时发生网络异常: {e}")
+        logger.error(f"  ➜ 注册 Telegram 菜单命令时发生网络异常: {e}")
 
 def _telegram_polling_worker():
     """后台轮询线程"""
@@ -549,7 +549,7 @@ def _telegram_polling_worker():
     api_url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
     offset = None
     
-    logger.trace("  🚀 Telegram 机器人交互监听已启动！")
+    logger.trace("  ➜ Telegram 机器人交互监听已启动！")
     
     while _tg_polling_active:
         try:
@@ -574,13 +574,13 @@ def _telegram_polling_worker():
                             _handle_callback_query(update['callback_query'])
                             
             elif response.status_code == 401 or response.status_code == 404:
-                logger.error("  ❌ Telegram Bot Token 无效，停止轮询。")
+                logger.error("  ➜ Telegram Bot Token 无效，停止轮询。")
                 break
                 
         except requests.exceptions.Timeout:
             pass 
         except Exception as e:
-            logger.debug(f"  ⚠️ Telegram 轮询网络异常 (将自动重试): {e}")
+            logger.debug(f"  ➜ Telegram 轮询网络异常 (将自动重试): {e}")
             time.sleep(5) 
             
         time.sleep(1)
@@ -606,7 +606,7 @@ def send_hdhive_checkin_notification(checkin_res: dict, user_info: dict):
     points = user_meta.get("points", 0)
     signin_days_total = user_meta.get("signin_days_total", 0)
 
-    status_icon = "✅" if is_success else "⚠️"
+    status_icon = "➜" if is_success else "➜"
     status_title = "影巢签到成功" if is_success else "影巢签到提示"
     status_text = "签到成功" if is_success else "今日已签到或失败"
 

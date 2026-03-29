@@ -219,7 +219,7 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
             
         elapsed = time.time() - start_time
         if elapsed > max_wait_seconds:
-            logger.warning(f"  ⚠️ 等待 Emby 空闲超时 ({max_wait_seconds}s)，强制继续执行。")
+            logger.warning(f"  ➜ 等待 Emby 空闲超时 ({max_wait_seconds}s)，强制继续执行。")
             return
             
         # 取第一个忙碌原因显示在日志里
@@ -227,7 +227,7 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
         if len(busy_reasons) > 1:
             reason_str += f" 等{len(busy_reasons)}项"
             
-        logger.info(f"  ⏳ Emby 负载高 [{reason_str}]，暂停等待中... (已等待 {int(elapsed)}s)")
+        logger.info(f"  ➜ Emby 负载高 [{reason_str}]，暂停等待中... (已等待 {int(elapsed)}s)")
         time.sleep(10)
 
 # 获取管理员令牌
@@ -829,7 +829,7 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
                     target_id = items[0].get("Id")
                     target_name = items[0].get("Name", current_path)
                     
-                    #logger.info(f"  🎯 [定点扫描] 找到已存在的父目录: '{target_name}'，准备扫描...")
+                    #logger.info(f"  ➜ [定点扫描] 找到已存在的父目录: '{target_name}'，准备扫描...")
                     
                     # 对这个特定的父目录触发刷新
                     refresh_url = f"{base_url.rstrip('/')}/Items/{target_id}/Refresh"
@@ -842,7 +842,7 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
                         "ReplaceAllMetadata": "false"
                     }
                     emby_client.post(refresh_url, params=refresh_params)
-                    logger.info(f"  🚀 [定点扫描] 已通知 Emby 对 '{target_name}' 立即扫描！")
+                    logger.info(f"  ➜ [定点扫描] 已通知 Emby 对 '{target_name}' 立即扫描！")
                     return True
         except Exception as e:
             pass # 忽略查询错误，继续向上找
@@ -850,7 +850,7 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
         # 向上退一级 (例如从 /strm/电影/超级英雄/奇异博士 退到 /strm/电影/超级英雄)
         current_path = os.path.dirname(current_path)
         
-    logger.warning(f"  ⚠️ [定点扫描] 未能在 Emby 中找到 {target_dir} 的有效父目录，将等待 90 秒后自动扫描。")
+    logger.warning(f"  ➜ [定点扫描] 未能在 Emby 中找到 {target_dir} 的有效父目录，将等待 90 秒后自动扫描。")
     return False
 
 # --- 极速轻量级文件变更通知 ---
@@ -882,7 +882,7 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
             
         return True
     except Exception as e:
-        logger.error(f"  ❌ [极速通知] 触发扫描失败: {e}")
+        logger.error(f"  ➜ [极速通知] 触发扫描失败: {e}")
         return False
 
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
@@ -1388,9 +1388,9 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
     success = remove_items_from_collection(collection_id, member_ids, base_url, api_key)
     
     if success:
-        logger.info(f"  ✅ 成功从Emby删除合集 {collection_id} 。")
+        logger.info(f"  ➜ 成功从Emby删除合集 {collection_id} 。")
     else:
-        logger.error(f"  ❌ 发送清空合集 {collection_id} 的请求失败。")
+        logger.error(f"  ➜ 发送清空合集 {collection_id} 的请求失败。")
         
     return success
 
@@ -1428,7 +1428,7 @@ def delete_collection_by_name(collection_name: str, base_url: str, api_key: str,
             logger.info(f"  ➜ 合集 {collection_name} 清空后依然存在 (可能是空壳)，执行强制删除...")
             return delete_item(collection_id, base_url, api_key, user_id)
         else:
-            logger.info(f"  ✅ 合集 {collection_name} 已通过清空内容自动移除。")
+            logger.info(f"  ➜ 合集 {collection_name} 已通过清空内容自动移除。")
             return True
         
     except Exception as e:
@@ -1828,14 +1828,14 @@ def delete_item_sy(item_id: str, emby_server_url: str, emby_api_key: str, user_i
     try:
         response = emby_client.post(api_url, headers=headers, params=params)
         response.raise_for_status()
-        logger.info(f"  ✅ [神医接口] 成功删除 Emby 媒体项 ID: {item_id}。")
+        logger.info(f"  ➜ [神医接口] 成功删除 Emby 媒体项 ID: {item_id}。")
         return True
     except Exception as e:
         # 区分一下错误类型，方便排查，但处理逻辑是一样的：都去试官方接口
         if isinstance(e, requests.exceptions.HTTPError) and e.response.status_code == 404:
-            logger.warning(f"  ⚠️ [神医接口] 调用失败 (404): 服务端未安装神医Pro插件或接口不匹配。")
+            logger.warning(f"  ➜ [神医接口] 调用失败 (404): 服务端未安装神医Pro插件或接口不匹配。")
         else:
-            logger.warning(f"  ⚠️ [神医接口] 调用异常: {e}")
+            logger.warning(f"  ➜ [神医接口] 调用异常: {e}")
             
         logger.info(f"  ➜ 正在自动切换至 [官方接口] 重试删除 ID: {item_id} ...")
         
@@ -1871,13 +1871,13 @@ def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: 
     try:
         response = emby_client.post(api_url, headers=headers, params=params)
         response.raise_for_status()
-        logger.info(f"  ✅ 成功删除 Emby 媒体项 ID: {item_id}。")
+        logger.info(f"  ➜ 成功删除 Emby 媒体项 ID: {item_id}。")
         return True
     except requests.exceptions.HTTPError as e:
-        logger.error(f"  ✅ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
+        logger.error(f"  ➜ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
         return False
     except Exception as e:
-        logger.error(f"  ✅ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
+        logger.error(f"  ➜ 使用临时令牌删除 Emby 媒体项 ID: {item_id} 时发生未知错误: {e}")
         return False    
 
 # --- 清理幽灵演员 ---
@@ -1915,7 +1915,7 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
         # 这个接口是 POST 请求
         response = emby_client.post(api_url, headers=headers, params=params)
         response.raise_for_status()
-        logger.info(f"  ✅ 成功删除演员 ID: {person_id}。")
+        logger.info(f"  ➜ 成功删除演员 ID: {person_id}。")
         return True
     except requests.exceptions.HTTPError as e:
         # 404 Not Found 意味着这个专用接口在您的服务器上不存在
@@ -2058,7 +2058,7 @@ def create_user_with_policy(
             pw_response = emby_client.post(password_url, headers=headers, json=password_payload)
             
             if pw_response.status_code == 204:
-                logger.info(f"  ✅ 成功为用户 '{username}' 设置密码。")
+                logger.info(f"  ➜ 成功为用户 '{username}' 设置密码。")
                 return new_user_id
             else:
                 logger.error(f"为用户 '{username}' 设置密码失败。状态码: {pw_response.status_code}, 响应: {pw_response.text}")
@@ -2111,7 +2111,7 @@ def set_user_disabled_status(
         response = emby_client.post(policy_update_url, headers=headers, json=current_policy)
 
         if response.status_code == 204:
-            logger.info(f"✅ 成功{action_text}用户 '{user_name_for_log}'。")
+            logger.info(f"➜ 成功{action_text}用户 '{user_name_for_log}'。")
             return True
         else:
             logger.error(f"{action_text}用户 '{user_name_for_log}' 失败。状态码: {response.status_code}, 响应: {response.text}")
@@ -2260,7 +2260,7 @@ def force_set_user_policy(user_id: str, policy: Dict[str, Any], base_url: str, a
         response = emby_client.post(policy_update_url, headers=headers, json=policy)
         
         if response.status_code == 204: # 204 No Content 表示成功
-            logger.info(f"  ✅ 成功为用户 '{user_name_for_log}' 应用了新的权限策略。")
+            logger.info(f"  ➜ 成功为用户 '{user_name_for_log}' 应用了新的权限策略。")
             return True
         else:
             logger.error(f"  ➜ 为用户 '{user_name_for_log}' 应用新策略失败。状态码: {response.status_code}, 响应: {response.text}")
@@ -2307,7 +2307,7 @@ def delete_emby_user(user_id: str) -> bool:
     try:
         response = emby_client.delete(api_url, headers=headers)
         response.raise_for_status()
-        logger.info(f"  ✅ 成功删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
+        logger.info(f"  ➜ 成功删除 Emby 用户 '{user_name_for_log}' (ID: {user_id})。")
         return True
     except requests.exceptions.HTTPError as e:
         logger.error(f"  ➜ 删除 Emby 用户 '{user_name_for_log}' 时发生HTTP错误: {e.response.status_code} - {e.response.text}")
@@ -2646,7 +2646,7 @@ def trigger_media_info_refresh(item_id: str, base_url: str, api_key: str, user_i
             logger.info(f"  💉 已对 ID:{item_id} 触发媒体信息提取请求。")
             return True
         else:
-            logger.warning(f"  ⚠️ 触发失败 ID:{item_id}, HTTP {response.status_code}: {response.text}")
+            logger.warning(f"  ➜ 触发失败 ID:{item_id}, HTTP {response.status_code}: {response.text}")
             return False
     except Exception as e:
         logger.error(f"  🚫 请求异常 ID:{item_id}: {e}")
@@ -2749,9 +2749,9 @@ def get_playback_reporting_data(base_url: str, api_key: str, user_id: str, days:
         if cleaned_data:
             import json
             # 只打印第一条，防止日志刷屏
-            logger.debug(f"  🔍 [UserPlaylist] 数据获取成功，Count: {len(cleaned_data)} | Sample: {json.dumps(cleaned_data[0], ensure_ascii=False)}")
+            logger.debug(f"  ➜ [UserPlaylist] 数据获取成功，Count: {len(cleaned_data)} | Sample: {json.dumps(cleaned_data[0], ensure_ascii=False)}")
         else:
-            logger.warning(f"  🔍 [UserPlaylist] 请求成功但返回空列表 (User: {user_id})")
+            logger.warning(f"  ➜ [UserPlaylist] 请求成功但返回空列表 (User: {user_id})")
 
         return {"data": cleaned_data}
 
@@ -2809,14 +2809,14 @@ def clear_item_media_info(item_id: str, base_url: str, api_key: str) -> bool:
         # 这个接口是 POST 请求，不需要 body
         response = emby_client.post(api_url, params=params)
         response.raise_for_status()
-        logger.info(f"  🧹 [神医] 成功清除项目 (ID:{item_id}) 的错误媒体信息缓存。")
+        logger.info(f"  ➜ [神医] 成功清除项目 (ID:{item_id}) 的错误媒体信息缓存。")
         return True
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 404:
-            logger.warning(f"  ⚠️ [神医] 清除媒体信息失败 (404): 插件版本可能过低，不支持此接口。")
+            logger.warning(f"  ➜ [神医] 清除媒体信息失败 (404): 插件版本可能过低，不支持此接口。")
         else:
-            logger.error(f"  ❌ [神医] 清除媒体信息报错: HTTP {e.response.status_code} - {e.response.text}")
+            logger.error(f"  ➜ [神医] 清除媒体信息报错: HTTP {e.response.status_code} - {e.response.text}")
         return False
     except Exception as e:
-        logger.error(f"  ❌ [神医] 调用清除媒体信息接口时发生网络异常: {e}")
+        logger.error(f"  ➜ [神医] 调用清除媒体信息接口时发生网络异常: {e}")
         return False

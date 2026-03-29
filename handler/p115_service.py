@@ -89,10 +89,10 @@ def refresh_115_token(failed_token=None):
                 logger.info(f"  🔄 [115] Token 自动续期成功！有效时长 {hours} 小时。")
                 return True
             else:
-                logger.error(f"  ❌ Token 续期失败: {resp.get('message')}，可能需要重新扫码")
+                logger.error(f"  ➜ Token 续期失败: {resp.get('message')}，可能需要重新扫码")
                 return False
         except Exception as e:
-            logger.error(f"  ❌ Token 续期请求异常: {e}")
+            logger.error(f"  ➜ Token 续期请求异常: {e}")
             return False
 
 # ======================================================================
@@ -122,11 +122,11 @@ class P115OpenAPIClient:
             resp = requests.request(method, url, headers=req_headers, timeout=30, **kwargs).json()
             
             if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
-                logger.warning("  ⚠️ [115] 检测到 Token 已过期，正在触发自动续期...")
+                logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
                 
                 # ★ 传入 current_token 进行比对
                 if refresh_115_token(current_token):
-                    logger.info("  🚀 [115] 续期完成，重新发送刚才失败的请求...")
+                    logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
                     return requests.request(method, url, headers=self.headers, timeout=30, **kwargs).json()
                 else:
                     logger.error("  💀 [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
@@ -318,7 +318,7 @@ class P115OpenAPIClient:
             try:
                 oss_res = requests.put(upload_url, data=file_data, headers=headers, timeout=300)
             except requests.exceptions.ConnectionError as e:
-                logger.warning(f"  ⚠️ HTTPS 握手失败，尝试降级为 HTTP 上传... ({e})")
+                logger.warning(f"  ➜ HTTPS 握手失败，尝试降级为 HTTP 上传... ({e})")
                 upload_url_http = upload_url.replace('https://', 'http://')
                 oss_res = requests.put(upload_url_http, data=file_data, headers=headers, timeout=300)
             
@@ -350,7 +350,7 @@ class P115CookieClient:
             try:
                 self.webapi = P115Client(self.cookie_str)
             except Exception as e:
-                logger.warning(f"  ⚠️ Cookie 客户端初始化失败: {e}")
+                logger.warning(f"  ➜ Cookie 客户端初始化失败: {e}")
                 raise
 
     def download_url(self, pick_code, user_agent=None):
@@ -452,9 +452,9 @@ class P115Service:
             if cls._openapi_client is None or getattr(cls._openapi_client, 'access_token', None) != token:
                 try:
                     cls._openapi_client = P115OpenAPIClient(token)
-                    logger.info("  🚀 [115] OpenAPI 客户端已初始化")
+                    logger.info("  ➜ [115] OpenAPI 客户端已初始化")
                 except Exception as e:
-                    logger.error(f"  ❌ 115 OpenAPI 客户端初始化失败: {e}")
+                    logger.error(f"  ➜ 115 OpenAPI 客户端初始化失败: {e}")
                     cls._openapi_client = None
             
             return cls._openapi_client
@@ -474,9 +474,9 @@ class P115Service:
                 try:
                     cls._cookie_client = P115CookieClient(cookie)
                     cls._cookie_cache = cookie
-                    logger.info("  🚀 [115] Cookie 客户端已初始化")
+                    logger.info("  ➜ [115] Cookie 客户端已初始化")
                 except Exception as e:
-                    logger.error(f"  ❌ 115 Cookie 客户端初始化失败: {e}")
+                    logger.error(f"  ➜ 115 Cookie 客户端初始化失败: {e}")
                     cls._cookie_client = None
             
             return cls._cookie_client
@@ -659,7 +659,7 @@ class P115Service:
                                     if path_name: display_name = path_name
                             except: pass
 
-                            logger.info(f"  ✅ [Cookie] 请求直链成功 -> {display_name}")
+                            logger.info(f"  ➜ [Cookie] 请求直链成功 -> {display_name}")
 
                             # ★ 将文件名一起存入缓存
                             _DIRECT_URL_CACHE[cache_key] = {
@@ -702,7 +702,7 @@ class P115Service:
                             if file_info and 'url' in file_info and 'url' in file_info['url']:
                                 direct_url = file_info['url']['url']
                                 display_name = file_info.get('file_name', pick_code)
-                                logger.info(f"  ✅ [OpenAPI] 请求直链成功 -> {display_name}")
+                                logger.info(f"  ➜ [OpenAPI] 请求直链成功 -> {display_name}")
                                 _DIRECT_URL_CACHE[cache_key] = {
                                     'url': direct_url,
                                     'name': display_name,
@@ -711,7 +711,7 @@ class P115Service:
                                 return direct_url
                         return None
                     except Exception as e:
-                        logger.warning(f"  ⚠️ [115 OpenAPI] 获取直链异常: {e}")
+                        logger.warning(f"  ➜ [115 OpenAPI] 获取直链异常: {e}")
                         return None
 
             def request(self, *args, **kwargs):
@@ -791,7 +791,7 @@ class P115CacheManager:
                     """, (str(local_path), str(cid)))
                     conn.commit()
         except Exception as e:
-            logger.error(f"  ❌ 更新 local_path 失败: {e}")
+            logger.error(f"  ➜ 更新 local_path 失败: {e}")
 
     @staticmethod
     def get_node_info(cid):
@@ -819,7 +819,7 @@ class P115CacheManager:
                     row = cursor.fetchone()
                     return row['id'] if row else None
         except Exception as e:
-            logger.error(f"  ❌ 读取 115 DB 缓存失败: {e}")
+            logger.error(f"  ➜ 读取 115 DB 缓存失败: {e}")
             return None
 
     @staticmethod
@@ -837,7 +837,7 @@ class P115CacheManager:
                     """, (str(cid), str(parent_cid), str(name), sha1))
                     conn.commit()
         except Exception as e:
-            logger.error(f"  ❌ 写入 115 DB 缓存失败: {e}")
+            logger.error(f"  ➜ 写入 115 DB 缓存失败: {e}")
 
     @staticmethod
     def get_file_sha1(fid):
@@ -876,7 +876,7 @@ class P115CacheManager:
                     cursor.execute("SELECT id, parent_id, pick_code FROM p115_filesystem_cache WHERE pick_code = ANY(%s)", (list(pickcodes),))
                     return cursor.fetchall()
         except Exception as e:
-            logger.error(f"  ❌ 查询文件缓存失败: {e}")
+            logger.error(f"  ➜ 查询文件缓存失败: {e}")
             return []
 
     @staticmethod
@@ -890,7 +890,7 @@ class P115CacheManager:
                     cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s OR parent_id = %s", (str(cid), str(cid)))
                     conn.commit()
         except Exception as e:
-            logger.error(f"  ❌ 清理 115 DB 缓存失败: {e}")
+            logger.error(f"  ➜ 清理 115 DB 缓存失败: {e}")
 
     @staticmethod
     def save_file_cache(fid, parent_id, name, sha1=None, pick_code=None, local_path=None, size=0):
@@ -924,7 +924,7 @@ class P115CacheManager:
                     """, (str(fid), str(parent_id), str(name), sha1, pick_code, local_path, size))
                     conn.commit()
         except Exception as e:
-            logger.error(f"  ❌ 写入 115 文件缓存失败: {e}")
+            logger.error(f"  ➜ 写入 115 文件缓存失败: {e}")
 
     @staticmethod
     def delete_files(fids):
@@ -937,7 +937,7 @@ class P115CacheManager:
                     cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = ANY(%s)", (list(fids),))
                     conn.commit()
         except Exception as e:
-            logger.error(f"  ❌ 清理 115 文件缓存失败: {e}")
+            logger.error(f"  ➜ 清理 115 文件缓存失败: {e}")
 
 # ======================================================================
 # ★★★ 115 整理记录 DB 管理器 ★★★
@@ -980,7 +980,7 @@ class P115RecordManager:
                           str(category_name) if category_name else None, str(renamed_name) if renamed_name else None, bool(is_center_cached), season_number))
                     conn.commit()
         except Exception as e:
-            logger.error(f"  ❌ 写入 115 整理记录失败: {e}")
+            logger.error(f"  ➜ 写入 115 整理记录失败: {e}")
 
 # ======================================================================
 # ★★★ 115 全局批量删除缓冲队列 (极简暴力清理版) ★★★
@@ -1050,7 +1050,7 @@ class P115DeleteBuffer:
                             if sub_name != unidentified_name and sub_cid:
                                 cids.append(sub_cid)
                 except Exception as e:
-                    logger.error(f"  ❌ 获取待整理目录子项失败: {e}")
+                    logger.error(f"  ➜ 获取待整理目录子项失败: {e}")
 
         # 去重
         cids = list(set(cids))
@@ -1072,16 +1072,16 @@ class P115DeleteBuffer:
                     logger.error(f"  🛑 [触发流控] 115 API 提示达到访问上限 ({resp.get('code')})，立即终止本次删除任务！")
                     return [] 
 
-                logger.error(f"  ❌ [批量销毁] 115 删除{item_type}失败 (第 {attempt + 1}/{max_retries} 次): {resp}")
+                logger.error(f"  ➜ [批量销毁] 115 删除{item_type}失败 (第 {attempt + 1}/{max_retries} 次): {resp}")
                 if attempt < max_retries - 1:
                     time.sleep(3)
             
-            logger.warning(f"  ⚠️ [批量销毁] 批量删除彻底失败，放弃本次清理。")
+            logger.warning(f"  ➜ [批量销毁] 批量删除彻底失败，放弃本次清理。")
             return []
 
         # 1. 删除明确指定的文件
         if fids:
-            logger.info(f"  💥 [批量销毁] 缓冲期结束，正在删除 {len(fids)} 个文件...")
+            logger.info(f"  ➜ [批量销毁] 缓冲期结束，正在删除 {len(fids)} 个文件...")
             success_fids = _safe_batch_delete(fids, is_dir=False)
             if success_fids:
                 P115CacheManager.delete_files(success_fids)
@@ -1134,16 +1134,16 @@ class P115DeleteBuffer:
             # ★ 只要没有媒体文件（哪怕里面有一堆 nfo 和 jpg），统统判定为空目录！
             if media_count == 0:
                 empty_cids_to_delete.append(cid)
-                logger.debug(f"  🗑️ 判定为空目录，加入待清理队列: CID {cid}")
+                logger.debug(f"  ➜ 判定为空目录，加入待清理队列: CID {cid}")
 
         # 4. 批量删除空目录
         if empty_cids_to_delete:
-            logger.debug(f"  💥 [批量清理] 正在向 115 发送批量删除空目录指令 ({len(empty_cids_to_delete)} 个)...")
+            logger.debug(f"  ➜ [批量清理] 正在向 115 发送批量删除空目录指令 ({len(empty_cids_to_delete)} 个)...")
             success_cids = _safe_batch_delete(empty_cids_to_delete, is_dir=True)
             if success_cids:
                 for cid in success_cids:
                     P115CacheManager.delete_cid(cid)
-                logger.info(f"  🧹 [批量清理] 成功删除了 {len(success_cids)} 个空目录。")
+                logger.info(f"  ➜ [批量清理] 成功删除了 {len(success_cids)} 个空目录。")
 
     @classmethod
     def flush(cls):
@@ -1188,7 +1188,7 @@ class SmartOrganizer:
                 try:
                     self.rules = json.loads(raw_rules)
                 except Exception as e:
-                    logger.error(f"  ❌ 解析 115 分类规则失败: {e}")
+                    logger.error(f"  ➜ 解析 115 分类规则失败: {e}")
                     self.rules = []
 
     def _fetch_raw_metadata(self):
@@ -1304,7 +1304,7 @@ class SmartOrganizer:
             return data
 
         except Exception as e:
-            logger.warning(f"  ⚠️ [整理] 获取原始元数据失败: {e}", exc_info=True)
+            logger.warning(f"  ➜ [整理] 获取原始元数据失败: {e}", exc_info=True)
             return {}
 
     def _match_rule(self, rule):
@@ -1341,11 +1341,11 @@ class SmartOrganizer:
                     else:
                         # 状态是 'NONE'、空值、或者其他未知状态，主动向 TMDb 查连载状态！
                         from tasks.helpers import evaluate_season_airing_status
-                        logger.info(f"  🔍 数据库状态为 '{season_status or '空'}'，正在向 TMDb 实时查询 '第 {season_num} 季' 的连载状态...")
+                        logger.info(f"  ➜ 数据库状态为 '{season_status or '空'}'，正在向 TMDb 实时查询 '第 {season_num} 季' 的连载状态...")
                         is_airing = evaluate_season_airing_status(self.tmdb_id, season_num, self.api_key)
                         
                         if is_airing:
-                            logger.info(f"  ✅ [连载判定] 确认 '第 {season_num} 季' 正在连载，命中连载规则！")
+                            logger.info(f"  ➜ [连载判定] 确认 '第 {season_num} 季' 正在连载，命中连载规则！")
                             # 既然是连载，就让它继续往下走，命中规则
                         else:
                             logger.debug(f"  🛑 [连载判定] 确认 '第 {season_num} 季' 已完结，跳过连载规则。")
@@ -1540,7 +1540,7 @@ class SmartOrganizer:
                                         logger.info(f"  🧠 [分季记忆体] 发现该剧 '第 {season_num} 季' 曾被整理过，沿用专属分类: {row['category_name']} (CID: {history_cid})")
                                         return history_cid
                                     else:
-                                        logger.warning(f"  ⚠️ [分季记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
+                                        logger.warning(f"  ➜ [分季记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
                                         break # 记忆失效，跳出循环走规则
                             
                             logger.debug(f"  🧠 [分季记忆体] 未找到 '第 {season_num} 季' 的有效专属记忆，将使用规则引擎进行分配。")
@@ -1560,15 +1560,15 @@ class SmartOrganizer:
                                     logger.info(f"  🧠 [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {history_cid})")
                                     return history_cid
                                 else:
-                                    logger.warning(f"  ⚠️ [记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
+                                    logger.warning(f"  ➜ [记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
             except Exception as e:
-                logger.warning(f"  ⚠️ 查询历史整理记录失败: {e}")
+                logger.warning(f"  ➜ 查询历史整理记录失败: {e}")
 
         # 2. 遍历规则
         for rule in self.rules:
             if not rule.get('enabled', True): continue
             if self._match_rule(rule):
-                logger.info(f"  🎯 [115] 命中规则: {rule.get('name')} -> 目录: {rule.get('dir_name')}")
+                logger.info(f"  ➜ [115] 命中规则: {rule.get('name')} -> 目录: {rule.get('dir_name')}")
                 return rule.get('cid')
         return None
 
@@ -1800,7 +1800,7 @@ class SmartOrganizer:
                     info['audio'] = " ".join(audio_tags)
 
         except Exception as e:
-            logger.warning(f"  ⚠️ 解析真实媒体信息失败: {e}")
+            logger.warning(f"  ➜ 解析真实媒体信息失败: {e}")
 
         # ★★★ 神医赋能日志转移到这里，并区分数据源 ★★★
         if guessed_info is not None and info:
@@ -2012,7 +2012,7 @@ class SmartOrganizer:
                         sub_files = self._scan_files_recursively(sub_id, depth + 1, max_depth, new_rel)
                         all_files.extend(sub_files)
         except Exception as e:
-            logger.warning(f"  ⚠️ 扫描目录出错 (CID: {cid}): {e}")
+            logger.warning(f"  ➜ 扫描目录出错 (CID: {cid}): {e}")
         return all_files
 
     def _is_junk_file(self, filename):
@@ -2157,25 +2157,25 @@ class SmartOrganizer:
                     if organizer.execute(items, target_cid_for_sub):
                         processed_count += len(items)
                 except Exception as e:
-                    logger.error(f"    ❌ 批量处理子项失败: {e}")
+                    logger.error(f"    ➜ 批量处理子项失败: {e}")
             
             # ★ 核心修改：批量移入未识别
             if unidentified_sub_fids and unidentified_cid:
-                logger.warning(f"    ⚠️ 无法识别合集子项 {len(unidentified_sub_fids)} 个，批量移入未识别。")
+                logger.warning(f"    ➜ 无法识别合集子项 {len(unidentified_sub_fids)} 个，批量移入未识别。")
                 try: 
                     self.client.fs_move(unidentified_sub_fids, unidentified_cid)
                 except Exception as e: 
-                    logger.error(f"    ❌ 移入未识别失败: {e}")
+                    logger.error(f"    ➜ 移入未识别失败: {e}")
             
             if not skip_gc:
                 from handler.p115_service import P115DeleteBuffer
                 P115DeleteBuffer.add(check_save_path=True)
-                logger.info(f"  ⏳ [清理空目录] 已将拆解完毕的合集包交由垃圾回收器检查: {root_name}")
+                logger.info(f"  ➜ [清理空目录] 已将拆解完毕的合集包交由垃圾回收器检查: {root_name}")
             
             return processed_count > 0
             
         except Exception as e:
-            logger.error(f"  ❌ 拆解合集包失败: {e}")
+            logger.error(f"  ➜ 拆解合集包失败: {e}")
             return False
 
     def execute(self, root_item_or_items, target_cid, progress_callback=None, skip_gc=False):
@@ -2290,20 +2290,20 @@ class SmartOrganizer:
                     # 如果拉取成功（说明这个 ID 确实有对应的剧集数据）
                     if self.raw_metadata and self.raw_metadata.get('title'):
                         self.details = self.raw_metadata
-                        logger.info(f"  ✅ [智能纠错] 成功保留原 ID ({self.tmdb_id}) 并切换为剧集: {self.details.get('title')}")
+                        logger.info(f"  ➜ [智能纠错] 成功保留原 ID ({self.tmdb_id}) 并切换为剧集: {self.details.get('title')}")
                         
                         target_cid = self.get_target_cid()
                         dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
                     else:
                         # 只有在原 ID 作为剧集彻底查不到数据时，才迫不得已用名字重新搜索
-                        logger.warning(f"  ⚠️ [智能纠错] 原 ID ({self.tmdb_id}) 作为剧集查询失败，尝试用名称重新搜索...")
+                        logger.warning(f"  ➜ [智能纠错] 原 ID ({self.tmdb_id}) 作为剧集查询失败，尝试用名称重新搜索...")
                         search_title = self.original_title
                         clean_title = re.sub(r'\(\d{4}\)', '', search_title).strip()
                         results = tmdb.search_media(query=clean_title, api_key=self.api_key, item_type='tv')
                         
                         if results and len(results) > 0:
                             new_tmdb_id = str(results[0]['id'])
-                            logger.info(f"  ✅ [智能纠错] 成功重新搜索并纠正为剧集: {results[0].get('name')} (ID:{new_tmdb_id})")
+                            logger.info(f"  ➜ [智能纠错] 成功重新搜索并纠正为剧集: {results[0].get('name')} (ID:{new_tmdb_id})")
                             self.tmdb_id = new_tmdb_id
                             self.raw_metadata = self._fetch_raw_metadata()
                             self.details = self.raw_metadata
@@ -2311,9 +2311,9 @@ class SmartOrganizer:
                             target_cid = self.get_target_cid()
                             dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
                         else:
-                            logger.warning(f"  ⚠️ [智能纠错] 未能在 TMDb 找到对应的剧集，将强制按剧集格式重命名以防冲突。")
+                            logger.warning(f"  ➜ [智能纠错] 未能在 TMDb 找到对应的剧集，将强制按剧集格式重命名以防冲突。")
                 except Exception as e:
-                    logger.error(f"  ❌ [智能纠错] 纠错失败: {e}")
+                    logger.error(f"  ➜ [智能纠错] 纠错失败: {e}")
 
         # =================================================================
         # 4. 计算最终的目录名称和路径 (支持 / 多级目录)
@@ -2361,7 +2361,7 @@ class SmartOrganizer:
                                 break
                 except: pass
 
-        logger.info(f"  🚀 [115] 开始整理: {root_name} -> {std_root_name}")
+        logger.info(f"  ➜ [115] 开始整理: {root_name} -> {std_root_name}")
 
         final_home_cid = None
         current_parent_cid = dest_parent_cid
@@ -2419,7 +2419,7 @@ class SmartOrganizer:
                     break
 
         if not final_home_cid:
-            logger.error(f"  ❌ 无法获取或创建目标目录链 (已尝试所有手段)")
+            logger.error(f"  ➜ 无法获取或创建目标目录链 (已尝试所有手段)")
             return False
         
         if not candidates: return True
@@ -2494,16 +2494,16 @@ class SmartOrganizer:
                                 if hit_count > 0:
                                     pre_fetched_mediainfo = valid_hits
                                     if hit_count == req_count:
-                                        logger.info(f"  ✅ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
+                                        logger.info(f"  ➜ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
                                     else:
-                                        logger.info(f"  ✅ [批量查询] 部分命中：成功获取 {hit_count}/{req_count} 个文件的媒体信息。")
+                                        logger.info(f"  ➜ [批量查询] 部分命中：成功获取 {hit_count}/{req_count} 个文件的媒体信息。")
                                 else:
-                                    logger.info(f"  ☁️ [批量查询] 中心服务器暂无这 {req_count} 个文件的媒体信息。")
+                                    logger.info(f"  ➜ [批量查询] 中心服务器暂无这 {req_count} 个文件的媒体信息。")
                             else:
-                                logger.warning(f"  ⚠️ [批量查询] 中心服务器返回数据格式异常。")
+                                logger.warning(f"  ➜ [批量查询] 中心服务器返回数据格式异常。")
                                 
                     except Exception as e:
-                        logger.warning(f"  ⚠️ [批量查询] 中心服务器查询失败: {e}")
+                        logger.warning(f"  ➜ [批量查询] 中心服务器查询失败: {e}")
 
         # 确保 allowed_exts 有兜底，防止用户清空列表导致报错
         if not allowed_exts:
@@ -2545,7 +2545,7 @@ class SmartOrganizer:
             # 2. 垃圾/花絮/样本校验 (仅针对视频)
             if ext in known_video_exts:
                 if self._is_junk_file(file_name) or (0 < file_size < MIN_VIDEO_SIZE):
-                    logger.debug(f"  🗑️ 判定为花絮或体积过小，打入未识别: {file_name}")
+                    logger.debug(f"  ➜ 判定为花絮或体积过小，打入未识别: {file_name}")
                     if fid: unrecognized_fids.append(fid)
                     if progress_callback: progress_callback()
                     continue
@@ -2661,7 +2661,7 @@ class SmartOrganizer:
             # ★★★ 核心修复：严格去重逻辑 (防多版本/洗版残留冲突) ★★★
             # =================================================================
             if new_filename in seen_new_filenames:
-                logger.warning(f"  ⚠️ [去重丢弃] 发现重复版本: '{file_name}' -> 目标名 '{new_filename}' 已被占用，当作垃圾打入未识别！")
+                logger.warning(f"  ➜ [去重丢弃] 发现重复版本: '{file_name}' -> 目标名 '{new_filename}' 已被占用，当作垃圾打入未识别！")
                 if fid: unrecognized_fids.append(fid)
                 continue # 直接跳过，绝不重命名，绝不移动，绝不生成 STRM！
             
@@ -2692,7 +2692,7 @@ class SmartOrganizer:
                 display_target = std_root_name
                 if items and items[0].get('_s_name'):
                     display_target = f"{std_root_name} - {items[0]['_s_name']}"
-                logger.info(f"  📁 [批量移动] 成功将 {len(fids)} 个文件移动至 -> {display_target}")
+                logger.info(f"  ➜ [批量移动] 成功将 {len(fids)} 个文件移动至 -> {display_target}")
                 
                 # =================================================================
                 # ★ 批量同名覆盖与重命名逻辑 (完美解决 (1) 冲突，且最小化 API 请求)
@@ -2737,7 +2737,7 @@ class SmartOrganizer:
                     
                     # 执行批量删除 (仅 1 次 API 请求，瞬间秒杀所有旧版文件)
                     if conflict_fids_to_delete:
-                        logger.warning(f"  ⚠️ [同名覆盖] 目标目录发现 {len(conflict_fids_to_delete)} 个同名旧文件，正在批量删除以腾出空间...")
+                        logger.warning(f"  ➜ [同名覆盖] 目标目录发现 {len(conflict_fids_to_delete)} 个同名旧文件，正在批量删除以腾出空间...")
                         self.client.fs_delete(conflict_fids_to_delete)
                         P115CacheManager.delete_files(conflict_fids_to_delete)
                     
@@ -2747,10 +2747,10 @@ class SmartOrganizer:
                         if ren_res.get('state'):
                             logger.info(f"  ✏️ [重命名] {current_name} -> {new_name}")
                         else:
-                            logger.warning(f"  ⚠️ [重命名失败] {current_name} -> {new_name}, 原因: {ren_res.get('error_msg', ren_res)}")
+                            logger.warning(f"  ➜ [重命名失败] {current_name} -> {new_name}, 原因: {ren_res.get('error_msg', ren_res)}")
                             
                 except Exception as e:
-                    logger.error(f"  ❌ [同名覆盖] 处理重命名逻辑失败: {e}")
+                    logger.error(f"  ➜ [同名覆盖] 处理重命名逻辑失败: {e}")
                 
                 # 2. 移动成功后，遍历该批次文件，生成 STRM 和记录日志
                 for file_item in items:
@@ -2789,7 +2789,7 @@ class SmartOrganizer:
                                 season_number=season_num 
                             )
                         except Exception as e:
-                            logger.error(f"  ❌ 记录文件整理日志失败: {e}")
+                            logger.error(f"  ➜ 记录文件整理日志失败: {e}")
 
                     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
                     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "http://127.0.0.1:5257").rstrip('/')
@@ -2888,7 +2888,7 @@ class SmartOrganizer:
                                 
                                 with open(strm_filepath, 'w', encoding='utf-8') as f:
                                     f.write(strm_content)
-                                logger.info(f"  📝 STRM 已生成 -> {strm_filename}")
+                                logger.info(f"  ➜ STRM 已生成 -> {strm_filename}")
                                 
                                 try:
                                     from monitor_service import enqueue_file_actively
@@ -2934,20 +2934,20 @@ class SmartOrganizer:
                                                 resp.raise_for_status()
                                                 with open(sub_filepath, 'wb') as f:
                                                     for chunk in resp.iter_content(chunk_size=8192): f.write(chunk)
-                                                logger.info(f"  ✅ [字幕下载] {new_filename} 下载完成！")
+                                                logger.info(f"  ➜ [字幕下载] {new_filename} 下载完成！")
                                         except Exception as e:
-                                            logger.error(f"  ❌ 下载字幕失败: {e}")
+                                            logger.error(f"  ➜ 下载字幕失败: {e}")
                             
                         except Exception as e:
-                            logger.error(f"  ❌ 生成 STRM 文件失败: {e}", exc_info=True)
+                            logger.error(f"  ➜ 生成 STRM 文件失败: {e}", exc_info=True)
                     if progress_callback:
                         progress_callback()
             else:
                 err_msg = str(move_res.get('error_msg', move_res))
-                logger.error(f"  ❌ [批量移动失败] 目标CID:{batch_target_cid}, 包含 {len(fids)} 个文件, 原因: {err_msg}")
+                logger.error(f"  ➜ [批量移动失败] 目标CID:{batch_target_cid}, 包含 {len(fids)} 个文件, 原因: {err_msg}")
                 
                 if '不存在' in err_msg or move_res.get('code') in [20004, 70004]:
-                    logger.warning(f"  🧹 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {batch_target_cid}")
+                    logger.warning(f"  ➜ 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {batch_target_cid}")
                     P115CacheManager.delete_cid(batch_target_cid)
                 if progress_callback:
                     for _ in items:
@@ -2957,7 +2957,7 @@ class SmartOrganizer:
         # ★★★ 终极清理：将所有不合规文件移入未识别目录 ★★★
         # =================================================================
         if unrecognized_fids and unidentified_cid:
-            logger.info(f"  🗑️ 发现 {len(unrecognized_fids)} 个不合规文件(扩展名不符/花絮/样本/广告)，正在移入未识别目录...")
+            logger.info(f"  ➜ 发现 {len(unrecognized_fids)} 个不合规文件(扩展名不符/花絮/样本/广告)，正在移入未识别目录...")
             # 同样传入列表，防止 115 API 报错
             self.client.fs_move(unrecognized_fids, unidentified_cid)
 
@@ -2966,13 +2966,13 @@ class SmartOrganizer:
         # =================================================================
         if not skip_gc:
             if not (not is_batch and root_item.get('_skip_gc')):
-                logger.info(f"  ⏳ [清理空目录] 整理完毕，已通知全局垃圾回收器检查待整理目录...")
+                logger.info(f"  ➜ [清理空目录] 整理完毕，已通知全局垃圾回收器检查待整理目录...")
                 from handler.p115_service import P115DeleteBuffer
                 P115DeleteBuffer.add(check_save_path=True)
             else:
                 logger.info("  🛡️ [MP上传] 单文件跳过垃圾回收检查。")
         else:
-            logger.debug("  ⏳ [清理空目录] 批量任务模式，跳过单次垃圾回收检查，等待统一清理。")
+            logger.debug("  ➜ [清理空目录] 批量任务模式，跳过单次垃圾回收检查，等待统一清理。")
 
         # --- 整理记录 ---
         if moved_count > 0 or keep_original:
@@ -3140,7 +3140,7 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
                     ai_result = ai_translator.parse_media_filename(target_name)
                     _AI_PARSE_CACHE[target_name] = ai_result # 写入记忆体
                 except Exception as e:
-                    logger.error(f"  ❌ AI 解析出错: {e}")
+                    logger.error(f"  ➜ AI 解析出错: {e}")
                     return None
 
             # 2. 查 TMDb 记忆体
@@ -3238,7 +3238,7 @@ class WebhookDeleteBuffer:
                     initial_files = cursor.fetchall()
 
                     if not initial_files:
-                        logger.warning(f"  ⚠️ [深度删除] 本地缓存未找到对应 PC 码的文件，无法执行本地推导，任务终止。")
+                        logger.warning(f"  ➜ [深度删除] 本地缓存未找到对应 PC 码的文件，无法执行本地推导，任务终止。")
                         return
 
                     deleted_nodes = set()       # 记录所有被判死刑的节点 (文件 + 变空的目录)
@@ -3298,13 +3298,13 @@ class WebhookDeleteBuffer:
                     # 第四步：执行唯一一次 115 API 删除调用
                     # =================================================================
                     if final_api_ids:
-                        logger.info(f"  💥 [深度删除] 本地推导完毕！向 115 发送批量删除指令 (共 {len(final_api_ids)} 个顶级节点)...")
+                        logger.info(f"  ➜ [深度删除] 本地推导完毕！向 115 发送批量删除指令 (共 {len(final_api_ids)} 个顶级节点)...")
                         resp = client.fs_delete(final_api_ids)
                         
                         if resp.get('state'):
-                            logger.info(f"  ✅ [深度删除] 115 网盘文件/空目录物理销毁成功！")
+                            logger.info(f"  ➜ [深度删除] 115 网盘文件/空目录物理销毁成功！")
                         else:
-                            logger.error(f"  ❌ [深度删除] 115 API 删除失败: {resp}")
+                            logger.error(f"  ➜ [深度删除] 115 API 删除失败: {resp}")
                             return # API 失败则不清理本地库，保持一致性
 
                     # =================================================================
@@ -3320,10 +3320,10 @@ class WebhookDeleteBuffer:
                         deleted_record_count = cursor.rowcount
 
                         conn.commit()
-                        logger.info(f"  🧹 [深度删除] 本地数据清理完毕: 缓存表移除 {deleted_cache_count} 条, 记录表移除 {deleted_record_count} 条。")
+                        logger.info(f"  ➜ [深度删除] 本地数据清理完毕: 缓存表移除 {deleted_cache_count} 条, 记录表移除 {deleted_record_count} 条。")
 
         except Exception as e:
-            logger.error(f"  ❌ [深度删除] 执行异常: {e}", exc_info=True)
+            logger.error(f"  ➜ [深度删除] 执行异常: {e}", exc_info=True)
 
 def delete_115_files_by_webhook(item_path, pickcodes):
     """
@@ -3371,7 +3371,7 @@ class ManualCorrectTaskQueue:
         try:
             _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_num)
         except Exception as e:
-            logger.error(f"  ❌ 批量重组失败: {e}", exc_info=True)
+            logger.error(f"  ➜ 批量重组失败: {e}", exc_info=True)
 
 
 def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num=None):
@@ -3464,13 +3464,13 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
         if details: title = details.get('title') or details.get('name') or title
     except: pass
 
-    logger.info(f"  🛠️ [批量重组] 开始对 {len(root_items)} 个文件执行定向整理 -> ID:{tmdb_id}")
+    logger.info(f"  ➜ [批量重组] 开始对 {len(root_items)} 个文件执行定向整理 -> ID:{tmdb_id}")
 
     organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
     organizer.is_manual_correct = True
     if season_num is not None and str(season_num).strip():
         organizer.forced_season = int(season_num)
-        logger.info(f"  📌 [批量重组] 已强制指定季号: Season {organizer.forced_season}")
+        logger.info(f"  ➜ [批量重组] 已强制指定季号: Season {organizer.forced_season}")
 
     # ★ 核心：将列表直接传给 execute，底层会自动打包成一次 115 API 移动请求！
     success = organizer.execute(root_items, target_cid)
@@ -3497,7 +3497,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
                                 sub_items.append(item)
                                 break
         except Exception as e:
-            logger.warning(f"  ⚠️ 查找关联字幕失败: {e}")
+            logger.warning(f"  ➜ 查找关联字幕失败: {e}")
 
     if sub_items:
         logger.info(f"  🔤 [批量重组] 发现 {len(sub_items)} 个关联字幕，跟随重组...")
@@ -3527,7 +3527,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
 
             if os.path.exists(old_strm_full_path):
                 os.remove(old_strm_full_path)
-                logger.debug(f"  🧹 删除本地旧 STRM: {old_strm_full_path}")
+                logger.debug(f"  ➜ 删除本地旧 STRM: {old_strm_full_path}")
 
             old_mi_full_path = os.path.splitext(old_file_rel_path)[0] + "-mediainfo.json"
             if os.path.exists(old_mi_full_path):
@@ -3559,7 +3559,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
 
                     if not has_media:
                         shutil.rmtree(curr_dir)
-                        logger.info(f"  🧹 本地旧目录已无媒体文件，执行删除: {curr_dir}")
+                        logger.info(f"  ➜ 本地旧目录已无媒体文件，执行删除: {curr_dir}")
                         curr_dir = os.path.dirname(curr_dir)
                     else:
                         break
@@ -3578,7 +3578,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
                 # 传入 update_type="Deleted"，复用我们刚写的极速向上寻根扫描逻辑
                 emby.notify_emby_file_changes(old_strm_paths_for_emby, emby_url, emby_api_key, update_type="Deleted")
             except Exception as e:
-                logger.warning(f"  ⚠️ 通知 Emby 极速扫描旧路径失败: {e}")
+                logger.warning(f"  ➜ 通知 Emby 极速扫描旧路径失败: {e}")
 
     # ★ 网盘擦屁股：直接移交全局垃圾回收器
     old_cids_to_check = set()
@@ -3594,7 +3594,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
 
     if old_cids_to_check:
         from handler.p115_service import P115DeleteBuffer
-        logger.info(f"  ⏳ 已将网盘旧目录链条 ({len(old_cids_to_check)}个层级) 加入全局清理队列，稍后执行清理...")
+        logger.info(f"  ➜ 已将网盘旧目录链条 ({len(old_cids_to_check)}个层级) 加入全局清理队列，稍后执行清理...")
         P115DeleteBuffer.add(fids=[], base_cids=list(old_cids_to_check))
 
     # ★ 更新记录状态
@@ -3614,4 +3614,4 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
                 conn.commit()
     except Exception as e: pass
 
-    logger.info(f"  ✅ [批量重组] {len(root_items)} 个文件处理完成！")
+    logger.info(f"  ➜ [批量重组] {len(root_items)} 个文件处理完成！")

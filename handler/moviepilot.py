@@ -59,7 +59,7 @@ def subscribe_with_custom_payload(payload: dict, config: Dict[str, Any]) -> bool
         sub_response = requests.post(subscribe_url, headers=subscribe_headers, json=payload, timeout=60)
         
         if sub_response.status_code in [200, 201, 204]:
-            logger.info(f"  ✅ MoviePilot 已接受订阅任务。")
+            logger.info(f"  ➜ MoviePilot 已接受订阅任务。")
             return True
         else:
             # 尝试解析错误信息
@@ -101,10 +101,10 @@ def cancel_subscription(tmdb_id: str, item_type: str, config: Dict[str, Any], se
             try:
                 response = requests.delete(cancel_url, headers=headers, params=params, timeout=30)
                 if response.status_code in [200, 204]:
-                    logger.info(f"  ✅ MoviePilot 已成功取消订阅: {media_id_for_api}{season_log}")
+                    logger.info(f"  ➜ MoviePilot 已成功取消订阅: {media_id_for_api}{season_log}")
                     return True
                 elif response.status_code == 404:
-                    logger.info(f"  ✅ MoviePilot 中未找到订阅 {media_id_for_api}{season_log}，无需取消。")
+                    logger.info(f"  ➜ MoviePilot 中未找到订阅 {media_id_for_api}{season_log}，无需取消。")
                     return True
                 else:
                     logger.error(f"  ➜ MoviePilot 取消订阅失败！API 返回: {response.status_code} - {response.text}")
@@ -331,7 +331,7 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
         page = 1
         page_size = 500
         
-        logger.info(f"  🔍 [MP清理] 正在全量搜索《{title}》的整理记录...")
+        logger.info(f"  ➜ [MP清理] 正在全量搜索《{title}》的整理记录...")
         
         while True:
             params = {"title": title, "page": page, "count": page_size}
@@ -355,7 +355,7 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
             except: break
 
         if not all_records:
-            logger.info(f"  ✅ [MP清理] 未找到《{title}》的任何整理记录。")
+            logger.info(f"  ➜ [MP清理] 未找到《{title}》的任何整理记录。")
             return []
 
         # 2. 内存筛选
@@ -378,10 +378,10 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
                 except: continue
 
         if not ids_to_delete:
-            logger.info(f"  ✅ [MP清理] 搜索到 {len(all_records)} 条记录，但没有 《{title}》 - 第 {season} 季 的记录。")
+            logger.info(f"  ➜ [MP清理] 搜索到 {len(all_records)} 条记录，但没有 《{title}》 - 第 {season} 季 的记录。")
             return []
 
-        logger.info(f"  🗑️ [MP清理] 筛选出 {len(ids_to_delete)} 条《{title}》 - 第 {season} 季 的整理记录，开始执行删除...")
+        logger.info(f"  ➜ [MP清理] 筛选出 {len(ids_to_delete)} 条《{title}》 - 第 {season} 季 的整理记录，开始执行删除...")
 
         # 3. 逐条删除并收集 Hash
         delete_url = f"{moviepilot_url}/api/v1/history/transfer"
@@ -402,12 +402,12 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
 
         # 去重 Hash
         collected_hashes = list(set(collected_hashes))
-        logger.info(f"  ✅ [MP清理] 清理完成，共删除 {deleted_count} 条记录，提取到 {len(collected_hashes)} 个关联种子Hash。")
+        logger.info(f"  ➜ [MP清理] 清理完成，共删除 {deleted_count} 条记录，提取到 {len(collected_hashes)} 个关联种子Hash。")
         
         return collected_hashes
 
     except Exception as e:
-        logger.error(f"  ❌ [MP清理] 执行出错: {e}")
+        logger.error(f"  ➜ [MP清理] 执行出错: {e}")
         return []
 
 def delete_download_tasks(keyword: str, config: Dict[str, Any], hashes: list = None) -> bool:
@@ -429,7 +429,7 @@ def delete_download_tasks(keyword: str, config: Dict[str, Any], hashes: list = N
         deleted_count = 0
 
         # --- 2. 策略 A: 精确打击 (仅使用 Hash) ---
-        logger.info(f"  🎯 [下载器清理] 正在根据 Hash 精确删除 {len(hashes)} 个任务...")
+        logger.info(f"  ➜ [下载器清理] 正在根据 Hash 精确删除 {len(hashes)} 个任务...")
         
         for task_hash in hashes:
             if not task_hash: continue
@@ -439,14 +439,14 @@ def delete_download_tasks(keyword: str, config: Dict[str, Any], hashes: list = N
                 # 只有这里才是真正执行删除的地方
                 del_res = requests.delete(del_url, headers=headers, timeout=10)
                 if del_res.status_code == 200:
-                    logger.info(f" 🗑️ [下载器清理] 已精确删除任务 Hash: {task_hash[:8]}...")
+                    logger.info(f" ➜ [下载器清理] 已精确删除任务 Hash: {task_hash[:8]}...")
                     deleted_count += 1
             except Exception as e:
                 logger.debug(f" [下载器清理] 删除 Hash {task_hash[:8]} 失败: {e}")
         
         # --- 3. 结果反馈 ---
         if deleted_count > 0:
-            logger.info(f"  ✅ [下载器清理] Hash 精确清理完成，共删除 {deleted_count} 个任务。")
+            logger.info(f"  ➜ [下载器清理] Hash 精确清理完成，共删除 {deleted_count} 个任务。")
             import time
             time.sleep(2)
             return True
@@ -456,7 +456,7 @@ def delete_download_tasks(keyword: str, config: Dict[str, Any], hashes: list = N
             return True
 
     except Exception as e:
-        logger.error(f"  ❌ [下载器清理] 执行出错: {e}")
+        logger.error(f"  ➜ [下载器清理] 执行出错: {e}")
         return False
     
 def get_downloading_tasks(config: Dict[str, Any]) -> list:

@@ -131,7 +131,7 @@ def task_check_and_update_container(processor):
                 task_manager.update_status_from_thread(100, "已是最新版本")
             
             if evt_type == 'RESTARTING':
-                logger.warning("  ⚠️ 系统即将重启以应用更新...")
+                logger.warning("  ➜ 系统即将重启以应用更新...")
                 task_manager.update_status_from_thread(100, "系统正在重启...")
                 # 给一点时间让日志写完
                 time.sleep(3)

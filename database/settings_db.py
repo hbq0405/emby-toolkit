@@ -186,7 +186,7 @@ def remove_item_from_recommendation_pool(tmdb_id: str):
                 # 添加下面这行来提交你的更改！
                 conn.commit()
                 
-                logger.debug(f"  ✅ 已成功从推荐池中移除 TMDB ID: {tmdb_id}。")
+                logger.debug(f"  ➜ 已成功从推荐池中移除 TMDB ID: {tmdb_id}。")
 
     except Exception as e:
         # 发生错误时，数据库连接会自动回滚，所以这里不用显式 rollback

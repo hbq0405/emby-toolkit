@@ -299,7 +299,7 @@ def task_actor_translation(processor):
             for original_name, translated_name in translation_map.items():
                 # --- [新增日志] 详细记录跳过原因 ---
                 if not translated_name:
-                    logger.warning(f"    - ⚠️ [跳过] 原名: '{original_name}' -> 翻译结果为空")
+                    logger.warning(f"    - ➜ [跳过] 原名: '{original_name}' -> 翻译结果为空")
                     continue
                 
                 if original_name == translated_name:
@@ -342,9 +342,9 @@ def task_actor_translation(processor):
                             batch_updated_count += 1
                         else:
                             # --- [新增日志] 记录API调用失败 ---
-                            logger.warning(f"    - ❌ [更新失败] Emby API 拒绝更新演员 ID: {task_info[0]} -> '{task_info[1]}'")
+                            logger.warning(f"    - ➜ [更新失败] Emby API 拒绝更新演员 ID: {task_info[0]} -> '{task_info[1]}'")
                     except Exception as exc:
-                        logger.error(f"    - ❌ [异常] 更新演员 (ID: {task_info[0]}) 时发生错误: {exc}")
+                        logger.error(f"    - ➜ [异常] 更新演员 (ID: {task_info[0]}) 时发生错误: {exc}")
 
             total_updated_count += batch_updated_count
             
@@ -354,7 +354,7 @@ def task_actor_translation(processor):
         # ======================================================================
         # 阶段 3: 任务结束
         # ======================================================================
-        final_message = f"  ✅ 任务完成！共成功翻译并更新了 {total_updated_count} 个演员名。"
+        final_message = f"  ➜ 任务完成！共成功翻译并更新了 {total_updated_count} 个演员名。"
         if processor.is_stop_requested():
             final_message = f"任务已中断。本次运行成功翻译并更新了 {total_updated_count} 个演员名。"
         
@@ -472,13 +472,13 @@ def task_merge_duplicate_actors(processor):
             person_details_log = [f"'{p['Name']}' (ID: {p['Id']}, 作品数: {len(actor_media_map.get(p['Id'], set()))})" for p in persons]
             logger.info(f"  ➜ [TMDb ID: {tmdb_id}] 决策:")
             logger.info(f"     - 分身列表: {', '.join(person_details_log)}")
-            logger.info(f"     - ✅ 保留 (主号): '{keeper['Name']}' (ID: {keeper['Id']})")
+            logger.info(f"     - ➜ 保留 (主号): '{keeper['Name']}' (ID: {keeper['Id']})")
 
             for person in persons:
                 if person['Id'] != keeper['Id']:
                     # 将TMDb ID也加入计划，以便后续数据库操作
                     merge_plan.append({'keeper': keeper, 'deletee': person, 'tmdb_id': tmdb_id})
-                    logger.warning(f"     - ❌ 合并并删除 (小号): '{person['Name']}' (ID: {person['Id']})")
+                    logger.warning(f"     - ➜ 合并并删除 (小号): '{person['Name']}' (ID: {person['Id']})")
 
         # ======================================================================
         # 阶段 4: 执行合并与删除
@@ -546,10 +546,10 @@ def task_merge_duplicate_actors(processor):
 
                     if update_success:
                         merged_item_count += 1
-                        logger.debug(f"    - ✅ 成功更新媒体项 '{item_details.get('Name')}' 的演员列表。")
+                        logger.debug(f"    - ➜ 成功更新媒体项 '{item_details.get('Name')}' 的演员列表。")
                     else:
                         all_media_updates_succeeded = False
-                        logger.error(f"    - ❌ 更新媒体项 '{item_details.get('Name')}' 失败！")
+                        logger.error(f"    - ➜ 更新媒体项 '{item_details.get('Name')}' 失败！")
 
             if all_media_updates_succeeded:
                 logger.info(f"  ➜ 所有媒体项已成功转移，准备删除“小号”演员 '{deletee['Name']}' (ID: {deletee['Id']})...")

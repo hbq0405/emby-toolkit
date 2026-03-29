@@ -53,7 +53,7 @@ def task_scan_and_organize_115(processor=None):
         from monitor_service import pause_queue_processing, resume_queue_processing
         pause_queue_processing()
     except Exception as e:
-        logger.warning(f"  ⚠️ 无法暂停监控队列: {e}")
+        logger.warning(f"  ➜ 无法暂停监控队列: {e}")
         resume_queue_processing = lambda: None
 
     config = get_config()
@@ -69,10 +69,10 @@ def task_scan_and_organize_115(processor=None):
         allowed_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg', 'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
 
     if not cid_val or str(cid_val) == '0':
-        logger.error("  ⚠️ 未配置待整理目录，跳过。")
+        logger.error("  ➜ 未配置待整理目录，跳过。")
         return
     if not enable_organize:
-        logger.warning("  ⚠️ 未开启智能整理开关，仅扫描不处理。")
+        logger.warning("  ➜ 未开启智能整理开关，仅扫描不处理。")
         return
         
     try:
@@ -100,7 +100,7 @@ def task_scan_and_organize_115(processor=None):
                     if mk_res.get('state'): unidentified_cid = mk_res.get('cid')
                 except: pass
 
-        logger.info(f"  🔍 [阶段一] 正在极速物理扫盘: {save_name} ...")
+        logger.info(f"  ➜ [阶段一] 正在极速物理扫盘: {save_name} ...")
         
         max_workers = int(config.get(constants.CONFIG_OPTION_115_MAX_WORKERS, 3))
         executor = ThreadPoolExecutor(max_workers=max_workers) 
@@ -125,7 +125,7 @@ def task_scan_and_organize_115(processor=None):
             try:
                 func(*args)
             except Exception as e:
-                logger.error(f"  ❌ 线程执行异常: {e}", exc_info=True)
+                logger.error(f"  ➜ 线程执行异常: {e}", exc_info=True)
             finally:
                 with task_cond:
                     active_tasks -= 1
@@ -262,7 +262,7 @@ def task_scan_and_organize_115(processor=None):
                 )
 
                 if not tmdb_id:
-                    logger.warning(f"  ⚠️ 无法识别媒体组: {top_name}，打入未识别。")
+                    logger.warning(f"  ➜ 无法识别媒体组: {top_name}，打入未识别。")
                     with group_lock:
                         unidentified_items.extend(files)
                     return
@@ -287,7 +287,7 @@ def task_scan_and_organize_115(processor=None):
                         with counter_lock:
                             processed_count += len(files)
                 except Exception as e:
-                    logger.error(f"  ❌ 批量整理出错 (组: {top_name}): {e}")
+                    logger.error(f"  ➜ 批量整理出错 (组: {top_name}): {e}")
 
             # 并发提交每个组的处理任务
             for top_name, group_data in physical_groups.items():
@@ -301,7 +301,7 @@ def task_scan_and_organize_115(processor=None):
         # 阶段三：批量移入未识别目录
         # =================================================================
         if unidentified_items and unidentified_cid:
-            logger.info(f"  🗑️ [阶段三] 正在批量移入未识别目录 ({len(unidentified_items)} 个文件)...")
+            logger.info(f"  ➜ [阶段三] 正在批量移入未识别目录 ({len(unidentified_items)} 个文件)...")
             u_fids = [i.get('fid') or i.get('file_id') for i in unidentified_items]
             
             chunk_size = 500
@@ -325,7 +325,7 @@ def task_scan_and_organize_115(processor=None):
                                 pick_code=pc 
                             )
                 except Exception as e:
-                    logger.error(f"  ❌ 批量移入未识别目录失败: {e}")
+                    logger.error(f"  ➜ 批量移入未识别目录失败: {e}")
 
         # ★ 任务结束前，触发一次全局待整理目录清理
         from handler.p115_service import P115DeleteBuffer
@@ -337,7 +337,7 @@ def task_scan_and_organize_115(processor=None):
         update_progress(100, final_msg)
 
     except Exception as e:
-        logger.error(f"  ⚠️ 115 扫描任务异常: {e}", exc_info=True)
+        logger.error(f"  ➜ 115 扫描任务异常: {e}", exc_info=True)
         update_progress(100, f"扫描异常结束: {e}")
     finally:
         try:
@@ -393,7 +393,7 @@ def task_sync_115_directory_tree(processor=None):
     
     for idx, (cid, dir_name) in enumerate(target_dirs.items()):
         base_prog = int((idx / total_cids) * 100)
-        update_progress(base_prog, f"  🔍 正在扫描第 {idx+1}/{total_cids} 个分类目录: [{dir_name}] ...")
+        update_progress(base_prog, f"  ➜ 正在扫描第 {idx+1}/{total_cids} 个分类目录: [{dir_name}] ...")
         
         offset = 0
         limit = 1000
@@ -451,7 +451,7 @@ def task_sync_115_directory_tree(processor=None):
                 offset += limit
                 
             except Exception as e:
-                logger.error(f"  ❌ 同步目录树异常 [{dir_name}]: {e}")
+                logger.error(f"  ➜ 同步目录树异常 [{dir_name}]: {e}")
                 break 
 
         # =================================================================
@@ -476,9 +476,9 @@ def task_sync_115_directory_tree(processor=None):
                         
                         cleaned_count = len(invalid_cids)
                         total_cleaned += cleaned_count
-                        logger.info(f"  🧹 [{dir_name}] 清理了 {cleaned_count} 个已失效的本地目录缓存。")
+                        logger.info(f"  ➜ [{dir_name}] 清理了 {cleaned_count} 个已失效的本地目录缓存。")
         except Exception as e:
-            logger.error(f"  ❌ 清理失效目录异常 [{dir_name}]: {e}")
+            logger.error(f"  ➜ 清理失效目录异常 [{dir_name}]: {e}")
 
     update_progress(100, f"=== 同步结束！共更新 {total_cached} 个目录，清理 {total_cleaned} 个失效缓存 ===")
 
@@ -493,7 +493,7 @@ def task_full_sync_strm_and_subs(processor=None):
     min_size_mb = int(config.get(constants.CONFIG_OPTION_115_MIN_VIDEO_SIZE, 10))
     MIN_VIDEO_SIZE = min_size_mb * 1024 * 1024
     
-    start_msg = "=== 🚀 开始极速全量同步 STRM 与 字幕 ===" if download_subs else "=== 🚀 开始极速全量同步 STRM (跳过字幕) ==="
+    start_msg = "=== ➜ 开始极速全量同步 STRM 与 字幕 ===" if download_subs else "=== ➜ 开始极速全量同步 STRM (跳过字幕) ==="
     if enable_cleanup: start_msg += " [已开启本地清理]"
     logger.info(start_msg)
     
@@ -511,7 +511,7 @@ def task_full_sync_strm_and_subs(processor=None):
         from monitor_service import pause_queue_processing, resume_queue_processing
         pause_queue_processing()
     except Exception as e:
-        logger.warning(f"  ⚠️ 无法暂停监控队列: {e}")
+        logger.warning(f"  ➜ 无法暂停监控队列: {e}")
         resume_queue_processing = lambda: None # 兜底防报错
 
     try:
@@ -618,10 +618,10 @@ def task_full_sync_strm_and_subs(processor=None):
                         base_cat_path = cid_to_rel_path.get(target_cid, '未识别')
                         resolved_path = os.path.join(base_cat_path, *sub_folders) if sub_folders else base_cat_path
                         dynamic_path_cache[pid] = resolved_path # 存入内存池，同目录文件不再请求
-                        logger.debug(f"  🔍 [API溯源] 成功动态推导路径: {resolved_path}")
+                        logger.debug(f"  ➜ [API溯源] 成功动态推导路径: {resolved_path}")
                         return resolved_path
             except Exception as e:
-                logger.debug(f"  ⚠️ 动态查询目录路径失败 (pid: {pid}): {e}")
+                logger.debug(f"  ➜ 动态查询目录路径失败 (pid: {pid}): {e}")
 
             return None
 
@@ -656,7 +656,7 @@ def task_full_sync_strm_and_subs(processor=None):
                         # ★ 核心：指定 cid 并传入 type，强制 115 在该分类下进行全局递归检索！
                         res = client.fs_files({'cid': target_cid, 'type': f_type, 'limit': limit, 'offset': offset, 'record_open_time': 0})
                         if not res.get('state') and res.get('code'):
-                            logger.error(f"  ❌ API 返回异常状态 (可能触发流控): {res}")
+                            logger.error(f"  ➜ API 返回异常状态 (可能触发流控): {res}")
                             sync_has_errors = True
                             break
                         data = res.get('data', [])
@@ -679,7 +679,7 @@ def task_full_sync_strm_and_subs(processor=None):
                             rel_dir = resolve_local_dir(pid, target_cid)
                                 
                             if not rel_dir: 
-                                logger.warning(f"  ⚠️ 彻底无法推导路径，跳过文件: {name} (pid: {pid})")
+                                logger.warning(f"  ➜ 彻底无法推导路径，跳过文件: {name} (pid: {pid})")
                                 continue 
                                 
                             current_local_path = os.path.join(local_root, rel_dir)
@@ -693,7 +693,7 @@ def task_full_sync_strm_and_subs(processor=None):
                                 
                                 if 0 < safe_file_size < MIN_VIDEO_SIZE:
                                     size_mb = safe_file_size / (1024 * 1024)
-                                    logger.debug(f"  🗑️ [全量同步] 视频体积过小 ({size_mb:.2f} MB)，判定为花絮/样本/广告，跳过生成 STRM: {name}")
+                                    logger.debug(f"  ➜ [全量同步] 视频体积过小 ({size_mb:.2f} MB)，判定为花絮/样本/广告，跳过生成 STRM: {name}")
                                     continue # 直接跳过当前文件，不生成 STRM 也不写缓存
                                 strm_name = os.path.splitext(name)[0] + ".strm"
                                 strm_path = os.path.join(current_local_path, strm_name)
@@ -726,7 +726,7 @@ def task_full_sync_strm_and_subs(processor=None):
                                 if need_write:
                                     with open(strm_path, 'w', encoding='utf-8') as f: f.write(content)
                                     if not os.path.exists(strm_path):
-                                        logger.debug(f"  📝 [新增] 生成 STRM: {strm_name}")
+                                        logger.debug(f"  ➜ [新增] 生成 STRM: {strm_name}")
                                     files_generated += 1
                                     
                                 valid_local_files.add(os.path.abspath(strm_path))
@@ -760,7 +760,7 @@ def task_full_sync_strm_and_subs(processor=None):
                                             logger.info(f"  ⬇️ [增量] 下载字幕: {name}")
                                             subs_downloaded += 1
                                     except Exception as e:
-                                        logger.error(f"  ❌ 下载字幕失败 [{name}]: {e}")
+                                        logger.error(f"  ➜ 下载字幕失败 [{name}]: {e}")
                                         
                                 valid_local_files.add(os.path.abspath(sub_path))
 
@@ -769,11 +769,11 @@ def task_full_sync_strm_and_subs(processor=None):
                         page += 1
                         
                     except Exception as e:
-                        logger.error(f"  ❌ 全局拉取异常 (cid={target_cid}, type={f_type}): {e}")
+                        logger.error(f"  ➜ 全局拉取异常 (cid={target_cid}, type={f_type}): {e}")
                         sync_has_errors = True
                         break
 
-        logger.info(f"  ✅ 增量同步完成！新增/更新 STRM: {files_generated} 个, 下载字幕: {subs_downloaded} 个。")
+        logger.info(f"  ➜ 增量同步完成！新增/更新 STRM: {files_generated} 个, 下载字幕: {subs_downloaded} 个。")
 
         # =================================================================
         # 阶段 3: 本地失效文件清理 (耗时: 秒级)
@@ -782,9 +782,9 @@ def task_full_sync_strm_and_subs(processor=None):
             if sync_has_errors:
                 logger.warning("  🛑 致命警告：本次同步过程中发生 API 异常或触发 115 流控！为防止灾难性误删，已强制跳过本地清理阶段！")
             elif not valid_local_files and files_generated == 0:
-                logger.warning("  ⚠️ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
+                logger.warning("  ➜ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
             else:
-                update_progress(90, "  🧹 正在比对并清理本地失效文件与空壳目录...")
+                update_progress(90, "  ➜ 正在比对并清理本地失效文件与空壳目录...")
                 cleaned_files = 0
                 cleaned_dirs = 0
                 import shutil  # 引入 shutil 用于连锅端
@@ -803,9 +803,9 @@ def task_full_sync_strm_and_subs(processor=None):
                                     try:
                                         os.remove(file_path)
                                         cleaned_files += 1
-                                        logger.debug(f"  🗑️ [清理] 删除失效文件: {file}")
+                                        logger.debug(f"  ➜ [清理] 删除失效文件: {file}")
                                     except Exception as e:
-                                        logger.warning(f"  ⚠️ 删除文件失败 {file}: {e}")
+                                        logger.warning(f"  ➜ 删除文件失败 {file}: {e}")
                     
                     # 2. ★ 终极暴力清理：自下而上扫描，只要没有 STRM，无视任何残留文件直接连锅端！
                     for root_dir, dirs, files in os.walk(target_local_dir, topdown=False):
@@ -826,16 +826,16 @@ def task_full_sync_strm_and_subs(processor=None):
                                 try:
                                     shutil.rmtree(dir_path)
                                     cleaned_dirs += 1
-                                    logger.debug(f"  🗑️ [清理] 删除无 STRM 的空壳目录: {dir_path}")
+                                    logger.debug(f"  ➜ [清理] 删除无 STRM 的空壳目录: {dir_path}")
                                 except Exception as e:
-                                    logger.warning(f"  ⚠️ 删除目录失败 {dir_path}: {e}")
+                                    logger.warning(f"  ➜ 删除目录失败 {dir_path}: {e}")
                             
-                logger.info(f"  🧹 清理完成: 删除了 {cleaned_files} 个失效文件, {cleaned_dirs} 个无STRM的空壳目录。")
+                logger.info(f"  ➜ 清理完成: 删除了 {cleaned_files} 个失效文件, {cleaned_dirs} 个无STRM的空壳目录。")
 
         update_progress(100, "=== 全量生成STRM任务结束 ===")
 
     except Exception as e:
-        logger.error(f"  ❌ 全量同步任务异常: {e}", exc_info=True)
+        logger.error(f"  ➜ 全量同步任务异常: {e}", exc_info=True)
         update_progress(100, f"任务异常结束: {e}")
     finally:
         # ★ 任务结束（无论成功失败），务必解除监控队列抑制，恢复处理
@@ -928,7 +928,7 @@ def task_sync_music_library(processor=None):
             try:
                 res = client.fs_files({'cid': current_cid, 'limit': limit, 'offset': offset, 'record_open_time': 0})
                 if not res.get('state') and res.get('code'):
-                    logger.error(f"  ❌ API 返回异常状态 (可能触发流控): {res}")
+                    logger.error(f"  ➜ API 返回异常状态 (可能触发流控): {res}")
                     sync_has_errors = True
                     break
                 data = res.get('data', [])
@@ -1018,7 +1018,7 @@ def task_sync_music_library(processor=None):
                                         logger.info(f"  ⬇️ [增量] 下载音乐附属文件: {name}")
                                         aux_downloaded += 1
                                 except Exception as e:
-                                    logger.error(f"  ❌ 下载音乐附属文件失败 [{name}]: {e}")
+                                    logger.error(f"  ➜ 下载音乐附属文件失败 [{name}]: {e}")
                             
                             # 无论是否刚刚下载，只要网盘里有，就加入有效名单，防止被清理
                             valid_local_files.add(os.path.abspath(aux_path))
@@ -1042,9 +1042,9 @@ def task_sync_music_library(processor=None):
         if sync_has_errors:
             logger.warning("  🛑 致命警告：音乐库同步过程中发生 API 异常或触发流控！为防止灾难性误删，已强制跳过本地清理阶段！")
         elif not valid_local_files and files_generated == 0 and files_skipped == 0:
-            logger.warning("  ⚠️ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
+            logger.warning("  ➜ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
         else:
-            update_progress(90, "  🧹 正在比对并清理本地失效文件与空壳目录...")
+            update_progress(90, "  ➜ 正在比对并清理本地失效文件与空壳目录...")
             
             if os.path.exists(music_local_base):
                 # 1. 清理失效的 STRM 和 附属文件
@@ -1058,7 +1058,7 @@ def task_sync_music_library(processor=None):
                                 try:
                                     os.remove(file_path)
                                     cleaned_files += 1
-                                    logger.debug(f"  🗑️ [清理] 删除失效文件: {file}")
+                                    logger.debug(f"  ➜ [清理] 删除失效文件: {file}")
                                 except Exception: pass
                 
                 # 2. 自下而上扫描，清理空壳目录 (逻辑不变：只要没有 STRM 就连锅端)
@@ -1077,7 +1077,7 @@ def task_sync_music_library(processor=None):
                             try:
                                 shutil.rmtree(dir_path)
                                 cleaned_dirs += 1
-                                logger.debug(f"  🗑️ [清理] 删除无 STRM 的空壳目录: {dir_path}")
+                                logger.debug(f"  ➜ [清理] 删除无 STRM 的空壳目录: {dir_path}")
                             except Exception: pass
 
     end_msg = f"=== 🎵 音乐库同步完成！新增/更新: {files_generated} 首, 下载附属: {aux_downloaded} 个 ==="
@@ -1113,7 +1113,7 @@ def task_monitor_115_life_events(processor=None):
         if task_manager: task_manager.update_status_from_thread(prog, msg)
         logger.info(msg)
 
-    update_progress(5, "=== 🚀 开始检查 115 增量生活事件 ===")
+    update_progress(5, "=== ➜ 开始检查 115 增量生活事件 ===")
 
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     etk_url = config.get(constants.CONFIG_OPTION_ETK_SERVER_URL, "").rstrip('/')
@@ -1197,18 +1197,18 @@ def task_monitor_115_life_events(processor=None):
                 if os.path.exists(strm_full):
                     os.remove(strm_full)
                     deleted_count += 1
-                    logger.info(f"  🗑️ [事件] 删除失效 STRM: {os.path.basename(strm_full)}")
+                    logger.info(f"  ➜ [事件] 删除失效 STRM: {os.path.basename(strm_full)}")
                     _notify_emby(strm_full)
             elif db_ext in known_sub_exts:
                 if os.path.exists(full_local_path):
                     os.remove(full_local_path)
-                    logger.info(f"  🗑️ [事件] 删除失效字幕: {file_name}")
+                    logger.info(f"  ➜ [事件] 删除失效字幕: {file_name}")
             else:
                 if os.path.exists(full_local_path) and os.path.isdir(full_local_path):
                     import shutil
                     shutil.rmtree(full_local_path)
                     deleted_count += 1
-                    logger.info(f"  🗑️ [事件] 删除失效目录: {file_name}")
+                    logger.info(f"  ➜ [事件] 删除失效目录: {file_name}")
                     _notify_emby(os.path.dirname(full_local_path))
             
             # 清理数据库
@@ -1247,9 +1247,9 @@ def task_monitor_115_life_events(processor=None):
                             
                         conn.commit()
                         if descendant_fids:
-                            logger.info(f"  🧹 [事件] 级联清理完成: 移除了 {len(descendant_fids)} 个子文件的缓存与整理记录。")
+                            logger.info(f"  ➜ [事件] 级联清理完成: 移除了 {len(descendant_fids)} 个子文件的缓存与整理记录。")
                 except Exception as e:
-                    logger.error(f"  ❌ [事件] 级联清理目录缓存与记录失败: {e}")
+                    logger.error(f"  ➜ [事件] 级联清理目录缓存与记录失败: {e}")
             else: 
                 # 单文件删除逻辑
                 P115CacheManager.delete_files([file_id])
@@ -1262,7 +1262,7 @@ def task_monitor_115_life_events(processor=None):
                                 cursor.execute("DELETE FROM p115_organize_records WHERE file_id = %s", (str(file_id),))
                             conn.commit()
                 except Exception as e:
-                    logger.error(f"  ❌ [事件] 清理 115 历史整理记录失败: {e}")
+                    logger.error(f"  ➜ [事件] 清理 115 历史整理记录失败: {e}")
 
         # ==========================================
         # 分支 2：新增、移入、改名、同目录移动
@@ -1304,7 +1304,7 @@ def task_monitor_115_life_events(processor=None):
                     safe_file_size = int(file_size) if str(file_size).isdigit() else 0
                     if 0 < safe_file_size < MIN_VIDEO_SIZE:
                         size_mb = safe_file_size / (1024 * 1024)
-                        logger.debug(f"  🗑️ [事件] 视频体积过小 ({size_mb:.2f} MB)，判定为花絮/样本/广告，忽略生成 STRM: {file_name}")
+                        logger.debug(f"  ➜ [事件] 视频体积过小 ({size_mb:.2f} MB)，判定为花絮/样本/广告，忽略生成 STRM: {file_name}")
                         return # 直接跳过，不生成 STRM，也不记录缓存
                 os.makedirs(current_local_path, exist_ok=True)
                 
@@ -1332,7 +1332,7 @@ def task_monitor_115_life_events(processor=None):
                     
                     added_count += 1
                     action_str = "移动/改名" if old_local_path else "新增"
-                    logger.info(f"  ✨ [事件] {action_str} STRM: {file_name}")
+                    logger.info(f"  ➜ [事件] {action_str} STRM: {file_name}")
                     
                     try:
                         from monitor_service import enqueue_file_actively
@@ -1390,7 +1390,7 @@ def task_monitor_115_life_events(processor=None):
                     if len(items) < 1000: break
                     offset += 1000
             except Exception as e:
-                logger.error(f"  ❌ 递归拉取目录 {file_name} 失败: {e}")
+                logger.error(f"  ➜ 递归拉取目录 {file_name} 失败: {e}")
 
     try:
         res = client.life_behavior_detail({"limit": 100, "offset": 0})
@@ -1429,7 +1429,7 @@ def task_monitor_115_life_events(processor=None):
                 events_to_delete.append({"relation_id": relation_id, "behavior_type": b_type_str})
 
     except Exception as e:
-        logger.error(f"  ❌ 获取生活事件异常: {e}", exc_info=True)
+        logger.error(f"  ➜ 获取生活事件异常: {e}", exc_info=True)
 
     # 4. 批量清空已处理的事件
     if events_to_delete:
@@ -1439,10 +1439,10 @@ def task_monitor_115_life_events(processor=None):
                 chunk = events_to_delete[i:i+chunk_size]
                 del_res = client.life_batch_delete(chunk)
                 if not del_res.get('state'):
-                    logger.warning(f"  ⚠️ 清空生活事件失败: {del_res}")
-            logger.debug(f"  🧹 成功清空 {len(events_to_delete)} 条已处理的生活事件。")
+                    logger.warning(f"  ➜ 清空生活事件失败: {del_res}")
+            logger.debug(f"  ➜ 成功清空 {len(events_to_delete)} 条已处理的生活事件。")
         except Exception as e:
-            logger.error(f"  ❌ 清空生活事件异常: {e}")
+            logger.error(f"  ➜ 清空生活事件异常: {e}")
 
     update_progress(100, f"=== 增量检查完成！新增/移动: {added_count}, 删除: {deleted_count} ===")
 

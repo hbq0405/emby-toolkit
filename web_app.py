@@ -155,7 +155,7 @@ def save_config_and_reload(new_config: Dict[str, Any]):
                 TGUserBotManager.get_instance().stop()
             except: pass
         
-        logger.info("  ✅ 新配置重新初始化完毕。")
+        logger.info("  ➜ 新配置重新初始化完毕。")
         
     except Exception as e:
         logger.error(f"保存配置文件或重新初始化时失败: {e}", exc_info=True)
@@ -188,9 +188,9 @@ def initialize_processors():
     if ai_enabled:
         try:
             shared_ai_translator = AITranslator(current_config)
-            logger.debug("  ✅ AI增强服务实例已初始化。")
+            logger.debug("  ➜ AI增强服务实例已初始化。")
         except Exception as e:
-            logger.error(f"  ❌ AITranslator 初始化失败: {e}")
+            logger.error(f"  ➜ AITranslator 初始化失败: {e}")
 
     # --- 初始化共享的 Douban 实例 ---
     shared_douban_api = None
@@ -207,7 +207,7 @@ def initialize_processors():
                 cooldown_seconds=douban_cooldown,
                 user_cookie=douban_cookie
             )
-            logger.debug("  ✅ DoubanApi 共享实例已初始化。")
+            logger.debug("  ➜ DoubanApi 共享实例已初始化。")
         except Exception as e:
             logger.error(f"DoubanApi 初始化失败: {e}", exc_info=True)
     
@@ -241,9 +241,9 @@ def initialize_processors():
             # --- 网络获取失败，回退到缓存 ---
             if cached_id:
                 server_id_local = cached_id
-                logger.warning(f"⚠️ 无法连接 Emby 服务器 (或超时)，已使用缓存的 Server ID: {server_id_local} 继续启动。")
+                logger.warning(f"➜ 无法连接 Emby 服务器 (或超时)，已使用缓存的 Server ID: {server_id_local} 继续启动。")
             else:
-                logger.error("❌ 无法连接 Emby 且本地无缓存 Server ID，部分功能可能受限。")
+                logger.error("➜ 无法连接 Emby 且本地无缓存 Server ID，部分功能可能受限。")
 
         # =========================================================
         # ★★★ Pro 版本在线验证逻辑 ★★★
@@ -262,11 +262,11 @@ def initialize_processors():
                 if resp.get("success") and resp.get("is_pro"):
                     config_manager.APP_CONFIG['is_pro_active'] = True
                     config_manager.APP_CONFIG['pro_expire_time'] = resp.get("expire_time", "")
-                    logger.info("  💎 Pro 验证通过！已解锁全部功能。")
+                    logger.info("  ➜ Pro 验证通过！已解锁全部功能。")
                 else:
                     logger.info("  ➜ 当前运行版本: 免费基础版 (升级 Pro 解锁 302 反代)")
             except Exception as e:
-                logger.error(f"  ❌ Pro 验证服务器连接失败: {e}。已降级为免费基础版。")
+                logger.error(f"  ➜ Pro 验证服务器连接失败: {e}。已降级为免费基础版。")
 
     # 初始化 media_processor_instance_local
     try:
@@ -361,7 +361,7 @@ def ensure_nginx_config():
         with open(final_config_path, 'w', encoding='utf-8') as f:
             f.write(final_config_content)
         
-        logger.info(f"✅ Nginx 配置文件已成功生成于: {final_config_path}")
+        logger.info(f"➜ Nginx 配置文件已成功生成于: {final_config_path}")
 
     except Exception as e:
         logger.error(f"生成 Nginx 配置文件时发生严重错误: {e}", exc_info=True)
@@ -515,7 +515,7 @@ def main_app_start():
         from handler.tg_userbot import TGUserBotManager
         TGUserBotManager.get_instance().start()
     else:
-        logger.info("  ⚠️ [免费版限制] Telegram 机器人交互菜单与订阅功能为 Pro 专属！交互监听未启动。")
+        logger.info("  ➜ [免费版限制] Telegram 机器人交互菜单与订阅功能为 Pro 专属！交互监听未启动。")
 
     def warmup_vector_cache():
         try:
@@ -524,28 +524,28 @@ def main_app_start():
             # 注意：这里不需要 api_key，因为只读库
             engine = RecommendationEngine(tmdb_api_key="dummy")
             engine._get_vector_data()
-            logger.debug("  ✅ 向量数据预加载完成。")
+            logger.debug("  ➜ 向量数据预加载完成。")
         except Exception as e:
-            logger.warning(f"  ⚠️ 向量预加载失败 (不影响启动): {e}")
+            logger.warning(f"  ➜ 向量预加载失败 (不影响启动): {e}")
 
     if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_AI_VECTOR):
         # 这行代码会启动一个后台死循环，每隔 30 分钟刷新一次数据
         # 且第一次会立即执行，起到“预热”的作用
         RecommendationEngine.start_auto_refresh_loop()
     else:
-        logger.debug("  ❌ 向量未启用，跳过向量预加载以节省内存。")
+        logger.debug("  ➜ 向量未启用，跳过向量预加载以节省内存。")
     
     def run_proxy_server():
         if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
             # ★★★ 不是 Pro 直接不启动反代服务 ★★★
             if not config_manager.APP_CONFIG.get('is_pro_active', False):
-                logger.warning("  ⚠️ [免费版限制] 302 反向代理与虚拟库功能为 Pro 高级版专属！反代服务未启动。")
+                logger.warning("  ➜ [免费版限制] 302 反向代理与虚拟库功能为 Pro 高级版专属！反代服务未启动。")
                 return
 
             try:
                 internal_proxy_port = 7758
                 external_port = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_PORT, 8097)
-                logger.info(f"  🚀 [302反代] 服务器已启动 (容器监听端口: {external_port})")
+                logger.info(f"  ➜ [302反代] 服务器已启动 (容器监听端口: {external_port})")
                 proxy_server = WSGIServer(('0.0.0.0', internal_proxy_port), proxy_app, handler_class=WebSocketHandler)
                 proxy_server.serve_forever()
             except Exception as e:
@@ -556,7 +556,7 @@ def main_app_start():
     gevent.spawn(run_proxy_server)
 
     main_app_port = int(constants.WEB_APP_PORT)
-    logger.info(f"  ✅ [主应用] 服务器已启动 (容器监听端口: {main_app_port})")
+    logger.info(f"  ➜ [主应用] 服务器已启动 (容器监听端口: {main_app_port})")
     
     class NullLogger:
         def write(self, data): pass

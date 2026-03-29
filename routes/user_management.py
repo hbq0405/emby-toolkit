@@ -265,7 +265,7 @@ def delete_user(user_id):
         if emby_delete_success:
             deleted_count = user_db.delete_user_from_db(user_id)
             if deleted_count > 0:
-                logger.info(f"  ✅ 成功从本地数据库中删除了用户 '{user_name}' (ID: {user_id}) 的记录。")
+                logger.info(f"  ➜ 成功从本地数据库中删除了用户 '{user_name}' (ID: {user_id}) 的记录。")
             else:
                 logger.warning(f"  ➜ 用户 '{user_name}' 已从 Emby 删除，但在本地数据库中未找到其主记录。")
             return jsonify({"status": "ok", "message": "用户已彻底删除"}), 200

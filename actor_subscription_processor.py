@@ -302,7 +302,7 @@ class ActorSubscriptionProcessor:
                     )
                     
                     conn.commit()
-                    logger.info(f"  ✅ 演员 '{actor_name_for_log}' 的扫描更新成功完成 ---")
+                    logger.info(f"  ➜ 演员 '{actor_name_for_log}' 的扫描更新成功完成 ---")
 
         except Exception as e:
             logger.error(f"为订阅ID {actor_name_for_log} 执行扫描时发生严重错误: {e}", exc_info=True)

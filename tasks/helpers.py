@@ -1130,7 +1130,7 @@ def apply_rating_logic(metadata_skeleton: Dict[str, Any], tmdb_data: Dict[str, A
     
     # 1. 成人强制修正
     if tmdb_data.get('adult') is True:
-        logger.warning(f"  ⚠️ 发现成人内容，忽略任何国家分级强制设为 'XXX'.")
+        logger.warning(f"  ➜ 发现成人内容，忽略任何国家分级强制设为 'XXX'.")
         target_us_code = 'XXX'
     # 2. 只有当不是成人内容时，才走常规映射逻辑
     elif 'US' in available_ratings:
@@ -1738,5 +1738,5 @@ def evaluate_season_airing_status(tmdb_id: str, season_number: int, api_key: str
         return False
 
     except Exception as e:
-        logger.warning(f"  ⚠️ 预检连载状态失败 (TMDb:{tmdb_id} S{season_number}): {e}")
+        logger.warning(f"  ➜ 预检连载状态失败 (TMDb:{tmdb_id} S{season_number}): {e}")
         return False

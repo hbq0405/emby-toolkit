@@ -203,10 +203,10 @@ def check_qrcode_status():
                 # ★ 直接调用小金库存钱函数
                 from handler.p115_service import save_115_tokens
                 save_115_tokens(access_token, refresh_token)
-                logger.info(f"  ✅ [115] 扫码成功！Token 已保存。")
+                logger.info(f"  ➜ [115] 扫码成功！Token 已保存。")
                     
             except Exception as e:
-                logger.error(f"  ❌ 保存 Token 失败: {e}")
+                logger.error(f"  ➜ 保存 Token 失败: {e}")
         
         return jsonify({
             "success": True,
@@ -344,7 +344,7 @@ def auto_save_auth():
             with P115Service._lock:
                 P115Service._openapi_client = None
                 
-            logger.info(f"  ✅ [115] 网页自动授权成功！Token 已无感保存。")
+            logger.info(f"  ➜ [115] 网页自动授权成功！Token 已无感保存。")
             
             # 3. 返回一个自动关闭的精美提示页
             html = """
@@ -363,7 +363,7 @@ def auto_save_auth():
             </head>
             <body>
                 <div class="card">
-                    <h2>✅ 授权成功！</h2>
+                    <h2>➜ 授权成功！</h2>
                     <p>Token 已自动保存到 ETK 系统。</p>
                     <p style="color: #999; font-size: 12px;">本窗口将在 3 秒后自动关闭...</p>
                 </div>
@@ -542,7 +542,7 @@ def list_115_directories():
         })
         
     except Exception as e:
-        logger.error(f"  ❌ [115目录] 获取目录异常: {e}", exc_info=True)
+        logger.error(f"  ➜ [115目录] 获取目录异常: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
 
 @p115_bp.route('/mkdir', methods=['POST'])
@@ -676,7 +676,7 @@ def handle_sorting_rules():
                         logger.info(f"  📂 已为规则 '{rule.get('name')}' 自动计算并保存路径: {rule.get('category_path')}")
                         
                     except Exception as e:
-                        logger.warning(f"  ⚠️ 获取规则 '{rule.get('name')}' 路径失败: {e}")
+                        logger.warning(f"  ➜ 获取规则 '{rule.get('name')}' 路径失败: {e}")
                         if not rule.get('category_path'):
                             rule['category_path'] = rule.get('dir_name', '')
                 elif not need_recalc:
@@ -723,7 +723,7 @@ def play_115_video(pick_code, filename=None):
                 if real_url:
                     break
             except Exception as e:
-                logger.warning(f"  ⚠️ [直链解析] {'OpenAPI' if use_openapi else 'Cookie'} 接口异常: {e}")
+                logger.warning(f"  ➜ [直链解析] {'OpenAPI' if use_openapi else 'Cookie'} 接口异常: {e}")
             
             # 核心：如果没拿到，切换布尔值，下一次循环就换另一个接口
             use_openapi = not use_openapi
@@ -737,7 +737,7 @@ def play_115_video(pick_code, filename=None):
         return response
         
     except Exception as e:
-        logger.error(f"  ❌ 直链解析发生异常: {e}")
+        logger.error(f"  ➜ 直链解析发生异常: {e}")
         return str(e), 500
     
 @p115_bp.route('/replace_strm', methods=['POST'])
@@ -794,16 +794,16 @@ def replace_strm_files():
                             skipped_count += 1
                             
                     except Exception as e:
-                        logger.error(f"  ❌ 处理文件 {file_path} 失败: {e}")
+                        logger.error(f"  ➜ 处理文件 {file_path} 失败: {e}")
         
         msg = f"替换完毕！成功修改了 {fixed_count} 个文件"
         if skipped_count > 0:
             msg += f" (已跳过 {skipped_count} 个未匹配的文件)"
-        logger.info(f"  🧹 [批量替换] {msg}")
+        logger.info(f"  ➜ [批量替换] {msg}")
         return jsonify({"success": True, "message": msg})
         
     except Exception as e:
-        logger.error(f"  ❌ 批量替换异常: {e}", exc_info=True)
+        logger.error(f"  ➜ 批量替换异常: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
 
 @p115_bp.route('/rename_config', methods=['GET', 'POST'])
@@ -966,7 +966,7 @@ def correct_organize_record():
         manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num)
         return jsonify({"success": True, "message": "重组完成！网盘与 STRM 已迁移。"})
     except Exception as e:
-        logger.error(f"  ❌ 手动重组失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 手动重组失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
     
 # ======================================================================
@@ -1237,7 +1237,7 @@ def empty_unrecognized_files():
                 if del_res.get('state'):
                     deleted_count += len(chunk)
                 else:
-                    logger.error(f"  ❌ 清空未识别物理文件失败: {del_res}")
+                    logger.error(f"  ➜ 清空未识别物理文件失败: {del_res}")
         
         # 3. 清理本地数据库中的未识别记录
         from database.connection import get_db_connection
@@ -1252,7 +1252,7 @@ def empty_unrecognized_files():
             "message": f"清空完毕！删除了 {deleted_count} 个网盘文件，清理了 {db_deleted} 条本地记录。"
         })
     except Exception as e:
-        logger.error(f"  ❌ 清空未识别目录异常: {e}", exc_info=True)
+        logger.error(f"  ➜ 清空未识别目录异常: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
 
 @p115_bp.route('/system/directories', methods=['GET'])

@@ -1332,7 +1332,7 @@ def get_pickcode_by_emby_id(emby_id: str) -> Optional[str]:
                             cursor.execute("SELECT pick_code FROM p115_filesystem_cache WHERE sha1 = %s AND pick_code IS NOT NULL LIMIT 1", (sha1,))
                             cache_row = cursor.fetchone()
                             if cache_row and cache_row['pick_code']:
-                                logger.debug(f"  🔍 [反代查询] 通过 SHA1 成功反查到 PC 码: {cache_row['pick_code']}")
+                                logger.debug(f"  ➜ [反代查询] 通过 SHA1 成功反查到 PC 码: {cache_row['pick_code']}")
                                 return cache_row['pick_code']
     except Exception as e:
         logger.error(f"DB: 根据 Emby ID 获取 PC 码失败: {e}")

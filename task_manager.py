@@ -81,7 +81,7 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
                 current_progress = 100
             
             update_status_from_thread(current_progress, final_message)
-            logger.info(f"  ✅ 后台任务 '{task_name}' 结束，最终状态: {final_message}")
+            logger.info(f"  ➜ 后台任务 '{task_name}' 结束，最终状态: {final_message}")
 
             background_task_status.update({
                 "is_running": False, "current_action": "无", "progress": 0, "message": "等待任务"
@@ -196,11 +196,11 @@ def trigger_115_organize_task():
         )
         
         if result:
-            logger.info("  ✅ [TG交互] 115 整理任务已成功提交到后台队列。")
+            logger.info("  ➜ [TG交互] 115 整理任务已成功提交到后台队列。")
         else:
-            logger.warning("  ⚠️ [TG交互] 115 整理任务提交失败，可能有其他任务正在运行。")
+            logger.warning("  ➜ [TG交互] 115 整理任务提交失败，可能有其他任务正在运行。")
         
         return result
     except Exception as e:
-        logger.error(f"  ❌ [TG交互] 触发 115 整理任务时发生错误: {e}", exc_info=True)
+        logger.error(f"  ➜ [TG交互] 触发 115 整理任务时发生错误: {e}", exc_info=True)
         return False

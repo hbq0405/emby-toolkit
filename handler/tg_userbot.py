@@ -112,7 +112,7 @@ class TGUserBotManager:
                         telethon_proxy['username'] = parsed.username
                         telethon_proxy['password'] = parsed.password
                 except Exception as e:
-                    logger.warning(f"  ⚠️ [TG订阅] 解析代理 URL 失败: {e}")
+                    logger.warning(f"  ➜ [TG订阅] 解析代理 URL 失败: {e}")
 
             self.client = TelegramClient(
                 self.session_path, 
@@ -132,7 +132,7 @@ class TGUserBotManager:
                 try:
                     is_auth = await self.client.is_user_authorized()
                 except AuthKeyUnregisteredError:
-                    logger.error("  ❌ [TG订阅] 登录凭证已失效 (AuthKeyUnregistered)。已自动清理，请在前端重新登录！")
+                    logger.error("  ➜ [TG订阅] 登录凭证已失效 (AuthKeyUnregistered)。已自动清理，请在前端重新登录！")
                     if self.client:
                         await self.client.disconnect()
                     if os.path.exists(self.session_path):
@@ -140,14 +140,14 @@ class TGUserBotManager:
                     return # 退出当前 daemon，等待前端重新触发 start()
 
                 if is_auth:
-                    logger.info("  🚀 [TG订阅] Telegram 客户端已授权，开始监听频道消息...")
+                    logger.info("  ➜ [TG订阅] Telegram 客户端已授权，开始监听频道消息...")
                     await self.client.run_until_disconnected()
                 else:
-                    logger.info("  ⏳ [TG订阅] Telegram 客户端已连接，等待前端输入验证码授权...")
+                    logger.info("  ➜ [TG订阅] Telegram 客户端已连接，等待前端输入验证码授权...")
                     # 保持协程存活，等待前端调用登录接口
                     while self.is_running:
                         if await self.client.is_user_authorized():
-                            logger.info("  🚀 [TG订阅] 授权成功，开始监听频道消息...")
+                            logger.info("  ➜ [TG订阅] 授权成功，开始监听频道消息...")
                             await self.client.run_until_disconnected()
                             break
                         await asyncio.sleep(2)
@@ -155,7 +155,7 @@ class TGUserBotManager:
             self.loop.run_until_complete(_daemon())
             
         except Exception as e:
-            logger.error(f"  ❌ [TG订阅] 运行异常: {e}", exc_info=True)
+            logger.error(f"  ➜ [TG订阅] 运行异常: {e}", exc_info=True)
         finally:
             self.is_running = False
             self.loop.close()
@@ -323,7 +323,7 @@ class TGUserBotManager:
         
         # 情况 A：找到了目标链接 (115 或 中间页)，且 (有 TMDB ID 或 有标题)
         if target_link and (tmdb_id or title):
-            logger.debug(f"  📥 [TG订阅] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 判定类型: {'剧集' if item_type=='tv' else '电影'}, 准备推入处理队列...")
+            logger.debug(f"  ➜ [TG订阅] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 判定类型: {'剧集' if item_type=='tv' else '电影'}, 准备推入处理队列...")
             
             tg_task_queue.put({
                 "type": "115_share_complex",
@@ -340,7 +340,7 @@ class TGUserBotManager:
         # 情况 B：手动发的磁力链或 ED2K
         elif is_magnet or is_ed2k or magnet_ed2k_match:
             target_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else text
-            logger.info(f"  📥 [TG订阅] 收到手动离线下载请求 -> {target_url[:30]}...")
+            logger.info(f"  ➜ [TG订阅] 收到手动离线下载请求 -> {target_url[:30]}...")
             
             tg_task_queue.put({
                 "type": "offline_download",
@@ -386,10 +386,10 @@ class TGUserBotManager:
                 res = await self.client.send_code_request(phone)
                 # 只要后台拿到 hash，就存起来供提交时使用
                 self.phone_code_hash = res.phone_code_hash
-                logger.info("  ✅ [TG订阅] 验证码发送请求已成功响应！")
+                logger.info("  ➜ [TG订阅] 验证码发送请求已成功响应！")
                 return True
             except Exception as e:
-                logger.error(f"  ❌ [TG订阅] 发送验证码被 TG 拒绝: {e}")
+                logger.error(f"  ➜ [TG订阅] 发送验证码被 TG 拒绝: {e}")
                 raise e
             
         future = asyncio.run_coroutine_threadsafe(_send(), self.loop)
@@ -398,7 +398,7 @@ class TGUserBotManager:
             # 我们只等 20 秒
             return future.result(timeout=20)
         except TimeoutError:
-            logger.warning("  ⚠️ [TG订阅] 请求验证码超时！但后台仍在尝试发送。")
+            logger.warning("  ➜ [TG订阅] 请求验证码超时！但后台仍在尝试发送。")
             # ★★★ 老六的终极骗术：捕获超时错误，不抛出异常，强行让前端弹出输入框！ ★★★
             # 只要这里不抛出异常，routes/system.py 就会给前端返回 success: True
             return True
@@ -409,17 +409,17 @@ class TGUserBotManager:
             try:
                 logger.info("  ➜ [TG订阅] 正在向 TG 服务器提交验证码...")
                 await self.client.sign_in(cfg['phone'], code, phone_code_hash=self.phone_code_hash)
-                logger.info("  ✅ [TG订阅] 验证码校验通过！")
+                logger.info("  ➜ [TG订阅] 验证码校验通过！")
                 return {"success": True}
             except SessionPasswordNeededError:
                 if not cfg['password']:
                     return {"success": False, "need_2fa": True, "msg": "需要两步验证密码，请在配置中填写后重试"}
                 logger.info("  ➜ [TG订阅] 正在提交两步验证密码...")
                 await self.client.sign_in(password=cfg['password'])
-                logger.info("  ✅ [TG订阅] 两步验证密码校验通过！")
+                logger.info("  ➜ [TG订阅] 两步验证密码校验通过！")
                 return {"success": True}
             except Exception as e:
-                logger.error(f"  ❌ [TG订阅] 提交验证码失败: {e}")
+                logger.error(f"  ➜ [TG订阅] 提交验证码失败: {e}")
                 raise e
                 
         # 同样放宽到 60 秒
@@ -451,7 +451,7 @@ def _process_tg_queue():
             target_cid = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID, '0')
             
             if not client:
-                logger.error("  ❌ [TG订阅] 115 客户端未初始化，无法执行任务。")
+                logger.error("  ➜ [TG订阅] 115 客户端未初始化，无法执行任务。")
                 continue
 
             # =================================================================
@@ -512,19 +512,19 @@ def _process_tg_queue():
                             if pwd_match and not receive_code:
                                 receive_code = pwd_match.group(1)
                                 
-                            logger.debug(f"  🎯 [TG订阅] 深挖成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
+                            logger.debug(f"  ➜ [TG订阅] 深挖成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
                         else:
                             # 智能诊断失败原因
                             if 'Just a moment' in resp.text or resp.status_code in [403, 503]:
-                                logger.error(f"  ❌ [TG订阅] 追踪失败：被 HDHive 的 Cloudflare 5秒盾拦截！")
+                                logger.error(f"  ➜ [TG订阅] 追踪失败：被 HDHive 的 Cloudflare 5秒盾拦截！")
                             elif '登录' in resp.text or '/login' in resp.url:
-                                logger.error(f"  ❌ [TG订阅] 追踪失败：HDHive 提示需要登录！请在 ETK 设置中配置 HDHive Cookie。")
+                                logger.error(f"  ➜ [TG订阅] 追踪失败：HDHive 提示需要登录！请在 ETK 设置中配置 HDHive Cookie。")
                             else:
-                                logger.error(f"  ❌ [TG订阅] 追踪失败：页面中未找到 115 链接。HTTP 状态码: {resp.status_code}")
+                                logger.error(f"  ➜ [TG订阅] 追踪失败：页面中未找到 115 链接。HTTP 状态码: {resp.status_code}")
                             continue
                             
                     except Exception as e:
-                        logger.error(f"  ❌ [TG订阅] 请求中间页失败: {e}")
+                        logger.error(f"  ➜ [TG订阅] 请求中间页失败: {e}")
                         continue
                 else:
                     # 普通 115 链接，直接提取
@@ -532,7 +532,7 @@ def _process_tg_queue():
                     if match: share_code = match.group(1)
 
                 if not share_code:
-                    logger.error("  ❌ [TG订阅] 无法获取有效的 115 Share Code，任务终止。")
+                    logger.error("  ➜ [TG订阅] 无法获取有效的 115 Share Code，任务终止。")
                     continue
 
                 # -----------------------------------------------------------
@@ -550,9 +550,9 @@ def _process_tg_queue():
                     
                     if results:
                         tmdb_id = str(results[0]['id'])
-                        logger.debug(f"  ✅ [TG订阅] 反查成功！精准匹配到 TMDB ID: {tmdb_id}")
+                        logger.debug(f"  ➜ [TG订阅] 反查成功！精准匹配到 TMDB ID: {tmdb_id}")
                     else:
-                        logger.warning(f"  ⚠️ [TG订阅] 反查失败，TMDb 未找到该{'剧集' if item_type=='tv' else '电影'}，任务终止。")
+                        logger.warning(f"  ➜ [TG订阅] 反查失败，TMDb 未找到该{'剧集' if item_type=='tv' else '电影'}，任务终止。")
                         continue
 
                 if not tmdb_id:
@@ -589,11 +589,11 @@ def _process_tg_queue():
                                 if row and row['watching_status'] in ['Watching', 'Paused', 'Pending']:
                                     should_process = True
                 except Exception as e:
-                    logger.error(f"  ❌ [TG订阅] 查库失败: {e}")
+                    logger.error(f"  ➜ [TG订阅] 查库失败: {e}")
                     continue
 
                 if not should_process:
-                    logger.debug(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
+                    logger.debug(f"  ➜ [TG订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
                     continue
 
                 # -----------------------------------------------------------
@@ -603,17 +603,17 @@ def _process_tg_queue():
                     from database import media_db
                     local_seasons = media_db.get_series_local_children_info(tmdb_id)
                     if season_number in local_seasons and episode_number in local_seasons[season_number]:
-                        logger.debug(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
+                        logger.debug(f"  ➜ [TG订阅] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
                         continue
 
                 # -----------------------------------------------------------
                 # 5. 执行转存
                 # -----------------------------------------------------------
-                logger.debug(f"  🎯 [TG订阅] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
+                logger.debug(f"  ➜ [TG订阅] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
                 
                 res = client.share_import(share_code, receive_code, target_cid)
                 if res and res.get('state'):
-                    logger.info(f"  ✅ [TG订阅] 资源转存成功！正在触发整理...")
+                    logger.info(f"  ➜ [TG订阅] 资源转存成功！正在触发整理...")
                     try:
                         import task_manager
                         import threading
@@ -621,7 +621,7 @@ def _process_tg_queue():
                     except: pass
                 else:
                     err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
-                    logger.error(f"  ❌ [TG订阅] 转存失败: {err}")
+                    logger.error(f"  ➜ [TG订阅] 转存失败: {err}")
 
             # =================================================================
             # ★ 任务类型 B：处理手动发送的磁力/ED2K 离线下载 (保持不变)
@@ -632,7 +632,7 @@ def _process_tg_queue():
                 
                 res = client.offline_add_urls(payload)
                 if res and res.get('state'):
-                    logger.info(f"  ✅ [TG订阅] 离线下载任务提交成功！")
+                    logger.info(f"  ➜ [TG订阅] 离线下载任务提交成功！")
                     try:
                         import task_manager
                         import threading
@@ -640,10 +640,10 @@ def _process_tg_queue():
                     except: pass
                 else:
                     err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
-                    logger.error(f"  ❌ [TG订阅] 离线提交失败: {err}")
+                    logger.error(f"  ➜ [TG订阅] 离线提交失败: {err}")
 
         except Exception as e:
-            logger.error(f"  ❌ [TG订阅] 队列处理异常: {e}")
+            logger.error(f"  ➜ [TG订阅] 队列处理异常: {e}")
 
 # 启动消费者协程
 spawn(_process_tg_queue)

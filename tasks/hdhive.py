@@ -15,13 +15,13 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
     """
     核心任务：从影巢解锁 -> 转存 115 -> 搜索真实ID -> 精准整理
     """
-    logger.info(f"=== 🚀 开始从影巢获取资源: {title} (TMDB: {tmdb_id}) ===")
+    logger.info(f"=== ➜ 开始从影巢获取资源: {title} (TMDB: {tmdb_id}) ===")
     
     hdhive = HDHiveClient(api_key)
     unlock_data = hdhive.unlock_resource(slug)
     
     if not unlock_data:
-        logger.error("  ❌ 影巢资源解锁失败，可能积分不足或资源已失效。")
+        logger.error("  ➜ 影巢资源解锁失败，可能积分不足或资源已失效。")
         return False
         
     share_url = unlock_data.get("url") or ""
@@ -41,7 +41,7 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
     # 提取分享码 (同时从 share_url 和 full_url 中找，增加容错率)
     match = re.search(r'(?:115\.com|115cdn\.com|anxia\.com)/s/([a-zA-Z0-9]+)', share_url + " " + full_url)
     if not match:
-        logger.error(f"  ❌ 无法从链接中提取 115 分享码: {share_url} | {full_url}")
+        logger.error(f"  ➜ 无法从链接中提取 115 分享码: {share_url} | {full_url}")
         return False
         
     share_code = match.group(1)
@@ -49,33 +49,33 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
 
     client = P115Service.get_client()
     if not client:
-        logger.error("  ❌ 115 客户端未初始化，无法转存。")
+        logger.error("  ➜ 115 客户端未初始化，无法转存。")
         return False
 
     config = get_config()
     save_cid = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID) 
     if not save_cid or str(save_cid) == '0':
-        logger.error("  ❌ 未配置 115 待整理目录，无法转存。")
+        logger.error("  ➜ 未配置 115 待整理目录，无法转存。")
         return False
 
-    logger.info(f"  📥 正在转存到 115 待整理目录 (CID: {save_cid})...")
+    logger.info(f"  ➜ 正在转存到 115 待整理目录 (CID: {save_cid})...")
     try:
         import_res = client.share_import(share_code, access_code, save_cid)
         
         # ★ 1：兼容 state 为 True (布尔值) 或 1 (数字/字符串) 的情况
         if not import_res or not import_res.get('state'):
-            logger.error(f"  ❌ 115 转存失败: {import_res.get('error_msg', import_res)}")
+            logger.error(f"  ➜ 115 转存失败: {import_res.get('error_msg', import_res)}")
             return False
             
         receive_title = import_res.get('data', {}).get('receive_title')
-        logger.info(f"  ✅ 115 转存成功！文件/目录名: {receive_title}")
+        logger.info(f"  ➜ 115 转存成功！文件/目录名: {receive_title}")
         
         if not receive_title:
-            logger.warning("  ⚠️ 转存成功但未返回文件名，交由全局定时扫描任务处理。")
+            logger.warning("  ➜ 转存成功但未返回文件名，交由全局定时扫描任务处理。")
             return True
 
         # ★ 2：去待整理目录搜索刚刚转存的文件，获取真实的 file_id (增加重试逻辑)
-        logger.info(f"  🔍 正在定位转存文件，准备执行精准整理...")
+        logger.info(f"  ➜ 正在定位转存文件，准备执行精准整理...")
         
         target_item = None
         max_retries = 3
@@ -83,7 +83,7 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
         for attempt in range(1, max_retries + 1):
             # 递增等待时间：2秒, 4秒, 6秒
             wait_time = attempt * 2
-            logger.debug(f"  ⏳ 等待 {wait_time} 秒后进行第 {attempt}/{max_retries} 次搜索...")
+            logger.debug(f"  ➜ 等待 {wait_time} 秒后进行第 {attempt}/{max_retries} 次搜索...")
             time.sleep(wait_time)
             
             try:
@@ -97,15 +97,15 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
                         break
                         
                 if target_item:
-                    logger.info(f"  🎯 第 {attempt} 次搜索成功定位到文件！")
+                    logger.info(f"  ➜ 第 {attempt} 次搜索成功定位到文件！")
                     break
                 else:
-                    logger.debug(f"  ❌ 第 {attempt} 次搜索未找到文件，115 索引可能尚未同步。")
+                    logger.debug(f"  ➜ 第 {attempt} 次搜索未找到文件，115 索引可能尚未同步。")
             except Exception as e:
-                logger.warning(f"  ⚠️ 第 {attempt} 次搜索请求发生异常: {e}")
+                logger.warning(f"  ➜ 第 {attempt} 次搜索请求发生异常: {e}")
                 
         if not target_item:
-            logger.warning(f"  ⚠️ 经过 {max_retries} 次重试，仍未能精准定位到文件 '{receive_title}'，将交由全局定时扫描任务处理。")
+            logger.warning(f"  ➜ 经过 {max_retries} 次重试，仍未能精准定位到文件 '{receive_title}'，将交由全局定时扫描任务处理。")
             return True
 
         # 构造 root_item 触发 SmartOrganizer (补全 pc, sha1, fs 等生成 STRM 必需的关键信息)
@@ -134,7 +134,7 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
         return True
 
     except Exception as e:
-        logger.error(f"  ❌ 转存或整理过程中发生异常: {e}", exc_info=True)
+        logger.error(f"  ➜ 转存或整理过程中发生异常: {e}", exc_info=True)
         return False
     
 def task_hdhive_auto_checkin(processor):
@@ -168,19 +168,19 @@ def task_hdhive_auto_checkin(processor):
                 logger.info(f"  ➜ 影巢签到: {real_message}")
                 task_manager.update_status_from_thread(100, f"已签到: {real_message}")
             else:
-                logger.info(f"  ✅ 影巢签到成功: {real_message}")
+                logger.info(f"  ➜ 影巢签到成功: {real_message}")
                 task_manager.update_status_from_thread(100, f"签到成功: {real_message}")
         else:
             error_msg = res.get("message", "签到失败")
-            logger.warning(f"  ⚠️ 影巢签到失败: {error_msg}")
+            logger.warning(f"  ➜ 影巢签到失败: {error_msg}")
             task_manager.update_status_from_thread(-1, f"签到失败: {error_msg}")
 
         # 3. ★ 新增：触发 Telegram 通知
         try:
             send_hdhive_checkin_notification(res, user_info)
         except Exception as e:
-            logger.error(f"  ⚠️ 发送影巢签到通知失败: {e}")
+            logger.error(f"  ➜ 发送影巢签到通知失败: {e}")
 
     except Exception as e:
-        logger.error(f"  ❌ 影巢自动签到发生异常: {e}", exc_info=True)
+        logger.error(f"  ➜ 影巢自动签到发生异常: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "签到异常")

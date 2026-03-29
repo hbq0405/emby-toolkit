@@ -369,7 +369,7 @@ def task_auto_sync_template_on_policy_change(processor, updated_user_id: str):
                                 policy_to_apply['IsDisabled'] = current_disabled_state
                                 logger.debug(f"    │  保留用户 '{user_name_to_push}' 的禁用状态: {current_disabled_state}")
                         except Exception as e:
-                            logger.warning(f"    │  ⚠️ 获取用户 '{user_name_to_push}' 实时状态失败，可能导致禁用状态重置: {e}")
+                            logger.warning(f"    │  ➜ 获取用户 '{user_name_to_push}' 实时状态失败，可能导致禁用状态重置: {e}")
 
                         # 3. 使用修改后的策略(policy_to_apply)进行推送
                         emby.force_set_user_policy(

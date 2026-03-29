@@ -83,7 +83,7 @@ class MediaFileHandler(FileSystemEventHandler):
         global MEDIAINFO_DEBOUNCE_TIMER
         with MEDIAINFO_QUEUE_LOCK:
             if file_path not in MEDIAINFO_EVENT_QUEUE:
-                logger.debug(f"  🔍 [实时监控] 媒体信息更新加入队列: {file_path}")
+                logger.debug(f"  ➜ [实时监控] 媒体信息更新加入队列: {file_path}")
             
             MEDIAINFO_EVENT_QUEUE.add(file_path)
             
@@ -105,7 +105,7 @@ def enqueue_file_actively(file_path: str):
     global DEBOUNCE_TIMER
     with QUEUE_LOCK:
         if file_path not in FILE_EVENT_QUEUE:
-            logger.info(f"  🎯 [主动推送] 文件加入监控队列: {os.path.basename(file_path)}")
+            logger.info(f"  ➜ [主动推送] 文件加入监控队列: {os.path.basename(file_path)}")
         
         FILE_EVENT_QUEUE.add(file_path)
         
@@ -160,7 +160,7 @@ def process_batch_queue():
             grouped_files[parent_dir].append(file_path)
 
         representative_files = []
-        logger.info(f"  🚀 [实时监控] 准备刮削 {len(files_to_scrape)} 个文件，聚合为 {len(grouped_files)} 个任务组。")
+        logger.info(f"  ➜ [实时监控] 准备刮削 {len(files_to_scrape)} 个文件，聚合为 {len(grouped_files)} 个任务组。")
 
         for parent_dir, files in grouped_files.items():
             rep_file = files[0]
@@ -174,7 +174,7 @@ def process_batch_queue():
         threading.Thread(target=_handle_batch_file_task, args=(processor, representative_files)).start()
 
     if files_to_refresh_only:
-        logger.info(f"  🚀 [实时监控] 发现 {len(files_to_refresh_only)} 个文件命中排除路径，将跳过刮削直接刷新 Emby。")
+        logger.info(f"  ➜ [实时监控] 发现 {len(files_to_refresh_only)} 个文件命中排除路径，将跳过刮削直接刷新 Emby。")
         threading.Thread(target=_handle_batch_refresh_only_task, args=(files_to_refresh_only,)).start()
 
 def process_mediainfo_queue():
@@ -211,7 +211,7 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
             
             # 如果没有“片头”字样，直接忽略，不消耗性能
             if "IntroStart" not in content:
-                logger.trace(f"  ⏭️ [实时监控] 文件未包含'片头'信息，忽略更新: {os.path.basename(file_path)}")
+                logger.trace(f"  ➜ [实时监控] 文件未包含'片头'信息，忽略更新: {os.path.basename(file_path)}")
                 continue
                 
             # 确认有片头后，再解析 JSON
@@ -284,12 +284,12 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
                                 created_at = NOW()
                         """, (sha1, json.dumps(raw_info, ensure_ascii=False)))
                         conn.commit()
-                        logger.trace(f"  💾 [实时监控] 检测到片头更新，已成功备份至数据库: {os.path.basename(file_path)}")
+                        logger.trace(f"  ➜ [实时监控] 检测到片头更新，已成功备份至数据库: {os.path.basename(file_path)}")
                     else:
-                        logger.trace(f"  ⚠️ [实时监控] 无法匹配到 SHA1，跳过备份: {os.path.basename(file_path)}")
+                        logger.trace(f"  ➜ [实时监控] 无法匹配到 SHA1，跳过备份: {os.path.basename(file_path)}")
 
         except Exception as e:
-            logger.error(f"  ❌ [实时监控] 处理媒体信息更新失败 {file_path}: {e}")
+            logger.error(f"  ➜ [实时监控] 处理媒体信息更新失败 {file_path}: {e}")
 
 def _handle_batch_file_task(processor, file_paths: List[str]):
     """
@@ -313,11 +313,11 @@ def _handle_batch_refresh_only_task(file_paths: List[str]):
     delay_seconds = config.get(constants.CONFIG_OPTION_MONITOR_EXCLUDE_REFRESH_DELAY, 0)
 
     if not base_url or not api_key:
-        logger.error(f"  ❌ [实时监控-排除路径] 无法执行刷新：Emby 配置缺失。")
+        logger.error(f"  ➜ [实时监控-排除路径] 无法执行刷新：Emby 配置缺失。")
         return
 
     if delay_seconds > 0:
-        logger.info(f"  ⏳ [实时监控-排除路径] 命中排除路径，等待 {delay_seconds} 秒后通知 Emby 刷新...")
+        logger.info(f"  ➜ [实时监控-排除路径] 命中排除路径，等待 {delay_seconds} 秒后通知 Emby 刷新...")
         time.sleep(delay_seconds)
         # 再次检查监控是否被禁用，防止长时间等待后状态改变
         if not config.get(constants.CONFIG_OPTION_MONITOR_ENABLED, False):
@@ -327,7 +327,7 @@ def _handle_batch_refresh_only_task(file_paths: List[str]):
     logger.info(f"  ⚡ [实时监控-排除路径] 正在向 Emby 发送 {len(valid_files)} 个文件的极速入库通知 (命中排除路径)。")
     # ★★★ 核心修改：直接调用极速通知接口，传入具体文件路径 ★★★
     emby.notify_emby_file_changes(valid_files, base_url, api_key)
-    logger.info(f"  ✅ [实时监控-排除路径] 批量极速通知完成！Emby 将仅针对这些文件进行秒级入库。")
+    logger.info(f"  ➜ [实时监控-排除路径] 批量极速通知完成！Emby 将仅针对这些文件进行秒级入库。")
 
 def _wait_for_files_stability(file_paths: List[str]) -> List[str]:
     """
@@ -386,7 +386,7 @@ def _wait_for_files_stability(file_paths: List[str]) -> List[str]:
             
     # 记录那些等了 60 秒还没写完的死文件
     for fp in pending_files:
-        logger.warning(f"  ⚠️ [实时监控] 文件不稳定或超时，跳过处理: {os.path.basename(fp)}")
+        logger.warning(f"  ➜ [实时监控] 文件不稳定或超时，跳过处理: {os.path.basename(fp)}")
         
     return valid_files
 
@@ -429,7 +429,7 @@ class MonitorService:
 
         if started_paths:
             self.observer.start()
-            logger.info(f"  👀 实时监控服务已启动，正在监听 {len(started_paths)} 个目录: {started_paths}")
+            logger.info(f"  ➜ 实时监控服务已启动，正在监听 {len(started_paths)} 个目录: {started_paths}")
         else:
             logger.warning("  ➜ 没有有效的监控目录，实时监控服务未启动。")
 
@@ -444,7 +444,7 @@ def pause_queue_processing():
     """暂停监控队列处理 (进入蓄水池模式)"""
     global IS_PROCESSING_PAUSED
     IS_PROCESSING_PAUSED = True
-    logger.info("  ⏸️ [实时监控] 已开启队列抑制，暂停处理新文件 (等待网盘处理完成)...")
+    logger.info("  ➜ [实时监控] 已开启队列抑制，暂停处理新文件 (等待网盘处理完成)...")
 
 def resume_queue_processing():
     """恢复监控队列处理 (开闸放水)"""

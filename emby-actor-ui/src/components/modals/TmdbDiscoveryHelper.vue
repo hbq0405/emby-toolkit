@@ -55,7 +55,7 @@
             <strong>{{ calculatedDateRange.end }}</strong>
           </span>
           <span v-else>
-            ⚠️ "即将上线"模式未启用，当前使用年份筛选。
+            ➜ "即将上线"模式未启用，当前使用年份筛选。
           </span>
         </div>
       </n-form-item>
