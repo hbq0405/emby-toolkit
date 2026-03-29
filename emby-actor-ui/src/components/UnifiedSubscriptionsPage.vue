@@ -259,6 +259,16 @@
       <n-form label-placement="left" label-width="auto" require-mark-placement="right-hanging">
         
         <n-divider title-placement="left">电影订阅策略 (剧集由智能追剧策略管理)</n-divider>
+        <n-form-item label="电影订阅优先通道">
+              <n-radio-group v-model:value="strategyConfig.subscription_priority">
+                <n-radio-button value="mp">MoviePilot 优先</n-radio-button>
+                <n-radio-button value="hdhive">影巢 (HDHive) 优先</n-radio-button>
+              </n-radio-group>
+              <template #feedback>
+                <b>影巢优先：</b>电影优先去影巢检索，成功则直接 115 秒传整理，失败或无资源再交由 MP 兜底。<br/>
+                <span style="color: var(--n-warning-color);">* 注：因影巢API限制，剧集固定走 MP 或 TG 频道，此选项仅对电影生效。</span>
+              </template>
+            </n-form-item>
         <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
           <li>新片，采用“搜索 N 天 -> 暂停 M 天”的循环机制，大幅降低 MoviePilot 搜索压力。</li>
           <li>老片，采用“搜索 N 天 -> 取消订阅 -> 复活”</li>
@@ -360,6 +370,7 @@ const strategyConfig = ref({
   delay_subscription_days: 0,
   timeout_revive_days: 0,
   download_timeout_hours: 0,
+  subscription_priority: 'mp'
 });
 
 const loadStrategyConfig = async () => {
@@ -373,6 +384,7 @@ const loadStrategyConfig = async () => {
       delay_subscription_days: 0,
       timeout_revive_days: 0,
       download_timeout_hours: 0,
+      subscription_priority: res.data.subscription_priority || 'mp',
       ...res.data 
     };
   } catch (e) {

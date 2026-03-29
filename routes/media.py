@@ -600,8 +600,12 @@ def api_get_subscription_strategy():
                 'movie_protection_days': 180,
                 'movie_search_window_days': 1,
                 'movie_pause_days': 7,
-                'delay_subscription_days': 30
+                'delay_subscription_days': 30,
+                'subscription_priority': 'mp'
             }
+        else:
+            if 'subscription_priority' not in config:
+                config['subscription_priority'] = 'mp'
         return jsonify(config)
     except Exception as e:
         logger.error(f"获取订阅策略失败: {e}")

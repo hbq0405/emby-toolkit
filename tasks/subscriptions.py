@@ -16,6 +16,8 @@ import task_manager
 from handler import telegram
 from database import settings_db, request_db, user_db, media_db, watchlist_db
 from .helpers import is_movie_subscribable, check_series_completion, parse_series_title_and_season, should_mark_as_pending
+from handler.hdhive_client import HDHiveClient
+from tasks.hdhive import task_download_from_hdhive
 
 logger = logging.getLogger(__name__)
 
@@ -849,10 +851,42 @@ def task_auto_subscribe(processor):
             success = False
             watchlist_config = settings_db.get_setting('watchlist_config') or {}
             tg_channel_tracking = watchlist_config.get('tg_channel_tracking', False)
+            subscription_priority = strategy_config.get('subscription_priority', 'mp')
 
             if item_type == 'Movie':
-                mp_payload = {"name": title, "tmdbid": int(tmdb_id), "type": "电影"}
-                success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
+                # ==========================================
+                # 电影逻辑：影巢优先 -> MP 兜底
+                # ==========================================
+                if subscription_priority == 'hdhive':
+                    logger.info(f"  ➜ [策略] 电影《{title}》启用影巢优先，正在检索影巢资源...")
+                    hdhive_api_key = settings_db.get_setting('hdhive_api_key')
+                    
+                    if hdhive_api_key:
+                        hd_client = HDHiveClient(hdhive_api_key)
+                        resources = hd_client.get_resources(tmdb_id, 'movie')
+                        
+                        if resources:
+                            # 取第一个资源（通常是默认最优或最新）
+                            target_resource = resources[0]
+                            slug = target_resource.get('slug')
+                            if slug:
+                                logger.info(f"  ➜ 影巢找到资源，准备解锁并转存 115...")
+                                # 调用 hdhive.py 中的核心转存整理任务
+                                success = task_download_from_hdhive(hdhive_api_key, slug, tmdb_id, 'movie', title)
+                                if success:
+                                    logger.info(f"  ✅ 影巢秒传成功！已跳过 MoviePilot 订阅。")
+                                else:
+                                    logger.warning(f"  ⚠️ 影巢转存失败，准备降级到 MoviePilot 兜底...")
+                        else:
+                            logger.info(f"  ➜ 影巢未找到电影《{title}》的资源，准备降级到 MoviePilot 兜底...")
+                    else:
+                        logger.warning(f"  ⚠️ 未配置影巢 API Key，自动降级到 MoviePilot...")
+
+                # 如果影巢没开、没找到资源、或者转存失败，统一交由 MP 兜底
+                if not success:
+                    logger.info(f"  ➜ 正在向 MoviePilot 提交电影《{title}》的订阅...")
+                    mp_payload = {"name": title, "tmdbid": int(tmdb_id), "type": "电影"}
+                    success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
             elif item_type == 'Series':
                 success = _subscribe_full_series_with_logic(int(tmdb_id), title, config, tmdb_api_key)
             elif item_type == 'Season' and parent_tmdb_id and season_number is not None:
