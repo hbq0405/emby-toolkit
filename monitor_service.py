@@ -284,9 +284,9 @@ def _handle_mediainfo_update_task(file_paths: List[str]):
                                 created_at = NOW()
                         """, (sha1, json.dumps(raw_info, ensure_ascii=False)))
                         conn.commit()
-                        logger.info(f"  💾 [实时监控] 检测到片头更新，已成功备份至数据库: {os.path.basename(file_path)}")
+                        logger.trace(f"  💾 [实时监控] 检测到片头更新，已成功备份至数据库: {os.path.basename(file_path)}")
                     else:
-                        logger.debug(f"  ⚠️ [实时监控] 无法匹配到 SHA1，跳过备份: {os.path.basename(file_path)}")
+                        logger.trace(f"  ⚠️ [实时监控] 无法匹配到 SHA1，跳过备份: {os.path.basename(file_path)}")
 
         except Exception as e:
             logger.error(f"  ❌ [实时监控] 处理媒体信息更新失败 {file_path}: {e}")

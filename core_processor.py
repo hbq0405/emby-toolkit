@@ -940,7 +940,7 @@ class MediaProcessor:
         except Exception: pass
 
         # 2. 查不到？现场算 FID 调 API 查！(专治第三方 STRM)
-        logger.info(f"  🔍 未在本地数据库找到 SHA1，尝试通过 115api 获取...")
+        logger.trace(f"  🔍 未在本地数据库找到 SHA1，尝试通过 115api 获取...")
         try:
             to_id_func = None
             try:
@@ -965,7 +965,7 @@ class MediaProcessor:
                             logger.info(f"  ✅ 成功通过 115 API 实时获取到 SHA1: {sha1}")
                             return sha1
         except Exception as e:
-            logger.warning(f"  ⚠️ 实时获取 SHA1 失败: {e}")
+            logger.trace(f"  ⚠️ 实时获取 SHA1 失败: {e}")
 
         return None
 
