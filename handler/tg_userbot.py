@@ -182,7 +182,7 @@ class TGUserBotManager:
 
         if not matched:
             # 如果你想知道为什么某个频道没被监听到，可以把下面这行注释打开看日志
-            logger.debug(f"  [UserBot 忽略] 收到消息 -> Username: {chat_username}, ID: {chat_id}")
+            # logger.debug(f"  [UserBot 忽略] 收到消息 -> Username: {chat_username}, ID: {chat_id}")
             return
 
         text = event.raw_text
@@ -190,55 +190,68 @@ class TGUserBotManager:
             return
 
         # =================================================================
-        # ★ 史诗级增强：透视隐藏链接 & 提取标题年份
+        # ★ 史诗级增强 2.0：全方位雷达 (提取实体链接 + 按钮链接 + URL密码)
         # =================================================================
         
-        # 1. 提取所有隐藏的超链接 (Markdown/HTML 里的 <a> 标签)
-        hidden_urls = []
+        all_urls = []
+
+        # 1. 提取 Markdown/HTML 隐藏的超链接
         if event.message.entities:
             for entity in event.message.entities:
                 if hasattr(entity, 'url') and entity.url:
-                    hidden_urls.append(entity.url)
+                    all_urls.append(entity.url)
 
-        # 2. 寻找目标链接 (明文 115 或 隐藏的 115/hdhive 中间页)
+        # 2. 提取底部内联键盘 (Inline Keyboard) 的按钮链接 (解决星河频道)
+        if event.message.reply_markup and hasattr(event.message.reply_markup, 'rows'):
+            for row in event.message.reply_markup.rows:
+                for button in row.buttons:
+                    if hasattr(button, 'url') and button.url:
+                        all_urls.append(button.url)
+
+        # 3. 寻找目标链接 (115 或 中间页) 和 提取码
         target_link = None
-        link_match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', text, re.IGNORECASE)
-        if link_match:
-            target_link = link_match.group(0)
-        else:
-            for url in hidden_urls:
-                if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/115/' in url:
-                    target_link = url
-                    break
+        receive_code = ""
 
-        # 3. 提取 TMDB ID (如果有)
+        # 先看文本里有没有明文的 115 链接，有的话插到最前面优先处理
+        link_match = re.search(r'(https?://(?:115cdn|115)\.com/s/[a-zA-Z0-9]+(?:[?&]password=[a-zA-Z0-9]+)?)', text, re.IGNORECASE)
+        if link_match:
+            all_urls.insert(0, link_match.group(1))
+
+        # 遍历所有收集到的链接
+        for url in all_urls:
+            if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/115/' in url:
+                target_link = url
+                # ★ 核心修复：尝试直接从 URL 中提取密码 (解决 ?password=8888 的情况)
+                pwd_in_url = re.search(r'(?:password|pwd)=([a-zA-Z0-9]{4})', url, re.IGNORECASE)
+                if pwd_in_url:
+                    receive_code = pwd_in_url.group(1)
+                break
+
+        # 4. 如果 URL 里没有密码，再从正文里找
+        if not receive_code:
+            pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', text, re.IGNORECASE)
+            if pwd_match:
+                receive_code = pwd_match.group(1)
+
+        # 5. 提取 TMDB ID (如果有)
         tmdb_id = None
         tmdb_match = re.search(r'TMDB ID[:：\s]*(\d+)', text, re.IGNORECASE)
         if tmdb_match:
             tmdb_id = tmdb_match.group(1)
 
-        # 4. 提取标题和年份 (用于没有 TMDB ID 时的反查)
-        # 匹配类似 "匹兹堡医护前线 (2025)" 或 "📺 电视剧：冬日的什么呀 (2026)"
+        # 6. 提取标题和年份 (用于没有 TMDB ID 时的反查)
         title = None
         year = None
         title_match = re.search(r'(?:电视剧|电影|名称)[:：\s]*([^\n]+?)\s*\((\d{4})\)', text)
         if not title_match:
-            # 尝试匹配第一行
             title_match = re.search(r'^([^\n]+?)\s*\((\d{4})\)', text)
             
         if title_match:
             title = title_match.group(1).strip()
-            # 去掉可能包含的 emoji 或前缀
             title = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', title).strip()
             year = title_match.group(2)
 
-        # 5. 提取密码
-        receive_code = ""
-        pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', text, re.IGNORECASE)
-        if pwd_match:
-            receive_code = pwd_match.group(1)
-
-        # 6. 提取季号和集号
+        # 7. 提取季号和集号
         season_number = None
         episode_number = None
         se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
@@ -251,21 +264,16 @@ class TGUserBotManager:
             if s_match: season_number = int(s_match.group(1))
             if e_match: episode_number = int(e_match.group(1))
 
-        # =================================================================
-        # ★ 史诗级增强：精准判定媒体类型 (防张冠李戴)
-        # =================================================================
-        item_type = 'movie' # 默认兜底为电影
-        
-        # 如果提取到了季号或集号，百分之百是剧集
+        # 8. 精准判定媒体类型 (防张冠李戴)
+        item_type = 'movie'
         if season_number is not None or episode_number is not None:
             item_type = 'tv'
-        # 否则通过文本中的特征标签来判定
-        elif re.search(r'(电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|第\d+季|第\d+集)', text, re.IGNORECASE):
+        elif re.search(r'(电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|第\d+季|第\d+集|更新至)', text, re.IGNORECASE):
             item_type = 'tv'
         elif re.search(r'(电影|Movie)', text, re.IGNORECASE):
             item_type = 'movie'
 
-        # 7. 解析磁力/ED2K 链接
+        # 9. 解析磁力/ED2K 链接
         is_magnet = text.lower().startswith('magnet:?')
         is_ed2k = text.lower().startswith('ed2k://')
         magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
