@@ -469,7 +469,7 @@ def _process_tg_queue():
                 share_code = None
                 
                 if 'hdhive.com' in target_link:
-                    logger.info(f"  🕵️‍♂️ [TG订阅] 检测到 HDHive 中间页，正在发射穿甲追踪弹...")
+                    logger.info(f"  🕵️‍♂️ [TG订阅] 检测到 HDHive 中间页，继续深挖链接...")
                     try:
                         import urllib.parse
                         import requests
@@ -509,7 +509,7 @@ def _process_tg_queue():
                             if pwd_match and not receive_code:
                                 receive_code = pwd_match.group(1)
                                 
-                            logger.info(f"  🎯 [TG订阅] 追踪成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
+                            logger.info(f"  🎯 [TG订阅] 深挖成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
                         else:
                             # 智能诊断失败原因
                             if 'Just a moment' in resp.text or resp.status_code in [403, 503]:
