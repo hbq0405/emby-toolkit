@@ -1159,7 +1159,7 @@
 
                     <n-divider title-placement="left" style="margin-top: 15px;">订阅频道 (Pro)</n-divider>
                     <n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;">
-                      自动监听的频道消息，根据订阅选择性转存资源到待处理目录。
+                      自动监听频道消息，根据订阅选择性转存资源到待处理目录。
                     </n-alert>
 
                     <n-form-item-grid-item label="启用监听" path="tg_user_enabled">
