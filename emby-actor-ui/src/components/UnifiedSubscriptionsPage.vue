@@ -278,7 +278,7 @@
             
             <n-grid :x-gap="12" :y-gap="0" :cols="2">
               <n-grid-item>
-                <n-form-item label="仅白嫖 (免费/已解锁)">
+                <n-form-item label="仅免费">
                   <n-switch v-model:value="strategyConfig.hdhive_free_only" size="small" />
                 </n-form-item>
               </n-grid-item>
@@ -288,14 +288,14 @@
                 </n-form-item>
               </n-grid-item>
               <n-grid-item>
-                <n-form-item label="最大允许积分">
+                <n-form-item label="最大积分">
                   <n-input-number v-model:value="strategyConfig.hdhive_max_points" size="small" :min="0" :disabled="strategyConfig.hdhive_free_only">
                     <template #suffix>分</template>
                   </n-input-number>
                 </n-form-item>
               </n-grid-item>
               <n-grid-item>
-                <n-form-item label="最大允许体积 (防合集)">
+                <n-form-item label="最大体积">
                   <n-input-number v-model:value="strategyConfig.hdhive_max_size_gb" size="small" :min="1">
                     <template #suffix>GB</template>
                   </n-input-number>
