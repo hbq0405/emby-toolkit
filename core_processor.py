@@ -761,7 +761,7 @@ class MediaProcessor:
                 if processed_file:
                     valid_files_to_notify.add(processed_file)
             except Exception as e:
-                logger.error(f"  🚫 [实时监控] 处理文件 '{file_path}' 失败: {e}")
+                logger.error(f"  ➜ [实时监控] 处理文件 '{file_path}' 失败: {e}")
 
         # 2. ★★★ 极速批量通知 Emby ★★★
         if valid_files_to_notify:
@@ -1747,7 +1747,7 @@ class MediaProcessor:
         douban_type = match_info_result.get("type")
 
         if not douban_type:
-            logger.error(f"  🚫 从豆瓣匹配结果中未能获取到媒体类型 for ID {douban_id}。处理中止。")
+            logger.error(f"  ➜ 从豆瓣匹配结果中未能获取到媒体类型 for ID {douban_id}。处理中止。")
             return [], None
 
         # 3.2 获取演职员 (使用完全可信的类型)
@@ -1916,7 +1916,7 @@ class MediaProcessor:
         # --- 现有媒体项处理循环 ---
         for i, item in enumerate(all_items):
             if self.is_stop_requested():
-                logger.warning("  🚫 全库扫描任务已被用户中止。")
+                logger.warning("  ➜ 全库扫描任务已被用户中止。")
                 break # 使用 break 优雅地退出循环
             
             item_id = item.get('Id')
@@ -3820,7 +3820,7 @@ class MediaProcessor:
                 logger.info(f"  ➜ {log_prefix} 开始为 '{item_name_for_log}' 下载 {len(images_to_sync)} 张主图片至覆盖缓存")
                 for image_type, filename in images_to_sync.items():
                     if self.is_stop_requested():
-                        logger.warning(f"  🚫 {log_prefix} 收到停止信号，中止图片下载。")
+                        logger.warning(f"  ➜ {log_prefix} 收到停止信号，中止图片下载。")
                         return False
                     emby.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
             
@@ -3845,7 +3845,7 @@ class MediaProcessor:
 
                 for child in children_to_process:
                     if self.is_stop_requested():
-                        logger.warning(f"  🚫 {log_prefix} 收到停止信号，中止子项目图片下载。")
+                        logger.warning(f"  ➜ {log_prefix} 收到停止信号，中止子项目图片下载。")
                         return False
                     
                     child_type, child_id = child.get("Type"), child.get("Id")

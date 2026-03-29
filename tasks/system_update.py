@@ -116,7 +116,7 @@ def task_check_and_update_container(processor):
             evt_type = event.get('event')
             
             if evt_type == 'ERROR':
-                logger.error(f"  🚫 {msg}")
+                logger.error(f"  ➜ {msg}")
                 task_manager.update_status_from_thread(-1, f"更新失败: {msg}")
                 return
             

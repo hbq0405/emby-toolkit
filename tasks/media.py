@@ -48,7 +48,7 @@ def task_role_translation(processor, force_full_update: bool = False):
     actor = processor.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE)
 
     if not actor:
-        logger.info("  🚫 AI翻译功能未启用，跳过任务。")
+        logger.info("  ➜ AI翻译功能未启用，跳过任务。")
         return
 
     # 1. 根据参数决定日志信息
@@ -303,7 +303,7 @@ def task_reprocess_all_review_items(processor, reason_filter: Optional[str] = No
 
         for i, item in enumerate(all_items):
             if processor.is_stop_requested():
-                logger.info("  🚫 任务被中止。")
+                logger.info("  ➜ 任务被中止。")
                 break
             
             item_id = item['id']
@@ -1434,7 +1434,7 @@ def task_execute_auto_tagging_rules(processor):
 
     for idx, rule in enumerate(rules):
         if processor.is_stop_requested(): 
-            logger.info("  🚫 任务被中止。")
+            logger.info("  ➜ 任务被中止。")
             break
 
         tags = rule.get('tags')
@@ -1629,7 +1629,7 @@ def task_scan_monitor_folders(processor):
                 known_tmdb_ids.add(str(row['tmdb_id']))
         logger.info(f"  ➜ 加载了 {len(known_tmdb_ids)} 个已知 TMDb ID (白名单)。")
     except Exception as e:
-        logger.error(f"  🚫 无法读取数据库白名单，任务中止: {e}")
+        logger.error(f"  ➜ 无法读取数据库白名单，任务中止: {e}")
         return
     
     tmdb_regex = r'(?:tmdb|tmdbid)[-_=\s]*(\d+)'
@@ -1669,7 +1669,7 @@ def task_scan_monitor_folders(processor):
                 # 都会重复刷新这些文件，导致死循环和日志刷屏。
                 # 排除目录的刷新应完全依赖“实时监控”或 Emby 自身的计划任务。
                 
-                # logger.debug(f"  🚫 [扫描跳过] 命中排除目录: {os.path.basename(dirpath)}")
+                # logger.debug(f"  ➜ [扫描跳过] 命中排除目录: {os.path.basename(dirpath)}")
                 dirnames[:] = [] # 停止向下递归
                 continue 
 
@@ -1745,7 +1745,7 @@ def task_scan_monitor_folders(processor):
                         trigger_count += 1
                         time.sleep(1) 
                     except Exception as e:
-                        logger.error(f"  🚫 处理文件失败: {e}")
+                        logger.error(f"  ➜ 处理文件失败: {e}")
 
     logger.info(f"  ➜ 监控目录扫描完成。扫描: {scan_count}, 触发处理: {trigger_count}")
     task_manager.update_status_from_thread(100, f"扫描完成，处理了 {trigger_count} 个新项目")
@@ -1785,7 +1785,7 @@ def task_restore_local_cache_from_db(processor):
         
         for i, item in enumerate(items_to_restore):
             if processor.is_stop_requested():
-                logger.warning("  🚫 任务被中止。")
+                logger.warning("  ➜ 任务被中止。")
                 break
 
             # 每处理50个文件，暂停 0.01 秒，防止 IO/CPU 100% 卡死系统
@@ -1911,7 +1911,7 @@ def task_restore_local_cache_from_db(processor):
                 success_count += 1
                 
             except Exception as e_item:
-                logger.error(f"  🚫 恢复项目 '{title}' 失败: {e_item}")
+                logger.error(f"  ➜ 恢复项目 '{title}' 失败: {e_item}")
 
         final_msg = f"恢复完成！成功生成 {success_count}/{total} 个项目的本地缓存文件。"
         logger.info(f"  ➜ {final_msg}")
@@ -2154,7 +2154,7 @@ def task_restore_mediainfo(processor):
     
     local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     if not local_root or not os.path.exists(local_root):
-        logger.warning("  🚫 未配置本地媒体库目录或目录不存在。")
+        logger.warning("  ➜ 未配置本地媒体库目录或目录不存在。")
         task_manager.update_status_from_thread(100, "未配置本地媒体库目录或目录不存在")
         time.sleep(1)
         return
@@ -2243,7 +2243,7 @@ def task_contribute_mediainfo_to_center(processor):
     logger.info("--- 开始执行媒体信息反哺中心服务器任务 (批量模式) ---")
     
     if not getattr(processor, 'p115_enabled', False) or not processor.p115_center:
-        logger.warning("  🚫 P115Center 未启用或未配置，无法执行反哺任务。")
+        logger.warning("  ➜ P115Center 未启用或未配置，无法执行反哺任务。")
         task_manager.update_status_from_thread(100, "P115Center 未启用")
         return
 

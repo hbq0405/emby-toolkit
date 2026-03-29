@@ -95,7 +95,7 @@ def _process_single_mp_file(file_info):
             }
             organizer.execute(file_node, target_cid)
         else:
-            logger.info(f"  🚫 [MP上传] 文件 '{file_info['name']}' 未命中任何分类规则，保持原样。")
+            logger.info(f"  ➜ [MP上传] 文件 '{file_info['name']}' 未命中任何分类规则，保持原样。")
     except Exception as e:
         logger.error(f"  ➜ [MP上传] 整理失败: {e}", exc_info=True)
 
@@ -105,12 +105,12 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
     统一处理 新入库(New) 和 追更(Update) 两种情况。
     """
     if not processor:
-        logger.error(f"  🚫 完整处理流程中止：核心处理器 (MediaProcessor) 未初始化。")
+        logger.error(f"  ➜ 完整处理流程中止：核心处理器 (MediaProcessor) 未初始化。")
         return
 
     item_details = emby.get_emby_item_details(item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
     if not item_details:
-        logger.error(f"  🚫 无法获取项目 {item_id} 的详情，任务中止。")
+        logger.error(f"  ➜ 无法获取项目 {item_id} 的详情，任务中止。")
         return
     
     item_name_for_log = item_details.get("Name", f"ID:{item_id}")
@@ -295,7 +295,7 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
                     tmdb_id=str(tmdb_id)
                 )
             except Exception as e:
-                logger.error(f"  🚫 触发智能追剧任务失败: {e}")
+                logger.error(f"  ➜ 触发智能追剧任务失败: {e}")
 
         # 启动协程，不等待结果，直接让当前 Webhook 任务结束
         spawn(_async_trigger_watchlist)
@@ -356,7 +356,7 @@ def _handle_immediate_tagging_with_lib(item_id, item_name, lib_id, lib_name, kno
                 
                 break 
     except Exception as e:
-        logger.error(f"  🚫 [自动打标] 失败: {e}")
+        logger.error(f"  ➜ [自动打标] 失败: {e}")
 
 # --- 辅助函数 ---
 def _process_batch_webhook_events():
@@ -827,7 +827,7 @@ def emby_webhook():
             except Exception as e:
                 logger.error(f"  ➜ 解析深度删除通知失败: {e}", exc_info=True)
         else:
-            logger.debug("  🚫 联动删除未开启，跳过网盘清理。")
+            logger.debug("  ➜ 联动删除未开启，跳过网盘清理。")
 
         # --------------------------------------------------------
         # 任务 2: 清理本地数据库、日志与内存缓存 (网盘删完再删本地)
@@ -856,7 +856,7 @@ def emby_webhook():
     if mp_event_type in ["transfer.complete", "transfer.subtitle.complete"]:
         nb_config = get_config()
         if not nb_config.get(constants.CONFIG_OPTION_115_ENABLE_ORGANIZE, False):
-            logger.debug("  🚫 智能整理未开启，忽略 MP 通知。")
+            logger.debug("  ➜ 智能整理未开启，忽略 MP 通知。")
             return jsonify({"status": "ignored_smart_organize_disabled"}), 200
 
         try:
@@ -908,7 +908,7 @@ def emby_webhook():
                 spawn(_process_single_mp_file, file_info)
                 return jsonify({"status": "processing_single_file"}), 200
             else:
-                logger.debug(f"  🚫 [MP上传] 忽略非文件类型的通知: {file_name}")
+                logger.debug(f"  ➜ [MP上传] 忽略非文件类型的通知: {file_name}")
                 return jsonify({"status": "ignored_not_file"}), 200
 
         except Exception as e:

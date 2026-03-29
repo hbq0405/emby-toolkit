@@ -59,7 +59,7 @@ def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str
             time.sleep(timeout_seconds)
             
             if not main_processor.is_stop_requested():
-                logger.warning(f"  🚫 '{task_name}' 达到 {max_runtime_minutes} 分钟的运行时长限制，将发送停止信号...")
+                logger.warning(f"  ➜ '{task_name}' 达到 {max_runtime_minutes} 分钟的运行时长限制，将发送停止信号...")
                 timeout_triggered.set()
                 main_processor.signal_stop()
 
@@ -73,7 +73,7 @@ def _task_run_chain_internal(processor, task_name: str, sequence_config_key: str
         for i, task_key in enumerate(task_sequence):
             if main_processor.is_stop_requested():
                 if not timeout_triggered.is_set():
-                    logger.warning(f"  🚫 '{task_name}' 被用户手动中止。")
+                    logger.warning(f"  ➜ '{task_name}' 被用户手动中止。")
                 break
 
             task_info = registry.get(task_key)

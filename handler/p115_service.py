@@ -2537,7 +2537,7 @@ class SmartOrganizer:
             
             # 1. 扩展名绝对白名单校验 (最高优先级)
             if ext not in allowed_exts:
-                logger.debug(f"  🚫 扩展名 .{ext} 不在允许列表中，打入未识别: {file_name}")
+                logger.debug(f"  ➜ 扩展名 .{ext} 不在允许列表中，打入未识别: {file_name}")
                 if fid: unrecognized_fids.append(fid)
                 if progress_callback: progress_callback()
                 continue

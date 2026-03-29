@@ -273,7 +273,7 @@ class WatchlistProcessor:
                         # 3. 决策：如果没有新内容，直接跳过后续所有逻辑
                         if not has_new_content:
                             skipped_count += 1
-                            logger.info(f"  💤 《{series_name}》无新内容，跳过全量刷新。")
+                            logger.info(f"  ➜ 《{series_name}》无新内容，跳过全量刷新。")
                             continue 
                         
                         # 如果代码走到这里，说明 has_new_content = True，将自然向下执行到第 3 步
@@ -526,7 +526,7 @@ class WatchlistProcessor:
         aggregated_data = tmdb.aggregate_full_series_data_from_tmdb(tmdb_id, self.tmdb_api_key, max_workers=5)
 
         if not aggregated_data:
-            logger.error(f"  🚫 无法聚合 '{item_name}' 的TMDb详情，元数据刷新中止。")
+            logger.error(f"  ➜ 无法聚合 '{item_name}' 的TMDb详情，元数据刷新中止。")
             return None
 
         # 翻译简介
@@ -1668,7 +1668,7 @@ class WatchlistProcessor:
 
         for i, series in enumerate(series_to_process):
             if self.is_stop_requested():
-                logger.info("  🚫 追剧列表更新任务被中止。")
+                logger.info("  ➜ 追剧列表更新任务被中止。")
                 break
             
             if self.progress_callback:

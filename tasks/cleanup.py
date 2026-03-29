@@ -419,7 +419,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
         processed_task_ids = []
         for i, task in enumerate(tasks_to_execute):
             if processor.is_stop_requested():
-                logger.warning("  🚫 任务被用户中止。")
+                logger.warning("  ➜ 任务被用户中止。")
                 break
             
             with connection.get_db_connection() as conn:
@@ -438,7 +438,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                     safe_ids_set.add(str(raw_best_val))
 
             if not safe_ids_set:
-                logger.error(f"  🚫 严重错误：无法确定 '{item_name}' 的保留版本... 跳过。")
+                logger.error(f"  ➜ 严重错误：无法确定 '{item_name}' 的保留版本... 跳过。")
                 continue
 
             versions = task['versions_info_json']

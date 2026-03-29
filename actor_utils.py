@@ -413,7 +413,7 @@ def enrich_all_actor_aliases_task(
 
                 for i in range(0, total_tmdb, CHUNK_SIZE):
                     if (stop_event and stop_event.is_set()) or (time.time() >= end_time):
-                        logger.info("  🚫 达到运行时长或收到停止信号，在 TMDb 下批次开始前结束。")
+                        logger.info("  ➜ 达到运行时长或收到停止信号，在 TMDb 下批次开始前结束。")
                         break
 
                     progress = int((i / total_tmdb) * 100)
@@ -515,7 +515,7 @@ def enrich_all_actor_aliases_task(
                                         source_actor = cursor.fetchone()
 
                                         if not target_actor or not source_actor or source_actor['map_id'] == target_actor['map_id']:
-                                            logger.warning(f"  🚫 合并中止：源或目标记录不存在，或它们本就是同一条记录。")
+                                            logger.warning(f"  ➜ 合并中止：源或目标记录不存在，或它们本就是同一条记录。")
                                             continue
 
                                         target_map_id = target_actor['map_id']
@@ -577,7 +577,7 @@ def enrich_all_actor_aliases_task(
                 logger.info("  ➜ 没有需要从 TMDb 补充或清理的演员。")
 
     except InterruptedError:
-        logger.info("  🚫 演员数据补充任务被中止。")
+        logger.info("  ➜ 演员数据补充任务被中止。")
         if conn: conn.rollback()
     except Exception as e:
         logger.error(f"  ➜ 演员数据补充任务发生严重错误: {e}", exc_info=True)

@@ -532,7 +532,7 @@ def task_auto_subscribe(processor):
                     admin_chat_ids = user_db.get_admin_telegram_chat_ids()
                     if admin_chat_ids:
                         items_list_str = "\n".join([f"· `{item}`" for item in cancelled_for_report])
-                        message_text = (f"🚫 *自动取消了 {len(cancelled_for_report)} 个超时订阅*\n\n"
+                        message_text = (f"➜ *自动取消了 {len(cancelled_for_report)} 个超时订阅*\n\n"
                                         f"下列项目因超过 {movie_search_window} 天未入库而被自动取消：\n{items_list_str}")
                         for admin_id in admin_chat_ids:
                             telegram.send_telegram_message(admin_id, message_text, disable_notification=True)
@@ -747,7 +747,7 @@ def task_auto_subscribe(processor):
                 
                 if paused_ids:
                     request_db.update_movie_status_paused(paused_ids, pause_days=movie_pause_days)
-                    logger.info(f"  💤 成功暂停 {len(paused_ids)} 部暂无资源的新片 (MP状态->S)。")
+                    logger.info(f"  ➜ 成功暂停 {len(paused_ids)} 部暂无资源的新片 (MP状态->S)。")
         
         # ======================================================================
         # 阶段 3 - 超时订阅复活 (轮回机制)

@@ -21,7 +21,7 @@ def task_generate_embeddings(processor):
     vector = processor.config.get(constants.CONFIG_OPTION_AI_VECTOR)
 
     if not vector:
-        logger.info("  🚫 AI向量化功能未启用，跳过任务。")
+        logger.info("  ➜ AI向量化功能未启用，跳过任务。")
         return
 
     try:

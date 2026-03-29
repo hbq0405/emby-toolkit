@@ -369,7 +369,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     # 2. 获取该合集的完整列表 (Parts) - 这一步不能省，因为要计算缺失
     coll_details = tmdb.get_collection_details(tmdb_coll_id, tmdb_api_key)
     if not coll_details or 'parts' not in coll_details:
-        logger.error(f"  🚫 无法获取 TMDb 合集 [{tmdb_coll_name}] 的详细列表。")
+        logger.error(f"  ➜ 无法获取 TMDb 合集 [{tmdb_coll_name}] 的详细列表。")
         return
 
     # 3. 格式化数据

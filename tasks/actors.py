@@ -72,7 +72,7 @@ def task_enrich_aliases(processor, force_full_update: bool = False):
         tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
 
         if not tmdb_api_key:
-            logger.error(f"  🚫 任务 '{task_name}' 中止：未在配置中找到 TMDb API Key。")
+            logger.error(f"  ➜ 任务 '{task_name}' 中止：未在配置中找到 TMDb API Key。")
             task_manager.update_status_from_thread(-1, "错误：缺少TMDb API Key")
             return
 
@@ -171,7 +171,7 @@ def task_actor_translation(processor):
     actor = processor.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE)
 
     if not actor:
-        logger.info("  🚫 AI翻译功能未启用，跳过任务。")
+        logger.info("  ➜ AI翻译功能未启用，跳过任务。")
         return
     
     try:
@@ -384,7 +384,7 @@ def task_merge_duplicate_actors(processor):
         library_ids_to_process = config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
 
         if not library_ids_to_process:
-            logger.error("  🚫 任务中止：未在设置中选择任何要处理的媒体库。")
+            logger.error("  ➜ 任务中止：未在设置中选择任何要处理的媒体库。")
             task_manager.update_status_from_thread(-1, "任务失败：未选择媒体库")
             return
 
@@ -484,7 +484,7 @@ def task_merge_duplicate_actors(processor):
         # 阶段 4: 执行合并与删除
         # ======================================================================
         if processor.is_stop_requested():
-            logger.warning("  🚫 任务已中止，未执行任何合并或删除操作。")
+            logger.warning("  ➜ 任务已中止，未执行任何合并或删除操作。")
             task_manager.update_status_from_thread(100, "任务已中止。")
             return
 
@@ -500,7 +500,7 @@ def task_merge_duplicate_actors(processor):
 
         for i, plan in enumerate(merge_plan):
             if processor.is_stop_requested():
-                logger.warning("  🚫 合并操作被用户中止。")
+                logger.warning("  ➜ 合并操作被用户中止。")
                 break
             
             keeper = plan['keeper']
@@ -676,7 +676,7 @@ def task_purge_ghost_actors(processor):
 
         for i, person in enumerate(orphans_to_delete):
             if processor.is_stop_requested():
-                logger.warning("  🚫 删除操作被用户中止。")
+                logger.warning("  ➜ 删除操作被用户中止。")
                 break
             
             person_id = person.get("Id")
@@ -728,7 +728,7 @@ def task_purge_unregistered_actors(processor):
         library_ids_to_process = config.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS, [])
 
         if not library_ids_to_process:
-            logger.error("  🚫 任务中止：未在设置中选择任何要处理的媒体库。")
+            logger.error("  ➜ 任务中止：未在设置中选择任何要处理的媒体库。")
             task_manager.update_status_from_thread(-1, "任务失败：未选择媒体库")
             return
 
@@ -769,7 +769,7 @@ def task_purge_unregistered_actors(processor):
         batch_size = 500
         for i in range(0, len(person_ids_to_fetch), batch_size):
             if processor.is_stop_requested():
-                logger.info("  🚫 在分批获取演员详情阶段，任务被中止。")
+                logger.info("  ➜ 在分批获取演员详情阶段，任务被中止。")
                 break
             
             batch_ids = person_ids_to_fetch[i:i + batch_size]
@@ -786,7 +786,7 @@ def task_purge_unregistered_actors(processor):
                 all_people_in_scope_details.extend(person_details_batch)
 
         if processor.is_stop_requested():
-            logger.warning("  🚫 任务已中止。")
+            logger.warning("  ➜ 任务已中止。")
             task_manager.update_status_from_thread(100, "任务已中止。")
             return
         
@@ -815,7 +815,7 @@ def task_purge_unregistered_actors(processor):
         # 6. 执行删除
         for i, person in enumerate(ghosts_to_delete):
             if processor.is_stop_requested():
-                logger.warning("  🚫 任务被用户中止。")
+                logger.warning("  ➜ 任务被用户中止。")
                 break
             
             person_id = person.get("Id")
