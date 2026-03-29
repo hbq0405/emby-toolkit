@@ -1349,15 +1349,15 @@ class WatchlistProcessor:
             
             # 补充日志：解释为什么这么做
             if real_next_episode_to_air:
-                logger.info(f"  🏁 [判定-TMDb已完结] 虽本地缺集，但满足完结策略，强制判定“已完结”以触发洗版(抢完结包)。")
+                logger.info(f"  ➜ [判定-TMDb已完结] 虽本地缺集，但满足完结策略，强制判定“已完结”以触发洗版(抢完结包)。")
             else:
-                logger.info(f"  🏁 [判定-本地已集齐] 满足完结策略，判定“已完结”。")
+                logger.info(f"  ➜ [判定-本地已集齐] 满足完结策略，判定“已完结”。")
 
         # 规则 2: TMDb 状态已完结 -> 直接完结 (不考虑本地是否集齐)
         elif is_ended_on_tmdb:
             final_status = STATUS_COMPLETED
             paused_until_date = None
-            logger.info(f"  🏁 [判定-规则1] TMDb状态为 '{new_tmdb_status}'，判定为“已完结”。")
+            logger.info(f"  ➜ [判定-规则1] TMDb状态为 '{new_tmdb_status}'，判定为“已完结”。")
 
         # 规则 3: 本季大结局已播出 (且无明确下一集) -> 直接完结 (不考虑本地是否集齐)
         elif is_season_finale and not effective_next_episode:
@@ -1375,7 +1375,7 @@ class WatchlistProcessor:
             else:
                 final_status = STATUS_COMPLETED
                 paused_until_date = None
-                logger.info(f"  🏁 [判定-规则2] 本季大结局 (S{last_s_num}E{last_e_num}) 已播出，判定为“已完结”。")
+                logger.info(f"  ➜ [判定-规则2] 本季大结局 (S{last_s_num}E{last_e_num}) 已播出，判定为“已完结”。")
 
         # 规则 4: 连载中逻辑
         else:
@@ -1449,7 +1449,7 @@ class WatchlistProcessor:
                     else:
                         final_status = STATUS_COMPLETED
                         paused_until_date = None
-                        logger.info(f"  🏁 [判定-已完结] 无待播集信息，且本季已完结或剧集已完结 (进度: S{last_s_num} - {last_e_num}/{current_season_total})。")
+                        logger.info(f"  ➜ [判定-已完结] 无待播集信息，且本季已完结或剧集已完结 (进度: S{last_s_num} - {last_e_num}/{current_season_total})。")
                 
                 else:
                     # 极端情况：无任何日期信息
