@@ -323,7 +323,7 @@ class TGUserBotManager:
         
         # 情况 A：找到了目标链接 (115 或 中间页)，且 (有 TMDB ID 或 有标题)
         if target_link and (tmdb_id or title):
-            logger.info(f"  📥 [TG订阅] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 判定类型: {'剧集' if item_type=='tv' else '电影'}, 准备推入处理队列...")
+            logger.debug(f"  📥 [TG订阅] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 判定类型: {'剧集' if item_type=='tv' else '电影'}, 准备推入处理队列...")
             
             tg_task_queue.put({
                 "type": "115_share_complex",
@@ -472,7 +472,7 @@ def _process_tg_queue():
                 share_code = None
                 
                 if 'hdhive.com' in target_link:
-                    logger.info(f"  🕵️‍♂️ [TG订阅] 检测到 HDHive 中间页，继续深挖链接...")
+                    logger.debug(f"  🕵️‍♂️ [TG订阅] 检测到 HDHive 中间页，继续深挖链接...")
                     try:
                         import urllib.parse
                         import requests
@@ -512,7 +512,7 @@ def _process_tg_queue():
                             if pwd_match and not receive_code:
                                 receive_code = pwd_match.group(1)
                                 
-                            logger.info(f"  🎯 [TG订阅] 深挖成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
+                            logger.debug(f"  🎯 [TG订阅] 深挖成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
                         else:
                             # 智能诊断失败原因
                             if 'Just a moment' in resp.text or resp.status_code in [403, 503]:
@@ -541,7 +541,7 @@ def _process_tg_queue():
                 item_type = task.get('item_type', 'movie')
                 
                 if not tmdb_id and title:
-                    logger.info(f"  🧠 [TG订阅] 缺失 TMDB ID，正在通过 TMDb 接口反查: {title} ({year}), 严格限定类型: {'剧集' if item_type=='tv' else '电影'}...")
+                    logger.debug(f"  🧠 [TG订阅] 缺失 TMDB ID，正在通过 TMDb 接口反查: {title} ({year}), 严格限定类型: {'剧集' if item_type=='tv' else '电影'}...")
                     from handler import tmdb
                     api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
                     
@@ -550,7 +550,7 @@ def _process_tg_queue():
                     
                     if results:
                         tmdb_id = str(results[0]['id'])
-                        logger.info(f"  ✅ [TG订阅] 反查成功！精准匹配到 TMDB ID: {tmdb_id}")
+                        logger.debug(f"  ✅ [TG订阅] 反查成功！精准匹配到 TMDB ID: {tmdb_id}")
                     else:
                         logger.warning(f"  ⚠️ [TG订阅] 反查失败，TMDb 未找到该{'剧集' if item_type=='tv' else '电影'}，任务终止。")
                         continue
@@ -593,7 +593,7 @@ def _process_tg_queue():
                     continue
 
                 if not should_process:
-                    logger.info(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
+                    logger.debug(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
                     continue
 
                 # -----------------------------------------------------------
@@ -603,13 +603,13 @@ def _process_tg_queue():
                     from database import media_db
                     local_seasons = media_db.get_series_local_children_info(tmdb_id)
                     if season_number in local_seasons and episode_number in local_seasons[season_number]:
-                        logger.info(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
+                        logger.debug(f"  ⏭️ [TG订阅] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
                         continue
 
                 # -----------------------------------------------------------
                 # 5. 执行转存
                 # -----------------------------------------------------------
-                logger.info(f"  🎯 [TG订阅] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
+                logger.debug(f"  🎯 [TG订阅] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
                 
                 res = client.share_import(share_code, receive_code, target_cid)
                 if res and res.get('state'):
