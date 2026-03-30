@@ -472,59 +472,51 @@ def _process_tg_queue():
                 share_code = None
                 
                 if 'hdhive.com' in target_link:
-                    logger.debug(f"  🕵️‍♂️ [TG订阅] 检测到 HDHive 中间页，继续深挖链接...")
+                    logger.debug(f"  🕵️‍♂️ [TG订阅] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址...")
                     try:
-                        import urllib.parse
-                        import requests
+                        # 1. 从链接中提取 32 位的 slug (例如: 7fecf5bde3614ad0bc331f3e4f081add)
+                        slug_match = re.search(r'hdhive\.com/resource/115/([a-fA-F0-9]{32})', target_link)
+                        if not slug_match:
+                            logger.error(f"  ➜ [TG订阅] 无法从影巢链接中提取 Slug 标识: {target_link}")
+                            continue
+                            
+                        slug = slug_match.group(1)
                         
-                        # 伪装成真实浏览器
-                        headers = {
-                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
-                            'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8'
-                        }
+                        # 2. 获取系统配置的影巢 API Key
+                        from database import settings_db
+                        hdhive_api_key = settings_db.get_setting('hdhive_api_key')
                         
-                        # 尝试自动携带系统里配置的 HDHive Cookie (如果有的话)
-                        cookie_str = ""
-                        for k, v in config_manager.APP_CONFIG.items():
-                            if 'hdhive' in k.lower() and 'cookie' in k.lower() and isinstance(v, str):
-                                cookie_str = v
-                                break
-                        if cookie_str:
-                            headers['Cookie'] = cookie_str
+                        if not hdhive_api_key:
+                            logger.error("  ➜ [TG订阅] 解析失败：未配置影巢 API Key！请在 ETK 设置页面配置。")
+                            continue
                             
-                        # 发起请求
-                        resp = requests.get(target_link, headers=headers, allow_redirects=True, timeout=15)
+                        # 3. 调用现成的 HDHiveClient 解锁并获取真实链接
+                        from handler.hdhive_client import HDHiveClient
+                        hd_client = HDHiveClient(hdhive_api_key)
                         
-                        # 1. 尝试从最终重定向的 URL 和 源码中提取 115 码
-                        match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', resp.url)
-                        if not match: match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', resp.text)
-                        if not match: match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', urllib.parse.unquote(resp.text))
-                            
-                        if match:
-                            share_code = match.group(1)
-                            
-                            # 2. 顺藤摸瓜，把隐藏的提取码(密码)也扒出来！
-                            pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', resp.url, re.IGNORECASE)
-                            if not pwd_match: pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', resp.text, re.IGNORECASE)
-                            if not pwd_match: pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', urllib.parse.unquote(resp.text), re.IGNORECASE)
-                            
-                            if pwd_match and not receive_code:
-                                receive_code = pwd_match.group(1)
-                                
-                            logger.debug(f"  ➜ [TG订阅] 深挖成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
-                        else:
-                            # 智能诊断失败原因
-                            if 'Just a moment' in resp.text or resp.status_code in [403, 503]:
-                                logger.error(f"  ➜ [TG订阅] 追踪失败：被 HDHive 的 Cloudflare 5秒盾拦截！")
-                            elif '登录' in resp.text or '/login' in resp.url:
-                                logger.error(f"  ➜ [TG订阅] 追踪失败：HDHive 提示需要登录！请在 ETK 设置中配置 HDHive Cookie。")
+                        logger.debug(f"  ➜ [TG订阅] 正在通过 API 请求影巢资源 (Slug: {slug[:8]}...)...")
+                        resource_data = hd_client.unlock_resource(slug)
+                        
+                        if resource_data and resource_data.get('url'):
+                            real_url = resource_data.get('url')
+                            # 提取真实的 115 Share Code
+                            match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', real_url)
+                            if match:
+                                share_code = match.group(1)
+                                # 优先使用 API 返回的提取码
+                                if resource_data.get('access_code'):
+                                    receive_code = resource_data.get('access_code')
+                                    
+                                logger.debug(f"  ➜ [TG订阅] 影巢 API 解析成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
                             else:
-                                logger.error(f"  ➜ [TG订阅] 追踪失败：页面中未找到 115 链接。HTTP 状态码: {resp.status_code}")
+                                logger.error(f"  ➜ [TG订阅] 影巢 API 返回的 URL 中未找到 115 提取码: {real_url}")
+                                continue
+                        else:
+                            logger.error("  ➜ [TG订阅] 影巢 API 未返回真实的 115 链接，可能是积分不足或资源已失效。")
                             continue
                             
                     except Exception as e:
-                        logger.error(f"  ➜ [TG订阅] 请求中间页失败: {e}")
+                        logger.error(f"  ➜ [TG订阅] 请求影巢 API 异常: {e}")
                         continue
                 else:
                     # 普通 115 链接，直接提取
