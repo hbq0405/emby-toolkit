@@ -57,10 +57,10 @@ class DoubanApi:
         
         if cooldown_seconds is not None and cooldown_seconds > 0:
             DoubanApi._cooldown_seconds = cooldown_seconds
-            logger.trace(f"豆瓣Api 已设置请求冷却时间为: {DoubanApi._cooldown_seconds} 秒。")
+            logger.trace(f"  ➜ 豆瓣Api 已设置请求冷却时间为: {DoubanApi._cooldown_seconds} 秒。")
         if user_cookie:
             DoubanApi._user_cookie = user_cookie
-            logger.trace("DoubanApi 已加载用户登录 Cookie。")
+            logger.trace("  ➜ DoubanApi 已加载用户登录 Cookie。")
     @classmethod
     def _apply_cooldown(cls):
         """在每次API请求前应用冷却等待，线程安全。"""
@@ -70,7 +70,7 @@ class DoubanApi:
             
             if elapsed < cls._cooldown_seconds:
                 wait_time = cls._cooldown_seconds - elapsed
-                logger.trace(f"豆瓣 API 冷却中... 等待 {wait_time:.2f} 秒。")
+                logger.trace(f"  ➜ 豆瓣 API 冷却中... 等待 {wait_time:.2f} 秒。")
                 time.sleep(wait_time)
             
             # 无论是否等待，都更新最后请求时间为当前时间
@@ -116,7 +116,7 @@ class DoubanApi:
             response_json = resp.json()
             if response_json.get("code") == 1080:
                 msg = response_json.get('msg', "豆瓣API速率限制")
-                logger.warning(f"GET触发豆瓣速率限制: {msg}")
+                logger.warning(f"  ➜ GET触发豆瓣速率限制: {msg}")
                 return self._make_error_dict("rate_limit", msg, response_json)
             return response_json
         except requests.exceptions.HTTPError as e:
@@ -127,7 +127,7 @@ class DoubanApi:
                     # 专门处理 need_login 错误
                     if error_json.get("code") == 1001 or "need_login" in error_json.get("msg", ""):
                         msg = "need_login"
-                        logger.error(f"豆瓣API请求失败: 需要登录。请在设置中配置有效的豆瓣Cookie。")
+                        logger.error(f"  ➜ 豆瓣API请求失败: 需要登录。请在设置中配置有效的豆瓣Cookie。")
                     else:
                         msg = error_json.get("msg", str(e))
                 except json.JSONDecodeError:
@@ -158,7 +158,7 @@ class DoubanApi:
             response_json = resp.json()
             if response_json.get("code") == 1080:
                 msg = response_json.get('msg', "豆瓣API速率限制")
-                logger.warning(f"POST触发豆瓣速率限制: {msg}")
+                logger.warning(f"  ➜ POST触发豆瓣速率限制: {msg}")
                 return self._make_error_dict("rate_limit", msg, response_json)
             return response_json
         except requests.exceptions.HTTPError as e:
@@ -167,7 +167,7 @@ class DoubanApi:
                 # 1. 这是一个预期的“未找到”情况，使用 WARNING 级别日志，而不是 ERROR
                 # 2. 日志内容更友好，明确指出是资源未找到
                 # 3. 最关键：不使用 exc_info=True，这样就不会打印 traceback
-                logger.warning(f"请求的资源未找到 (404 Not Found)，URL: {req_url}")
+                logger.warning(f"  ➜ 请求的资源未找到 (404 Not Found)，URL: {req_url}")
                 
                 # 4. 返回一个特定的错误字典，方便上层调用者判断具体错误类型
                 #    这里的 "movie_not_found" 对应了日志中的 "movie_not_found"
@@ -178,7 +178,7 @@ class DoubanApi:
                     error_json = e.response.json()
                     if error_json.get("code") == 1001 or "need_login" in error_json.get("msg", ""):
                         msg = "need_login"
-                        logger.error(f"豆瓣API请求失败: 需要登录。请在设置中配置有效的豆瓣Cookie。")
+                        logger.error(f"  ➜ 豆瓣API请求失败: 需要登录。请在设置中配置有效的豆瓣Cookie。")
                     else:
                         msg = error_json.get("msg", str(e))
                 except json.JSONDecodeError:
@@ -211,20 +211,20 @@ class DoubanApi:
         logger.info(f"  ➜ 通过豆瓣ID获取详情: {detail_url}")
         details = self.__invoke(detail_url)
         if details.get("error"): # __invoke 返回了错误
-            logger.warning(f"获取豆瓣ID {subject_id} ({subject_type}) 详情失败: {details.get('message')}")
+            logger.warning(f"  ➜ 获取豆瓣ID {subject_id} ({subject_type}) 详情失败: {details.get('message')}")
         return details # 直接返回 __invoke 的结果 (成功或错误字典)
 
     def match_info(self, name: str, imdbid: Optional[str] = None, mtype: Optional[str] = None,
                year: Optional[str] = None, season: Optional[int] = None) -> Dict[str, Any]:
         if imdbid and imdbid.strip().startswith("tt"):
             actual_imdbid = imdbid.strip()
-            logger.trace(f"尝试通过IMDBID {actual_imdbid} (使用统一接口) 查询豆瓣信息...")
+            logger.trace(f"  ➜ 尝试通过IMDBID {actual_imdbid} (使用统一接口) 查询豆瓣信息...")
             
             # 1. 调用唯一的、简单的 imdbid 函数
             result_from_imdb = self.imdbid(actual_imdbid)
             
             if result_from_imdb.get("error"):
-                logger.warning(f"IMDBID {actual_imdbid} 查询失败: {result_from_imdb.get('message')}")
+                logger.warning(f"  ➜ IMDBID {actual_imdbid} 查询失败: {result_from_imdb.get('message')}")
             elif result_from_imdb.get("id"):
                 douban_id_url = str(result_from_imdb.get("id"))
                 match = re.search(r'/(movie|tv)/(\d+)/?$', douban_id_url)
@@ -235,7 +235,7 @@ class DoubanApi:
                     # 3. ✨✨✨ 核心修正：直接使用从 Emby 传入的 mtype 作为最终类型 ✨✨✨
                     final_mtype = 'tv' if mtype and mtype.lower() in ['series', 'tv'] else 'movie'
                     
-                    logger.trace(f"IMDBID '{actual_imdbid}' -> 豆瓣ID: {actual_douban_id}。将使用传入的类型: '{final_mtype}'")
+                    logger.trace(f"  ➜ IMDBID '{actual_imdbid}' -> 豆瓣ID: {actual_douban_id}。将使用传入的类型: '{final_mtype}'")
                     
                     title = result_from_imdb.get("title", result_from_imdb.get("alt_title", name))
                     original_title = result_from_imdb.get("original_title")
@@ -244,9 +244,9 @@ class DoubanApi:
                     return {"id": actual_douban_id, "title": title, "original_title": original_title,
                             "year": year_from_api or year, "type": final_mtype, "source": "imdb_lookup"}
                 else:
-                    logger.warning(f"IMDBID {actual_imdbid} 查询到的豆瓣ID URL '{douban_id_url}' 无法解析。")
+                    logger.warning(f"  ➜ IMDBID {actual_imdbid} 查询到的豆瓣ID URL '{douban_id_url}' 无法解析。")
             else:
-                logger.warning(f"IMDBID {actual_imdbid} 查询结果无效或无ID。")
+                logger.warning(f"  ➜ IMDBID {actual_imdbid} 查询结果无效或无ID。")
 
         # 如果IMDb查询失败或无IMDbID，则进行名称搜索
         logger.info(f"  ➜ IMDb查询失败或未提供ID，回退到名称搜索: '{name}'")
