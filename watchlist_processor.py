@@ -995,9 +995,9 @@ class WatchlistProcessor:
             
             if moviepilot.subscribe_with_custom_payload(payload, self.config):
                 settings_db.decrement_subscription_quota()
-                logger.info(f"  ➜ [完结洗版] 《{series_name}》S{season_number} 已提交洗版订阅。")
+                logger.info(f"  ➜ [完结洗版] 《{series_name}》 第 {season_number} 季 已提交洗版订阅。")
             else:
-                logger.error(f"  ➜ [完结洗版] 《{series_name}》S{season_number} 提交失败。")
+                logger.error(f"  ➜ [完结洗版] 《{series_name}》 第 {season_number} 季 提交失败。")
 
         except Exception as e:
             logger.error(f"  ➜ 执行完结自动洗版逻辑时出错: {e}", exc_info=True)
