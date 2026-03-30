@@ -238,6 +238,14 @@
                         </n-text>
                       </template>
                     </n-form-item>
+                    <n-form-item label="SHA1检测" path="monitor_sha1_pc_search">
+                      <n-switch v-model:value="configModel.monitor_sha1_pc_search" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          文件SHA1查询，非115可关闭，关闭则影响备份媒体信息、媒体信息中心化等。
+                        </n-text>
+                      </template>
+                    </n-form-item>
                     <n-alert type="info" :show-icon="true" style="margin-top: 10px;">
                       <span style="font-size: 0.85em;">
                         <b>友情提示：</b> 开启实时监控后，系统会自动处理新增媒体并通知Emby扫描入库，所以请关闭Emby媒体库的实时监控以免冲突。
