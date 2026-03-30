@@ -2764,10 +2764,56 @@ class SmartOrganizer:
                 continue # 这批全被 skip 了
                 
             # -----------------------------------------------------------
-            # ★ 2. 执行删除旧文件 (洗版/同名覆盖)
+            # ★ 2. 执行删除旧文件 (洗版/同名覆盖 + 完美擦屁股)
             # -----------------------------------------------------------
             if fids_to_delete:
                 logger.warning(f"  ➜ [版本控制] 正在删除 {len(fids_to_delete)} 个被替换的旧版本文件...")
+                
+                # === 本地擦屁股逻辑 ===
+                local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+                old_strm_paths_for_emby = []
+                
+                if local_root and os.path.exists(local_root):
+                    try:
+                        from database.connection import get_db_connection
+                        with get_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                # 从缓存查出旧文件的本地路径
+                                cursor.execute("SELECT local_path FROM p115_filesystem_cache WHERE id = ANY(%s)", (list(fids_to_delete),))
+                                for row in cursor.fetchall():
+                                    old_file_rel_path = row['local_path']
+                                    if not old_file_rel_path: continue
+                                    
+                                    old_file_rel_path = str(old_file_rel_path).lstrip('\\/')
+                                    old_strm_rel_path = os.path.splitext(old_file_rel_path)[0] + ".strm"
+                                    old_strm_full_path = os.path.join(local_root, old_strm_rel_path)
+                                    
+                                    old_strm_paths_for_emby.append(old_strm_full_path)
+                                    
+                                    # 1. 删除 STRM
+                                    if os.path.exists(old_strm_full_path):
+                                        os.remove(old_strm_full_path)
+                                        logger.debug(f"  ➜ 删除本地旧 STRM: {old_strm_full_path}")
+                                        
+                                    # 2. 删除 mediainfo.json
+                                    old_mi_full_path = os.path.splitext(old_file_rel_path)[0] + "-mediainfo.json"
+                                    if os.path.exists(old_mi_full_path):
+                                        os.remove(old_mi_full_path)
+                                        
+                                    # 3. 删除关联字幕
+                                    old_dir_full_path = os.path.dirname(old_strm_full_path)
+                                    old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
+                                    if os.path.exists(old_dir_full_path):
+                                        for f in os.listdir(old_dir_full_path):
+                                            if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
+                                                sub_to_del = os.path.join(old_dir_full_path, f)
+                                                try:
+                                                    os.remove(sub_to_del)
+                                                except: pass
+                    except Exception as e:
+                        logger.warning(f"  ➜ 清理本地旧文件失败: {e}")
+                
+                # === 执行网盘删除和缓存清理 ===
                 self.client.fs_delete(list(fids_to_delete))
                 P115CacheManager.delete_files(list(fids_to_delete))
                 
