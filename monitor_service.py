@@ -324,7 +324,7 @@ def _handle_batch_refresh_only_task(file_paths: List[str]):
             logger.info("  ➜ [实时监控-排除路径] 监控已禁用，跳过刷新。")
             return
 
-    logger.info(f"  ⚡ [实时监控-排除路径] 正在向 Emby 发送 {len(valid_files)} 个文件的极速入库通知 (命中排除路径)。")
+    logger.info(f"  ➜ [实时监控-排除路径] 正在向 Emby 发送 {len(valid_files)} 个文件的极速入库通知 (命中排除路径)。")
     # ★★★ 核心修改：直接调用极速通知接口，传入具体文件路径 ★★★
     emby.notify_emby_file_changes(valid_files, base_url, api_key)
     logger.info(f"  ➜ [实时监控-排除路径] 批量极速通知完成！Emby 将仅针对这些文件进行秒级入库。")

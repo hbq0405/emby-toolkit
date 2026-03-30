@@ -267,7 +267,7 @@ class WatchlistProcessor:
                                 # 如果 TMDb 的日期比本地新，说明有新集播出了
                                 if last_air_date_local and tmdb_last_date > last_air_date_local:
                                     has_new_content = True
-                                    logger.info(f"  ⚡ [新季检测] 《{series_name}》发现新播出记录 ({tmdb_last_date} > {last_air_date_local})，触发全量刷新。")
+                                    logger.info(f"  ➜ [新季检测] 《{series_name}》发现新播出记录 ({tmdb_last_date} > {last_air_date_local})，触发全量刷新。")
                             except: pass
                         
                         # 3. 决策：如果没有新内容，直接跳过后续所有逻辑

@@ -63,7 +63,7 @@ def refresh_115_token(failed_token=None):
                 
             # ★ 并发防御：如果数据库里的 token 已经和刚才报错的 token 不一样了，说明别的线程刚续期完，直接放行！
             if failed_token and current_access and current_access != failed_token:
-                logger.info("  ⚡ [115] 检测到 Token 已被其他线程续期，直接放行。")
+                logger.info("  ➜ [115] 检测到 Token 已被其他线程续期，直接放行。")
                 if P115Service._openapi_client:
                     P115Service._openapi_client.access_token = current_access
                     P115Service._openapi_client.headers["Authorization"] = f"Bearer {current_access}"
@@ -626,7 +626,7 @@ class P115Service:
                     if now < cached_data['expire_at']:
                         # ★ 提取缓存里的文件名打印
                         #display_name = cached_data.get('name', pick_code[:8])
-                        #logger.info(f"  ⚡ [直链缓存] 命中直链 -> {display_name} (UA: {str(user_agent)[:15]}...)")
+                        #logger.info(f"  ➜ [直链缓存] 命中直链 -> {display_name} (UA: {str(user_agent)[:15]}...)")
                         return cached_data['url']
 
                 with P115Service._downurl_lock:

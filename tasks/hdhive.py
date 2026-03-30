@@ -45,7 +45,7 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
         return False
         
     share_code = match.group(1)
-    logger.info(f"  🔗 成功获取 115 分享码: {share_code}, 提取码: {access_code}")
+    logger.info(f"  ➜ 成功获取 115 分享码: {share_code}, 提取码: {access_code}")
 
     client = P115Service.get_client()
     if not client:

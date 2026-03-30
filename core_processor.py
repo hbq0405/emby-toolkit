@@ -725,7 +725,7 @@ class MediaProcessor:
             # =========================================================
             
             if not skip_refresh:
-                logger.info(f"  ⚡ [实时监控] 极速通知 Emby 单文件入库: {os.path.basename(file_path)}")
+                logger.info(f"  ➜ [实时监控] 极速通知 Emby 单文件入库: {os.path.basename(file_path)}")
                 emby.notify_emby_file_changes([file_path], self.emby_url, self.emby_api_key)
                 logger.info(f"  ➜ [实时监控] 预处理完成，Emby 将进行秒级精准入库...")
             else:

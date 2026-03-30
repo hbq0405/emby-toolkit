@@ -874,7 +874,7 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
         # 直接提取所有文件所在的目录，去重 (防止批量入库时重复刷新同一个父目录)
         dirs_to_refresh = set(os.path.dirname(p) for p in file_paths if p)
         
-        #logger.info(f"  ⚡ [极速通知] 收到 {len(file_paths)} 个文件{action_zh}请求，准备对 {len(dirs_to_refresh)} 个父目录触发精准扫描...")
+        #logger.info(f"  ➜ [极速通知] 收到 {len(file_paths)} 个文件{action_zh}请求，准备对 {len(dirs_to_refresh)} 个父目录触发精准扫描...")
         
         # 直接拿鞭子抽，让 Emby 扫目录
         for d in dirs_to_refresh:

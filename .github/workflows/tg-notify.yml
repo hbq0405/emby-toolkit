@@ -19,7 +19,7 @@ jobs:
             📦 **项目**: ${{ github.repository }}
             🏷 **版本**: ${{ github.event.release.tag_name }}
             👤 **发布者**: ${{ github.event.release.author.login }}
-            🔗 **直达链接**: [点击查看 Release](${{ github.event.release.html_url }})
+            ➜ **直达链接**: [点击查看 Release](${{ github.event.release.html_url }})
             📖 **项目文档**: [点击查看 Wiki](https://hbq0405.github.io/emby-toolkit/zh/)
             
             ➜ **更新日志**:

@@ -918,32 +918,32 @@ def task_auto_subscribe(processor):
                                 effective_points = 0 if is_unlocked else raw_points
                                 size_gb = _parse_size_to_gb(r.get('share_size'))
                                 
-                                logger.info(f"    [{i}/{len(resources)}] 检查: {r_title} (体积: {size_gb:.2f}GB, 需积分: {effective_points})")
+                                logger.info(f"  ➜ [{i}/{len(resources)}] 检查: {r_title} (体积: {size_gb:.2f}GB, 需积分: {effective_points})")
                                 
                                 # 1. 积分过滤
                                 if hd_free_only and effective_points > 0:
-                                    logger.info(f"      × 排除: 仅限免费资源 (该资源需 {effective_points} 积分)")
+                                    logger.info(f"  ➜ 排除: 仅限免费资源 (该资源需 {effective_points} 积分)")
                                     continue
                                 if effective_points > hd_max_points:
-                                    logger.info(f"      × 排除: 超过最大积分限制 (限制 {hd_max_points} 积分)")
+                                    logger.info(f"  ➜ 排除: 超过最大积分限制 (限制 {hd_max_points} 积分)")
                                     continue
                                     
                                 # 2. 体积过滤 (核心逻辑：大于设定体积就丢弃)
                                 if size_gb > hd_max_size:
-                                    logger.info(f"      × 排除: 超过最大体积限制 (限制 {hd_max_size}GB)")
+                                    logger.info(f"  ➜ 排除: 超过最大体积限制 (限制 {hd_max_size}GB)")
                                     continue
                                 
                                 # 安全策略：丢弃无法获取体积的资源，防止盲盒下载超大合集
                                 # 如果你想放行未知体积的资源，请在下面两行前面加上 # 注释掉
                                 if size_gb <= 0.0:
-                                    logger.info(f"      × 排除: 无法获取有效体积信息，为防止超大文件自动拦截")
+                                    logger.info(f"  ➜ 排除: 无法获取有效体积信息，为防止超大文件自动拦截")
                                     continue
                                     
                                 # 3. 分辨率过滤
                                 if hd_res != 'All':
                                     res_list = r.get('video_resolution', [])
                                     if hd_res not in res_list:
-                                        logger.info(f"      × 排除: 分辨率不匹配 (需要 {hd_res}，实际为 {res_list})")
+                                        logger.info(f"  ➜ 排除: 分辨率不匹配 (需要 {hd_res}，实际为 {res_list})")
                                         continue
 
                                 # 4. 排除 ISO 原盘
@@ -955,7 +955,7 @@ def task_auto_subscribe(processor):
                                         is_iso = True
                                         
                                     if is_iso:
-                                        logger.info(f"      × 排除: 命中了排除 ISO 原盘规则")
+                                        logger.info(f"  ➜ 排除: 命中了排除 ISO 原盘规则")
                                         continue
 
                                 # 5. 仅限中文字幕
@@ -967,11 +967,11 @@ def task_auto_subscribe(processor):
                                         has_zh_sub = True
                                     
                                     if not has_zh_sub:
-                                        logger.info(f"      × 排除: 未检测到中文字幕标识")
+                                        logger.info(f"  ➜ 排除: 未检测到中文字幕标识")
                                         continue
                                         
                                 # 如果代码能走到这里，说明所有条件都满足了
-                                logger.info(f"      √ 筛选通过，加入候选列表")
+                                logger.info(f"  ➜ 筛选通过，加入候选列表")
                                 r['_effective_points'] = effective_points
                                 r['_size_gb'] = size_gb
                                 valid_resources.append(r)
