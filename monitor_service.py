@@ -413,25 +413,32 @@ class MonitorService:
             logger.warning("  ➜ 实时监控已启用，但未配置监控目录列表。")
             return
 
-        self.observer = Observer()
-        event_handler = MediaFileHandler(self.extensions, self.exclude_dirs)
+        # ★★★ 核心修改：将耗时的目录遍历和监听注册放到后台线程执行，防止阻塞主程序启动 ★★★
+        def _async_start():
+            self.observer = Observer()
+            event_handler = MediaFileHandler(self.extensions, self.exclude_dirs)
 
-        started_paths = []
-        for path in self.paths:
-            if os.path.exists(path) and os.path.isdir(path):
-                try:
-                    self.observer.schedule(event_handler, path, recursive=True)
-                    started_paths.append(path)
-                except Exception as e:
-                    logger.error(f"  ➜ 无法监控目录 '{path}': {e}")
+            started_paths = []
+            for path in self.paths:
+                if os.path.exists(path) and os.path.isdir(path):
+                    try:
+                        logger.debug(f"  ➜ [实时监控] 正在为目录建立监听树 (若目录较大或为网盘挂载，可能需要一些时间): {path}")
+                        # 这里的 recursive=True 会遍历所有子目录，是耗时的元凶
+                        self.observer.schedule(event_handler, path, recursive=True)
+                        started_paths.append(path)
+                    except Exception as e:
+                        logger.error(f"  ➜ 无法监控目录 '{path}': {e}")
+                else:
+                    logger.warning(f"  ➜ 监控目录不存在或无效，已跳过: {path}")
+
+            if started_paths:
+                self.observer.start()
+                logger.info(f"  ➜ 实时监控服务已启动，正在监听 {len(started_paths)} 个目录: {started_paths}")
             else:
-                logger.warning(f"  ➜ 监控目录不存在或无效，已跳过: {path}")
+                logger.warning("  ➜ 没有有效的监控目录，实时监控服务未启动。")
 
-        if started_paths:
-            self.observer.start()
-            logger.info(f"  ➜ 实时监控服务已启动，正在监听 {len(started_paths)} 个目录: {started_paths}")
-        else:
-            logger.warning("  ➜ 没有有效的监控目录，实时监控服务未启动。")
+        # 启动后台守护线程执行扫描
+        threading.Thread(target=_async_start, name="MonitorServiceStarter", daemon=True).start()
 
     def stop(self):
         if self.observer:
