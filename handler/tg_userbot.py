@@ -141,7 +141,17 @@ class TGUserBotManager:
 
                 if is_auth:
                     logger.info("  ➜ [TG订阅] Telegram 客户端已授权，开始监听频道消息...")
-                    await self.client.run_until_disconnected()
+                    # ★ 增加自动重连机制，防止 TG 服务器抽风导致服务永久挂掉
+                    while self.is_running:
+                        try:
+                            if not self.client.is_connected():
+                                await self.client.connect()
+                            await self.client.run_until_disconnected()
+                        except Exception as e:
+                            if not self.is_running:
+                                break
+                            logger.warning(f"  ➜ [TG订阅] 监听中断 (TG服务器异常)，10秒后自动重连: {e}")
+                            await asyncio.sleep(10) # 等待 10 秒后重试，避免频繁请求被封
                 else:
                     logger.info("  ➜ [TG订阅] Telegram 客户端已连接，等待前端输入验证码授权...")
                     # 保持协程存活，等待前端调用登录接口
