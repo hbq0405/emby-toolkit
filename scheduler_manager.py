@@ -278,7 +278,7 @@ class SchedulerManager:
                 else:
                     log_message += " (无时长限制)。"
                 
-                logger.info(log_message)
+                logger.debug(log_message)
 
             except ValueError as e:
                 logger.error(f"  ➜ 设置 '{job_name}' 失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
