@@ -567,7 +567,7 @@ def _process_tg_queue():
                         with conn.cursor() as cursor:
                             cursor.execute("SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (tmdb_id,))
                             row = cursor.fetchone()
-                            if row and row['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
+                            if row and row['subscription_status'] in ['SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
                                 should_process = True
                             
                             if not should_process:
@@ -579,7 +579,7 @@ def _process_tg_queue():
                                 """, (tmdb_id, tmdb_id))
                                 rows = cursor.fetchall()
                                 for r in rows:
-                                    if r['subscription_status'] in ['WANTED', 'SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
+                                    if r['subscription_status'] in ['SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
                                         should_process = True
                                         break
                             
@@ -593,7 +593,7 @@ def _process_tg_queue():
                     continue
 
                 if not should_process:
-                    logger.debug(f"  ➜ [TG订阅] 资源 (TMDB: {tmdb_id}) 不在订阅/追剧列表中，已忽略。")
+                    logger.debug(f"  ➜ [TG订阅] 资源 (TMDB: {tmdb_id}) 不在已订阅/追剧列表中，已忽略。")
                     continue
 
                 # -----------------------------------------------------------
