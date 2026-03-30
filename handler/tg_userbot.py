@@ -254,30 +254,38 @@ class TGUserBotManager:
             title = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', title).strip()
             year = title_match.group(2)
 
-        # 7. 提取季号和集号 (泥石流级增强版)
+        # 7. 提取季号和集号 (泥石流级增强版 + 合集包识别)
         season_number = None
         episode_number = None
+        is_pack = False # ★ 新增：标记是否为合集包
         
-        # 规则 A: 标准 S01E01 或 S1 EP10
-        se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
-        if se_match:
-            season_number = int(se_match.group(1))
-            episode_number = int(se_match.group(2))
+        # 规则 A: 范围匹配合集包 (例如 S01E01-E19, S1 EP01~10)
+        range_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})\s*(?:-|~|至)\s*(?:E|EP)?\s*(\d{1,4})', text, re.IGNORECASE)
+        if range_match:
+            season_number = int(range_match.group(1))
+            episode_number = int(range_match.group(3)) # 记录最大集号
+            is_pack = True
         else:
-            # 规则 B: 第x季 第x集
-            s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
-            e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)', text, re.IGNORECASE)
-            if s_match: season_number = int(s_match.group(1))
-            if e_match: episode_number = int(e_match.group(1))
-            
-            # 规则 C: 应对群魔乱舞的合集包 (更新至X集, 全X集, 1-X集)
-            # 提取这种描述中的“最大集号”作为进度标识
-            if episode_number is None:
-                bulk_match = re.search(r'(?:更新至|全|至)(?:第)?\s*(\d{1,4})\s*(?:集|话)|(?:^|\s)\d{1,3}-(\d{1,4})(?:集|话)?', text)
-                if bulk_match:
-                    ep_str = bulk_match.group(1) or bulk_match.group(2)
-                    if ep_str:
-                        episode_number = int(ep_str)
+            # 规则 B: 标准单集 S01E01 或 S1 EP10
+            se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
+            if se_match:
+                season_number = int(se_match.group(1))
+                episode_number = int(se_match.group(2))
+            else:
+                # 规则 C: 第x季 第x集
+                s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
+                e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)', text, re.IGNORECASE)
+                if s_match: season_number = int(s_match.group(1))
+                if e_match: episode_number = int(e_match.group(1))
+                
+                # 规则 D: 应对群魔乱舞的合集包 (更新至X集, 全X集, 1-X集)
+                if episode_number is None:
+                    bulk_match = re.search(r'(?:更新至|全|至)(?:第)?\s*(\d{1,4})\s*(?:集|话)|(?:^|\s)\d{1,3}-(\d{1,4})(?:集|话)?', text)
+                    if bulk_match:
+                        ep_str = bulk_match.group(1) or bulk_match.group(2)
+                        if ep_str:
+                            episode_number = int(ep_str)
+                            is_pack = True # 标记为合集
 
         # ★ 兜底神技：国产剧/韩剧通常不写季号，如果提取到了集号但没季号，默认第一季！
         if episode_number is not None and season_number is None:
@@ -330,11 +338,12 @@ class TGUserBotManager:
                 "tmdb_id": tmdb_id,
                 "title": title,
                 "year": year,
-                "item_type": item_type, # <--- ★ 把判定好的类型传给队列
+                "item_type": item_type,
                 "target_link": target_link,
                 "receive_code": receive_code,
                 "season_number": season_number,
-                "episode_number": episode_number
+                "episode_number": episode_number,
+                "is_pack": is_pack  # <--- ★ 新增这行，传给消费者
             })
             
         # 情况 B：手动发的磁力链或 ED2K
@@ -465,48 +474,49 @@ def _process_tg_queue():
                 receive_code = task.get('receive_code', '')
                 season_number = task.get('season_number')
                 episode_number = task.get('episode_number')
+                is_pack = task.get('is_pack', False) # 获取合集标记
 
                 # -----------------------------------------------------------
-                # 1. 追踪弹：解析真实的 115 Share Code (穿甲增强版)
+                # 1. 追踪弹：解析真实的 115 Share Code (修复密码提取)
                 # -----------------------------------------------------------
                 share_code = None
                 
                 if 'hdhive.com' in target_link:
                     logger.debug(f"  🕵️‍♂️ [TG订阅] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址...")
                     try:
-                        # 1. 从链接中提取 32 位的 slug (例如: 7fecf5bde3614ad0bc331f3e4f081add)
                         slug_match = re.search(r'hdhive\.com/resource/115/([a-fA-F0-9]{32})', target_link)
                         if not slug_match:
                             logger.error(f"  ➜ [TG订阅] 无法从影巢链接中提取 Slug 标识: {target_link}")
                             continue
                             
                         slug = slug_match.group(1)
-                        
-                        # 2. 获取系统配置的影巢 API Key
                         from database import settings_db
                         hdhive_api_key = settings_db.get_setting('hdhive_api_key')
                         
                         if not hdhive_api_key:
-                            logger.error("  ➜ [TG订阅] 解析失败：未配置影巢 API Key！请在 ETK 设置页面配置。")
+                            logger.error("  ➜ [TG订阅] 解析失败：未配置影巢 API Key！")
                             continue
                             
-                        # 3. 调用现成的 HDHiveClient 解锁并获取真实链接
                         from handler.hdhive_client import HDHiveClient
                         hd_client = HDHiveClient(hdhive_api_key)
-                        
-                        logger.debug(f"  ➜ [TG订阅] 正在通过 API 请求影巢资源 (Slug: {slug[:8]}...)...")
                         resource_data = hd_client.unlock_resource(slug)
                         
                         if resource_data and resource_data.get('url'):
                             real_url = resource_data.get('url')
-                            # 提取真实的 115 Share Code
+                            full_url = resource_data.get('full_url', '')
+                            
                             match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', real_url)
                             if match:
                                 share_code = match.group(1)
-                                # 优先使用 API 返回的提取码
+                                
+                                # ★★★ 核心修复：提取码兜底逻辑 (照搬 hdhive.py) ★★★
                                 if resource_data.get('access_code'):
                                     receive_code = resource_data.get('access_code')
-                                    
+                                if not receive_code:
+                                    pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', full_url + "&" + real_url, re.IGNORECASE)
+                                    if pwd_match:
+                                        receive_code = pwd_match.group(1)
+                                        
                                 logger.debug(f"  ➜ [TG订阅] 影巢 API 解析成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
                             else:
                                 logger.error(f"  ➜ [TG订阅] 影巢 API 返回的 URL 中未找到 115 提取码: {real_url}")
@@ -531,15 +541,11 @@ def _process_tg_queue():
                 # 2. 最强大脑：缺失 TMDB ID 时自动反查
                 # -----------------------------------------------------------
                 item_type = task.get('item_type', 'movie')
-                
                 if not tmdb_id and title:
                     logger.debug(f"  ➜ [TG订阅] 缺失 TMDB ID，正在通过 TMDb 接口反查: {title} ({year}), 严格限定类型: {'剧集' if item_type=='tv' else '电影'}...")
                     from handler import tmdb
                     api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-                    
-                    # ★ 核心修复：不再盲目双搜，直接使用前面判定好的类型进行精准搜索
                     results = tmdb.search_media(title, api_key, item_type=item_type, year=year)
-                    
                     if results:
                         tmdb_id = str(results[0]['id'])
                         logger.debug(f"  ➜ [TG订阅] 反查成功！精准匹配到 TMDB ID: {tmdb_id}")
@@ -547,11 +553,10 @@ def _process_tg_queue():
                         logger.warning(f"  ➜ [TG订阅] 反查失败，TMDb 未找到该{'剧集' if item_type=='tv' else '电影'}，任务终止。")
                         continue
 
-                if not tmdb_id:
-                    continue
+                if not tmdb_id: continue
 
                 # -----------------------------------------------------------
-                # 3. 查库校验 (复用之前的完美逻辑)
+                # 3. 查库校验 (判断是否在追剧列表中)
                 # -----------------------------------------------------------
                 should_process = False
                 try:
@@ -589,14 +594,25 @@ def _process_tg_queue():
                     continue
 
                 # -----------------------------------------------------------
-                # 4. 精准去重逻辑
+                # 4. 精准去重逻辑 (★★ 核心修复：合集包智能补齐 ★★)
                 # -----------------------------------------------------------
                 if season_number is not None and episode_number is not None:
                     from database import media_db
                     local_seasons = media_db.get_series_local_children_info(tmdb_id)
-                    if season_number in local_seasons and episode_number in local_seasons[season_number]:
-                        logger.debug(f"  ➜ [TG订阅] 资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
-                        continue
+                    
+                    if is_pack:
+                        # 如果是合集包，检查本地该季的总集数是否满足
+                        local_ep_count = len(local_seasons.get(season_number, []))
+                        if local_ep_count >= episode_number:
+                            logger.debug(f"  ➜ [TG订阅] 合集包 (TMDB: {tmdb_id} S{season_number:02d} 宣称 {episode_number} 集)，本地已有 {local_ep_count} 集，判定为已满足，跳过转存！")
+                            continue
+                        else:
+                            logger.info(f"  ➜ [TG订阅] 发现合集包 (S{season_number:02d} 宣称 {episode_number} 集)，本地仅有 {local_ep_count} 集，放行转存以补齐缺集！")
+                    else:
+                        # 如果是单集，严格检查该集是否存在
+                        if season_number in local_seasons and episode_number in local_seasons[season_number]:
+                            logger.debug(f"  ➜ [TG订阅] 单集资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
+                            continue
 
                 # -----------------------------------------------------------
                 # 5. 执行转存
