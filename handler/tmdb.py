@@ -567,12 +567,12 @@ def search_media(query: str, api_key: str, item_type: str = 'movie', year: Optio
             params['first_air_date_year'] = year
 
     year_info = f" (年份: {year})" if year else ""
-    logger.debug(f"TMDb: 正在搜索 {item_type}: '{query}'{year_info}")
+    logger.debug(f"  ➜ TMDb: 正在搜索 {item_type}: '{query}'{year_info}")
     data = _tmdb_request(endpoint, api_key, params)
     
     # 如果中文搜索不到，可以尝试用英文再搜一次
     if data and not data.get("results") and params['language'].startswith("zh"):
-        logger.debug(f"中文搜索 '{query}'{year_info} 未找到结果，尝试使用英文再次搜索...")
+        logger.debug(f"  ➜ TMDb: 中文搜索 '{query}'{year_info} 未找到结果，尝试使用英文再次搜索...")
         params['language'] = 'en-US'
         data = _tmdb_request(endpoint, api_key, params)
 
@@ -612,11 +612,11 @@ def search_media_for_discover(query: str, api_key: str, item_type: str = 'movie'
             params['first_air_date_year'] = year
 
     year_info = f" (年份: {year})" if year else ""
-    logger.debug(f"TMDb: 正在搜索 {item_type}: '{query}'{year_info} at page {page}")
+    logger.debug(f"  ➜ TMDb: 正在搜索 {item_type}: '{query}'{year_info} at page {page}")
     data = _tmdb_request(endpoint, api_key, params)
     
     if data and not data.get("results") and params['language'].startswith("zh"):
-        logger.debug(f"中文搜索 '{query}'{year_info} 未找到结果，尝试使用英文再次搜索...")
+        logger.debug(f"  ➜ TMDb: 中文搜索 '{query}'{year_info} 未找到结果，尝试使用英文再次搜索...")
         params['language'] = 'en-US'
         data = _tmdb_request(endpoint, api_key, params)
 
@@ -644,7 +644,7 @@ def search_person_tmdb(query: str, api_key: str) -> Optional[List[Dict[str, Any]
         "include_adult": "false",
         "language": DEFAULT_LANGUAGE # 使用模块内定义的默认语言
     }
-    logger.debug(f"TMDb: 正在搜索演员: '{query}'")
+    logger.debug(f"  ➜ TMDb: 正在搜索演员: '{query}'")
     data = _tmdb_request(endpoint, api_key, params)
     return data.get("results") if data else None
 
