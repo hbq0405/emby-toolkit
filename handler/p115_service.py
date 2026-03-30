@@ -129,7 +129,7 @@ class P115OpenAPIClient:
                     logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
                     return requests.request(method, url, headers=self.headers, timeout=30, **kwargs).json()
                 else:
-                    logger.error("  💀 [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
+                    logger.error("  ➜ [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
             
             return resp
         except Exception as e:

@@ -774,7 +774,7 @@ def emby_webhook():
     # ★★★ 处理神医插件的 deep.delete (深度删除) 事件 ★★★
     # ======================================================================
     if event_type == "deep.delete":
-        logger.info("  💀 收到神医助手深度删除通知，准备执行清理流程...")
+        logger.info("  ➜ 收到神医助手深度删除通知，准备执行清理流程...")
         
         item_from_webhook = data.get("Item", {})
         original_item_id = item_from_webhook.get("Id")
