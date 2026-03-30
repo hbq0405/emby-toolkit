@@ -3148,7 +3148,7 @@ class MediaProcessor:
                     translation = final_translation_map.get(term)
                     logger.debug(f"    ├─ {term} ➜ {translation}")
             if failed_to_translate_terms:
-                logger.warning(f"    ➜ 翻译失败列表 ({len(failed_to_translate_terms)}条): {list(failed_to_translate_terms)}")
+                logger.warning(f"  ➜ 翻译失败列表 ({len(failed_to_translate_terms)}条): {list(failed_to_translate_terms)}")
 
             for actor in current_cast_list:
                 original_name = actor.get('name')
