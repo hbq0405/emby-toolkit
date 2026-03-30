@@ -46,7 +46,8 @@ class TGUserBotManager:
             'api_hash': cfg.get(constants.CONFIG_OPTION_TG_USER_API_HASH, ''),
             'phone': cfg.get(constants.CONFIG_OPTION_TG_USER_PHONE, ''),
             'password': cfg.get(constants.CONFIG_OPTION_TG_USER_2FA, ''),
-            'channels': cfg.get(constants.CONFIG_OPTION_TG_MONITOR_CHANNELS) or []
+            'channels': cfg.get(constants.CONFIG_OPTION_TG_MONITOR_CHANNELS) or [],
+            'monitor_types': cfg.get(constants.CONFIG_OPTION_TG_MONITOR_TYPE) or ['movie', 'tv']
         }
 
     def start(self):
@@ -319,6 +320,14 @@ class TGUserBotManager:
                     item_type = 'tv'
                 elif re.search(r'(电影|Movie)', header_text, re.IGNORECASE):
                     item_type = 'movie'
+
+        # =================================================================
+        # 根据用户配置的订阅类型进行拦截
+        # =================================================================
+        allowed_types = cfg.get('monitor_types', ['movie', 'tv'])
+        if item_type not in allowed_types:
+            logger.debug(f"  ➜ [TG订阅] 资源类型为 {'剧集' if item_type=='tv' else '电影'}，未在允许的订阅类型中，已忽略。")
+            return
 
         # 9. 解析磁力/ED2K 链接
         is_magnet = text.lower().startswith('magnet:?')

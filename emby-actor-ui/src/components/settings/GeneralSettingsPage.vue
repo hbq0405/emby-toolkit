@@ -1184,6 +1184,15 @@
                         <n-select v-model:value="configModel.tg_monitor_channels" multiple filterable tag placeholder="输入频道 Username 或 ID 并回车 (如 hdtv115)" :options="[]" />
                       </n-form-item-grid-item>
 
+                      <n-form-item-grid-item label="订阅类型" path="tg_monitor_type">
+                        <n-checkbox-group v-model:value="configModel.tg_monitor_type">
+                          <n-space>
+                            <n-checkbox value="movie" label="电影" />
+                            <n-checkbox value="tv" label="电视剧" />
+                          </n-space>
+                        </n-checkbox-group>
+                      </n-form-item-grid-item>
+
                       <!-- 登录交互区 -->
                       <n-form-item-grid-item label="账号授权状态">
                         <n-space align="center">
