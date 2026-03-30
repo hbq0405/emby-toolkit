@@ -1131,10 +1131,19 @@ class MediaProcessor:
                             if not file_sha1 and file_pc:
                                 file_sha1 = self._get_sha1_by_pickcode(file_pc)
                             
-                            # 强制兜底物理路径：如果 raw_path 是 http，尝试用顶层 Path 兜底
+                            # ★ 修复 2：提取当前版本的真实 ID，并强制剥离 mediasource_ 前缀
+                            raw_source_id = str(source.get('Id') or item_id)
+                            source_id = raw_source_id.replace("mediasource_", "")
+                            
+                            # ★★★ 核心修复 A：精准兜底物理路径 ★★★
+                            # 如果 raw_path 是 http，只有当当前 source 是主版本时，才允许使用顶层 Path 兜底。
+                            # 辅版本置空，强制底层函数从当前 source 的 MediaStreams 中读取真实流信息。
                             emby_path = raw_path
                             if emby_path.startswith('http'):
-                                emby_path = item_details_from_emby.get('Path', '')
+                                if source_id == item_id:
+                                    emby_path = item_details_from_emby.get('Path', '')
+                                else:
+                                    emby_path = ''
                                 
                             mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
                             file_sha1 = self._get_sha1_by_pickcode(file_pc)
@@ -1142,15 +1151,16 @@ class MediaProcessor:
                             # 构造临时 item 传递给 parse_full_asset_details，确保解析的是当前版本的属性
                             temp_item = item_details_from_emby.copy()
                             
-                            # ★ 修复 2：提取当前版本的真实 ID，并强制剥离 mediasource_ 前缀
-                            raw_source_id = str(source.get('Id') or item_id)
-                            source_id = raw_source_id.replace("mediasource_", "")
                             temp_item['Id'] = source_id 
-                            
                             temp_item['Path'] = emby_path
                             if 'Container' in source: temp_item['Container'] = source['Container']
                             if 'Size' in source: temp_item['Size'] = source['Size']
                             if 'RunTimeTicks' in source: temp_item['RunTimeTicks'] = source['RunTimeTicks']
+                            
+                            # ★★★ 核心修复 B：清除顶层分辨率污染 ★★★
+                            # 防止主版本的 Width/Height 污染辅版本
+                            temp_item.pop('Width', None)
+                            temp_item.pop('Height', None)
                             
                             # ★★★ 核心修复 5：将当前版本的专属流信息强行覆盖到顶层 ★★★
                             if 'MediaStreams' in source:
@@ -1442,13 +1452,21 @@ class MediaProcessor:
                         # 遍历该集的所有版本
                         for version in versions_of_episode:
                             raw_path = version.get('Path', '')
+                            
+                            # ★ 强制剥离 mediasource_ 前缀
+                            clean_v_id = str(version.get('Id')).replace("mediasource_", "")
+                            
                             file_pc, file_sha1 = self._extract_115_fingerprints(raw_path)
                             if not file_sha1 and file_pc:
                                 file_sha1 = self._get_sha1_by_pickcode(file_pc)
                             
+                            # ★★★ 核心修复 A：精准兜底物理路径 ★★★
                             emby_path = raw_path
                             if emby_path.startswith('http'):
-                                emby_path = item_details_from_emby.get('Path', '')
+                                if clean_v_id == item_id:
+                                    emby_path = item_details_from_emby.get('Path', '')
+                                else:
+                                    emby_path = ''
                                 
                             mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
                             file_sha1 = self._get_sha1_by_pickcode(file_pc)
@@ -1460,9 +1478,6 @@ class MediaProcessor:
                             details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
 
                             all_assets.append(details)
-                            
-                            # ★ 强制剥离 mediasource_ 前缀
-                            clean_v_id = str(version.get('Id')).replace("mediasource_", "")
                             all_ids.append(clean_v_id)
                             
                             if file_sha1: all_sha1s.append(file_sha1)
