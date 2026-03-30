@@ -930,8 +930,11 @@ class WatchlistProcessor:
                 logger.warning(f"  ➜ 每日订阅配额已用尽，跳过《{series_name}》S{season_number} 的完结洗版。")
                 return
             # 2. 直接使用传入的集数进行一致性检查
-            if self._check_season_consistency(tmdb_id, season_number, episode_count):
-                return
+            tg_channel_tracking = watchlist_cfg.get('tg_channel_tracking', False)
+            if tg_channel_tracking:
+                logger.info(f"  ➜ [完结洗版] 已开启 TG 追更，跳过一致性检查，强制洗版。")
+            elif self._check_season_consistency(tmdb_id, season_number, episode_count):
+                return # 满足条件，跳过洗版
             
             # 3. 检查是否需要删除旧文件 (Emby)
             if watchlist_cfg.get('auto_delete_old_files', False):
