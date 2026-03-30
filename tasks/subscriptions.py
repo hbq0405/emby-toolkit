@@ -1089,7 +1089,7 @@ def task_auto_subscribe(processor):
 
             # 如果配置了延时，且不是列表中的最后一个项目，则进行休眠
             if request_delay > 0 and i < len(wanted_items) - 1:
-                logger.debug(f"  zzz 根据配置暂停 {request_delay} 秒...")
+                logger.debug(f"  ➜ 根据配置暂停 {request_delay} 秒...")
                 time.sleep(request_delay)
         
         # 发送用户通知
@@ -1102,7 +1102,7 @@ def task_auto_subscribe(processor):
                     message_text = (f"🎉 *您的 {len(subscribed_items)} 个订阅已成功处理*\n\n您之前想看的下列内容现已加入下载队列：\n{items_list_str}")
                     telegram.send_telegram_message(user_chat_id, message_text)
             except Exception as e:
-                logger.error(f"为用户 {user_id} 发送自动订阅的合并通知时出错: {e}")
+                logger.error(f"  ➜ 为用户 {user_id} 发送自动订阅的合并通知时出错: {e}")
 
         # 失败的通知
         logger.info(f"  ➜ 准备为 {len(failed_notifications_to_send)} 位用户发送合并的失败通知...")
