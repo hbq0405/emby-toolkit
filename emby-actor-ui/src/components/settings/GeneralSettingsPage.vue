@@ -1166,6 +1166,15 @@
                       <n-switch v-model:value="configModel.tg_user_enabled" />
                     </n-form-item-grid-item>
 
+                    <n-form-item-grid-item label="订阅类型" path="tg_monitor_type">
+                      <n-checkbox-group v-model:value="configModel.tg_monitor_type">
+                        <n-space>
+                          <n-checkbox value="movie" label="电影" />
+                          <n-checkbox value="tv" label="电视剧" />
+                        </n-space>
+                      </n-checkbox-group>
+                    </n-form-item-grid-item>
+
                     <template v-if="configModel.tg_user_enabled">
                       <n-form-item-grid-item label="API ID" path="tg_user_api_id">
                         <n-input v-model:value="configModel.tg_user_api_id" placeholder="例如: 1234567" />
@@ -1182,15 +1191,6 @@
                       
                       <n-form-item-grid-item label="监听频道白名单" path="tg_monitor_channels">
                         <n-select v-model:value="configModel.tg_monitor_channels" multiple filterable tag placeholder="输入频道 Username 或 ID 并回车 (如 hdtv115)" :options="[]" />
-                      </n-form-item-grid-item>
-
-                      <n-form-item-grid-item label="订阅类型" path="tg_monitor_type">
-                        <n-checkbox-group v-model:value="configModel.tg_monitor_type">
-                          <n-space>
-                            <n-checkbox value="movie" label="电影" />
-                            <n-checkbox value="tv" label="电视剧" />
-                          </n-space>
-                        </n-checkbox-group>
                       </n-form-item-grid-item>
 
                       <!-- 登录交互区 -->
