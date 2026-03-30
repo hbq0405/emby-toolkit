@@ -2991,7 +2991,7 @@ class SmartOrganizer:
                         progress_callback()
             else:
                 err_msg = str(move_res.get('error_msg', move_res))
-                logger.error(f"  ➜ [批量移动失败] 目标CID:{batch_target_cid}, 包含 {len(fids)} 个文件, 原因: {err_msg}")
+                logger.error(f"  ➜ [批量移动失败] 目标CID:{batch_target_cid}, 包含 {len(move_fids)} 个文件, 原因: {err_msg}")
                 
                 if '不存在' in err_msg or move_res.get('code') in [20004, 70004]:
                     logger.warning(f"  ➜ 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {batch_target_cid}")
