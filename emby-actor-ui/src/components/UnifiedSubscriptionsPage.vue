@@ -255,7 +255,7 @@
       </div>
     </transition>
     <!-- 订阅策略配置模态框 -->
-    <n-modal v-model:show="showStrategyModal" preset="card" title="订阅策略配置" style="width: 600px;">
+    <n-modal v-model:show="showStrategyModal" preset="card" title="订阅策略配置" style="width: 600px;" :auto-focus="false">
       <n-form label-placement="left" label-width="auto" require-mark-placement="right-hanging">
         
         <n-divider title-placement="left">电影订阅策略 (剧集由智能追剧策略管理)</n-divider>
