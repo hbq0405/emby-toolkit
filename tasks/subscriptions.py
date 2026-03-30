@@ -44,18 +44,31 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
 }
 # 解析影巢返回的体积字符串
 def _parse_size_to_gb(size_str):
-    """将影巢返回的体积字符串 (如 '58.3 GB', '1.77TB') 转换为 GB 浮点数"""
+    """将影巢返回的体积字符串 (如 '58.3 GB', '1.77TB', '50G') 转换为 GB 浮点数"""
     if not size_str:
         return 0.0
-    size_str = size_str.upper().replace(' ', '')
-    match = re.search(r'([\d\.]+)([A-Z]+)', size_str)
+    
+    # 确保转换为字符串，去除空格并转大写
+    size_str = str(size_str).upper().replace(' ', '')
+    
+    # 匹配数字(含小数点)和后面的字母单位
+    match = re.search(r'([\d\.]+)([A-Z]*)', size_str)
     if not match:
         return 0.0
-    val = float(match.group(1))
+        
+    try:
+        val = float(match.group(1))
+    except ValueError:
+        return 0.0
+        
     unit = match.group(2)
-    if 'TB' in unit: return val * 1024
-    if 'GB' in unit: return val
-    if 'MB' in unit: return val / 1024
+    
+    # 兼容 G, GB, GiB 等各种写法
+    if 'T' in unit: return val * 1024
+    if 'G' in unit: return val
+    if 'M' in unit: return val / 1024
+    if 'K' in unit: return val / (1024 * 1024)
+    
     return 0.0
 
 # ★★★ 内部辅助函数：处理整部剧集的精细化订阅 ★★★
@@ -881,6 +894,7 @@ def task_auto_subscribe(processor):
                         resources = hd_client.get_resources(tmdb_id, 'movie')
                         
                         if resources:
+                            logger.info(f"  ➜ 影巢共返回 {len(resources)} 个资源，开始执行条件筛选：")
                             # --- ★★★ 智能漏斗：开始过滤资源 ★★★ ---
                             valid_resources = []
                             
@@ -892,72 +906,87 @@ def task_auto_subscribe(processor):
                             hd_zh_sub_only = strategy_config.get('hdhive_zh_sub_only', True)
                             hd_exclude_iso = strategy_config.get('hdhive_exclude_iso', False)
                             
-                            for r in resources:
+                            for i, r in enumerate(resources, 1):
                                 r_title = r.get('title', '未知标题')
                                 r_source = r.get('source', [])
                                 r_sub_lang = r.get('subtitle_language', [])
                                 r_remark = r.get('remark', '')
                                 
-                                # 1. 积分过滤
+                                # 提前计算积分和体积，用于日志打印
                                 is_unlocked = r.get('is_unlocked', False)
                                 raw_points = r.get('unlock_points') or 0
                                 effective_points = 0 if is_unlocked else raw_points
-                                
-                                if hd_free_only and effective_points > 0: continue
-                                if effective_points > hd_max_points: continue
-                                    
-                                # 2. 体积过滤
                                 size_gb = _parse_size_to_gb(r.get('share_size'))
-                                if size_gb > hd_max_size: continue
+                                
+                                logger.info(f"    [{i}/{len(resources)}] 检查: {r_title} (体积: {size_gb:.2f}GB, 需积分: {effective_points})")
+                                
+                                # 1. 积分过滤
+                                if hd_free_only and effective_points > 0:
+                                    logger.info(f"      × 排除: 仅限免费资源 (该资源需 {effective_points} 积分)")
+                                    continue
+                                if effective_points > hd_max_points:
+                                    logger.info(f"      × 排除: 超过最大积分限制 (限制 {hd_max_points} 积分)")
+                                    continue
+                                    
+                                # 2. 体积过滤 (核心逻辑：大于设定体积就丢弃)
+                                if size_gb > hd_max_size:
+                                    logger.info(f"      × 排除: 超过最大体积限制 (限制 {hd_max_size}GB)")
+                                    continue
+                                
+                                # 安全策略：丢弃无法获取体积的资源，防止盲盒下载超大合集
+                                # 如果你想放行未知体积的资源，请在下面两行前面加上 # 注释掉
+                                if size_gb <= 0.0:
+                                    logger.info(f"      × 排除: 无法获取有效体积信息，为防止超大文件自动拦截")
+                                    continue
                                     
                                 # 3. 分辨率过滤
                                 if hd_res != 'All':
                                     res_list = r.get('video_resolution', [])
-                                    if hd_res not in res_list: continue
+                                    if hd_res not in res_list:
+                                        logger.info(f"      × 排除: 分辨率不匹配 (需要 {hd_res}，实际为 {res_list})")
+                                        continue
 
-                                # 4. ★★★ 排除 ISO 原盘 (允许 REMUX) ★★★
+                                # 4. 排除 ISO 原盘
                                 if hd_exclude_iso:
                                     is_iso = False
-                                    # 检查 source 数组
                                     if any('ISO' in s.upper() for s in r_source):
                                         is_iso = True
-                                    # 检查标题 (包含 ISO 且不包含 REMUX)
                                     if 'ISO' in r_title.upper() and 'REMUX' not in r_title.upper():
                                         is_iso = True
                                         
                                     if is_iso:
-                                        logger.debug(f"  ➜ 过滤掉 ISO 原盘资源: {r_title}")
+                                        logger.info(f"      × 排除: 命中了排除 ISO 原盘规则")
                                         continue
 
-                                # 5. ★★★ 仅限中文字幕 ★★★
+                                # 5. 仅限中文字幕
                                 if hd_zh_sub_only:
                                     has_zh_sub = False
-                                    # 检查官方 subtitle_language 字段
                                     if any(lang in ['简中', '繁中', '中文', '国语', '粤语', '中英'] for lang in r_sub_lang):
                                         has_zh_sub = True
-                                    # 检查标题和备注中的关键字
                                     elif re.search(r'(中字|简中|繁中|特效字幕|国语|粤语|简繁|中英)', r_title + r_remark, re.IGNORECASE):
                                         has_zh_sub = True
                                     
                                     if not has_zh_sub:
-                                        logger.debug(f"  ➜ 过滤掉无中文字幕资源: {r_title}")
+                                        logger.info(f"      × 排除: 未检测到中文字幕标识")
                                         continue
                                         
-                                # 记录有效积分和体积，方便后续排序
+                                # 如果代码能走到这里，说明所有条件都满足了
+                                logger.info(f"      √ 筛选通过，加入候选列表")
                                 r['_effective_points'] = effective_points
                                 r['_size_gb'] = size_gb
                                 valid_resources.append(r)
                             
                             # --- ★★★ 智能排序：选出最优解 ★★★ ---
                             if valid_resources:
+                                logger.info(f"  ➜ 共有 {len(valid_resources)} 个资源通过筛选，正在根据 (积分最少 -> 体积最大) 排序...")
                                 # 排序规则：优先选积分最少的(白嫖优先) -> 积分相同时，选体积最大的(画质更好)
                                 valid_resources.sort(key=lambda x: (x['_effective_points'], -x['_size_gb']))
                                 
                                 target_resource = valid_resources[0]
                                 slug = target_resource.get('slug')
                                 
-                                logger.info(f"  ➜ 筛选出最优影巢资源: {target_resource.get('title')} "
-                                            f"(体积: {target_resource['_size_gb']:.1f}GB, 需积分: {target_resource['_effective_points']})")
+                                logger.info(f"  ➜ 最终选定最优影巢资源: {target_resource.get('title')} "
+                                            f"(体积: {target_resource['_size_gb']:.2f}GB, 需积分: {target_resource['_effective_points']})")
                                 
                                 if slug:
                                     success = task_download_from_hdhive(hdhive_api_key, slug, tmdb_id, 'movie', title)
@@ -966,7 +995,7 @@ def task_auto_subscribe(processor):
                                     else:
                                         logger.warning(f"  ➜ 影巢转存失败，准备降级到 MoviePilot 兜底...")
                             else:
-                                logger.info(f"  ➜ 影巢有资源，但没有符合你设置的过滤条件 (积分/体积/分辨率)，准备降级到 MoviePilot 兜底...")
+                                logger.info(f"  ➜ 影巢有资源，但全部被过滤规则拦截，准备降级到 MoviePilot 兜底...")
                         else:
                             logger.info(f"  ➜ 影巢未找到电影《{title}》的资源，准备降级到 MoviePilot 兜底...")
                     else:
