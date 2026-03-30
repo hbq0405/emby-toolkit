@@ -86,9 +86,10 @@ DEFAULT_TELEGRAM_MENU_TASKS = [
 CONFIG_OPTION_TG_USER_ENABLED = "tg_user_enabled"                  # TG用户登录
 CONFIG_OPTION_TG_USER_API_ID = "tg_user_api_id"                    # TG用户API ID
 CONFIG_OPTION_TG_USER_API_HASH = "tg_user_api_hash"                # TG用户API Hash
-CONFIG_OPTION_TG_USER_PHONE = "tg_user_phone"
-CONFIG_OPTION_TG_USER_2FA = "tg_user_2fa"
-CONFIG_OPTION_TG_MONITOR_CHANNELS = "tg_monitor_channels"
+CONFIG_OPTION_TG_USER_PHONE = "tg_user_phone"                      # TG用户手机号
+CONFIG_OPTION_TG_USER_2FA = "tg_user_2fa"                          # TG用户2FA
+CONFIG_OPTION_TG_MONITOR_CHANNELS = "tg_monitor_channels"          # 监控的频道列表
+CONFIG_OPTION_TG_MONITOR_TYPE = "tg_monitor_type"                  # 新增：订阅的资源类型，movie/tv
 
 # ==============================================================================
 # ✨ 反向代理配置 (Reverse Proxy)
