@@ -1991,7 +1991,7 @@ class SmartOrganizer:
             if not s_name: s_name = f"Season {season_num:02d}"
 
         # ★ 返回值增加 s_name
-        return new_name, season_num, s_name, is_center_cached
+        return new_name, season_num, episode_num, s_name, is_center_cached
 
     def _scan_files_recursively(self, cid, depth=0, max_depth=3, current_rel_path=""):
         all_files = []
@@ -2608,10 +2608,10 @@ class SmartOrganizer:
                             break
                     real_target_cid = current_parent
             else:
-                new_filename, season_num, s_name, is_center_cached = self._rename_file_node(
+                new_filename, season_num, episode_num, s_name, is_center_cached = self._rename_file_node(
                     file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
                     pre_fetched_mediainfo=pre_fetched_mediainfo,
-                    local_pre_fetched_mediainfo=local_pre_fetched_mediainfo # ★ 传入本地字典
+                    local_pre_fetched_mediainfo=local_pre_fetched_mediainfo 
                 )
 
                 real_target_cid = final_home_cid
@@ -2671,6 +2671,7 @@ class SmartOrganizer:
             # 暂存入分组字典
             file_item['_new_filename'] = new_filename
             file_item['_season_num'] = season_num
+            file_item['_episode_num'] = episode_num
             file_item['_s_name'] = s_name
             file_item['_is_center_cached'] = is_center_cached
             
@@ -2681,79 +2682,125 @@ class SmartOrganizer:
         # =================================================================
         # ★★★ 执行批量移动与后续 STRM 生成 ★★★
         # =================================================================
+        conflict_mode = cfg.get('conflict_mode', 'replace') # 获取覆盖模式，默认洗版替换
+        
         for batch_target_cid, items in move_groups.items():
-            fids = [item.get('fid') or item.get('file_id') for item in items]
+            # -----------------------------------------------------------
+            # ★ 1. 移动前：拉取目标目录现有文件，进行冲突检测
+            # -----------------------------------------------------------
+            existing_res = self.client.fs_files({'cid': batch_target_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
+            existing_files = [f for f in existing_res.get('data', []) if str(f.get('fc') or f.get('type')) == '1']
             
-            # 1. 批量发送移动指令 (一次 API 请求搞定整个目录的文件)
-            move_res = self.client.fs_move(fids, batch_target_cid)
+            existing_names = {}      # name -> fid (用于精准同名覆盖)
+            existing_tv_eps = {}     # (s, e) -> [fid1, fid2] (用于剧集洗版)
+            existing_movie_vids = [] # [fid1, fid2] (用于电影洗版)
+            
+            for ef in existing_files:
+                e_name = ef.get('fn') or ef.get('n') or ef.get('file_name')
+                e_fid = str(ef.get('fid') or ef.get('file_id'))
+                e_ext = e_name.split('.')[-1].lower() if '.' in e_name else ''
+                
+                if e_ext in known_video_exts:
+                    existing_names[e_name] = e_fid
+                    if self.media_type == 'tv':
+                        # 提取目标目录已有文件的 SxxEyy
+                        match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b', e_name, re.IGNORECASE)
+                        if match:
+                            s, e = int(match.group(1)), int(match.group(2))
+                            if (s, e) not in existing_tv_eps: existing_tv_eps[(s, e)] = []
+                            existing_tv_eps[(s, e)].append(e_fid)
+                    else:
+                        existing_movie_vids.append(e_fid)
+
+            valid_items = []
+            fids_to_delete = set()
+            
+            for item in items:
+                new_name = item['_new_filename']
+                s_num = item.get('_season_num')
+                e_num = item.get('_episode_num')
+                ext = new_name.split('.')[-1].lower() if '.' in new_name else ''
+                is_vid = ext in known_video_exts
+                
+                is_conflict = False
+                conflict_old_fids = []
+                
+                # 判定是否冲突
+                if is_vid:
+                    if self.media_type == 'tv' and s_num is not None and e_num is not None:
+                        if (s_num, e_num) in existing_tv_eps:
+                            is_conflict = True
+                            conflict_old_fids = existing_tv_eps[(s_num, e_num)]
+                    elif self.media_type == 'movie':
+                        if existing_movie_vids:
+                            is_conflict = True
+                            conflict_old_fids = existing_movie_vids
+                
+                # 根据模式处理冲突
+                if is_conflict:
+                    if conflict_mode == 'skip':
+                        logger.info(f"  ➜ [覆盖模式:跳过] 目标目录已存在同集/同电影，放弃处理: {new_name}")
+                        unrecognized_fids.append(item.get('fid') or item.get('file_id'))
+                        continue # 丢弃新文件
+                    elif conflict_mode == 'replace':
+                        logger.info(f"  ➜ [覆盖模式:替换] 目标目录存在旧版本，准备删除旧版保留最新: {new_name}")
+                        fids_to_delete.update(conflict_old_fids)
+                        valid_items.append(item)
+                    elif conflict_mode == 'keep_both':
+                        # 多版本共存，但如果名字完全一样，必须删旧的防报错
+                        if new_name in existing_names:
+                            logger.info(f"  ➜ [覆盖模式:共存] 允许共存，但发现完全同名文件，执行同名覆盖: {new_name}")
+                            fids_to_delete.add(existing_names[new_name])
+                        else:
+                            logger.info(f"  ➜ [覆盖模式:共存] 目标目录已存在同集，作为多版本共存: {new_name}")
+                        valid_items.append(item)
+                else:
+                    # 不冲突，但也要防完全同名
+                    if new_name in existing_names:
+                        fids_to_delete.add(existing_names[new_name])
+                    valid_items.append(item)
+            
+            if not valid_items:
+                continue # 这批全被 skip 了
+                
+            # -----------------------------------------------------------
+            # ★ 2. 执行删除旧文件 (洗版/同名覆盖)
+            # -----------------------------------------------------------
+            if fids_to_delete:
+                logger.warning(f"  ➜ [版本控制] 正在删除 {len(fids_to_delete)} 个被替换的旧版本文件...")
+                self.client.fs_delete(list(fids_to_delete))
+                P115CacheManager.delete_files(list(fids_to_delete))
+                
+            # -----------------------------------------------------------
+            # ★ 3. 执行移动新文件
+            # -----------------------------------------------------------
+            move_fids = [item.get('fid') or item.get('file_id') for item in valid_items]
+            move_res = self.client.fs_move(move_fids, batch_target_cid)
             
             if move_res.get('state'):
-                # 提取展示用的目录名
                 display_target = std_root_name
-                if items and items[0].get('_s_name'):
-                    display_target = f"{std_root_name} - {items[0]['_s_name']}"
-                logger.info(f"  ➜ [批量移动] 成功将 {len(fids)} 个文件移动至 -> {display_target}")
+                if valid_items and valid_items[0].get('_s_name'):
+                    display_target = f"{std_root_name} - {valid_items[0]['_s_name']}"
+                logger.info(f"  ➜ [批量移动] 成功将 {len(move_fids)} 个文件移动至 -> {display_target}")
                 
-                # =================================================================
-                # ★ 批量同名覆盖与重命名逻辑 (完美解决 (1) 冲突，且最小化 API 请求)
-                # =================================================================
-                try:
-                    # 获取目标目录当前的所有文件 (仅 1 次 API 请求)
-                    existing_res = self.client.fs_files({'cid': batch_target_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
-                    existing_files = existing_res.get('data', [])
-                    
-                    # 建立 FID -> 当前真实名称 的映射 (找回移动后可能被 115 加上 (1) 的文件)
-                    fid_to_current_name = {
-                        str(e.get('fid') or e.get('file_id')): (e.get('fn') or e.get('n') or e.get('file_name'))
-                        for e in existing_files if str(e.get('fc') or e.get('type')) == '1'
-                    }
-                    
-                    # 建立 名称 -> FID 的映射 (用于寻找占用完美名字的旧文件)
-                    existing_name_to_fid = {
-                        (e.get('fn') or e.get('n') or e.get('file_name')): str(e.get('fid') or e.get('file_id'))
-                        for e in existing_files if str(e.get('fc') or e.get('type')) == '1'
-                    }
-                    
-                    # 收集需要被删除的旧文件 FID (用于批量删除)
-                    conflict_fids_to_delete = []
-                    # 收集需要被重命名的新文件 (用于逐个重命名)
-                    items_to_rename = []
-                    
-                    for file_item in items:
-                        fid = str(file_item.get('fid') or file_item.get('file_id'))
-                        new_filename = file_item['_new_filename']
-                        current_name_in_115 = fid_to_current_name.get(fid, file_item.get('fn'))
-                        
-                        if current_name_in_115 != new_filename:
-                            # 如果完美名字被别人占用了，且那个人不是我自己
-                            if new_filename in existing_name_to_fid:
-                                conflict_fid = existing_name_to_fid[new_filename]
-                                if conflict_fid != fid:
-                                    conflict_fids_to_delete.append(conflict_fid)
-                                    # 从字典移除，防止多个文件重名时重复添加同一个 FID
-                                    del existing_name_to_fid[new_filename] 
-                            
-                            items_to_rename.append((fid, current_name_in_115, new_filename))
-                    
-                    # 执行批量删除 (仅 1 次 API 请求，瞬间秒杀所有旧版文件)
-                    if conflict_fids_to_delete:
-                        logger.warning(f"  ➜ [同名覆盖] 目标目录发现 {len(conflict_fids_to_delete)} 个同名旧文件，正在批量删除以腾出空间...")
-                        self.client.fs_delete(conflict_fids_to_delete)
-                        P115CacheManager.delete_files(conflict_fids_to_delete)
-                    
-                    # 执行重命名 (N 次 API 请求，115 不支持批量重命名，这和原来保持一致)
-                    for fid, current_name, new_name in items_to_rename:
+                # -----------------------------------------------------------
+                # ★ 4. 执行重命名
+                # -----------------------------------------------------------
+                for item in valid_items:
+                    fid = str(item.get('fid') or item.get('file_id'))
+                    old_name = item.get('fn') or item.get('n') or item.get('file_name')
+                    new_name = item['_new_filename']
+                    if old_name != new_name:
                         ren_res = self.client.fs_rename((fid, new_name))
                         if ren_res.get('state'):
-                            logger.info(f"  ➜ [重命名] {current_name} -> {new_name}")
+                            logger.info(f"  ➜ [重命名] {old_name} -> {new_name}")
                         else:
-                            logger.warning(f"  ➜ [重命名失败] {current_name} -> {new_name}, 原因: {ren_res.get('error_msg', ren_res)}")
-                            
-                except Exception as e:
-                    logger.error(f"  ➜ [同名覆盖] 处理重命名逻辑失败: {e}")
+                            logger.warning(f"  ➜ [重命名失败] {old_name} -> {new_name}, 原因: {ren_res.get('error_msg', ren_res)}")
                 
-                # 2. 移动成功后，遍历该批次文件，生成 STRM 和记录日志
-                for file_item in items:
+                # -----------------------------------------------------------
+                # ★ 5. 生成 STRM 和记录日志
+                # -----------------------------------------------------------
+                for file_item in valid_items:
                     fid = file_item.get('fid') or file_item.get('file_id')
                     file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
                     new_filename = file_item['_new_filename']

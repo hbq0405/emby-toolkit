@@ -73,6 +73,28 @@
           <!-- 标签页 3：高级设置 -->
           <n-tab-pane name="adv" tab="高级设置">
             <n-form label-placement="left" size="small" style="margin-top: 16px;">
+              
+              <!-- ★★★ 新增：覆盖模式选项 ★★★ -->
+              <n-form-item label="同集/同电影覆盖模式">
+                <n-radio-group v-model:value="config.conflict_mode">
+                  <n-space vertical>
+                    <n-radio value="replace">
+                      <b>仅保留最新 (洗版推荐)</b>
+                      <div style="font-size: 12px; color: gray;">删除目标目录中同一集/同一电影的所有旧版本，移入新版本。</div>
+                    </n-radio>
+                    <n-radio value="keep_both">
+                      <b>多版本共存</b>
+                      <div style="font-size: 12px; color: gray;">只要文件名不同，同一集的不同版本(如 1080p 和 4K)将共存。</div>
+                    </n-radio>
+                    <n-radio value="skip">
+                      <b>跳过 (防重复下载)</b>
+                      <div style="font-size: 12px; color: gray;">只要目标目录已有该集/该电影，新文件直接丢弃打入未识别。</div>
+                    </n-radio>
+                  </n-space>
+                </n-radio-group>
+              </n-form-item>
+              <n-divider style="margin: 12px 0;" />
+
               <n-form-item label="智能重命名">
                 <n-switch v-model:value="config.enable_smart_rename" />
                 <template #feedback>
@@ -166,6 +188,7 @@ const saving = ref(false);
 const config = ref({
   keep_original_name: false,
   enable_smart_rename: true,
+  conflict_mode: 'replace',
   main_dir_format: ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'],
   season_dir_format: ['season_name_en'],
   file_format: ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio_count', 'sep_space', 'audio', 'sep_middot_space', 'group'],
