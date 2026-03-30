@@ -2997,7 +2997,7 @@ class SmartOrganizer:
                     logger.warning(f"  ➜ 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {batch_target_cid}")
                     P115CacheManager.delete_cid(batch_target_cid)
                 if progress_callback:
-                    for _ in items:
+                    for _ in valid_items:
                         progress_callback()
 
         # =================================================================
