@@ -251,7 +251,7 @@ def initialize_processors():
         config_manager.APP_CONFIG['is_pro_active'] = False 
         
         if server_id_local:
-            logger.info("  ➜ 正在验证 Pro 授权状态...")
+            logger.debug("  ➜ 正在验证 Pro 授权状态...")
             try:
                 import requests
                 verify_url = "https://auth.55565576.xyz" 
