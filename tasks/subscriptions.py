@@ -889,31 +889,58 @@ def task_auto_subscribe(processor):
                             hd_max_points = strategy_config.get('hdhive_max_points', 10)
                             hd_max_size = strategy_config.get('hdhive_max_size_gb', 120)
                             hd_res = strategy_config.get('hdhive_resolution', 'All')
+                            hd_zh_sub_only = strategy_config.get('hdhive_zh_sub_only', True)
+                            hd_exclude_iso = strategy_config.get('hdhive_exclude_iso', False)
                             
                             for r in resources:
                                 r_title = r.get('title', '未知标题')
+                                r_source = r.get('source', [])
+                                r_sub_lang = r.get('subtitle_language', [])
+                                r_remark = r.get('remark', '')
                                 
-                                # 1. 计算实际消耗积分 (如果已解锁，则视为 0 分)
+                                # 1. 积分过滤
                                 is_unlocked = r.get('is_unlocked', False)
                                 raw_points = r.get('unlock_points') or 0
                                 effective_points = 0 if is_unlocked else raw_points
                                 
-                                # 积分过滤
-                                if hd_free_only and effective_points > 0:
-                                    continue
-                                if effective_points > hd_max_points:
-                                    continue
+                                if hd_free_only and effective_points > 0: continue
+                                if effective_points > hd_max_points: continue
                                     
-                                # 2. 体积过滤 (防大合集)
+                                # 2. 体积过滤
                                 size_gb = _parse_size_to_gb(r.get('share_size'))
-                                if size_gb > hd_max_size:
-                                    logger.debug(f"  ➜ 过滤掉超大资源: {r_title} ({size_gb:.1f}GB > {hd_max_size}GB)")
-                                    continue
+                                if size_gb > hd_max_size: continue
                                     
                                 # 3. 分辨率过滤
                                 if hd_res != 'All':
                                     res_list = r.get('video_resolution', [])
-                                    if hd_res not in res_list:
+                                    if hd_res not in res_list: continue
+
+                                # 4. ★★★ 排除 ISO 原盘 (允许 REMUX) ★★★
+                                if hd_exclude_iso:
+                                    is_iso = False
+                                    # 检查 source 数组
+                                    if any('ISO' in s.upper() for s in r_source):
+                                        is_iso = True
+                                    # 检查标题 (包含 ISO 且不包含 REMUX)
+                                    if 'ISO' in r_title.upper() and 'REMUX' not in r_title.upper():
+                                        is_iso = True
+                                        
+                                    if is_iso:
+                                        logger.debug(f"  ➜ 过滤掉 ISO 原盘资源: {r_title}")
+                                        continue
+
+                                # 5. ★★★ 仅限中文字幕 ★★★
+                                if hd_zh_sub_only:
+                                    has_zh_sub = False
+                                    # 检查官方 subtitle_language 字段
+                                    if any(lang in ['简中', '繁中', '中文', '国语', '粤语', '中英'] for lang in r_sub_lang):
+                                        has_zh_sub = True
+                                    # 检查标题和备注中的关键字
+                                    elif re.search(r'(中字|简中|繁中|特效字幕|国语|粤语|简繁|中英)', r_title + r_remark, re.IGNORECASE):
+                                        has_zh_sub = True
+                                    
+                                    if not has_zh_sub:
+                                        logger.debug(f"  ➜ 过滤掉无中文字幕资源: {r_title}")
                                         continue
                                         
                                 # 记录有效积分和体积，方便后续排序

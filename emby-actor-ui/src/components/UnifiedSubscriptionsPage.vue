@@ -301,6 +301,16 @@
                   </n-input-number>
                 </n-form-item>
               </n-grid-item>
+              <n-grid-item>
+                <n-form-item label="仅含中文字幕">
+                  <n-switch v-model:value="strategyConfig.hdhive_zh_sub_only" size="small" />
+                </n-form-item>
+              </n-grid-item>
+              <n-grid-item>
+                <n-form-item label="排除原盘 (ISO)">
+                  <n-switch v-model:value="strategyConfig.hdhive_exclude_iso" size="small" />
+                </n-form-item>
+              </n-grid-item>
             </n-grid>
           </div>
         </n-collapse-transition>
@@ -409,7 +419,9 @@ const strategyConfig = ref({
   hdhive_free_only: false,
   hdhive_max_points: 10,
   hdhive_max_size_gb: 120,
-  hdhive_resolution: 'All'
+  hdhive_resolution: 'All',
+  hdhive_zh_sub_only: true,
+  hdhive_exclude_iso: false
 });
 
 const loadStrategyConfig = async () => {

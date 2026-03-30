@@ -601,10 +601,12 @@ def api_get_subscription_strategy():
             'movie_pause_days': 7,
             'delay_subscription_days': 30,
             'subscription_priority': 'mp',
-            'hdhive_free_only': False,       # 仅限免费
-            'hdhive_max_points': 10,         # 最大允许积分
-            'hdhive_max_size_gb': 120,       # 最大允许体积(GB)，防合集
-            'hdhive_resolution': 'All'       # 分辨率要求 (All, 4K, 1080p)
+            'hdhive_free_only': False,      
+            'hdhive_max_points': 10,        
+            'hdhive_max_size_gb': 120,       
+            'hdhive_resolution': 'All',
+            'hdhive_zh_sub_only': True,      
+            'hdhive_exclude_iso': False              
         }
         
         if not config:
