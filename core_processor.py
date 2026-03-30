@@ -969,6 +969,23 @@ class MediaProcessor:
 
         return None
 
+    def _get_local_path_by_pickcode(self, pick_code: str) -> Optional[str]:
+        """
+        通过 pick_code 反查 115 缓存表获取 local_path (相对路径)
+        用于在 HTTP/STRM 模式下精准还原多版本文件的真实物理路径。
+        """
+        if not pick_code: return None
+        try:
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT local_path FROM p115_filesystem_cache WHERE pick_code = %s AND local_path IS NOT NULL LIMIT 1", (pick_code,))
+                row = cursor.fetchone()
+                if row and row['local_path']: 
+                    return row['local_path']
+        except Exception as e:
+            logger.warning(f"通过 pick_code 查询 local_path 失败: {e}")
+        return None
+
     # --- 更新媒体元数据缓存 ---
     def _upsert_media_metadata(
         self,
@@ -1131,19 +1148,34 @@ class MediaProcessor:
                             if not file_sha1 and file_pc:
                                 file_sha1 = self._get_sha1_by_pickcode(file_pc)
                             
-                            # ★ 修复 2：提取当前版本的真实 ID，并强制剥离 mediasource_ 前缀
+                            # ★ 提取当前版本的真实 ID，并强制剥离 mediasource_ 前缀
                             raw_source_id = str(source.get('Id') or item_id)
                             source_id = raw_source_id.replace("mediasource_", "")
                             
-                            # ★★★ 核心修复 A：精准兜底物理路径 ★★★
-                            # 如果 raw_path 是 http，只有当当前 source 是主版本时，才允许使用顶层 Path 兜底。
-                            # 辅版本置空，强制底层函数从当前 source 的 MediaStreams 中读取真实流信息。
+                            # ★★★ 终极修复：利用 local_strm_root + local_path 完美还原物理路径 ★★★
                             emby_path = raw_path
                             if emby_path.startswith('http'):
+                                main_emby_path = item_details_from_emby.get('Path', '')
                                 if source_id == item_id:
-                                    emby_path = item_details_from_emby.get('Path', '')
+                                    # 主版本：直接使用顶层 Path
+                                    emby_path = main_emby_path
                                 else:
-                                    emby_path = ''
+                                    # 辅版本：查库获取相对路径，与 local_strm_root 拼接
+                                    db_local_path = self._get_local_path_by_pickcode(file_pc)
+                                    if db_local_path:
+                                        local_strm_root = self.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
+                                        if local_strm_root:
+                                            # 完美拼接：/strm/媒体库 + 电影/.../xxx.mkv
+                                            emby_path = os.path.join(local_strm_root, db_local_path.lstrip('/\\'))
+                                        elif main_emby_path:
+                                            # 兜底：如果没配 root，用主版本的目录 + 真实文件名
+                                            real_filename = os.path.basename(db_local_path.replace('\\', '/'))
+                                            base_dir = os.path.dirname(main_emby_path)
+                                            emby_path = os.path.join(base_dir, real_filename)
+                                        else:
+                                            emby_path = ''
+                                    else:
+                                        emby_path = ''
                                 
                             mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
                             file_sha1 = self._get_sha1_by_pickcode(file_pc)
@@ -1157,16 +1189,15 @@ class MediaProcessor:
                             if 'Size' in source: temp_item['Size'] = source['Size']
                             if 'RunTimeTicks' in source: temp_item['RunTimeTicks'] = source['RunTimeTicks']
                             
-                            # ★★★ 核心修复 B：清除顶层分辨率污染 ★★★
-                            # 防止主版本的 Width/Height 污染辅版本
+                            # ★ 清除顶层分辨率污染，防止主版本的 Width/Height 污染辅版本
                             temp_item.pop('Width', None)
                             temp_item.pop('Height', None)
                             
-                            # ★★★ 核心修复 5：将当前版本的专属流信息强行覆盖到顶层 ★★★
+                            # ★ 将当前版本的专属流信息强行覆盖到顶层
                             if 'MediaStreams' in source:
                                 temp_item['MediaStreams'] = source['MediaStreams']
                             
-                            # ★★★ 核心修复 6：隔离污染，让底层函数只看到当前这一个 source ★★★
+                            # ★ 隔离污染，让底层函数只看到当前这一个 source
                             temp_item['MediaSources'] = [source]
                             
                             asset_details = parse_full_asset_details(
@@ -1178,7 +1209,7 @@ class MediaProcessor:
                             asset_details['source_library_id'] = source_lib_id
 
                             all_assets.append(asset_details)
-                            all_ids.append(source_id) # ★ 修复 3：将当前版本的 ID 收集起来
+                            all_ids.append(source_id)
                             if file_pc: all_pcs.append(file_pc)
                             if file_sha1: all_sha1s.append(file_sha1)
                     else:
@@ -1460,13 +1491,28 @@ class MediaProcessor:
                             if not file_sha1 and file_pc:
                                 file_sha1 = self._get_sha1_by_pickcode(file_pc)
                             
-                            # ★★★ 核心修复 A：精准兜底物理路径 ★★★
+                            # ★★★ 终极修复：利用 local_strm_root + local_path 完美还原物理路径 ★★★
                             emby_path = raw_path
                             if emby_path.startswith('http'):
+                                main_emby_path = item_details_from_emby.get('Path', '')
                                 if clean_v_id == item_id:
-                                    emby_path = item_details_from_emby.get('Path', '')
+                                    # 主版本：直接使用顶层 Path
+                                    emby_path = main_emby_path
                                 else:
-                                    emby_path = ''
+                                    # 辅版本：查库获取相对路径，与 local_strm_root 拼接
+                                    db_local_path = self._get_local_path_by_pickcode(file_pc)
+                                    if db_local_path:
+                                        local_strm_root = self.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
+                                        if local_strm_root:
+                                            emby_path = os.path.join(local_strm_root, db_local_path.lstrip('/\\'))
+                                        elif main_emby_path:
+                                            real_filename = os.path.basename(db_local_path.replace('\\', '/'))
+                                            base_dir = os.path.dirname(main_emby_path)
+                                            emby_path = os.path.join(base_dir, real_filename)
+                                        else:
+                                            emby_path = ''
+                                    else:
+                                        emby_path = ''
                                 
                             mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
                             file_sha1 = self._get_sha1_by_pickcode(file_pc)
