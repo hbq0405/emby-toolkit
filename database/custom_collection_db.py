@@ -147,10 +147,11 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional
     支持通过 TMDb ID 或 标题 定位并修正媒体项。
     包含完整的元数据获取和状态更新逻辑。
     """
-    conn = None
     try:
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
+        # ★★★ 核心修复：正确使用 with 语句获取数据库连接 ★★★
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 显式关闭自动提交，开启事务 (FOR UPDATE 需要在事务中运行)
             conn.autocommit = False
 
             # === Part 1: 锁定并读取记录 ===
@@ -171,10 +172,8 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional
                     break
                 
                 # 2. 如果 ID 没匹配上（或没提供），尝试 标题 匹配
-                # 注意：未识别项目的 tmdb_id 通常为 None 或 "None"
                 current_id = str(item.get('tmdb_id')) if item.get('tmdb_id') else 'None'
                 if not old_tmdb_id and old_title:
-                    # 只有当当前项没有有效ID，且标题匹配时才算数
                     if current_id.lower() == 'none' and item.get('title') == old_title:
                         target_item = item
                         break
@@ -183,7 +182,6 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional
                 logger.warning(f"  ➜ 修正失败：在合集 {collection_id} 中未找到 ID={old_tmdb_id} 或 Title={old_title} 的项目。")
                 return None
 
-            # 获取旧的媒体类型，用于后续逻辑
             item_type = target_item.get('media_type', 'Movie')
 
             # === Part 3: 更新内存中的项目数据 ===
@@ -196,17 +194,13 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional
             # === Part 4: 更新修正规则 (Corrections) ===
             corrections = definition.get('corrections', {})
             
-            # 构造修正后的值
             correction_value = {"tmdb_id": str(new_tmdb_id)}
             if season_number is not None: 
                 correction_value['season'] = int(season_number)
             
-            # 构造修正规则的 Key
             if old_tmdb_id:
-                # 传统方式：Key 是旧 ID
                 correction_key = str(old_tmdb_id)
             else:
-                # 新方式：Key 是 "title:原始标题"
                 correction_key = f"title:{old_title}"
             
             corrections[correction_key] = correction_value
@@ -219,29 +213,22 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional
             )
             
             # === Part 6: 状态继承与新媒体入库 (核心逻辑) ===
-            
-            # 6.1 如果有旧 ID，且旧 ID 不等于新 ID，将旧 ID 设为忽略
             if old_tmdb_id and old_tmdb_id != new_tmdb_id:
                  request_db.set_media_status_ignored(tmdb_ids=[old_tmdb_id], item_type=item_type, ignore_reason=f"修正为 {new_tmdb_id}")
 
-            # 6.2 准备 API Key 和 来源信息
             api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
             subscription_source = {"type": "collection_correction", "id": collection_id, "name": definition.get('name', '')}
             
             corrected_item_for_return = {}
 
-            # 6.3 处理新 ID 的入库和状态更新
             # --- 【分支 A：修正为某一季】 ---
             if season_number is not None:
-                # A1. 获取父剧详情
                 parent_details = tmdb.get_tv_details(int(new_tmdb_id), api_key)
                 if not parent_details: raise ValueError(f"无法获取父剧 {new_tmdb_id} 详情")
                 
-                # A2. 获取季详情
                 season_details = tmdb.get_tv_season_details(int(new_tmdb_id), season_number, api_key)
                 if not season_details: raise ValueError(f"无法获取季 {season_number} 详情")
 
-                # A3. 构造元数据对象
                 parent_media_info = {
                     'tmdb_id': new_tmdb_id, 
                     'item_type': 'Series', 
@@ -262,10 +249,8 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional
                     'release_date': season_details.get("air_date", '')
                 }
                 
-                # A4. 确保记录存在
                 media_db.ensure_media_record_exists([parent_media_info, season_media_info])
 
-                # A5. 更新订阅状态
                 release_date = season_details.get("air_date", '')
                 final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
                 
@@ -293,11 +278,9 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional
 
             # --- 【分支 B：电影或整剧修正】 ---
             else:
-                # B1. 获取详情
                 details = tmdb.get_tv_details(int(new_tmdb_id), api_key) if item_type == 'Series' else tmdb.get_movie_details(int(new_tmdb_id), api_key)
                 if not details: raise ValueError(f"无法获取 {new_tmdb_id} 详情")
                 
-                # B2. 构造元数据
                 media_info = {
                     'tmdb_id': new_tmdb_id, 
                     'item_type': item_type, 
@@ -306,10 +289,8 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional
                     'release_date': details.get("release_date") or details.get("first_air_date", '')
                 }
                 
-                # B3. 确保记录存在
                 media_db.ensure_media_record_exists([media_info])
                 
-                # B4. 更新订阅状态
                 release_date = media_info['release_date']
                 final_subscription_status = 'PENDING_RELEASE' if release_date and release_date > datetime.now().strftime('%Y-%m-%d') else 'WANTED'
                 
@@ -334,16 +315,15 @@ def apply_and_persist_media_correction(collection_id: int, old_tmdb_id: Optional
                     "media_type": item_type
                 }
 
+            # 提交事务
             conn.commit()
             logger.info(f"  ➜ 成功为合集 {collection_id} 应用修正：Key='{correction_key}' -> {new_tmdb_id} (季: {season_number})")
             return corrected_item_for_return
 
     except Exception as e:
-        logger.error(f"  ➜ 应用媒体修正时发生严重错误，事务已回滚: {e}", exc_info=True)
-        if conn: conn.rollback()
+        # ★★★ 核心修复：移除手动 rollback 和 close，交由 with 块自动处理 ★★★
+        logger.error(f"  ➜ 应用媒体修正时发生严重错误，事务已自动回滚: {e}", exc_info=True)
         raise
-    finally:
-        if conn: conn.close()
 
 # ======================================================================
 # 模块: 筛选器
