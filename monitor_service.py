@@ -433,7 +433,7 @@ class MonitorService:
 
             if started_paths:
                 self.observer.start()
-                logger.info(f"  ➜ 实时监控服务已启动，正在监听 {len(started_paths)} 个目录: {started_paths}")
+                logger.info(f"  ➜ [实时监控] 服务已启动，正在监听 {len(started_paths)} 个目录: {started_paths}")
             else:
                 logger.warning("  ➜ 没有有效的监控目录，实时监控服务未启动。")
 
