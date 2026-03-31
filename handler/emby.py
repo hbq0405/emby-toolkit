@@ -1293,7 +1293,7 @@ def get_collections_containing_item(item_id: str, base_url: str, api_key: str, u
         response.raise_for_status()
         return response.json().get("Items", [])
     except Exception as e:
-        logger.error(f"反查项目 {item_id} 所属合集失败: {e}")
+        logger.error(f"  ➜ 反查项目 {item_id} 所属合集失败: {e}")
         return []
 
 # ✨✨✨ 获取 Emby 服务器信息 (如 Server ID) ✨✨✨
@@ -1304,7 +1304,7 @@ def get_emby_server_info(base_url: str, api_key: str, **kwargs) -> Optional[Dict
     api_url = f"{base_url.rstrip('/')}/System/Info"
     params = {"api_key": api_key}
     
-    logger.debug("正在获取 Emby 服务器信息...")
+    logger.debug("  ➜ 正在获取 Emby 服务器信息...")
     try:
         # 修改点：将 kwargs 传递给 emby_client.get
         # 这样就可以支持 timeout=5 这种参数了
@@ -1314,7 +1314,7 @@ def get_emby_server_info(base_url: str, api_key: str, **kwargs) -> Optional[Dict
         return data
     except Exception as e:
         # 修改日志级别为 warning，因为在离线启动时这是预期内的错误
-        logger.warning(f"获取 Emby 服务器信息失败 (可能是服务器离线): {e}")
+        logger.warning(f"  ➜ 获取 Emby 服务器信息失败 (可能是服务器离线): {e}")
         return None
 
 # --- 根据名称查找一个特定的电影合集 ---
@@ -1328,7 +1328,7 @@ def get_collection_by_name(name: str, base_url: str, api_key: str, user_id: str)
             logger.debug(f"  ➜ 根据名称 '{name}' 找到了已存在的合集 (ID: {collection.get('Id')})。")
             return collection
     
-    logger.trace(f"未找到名为 '{name}' 的合集。")
+    logger.trace(f"  ➜ 未找到名为 '{name}' 的合集。")
     return None
 
 # --- 获取合集成员列表 ---
@@ -1341,7 +1341,7 @@ def get_collection_members(collection_id: str, base_url: str, api_key: str, user
         items = response.json().get("Items", [])
         return [item['Id'] for item in items]
     except Exception as e:
-        logger.error(f"获取合集 {collection_id} 成员时失败: {e}")
+        logger.error(f"  ➜ 获取合集 {collection_id} 成员时失败: {e}")
         return None
 
 # --- 向合集添加成员 ---
@@ -1381,7 +1381,7 @@ def empty_collection_in_emby(collection_id: str, base_url: str, api_key: str, us
         return False
         
     if not member_ids:
-        logger.info("  - 合集本身已为空，无需清空。")
+        logger.info("  ➜ 合集本身已为空，无需清空。")
         return True
 
     logger.trace(f"  ➜ 正在从合集 {collection_id} 中移除 {len(member_ids)} 个成员...")
@@ -1432,7 +1432,7 @@ def delete_collection_by_name(collection_name: str, base_url: str, api_key: str,
             return True
         
     except Exception as e:
-        logger.error(f"删除合集 '{collection_name}' 失败: {e}")
+        logger.error(f"  ➜ 删除合集 '{collection_name}' 失败: {e}")
         return False
 
 # --- 创建或更新合集 ---
@@ -1514,10 +1514,10 @@ def create_or_update_collection_with_emby_ids(
                     final_emby_ids.extend(found_ids) # 使用 extend 批量添加
                 else:
                     if not allow_empty:
-                        logger.warning(f"无法获取占位素材，且不允许创建空合集，跳过处理 '{collection_name}'。")
+                        logger.warning(f"  ➜ 无法获取占位素材，且不允许创建空合集，跳过处理 '{collection_name}'。")
                         return None
                     else:
-                        logger.warning(f"无法获取占位素材，合集 '{collection_name}' 将保持真正的空状态。")
+                        logger.warning(f"  ➜ 无法获取占位素材，合集 '{collection_name}' 将保持真正的空状态。")
 
             except Exception as e:
                 logger.error(f"  ➜ 获取随机素材失败: {e}")
@@ -1568,7 +1568,7 @@ def create_or_update_collection_with_emby_ids(
             # 如果经过抓取后还是空的，且不允许为空，则放弃
             if not final_emby_ids:
                 if not allow_empty:
-                    logger.warning(f"合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
+                    logger.warning(f"  ➜ 合集 '{collection_name}' 在媒体库中没有任何匹配项，跳过创建。")
                     return None
                 # 如果 allow_empty=True 但没抓到壮丁，尝试创建空合集（Emby可能会报错，但值得一试）
 
@@ -1584,7 +1584,7 @@ def create_or_update_collection_with_emby_ids(
             return emby_collection_id
 
     except Exception as e:
-        logger.error(f"处理Emby合集 '{collection_name}' 时发生未知错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 处理Emby合集 '{collection_name}' 时发生未知错误: {e}", exc_info=True)
         return None
 
 # --- 根据ID列表批量获取Emby项目 ---    
@@ -1640,7 +1640,7 @@ def get_emby_items_by_id(
             
         except requests.exceptions.RequestException as e:
             # 记录当前批次的错误，但继续处理下一批
-            logger.error(f"根据ID列表批量获取Emby项目时，处理批次 {i+1} 失败: {e}")
+            logger.error(f"  ➜ 根据ID列表批量获取Emby项目时，处理批次 {i+1} 失败: {e}")
             continue
 
     logger.trace(f"  ➜ 所有批次请求完成，共获取到 {len(all_items)} 个媒体项。")
@@ -1648,7 +1648,7 @@ def get_emby_items_by_id(
 
 # --- 向合集追加单个成员 ---    
 def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: str, api_key: str, user_id: str) -> bool:
-    logger.trace(f"准备将项目 {item_emby_id} 追加到合集 {collection_id}...")
+    logger.trace(f"  ➜ 准备将项目 {item_emby_id} 追加到合集 {collection_id}...")
     
     api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
     
@@ -1661,17 +1661,17 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
         response = emby_client.post(api_url, params=params)
         response.raise_for_status()
         
-        logger.trace(f"成功发送追加请求：将项目 {item_emby_id} 添加到合集 {collection_id}。")
+        logger.trace(f"  ➜ 成功发送追加请求：将项目 {item_emby_id} 添加到合集 {collection_id}。")
         return True
         
     except requests.RequestException as e:
         if e.response is not None:
-            logger.error(f"向合集 {collection_id} 追加项目 {item_emby_id} 时失败: HTTP {e.response.status_code} - {e.response.text[:200]}")
+            logger.error(f"  ➜ 向合集 {collection_id} 追加项目 {item_emby_id} 时失败: HTTP {e.response.status_code} - {e.response.text[:200]}")
         else:
-            logger.error(f"向合集 {collection_id} 追加项目 {item_emby_id} 时发生网络错误: {e}")
+            logger.error(f"  ➜ 向合集 {collection_id} 追加项目 {item_emby_id} 时发生网络错误: {e}")
         return False
     except Exception as e:
-        logger.error(f"向合集 {collection_id} 追加项目时发生未知错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 向合集 {collection_id} 追加项目时发生未知错误: {e}", exc_info=True)
         return False
 
 # --- 获取所有媒体库及其源文件夹路径 ---    
@@ -1708,7 +1708,7 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
         return libraries_with_paths
 
     except Exception as e:
-        logger.error(f"实时获取媒体库路径时发生错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 实时获取媒体库路径时发生错误: {e}", exc_info=True)
         return []
 
 # --- 定位媒体库 ---
@@ -1717,12 +1717,12 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
     try:
         all_libraries_data = get_all_libraries_with_paths(base_url, api_key)
         if not all_libraries_data:
-            logger.error("无法获取任何媒体库的路径信息，定位失败。")
+            logger.error(f"  ➜ 无法获取任何媒体库的路径信息，定位失败。")
             return None
 
         item_details = get_emby_item_details(item_id, base_url, api_key, user_id, fields="Path")
         if not item_details or not item_details.get("Path"):
-            logger.error(f"无法获取项目 {item_id} 的文件路径，定位失败。")
+            logger.error(f"  ➜ 无法获取项目 {item_id} 的文件路径，定位失败。")
             return None
         item_path = item_details["Path"]
 
@@ -1740,7 +1740,7 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
             logger.trace(f"  ➜ 匹配到媒体库 '{best_match_library.get('Name')}'。")
             return best_match_library
         else:
-            logger.error(f"项目路径 '{item_path}' 未能匹配任何媒体库的源文件夹。")
+            logger.error(f"  ➜ 项目路径 '{item_path}' 未能匹配任何媒体库的源文件夹。")
             return None
 
     except Exception as e:
@@ -1793,7 +1793,7 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
         return True
 
     except Exception as e:
-        logger.error(f"更新项目详情失败 (ID: {item_id}): {e}")
+        logger.error(f"  ➜ 更新项目详情失败 (ID: {item_id}): {e}")
         return False
 
 # --- 删除媒体项神医接口 (带自动回退) ---    
@@ -2643,7 +2643,7 @@ def trigger_media_info_refresh(item_id: str, base_url: str, api_key: str, user_i
         response = emby_client.post(url, params=params, json={})
         
         if response.status_code == 200:
-            logger.info(f"  💉 已对 ID:{item_id} 触发媒体信息提取请求。")
+            logger.info(f"  ➜ 已对 ID:{item_id} 触发媒体信息提取请求。")
             return True
         else:
             logger.warning(f"  ➜ 触发失败 ID:{item_id}, HTTP {response.status_code}: {response.text}")

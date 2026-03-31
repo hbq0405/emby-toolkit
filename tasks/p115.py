@@ -987,7 +987,7 @@ def task_sync_music_library(processor=None):
                             valid_local_files.add(os.path.abspath(strm_path))
                             
                             if (files_generated + files_skipped) % 200 == 0:
-                                logger.info(f"  🎵 进度: 新增/更新 {files_generated} 首, 跳过 {files_skipped} 首...")
+                                logger.info(f"  ➜ 进度: 新增/更新 {files_generated} 首, 跳过 {files_skipped} 首...")
                             
                             sha1 = item.get('sha1') or item.get('sha')
                             file_size = _parse_115_size(item.get('fs') or item.get('size'))

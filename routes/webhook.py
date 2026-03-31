@@ -1164,7 +1164,7 @@ def emby_webhook():
     # ★★★ 处理音乐 (Audio) 入库事件 ★★★
     # ======================================================================
     if event_type in ["item.add", "library.new"] and original_item_type == "Audio":
-        logger.info(f"  🎵 [音乐入库] 检测到音频文件 '{original_item_name}'，直接触发神医提取媒体信息...")
+        logger.info(f"  ➜ [音乐入库] 检测到音频文件 '{original_item_name}'，直接触发神医提取媒体信息...")
         processor = extensions.media_processor_instance
         
         def _trigger_audio_info():

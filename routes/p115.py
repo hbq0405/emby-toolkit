@@ -1084,7 +1084,7 @@ def upload_music_file():
             local_file_path = os.path.join(local_dir, file.filename)
             file.save(local_file_path) # Flask 原生方法直接保存文件
             
-            logger.info(f"  🖼️ [本地直存] 附属文件已直接保存到本地 STRM 目录: {local_file_path}")
+            logger.info(f"  ➜ [本地直存] 附属文件已直接保存到本地 STRM 目录: {local_file_path}")
             return jsonify({"success": True, "message": f"{file.filename} 已直接保存到本地"})
 
         # ==========================================
