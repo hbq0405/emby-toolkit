@@ -2,6 +2,17 @@
 from gevent import monkey
 monkey.patch_all()
 import logging
+#过滤底层日志
+logging.getLogger("requests").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
+logging.getLogger("openai").setLevel(logging.WARNING)
+logging.getLogger("docker").setLevel(logging.WARNING)
+logging.getLogger("PIL").setLevel(logging.WARNING)
+logging.getLogger("geventwebsocket").setLevel(logging.WARNING)
+logging.getLogger("urllib3").setLevel(logging.WARNING)
+logging.getLogger("watchdog").setLevel(logging.WARNING)
 logging.getLogger("telethon").setLevel(logging.WARNING)
 import os
 import sys
@@ -92,19 +103,7 @@ else:
     except Exception as e:
         logger.warning(f"无法保存 Session 密钥，重启后用户需重新登录: {e}")
 
-#过滤底层日志
-logging.getLogger("requests").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-logging.getLogger("httpx").setLevel(logging.WARNING)
-logging.getLogger("httpcore").setLevel(logging.WARNING)
-logging.getLogger("openai").setLevel(logging.WARNING)
-logging.getLogger("docker").setLevel(logging.WARNING)
-logging.getLogger("PIL").setLevel(logging.WARNING)
-logging.getLogger("geventwebsocket").setLevel(logging.WARNING)
-logging.getLogger("urllib3").setLevel(logging.WARNING)
-logging.getLogger("watchdog").setLevel(logging.WARNING)
 # --- 全局变量 ---
-
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
 JOB_ID_SYNC_PERSON_MAP = "scheduled_sync_person_map"
 JOB_ID_PROCESS_WATCHLIST = "scheduled_process_watchlist"
