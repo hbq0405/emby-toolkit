@@ -1,6 +1,8 @@
 # web_app.py
 from gevent import monkey
 monkey.patch_all()
+import logging
+logging.getLogger("telethon").setLevel(logging.WARNING)
 import os
 import sys
 import shutil
@@ -55,7 +57,6 @@ from routes.p115 import p115_bp
 from routes.hdhive import hdhive_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
-import logging
 from logger_setup import frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
 import config_manager
 from database import connection, settings_db
@@ -102,7 +103,6 @@ logging.getLogger("PIL").setLevel(logging.WARNING)
 logging.getLogger("geventwebsocket").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 logging.getLogger("watchdog").setLevel(logging.WARNING)
-logging.getLogger("telethon").setLevel(logging.WARNING)
 # --- 全局变量 ---
 
 JOB_ID_FULL_SCAN = "scheduled_full_scan"
