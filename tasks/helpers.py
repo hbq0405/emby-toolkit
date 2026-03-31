@@ -1647,7 +1647,12 @@ def translate_tmdb_metadata_recursively(
             # 回填结果
             for tmdb_id_str, trans_text in trans_results.items():
                 if trans_text and utils.contains_chinese(trans_text):
-                    pending_items[tmdb_id_str]["ref"]['overview'] = trans_text
+                    if tmdb_id_str in pending_items:
+                        pending_items[tmdb_id_str]["ref"]['overview'] = trans_text
+                    else:
+                        # 如果找不到这个ID，打印一个警告并跳过，防止程序崩溃
+                        import logging
+                        logging.getLogger(__name__).warning(f"AI翻译返回了未知的 TMDb ID: {tmdb_id_str}，已跳过该条目。")
                     translated_count += 1
             
             import time
