@@ -545,7 +545,7 @@ def main_app_start():
             try:
                 internal_proxy_port = 7758
                 external_port = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_PORT, 8097)
-                logger.info(f"  ➜ [302反代] 服务器已启动 (容器监听端口: {external_port})")
+                logger.info(f"  ➜ [302反代] 服务已启动 (容器监听端口: {external_port})")
                 proxy_server = WSGIServer(('0.0.0.0', internal_proxy_port), proxy_app, handler_class=WebSocketHandler)
                 proxy_server.serve_forever()
             except Exception as e:
@@ -556,7 +556,7 @@ def main_app_start():
     gevent.spawn(run_proxy_server)
 
     main_app_port = int(constants.WEB_APP_PORT)
-    logger.info(f"  ➜ [主应用] 服务器已启动 (容器监听端口: {main_app_port})")
+    logger.info(f"  ➜ [主应用] 服务已启动 (容器监听端口: {main_app_port})")
     
     class NullLogger:
         def write(self, data): pass

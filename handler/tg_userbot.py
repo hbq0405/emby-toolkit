@@ -141,7 +141,7 @@ class TGUserBotManager:
                     return # 退出当前 daemon，等待前端重新触发 start()
 
                 if is_auth:
-                    logger.info("  ➜ [频道监听] 服务器已启动，开始监听频道消息...")
+                    logger.info("  ➜ [频道监听] 服务已启动，开始监听频道消息...")
                     await self.client.run_until_disconnected()
                 else:
                     logger.info("  ➜ [频道监听] Telegram 客户端已连接，等待前端输入验证码授权...")
