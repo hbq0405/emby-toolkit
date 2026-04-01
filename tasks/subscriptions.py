@@ -94,8 +94,8 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
 
         # 规范化名称
         final_series_name = series_details.get('name', series_name)
-        # ★★★ 新增：获取剧集海报作为兜底 ★★★
         series_poster = series_details.get('poster_path')
+        series_backdrop = series_details.get('backdrop_path')
         
         # 2. 获取所有有效季 (Season > 0)
         seasons = series_details.get('seasons', [])
@@ -173,7 +173,8 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                     'season_number': s_num,
                     'parent_series_tmdb_id': str(tmdb_id),
                     'release_date': air_date_str,
-                    'poster_path': final_poster, # 使用处理后的海报
+                    'poster_path': final_poster,
+                    'backdrop_path': series_backdrop,
                     'overview': season.get('overview')
                 }
                 
@@ -264,6 +265,7 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                     'season_number': s_num,
                     'title': season.get('name'),
                     'poster_path': final_poster,
+                    'backdrop_path': series_backdrop,
                     'release_date': air_date_str
                 }
                 request_db.set_media_status_subscribed(
