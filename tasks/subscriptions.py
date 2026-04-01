@@ -907,10 +907,10 @@ def task_auto_subscribe(processor):
                             hd_exclude_iso = strategy_config.get('hdhive_exclude_iso', False)
                             
                             for i, r in enumerate(resources, 1):
-                                r_title = r.get('title', '未知标题')
-                                r_source = r.get('source', [])
-                                r_sub_lang = r.get('subtitle_language', [])
-                                r_remark = r.get('remark', '')
+                                r_title = r.get('title') or '未知标题'
+                                r_source = r.get('source') or []
+                                r_sub_lang = r.get('subtitle_language') or []
+                                r_remark = r.get('remark') or ''
                                 
                                 # 提前计算积分和体积，用于日志打印
                                 is_unlocked = r.get('is_unlocked', False)
