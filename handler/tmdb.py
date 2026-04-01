@@ -764,7 +764,7 @@ def discover_movie_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[s
     if not api_key:
         return None
     endpoint = "/discover/movie"
-    logger.debug(f"TMDb: 发现电影 (条件: {params})")
+    logger.debug(f"  ➜ TMDb: 发现电影 (条件: {params})")
     return _tmdb_request(endpoint, api_key, params, use_default_language=True)
 
 # --- 探索电视剧 ---
@@ -773,7 +773,7 @@ def discover_tv_tmdb(api_key: str, params: Dict[str, Any]) -> Optional[Dict[str,
     if not api_key:
         return None
     endpoint = "/discover/tv"
-    logger.debug(f"TMDb: 发现电视剧 (条件: {params})")
+    logger.debug(f"  ➜ TMDb: 发现电视剧 (条件: {params})")
     return _tmdb_request(endpoint, api_key, params, use_default_language=True)
 
 # --- 获取电影类型列表 ---

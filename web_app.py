@@ -276,7 +276,7 @@ def initialize_processors():
         )
         logger.trace("  ➜ 核心处理器 实例已创建/更新。")
     except Exception as e:
-        logger.error(f"创建 MediaProcessor 实例失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 创建 MediaProcessor 实例失败: {e}", exc_info=True)
         media_processor_instance_local = None
 
     # 初始化 watchlist_processor_instance_local
@@ -286,9 +286,9 @@ def initialize_processors():
             ai_translator=shared_ai_translator,
             douban_api=shared_douban_api
         )
-        logger.trace("WatchlistProcessor 实例已成功初始化。")
+        logger.trace("  ➜ WatchlistProcessor 实例已成功初始化。")
     except Exception as e:
-        logger.error(f"创建 WatchlistProcessor 实例失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 创建 WatchlistProcessor 实例失败: {e}", exc_info=True)
         watchlist_processor_instance_local = None
 
     # 初始化 actor_subscription_processor_instance_local
@@ -296,7 +296,7 @@ def initialize_processors():
         actor_subscription_processor_instance_local = ActorSubscriptionProcessor(config=current_config)
         logger.trace("ActorSubscriptionProcessor 实例已成功初始化。")
     except Exception as e:
-        logger.error(f"创建 ActorSubscriptionProcessor 实例失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 创建 ActorSubscriptionProcessor 实例失败: {e}", exc_info=True)
         actor_subscription_processor_instance_local = None
 
 
@@ -315,7 +315,7 @@ def ensure_nginx_config():
     final_config_path = '/etc/nginx/conf.d/default.conf'
     # 检查开关
     if not config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_PROXY_ENABLED):
-        logger.info("反向代理功能未启用，正在清理 Nginx 默认配置以释放端口...")
+        logger.info("  ➜ 反向代理功能未启用，正在清理 Nginx 默认配置以释放端口...")
         try:
             # 写入空文件，相当于禁用了 Nginx 的默认站点
             with open(final_config_path, 'w') as f:
@@ -324,7 +324,7 @@ def ensure_nginx_config():
         except Exception as e:
             logger.warning(f"清理 Nginx 默认配置失败: {e}")
             return
-    logger.info("正在生成 Nginx 配置文件...")
+    logger.info("  ➜ 正在生成 Nginx 配置文件...")
     
     template_dir = os.path.join(os.getcwd(), 'templates', 'nginx')
     template_filename = 'emby_proxy.conf.template'
@@ -344,7 +344,7 @@ def ensure_nginx_config():
         proxy_upstream = "127.0.0.1:7758" 
 
         if not emby_upstream:
-            logger.error("config.ini 中未配置 Emby 服务器地址，无法生成 Nginx 配置！")
+            logger.error("  ➜ config.ini 中未配置 Emby 服务器地址，无法生成 Nginx 配置！")
             sys.exit(1) # 严重错误，直接退出
 
         # 4. 填充模板
@@ -360,10 +360,10 @@ def ensure_nginx_config():
         with open(final_config_path, 'w', encoding='utf-8') as f:
             f.write(final_config_content)
         
-        logger.info(f"➜ Nginx 配置文件已成功生成于: {final_config_path}")
+        logger.info(f"  ➜ Nginx 配置文件已成功生成于: {final_config_path}")
 
     except Exception as e:
-        logger.error(f"生成 Nginx 配置文件时发生严重错误: {e}", exc_info=True)
+        logger.error(f"  ➜ 生成 Nginx 配置文件时发生严重错误: {e}", exc_info=True)
         sys.exit(1) # 严重错误，直接退出
 
 # --- 检查字体文件 ---
@@ -384,7 +384,7 @@ def ensure_cover_generator_fonts():
 
     if not os.path.exists(cover_fonts_dir):
         os.makedirs(cover_fonts_dir, exist_ok=True)
-        logger.trace(f"已创建字体目录：{cover_fonts_dir}")
+        logger.trace(f"  ➜ 已创建字体目录：{cover_fonts_dir}")
 
     for font_name in required_fonts:
         dest_path = os.path.join(cover_fonts_dir, font_name)
@@ -393,21 +393,21 @@ def ensure_cover_generator_fonts():
             if os.path.isfile(src_path):
                 try:
                     shutil.copy2(src_path, dest_path)
-                    logger.trace(f"已拷贝缺失字体文件 {font_name} 到 {cover_fonts_dir}")
+                    logger.trace(f"  ➜ 已拷贝缺失字体文件 {font_name} 到 {cover_fonts_dir}")
                 except Exception as e:
-                    logger.error(f"拷贝字体文件 {font_name} 失败: {e}", exc_info=True)
+                    logger.error(f"  ➜ 拷贝字体文件 {font_name} 失败: {e}", exc_info=True)
             else:
-                logger.warning(f"项目根目录缺少字体文件 {font_name}，无法拷贝至 {cover_fonts_dir}")
+                logger.warning(f"  ➜ 项目根目录缺少字体文件 {font_name}，无法拷贝至 {cover_fonts_dir}")
 
 # --- 应用退出处理 ---
 def application_exit_handler():
     # global media_processor_instance, scheduler, task_worker_thread # 不再需要 scheduler
     global media_processor_instance, task_worker_thread, monitor_service_instance # 修正后的
-    logger.info("应用程序正在退出 (atexit)，执行清理操作...")
+    logger.info("  ➜ 应用程序正在退出 (atexit)，执行清理操作...")
 
     # 1. 立刻通知当前正在运行的任务停止
     if extensions.media_processor_instance: # 从 extensions 获取
-        logger.info("正在发送停止信号给当前任务...")
+        logger.info("  ➜ 正在发送停止信号给当前任务...")
         extensions.media_processor_instance.signal_stop()
 
     task_manager.clear_task_queue()
@@ -423,7 +423,7 @@ def application_exit_handler():
     
     scheduler_manager.shutdown()
     
-    logger.info("atexit 清理操作执行完毕。")
+    logger.info("  ➜ atexit 清理操作执行完毕。")
 atexit.register(application_exit_handler)
 
 # --- 反代监控 ---
@@ -497,7 +497,7 @@ def main_app_start():
     try:
         LifeEventMonitorDaemon.start_or_update()
     except Exception as e:
-        logger.error(f"启动 115 生活事件守护进程失败: {e}")
+        logger.error(f"  ➜ 启动 115 生活事件守护进程失败: {e}")
 
     # 启动实时监控服务
     try:
@@ -505,7 +505,7 @@ def main_app_start():
             monitor_service_instance = MonitorService(config_manager.APP_CONFIG, extensions.media_processor_instance)
             monitor_service_instance.start()
     except Exception as e:
-        logger.error(f"启动实时监控服务失败: {e}", exc_info=True)
+        logger.error(f"  ➜ 启动实时监控服务失败: {e}", exc_info=True)
 
     # 启动 Telegram 机器人交互监听
     if config_manager.APP_CONFIG.get('is_pro_active', False):
@@ -518,7 +518,7 @@ def main_app_start():
 
     def warmup_vector_cache():
         try:
-            logger.debug("  🔥 正在后台预加载向量数据...")
+            logger.debug("  ➜ 正在后台预加载向量数据...")
             # 只需要实例化一个引擎并调用 _get_vector_data 即可触发加载
             # 注意：这里不需要 api_key，因为只读库
             engine = RecommendationEngine(tmdb_api_key="dummy")
@@ -548,7 +548,7 @@ def main_app_start():
                 proxy_server = WSGIServer(('0.0.0.0', internal_proxy_port), proxy_app, handler_class=WebSocketHandler)
                 proxy_server.serve_forever()
             except Exception as e:
-                logger.error(f"启动虚拟库服务失败: {e}", exc_info=True)
+                logger.error(f"  ➜ 启动虚拟库服务失败: {e}", exc_info=True)
         else:
             logger.info("虚拟库未在配置中启用。")
 
