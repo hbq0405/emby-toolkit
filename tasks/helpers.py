@@ -975,6 +975,7 @@ def process_subscription_items_and_update_db(
                     'original_title': parent_details.get('original_name'),
                     'release_date': parent_details.get('first_air_date'),
                     'poster_path': parent_details.get('poster_path'),
+                    'backdrop_path': parent_details.get('backdrop_path'),
                     'overview': parent_details.get('overview')
                 }
 
