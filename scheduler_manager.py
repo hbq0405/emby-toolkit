@@ -26,6 +26,36 @@ LOW_FREQ_CHAIN_JOB_ID = 'low_freq_task_chain_job'
 DAILY_THEME_JOB_ID = 'daily_theme_job'
 
 
+def _fix_apscheduler_cron_dow(cron_expression: str) -> str:
+    """
+    【修复 APScheduler 星期映射的经典坑】
+    标准 CRON: 0=周日, 1=周一, ..., 6=周六
+    APScheduler: 0=周一, 1=周二, ..., 6=周日
+    解决方案：将标准CRON的数字强制转为英文缩写，消除底层的歧义。
+    """
+    try:
+        parts = cron_expression.strip().split()
+        if len(parts) != 5:
+            return cron_expression
+        
+        dow = parts[4]
+        if dow != '*':
+            # 映射表：将数字安全地替换为明确的英文缩写
+            mapping = {
+                '7': 'sun', '6': 'sat', '5': 'fri', '4': 'thu',
+                '3': 'wed', '2': 'tue', '1': 'mon', '0': 'sun'
+            }
+            # 使用正则 \b 匹配独立数字，避免错误替换
+            for num, name in mapping.items():
+                dow = re.sub(rf'\b{num}\b', name, dow)
+            parts[4] = dow
+            
+        return " ".join(parts)
+    except Exception as e:
+        logger.warning(f"  ➜ 尝试修复 CRON 星期映射时出错: {e}，将使用原表达式。")
+        return cron_expression
+
+
 # --- 友好的CRON日志翻译函数 (保持不变) ---
 def _get_next_run_time_str(cron_expression: str) -> str:
     """
@@ -73,16 +103,6 @@ def _get_next_run_time_str(cron_expression: str) -> str:
             if part == '*': return ""
 
             # 核心改进：处理范围和步长
-            match = re.match(r'(\d+)-(\d+)/(\d+)', part)
-            if match:
-                start, end, step = match.groups()
-                if unit == '点':
-                    start_ch = _format_hour_to_chinese_time(start)
-                    end_ch = _format_hour_to_chinese_time(end)
-                    step_ch = _number_to_chinese(step)
-                    return f"从{start_ch}至{end_ch}，每隔{step_ch}小时"
-                return f"从{start}{unit}到{end}{unit}，每隔{step}{unit}"
-
             match = re.match(r'(\d+)-(\d+)/(\d+)', part)
             if match:
                 start, end, step = match.groups()
@@ -240,6 +260,10 @@ class SchedulerManager:
         task_sequence = config.get(sequence_key, [])
 
         if is_enabled and cron_str and task_sequence:
+
+            # 修复 APScheduler 星期映射 Bug
+            fixed_cron_str = _fix_apscheduler_cron_dow(cron_str)
+            
             registry = get_task_registry()
             task_info = registry.get(task_key)
             if not task_info:
@@ -260,13 +284,13 @@ class SchedulerManager:
             try:
                 self.scheduler.add_job(
                     func=scheduled_chain_task_wrapper,
-                    trigger=CronTrigger.from_crontab(cron_str, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                    trigger=CronTrigger.from_crontab(fixed_cron_str, timezone=str(pytz.timezone(constants.TIMEZONE))),
                     id=job_id,
                     name=job_name,
                     replace_existing=True
                 )
                 
-                friendly_cron_str = _get_next_run_time_str(cron_str)
+                friendly_cron_str = _get_next_run_time_str(fixed_cron_str)
                 chain_max_runtime_minutes = config.get(runtime_key) or 0
                 
                 log_message = (

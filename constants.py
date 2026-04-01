@@ -40,6 +40,7 @@ CONFIG_OPTION_MONITOR_EXCLUDE_DIRS = "monitor_exclude_dirs"
 DEFAULT_MONITOR_EXCLUDE_DIRS = [] # 默认排除路径列表
 CONFIG_OPTION_MONITOR_EXCLUDE_REFRESH_DELAY = "monitor_exclude_refresh_delay"
 DEFAULT_MONITOR_EXCLUDE_REFRESH_DELAY = 0 # 默认不延迟
+CONFIG_OPTION_MONITOR_SHA1_PC_SEARCH = "monitor_sha1_pc_search" 
 
 # ==============================================================================
 # ✨ 115 网盘配置 (115 Cloud Drive) 

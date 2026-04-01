@@ -196,6 +196,9 @@ def process_mediainfo_queue():
 
 def _handle_mediainfo_update_task(file_paths: List[str]):
     """处理 -mediainfo.json 的更新，提取 SHA1 并覆盖备份到数据库"""
+    if not config_manager.APP_CONFIG.get("monitor_sha1_pc_search", True):
+        return
+        
     # 复用现有的稳定性检测，确保神医插件已经把文件写完了
     valid_files = _wait_for_files_stability(file_paths)
     if not valid_files: return
