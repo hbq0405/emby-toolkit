@@ -1388,15 +1388,16 @@ class MediaProcessor:
                 for season in seasons_details:
                     if not isinstance(season, dict): continue
                     
-                    # ★★★ 核心修复：严防死守 ID=0 ★★★
-                    s_tmdb_id = season.get('id')
-                    if not s_tmdb_id or str(s_tmdb_id) in ['0', 'None', '']:
-                        continue
-
                     s_num = season.get('season_number')
                     if s_num is None: continue 
                     try: s_num_int = int(s_num)
                     except ValueError: continue
+
+                    # 允许缺失 TMDb ID 的季使用内部兜底 ID 入库 
+                    s_tmdb_id = season.get('id')
+                    if not s_tmdb_id or str(s_tmdb_id) in ['0', 'None', '']:
+                        s_tmdb_id = f"{series_details.get('id')}-S{s_num_int}"
+                        logger.debug(f"  ➜ [入库] 季 S{s_num_int} 缺失 TMDb ID，使用内部兜底 ID: {s_tmdb_id}")
 
                     season_poster = season.get('poster_path') or series_details.get('poster_path')
                     matched_emby_seasons = seasons_grouped_by_number.get(s_num_int, [])
@@ -1438,24 +1439,20 @@ class MediaProcessor:
                         except: pass
 
                 for episode in episodes_details:
-                    # ★★★ 核心修复：严防死守，只认 TMDb 数字 ID ★★★
-                    e_tmdb_id = episode.get('id')
-                    
-                    # 1. 必须有 ID
-                    if not e_tmdb_id: 
-                        continue
-                    
-                    # 2. ID 必须是数字字符串，且不能是 '0'
-                    e_tmdb_id_str = str(e_tmdb_id)
-                    if e_tmdb_id_str in ['0', 'None', ''] or not e_tmdb_id_str.isdigit():
-                        continue
-
-                    # 3. 必须有季号和集号
+                    # 1. 必须有季号和集号 (提前解析，用于生成内部ID)
                     if episode.get('episode_number') is None: continue
                     try:
                         s_num = int(episode.get('season_number'))
                         e_num = int(episode.get('episode_number'))
                     except (ValueError, TypeError): continue
+
+                    # 允许缺失 TMDb ID 的分集使用内部兜底 ID 入库
+                    e_tmdb_id = episode.get('id')
+                    e_tmdb_id_str = str(e_tmdb_id) if e_tmdb_id else ""
+                    
+                    if e_tmdb_id_str in ['0', 'None', ''] or not e_tmdb_id_str.isdigit():
+                        e_tmdb_id_str = f"{series_details.get('id')}-S{s_num}E{e_num}"
+                        logger.debug(f"  ➜ [入库] 分集 S{s_num}E{e_num} 缺失 TMDb ID，使用内部兜底 ID: {e_tmdb_id_str}")
 
                     versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
 
@@ -1571,10 +1568,21 @@ class MediaProcessor:
             ]
             data_for_batch = []
             for record in records_to_upsert:
-                # 再次检查 ID，防止漏网之鱼 (使用严格校验)
+                # 再次检查 ID，防止漏网之鱼
                 rec_id = record.get('tmdb_id')
-                if not is_valid_tmdb_id(rec_id):
-                    logger.warning(f"  ➜ [入库拦截] 发现无效的 TMDb ID: '{rec_id}'，已丢弃该条记录。")
+                rec_type = record.get('item_type')
+                
+                # 放宽对 Season 和 Episode 的校验，允许内部兜底 ID (包含 '-') 入库 ★★★
+                is_valid = False
+                if rec_type in ['Movie', 'Series']:
+                    is_valid = is_valid_tmdb_id(rec_id) # 顶层项目必须是纯数字的真实 TMDb ID
+                elif rec_type in ['Season', 'Episode']:
+                    # 子项目允许是纯数字，也允许是带 '-' 的内部兜底 ID
+                    if rec_id and (is_valid_tmdb_id(rec_id) or '-' in str(rec_id)):
+                        is_valid = True
+
+                if not is_valid:
+                    logger.warning(f"  ➜ [入库拦截] 发现无效的 TMDb ID: '{rec_id}' (类型: {rec_type})，已丢弃该条记录。")
                     continue
 
                 db_row_complete = {col: record.get(col) for col in all_possible_columns}
