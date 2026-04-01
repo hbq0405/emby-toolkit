@@ -362,8 +362,8 @@ def set_media_status_none(
                     # 模式 A: UPSERT (用于创建占位符或更新)
                     # 必须包含 title 等必填字段，由调用方保证 media_info_list 的完整性
                     sql = """
-                        INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, title, original_title, release_date, release_year, poster_path, season_number, parent_series_tmdb_id, overview)
-                        VALUES (%(tmdb_id)s, %(item_type)s, 'NONE', '[]'::jsonb, %(title)s, %(original_title)s, %(release_date)s, %(release_year)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
+                        INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, title, original_title, release_date, release_year, poster_path, backdrop_path, season_number, parent_series_tmdb_id, overview)
+                        VALUES (%(tmdb_id)s, %(item_type)s, 'NONE', '[]'::jsonb, %(title)s, %(original_title)s, %(release_date)s, %(release_year)s, %(poster_path)s, %(backdrop_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                             subscription_status = 'NONE',
                             overview = COALESCE(EXCLUDED.overview, media_metadata.overview),
@@ -374,6 +374,7 @@ def set_media_status_none(
                             -- 可选：更新元数据
                             title = COALESCE(EXCLUDED.title, media_metadata.title),
                             poster_path = COALESCE(EXCLUDED.poster_path, media_metadata.poster_path),
+                            backdrop_path = COALESCE(EXCLUDED.backdrop_path, media_metadata.backdrop_path),
                             parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
                     """
                     execute_batch(cursor, sql, data_to_upsert)
