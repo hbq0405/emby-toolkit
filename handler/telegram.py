@@ -323,6 +323,8 @@ def send_transfer_success_notification(task: dict):
         # 尝试获取 TMDB 图片和评分
         photo_url = None
         rating = ""
+        overview_text = "" # ★★★ 新增：初始化简介文本变量
+        
         if tmdb_id:
             tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
             try:
@@ -332,18 +334,26 @@ def send_transfer_success_notification(task: dict):
                     details = get_tv_details(int(tmdb_id), tmdb_api_key)
                     
                 if details:
-                    if details.get('poster_path'):
-                        photo_url = f"https://image.tmdb.org/t/p/w500{details['poster_path']}"
-                    elif details.get('backdrop_path'):
+                    if details.get('backdrop_path'):
                         photo_url = f"https://image.tmdb.org/t/p/w780{details['backdrop_path']}"
+                    elif details.get('poster_path'):
+                        photo_url = f"https://image.tmdb.org/t/p/w500{details['poster_path']}"
                         
                     vote_average = details.get('vote_average')
                     if vote_average:
                         rating = f"✨ *评分*: `{vote_average:.1f}/10`\n"
+                        
+                    # ★★★ 新增：提取剧情简介并限制字数 ★★★
+                    raw_overview = details.get('overview', '')
+                    if raw_overview:
+                        # 限制最多显示 200 个字符，超出的用省略号代替
+                        if len(raw_overview) > 200:
+                            raw_overview = raw_overview[:200] + "..."
+                        overview_text = f"📝 *剧情*: {escape_markdown(raw_overview)}\n"
             except Exception:
                 pass
 
-        # 组装类似截图的卡片文本
+        # 组装卡片文本
         caption = (
             f"📥 *转存成功*\n"
             f"*{escaped_title}*\n\n"
@@ -352,6 +362,7 @@ def send_transfer_success_notification(task: dict):
             f"🎭 *类别*: {type_str}\n"
             f"{rating}"
             f"🔗 *来源*: [查看详情]({target_link})"
+            f"{overview_text}" 
         )
 
         global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
