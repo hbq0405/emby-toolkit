@@ -22,15 +22,15 @@ class HDHiveClient:
         if isinstance(e, requests.exceptions.HTTPError):
             status = e.response.status_code
             if status == 401:
-                logger.error(f"➜ 影巢 {context} 失败: API Key 无效或未关联用户 (401)！请检查 Key 是否正确。")
+                logger.error(f"  ➜ 影巢 {context} 失败: API Key 无效或未关联用户 (401)！请检查 Key 是否正确。")
             elif status == 403:
-                logger.error(f"➜ 影巢 {context} 失败: 权限不足 (403)！该接口可能需要 Premium 会员。")
+                logger.error(f"  ➜ 影巢 {context} 失败: 权限不足 (403)！该接口可能需要 Premium 会员。")
             elif status == 404:
-                logger.error(f"➜ 影巢 {context} 失败: 找不到资源 (404)。")
+                logger.error(f"  ➜ 影巢 {context} 失败: 找不到资源 (404)。")
             else:
-                logger.error(f"➜ 影巢 {context} 失败: HTTP {status} 错误。")
+                logger.error(f"  ➜ 影巢 {context} 失败: HTTP {status} 错误。")
         else:
-            logger.error(f"➜ 影巢 {context} 失败 (网络或代理解析异常): {e}")
+            logger.error(f"  ➜ 影巢 {context} 失败 (网络或代理解析异常): {e}")
 
     def ping(self):
         """测试 API Key 是否有效"""
@@ -49,7 +49,7 @@ class HDHiveClient:
             
             # 记录异常状态码，方便排错
             if res.status_code != 200:
-                logger.warning(f"➜ 影巢获取用户信息异常: HTTP {res.status_code} - {res.text}")
+                logger.warning(f"  ➜ 影巢获取用户信息异常: HTTP {res.status_code} - {res.text}")
                 
             if res.status_code == 403:
                 return {"nickname": "普通用户", "user_meta": {"points": "未知 (需Premium)"}}
@@ -60,11 +60,11 @@ class HDHiveClient:
             if data.get("success"):
                 return data.get("data")
             else:
-                logger.error(f"➜ 影巢获取用户信息失败: {data.get('message')}")
+                logger.error(f"  ➜ 影巢获取用户信息失败: {data.get('message')}")
                 return None
                 
         except Exception as e:
-            logger.error(f"➜ 影巢获取用户信息发生异常: {e}")
+            logger.error(f"  ➜ 影巢获取用户信息发生异常: {e}")
             return None
 
     def get_quota(self):
@@ -129,7 +129,7 @@ class HDHiveClient:
             if data.get("success"):
                 return data.get("data")
             else:
-                logger.error(f"➜ 影巢解锁失败: {data.get('message')}")
+                logger.error(f"  ➜ 影巢解锁失败: {data.get('message')}")
                 return None
         except Exception as e:
             self._handle_error(e, "解锁资源")
