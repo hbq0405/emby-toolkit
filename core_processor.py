@@ -1385,26 +1385,21 @@ class MediaProcessor:
                         try: seasons_grouped_by_number[int(idx)].append(s_ver)
                         except: pass
 
-                processed_emby_seasons = set() # ★ 新增：记录已处理的 Emby 季
-
                 for season in seasons_details:
                     if not isinstance(season, dict): continue
                     
+                    # ★★★ 核心修复：严防死守 ID=0 ★★★
+                    s_tmdb_id = season.get('id')
+                    if not s_tmdb_id or str(s_tmdb_id) in ['0', 'None', '']:
+                        continue
+
                     s_num = season.get('season_number')
                     if s_num is None: continue 
                     try: s_num_int = int(s_num)
                     except ValueError: continue
 
-                    # ★★★ 核心修改：允许缺失 TMDb ID 的季使用内部兜底 ID 入库 ★★★
-                    s_tmdb_id = season.get('id')
-                    if not s_tmdb_id or str(s_tmdb_id) in ['0', 'None', '']:
-                        s_tmdb_id = f"{series_details.get('id')}-S{s_num_int}"
-
                     season_poster = season.get('poster_path') or series_details.get('poster_path')
                     matched_emby_seasons = seasons_grouped_by_number.get(s_num_int, [])
-
-                    if matched_emby_seasons:
-                        processed_emby_seasons.add(s_num_int) # ★ 记录已处理
 
                     # ★ 提取所有匹配到的季文件夹 ID
                     season_ids = [s['Id'] for s in matched_emby_seasons] if matched_emby_seasons else []
@@ -1417,31 +1412,6 @@ class MediaProcessor:
                         "season_number": s_num,
                         "total_episodes": season.get('episode_count', 0),
                         "in_library": bool(matched_emby_seasons) if not is_pending else False,
-                        "emby_item_ids_json": json.dumps(season_ids),
-                        "file_sha1_json": '[]'
-                    })
-
-                # ★★★ 新增：兜底处理 Emby 中存在，但 TMDb 中完全没有的季 ★★★
-                for s_num, matched_emby_seasons in seasons_grouped_by_number.items():
-                    if s_num in processed_emby_seasons:
-                        continue
-
-                    fallback_s_tmdb_id = f"{series_details.get('id')}-S{s_num}"
-                    logger.debug(f"  ➜ [入库兜底] 发现 Emby 本地季 S{s_num} 在 TMDb 中不存在，生成内部 ID: {fallback_s_tmdb_id}")
-
-                    season_ids = [s['Id'] for s in matched_emby_seasons]
-
-                    records_to_upsert.append({
-                        "tmdb_id": fallback_s_tmdb_id,
-                        "item_type": "Season",
-                        "parent_series_tmdb_id": str(series_details.get('id')),
-                        "title": matched_emby_seasons[0].get('Name') or f"Season {s_num}",
-                        "overview": None,
-                        "release_date": matched_emby_seasons[0].get('PremiereDate'),
-                        "poster_path": series_details.get('poster_path'), 
-                        "season_number": s_num,
-                        "total_episodes": 0,
-                        "in_library": True,
                         "emby_item_ids_json": json.dumps(season_ids),
                         "file_sha1_json": '[]'
                     })
