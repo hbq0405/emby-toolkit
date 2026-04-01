@@ -1165,7 +1165,7 @@
                       <n-input v-model:value="configModel.telegram_channel_id" placeholder="例如: -100123456789" />
                     </n-form-item-grid-item>
 
-                    <n-form-item-grid-item label="群组通知类型" path="telegram_notify_types">
+                    <n-form-item-grid-item label="通知类型" path="telegram_notify_types">
                       <n-checkbox-group v-model:value="configModel.telegram_notify_types">
                         <n-space>
                           <n-checkbox value="library_new" label="入库通知" />
