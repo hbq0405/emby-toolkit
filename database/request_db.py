@@ -139,7 +139,8 @@ def set_media_status_wanted(
                             first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                             ignore_reason = NULL, 
                             parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id),
-                            poster_path = COALESCE(EXCLUDED.poster_path, media_metadata.poster_path)
+                            poster_path = COALESCE(EXCLUDED.poster_path, media_metadata.poster_path),
+                            backdrop_path = COALESCE(EXCLUDED.backdrop_path, media_metadata.backdrop_path)
                         WHERE
                             -- 1. 绝对不覆盖已订阅/已完成的项目
                             media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'PAUSED')
