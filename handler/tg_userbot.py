@@ -631,6 +631,15 @@ def _process_tg_queue():
                 res = client.share_import(share_code, receive_code, target_cid)
                 if res and res.get('state'):
                     logger.info(f"  ➜ [频道监听] 资源转存成功！正在触发整理...")
+                    
+                    # ★★★ 新增：发送转存成功通知 ★★★
+                    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TG_MONITOR_NOTIFY_ENABLED, False):
+                        try:
+                            from handler.telegram import send_transfer_success_notification
+                            send_transfer_success_notification(task)
+                        except Exception as e:
+                            logger.error(f"  ➜ [频道监听] 发送转存通知失败: {e}")
+
                     try:
                         import task_manager
                         import threading

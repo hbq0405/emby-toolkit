@@ -1183,7 +1183,9 @@
                           </n-space>
                         </n-checkbox-group>
                       </n-form-item-grid-item>
-
+                      <n-form-item-grid-item label="转存成功通知" path="tg_monitor_notify_enabled">
+                        <n-switch v-model:value="configModel.tg_monitor_notify_enabled" />
+                      </n-form-item-grid-item>
                       <n-form-item-grid-item label="API ID" path="tg_user_api_id">
                         <n-input v-model:value="configModel.tg_user_api_id" placeholder="例如: 1234567" />
                       </n-form-item-grid-item>

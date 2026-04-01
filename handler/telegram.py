@@ -290,6 +290,88 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
     except Exception as e:
         logger.error(f"  ➜ 发送媒体通知时发生严重错误: {e}", exc_info=True)
 
+def send_transfer_success_notification(task: dict):
+    """发送频道监听转存成功的通知"""
+    try:
+        title = task.get('title', '未知标题')
+        year = task.get('year', '')
+        item_type = task.get('item_type', 'movie')
+        season_number = task.get('season_number')
+        episode_number = task.get('episode_number')
+        is_pack = task.get('is_pack', False)
+        tmdb_id = task.get('tmdb_id')
+        target_link = task.get('target_link', '')
+
+        display_title = f"{title} ({year})" if year else title
+        escaped_title = escape_markdown(display_title)
+        
+        type_str = "🎬 电影" if item_type == 'movie' else "📺 剧集"
+        
+        season_info = ""
+        if item_type == 'tv':
+            if season_number is not None:
+                if episode_number is not None:
+                    if is_pack:
+                        season_info = f"📦 *季集*: `S{season_number:02d} 包含 {episode_number} 集`\n"
+                    else:
+                        season_info = f"📦 *季集*: `S{season_number:02d}E{episode_number:02d}`\n"
+                else:
+                    season_info = f"📦 *季集*: `S{season_number:02d}`\n"
+
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # 尝试获取 TMDB 图片和评分
+        photo_url = None
+        rating = ""
+        if tmdb_id:
+            tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+            try:
+                if item_type == 'movie':
+                    details = get_movie_details(int(tmdb_id), tmdb_api_key)
+                else:
+                    details = get_tv_details(int(tmdb_id), tmdb_api_key)
+                    
+                if details:
+                    if details.get('poster_path'):
+                        photo_url = f"https://image.tmdb.org/t/p/w500{details['poster_path']}"
+                    elif details.get('backdrop_path'):
+                        photo_url = f"https://image.tmdb.org/t/p/w780{details['backdrop_path']}"
+                        
+                    vote_average = details.get('vote_average')
+                    if vote_average:
+                        rating = f"✨ *评分*: `{vote_average:.1f}/10`\n"
+            except Exception:
+                pass
+
+        # 组装类似截图的卡片文本
+        caption = (
+            f"📥 *转存成功*\n"
+            f"*{escaped_title}*\n\n"
+            f"{season_info}"
+            f"🕒 *时间*: `{current_time}`\n"
+            f"🎭 *类别*: {type_str}\n"
+            f"{rating}"
+            f"🔗 *来源*: [查看详情]({target_link})"
+        )
+
+        global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+        admin_ids = set(user_db.get_admin_telegram_chat_ids())
+
+        targets = set()
+        if global_channel_id:
+            targets.add(str(global_channel_id))
+        for aid in admin_ids:
+            targets.add(str(aid))
+
+        for target in targets:
+            if photo_url:
+                send_telegram_photo(target, photo_url, caption)
+            else:
+                send_telegram_message(target, caption)
+
+    except Exception as e:
+        logger.error(f"  ➜ 发送转存成功通知时出错: {e}", exc_info=True)
+
 # ======================================================================
 # ★★★ Telegram 机器人交互监听 (长轮询) ★★★
 # ======================================================================
