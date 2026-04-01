@@ -300,7 +300,6 @@ def send_transfer_success_notification(task: dict):
         episode_number = task.get('episode_number')
         is_pack = task.get('is_pack', False)
         tmdb_id = task.get('tmdb_id')
-        target_link = task.get('target_link', '')
 
         display_title = f"{title} ({year})" if year else title
         escaped_title = escape_markdown(display_title)
@@ -323,7 +322,7 @@ def send_transfer_success_notification(task: dict):
         # 尝试获取 TMDB 图片和评分
         photo_url = None
         rating = ""
-        overview_text = "" # ★★★ 新增：初始化简介文本变量
+        overview_text = "" 
         
         if tmdb_id:
             tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
@@ -343,7 +342,6 @@ def send_transfer_success_notification(task: dict):
                     if vote_average:
                         rating = f"✨ *评分*: `{vote_average:.1f}/10`\n"
                         
-                    # ★★★ 新增：提取剧情简介并限制字数 ★★★
                     raw_overview = details.get('overview', '')
                     if raw_overview:
                         # 限制最多显示 200 个字符，超出的用省略号代替
@@ -361,7 +359,6 @@ def send_transfer_success_notification(task: dict):
             f"🕒 *时间*: `{current_time}`\n"
             f"🎭 *类别*: {type_str}\n"
             f"{rating}"
-            f"🔗 *来源*: [查看详情]({target_link})"
             f"{overview_text}" 
         )
 
