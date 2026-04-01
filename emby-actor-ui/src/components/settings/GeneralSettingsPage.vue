@@ -85,14 +85,6 @@
                         </n-text>
                       </template>
                     </n-form-item-grid-item>
-                    <n-form-item-grid-item label="备份集图片" path="backup_episode_image">
-                      <n-switch v-model:value="configModel.backup_episode_image" />
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">
-                          备份所有的集图片。
-                        </n-text>
-                      </template>
-                    </n-form-item-grid-item>
                     <n-form-item-grid-item label="关键词写入标签" path="keyword_to_tags">
                       <n-switch v-model:value="configModel.keyword_to_tags" />
                       <template #feedback>

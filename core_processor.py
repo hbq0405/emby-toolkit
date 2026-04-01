@@ -3928,47 +3928,6 @@ class MediaProcessor:
                         return False
                     emby.download_emby_image(item_id, image_type, os.path.join(image_override_dir, filename), self.emby_url, self.emby_api_key)
             
-            # --- 分集图片逻辑 ---
-            if item_type == "Series" and self.config.get(constants.CONFIG_OPTION_BACKUP_EPISODE_IMAGE, False):
-                children_to_process = []
-                # 获取所有子项信息，用于查找 (增加 ImageTags 字段请求)
-                all_children = emby.get_series_children(
-                    item_id, self.emby_url, self.emby_api_key, self.emby_user_id, 
-                    series_name_for_log=item_name_for_log,
-                    fields="Id,Name,ParentIndexNumber,IndexNumber,Overview,ImageTags"
-                ) or []
-                
-                if episode_ids_to_sync:
-                    # 模式一：只处理指定的分集
-                    logger.info(f"  ➜ {log_prefix} 将只同步 {len(episode_ids_to_sync)} 个指定分集的图片。")
-                    id_set = set(episode_ids_to_sync)
-                    children_to_process = [child for child in all_children if child.get("Id") in id_set]
-                elif images_to_sync == full_image_map:
-                    # 模式二：处理所有子项（原逻辑）
-                    children_to_process = all_children
-
-                for child in children_to_process:
-                    if self.is_stop_requested():
-                        logger.warning(f"  ➜ {log_prefix} 收到停止信号，中止子项目图片下载。")
-                        return False
-                    
-                    child_type, child_id = child.get("Type"), child.get("Id")
-                    
-                    # ★★★ 优雅处理：检查该分集/季是否真的有独立图片 ★★★
-                    # 如果没有 Primary 标签，说明 Emby 只是在用父级海报占位，直接跳过，避免触发 500 错误和重试耗时
-                    if "Primary" not in child.get("ImageTags", {}):
-                        # logger.trace(f"  ➜ {log_prefix} {child_type} (ID:{child_id}) 暂无独立封面，优雅跳过。")
-                        continue
-
-                    if child_type == "Season":
-                        season_number = child.get("IndexNumber")
-                        if season_number is not None:
-                            emby.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}.jpg"), self.emby_url, self.emby_api_key)
-                    elif child_type == "Episode":
-                        season_number, episode_number = child.get("ParentIndexNumber"), child.get("IndexNumber")
-                        if season_number is not None and episode_number is not None:
-                            emby.download_emby_image(child_id, "Primary", os.path.join(image_override_dir, f"season-{season_number}-episode-{episode_number}.jpg"), self.emby_url, self.emby_api_key)
-            
             logger.trace(f"  ➜ {log_prefix} 成功完成 '{item_name_for_log}' 的覆盖缓存-图片备份。")
             return True
         except Exception as e:
