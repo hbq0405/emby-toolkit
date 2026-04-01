@@ -877,6 +877,7 @@ def task_auto_subscribe(processor):
 
             # 提交 MP 订阅
             success = False
+            action_type = "MP" 
             watchlist_config = settings_db.get_setting('watchlist_config') or {}
             tg_channel_tracking = watchlist_config.get('tg_channel_tracking', False)
             subscription_priority = strategy_config.get('subscription_priority', 'mp')
@@ -991,6 +992,7 @@ def task_auto_subscribe(processor):
                                 if slug:
                                     success = task_download_from_hdhive(hdhive_api_key, slug, tmdb_id, 'movie', title)
                                     if success:
+                                        action_type = "影巢" 
                                         logger.info(f"  ➜ 影巢秒传成功！已跳过 MoviePilot 订阅。")
                                     else:
                                         logger.warning(f"  ➜ 影巢转存失败，准备降级到 MoviePilot 兜底...")
@@ -1082,7 +1084,7 @@ def task_auto_subscribe(processor):
                         source_display_parts.append("追剧补全")
                 
                 source_display = ", ".join(set(source_display_parts)) or "未知来源"
-                subscription_details.append({'source': source_display, 'item': item_display_name})
+                subscription_details.append({'source': source_display, 'item': item_display_name, 'action': action_type})
 
             else:
                 logger.error(f"  ➜ 订阅《{item['title']}》失败，请检查 MoviePilot 连接或日志。")
@@ -1121,11 +1123,12 @@ def task_auto_subscribe(processor):
             
             item_lines = []
             for detail in subscription_details:
-                # 我们在前面已经把来源格式化得很好了，比如 "用户请求(admin)" 或 "合集(豆瓣电影Top250)"
                 source = telegram.escape_markdown(detail.get('source', '未知来源'))
                 item = telegram.escape_markdown(detail['item'])
-                # 新的格式更简洁: [来源] -> 项目
-                item_lines.append(f"├─ `[{source}]` {item}")
+                
+                action_tag = "影巢转存" if detail.get('action') == '影巢' else "MP订阅"
+                
+                item_lines.append(f"├─ `[{action_tag}]` `[{source}]` {item}")
                 
             summary_message = header + "\n" + "\n".join(item_lines)
         else:
