@@ -632,8 +632,9 @@ def _process_tg_queue():
                 if res and res.get('state'):
                     logger.info(f"  ➜ [频道监听] 资源转存成功！正在触发整理...")
                     
-                    # ★★★ 新增：发送转存成功通知 ★★★
-                    if config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TG_MONITOR_NOTIFY_ENABLED, False):
+                    # ★★★ 发送转存成功通知 ★★★
+                    notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
+                    if 'transfer_success' in notify_types:
                         try:
                             from handler.telegram import send_transfer_success_notification
                             send_transfer_success_notification(task)

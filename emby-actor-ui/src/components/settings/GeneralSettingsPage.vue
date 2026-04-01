@@ -1165,6 +1165,16 @@
                       <n-input v-model:value="configModel.telegram_channel_id" placeholder="例如: -100123456789" />
                     </n-form-item-grid-item>
 
+                    <n-form-item-grid-item label="群组通知类型" path="telegram_notify_types">
+                      <n-checkbox-group v-model:value="configModel.telegram_notify_types">
+                        <n-space>
+                          <n-checkbox value="library_new" label="入库通知" />
+                          <n-checkbox value="transfer_success" label="转存通知" />
+                          <n-checkbox value="playback" label="播放通知" />
+                        </n-space>
+                      </n-checkbox-group>
+                    </n-form-item-grid-item>
+
                     <n-divider title-placement="left" style="margin-top: 15px;">订阅频道 (Pro)</n-divider>
                     <n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;">
                       自动监听频道消息，根据订阅选择性转存资源到待处理目录。
@@ -1182,9 +1192,6 @@
                             <n-checkbox value="tv" label="电视剧" />
                           </n-space>
                         </n-checkbox-group>
-                      </n-form-item-grid-item>
-                      <n-form-item-grid-item label="转存成功通知" path="tg_monitor_notify_enabled">
-                        <n-switch v-model:value="configModel.tg_monitor_notify_enabled" />
                       </n-form-item-grid-item>
                       <n-form-item-grid-item label="API ID" path="tg_user_api_id">
                         <n-input v-model:value="configModel.tg_user_api_id" placeholder="例如: 1234567" />

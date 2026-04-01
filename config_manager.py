@@ -192,7 +192,7 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_TG_USER_2FA: (constants.CONFIG_SECTION_TELEGRAM, 'password', ""),
     constants.CONFIG_OPTION_TG_MONITOR_CHANNELS: (constants.CONFIG_SECTION_TELEGRAM, 'list', []),
     constants.CONFIG_OPTION_TG_MONITOR_TYPE: (constants.CONFIG_SECTION_TELEGRAM, 'list', ['movie', 'tv']),
-    constants.CONFIG_OPTION_TG_MONITOR_NOTIFY_ENABLED: (constants.CONFIG_SECTION_TELEGRAM, 'boolean', False),
+    constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES: (constants.CONFIG_SECTION_TELEGRAM, 'list', constants.DEFAULT_TELEGRAM_NOTIFY_TYPES),
 }
 
 # --- 全局配置字典 ---

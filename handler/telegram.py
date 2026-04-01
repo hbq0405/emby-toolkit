@@ -239,13 +239,15 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         subscriber_chat_ids = {chat_id for chat_id in subscriber_chat_ids if chat_id}
 
         # --- 6. 发送全局通知 ---
-        global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
-        if global_channel_id:
-            logger.info(f"  ➜ 正在向全局频道 {global_channel_id} 发送通知...")
-            if photo_url:
-                send_telegram_photo(global_channel_id, photo_url, caption)
-            else:
-                send_telegram_message(global_channel_id, caption)
+        notify_types = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
+        if 'library_new' in notify_types:
+            global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+            if global_channel_id:
+                logger.info(f"  ➜ 正在向全局频道 {global_channel_id} 发送通知...")
+                if photo_url:
+                    send_telegram_photo(global_channel_id, photo_url, caption)
+                else:
+                    send_telegram_message(global_channel_id, caption)
 
         # --- 7. 发送管理员通知 ---
         # 逻辑：如果管理员没有配置频道，或者管理员想接收所有入库通知，但又不想和个人订阅通知重复
@@ -325,31 +327,35 @@ def send_transfer_success_notification(task: dict):
         overview_text = "" 
         
         if tmdb_id:
-            tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-            try:
-                if item_type == 'movie':
-                    details = get_movie_details(int(tmdb_id), tmdb_api_key)
-                else:
-                    details = get_tv_details(int(tmdb_id), tmdb_api_key)
+            # ★★★ 核心修复：剥离内部兜底 ID (如 282902-S1E1)，只取纯数字的主 ID ★★★
+            base_tmdb_id = str(tmdb_id).split('-')[0]
+            
+            if base_tmdb_id and base_tmdb_id.isdigit():
+                tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+                try:
+                    if item_type == 'movie':
+                        details = get_movie_details(int(base_tmdb_id), tmdb_api_key)
+                    else:
+                        details = get_tv_details(int(base_tmdb_id), tmdb_api_key)
                     
-                if details:
-                    if details.get('backdrop_path'):
-                        photo_url = f"https://image.tmdb.org/t/p/w780{details['backdrop_path']}"
-                    elif details.get('poster_path'):
-                        photo_url = f"https://image.tmdb.org/t/p/w500{details['poster_path']}"
-                        
-                    vote_average = details.get('vote_average')
-                    if vote_average:
-                        rating = f"✨ *评分*: `{vote_average:.1f}/10`\n"
-                        
-                    raw_overview = details.get('overview', '')
-                    if raw_overview:
-                        # 限制最多显示 200 个字符，超出的用省略号代替
-                        if len(raw_overview) > 200:
-                            raw_overview = raw_overview[:200] + "..."
-                        overview_text = f"📝 *剧情*: {escape_markdown(raw_overview)}\n"
-            except Exception:
-                pass
+                    if details:
+                        if details.get('backdrop_path'):
+                            photo_url = f"https://image.tmdb.org/t/p/w780{details['backdrop_path']}"
+                        elif details.get('poster_path'):
+                            photo_url = f"https://image.tmdb.org/t/p/w500{details['poster_path']}"
+                            
+                        vote_average = details.get('vote_average')
+                        if vote_average:
+                            rating = f"✨ *评分*: `{vote_average:.1f}/10`\n"
+                            
+                        raw_overview = details.get('overview', '')
+                        if raw_overview:
+                            # 限制最多显示 200 个字符，超出的用省略号代替
+                            if len(raw_overview) > 200:
+                                raw_overview = raw_overview[:200] + "..."
+                            overview_text = f"📝 *剧情*: {escape_markdown(raw_overview)}\n"
+                except Exception:
+                    pass
 
         # 组装卡片文本
         caption = (
