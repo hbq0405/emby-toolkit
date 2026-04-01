@@ -1031,40 +1031,14 @@ def emby_webhook():
                     else:
                         update_data['played'] = False
 
-            # ★★★ 新增：发送花里胡哨的播放通知 ★★★
+            # 发送有灵魂的图文播放通知 
             notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
             if 'playback' in notify_types and event_type in ["playback.start", "playback.pause", "playback.stop"]:
                 try:
-                    device_name = data.get("Session", {}).get("DeviceName", "未知设备")
-                    client_name = data.get("Session", {}).get("Client", "未知客户端")
-                    
-                    action_map = {
-                        "playback.start": "▶️ 开始播放",
-                        "playback.pause": "⏸ 暂停播放",
-                        "playback.stop": "⏹ 停止播放"
-                    }
-                    action_str = action_map.get(event_type, "播放状态改变")
-                    current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    
-                    # 尝试获取媒体名称
-                    display_item_name = original_item_name
-                    if original_item_type == "Episode" and item_from_webhook.get("SeriesName"):
-                        display_item_name = f"{item_from_webhook.get('SeriesName')} - {original_item_name}"
-                    
-                    msg = (
-                        f"{action_str}\n\n"
-                        f"👤 *用户*: `{telegram.escape_markdown(user_name)}`\n"
-                        f"🎬 *媒体*: *{telegram.escape_markdown(display_item_name)}*\n"
-                        f"📱 *设备*: `{telegram.escape_markdown(device_name)} ({telegram.escape_markdown(client_name)})`\n"
-                        f"🕒 *时间*: `{telegram.escape_markdown(current_time)}`"
-                    )
-                    
-                    global_channel_id = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
-                    if global_channel_id:
-                        # 播放通知比较频繁，强制静音发送 (disable_notification=True)
-                        telegram.send_telegram_message(global_channel_id, msg, disable_notification=True)
+                    # 使用 spawn 异步丢给后台处理，杜绝网络波动卡住 Emby Webhook 导致延迟
+                    spawn(telegram.send_playback_notification, data)
                 except Exception as e:
-                    logger.error(f"  ➜ 发送播放通知失败: {e}")
+                    logger.error(f"  ➜ 发送播放通知任务分配失败: {e}")
 
         try:
             if len(update_data) > 2:

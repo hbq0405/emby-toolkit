@@ -239,9 +239,11 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         subscriber_chat_ids = {chat_id for chat_id in subscriber_chat_ids if chat_id}
 
         # --- 6. 发送全局通知 ---
+        # ★ 修复: 提取到最外层，确保哪怕没有开启频道推送，变量也存在，供后续管理员防重复使用
+        global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+        
         notify_types = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
         if 'library_new' in notify_types:
-            global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
             if global_channel_id:
                 logger.info(f"  ➜ 正在向全局频道 {global_channel_id} 发送通知...")
                 if photo_url:
@@ -385,6 +387,76 @@ def send_transfer_success_notification(task: dict):
 
     except Exception as e:
         logger.error(f"  ➜ 发送转存成功通知时出错: {e}", exc_info=True)
+
+def send_playback_notification(data: dict):
+    """发送图文并茂的播放状态通知 (附带剧集或电影海报)"""
+    try:
+        event_type = data.get("Event")
+        user_name = data.get("User", {}).get("Name", "未知用户")
+        device_name = data.get("Session", {}).get("DeviceName", "未知设备")
+        client_name = data.get("Session", {}).get("Client", "未知客户端")
+        
+        item = data.get("Item", {})
+        original_item_name = item.get("Name", "未知项目")
+        original_item_type = item.get("Type", "Unknown")
+        
+        display_item_name = original_item_name
+        if original_item_type == "Episode" and item.get("SeriesName"):
+            display_item_name = f"{item.get('SeriesName')} - {original_item_name}"
+            
+        # 尝试获取 TMDB ID 以便抓取高清图片
+        tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
+        if original_item_type == "Episode":
+            # 如果是分集，尝试获取所在剧集的 TMDB ID (海报更好看)
+            series_tmdb = item.get("SeriesProviderIds", {}).get("Tmdb")
+            if series_tmdb:
+                tmdb_id = series_tmdb
+
+        photo_url = None
+        if tmdb_id:
+            base_tmdb_id = str(tmdb_id).split('-')[0]
+            if base_tmdb_id.isdigit():
+                tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+                try:
+                    if original_item_type in ["Series", "Episode"]:
+                        details = get_tv_details(int(base_tmdb_id), tmdb_api_key)
+                    else:
+                        details = get_movie_details(int(base_tmdb_id), tmdb_api_key)
+                    
+                    if details:
+                        # 优先使用背景大图，如果没有则使用竖版海报
+                        if details.get('backdrop_path'):
+                            photo_url = f"https://image.tmdb.org/t/p/w780{details['backdrop_path']}"
+                        elif details.get('poster_path'):
+                            photo_url = f"https://image.tmdb.org/t/p/w500{details['poster_path']}"
+                except Exception as e:
+                    logger.debug(f"  ➜ 获取播放通知图片失败 (可忽略): {e}")
+                    
+        action_map = {
+            "playback.start": "▶️ 开始播放",
+            "playback.pause": "⏸ 暂停播放",
+            "playback.stop": "⏹ 停止播放"
+        }
+        action_str = action_map.get(event_type, "🎬 播放状态改变")
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        caption = (
+            f"{action_str}\n\n"
+            f"👤 *用户*: `{escape_markdown(user_name)}`\n"
+            f"🎬 *媒体*: *{escape_markdown(display_item_name)}*\n"
+            f"📱 *设备*: `{escape_markdown(device_name)} ({escape_markdown(client_name)})`\n"
+            f"🕒 *时间*: `{escape_markdown(current_time)}`"
+        )
+        
+        global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+        if global_channel_id:
+            # 播放通知比较频繁，强制静音发送 (disable_notification=True)
+            if photo_url:
+                send_telegram_photo(global_channel_id, photo_url, caption, disable_notification=True)
+            else:
+                send_telegram_message(global_channel_id, caption, disable_notification=True)
+    except Exception as e:
+        logger.error(f"  ➜ 组装/发送播放图文通知时发生异常: {e}")
 
 # ======================================================================
 # ★★★ Telegram 机器人交互监听 (长轮询) ★★★
