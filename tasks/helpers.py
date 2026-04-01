@@ -1325,6 +1325,7 @@ def construct_metadata_payload(item_type: str, tmdb_data: Dict[str, Any],
                     ep_skeleton['overview'] = ep_data.get('overview')
                     ep_skeleton['air_date'] = ep_data.get('air_date')
                     ep_skeleton['vote_average'] = ep_data.get('vote_average')
+                    ep_skeleton['still_path'] = ep_data.get('still_path')
                     
                     # 演员
                     ep_credits = ep_data.get('credits', {})

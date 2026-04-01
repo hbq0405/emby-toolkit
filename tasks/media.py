@@ -1888,6 +1888,7 @@ def task_restore_local_cache_from_db(processor):
                                 "episode_number": e_num,
                                 "air_date": str(e_row['release_date']) if e_row['release_date'] else None,
                                 "vote_average": e_row['rating'],
+                                "still_path": e_row['poster_path']
                             }
                             episodes_data[key] = e_data
 

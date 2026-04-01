@@ -399,6 +399,7 @@ class MediaProcessor:
                                     "episode_number": e_num,
                                     "air_date": str(e_row['release_date']) if e_row['release_date'] else None,
                                     "vote_average": e_row['rating'],
+                                    "still_path": e_row['poster_path']
                                 }
                                 episodes_data[key] = e_data
 
@@ -4186,6 +4187,17 @@ class MediaProcessor:
                         if s_num is not None and s_poster:
                             downloads.append((s_poster, f"season-{s_num}.jpg"))
 
+                # --- E. 剧集分集图片 (Still)  ---
+                if aggregated_tmdb_data and "episodes_details" in aggregated_tmdb_data:
+                    episodes = aggregated_tmdb_data["episodes_details"]
+                    ep_list = episodes.values() if isinstance(episodes, dict) else (episodes if isinstance(episodes, list) else [])
+                    for ep in ep_list:
+                        s_num = ep.get("season_number")
+                        e_num = ep.get("episode_number")
+                        e_still = ep.get("still_path")
+                        if s_num is not None and e_num is not None and e_still:
+                            downloads.append((e_still, f"season-{s_num}-episode-{e_num}.jpg"))
+
             # 5. 执行下载
             base_image_url = "https://image.tmdb.org/t/p/original"
             success_count = 0
@@ -4727,6 +4739,8 @@ class MediaProcessor:
                             child_data['air_date'] = specific_tmdb_data.get('air_date')
                         if specific_tmdb_data.get('vote_average'):
                             child_data['vote_average'] = specific_tmdb_data.get('vote_average')
+                        if specific_tmdb_data.get('still_path'):
+                            child_data['still_path'] = specific_tmdb_data.get('still_path')
 
                 # 2. 处理分季 (Season)
                 elif is_season_file and tmdb_seasons_data and current_s_num is not None:
