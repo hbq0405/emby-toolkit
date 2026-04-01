@@ -1447,3 +1447,43 @@ def get_notification_media_info_by_emby_id(emby_id: str) -> dict:
     except Exception as e:
         logger.error(f"DB: 获取通知图片信息失败: {e}")
     return {}
+
+# 根据 TMDB ID 快速获取用于转存通知的媒体信息
+def get_notification_media_info_by_tmdb_id(tmdb_id: str) -> dict:
+    """
+    【转存通知专用】根据 TMDB ID 快速盲查本地数据库的图片、评分和简介。
+    排序权重保证优先使用 Series(剧集) 和 Movie(电影) 级别的高清横幅，
+    如果是分集或季数据，自动回退寻找父剧集的图片。
+    """
+    if not tmdb_id: return {}
+    sql = """
+        SELECT 
+            m.item_type, 
+            m.backdrop_path, 
+            m.poster_path, 
+            m.rating, 
+            m.overview,
+            p.backdrop_path AS parent_backdrop_path,
+            p.poster_path AS parent_poster_path
+        FROM media_metadata m
+        LEFT JOIN media_metadata p ON m.parent_series_tmdb_id = p.tmdb_id AND p.item_type = 'Series'
+        WHERE m.tmdb_id = %s
+        ORDER BY 
+            CASE m.item_type 
+                WHEN 'Series' THEN 1 
+                WHEN 'Movie' THEN 2 
+                WHEN 'Season' THEN 3 
+                WHEN 'Episode' THEN 4 
+                ELSE 5 
+            END
+        LIMIT 1
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (str(tmdb_id),))
+                row = cursor.fetchone()
+                if row: return dict(row)
+    except Exception as e:
+        logger.error(f"DB: 获取转存通知图片信息(TMDB ID)失败: {e}")
+    return {}

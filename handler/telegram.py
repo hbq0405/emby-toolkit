@@ -318,16 +318,22 @@ def send_transfer_success_notification(task: dict):
         overview_text = "" 
         
         if tmdb_id:
-            # ★★★ 核心修复：剥离内部兜底 ID，只取纯数字的主 ID ★★★
-            base_tmdb_id = str(tmdb_id).split('-')[0]
+            # ★ 转存时的 ID 绝对是纯种 TMDB ID
+            base_tmdb_id = str(tmdb_id).strip()
             
-            if base_tmdb_id and base_tmdb_id.isdigit():
+            if base_tmdb_id.isdigit():
                 try:
-                    db_type = 'Movie' if item_type == 'movie' else 'Series'
-                    db_info = media_db.get_media_details(base_tmdb_id, db_type)
+                    from database import media_db
+                    # 极速本地盲查，不需要管是电影还是剧集
+                    db_info = media_db.get_notification_media_info_by_tmdb_id(base_tmdb_id)
                     
                     if db_info:
+                        # 优先横幅，如果没有再找竖图
                         path = db_info.get('backdrop_path') or db_info.get('poster_path')
+                        # 如果拿到的是单集或季，且没图，向父剧集借图
+                        if not path and db_info.get('item_type') in ['Episode', 'Season']:
+                            path = db_info.get('parent_backdrop_path') or db_info.get('parent_poster_path')
+                            
                         if path:
                             photo_url = f"https://image.tmdb.org/t/p/w780{path}"
                             
@@ -341,7 +347,7 @@ def send_transfer_success_notification(task: dict):
                                 raw_overview = raw_overview[:200] + "..."
                             overview_text = f"📝 *剧情*: {escape_markdown(raw_overview)}\n"
                 except Exception as e:
-                    logger.debug(f"  ➜ 获取转存通知图片失败: {e}")
+                    logger.error(f"  ➜ 获取转存通知图片(本地查库)失败: {e}")
 
         # 组装卡片文本
         caption = (

@@ -46,13 +46,25 @@ class HDHiveClient:
         """获取当前用户信息"""
         try:
             res = requests.get(f"{self.BASE_URL}/me", headers=self.headers, proxies=self.proxies, timeout=10)
+            
+            # 记录异常状态码，方便排错
+            if res.status_code != 200:
+                logger.warning(f"➜ 影巢获取用户信息异常: HTTP {res.status_code} - {res.text}")
+                
             if res.status_code == 403:
                 return {"nickname": "普通用户", "user_meta": {"points": "未知 (需Premium)"}}
+                
             res.raise_for_status()
             data = res.json()
-            return data.get("data") if data.get("success") else None
+            
+            if data.get("success"):
+                return data.get("data")
+            else:
+                logger.error(f"➜ 影巢获取用户信息失败: {data.get('message')}")
+                return None
+                
         except Exception as e:
-            self._handle_error(e, "获取用户信息")
+            logger.error(f"➜ 影巢获取用户信息发生异常: {e}")
             return None
 
     def get_quota(self):

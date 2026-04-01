@@ -1171,6 +1171,7 @@
                           <n-checkbox value="library_new" label="入库通知" />
                           <n-checkbox value="transfer_success" label="转存通知" />
                           <n-checkbox value="playback" label="播放通知" />
+                          <n-checkbox value="hdhive_checkin" label="影巢签到通知" />
                         </n-space>
                       </n-checkbox-group>
                     </n-form-item-grid-item>

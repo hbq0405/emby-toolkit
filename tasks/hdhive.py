@@ -8,6 +8,7 @@ from handler.telegram import send_hdhive_checkin_notification
 from database import settings_db
 import task_manager
 import constants
+import config_manager
 
 logger = logging.getLogger(__name__)
 
@@ -157,7 +158,7 @@ def task_hdhive_auto_checkin(processor):
         # 1. 发送签到请求
         res = client.checkin(is_gambler=False)
         
-        # 2. ★ 新增：签到完顺便拉取一下最新的用户信息，为了在通知里展示最新积分
+        # 2. 签到完顺便拉取一下最新的用户信息，为了在通知里展示最新积分
         user_info = client.get_user_info() or {}
 
         if res.get("success"):
@@ -175,11 +176,15 @@ def task_hdhive_auto_checkin(processor):
             logger.warning(f"  ➜ 影巢签到失败: {error_msg}")
             task_manager.update_status_from_thread(-1, f"签到失败: {error_msg}")
 
-        # 3. ★ 新增：触发 Telegram 通知
-        try:
-            send_hdhive_checkin_notification(res, user_info)
-        except Exception as e:
-            logger.error(f"  ➜ 发送影巢签到通知失败: {e}")
+        # 3. 触发 Telegram 通知
+        notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, [])
+        if 'hdhive_checkin' in notify_types:
+            try:
+                send_hdhive_checkin_notification(res, user_info)
+            except Exception as e:
+                logger.error(f"  ➜ 发送影巢签到通知失败: {e}")
+        else:
+            logger.debug("  ➜ 影巢签到通知已在设置中关闭，跳过推送。")
 
     except Exception as e:
         logger.error(f"  ➜ 影巢自动签到发生异常: {e}", exc_info=True)
