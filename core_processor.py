@@ -1480,7 +1480,9 @@ class MediaProcessor:
                         "title": episode.get('name'), "overview": episode.get('overview'), 
                         "release_date": episode.get('air_date'), 
                         "season_number": s_num, "episode_number": e_num,
-                        "runtime_minutes": final_runtime
+                        "runtime_minutes": final_runtime,
+                        "poster_path": episode.get('still_path'),
+                        "backdrop_path": episode.get('still_path')
                     }
                     
                     # ★ 资产信息处理 (支持多版本)
