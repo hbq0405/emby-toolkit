@@ -486,68 +486,7 @@ def _process_tg_queue():
                 is_pack = task.get('is_pack', False) # 获取合集标记
 
                 # -----------------------------------------------------------
-                # 1. 追踪弹：解析真实的 115 Share Code (修复密码提取)
-                # -----------------------------------------------------------
-                share_code = None
-                
-                if 'hdhive.com' in target_link:
-                    logger.debug(f"  ➜ [频道监听] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址...")
-                    try:
-                        slug_match = re.search(r'hdhive\.com/resource/115/([a-fA-F0-9]{32})', target_link)
-                        if not slug_match:
-                            logger.error(f"  ➜ [频道监听] 无法从影巢链接中提取 Slug 标识: {target_link}")
-                            continue
-                            
-                        slug = slug_match.group(1)
-                        from database import settings_db
-                        hdhive_api_key = settings_db.get_setting('hdhive_api_key')
-                        
-                        if not hdhive_api_key:
-                            logger.error("  ➜ [频道监听] 解析失败：未配置影巢 API Key！")
-                            continue
-                            
-                        from handler.hdhive_client import HDHiveClient
-                        hd_client = HDHiveClient(hdhive_api_key)
-                        resource_data = hd_client.unlock_resource(slug)
-                        
-                        if resource_data and resource_data.get('url'):
-                            real_url = resource_data.get('url')
-                            full_url = resource_data.get('full_url', '')
-                            
-                            match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', real_url)
-                            if match:
-                                share_code = match.group(1)
-                                
-                                # ★★★ 核心修复：提取码兜底逻辑 (照搬 hdhive.py) ★★★
-                                if resource_data.get('access_code'):
-                                    receive_code = resource_data.get('access_code')
-                                if not receive_code:
-                                    pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', full_url + "&" + real_url, re.IGNORECASE)
-                                    if pwd_match:
-                                        receive_code = pwd_match.group(1)
-                                        
-                                logger.debug(f"  ➜ [频道监听] 影巢 API 解析成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
-                            else:
-                                logger.error(f"  ➜ [频道监听] 影巢 API 返回的 URL 中未找到 115 提取码: {real_url}")
-                                continue
-                        else:
-                            logger.error("  ➜ [频道监听] 影巢 API 未返回真实的 115 链接，可能是积分不足或资源已失效。")
-                            continue
-                            
-                    except Exception as e:
-                        logger.error(f"  ➜ [频道监听] 请求影巢 API 异常: {e}")
-                        continue
-                else:
-                    # 普通 115 链接，直接提取
-                    match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', target_link)
-                    if match: share_code = match.group(1)
-
-                if not share_code:
-                    logger.error("  ➜ [频道监听] 无法获取有效的 115 Share Code，任务终止。")
-                    continue
-
-                # -----------------------------------------------------------
-                # 2. 最强大脑：缺失 TMDB ID 时自动反查
+                # 1. 最强大脑：缺失 TMDB ID 时自动反查 (必须最先执行，拿到ID)
                 # -----------------------------------------------------------
                 item_type = task.get('item_type', 'movie')
                 if not tmdb_id and title:
@@ -565,7 +504,7 @@ def _process_tg_queue():
                 if not tmdb_id: continue
 
                 # -----------------------------------------------------------
-                # 3. 查库校验 (判断是否在追剧列表中)
+                # 2. 查库校验 (判断是否在追剧列表中，不在直接扔掉，绝不浪费积分)
                 # -----------------------------------------------------------
                 should_process = False
                 try:
@@ -603,7 +542,7 @@ def _process_tg_queue():
                     continue
 
                 # -----------------------------------------------------------
-                # 4. 精准去重逻辑 (★★ 核心修复：合集包智能补齐 ★★)
+                # 3. 精准去重逻辑 (本地已有的集数直接跳过，绝不浪费积分)
                 # -----------------------------------------------------------
                 if season_number is not None and episode_number is not None:
                     from database import media_db
@@ -622,6 +561,67 @@ def _process_tg_queue():
                         if season_number in local_seasons and episode_number in local_seasons[season_number]:
                             logger.debug(f"  ➜ [频道监听] 单集资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
                             continue
+
+                # -----------------------------------------------------------
+                # 4. 追踪弹：解析真实的 115 Share Code (★★★ 此时才允许扣积分解锁 ★★★)
+                # -----------------------------------------------------------
+                share_code = None
+                
+                if 'hdhive.com' in target_link:
+                    logger.debug(f"  ➜ [频道监听] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址 (将扣除积分)...")
+                    try:
+                        slug_match = re.search(r'hdhive\.com/resource/115/([a-fA-F0-9]{32})', target_link)
+                        if not slug_match:
+                            logger.error(f"  ➜ [频道监听] 无法从影巢链接中提取 Slug 标识: {target_link}")
+                            continue
+                            
+                        slug = slug_match.group(1)
+                        from database import settings_db
+                        hdhive_api_key = settings_db.get_setting('hdhive_api_key')
+                        
+                        if not hdhive_api_key:
+                            logger.error("  ➜ [频道监听] 解析失败：未配置影巢 API Key！")
+                            continue
+                            
+                        from handler.hdhive_client import HDHiveClient
+                        hd_client = HDHiveClient(hdhive_api_key)
+                        resource_data = hd_client.unlock_resource(slug)
+                        
+                        if resource_data and resource_data.get('url'):
+                            real_url = resource_data.get('url')
+                            full_url = resource_data.get('full_url', '')
+                            
+                            match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', real_url)
+                            if match:
+                                share_code = match.group(1)
+                                
+                                # 提取码兜底逻辑
+                                if resource_data.get('access_code'):
+                                    receive_code = resource_data.get('access_code')
+                                if not receive_code:
+                                    pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', full_url + "&" + real_url, re.IGNORECASE)
+                                    if pwd_match:
+                                        receive_code = pwd_match.group(1)
+                                        
+                                logger.debug(f"  ➜ [频道监听] 影巢 API 解析成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
+                            else:
+                                logger.error(f"  ➜ [频道监听] 影巢 API 返回的 URL 中未找到 115 提取码: {real_url}")
+                                continue
+                        else:
+                            logger.error("  ➜ [频道监听] 影巢 API 未返回真实的 115 链接，可能是积分不足或资源已失效。")
+                            continue
+                            
+                    except Exception as e:
+                        logger.error(f"  ➜ [频道监听] 请求影巢 API 异常: {e}")
+                        continue
+                else:
+                    # 普通 115 链接，直接提取
+                    match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', target_link)
+                    if match: share_code = match.group(1)
+
+                if not share_code:
+                    logger.error("  ➜ [频道监听] 无法获取有效的 115 Share Code，任务终止。")
+                    continue
 
                 # -----------------------------------------------------------
                 # 5. 执行转存
