@@ -238,12 +238,13 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         }
         subscriber_chat_ids = {chat_id for chat_id in subscriber_chat_ids if chat_id}
 
-        # --- 6. 发送全局通知 ---
-        # ★ 修复: 提取到最外层，确保哪怕没有开启频道推送，变量也存在，供后续管理员防重复使用
+        # --- 6 & 7. 发送全局和管理员通知 ---
         global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
-        
         notify_types = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
+        
+        # ★ 严格判定：只有勾选了“入库通知”，才允许向频道和管理员发送非订阅类的公播消息
         if 'library_new' in notify_types:
+            # A. 发送给频道
             if global_channel_id:
                 logger.info(f"  ➜ 正在向全局频道 {global_channel_id} 发送通知...")
                 if photo_url:
@@ -251,29 +252,22 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
                 else:
                     send_telegram_message(global_channel_id, caption)
 
-        # --- 7. 发送管理员通知 ---
-        # 逻辑：如果管理员没有配置频道，或者管理员想接收所有入库通知，但又不想和个人订阅通知重复
-        all_admin_chat_ids = set(user_db.get_admin_telegram_chat_ids())
-
-        if all_admin_chat_ids:
-            # 预处理订阅者 ID 集合
-            subscriber_id_set = {str(sid) for sid in subscriber_chat_ids}
-            
-            for admin_chat_id in all_admin_chat_ids:
-                # 排除掉频道 ID
-                if str(admin_chat_id) == str(global_channel_id):
-                    continue
-
-                # ★★★ 核心去重：如果管理员也是订阅者，跳过 ★★★
-                if str(admin_chat_id) in subscriber_id_set:
-                    logger.info(f"  ➜ 管理员 {admin_chat_id} 也是订阅者，跳过通用通知，等待发送个人通知。")
-                    continue
-                
-                logger.info(f"  ➜ 正在向管理员 {admin_chat_id} 发送全局入库通知...")
-                if photo_url:
-                    send_telegram_photo(admin_chat_id, photo_url, caption)
-                else:
-                    send_telegram_message(admin_chat_id, caption)
+            # B. 发送给管理员
+            all_admin_chat_ids = set(user_db.get_admin_telegram_chat_ids())
+            if all_admin_chat_ids:
+                subscriber_id_set = {str(sid) for sid in subscriber_chat_ids}
+                for admin_chat_id in all_admin_chat_ids:
+                    # 去重：不发给频道，也不发给已经是订阅者的管理员
+                    if str(admin_chat_id) == str(global_channel_id) or str(admin_chat_id) in subscriber_id_set:
+                        continue
+                    
+                    logger.info(f"  ➜ 正在向管理员 {admin_chat_id} 发送全局入库通知...")
+                    if photo_url:
+                        send_telegram_photo(admin_chat_id, photo_url, caption)
+                    else:
+                        send_telegram_message(admin_chat_id, caption)
+        else:
+            logger.debug(f"  ➜ [通知] '入库通知' 设置为关闭，跳过频道和管理员的全局广播。")
 
         # --- 8. 发送个人订阅到货通知 ---
         if subscriber_chat_ids:
@@ -448,13 +442,29 @@ def send_playback_notification(data: dict):
             f"🕒 *时间*: `{escape_markdown(current_time)}`"
         )
         
+        # --- 收集发送目标 (频道 + 所有管理员) ---
         global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+        admin_ids = set(user_db.get_admin_telegram_chat_ids())
+
+        targets = set()
         if global_channel_id:
+            targets.add(str(global_channel_id))
+        for aid in admin_ids:
+            if aid:
+                targets.add(str(aid))
+
+        if not targets:
+            logger.debug("  ➜ [播放通知] 未配置接收人 (频道或管理员均为空)，跳过发送。")
+            return
+
+        # --- 遍历发送 ---
+        for target in targets:
             # 播放通知比较频繁，强制静音发送 (disable_notification=True)
             if photo_url:
-                send_telegram_photo(global_channel_id, photo_url, caption, disable_notification=True)
+                send_telegram_photo(target, photo_url, caption, disable_notification=True)
             else:
-                send_telegram_message(global_channel_id, caption, disable_notification=True)
+                send_telegram_message(target, caption, disable_notification=True)
+                
     except Exception as e:
         logger.error(f"  ➜ 组装/发送播放图文通知时发生异常: {e}")
 
