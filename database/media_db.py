@@ -1415,3 +1415,35 @@ def get_local_mediainfo_assets_with_sha1() -> List[Dict[str, Any]]:
     except Exception as e:
         logger.error(f"DB: 获取本地带 SHA1 的资产失败: {e}")
         return []
+    
+# 根据 Emby ID 快速获取用于通知的媒体信息 (附带父级回退逻辑)
+def get_notification_media_info_by_emby_id(emby_id: str) -> dict:
+    """
+    【通知增强】根据 Emby ID 快速获取用于通知的图片、评分和简介。
+    如果是 Episode，优先用自己的图片，没有则回退到父剧集的图片。
+    优先使用 backdrop_path 横幅背景图。
+    """
+    if not emby_id: return {}
+    sql = """
+        SELECT 
+            m.item_type, 
+            m.backdrop_path, 
+            m.poster_path, 
+            m.rating, 
+            m.overview,
+            p.backdrop_path AS parent_backdrop_path,
+            p.poster_path AS parent_poster_path
+        FROM media_metadata m
+        LEFT JOIN media_metadata p ON m.parent_series_tmdb_id = p.tmdb_id AND p.item_type = 'Series'
+        WHERE m.emby_item_ids_json @> %s::jsonb
+        LIMIT 1
+    """
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (json.dumps([emby_id]),))
+                row = cursor.fetchone()
+                if row: return dict(row)
+    except Exception as e:
+        logger.error(f"DB: 获取通知图片信息失败: {e}")
+    return {}

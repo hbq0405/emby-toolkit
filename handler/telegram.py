@@ -6,7 +6,7 @@ import requests
 import logging
 from datetime import datetime
 from config_manager import APP_CONFIG, get_proxies_for_requests
-from handler.tmdb import get_movie_details, get_tv_details
+from database import media_db
 from handler.emby import get_emby_item_details
 from database import user_db, request_db
 import constants
@@ -193,24 +193,19 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
                 formatted_episodes = _format_episode_ranges(raw_episodes)
                 episode_info_text = f"🎞️ *集数*: `{formatted_episodes}`\n"
 
-        # --- 3. 调用 tmdb_handler 获取图片路径 ---
+        # --- 3. 调用本地数据库获取图片路径 ---
         photo_url = None
-        if tmdb_id:
-            tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-            image_details = None
-            try:
-                if item_type == 'Movie':
-                    image_details = get_movie_details(int(tmdb_id), tmdb_api_key, append_to_response=None)
-                elif item_type == 'Series':
-                    image_details = get_tv_details(int(tmdb_id), tmdb_api_key, append_to_response=None)
-
-                if image_details:
-                    if image_details.get('backdrop_path'):
-                        photo_url = f"https://image.tmdb.org/t/p/w780{image_details['backdrop_path']}"
-                    elif image_details.get('poster_path'):
-                        photo_url = f"https://image.tmdb.org/t/p/w500{image_details['poster_path']}"
-            except Exception as e:
-                 logger.error(f"  ➜ [通知] 调用 tmdb_handler 获取图片信息时出错: {e}", exc_info=True)
+        try:
+            db_info = media_db.get_notification_media_info_by_emby_id(item_id)
+            if db_info:
+                # 优先横幅，其次竖图，如果是分集没图，找它爹(剧集)要横幅
+                path = db_info.get('backdrop_path') or db_info.get('poster_path')
+                if not path and db_info.get('item_type') == 'Episode':
+                    path = db_info.get('parent_backdrop_path') or db_info.get('parent_poster_path')
+                if path:
+                    photo_url = f"https://image.tmdb.org/t/p/w780{path}"
+        except Exception as e:
+            logger.error(f"  ➜ [通知] 从本地数据库获取图片信息时出错: {e}", exc_info=True)
         
         # --- 4. 组装最终的通知文本 (Caption) ---
         notification_title_map = {
@@ -323,35 +318,30 @@ def send_transfer_success_notification(task: dict):
         overview_text = "" 
         
         if tmdb_id:
-            # ★★★ 核心修复：剥离内部兜底 ID (如 282902-S1E1)，只取纯数字的主 ID ★★★
+            # ★★★ 核心修复：剥离内部兜底 ID，只取纯数字的主 ID ★★★
             base_tmdb_id = str(tmdb_id).split('-')[0]
             
             if base_tmdb_id and base_tmdb_id.isdigit():
-                tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
                 try:
-                    if item_type == 'movie':
-                        details = get_movie_details(int(base_tmdb_id), tmdb_api_key)
-                    else:
-                        details = get_tv_details(int(base_tmdb_id), tmdb_api_key)
+                    db_type = 'Movie' if item_type == 'movie' else 'Series'
+                    db_info = media_db.get_media_details(base_tmdb_id, db_type)
                     
-                    if details:
-                        if details.get('backdrop_path'):
-                            photo_url = f"https://image.tmdb.org/t/p/w780{details['backdrop_path']}"
-                        elif details.get('poster_path'):
-                            photo_url = f"https://image.tmdb.org/t/p/w500{details['poster_path']}"
+                    if db_info:
+                        path = db_info.get('backdrop_path') or db_info.get('poster_path')
+                        if path:
+                            photo_url = f"https://image.tmdb.org/t/p/w780{path}"
                             
-                        vote_average = details.get('vote_average')
+                        vote_average = db_info.get('rating')
                         if vote_average:
                             rating = f"✨ *评分*: `{vote_average:.1f}/10`\n"
                             
-                        raw_overview = details.get('overview', '')
+                        raw_overview = db_info.get('overview', '')
                         if raw_overview:
-                            # 限制最多显示 200 个字符，超出的用省略号代替
                             if len(raw_overview) > 200:
                                 raw_overview = raw_overview[:200] + "..."
                             overview_text = f"📝 *剧情*: {escape_markdown(raw_overview)}\n"
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"  ➜ 获取转存通知图片失败: {e}")
 
         # 组装卡片文本
         caption = (
@@ -383,7 +373,7 @@ def send_transfer_success_notification(task: dict):
         logger.error(f"  ➜ 发送转存成功通知时出错: {e}", exc_info=True)
 
 def send_playback_notification(data: dict):
-    """发送图文并茂的播放状态通知 (附带剧集或电影海报)"""
+    """发送图文并茂的播放状态通知 (附带剧集或电影海报，注入灵魂版)"""
     try:
         event_type = data.get("Event")
         user_name = data.get("User", {}).get("Name", "未知用户")
@@ -393,38 +383,23 @@ def send_playback_notification(data: dict):
         item = data.get("Item", {})
         original_item_name = item.get("Name", "未知项目")
         original_item_type = item.get("Type", "Unknown")
+        item_id = item.get("Id")
         
         display_item_name = original_item_name
         if original_item_type == "Episode" and item.get("SeriesName"):
             display_item_name = f"{item.get('SeriesName')} - {original_item_name}"
             
-        # 尝试获取 TMDB ID 以便抓取高清图片
-        tmdb_id = item.get("ProviderIds", {}).get("Tmdb")
-        if original_item_type == "Episode":
-            # 如果是分集，尝试获取所在剧集的 TMDB ID (海报更好看)
-            series_tmdb = item.get("SeriesProviderIds", {}).get("Tmdb")
-            if series_tmdb:
-                tmdb_id = series_tmdb
-
+        # --- 本地数据库提取图片 (极速，无网络请求依赖) ---
         photo_url = None
-        if tmdb_id:
-            base_tmdb_id = str(tmdb_id).split('-')[0]
-            if base_tmdb_id.isdigit():
-                tmdb_api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-                try:
-                    if original_item_type in ["Series", "Episode"]:
-                        details = get_tv_details(int(base_tmdb_id), tmdb_api_key)
-                    else:
-                        details = get_movie_details(int(base_tmdb_id), tmdb_api_key)
-                    
-                    if details:
-                        # 优先使用背景大图，如果没有则使用竖版海报
-                        if details.get('backdrop_path'):
-                            photo_url = f"https://image.tmdb.org/t/p/w780{details['backdrop_path']}"
-                        elif details.get('poster_path'):
-                            photo_url = f"https://image.tmdb.org/t/p/w500{details['poster_path']}"
-                except Exception as e:
-                    logger.debug(f"  ➜ 获取播放通知图片失败 (可忽略): {e}")
+        if item_id:
+            db_info = media_db.get_notification_media_info_by_emby_id(item_id)
+            if db_info:
+                # 优先横幅，如果没有再用竖图。如果是分集没图，自动用父剧集的横幅图
+                path = db_info.get('backdrop_path') or db_info.get('poster_path')
+                if not path and db_info.get('item_type') == 'Episode':
+                    path = db_info.get('parent_backdrop_path') or db_info.get('parent_poster_path')
+                if path:
+                    photo_url = f"https://image.tmdb.org/t/p/w780{path}"
                     
         action_map = {
             "playback.start": "▶️ 开始播放",
@@ -457,13 +432,12 @@ def send_playback_notification(data: dict):
             logger.debug("  ➜ [播放通知] 未配置接收人 (频道或管理员均为空)，跳过发送。")
             return
 
-        # --- 遍历发送 ---
+        # --- 遍历发送 (移除所有静音参数，让通知发出清脆的叮咚声！) ---
         for target in targets:
-            # 播放通知比较频繁，强制静音发送 (disable_notification=True)
             if photo_url:
-                send_telegram_photo(target, photo_url, caption, disable_notification=True)
+                send_telegram_photo(target, photo_url, caption)
             else:
-                send_telegram_message(target, caption, disable_notification=True)
+                send_telegram_message(target, caption)
                 
     except Exception as e:
         logger.error(f"  ➜ 组装/发送播放图文通知时发生异常: {e}")
