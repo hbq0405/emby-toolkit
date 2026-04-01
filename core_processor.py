@@ -102,7 +102,7 @@ def _aggregate_series_cast_from_tmdb_data(series_data: Dict[str, Any], all_episo
     """
     【新】从内存中的TMDB数据聚合一个剧集的所有演员。
     """
-    logger.debug(f"【演员聚合】开始为 '{series_data.get('name')}' 从内存中的TMDB数据聚合演员...")
+    logger.debug(f"  ➜ 【演员聚合】开始为 '{series_data.get('name')}' 从内存中的TMDB数据聚合演员...")
     aggregated_cast_map = {}
 
     # 1. 优先处理主剧集的演员列表
