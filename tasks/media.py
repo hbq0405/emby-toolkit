@@ -1269,6 +1269,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             child_record['title'] = tmdb_ep_info.get('name')
                             child_record['overview'] = tmdb_ep_info.get('overview')
                             child_record['poster_path'] = tmdb_ep_info.get('still_path')
+                            child_record['backdrop_path'] = tmdb_ep_info.get('still_path')
                             child_record['runtime_minutes'] = emby_ep_runtime if emby_ep_runtime else tmdb_ep_info.get('runtime')
                             if tmdb_ep_info.get('vote_average') is not None:
                                 child_record['rating'] = tmdb_ep_info.get('vote_average')
@@ -1277,6 +1278,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             child_record['title'] = versions[0].get('Name')
                             child_record['overview'] = versions[0].get('Overview')
                             child_record['runtime_minutes'] = emby_ep_runtime
+                            child_record['poster_path'] = None   # ★★★ 兜底
+                            child_record['backdrop_path'] = None # ★★★ 兜底
                         
                         metadata_batch.append(child_record)
 

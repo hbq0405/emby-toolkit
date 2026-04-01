@@ -1583,7 +1583,9 @@ class MediaProcessor:
                         "overview": emby_ep.get('Overview'), 
                         "release_date": emby_ep.get('PremiereDate'), 
                         "season_number": s_num, "episode_number": e_num,
-                        "runtime_minutes": final_runtime
+                        "runtime_minutes": final_runtime,
+                        "poster_path": None,    # ★★★ 新增
+                        "backdrop_path": None,   # ★★★ 新增
                     }
 
                     all_assets = []
@@ -2574,18 +2576,6 @@ class MediaProcessor:
                     logger.info(f"  ➜ [快速模式] 检测到完美本地数据，跳过图片下载、文件写入及 Emby 刷新。")
                 
                 else:
-                    # --- 分支 B: 正常处理/追更模式 ---
-                    # 写入 override 文件
-                    # 注意：sync_single_item_assets 内部已经有针对 episode_ids_to_sync 的优化，
-                    # 它只会下载新分集的图片，并复制新分集的 JSON，不会重新下载全套图片。
-                    # self.sync_single_item_assets(
-                    #     item_id=item_id,
-                    #     update_description="主流程处理完成" if not specific_episode_ids else f"追更: {len(specific_episode_ids)}个分集",
-                    #     final_cast_override=final_processed_cast,
-                    #     episode_ids_to_sync=specific_episode_ids,
-                    #     metadata_override=tmdb_details_for_extra 
-                    # )
-
                     # 通过 API 实时更新 Emby 演员库中的名字
                     self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
 
@@ -3859,64 +3849,6 @@ class MediaProcessor:
             logger.error(f"  ➜ 获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
             return None
     
-    # --- 实时覆盖缓存同步 ---
-    def sync_single_item_assets(self, item_id: str, 
-                                update_description: Optional[str] = None, 
-                                sync_timestamp_iso: Optional[str] = None,
-                                final_cast_override: Optional[List[Dict[str, Any]]] = None,
-                                episode_ids_to_sync: Optional[List[str]] = None,
-                                metadata_override: Optional[Dict[str, Any]] = None): 
-        """
-        纯粹的项目经理，负责接收设计师的所有材料，并分发给施工队。
-        """
-        log_prefix = f"实时覆盖缓存同步"
-        logger.trace(f"--- {log_prefix} 开始执行 (ItemID: {item_id}) ---")
-
-        if not self.local_data_path:
-            logger.warning(f"  ➜ {log_prefix} 任务跳过，因为未配置本地数据源路径。")
-            return
-
-        try:
-            item_details = emby.get_emby_item_details(
-                item_id, self.emby_url, self.emby_api_key, self.emby_user_id,
-                fields="ProviderIds,Type,Name,IndexNumber,ParentIndexNumber"
-            )
-            if not item_details:
-                raise ValueError("在Emby中找不到该项目。")
-
-            tmdb_id = item_details.get("ProviderIds", {}).get("Tmdb")
-            if not tmdb_id:
-                logger.warning(f"{log_prefix} 项目 '{item_details.get('Name')}' 缺少TMDb ID，无法同步。")
-                return
-
-            # 1. 调度外墙施工队
-            self.sync_item_images(item_details, update_description, episode_ids_to_sync=episode_ids_to_sync)
-            
-            # 2. 调度精装修施工队，并把所有图纸和材料都给他
-            self.sync_item_metadata(
-                item_details, 
-                tmdb_id, 
-                final_cast_override=final_cast_override, 
-                episode_ids_to_sync=episode_ids_to_sync,
-                metadata_override=metadata_override 
-            )
-
-            # 3. 记录工时
-            timestamp_to_log = sync_timestamp_iso or datetime.now(timezone.utc).isoformat()
-            with get_central_db_connection() as conn:
-                cursor = conn.cursor()
-                self.log_db_manager.mark_assets_as_synced(
-                    cursor, 
-                    item_id, 
-                    timestamp_to_log
-                )
-                conn.commit()
-            
-            logger.trace(f"--- {log_prefix} 成功完成 (ItemID: {item_id}) ---")
-
-        except Exception as e:
-            logger.error(f"{log_prefix} 执行时发生错误 (ItemID: {item_id}): {e}", exc_info=True)
-
     # --- 备份图片 ---
     def sync_item_images(self, item_details: Dict[str, Any], update_description: Optional[str] = None, episode_ids_to_sync: Optional[List[str]] = None) -> bool:
         """
@@ -4198,32 +4130,39 @@ class MediaProcessor:
                         if s_num is not None and e_num is not None and e_still:
                             downloads.append((e_still, f"season-{s_num}-episode-{e_num}.jpg"))
 
-            # 5. 执行下载
+            # 5. 执行下载 (★★★ 多线程并发提速版 ★★★)
             base_image_url = "https://image.tmdb.org/t/p/original"
-            success_count = 0
             import requests
+            import concurrent.futures
             
             # ★ 获取系统配置的代理
             proxies = config_manager.get_proxies_for_requests()
             
-            for tmdb_path, local_name in downloads:
-                if not tmdb_path: continue
+            def _download_single_image(tmdb_path, local_name):
+                if not tmdb_path: return 0
                 full_url = f"{base_image_url}{tmdb_path}"
                 save_path = os.path.join(image_override_dir, local_name)
                 
+                # 如果文件已存在且大小不为0，直接跳过
                 if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
-                    continue
+                    return 0
 
                 try:
-                    # ★ 在请求中加入 proxies 参数
                     resp = requests.get(full_url, timeout=15, proxies=proxies)
                     if resp.status_code == 200:
                         with open(save_path, 'wb') as f:
                             f.write(resp.content)
-                        success_count += 1
-                        time_module.sleep(0.1)
+                        return 1
                 except Exception as e:
                     logger.warning(f"  ➜ 下载图片失败 {local_name}: {e}")
+                return 0
+
+            success_count = 0
+            # 开启 5 个并发线程同时下载，速度起飞
+            with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                futures = [executor.submit(_download_single_image, path, name) for path, name in downloads]
+                for future in concurrent.futures.as_completed(futures):
+                    success_count += future.result()
 
             logger.info(f"  ➜ {log_prefix} 共下载 {success_count} 张图片。")
             return True

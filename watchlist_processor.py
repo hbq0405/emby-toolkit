@@ -659,6 +659,19 @@ class WatchlistProcessor:
                             ep
                         )
 
+        # ★★★ 4.5 新增：并发下载缺失的图片 (包含最新分集图片) ★★★
+        try:
+            import extensions
+            if extensions.media_processor_instance:
+                logger.debug(f"  ➜ 正在检查并下载 '{item_name}' 缺失的图片(含最新分集)...")
+                extensions.media_processor_instance.download_images_from_tmdb(
+                    tmdb_id=tmdb_id,
+                    item_type='Series',
+                    aggregated_tmdb_data=aggregated_data
+                )
+        except Exception as e_img:
+            logger.warning(f"  ➜ 追剧刷新时下载图片失败: {e_img}")
+
         # 5. 通知 Emby 刷新元数据 
         if item_id:
             emby.refresh_emby_item_metadata(
