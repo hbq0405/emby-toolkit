@@ -1385,6 +1385,8 @@ class MediaProcessor:
                         try: seasons_grouped_by_number[int(idx)].append(s_ver)
                         except: pass
 
+                processed_emby_seasons = set() # ★ 新增：记录已处理的 Emby 季
+
                 for season in seasons_details:
                     if not isinstance(season, dict): continue
                     
@@ -1393,14 +1395,16 @@ class MediaProcessor:
                     try: s_num_int = int(s_num)
                     except ValueError: continue
 
-                    # 允许缺失 TMDb ID 的季使用内部兜底 ID 入库 
+                    # ★★★ 核心修改：允许缺失 TMDb ID 的季使用内部兜底 ID 入库 ★★★
                     s_tmdb_id = season.get('id')
                     if not s_tmdb_id or str(s_tmdb_id) in ['0', 'None', '']:
                         s_tmdb_id = f"{series_details.get('id')}-S{s_num_int}"
-                        logger.debug(f"  ➜ [入库] 季 S{s_num_int} 缺失 TMDb ID，使用内部兜底 ID: {s_tmdb_id}")
 
                     season_poster = season.get('poster_path') or series_details.get('poster_path')
                     matched_emby_seasons = seasons_grouped_by_number.get(s_num_int, [])
+
+                    if matched_emby_seasons:
+                        processed_emby_seasons.add(s_num_int) # ★ 记录已处理
 
                     # ★ 提取所有匹配到的季文件夹 ID
                     season_ids = [s['Id'] for s in matched_emby_seasons] if matched_emby_seasons else []
@@ -1413,6 +1417,31 @@ class MediaProcessor:
                         "season_number": s_num,
                         "total_episodes": season.get('episode_count', 0),
                         "in_library": bool(matched_emby_seasons) if not is_pending else False,
+                        "emby_item_ids_json": json.dumps(season_ids),
+                        "file_sha1_json": '[]'
+                    })
+
+                # ★★★ 新增：兜底处理 Emby 中存在，但 TMDb 中完全没有的季 ★★★
+                for s_num, matched_emby_seasons in seasons_grouped_by_number.items():
+                    if s_num in processed_emby_seasons:
+                        continue
+
+                    fallback_s_tmdb_id = f"{series_details.get('id')}-S{s_num}"
+                    logger.debug(f"  ➜ [入库兜底] 发现 Emby 本地季 S{s_num} 在 TMDb 中不存在，生成内部 ID: {fallback_s_tmdb_id}")
+
+                    season_ids = [s['Id'] for s in matched_emby_seasons]
+
+                    records_to_upsert.append({
+                        "tmdb_id": fallback_s_tmdb_id,
+                        "item_type": "Season",
+                        "parent_series_tmdb_id": str(series_details.get('id')),
+                        "title": matched_emby_seasons[0].get('Name') or f"Season {s_num}",
+                        "overview": None,
+                        "release_date": matched_emby_seasons[0].get('PremiereDate'),
+                        "poster_path": series_details.get('poster_path'), 
+                        "season_number": s_num,
+                        "total_episodes": 0,
+                        "in_library": True,
                         "emby_item_ids_json": json.dumps(season_ids),
                         "file_sha1_json": '[]'
                     })
@@ -1438,6 +1467,8 @@ class MediaProcessor:
                         try: episodes_grouped_by_number[(int(s_num), int(e_num))].append(ep_version)
                         except: pass
 
+                processed_emby_episodes = set() # ★ 新增：记录已处理的 Emby 分集
+
                 for episode in episodes_details:
                     # 1. 必须有季号和集号 (提前解析，用于生成内部ID)
                     if episode.get('episode_number') is None: continue
@@ -1446,15 +1477,17 @@ class MediaProcessor:
                         e_num = int(episode.get('episode_number'))
                     except (ValueError, TypeError): continue
 
-                    # 允许缺失 TMDb ID 的分集使用内部兜底 ID 入库
+                    # ★★★ 核心修改：允许缺失 TMDb ID 的分集使用内部兜底 ID 入库 ★★★
                     e_tmdb_id = episode.get('id')
                     e_tmdb_id_str = str(e_tmdb_id) if e_tmdb_id else ""
                     
                     if e_tmdb_id_str in ['0', 'None', ''] or not e_tmdb_id_str.isdigit():
                         e_tmdb_id_str = f"{series_details.get('id')}-S{s_num}E{e_num}"
-                        logger.debug(f"  ➜ [入库] 分集 S{s_num}E{e_num} 缺失 TMDb ID，使用内部兜底 ID: {e_tmdb_id_str}")
 
                     versions_of_episode = episodes_grouped_by_number.get((s_num, e_num))
+
+                    if versions_of_episode:
+                        processed_emby_episodes.add((s_num, e_num)) # ★ 记录已处理
 
                     # 追更模式下，跳过非目标分集，避免全量读写 
                     if specific_episode_ids and not is_pending:
@@ -1548,6 +1581,94 @@ class MediaProcessor:
                         episode_record['file_sha1_json'] = '[]'
                         episode_record['file_pickcode_json'] = '[]'
                         
+                    records_to_upsert.append(episode_record)
+
+                # ★★★ 新增：兜底处理 Emby 中存在，但 TMDb 中完全没有的分集 ★★★
+                for (s_num, e_num), versions in episodes_grouped_by_number.items():
+                    if (s_num, e_num) in processed_emby_episodes:
+                        continue
+
+                    # 追更模式下，跳过非目标分集
+                    if specific_episode_ids and not is_pending:
+                        is_target = False
+                        for v in versions:
+                            if str(v.get('Id')) in specific_episode_ids:
+                                is_target = True
+                                break
+                        if not is_target:
+                            continue
+
+                    fallback_e_tmdb_id = f"{series_details.get('id')}-S{s_num}E{e_num}"
+                    logger.debug(f"  ➜ [入库兜底] 发现 Emby 本地分集 S{s_num}E{e_num} 在 TMDb 中不存在，生成内部 ID: {fallback_e_tmdb_id}")
+
+                    emby_ep = versions[0]
+                    final_runtime = round(emby_ep['RunTimeTicks'] / 600000000) if emby_ep.get('RunTimeTicks') else None
+
+                    episode_record = {
+                        "tmdb_id": fallback_e_tmdb_id, 
+                        "item_type": "Episode", 
+                        "parent_series_tmdb_id": str(series_details.get('id')), 
+                        "title": emby_ep.get('Name') or f"Episode {e_num}", 
+                        "overview": emby_ep.get('Overview'), 
+                        "release_date": emby_ep.get('PremiereDate'), 
+                        "season_number": s_num, "episode_number": e_num,
+                        "runtime_minutes": final_runtime
+                    }
+
+                    all_assets = []
+                    all_ids = []
+                    all_sha1s = []
+                    all_pcs = []
+                    
+                    for version in versions:
+                        raw_path = version.get('Path', '')
+                        clean_v_id = str(version.get('Id')).replace("mediasource_", "")
+                        
+                        file_pc, file_sha1 = self._extract_115_fingerprints(raw_path)
+                        if not file_sha1 and file_pc:
+                            file_sha1 = self._get_sha1_by_pickcode(file_pc)
+                        
+                        emby_path = raw_path
+                        if emby_path.startswith('http'):
+                            main_emby_path = item_details_from_emby.get('Path', '')
+                            if clean_v_id == item_id:
+                                emby_path = main_emby_path
+                            else:
+                                db_local_path = self._get_local_path_by_pickcode(file_pc)
+                                if db_local_path:
+                                    local_strm_root = self.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
+                                    if local_strm_root:
+                                        emby_path = os.path.join(local_strm_root, db_local_path.lstrip('/\\'))
+                                    elif main_emby_path:
+                                        real_filename = os.path.basename(db_local_path.replace('\\', '/'))
+                                        base_dir = os.path.dirname(main_emby_path)
+                                        emby_path = os.path.join(base_dir, real_filename)
+                                    else:
+                                        emby_path = ''
+                                else:
+                                    emby_path = ''
+                            
+                        mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
+                        file_sha1 = self._get_sha1_by_pickcode(file_pc)
+                        
+                        details = parse_full_asset_details(
+                            version,
+                            local_mediainfo_path=mediainfo_path
+                        )
+                        details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
+
+                        all_assets.append(details)
+                        all_ids.append(clean_v_id)
+                        
+                        if file_sha1: all_sha1s.append(file_sha1)
+                        if file_pc: all_pcs.append(file_pc)
+                        
+                    episode_record['asset_details_json'] = json.dumps(all_assets, ensure_ascii=False)
+                    episode_record['emby_item_ids_json'] = json.dumps(list(dict.fromkeys(all_ids)))
+                    episode_record['file_sha1_json'] = json.dumps(list(dict.fromkeys(all_sha1s)))
+                    episode_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
+                    episode_record['in_library'] = True
+
                     records_to_upsert.append(episode_record)
 
             if not records_to_upsert:
