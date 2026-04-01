@@ -138,7 +138,7 @@ def send_telegram_photo(chat_id: str, photo_url: str, caption: str, disable_noti
         proxies = get_proxies_for_requests()
         response = requests.post(api_url, json=payload, timeout=30, proxies=proxies)
         if response.status_code == 200:
-            logger.info(f"  ➜ 成功发送 Telegram 图文消息至 Chat ID: {final_chat_id}")
+            logger.debug(f"  ➜ 成功发送 Telegram 图文消息至 Chat ID: {final_chat_id}")
             return True
         else:
             logger.error(f"  ➜ 发送 Telegram 图文消息失败, 状态码: {response.status_code}, 响应: {response.text}")
