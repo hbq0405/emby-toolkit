@@ -1644,16 +1644,14 @@ def translate_tmdb_metadata_recursively(
             # 调用 AI
             trans_results = ai_translator.batch_translate_overviews(batch_dict, context_title=item_name)
             
-            # 回填结果
+            # 回填结果 (★★★ 增加防御性编程 ★★★)
             for tmdb_id_str, trans_text in trans_results.items():
                 if trans_text and utils.contains_chinese(trans_text):
                     if tmdb_id_str in pending_items:
                         pending_items[tmdb_id_str]["ref"]['overview'] = trans_text
+                        translated_count += 1
                     else:
-                        # 如果找不到这个ID，打印一个警告并跳过，防止程序崩溃
-                        import logging
-                        logging.getLogger(__name__).warning(f"AI翻译返回了未知的 TMDb ID: {tmdb_id_str}，已跳过该条目。")
-                    translated_count += 1
+                        logger.warning(f"    ├─ [AI幻觉拦截] AI返回了未知的ID(简介): {tmdb_id_str}，已跳过。")
             
             import time
             time.sleep(1) # 避免触发频率限制
@@ -1668,12 +1666,15 @@ def translate_tmdb_metadata_recursively(
             # 调用 AI
             trans_results = ai_translator.batch_translate_titles(batch_dict, media_type="Episode")
             
-            # 回填结果
+            # 回填结果 (★★★ 增加防御性编程 ★★★)
             for tmdb_id_str, trans_text in trans_results.items():
                 if trans_text and utils.contains_chinese(trans_text):
-                    title_key = pending_items[tmdb_id_str]["title_key"]
-                    pending_items[tmdb_id_str]["ref"][title_key] = trans_text
-                    translated_count += 1
+                    if tmdb_id_str in pending_items:
+                        title_key = pending_items[tmdb_id_str]["title_key"]
+                        pending_items[tmdb_id_str]["ref"][title_key] = trans_text
+                        translated_count += 1
+                    else:
+                        logger.warning(f"    ├─ [AI幻觉拦截] AI返回了未知的ID(标题): {tmdb_id_str}，已跳过。")
             
             import time
             time.sleep(1)
