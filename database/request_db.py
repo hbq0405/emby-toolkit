@@ -130,8 +130,8 @@ def set_media_status_wanted(
                 else:
                     # 自动模式：
                     sql = """
-                        INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, title, original_title, release_date, release_year, poster_path, season_number, parent_series_tmdb_id, overview)
-                        VALUES (%(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb, NOW(), %(title)s, %(original_title)s, %(release_date)s, %(release_year)s, %(poster_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
+                        INSERT INTO media_metadata (tmdb_id, item_type, subscription_status, subscription_sources_json, first_requested_at, title, original_title, release_date, release_year, poster_path, backdrop_path, season_number, parent_series_tmdb_id, overview)
+                        VALUES (%(tmdb_id)s, %(item_type)s, 'WANTED', %(source)s::jsonb, NOW(), %(title)s, %(original_title)s, %(release_date)s, %(release_year)s, %(poster_path)s, %(backdrop_path)s, %(season_number)s, %(parent_series_tmdb_id)s, %(overview)s)
                         ON CONFLICT (tmdb_id, item_type) DO UPDATE SET
                             subscription_status = 'WANTED',
                             subscription_sources_json = media_metadata.subscription_sources_json || EXCLUDED.subscription_sources_json,
