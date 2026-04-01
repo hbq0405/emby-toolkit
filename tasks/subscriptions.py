@@ -174,7 +174,6 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                     'parent_series_tmdb_id': str(tmdb_id),
                     'release_date': air_date_str,
                     'poster_path': final_poster, # 使用处理后的海报
-                    'backdrop_path': season.get('backdrop_path') or series_details.get('backdrop_path'),
                     'overview': season.get('overview')
                 }
                 
@@ -265,7 +264,6 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                     'season_number': s_num,
                     'title': season.get('name'),
                     'poster_path': final_poster,
-                    'backdrop_path': season.get('backdrop_path') or series_details.get('backdrop_path'),
                     'release_date': air_date_str
                 }
                 request_db.set_media_status_subscribed(

@@ -1019,7 +1019,6 @@ def process_subscription_items_and_update_db(
                 'release_year': release_year, 
                 'overview': details.get('overview'),
                 'poster_path': details.get('poster_path') or details.get('parent_poster_path'),
-                'backdrop_path': details.get('backdrop_path') or details.get('parent_backdrop_path'),
                 'parent_series_tmdb_id': details.get('parent_series_tmdb_id'),
                 'season_number': details.get('season_number'),
                 'source': subscription_source # 直接使用传入的 source
