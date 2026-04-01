@@ -368,14 +368,28 @@ def aggregate_full_series_data_from_tmdb(
                                     target_ep["overview"] = en_overview
                                     
                                     # =================================================
-                                    # ★★★ 联动替换标题 ★★★
-                                    # 如果简介缺失，说明中文数据质量差。
-                                    # 此时强制用英文标题覆盖现有的中文标题（如"第1集"），
-                                    # 以便后续流程能识别出这是英文，从而触发AI翻译。
+                                    # ★★★ 联动替换标题 (修复版) ★★★
+                                    # 坚决保护已有的、真实的中文标题！
+                                    # 仅当英文标题有效，且中文标题无效（为空或为占位符）时才替换。
                                     # =================================================
                                     en_title = en_data_item.get("name")
+                                    current_zh_title = target_ep.get("name", "")
+                                    
                                     if en_title:
-                                        target_ep["name"] = en_title
+                                        import re
+                                        # 检查英文标题是否只是无意义的占位符 (如 "Episode 1", "Episode 12")
+                                        is_en_generic = bool(re.match(r'^Episode\s*\d+$', en_title, re.IGNORECASE))
+                                        
+                                        # 检查中文标题是否是无意义的占位符 (如 "第 1 集", "第12集", "Episode 1")
+                                        is_zh_generic = bool(re.match(r'^(第\s*\d+\s*集|Episode\s*\d+)$', current_zh_title, re.IGNORECASE))
+                                        
+                                        # 替换条件：
+                                        # 1. 英文标题不是占位符 (说明英文标题有实际内容)
+                                        # 2. 并且 (中文标题为空 OR 中文标题是占位符 OR 中文标题完全不含中文)
+                                        if not is_en_generic:
+                                            if not current_zh_title or is_zh_generic or not contains_chinese(current_zh_title):
+                                                target_ep["name"] = en_title
+                                                # logger.debug(f"      ├─ 标题优化: '{current_zh_title}' -> '{en_title}'")
                                     
                                     filled_count += 1
                         
