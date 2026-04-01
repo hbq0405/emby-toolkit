@@ -963,7 +963,7 @@ def task_auto_subscribe(processor):
                                     has_zh_sub = False
                                     if any(lang in ['简中', '繁中', '中文', '国语', '粤语', '中英'] for lang in r_sub_lang):
                                         has_zh_sub = True
-                                    elif re.search(r'(中字|简中|繁中|特效字幕|国语|粤语|简繁|中英)', r_title + r_remark, re.IGNORECASE):
+                                    elif re.search(r'(中字|简中|繁中|特效字幕|国语|粤语|简繁|中英)', (r_title or "") + (r_remark or ""), re.IGNORECASE):
                                         has_zh_sub = True
                                     
                                     if not has_zh_sub:
