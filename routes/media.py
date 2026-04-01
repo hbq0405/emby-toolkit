@@ -128,7 +128,7 @@ def proxy_external_image():
             'Referer': f"{parsed_url.scheme}://{parsed_url.netloc}/"
         }
         
-        logger.debug(f"代理请求外部图片: URL='{external_url}', 使用代理={bool(proxies)}")
+        logger.debug(f"  ➜ 代理请求外部图片: URL='{external_url}', 使用代理={bool(proxies)}")
 
         # 4. 带着代理和伪装头去请求
         # 增加 verify=False 可以防止某些代理抓包导致的 SSL 报错（可选）
