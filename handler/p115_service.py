@@ -981,6 +981,18 @@ class P115RecordManager:
                     conn.commit()
         except Exception as e:
             logger.error(f"  ➜ 写入 115 整理记录失败: {e}")
+    @staticmethod
+    def delete_records(file_ids):
+        """批量删除整理记录 (用于洗版替换时清理旧记录)"""
+        if not file_ids: return
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # 使用 ANY 语法批量删除
+                    cursor.execute("DELETE FROM p115_organize_records WHERE file_id = ANY(%s)", (list(file_ids),))
+                    conn.commit()
+        except Exception as e:
+            logger.error(f"  ➜ 清理 115 整理记录失败: {e}")
 
 # ======================================================================
 # ★★★ 115 全局批量删除缓冲队列 (极简暴力清理版) ★★★
@@ -2816,6 +2828,7 @@ class SmartOrganizer:
                 # === 执行网盘删除和缓存清理 ===
                 self.client.fs_delete(list(fids_to_delete))
                 P115CacheManager.delete_files(list(fids_to_delete))
+                P115RecordManager.delete_records(list(fids_to_delete))
                 
             # -----------------------------------------------------------
             # ★ 3. 执行移动新文件
