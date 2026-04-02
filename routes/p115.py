@@ -1046,21 +1046,36 @@ def upload_music_file():
         client = P115Service.get_client()
         
         if str(target_cid) != str(music_root_cid) and client:
-            dir_info = client.fs_files({'cid': target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
-            path_nodes = dir_info.get('path', [])
+            # ★ 核心修复：并发上传时，115 接口返回 path 可能有延迟或截断，导致单首歌跑飞
+            # 优先 1：从本地 DB 缓存中推导相对路径，零延迟且百分百精准
+            cached_local_path = P115CacheManager.get_local_path(target_cid)
+            if cached_local_path and cached_local_path.replace('\\', '/').startswith(music_root_name):
+                rel = cached_local_path.replace('\\', '/')[len(music_root_name):].strip('/')
+                if rel: target_rel_path = rel
             
-            start_idx = -1
-            for i, node in enumerate(path_nodes):
-                if str(node.get('cid') or node.get('file_id')) == str(music_root_cid):
-                    start_idx = i + 1
-                    break
+            # 优先 2：如果缓存没命中，再去 115 查，并增加重试机制对抗 115 目录树同步延迟
+            if not target_rel_path:
+                for retry in range(3):
+                    dir_info = client.fs_files({'cid': target_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                    path_nodes = dir_info.get('path', [])
                     
-            if start_idx != -1:
-                sub_folders = [str(p.get('name') or p.get('file_name')).strip() for p in path_nodes[start_idx:]]
-                if sub_folders:
-                    target_rel_path = os.path.join(*sub_folders)
-            else:
-                target_rel_path = "未分类上传"
+                    start_idx = -1
+                    for i, node in enumerate(path_nodes):
+                        if str(node.get('cid') or node.get('file_id')) == str(music_root_cid):
+                            start_idx = i + 1
+                            break
+                            
+                    if start_idx != -1:
+                        sub_folders = [str(p.get('name') or p.get('file_name')).strip() for p in path_nodes[start_idx:]]
+                        if sub_folders:
+                            target_rel_path = os.path.join(*sub_folders)
+                        break
+                    else:
+                        time.sleep(1) # 115 路径树存在延迟，暂停 1 秒后重查
+                        
+                # 终极兜底
+                if start_idx == -1:
+                    target_rel_path = "未分类上传"
 
         base_local_path = os.path.join(music_root_name, target_rel_path).replace('\\', '/')
 
