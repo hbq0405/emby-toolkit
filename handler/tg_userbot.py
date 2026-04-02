@@ -496,6 +496,7 @@ def _process_tg_queue():
                     results = tmdb.search_media(title, api_key, item_type=item_type, year=year)
                     if results:
                         tmdb_id = str(results[0]['id'])
+                        task['tmdb_id'] = tmdb_id # 更新任务字典，供后续步骤使用
                         logger.debug(f"  ➜ [频道监听] 反查成功！精准匹配到 TMDB ID: {tmdb_id}")
                     else:
                         logger.warning(f"  ➜ [频道监听] 反查失败，TMDb 未找到该{'剧集' if item_type=='tv' else '电影'}，任务终止。")
