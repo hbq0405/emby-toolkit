@@ -1691,7 +1691,7 @@ class SmartOrganizer:
 
         return info_dict
 
-    def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None):
+    def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, silent_log=False):
         """
         通过 SHA1 获取真实的媒体信息，并转换为乐高重命名参数
         """
@@ -1824,7 +1824,7 @@ class SmartOrganizer:
             logger.warning(f"  ➜ 解析真实媒体信息失败: {e}")
 
         # ★★★ 纠错日志：遍历真理字典中的每一个键进行对比 ★★★
-        if guessed_info is not None and info:
+        if guessed_info is not None and info and not silent_log:
             corrected_items = []
             for k in info.keys():
                 old_v = guessed_info.get(k, '')
@@ -1894,7 +1894,7 @@ class SmartOrganizer:
 
         return "".join(final_parts)
 
-    def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None):
+    def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, silent_log=False):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
         if '.' not in original_name: return original_name, None, False
 
@@ -1947,10 +1947,9 @@ class SmartOrganizer:
         if not is_sub and enable_smart_rename:
             sha1 = file_node.get('sha1') or file_node.get('sha')
             if sha1:
-                real_info, is_center_cached = self._fetch_and_parse_mediainfo(sha1, video_info, pre_fetched_mediainfo, local_pre_fetched_mediainfo)
+                real_info, is_center_cached = self._fetch_and_parse_mediainfo(sha1, video_info, pre_fetched_mediainfo, local_pre_fetched_mediainfo, silent_log=silent_log)
                 if real_info:
                     for k, v in real_info.items():
-                        # ★ 核心修复：无条件覆盖！只要物理字典里有这个键，哪怕是空字符串也要盖掉文件名的瞎猜
                         video_info[k] = v
                     
         # 解析季集号
@@ -2562,7 +2561,12 @@ class SmartOrganizer:
                 ext = fn.split('.')[-1].lower() if '.' in fn else ''
                 if ext in known_video_exts:
                     # 临时调用重命名获取名字
-                    v_name, v_s, v_e, _, _ = self._rename_file_node(file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title, pre_fetched_mediainfo=pre_fetched_mediainfo, local_pre_fetched_mediainfo=local_pre_fetched_mediainfo)
+                    v_name, v_s, v_e, _, _ = self._rename_file_node(
+                        file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), 
+                        original_title=original_title, pre_fetched_mediainfo=pre_fetched_mediainfo, 
+                        local_pre_fetched_mediainfo=local_pre_fetched_mediainfo,
+                        silent_log=True  # ★ 开启静默，防止预扫描时重复打印日志
+                    )
                     key = (v_s, v_e) if self.media_type == 'tv' else 'movie'
                     batch_video_names[key] = v_name.rsplit('.', 1)[0]
             
