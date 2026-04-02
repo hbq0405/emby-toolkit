@@ -1164,65 +1164,16 @@
                       </n-checkbox-group>
                     </n-form-item-grid-item>
 
-                    <n-divider title-placement="left" style="margin-top: 15px;">订阅频道 (Pro)</n-divider>
+                    <!-- ★ 修改点：移除原有的表单，换成呼出模态框的按钮 -->
+                    <n-divider title-placement="left" style="margin-top: 15px;">频道订阅监听 (Pro)</n-divider>
                     <n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;">
-                      自动监听频道消息，根据订阅选择性转存资源到待处理目录。
+                      自动监听频道消息，根据订阅选择性转存资源。为防止冲突，此功能已独立配置。
                     </n-alert>
-
-                    <n-form-item-grid-item label="启用监听" path="tg_user_enabled">
-                      <n-switch v-model:value="configModel.tg_user_enabled" />
-                    </n-form-item-grid-item>
-
-                    <template v-if="configModel.tg_user_enabled">
-                      <n-form-item-grid-item label="订阅类型" path="tg_monitor_type">
-                        <n-checkbox-group v-model:value="configModel.tg_monitor_type">
-                          <n-space>
-                            <n-checkbox value="movie" label="电影" />
-                            <n-checkbox value="tv" label="电视剧" />
-                          </n-space>
-                        </n-checkbox-group>
-                      </n-form-item-grid-item>
-                      <n-form-item-grid-item label="API ID" path="tg_user_api_id">
-                        <n-input v-model:value="configModel.tg_user_api_id" placeholder="例如: 1234567" />
-                      </n-form-item-grid-item>
-                      <n-form-item-grid-item label="API Hash" path="tg_user_api_hash">
-                        <n-input v-model:value="configModel.tg_user_api_hash" type="password" show-password-on="click" />
-                      </n-form-item-grid-item>
-                      <n-form-item-grid-item label="手机号 (带国家代码)" path="tg_user_phone">
-                        <n-input v-model:value="configModel.tg_user_phone" placeholder="例如: +8613800138000" />
-                      </n-form-item-grid-item>
-                      <n-form-item-grid-item label="两步验证密码 (2FA)" path="tg_user_2fa">
-                        <n-input v-model:value="configModel.tg_user_2fa" type="password" show-password-on="click" placeholder="如果没有设置请留空" />
-                      </n-form-item-grid-item>
-                      
-                      <n-form-item-grid-item label="监听频道白名单" path="tg_monitor_channels">
-                        <n-select v-model:value="configModel.tg_monitor_channels" multiple filterable tag placeholder="输入频道 Username 或 ID 并回车 (如 hdtv115)" :options="[]" />
-                      </n-form-item-grid-item>
-
-                      <!-- 登录交互区 -->
-                      <n-form-item-grid-item label="账号授权状态">
-                        <n-space align="center">
-                          <n-tag :type="userBotStatus === 'authorized' ? 'success' : 'error'">
-                            {{ userBotStatus === 'authorized' ? '已登录 (监听中)' : '未登录' }}
-                          </n-tag>
-                          
-                          <n-button v-if="userBotStatus !== 'authorized'" type="primary" size="small" @click="sendUserBotCode" :loading="isSendingCode">
-                            获取验证码
-                          </n-button>
-                          <n-button v-else type="error" ghost size="small" @click="logoutUserBot">
-                            注销账号
-                          </n-button>
-                        </n-space>
-                      </n-form-item-grid-item>
-
-                      <!-- 验证码输入框 (点击获取验证码后显示) -->
-                      <n-form-item-grid-item v-if="showCodeInput" label="输入验证码">
-                        <n-input-group>
-                          <n-input v-model:value="userBotCode" placeholder="输入 TG 收到的验证码" />
-                          <n-button type="primary" @click="submitUserBotCode" :loading="isSubmittingCode">登录</n-button>
-                        </n-input-group>
-                      </n-form-item-grid-item>
-                    </template>
+                    
+                    <n-button block type="primary" secondary @click="tgMonitorModalRef?.open()">
+                      <template #icon><n-icon :component="ListIcon" /></template>
+                      配置频道订阅监听
+                    </n-button>
 
                   </n-card>
                 </n-gi>
@@ -1861,11 +1812,13 @@
         </n-space>
       </template>
     </n-modal>
+    <!-- ★ 引入频道监听模态框 -->
+    <TGMonitorModal ref="tgMonitorModalRef" />
 </template>
 
 <script setup>
 import { ref, watch, computed, onMounted, onUnmounted, nextTick, isShallow } from 'vue'; 
-import draggable from 'vuedraggable';
+import TGMonitorModal from './TGMonitorModal.vue';
 import { 
   NCard, NForm, NFormItem, NInputNumber, NSwitch, NButton, NGrid, NGi, 
   NSpin, NAlert, NInput, NSelect, NSpace, useMessage, useDialog,
@@ -1900,6 +1853,7 @@ import RenameConfigModal from './RenameConfigModal.vue';
 import MusicManagerModal from './MusicManagerModal.vue';
 import RuleManagerModal from './RuleManagerModal.vue'; 
 import axios from 'axios';
+const tgMonitorModalRef = ref(null);
 const renameModalRef = ref(null);
 const musicModalRef = ref(null);
 const ruleManagerRef = ref(null);
@@ -2877,68 +2831,6 @@ const handleCreateFolder = async () => {
   } catch (e) {
     message.error("请求失败: " + e.message);
   }
-};
-
-// --- UserBot 逻辑 ---
-const userBotStatus = ref('unauthorized');
-const showCodeInput = ref(false);
-const userBotCode = ref('');
-const isSendingCode = ref(false);
-const isSubmittingCode = ref(false);
-
-const checkUserBotStatus = async () => {
-  try {
-    const res = await axios.get('/api/tg_userbot/status');
-    if (res.data.success) {
-      userBotStatus.value = res.data.data.status;
-    }
-  } catch (e) {}
-};
-
-const sendUserBotCode = async () => {
-  // 必须先保存配置，后端才能拿到最新的 API_ID 和 Phone
-  await save(); 
-  isSendingCode.value = true;
-  try {
-    const res = await axios.post('/api/tg_userbot/send_code');
-    if (res.data.success) {
-      message.success(res.data.message);
-      showCodeInput.value = true;
-    } else {
-      message.error(res.data.message);
-    }
-  } catch (e) {
-    message.error(e.response?.data?.message || '请求失败');
-  } finally {
-    isSendingCode.value = false;
-  }
-};
-
-const submitUserBotCode = async () => {
-  if (!userBotCode.value) return message.warning('请输入验证码');
-  isSubmittingCode.value = true;
-  try {
-    const res = await axios.post('/api/tg_userbot/login', { code: userBotCode.value });
-    if (res.data.success) {
-      message.success(res.data.message);
-      showCodeInput.value = false;
-      checkUserBotStatus();
-    } else {
-      message.error(res.data.message);
-    }
-  } catch (e) {
-    message.error(e.response?.data?.message || '登录失败');
-  } finally {
-    isSubmittingCode.value = false;
-  }
-};
-
-const logoutUserBot = async () => {
-  try {
-    await axios.post('/api/tg_userbot/logout');
-    message.success('已注销');
-    checkUserBotStatus();
-  } catch (e) {}
 };
 
 const confirmFolderSelection = () => {

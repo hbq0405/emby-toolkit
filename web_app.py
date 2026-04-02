@@ -66,6 +66,7 @@ from routes.user_portal import user_portal_bp
 from routes.discover import discover_bp
 from routes.p115 import p115_bp
 from routes.hdhive import hdhive_bp
+from routes.tg_userbot import tg_userbot_bp
 # --- 核心模块导入 ---
 import constants # 你的常量定义\
 from logger_setup import frontend_log_queue, add_file_handler # 日志记录器和前端日志队列
@@ -465,7 +466,7 @@ app.register_blueprint(user_portal_bp)
 app.register_blueprint(discover_bp)
 app.register_blueprint(p115_bp)
 app.register_blueprint(hdhive_bp)
-
+app.register_blueprint(tg_userbot_bp)
 def main_app_start():
     """将主应用启动逻辑封装成一个函数"""
     global monitor_service_instance # 声明使用全局变量

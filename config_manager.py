@@ -184,13 +184,6 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_TELEGRAM_BOT_TOKEN: (constants.CONFIG_SECTION_TELEGRAM, 'password', ""),
     constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID: (constants.CONFIG_SECTION_TELEGRAM, 'string', ""),
     constants.CONFIG_OPTION_TELEGRAM_MENU_TASKS: (constants.CONFIG_SECTION_TELEGRAM, 'list', constants.DEFAULT_TELEGRAM_MENU_TASKS),
-    constants.CONFIG_OPTION_TG_USER_ENABLED: (constants.CONFIG_SECTION_TELEGRAM, 'boolean', False),
-    constants.CONFIG_OPTION_TG_USER_API_ID: (constants.CONFIG_SECTION_TELEGRAM, 'string', ""),
-    constants.CONFIG_OPTION_TG_USER_API_HASH: (constants.CONFIG_SECTION_TELEGRAM, 'string', ""),
-    constants.CONFIG_OPTION_TG_USER_PHONE: (constants.CONFIG_SECTION_TELEGRAM, 'string', ""),
-    constants.CONFIG_OPTION_TG_USER_2FA: (constants.CONFIG_SECTION_TELEGRAM, 'password', ""),
-    constants.CONFIG_OPTION_TG_MONITOR_CHANNELS: (constants.CONFIG_SECTION_TELEGRAM, 'list', []),
-    constants.CONFIG_OPTION_TG_MONITOR_TYPE: (constants.CONFIG_SECTION_TELEGRAM, 'list', ['movie', 'tv']),
     constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES: (constants.CONFIG_SECTION_TELEGRAM, 'list', constants.DEFAULT_TELEGRAM_NOTIFY_TYPES),
 }
 

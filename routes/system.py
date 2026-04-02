@@ -576,37 +576,3 @@ def transfer_pro():
     except Exception as e:
         logger.error(f"换绑请求异常: {e}")
         return jsonify({"success": False, "message": "连接验证服务器失败，请检查网络"}), 500
-    
-@system_bp.route('/tg_userbot/status', methods=['GET'])
-def tg_userbot_status():
-    manager = TGUserBotManager.get_instance()
-    return jsonify({"success": True, "data": manager.get_status()})
-
-@system_bp.route('/tg_userbot/send_code', methods=['POST'])
-def tg_userbot_send_code():
-    try:
-        from handler.tg_userbot import TGUserBotManager
-        TGUserBotManager.get_instance().send_login_code()
-        return jsonify({"success": True, "message": "验证码已发送到您的 Telegram 客户端"})
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"发送验证码失败: {e}", exc_info=True)
-        return jsonify({"success": False, "message": f"发送失败: {str(e)}"})
-
-@system_bp.route('/tg_userbot/login', methods=['POST'])
-def tg_userbot_login():
-    code = request.json.get('code')
-    if not code: return jsonify({"success": False, "message": "请输入验证码"})
-    try:
-        res = TGUserBotManager.get_instance().submit_login_code(code)
-        if res.get('success'):
-            return jsonify({"success": True, "message": "登录成功！监听服务已启动。"})
-        else:
-            return jsonify({"success": False, "message": res.get('msg', '登录失败')})
-    except Exception as e:
-        return jsonify({"success": False, "message": str(e)})
-
-@system_bp.route('/tg_userbot/logout', methods=['POST'])
-def tg_userbot_logout():
-    TGUserBotManager.get_instance().logout()
-    return jsonify({"success": True, "message": "已注销并清除凭证"})
