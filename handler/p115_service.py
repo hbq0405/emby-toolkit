@@ -1901,6 +1901,25 @@ class SmartOrganizer:
             if not lang_suffix:
                 match = re.search(r'(?:\.|-|_|\s)(chs|cht|zh-cn|zh-tw|eng|jpn|kor|tc|sc)(?:\.|-|_|$)', name_body, re.IGNORECASE)
                 if match: lang_suffix = f".{match.group(1)}"
+                # ★★★ 强制基础名注入 (专为 MP 字幕挂起等待机制设计) ★★★
+                forced_base_name = file_node.get('_forced_base_name')
+                if forced_base_name:
+                    new_name = f"{forced_base_name}{lang_suffix}.{ext}"
+                    season_num = file_node.get('_forced_season')
+                    episode_num = file_node.get('_forced_episode')
+                    s_name = None
+                    if is_tv and season_num is not None:
+                        cfg = self.rename_config
+                        season_format = cfg.get('season_dir_format', ['season_name_en'])
+                        s_name = self._build_name_from_format(
+                            season_format, 
+                            is_tv=True, 
+                            season_num=season_num, 
+                            original_title=original_title, 
+                            safe_title=new_base_name
+                        )
+                        if not s_name: s_name = f"Season {season_num:02d}"
+                    return new_name, season_num, episode_num, s_name, False
 
         cfg = self.rename_config
         
@@ -2520,6 +2539,39 @@ class SmartOrganizer:
         # 确保 allowed_exts 有兜底，防止用户清空列表导致报错
         if not allowed_exts:
             allowed_exts = known_video_exts | {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
+
+        # =================================================================
+        # ★★★ 同批次字幕完美对齐视频命名 (解决 MP 单文件上传分离问题) ★★★
+        # =================================================================
+        batch_video_names = {} # key: (season, episode) -> base_name
+        if not keep_original and is_batch:
+            # 1. 预扫描视频，生成标准命名
+            for file_item in candidates:
+                fn = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
+                ext = fn.split('.')[-1].lower() if '.' in fn else ''
+                if ext in known_video_exts:
+                    # 临时调用重命名获取名字
+                    v_name, v_s, v_e, _, _ = self._rename_file_node(file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title, pre_fetched_mediainfo=pre_fetched_mediainfo, local_pre_fetched_mediainfo=local_pre_fetched_mediainfo)
+                    key = (v_s, v_e) if self.media_type == 'tv' else 'movie'
+                    batch_video_names[key] = v_name.rsplit('.', 1)[0]
+            
+            # 2. 将视频基础名注入到同批次的字幕中
+            if batch_video_names:
+                for file_item in candidates:
+                    fn = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
+                    ext = fn.split('.')[-1].lower() if '.' in fn else ''
+                    if ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
+                        s_num = file_item.get('_forced_season')
+                        e_num = file_item.get('_forced_episode')
+                        if self.media_type == 'tv' and (s_num is None or e_num is None):
+                            match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b', fn, re.IGNORECASE)
+                            if match:
+                                s_num, e_num = int(match.group(1)), int(match.group(2))
+                        
+                        key = (s_num, e_num) if self.media_type == 'tv' else 'movie'
+                        if key in batch_video_names:
+                            file_item['_forced_base_name'] = batch_video_names[key]
+                            logger.debug(f"  ➜ [字幕对齐] 成功将字幕 '{fn}' 绑定至视频基础名 '{batch_video_names[key]}'")
 
         # =================================================================
         # ★★★ 核心性能修复：内存级目录缓存 ★★★
