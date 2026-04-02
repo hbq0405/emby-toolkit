@@ -236,11 +236,6 @@
                         </n-text>
                       </template>
                     </n-form-item>
-                    <n-alert type="info" :show-icon="true" style="margin-top: 10px;">
-                      <span style="font-size: 0.85em;">
-                        <b>友情提示：</b> 开启实时监控后，系统会自动处理新增媒体并通知Emby扫描入库，所以请关闭Emby媒体库的实时监控以免冲突。
-                      </span>
-                    </n-alert>
                   </n-card>
                 </n-gi>
                 <n-gi>
@@ -265,11 +260,11 @@
                       <n-input v-model:value="configModel.tmdb_api_base_url" placeholder="https://api.themoviedb.org/3" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">TMDb API的基础URL，通常不需要修改。</n-text></template>
                     </n-form-item>
-                    <n-form-item label="允许成人内容探索" path="tmdb_include_adult">
+                    <n-form-item label="成人内容探索" path="tmdb_include_adult">
                       <n-space align="center">
                         <n-switch v-model:value="configModel.tmdb_include_adult" />
                         <n-text depth="3" style="font-size: 0.9em; margin-left: 8px;">
-                          开启后，仅当在探索页面筛选“Emby分级15”的中文标签时，才会返回 TMDb 成人内容。
+                          控制影视探索是否返回成人内容。
                         </n-text>
                       </n-space>
                     </n-form-item>
