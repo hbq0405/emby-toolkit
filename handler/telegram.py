@@ -423,11 +423,14 @@ def send_playback_notification(data: dict):
         original_item_type = item.get("Type", "Unknown")
         item_id = item.get("Id")
         
+        # 优先从 Emby Webhook 数据中提取剧情
+        raw_overview = item.get("Overview", "")
+        
         display_item_name = original_item_name
         if original_item_type == "Episode" and item.get("SeriesName"):
             display_item_name = f"{item.get('SeriesName')} - {original_item_name}"
             
-        # --- 本地数据库提取图片 (极速，无网络请求依赖) ---
+        # --- 本地数据库提取图片和剧情兜底 (极速，无网络请求依赖) ---
         photo_url = None
         if item_id:
             db_info = media_db.get_notification_media_info_by_emby_id(item_id)
@@ -438,11 +441,17 @@ def send_playback_notification(data: dict):
                     path = db_info.get('parent_backdrop_path') or db_info.get('parent_poster_path')
                 if path:
                     photo_url = f"https://image.tmdb.org/t/p/w780{path}"
-                raw_overview = db_info.get('overview', '')
-                if raw_overview:
-                    if len(raw_overview) > 200:
-                        raw_overview = raw_overview[:200] + "..."
-                    overview_text = f"📝 *剧情*: {escape_markdown(raw_overview)}\n"
+                
+                # ★ 新增：如果 Emby 没传剧情，从本地数据库兜底获取
+                if not raw_overview:
+                    raw_overview = db_info.get('overview', '')
+        
+        # 格式化剧情文本 (限制长度防刷屏)
+        overview_text = ""
+        if raw_overview:
+            if len(raw_overview) > 150:
+                raw_overview = raw_overview[:150] + "..."
+            overview_text = f"\n📝 *剧情*: {escape_markdown(raw_overview)}"
                     
         action_map = {
             "playback.start": "▶️ 开始播放",
@@ -452,13 +461,14 @@ def send_playback_notification(data: dict):
         action_str = action_map.get(event_type, "🎬 播放状态改变")
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        # ★ 修改：将剧情变量追加到卡片末尾
         caption = (
             f"{action_str}\n\n"
             f"👤 *用户*: `{escape_markdown(user_name)}`\n"
             f"🎬 *媒体*: *{escape_markdown(display_item_name)}*\n"
             f"📱 *设备*: `{escape_markdown(device_name)} ({escape_markdown(client_name)})`\n"
             f"🕒 *时间*: `{escape_markdown(current_time)}`"
-            f"{overview_text}"
+            f"{overview_text}" 
         )
         
         # --- 收集发送目标 (频道 + 所有管理员) ---
