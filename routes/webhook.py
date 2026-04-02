@@ -143,10 +143,10 @@ def _enqueue_mp_file(file_info):
         if task['timer'] is not None:
             task['timer'].kill()
         
-        # ★ 核心机制：如果视频到了，只等 5 秒(防并发)就发车；如果只有字幕，最多等 5 分钟！
-        delay = 5.0 if task['has_video'] else 300.0
+        # ★ 核心机制：如果视频到了，只等 5 秒(防并发)就发车；如果只有字幕，最多等 2 小时！
+        delay = 5.0 if task['has_video'] else 7200.0
         
-        logger.info(f"  ➜ [MP缓冲] 文件 '{file_name}' 加入队列。当前批次 {len(task['files'])} 个文件。等待 {delay} 秒后合并执行...")
+        logger.info(f"  ➜ [MP缓冲] 文件 '{file_name}' 加入队列。当前批次 {len(task['files'])} 个文件。最多等待 {delay} 秒后合并执行...")
         task['timer'] = spawn_later(delay, _flush_mp_batch, key)
 
 def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, force_full_update: bool, new_episode_ids: Optional[List[str]] = None, is_new_item: bool = True):
