@@ -62,9 +62,7 @@
                     <n-form-item-grid-item label="处理项目间的延迟 (秒)" path="delay_between_items_sec">
                       <n-input-number v-model:value="configModel.delay_between_items_sec" :min="0" :step="0.1" placeholder="例如: 0.5"/>
                     </n-form-item-grid-item>
-                    <n-form-item-grid-item label="豆瓣API默认冷却时间 (秒)" path="api_douban_default_cooldown_seconds">
-                      <n-input-number v-model:value="configModel.api_douban_default_cooldown_seconds" :min="0.1" :step="0.1" placeholder="例如: 1.0"/>
-                    </n-form-item-grid-item>
+                    
                     <n-form-item-grid-item label="需手动处理的最低评分阈值" path="min_score_for_review">
                       <n-input-number v-model:value="configModel.min_score_for_review" :min="0.0" :max="10" :step="0.1" placeholder="例如: 6.0"/>
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">处理质量评分低于此值的项目将进入待复核列表。</n-text></template>
@@ -234,7 +232,7 @@
                       <n-switch v-model:value="configModel.monitor_sha1_pc_search" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          文件SHA1查询，非115可关闭，关闭则影响备份媒体信息、媒体信息中心化等。
+                          文件SHA1查询，非115网盘勿启用。
                         </n-text>
                       </template>
                     </n-form-item>
@@ -277,7 +275,7 @@
                     </n-form-item>
                     <n-form-item label="GitHub 个人访问令牌" path="github_token">
                       <n-input type="password" show-password-on="mousedown" v-model:value="configModel.github_token" placeholder="可选，用于提高API请求频率限制"/>
-                      <template #feedback><n-text depth="3" style="font-size:0.8em;"><a href="https://github.com/settings/tokens/new" target="_blank" style="font-size: 1.3em; margin-left: 8px; color: var(--n-primary-color); text-decoration: underline;">免费申请GithubTOKEN</a></n-text></template>
+                      <template #feedback><n-text depth="3" style="font-size:0.8em;"><a href="https://github.com/settings/tokens/new" target="_blank" style="font-size: 1.3em; margin-left: 4px; color: var(--n-primary-color); text-decoration: underline;">免费申请GithubTOKEN</a></n-text></template>
                     </n-form-item>
                     <n-form-item label="启用在线豆瓣API" path="douban_enable_online_api">
                       <n-space align="center">
@@ -287,9 +285,12 @@
                         </n-text>
                       </n-space>
                     </n-form-item>
+                    <n-form-item-grid-item label="豆瓣API冷却时间 (秒)" path="api_douban_default_cooldown_seconds">
+                      <n-input-number v-model:value="configModel.api_douban_default_cooldown_seconds" :min="0.1" :step="0.1" placeholder="例如: 1.0"/>
+                    </n-form-item-grid-item>
                     <n-form-item label="豆瓣登录 Cookie" path="douban_cookie">
                       <n-input type="password" show-password-on="mousedown" v-model:value="configModel.douban_cookie" placeholder="从浏览器开发者工具中获取"/>
-                      <template #feedback><n-text depth="3" style="font-size:0.8em;">非必要不用配置，当日志频繁出现“豆瓣API请求失败: 需要登录...”的提示时再配置。</n-text></template>
+                      <template #feedback><n-text depth="3" style="font-size:0.8em;">非必要不用配置，作用有限。</n-text></template>
                     </n-form-item>
                   </n-card>
                 </n-gi>
