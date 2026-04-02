@@ -2947,7 +2947,6 @@ class SmartOrganizer:
                                 if str(rule.get('cid')) == str(target_cid):
                                     category_name = rule.get('dir_name', '未识别')
                                     break
-                            from handler.p115_service import P115RecordManager
                             P115RecordManager.add_or_update_record(
                                 file_id=fid,
                                 original_name=file_name,

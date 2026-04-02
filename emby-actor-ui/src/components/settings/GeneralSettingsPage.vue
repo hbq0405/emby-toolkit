@@ -276,7 +276,7 @@
                       <n-space align="center">
                         <n-switch v-model:value="configModel.douban_enable_online_api" />
                         <n-text depth="3" style="font-size: 0.9em; margin-left: 8px;">
-                          关闭后仅使用本地缓存，不再发起在线请求。
+                          关闭后仅使用本地缓存。
                         </n-text>
                       </n-space>
                     </n-form-item>
