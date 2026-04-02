@@ -349,6 +349,38 @@ def send_transfer_success_notification(task: dict):
                 except Exception as e:
                     logger.error(f"  ➜ 获取转存通知图片(本地查库)失败: {e}")
 
+                # =================================================================
+                # ★★★ 核心修复：如果本地查不到图（早期订阅的未开播剧集），去 TMDB 现拉 ★★★
+                # =================================================================
+                if not photo_url:
+                    try:
+                        from handler import tmdb as tmdb_api
+                        api_key = APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+                        if api_key:
+                            tmdb_data = None
+                            if item_type == 'movie':
+                                tmdb_data = tmdb_api.get_movie_details(int(base_tmdb_id), api_key)
+                            else:
+                                tmdb_data = tmdb_api.get_tv_details(int(base_tmdb_id), api_key)
+
+                            if tmdb_data:
+                                # 优先横幅，其次竖图
+                                path = tmdb_data.get('backdrop_path') or tmdb_data.get('poster_path')
+                                if path:
+                                    photo_url = f"https://image.tmdb.org/t/p/w780{path}"
+
+                                # 顺便补全可能缺失的剧情和评分
+                                if not overview_text and tmdb_data.get('overview'):
+                                    raw_overview = tmdb_data.get('overview')
+                                    if len(raw_overview) > 200:
+                                        raw_overview = raw_overview[:200] + "..."
+                                    overview_text = f"📝 *剧情*: {escape_markdown(raw_overview)}\n"
+
+                                if not rating and tmdb_data.get('vote_average'):
+                                    rating = f"✨ *评分*: `{tmdb_data.get('vote_average'):.1f}/10`\n"
+                    except Exception as e:
+                        logger.debug(f"  ➜ 转存通知尝试从 TMDB API 获取图片兜底失败: {e}")
+
         # 组装卡片文本
         caption = (
             f"📥 *转存成功*\n"
@@ -406,6 +438,11 @@ def send_playback_notification(data: dict):
                     path = db_info.get('parent_backdrop_path') or db_info.get('parent_poster_path')
                 if path:
                     photo_url = f"https://image.tmdb.org/t/p/w780{path}"
+                raw_overview = db_info.get('overview', '')
+                if raw_overview:
+                    if len(raw_overview) > 200:
+                        raw_overview = raw_overview[:200] + "..."
+                    overview_text = f"📝 *剧情*: {escape_markdown(raw_overview)}\n"
                     
         action_map = {
             "playback.start": "▶️ 开始播放",
@@ -421,6 +458,7 @@ def send_playback_notification(data: dict):
             f"🎬 *媒体*: *{escape_markdown(display_item_name)}*\n"
             f"📱 *设备*: `{escape_markdown(device_name)} ({escape_markdown(client_name)})`\n"
             f"🕒 *时间*: `{escape_markdown(current_time)}`"
+            f"{overview_text}"
         )
         
         # --- 收集发送目标 (频道 + 所有管理员) ---
