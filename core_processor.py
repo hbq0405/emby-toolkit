@@ -2477,7 +2477,7 @@ class MediaProcessor:
                     )
 
                 if is_feedback_mode:
-                    logger.info(f"  ➜ [快速模式] 数据库缓存命中，物理资产已核对完毕，跳过 Emby 刷新。")
+                    logger.debug(f"  ➜ [快速模式] 跳过 Emby 刷新。")
                 
                 else:
                     # 通过 API 实时更新 Emby 演员库中的名字
