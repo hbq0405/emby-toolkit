@@ -31,8 +31,13 @@ def build_movie_nfo(data: dict, cast: list) -> str:
     for genre in data.get('genres', []):
         _add_element(root, 'genre', genre.get('name') if isinstance(genre, dict) else genre)
     
-    for tag in data.get('keywords', []):
-        _add_element(root, 'tag', tag.get('name') if isinstance(tag, dict) else tag)
+    tags_to_write = data.get('_mapped_chinese_tags')
+    if tags_to_write is not None:
+        for tag in tags_to_write:
+            _add_element(root, 'tag', tag)
+    else:
+        for tag in data.get('keywords', []):
+            _add_element(root, 'tag', tag.get('name') if isinstance(tag, dict) else tag)
         
     for studio in data.get('production_companies', []):
         _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)
@@ -67,6 +72,15 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
 
     for genre in data.get('genres', []):
         _add_element(root, 'genre', genre.get('name') if isinstance(genre, dict) else genre)
+
+    tags_to_write = data.get('_mapped_chinese_tags')
+    if tags_to_write is not None:
+        for tag in tags_to_write:
+            _add_element(root, 'tag', tag)
+    else:
+        for tag in data.get('keywords', []):
+            _add_element(root, 'tag', tag.get('name') if isinstance(tag, dict) else tag)
+
     for studio in data.get('networks', []) + data.get('production_companies', []):
         _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)
 

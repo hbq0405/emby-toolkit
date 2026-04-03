@@ -4233,9 +4233,93 @@ class MediaProcessor:
                        final_cast_override: Optional[List[Dict[str, Any]]] = None,
                        episode_ids_to_sync: Optional[List[str]] = None,
                        metadata_override: Optional[Dict[str, Any]] = None):
-        
+        """
+        【双模兼容版】基于模板和现有数据构建元数据文件。
+        - 通用阶段：执行工作室中文化、关键词映射等数据净化。
+        - NFO 模式：生成 XML 写入物理目录。
+        - 神医模式：生成 JSON 写入 override 缓存目录。
+        """
         item_type = item_details.get("Type")
-        
+        log_prefix = "[NFO模式-元数据写入]" if self.is_nfo_mode else "[覆盖缓存-元数据写入]"
+
+        # 1. 准备要写入的数据 (深拷贝防污染)
+        data_to_write = copy.deepcopy(metadata_override) if metadata_override else {}
+        cast_to_write = final_cast_override or []
+
+        # =========================================================
+        # ★★★ 通用数据净化阶段 (双模共享) ★★★
+        # =========================================================
+        if data_to_write:
+            # A. 工作室/电视网中文化处理 (过滤并翻译)
+            if self.config.get(constants.CONFIG_OPTION_STUDIO_TO_CHINESE, False):
+                try:
+                    studio_mapping_data = settings_db.get_setting('studio_mapping') or utils.DEFAULT_STUDIO_MAPPING
+                    company_id_map, network_id_map, name_map = {}, {}, {}
+                    for entry in studio_mapping_data:
+                        label = entry.get('label')
+                        if not label: continue
+                        for cid in entry.get('company_ids', []): company_id_map[int(cid)] = label
+                        for nid in entry.get('network_ids', []): network_id_map[int(nid)] = label
+                        for en_name in entry.get('en', []): name_map[en_name.lower().strip()] = label
+
+                    def filter_and_translate_studios(source_list, is_network_field=False):
+                        if not source_list: return []
+                        filtered = []
+                        for item in source_list:
+                            s_id, s_name = item.get('id'), item.get('name', '').strip()
+                            mapped_label = None
+                            if s_id is not None:
+                                try: mapped_label = network_id_map.get(int(s_id)) if is_network_field else company_id_map.get(int(s_id))
+                                except: pass
+                            if not mapped_label and s_name: mapped_label = name_map.get(s_name.lower())
+                            
+                            # ★★★ 核心修复：有映射则改名并保留，无映射则直接丢弃！ ★★★
+                            if mapped_label:
+                                item['name'] = mapped_label
+                                filtered.append(item)
+                        return filtered
+
+                    if item_type == 'Movie' and 'production_companies' in data_to_write:
+                        data_to_write['production_companies'] = filter_and_translate_studios(data_to_write['production_companies'], False)
+                    elif item_type == 'Series':
+                        if 'networks' in data_to_write: data_to_write['networks'] = filter_and_translate_studios(data_to_write['networks'], True)
+                        if 'production_companies' in data_to_write: data_to_write['production_companies'] = filter_and_translate_studios(data_to_write['production_companies'], False)
+                except Exception as e_studio:
+                    logger.warning(f"  ➜ {log_prefix} 处理工作室中文化时发生错误: {e_studio}")
+
+            # B. 剧集专属：合并 Networks 和 Production Companies
+            if item_type == 'Series':
+                merged_list = data_to_write.get('networks', []) + data_to_write.get('production_companies', [])
+                unique_networks, seen_ids, seen_names = [], set(), set()
+                for item in merged_list:
+                    if not isinstance(item, dict): continue
+                    i_id, i_name = item.get('id'), item.get('name')
+                    is_duplicate = False
+                    if i_id:
+                        if i_id in seen_ids: is_duplicate = True
+                        else: seen_ids.add(i_id)
+                    if i_name:
+                        if i_name in seen_names: is_duplicate = True
+                        else: seen_names.add(i_name)
+                    if not i_id and not i_name: continue
+                    if not is_duplicate: unique_networks.append(item)
+                data_to_write['networks'] = unique_networks
+                if 'production_companies' in data_to_write: del data_to_write['production_companies']
+
+            # C. 关键词映射处理
+            if self.config.get(constants.CONFIG_OPTION_KEYWORD_TO_TAGS, False):
+                try:
+                    mapping_data = settings_db.get_setting('keyword_mapping') or utils.DEFAULT_KEYWORD_MAPPING
+                    keyword_map = {str(kid): entry.get('label') for entry in mapping_data if entry.get('label') for kid in entry.get('ids', [])}
+                    kw_data = data_to_write.get('keywords', {})
+                    source_keywords = kw_data.get('keywords') or kw_data.get('results') or [] if isinstance(kw_data, dict) else []
+                    final_tags = {keyword_map[str(k.get('id', ''))] for k in source_keywords if isinstance(k, dict) and str(k.get('id', '')) in keyword_map}
+                    
+                    # 将映射后的中文标签存入一个特殊字段，供双模读取
+                    data_to_write['_mapped_chinese_tags'] = list(final_tags)
+                except Exception as e_tags:
+                    logger.warning(f"  ➜ {log_prefix} 处理关键词映射时发生错误: {e_tags}")
+
         # ======================================================================
         # ★★★ 双模分流：NFO 模式 ★★★
         # ======================================================================
@@ -4246,60 +4330,43 @@ class MediaProcessor:
                 logger.warning(f"  ➜ [NFO模式] 无法获取物理路径，跳过 NFO 生成。")
                 return
 
-            # ★★★ 核心修复：精准区分目录 ★★★
             episode_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
             import re
             series_root_dir = episode_dir
             if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(episode_dir), re.IGNORECASE):
                 series_root_dir = os.path.dirname(episode_dir)
 
-            data_to_write = metadata_override or {}
-            cast_to_write = final_cast_override or []
-
             try:
                 if item_type == "Movie":
                     nfo_content = nfo_builder.build_movie_nfo(data_to_write, cast_to_write)
                     nfo_path = os.path.splitext(media_path)[0] + ".nfo"
-                    with open(nfo_path, 'w', encoding='utf-8') as f:
-                        f.write(nfo_content)
+                    with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
                     logger.info(f"  ➜ [NFO模式] 成功写入电影 NFO: {nfo_path}")
 
                 elif item_type == "Series":
-                    # 1. tvshow.nfo 写入剧集根目录 (series_root_dir)
                     nfo_content = nfo_builder.build_tvshow_nfo(data_to_write, cast_to_write)
                     nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
-                    with open(nfo_path, 'w', encoding='utf-8') as f:
-                        f.write(nfo_content)
+                    with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
                     logger.info(f"  ➜ [NFO模式] 成功写入剧集 NFO: {nfo_path}")
                     
-                    # 2. ★★★ 核心修复：使用 os.walk 深度遍历，批量生成单集 NFO ★★★
                     episodes_data = data_to_write.get("episodes_details", {})
                     if episodes_data and os.path.isdir(series_root_dir):
-                        import re
                         valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
                         generated_count = 0
-                        
                         for root, dirs, files in os.walk(series_root_dir):
                             for filename in files:
-                                if os.path.splitext(filename)[1].lower() not in valid_exts:
-                                    continue
-                                    
+                                if os.path.splitext(filename)[1].lower() not in valid_exts: continue
                                 match = re.search(r'[sS](\d{1,4})[eE](\d{1,4})', filename)
                                 if match:
-                                    target_s = int(match.group(1))
-                                    target_e = int(match.group(2))
-                                    
+                                    target_s, target_e = int(match.group(1)), int(match.group(2))
                                     ep_list = episodes_data.values() if isinstance(episodes_data, dict) else (episodes_data if isinstance(episodes_data, list) else [])
                                     for ep in ep_list:
                                         if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
                                             ep_cast = ep.get('credits', {}).get('cast', [])
                                             if not ep_cast: ep_cast = cast_to_write 
-                                            
                                             ep_nfo_content = nfo_builder.build_episode_nfo(ep, ep_cast)
-                                            # 注意：保存在 root (当前视频所在的真实子目录)
                                             ep_nfo_path = os.path.join(root, os.path.splitext(filename)[0] + ".nfo")
-                                            with open(ep_nfo_path, 'w', encoding='utf-8') as f:
-                                                f.write(ep_nfo_content)
+                                            with open(ep_nfo_path, 'w', encoding='utf-8') as f: f.write(ep_nfo_content)
                                             generated_count += 1
                                             break
                         logger.info(f"  ➜ [NFO模式] 深度扫描目录完成，批量生成了 {generated_count} 个单集 NFO。")
@@ -4307,257 +4374,71 @@ class MediaProcessor:
                 elif item_type == "Episode":
                     nfo_content = nfo_builder.build_episode_nfo(data_to_write, cast_to_write)
                     nfo_path = os.path.splitext(media_path)[0] + ".nfo"
-                    with open(nfo_path, 'w', encoding='utf-8') as f:
-                        f.write(nfo_content)
+                    with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
                     logger.info(f"  ➜ [NFO模式] 成功写入分集 NFO: {nfo_path}")
 
             except Exception as e:
                 logger.error(f"  ➜ [NFO模式] 写入 NFO 文件失败: {e}")
-            
-            return # NFO 模式执行完毕，直接返回
+            return
 
         # ======================================================================
-        # 神医 Pro 覆盖缓存模式逻辑 
+        # ★★★ 双模分流：神医覆盖缓存模式 ★★★
         # ======================================================================
-        log_prefix = "[覆盖缓存-元数据写入]"
-
-        # 定义核心路径
         cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
         target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
         main_json_filename = "all.json" if item_type == "Movie" else "series.json"
         main_json_path = os.path.join(target_override_dir, main_json_filename)
-
-        # 确保目标目录存在
         os.makedirs(target_override_dir, exist_ok=True)
 
         perfect_cast_for_injection = []
-        
-        # 定义一个变量用来存分集数据 
-        tmdb_episodes_data = None 
-        # 定义一个变量用来存分季数据
-        tmdb_seasons_data = None
+        tmdb_episodes_data = data_to_write.get('episodes_details')
+        tmdb_seasons_data = data_to_write.get('seasons_details')
 
-        # 如果有元数据覆盖，先写入元数据 
-        if metadata_override:
+        if data_to_write:
             logger.trace(f"  ➜ {log_prefix} 检测到元数据修正，正在写入主文件...")
             
-            #  在删除前，先把分集数据提取出来！ 
-            if 'episodes_details' in metadata_override:
-                tmdb_episodes_data = metadata_override['episodes_details']
-            
-            # 提取分季数据
-            if 'seasons_details' in metadata_override:
-                tmdb_seasons_data = metadata_override['seasons_details']
+            # 写入 tags.json
+            if '_mapped_chinese_tags' in data_to_write:
+                final_tags = data_to_write['_mapped_chinese_tags']
+                tags_json_path = os.path.join(target_override_dir, "tags.json")
+                if final_tags:
+                    with open(tags_json_path, 'w', encoding='utf-8') as f:
+                        json.dump({"tags": final_tags}, f, ensure_ascii=False, indent=2)
+                    logger.info(f"  ➜ {log_prefix} 已根据映射表生成 tags.json，包含 {len(final_tags)} 个中文标签。")
+                else:
+                    if os.path.exists(tags_json_path): os.remove(tags_json_path)
+                del data_to_write['_mapped_chinese_tags']
 
-            # 创建一个副本，避免修改原始对象影响后续逻辑
-            data_to_write = copy.deepcopy(metadata_override)
-
-            # 工作室/电视网中文化处理
-            if self.config.get(constants.CONFIG_OPTION_STUDIO_TO_CHINESE, False):
-                try:
-                    # A. 获取映射表
-                    studio_mapping_data = settings_db.get_setting('studio_mapping')
-                    if not studio_mapping_data:
-                        studio_mapping_data = utils.DEFAULT_STUDIO_MAPPING
-                    
-                    # B. 构建两个独立的查找表
-                    company_id_map = {}
-                    network_id_map = {}
-                    name_map = {} 
-
-                    for entry in studio_mapping_data:
-                        label = entry.get('label')
-                        if not label: continue
-                        # 分别存入对应的 ID 表
-                        for cid in entry.get('company_ids', []): company_id_map[int(cid)] = label
-                        for nid in entry.get('network_ids', []): network_id_map[int(nid)] = label
-                        # 名称映射作为兜底
-                        for en_name in entry.get('en', []): name_map[en_name.lower().strip()] = label
-
-                    # C. 定义通用过滤函数 (逻辑已简化)
-                    def filter_and_translate_studios(source_list, is_network_field=False):
-                        if not source_list: return []
-                        filtered = []
-                        for item in source_list:
-                            s_id = item.get('id')
-                            s_name = item.get('name', '').strip()
-                            mapped_label = None
-                            
-                            # 1. 优先 ID 匹配 (精准区分 Network 和 Company)
-                            if s_id is not None:
-                                try:
-                                    s_id_int = int(s_id)
-                                    if is_network_field:
-                                        # 如果是 networks 字段，只查 network_id_map
-                                        mapped_label = network_id_map.get(s_id_int)
-                                    else:
-                                        # 如果是 production_companies 字段，只查 company_id_map
-                                        mapped_label = company_id_map.get(s_id_int)
-                                except: pass
-                            
-                            # 2. 尝试名称匹配 (兜底)
-                            if not mapped_label and s_name:
-                                mapped_label = name_map.get(s_name.lower())
-                            
-                            # 3. 有映射则改名并保留，无映射则丢弃
-                            if mapped_label:
-                                item['name'] = mapped_label
-                                filtered.append(item)
-                        return filtered
-
-                    # D. 执行过滤
-                    if item_type == 'Movie' and 'production_companies' in data_to_write:
-                        # 电影只有制作公司
-                        data_to_write['production_companies'] = filter_and_translate_studios(data_to_write['production_companies'], is_network_field=False)
-                    
-                    elif item_type == 'Series':
-                        # 剧集：Networks 查 Network 表
-                        if 'networks' in data_to_write:
-                            data_to_write['networks'] = filter_and_translate_studios(data_to_write['networks'], is_network_field=True)
-                        
-                        # 剧集：Production Companies 查 Company 表
-                        if 'production_companies' in data_to_write:
-                            data_to_write['production_companies'] = filter_and_translate_studios(data_to_write['production_companies'], is_network_field=False)
-
-                except Exception as e_studio:
-                    logger.warning(f"  ➜ {log_prefix} 处理工作室中文化时发生错误: {e_studio}")
-
-            # =========================================================
-            # 2. ★★★ 剧集专属：合并 Networks 和 Production Companies ★★★
-            # =========================================================
-            if item_type == 'Series':
-                # 获取两个列表
-                current_networks = data_to_write.get('networks', [])
-                current_companies = data_to_write.get('production_companies', [])
-                
-                # 合并
-                merged_list = current_networks + current_companies
-                
-                # 去重 (优先 ID，其次 Name)
-                unique_networks = []
-                seen_ids = set()
-                seen_names = set()
-                
-                for item in merged_list:
-                    if not isinstance(item, dict): continue
-                    
-                    i_id = item.get('id')
-                    i_name = item.get('name')
-                    
-                    is_duplicate = False
-                    
-                    if i_id:
-                        if i_id in seen_ids: is_duplicate = True
-                        else: seen_ids.add(i_id)
-                    
-                    if i_name:
-                        if i_name in seen_names: is_duplicate = True
-                        else: seen_names.add(i_name)
-                    
-                    if not i_id and not i_name: continue
-                        
-                    if not is_duplicate:
-                        unique_networks.append(item)
-                
-                # 回写到 networks
-                data_to_write['networks'] = unique_networks
-                
-                # ★★★ 关键：删除 production_companies，Emby 剧集不读此字段，且防止冗余 ★★★
-                if 'production_companies' in data_to_write:
-                    del data_to_write['production_companies']
-                
-                logger.debug(f"  ➜ {log_prefix} [剧集优化] 已将制作公司合并入电视网并去重，最终数量: {len(unique_networks)}")
-
-            # --- 关键词映射处理并写入 tags.json ---
-            if self.config.get(constants.CONFIG_OPTION_KEYWORD_TO_TAGS, False):
-                try:
-                    # A. 获取映射表 (数据库优先 -> Utils兜底)
-                    mapping_data = settings_db.get_setting('keyword_mapping')
-                    if not mapping_data:
-                        mapping_data = utils.DEFAULT_KEYWORD_MAPPING
-                    
-                    # B. 构建 ID -> 中文Label 的查找表
-                    keyword_map = {}
-                    for entry in mapping_data:
-                        label = entry.get('label')
-                        if label:
-                            for kid in entry.get('ids', []):
-                                keyword_map[str(kid)] = label
-                    
-                    # C. 从元数据中提取原始关键词
-                    source_keywords = []
-                    kw_data = data_to_write.get('keywords', {})
-                    if isinstance(kw_data, dict):
-                        # 兼容 Movie ('keywords') 和 Series ('results') 的结构
-                        source_keywords = kw_data.get('keywords') or kw_data.get('results') or []
-                    
-                    # D. 过滤并映射
-                    final_tags = set()
-                    for k in source_keywords:
-                        if isinstance(k, dict):
-                            kid = str(k.get('id', ''))
-                            if kid in keyword_map:
-                                final_tags.add(keyword_map[kid])
-                    
-                    # E. 写入 tags.json (如果存在映射结果)
-                    tags_json_path = os.path.join(target_override_dir, "tags.json")
-                    if final_tags:
-                        with open(tags_json_path, 'w', encoding='utf-8') as f:
-                            json.dump({"tags": list(final_tags)}, f, ensure_ascii=False, indent=2)
-                        logger.info(f"  ➜ {log_prefix} 已根据映射表生成 tags.json，包含 {len(final_tags)} 个中文标签。")
-                    else:
-                        # 如果没有匹配的标签，且存在旧文件，则删除旧文件以保持干净
-                        if os.path.exists(tags_json_path):
-                            os.remove(tags_json_path)
-
-                except Exception as e_tags:
-                    logger.warning(f"  ➜ {log_prefix} 处理关键词映射写入 tags.json 时发生错误: {e_tags}")
-            
-            # 2. 剔除不需要写入主文件的临时字段
-            # (注意：这里删除了 episodes_details，所以上面必须先提取)
             keys_to_remove = ['seasons_details', 'episodes_details', 'release_dates'] 
             for k in keys_to_remove:
-                if k in data_to_write:
-                    del data_to_write[k]
+                if k in data_to_write: del data_to_write[k]
 
-            # 3. 写入净化后的数据
             with open(main_json_path, 'w', encoding='utf-8') as f:
                 json.dump(data_to_write, f, ensure_ascii=False, indent=2)
 
         if final_cast_override is not None:
-            # --- 角色一：主体精装修 ---
             new_cast_for_json = self._build_cast_from_final_data(final_cast_override)
             perfect_cast_for_injection = new_cast_for_json
-
-            # 步骤 2: 修改或创建主文件
             if not os.path.exists(main_json_path):
                 skeleton = utils.MOVIE_SKELETON_TEMPLATE if item_type == "Movie" else utils.SERIES_SKELETON_TEMPLATE
                 data = json.loads(json.dumps(skeleton))
             else:
-                with open(main_json_path, 'r', encoding='utf-8') as f:
-                    data = json.load(f)
-
+                with open(main_json_path, 'r', encoding='utf-8') as f: data = json.load(f)
             if 'casts' in data: data['casts']['cast'] = perfect_cast_for_injection
             else: data.setdefault('credits', {})['cast'] = perfect_cast_for_injection
-            
             with open(main_json_path, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
         else:
-            # --- 角色二：零活处理 (追更) ---
             if os.path.exists(main_json_path):
                  with open(main_json_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     perfect_cast_for_injection = (data.get('casts', {}) or data.get('credits', {})).get('cast', [])
 
-        # 步骤 3: 公共施工 - 注入分集文件
         if item_type == "Series" and perfect_cast_for_injection:
             self._inject_cast_to_series_files(
-                target_dir=target_override_dir, 
-                cast_list=perfect_cast_for_injection, 
-                series_details=item_details, 
-                episode_ids_to_sync=episode_ids_to_sync,
-                tmdb_episodes_data=tmdb_episodes_data,
-                tmdb_seasons_data=tmdb_seasons_data 
+                target_dir=target_override_dir, cast_list=perfect_cast_for_injection, 
+                series_details=item_details, episode_ids_to_sync=episode_ids_to_sync,
+                tmdb_episodes_data=tmdb_episodes_data, tmdb_seasons_data=tmdb_seasons_data 
             )
 
     # --- 辅助函数：从不同数据源构建演员列表 ---
