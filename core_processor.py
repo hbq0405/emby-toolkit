@@ -2510,35 +2510,30 @@ class MediaProcessor:
                 )
 
                 # ======================================================================
-                if self.is_nfo_mode:
-                    # 如果是 Webhook 回流 (命中缓存)，说明预处理已经写过 NFO 了，直接跳过，简化流程！
-                    if is_feedback_mode:
-                        logger.debug(f"  ➜ [NFO模式] Webhook 回流，跳过重复生成 NFO 和图片。")
-                    else:
-                        # 只有在预处理阶段，或者用户手动添加文件(无监控)时，才生成 NFO 和图片
-                        logger.info(f"  ➜ [NFO模式] 正在生成物理资产 (NFO文件 & 图片)...")
-                        
-                        self.sync_item_metadata(
-                            item_details=item_details_from_emby,
-                            tmdb_id=tmdb_id,
-                            final_cast_override=final_processed_cast,
-                            episode_ids_to_sync=specific_episode_ids,
-                            metadata_override=tmdb_details_for_extra
-                        )
-                        
-                        self.download_images_from_tmdb(
-                            tmdb_id=tmdb_id,
-                            item_type=item_type,
-                            aggregated_tmdb_data=tmdb_details_for_extra, 
-                            item_details=item_details_from_emby
-                        )
+                # 如果是 Webhook 回流 (命中缓存)，说明预处理已经写过 NFO 了，直接跳过，简化流程！
+                if is_feedback_mode:
+                    logger.debug(f"  ➜ [NFO模式] Webhook 回流，跳过重复生成 NFO 和图片。")
+                else:
+                    # 只有在预处理阶段，或者用户手动添加文件(无监控)时，才生成 NFO 和图片
+                    logger.info(f"  ➜ [NFO模式] 正在生成物理资产 (NFO文件 & 图片)...")
+                    
+                    self.sync_item_metadata(
+                        item_details=item_details_from_emby,
+                        tmdb_id=tmdb_id,
+                        final_cast_override=final_processed_cast,
+                        episode_ids_to_sync=specific_episode_ids,
+                        metadata_override=tmdb_details_for_extra
+                    )
+                    
+                    self.download_images_from_tmdb(
+                        tmdb_id=tmdb_id,
+                        item_type=item_type,
+                        aggregated_tmdb_data=tmdb_details_for_extra, 
+                        item_details=item_details_from_emby
+                    )
 
                 if is_feedback_mode:
-                    # --- 分支 A: 纯读取模式 (极速恢复) ---
-                    if self.is_nfo_mode:
-                        logger.info(f"  ➜ [快速模式] 数据库缓存命中，物理资产已核对完毕，跳过 Emby 刷新。")
-                    else:
-                        logger.info(f"  ➜ [快速模式] 检测到完美本地数据，跳过图片下载、文件写入及 Emby 刷新。")
+                    logger.info(f"  ➜ [快速模式] 数据库缓存命中，物理资产已核对完毕，跳过 Emby 刷新。")
                 
                 else:
                     # 通过 API 实时更新 Emby 演员库中的名字
