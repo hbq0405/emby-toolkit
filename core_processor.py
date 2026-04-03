@@ -348,7 +348,7 @@ class MediaProcessor:
             
             # --- 分支 A: 数据库有，文件没有 -> 生成文件 (纸质存档缺失) ---
             if db_record and not file_exists and db_actors:
-                logger.info(f"  ➜ [实时监控] 命中数据库缓存 (ID:{tmdb_id})，但覆盖缓存缺失。正在从数据库生成覆盖缓存文件...")
+                logger.info(f"  ➜ [实时监控] 命中数据库缓存 (ID:{tmdb_id})，正在从数据库生成NFO文件...")
                 try:
                     # 1. 生成主 payload
                     from tasks.helpers import reconstruct_metadata_from_db
@@ -401,7 +401,7 @@ class MediaProcessor:
                             if episodes_data:
                                 payload['episodes_details'] = episodes_data
                                 
-                            logger.info(f"  ➜ [实时监控] 已从数据库恢复 {len(seasons_data)} 个季和 {len(episodes_data)} 个分集的数据。")
+                            logger.debug(f"  ➜ [实时监控] 已从数据库恢复 {len(seasons_data)} 个季和 {len(episodes_data)} 个分集的数据。")
                     
                     # 2. 构造上下文对象
                     fake_item_details = {
@@ -428,9 +428,9 @@ class MediaProcessor:
             elif db_record and file_exists:
                 # 检查是否需要更新 in_library 状态 (如果是新文件入库)
                 if db_record.get('in_library') is False:
-                     logger.info(f"  ➜ [实时监控] 数据双全 (ID:{tmdb_id})，但数据库标记为离线。无需处理元数据，仅通知 Emby 刷新。")
+                     logger.info(f"  ➜ [实时监控] (ID:{tmdb_id})数据库标记为离线。无需处理元数据，仅通知 Emby 刷新。")
                 else:
-                     logger.info(f"  ➜ [实时监控] 数据双全且在线 (ID:{tmdb_id})。可能是洗版/追更，跳过元数据处理，仅通知 Emby 刷新。")
+                     logger.info(f"  ➜ [实时监控] (ID:{tmdb_id})可能是洗版/追更，跳过元数据处理，仅通知 Emby 刷新。")
                 
                 should_skip_full_processing = True
 
@@ -1920,23 +1920,19 @@ class MediaProcessor:
     # --- 获取豆瓣数据（演员+评分） 封装了“优先本地缓存，失败则在线获取”的逻辑 ---
     def _get_douban_data_with_local_cache(self, media_info: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[float]]:
         """
-        【V3 - 最终版】获取豆瓣数据（演员+评分）。优先本地缓存，失败则回退到功能完整的在线API路径。
-        返回: (演员列表, 豆瓣评分) 的元组。
+        获取豆瓣数据（演员+评分）。直接使用在线 API。
         """
-        # 1. 准备查找所需的信息
         provider_ids = media_info.get("ProviderIds", {})
         item_name = media_info.get("Name", "")
         imdb_id = provider_ids.get("Imdb")
-        douban_id_from_provider = provider_ids.get("Douban")
         item_type = media_info.get("Type")
         item_year = str(media_info.get("ProductionYear", ""))
 
-        # 检查是否启用了在线API 
         if not self.config.get(constants.CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API, True):
-            logger.info("  ➜ 未找到本地豆瓣缓存，且在线豆瓣API已禁用，跳过豆瓣数据获取。")
             return [], None
         
-        # 3.1 匹配豆瓣ID和类型。现在 match_info 返回的结果是完全可信的。
+        logger.info("  ➜ 准备通过豆瓣在线 API 获取演员信息...")
+
         match_info_result = self.douban_api.match_info(
             name=item_name, imdbid=imdb_id, mtype=item_type, year=item_year
         )
@@ -1946,22 +1942,17 @@ class MediaProcessor:
             return [], None
 
         douban_id = match_info_result["id"]
-        # ✨✨✨ 直接信任从 douban.py 返回的类型 ✨✨✨
         douban_type = match_info_result.get("type")
 
         if not douban_type:
-            logger.error(f"  ➜ 从豆瓣匹配结果中未能获取到媒体类型 for ID {douban_id}。处理中止。")
             return [], None
 
-        # 3.2 获取演职员 (使用完全可信的类型)
         cast_data = self.douban_api.get_acting(
             name=item_name, 
             douban_id_override=douban_id, 
             mtype=douban_type
         )
-        douban_cast_raw = cast_data.get("cast", [])
-
-        return douban_cast_raw, None
+        return cast_data.get("cast", []), None
     
     # --- 通过TmdbID查找映射表 ---
     def _find_person_in_map_by_tmdb_id(self, tmdb_id: str, cursor: psycopg2.extensions.cursor) -> Optional[Dict[str, Any]]:
@@ -2218,19 +2209,8 @@ class MediaProcessor:
         
         try:
             authoritative_cast_source = []
-            tmdb_details_for_extra = None # 用于内部缓存
+            formatted_metadata = None # 用于内部缓存
 
-            # =========================================================
-            # ★★★ 步骤 1: 确定元数据骨架 ★★★
-            # =========================================================
-            logger.info(f"  ➜ 正在构建标准元数据骨架...")
-            
-            # 1. 初始化骨架
-            if item_type == "Movie":
-                tmdb_details_for_extra = json.loads(json.dumps(utils.MOVIE_SKELETON_TEMPLATE))
-            elif item_type == "Series":
-                tmdb_details_for_extra = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
-            
             # 2. 获取数据源 (TMDb API 或 本地缓存)
             fresh_data = None
             aggregated_tmdb_data = None # 专门用于剧集
@@ -2284,31 +2264,30 @@ class MediaProcessor:
                                 aggregated_tmdb_data["series_details"]["name"] = chinese_alias
 
             # 4. 填充骨架 (Data Mapping)
-            if fresh_data:
-                # --- A. 基础字段直接覆盖 (通用) ---
-                tmdb_details_for_extra = construct_metadata_payload(
-                    item_type=item_type,
-                    tmdb_data=fresh_data,
-                    aggregated_tmdb_data=aggregated_tmdb_data,
-                    emby_data_fallback=item_details_from_emby
-                )
+            # 直接生成标准化元数据字典
+            formatted_metadata = construct_metadata_payload(
+                item_type=item_type,
+                tmdb_data=fresh_data or {},
+                aggregated_tmdb_data=aggregated_tmdb_data,
+                emby_data_fallback=item_details_from_emby
+            )
                 
-                #  如果 Emby 尚未有类型数据，使用 TMDb 数据补全，确保后续动画判断准确 
-                if not item_details_from_emby.get("Genres") and fresh_data.get("genres"):
-                    item_details_from_emby["Genres"] = fresh_data.get("genres")
-                    logger.debug(f"  ➜ 检测到 Emby 缺少类型数据，已使用 TMDb 数据补全 Genres: {len(fresh_data.get('genres'))} 个")
+            #  如果 Emby 尚未有类型数据，使用 TMDb 数据补全，确保后续动画判断准确 
+            if not item_details_from_emby.get("Genres") and fresh_data.get("genres"):
+                item_details_from_emby["Genres"] = fresh_data.get("genres")
+                logger.debug(f"  ➜ 检测到 Emby 缺少类型数据，已使用 TMDb 数据补全 Genres: {len(fresh_data.get('genres'))} 个")
 
-                # --- 重新提取 authoritative_cast_source (为了后续流程) ---
-                if item_type == "Movie":
-                    credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
+            # --- 重新提取 authoritative_cast_source (为了后续流程) ---
+            if item_type == "Movie":
+                credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
+                authoritative_cast_source = credits_source.get('cast', [])
+            elif item_type == "Series":
+                if aggregated_tmdb_data:
+                    all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
+                    authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(fresh_data, all_episodes)
+                else:
+                    credits_source = fresh_data.get('aggregate_credits') or fresh_data.get('credits') or {}
                     authoritative_cast_source = credits_source.get('cast', [])
-                elif item_type == "Series":
-                    if aggregated_tmdb_data:
-                        all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
-                        authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(fresh_data, all_episodes)
-                    else:
-                        credits_source = fresh_data.get('aggregate_credits') or fresh_data.get('credits') or {}
-                        authoritative_cast_source = credits_source.get('cast', [])
 
             # =========================================================
             # ★★★ 步骤 2: 移除无头像演员 ★★★
@@ -2329,7 +2308,7 @@ class MediaProcessor:
                 else:
                     logger.debug("  ➜ (预检查) 所有源数据中的演员均有头像，无需预先移除。")
                 
-           # =========================================================
+            # =========================================================
             # ★★★ 步骤 3:  数据来源 ★★★
             # =========================================================
             final_processed_cast = None
@@ -2337,14 +2316,14 @@ class MediaProcessor:
             
             # 1.快速模式
             if not force_full_update:
-                if final_processed_cast is None:
-                    logger.info(f"  ➜ [快速模式] 尝试从数据库缓存恢复数据 (ID:{tmdb_id})...")
-                    payload, cast = self._reconstruct_full_data_from_db(tmdb_id, item_type)
-                    if payload and cast:
-                        final_processed_cast = cast
-                        tmdb_details_for_extra = payload
-                        cache_row = {'source': 'database_cache'} # 标记来源为数据库
-                        logger.info("  ➜ [快速模式] 成功从数据库缓存恢复元数据和演员表，跳过在线刮削！")
+                # ★★★ Webhook 回流时，直接从数据库读取预处理存入的数据，完美跳过在线刮削！ ★★★
+                logger.info(f"  ➜ [快速模式] 尝试从数据库缓存恢复数据 (ID:{tmdb_id})...")
+                payload, cast = self._reconstruct_full_data_from_db(tmdb_id, item_type)
+                if payload and cast:
+                    final_processed_cast = cast
+                    formatted_metadata = payload
+                    cache_row = {'source': 'database_cache'} # 标记来源为数据库
+                    logger.info("  ➜ [快速模式] 成功从数据库缓存恢复元数据和演员表，跳过在线刮削！")
 
             # 2.完整模式
             if final_processed_cast is None:
@@ -2358,7 +2337,7 @@ class MediaProcessor:
                             fresh_data = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
                             if fresh_data:
                                 # 1. 覆盖骨架 (导演、分级、工作室、简介等)
-                                tmdb_details_for_extra.update(fresh_data)
+                                formatted_metadata.update(fresh_data)
                                 # 2. 更新演员源 (确保是 TMDb 原版顺序)
                                 if fresh_data.get("credits", {}).get("cast"):
                                     authoritative_cast_source = fresh_data["credits"]["cast"]
@@ -2369,7 +2348,7 @@ class MediaProcessor:
                             if aggregated_tmdb_data:
                                 series_details = aggregated_tmdb_data.get("series_details", {})
                                 # 1. 覆盖骨架
-                                tmdb_details_for_extra.update(series_details)
+                                formatted_metadata.update(series_details)
                                 # 2. 更新演员源
                                 all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
                                 authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(series_details, all_episodes)
@@ -2389,15 +2368,15 @@ class MediaProcessor:
                         
                         # 逻辑 A: 回填缓存
                         if local_trans and local_trans.get('overview') and utils.contains_chinese(local_trans['overview']):
-                            tmdb_details_for_extra["overview"] = local_trans['overview']
+                            formatted_metadata["overview"] = local_trans['overview']
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                 aggregated_tmdb_data["series_details"]["overview"] = local_trans['overview']
                             logger.info(f"  ➜ [完整模式] 命中本地中文简介缓存，跳过AI翻译。")
                         
                         # 逻辑 B: 执行翻译
                         else:
-                            current_overview = tmdb_details_for_extra.get("overview", "")
-                            item_title_for_ai = tmdb_details_for_extra.get("title") or tmdb_details_for_extra.get("name")
+                            current_overview = formatted_metadata.get("overview", "")
+                            item_title_for_ai = formatted_metadata.get("title") or formatted_metadata.get("name")
                             
                             needs_trans_overview = False
                             if not current_overview: needs_trans_overview = True
@@ -2421,7 +2400,7 @@ class MediaProcessor:
                                     logger.info(f"  ➜ [完整模式] 正在调用 AI 翻译简介...")
                                     trans_overview = self.ai_translator.translate_overview(english_overview, title=item_title_for_ai)
                                     if trans_overview:
-                                        tmdb_details_for_extra["overview"] = trans_overview
+                                        formatted_metadata["overview"] = trans_overview
                                         if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                             aggregated_tmdb_data["series_details"]["overview"] = trans_overview
 
@@ -2436,42 +2415,42 @@ class MediaProcessor:
                         if local_trans and local_trans.get('title') and utils.contains_chinese(local_trans['title']):
                             cached_title = local_trans['title']
                             if item_type == "Movie": 
-                                tmdb_details_for_extra["title"] = cached_title
+                                formatted_metadata["title"] = cached_title
                             else: 
-                                tmdb_details_for_extra["name"] = cached_title
+                                formatted_metadata["name"] = cached_title
                                 if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                     aggregated_tmdb_data["series_details"]["name"] = cached_title
                             logger.info(f"  ➜ [完整模式] 命中本地中文标题缓存，跳过AI翻译。")
                         
                         # 逻辑 B: 执行翻译
                         else:
-                            current_title = tmdb_details_for_extra.get("title") if item_type == "Movie" else tmdb_details_for_extra.get("name")
+                            current_title = formatted_metadata.get("title") if item_type == "Movie" else formatted_metadata.get("name")
                             if current_title and not utils.contains_chinese(current_title):
                                 logger.info(f"  ➜ [完整模式] 正在调用 AI 翻译标题: {current_title}")
-                                release_date = tmdb_details_for_extra.get("release_date") or tmdb_details_for_extra.get("first_air_date")
+                                release_date = formatted_metadata.get("release_date") or formatted_metadata.get("first_air_date")
                                 year_str = release_date[:4] if release_date else ""
                                 
                                 trans_title = self.ai_translator.translate_title(current_title, media_type=item_type, year=year_str)
                                 if trans_title and utils.contains_chinese(trans_title):
-                                    if item_type == "Movie": tmdb_details_for_extra["title"] = trans_title
+                                    if item_type == "Movie": formatted_metadata["title"] = trans_title
                                     else: 
-                                        tmdb_details_for_extra["name"] = trans_title
+                                        formatted_metadata["name"] = trans_title
                                         if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                             aggregated_tmdb_data["series_details"]["name"] = trans_title
 
                 # 3. 剧集分集翻译
                 if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False):
                     logger.info(f"  ➜ [完整模式] 正在递归检查分集简介翻译...")
-                    current_series_name = tmdb_details_for_extra.get("name")
+                    current_series_name = formatted_metadata.get("name")
                     translate_tmdb_metadata_recursively(
                         item_type='Series',
                         tmdb_data=aggregated_tmdb_data,
                         ai_translator=self.ai_translator,
                         item_name=current_series_name
                     )
-                    # 翻译完后，需要把 aggregated_tmdb_data 里的 episodes_details 同步回 tmdb_details_for_extra
+                    # 翻译完后，需要把 aggregated_tmdb_data 里的 episodes_details 同步回 formatted_metadata
                     if "episodes_details" in aggregated_tmdb_data:
-                        tmdb_details_for_extra["episodes_details"] = aggregated_tmdb_data["episodes_details"]
+                        formatted_metadata["episodes_details"] = aggregated_tmdb_data["episodes_details"]
 
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
@@ -2512,23 +2491,23 @@ class MediaProcessor:
                 # ======================================================================
                 # 如果是 Webhook 回流 (命中缓存)，说明预处理已经写过 NFO 了，直接跳过，简化流程！
                 if is_feedback_mode:
-                    logger.debug(f"  ➜ [NFO模式] Webhook 回流，跳过重复生成 NFO 和图片。")
+                    logger.debug(f"  ➜ Webhook 回流，跳过重复生成 NFO 和图片。")
                 else:
                     # 只有在预处理阶段，或者用户手动添加文件(无监控)时，才生成 NFO 和图片
-                    logger.info(f"  ➜ [NFO模式] 正在生成物理资产 (NFO文件 & 图片)...")
+                    logger.info(f"  ➜ 正在生成(NFO文件 & 图片)...")
                     
                     self.sync_item_metadata(
                         item_details=item_details_from_emby,
                         tmdb_id=tmdb_id,
                         final_cast_override=final_processed_cast,
                         episode_ids_to_sync=specific_episode_ids,
-                        metadata_override=tmdb_details_for_extra
+                        metadata_override=formatted_metadata
                     )
                     
                     self.download_images_from_tmdb(
                         tmdb_id=tmdb_id,
                         item_type=item_type,
-                        aggregated_tmdb_data=tmdb_details_for_extra, 
+                        aggregated_tmdb_data=formatted_metadata, 
                         item_details=item_details_from_emby
                     )
 
@@ -2556,7 +2535,7 @@ class MediaProcessor:
                     item_type=item_type,
                     item_details_from_emby=item_details_from_emby,
                     final_processed_cast=final_processed_cast,
-                    source_data_package=tmdb_details_for_extra,
+                    source_data_package=formatted_metadata,
                     specific_episode_ids=specific_episode_ids
                 )
                 
@@ -3769,7 +3748,7 @@ class MediaProcessor:
             episode_dir = ""
             
             if not item_details or not item_details.get("Path"):
-                logger.warning(f"  ➜ {log_prefix} [NFO模式] 缺少物理路径，无法下载图片。")
+                logger.warning(f"  ➜ {log_prefix} 缺少物理路径，无法下载图片。")
                 return False
             media_path = item_details.get("Path")
             episode_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
@@ -3991,10 +3970,10 @@ class MediaProcessor:
         # ======================================================================
         # ★★★ 写入 NFO 文件 ★★★
         # ======================================================================
-        logger.info(f"  ➜ [NFO模式] 正在生成并写入 NFO 文件...")
+        logger.info(f"  ➜ 正在生成并写入 NFO 文件...")
         media_path = item_details.get("Path")
         if not media_path:
-            logger.warning(f"  ➜ [NFO模式] 无法获取物理路径，跳过 NFO 生成。")
+            logger.warning(f"  ➜ 无法获取物理路径，跳过 NFO 生成。")
             return
 
         episode_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
@@ -4008,7 +3987,7 @@ class MediaProcessor:
                 nfo_content = nfo_builder.build_movie_nfo(data_to_write, cast_to_write)
                 nfo_path = os.path.splitext(media_path)[0] + ".nfo"
                 with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
-                logger.info(f"  ➜ [NFO模式] 成功写入电影 NFO: {nfo_path}")
+                logger.info(f"  ➜ 成功写入电影 NFO: {nfo_path}")
 
             elif item_type == "Series":
                 nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
@@ -4040,15 +4019,15 @@ class MediaProcessor:
                                 })
                             if old_actors:
                                 cast_to_write = old_actors
-                                logger.info(f"  ➜ [NFO模式] 追剧刷新：已从旧 NFO 恢复 {len(old_actors)} 位演员。")
+                                logger.info(f"  ➜ 追剧刷新：已从旧 NFO 恢复 {len(old_actors)} 位演员。")
                                 
-                        logger.info("  ➜ [NFO模式] 追剧刷新：已锁定并继承原有剧集标题与演员表。")
+                        logger.info("  ➜ 追剧刷新：已锁定并继承原有剧集标题与演员表。")
                     except Exception as e:
-                        logger.warning(f"  ➜ [NFO模式] 读取原有 NFO 失败: {e}")
+                        logger.warning(f"  ➜ 读取原有 NFO 失败: {e}")
 
                 nfo_content = nfo_builder.build_tvshow_nfo(data_to_write, cast_to_write)
                 with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
-                logger.info(f"  ➜ [NFO模式] 成功写入剧集 NFO: {nfo_path}")
+                logger.info(f"  ➜ 成功写入剧集 NFO: {nfo_path}")
                 
                 episodes_data = data_to_write.get("episodes_details", {})
                 seasons_data = data_to_write.get("seasons_details", [])
@@ -4071,7 +4050,7 @@ class MediaProcessor:
                                         season_nfo_content = nfo_builder.build_season_nfo(season_info)
                                         season_nfo_path = os.path.join(root_dir, "season.nfo")
                                         with open(season_nfo_path, 'w', encoding='utf-8') as f: f.write(season_nfo_content)
-                                        logger.info(f"  ➜ [NFO模式] 成功写入季 NFO: {season_nfo_path}")
+                                        logger.info(f"  ➜ 成功写入季 NFO: {season_nfo_path}")
                                     season_dirs_processed.add(root_dir)
 
                                 ep_list = episodes_data.values() if isinstance(episodes_data, dict) else (episodes_data if isinstance(episodes_data, list) else [])
@@ -4084,16 +4063,16 @@ class MediaProcessor:
                                         with open(ep_nfo_path, 'w', encoding='utf-8') as f: f.write(ep_nfo_content)
                                         generated_count += 1
                                         break
-                    logger.info(f"  ➜ [NFO模式] 深度扫描目录完成，批量生成了 {generated_count} 个单集 NFO。")
+                    logger.info(f"  ➜ 深度扫描目录完成，批量生成了 {generated_count} 个集 NFO。")
 
             elif item_type == "Episode":
                 nfo_content = nfo_builder.build_episode_nfo(data_to_write, cast_to_write)
                 nfo_path = os.path.splitext(media_path)[0] + ".nfo"
                 with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
-                logger.info(f"  ➜ [NFO模式] 成功写入分集 NFO: {nfo_path}")
+                logger.info(f"  ➜ 成功写入分集 NFO: {nfo_path}")
 
         except Exception as e:
-            logger.error(f"  ➜ [NFO模式] 写入 NFO 文件失败: {e}")
+            logger.error(f"  ➜ 写入 NFO 文件失败: {e}")
 
     # --- 辅助函数：从不同数据源构建演员列表 ---
     def _build_cast_from_final_data(self, final_cast_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
