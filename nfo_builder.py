@@ -2,6 +2,7 @@
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import logging
+from utils import GENRE_TRANSLATION_PATCH  # ★★★ 引入类型汉化补丁 ★★★
 
 logger = logging.getLogger(__name__)
 
@@ -27,10 +28,14 @@ def build_movie_nfo(data: dict, cast: list) -> str:
     if data.get('imdb_id'):
         ET.SubElement(root, 'uniqueid', type='imdb').text = str(data.get('imdb_id'))
 
-    # 列表类型数据
+    # ★★★ 修复：类型 (Genre) 中文化映射 ★★★
     for genre in data.get('genres', []):
-        _add_element(root, 'genre', genre.get('name') if isinstance(genre, dict) else genre)
+        genre_name = genre.get('name') if isinstance(genre, dict) else genre
+        if genre_name in GENRE_TRANSLATION_PATCH:
+            genre_name = GENRE_TRANSLATION_PATCH[genre_name]
+        _add_element(root, 'genre', genre_name)
     
+    # 关键词 (Tags) - 优先使用净化后的中文标签
     tags_to_write = data.get('_mapped_chinese_tags')
     if tags_to_write is not None:
         for tag in tags_to_write:
@@ -51,8 +56,11 @@ def build_movie_nfo(data: dict, cast: list) -> str:
         if actor.get('profile_path'):
             img_url = actor['profile_path'] if actor['profile_path'].startswith('http') else f"https://image.tmdb.org/t/p/w500{actor['profile_path']}"
             _add_element(actor_elem, 'thumb', img_url)
-        if actor.get('id'):
-            _add_element(actor_elem, 'tmdbid', actor.get('id'))
+            
+        # ★★★ 修复：兼容 TMDb 原生 id 和 数据库恢复的 tmdb_id ★★★
+        actor_id = actor.get('id') or actor.get('tmdb_id')
+        if actor_id:
+            _add_element(actor_elem, 'tmdbid', actor_id)
 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
@@ -70,9 +78,14 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     if data.get('id'):
         ET.SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(data.get('id'))
 
+    # ★★★ 修复：类型 (Genre) 中文化映射 ★★★
     for genre in data.get('genres', []):
-        _add_element(root, 'genre', genre.get('name') if isinstance(genre, dict) else genre)
-
+        genre_name = genre.get('name') if isinstance(genre, dict) else genre
+        if genre_name in GENRE_TRANSLATION_PATCH:
+            genre_name = GENRE_TRANSLATION_PATCH[genre_name]
+        _add_element(root, 'genre', genre_name)
+        
+    # 关键词 (Tags) - 优先使用净化后的中文标签
     tags_to_write = data.get('_mapped_chinese_tags')
     if tags_to_write is not None:
         for tag in tags_to_write:
@@ -80,7 +93,7 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     else:
         for tag in data.get('keywords', []):
             _add_element(root, 'tag', tag.get('name') if isinstance(tag, dict) else tag)
-
+            
     for studio in data.get('networks', []) + data.get('production_companies', []):
         _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)
 
@@ -92,8 +105,11 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
         if actor.get('profile_path'):
             img_url = actor['profile_path'] if actor['profile_path'].startswith('http') else f"https://image.tmdb.org/t/p/w500{actor['profile_path']}"
             _add_element(actor_elem, 'thumb', img_url)
-        if actor.get('id'):
-            _add_element(actor_elem, 'tmdbid', actor.get('id'))
+            
+        # ★★★ 修复：兼容 TMDb 原生 id 和 数据库恢复的 tmdb_id ★★★
+        actor_id = actor.get('id') or actor.get('tmdb_id')
+        if actor_id:
+            _add_element(actor_elem, 'tmdbid', actor_id)
 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
@@ -117,5 +133,10 @@ def build_episode_nfo(data: dict, cast: list) -> str:
         if actor.get('profile_path'):
             img_url = actor['profile_path'] if actor['profile_path'].startswith('http') else f"https://image.tmdb.org/t/p/w500{actor['profile_path']}"
             _add_element(actor_elem, 'thumb', img_url)
+            
+        # ★★★ 修复：兼容 TMDb 原生 id 和 数据库恢复的 tmdb_id ★★★
+        actor_id = actor.get('id') or actor.get('tmdb_id')
+        if actor_id:
+            _add_element(actor_elem, 'tmdbid', actor_id)
 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
