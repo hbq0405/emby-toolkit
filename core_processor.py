@@ -418,7 +418,8 @@ class MediaProcessor:
                         "Id": "pending", 
                         "Name": db_record.get('title'), 
                         "Type": item_type, 
-                        "ProviderIds": {"Tmdb": tmdb_id}
+                        "ProviderIds": {"Tmdb": tmdb_id},
+                        "Path": file_path
                     }
                     
                     # 3. 写入文件
@@ -447,7 +448,8 @@ class MediaProcessor:
                             "Name": override_data.get('title') or override_data.get('name'), 
                             "Type": item_type, 
                             "ProviderIds": {"Tmdb": tmdb_id},
-                            "DateCreated": datetime.now(timezone.utc)
+                            "DateCreated": datetime.now(timezone.utc),
+                            "Path": file_path
                         }
                         
                         # 写入数据库
