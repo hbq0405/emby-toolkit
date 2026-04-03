@@ -104,11 +104,11 @@ def task_sync_images(processor, item_id: str, update_description: str, sync_time
 
 def task_sync_all_metadata(processor, item_id: str, item_name: str):
     """
-    【任务：全能元数据同步器。
+    【任务：全能元数据同步器】
     当收到 metadata.update Webhook 时，此任务会：
     1. 从 Emby 获取最新数据。
-    2. 将更新持久化到 override 覆盖缓存文件。
-    3. 将更新同步到 media_metadata 数据库缓存。
+    2. 将更新同步到 media_metadata 数据库缓存。
+    (注：NFO 模式下，物理文件的修改由 Emby 自身负责)
     """
     log_prefix = f"全能元数据同步 for '{item_name}'"
     logger.trace(f"  ➜ 任务开始：{log_prefix}")
@@ -119,17 +119,13 @@ def task_sync_all_metadata(processor, item_id: str, item_name: str):
             processor.emby_url, 
             processor.emby_api_key, 
             processor.emby_user_id,
-            # 请求所有可能被用户修改的字段
             fields="ProviderIds,Type,Name,OriginalTitle,Overview,Tagline,CommunityRating,OfficialRating,Genres,Studios,Tags,PremiereDate"
         )
         if not item_details:
             logger.error(f"  ➜ {log_prefix} 失败：无法获取项目 {item_id} 的最新详情。")
             return
 
-        # 步骤 2: 调用施工队，更新 override 文件
-        processor.sync_emby_updates_to_override_files(item_details)
-
-        # 步骤 3: 调用另一个施工队，更新数据库缓存
+        # 步骤 2: 调用施工队，更新数据库缓存
         processor.sync_single_item_to_metadata_cache(item_id, item_name=item_name)
 
         logger.trace(f"  ➜ 任务成功：{log_prefix}")
@@ -1753,37 +1749,37 @@ def task_scan_monitor_folders(processor):
     logger.info(f"  ➜ 监控目录扫描完成。扫描: {scan_count}, 触发处理: {trigger_count}")
     task_manager.update_status_from_thread(100, f"扫描完成，处理了 {trigger_count} 个新项目")
 
-# --- 从数据库恢复本地覆盖缓存 ---
-def task_restore_local_cache_from_db(processor):
+# --- 从数据库恢复物理 NFO 和图片 ---
+def task_restore_nfo_and_images(processor):
     """
-    【灾难恢复】从数据库读取元数据，重新生成本地 override JSON 文件。
-    用于误删 cache 目录或迁移环境后的数据恢复。
+    【灾难恢复】从数据库读取元数据，重新生成物理目录下的 NFO 文件并补齐图片。
+    用于 NFO 丢失、图片丢失或洗版后的数据恢复。
     """
-    task_name = "恢复覆盖缓存"
+    task_name = "恢复NFO与图片"
     logger.trace(f"--- 开始执行 '{task_name}' ---")
     
     try:
-        # 1. 获取所有顶层项目 (Movie, Series)
         task_manager.update_status_from_thread(5, "正在读取数据库...")
         
         items_to_restore = []
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
+            # 只恢复当前在库的项目
             cursor.execute("""
                 SELECT * FROM media_metadata 
                 WHERE item_type IN ('Movie', 'Series') 
                   AND tmdb_id IS NOT NULL 
                   AND tmdb_id NOT IN ('0', 'None', 'null', '')
+                  AND in_library = TRUE
             """)
             items_to_restore = [dict(row) for row in cursor.fetchall()]
 
         total = len(items_to_restore)
         if total == 0:
-            task_manager.update_status_from_thread(100, "数据库中没有可恢复的项目。")
+            task_manager.update_status_from_thread(100, "数据库中没有可恢复的在线项目。")
             return
 
-        logger.info(f"  ➜ 发现 {total} 个项目需要恢复缓存。")
-        
+        logger.info(f"  ➜ 发现 {total} 个项目需要恢复 NFO 和图片。")
         success_count = 0
         
         for i, item in enumerate(items_to_restore):
@@ -1791,33 +1787,44 @@ def task_restore_local_cache_from_db(processor):
                 logger.warning("  ➜ 任务被中止。")
                 break
 
-            # 每处理50个文件，暂停 0.01 秒，防止 IO/CPU 100% 卡死系统
-            if i % 50 == 0:
-                time.sleep(0.01)
+            if i % 10 == 0: time.sleep(0.1)
 
             tmdb_id = item['tmdb_id']
             item_type = item['item_type']
             title = item.get('title', tmdb_id)
             
-            # 更新进度
             if i % 5 == 0:
                 progress = int((i / total) * 100)
                 task_manager.update_status_from_thread(progress, f"正在恢复 ({i+1}/{total}): {title}")
 
             try:
+                # ★★★ 1. 获取真实的物理路径 ★★★
+                emby_ids_str = item.get('emby_item_ids_json', '[]')
+                emby_ids = json.loads(emby_ids_str) if isinstance(emby_ids_str, str) else emby_ids_str
+                
+                if not emby_ids:
+                    logger.warning(f"  ➜ 项目 '{title}' 没有关联的 Emby ID，无法定位物理路径，跳过。")
+                    continue
+                    
+                target_emby_id = emby_ids[0]
+                item_details = emby.get_emby_item_details(
+                    target_emby_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
+                )
+                
+                if not item_details or not item_details.get("Path"):
+                    logger.warning(f"  ➜ 无法获取项目 '{title}' 的物理路径，跳过。")
+                    continue
+
                 # --- A. 准备演员数据 ---
                 db_actors = []
                 if item.get('actors_json'):
                     try:
                         raw_actors = item['actors_json']
                         actors_link = json.loads(raw_actors) if isinstance(raw_actors, str) else raw_actors
-                        
                         actor_tmdb_ids = [a['tmdb_id'] for a in actors_link if 'tmdb_id' in a]
-                        
                         if actor_tmdb_ids:
                             with connection.get_db_connection() as conn:
                                 cursor = conn.cursor()
-                                # 批量查询演员详情
                                 placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
                                 sql = f"""
                                     SELECT am.*, pim.primary_name as name
@@ -1828,8 +1835,6 @@ def task_restore_local_cache_from_db(processor):
                                 cursor.execute(sql, tuple(actor_tmdb_ids))
                                 actor_rows = cursor.fetchall()
                                 actor_map = {r['tmdb_id']: dict(r) for r in actor_rows}
-                                
-                                # 组装回有序列表
                                 for link in actors_link:
                                     tid = link.get('tmdb_id')
                                     if tid in actor_map:
@@ -1837,7 +1842,6 @@ def task_restore_local_cache_from_db(processor):
                                         full_actor['character'] = link.get('character')
                                         full_actor['order'] = link.get('order')
                                         db_actors.append(full_actor)
-                                        
                                 db_actors.sort(key=lambda x: x.get('order', 999))
                     except Exception as e_actor:
                         logger.warning(f"  ➜ 解析演员数据失败 ({title}): {e_actor}")
@@ -1849,75 +1853,54 @@ def task_restore_local_cache_from_db(processor):
                 if item_type == "Series":
                     with connection.get_db_connection() as conn:
                         cursor = conn.cursor()
-                        
-                        # 查分季
                         cursor.execute("SELECT * FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Season'", (tmdb_id,))
-                        seasons_rows = cursor.fetchall()
                         seasons_data = []
-                        for s_row in seasons_rows:
-                            # ★ 拦截临时内部ID，不写入 JSON 缓存
-                            if not str(s_row['tmdb_id']).isdigit():
-                                continue
-                                
-                            s_data = {
-                                "id": int(s_row['tmdb_id']),
-                                "name": s_row['title'],
-                                "overview": s_row['overview'],
-                                "season_number": s_row['season_number'],
-                                "air_date": str(s_row['release_date']) if s_row['release_date'] else None,
+                        for s_row in cursor.fetchall():
+                            if not str(s_row['tmdb_id']).isdigit(): continue
+                            seasons_data.append({
+                                "id": int(s_row['tmdb_id']), "name": s_row['title'], "overview": s_row['overview'],
+                                "season_number": s_row['season_number'], "air_date": str(s_row['release_date']) if s_row['release_date'] else None,
                                 "poster_path": s_row['poster_path']
-                            }
-                            seasons_data.append(s_data)
+                            })
                         
-                        # 查分集
                         cursor.execute("SELECT * FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode'", (tmdb_id,))
-                        episodes_rows = cursor.fetchall()
                         episodes_data = {} 
-                        
-                        for e_row in episodes_rows:
-                            # ★ 拦截临时内部ID，不写入 JSON 缓存
-                            if not str(e_row['tmdb_id']).isdigit():
-                                continue
-                                
-                            s_num = e_row['season_number']
-                            e_num = e_row['episode_number']
-                            key = f"S{s_num}E{e_num}"
-                            
-                            e_data = {
-                                "id": int(e_row['tmdb_id']),
-                                "name": e_row['title'],
-                                "overview": e_row['overview'],
-                                "season_number": s_num,
-                                "episode_number": e_num,
+                        for e_row in cursor.fetchall():
+                            if not str(e_row['tmdb_id']).isdigit(): continue
+                            s_num, e_num = e_row['season_number'], e_row['episode_number']
+                            episodes_data[f"S{s_num}E{e_num}"] = {
+                                "id": int(e_row['tmdb_id']), "name": e_row['title'], "overview": e_row['overview'],
+                                "season_number": s_num, "episode_number": e_num,
                                 "air_date": str(e_row['release_date']) if e_row['release_date'] else None,
-                                "vote_average": e_row['rating'],
-                                "still_path": e_row['poster_path']
+                                "vote_average": e_row['rating'], "still_path": e_row['poster_path']
                             }
-                            episodes_data[key] = e_data
-
                         if seasons_data: payload['seasons_details'] = seasons_data
                         if episodes_data: payload['episodes_details'] = episodes_data
 
-                # --- D. 写入文件 ---
-                # 构造上下文对象 (Id='pending' 避免触发 Emby API 请求)
-                fake_item_details = {
-                    "Id": "pending", 
-                    "Name": title, 
-                    "Type": item_type, 
-                    "ProviderIds": {"Tmdb": tmdb_id}
-                }
-                
+                # --- D. 写入 NFO ---
+                logger.info(f"  ➜ 正在为 '{title}' 生成物理 NFO 文件...")
                 processor.sync_item_metadata(
-                    item_details=fake_item_details,
+                    item_details=item_details, # 传入真实的 item_details (包含 Path)
                     tmdb_id=tmdb_id,
+                    final_cast_override=db_actors,
                     metadata_override=payload
                 )
+                
+                # --- E. 下载图片 ---
+                logger.info(f"  ➜ 正在为 '{title}' 补齐缺失图片...")
+                processor.download_images_from_tmdb(
+                    tmdb_id=tmdb_id,
+                    item_type=item_type,
+                    aggregated_tmdb_data=payload,
+                    item_details=item_details
+                )
+                
                 success_count += 1
                 
             except Exception as e_item:
-                logger.error(f"  ➜ 恢复项目 '{title}' 失败: {e_item}")
+                logger.error(f"  ➜ 恢复项目 '{title}' 失败: {e_item}", exc_info=True)
 
-        final_msg = f"恢复完成！成功生成 {success_count}/{total} 个项目的本地缓存文件。"
+        final_msg = f"恢复完成！成功为 {success_count}/{total} 个项目生成了 NFO 和图片。"
         logger.info(f"  ➜ {final_msg}")
         task_manager.update_status_from_thread(100, final_msg)
 
