@@ -297,11 +297,25 @@ class MediaProcessor:
             should_skip_full_processing = False
             
             # 1. 路径准备
-            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-            base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, str(tmdb_id))
-            main_json_filename = "all.json" if item_type == "Movie" else "series.json"
-            main_json_path = os.path.join(base_override_dir, main_json_filename)
-            file_exists = os.path.exists(main_json_path)
+            file_exists = False
+            if not self.is_nfo_mode:
+                # 神医模式：检查 override 目录
+                cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+                base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, str(tmdb_id))
+                main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+                main_json_path = os.path.join(base_override_dir, main_json_filename)
+                file_exists = os.path.exists(main_json_path)
+            else:
+                # NFO 模式检查物理目录下的 NFO 文件 
+                if item_type == "Movie":
+                    nfo_path = os.path.splitext(file_path)[0] + ".nfo"
+                else:
+                    episode_dir = os.path.dirname(file_path)
+                    series_root_dir = episode_dir
+                    if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(episode_dir), re.IGNORECASE):
+                        series_root_dir = os.path.dirname(episode_dir)
+                    nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
+                file_exists = os.path.exists(nfo_path)
 
             # 2. 数据库查询 (获取完整元数据 + 演员表)
             db_record = None
@@ -1812,11 +1826,14 @@ class MediaProcessor:
 
             update_clauses = []
             for col in cols_to_update:
-                # 针对 total_episodes 字段，检查锁定状态
-                # 逻辑：如果 total_episodes_locked 为 TRUE，则保持原值；否则使用新值 (EXCLUDED.total_episodes)
                 if col == 'total_episodes':
                     update_clauses.append(
                         "total_episodes = CASE WHEN media_metadata.total_episodes_locked IS TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END"
+                    )
+                elif col == 'in_library':
+                    # ★★★ 核心修复：如果新数据是 False (预处理)，但老数据已经是 True (已入库)，绝对不覆盖！★★★
+                    update_clauses.append(
+                        "in_library = CASE WHEN EXCLUDED.in_library IS FALSE AND media_metadata.in_library IS TRUE THEN TRUE ELSE EXCLUDED.in_library END"
                     )
                 else:
                     # 其他字段正常更新
@@ -4345,12 +4362,14 @@ class MediaProcessor:
                 elif item_type == "Series":
                     nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
                     
-                    # ★★★ 修复：追剧刷新时，读取旧 NFO 锁定标题，防止被 TMDb 乱改 ★★★
+                    # ★★★ 修复：追剧刷新时，读取旧 NFO 锁定标题和演员表 ★★★
                     if is_series_refresh and os.path.exists(nfo_path):
                         try:
                             import xml.etree.ElementTree as ET
                             tree = ET.parse(nfo_path)
                             root = tree.getroot()
+                            
+                            # 1. 锁定标题
                             ext_title = root.findtext('title')
                             ext_orig = root.findtext('originaltitle')
                             ext_sort = root.findtext('sorttitle')
@@ -4358,9 +4377,25 @@ class MediaProcessor:
                             if ext_title: data_to_write['name'] = ext_title
                             if ext_orig: data_to_write['original_name'] = ext_orig
                             if ext_sort: data_to_write['sorttitle'] = ext_sort
-                            logger.info("  ➜ [NFO模式] 追剧刷新：已锁定并继承原有剧集标题，防止被覆盖。")
+                            
+                            # 2. 锁定演员表 (如果传入的演员表为空，直接从旧 NFO 里抠出来继承)
+                            if not cast_to_write:
+                                old_actors = []
+                                for actor_elem in root.findall('actor'):
+                                    old_actors.append({
+                                        'name': actor_elem.findtext('name'),
+                                        'character': actor_elem.findtext('role'),
+                                        'order': actor_elem.findtext('order'),
+                                        'profile_path': actor_elem.findtext('thumb'),
+                                        'tmdb_id': actor_elem.findtext('tmdbid')
+                                    })
+                                if old_actors:
+                                    cast_to_write = old_actors
+                                    logger.info(f"  ➜ [NFO模式] 追剧刷新：已从旧 NFO 恢复 {len(old_actors)} 位演员。")
+                                    
+                            logger.info("  ➜ [NFO模式] 追剧刷新：已锁定并继承原有剧集标题与演员表。")
                         except Exception as e:
-                            logger.warning(f"  ➜ [NFO模式] 读取原有 NFO 标题失败: {e}")
+                            logger.warning(f"  ➜ [NFO模式] 读取原有 NFO 失败: {e}")
 
                     # 写入主剧集 NFO (包含更新后的简介、状态等)
                     nfo_content = nfo_builder.build_tvshow_nfo(data_to_write, cast_to_write)
