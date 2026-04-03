@@ -251,6 +251,7 @@
                           <template #prefix><n-icon :component="FolderIcon" /></template>
                         </n-input>
                         <n-button type="primary" ghost @click="openLocalFolderSelector('local_data_path', false)">选择</n-button>
+                        <template #feedback><n-text depth="3" style="font-size:0.8em;">留空使用NFO模式。</n-text></template>
                       </n-input-group>
                     </n-form-item>
                     <n-form-item label="TMDB API Key" path="tmdb_api_key">
