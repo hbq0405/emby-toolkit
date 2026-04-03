@@ -959,6 +959,7 @@ class MediaProcessor:
                             tid = link.get('tmdb_id')
                             if tid in actor_map:
                                 full_actor = actor_map[tid].copy()
+                                full_actor['id'] = tid 
                                 full_actor['character'] = link.get('character')
                                 full_actor['order'] = link.get('order')
                                 db_actors.append(full_actor)
@@ -1733,14 +1734,11 @@ class MediaProcessor:
 
             update_clauses = []
             for col in cols_to_update:
+                # 针对 total_episodes 字段，检查锁定状态
+                # 逻辑：如果 total_episodes_locked 为 TRUE，则保持原值；否则使用新值 (EXCLUDED.total_episodes)
                 if col == 'total_episodes':
                     update_clauses.append(
                         "total_episodes = CASE WHEN media_metadata.total_episodes_locked IS TRUE THEN media_metadata.total_episodes ELSE EXCLUDED.total_episodes END"
-                    )
-                elif col == 'in_library':
-                    # ★★★ 核心修复：如果新数据是 False (预处理)，但老数据已经是 True (已入库)，绝对不覆盖！★★★
-                    update_clauses.append(
-                        "in_library = CASE WHEN EXCLUDED.in_library IS FALSE AND media_metadata.in_library IS TRUE THEN TRUE ELSE EXCLUDED.in_library END"
                     )
                 else:
                     # 其他字段正常更新

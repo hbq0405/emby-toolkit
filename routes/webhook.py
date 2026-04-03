@@ -473,7 +473,7 @@ def _process_batch_webhook_events():
             
             # ★★★ 优化核心：如果不在线，直接踢出缓存，视为新项目重跑 ★★★
             if not is_online_in_db:
-                logger.info(f"  ➜ ➜ 缓存命中 '{parent_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
+                logger.info(f"  ➜ 缓存命中 '{parent_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
                 
                 # 从内存缓存中移除
                 if parent_id in extensions.media_processor_instance.processed_items_cache:
@@ -543,7 +543,7 @@ def _dispatch_item(item_id, item_name, item_type):
         if is_already_processed:
             is_online_in_db = media_db.is_emby_id_in_library(item_id)
             if not is_online_in_db:
-                logger.info(f"  ➜ ➜ 缓存命中 '{item_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
+                logger.info(f"  ➜ 缓存命中 '{item_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
                 if item_id in extensions.media_processor_instance.processed_items_cache:
                     del extensions.media_processor_instance.processed_items_cache[item_id]
                 is_already_processed = False
