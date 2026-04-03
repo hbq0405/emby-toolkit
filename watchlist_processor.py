@@ -698,7 +698,8 @@ class WatchlistProcessor:
                         item_details=current_item_details,
                         tmdb_id=tmdb_id,
                         final_cast_override=db_actors, # 传入从数据库恢复的精修演员表
-                        metadata_override=payload_for_nfo # 传入结构正确的 TMDb 数据
+                        metadata_override=payload_for_nfo, # 传入结构正确的 TMDb 数据
+                        is_series_refresh=True # ★★★ 修复4：标记为追剧刷新模式，跳过 tvshow.nfo ★★★
                     )
 
         except Exception as e_img:

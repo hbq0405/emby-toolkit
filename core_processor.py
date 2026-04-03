@@ -426,6 +426,7 @@ class MediaProcessor:
                     self.sync_item_metadata(
                         item_details=fake_item_details,
                         tmdb_id=str(tmdb_id),
+                        final_cast_override=db_actors, 
                         metadata_override=payload
                     )
                     should_skip_full_processing = True
@@ -4229,7 +4230,8 @@ class MediaProcessor:
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str,
                        final_cast_override: Optional[List[Dict[str, Any]]] = None,
                        episode_ids_to_sync: Optional[List[str]] = None,
-                       metadata_override: Optional[Dict[str, Any]] = None):
+                       metadata_override: Optional[Dict[str, Any]] = None,
+                       is_series_refresh: bool = False):
         """
         【双模兼容版】基于模板和现有数据构建元数据文件。
         - 通用阶段：执行工作室中文化、关键词映射等数据净化。
@@ -4341,10 +4343,14 @@ class MediaProcessor:
                     logger.info(f"  ➜ [NFO模式] 成功写入电影 NFO: {nfo_path}")
 
                 elif item_type == "Series":
-                    nfo_content = nfo_builder.build_tvshow_nfo(data_to_write, cast_to_write)
-                    nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
-                    with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
-                    logger.info(f"  ➜ [NFO模式] 成功写入剧集 NFO: {nfo_path}")
+                    # ★★★ 修复3：如果是追剧刷新，跳过 tvshow.nfo 的更新，保护原有数据和演员表 ★★★
+                    if not is_series_refresh:
+                        nfo_content = nfo_builder.build_tvshow_nfo(data_to_write, cast_to_write)
+                        nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
+                        with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
+                        logger.info(f"  ➜ [NFO模式] 成功写入剧集 NFO: {nfo_path}")
+                    else:
+                        logger.info(f"  ➜ [NFO模式] 追剧刷新模式，跳过 tvshow.nfo 的覆盖更新。")
                     
                     episodes_data = data_to_write.get("episodes_details", {})
                     if episodes_data and os.path.isdir(series_root_dir):
