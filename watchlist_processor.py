@@ -684,10 +684,21 @@ class WatchlistProcessor:
                 # 2. ★★★ 核心修复：NFO 模式下，追剧刷新必须补全 NFO 文件 ★★★
                 if extensions.media_processor_instance.is_nfo_mode and current_item_details:
                     logger.debug(f"  ➜ [NFO模式] 正在为 '{item_name}' 补全 NFO 文件...")
+                    
+                    # A. 构造正确的 Payload 结构 (将嵌套的 series_details 提级到根目录)
+                    payload_for_nfo = latest_series_data.copy()
+                    payload_for_nfo['seasons_details'] = aggregated_data.get('seasons_details', [])
+                    payload_for_nfo['episodes_details'] = aggregated_data.get('episodes_details', {})
+                    
+                    # B. 从数据库逆向恢复之前精修过的演员表 (防止 NFO 演员表被清空)
+                    _, db_actors = extensions.media_processor_instance._reconstruct_full_data_from_db(tmdb_id, 'Series')
+                    
+                    # C. 写入 NFO
                     extensions.media_processor_instance.sync_item_metadata(
                         item_details=current_item_details,
                         tmdb_id=tmdb_id,
-                        metadata_override=aggregated_data
+                        final_cast_override=db_actors, # 传入从数据库恢复的精修演员表
+                        metadata_override=payload_for_nfo # 传入结构正确的 TMDb 数据
                     )
 
         except Exception as e_img:
