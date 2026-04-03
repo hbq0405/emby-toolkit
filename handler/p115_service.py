@@ -3724,7 +3724,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
                     for root, _, files in os.walk(curr_dir):
                         for f in files:
                             ext = f.split('.')[-1].lower()
-                            if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'nfo'}:
+                            if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov'}:
                                 has_media = True
                                 break
                         if has_media: break
