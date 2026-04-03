@@ -2676,31 +2676,28 @@ class MediaProcessor:
                 )
 
                 # ======================================================================
-                # ★★★ 核心修复：NFO 模式的“物理资产强制核对”防线 ★★★
-                # 即使命中了数据库缓存（跳过了耗时的 AI 翻译和 TMDb 演员拉取），
-                # NFO 模式也必须强制核对本地物理文件是否存在！
-                # ======================================================================
                 if self.is_nfo_mode:
-                    logger.info(f"  ➜ [NFO模式] 正在核对物理资产 (NFO文件 & 图片)...")
-                    
-                    # 1. 核对并补全 NFO 文件 (极速覆盖写入，纯本地 IO，耗时 < 0.05秒)
-                    self.sync_item_metadata(
-                        item_details=item_details_from_emby,
-                        tmdb_id=tmdb_id,
-                        final_cast_override=final_processed_cast,
-                        episode_ids_to_sync=specific_episode_ids,
-                        metadata_override=tmdb_details_for_extra
-                    )
-                    
-                    # 2. 核对并补全图片 
-                    # (仅消耗 1 次 TMDb API 获取主图 URL，利用 payload 恢复分集图 URL)
-                    # (自带防重复下载机制，已存在的图片瞬间跳过)
-                    self.download_images_from_tmdb(
-                        tmdb_id=tmdb_id,
-                        item_type=item_type,
-                        aggregated_tmdb_data=tmdb_details_for_extra, # 完美复用缓存恢复的 payload
-                        item_details=item_details_from_emby
-                    )
+                    # 如果是 Webhook 回流 (命中缓存)，说明预处理已经写过 NFO 了，直接跳过，简化流程！
+                    if is_feedback_mode:
+                        logger.debug(f"  ➜ [NFO模式] Webhook 回流，跳过重复生成 NFO 和图片。")
+                    else:
+                        # 只有在预处理阶段，或者用户手动添加文件(无监控)时，才生成 NFO 和图片
+                        logger.info(f"  ➜ [NFO模式] 正在生成物理资产 (NFO文件 & 图片)...")
+                        
+                        self.sync_item_metadata(
+                            item_details=item_details_from_emby,
+                            tmdb_id=tmdb_id,
+                            final_cast_override=final_processed_cast,
+                            episode_ids_to_sync=specific_episode_ids,
+                            metadata_override=tmdb_details_for_extra
+                        )
+                        
+                        self.download_images_from_tmdb(
+                            tmdb_id=tmdb_id,
+                            item_type=item_type,
+                            aggregated_tmdb_data=tmdb_details_for_extra, 
+                            item_details=item_details_from_emby
+                        )
 
                 if is_feedback_mode:
                     # --- 分支 A: 纯读取模式 (极速恢复) ---

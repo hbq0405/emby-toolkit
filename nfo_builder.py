@@ -66,9 +66,9 @@ def build_movie_nfo(data: dict, cast: list) -> str:
 
 def build_tvshow_nfo(data: dict, cast: list) -> str:
     root = ET.Element('tvshow')
-    _add_element(root, 'title', data.get('name'))
-    _add_element(root, 'originaltitle', data.get('original_name'))
-    _add_element(root, 'sorttitle', data.get('name'))
+    _add_element(root, 'title', data.get('name') or data.get('title'))
+    _add_element(root, 'originaltitle', data.get('original_name') or data.get('original_title'))
+    _add_element(root, 'sorttitle', data.get('name') or data.get('title'))
     _add_element(root, 'plot', data.get('overview'))
     _add_element(root, 'year', data.get('first_air_date')[:4] if data.get('first_air_date') else '')
     _add_element(root, 'premiered', data.get('first_air_date'))
@@ -115,7 +115,7 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
 
 def build_episode_nfo(data: dict, cast: list) -> str:
     root = ET.Element('episodedetails')
-    _add_element(root, 'title', data.get('name'))
+    _add_element(root, 'title', data.get('name') or data.get('title'))
     _add_element(root, 'plot', data.get('overview'))
     _add_element(root, 'season', data.get('season_number'))
     _add_element(root, 'episode', data.get('episode_number'))
