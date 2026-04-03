@@ -595,7 +595,7 @@ class MediaProcessor:
                     final_processed_cast = authoritative_cast_source
             
             # =========================================================
-            # 步骤 4 & 5: 生成本地 override 元数据文件 & 写入数据库
+            # 步骤 4 & 5: 生成本地 NFO 元数据文件 & 写入数据库
             # =========================================================
             if not should_skip_full_processing:
                 # 1. 准备伪造的 Emby 对象
