@@ -390,6 +390,25 @@ class MediaProcessor:
                         "ProviderIds": {"Tmdb": tmdb_id},
                         "Path": file_path
                     }
+
+                    # =========================================================
+                    # ★★★ 新增：离线状态检测 (检查本地是否缺失图片) ★★★
+                    # =========================================================
+                    target_dir = folder_path
+                    # 如果是剧集且当前在 Season 文件夹内，需要退回上一级根目录检查
+                    if item_type == "Series" and re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(folder_path), re.IGNORECASE):
+                        target_dir = os.path.dirname(folder_path)
+                    
+                    poster_path = os.path.join(target_dir, "poster.jpg")
+                    if not os.path.exists(poster_path):
+                        logger.info(f"  ➜ [实时监控] 检测到本地缺失海报 (离线恢复状态)，准备重新下载图片资产...")
+                        self.download_images_from_tmdb(
+                            tmdb_id=str(tmdb_id),
+                            item_type=item_type,
+                            aggregated_tmdb_data=payload if item_type == "Series" else None,
+                            item_details=fake_item_details
+                        )
+                    # =========================================================
                     
                     # 3. 写入 NFO 文件 (传入 db_actors 确保演员表不丢失)
                     self.sync_item_metadata(
