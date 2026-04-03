@@ -579,7 +579,7 @@
                             <template #unchecked>本地媒体信息</template>
                         </n-switch>
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">开启时，在线从中心服务器获取媒体信息数据。</n-text>
+                            <n-text depth="3" style="font-size:0.8em;">在线从中心服务器获取媒体信息数据，需要神医Pro。</n-text>
                         </template>
                     </n-form-item>
                     <n-form-item label="同步下载字幕" path="p115_download_subs">
