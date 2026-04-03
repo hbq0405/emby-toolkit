@@ -65,15 +65,16 @@ def build_movie_nfo(data: dict, cast: list) -> str:
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
 def build_tvshow_nfo(data: dict, cast: list) -> str:
+    """生成剧 NFO (tvshow.nfo) """
     root = ET.Element('tvshow')
     _add_element(root, 'title', data.get('name') or data.get('title'))
     _add_element(root, 'originaltitle', data.get('original_name') or data.get('original_title'))
-    _add_element(root, 'sorttitle', data.get('name') or data.get('title'))
+    _add_element(root, 'sorttitle', data.get('sorttitle') or data.get('name') or data.get('title'))
     _add_element(root, 'plot', data.get('overview'))
     _add_element(root, 'year', data.get('first_air_date')[:4] if data.get('first_air_date') else '')
     _add_element(root, 'premiered', data.get('first_air_date'))
     _add_element(root, 'rating', data.get('vote_average'))
-    _add_element(root, 'status', data.get('status')) # 追剧状态
+    _add_element(root, 'status', data.get('status')) 
     
     if data.get('id'):
         ET.SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(data.get('id'))
@@ -113,7 +114,21 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
+def build_season_nfo(data: dict) -> str:
+    """生成季 NFO (season.nfo) """
+    root = ET.Element('season')
+    _add_element(root, 'title', data.get('name'))
+    _add_element(root, 'plot', data.get('overview'))
+    _add_element(root, 'seasonnumber', data.get('season_number'))
+    _add_element(root, 'premiered', data.get('air_date'))
+    
+    if data.get('id'):
+        ET.SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(data.get('id'))
+
+    return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
+
 def build_episode_nfo(data: dict, cast: list) -> str:
+    """生成集 NFO (episode.nfo) """
     root = ET.Element('episodedetails')
     _add_element(root, 'title', data.get('name') or data.get('title'))
     _add_element(root, 'plot', data.get('overview'))

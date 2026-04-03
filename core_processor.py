@@ -4343,32 +4343,63 @@ class MediaProcessor:
                     logger.info(f"  ➜ [NFO模式] 成功写入电影 NFO: {nfo_path}")
 
                 elif item_type == "Series":
-                    # ★★★ 修复3：如果是追剧刷新，跳过 tvshow.nfo 的更新，保护原有数据和演员表 ★★★
-                    if not is_series_refresh:
-                        nfo_content = nfo_builder.build_tvshow_nfo(data_to_write, cast_to_write)
-                        nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
-                        with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
-                        logger.info(f"  ➜ [NFO模式] 成功写入剧集 NFO: {nfo_path}")
-                    else:
-                        logger.info(f"  ➜ [NFO模式] 追剧刷新模式，跳过 tvshow.nfo 的覆盖更新。")
+                    nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
+                    
+                    # ★★★ 修复：追剧刷新时，读取旧 NFO 锁定标题，防止被 TMDb 乱改 ★★★
+                    if is_series_refresh and os.path.exists(nfo_path):
+                        try:
+                            import xml.etree.ElementTree as ET
+                            tree = ET.parse(nfo_path)
+                            root = tree.getroot()
+                            ext_title = root.findtext('title')
+                            ext_orig = root.findtext('originaltitle')
+                            ext_sort = root.findtext('sorttitle')
+                            
+                            if ext_title: data_to_write['name'] = ext_title
+                            if ext_orig: data_to_write['original_name'] = ext_orig
+                            if ext_sort: data_to_write['sorttitle'] = ext_sort
+                            logger.info("  ➜ [NFO模式] 追剧刷新：已锁定并继承原有剧集标题，防止被覆盖。")
+                        except Exception as e:
+                            logger.warning(f"  ➜ [NFO模式] 读取原有 NFO 标题失败: {e}")
+
+                    # 写入主剧集 NFO (包含更新后的简介、状态等)
+                    nfo_content = nfo_builder.build_tvshow_nfo(data_to_write, cast_to_write)
+                    with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
+                    logger.info(f"  ➜ [NFO模式] 成功写入剧集 NFO: {nfo_path}")
                     
                     episodes_data = data_to_write.get("episodes_details", {})
+                    seasons_data = data_to_write.get("seasons_details", []) # 获取季数据
+                    
                     if episodes_data and os.path.isdir(series_root_dir):
                         valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
                         generated_count = 0
-                        for root, dirs, files in os.walk(series_root_dir):
+                        season_dirs_processed = set() # 用于记录已经生成过 season.nfo 的目录
+                        
+                        for root_dir, dirs, files in os.walk(series_root_dir):
                             for filename in files:
                                 if os.path.splitext(filename)[1].lower() not in valid_exts: continue
                                 match = re.search(r'[sS](\d{1,4})[eE](\d{1,4})', filename)
                                 if match:
                                     target_s, target_e = int(match.group(1)), int(match.group(2))
+                                    
+                                    # ★★★ 新增：在当前季文件夹生成 season.nfo ★★★
+                                    if root_dir not in season_dirs_processed:
+                                        season_info = next((s for s in seasons_data if s.get('season_number') == target_s), None)
+                                        if season_info:
+                                            season_nfo_content = nfo_builder.build_season_nfo(season_info)
+                                            season_nfo_path = os.path.join(root_dir, "season.nfo")
+                                            with open(season_nfo_path, 'w', encoding='utf-8') as f: f.write(season_nfo_content)
+                                            logger.info(f"  ➜ [NFO模式] 成功写入季 NFO: {season_nfo_path}")
+                                        season_dirs_processed.add(root_dir)
+
+                                    # 生成单集 NFO
                                     ep_list = episodes_data.values() if isinstance(episodes_data, dict) else (episodes_data if isinstance(episodes_data, list) else [])
                                     for ep in ep_list:
                                         if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
                                             ep_cast = ep.get('credits', {}).get('cast', [])
                                             if not ep_cast: ep_cast = cast_to_write 
                                             ep_nfo_content = nfo_builder.build_episode_nfo(ep, ep_cast)
-                                            ep_nfo_path = os.path.join(root, os.path.splitext(filename)[0] + ".nfo")
+                                            ep_nfo_path = os.path.join(root_dir, os.path.splitext(filename)[0] + ".nfo")
                                             with open(ep_nfo_path, 'w', encoding='utf-8') as f: f.write(ep_nfo_content)
                                             generated_count += 1
                                             break
