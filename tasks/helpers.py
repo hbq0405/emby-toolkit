@@ -1082,9 +1082,10 @@ def process_subscription_items_and_update_db(
     return processed_active_ids
 
 # --- 分级映射逻辑 ---
-def apply_rating_logic(metadata_skeleton: Dict[str, Any], tmdb_data: Dict[str, Any], item_type: str):
+def apply_rating_logic(payload: Dict[str, Any], tmdb_data: Dict[str, Any], item_type: str):
     """
-    将 TMDb 的原始分级数据，经过配置的映射规则处理后，注入到元数据骨架中。
+    将 TMDb 的原始分级数据，经过配置的映射规则处理后，直接提取出最终的分级字符串。
+    不再维护复杂的嵌套结构，直接写入 payload 的 mpaa 字段供 NFO 使用。
     """
     from database import settings_db
     
@@ -1103,43 +1104,18 @@ def apply_rating_logic(metadata_skeleton: Dict[str, Any], tmdb_data: Dict[str, A
         _countries = tmdb_data.get('origin_country', [])
         origin_country = _countries[0] if _countries else None
 
-    # 准备数据源
+    # 准备数据源 (扁平化提取)
     available_ratings = {}
-    target_list_node = [] # 指向骨架中的列表节点
-    
     if item_type == "Movie":
-        # 电影数据源解析
-        if 'release_dates' in tmdb_data:
-            metadata_skeleton['release_dates'] = tmdb_data['release_dates']
-            # 构建列表和字典
-            countries_list = []
-            for r in tmdb_data['release_dates'].get('results', []):
-                country_code = r.get('iso_3166_1')
-                cert = ""
-                release_date = ""
-                for rel in r.get('release_dates', []):
-                    if rel.get('certification'):
-                        cert = rel.get('certification')
-                        release_date = rel.get('release_date')
-                        break
-                if cert:
-                    available_ratings[country_code] = cert
-                    countries_list.append({
-                        "iso_3166_1": country_code,
-                        "certification": cert,
-                        "release_date": release_date,
-                        "primary": (country_code == origin_country)
-                    })
-            metadata_skeleton['releases']['countries'] = countries_list
-            target_list_node = metadata_skeleton['releases']['countries']
-            
+        for r in tmdb_data.get('release_dates', {}).get('results', []):
+            country_code = r.get('iso_3166_1')
+            for rel in r.get('release_dates', []):
+                if rel.get('certification'):
+                    available_ratings[country_code] = rel.get('certification')
+                    break
     elif item_type == "Series":
-        # 剧集数据源解析
-        if 'content_ratings' in tmdb_data:
-            metadata_skeleton['content_ratings'] = tmdb_data['content_ratings']
-            for r in tmdb_data['content_ratings'].get('results', []):
-                available_ratings[r.get('iso_3166_1')] = r.get('rating')
-            target_list_node = metadata_skeleton['content_ratings']['results']
+        for r in tmdb_data.get('content_ratings', {}).get('results', []):
+            available_ratings[r.get('iso_3166_1')] = r.get('rating')
 
     # --- 核心映射逻辑 ---
     target_us_code = None
@@ -1200,178 +1176,112 @@ def apply_rating_logic(metadata_skeleton: Dict[str, Any], tmdb_data: Dict[str, A
                 elif not final_rating_str:
                     final_rating_str = source_rating
 
-    # 4. 补全 US 分级到列表
     if target_us_code:
-        # 移除旧 US
-        if item_type == "Movie":
-            target_list_node[:] = [c for c in target_list_node if c.get('iso_3166_1') != 'US']
-            target_list_node.append({
-                "iso_3166_1": "US",
-                "certification": target_us_code,
-                "release_date": datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
-                "primary": False
-            })
-        else:
-            target_list_node[:] = [r for r in target_list_node if r.get('iso_3166_1') != 'US']
-            target_list_node.append({
-                "iso_3166_1": "US",
-                "rating": target_us_code
-            })
+        final_rating_str = target_us_code
 
-    # 5. 写入根节点兜底
+    # 4. 直接写入 payload 根节点供 NFO 使用
     if final_rating_str:
-        metadata_skeleton['mpaa'] = final_rating_str
-        metadata_skeleton['certification'] = final_rating_str
+        payload['mpaa'] = final_rating_str
+        payload['certification'] = final_rating_str
 
 def construct_metadata_payload(item_type: str, tmdb_data: Dict[str, Any], 
                                   aggregated_tmdb_data: Optional[Dict[str, Any]] = None,
                                   emby_data_fallback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """
-        统一封装：将 TMDb 原始数据转换为符合本地 override 格式的标准元数据骨架。
-        包含：基础字段映射、复杂字段处理(Genres/Keywords/Videos)、分级逻辑、剧集子项结构化等。
-        """
-        # 1. 初始化骨架
-        if item_type == "Movie":
-            payload = json.loads(json.dumps(utils.MOVIE_SKELETON_TEMPLATE))
-        else:
-            payload = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
-
-        if not tmdb_data:
-            return payload
-
-        # 2. 基础字段直接覆盖 (排除特殊字段)
-        exclude_keys = [
-            'casts', 'releases', 'release_dates', 'keywords', 'trailers', 
-            'content_ratings', 'videos', 'credits', 'genres', 
-            'episodes_details', 'seasons_details', 'created_by', 'networks',
-            'production_companies'
-        ]
-        for key in payload.keys():
-            if key in tmdb_data and key not in exclude_keys:
-                payload[key] = tmdb_data[key]
-
-        # 3. 通用复杂字段处理
-        # Genres: 优先 TMDb，Emby 兜底
-        if 'genres' in tmdb_data and tmdb_data['genres']:
-            payload['genres'] = tmdb_data['genres']
-        elif emby_data_fallback and emby_data_fallback.get('Genres'):
-            payload['genres'] = [{'id': 0, 'name': g} for g in emby_data_fallback['Genres']]
-
-        # Keywords
-        if 'keywords' in tmdb_data:
-            kw_data = tmdb_data['keywords']
-            if item_type == "Movie":
-                if isinstance(kw_data, dict): payload['keywords']['keywords'] = kw_data.get('keywords', [])
-                elif isinstance(kw_data, list): payload['keywords']['keywords'] = kw_data
-            else:
-                if isinstance(kw_data, dict): payload['keywords']['results'] = kw_data.get('results', [])
-                elif isinstance(kw_data, list): payload['keywords']['results'] = kw_data
-
-        # Videos / Trailers
-        if 'videos' in tmdb_data:
-            if item_type == "Movie":
-                youtube_list = []
-                for v in tmdb_data['videos'].get('results', []):
-                    if v.get('site') == 'YouTube' and v.get('type') == 'Trailer':
-                        youtube_list.append({
-                            "name": v.get('name'), "size": str(v.get('size', 'HD')), 
-                            "source": v.get('key'), "type": "Trailer"
-                        })
-                payload['trailers']['youtube'] = youtube_list
-            else:
-                payload['videos'] = tmdb_data['videos']
-
-        # 手动处理 Studios 字段
-        if 'production_companies' in tmdb_data:
-            payload['production_companies'] = tmdb_data['production_companies']
-        
-        if 'networks' in tmdb_data:
-            payload['networks'] = tmdb_data['networks']
-
-        # 4. 类型特定处理
-        if item_type == "Movie":
-            # 演员表
-            credits_source = tmdb_data.get('credits') or tmdb_data.get('casts') or {}
-            if credits_source:
-                payload['casts']['cast'] = credits_source.get('cast', [])
-                payload['casts']['crew'] = credits_source.get('crew', [])
-            
-            # 分级
-            apply_rating_logic(payload, tmdb_data, "Movie")
-
-        elif item_type == "Series":
-            # 演员表
-            credits_source = tmdb_data.get('aggregate_credits') or tmdb_data.get('credits') or {}
-            if credits_source:
-                payload['credits']['cast'] = credits_source.get('cast', [])
-                payload['credits']['crew'] = credits_source.get('crew', [])
-            
-            if 'created_by' in tmdb_data: payload['created_by'] = tmdb_data['created_by']
-            if 'networks' in tmdb_data: payload['networks'] = tmdb_data['networks']
-            
-            # 外部ID
-            if 'external_ids' in tmdb_data:
-                ext_ids = tmdb_data['external_ids']
-                if 'imdb_id' in ext_ids: payload['external_ids']['imdb_id'] = ext_ids['imdb_id']
-                if 'tvdb_id' in ext_ids: payload['external_ids']['tvdb_id'] = ext_ids['tvdb_id']
-                if 'tvrage_id' in ext_ids: payload['external_ids']['tvrage_id'] = ext_ids['tvrage_id']
-
-            # 分级
-            apply_rating_logic(payload, tmdb_data, "Series")
-
-            # 挂载子项数据 (Seasons / Episodes)
-            if aggregated_tmdb_data:
-                payload['seasons_details'] = aggregated_tmdb_data.get('seasons_details', [])
-                
-                raw_episodes = aggregated_tmdb_data.get('episodes_details', {})
-                formatted_episodes = {}
-                
-                # 统一处理分集骨架
-                for key, ep_data in raw_episodes.items():
-                    ep_skeleton = json.loads(json.dumps(utils.EPISODE_SKELETON_TEMPLATE))
-                    
-                    # 关键字段
-                    ep_skeleton['id'] = ep_data.get('id') 
-                    ep_skeleton['season_number'] = ep_data.get('season_number')
-                    ep_skeleton['episode_number'] = ep_data.get('episode_number')
-                    ep_skeleton['name'] = ep_data.get('name')
-                    ep_skeleton['overview'] = ep_data.get('overview')
-                    ep_skeleton['air_date'] = ep_data.get('air_date')
-                    ep_skeleton['vote_average'] = ep_data.get('vote_average')
-                    ep_skeleton['still_path'] = ep_data.get('still_path')
-                    
-                    # 演员
-                    ep_credits = ep_data.get('credits', {})
-                    ep_skeleton['credits']['cast'] = ep_credits.get('cast', []) 
-                    ep_skeleton['credits']['guest_stars'] = ep_credits.get('guest_stars', [])
-                    ep_skeleton['credits']['crew'] = ep_credits.get('crew', [])
-                    
-                    formatted_episodes[key] = ep_skeleton
-                
-                payload['episodes_details'] = formatted_episodes
-
+    """
+    【纯净 NFO 版】将 TMDb 原始数据转换为扁平化的字典，直接供 NFO Builder 使用。
+    彻底移除了臃肿的 JSON 骨架模板。
+    """
+    payload = {}
+    if not tmdb_data:
         return payload
+
+    # 1. 基础字段直接拷贝
+    exclude_keys = [
+        'casts', 'releases', 'release_dates', 'keywords', 'trailers', 
+        'content_ratings', 'videos', 'credits', 'genres', 
+        'episodes_details', 'seasons_details', 'created_by', 'networks',
+        'production_companies'
+    ]
+    for key, value in tmdb_data.items():
+        if key not in exclude_keys:
+            payload[key] = value
+
+    # 2. 通用复杂字段处理
+    # Genres: 优先 TMDb，Emby 兜底
+    if 'genres' in tmdb_data and tmdb_data['genres']:
+        payload['genres'] = tmdb_data['genres']
+    elif emby_data_fallback and emby_data_fallback.get('Genres'):
+        payload['genres'] = [{'id': 0, 'name': g} for g in emby_data_fallback['Genres']]
+
+    # Keywords (统一转为列表)
+    if 'keywords' in tmdb_data:
+        kw_data = tmdb_data['keywords']
+        if item_type == "Movie":
+            payload['keywords'] = kw_data.get('keywords', []) if isinstance(kw_data, dict) else (kw_data if isinstance(kw_data, list) else [])
+        else:
+            payload['keywords'] = kw_data.get('results', []) if isinstance(kw_data, dict) else (kw_data if isinstance(kw_data, list) else [])
+
+    # Studios / Networks
+    if 'production_companies' in tmdb_data:
+        payload['production_companies'] = tmdb_data['production_companies']
+    if 'networks' in tmdb_data:
+        payload['networks'] = tmdb_data['networks']
+
+    # 3. 类型特定处理
+    if item_type == "Movie":
+        apply_rating_logic(payload, tmdb_data, "Movie")
+
+    elif item_type == "Series":
+        if 'created_by' in tmdb_data: 
+            payload['created_by'] = tmdb_data['created_by']
+            
+        apply_rating_logic(payload, tmdb_data, "Series")
+
+        # 挂载子项数据 (Seasons / Episodes)
+        if aggregated_tmdb_data:
+            payload['seasons_details'] = aggregated_tmdb_data.get('seasons_details', [])
+            
+            raw_episodes = aggregated_tmdb_data.get('episodes_details', {})
+            formatted_episodes = {}
+            
+            # 提取分集所需字段
+            for key, ep_data in raw_episodes.items():
+                formatted_episodes[key] = {
+                    'id': ep_data.get('id'),
+                    'season_number': ep_data.get('season_number'),
+                    'episode_number': ep_data.get('episode_number'),
+                    'name': ep_data.get('name'),
+                    'overview': ep_data.get('overview'),
+                    'air_date': ep_data.get('air_date'),
+                    'vote_average': ep_data.get('vote_average'),
+                    'still_path': ep_data.get('still_path'),
+                    'credits': {
+                        'cast': ep_data.get('credits', {}).get('cast', []),
+                        'guest_stars': ep_data.get('credits', {}).get('guest_stars', []),
+                        'crew': ep_data.get('credits', {}).get('crew', [])
+                    }
+                }
+            payload['episodes_details'] = formatted_episodes
+
+    return payload
 
 def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    【增强版】将数据库记录还原为符合本地 override 格式的标准元数据骨架。
-    修复：填充 original_language 以解决 ID 冲突；填充导演、国家、总集数等缺失字段。
+    【纯净 NFO 版】将数据库记录还原为扁平化的字典，直接供 NFO Builder 使用。
+    彻底移除了臃肿的 JSON 骨架模板。
     """
     item_type = db_row.get('item_type')
-    
-    # 1. 初始化骨架
-    if item_type == "Movie":
-        payload = json.loads(json.dumps(utils.MOVIE_SKELETON_TEMPLATE))
-    else:
-        payload = json.loads(json.dumps(utils.SERIES_SKELETON_TEMPLATE))
+    payload = {}
 
-    # 2. 基础字段映射
+    # 1. 基础字段映射
     payload['id'] = int(db_row.get('tmdb_id') or 0)
     payload['overview'] = db_row.get('overview')
     payload['original_language'] = db_row.get('original_language')
     payload['status'] = db_row.get('watchlist_tmdb_status')
     payload['backdrop_path'] = db_row.get('backdrop_path')
     payload['homepage'] = db_row.get('homepage')
+    payload['vote_average'] = db_row.get('rating')
+    payload['poster_path'] = db_row.get('poster_path')
 
     # 标题与日期
     if item_type == "Movie":
@@ -1388,15 +1298,9 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
         l_date = db_row.get('last_air_date')
         payload['last_air_date'] = str(l_date) if l_date else ''
         payload['number_of_episodes'] = db_row.get('total_episodes', 0)
-        # 数据库不存总季数，给个默认值 1，避免为 0
         payload['number_of_seasons'] = 1 
 
-    payload['vote_average'] = db_row.get('rating')
-    payload['poster_path'] = db_row.get('poster_path')
-    
-    # 3. 复杂 JSON 字段还原
-    
-    # Genres (类型)
+    # 2. 复杂 JSON 字段还原
     if db_row.get('genres_json'):
         try:
             raw_genres = db_row['genres_json']
@@ -1406,10 +1310,8 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
                     payload['genres'] = [{"id": 0, "name": g} for g in genres_data]
                 else:
                     payload['genres'] = genres_data
-        except Exception as e:
-            logger.warning(f"还原 Genres 失败: {e}")
+        except Exception: pass
 
-    # 1. 电影：只恢复制作公司
     if item_type == 'Movie':
         if db_row.get('production_companies_json'):
             try:
@@ -1417,13 +1319,9 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
                 data = json.loads(raw) if isinstance(raw, str) else raw
                 if data: payload['production_companies'] = data
             except Exception: pass
-
-    # 2. 剧集：合并 Networks + Companies -> 写入 networks
     elif item_type == 'Series':
         merged_list = []
         seen_ids = set()
-
-        # A. 优先读取 Networks (权重高，如 CCTV-8)
         if db_row.get('networks_json'):
             try:
                 raw = db_row['networks_json']
@@ -1435,11 +1333,6 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
                             merged_list.append(n)
                             seen_ids.add(nid)
             except Exception: pass
-
-        # B. 补充读取 Companies (权重低，如 正午阳光)
-        # 只有当 ID 不冲突时才加入。
-        # 例子：如果 Networks 里有 521(CCTV-8)，Companies 里有 521(梦工厂)，这里会跳过梦工厂，保留 CCTV-8。
-        # 例子：正午阳光 ID 是独立的，会成功加入。
         if db_row.get('production_companies_json'):
             try:
                 raw = db_row['production_companies_json']
@@ -1451,107 +1344,52 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
                             merged_list.append(c)
                             seen_ids.add(cid)
             except Exception: pass
-
-        # C. 写入 JSON
         if merged_list:
-            # Emby 剧集只看 networks
             payload['networks'] = merged_list
 
-    # Directors (导演/主创) -> 映射到 created_by 或 crew
     if db_row.get('directors_json'):
         try:
             raw_directors = db_row['directors_json']
             directors_list = json.loads(raw_directors) if isinstance(raw_directors, str) else raw_directors
             if directors_list:
                 if item_type == 'Series':
-                    # 剧集：数据库存的 directors 其实是 created_by
                     payload['created_by'] = directors_list
                 else:
-                    # 电影：放入 crew 并标记为 Director
-                    crew_list = []
-                    for d in directors_list:
-                        crew_list.append({
-                            "id": d.get('id'),
-                            "name": d.get('name'),
-                            "job": "Director",
-                            "department": "Directing"
-                        })
-                    payload['casts']['crew'] = crew_list
-        except Exception as e:
-            logger.warning(f"还原 Directors 失败: {e}")
+                    crew_list = [{"id": d.get('id'), "name": d.get('name'), "job": "Director", "department": "Directing"} for d in directors_list]
+                    payload.setdefault('casts', {})['crew'] = crew_list
+        except Exception: pass
 
-    # Countries (国家)
     if db_row.get('countries_json'):
         try:
             raw_countries = db_row['countries_json']
             countries_list = json.loads(raw_countries) if isinstance(raw_countries, str) else raw_countries
             if countries_list:
-                # 数据库存的是代码列表 ["CN", "US"]
                 if item_type == 'Series':
                     payload['origin_country'] = countries_list
                 else:
-                    # 电影需要对象列表
                     payload['production_countries'] = [{"iso_3166_1": c, "name": ""} for c in countries_list]
-        except Exception as e:
-            logger.warning(f"还原 Countries 失败: {e}")
+        except Exception: pass
         
-    # Keywords (Tags)
     if db_row.get('keywords_json'):
         try:
             raw_kw = db_row['keywords_json']
             kw_list = json.loads(raw_kw) if isinstance(raw_kw, str) else raw_kw
             if kw_list:
-                if item_type == "Movie":
-                    payload['keywords']['keywords'] = kw_list
-                else:
-                    payload['keywords']['results'] = kw_list
-        except Exception as e:
-            logger.warning(f"还原 Keywords 失败: {e}")
+                payload['keywords'] = kw_list
+        except Exception: pass
 
-    # 4. 演员表 (Cast)
-    if actors_list:
-        formatted_cast = []
-        for i, actor in enumerate(actors_list):
-            final_name = actor.get('name') or actor.get('original_name')
-            formatted_cast.append({
-                "id": actor.get('tmdb_id'),
-                "name": final_name,
-                "original_name": actor.get('original_name'),
-                "character": actor.get('character') or actor.get('role'),
-                "profile_path": actor.get('profile_path'),
-                "order": actor.get('order', i),
-                "known_for_department": "Acting"
-            })
-        
-        if item_type == "Movie":
-            payload['casts']['cast'] = formatted_cast
-        else:
-            payload['credits']['cast'] = formatted_cast
-
-    # 5. 分级 (Official Rating)
+    # 3. 分级 (Official Rating)
     if db_row.get('official_rating_json'):
         try:
             raw_rating = db_row['official_rating_json']
             ratings_map = json.loads(raw_rating) if isinstance(raw_rating, str) else raw_rating
-            
             rating_val = ratings_map.get('US')
             if not rating_val and ratings_map:
                 rating_val = list(ratings_map.values())[0]
-            
             if rating_val:
                 payload['mpaa'] = rating_val
                 payload['certification'] = rating_val
-                
-                if item_type == "Movie":
-                    payload['releases']['countries'] = [{
-                        "iso_3166_1": "US", "certification": rating_val, "release_date": "", "primary": True
-                    }]
-                else:
-                    payload['content_ratings']['results'] = [{
-                        "iso_3166_1": "US", "rating": rating_val
-                    }]
-        except Exception as e:
-            logger.warning(f"还原 Rating 失败: {e}")
+        except Exception: pass
 
     return payload
 
