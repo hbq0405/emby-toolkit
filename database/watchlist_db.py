@@ -56,7 +56,7 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             s.release_date as release_year,
             
             -- 季的状态
-            COALESCE(NULLIF(s.watching_status, 'NONE'), p.watching_status) as status,
+            s.watching_status as status,
             
             -- 剧集层面的状态
             p.watching_status as series_status,

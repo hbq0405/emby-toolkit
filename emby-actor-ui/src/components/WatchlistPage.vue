@@ -1074,7 +1074,13 @@ const missingData = computed(() => {
 });
 
 const nextEpisode = (item) => {
-  return item.next_episode_to_air || null;
+  const ep = item.next_episode_to_air;
+  if (!ep) return null;
+  // 核心修复：只有当待播集的季号等于当前卡片的季号时，才显示！
+  if (ep.season_number === item.season_number) {
+    return ep;
+  }
+  return null;
 };
 
 const toggleSelection = (itemId, event, index) => {
