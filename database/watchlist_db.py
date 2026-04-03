@@ -89,6 +89,7 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             AND s.season_number > 0
             AND p.item_type = 'Series'
             AND p.watching_status != 'NONE'
+            AND s.watching_status != 'NONE'
             AND (
                 -- 1. 缺集 (未集齐) -> 显示
                 (s.total_episodes = 0 OR COALESCE(es.collected_count, 0) < s.total_episodes)
