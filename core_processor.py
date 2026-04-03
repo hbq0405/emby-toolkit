@@ -4165,27 +4165,31 @@ class MediaProcessor:
                         else:
                             downloads.append((s_poster, os.path.join(series_root_dir, f"season-{s_num}.jpg")))
 
-                # 分集图 -> 分集目录 (episode_dir)
+                # 分集图 -> 深度遍历寻找视频文件
                 if aggregated_tmdb_data and "episodes_details" in aggregated_tmdb_data:
                     episodes = aggregated_tmdb_data["episodes_details"]
                     ep_list = episodes.values() if isinstance(episodes, dict) else (episodes if isinstance(episodes, list) else [])
                     
                     if is_nfo_mode:
-                        if item_details and item_details.get("Path") and os.path.isdir(episode_dir):
+                        if item_details and item_details.get("Path") and os.path.isdir(series_root_dir):
                             import re
                             valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
-                            for filename in os.listdir(episode_dir):
-                                if os.path.splitext(filename)[1].lower() not in valid_exts: continue
-                                match = re.search(r'[sS](\d{1,4})[eE](\d{1,4})', filename)
-                                if match:
-                                    target_s, target_e = int(match.group(1)), int(match.group(2))
-                                    for ep in ep_list:
-                                        if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
-                                            e_still = ep.get("still_path")
-                                            if e_still:
-                                                thumb_name = os.path.splitext(filename)[0] + "-thumb.jpg"
-                                                downloads.append((e_still, os.path.join(episode_dir, thumb_name)))
-                                            break
+                            
+                            # ★★★ 核心修复：使用 os.walk 深度遍历，钻进 Season 文件夹找视频 ★★★
+                            for root, dirs, files in os.walk(series_root_dir):
+                                for filename in files:
+                                    if os.path.splitext(filename)[1].lower() not in valid_exts: continue
+                                    match = re.search(r'[sS](\d{1,4})[eE](\d{1,4})', filename)
+                                    if match:
+                                        target_s, target_e = int(match.group(1)), int(match.group(2))
+                                        for ep in ep_list:
+                                            if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
+                                                e_still = ep.get("still_path")
+                                                if e_still:
+                                                    thumb_name = os.path.splitext(filename)[0] + "-thumb.jpg"
+                                                    # 注意：保存在 root (当前视频所在的真实子目录)
+                                                    downloads.append((e_still, os.path.join(root, thumb_name)))
+                                                break
                     else:
                         for ep in ep_list:
                             s_num, e_num, e_still = ep.get("season_number"), ep.get("episode_number"), ep.get("still_path")
@@ -4268,35 +4272,37 @@ class MediaProcessor:
                         f.write(nfo_content)
                     logger.info(f"  ➜ [NFO模式] 成功写入剧集 NFO: {nfo_path}")
                     
-                    # 2. 扫描分集目录 (episode_dir)，批量生成单集 NFO
+                    # 2. ★★★ 核心修复：使用 os.walk 深度遍历，批量生成单集 NFO ★★★
                     episodes_data = data_to_write.get("episodes_details", {})
-                    if episodes_data and os.path.isdir(episode_dir):
+                    if episodes_data and os.path.isdir(series_root_dir):
+                        import re
                         valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
                         generated_count = 0
                         
-                        for filename in os.listdir(episode_dir):
-                            if os.path.splitext(filename)[1].lower() not in valid_exts:
-                                continue
-                                
-                            match = re.search(r'[sS](\d{1,4})[eE](\d{1,4})', filename)
-                            if match:
-                                target_s = int(match.group(1))
-                                target_e = int(match.group(2))
-                                
-                                ep_list = episodes_data.values() if isinstance(episodes_data, dict) else (episodes_data if isinstance(episodes_data, list) else [])
-                                for ep in ep_list:
-                                    if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
-                                        ep_cast = ep.get('credits', {}).get('cast', [])
-                                        if not ep_cast: ep_cast = cast_to_write 
-                                        
-                                        ep_nfo_content = nfo_builder.build_episode_nfo(ep, ep_cast)
-                                        # 单集 NFO 写入分集目录
-                                        ep_nfo_path = os.path.join(episode_dir, os.path.splitext(filename)[0] + ".nfo")
-                                        with open(ep_nfo_path, 'w', encoding='utf-8') as f:
-                                            f.write(ep_nfo_content)
-                                        generated_count += 1
-                                        break
-                        logger.info(f"  ➜ [NFO模式] 扫描目录完成，批量生成了 {generated_count} 个单集 NFO。")
+                        for root, dirs, files in os.walk(series_root_dir):
+                            for filename in files:
+                                if os.path.splitext(filename)[1].lower() not in valid_exts:
+                                    continue
+                                    
+                                match = re.search(r'[sS](\d{1,4})[eE](\d{1,4})', filename)
+                                if match:
+                                    target_s = int(match.group(1))
+                                    target_e = int(match.group(2))
+                                    
+                                    ep_list = episodes_data.values() if isinstance(episodes_data, dict) else (episodes_data if isinstance(episodes_data, list) else [])
+                                    for ep in ep_list:
+                                        if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
+                                            ep_cast = ep.get('credits', {}).get('cast', [])
+                                            if not ep_cast: ep_cast = cast_to_write 
+                                            
+                                            ep_nfo_content = nfo_builder.build_episode_nfo(ep, ep_cast)
+                                            # 注意：保存在 root (当前视频所在的真实子目录)
+                                            ep_nfo_path = os.path.join(root, os.path.splitext(filename)[0] + ".nfo")
+                                            with open(ep_nfo_path, 'w', encoding='utf-8') as f:
+                                                f.write(ep_nfo_content)
+                                            generated_count += 1
+                                            break
+                        logger.info(f"  ➜ [NFO模式] 深度扫描目录完成，批量生成了 {generated_count} 个单集 NFO。")
 
                 elif item_type == "Episode":
                     nfo_content = nfo_builder.build_episode_nfo(data_to_write, cast_to_write)

@@ -662,27 +662,36 @@ class WatchlistProcessor:
                             ep
                         )
 
-        # ★★★ 4.5 新增：并发下载缺失的图片 (包含最新分集图片) ★★★
+        # ★★★ 4.5 新增：并发下载缺失的图片 & 补全 NFO (双模兼容) ★★★
         try:
             import extensions
             if extensions.media_processor_instance:
-                logger.debug(f"  ➜ 正在检查并下载 '{item_name}' 缺失的图片(含最新分集)...")
-                
-                # ★★★ 新增：为了支持 NFO 模式，需要获取 Emby 的物理路径 ★★★
                 current_item_details = None
                 if item_id:
                     current_item_details = emby.get_emby_item_details(
                         item_id, self.emby_url, self.emby_api_key, self.emby_user_id
                     )
 
+                # 1. 补全图片
+                logger.debug(f"  ➜ 正在检查并下载 '{item_name}' 缺失的图片(含最新分集)...")
                 extensions.media_processor_instance.download_images_from_tmdb(
                     tmdb_id=tmdb_id,
                     item_type='Series',
                     aggregated_tmdb_data=aggregated_data,
-                    item_details=current_item_details 
+                    item_details=current_item_details
                 )
+
+                # 2. ★★★ 核心修复：NFO 模式下，追剧刷新必须补全 NFO 文件 ★★★
+                if extensions.media_processor_instance.is_nfo_mode and current_item_details:
+                    logger.debug(f"  ➜ [NFO模式] 正在为 '{item_name}' 补全 NFO 文件...")
+                    extensions.media_processor_instance.sync_item_metadata(
+                        item_details=current_item_details,
+                        tmdb_id=tmdb_id,
+                        metadata_override=aggregated_data
+                    )
+
         except Exception as e_img:
-            logger.warning(f"  ➜ 追剧刷新时下载图片失败: {e_img}")
+            logger.warning(f"  ➜ 追剧刷新时处理物理资产失败: {e_img}")
 
         # 5. 通知 Emby 刷新元数据 
         if item_id:
