@@ -32,6 +32,7 @@ from cachetools import TTLCache
 from ai_translator import AITranslator
 from watchlist_processor import WatchlistProcessor
 from handler.douban import DoubanApi
+import nfo_builder
 # --- P115Center 依赖 ---
 try:
     from p115center import P115Center
@@ -146,6 +147,7 @@ class MediaProcessor:
         self.emby_user_id = self.config.get("emby_user_id")
         self.tmdb_api_key = self.config.get("tmdb_api_key", "")
         self.local_data_path = self.config.get("local_data_path", "").strip()
+        self.is_nfo_mode = not bool(self.local_data_path)
 
         self.ai_translator = ai_translator
         
@@ -677,7 +679,8 @@ class MediaProcessor:
                     "Id": "pending",
                     "Name": details.get('title') or details.get('name'),
                     "Type": item_type,
-                    "ProviderIds": {"Tmdb": tmdb_id}
+                    "ProviderIds": {"Tmdb": tmdb_id},
+                    "Path": file_path
                 }
 
                 logger.info(f"  ➜ [实时监控] 正在按照骨架模板格式化元数据...")
@@ -715,7 +718,8 @@ class MediaProcessor:
                 self.download_images_from_tmdb(
                     tmdb_id=tmdb_id,
                     item_type=item_type,
-                    aggregated_tmdb_data=aggregated_tmdb_data
+                    aggregated_tmdb_data=aggregated_tmdb_data,
+                    item_details=fake_item_details
                 )
 
             else:
@@ -3935,27 +3939,43 @@ class MediaProcessor:
             return False
     
     # --- 从 TMDb 直接下载图片 (用于实时监控/预处理) ---
-    def download_images_from_tmdb(self, tmdb_id: str, item_type: str, aggregated_tmdb_data: Optional[Dict[str, Any]] = None) -> bool:
+    def download_images_from_tmdb(self, tmdb_id: str, item_type: str, aggregated_tmdb_data: Optional[Dict[str, Any]] = None, item_details: Optional[Dict[str, Any]] = None) -> bool:
         """
-        直接从 TMDb API 获取并下载图片到本地 override 目录。
+        【双模兼容版】直接从 TMDb API 获取并下载图片。
+        - 神医模式：下载到 local_data_path/override/...
+        - NFO 模式：下载到视频所在的物理目录 (需传入 item_details 获取 Path)
         """
-        if not tmdb_id or not self.local_data_path:
-            logger.error(f"  ➜ [TMDb图片下载] 缺少 TMDb ID 或本地路径配置，无法下载。")
+        if not tmdb_id:
             return False
 
         try:
             log_prefix = "[TMDb图片下载]"
             
-            # 1. 准备目录
-            cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-            base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, str(tmdb_id))
-            image_override_dir = os.path.join(base_override_dir, "images")
-            os.makedirs(image_override_dir, exist_ok=True)
+            # ======================================================================
+            # ★★★ 双模分流：确定图片保存目录 ★★★
+            # ======================================================================
+            is_nfo_mode = not bool(self.local_data_path)
+            
+            if is_nfo_mode:
+                if not item_details or not item_details.get("Path"):
+                    logger.warning(f"  ➜ {log_prefix} [NFO模式] 缺少 Emby 项目详情或物理路径，无法下载图片。")
+                    return False
+                media_path = item_details.get("Path")
+                # 如果是文件(电影/单集)，取所在目录；如果是目录(剧集)，直接用
+                target_image_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
+                logger.debug(f"  ➜ {log_prefix} [NFO模式] 图片将保存至物理目录: {target_image_dir}")
+            else:
+                if not self.local_data_path: 
+                    logger.error(f"  ➜ {log_prefix} [神医模式] 未配置 local_data_path。")
+                    return False
+                cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+                base_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, str(tmdb_id))
+                target_image_dir = os.path.join(base_override_dir, "images")
+                os.makedirs(target_image_dir, exist_ok=True)
 
-            # 先获取基础信息以确定原语言
+            # 1. 先获取基础信息以确定原语言
             orig_lang = "en" # 默认兜底
             try:
-                # 发起一个轻量级请求（不带 append_to_response），只为拿 original_language
                 if item_type == "Movie":
                     base_info = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, append_to_response="")
                 elif item_type == "Series":
@@ -3968,29 +3988,20 @@ class MediaProcessor:
 
             # 2. 确定搜索策略
             lang_pref = self.config.get(constants.CONFIG_OPTION_TMDB_IMAGE_LANGUAGE_PREFERENCE, 'zh')
-
             search_strategies = []
             
             if lang_pref == 'zh':
-                # 策略 A: 严格中文优先
                 search_strategies.append(("zh-CN", "简体中文"))
                 search_strategies.append(("zh-TW,zh,zh-HK,zh-SG", "繁体/通用中文"))
                 search_strategies.append(("en,null", "英文/无文字"))
                 if orig_lang not in ['zh', 'cn', 'tw', 'hk', 'en']:
                     search_strategies.append((f"{orig_lang}", f"原语言({orig_lang})"))
             else:
-                # 策略 B: 原语言优先
-                # 核心修复：港片/台片原语言通常是 cn(粤语) 或 zh，但海报标签通常是 zh-HK, zh-TW, zh-CN, zh
                 if orig_lang in ['zh', 'cn', 'tw', 'hk']:
                     search_strategies.append(("zh-CN,zh-HK,zh-TW,zh,cn", f"原语言(中文系/{orig_lang})"))
                 elif orig_lang != 'en':
                     search_strategies.append((orig_lang, f"原语言({orig_lang})"))
-                
-                # 2. 第二顺位：英文/无文字 (高质量通用图)
-                # 如果原语言就是英语(en)，这一步自然就覆盖了原语言
                 search_strategies.append(("en,null", "英文/无文字"))
-                
-                # 3. 第三顺位：中文兜底
                 if orig_lang not in ['zh', 'cn', 'tw', 'hk']:
                     search_strategies.append(("zh-CN,zh-HK,zh-TW,zh", "中文兜底"))
 
@@ -4000,21 +4011,16 @@ class MediaProcessor:
             # 3. 执行分步请求
             for lang_param, desc in search_strategies:
                 logger.debug(f"  ➜ {log_prefix} 尝试获取图片，策略: {desc} ...")
-                
                 try:
                     if item_type == "Movie":
                         data = tmdb.get_movie_details(
-                            int(tmdb_id), 
-                            self.tmdb_api_key, 
-                            append_to_response="images", 
-                            include_image_language=lang_param
+                            int(tmdb_id), self.tmdb_api_key, 
+                            append_to_response="images", include_image_language=lang_param
                         )
                     elif item_type == "Series":
                         data = tmdb.get_tv_details(
-                            int(tmdb_id), 
-                            self.tmdb_api_key, 
-                            append_to_response="images,seasons", 
-                            include_image_language=lang_param
+                            int(tmdb_id), self.tmdb_api_key, 
+                            append_to_response="images,seasons", include_image_language=lang_param
                         )
                     
                     if data and data.get("images", {}).get("posters"):
@@ -4022,9 +4028,6 @@ class MediaProcessor:
                         used_strategy = desc
                         logger.info(f"  ➜ {log_prefix} 成功通过策略 [{desc}] 获取到 {len(data['images']['posters'])} 张海报。")
                         break 
-                    else:
-                        logger.debug(f"  ➜ {log_prefix} 策略 [{desc}] 未返回有效海报，尝试下一策略...")
-                
                 except Exception as e:
                     logger.warning(f"  ➜ {log_prefix} 策略 [{desc}] 请求失败: {e}")
 
@@ -4033,7 +4036,7 @@ class MediaProcessor:
                 return False
 
             # =========================================================
-            # 4. 图片选择逻辑
+            # 4. 图片选择与命名逻辑 (双模差异化)
             # =========================================================
             downloads = []
             images_node = tmdb_data.get("images", {})
@@ -4043,68 +4046,87 @@ class MediaProcessor:
             if posters_list:
                 selected_poster = posters_list[0]["file_path"]
                 downloads.append((selected_poster, "poster.jpg"))
-                logger.info(f"  ➜ {log_prefix} 选中海报: {selected_poster} (评分: {posters_list[0].get('vote_average')})")
             
             # --- B. 背景 (Backdrop) ---
             backdrops_list = images_node.get("backdrops", [])
-            selected_backdrop = None
-            if backdrops_list:
-                selected_backdrop = backdrops_list[0]["file_path"]
-            
-            if not selected_backdrop:
-                selected_backdrop = tmdb_data.get("backdrop_path")
-
+            selected_backdrop = backdrops_list[0]["file_path"] if backdrops_list else tmdb_data.get("backdrop_path")
             if selected_backdrop:
                 downloads.append((selected_backdrop, "fanart.jpg"))
-                downloads.append((selected_backdrop, "landscape.jpg"))
+                if not is_nfo_mode: # 神医模式还需要 landscape.jpg
+                    downloads.append((selected_backdrop, "landscape.jpg"))
 
             # --- C. Logo ---
             logos_list = images_node.get("logos", [])
             if logos_list:
                 downloads.append((logos_list[0]["file_path"], "clearlogo.png"))
 
-            # --- D. 剧集季海报 ---
+            # --- D. 剧集季海报 & 分集图 ---
             if item_type == "Series":
-                # ★ 优先从已聚合的数据中提取季海报 (因为那里已经应用了语言偏好)
-                if aggregated_tmdb_data and "seasons_details" in aggregated_tmdb_data:
-                    for season in aggregated_tmdb_data["seasons_details"]:
-                        s_num = season.get("season_number")
-                        s_poster = season.get("poster_path")
-                        if s_num is not None and s_poster:
-                            downloads.append((s_poster, f"season-{s_num}.jpg"))
-                else:
-                    seasons = tmdb_data.get("seasons", [])
-                    for season in seasons:
-                        s_num = season.get("season_number")
-                        s_poster = season.get("poster_path")
-                        if s_num is not None and s_poster:
+                # 季海报
+                seasons_source = aggregated_tmdb_data.get("seasons_details", []) if aggregated_tmdb_data else tmdb_data.get("seasons", [])
+                for season in seasons_source:
+                    s_num = season.get("season_number")
+                    s_poster = season.get("poster_path")
+                    if s_num is not None and s_poster:
+                        if is_nfo_mode:
+                            downloads.append((s_poster, f"season{s_num:02d}-poster.jpg"))
+                        else:
                             downloads.append((s_poster, f"season-{s_num}.jpg"))
 
-                # --- E. 剧集分集图片 (Still)  ---
+                # 分集图
                 if aggregated_tmdb_data and "episodes_details" in aggregated_tmdb_data:
                     episodes = aggregated_tmdb_data["episodes_details"]
                     ep_list = episodes.values() if isinstance(episodes, dict) else (episodes if isinstance(episodes, list) else [])
-                    for ep in ep_list:
-                        s_num = ep.get("season_number")
-                        e_num = ep.get("episode_number")
-                        e_still = ep.get("still_path")
-                        if s_num is not None and e_num is not None and e_still:
-                            downloads.append((e_still, f"season-{s_num}-episode-{e_num}.jpg"))
+                    
+                    if is_nfo_mode:
+                        # ★★★ 终极修复：扫描同目录下的所有视频文件，批量加入缩略图下载队列 ★★★
+                        if item_details and item_details.get("Path"):
+                            media_path = item_details.get("Path")
+                            series_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
+                            
+                            if os.path.isdir(series_dir):
+                                import re
+                                valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
+                                queued_count = 0
+                                
+                                for filename in os.listdir(series_dir):
+                                    if os.path.splitext(filename)[1].lower() not in valid_exts:
+                                        continue
+                                        
+                                    match = re.search(r'[sS](\d{1,4})[eE](\d{1,4})', filename)
+                                    if match:
+                                        target_s = int(match.group(1))
+                                        target_e = int(match.group(2))
+                                        
+                                        for ep in ep_list:
+                                            if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
+                                                e_still = ep.get("still_path")
+                                                if e_still:
+                                                    thumb_name = os.path.splitext(filename)[0] + "-thumb.jpg"
+                                                    downloads.append((e_still, thumb_name))
+                                                    queued_count += 1
+                                                break
+                                logger.info(f"  ➜ {log_prefix} [NFO模式] 扫描目录完成，已将 {queued_count} 张单集缩略图加入下载队列。")
+                    else:
+                        # 神医模式：下载所有分集图片到 images 目录
+                        for ep in ep_list:
+                            s_num = ep.get("season_number")
+                            e_num = ep.get("episode_number")
+                            e_still = ep.get("still_path")
+                            if s_num is not None and e_num is not None and e_still:
+                                downloads.append((e_still, f"season-{s_num}-episode-{e_num}.jpg"))
 
-            # 5. 执行下载 (★★★ 多线程并发提速版 ★★★)
+            # 5. 执行下载 (多线程并发)
             base_image_url = "https://image.tmdb.org/t/p/original"
             import requests
             import concurrent.futures
-            
-            # ★ 获取系统配置的代理
             proxies = config_manager.get_proxies_for_requests()
             
             def _download_single_image(tmdb_path, local_name):
                 if not tmdb_path: return 0
                 full_url = f"{base_image_url}{tmdb_path}"
-                save_path = os.path.join(image_override_dir, local_name)
+                save_path = os.path.join(target_image_dir, local_name)
                 
-                # 如果文件已存在且大小不为0，直接跳过
                 if os.path.exists(save_path) and os.path.getsize(save_path) > 0:
                     return 0
 
@@ -4119,13 +4141,12 @@ class MediaProcessor:
                 return 0
 
             success_count = 0
-            # 开启 5 个并发线程同时下载，速度起飞
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
                 futures = [executor.submit(_download_single_image, path, name) for path, name in downloads]
                 for future in concurrent.futures.as_completed(futures):
                     success_count += future.result()
 
-            logger.info(f"  ➜ {log_prefix} 共下载 {success_count} 张图片。")
+            logger.info(f"  ➜ {log_prefix} 共下载 {success_count} 张图片至 {target_image_dir}。")
             return True
 
         except Exception as e:
@@ -4137,11 +4158,85 @@ class MediaProcessor:
                        final_cast_override: Optional[List[Dict[str, Any]]] = None,
                        episode_ids_to_sync: Optional[List[str]] = None,
                        metadata_override: Optional[Dict[str, Any]] = None):
-        """
-        基于模板和现有数据构建 override 文件。
-        同时支持传递 TMDb 分集原始数据。
-        """
+        
         item_type = item_details.get("Type")
+        
+        # ======================================================================
+        # ★★★ 双模分流：NFO 模式 ★★★
+        # ======================================================================
+        if self.is_nfo_mode:
+            logger.info(f"  ➜ [NFO模式] 正在生成并写入 NFO 文件...")
+            media_path = item_details.get("Path")
+            if not media_path:
+                logger.warning(f"  ➜ [NFO模式] 无法获取物理路径，跳过 NFO 生成。")
+                return
+
+            data_to_write = metadata_override or {}
+            cast_to_write = final_cast_override or []
+
+            try:
+                if item_type == "Movie":
+                    nfo_content = nfo_builder.build_movie_nfo(data_to_write, cast_to_write)
+                    nfo_path = os.path.splitext(media_path)[0] + ".nfo"
+                    with open(nfo_path, 'w', encoding='utf-8') as f:
+                        f.write(nfo_content)
+                    logger.info(f"  ➜ [NFO模式] 成功写入电影 NFO: {nfo_path}")
+
+                elif item_type == "Series":
+                    # 1. 生成剧集根目录的 tvshow.nfo
+                    series_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
+                    nfo_content = nfo_builder.build_tvshow_nfo(data_to_write, cast_to_write)
+                    nfo_path = os.path.join(series_dir, "tvshow.nfo")
+                    with open(nfo_path, 'w', encoding='utf-8') as f:
+                        f.write(nfo_content)
+                    logger.info(f"  ➜ [NFO模式] 成功写入剧集 NFO: {nfo_path}")
+                    
+                    # 2. ★★★ 终极修复：扫描同目录下的所有视频文件，批量生成单集 NFO ★★★
+                    episodes_data = data_to_write.get("episodes_details", {})
+                    if episodes_data and os.path.isdir(series_dir):
+                        import re
+                        valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
+                        generated_count = 0
+                        
+                        for filename in os.listdir(series_dir):
+                            if os.path.splitext(filename)[1].lower() not in valid_exts:
+                                continue
+                                
+                            match = re.search(r'[sS](\d{1,4})[eE](\d{1,4})', filename)
+                            if match:
+                                target_s = int(match.group(1))
+                                target_e = int(match.group(2))
+                                
+                                ep_list = episodes_data.values() if isinstance(episodes_data, dict) else (episodes_data if isinstance(episodes_data, list) else [])
+                                for ep in ep_list:
+                                    if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
+                                        ep_cast = ep.get('credits', {}).get('cast', [])
+                                        if not ep_cast: ep_cast = cast_to_write 
+                                        
+                                        ep_nfo_content = nfo_builder.build_episode_nfo(ep, ep_cast)
+                                        ep_nfo_path = os.path.join(series_dir, os.path.splitext(filename)[0] + ".nfo")
+                                        with open(ep_nfo_path, 'w', encoding='utf-8') as f:
+                                            f.write(ep_nfo_content)
+                                        generated_count += 1
+                                        break
+                        logger.info(f"  ➜ [NFO模式] 扫描目录完成，批量生成了 {generated_count} 个单集 NFO。")
+
+                elif item_type == "Episode":
+                    # (如果是通过全量扫描进来的单集，走这里)
+                    nfo_content = nfo_builder.build_episode_nfo(data_to_write, cast_to_write)
+                    nfo_path = os.path.splitext(media_path)[0] + ".nfo"
+                    with open(nfo_path, 'w', encoding='utf-8') as f:
+                        f.write(nfo_content)
+                    logger.info(f"  ➜ [NFO模式] 成功写入分集 NFO: {nfo_path}")
+
+            except Exception as e:
+                logger.error(f"  ➜ [NFO模式] 写入 NFO 文件失败: {e}")
+            
+            return # NFO 模式执行完毕，直接返回
+
+        # ======================================================================
+        # 神医 Pro 覆盖缓存模式逻辑 
+        # ======================================================================
         log_prefix = "[覆盖缓存-元数据写入]"
 
         # 定义核心路径

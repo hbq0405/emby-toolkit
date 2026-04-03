@@ -63,6 +63,7 @@ class WatchlistProcessor:
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
         self.local_data_path = self.config.get("local_data_path", "")
+        self.is_nfo_mode = not bool(self.local_data_path)
         self.p115_enable_organize = self.config.get("p115_enable_organize", False)
         self.ai_translator = ai_translator
         self.douban_api = douban_api
@@ -436,6 +437,8 @@ class WatchlistProcessor:
         保存数据到本地 JSON 缓存文件 (智能合并模式)。
         - ★★★ 智能保护：'series.json' 不更新 'name'，但 'season-*.json' 会更新 'name'。
         """
+        if self.is_nfo_mode:
+            return 
         if not self.local_data_path:
             return
 
@@ -664,10 +667,19 @@ class WatchlistProcessor:
             import extensions
             if extensions.media_processor_instance:
                 logger.debug(f"  ➜ 正在检查并下载 '{item_name}' 缺失的图片(含最新分集)...")
+                
+                # ★★★ 新增：为了支持 NFO 模式，需要获取 Emby 的物理路径 ★★★
+                current_item_details = None
+                if item_id:
+                    current_item_details = emby.get_emby_item_details(
+                        item_id, self.emby_url, self.emby_api_key, self.emby_user_id
+                    )
+
                 extensions.media_processor_instance.download_images_from_tmdb(
                     tmdb_id=tmdb_id,
                     item_type='Series',
-                    aggregated_tmdb_data=aggregated_data
+                    aggregated_tmdb_data=aggregated_data,
+                    item_details=current_item_details 
                 )
         except Exception as e_img:
             logger.warning(f"  ➜ 追剧刷新时下载图片失败: {e_img}")
@@ -1580,6 +1592,32 @@ class WatchlistProcessor:
                     watchlist_db.update_specific_season_total_episodes(tmdb_id, latest_season_num, fake_total)
                     logger.debug(f"  ➜ 已同步更新 S{latest_season_num} 的总集数为 {fake_total}")
         self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
+
+        # ======================================================================
+        # ★★★ 双模分流：NFO 模式下更新 tvshow.nfo 的状态 ★★★
+        # ======================================================================
+        if self.is_nfo_mode and item_id:
+            try:
+                # 需要获取剧集的物理路径
+                series_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+                if series_details and series_details.get("Path"):
+                    series_dir = series_details.get("Path")
+                    nfo_path = os.path.join(series_dir, "tvshow.nfo")
+                    
+                    if os.path.exists(nfo_path):
+                        # 简单的正则替换状态，避免重新解析整个 XML 破坏原有格式
+                        with open(nfo_path, 'r', encoding='utf-8') as f:
+                            nfo_content = f.read()
+                        
+                        import re
+                        # 将 <status>xxx</status> 替换为新的 TMDb 状态
+                        new_nfo_content = re.sub(r'<status>.*?</status>', f'<status>{new_tmdb_status}</status>', nfo_content, flags=re.IGNORECASE)
+                        
+                        with open(nfo_path, 'w', encoding='utf-8') as f:
+                            f.write(new_nfo_content)
+                        logger.info(f"  ➜ [NFO模式] 已同步更新 tvshow.nfo 追剧状态为: {new_tmdb_status}")
+            except Exception as e:
+                logger.warning(f"  ➜ [NFO模式] 更新 tvshow.nfo 状态失败: {e}")
 
         # ======================================================================
         # ★★★ 提前计算季的活跃状态 (供数据库同步和目录重组使用) ★★★

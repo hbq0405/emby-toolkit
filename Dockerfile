@@ -67,6 +67,7 @@ COPY web_app.py \
      scheduler_manager.py \
      reverse_proxy.py \
      monitor_service.py \
+     nfo_builder.py \
      ./
 
 COPY pyarmor_runtime_000000/ ./pyarmor_runtime_000000/
