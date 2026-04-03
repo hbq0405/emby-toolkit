@@ -465,35 +465,31 @@ def _process_batch_webhook_events():
         
         # 1. 检查是否已处理
         is_already_processed = parent_id in extensions.media_processor_instance.processed_items_cache
+        is_online_in_db = media_db.is_emby_id_in_library(parent_id)
 
         # 2. 检查数据库是否在线 (处理“僵尸数据”)
-        if is_already_processed:
-            # 这一步很快，只是查一下 media_metadata 表的 in_library 字段
-            is_online_in_db = media_db.is_emby_id_in_library(parent_id)
-            
-            # ★★★ 优化核心：如果不在线，直接踢出缓存，视为新项目重跑 ★★★
-            if not is_online_in_db:
-                logger.info(f"  ➜ ➜ 缓存命中 '{parent_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
-                
-                # 从内存缓存中移除
-                if parent_id in extensions.media_processor_instance.processed_items_cache:
-                    del extensions.media_processor_instance.processed_items_cache[parent_id]
-                
-                # 标记为未处理，后续逻辑会把它当作“新入库”来执行完整的数据库修复
-                is_already_processed = False
+        if is_already_processed and not is_online_in_db:
+            logger.info(f"  ➜ ➜ 缓存命中 '{parent_name}'，但数据库标记为离线/缺失。清除缓存，触发重新入库流程。")
+            if parent_id in extensions.media_processor_instance.processed_items_cache:
+                del extensions.media_processor_instance.processed_items_cache[parent_id]
+            is_already_processed = False
+
+        # ★★★ 修复：只要数据库里有这个剧（在线），它就是追更（Update），否则就是新入库（New） ★★★
+        is_new_item = not is_online_in_db
+        
         # 3. 统一分派任务
-        task_name_prefix = "Webhook追更" if is_already_processed and episode_ids else "Webhook入库"
+        task_name_prefix = "Webhook追更" if not is_new_item and episode_ids else "Webhook入库"
         
         logger.info(f"  ➜ 为 '{parent_name}' 分派任务: {task_name_prefix} (分集数: {len(episode_ids)})")
         
         task_manager.submit_task(
             _handle_full_processing_flow,
             task_name=f"{task_name_prefix}: {parent_name}",
-            processor_type='media', # 确保传递 processor 实例
+            processor_type='media', 
             item_id=parent_id,
-            force_full_update=False, # Webhook 触发通常不需要强制深度刷新 TMDb
+            force_full_update=False, 
             new_episode_ids=episode_ids if episode_ids else None,
-            is_new_item=not is_already_processed
+            is_new_item=is_new_item # 传入精准的判断结果
         )
 
     logger.info("  ➜ 所有 Webhook 批量任务已成功分派。")
@@ -570,7 +566,7 @@ def _dispatch_item(item_id, item_name, item_type):
             item_id=item_id,
             force_full_update=False,
             new_episode_ids=None,
-            is_new_item=not is_already_processed
+            is_new_item = not is_online_in_db
         )
     else:
         # 剧集、分集等进入防抖队列，等待合并
