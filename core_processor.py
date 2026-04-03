@@ -277,23 +277,11 @@ class MediaProcessor:
                 logger.warning(f"  ➜ [实时监控] 查重失败，将继续常规流程: {e}")
 
             # =========================================================
-            # ★★★ 核心升级：数据库与缓存双向互补检查 ★★★
+            # ★★★ 核心升级：纯数据库缓存极速检查 (NFO 模式) ★★★
             # =========================================================
             should_skip_full_processing = False
             
-            # 1. 路径准备
-            file_exists = False
-            if item_type == "Movie":
-                nfo_path = os.path.splitext(file_path)[0] + ".nfo"
-            else:
-                episode_dir = os.path.dirname(file_path)
-                series_root_dir = episode_dir
-                if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(episode_dir), re.IGNORECASE):
-                    series_root_dir = os.path.dirname(episode_dir)
-                nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
-            file_exists = os.path.exists(nfo_path)
-
-            # 2. 数据库查询 (获取完整元数据 + 演员表)
+            # 1. 数据库查询 (获取完整元数据 + 演员表)
             db_record = None
             db_actors = []
             
@@ -308,16 +296,13 @@ class MediaProcessor:
                     if db_record.get('actors_json'):
                         try:
                             raw_actors = db_record['actors_json']
-                            # ★★★ 修复：兼容 list 和 str 两种类型 ★★★
                             if isinstance(raw_actors, str):
                                 actors_link = json.loads(raw_actors)
                             else:
                                 actors_link = raw_actors
 
-                            # 提取 tmdb_id 列表
                             actor_tmdb_ids = [a['tmdb_id'] for a in actors_link if 'tmdb_id' in a]
                             if actor_tmdb_ids:
-                                # 批量查询演员详情
                                 placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
                                 sql = f"""
                                     SELECT am.*, pim.primary_name as name
@@ -326,35 +311,30 @@ class MediaProcessor:
                                     WHERE am.tmdb_id IN ({placeholders})
                                 """
                                 cursor.execute(sql, tuple(actor_tmdb_ids))
-                                
                                 actor_rows = cursor.fetchall()
                                 actor_map = {r['tmdb_id']: dict(r) for r in actor_rows}
                                 
-                                # 组装回有序列表
                                 for link in actors_link:
                                     tid = link.get('tmdb_id')
                                     if tid in actor_map:
                                         full_actor = actor_map[tid].copy()
-                                        full_actor['character'] = link.get('character') # 使用关系表里的角色名
+                                        full_actor['character'] = link.get('character')
                                         full_actor['order'] = link.get('order')
                                         db_actors.append(full_actor)
                                         
-                                # 按 order 排序
                                 db_actors.sort(key=lambda x: x.get('order', 999))
                         except Exception as e:
                             logger.warning(f"  ➜ [实时监控] 从数据库解析演员失败: {e}")
 
-            # 3. 决策逻辑分支
-            
-            # --- 分支 A: 数据库有，文件没有 -> 生成文件 (纸质存档缺失) ---
-            if db_record and not file_exists and db_actors:
-                logger.info(f"  ➜ [实时监控] 命中数据库缓存 (ID:{tmdb_id})，正在从数据库生成NFO文件...")
+            # 2. 决策逻辑分支 (只要数据库有数据且有演员，就是完美命中)
+            if db_record and db_actors:
+                logger.info(f"  ➜ [实时监控] 命中数据库缓存 (ID:{tmdb_id})。正在从数据库恢复元数据并生成 NFO...")
                 try:
                     # 1. 生成主 payload
                     from tasks.helpers import reconstruct_metadata_from_db
                     payload = reconstruct_metadata_from_db(db_record, db_actors)
 
-                    # ★★★ 新增：如果是剧集，需要查询并注入分季/分集数据 ★★★
+                    # 如果是剧集，需要查询并注入分季/分集数据
                     if item_type == "Series":
                         with get_central_db_connection() as conn:
                             cursor = conn.cursor()
@@ -364,6 +344,7 @@ class MediaProcessor:
                             seasons_rows = cursor.fetchall()
                             seasons_data = []
                             for s_row in seasons_rows:
+                                if not str(s_row['tmdb_id']).isdigit(): continue
                                 s_data = {
                                     "id": int(s_row['tmdb_id']),
                                     "name": s_row['title'],
@@ -377,9 +358,10 @@ class MediaProcessor:
                             # B. 查分集
                             cursor.execute("SELECT * FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode'", (str(tmdb_id),))
                             episodes_rows = cursor.fetchall()
-                            episodes_data = {} # 字典格式 S1E1: data
+                            episodes_data = {}
                             
                             for e_row in episodes_rows:
+                                if not str(e_row['tmdb_id']).isdigit(): continue
                                 s_num = e_row['season_number']
                                 e_num = e_row['episode_number']
                                 key = f"S{s_num}E{e_num}"
@@ -395,13 +377,10 @@ class MediaProcessor:
                                 }
                                 episodes_data[key] = e_data
 
-                            # C. 注入 payload
-                            if seasons_data:
-                                payload['seasons_details'] = seasons_data
-                            if episodes_data:
-                                payload['episodes_details'] = episodes_data
+                            if seasons_data: payload['seasons_details'] = seasons_data
+                            if episodes_data: payload['episodes_details'] = episodes_data
                                 
-                            logger.debug(f"  ➜ [实时监控] 已从数据库恢复 {len(seasons_data)} 个季和 {len(episodes_data)} 个分集的数据。")
+                            logger.info(f"  ➜ [实时监控] 已从数据库恢复 {len(seasons_data)} 个季和 {len(episodes_data)} 个分集的数据。")
                     
                     # 2. 构造上下文对象
                     fake_item_details = {
@@ -412,31 +391,19 @@ class MediaProcessor:
                         "Path": file_path
                     }
                     
-                    # 3. 写入文件
+                    # 3. 写入 NFO 文件 (传入 db_actors 确保演员表不丢失)
                     self.sync_item_metadata(
                         item_details=fake_item_details,
                         tmdb_id=str(tmdb_id),
-                        final_cast_override=db_actors, 
+                        final_cast_override=db_actors,
                         metadata_override=payload
                     )
                     should_skip_full_processing = True
-                    logger.info(f"  ➜ [实时监控] 覆盖文件已恢复。跳过在线刮削。")
+                    logger.info(f"  ➜ [实时监控] 物理 NFO 已生成。跳过在线刮削。")
                 except Exception as e:
-                    logger.error(f"  ➜ [实时监控] 从数据库恢复文件失败: {e}，将回退到在线刮削。")
-
-            # --- 分支 B: 都有 -> 完美状态 ---
-            elif db_record and file_exists:
-                # 检查是否需要更新 in_library 状态 (如果是新文件入库)
-                if db_record.get('in_library') is False:
-                     logger.info(f"  ➜ [实时监控] (ID:{tmdb_id})数据库标记为离线。无需处理元数据，仅通知 Emby 刷新。")
-                else:
-                     logger.info(f"  ➜ [实时监控] (ID:{tmdb_id})可能是洗版/追更，跳过元数据处理，仅通知 Emby 刷新。")
-                
-                should_skip_full_processing = True
-
-            # --- 分支 D: 都没有 -> 继续后续的 TMDb 在线流程 ---
+                    logger.error(f"  ➜ [实时监控] 从数据库恢复 NFO 失败: {e}，将回退到在线刮削。")
             else:
-                logger.info(f"  ➜ [实时监控] 本地无缓存 (ID:{tmdb_id})，准备执行 TMDb 在线刮削...")
+                logger.info(f"  ➜ [实时监控] 数据库无有效缓存 (ID:{tmdb_id})，准备执行 TMDb 在线刮削...")
 
             # =========================================================
             # 步骤 3: 获取完整详情 & 准备核心处理
@@ -4027,7 +3994,7 @@ class MediaProcessor:
 
                 nfo_content = nfo_builder.build_tvshow_nfo(data_to_write, cast_to_write)
                 with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
-                logger.info(f"  ➜ 成功写入剧集 NFO: {nfo_path}")
+                logger.info(f"  ➜ 成功写入剧 NFO: {nfo_path}")
                 
                 episodes_data = data_to_write.get("episodes_details", {})
                 seasons_data = data_to_write.get("seasons_details", [])
