@@ -1002,6 +1002,93 @@ class MediaProcessor:
             logger.warning(f"通过 pick_code 查询 local_path 失败: {e}")
         return None
 
+    def _reconstruct_full_data_from_db(self, tmdb_id: str, item_type: str) -> Tuple[Optional[Dict[str, Any]], Optional[List[Dict[str, Any]]]]:
+        """
+        【核心桥梁】从数据库逆向重建完整的元数据 Payload 和演员表。
+        用于 NFO 模式下的 Webhook 回流，完美替代 override 文件的作用，避免重复刮削。
+        """
+        try:
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                # 1. 查主表
+                cursor.execute("SELECT * FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (str(tmdb_id), item_type))
+                row = cursor.fetchone()
+                if not row: return None, None
+                
+                db_record = dict(row)
+                db_actors = []
+                
+                # 2. 查演员
+                if db_record.get('actors_json'):
+                    raw_actors = db_record['actors_json']
+                    actors_link = json.loads(raw_actors) if isinstance(raw_actors, str) else raw_actors
+                    actor_tmdb_ids = [a['tmdb_id'] for a in actors_link if 'tmdb_id' in a]
+                    if actor_tmdb_ids:
+                        placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
+                        sql = f"""
+                            SELECT am.*, pim.primary_name as name
+                            FROM actor_metadata am
+                            LEFT JOIN person_identity_map pim ON am.tmdb_id = pim.tmdb_person_id
+                            WHERE am.tmdb_id IN ({placeholders})
+                        """
+                        cursor.execute(sql, tuple(actor_tmdb_ids))
+                        actor_map = {r['tmdb_id']: dict(r) for r in cursor.fetchall()}
+                        for link in actors_link:
+                            tid = link.get('tmdb_id')
+                            if tid in actor_map:
+                                full_actor = actor_map[tid].copy()
+                                full_actor['character'] = link.get('character')
+                                full_actor['order'] = link.get('order')
+                                db_actors.append(full_actor)
+                        db_actors.sort(key=lambda x: x.get('order', 999))
+                
+                if not db_actors: return None, None
+
+                # 3. 组装 Payload
+                from tasks.helpers import reconstruct_metadata_from_db
+                payload = reconstruct_metadata_from_db(db_record, db_actors)
+
+                # 4. 如果是剧集，补充季和集
+                if item_type == "Series":
+                    # A. 查分季
+                    cursor.execute("SELECT * FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Season'", (str(tmdb_id),))
+                    seasons_data = []
+                    for s_row in cursor.fetchall():
+                        seasons_data.append({
+                            "id": int(s_row['tmdb_id']),
+                            "name": s_row['title'],
+                            "overview": s_row['overview'],
+                            "season_number": s_row['season_number'],
+                            "air_date": str(s_row['release_date']) if s_row['release_date'] else None,
+                            "poster_path": s_row['poster_path']
+                        })
+                    
+                    # B. 查分集
+                    cursor.execute("SELECT * FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode'", (str(tmdb_id),))
+                    episodes_data = {}
+                    for e_row in cursor.fetchall():
+                        s_num = e_row['season_number']
+                        e_num = e_row['episode_number']
+                        key = f"S{s_num}E{e_num}"
+                        episodes_data[key] = {
+                            "id": int(e_row['tmdb_id']) if str(e_row['tmdb_id']).isdigit() else e_row['tmdb_id'],
+                            "name": e_row['title'],
+                            "overview": e_row['overview'],
+                            "season_number": s_num,
+                            "episode_number": e_num,
+                            "air_date": str(e_row['release_date']) if e_row['release_date'] else None,
+                            "vote_average": e_row['rating'],
+                            "still_path": e_row['poster_path']
+                        }
+
+                    if seasons_data: payload['seasons_details'] = seasons_data
+                    if episodes_data: payload['episodes_details'] = episodes_data
+
+                return payload, db_actors
+        except Exception as e:
+            logger.error(f"从数据库重建元数据失败: {e}")
+            return None, None
+
     # --- 更新媒体元数据缓存 ---
     def _upsert_media_metadata(
         self,
@@ -2192,9 +2279,6 @@ class MediaProcessor:
         if not is_valid_tmdb_id(tmdb_id):
             logger.error(f"  ➜ '{item_name_for_log}' 缺少有效的 TMDb ID (当前值: {tmdb_id})，跳过处理。")
             return False
-        if not self.local_data_path:
-            logger.error(f"  ➜ '{item_name_for_log}' 处理失败：未在配置中设置“本地数据源路径”。")
-            return False
         
         try:
             authoritative_cast_source = []
@@ -2309,112 +2393,124 @@ class MediaProcessor:
                 else:
                     logger.debug("  ➜ (预检查) 所有源数据中的演员均有头像，无需预先移除。")
                 
-            # =========================================================
+           # =========================================================
             # ★★★ 步骤 3:  数据来源 ★★★
             # =========================================================
             final_processed_cast = None
             cache_row = None 
+            
             # 1.快速模式
             if not force_full_update:
-                # --- 路径准备 ---
-                cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
-                target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
-                main_json_filename = "all.json" if item_type == "Movie" else "series.json"
-                override_json_path = os.path.join(target_override_dir, main_json_filename)
-                
-                if os.path.exists(override_json_path):
-                    logger.info(f"  ➜ [快速模式] 发现本地覆盖文件，优先加载: {override_json_path}")
-                    try:
-                        override_data = _read_local_json(override_json_path)
-                        if override_data:
-                            cast_data = (override_data.get('casts', {}) or override_data.get('credits', {})).get('cast', [])
-                            if cast_data:
-                                logger.info(f"  ➜ [快速模式] 成功从文件加载 {len(cast_data)} 位演员和元数据...")
-                                final_processed_cast = cast_data
+                # --- A. 尝试文件缓存 (仅神医模式) ---
+                if not self.is_nfo_mode:
+                    cache_folder_name = "tmdb-movies2" if item_type == "Movie" else "tmdb-tv"
+                    target_override_dir = os.path.join(self.local_data_path, "override", cache_folder_name, tmdb_id)
+                    main_json_filename = "all.json" if item_type == "Movie" else "series.json"
+                    override_json_path = os.path.join(target_override_dir, main_json_filename)
+                    
+                    if os.path.exists(override_json_path):
+                        logger.info(f"  ➜ [快速模式] 发现本地覆盖文件，优先加载: {override_json_path}")
+                        try:
+                            override_data = _read_local_json(override_json_path)
+                            if override_data:
+                                cast_data = (override_data.get('casts', {}) or override_data.get('credits', {})).get('cast', [])
+                                if cast_data:
+                                    logger.info(f"  ➜ [快速模式] 成功从文件加载 {len(cast_data)} 位演员和元数据...")
+                                    final_processed_cast = cast_data
+                                    tmdb_details_for_extra = override_data 
+                                    cache_row = {'source': 'override_file'}
                                 
-                                # 关键设置 1: 以此为源更新数据库
-                                tmdb_details_for_extra = override_data 
-                                
-                                # 如果是剧集，必须把分集文件也读进来！ 
-                                if item_type == "Series":
-                                    logger.info("  ➜ [快速模式] 检测到剧集，正在聚合本地分集元数据...")
-                                    episodes_details_map = {}
-                                    seasons_details_list = [] 
-                                    
-                                    try:
-                                        # 1. 先读 Override (保留你的手动修改)
-                                        if os.path.exists(target_override_dir):
-                                            for fname in os.listdir(target_override_dir):
-                                                full_path = os.path.join(target_override_dir, fname)
-                                                if fname.startswith("season-") and fname.endswith(".json"):
-                                                    try:
-                                                        data = _read_local_json(full_path)
-                                                        if data:
-                                                            if "-episode-" in fname:
-                                                                key = f"S{data.get('season_number')}E{data.get('episode_number')}"
-                                                                episodes_details_map[key] = data
-                                                            else:
-                                                                seasons_details_list.append(data)
-                                                    except: pass
+                                    # 如果是剧集，必须把分集文件也读进来！ 
+                                    if item_type == "Series":
+                                        logger.info("  ➜ [快速模式] 检测到剧集，正在聚合本地分集元数据...")
+                                        episodes_details_map = {}
+                                        seasons_details_list = [] 
                                         
-                                        # 2. 查漏补缺：从 TMDb 获取新分集 ID
-                                        if self.tmdb_api_key:
-                                            # 直接复用函数开头已经获取到的数据，不再重复请求
-                                            fresh_agg_data = aggregated_tmdb_data
+                                        try:
+                                            # 1. 先读 Override (保留你的手动修改)
+                                            if os.path.exists(target_override_dir):
+                                                for fname in os.listdir(target_override_dir):
+                                                    full_path = os.path.join(target_override_dir, fname)
+                                                    if fname.startswith("season-") and fname.endswith(".json"):
+                                                        try:
+                                                            data = _read_local_json(full_path)
+                                                            if data:
+                                                                if "-episode-" in fname:
+                                                                    key = f"S{data.get('season_number')}E{data.get('episode_number')}"
+                                                                    episodes_details_map[key] = data
+                                                                else:
+                                                                    seasons_details_list.append(data)
+                                                        except: pass
                                             
-                                            #以此为防线：万一开头没获取到（虽然不太可能），再尝试获取一次
-                                            if not fresh_agg_data:
-                                                # logger.debug("  ➜ [快速模式] 首次聚合未命中，正在补充请求 TMDb 数据...")
-                                                fresh_agg_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
-                                            
-                                            if fresh_agg_data:
-                                                fresh_eps = fresh_agg_data.get("episodes_details", {})
-                                                added_count = 0
+                                            # 2. 查漏补缺：从 TMDb 获取新分集 ID
+                                            if self.tmdb_api_key:
+                                                # 直接复用函数开头已经获取到的数据，不再重复请求
+                                                fresh_agg_data = aggregated_tmdb_data
                                                 
-                                                for k, v in fresh_eps.items():
-                                                    # 只有本地没有的，才加进去 
-                                                    if k not in episodes_details_map:
-                                                        # ✨ 删除 TMDb 自带的原始演员表，强制使用本地精修表 ✨
-                                                        if 'credits' in v:
-                                                            del v['credits']
+                                                #以此为防线：万一开头没获取到（虽然不太可能），再尝试获取一次
+                                                if not fresh_agg_data:
+                                                    # logger.debug("  ➜ [快速模式] 首次聚合未命中，正在补充请求 TMDb 数据...")
+                                                    fresh_agg_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                                                
+                                                if fresh_agg_data:
+                                                    fresh_eps = fresh_agg_data.get("episodes_details", {})
+                                                    added_count = 0
+                                                    
+                                                    for k, v in fresh_eps.items():
+                                                        # 只有本地没有的，才加进去 
+                                                        if k not in episodes_details_map:
+                                                            # ✨ 删除 TMDb 自带的原始演员表，强制使用本地精修表 ✨
+                                                            if 'credits' in v:
+                                                                del v['credits']
+                                                                
+                                                            episodes_details_map[k] = v
+                                                            added_count += 1
                                                             
-                                                        episodes_details_map[k] = v
-                                                        added_count += 1
-                                                        
-                                                if added_count > 0:
-                                                    logger.info(f"  ➜ [快速模式] 成功补全了 {added_count} 个本地缺失的追更分集数据 (内存补全)。")
+                                                    if added_count > 0:
+                                                        logger.info(f"  ➜ [快速模式] 成功补全了 {added_count} 个本地缺失的追更分集数据 (内存补全)。")
 
-                                                # 顺便补全一下缺失的季信息 (Seasons)
-                                                fresh_seasons = fresh_agg_data.get("seasons_details", [])
-                                                existing_season_nums = {s.get('season_number') for s in seasons_details_list}
-                                                for fs in fresh_seasons:
-                                                    if fs.get('season_number') not in existing_season_nums:
-                                                        seasons_details_list.append(fs)
+                                                    # 顺便补全一下缺失的季信息 (Seasons)
+                                                    fresh_seasons = fresh_agg_data.get("seasons_details", [])
+                                                    existing_season_nums = {s.get('season_number') for s in seasons_details_list}
+                                                    for fs in fresh_seasons:
+                                                        if fs.get('season_number') not in existing_season_nums:
+                                                            seasons_details_list.append(fs)
 
-                                        # 3. 塞回骨架
-                                        if episodes_details_map:
-                                            tmdb_details_for_extra['episodes_details'] = episodes_details_map
-                                        if seasons_details_list:
-                                            seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
-                                            tmdb_details_for_extra['seasons_details'] = seasons_details_list
+                                            # 3. 塞回骨架
+                                            if episodes_details_map:
+                                                tmdb_details_for_extra['episodes_details'] = episodes_details_map
+                                            if seasons_details_list:
+                                                seasons_details_list.sort(key=lambda x: x.get('season_number', 0))
+                                                tmdb_details_for_extra['seasons_details'] = seasons_details_list
 
-                                    except Exception as e_ep:
-                                        logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生异常: {e_ep}")
+                                        except Exception as e_ep:
+                                            logger.warning(f"  ➜ [快速模式] 聚合分集/季数据时发生异常: {e_ep}")
 
-                                # 关键设置 2: 标记源为文件
-                                cache_row = {'source': 'override_file'} 
+                                    # 关键设置 2: 标记源为文件
+                                    cache_row = {'source': 'override_file'} 
 
-                                # 补充：简单的 ID 映射
-                                tmdb_to_emby_map = {}
-                                for person in item_details_from_emby.get("People", []):
-                                    pid = (person.get("ProviderIds") or {}).get("Tmdb")
-                                    if pid: tmdb_to_emby_map[str(pid)] = person.get("Id")
-                                for actor in final_processed_cast:
-                                    aid = str(actor.get('id'))
-                                    if aid in tmdb_to_emby_map:
-                                        actor['emby_person_id'] = tmdb_to_emby_map[aid]
-                    except Exception as e:
-                        logger.warning(f"  ➜ 读取覆盖文件失败: {e}，将尝试数据库缓存。")
+                                    # 补充：简单的 ID 映射
+                                    tmdb_to_emby_map = {}
+                                    for person in item_details_from_emby.get("People", []):
+                                        pid = (person.get("ProviderIds") or {}).get("Tmdb")
+                                        if pid: tmdb_to_emby_map[str(pid)] = person.get("Id")
+                                    for actor in final_processed_cast:
+                                        aid = str(actor.get('id'))
+                                        if aid in tmdb_to_emby_map:
+                                            actor['emby_person_id'] = tmdb_to_emby_map[aid]
+                        except Exception as e:
+                            logger.warning(f"  ➜ 读取覆盖文件失败: {e}，将尝试数据库缓存。")
+
+                # --- B. 尝试数据库缓存 (NFO模式 或 文件缓存丢失) ---
+                # ★★★ 核心修复：Webhook 回流时，直接从数据库读取预处理存入的数据，完美跳过在线刮削！ ★★★
+                if final_processed_cast is None:
+                    logger.info(f"  ➜ [快速模式] 尝试从数据库缓存恢复数据 (ID:{tmdb_id})...")
+                    payload, cast = self._reconstruct_full_data_from_db(tmdb_id, item_type)
+                    if payload and cast:
+                        final_processed_cast = cast
+                        tmdb_details_for_extra = payload
+                        cache_row = {'source': 'database_cache'} # 标记来源为数据库
+                        logger.info("  ➜ [快速模式] 成功从数据库缓存恢复元数据和演员表，跳过在线刮削！")
 
             # 2.完整模式
             if final_processed_cast is None:
@@ -2575,8 +2671,8 @@ class MediaProcessor:
                 is_feedback_mode = (
                     cache_row 
                     and isinstance(cache_row, dict) 
-                    and cache_row.get('source') == 'override_file'
-                    and not specific_episode_ids  # <--- 关键：如果有指定分集(追更)，则必须为 False
+                    and cache_row.get('source') in ['override_file', 'database_cache'] 
+                    and not specific_episode_ids  
                 )
 
                 if is_feedback_mode:
