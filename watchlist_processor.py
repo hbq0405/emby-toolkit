@@ -1540,6 +1540,15 @@ class WatchlistProcessor:
                         s_date = datetime.strptime(s['air_date'], '%Y-%m-%d').date()
                         if s_date <= today: active_seasons.add(s['season_number'])
                     except ValueError: pass
+        # 规则 D (兜底规则)
+        valid_local_seasons = [s for s in emby_seasons.keys() if s > 0]
+        if valid_local_seasons:
+            active_seasons.add(max(valid_local_seasons))
+        else:
+            tmdb_seasons_list = latest_series_data.get('seasons', [])
+            valid_tmdb_seasons = [s for s in tmdb_seasons_list if s.get('season_number', 0) > 0]
+            if valid_tmdb_seasons:
+                active_seasons.add(max(s['season_number'] for s in valid_tmdb_seasons))
 
         # ======================================================================
         # ★★★ 追剧目录自动重组 (大脑指挥官 - 优雅在播季限定版) ★★★
