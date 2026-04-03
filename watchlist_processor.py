@@ -62,8 +62,6 @@ class WatchlistProcessor:
         self.emby_url = self.config.get("emby_server_url")
         self.emby_api_key = self.config.get("emby_api_key")
         self.emby_user_id = self.config.get("emby_user_id")
-        self.local_data_path = self.config.get("local_data_path", "")
-        self.is_nfo_mode = not bool(self.local_data_path)
         self.p115_enable_organize = self.config.get("p115_enable_organize", False)
         self.ai_translator = ai_translator
         self.douban_api = douban_api
@@ -432,77 +430,6 @@ class WatchlistProcessor:
             tmdb_id=tmdb_id
         )
 
-    def _save_local_json(self, relative_path: str, new_data: Dict[str, Any]):
-        """
-        保存数据到本地 JSON 缓存文件 (智能合并模式)。
-        - ★★★ 智能保护：'series.json' 不更新 'name'，但 'season-*.json' 会更新 'name'。
-        """
-        if self.is_nfo_mode:
-            return 
-        if not self.local_data_path:
-            return
-
-        full_path = os.path.join(self.local_data_path, relative_path)
-        filename = os.path.basename(full_path)
-        
-        # ★★★ 关键检查：如果文件不存在，直接放弃，绝不创建“残缺”文件 ★★★
-        if not os.path.exists(full_path):
-            logger.trace(f"  ➜ 本地缓存文件不存在，跳过更新: {filename}")
-            return
-
-        try:
-            # 读取现有文件
-            with open(full_path, 'r', encoding='utf-8') as f:
-                final_data = json.load(f)
-
-            # 定义要更新的字段 (TMDb 字段 -> JSON 字段)
-            fields_to_update = {
-                # --- 基础视觉与文本 ---
-                "overview": "overview",           # 简介
-                "poster_path": "poster_path",     # 海报
-                "backdrop_path": "backdrop_path", # 背景
-                "still_path": "still_path",       # 剧照
-                "tagline": "tagline",             # 标语
-                
-                # --- 日期 ---
-                "first_air_date": "release_date", # 首播日期 (Series)
-                "air_date": "release_date",       # 播出日期 (Episode/Season)
-                
-                # --- ★★★ 新增：核心元数据 ★★★ ---
-                "genres": "genres",                         # 类型 (对象数组)
-                "keywords": "keywords",                     # 关键词 (对象结构)
-                "content_ratings": "content_ratings",       # 分级信息 (对象结构)
-                "origin_country": "origin_country",         # 产地 (字符串数组)
-                "production_companies": "production_companies", # 制作公司 (对象数组)
-                
-                # --- ★★★ 新增：评分与状态 ★★★ ---
-                "vote_average": "vote_average",   # 评分
-                "vote_count": "vote_count",       # 评分人数
-                "popularity": "popularity"        # 热度
-            }
-
-            # 差异化保护：只有非 series.json 才允许更新标题
-            if 'series.json' not in filename:
-                fields_to_update["name"] = "name"
-
-            # 执行合并更新
-            updated = False
-            for tmdb_key, json_key in fields_to_update.items():
-                if tmdb_key in new_data and new_data[tmdb_key] is not None:
-                    # 只有值真的变了才更新，减少文件IO
-                    if final_data.get(json_key) != new_data[tmdb_key]:
-                        final_data[json_key] = new_data[tmdb_key]
-                        updated = True
-
-            # 只有发生变更时才写入
-            if updated:
-                with open(full_path, 'w', encoding='utf-8') as f:
-                    json.dump(final_data, f, ensure_ascii=False, indent=4)
-                logger.debug(f"  ➜ 已刷新本地元数据: {filename}")
-            
-        except Exception as e:
-            logger.error(f"更新本地缓存文件失败: {full_path}, 错误: {e}")
-
     # --- 通用的元数据刷新辅助函数 ---
     def _refresh_series_metadata(self, tmdb_id: str, item_name: str, item_id: Optional[str]) -> Optional[tuple]:
         """
@@ -555,9 +482,6 @@ class WatchlistProcessor:
         except Exception as e:
             logger.warning(f"  ➜ 应用分级映射逻辑时出错: {e}")
         
-        # 2. 将 TMDb 最新数据合并写入本地 JSON (series.json) 
-        self._save_local_json(f"override/tmdb-tv/{tmdb_id}/series.json", latest_series_data)
-
         # 3. 更新数据库 (Series 层级) - 代码保持不变
         content_ratings = latest_series_data.get("content_ratings", {}).get("results", [])
         official_rating_json = {}
@@ -645,23 +569,6 @@ class WatchlistProcessor:
             season_num = season_details.get("season_number")
             if season_num is None: continue
             
-            # 保存 season-X.json
-            self._save_local_json(f"override/tmdb-tv/{tmdb_id}/season-{season_num}.json", season_details)
-
-            # 提取集信息
-            episodes = season_details.get("episodes", [])
-            if episodes:
-                all_tmdb_episodes.extend(episodes)
-                
-                # 保存 season-X-episode-Y.json
-                for ep in episodes:
-                    ep_num = ep.get("episode_number")
-                    if ep_num is not None:
-                        self._save_local_json(
-                            f"override/tmdb-tv/{tmdb_id}/season-{season_num}-episode-{ep_num}.json", 
-                            ep
-                        )
-
         # ★★★ 4.5 新增：并发下载缺失的图片 & 补全 NFO (双模兼容) ★★★
         try:
             import extensions
@@ -682,7 +589,7 @@ class WatchlistProcessor:
                 )
 
                 # 2. ★★★ 核心修复：NFO 模式下，追剧刷新必须补全 NFO 文件 ★★★
-                if extensions.media_processor_instance.is_nfo_mode and current_item_details:
+                if current_item_details:
                     logger.debug(f"  ➜ [NFO模式] 正在为 '{item_name}' 补全 NFO 文件...")
                     
                     # A. 构造正确的 Payload 结构 (将嵌套的 series_details 提级到根目录)
@@ -1613,32 +1520,6 @@ class WatchlistProcessor:
                     watchlist_db.update_specific_season_total_episodes(tmdb_id, latest_season_num, fake_total)
                     logger.debug(f"  ➜ 已同步更新 S{latest_season_num} 的总集数为 {fake_total}")
         self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
-
-        # ======================================================================
-        # ★★★ 双模分流：NFO 模式下更新 tvshow.nfo 的状态 ★★★
-        # ======================================================================
-        if self.is_nfo_mode and item_id:
-            try:
-                # 需要获取剧集的物理路径
-                series_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
-                if series_details and series_details.get("Path"):
-                    series_dir = series_details.get("Path")
-                    nfo_path = os.path.join(series_dir, "tvshow.nfo")
-                    
-                    if os.path.exists(nfo_path):
-                        # 简单的正则替换状态，避免重新解析整个 XML 破坏原有格式
-                        with open(nfo_path, 'r', encoding='utf-8') as f:
-                            nfo_content = f.read()
-                        
-                        import re
-                        # 将 <status>xxx</status> 替换为新的 TMDb 状态
-                        new_nfo_content = re.sub(r'<status>.*?</status>', f'<status>{new_tmdb_status}</status>', nfo_content, flags=re.IGNORECASE)
-                        
-                        with open(nfo_path, 'w', encoding='utf-8') as f:
-                            f.write(new_nfo_content)
-                        logger.info(f"  ➜ [NFO模式] 已同步更新 tvshow.nfo 追剧状态为: {new_tmdb_status}")
-            except Exception as e:
-                logger.warning(f"  ➜ [NFO模式] 更新 tvshow.nfo 状态失败: {e}")
 
         # ======================================================================
         # ★★★ 提前计算季的活跃状态 (供数据库同步和目录重组使用) ★★★

@@ -144,10 +144,6 @@ CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN = "api_douban_default_cooldown_seconds" # 
 CONFIG_OPTION_DOUBAN_COOKIE = "douban_cookie" # 用于身份验证的豆瓣登录Cookie
 CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API = "douban_enable_online_api" # 是否启用豆瓣在线API
 
-# --- 本地数据源 (神医模式) ---
-CONFIG_SECTION_LOCAL_DATA = "LocalDataSource"
-CONFIG_OPTION_LOCAL_DATA_PATH = "local_data_path" # 本地JSON元数据（TMDbHelper等生成）的根路径
-
 # --- MoviePilot ---
 CONFIG_SECTION_MOVIEPILOT = "MoviePilot"
 CONFIG_OPTION_MOVIEPILOT_URL = "moviepilot_url"

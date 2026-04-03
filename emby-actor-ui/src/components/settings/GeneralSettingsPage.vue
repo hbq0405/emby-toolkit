@@ -241,21 +241,6 @@
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">数据源与API</span></template>
-                    <n-form-item label="本地数据源路径" path="local_data_path">
-                      <n-input-group>
-                        <n-input 
-                          v-model:value="configModel.local_data_path" 
-                          placeholder="神医TMDB缓存目录 (cache和override的上层)" 
-                          @click="openLocalFolderSelector('local_data_path', false)"
-                        >
-                          <template #prefix><n-icon :component="FolderIcon" /></template>
-                        </n-input>
-                        <n-button type="primary" ghost @click="openLocalFolderSelector('local_data_path', false)">选择</n-button>
-                      </n-input-group>
-                      <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">留空使用NFO模式。</n-text>
-                      </template>
-                    </n-form-item>
                     <n-form-item label="TMDB API Key" path="tmdb_api_key">
                       <n-input type="password" show-password-on="mousedown" v-model:value="configModel.tmdb_api_key" placeholder="输入你的 TMDB API Key" />
                     </n-form-item>

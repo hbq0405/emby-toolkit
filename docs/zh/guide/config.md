@@ -83,12 +83,6 @@
 | `monitor_scan_lookback_days` | 回溯扫描天数 |
 | `monitor_exclude_dirs` | 排除路径 |
 
-## LocalDataSource
-
-| Key | 说明 |
-| --- | --- |
-| `local_data_path` | 本地元数据 JSON 根目录 |
-
 ## General
 
 | Key | 说明 |
