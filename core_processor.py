@@ -17,7 +17,7 @@ import psycopg2
 from handler.custom_collection import RecommendationEngine
 import config_manager
 from database.connection import get_db_connection
-from database import media_db, maintenance_db, settings_db
+from database import media_db, settings_db
 import handler.emby as emby
 import handler.tmdb as tmdb
 from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids, construct_metadata_payload, translate_tmdb_metadata_recursively
