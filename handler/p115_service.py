@@ -1174,7 +1174,7 @@ class SmartOrganizer:
         self.ai_translator = ai_translator # 新增
         self.use_ai = use_ai
         self.api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-
+        self.forced_season = None
         self.studio_map = settings_db.get_setting('studio_mapping') or utils.DEFAULT_STUDIO_MAPPING
         self.keyword_map = settings_db.get_setting('keyword_mapping') or utils.DEFAULT_KEYWORD_MAPPING
         self.rating_map = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
@@ -2220,13 +2220,14 @@ class SmartOrganizer:
             return False
 
     def execute(self, root_item_or_items, target_cid, progress_callback=None, skip_gc=False):
-        # ★ 新增：判断传入的是单个文件还是批量文件列表
+        # 判断传入的是单个文件还是批量文件列表
         is_batch = isinstance(root_item_or_items, list)
         
         if is_batch:
             if not root_item_or_items: return True # 防御性检查：空列表直接返回
-            root_item = root_item_or_items[0]      # ★ 修复报错：取第一个元素作为代表项，供后续提取父目录ID使用
+            root_item = root_item_or_items[0]      # 取第一个元素作为代表项，供后续提取父目录ID使用
             root_name = "批量文件"
+            parse_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '') # ★ 用于提取季号
             source_root_id = root_item.get('pid') or root_item.get('parent_id')
             is_source_file = True
             dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
@@ -2234,10 +2235,38 @@ class SmartOrganizer:
             root_item = root_item_or_items
             # 兼容 OpenAPI 键名
             root_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '未知')
+            parse_name = root_name # ★ 用于提取季号
             source_root_id = root_item.get('fid') or root_item.get('file_id')
             fc_val = root_item.get('fc') if root_item.get('fc') is not None else root_item.get('type')
             is_source_file = str(fc_val) == '1'
             dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+
+        # =================================================================
+        # ★★★ 动态修正目标目录 (解决 TG/影巢 无法触发连载检查的问题) ★★★
+        # =================================================================
+        if self.media_type == 'tv' and getattr(self, 'forced_season', None) is None:
+            m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', parse_name, re.IGNORECASE)
+            m2 = re.search(r'Season\s*(\d{1,4})\b', parse_name, re.IGNORECASE)
+            m3 = re.search(r'第(\d{1,4})季', parse_name)
+            extracted_season = None
+            
+            if m1: extracted_season = int(m1.group(1))
+            elif m2: extracted_season = int(m2.group(1))
+            elif m3: extracted_season = int(m3.group(1))
+            else:
+                # 动漫或无季号命名兜底：只要看起来像是有集号的，统统按第一季算
+                if re.search(r'(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话]', parse_name, re.IGNORECASE):
+                    extracted_season = 1
+            
+            if extracted_season is not None:
+                self.forced_season = extracted_season
+                logger.info(f"  ➜ [动态修正] 从物理文件名 '{parse_name}' 中提取到季号 S{extracted_season:02d}，正在重新评估目标分类...")
+                new_target_cid = self.get_target_cid()
+                if new_target_cid and str(new_target_cid) != str(target_cid):
+                    logger.info(f"  ➜ [动态修正] 目标分类已修正 (成功触发连载状态检查)")
+                    target_cid = new_target_cid
+                    # 同步更新 dest_parent_cid，防止后面创建目录时用错
+                    dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
 
         # =================================================================
         # 1. 拦截合集包 (Collection Breakdown) - 仅限单项传入时触发
