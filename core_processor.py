@@ -2427,31 +2427,48 @@ class MediaProcessor:
                         collection_info = formatted_metadata.get("belongs_to_collection")
                         if collection_info and isinstance(collection_info, dict) and collection_info.get("id"):
                             col_id = collection_info.get("id")
+                            # 1. 保留原始的合集名（通常跟随电影语言，已经是中文了）
                             col_name = collection_info.get("name", "")
                             col_overview = ""
                             
                             logger.info(f"  ➜ [完整模式] 检测到合集信息 (ID: {col_id})，正在获取合集详情...")
                             try:
-                                # 尝试获取合集详情以拿到 overview
                                 import requests
-                                url = f"{self.config.get(constants.CONFIG_OPTION_TMDB_API_BASE_URL, 'https://api.themoviedb.org/3')}/collection/{col_id}?api_key={self.tmdb_api_key}&language=en-US"
-                                resp = requests.get(url, timeout=10, proxies=config_manager.get_proxies_for_requests())
-                                if resp.status_code == 200:
-                                    col_details = resp.json()
-                                    col_overview = col_details.get("overview", "")
-                                    # 如果详情里的名字更全，优先使用
-                                    col_name = col_details.get("name", col_name)
+                                base_url = self.config.get(constants.CONFIG_OPTION_TMDB_API_BASE_URL, 'https://api.themoviedb.org/3')
+                                
+                                # 2. 优先请求中文详情
+                                url_zh = f"{base_url}/collection/{col_id}?api_key={self.tmdb_api_key}&language=zh-CN"
+                                resp_zh = requests.get(url_zh, timeout=10, proxies=config_manager.get_proxies_for_requests())
+                                if resp_zh.status_code == 200:
+                                    col_details_zh = resp_zh.json()
+                                    col_overview = col_details_zh.get("overview", "")
+                                    # 如果原始名字为空，才用详情里的名字兜底
+                                    if not col_name:
+                                        col_name = col_details_zh.get("name", "")
+
+                                # 3. 如果中文没有简介，再请求英文详情获取简介用于 AI 翻译
+                                if not col_overview:
+                                    url_en = f"{base_url}/collection/{col_id}?api_key={self.tmdb_api_key}&language=en-US"
+                                    resp_en = requests.get(url_en, timeout=10, proxies=config_manager.get_proxies_for_requests())
+                                    if resp_en.status_code == 200:
+                                        col_details_en = resp_en.json()
+                                        col_overview = col_details_en.get("overview", "")
+                                        if not col_name:
+                                            col_name = col_details_en.get("name", "")
                             except Exception as e:
                                 logger.warning(f"  ➜ 获取合集 {col_id} 详情失败: {e}")
 
-                            # A. 翻译合集标题
+                            # A. 翻译合集标题 (只有当它真的是英文时才翻译)
                             if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False):
                                 if col_name and not utils.contains_chinese(col_name):
                                     logger.info(f"  ➜ [完整模式] 正在调用 AI 翻译合集标题: {col_name}")
                                     trans_col_name = self.ai_translator.translate_title(col_name, media_type="Movie")
                                     if trans_col_name and utils.contains_chinese(trans_col_name):
+                                        # 强行把 "合集" 替换为 "（系列）" 以保持原生风格
+                                        if trans_col_name.endswith("合集"):
+                                            trans_col_name = trans_col_name[:-2] + "（系列）"
                                         collection_info["name"] = trans_col_name
-                                        col_name = trans_col_name # 更新上下文供简介翻译使用
+                                        col_name = trans_col_name 
                                 else:
                                     collection_info["name"] = col_name
                             else:
