@@ -283,6 +283,16 @@
               <!-- 悬浮操作层 -->
               <div class="image-overlay">
                 <n-space justify="center" align="center" style="height: 100%;">
+                  <!-- 新增：TMDb 搜索按钮 -->
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button circle type="warning" @click="openTmdbSelector(img.type, img.tmdbKey)">
+                        <template #icon><n-icon :component="SearchIcon" /></template>
+                      </n-button>
+                    </template>
+                    从 TMDb 搜索备选图
+                  </n-tooltip>
+
                   <n-tooltip trigger="hover">
                     <template #trigger>
                       <n-button circle type="primary" @click="triggerFileUpload(img.type)">
@@ -332,7 +342,46 @@
         <n-button type="primary" @click="submitUrlImage" :loading="isUploadingImage">确定</n-button>
       </template>
     </n-modal>
+    <!-- ★★★ 新增：TMDb 备选图模态框 ★★★ -->
+    <n-modal
+      v-model:show="showTmdbSelector"
+      preset="card"
+      style="width: 1000px; max-width: 95vw;"
+      :title="`选择 TMDb ${currentTmdbImageLabel}`"
+      :bordered="false"
+      size="huge"
+    >
+      <div v-if="isFetchingTmdbImages" style="text-align: center; padding: 40px;">
+        <n-spin size="large" />
+        <div style="margin-top: 10px;">正在从 TMDb 拉取高清图片...</div>
+      </div>
+      
+      <div v-else-if="currentTmdbImages.length === 0" style="text-align: center; padding: 40px;">
+        <n-empty description="TMDb 上没有找到该类型的图片" />
+      </div>
 
+      <n-grid v-else cols="2 s:3 m:4 l:5" :x-gap="12" :y-gap="12">
+        <n-grid-item v-for="(img, index) in currentTmdbImages" :key="index">
+          <n-card class="tmdb-image-card" hoverable @click="selectTmdbImage(img.original)">
+            <template #cover>
+              <n-image
+                :src="img.preview"
+                lazy
+                object-fit="contain"
+                preview-disabled
+                class="tmdb-grid-image"
+                :style="{ aspectRatio: currentTmdbImageAspect }"
+              />
+            </template>
+            <div class="tmdb-image-footer">
+              <n-tag size="small" :type="img.lang === 'zh' || img.lang === 'zh-CN' ? 'success' : 'default'">
+                {{ img.lang === 'null' ? '无文字' : img.lang }}
+              </n-tag>
+            </div>
+          </n-card>
+        </n-grid-item>
+      </n-grid>
+    </n-modal>
   </n-layout>
 </template>
 
@@ -352,7 +401,8 @@ import {
   AddOutline as AddIcon,
   ChevronDownOutline as ChevronDownIcon,
   CloudUploadOutline as CloudUploadIcon,
-  LinkOutline as LinkIcon
+  LinkOutline as LinkIcon,
+  SearchOutline as SearchIcon
 } from '@vicons/ionicons5';
 import { debounce } from 'lodash-es';
 
@@ -392,10 +442,10 @@ const imageRefreshTokens = ref({
 });
 
 const imageTypes = [
-  { type: 'poster', label: '海报 (Poster)', embyType: 'Primary', aspect: '2/3' },
-  { type: 'clearlogo', label: '标志 (Logo)', embyType: 'Logo', aspect: '16/9' },
-  { type: 'fanart', label: '艺术图 (Fanart)', embyType: 'Backdrop', aspect: '16/9' },
-  { type: 'landscape', label: '缩略图 (Landscape)', embyType: 'Thumb', aspect: '16/9' }
+  { type: 'poster', label: '海报 (Poster)', embyType: 'Primary', aspect: '2/3', tmdbKey: 'posters' },
+  { type: 'clearlogo', label: '标志 (Logo)', embyType: 'Logo', aspect: '16/9', tmdbKey: 'logos' },
+  { type: 'fanart', label: '艺术图 (Fanart)', embyType: 'Backdrop', aspect: '16/9', tmdbKey: 'backdrops' },
+  { type: 'landscape', label: '缩略图 (Landscape)', embyType: 'Thumb', aspect: '16/9', tmdbKey: 'backdrops' } // 缩略图通常用背景图代替
 ];
 
 // 动态获取图片URL (带时间戳防缓存)
@@ -476,6 +526,56 @@ const uploadImagePayload = async (payload) => {
 };
 // ★★★ 图像编辑逻辑结束 ★★★
 
+// ★★★ TMDb 选图相关状态 ★★★
+const showTmdbSelector = ref(false);
+const isFetchingTmdbImages = ref(false);
+const tmdbImagesCache = ref(null); // 缓存拉取到的所有图片
+const currentTmdbImages = ref([]); // 当前展示的图片列表
+const currentTmdbImageLabel = ref('');
+const currentTmdbImageAspect = ref('2/3');
+
+// 打开 TMDb 选图框
+const openTmdbSelector = async (type, tmdbKey) => {
+  currentEditImageType.value = type;
+  
+  // 设置 UI 标题和比例
+  const imgConfig = imageTypes.find(i => i.type === type);
+  currentTmdbImageLabel.value = imgConfig.label;
+  currentTmdbImageAspect.value = imgConfig.aspect;
+  
+  showTmdbSelector.value = true;
+
+  // 如果还没拉取过，去后端拉取
+  if (!tmdbImagesCache.value) {
+    isFetchingTmdbImages.value = true;
+    try {
+      const res = await axios.get(`/api/tmdb_images/${itemId.value}`);
+      tmdbImagesCache.value = res.data;
+    } catch (error) {
+      message.error("获取 TMDb 图片失败");
+      showTmdbSelector.value = false;
+      isFetchingTmdbImages.value = false;
+      return;
+    }
+    isFetchingTmdbImages.value = false;
+  }
+
+  // 根据类型展示对应的图片列表
+  currentTmdbImages.value = tmdbImagesCache.value[tmdbKey] || [];
+};
+
+// 选中 TMDb 图片并提交
+const selectTmdbImage = async (originalUrl) => {
+  showTmdbSelector.value = false; // 关闭选图框
+  
+  // 直接复用之前的上传逻辑，把 TMDb 原图直链发给后端
+  const payload = {
+    image_type: currentEditImageType.value,
+    image_url: originalUrl
+  };
+  
+  await uploadImagePayload(payload);
+};
 
 const searchDropdownOptions = computed(() => {
   const options = [];
@@ -855,5 +955,26 @@ const handleSaveChanges = async () => {
 
 .image-wrapper:hover .image-overlay {
   opacity: 1;
+}
+
+/* ★★★ TMDb 选图网格样式 ★★★ */
+.tmdb-image-card {
+  cursor: pointer;
+  transition: transform 0.2s;
+  background-color: #1a1a1a;
+}
+.tmdb-image-card:hover {
+  transform: scale(1.05);
+  border-color: var(--n-primary-color);
+}
+.tmdb-grid-image {
+  width: 100%;
+  display: block;
+  background-color: #000;
+}
+.tmdb-image-footer {
+  padding: 8px;
+  text-align: center;
+  background-color: var(--n-card-color);
 }
 </style>
