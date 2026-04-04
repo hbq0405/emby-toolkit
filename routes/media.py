@@ -805,7 +805,8 @@ def api_get_tmdb_images(item_id):
                 "preview": f"{base_preview_url}{img['file_path']}",
                 "original": f"{base_original_url}{img['file_path']}",
                 "aspect_ratio": img.get("aspect_ratio", 1),
-                "lang": img.get("iso_639_1", "无")
+                "width": img.get("width"),    # ★★★ 新增：把宽度传给前端
+                "height": img.get("height")   # ★★★ 新增：把高度传给前端
             } for img in img_list]
 
         result = {

@@ -361,17 +361,8 @@
             />
           </div>
           <div class="tmdb-card-info">
-            <div class="tmdb-provider">TheMovieDb</div>
-            <div class="tmdb-meta">
-              {{ img.width ? `${img.width}×${img.height}` : '' }}
-              {{ img.width && img.lang ? ' - ' : '' }}
-              {{ formatLang(img.lang) }}
-            </div>
-            <div class="tmdb-score" v-if="img.vote_average">
-              {{ img.vote_average.toFixed(1) }} - 共 {{ img.vote_count || 1 }} 票
-            </div>
-            <div class="tmdb-score" v-else>
-              未分级
+            <div class="tmdb-meta" v-if="img.width && img.height">
+              {{ img.width }} × {{ img.height }}
             </div>
           </div>
         </div>
