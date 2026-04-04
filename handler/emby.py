@@ -641,7 +641,7 @@ def get_emby_library_items(
 
     if search_term and search_term.strip():
         # ... (搜索逻辑保持不变) ...
-        logger.info(f"进入搜索模式，关键词: '{search_term}'")
+        logger.info(f"  ➜ 进入搜索模式，关键词: '{search_term}'")
         api_url = f"{base_url.rstrip('/')}/Users/{user_id}/Items"
         params = {
             "api_key": api_key,
@@ -655,10 +655,10 @@ def get_emby_library_items(
             response = emby_client.get(api_url, params=params)
             response.raise_for_status()
             items = response.json().get("Items", [])
-            logger.info(f"搜索到 {len(items)} 个匹配项。")
+            logger.info(f"  ➜ 搜索到 {len(items)} 个匹配项。")
             return items
         except requests.exceptions.RequestException as e:
-            logger.error(f"搜索 Emby 时发生网络错误: {e}")
+            logger.error(f"  ➜ 搜索 Emby 时发生网络错误: {e}")
             return None
 
     if not library_ids:

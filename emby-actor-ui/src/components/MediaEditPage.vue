@@ -252,19 +252,19 @@
       </n-spin>
     </n-modal>
 
-    <!-- ★★★ 图像编辑模态框 (Emby 排版风格) ★★★ -->
+    <!-- ★★★ 图像编辑模态框 (Emby 排版风格 - 单行等大卡片) ★★★ -->
     <n-modal
       v-model:show="showImageEditor"
       preset="card"
-      style="width: 1000px; max-width: 95vw;"
+      style="width: 1100px; max-width: 95vw;"
       title="编辑图像"
       :bordered="false"
       size="huge"
     >
       <div class="emby-image-grid">
         <div v-for="img in imageTypes" :key="img.type" class="emby-image-card">
-          <!-- 图片展示区 -->
-          <div class="emby-card-image-container" :style="{ aspectRatio: img.aspect }">
+          <!-- 图片展示区 (统一使用 16:9 比例，图片 contain 缩放) -->
+          <div class="emby-card-image-container">
             <n-image
               :src="getDynamicImageUrl(img.embyType, img.type)"
               lazy
@@ -325,7 +325,7 @@
       >
     </n-modal>
 
-    <!-- ★★★ TMDb 备选图模态框 (Emby 排版风格) ★★★ -->
+    <!-- ★★★ TMDb 备选图模态框 (Emby 排版风格 - 完整显示不裁剪) ★★★ -->
     <n-modal
       v-model:show="showTmdbSelector"
       preset="card"
@@ -350,11 +350,12 @@
           class="emby-tmdb-card" 
           @click="selectTmdbImage(img.original)"
         >
+          <!-- 动态比例容器，内部图片 contain -->
           <div class="tmdb-card-image-wrapper" :style="{ aspectRatio: currentTmdbImageAspect }">
             <n-image
               :src="img.preview"
               lazy
-              object-fit="cover"
+              object-fit="contain"
               preview-disabled
               class="full-image"
             />
@@ -930,18 +931,17 @@ const handleSaveChanges = async () => {
    ========================================================= */
 .emby-image-grid {
   display: grid;
-  /* 适当放宽列宽，Emby的卡片比较宽大 */
-  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-  gap: 24px;
+  /* 强制 4 列，保证 4 张图永远在同一行 */
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 20px;
   padding: 10px 0;
 }
 
 .emby-image-card {
-  /* 使用主题的卡片/嵌入背景色，而不是写死的颜色 */
   background-color: var(--n-color-embedded);
   border: 1px solid var(--n-border-color);
   border-radius: 8px;
-  padding: 16px; /* Emby风格：图片外围有留白 */
+  padding: 16px;
   display: flex;
   flex-direction: column;
   transition: all 0.2s;
@@ -954,17 +954,25 @@ const handleSaveChanges = async () => {
 
 .emby-card-image-container {
   width: 100%;
-  background-color: var(--n-action-color); /* 占位背景色 */
+  /* 强制所有卡片的图片区域为 16:9 横版比例 */
+  aspect-ratio: 16 / 9;
+  background-color: var(--n-action-color);
   border-radius: 4px;
   overflow: hidden;
   position: relative;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
+/* 确保 n-image 组件本身撑满容器 */
 .full-image {
   width: 100%;
   height: 100%;
-  display: block;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .image-placeholder {
@@ -985,14 +993,14 @@ const handleSaveChanges = async () => {
 }
 
 .emby-card-title {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
   color: var(--n-text-color);
 }
 
 .emby-card-actions {
   display: flex;
-  gap: 20px;
+  gap: 16px;
   justify-content: center;
   width: 100%;
   margin-top: 4px;
@@ -1021,16 +1029,14 @@ const handleSaveChanges = async () => {
 
 .emby-tmdb-grid {
   display: grid;
-  /* 调整密度：最小 160px，保证文字有足够空间居中显示 */
   grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
-  gap: 24px 16px; /* 上下间距大一点，给文字留空间 */
+  gap: 24px 16px;
   padding: 10px 0;
   max-height: 65vh;
   overflow-y: auto;
   padding-right: 8px;
 }
 
-/* 滚动条适配主题 */
 .emby-tmdb-grid::-webkit-scrollbar {
   width: 6px;
 }
@@ -1064,6 +1070,9 @@ const handleSaveChanges = async () => {
   overflow: hidden;
   transition: all 0.2s;
   box-shadow: var(--n-box-shadow);
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .tmdb-card-info {
