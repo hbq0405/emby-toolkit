@@ -2172,11 +2172,11 @@ class MediaProcessor:
     # ---核心处理流程 ---
     def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None):
         """
-        本函数作为“设计师”，只负责计算和思考，产出“设计图”和“物料清单”，然后全权委托给施工队。
+        【V3 极简架构版】
+        彻底分离“预处理”和“Webhook回流”逻辑。
+        - 预处理/强制刷新：执行完整的 TMDb -> AI翻译 -> 演员处理 -> NFO生成。
+        - Webhook回流：秒级命中缓存，仅提取 Emby ID 和视频流信息更新数据库，拒绝一切冗余操作。
         """
-        # ======================================================================
-        # 阶段 1: 准备工作
-        # ======================================================================
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
         tmdb_id = item_details_from_emby.get("ProviderIds", {}).get("Tmdb")
@@ -2190,296 +2190,199 @@ class MediaProcessor:
         if not is_valid_tmdb_id(tmdb_id):
             logger.error(f"  ➜ '{item_name_for_log}' 缺少有效的 TMDb ID (当前值: {tmdb_id})，跳过处理。")
             return False
-        
+
         try:
-            authoritative_cast_source = []
-            formatted_metadata = None # 用于内部缓存
+            # ======================================================================
+            # ★★★ 核心重构：极速回流模式拦截 (Webhook Feedback) ★★★
+            # ======================================================================
+            is_webhook_feedback = False
+            formatted_metadata = None
+            final_processed_cast = None
 
-            # 2. 获取数据源 (TMDb API 或 本地缓存)
-            fresh_data = None
-            aggregated_tmdb_data = None # 专门用于剧集
+            # 只要不是强制刷新，就尝试从数据库捞取预处理时存入的完整元数据
+            if not force_full_update:
+                payload, cast = self._reconstruct_full_data_from_db(tmdb_id, item_type)
+                if payload and cast:
+                    formatted_metadata = payload
+                    final_processed_cast = cast
+                    is_webhook_feedback = True
+                    logger.info(f"  ➜ [极速回流] 命中本地数据库缓存，跳过 TMDb/AI/演员处理/NFO生成！")
 
-            if self.tmdb_api_key:
-                try:
-                    if item_type == "Movie":
-                        fresh_data = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
-                        if fresh_data: logger.info(f"  ➜ 成功从 TMDb API 获取到最新电影元数据。")
+            # ======================================================================
+            # 传统重型处理流程 (手动入库 / 强制刷新 / 预处理遗漏)
+            # ======================================================================
+            if not is_webhook_feedback:
+                logger.info(f"  ➜ [完整模式] 未命中缓存或强制重处理，开始执行核心刮削流程...")
 
-                    elif item_type == "Series":
-                        aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
-                        if aggregated_tmdb_data:
-                            fresh_data = aggregated_tmdb_data.get("series_details")
-                            logger.info(f"  ➜ 成功从 TMDb API 获取到最新剧集聚合数据。")
+                # 1. 获取 TMDb 数据
+                fresh_data = None
+                aggregated_tmdb_data = None
+                if self.tmdb_api_key:
+                    try:
+                        if item_type == "Movie":
+                            fresh_data = tmdb.get_movie_details(tmdb_id, self.tmdb_api_key)
+                        elif item_type == "Series":
+                            aggregated_tmdb_data = tmdb.aggregate_full_series_data_from_tmdb(int(tmdb_id), self.tmdb_api_key)
+                            if aggregated_tmdb_data:
+                                fresh_data = aggregated_tmdb_data.get("series_details")
+                    except Exception as e:
+                        logger.warning(f"  ➜ 从 TMDb API 获取数据失败: {e}")
 
-                except Exception as e:
-                    logger.warning(f"  ➜ 从 TMDb API 获取数据失败: {e}")
+                if not fresh_data:
+                    logger.error("  ➜ 无法获取 TMDb 详情，中止处理。")
+                    return False
 
-            # 提取 TMDb 官方中文别名
-            if fresh_data:
+                # 提取 TMDb 官方中文别名
                 current_title = fresh_data.get("title") if item_type == "Movie" else fresh_data.get("name")
                 if current_title and not utils.contains_chinese(current_title):
                     chinese_alias = None
                     alt_titles_data = fresh_data.get("alternative_titles", {})
                     alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
-                    
                     priority_map = {"CN": 1, "SG": 2, "TW": 3, "HK": 4}
                     best_priority = 99
-                    
                     for alt in alt_list:
                         alt_title = alt.get("title", "")
                         if utils.contains_chinese(alt_title):
                             iso_country = alt.get("iso_3166_1", "").upper()
                             current_priority = priority_map.get(iso_country, 5)
-                            
                             if current_priority < best_priority:
                                 chinese_alias = alt_title
                                 best_priority = current_priority
-                                
-                            if best_priority == 1:
-                                break
-                    
+                            if best_priority == 1: break
                     if chinese_alias:
-                        logger.info(f"  ➜ [完整模式] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")
-                        if item_type == "Movie":
-                            fresh_data["title"] = chinese_alias
+                        logger.info(f"  ➜ 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")
+                        if item_type == "Movie": fresh_data["title"] = chinese_alias
                         else:
                             fresh_data["name"] = chinese_alias
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                 aggregated_tmdb_data["series_details"]["name"] = chinese_alias
 
-            # 4. 填充骨架 (Data Mapping)
-            # 直接生成标准化元数据字典
-            formatted_metadata = construct_metadata_payload(
-                item_type=item_type,
-                tmdb_data=fresh_data or {},
-                aggregated_tmdb_data=aggregated_tmdb_data,
-                emby_data_fallback=item_details_from_emby
-            )
-                
-            #  如果 Emby 尚未有类型数据，使用 TMDb 数据补全，确保后续动画判断准确 
-            if not item_details_from_emby.get("Genres") and fresh_data.get("genres"):
-                item_details_from_emby["Genres"] = fresh_data.get("genres")
-                logger.debug(f"  ➜ 检测到 Emby 缺少类型数据，已使用 TMDb 数据补全 Genres: {len(fresh_data.get('genres'))} 个")
+                # 2. 填充骨架
+                formatted_metadata = construct_metadata_payload(
+                    item_type=item_type,
+                    tmdb_data=fresh_data or {},
+                    aggregated_tmdb_data=aggregated_tmdb_data,
+                    emby_data_fallback=item_details_from_emby
+                )
 
-            # --- 重新提取 authoritative_cast_source (为了后续流程) ---
-            if item_type == "Movie":
-                credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
-                authoritative_cast_source = credits_source.get('cast', [])
-            elif item_type == "Series":
-                if aggregated_tmdb_data:
-                    all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values())
-                    authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(fresh_data, all_episodes)
-                else:
-                    credits_source = fresh_data.get('aggregate_credits') or fresh_data.get('credits') or {}
+                if not item_details_from_emby.get("Genres") and fresh_data.get("genres"):
+                    item_details_from_emby["Genres"] = fresh_data.get("genres")
+
+                # 提取演员源数据
+                authoritative_cast_source = []
+                if item_type == "Movie":
+                    credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
                     authoritative_cast_source = credits_source.get('cast', [])
+                elif item_type == "Series":
+                    all_episodes = list(aggregated_tmdb_data.get("episodes_details", {}).values()) if aggregated_tmdb_data else []
+                    authoritative_cast_source = _aggregate_series_cast_from_tmdb_data(fresh_data, all_episodes)
 
-            # =========================================================
-            # ★★★ 步骤 2: 移除无头像演员 ★★★
-            # =========================================================
-            if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True) and authoritative_cast_source:
-                original_count = len(authoritative_cast_source)
-                
-                # 使用 'profile_path' 作为判断依据
-                actors_with_avatars = [
-                    actor for actor in authoritative_cast_source if actor.get("profile_path")
-                ]
-                
-                if len(actors_with_avatars) < original_count:
-                    removed_count = original_count - len(actors_with_avatars)
-                    logger.info(f"  ➜ 在核心处理前，已从源数据中移除 {removed_count} 位无头像的演员。")
-                    # 用筛选后的列表覆盖原始列表
-                    authoritative_cast_source = actors_with_avatars
-                else:
-                    logger.debug("  ➜ (预检查) 所有源数据中的演员均有头像，无需预先移除。")
-                
-            # =========================================================
-            # ★★★ 步骤 3: 翻译与元数据补全 (始终执行，内部自带极速缓存) ★★★
-            # =========================================================
-            # 标题、简介、合集翻译
-            if self.ai_translator:
-                
-                # ====== 1. 简介翻译处理 ======
-                if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False):
-                    logger.info(f"  ➜ 正在检查是否需要 AI 翻译简介...")
-                    
-                    # 优先检查本地数据库缓存
-                    local_trans = media_db.get_local_translation_info(str(tmdb_id), item_type)
-                    
-                    # 逻辑 A: 回填缓存
-                    if local_trans and local_trans.get('overview') and utils.contains_chinese(local_trans['overview']):
-                        formatted_metadata["overview"] = local_trans['overview']
-                        if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
-                            aggregated_tmdb_data["series_details"]["overview"] = local_trans['overview']
-                        logger.info(f"  ➜ 命中本地中文简介缓存，跳过AI翻译。")
-                    
-                    # 逻辑 B: 执行翻译
-                    else:
-                        current_overview = formatted_metadata.get("overview", "")
-                        item_title_for_ai = formatted_metadata.get("title") or formatted_metadata.get("name")
-                        
-                        needs_trans_overview = False
-                        if not current_overview: needs_trans_overview = True
-                        elif not utils.contains_chinese(current_overview): needs_trans_overview = True
-                        
-                        if needs_trans_overview:
-                            english_overview = ""
-                            if current_overview and len(current_overview) > 10:
-                                english_overview = current_overview
-                            elif self.tmdb_api_key:
-                                try:
-                                    if item_type == "Movie":
-                                        en_data = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, language="en-US")
-                                        english_overview = en_data.get("overview")
-                                    elif item_type == "Series":
-                                        en_data = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, language="en-US")
-                                        english_overview = en_data.get("overview")
-                                except: pass
-                            
-                            if english_overview:
-                                logger.info(f"  ➜ 正在调用 AI 翻译简介...")
-                                trans_overview = self.ai_translator.translate_overview(english_overview, title=item_title_for_ai)
-                                if trans_overview:
-                                    formatted_metadata["overview"] = trans_overview
-                                    if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
-                                        aggregated_tmdb_data["series_details"]["overview"] = trans_overview
+                if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True) and authoritative_cast_source:
+                    authoritative_cast_source = [actor for actor in authoritative_cast_source if actor.get("profile_path")]
 
-                # ====== 2. 标题翻译处理 ======
-                if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False):
-                    logger.info(f"  ➜ 正在检查是否需要 AI 翻译标题...")
-                    
-                    # 优先检查本地数据库缓存
-                    local_trans = media_db.get_local_translation_info(str(tmdb_id), item_type)
-                    
-                    # 逻辑 A: 回填缓存
-                    if local_trans and local_trans.get('title') and utils.contains_chinese(local_trans['title']):
-                        cached_title = local_trans['title']
-                        if item_type == "Movie": 
-                            formatted_metadata["title"] = cached_title
-                        else: 
-                            formatted_metadata["name"] = cached_title
+                # 3. AI 翻译 (简介、标题、合集)
+                if self.ai_translator:
+                    # 简介翻译
+                    if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False):
+                        local_trans = media_db.get_local_translation_info(str(tmdb_id), item_type)
+                        if local_trans and local_trans.get('overview') and utils.contains_chinese(local_trans['overview']):
+                            formatted_metadata["overview"] = local_trans['overview']
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
-                                aggregated_tmdb_data["series_details"]["name"] = cached_title
-                        logger.info(f"  ➜ 命中本地中文标题缓存，跳过AI翻译。")
-                    
-                    # 逻辑 B: 执行翻译
-                    else:
-                        current_title = formatted_metadata.get("title") if item_type == "Movie" else formatted_metadata.get("name")
-                        if current_title and not utils.contains_chinese(current_title):
-                            logger.info(f"  ➜ 正在调用 AI 翻译标题: {current_title}")
-                            release_date = formatted_metadata.get("release_date") or formatted_metadata.get("first_air_date")
-                            year_str = release_date[:4] if release_date else ""
-                            
-                            trans_title = self.ai_translator.translate_title(current_title, media_type=item_type, year=year_str)
-                            if trans_title and utils.contains_chinese(trans_title):
-                                if item_type == "Movie": formatted_metadata["title"] = trans_title
-                                else: 
-                                    formatted_metadata["name"] = trans_title
-                                    if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
-                                        aggregated_tmdb_data["series_details"]["name"] = trans_title
+                                aggregated_tmdb_data["series_details"]["overview"] = local_trans['overview']
+                        else:
+                            current_overview = formatted_metadata.get("overview", "")
+                            if not current_overview or not utils.contains_chinese(current_overview):
+                                english_overview = current_overview if current_overview and len(current_overview) > 10 else ""
+                                if not english_overview and self.tmdb_api_key:
+                                    try:
+                                        if item_type == "Movie": english_overview = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, language="en-US").get("overview")
+                                        elif item_type == "Series": english_overview = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, language="en-US").get("overview")
+                                    except: pass
+                                if english_overview:
+                                    logger.info(f"  ➜ 正在调用 AI 翻译简介...")
+                                    trans_overview = self.ai_translator.translate_overview(english_overview, title=formatted_metadata.get("title") or formatted_metadata.get("name"))
+                                    if trans_overview:
+                                        formatted_metadata["overview"] = trans_overview
+                                        if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                            aggregated_tmdb_data["series_details"]["overview"] = trans_overview
 
-                # ====== 3. 合集(Collection)翻译处理 ======
-                if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
-                    collection_info = formatted_metadata.get("belongs_to_collection")
-                    if collection_info and isinstance(collection_info, dict) and collection_info.get("id"):
-                        col_id = collection_info.get("id")
-                        col_name = collection_info.get("name", "")
-                        col_overview = ""
-                        
-                        logger.info(f"  ➜ 检测到合集信息 (ID: {col_id})，正在获取合集详情...")
-                        try:
-                            import requests
-                            base_url = self.config.get(constants.CONFIG_OPTION_TMDB_API_BASE_URL, 'https://api.themoviedb.org/3')
-                            
-                            url_zh = f"{base_url}/collection/{col_id}?api_key={self.tmdb_api_key}&language=zh-CN"
-                            resp_zh = requests.get(url_zh, timeout=10, proxies=config_manager.get_proxies_for_requests())
-                            if resp_zh.status_code == 200:
-                                col_details_zh = resp_zh.json()
-                                col_overview = col_details_zh.get("overview", "")
-                                if not col_name:
-                                    col_name = col_details_zh.get("name", "")
+                    # 标题翻译
+                    if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False):
+                        local_trans = media_db.get_local_translation_info(str(tmdb_id), item_type)
+                        if local_trans and local_trans.get('title') and utils.contains_chinese(local_trans['title']):
+                            cached_title = local_trans['title']
+                            if item_type == "Movie": formatted_metadata["title"] = cached_title
+                            else: 
+                                formatted_metadata["name"] = cached_title
+                                if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                    aggregated_tmdb_data["series_details"]["name"] = cached_title
+                        else:
+                            current_title = formatted_metadata.get("title") if item_type == "Movie" else formatted_metadata.get("name")
+                            if current_title and not utils.contains_chinese(current_title):
+                                logger.info(f"  ➜ 正在调用 AI 翻译标题: {current_title}")
+                                release_date = formatted_metadata.get("release_date") or formatted_metadata.get("first_air_date")
+                                trans_title = self.ai_translator.translate_title(current_title, media_type=item_type, year=release_date[:4] if release_date else "")
+                                if trans_title and utils.contains_chinese(trans_title):
+                                    if item_type == "Movie": formatted_metadata["title"] = trans_title
+                                    else: 
+                                        formatted_metadata["name"] = trans_title
+                                        if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                            aggregated_tmdb_data["series_details"]["name"] = trans_title
 
-                            if not col_overview:
-                                url_en = f"{base_url}/collection/{col_id}?api_key={self.tmdb_api_key}&language=en-US"
-                                resp_en = requests.get(url_en, timeout=10, proxies=config_manager.get_proxies_for_requests())
-                                if resp_en.status_code == 200:
-                                    col_details_en = resp_en.json()
-                                    col_overview = col_details_en.get("overview", "")
-                                    if not col_name:
-                                        col_name = col_details_en.get("name", "")
-                        except Exception as e:
-                            logger.warning(f"  ➜ 获取合集 {col_id} 详情失败: {e}")
+                    # 合集翻译
+                    if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
+                        collection_info = formatted_metadata.get("belongs_to_collection")
+                        if collection_info and isinstance(collection_info, dict) and collection_info.get("id"):
+                            col_id = collection_info.get("id")
+                            col_name = collection_info.get("name", "")
+                            col_overview = ""
+                            try:
+                                import requests
+                                base_url = self.config.get(constants.CONFIG_OPTION_TMDB_API_BASE_URL, 'https://api.themoviedb.org/3')
+                                url_zh = f"{base_url}/collection/{col_id}?api_key={self.tmdb_api_key}&language=zh-CN"
+                                resp_zh = requests.get(url_zh, timeout=10, proxies=config_manager.get_proxies_for_requests())
+                                if resp_zh.status_code == 200:
+                                    col_details_zh = resp_zh.json()
+                                    col_overview = col_details_zh.get("overview", "")
+                                    if not col_name: col_name = col_details_zh.get("name", "")
+                                if not col_overview:
+                                    url_en = f"{base_url}/collection/{col_id}?api_key={self.tmdb_api_key}&language=en-US"
+                                    resp_en = requests.get(url_en, timeout=10, proxies=config_manager.get_proxies_for_requests())
+                                    if resp_en.status_code == 200:
+                                        col_details_en = resp_en.json()
+                                        col_overview = col_details_en.get("overview", "")
+                                        if not col_name: col_name = col_details_en.get("name", "")
+                            except: pass
 
-                        if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False):
-                            if col_name and not utils.contains_chinese(col_name):
-                                logger.info(f"  ➜ 正在调用 AI 翻译合集标题: {col_name}")
+                            if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False) and col_name and not utils.contains_chinese(col_name):
                                 trans_col_name = self.ai_translator.translate_title(col_name, media_type="Movie")
                                 if trans_col_name and utils.contains_chinese(trans_col_name):
-                                    if trans_col_name.endswith("合集"):
-                                        trans_col_name = trans_col_name[:-2] + "（系列）"
+                                    if trans_col_name.endswith("合集"): trans_col_name = trans_col_name[:-2] + "（系列）"
                                     collection_info["name"] = trans_col_name
                                     col_name = trans_col_name 
-                            else:
-                                collection_info["name"] = col_name
-                        else:
-                            collection_info["name"] = col_name
+                            else: collection_info["name"] = col_name
 
-                        if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False):
-                            if col_overview and not utils.contains_chinese(col_overview):
-                                logger.info(f"  ➜ 正在调用 AI 翻译合集简介...")
+                            if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False) and col_overview and not utils.contains_chinese(col_overview):
                                 trans_col_overview = self.ai_translator.translate_overview(col_overview, title=col_name)
-                                if trans_col_overview:
-                                    collection_info["overview"] = trans_col_overview
-                            elif col_overview:
-                                collection_info["overview"] = col_overview
-                        else:
-                            if col_overview:
-                                collection_info["overview"] = col_overview
-                                
-                        formatted_metadata["belongs_to_collection"] = collection_info
+                                if trans_col_overview: collection_info["overview"] = trans_col_overview
+                            elif col_overview: collection_info["overview"] = col_overview
+                                    
+                            formatted_metadata["belongs_to_collection"] = collection_info
 
-            # 剧集分集翻译
-            if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False):
-                logger.info(f"  ➜ 正在递归检查分集简介翻译...")
-                current_series_name = formatted_metadata.get("name")
-                translate_tmdb_metadata_recursively(
-                    item_type='Series',
-                    tmdb_data=aggregated_tmdb_data,
-                    ai_translator=self.ai_translator,
-                    item_name=current_series_name
-                )
-                if "episodes_details" in aggregated_tmdb_data:
-                    formatted_metadata["episodes_details"] = aggregated_tmdb_data["episodes_details"]
+                    # 剧集分集翻译
+                    if item_type == "Series" and aggregated_tmdb_data and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False):
+                        translate_tmdb_metadata_recursively(item_type='Series', tmdb_data=aggregated_tmdb_data, ai_translator=self.ai_translator, item_name=formatted_metadata.get("name"))
+                        if "episodes_details" in aggregated_tmdb_data: formatted_metadata["episodes_details"] = aggregated_tmdb_data["episodes_details"]
 
-            # =========================================================
-            # ★★★ 步骤 4: 演员表处理 (核心耗时操作，优先查缓存) ★★★
-            # =========================================================
-            final_processed_cast = None
-            cache_row = None 
-            
-            # 1. 快速模式：尝试从数据库恢复演员表
-            if not force_full_update:
-                logger.info(f"  ➜ [快速模式] 尝试从数据库缓存恢复演员表 (ID:{tmdb_id})...")
-                # ★ 核心修复：只提取 cast，不再用 payload 覆盖 formatted_metadata！
-                _, cast = self._reconstruct_full_data_from_db(tmdb_id, item_type)
-                if cast:
-                    final_processed_cast = cast
-                    cache_row = {'source': 'database_cache'} # 标记来源为数据库
-                    logger.info("  ➜ [快速模式] 成功从数据库恢复演员表缓存，跳过演员处理逻辑！")
-
-            # 2. 完整模式：执行核心演员处理
-            if final_processed_cast is None:
-                logger.info(f"  ➜ 未命中演员缓存或强制重处理，开始执行核心演员处理流程...")
-                
+                # 4. 演员表处理
                 with get_central_db_connection() as conn:
                     cursor = conn.cursor()
-                    
                     all_emby_people = item_details_from_emby.get("People", [])
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
                     emby_config = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
                     enriched_emby_cast = self.actor_db_manager.enrich_actors_with_provider_ids(cursor, current_emby_cast_raw, emby_config)
                     douban_cast_raw, _ = self._get_douban_data_with_local_cache(item_details_from_emby)
 
-                    # 调用核心处理器处理演员表
                     final_processed_cast = self._process_cast_list(
                         tmdb_cast_people=authoritative_cast_source,
                         emby_cast_people=enriched_emby_cast,
@@ -2490,64 +2393,45 @@ class MediaProcessor:
                         stop_event=self.get_stop_event()
                     )
 
-            # =========================================================
-            # ★★★ 步骤 5: 统一的收尾流程 ★★★
-            # =========================================================
-            if final_processed_cast is None:
-                raise ValueError("未能生成有效的最终演员列表。")
+                if final_processed_cast is None: raise ValueError("未能生成有效的最终演员列表。")
 
+                # 5. 生成 NFO 和 图片
+                logger.info(f"  ➜ 正在生成(NFO文件 & 图片)...")
+                self.sync_item_metadata(
+                    item_details=item_details_from_emby,
+                    tmdb_id=tmdb_id,
+                    final_cast_override=final_processed_cast,
+                    episode_ids_to_sync=specific_episode_ids,
+                    metadata_override=formatted_metadata
+                )
+                self.download_images_from_tmdb(
+                    tmdb_id=tmdb_id,
+                    item_type=item_type,
+                    aggregated_tmdb_data=formatted_metadata, 
+                    item_details=item_details_from_emby
+                )
+
+                # 6. 更新 Emby 演员名并通知刷新
+                self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
+                logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
+                emby.refresh_emby_item_metadata(
+                    item_emby_id=item_id,
+                    emby_server_url=self.emby_url,
+                    emby_api_key=self.emby_api_key,
+                    user_id_for_ops=self.emby_user_id,
+                    replace_all_metadata_param=True, 
+                    item_name_for_log=item_name_for_log
+                )
+            else:
+                logger.debug(f"  ➜ [极速回流] 直接进入数据库状态更新与质检环节...")
+
+            # ======================================================================
+            # 统一收尾流程 (更新数据库、质检、合集、通知)
+            # ======================================================================
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
 
-                is_feedback_mode = (
-                    cache_row 
-                    and isinstance(cache_row, dict) 
-                    and cache_row.get('source') in ['override_file', 'database_cache'] 
-                    and not specific_episode_ids  # <--- 关键：如果有指定分集(追更)，则必须为 False
-                )
-
-                # ======================================================================
-                # 如果是 Webhook 回流 (命中缓存)，说明预处理已经写过 NFO 了，直接跳过，简化流程！
-                if is_feedback_mode:
-                    logger.debug(f"  ➜ Webhook 回流，跳过重复生成 NFO 和图片。")
-                else:
-                    # 只有在预处理阶段，或者用户手动添加文件(无监控)时，才生成 NFO 和图片
-                    logger.info(f"  ➜ 正在生成(NFO文件 & 图片)...")
-                    
-                    self.sync_item_metadata(
-                        item_details=item_details_from_emby,
-                        tmdb_id=tmdb_id,
-                        final_cast_override=final_processed_cast,
-                        episode_ids_to_sync=specific_episode_ids,
-                        metadata_override=formatted_metadata
-                    )
-                    
-                    self.download_images_from_tmdb(
-                        tmdb_id=tmdb_id,
-                        item_type=item_type,
-                        aggregated_tmdb_data=formatted_metadata, 
-                        item_details=item_details_from_emby
-                    )
-
-                if is_feedback_mode:
-                    logger.debug(f"  ➜ [快速模式] 跳过 Emby 刷新。")
-                
-                else:
-                    # 通过 API 实时更新 Emby 演员库中的名字
-                    self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
-
-                    # 通知 Emby 刷新
-                    logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
-                    emby.refresh_emby_item_metadata(
-                        item_emby_id=item_id,
-                        emby_server_url=self.emby_url,
-                        emby_api_key=self.emby_api_key,
-                        user_id_for_ops=self.emby_user_id,
-                        replace_all_metadata_param=True, 
-                        item_name_for_log=item_name_for_log
-                    )
-
-                # 更新我们自己的数据库缓存
+                # 1. 更新数据库缓存 (绑定 Emby ID, 提取视频流资产)
                 self._upsert_media_metadata(
                     cursor=cursor,
                     item_type=item_type,
@@ -2557,80 +2441,48 @@ class MediaProcessor:
                     specific_episode_ids=specific_episode_ids
                 )
                 
-                # 综合质检 (视频流检查 + 演员匹配度评分)
-                logger.info(f"  ➜ 正在评估《{item_name_for_log}》的处理质量...")
-                
-                # --- 1. 视频流数据完整性检查 (基于神医 mediainfo.json) ---
+                # 2. 综合质检 (视频流检查 + 演员匹配度评分)
                 stream_check_passed = True
                 stream_fail_reason = ""
                 
                 def _check_mediainfo_file(file_path, label_prefix=""):
-                    if not file_path:
-                        return False, f"{label_prefix} 缺失文件路径"
-                    # 拼接出同名的 -mediainfo.json 路径
+                    if not file_path: return False, f"{label_prefix} 缺失文件路径"
                     mediainfo_path = os.path.splitext(file_path)[0] + "-mediainfo.json"
-                    if os.path.exists(mediainfo_path):
-                        return True, ""
-                    else:
-                        return False, f"{label_prefix}缺失媒体信息: 文件 (-mediainfo.json)"
+                    if os.path.exists(mediainfo_path): return True, ""
+                    else: return False, f"{label_prefix}缺失媒体信息: 文件 (-mediainfo.json)"
 
-                # --- 分类处理 ---
                 if item_type in ['Movie', 'Episode']:
-                    # 直接从 Emby 详情中获取物理路径
                     emby_path = item_details_from_emby.get("Path")
                     passed, reason = _check_mediainfo_file(emby_path, "")
                     if not passed:
                         stream_check_passed = False
                         stream_fail_reason = reason
-
                 elif item_type == 'Series':
-                    # 剧集：查库递归检查所有已入库分集
                     try:
-                        # 使用刚刚写入的最新数据
                         cursor.execute("""
                             SELECT season_number, episode_number, asset_details_json 
                             FROM media_metadata 
                             WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND in_library = TRUE
                             ORDER BY season_number ASC, episode_number ASC
                         """, (tmdb_id,))
-                        
-                        db_episodes = cursor.fetchall()
-                        for db_ep in db_episodes:
-                            s_idx = db_ep['season_number']
-                            e_idx = db_ep['episode_number']
+                        for db_ep in cursor.fetchall():
+                            s_idx, e_idx = db_ep['season_number'], db_ep['episode_number']
                             raw_assets = db_ep['asset_details_json']
-                            
                             assets = json.loads(raw_assets) if isinstance(raw_assets, str) else (raw_assets if isinstance(raw_assets, list) else [])
-                            
-                            # 从资产详情中提取物理路径
-                            ep_path = None
-                            if assets and len(assets) > 0:
-                                ep_path = assets[0].get('path')
-                            
-                            # 调用辅助函数检查物理文件
+                            ep_path = assets[0].get('path') if assets and len(assets) > 0 else None
                             passed, reason = _check_mediainfo_file(ep_path, f"[S{s_idx}E{e_idx}]")
-                            
                             if not passed:
                                 stream_check_passed = False
                                 stream_fail_reason = reason
                                 logger.warning(f"  ➜ [质检] 剧集《{item_name_for_log}》检测到坏分集: {reason}")
                                 break 
-
                     except Exception as e_db_check:
                         logger.warning(f"  ➜ [质检] 数据库验证分集流信息时出错: {e_db_check}")
 
-                # 演员处理质量评分
                 raw_genres = item_details_from_emby.get("Genres", [])
-
-                # 如果数据本身就是字符串列表（兼容旧数据），则保持不变
-                if raw_genres and isinstance(raw_genres[0], dict):
-                    genres = [g.get('name') for g in raw_genres if g.get('name')]
-                else:
-                    genres = raw_genres
-
+                genres = [g.get('name') for g in raw_genres if g.get('name')] if raw_genres and isinstance(raw_genres[0], dict) else raw_genres
                 is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres or "记录" in genres
                 
-                # 无论数据来自 API 还是 本地缓存，都必须接受评分算法的检验。
                 processing_score = actor_utils.evaluate_cast_processing_quality(
                     final_cast=final_processed_cast, 
                     original_cast_count=original_emby_actor_count,
@@ -2638,81 +2490,55 @@ class MediaProcessor:
                     is_animation=is_animation
                 )
 
-                if cache_row:
-                    logger.info(f"  ➜ [快速模式] 基于缓存数据的实时复核评分: {processing_score:.2f}")
+                if is_webhook_feedback:
+                    logger.info(f"  ➜ [极速回流] 基于缓存数据的实时复核评分: {processing_score:.2f}")
                 
-                raw_min_score = self.config.get("min_score_for_review")
-                if raw_min_score is None:
-                    raw_min_score = constants.DEFAULT_MIN_SCORE_FOR_REVIEW
+                raw_min_score = self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW)
                 min_score_for_review = float(raw_min_score)
                 
-                # 最终判定与日志写入 ---
-                # 确定要记录到数据库的目标 ID 和 名称
-                # 如果当前处理的是分集，必须向上追溯到剧集 ID
                 target_log_id = item_id
                 target_log_name = item_name_for_log
                 target_log_type = item_type
 
                 if item_type == 'Episode':
                     series_id = item_details_from_emby.get('SeriesId')
-                    series_name = item_details_from_emby.get('SeriesName')
                     if series_id:
                         target_log_id = str(series_id)
-                        target_log_name = series_name or f"剧集(ID:{series_id})"
+                        target_log_name = item_details_from_emby.get('SeriesName') or f"剧集(ID:{series_id})"
                         target_log_type = 'Series'
-                        # 如果是分集失败，在日志名字里带上分集信息，方便排查
                         if not stream_check_passed:
-                            s_idx = item_details_from_emby.get('ParentIndexNumber')
-                            e_idx = item_details_from_emby.get('IndexNumber')
+                            s_idx, e_idx = item_details_from_emby.get('ParentIndexNumber'), item_details_from_emby.get('IndexNumber')
                             stream_fail_reason = f"[S{s_idx}E{e_idx}] {stream_fail_reason}"
 
-                # 最终判定与日志写入 ---
-                # 优先级：视频流缺失 > 评分过低
+                # 3. 最终判定与日志写入
                 if not stream_check_passed:
-                    # 情况 A: 视频流缺失 -> 强制待复核
                     logger.warning(f"  ➜ [质检]《{item_name_for_log}》因缺失视频流数据，需重新处理。")
-                    # 记录到 Series ID
                     self.log_db_manager.save_to_failed_log(cursor, target_log_id, target_log_name, stream_fail_reason, target_log_type, score=0.0)
-                    # 标记为已处理 (防止死循环)，但在UI中会显示在“待复核”
                     self._mark_item_as_processed(cursor, target_log_id, target_log_name, score=0.0)
-                    
                 elif processing_score < min_score_for_review:
-                    # 情况 B: 评分过低 -> 待复核
                     reason = f"处理评分 ({processing_score:.2f}) 低于阈值 ({min_score_for_review})。"
-                    
-                    if cache_row:
-                        logger.warning(f"  ➜ [质检]《{item_name_for_log}》本地缓存数据质量不佳 (评分: {processing_score:.2f})，已重新标记为【待复核】。")
-                    else:
-                        logger.warning(f"  ➜ [质检]《{item_name_for_log}》处理质量不佳，已标记为【待复核】。原因: {reason}")
-                        
+                    if is_webhook_feedback: logger.warning(f"  ➜ [质检]《{item_name_for_log}》本地缓存数据质量不佳 (评分: {processing_score:.2f})，已重新标记为【待复核】。")
+                    else: logger.warning(f"  ➜ [质检]《{item_name_for_log}》处理质量不佳，已标记为【待复核】。原因: {reason}")
                     self.log_db_manager.save_to_failed_log(cursor, target_log_id, target_log_name, reason, target_log_type, score=processing_score)
                     self._mark_item_as_processed(cursor, target_log_id, target_log_name, score=processing_score)
-                    
                 else:
-                    # 情况 C: 一切正常 -> 移除待复核标记（如果之前有）
                     logger.info(f"  ➜ 《{item_name_for_log}》质检通过 (评分: {processing_score:.2f})，标记为已处理。")
-                    # 只有当分集也通过时，才更新剧集的记录为成功
                     self._mark_item_as_processed(cursor, target_log_id, target_log_name, score=processing_score)
                     self.log_db_manager.remove_from_failed_log(cursor, target_log_id)
                 
                 conn.commit()
 
-            # 只有电影和剧集才需要刷新向量库，分集(Episode)入库不影响整体推荐，跳过以节省资源
+            # 4. 刷新向量库
             is_pure_episode_update = (item_type == 'Series' and specific_episode_ids)
-
-            if item_type in ['Movie', 'Series'] and not is_pure_episode_update and \
-               self.config.get(constants.CONFIG_OPTION_PROXY_ENABLED) and \
-               self.config.get(constants.CONFIG_OPTION_AI_VECTOR):
+            if item_type in ['Movie', 'Series'] and not is_pure_episode_update and self.config.get(constants.CONFIG_OPTION_PROXY_ENABLED) and self.config.get(constants.CONFIG_OPTION_AI_VECTOR):
                 try:
-                    # 使用 threading 异步执行，不阻塞核心流程
                     threading.Thread(target=RecommendationEngine.refresh_cache).start()
                     logger.debug(f"  ➜ [智能推荐] 已触发向量缓存刷新，'{item_name_for_log}' 将即刻加入推荐池。")
                 except Exception as e:
                     logger.warning(f"  ➜ [智能推荐] 触发缓存刷新失败: {e}")
-            elif is_pure_episode_update:
-                logger.debug(f"  ➜ [智能推荐] 检测到为剧集追更模式，跳过向量缓存刷新。")
 
             logger.trace(f"--- 处理完成 '{item_name_for_log}' ---")
+            return True
 
         except (ValueError, InterruptedError) as e:
             logger.warning(f"处理 '{item_name_for_log}' 的过程中断: {e}")
@@ -2725,9 +2551,6 @@ class MediaProcessor:
             except Exception as log_e:
                 logger.error(f"写入待复核日志时再次发生错误: {log_e}")
             return False
-
-        logger.trace(f"  ➜ 处理完成 '{item_name_for_log}'")
-        return True
 
     # --- 核心处理器 ---
     def _process_cast_list(self, tmdb_cast_people: List[Dict[str, Any]],
