@@ -99,6 +99,14 @@
                         </n-text>
                       </template>
                     </n-form-item-grid-item>
+                    <n-form-item-grid-item label="启用合集" path="generate_collection_nfo">
+                      <n-switch v-model:value="configModel.generate_collection_nfo" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          在电影NFO中生成合集信息。
+                        </n-text>
+                      </template>
+                    </n-form-item-grid-item>
                   </n-card>
                 </n-gi>
                 <!-- 第二列：实时监控 -->

@@ -28,6 +28,14 @@ def build_movie_nfo(data: dict, cast: list) -> str:
     if data.get('imdb_id'):
         ET.SubElement(root, 'uniqueid', type='imdb').text = str(data.get('imdb_id'))
 
+    # 合集 (Collection / Set) 写入 
+    collection = data.get('belongs_to_collection')
+    if collection and isinstance(collection, dict) and collection.get('name'):
+        set_elem = ET.SubElement(root, 'set')
+        _add_element(set_elem, 'name', collection.get('name'))
+        if collection.get('id'):
+            _add_element(set_elem, 'tmdbcolid', str(collection.get('id')))
+
     # ★★★ 修复：类型 (Genre) 中文化映射 ★★★
     for genre in data.get('genres', []):
         genre_name = genre.get('name') if isinstance(genre, dict) else genre

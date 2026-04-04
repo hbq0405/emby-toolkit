@@ -3877,6 +3877,12 @@ class MediaProcessor:
         data_to_write = copy.deepcopy(metadata_override) if metadata_override else {}
         cast_to_write = final_cast_override or []
 
+        # 是否写入合集元数据（仅电影且开关未开启时剔除合集信息）
+        if item_type == 'Movie':
+            if not self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
+                # 如果开关未开启，从写入数据中剔除合集信息
+                data_to_write.pop('belongs_to_collection', None)
+
         # =========================================================
         # ★★★ 通用数据净化阶段 ★★★
         # =========================================================
