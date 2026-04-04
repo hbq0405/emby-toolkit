@@ -2422,6 +2422,57 @@ class MediaProcessor:
                                         if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                             aggregated_tmdb_data["series_details"]["name"] = trans_title
 
+                    # ====== 3. 合集(Collection)翻译处理 ======
+                    if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
+                        collection_info = formatted_metadata.get("belongs_to_collection")
+                        if collection_info and isinstance(collection_info, dict) and collection_info.get("id"):
+                            col_id = collection_info.get("id")
+                            col_name = collection_info.get("name", "")
+                            col_overview = ""
+                            
+                            logger.info(f"  ➜ [完整模式] 检测到合集信息 (ID: {col_id})，正在获取合集详情...")
+                            try:
+                                # 尝试获取合集详情以拿到 overview
+                                import requests
+                                url = f"{self.config.get(constants.CONFIG_OPTION_TMDB_API_BASE_URL, 'https://api.themoviedb.org/3')}/collection/{col_id}?api_key={self.tmdb_api_key}&language=en-US"
+                                resp = requests.get(url, timeout=10, proxies=config_manager.get_proxies_for_requests())
+                                if resp.status_code == 200:
+                                    col_details = resp.json()
+                                    col_overview = col_details.get("overview", "")
+                                    # 如果详情里的名字更全，优先使用
+                                    col_name = col_details.get("name", col_name)
+                            except Exception as e:
+                                logger.warning(f"  ➜ 获取合集 {col_id} 详情失败: {e}")
+
+                            # A. 翻译合集标题
+                            if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False):
+                                if col_name and not utils.contains_chinese(col_name):
+                                    logger.info(f"  ➜ [完整模式] 正在调用 AI 翻译合集标题: {col_name}")
+                                    trans_col_name = self.ai_translator.translate_title(col_name, media_type="Movie")
+                                    if trans_col_name and utils.contains_chinese(trans_col_name):
+                                        collection_info["name"] = trans_col_name
+                                        col_name = trans_col_name # 更新上下文供简介翻译使用
+                                else:
+                                    collection_info["name"] = col_name
+                            else:
+                                collection_info["name"] = col_name
+
+                            # B. 翻译合集简介
+                            if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False):
+                                if col_overview and not utils.contains_chinese(col_overview):
+                                    logger.info(f"  ➜ [完整模式] 正在调用 AI 翻译合集简介...")
+                                    trans_col_overview = self.ai_translator.translate_overview(col_overview, title=col_name)
+                                    if trans_col_overview:
+                                        collection_info["overview"] = trans_col_overview
+                                elif col_overview:
+                                    collection_info["overview"] = col_overview
+                            else:
+                                if col_overview:
+                                    collection_info["overview"] = col_overview
+                                    
+                            # 回填数据
+                            formatted_metadata["belongs_to_collection"] = collection_info
+
                 # 3. 剧集分集翻译
                 if item_type == "Series" and aggregated_tmdb_data and self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False):
                     logger.info(f"  ➜ [完整模式] 正在递归检查分集简介翻译...")

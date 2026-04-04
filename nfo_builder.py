@@ -35,6 +35,9 @@ def build_movie_nfo(data: dict, cast: list) -> str:
         _add_element(set_elem, 'name', collection.get('name'))
         if collection.get('id'):
             _add_element(set_elem, 'tmdbcolid', str(collection.get('id')))
+        # ★ 新增：写入合集简介
+        if collection.get('overview'):
+            _add_element(set_elem, 'overview', collection.get('overview'))
 
     # ★★★ 修复：类型 (Genre) 中文化映射 ★★★
     for genre in data.get('genres', []):
