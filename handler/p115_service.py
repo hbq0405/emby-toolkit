@@ -1174,7 +1174,7 @@ class SmartOrganizer:
         self.ai_translator = ai_translator # 新增
         self.use_ai = use_ai
         self.api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
-
+        self.forced_season = None
         self.studio_map = settings_db.get_setting('studio_mapping') or utils.DEFAULT_STUDIO_MAPPING
         self.keyword_map = settings_db.get_setting('keyword_mapping') or utils.DEFAULT_KEYWORD_MAPPING
         self.rating_map = settings_db.get_setting('rating_mapping') or utils.DEFAULT_RATING_MAPPING
@@ -1968,35 +1968,51 @@ class SmartOrganizer:
                 e_only = match.group(4)
                 zh_ep = match.group(5)
                 if season_num is None:
-                    season_num = int(s) if s else 1
+                    season_num = int(s) if s else None # 暂不兜底为1，留给相对路径提取
                 if episode_num is None:
                     episode_num = int(e) if e else (int(ep_only) if ep_only else (int(e_only) if e_only else int(zh_ep)))
-            else:
-                # 2. ★ 纯数字兜底 (绝对安全：因为外层有 if is_tv 保护，绝不会把电影当成剧集)
+            
+            # 2. 从相对路径提取季号 (解决多季目录混合选择，且文件名为纯数字/EP01的情况)
+            if season_num is None:
+                rel_path = file_node.get('rel_path', '')
+                if rel_path:
+                    m_rel = re.search(r'(?:Season\s*|S|第)(\d{1,4})(?:季)?(?:/|$)', rel_path, re.IGNORECASE)
+                    if m_rel:
+                        season_num = int(m_rel.group(1))
+
+            # 3. ★ 纯数字兜底提取集号
+            if episode_num is None:
                 name_without_ext = original_name.rsplit('.', 1)[0]
-                
-                # 策略A：文件名就是纯数字 (如 "01.mp4")
                 if name_without_ext.isdigit():
-                    if episode_num is None: episode_num = int(name_without_ext)
+                    episode_num = int(name_without_ext)
                 else:
-                    # 策略B：剔除年份、分辨率等干扰项后，寻找独立的数字
                     clean_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', name_without_ext)
-                    
-                    # 优先找末尾的数字 (如 "白夜追凶 - 02")
                     end_match = re.search(r'(?:^|[ \.\-\_\[\(])(\d{1,4})(?:[\]\)]|\s*)$', clean_name)
                     if end_match:
-                        if episode_num is None: episode_num = int(end_match.group(1))
+                        episode_num = int(end_match.group(1))
                     else:
-                        # 找中间被明显分隔的数字 (如 "白夜追凶 02 1080p")
                         mid_match = re.search(r'(?:^|[ \-\_\[\(])(\d{1,4})(?:[ \.\-\_\]\)]|$)', clean_name)
                         if mid_match:
-                            if episode_num is None: episode_num = int(mid_match.group(1))
+                            episode_num = int(mid_match.group(1))
                 
-                if season_num is None:
-                    season_num = 1
+            # 4. 终极兜底
+            if season_num is None:
+                season_num = 1
 
         if hasattr(self, 'forced_season') and self.forced_season is not None:
-            season_num = int(self.forced_season)
+            # ★ 核心修复：防止批量整理时，第一个文件的季号污染后续所有不同季号的文件
+            if getattr(self, 'is_manual_correct', False):
+                season_num = int(self.forced_season)
+            else:
+                # 仅当文件名和相对路径中都没有明确的季号特征时，才使用外层推导的 forced_season 作为兜底
+                has_explicit_season = False
+                if re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)|Season\s*\d{1,4}|第\d{1,4}季', original_name, re.IGNORECASE):
+                    has_explicit_season = True
+                elif file_node.get('rel_path') and re.search(r'(?:Season\s*|S|第)\d{1,4}(?:季)?(?:/|$)', file_node.get('rel_path'), re.IGNORECASE):
+                    has_explicit_season = True
+                    
+                if not has_explicit_season:
+                    season_num = int(self.forced_season)
 
         # ★★★ 核心升级：直接调用统一乐高引擎生成文件名 ★★★
         default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
@@ -2220,13 +2236,14 @@ class SmartOrganizer:
             return False
 
     def execute(self, root_item_or_items, target_cid, progress_callback=None, skip_gc=False):
-        # ★ 新增：判断传入的是单个文件还是批量文件列表
+        # 判断传入的是单个文件还是批量文件列表
         is_batch = isinstance(root_item_or_items, list)
         
         if is_batch:
             if not root_item_or_items: return True # 防御性检查：空列表直接返回
-            root_item = root_item_or_items[0]      # ★ 修复报错：取第一个元素作为代表项，供后续提取父目录ID使用
+            root_item = root_item_or_items[0]      # 取第一个元素作为代表项，供后续提取父目录ID使用
             root_name = "批量文件"
+            parse_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '') # ★ 用于提取季号
             source_root_id = root_item.get('pid') or root_item.get('parent_id')
             is_source_file = True
             dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
@@ -2234,10 +2251,38 @@ class SmartOrganizer:
             root_item = root_item_or_items
             # 兼容 OpenAPI 键名
             root_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name', '未知')
+            parse_name = root_name # ★ 用于提取季号
             source_root_id = root_item.get('fid') or root_item.get('file_id')
             fc_val = root_item.get('fc') if root_item.get('fc') is not None else root_item.get('type')
             is_source_file = str(fc_val) == '1'
             dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else (root_item.get('pid') or root_item.get('parent_id') or root_item.get('cid'))
+
+        # =================================================================
+        # ★★★ 动态修正目标目录 (解决 TG/影巢 无法触发连载检查的问题) ★★★
+        # =================================================================
+        if self.media_type == 'tv' and getattr(self, 'forced_season', None) is None:
+            m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', parse_name, re.IGNORECASE)
+            m2 = re.search(r'Season\s*(\d{1,4})\b', parse_name, re.IGNORECASE)
+            m3 = re.search(r'第(\d{1,4})季', parse_name)
+            extracted_season = None
+            
+            if m1: extracted_season = int(m1.group(1))
+            elif m2: extracted_season = int(m2.group(1))
+            elif m3: extracted_season = int(m3.group(1))
+            else:
+                # 动漫或无季号命名兜底：只要看起来像是有集号的，统统按第一季算
+                if re.search(r'(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话]', parse_name, re.IGNORECASE):
+                    extracted_season = 1
+            
+            if extracted_season is not None:
+                self.forced_season = extracted_season
+                logger.info(f"  ➜ [动态修正] 从物理文件名 '{parse_name}' 中提取到季号 S{extracted_season:02d}，正在重新评估目标分类...")
+                new_target_cid = self.get_target_cid()
+                if new_target_cid and str(new_target_cid) != str(target_cid):
+                    logger.info(f"  ➜ [动态修正] 目标分类已修正 (成功触发连载状态检查)")
+                    target_cid = new_target_cid
+                    # 同步更新 dest_parent_cid，防止后面创建目录时用错
+                    dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
 
         # =================================================================
         # 1. 拦截合集包 (Collection Breakdown) - 仅限单项传入时触发
