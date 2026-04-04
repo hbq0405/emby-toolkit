@@ -1,250 +1,345 @@
 <template>
   <n-layout content-style="padding: 24px;">
-  <div class="media-edit-page">
-    <n-page-header @back="goBack">
-      <template #title>
-        手动编辑媒体演员信息
-      </template>
-    </n-page-header>
+    <div class="media-edit-page">
+      <n-page-header @back="goBack">
+        <template #title>
+          手动编辑媒体信息
+        </template>
+      </n-page-header>
 
-    <n-divider />
+      <n-divider />
 
-    <div v-if="isLoading" class="loading-container">
-      <n-spin size="large" />
-      <p style="text-align: center; margin-top: 10px;">正在加载媒体详情...</p>
-    </div>
+      <div v-if="isLoading" class="loading-container">
+        <n-spin size="large" />
+        <p style="text-align: center; margin-top: 10px;">正在加载媒体详情...</p>
+      </div>
 
-    <div v-else-if="itemDetails && itemDetails.item_name">
-      <n-grid cols="1 l:4" :x-gap="24" responsive="screen">
-        <!-- 左侧信息栏 (海报) -->
-        <n-grid-item span="1 l:1">
-          <n-space vertical :size="24">
-            <n-card :title="itemDetails.item_name" :bordered="false">
-              <template #cover>
-                <n-image
-                  :src="posterUrl"
-                  lazy
-                  object-fit="cover"
-                  class="media-poster"
+      <div v-else-if="itemDetails && itemDetails.item_name">
+        <n-grid cols="1 l:4" :x-gap="24" responsive="screen">
+          <!-- 左侧信息栏 (海报) -->
+          <n-grid-item span="1 l:1">
+            <n-space vertical :size="24">
+              <n-card :title="itemDetails.item_name" :bordered="false">
+                <template #cover>
+                  <n-image
+                    :src="posterUrl"
+                    lazy
+                    object-fit="cover"
+                    class="media-poster"
+                    :fallback-src="fallbackAvatar"
+                  >
+                    <template #placeholder>
+                      <div class="poster-placeholder">
+                        <n-icon :component="ImageIcon" size="48" :depth="3" />
+                      </div>
+                    </template>
+                  </n-image>
+                </template>
+                <template #header-extra>
+                  <n-tag :type="itemDetails.item_type === 'Movie' ? 'info' : 'success'" size="small" round>
+                    {{ itemTypeInChinese }}
+                  </n-tag>
+                </template>
+                <n-descriptions label-placement="left" bordered :column="1" size="small">
+                  <n-descriptions-item label="Emby ItemID">
+                    {{ itemDetails.item_id }}
+                  </n-descriptions-item>
+                  <n-descriptions-item label="原始记录评分" v-if="itemDetails.original_score !== null && itemDetails.original_score !== undefined">
+                    <n-tag type="warning" size="small">{{ itemDetails.original_score }}</n-tag>
+                  </n-descriptions-item>
+                  <n-descriptions-item label="待复核原因" v-if="itemDetails.review_reason">
+                    <n-text type="error">{{ itemDetails.review_reason }}</n-text>
+                  </n-descriptions-item>
+                </n-descriptions>
+                
+                <!-- ★★★ 新增：编辑图像按钮 ★★★ -->
+                <template #action>
+                  <n-button block type="primary" secondary @click="showImageEditor = true">
+                    <template #icon>
+                      <n-icon :component="ImagesIcon" />
+                    </template>
+                    编辑图像
+                  </n-button>
+                </template>
+              </n-card>
+
+              <n-card title="辅助工具" :bordered="false">
+                <n-space vertical>
+                  <n-form-item label="数据操作" label-placement="top">
+                    <n-space>
+                      <n-button-group>
+                      <n-button 
+                        tag="a" 
+                        :href="searchLinks.baidu"
+                        target="_blank" 
+                        :disabled="!searchLinks.baidu"
+                        :loading="isLoading"
+                      >
+                        百度搜索
+                      </n-button>
+                      <n-dropdown
+                        trigger="click"
+                        :options="searchDropdownOptions"
+                        @select="handleSearchDropdownSelect"
+                      >
+                        <n-button :disabled="searchDropdownOptions.length === 0">
+                          <template #icon>
+                            <n-icon :component="ChevronDownIcon" />
+                          </template>
+                        </n-button>
+                      </n-dropdown>
+                    </n-button-group>
+                      <n-button
+                        type="info"
+                        @click="translateAllFields" 
+                        :loading="isTranslating" 
+                        :disabled="isLoading"
+                      >
+                        一键翻译
+                      </n-button>
+                    </n-space>
+                  </n-form-item>
+                </n-space>
+              </n-card>
+            </n-space>
+          </n-grid-item>
+
+          <!-- 右侧演员列表 -->
+          <n-grid-item span="1 l:3">
+            <n-card :bordered="false" class="dashboard-card">
+              <template #header>
+                <span class="card-title">演员列表</span>
+              </template>
+              <n-form label-placement="left" label-width="auto">
+                <draggable
+                  v-model="editableCast"
+                  tag="div"
+                  item-key="_temp_id"
+                  class="actor-grid-container"
+                  handle=".drag-handle"
+                  animation="300"
                 >
-                  <template #placeholder>
-                    <div class="poster-placeholder">
-                      <n-icon :component="ImageIcon" size="48" :depth="3" />
+                  <template #item="{ element: actor, index }">
+                    <div class="actor-card-header">
+                      <n-card size="small" class="dashboard-card actor-edit-card" content-style="padding: 16px;">
+                        <template #header>
+                          <div class="actor-card-header">
+                            <n-avatar
+                              round
+                              size="small"
+                              :style="{ backgroundColor: getAvatarColor(actor.name) }"
+                            >
+                              {{ index + 1 }}
+                            </n-avatar>
+                            <span class="actor-name-title" :title="actor.name">{{ actor.name || '新演员' }}</span>
+                          </div>
+                        </template>
+                        <template #header-extra>
+                          <n-space>
+                            <n-button text class="drag-handle">
+                              <n-icon :component="DragHandleIcon" />
+                            </n-button>
+                            <n-popconfirm @positive-click="removeActor(index)">
+                              <template #trigger>
+                                <n-button text type="error">
+                                  <n-icon :component="TrashIcon" />
+                                </n-button>
+                              </template>
+                              确定要删除演员 “{{ actor.name || '新演员' }}” 吗？
+                            </n-popconfirm>
+                          </n-space>
+                        </template>
+                        
+                        <div class="actor-card-content">
+                          <n-image
+                            :src="getActorImageUrl(actor)"
+                            lazy
+                            object-fit="cover"
+                            class="actor-avatar-image"
+                          >
+                            <template #placeholder>
+                              <div class="avatar-placeholder">
+                                <n-icon :component="PersonIcon" size="24" :depth="3" />
+                              </div>
+                            </template>
+                          </n-image>
+                          
+                          <div class="actor-inputs">
+                            <n-form-item label="演员" label-placement="left" label-width="40" class="compact-form-item">
+                              <n-input v-model:value="actor.name" placeholder="演员名" size="small" style="width: 100%;" />
+                            </n-form-item>
+                            <n-form-item label="角色" label-placement="left" label-width="40" class="compact-form-item">
+                              <n-input v-model:value="actor.role" placeholder="角色名" size="small" style="width: 100%;" />
+                            </n-form-item>
+                          </div>
+                        </div>
+                      </n-card>
                     </div>
                   </template>
-                </n-image>
-              </template>
-              <template #header-extra>
-                <n-tag :type="itemDetails.item_type === 'Movie' ? 'info' : 'success'" size="small" round>
-                  {{ itemTypeInChinese }}
-                </n-tag>
-              </template>
-              <n-descriptions label-placement="left" bordered :column="1" size="small">
-                <n-descriptions-item label="Emby ItemID">
-                  {{ itemDetails.item_id }}
-                </n-descriptions-item>
-                <n-descriptions-item label="原始记录评分" v-if="itemDetails.original_score !== null && itemDetails.original_score !== undefined">
-                  <n-tag type="warning" size="small">{{ itemDetails.original_score }}</n-tag>
-                </n-descriptions-item>
-                <n-descriptions-item label="待复核原因" v-if="itemDetails.review_reason">
-                  <n-text type="error">{{ itemDetails.review_reason }}</n-text>
-                </n-descriptions-item>
-              </n-descriptions>
+                </draggable>
+              </n-form>
+              
+              <div class="sticky-actions">
+                <n-space>
+                  <n-button @click="showAddActorModal = true" type="default" secondary>
+                    <template #icon>
+                      <n-icon :component="AddIcon" />
+                    </template>
+                    添加演员
+                  </n-button>
+                  <n-button @click="goBack">返回列表</n-button>
+                  <n-button type="primary" @click="handleSaveChanges" :loading="isSaving">
+                    保存修改
+                  </n-button>
+                </n-space>
+              </div>
             </n-card>
+          </n-grid-item>
+        </n-grid>
+      </div>
 
-            <n-card title="辅助工具" :bordered="false">
-              <n-space vertical>
-                <n-form-item label="数据操作" label-placement="top">
-                  <n-space>
-                    <n-button-group>
-                    <n-button 
-                      tag="a" 
-                      :href="searchLinks.baidu"
-                      target="_blank" 
-                      :disabled="!searchLinks.baidu"
-                      :loading="isLoading"
-                    >
-                      百度搜索
-                    </n-button>
-                    <n-dropdown
-                      trigger="click"
-                      :options="searchDropdownOptions"
-                      @select="handleSearchDropdownSelect"
-                    >
-                      <n-button :disabled="searchDropdownOptions.length === 0">
-                        <template #icon>
-                          <n-icon :component="ChevronDownIcon" />
-                        </template>
-                      </n-button>
-                    </n-dropdown>
-                  </n-button-group>
-                    <n-button
-                      type="info"
-                      @click="translateAllFields" 
-                      :loading="isTranslating" 
-                      :disabled="isLoading"
-                    >
-                      一键翻译
-                    </n-button>
-                  </n-space>
-                </n-form-item>
-              </n-space>
-            </n-card>
-          </n-space>
-        </n-grid-item>
+      <div v-else class="error-container">
+        <n-alert title="错误" type="error">
+          无法加载媒体详情，或指定的媒体项不存在。请检查后端日志或确认该媒体项有效。
+          <n-button text @click="goBack" style="margin-left: 10px;">返回列表</n-button>
+        </n-alert>
+      </div>
+    </div>
 
-        <!-- 右侧演员列表 -->
-        <n-grid-item span="1 l:3">
-          <n-card :bordered="false" class="dashboard-card">
-            <template #header>
-              <span class="card-title">演员列表</span>
+    <!-- 搜索演员模态框 -->
+    <n-modal
+      v-model:show="showAddActorModal"
+      preset="card"
+      style="width: 600px"
+      title="搜索并添加演员"
+      :bordered="false"
+      size="huge"
+      :segmented="{ content: 'soft', footer: 'soft' }"
+    >
+      <n-input
+        v-model:value="actorSearchQuery"
+        placeholder="输入演员名进行搜索..."
+        clearable
+        @update:value="debouncedSearchActors"
+      />
+      <n-spin :show="isSearchingActors" style="margin-top: 20px; min-height: 150px;">
+        <n-list hoverable clickable>
+          <n-list-item v-for="actor in actorSearchResults" :key="actor.id" @click="selectActor(actor)">
+            <template #prefix>
+              <n-avatar
+                :src="getTMDbImageUrl(actor.profile_path, 'w92')"
+                :fallback-src="fallbackAvatar"
+                size="large"
+                object-fit="cover"
+              />
             </template>
-            <n-form label-placement="left" label-width="auto">
-              <draggable
-                v-model="editableCast"
-                tag="div"
-                item-key="_temp_id"
-                class="actor-grid-container"
-                handle=".drag-handle"
-                animation="300"
+            <n-thing :title="actor.name">
+              <template #description>
+                <n-text depth="3" v-if="actor.known_for">
+                  代表作: {{ actor.known_for }}
+                </n-text>
+                <n-text depth="3" v-else>
+                  {{ actor.department || '表演' }}
+                </n-text>
+              </template>
+            </n-thing>
+            <template #suffix>
+              <n-button size="small" type="primary">选择</n-button>
+            </template>
+          </n-list-item>
+        </n-list>
+        <n-empty v-if="!isSearchingActors && actorSearchResults.length === 0 && actorSearchQuery" description="未找到相关人物" style="padding: 20px 0;" />
+      </n-spin>
+    </n-modal>
+
+    <!-- ★★★ 新增：图像编辑模态框 ★★★ -->
+    <n-modal
+      v-model:show="showImageEditor"
+      preset="card"
+      style="width: 900px; max-width: 95vw;"
+      title="编辑图像"
+      :bordered="false"
+      size="huge"
+    >
+      <n-grid cols="1 s:2 m:4" :x-gap="16" :y-gap="16">
+        <n-grid-item v-for="img in imageTypes" :key="img.type">
+          <n-card class="image-edit-card" :bordered="true" size="small">
+            <div class="image-wrapper" :style="{ aspectRatio: img.aspect }">
+              <n-image
+                :src="getDynamicImageUrl(img.embyType, img.type)"
+                lazy
+                object-fit="contain"
+                class="full-image"
+                :fallback-src="fallbackAvatar"
               >
-                <template #item="{ element: actor, index }">
-                  <div class="actor-card-header">
-                    <n-card size="small" class="dashboard-card actor-edit-card" content-style="padding: 16px;">
-                      <template #header>
-                        <div class="actor-card-header">
-                          <n-avatar
-                            round
-                            size="small"
-                            :style="{ backgroundColor: getAvatarColor(actor.name) }"
-                          >
-                            {{ index + 1 }}
-                          </n-avatar>
-                          <span class="actor-name-title" :title="actor.name">{{ actor.name || '新演员' }}</span>
-                        </div>
-                      </template>
-                      <template #header-extra>
-                        <n-space>
-                          <n-button text class="drag-handle">
-                            <n-icon :component="DragHandleIcon" />
-                          </n-button>
-                          <n-popconfirm @positive-click="removeActor(index)">
-                            <template #trigger>
-                              <n-button text type="error">
-                                <n-icon :component="TrashIcon" />
-                              </n-button>
-                            </template>
-                            确定要删除演员 “{{ actor.name || '新演员' }}” 吗？
-                          </n-popconfirm>
-                        </n-space>
-                      </template>
-                      
-                      <div class="actor-card-content">
-                        <n-image
-                          :src="getActorImageUrl(actor)"
-                          lazy
-                          object-fit="cover"
-                          class="actor-avatar-image"
-                        >
-                          <template #placeholder>
-                            <div class="avatar-placeholder">
-                              <n-icon :component="PersonIcon" size="24" :depth="3" />
-                            </div>
-                          </template>
-                        </n-image>
-                        
-                        <div class="actor-inputs">
-                          <n-form-item label="演员" label-placement="left" label-width="40" class="compact-form-item">
-                            <n-input v-model:value="actor.name" placeholder="演员名" size="small" style="width: 100%;" />
-                          </n-form-item>
-                          <n-form-item label="角色" label-placement="left" label-width="40" class="compact-form-item">
-                            <n-input v-model:value="actor.role" placeholder="角色名" size="small" style="width: 100%;" />
-                          </n-form-item>
-                        </div>
-                      </div>
-                    </n-card>
+                <template #placeholder>
+                  <div class="image-placeholder">
+                    <n-icon :component="ImageIcon" size="32" :depth="3" />
+                    <span style="margin-top: 8px; color: #666;">{{ img.label }}</span>
                   </div>
                 </template>
-              </draggable>
-            </n-form>
-            
-            <div class="sticky-actions">
-              <n-space>
-                <n-button @click="showAddActorModal = true" type="default" secondary>
-                  <template #icon>
-                    <n-icon :component="AddIcon" />
-                  </template>
-                  添加演员
-                </n-button>
-                <n-button @click="goBack">返回列表</n-button>
-                <n-button type="primary" @click="handleSaveChanges" :loading="isSaving">
-                  保存修改
-                </n-button>
-              </n-space>
+              </n-image>
+              
+              <!-- 悬浮操作层 -->
+              <div class="image-overlay">
+                <n-space justify="center" align="center" style="height: 100%;">
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button circle type="primary" @click="triggerFileUpload(img.type)">
+                        <template #icon><n-icon :component="CloudUploadIcon" /></template>
+                      </n-button>
+                    </template>
+                    上传本地图片
+                  </n-tooltip>
+                  
+                  <n-tooltip trigger="hover">
+                    <template #trigger>
+                      <n-button circle type="info" @click="openUrlPrompt(img.type)">
+                        <template #icon><n-icon :component="LinkIcon" /></template>
+                      </n-button>
+                    </template>
+                    设置网络图片URL
+                  </n-tooltip>
+                </n-space>
+              </div>
+            </div>
+            <div style="text-align: center; margin-top: 8px; font-weight: bold;">
+              {{ img.label }}
             </div>
           </n-card>
         </n-grid-item>
       </n-grid>
-    </div>
 
-    <div v-else class="error-container">
-      <n-alert title="错误" type="error">
-        无法加载媒体详情，或指定的媒体项不存在。请检查后端日志或确认该媒体项有效。
-        <n-button text @click="goBack" style="margin-left: 10px;">返回列表</n-button>
-      </n-alert>
-    </div>
-  </div>
-  <n-modal
-    v-model:show="showAddActorModal"
-    preset="card"
-    style="width: 600px"
-    title="搜索并添加演员"
-    :bordered="false"
-    size="huge"
-    :segmented="{ content: 'soft', footer: 'soft' }"
-  >
-    <n-input
-      v-model:value="actorSearchQuery"
-      placeholder="输入演员名进行搜索..."
-      clearable
-      @update:value="debouncedSearchActors"
-    />
-    <n-spin :show="isSearchingActors" style="margin-top: 20px; min-height: 150px;">
-      <n-list hoverable clickable>
-        <n-list-item v-for="actor in actorSearchResults" :key="actor.id" @click="selectActor(actor)">
-          <template #prefix>
-            <n-avatar
-              :src="getTMDbImageUrl(actor.profile_path, 'w92')"
-              :fallback-src="fallbackAvatar"
-              size="large"
-              object-fit="cover"
-            />
-          </template>
-          <n-thing :title="actor.name">
-            <template #description>
-              <n-text depth="3" v-if="actor.known_for">
-                代表作: {{ actor.known_for }}
-              </n-text>
-              <n-text depth="3" v-else>
-                {{ actor.department || '表演' }}
-              </n-text>
-            </template>
-          </n-thing>
-          <template #suffix>
-            <n-button size="small" type="primary">选择</n-button>
-          </template>
-        </n-list-item>
-      </n-list>
-      <n-empty v-if="!isSearchingActors && actorSearchResults.length === 0 && actorSearchQuery" description="未找到相关人物" style="padding: 20px 0;" />
-    </n-spin>
-  </n-modal>
+      <!-- 隐藏的文件上传组件 -->
+      <input 
+        type="file" 
+        ref="fileInputRef" 
+        style="display: none" 
+        accept="image/jpeg, image/png, image/webp" 
+        @change="handleFileUpload"
+      >
+    </n-modal>
+
+    <!-- ★★★ 新增：输入图片URL模态框 ★★★ -->
+    <n-modal v-model:show="showUrlPrompt" preset="dialog" title="设置网络图片">
+      <n-input 
+        v-model:value="imageUrlInput" 
+        type="text" 
+        placeholder="请粘贴以 http/https 开头的图片直链..." 
+      />
+      <template #action>
+        <n-button @click="showUrlPrompt = false">取消</n-button>
+        <n-button type="primary" @click="submitUrlImage" :loading="isUploadingImage">确定</n-button>
+      </template>
+    </n-modal>
+
   </n-layout>
 </template>
 
 <script setup>
 import { ref, onMounted, watch, computed, nextTick } from 'vue';
 import draggable from 'vuedraggable';
-import { NIcon, NInput, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage, NModal, NList, NListItem, NThing, NEmpty, NButtonGroup, NDropdown } from 'naive-ui';
+import { NIcon, NInput, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage, NModal, NList, NListItem, NThing, NEmpty, NButtonGroup, NDropdown, NTooltip } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
 import axios from 'axios';
 import { NPageHeader, NDivider, NSpin, NCard, NDescriptions, NDescriptionsItem, NButton, NSpace, NAlert, useMessage } from 'naive-ui';
@@ -252,9 +347,12 @@ import {
   MoveOutline as DragHandleIcon,
   TrashOutline as TrashIcon,
   ImageOutline as ImageIcon,
+  ImagesOutline as ImagesIcon,
   PersonOutline as PersonIcon,
   AddOutline as AddIcon,
-  ChevronDownOutline as ChevronDownIcon 
+  ChevronDownOutline as ChevronDownIcon,
+  CloudUploadOutline as CloudUploadIcon,
+  LinkOutline as LinkIcon
 } from '@vicons/ionicons5';
 import { debounce } from 'lodash-es';
 
@@ -277,19 +375,114 @@ const actorSearchResults = ref([]);
 const isSearchingActors = ref(false);
 const fallbackAvatar = 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7';
 
-const posterUrl = computed(() => {
-  if (itemDetails.value?.item_id && itemDetails.value?.image_tag) {
-    return `/image_proxy/Items/${itemDetails.value.item_id}/Images/Primary?tag=${itemDetails.value.image_tag}&quality=90`;
-  }
-  return '';
+// ★★★ 图像编辑相关状态 ★★★
+const showImageEditor = ref(false);
+const showUrlPrompt = ref(false);
+const imageUrlInput = ref('');
+const currentEditImageType = ref('');
+const fileInputRef = ref(null);
+const isUploadingImage = ref(false);
+
+// 用于强制刷新图片的随机时间戳
+const imageRefreshTokens = ref({
+  poster: Date.now(),
+  clearlogo: Date.now(),
+  fanart: Date.now(),
+  landscape: Date.now()
 });
+
+const imageTypes = [
+  { type: 'poster', label: '海报 (Poster)', embyType: 'Primary', aspect: '2/3' },
+  { type: 'clearlogo', label: '标志 (Logo)', embyType: 'Logo', aspect: '16/9' },
+  { type: 'fanart', label: '艺术图 (Fanart)', embyType: 'Backdrop', aspect: '16/9' },
+  { type: 'landscape', label: '缩略图 (Landscape)', embyType: 'Thumb', aspect: '16/9' }
+];
+
+// 动态获取图片URL (带时间戳防缓存)
+const getDynamicImageUrl = (embyType, typeKey) => {
+  if (!itemDetails.value?.item_id) return '';
+  // 如果是 Thumb，Emby 有时没有 Thumb 会用 Backdrop 代替，这里统一请求
+  return `/image_proxy/Items/${itemDetails.value.item_id}/Images/${embyType}?quality=90&t=${imageRefreshTokens.value[typeKey]}`;
+};
+
+const posterUrl = computed(() => {
+  return getDynamicImageUrl('Primary', 'poster');
+});
+
+// ★★★ 图像上传逻辑 ★★★
+const triggerFileUpload = (type) => {
+  currentEditImageType.value = type;
+  if (fileInputRef.value) {
+    fileInputRef.value.click();
+  }
+};
+
+const handleFileUpload = async (event) => {
+  const file = event.target.files[0];
+  if (!file) return;
+
+  const formData = new FormData();
+  formData.append('image_type', currentEditImageType.value);
+  formData.append('file', file);
+
+  await uploadImagePayload(formData);
+  // 清空 input 以便下次选择同名文件
+  event.target.value = ''; 
+};
+
+const openUrlPrompt = (type) => {
+  currentEditImageType.value = type;
+  imageUrlInput.value = '';
+  showUrlPrompt.value = true;
+};
+
+const submitUrlImage = async () => {
+  if (!imageUrlInput.value.startsWith('http')) {
+    message.error("请输入有效的 http/https 图片链接");
+    return;
+  }
+  
+  const payload = {
+    image_type: currentEditImageType.value,
+    image_url: imageUrlInput.value
+  };
+  
+  await uploadImagePayload(payload);
+  showUrlPrompt.value = false;
+};
+
+const uploadImagePayload = async (payload) => {
+  isUploadingImage.value = true;
+  const loadingMsg = message.loading("正在替换并通知 Emby 刷新...", { duration: 0 });
+  
+  try {
+    const config = payload instanceof FormData 
+      ? { headers: { 'Content-Type': 'multipart/form-data' } } 
+      : {};
+      
+    const res = await axios.post(`/api/update_media_image/${itemId.value}`, payload, config);
+    message.success(res.data.message || "图片替换成功！");
+    
+    // 刷新对应图片的时间戳，强制前端重新加载图片
+    imageRefreshTokens.value[currentEditImageType.value] = Date.now();
+    
+  } catch (error) {
+    console.error("图片替换失败:", error);
+    message.error(error.response?.data?.error || "图片替换失败，请检查后端日志。");
+  } finally {
+    loadingMsg.destroy();
+    isUploadingImage.value = false;
+  }
+};
+// ★★★ 图像编辑逻辑结束 ★★★
+
 
 const searchDropdownOptions = computed(() => {
   const options = [];
   if (searchLinks.value.wikipedia) {
     options.push({
       label: 'Google (维基百科)',
-      key: 'wikipedia' // key 用于区分选项
+      key: 'wikipedia'
     });
   }
   if (searchLinks.value.google) {
@@ -298,11 +491,9 @@ const searchDropdownOptions = computed(() => {
       key: 'google'
     });
   }
-  // 你可以在这里添加更多选项，比如豆瓣搜索等
   return options;
 });
 
-// ▼▼▼ 【核心新增】处理下拉菜单点击事件的函数 ▼▼▼
 const handleSearchDropdownSelect = (key) => {
   const url = searchLinks.value[key];
   if (url) {
@@ -310,15 +501,10 @@ const handleSearchDropdownSelect = (key) => {
   }
 };
 
-
-
 const getActorImageUrl = (actor) => {
-  // 如果 actor.imageUrl 存在
   if (actor.imageUrl) {
-    // 将完整的外部图片URL进行编码，并作为参数传递给我们的新后端代理
     return `/api/image_proxy?url=${encodeURIComponent(actor.imageUrl)}`;
   }
-  // 如果不存在，返回空字符串
   return ''; 
 };
 
@@ -327,12 +513,9 @@ const itemTypeInChinese = computed(() => {
     return '';
   }
   switch (itemDetails.value.item_type) {
-    case 'Movie':
-      return '电影';
-    case 'Series':
-      return '电视剧';
-    default:
-      return itemDetails.value.item_type;
+    case 'Movie': return '电影';
+    case 'Series': return '电视剧';
+    default: return itemDetails.value.item_type;
   }
 });
 
@@ -375,7 +558,6 @@ const searchActors = async () => {
   }
   isSearchingActors.value = true;
   try {
-    // 调用后端 /api/custom_collections/config/tmdb_search_persons 接口
     const response = await axios.get('/api/custom_collections/config/tmdb_search_persons', {
       params: { q: actorSearchQuery.value }
     });
@@ -388,41 +570,33 @@ const searchActors = async () => {
   }
 };
 
-// 使用防抖来避免过于频繁的API请求
 const debouncedSearchActors = debounce(searchActors, 300);
 
-// ▼▼▼ 新增：选择一个演员并添加到列表的逻辑 ▼▼▼
 const selectActor = (actor) => {
-  // 检查演员是否已存在
   if (editableCast.value.some(a => a.tmdbId === actor.id)) {
     message.warning(`演员 "${actor.name}" 已经在列表中了。`);
     return;
   }
 
-  // 构建新的演员对象
   const newActor = {
     tmdbId: actor.id,
     name: actor.name,
-    role: '', // 角色名留空让用户填写
-    imageUrl: getTMDbImageUrl(actor.profile_path), // 直接使用TMDb的图片
-    emby_person_id: null, // 新增的演员没有emby person id
+    role: '',
+    imageUrl: getTMDbImageUrl(actor.profile_path),
+    emby_person_id: null,
     _temp_id: `new-actor-${Date.now()}`
   };
 
-  // 添加到列表
   editableCast.value.push(newActor);
   message.success(`已添加演员 "${actor.name}"，请为他/她填写角色名。`);
 
-  // 关闭模态框并清空搜索
   showAddActorModal.value = false;
   actorSearchQuery.value = '';
   actorSearchResults.value = [];
 };
 
 const translateAllFields = async () => {
-  // ...
   try {
-    // 【★★★ 构建包含所有上下文的最终 Payload ★★★】
     const payload = { 
       cast: editableCast.value,
       title: itemDetails.value.item_name,
@@ -453,7 +627,6 @@ const fetchMediaDetails = async () => {
     const response = await axios.get(`/api/media_for_editing/${itemId.value}`);
     itemDetails.value = response.data;
 
-    // ▼▼▼ 现在会接收一个包含多个链接的对象 ▼▼▼
     if (response.data && response.data.search_links) {
       searchLinks.value = response.data.search_links;
     }
@@ -470,7 +643,6 @@ onMounted(() => {
   itemId.value = route.params.itemId;
   
   if (itemId.value) {
-    console.log(`准备为 Item ID: ${itemId.value} 获取详情...`);
     fetchMediaDetails();
   } else {
     message.error("未提供媒体项ID！");
@@ -486,16 +658,13 @@ const handleSaveChanges = async () => {
   if (!itemDetails.value?.item_id) return;
   isSaving.value = true;
   try {
-    // 等待任何可能的输入框更新完成
     await nextTick();
 
-    // ★★★ 核心修复：明确构建发送到后端的演员对象结构 ★★★
     const castPayload = editableCast.value.map(actor => {
-      // 从前端的 actor 对象中提取需要的数据，并使用后端期望的键名
       return {
-        tmdbId: actor.tmdbId, // 确保发送 tmdbId
-        name: actor.name,     // 发送 name
-        role: actor.role,      // 发送 role
+        tmdbId: actor.tmdbId,
+        name: actor.name,
+        role: actor.role,
         emby_person_id: actor.emby_person_id
       };
     });
@@ -505,14 +674,9 @@ const handleSaveChanges = async () => {
       item_name: itemDetails.value.item_name,
     };
     
-    // (可选) 在发送前打印最终的 payload，用于调试
-    console.log("----------- [最终发送到后端的数据] -----------");
-    console.log(JSON.stringify(payload, null, 2));
-
     await axios.post(`/api/update_media_cast_sa/${itemDetails.value.item_id}`, payload);
     
     message.success("修改已保存，Emby将自动刷新。");
-    // 延迟一小段时间再返回，给用户反馈时间
     setTimeout(() => {
       goBack();
     }, 1500);
@@ -561,21 +725,10 @@ const handleSaveChanges = async () => {
   grid-template-columns: repeat(1, 1fr);
   gap: 16px;
 }
-/* ★★★ START: 核心修改 - 移除 2xl 的 5 列规则 ★★★ */
-@media (min-width: 640px) { /* s */
-  .actor-grid-container { grid-template-columns: repeat(2, 1fr); }
-}
-@media (min-width: 768px) { /* m */
-  .actor-grid-container { grid-template-columns: repeat(2, 1fr); }
-}
-@media (min-width: 1024px) { /* l */
-  .actor-grid-container { grid-template-columns: repeat(3, 1fr); }
-}
-@media (min-width: 1280px) { /* xl */
-  .actor-grid-container { grid-template-columns: repeat(4, 1fr); }
-}
-/* 移除了针对 1536px 以上屏幕的 5 列规则 */
-/* ★★★ END: 核心修改 ★★★ */
+@media (min-width: 640px) { .actor-grid-container { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 768px) { .actor-grid-container { grid-template-columns: repeat(2, 1fr); } }
+@media (min-width: 1024px) { .actor-grid-container { grid-template-columns: repeat(3, 1fr); } }
+@media (min-width: 1280px) { .actor-grid-container { grid-template-columns: repeat(4, 1fr); } }
 
 .actor-edit-card:hover {
   transform: translateY(-4px);
@@ -653,5 +806,54 @@ const handleSaveChanges = async () => {
   transform: rotate(2deg);
   box-shadow: 0 10px 20px rgba(0,0,0,0.2);
   z-index: 99;
+}
+
+/* ★★★ 图像编辑相关样式 ★★★ */
+.image-edit-card {
+  background-color: var(--n-color-modal);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.image-wrapper {
+  position: relative;
+  width: 100%;
+  background-color: #1a1a1a; /* 深色背景衬托图片 */
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.full-image {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.image-placeholder {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  background-color: #2a2a2a;
+}
+
+.image-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.6);
+  opacity: 0;
+  transition: opacity 0.3s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.image-wrapper:hover .image-overlay {
+  opacity: 1;
 }
 </style>

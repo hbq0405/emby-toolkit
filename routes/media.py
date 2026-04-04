@@ -701,3 +701,53 @@ def clear_tagging_now():
         rating_filters=rating_filters
     )
     return jsonify({"message": "批量移除任务已启动"})
+
+# ✨✨✨ 手动替换媒体图片 (海报/Logo/背景) ✨✨✨
+@media_api_bp.route('/update_media_image/<item_id>', methods=['POST'])
+@admin_required
+@processor_ready_required
+def api_update_media_image(item_id):
+    """
+    接收前端传来的图片 URL 或 图片文件，直接覆盖物理文件并刷新 Emby。
+    支持 multipart/form-data (文件上传) 或 application/json (URL)。
+    """
+    try:
+        image_type = None
+        image_url = None
+        image_bytes = None
+
+        # 1. 解析请求数据 (兼容 JSON 和 FormData)
+        if request.is_json:
+            data = request.json
+            image_type = data.get('image_type')
+            image_url = data.get('image_url')
+        else:
+            image_type = request.form.get('image_type')
+            image_url = request.form.get('image_url')
+            file = request.files.get('file')
+            if file and file.filename:
+                image_bytes = file.read()
+
+        # 2. 基础校验
+        if not image_type:
+            return jsonify({"error": "缺少 image_type 参数 (可选值: poster, clearlogo, fanart, landscape)"}), 400
+            
+        if not image_url and not image_bytes:
+            return jsonify({"error": "必须提供 image_url 或上传 file"}), 400
+
+        # 3. 调用核心处理器执行物理替换
+        success, message = extensions.media_processor_instance.update_media_image_manually(
+            item_id=item_id,
+            image_type=image_type,
+            image_url=image_url,
+            image_bytes=image_bytes
+        )
+
+        if success:
+            return jsonify({"message": message}), 200
+        else:
+            return jsonify({"error": message}), 500
+
+    except Exception as e:
+        logger.error(f"API /update_media_image 发生错误: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500

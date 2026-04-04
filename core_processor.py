@@ -3930,6 +3930,75 @@ class MediaProcessor:
             logger.error(f"{log_prefix} 发生未知错误: {e}", exc_info=True)
             return False
 
+    # 手动替换媒体图片 (物理覆盖)
+    def update_media_image_manually(self, item_id: str, image_type: str, image_url: Optional[str] = None, image_bytes: Optional[bytes] = None) -> Tuple[bool, str]:
+        """
+        手动更新媒体图片。直接覆盖物理文件，并通知 Emby 刷新。
+        支持传入图片直链 (image_url) 或 二进制文件流 (image_bytes)。
+        """
+        # 1. 校验图片类型和对应的文件名
+        valid_types = {
+            'poster': 'poster.jpg',
+            'clearlogo': 'clearlogo.png',
+            'fanart': 'fanart.jpg',
+            'landscape': 'landscape.jpg'
+        }
+        if image_type not in valid_types:
+            return False, f"不支持的图片类型: {image_type}"
+
+        try:
+            # 2. 获取媒体的物理路径
+            item_details = emby.get_emby_item_details(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
+            if not item_details or not item_details.get("Path"):
+                return False, "无法获取该媒体的物理路径，请确保文件存在。"
+
+            media_path = item_details.get("Path")
+            target_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
+            
+            # 智能判断：如果是剧集，且当前在 Season 文件夹内，需要退回上一级根目录
+            import re
+            if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(target_dir), re.IGNORECASE):
+                target_dir = os.path.dirname(target_dir)
+
+            target_file_path = os.path.join(target_dir, valid_types[image_type])
+            logger.info(f"  ➜ [手动换图] 准备覆盖物理文件: {target_file_path}")
+
+            # 3. 保存图片
+            if image_bytes:
+                # 模式 A: 直接保存上传的文件流
+                with open(target_file_path, 'wb') as f:
+                    f.write(image_bytes)
+                logger.info(f"  ➜ [手动换图] 成功保存上传的图片流。")
+                
+            elif image_url:
+                # 模式 B: 下载网络图片
+                import requests
+                proxies = config_manager.get_proxies_for_requests()
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+                resp = requests.get(image_url, timeout=15, proxies=proxies, headers=headers)
+                resp.raise_for_status()
+                with open(target_file_path, 'wb') as f:
+                    f.write(resp.content)
+                logger.info(f"  ➜ [手动换图] 成功从 URL 下载并保存图片。")
+            else:
+                return False, "未提供图片 URL 或文件数据。"
+
+            # 4. 通知 Emby 刷新 (局部刷新，仅让 Emby 重新读取本地文件)
+            emby.refresh_emby_item_metadata(
+                item_emby_id=item_id,
+                emby_server_url=self.emby_url,
+                emby_api_key=self.emby_api_key,
+                user_id_for_ops=self.emby_user_id,
+                replace_all_metadata_param=False, # ★ 设为 False，防止覆盖其他元数据，只扫本地图
+                item_name_for_log=item_details.get("Name", "未知项目")
+            )
+            
+            return True, f"{image_type} 替换成功！"
+
+        except Exception as e:
+            logger.error(f"  ➜ [手动换图] 失败: {e}", exc_info=True)
+            return False, f"替换失败: {str(e)}"
+
     # --- 备份元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str,
                        final_cast_override: Optional[List[Dict[str, Any]]] = None,
