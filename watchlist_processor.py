@@ -569,7 +569,11 @@ class WatchlistProcessor:
             season_num = season_details.get("season_number")
             if season_num is None: continue
             
-        # ★★★ 4.5 新增：并发下载缺失的图片 & 补全 NFO (双模兼容) ★★★
+            # 👇 补回缺失的代码：提取该季的所有集并加入总列表
+            episodes = season_details.get("episodes", [])
+            all_tmdb_episodes.extend(episodes)
+            
+        # ★★★ 4.5 新增：并发下载缺失的图片 & 补全 NFO ★★★
         try:
             import extensions
             if extensions.media_processor_instance:
