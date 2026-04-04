@@ -252,73 +252,68 @@
       </n-spin>
     </n-modal>
 
-    <!-- ★★★ 新增：图像编辑模态框 ★★★ -->
+    <!-- ★★★ 图像编辑模态框 (Emby 原生风格) ★★★ -->
     <n-modal
       v-model:show="showImageEditor"
       preset="card"
-      style="width: 900px; max-width: 95vw;"
+      style="width: 1000px; max-width: 95vw; background-color: #202020;"
       title="编辑图像"
       :bordered="false"
       size="huge"
     >
-      <n-grid cols="1 s:2 m:4" :x-gap="16" :y-gap="16">
-        <n-grid-item v-for="img in imageTypes" :key="img.type">
-          <n-card class="image-edit-card" :bordered="true" size="small">
-            <div class="image-wrapper" :style="{ aspectRatio: img.aspect }">
-              <n-image
-                :src="getDynamicImageUrl(img.embyType, img.type)"
-                lazy
-                object-fit="contain"
-                class="full-image"
-                :fallback-src="fallbackAvatar"
-              >
-                <template #placeholder>
-                  <div class="image-placeholder">
-                    <n-icon :component="ImageIcon" size="32" :depth="3" />
-                    <span style="margin-top: 8px; color: #666;">{{ img.label }}</span>
-                  </div>
+      <div class="emby-image-grid">
+        <div v-for="img in imageTypes" :key="img.type" class="emby-image-card">
+          <!-- 图片展示区 -->
+          <div class="emby-card-image-container" :style="{ aspectRatio: img.aspect }">
+            <n-image
+              :src="getDynamicImageUrl(img.embyType, img.type)"
+              lazy
+              object-fit="contain"
+              class="full-image"
+              :fallback-src="fallbackAvatar"
+            >
+              <template #placeholder>
+                <div class="image-placeholder">
+                  <n-icon :component="ImageIcon" size="32" :depth="3" />
+                </div>
+              </template>
+            </n-image>
+          </div>
+          
+          <!-- 信息与操作区 -->
+          <div class="emby-card-footer">
+            <div class="emby-card-title">{{ img.label }}</div>
+            <div class="emby-card-actions">
+              <n-tooltip trigger="hover" placement="bottom">
+                <template #trigger>
+                  <n-button text class="emby-action-btn" @click="openTmdbSelector(img.type, img.tmdbKey)">
+                    <n-icon :component="SearchIcon" size="20" />
+                  </n-button>
                 </template>
-              </n-image>
-              
-              <!-- 悬浮操作层 -->
-              <div class="image-overlay">
-                <n-space justify="center" align="center" style="height: 100%;">
-                  <!-- 新增：TMDb 搜索按钮 -->
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-button circle type="warning" @click="openTmdbSelector(img.type, img.tmdbKey)">
-                        <template #icon><n-icon :component="SearchIcon" /></template>
-                      </n-button>
-                    </template>
-                    从 TMDb 搜索备选图
-                  </n-tooltip>
+                搜索新图像
+              </n-tooltip>
 
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-button circle type="primary" @click="triggerFileUpload(img.type)">
-                        <template #icon><n-icon :component="CloudUploadIcon" /></template>
-                      </n-button>
-                    </template>
-                    上传本地图片
-                  </n-tooltip>
-                  
-                  <n-tooltip trigger="hover">
-                    <template #trigger>
-                      <n-button circle type="info" @click="openUrlPrompt(img.type)">
-                        <template #icon><n-icon :component="LinkIcon" /></template>
-                      </n-button>
-                    </template>
-                    设置网络图片URL
-                  </n-tooltip>
-                </n-space>
-              </div>
+              <n-tooltip trigger="hover" placement="bottom">
+                <template #trigger>
+                  <n-button text class="emby-action-btn" @click="triggerFileUpload(img.type)">
+                    <n-icon :component="AddIcon" size="22" />
+                  </n-button>
+                </template>
+                选择图像文件
+              </n-tooltip>
+
+              <n-tooltip trigger="hover" placement="bottom">
+                <template #trigger>
+                  <n-button text class="emby-action-btn" @click="openUrlPrompt(img.type)">
+                    <n-icon :component="LinkIcon" size="20" />
+                  </n-button>
+                </template>
+                设置来自网址的图像
+              </n-tooltip>
             </div>
-            <div style="text-align: center; margin-top: 8px; font-weight: bold;">
-              {{ img.label }}
-            </div>
-          </n-card>
-        </n-grid-item>
-      </n-grid>
+          </div>
+        </div>
+      </div>
 
       <!-- 隐藏的文件上传组件 -->
       <input 
@@ -330,7 +325,55 @@
       >
     </n-modal>
 
-    <!-- ★★★ 新增：输入图片URL模态框 ★★★ -->
+    <!-- ★★★ TMDb 备选图模态框 (高密度小图流) ★★★ -->
+    <n-modal
+      v-model:show="showTmdbSelector"
+      preset="card"
+      style="width: 1200px; max-width: 95vw; background-color: #202020;"
+      :title="`搜索图像 - ${currentTmdbImageLabel}`"
+      :bordered="false"
+      size="huge"
+    >
+      <div v-if="isFetchingTmdbImages" class="tmdb-loading-state">
+        <n-spin size="large" />
+        <div style="margin-top: 16px; color: #aaa;">正在从 TheMovieDb 拉取数据...</div>
+      </div>
+      
+      <div v-else-if="currentTmdbImages.length === 0" class="tmdb-loading-state">
+        <n-empty description="未找到相关图像" />
+      </div>
+
+      <div v-else class="emby-tmdb-grid">
+        <div 
+          v-for="(img, index) in currentTmdbImages" 
+          :key="index" 
+          class="emby-tmdb-card" 
+          @click="selectTmdbImage(img.original)"
+        >
+          <div class="tmdb-card-image-wrapper" :style="{ aspectRatio: currentTmdbImageAspect }">
+            <n-image
+              :src="img.preview"
+              lazy
+              object-fit="cover"
+              preview-disabled
+              class="full-image"
+            />
+          </div>
+          <div class="tmdb-card-info">
+            <div class="tmdb-provider">TheMovieDb</div>
+            <div class="tmdb-meta">
+              <!-- 如果后端没传宽高，就只显示语言 -->
+              {{ img.width ? `${img.width}x${img.height} - ` : '' }}{{ formatLang(img.lang) }}
+            </div>
+            <div class="tmdb-score" v-if="img.vote_average">
+              ★ {{ img.vote_average.toFixed(1) }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </n-modal>
+
+    <!-- 输入图片URL模态框 -->
     <n-modal v-model:show="showUrlPrompt" preset="dialog" title="设置网络图片">
       <n-input 
         v-model:value="imageUrlInput" 
@@ -341,46 +384,6 @@
         <n-button @click="showUrlPrompt = false">取消</n-button>
         <n-button type="primary" @click="submitUrlImage" :loading="isUploadingImage">确定</n-button>
       </template>
-    </n-modal>
-    <!-- ★★★ 新增：TMDb 备选图模态框 ★★★ -->
-    <n-modal
-      v-model:show="showTmdbSelector"
-      preset="card"
-      style="width: 1000px; max-width: 95vw;"
-      :title="`选择 TMDb ${currentTmdbImageLabel}`"
-      :bordered="false"
-      size="huge"
-    >
-      <div v-if="isFetchingTmdbImages" style="text-align: center; padding: 40px;">
-        <n-spin size="large" />
-        <div style="margin-top: 10px;">正在从 TMDb 拉取高清图片...</div>
-      </div>
-      
-      <div v-else-if="currentTmdbImages.length === 0" style="text-align: center; padding: 40px;">
-        <n-empty description="TMDb 上没有找到该类型的图片" />
-      </div>
-
-      <n-grid v-else cols="2 s:3 m:4 l:5" :x-gap="12" :y-gap="12">
-        <n-grid-item v-for="(img, index) in currentTmdbImages" :key="index">
-          <n-card class="tmdb-image-card" hoverable @click="selectTmdbImage(img.original)">
-            <template #cover>
-              <n-image
-                :src="img.preview"
-                lazy
-                object-fit="contain"
-                preview-disabled
-                class="tmdb-grid-image"
-                :style="{ aspectRatio: currentTmdbImageAspect }"
-              />
-            </template>
-            <div class="tmdb-image-footer">
-              <n-tag size="small" :type="img.lang === 'zh' || img.lang === 'zh-CN' ? 'success' : 'default'">
-                {{ img.lang === 'null' ? '无文字' : img.lang }}
-              </n-tag>
-            </div>
-          </n-card>
-        </n-grid-item>
-      </n-grid>
     </n-modal>
   </n-layout>
 </template>
@@ -575,6 +578,16 @@ const selectTmdbImage = async (originalUrl) => {
   };
   
   await uploadImagePayload(payload);
+};
+
+// 格式化语言显示
+const formatLang = (langCode) => {
+  if (!langCode || langCode === 'null') return '未分级/无文字';
+  const langMap = {
+    'zh': 'Chinese', 'zh-CN': 'Chinese (Simplified)', 'zh-TW': 'Chinese (Traditional)',
+    'en': 'English', 'ja': 'Japanese', 'ko': 'Korean'
+  };
+  return langMap[langCode] || langCode.toUpperCase();
 };
 
 const searchDropdownOptions = computed(() => {
@@ -909,18 +922,31 @@ const handleSaveChanges = async () => {
 }
 
 /* ★★★ 图像编辑相关样式 ★★★ */
-.image-edit-card {
-  background-color: var(--n-color-modal);
-  border-radius: 8px;
-  overflow: hidden;
+.emby-image-grid {
+  display: grid;
+  /* 自适应列宽，最小 180px，保证一排能放下 4-5 个，不出现滚动条 */
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 20px;
+  padding: 10px 0;
 }
 
-.image-wrapper {
-  position: relative;
-  width: 100%;
-  background-color: #1a1a1a; /* 深色背景衬托图片 */
-  border-radius: 4px;
+.emby-image-card {
+  background-color: #333333;
+  border-radius: 6px;
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  transition: background-color 0.2s;
+}
+
+.emby-image-card:hover {
+  background-color: #3f3f3f;
+}
+
+.emby-card-image-container {
+  width: 100%;
+  background-color: #1a1a1a;
+  position: relative;
 }
 
 .full-image {
@@ -933,48 +959,120 @@ const handleSaveChanges = async () => {
   width: 100%;
   height: 100%;
   display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: #1a1a1a;
+}
+
+.emby-card-footer {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+}
+
+.emby-card-title {
+  font-size: 14px;
+  font-weight: 500;
+  color: #e0e0e0;
+}
+
+.emby-card-actions {
+  display: flex;
+  gap: 24px;
+  justify-content: center;
+  width: 100%;
+}
+
+.emby-action-btn {
+  color: #a0a0a0 !important;
+  transition: color 0.2s, transform 0.1s;
+}
+
+.emby-action-btn:hover {
+  color: #ffffff !important;
+  transform: scale(1.1);
+}
+
+/* =========================================================
+   ★★★ TMDb 搜索模态框 (高密度小图流) ★★★
+   ========================================================= */
+.tmdb-loading-state {
+  display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background-color: #2a2a2a;
+  min-height: 300px;
 }
 
-.image-overlay {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.6);
-  opacity: 0;
-  transition: opacity 0.3s ease;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+.emby-tmdb-grid {
+  display: grid;
+  /* 极高密度：最小 130px，大屏一行能塞 7-8 张图，专治巨物恐惧症 */
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 16px;
+  padding: 10px 0;
+  max-height: 65vh;
+  overflow-y: auto;
+  padding-right: 8px; /* 给滚动条留点呼吸空间 */
 }
 
-.image-wrapper:hover .image-overlay {
-  opacity: 1;
+/* 自定义滚动条使其更暗黑 */
+.emby-tmdb-grid::-webkit-scrollbar {
+  width: 8px;
+}
+.emby-tmdb-grid::-webkit-scrollbar-track {
+  background: #202020; 
+}
+.emby-tmdb-grid::-webkit-scrollbar-thumb {
+  background: #555; 
+  border-radius: 4px;
+}
+.emby-tmdb-grid::-webkit-scrollbar-thumb:hover {
+  background: #777; 
 }
 
-/* ★★★ TMDb 选图网格样式 ★★★ */
-.tmdb-image-card {
+.emby-tmdb-card {
   cursor: pointer;
-  transition: transform 0.2s;
-  background-color: #1a1a1a;
+  border-radius: 4px;
+  overflow: hidden;
+  background-color: transparent;
+  transition: transform 0.2s, box-shadow 0.2s;
 }
-.tmdb-image-card:hover {
-  transform: scale(1.05);
-  border-color: var(--n-primary-color);
+
+.emby-tmdb-card:hover {
+  transform: scale(1.03);
+  box-shadow: 0 0 0 2px var(--n-primary-color);
 }
-.tmdb-grid-image {
+
+.tmdb-card-image-wrapper {
   width: 100%;
-  display: block;
-  background-color: #000;
+  background-color: #111;
 }
-.tmdb-image-footer {
-  padding: 8px;
+
+.tmdb-card-info {
+  padding: 8px 4px;
   text-align: center;
-  background-color: var(--n-card-color);
+}
+
+.tmdb-provider {
+  font-size: 13px;
+  font-weight: 600;
+  color: #e0e0e0;
+  margin-bottom: 2px;
+}
+
+.tmdb-meta {
+  font-size: 11px;
+  color: #999;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.tmdb-score {
+  font-size: 11px;
+  color: #f2c94c;
+  margin-top: 2px;
 }
 </style>
