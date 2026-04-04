@@ -1968,35 +1968,51 @@ class SmartOrganizer:
                 e_only = match.group(4)
                 zh_ep = match.group(5)
                 if season_num is None:
-                    season_num = int(s) if s else 1
+                    season_num = int(s) if s else None # 暂不兜底为1，留给相对路径提取
                 if episode_num is None:
                     episode_num = int(e) if e else (int(ep_only) if ep_only else (int(e_only) if e_only else int(zh_ep)))
-            else:
-                # 2. ★ 纯数字兜底 (绝对安全：因为外层有 if is_tv 保护，绝不会把电影当成剧集)
+            
+            # 2. 从相对路径提取季号 (解决多季目录混合选择，且文件名为纯数字/EP01的情况)
+            if season_num is None:
+                rel_path = file_node.get('rel_path', '')
+                if rel_path:
+                    m_rel = re.search(r'(?:Season\s*|S|第)(\d{1,4})(?:季)?(?:/|$)', rel_path, re.IGNORECASE)
+                    if m_rel:
+                        season_num = int(m_rel.group(1))
+
+            # 3. ★ 纯数字兜底提取集号
+            if episode_num is None:
                 name_without_ext = original_name.rsplit('.', 1)[0]
-                
-                # 策略A：文件名就是纯数字 (如 "01.mp4")
                 if name_without_ext.isdigit():
-                    if episode_num is None: episode_num = int(name_without_ext)
+                    episode_num = int(name_without_ext)
                 else:
-                    # 策略B：剔除年份、分辨率等干扰项后，寻找独立的数字
                     clean_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', name_without_ext)
-                    
-                    # 优先找末尾的数字 (如 "白夜追凶 - 02")
                     end_match = re.search(r'(?:^|[ \.\-\_\[\(])(\d{1,4})(?:[\]\)]|\s*)$', clean_name)
                     if end_match:
-                        if episode_num is None: episode_num = int(end_match.group(1))
+                        episode_num = int(end_match.group(1))
                     else:
-                        # 找中间被明显分隔的数字 (如 "白夜追凶 02 1080p")
                         mid_match = re.search(r'(?:^|[ \-\_\[\(])(\d{1,4})(?:[ \.\-\_\]\)]|$)', clean_name)
                         if mid_match:
-                            if episode_num is None: episode_num = int(mid_match.group(1))
+                            episode_num = int(mid_match.group(1))
                 
-                if season_num is None:
-                    season_num = 1
+            # 4. 终极兜底
+            if season_num is None:
+                season_num = 1
 
         if hasattr(self, 'forced_season') and self.forced_season is not None:
-            season_num = int(self.forced_season)
+            # ★ 核心修复：防止批量整理时，第一个文件的季号污染后续所有不同季号的文件
+            if getattr(self, 'is_manual_correct', False):
+                season_num = int(self.forced_season)
+            else:
+                # 仅当文件名和相对路径中都没有明确的季号特征时，才使用外层推导的 forced_season 作为兜底
+                has_explicit_season = False
+                if re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)|Season\s*\d{1,4}|第\d{1,4}季', original_name, re.IGNORECASE):
+                    has_explicit_season = True
+                elif file_node.get('rel_path') and re.search(r'(?:Season\s*|S|第)\d{1,4}(?:季)?(?:/|$)', file_node.get('rel_path'), re.IGNORECASE):
+                    has_explicit_season = True
+                    
+                if not has_explicit_season:
+                    season_num = int(self.forced_season)
 
         # ★★★ 核心升级：直接调用统一乐高引擎生成文件名 ★★★
         default_format = ['title_zh', 'sep_dash_space', 'year', 'sep_middot_space', 's_e', 'sep_middot_space', 'resolution', 'sep_middot_space', 'codec', 'sep_middot_space', 'audio', 'sep_middot_space', 'group']
