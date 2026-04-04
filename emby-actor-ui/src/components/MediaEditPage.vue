@@ -252,11 +252,11 @@
       </n-spin>
     </n-modal>
 
-    <!-- ★★★ 图像编辑模态框 (Emby 原生风格) ★★★ -->
+    <!-- ★★★ 图像编辑模态框 (Emby 排版风格) ★★★ -->
     <n-modal
       v-model:show="showImageEditor"
       preset="card"
-      style="width: 1000px; max-width: 95vw; background-color: #202020;"
+      style="width: 1000px; max-width: 95vw;"
       title="编辑图像"
       :bordered="false"
       size="huge"
@@ -274,7 +274,7 @@
             >
               <template #placeholder>
                 <div class="image-placeholder">
-                  <n-icon :component="ImageIcon" size="32" :depth="3" />
+                  <n-icon :component="ImageIcon" size="40" :depth="3" />
                 </div>
               </template>
             </n-image>
@@ -287,7 +287,7 @@
               <n-tooltip trigger="hover" placement="bottom">
                 <template #trigger>
                   <n-button text class="emby-action-btn" @click="openTmdbSelector(img.type, img.tmdbKey)">
-                    <n-icon :component="SearchIcon" size="20" />
+                    <n-icon :component="SearchIcon" size="22" />
                   </n-button>
                 </template>
                 搜索新图像
@@ -296,19 +296,19 @@
               <n-tooltip trigger="hover" placement="bottom">
                 <template #trigger>
                   <n-button text class="emby-action-btn" @click="triggerFileUpload(img.type)">
-                    <n-icon :component="AddIcon" size="22" />
+                    <n-icon :component="CloudUploadIcon" size="24" />
                   </n-button>
                 </template>
-                选择图像文件
+                上传图像文件
               </n-tooltip>
 
               <n-tooltip trigger="hover" placement="bottom">
                 <template #trigger>
                   <n-button text class="emby-action-btn" @click="openUrlPrompt(img.type)">
-                    <n-icon :component="LinkIcon" size="20" />
+                    <n-icon :component="LinkIcon" size="22" />
                   </n-button>
                 </template>
-                设置来自网址的图像
+                设置网络图像
               </n-tooltip>
             </div>
           </div>
@@ -325,18 +325,18 @@
       >
     </n-modal>
 
-    <!-- ★★★ TMDb 备选图模态框 (高密度小图流) ★★★ -->
+    <!-- ★★★ TMDb 备选图模态框 (Emby 排版风格) ★★★ -->
     <n-modal
       v-model:show="showTmdbSelector"
       preset="card"
-      style="width: 1200px; max-width: 95vw; background-color: #202020;"
+      style="width: 1200px; max-width: 95vw;"
       :title="`搜索图像 - ${currentTmdbImageLabel}`"
       :bordered="false"
       size="huge"
     >
       <div v-if="isFetchingTmdbImages" class="tmdb-loading-state">
         <n-spin size="large" />
-        <div style="margin-top: 16px; color: #aaa;">正在从 TheMovieDb 拉取数据...</div>
+        <div style="margin-top: 16px; color: var(--n-text-color-3);">正在从 TheMovieDb 拉取数据...</div>
       </div>
       
       <div v-else-if="currentTmdbImages.length === 0" class="tmdb-loading-state">
@@ -362,11 +362,15 @@
           <div class="tmdb-card-info">
             <div class="tmdb-provider">TheMovieDb</div>
             <div class="tmdb-meta">
-              <!-- 如果后端没传宽高，就只显示语言 -->
-              {{ img.width ? `${img.width}x${img.height} - ` : '' }}{{ formatLang(img.lang) }}
+              {{ img.width ? `${img.width}×${img.height}` : '' }}
+              {{ img.width && img.lang ? ' - ' : '' }}
+              {{ formatLang(img.lang) }}
             </div>
             <div class="tmdb-score" v-if="img.vote_average">
-              ★ {{ img.vote_average.toFixed(1) }}
+              {{ img.vote_average.toFixed(1) }} - 共 {{ img.vote_count || 1 }} 票
+            </div>
+            <div class="tmdb-score" v-else>
+              未分级
             </div>
           </div>
         </div>
@@ -921,32 +925,40 @@ const handleSaveChanges = async () => {
   z-index: 99;
 }
 
-/* ★★★ 图像编辑相关样式 ★★★ */
+/* =========================================================
+   ★★★ 图像编辑模态框 (Emby 排版风格) ★★★
+   ========================================================= */
 .emby-image-grid {
   display: grid;
-  /* 自适应列宽，最小 180px，保证一排能放下 4-5 个，不出现滚动条 */
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 20px;
+  /* 适当放宽列宽，Emby的卡片比较宽大 */
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 24px;
   padding: 10px 0;
 }
 
 .emby-image-card {
-  background-color: #333333;
-  border-radius: 6px;
-  overflow: hidden;
+  /* 使用主题的卡片/嵌入背景色，而不是写死的颜色 */
+  background-color: var(--n-color-embedded);
+  border: 1px solid var(--n-border-color);
+  border-radius: 8px;
+  padding: 16px; /* Emby风格：图片外围有留白 */
   display: flex;
   flex-direction: column;
-  transition: background-color 0.2s;
+  transition: all 0.2s;
 }
 
 .emby-image-card:hover {
-  background-color: #3f3f3f;
+  box-shadow: var(--n-box-shadow-hover);
+  border-color: var(--n-primary-color);
 }
 
 .emby-card-image-container {
   width: 100%;
-  background-color: #1a1a1a;
+  background-color: var(--n-action-color); /* 占位背景色 */
+  border-radius: 4px;
+  overflow: hidden;
   position: relative;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
 }
 
 .full-image {
@@ -961,42 +973,43 @@ const handleSaveChanges = async () => {
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #1a1a1a;
+  background-color: var(--n-action-color);
 }
 
 .emby-card-footer {
-  padding: 12px;
+  margin-top: 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
 }
 
 .emby-card-title {
-  font-size: 14px;
-  font-weight: 500;
-  color: #e0e0e0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--n-text-color);
 }
 
 .emby-card-actions {
   display: flex;
-  gap: 24px;
+  gap: 20px;
   justify-content: center;
   width: 100%;
+  margin-top: 4px;
 }
 
 .emby-action-btn {
-  color: #a0a0a0 !important;
+  color: var(--n-text-color-3) !important;
   transition: color 0.2s, transform 0.1s;
 }
 
 .emby-action-btn:hover {
-  color: #ffffff !important;
+  color: var(--n-primary-color) !important;
   transform: scale(1.1);
 }
 
 /* =========================================================
-   ★★★ TMDb 搜索模态框 (高密度小图流) ★★★
+   ★★★ TMDb 搜索模态框 (Emby 排版风格) ★★★
    ========================================================= */
 .tmdb-loading-state {
   display: flex;
@@ -1008,71 +1021,73 @@ const handleSaveChanges = async () => {
 
 .emby-tmdb-grid {
   display: grid;
-  /* 极高密度：最小 130px，大屏一行能塞 7-8 张图，专治巨物恐惧症 */
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: 16px;
+  /* 调整密度：最小 160px，保证文字有足够空间居中显示 */
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 24px 16px; /* 上下间距大一点，给文字留空间 */
   padding: 10px 0;
   max-height: 65vh;
   overflow-y: auto;
-  padding-right: 8px; /* 给滚动条留点呼吸空间 */
+  padding-right: 8px;
 }
 
-/* 自定义滚动条使其更暗黑 */
+/* 滚动条适配主题 */
 .emby-tmdb-grid::-webkit-scrollbar {
-  width: 8px;
+  width: 6px;
 }
 .emby-tmdb-grid::-webkit-scrollbar-track {
-  background: #202020; 
+  background: transparent; 
 }
 .emby-tmdb-grid::-webkit-scrollbar-thumb {
-  background: #555; 
+  background: var(--n-border-color); 
   border-radius: 4px;
 }
 .emby-tmdb-grid::-webkit-scrollbar-thumb:hover {
-  background: #777; 
+  background: var(--n-text-color-3); 
 }
 
 .emby-tmdb-card {
   cursor: pointer;
-  border-radius: 4px;
-  overflow: hidden;
-  background-color: transparent;
-  transition: transform 0.2s, box-shadow 0.2s;
+  display: flex;
+  flex-direction: column;
+  transition: transform 0.2s;
 }
 
-.emby-tmdb-card:hover {
+.emby-tmdb-card:hover .tmdb-card-image-wrapper {
   transform: scale(1.03);
   box-shadow: 0 0 0 2px var(--n-primary-color);
 }
 
 .tmdb-card-image-wrapper {
   width: 100%;
-  background-color: #111;
+  background-color: var(--n-action-color);
+  border-radius: 6px;
+  overflow: hidden;
+  transition: all 0.2s;
+  box-shadow: var(--n-box-shadow);
 }
 
 .tmdb-card-info {
-  padding: 8px 4px;
+  margin-top: 10px;
   text-align: center;
+  line-height: 1.5;
 }
 
 .tmdb-provider {
   font-size: 13px;
-  font-weight: 600;
-  color: #e0e0e0;
-  margin-bottom: 2px;
+  font-weight: 500;
+  color: var(--n-text-color);
 }
 
 .tmdb-meta {
-  font-size: 11px;
-  color: #999;
+  font-size: 12px;
+  color: var(--n-text-color-3);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
 .tmdb-score {
-  font-size: 11px;
-  color: #f2c94c;
-  margin-top: 2px;
+  font-size: 12px;
+  color: var(--n-text-color-3);
 }
 </style>
