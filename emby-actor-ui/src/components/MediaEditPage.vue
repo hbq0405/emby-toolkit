@@ -970,11 +970,17 @@ const handleSaveChanges = async () => {
 .full-image {
   width: 100%;
   height: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+  display: block; /* ⚠️ 删掉原来的 display: flex */
 }
 
+/* ⚠️ 关键修复：穿透到内部真实的 img 标签，强制它 100% 宽高并 contain */
+.full-image :deep(img) {
+  width: 100%;
+  height: 100%;
+  object-fit: contain !important;
+}
+
+/* 修复占位符居中问题（因为去掉了 full-image 的 flex） */
 .image-placeholder {
   width: 100%;
   height: 100%;
@@ -982,6 +988,9 @@ const handleSaveChanges = async () => {
   align-items: center;
   justify-content: center;
   background-color: var(--n-action-color);
+  position: absolute;
+  top: 0;
+  left: 0;
 }
 
 .emby-card-footer {
