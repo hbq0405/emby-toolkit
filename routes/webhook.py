@@ -1187,12 +1187,12 @@ def emby_webhook():
         # --- 【拦截 3】如果是合集(BoxSet)，它没有物理路径，直接跳过库路径检查 ---
         if original_item_type == "BoxSet":
             logger.trace(f"  ➜ Webhook: 项目 '{original_item_name}' 是合集类型，跳过媒体库路径检查。")
-            # 注意：这里不 return，因为后面可能还有合集的处理逻辑
             library_info = None 
         else:
             # 正常的媒体项，才去获取所属库信息
             library_info = emby.get_library_root_for_item(
-                original_item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id
+                original_item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id, 
+                item_path=original_item_path # ★★★ 核心优化：直接把 Webhook 传来的 Path 喂进去
             )
         
         if library_info:

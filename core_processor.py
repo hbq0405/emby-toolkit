@@ -725,7 +725,7 @@ class MediaProcessor:
     def _refresh_lib_guid_map(self):
         """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""
         try:
-            # 调用 emby.py 中的函数
+            # 调用 emby.py 中的函数 (现在自带极速缓存)
             libs_data = emby.get_all_libraries_with_paths(self.emby_url, self.emby_api_key)
             new_map = {}
             for lib in libs_data:
@@ -737,7 +737,7 @@ class MediaProcessor:
             
             self._global_lib_guid_map = new_map
             self._last_lib_map_update = time.time()
-            logger.debug(f"  ➜ 已刷新媒体库 GUID 映射表，共加载 {len(new_map)} 个库。")
+            # logger.debug(f"  ➜ 已刷新媒体库 GUID 映射表，共加载 {len(new_map)} 个库。") # ★ 注释掉啰嗦日志
         except Exception as e:
             logger.error(f"刷新媒体库 GUID 映射失败: {e}")
 
@@ -2154,7 +2154,8 @@ class MediaProcessor:
                 item_id=emby_item_id,
                 base_url=self.emby_url,
                 api_key=self.emby_api_key,
-                user_id=self.emby_user_id
+                user_id=self.emby_user_id,
+                item_path=item_details.get("Path") # ★★★ 核心优化：直接把刚查到的 Path 喂进去
             )
             if lib_info and lib_info.get('Id'):
                 item_details['_SourceLibraryId'] = lib_info['Id']
@@ -2206,7 +2207,7 @@ class MediaProcessor:
                     formatted_metadata = payload
                     final_processed_cast = cast
                     is_webhook_feedback = True
-                    logger.info(f"  ➜ [极速回流] 命中本地数据库缓存，跳过 TMDb/AI/演员处理/NFO生成！")
+                    logger.info(f"  ➜ [webhook回流] 跳过 TMDb/AI/演员处理/NFO生成！")
 
             # ======================================================================
             # 传统重型处理流程 (手动入库 / 强制刷新 / 预处理遗漏)
@@ -2423,7 +2424,7 @@ class MediaProcessor:
                     item_name_for_log=item_name_for_log
                 )
             else:
-                logger.debug(f"  ➜ [极速回流] 直接进入数据库状态更新与质检环节...")
+                logger.debug(f"  ➜ [webhook回流] 开始质检...")
 
             # ======================================================================
             # 统一收尾流程 (更新数据库、质检、合集、通知)
@@ -2491,7 +2492,7 @@ class MediaProcessor:
                 )
 
                 if is_webhook_feedback:
-                    logger.info(f"  ➜ [极速回流] 基于缓存数据的实时复核评分: {processing_score:.2f}")
+                    logger.info(f"  ➜ [webhook回流] 基于缓存数据的实时复核评分: {processing_score:.2f}")
                 
                 raw_min_score = self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW)
                 min_score_for_review = float(raw_min_score)

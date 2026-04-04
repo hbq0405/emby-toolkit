@@ -22,6 +22,11 @@ from typing import Optional, List, Dict, Any, Generator, Tuple, Set, Callable
 import logging
 logger = logging.getLogger(__name__)
 
+# --- 媒体库路径内存缓存 (TTL: 5分钟) ---
+_library_paths_cache = None
+_library_paths_cache_time = 0
+CACHE_TTL = 300
+
 class EmbyAPIClient:
     """
     Emby API 客户端封装
@@ -1674,9 +1679,16 @@ def append_item_to_collection(collection_id: str, item_emby_id: str, base_url: s
         logger.error(f"  ➜ 向合集 {collection_id} 追加项目时发生未知错误: {e}", exc_info=True)
         return False
 
-# --- 获取所有媒体库及其源文件夹路径 ---    
-def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, Any]]:
-    logger.debug("  ➜ 正在实时获取所有媒体库及其源文件夹路径...")
+# --- 获取所有媒体库及其源文件夹路径 (带极速缓存) ---    
+def get_all_libraries_with_paths(base_url: str, api_key: str, force_refresh: bool = False) -> List[Dict[str, Any]]:
+    global _library_paths_cache, _library_paths_cache_time
+    now = time.time()
+    
+    # 命中缓存，直接秒回，不打印任何日志
+    if not force_refresh and _library_paths_cache is not None and (now - _library_paths_cache_time < CACHE_TTL):
+        return _library_paths_cache
+
+    logger.debug("  ➜ [缓存穿透] 正在实时获取所有媒体库及其源文件夹路径...")
     try:
         folders_url = f"{base_url.rstrip('/')}/Library/VirtualFolders"
         params = {"api_key": api_key}
@@ -1691,40 +1703,42 @@ def get_all_libraries_with_paths(base_url: str, api_key: str) -> List[Dict[str, 
             lib_guid = folder.get("Guid")
             locations = folder.get("Locations", [])
 
-            # 只要有 ID、名字，并且配置了物理路径，它就是一个有效的实体媒体库！
             if lib_id and lib_name and locations:
                 libraries_with_paths.append({
                     "info": {
                         "Name": lib_name,
                         "Id": lib_id,
                         "Guid": lib_guid,
-                        # 如果为空，给个默认标识 'mixed'，防止后续逻辑报错
                         "CollectionType": folder.get("CollectionType") or "mixed" 
                     },
                     "paths": locations
                 })
         
-        logger.debug(f"  ➜ 实时获取到 {len(libraries_with_paths)} 个媒体库的路径信息。")
+        # 更新缓存
+        _library_paths_cache = libraries_with_paths
+        _library_paths_cache_time = now
+        
         return libraries_with_paths
 
     except Exception as e:
         logger.error(f"  ➜ 实时获取媒体库路径时发生错误: {e}", exc_info=True)
-        return []
+        return _library_paths_cache or [] # 失败则回退到旧缓存
 
-# --- 定位媒体库 ---
-def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str) -> Optional[Dict[str, Any]]:
-    logger.debug(f"  ➜ 正在为项目ID {item_id} 定位媒体库...")
+# --- 定位媒体库 (极速版) ---
+def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id: str, item_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
     try:
         all_libraries_data = get_all_libraries_with_paths(base_url, api_key)
         if not all_libraries_data:
             logger.error(f"  ➜ 无法获取任何媒体库的路径信息，定位失败。")
             return None
 
-        item_details = get_emby_item_details(item_id, base_url, api_key, user_id, fields="Path")
-        if not item_details or not item_details.get("Path"):
-            logger.error(f"  ➜ 无法获取项目 {item_id} 的文件路径，定位失败。")
-            return None
-        item_path = item_details["Path"]
+        # 如果调用方没传 Path，才去 Emby 查
+        if not item_path:
+            item_details = get_emby_item_details(item_id, base_url, api_key, user_id, fields="Path")
+            if not item_details or not item_details.get("Path"):
+                logger.error(f"  ➜ 无法获取项目 {item_id} 的文件路径，定位失败。")
+                return None
+            item_path = item_details["Path"]
 
         best_match_library = None
         longest_match_length = 0
@@ -1737,7 +1751,6 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
                         best_match_library = lib_data["info"]
         
         if best_match_library:
-            logger.trace(f"  ➜ 匹配到媒体库 '{best_match_library.get('Name')}'。")
             return best_match_library
         else:
             logger.error(f"  ➜ 项目路径 '{item_path}' 未能匹配任何媒体库的源文件夹。")
