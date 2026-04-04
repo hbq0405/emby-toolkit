@@ -4016,11 +4016,18 @@ class MediaProcessor:
                 try:
                     mapping_data = settings_db.get_setting('keyword_mapping') or utils.DEFAULT_KEYWORD_MAPPING
                     keyword_map = {str(kid): entry.get('label') for entry in mapping_data if entry.get('label') for kid in entry.get('ids', [])}
-                    kw_data = data_to_write.get('keywords', {})
-                    source_keywords = kw_data.get('keywords') or kw_data.get('results') or [] if isinstance(kw_data, dict) else []
+                    
+                    # ★ 修复：同时兼容 TMDb 的字典格式和本地数据库的列表格式
+                    kw_data = data_to_write.get('keywords', [])
+                    source_keywords = []
+                    if isinstance(kw_data, dict):
+                        source_keywords = kw_data.get('keywords') or kw_data.get('results') or []
+                    elif isinstance(kw_data, list):
+                        source_keywords = kw_data
+                        
                     final_tags = {keyword_map[str(k.get('id', ''))] for k in source_keywords if isinstance(k, dict) and str(k.get('id', '')) in keyword_map}
                     
-                    # 将映射后的中文标签存入一个特殊字段，供双模读取
+                    # 将映射后的中文标签存入一个特殊字段
                     data_to_write['_mapped_chinese_tags'] = list(final_tags)
                 except Exception as e_tags:
                     logger.warning(f"  ➜ {log_prefix} 处理关键词映射时发生错误: {e_tags}")

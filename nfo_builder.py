@@ -52,11 +52,12 @@ def build_movie_nfo(data: dict, cast: list) -> str:
         for tag in tags_to_write:
             _add_element(root, 'tag', tag)
     else:
-        for tag in data.get('keywords', []):
+        # ★ 修复：兼容字典和列表格式
+        raw_keywords = data.get('keywords', [])
+        if isinstance(raw_keywords, dict):
+            raw_keywords = raw_keywords.get('keywords') or raw_keywords.get('results') or []
+        for tag in raw_keywords:
             _add_element(root, 'tag', tag.get('name') if isinstance(tag, dict) else tag)
-        
-    for studio in data.get('production_companies', []):
-        _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)
 
     # 演员表
     for actor in cast:
@@ -103,7 +104,11 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
         for tag in tags_to_write:
             _add_element(root, 'tag', tag)
     else:
-        for tag in data.get('keywords', []):
+        # ★ 修复：兼容字典和列表格式
+        raw_keywords = data.get('keywords', [])
+        if isinstance(raw_keywords, dict):
+            raw_keywords = raw_keywords.get('keywords') or raw_keywords.get('results') or []
+        for tag in raw_keywords:
             _add_element(root, 'tag', tag.get('name') if isinstance(tag, dict) else tag)
             
     for studio in data.get('networks', []) + data.get('production_companies', []):
