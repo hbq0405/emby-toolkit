@@ -187,6 +187,15 @@
                     <n-tooltip><template #trigger><n-button @click="() => updateItemStatus(item, 'WANTED', true)" type="primary" ghost circle size="small"><template #icon><n-icon :component="WantedIcon" /></template></n-button></template>取消忽略</n-tooltip>
                   </template>
 
+                  <n-tooltip>
+                    <template #trigger>
+                      <n-button @click="() => openHDHiveModal(item)" type="warning" ghost circle size="small">
+                        <template #icon><n-icon :component="CloudDownloadIcon" /></template>
+                      </n-button>
+                    </template>
+                    影巢搜索
+                  </n-tooltip>
+
                   <n-tooltip><template #trigger><n-button text tag="a" :href="getTMDbLink(item)" target="_blank"><template #icon><n-icon :component="TMDbIcon" size="18" /></template></n-button></template>TMDb</n-tooltip>
               </div>
                 </div>
@@ -371,6 +380,12 @@
         </n-space>
       </template>
     </n-modal>
+  <!-- ★★★ 影巢资源列表模态框 (独立组件) ★★★ -->
+    <HDHiveResourceModal 
+      v-model:show="showHDHiveModal" 
+      :media="currentHDHiveMedia" 
+      @download-success="handleHDHiveDownloadSuccess" 
+    />
   </n-layout>
 </template>
 
@@ -378,9 +393,9 @@
 import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NCheckboxGroup, NRadio, NForm, NFormItem, NInputNumber, NModal, NPopconfirm } from 'naive-ui';
-import { FilmOutline as FilmIcon, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon, CloseOutline as CloseIcon } from '@vicons/ionicons5';
+import { FilmOutline as FilmIcon, TvOutline as TvIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, CaretDownOutline as CaretDownIcon, CheckmarkCircleOutline as WantedIcon, HourglassOutline as PendingIcon, BanOutline as IgnoredIcon, DownloadOutline as SubscribedIcon, PersonCircleOutline as SourceIcon, TrashOutline as TrashIcon, SettingsOutline as SettingsIcon, PauseCircleOutline as PausedIcon, ReaderOutline as AuditIcon, CloseOutline as CloseIcon, CloudDownloadOutline as CloudDownloadIcon } from '@vicons/ionicons5';
 import { format } from 'date-fns'
-
+import HDHiveResourceModal from './HDHiveResourceModal.vue';
 const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 512 512", width: "18", height: "18" }, [
   h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" })
 ]);
@@ -423,6 +438,22 @@ const strategyConfig = ref({
   hdhive_zh_sub_only: true,
   hdhive_exclude_iso: false
 });
+
+// ★★★ 影巢搜索相关状态与方法 ★★★
+const showHDHiveModal = ref(false);
+const currentHDHiveMedia = ref(null);
+
+const openHDHiveModal = (item) => {
+  currentHDHiveMedia.value = item;
+  showHDHiveModal.value = true;
+};
+
+const handleHDHiveDownloadSuccess = () => {
+  // 当在统一订阅页面通过影巢成功转存后，乐观地将状态更新为“已订阅”
+  if (currentHDHiveMedia.value) {
+    updateItemStatus(currentHDHiveMedia.value, 'SUBSCRIBED');
+  }
+};
 
 const loadStrategyConfig = async () => {
   try {

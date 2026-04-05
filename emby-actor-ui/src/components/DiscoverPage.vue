@@ -385,38 +385,13 @@
       </n-space>
     </n-modal>
 
-    <!-- ★★★ 影巢资源列表模态框 ★★★ -->
-    <n-modal v-model:show="showHDHiveResourceModal" preset="card" :title="`影巢资源: ${currentHDHiveMedia?.title || currentHDHiveMedia?.name}`" style="width: 800px; max-width: 95%;">
-      <n-spin :show="loadingHDHiveResources">
-        <n-empty v-if="hdhiveResources.length === 0 && !loadingHDHiveResources" description="影巢暂无该资源，请尝试使用 MoviePilot 常规订阅。" />
-        <n-space vertical v-else>
-          <n-card v-for="res in hdhiveResources" :key="res.slug" size="small" hoverable>
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <div>
-                <!-- 去掉写死的白色字体 -->
-                <div style="font-weight: bold; font-size: 15px; margin-bottom: 4px;">{{ res.title || '未命名资源' }}</div>
-                <n-space size="small" style="font-size: 12px;">
-                  <n-tag size="small" type="info" :bordered="false">{{ res.share_size || '未知大小' }}</n-tag>
-                  <n-tag size="small" type="success" :bordered="false" v-if="res.video_resolution?.length">{{ res.video_resolution.join(', ') }}</n-tag>
-                  <n-tag size="small" type="warning" :bordered="false" v-if="res.source?.length">{{ res.source.join(', ') }}</n-tag>
-                  <span style="color: #888;" v-if="res.remark">{{ res.remark }}</span>
-                </n-space>
-              </div>
-              <div style="flex-shrink: 0; margin-left: 16px; text-align: right;">
-                <div style="font-size: 12px; color: #f0a020; margin-bottom: 4px;">
-                  <span v-if="res.already_owned">已解锁</span>
-                  <span v-else-if="res.unlock_points === 0 || res.unlock_points === null">免费</span>
-                  <span v-else>需 {{ res.unlock_points }} 积分</span>
-                </div>
-                <n-button type="primary" color="#f0a020" size="small" @click="downloadFromHDHive(res)" :loading="downloadingSlug === res.slug">
-                  一键转存
-                </n-button>
-              </div>
-            </div>
-          </n-card>
-        </n-space>
-      </n-spin>
-    </n-modal>
+    <!-- ★★★ 影巢资源列表模态框 (独立组件) ★★★ -->
+    <HDHiveResourceModal 
+      v-model:show="showHDHiveResourceModal" 
+      :media="currentHDHiveMedia" 
+      :season-number="currentHDHiveSeason"
+      @download-success="fetchHDHiveConfig" 
+    />
     
   </div>
   </n-layout>
@@ -427,6 +402,7 @@ import { ref, reactive, watch, onMounted, onUnmounted, computed } from 'vue';
 import { useRouter } from 'vue-router';
 import axios from 'axios';
 import { useAuthStore } from '../stores/auth';
+import HDHiveResourceModal from './HDHiveResourceModal.vue';
 import { 
   NPageHeader, NCard, NSpace, NRadioGroup, NRadioButton, NSelect,
   NInputNumber, NSpin, NGrid, NGi, NButton, NThing, useMessage, NIcon, 
@@ -731,6 +707,7 @@ const loadingHDHiveResources = ref(false);
 const hdhiveResources = ref([]);
 const currentHDHiveMedia = ref(null);
 const downloadingSlug = ref(null);
+const currentHDHiveSeason = ref(null);
 
 // ★★★ 影巢 API 调用逻辑 ★★★
 const fetchHDHiveConfig = async () => {
@@ -798,56 +775,8 @@ const openHDHiveResourceModal = async (media, seasonNumber = null) => {
   
   showMovieChoiceModal.value = false; // 如果是从电影弹窗来的，关掉它
   currentHDHiveMedia.value = media;
+  currentHDHiveSeason.value = seasonNumber; // 传递季号
   showHDHiveResourceModal.value = true;
-  loadingHDHiveResources.value = true;
-  hdhiveResources.value = [];
-  
-  try {
-    const params = {
-      tmdb_id: media.id,
-      media_type: media.media_type || mediaType.value
-    };
-    if (seasonNumber !== null) {
-      params.season = seasonNumber;
-    }
-    
-    const res = await axios.get('/api/hdhive/resources', { params });
-    if (res.data.success) {
-      hdhiveResources.value = res.data.data;
-    } else {
-      message.error(res.data.message);
-    }
-  } catch (e) {
-    message.error("获取影巢资源失败");
-  } finally {
-    loadingHDHiveResources.value = false;
-  }
-};
-
-// 触发影巢下载
-const downloadFromHDHive = async (resource) => {
-  downloadingSlug.value = resource.slug;
-  try {
-    const payload = {
-      slug: resource.slug,
-      tmdb_id: currentHDHiveMedia.value.id,
-      media_type: currentHDHiveMedia.value.media_type || mediaType.value,
-      title: currentHDHiveMedia.value.title || currentHDHiveMedia.value.name
-    };
-    const res = await axios.post('/api/hdhive/download', payload);
-    if (res.data.success) {
-      message.success(res.data.message);
-      // 刷新一下用户信息以更新积分
-      fetchHDHiveConfig();
-      setTimeout(() => { showHDHiveResourceModal.value = false; }, 1500);
-    } else {
-      message.error(res.data.message);
-    }
-  } catch (e) {
-    message.error("触发下载失败");
-  } finally {
-    downloadingSlug.value = null;
-  }
 };
 
 // ★★★ 改造原有的 handleSubscribe ★★★
