@@ -777,6 +777,11 @@ const triggerBackfillTask = async () => {
 };
 
 const hasMissingSeasons = (item) => {
+  // 【修复】如果是“已完结”视图的聚合卡片，直接使用前端精准计算出的 seasons_missing 数组
+  if (item.is_aggregated) {
+    return item.seasons_missing && item.seasons_missing.length > 0;
+  }
+  // “追剧中”视图依然使用后端的 missing_info
   const data = item.missing_info;
   return data?.missing_seasons?.length > 0;
 };
