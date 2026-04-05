@@ -950,6 +950,15 @@ class WatchlistProcessor:
             if moviepilot.subscribe_with_custom_payload(payload, self.config):
                 settings_db.decrement_subscription_quota()
                 logger.info(f"  ➜ [完结洗版] 《{series_name}》 第 {season_number} 季 已提交洗版订阅。")
+                
+                # ★★★ 新增：点亮洗版特权灯，让 Organizer 强制替换 ★★★
+                try:
+                    with connection.get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute("UPDATE media_metadata SET active_washing = TRUE WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
+                            conn.commit()
+                except Exception as e:
+                    logger.error(f"  ➜ 开启洗版状态失败: {e}")
             else:
                 logger.error(f"  ➜ [完结洗版] 《{series_name}》 第 {season_number} 季 提交失败。")
 

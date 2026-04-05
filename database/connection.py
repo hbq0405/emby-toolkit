@@ -237,6 +237,7 @@ def init_db():
                         total_episodes INTEGER DEFAULT 0,
                         total_episodes_locked BOOLEAN DEFAULT FALSE,
                         waiting_for_completed_pack BOOLEAN DEFAULT FALSE,
+                        active_washing BOOLEAN DEFAULT FALSE,
 
                         -- 内部管理字段
                         last_synced_at TIMESTAMP WITH TIME ZONE,
@@ -522,7 +523,8 @@ def init_db():
                             "networks_json": "JSONB",
                             "file_sha1_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
                             "file_pickcode_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
-                            "waiting_for_completed_pack": "BOOLEAN DEFAULT FALSE"
+                            "waiting_for_completed_pack": "BOOLEAN DEFAULT FALSE",
+                            "active_washing": "BOOLEAN DEFAULT FALSE"
                         },
                         'resubscribe_rules': {
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE",

@@ -2808,6 +2808,22 @@ class SmartOrganizer:
         # =================================================================
         conflict_mode = cfg.get('conflict_mode', 'replace') # 获取覆盖模式，默认洗版替换
         
+        # ★★★ 洗版特权检测 ★★★
+        force_replace = False
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT active_washing FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (str(self.tmdb_id), 'Series' if self.media_type == 'tv' else 'Movie'))
+                    row = cursor.fetchone()
+                    if row and row.get('active_washing'):
+                        force_replace = True
+        except Exception as e:
+            pass
+
+        if force_replace:
+            conflict_mode = 'replace'
+            logger.info(f"  ➜ [洗版特权] 检测到当前剧集处于洗版状态，强制将覆盖模式切换为 '仅保留最新(替换)'！")
+        
         for batch_target_cid, items in move_groups.items():
             # -----------------------------------------------------------
             # ★ 1. 移动前：拉取目标目录现有文件，进行冲突检测
@@ -3199,6 +3215,17 @@ class SmartOrganizer:
                     category_name = rule.get('dir_name', '未识别')
                     break
             
+        # ★★★ 解除洗版状态 ★★★
+        if force_replace and moved_count > 0:
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("UPDATE media_metadata SET active_washing = FALSE WHERE tmdb_id = %s AND item_type = %s", (str(self.tmdb_id), 'Series' if self.media_type == 'tv' else 'Movie'))
+                        conn.commit()
+                logger.info(f"  ➜ [洗版特权] 洗版文件整理完成，已解除洗版状态。")
+            except Exception as e:
+                pass
+
         return True
 
 def _parse_115_size(size_val):

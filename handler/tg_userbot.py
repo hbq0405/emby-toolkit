@@ -553,8 +553,13 @@ def _process_tg_queue():
                                             should_process = True
                                             logger.info(f"  ➜ [TG洗版特权] 识别到完结包，且剧集正在等待洗版，特权放行！(TMDB: {tmdb_id})")
                                             
-                                            # ★★★ 阅后即焚：立刻将标志位改为 False，彻底阻断频道 B、C 的后续推送 ★★★
-                                            cursor.execute("UPDATE media_metadata SET waiting_for_completed_pack = FALSE WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
+                                            # ★★★ 阅后即焚 + 点亮洗版特权灯 ★★★
+                                            cursor.execute("""
+                                                UPDATE media_metadata 
+                                                SET waiting_for_completed_pack = FALSE,
+                                                    active_washing = TRUE
+                                                WHERE tmdb_id = %s AND item_type = 'Series'
+                                            """, (tmdb_id,))
                                             conn.commit()
                                         else:
                                             logger.info(f"  ➜ [TG洗版拦截] 识别到完结包，但该剧集不需要洗版 (标志位为False)，已忽略。")
