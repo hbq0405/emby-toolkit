@@ -480,7 +480,7 @@
                 </n-switch>
               </div>
               <div class="setting-desc">
-                开启后，待订阅剧集不再提交给MP。
+                开启后，订阅及洗版将不再提交给MP。
               </div>
             </div>
           </div>  
