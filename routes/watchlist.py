@@ -314,3 +314,18 @@ def api_watchlist_settings():
         except Exception as e:
             logger.error(f"保存追剧配置失败: {e}", exc_info=True)
             return jsonify({"error": "保存配置失败"}), 500
+        
+@watchlist_bp.route('/missing_seasons/<item_id>', methods=['GET'])
+@admin_required
+def api_get_missing_seasons(item_id):
+    """获取指定剧集的缺失季列表"""
+    try:
+        missing_seasons = watchlist_db.get_missing_seasons_for_series(item_id)
+        # 格式化日期
+        for s in missing_seasons:
+            if isinstance(s.get('air_date'), (datetime, date)):
+                s['air_date'] = s['air_date'].isoformat()
+        return jsonify(missing_seasons), 200
+    except Exception as e:
+        logger.error(f"获取缺失季失败: {e}")
+        return jsonify({"error": "获取缺失季失败"}), 500

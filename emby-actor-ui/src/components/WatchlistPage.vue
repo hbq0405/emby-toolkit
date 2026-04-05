@@ -324,29 +324,43 @@
       </div>
       <div v-else class="center-container"><n-empty :description="emptyStateDescription" size="huge" /></div>
     </div>
-    <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 900px;" :title="selectedSeries ? `缺失详情 - ${selectedSeries.item_name}` : ''" :bordered="false" size="huge">
-      <div v-if="selectedSeries && missingData">
-        <n-tabs type="line" animated v-model:value="activeTab">
-          <n-tab-pane name="seasons" :tab="`缺季 (${missingData.missing_seasons.length})`" :disabled="missingData.missing_seasons.length === 0">
-            <n-list bordered>
-              <n-list-item v-for="season in missingData.missing_seasons" :key="season.season_number">
-                <template #prefix><n-tag type="warning">S{{ season.season_number }}</n-tag></template>
-                <n-ellipsis>{{ season.name }} ({{ season.episode_count }}集, {{ formatAirDate(season.air_date) }})</n-ellipsis>
-              </n-list-item>
-            </n-list>
-          </n-tab-pane>
-          <n-tab-pane name="gaps" :tab="`缺集的季 (${missingData.seasons_with_gaps.length})`" :disabled="missingData.seasons_with_gaps.length === 0">
-            <n-list bordered>
-              <n-list-item v-for="gap in missingData.seasons_with_gaps" :key="gap.season">
-                <n-space vertical>
-                  <div><n-tag type="error">第 {{ gap.season }} 季</n-tag> 存在分集缺失</div>
-                  <n-text :depth="3">具体缺失的集号: {{ gap.missing.join(', ') }}</n-text>
-                </n-space>
-              </n-list-item>
-            </n-list>
-          </n-tab-pane>
-        </n-tabs>
-      </div>
+    <n-modal v-model:show="showModal" preset="card" style="width: 90%; max-width: 600px;" :title="selectedSeries ? `缺失的季 - ${selectedSeries.item_name}` : ''" :bordered="false">
+      <n-spin :show="loadingMissing">
+        <div v-if="realtimeMissingSeasons.length > 0">
+          <n-list bordered>
+            <n-list-item v-for="season in realtimeMissingSeasons" :key="season.season_number">
+              <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
+                <div style="display: flex; align-items: center; gap: 12px;">
+                  <n-tag type="warning">S{{ season.season_number }}</n-tag>
+                  <div>
+                    <div style="font-weight: bold;">{{ season.name }}</div>
+                    <div style="font-size: 12px; color: #888;">{{ season.episode_count }}集 · {{ formatAirDate(season.air_date) }}</div>
+                  </div>
+                </div>
+                
+                <!-- 订阅按钮 -->
+                <div style="flex-shrink: 0;">
+                  <n-button 
+                    v-if="season.subscription_status === 'NONE' || season.subscription_status === 'IGNORED'"
+                    size="small" 
+                    type="primary" 
+                    secondary
+                    :loading="subscribingSeasonId === season.tmdb_id"
+                    @click="subscribeMissingSeason(season)"
+                  >
+                    <template #icon><n-icon><DownloadIcon/></n-icon></template>
+                    补订此季
+                  </n-button>
+                  <n-tag v-else-if="season.subscription_status === 'SUBSCRIBED'" type="info" size="small">已订阅</n-tag>
+                  <n-tag v-else-if="season.subscription_status === 'WANTED'" type="info" size="small">待订阅</n-tag>
+                  <n-tag v-else-if="season.subscription_status === 'REQUESTED'" type="warning" size="small">待审核</n-tag>
+                </div>
+              </div>
+            </n-list-item>
+          </n-list>
+        </div>
+        <n-empty v-else description="太棒了！该剧集目前没有任何缺失的季。" style="margin: 40px 0;" />
+      </n-spin>
     </n-modal>
     <!-- 追剧策略配置模态框 -->
     <n-modal 
@@ -773,19 +787,21 @@ const hasGaps = (item) => {
 };
 
 const hasMissing = (item) => {
-  return hasMissingSeasons(item) || hasGaps(item);
+  if (item.is_aggregated) {
+    return item.seasons_missing && item.seasons_missing.length > 0;
+  } else {
+    // 对于单季卡片，只要没满集，就显示眼睛图标
+    return (item.collected_count || 0) < (item.total_count || 0);
+  }
 };
 
 const getMissingCountText = (item) => {
-  if (!hasMissing(item)) return '';
-  const data = item.missing_info;
-  const season_count = data?.missing_seasons?.length || 0;
-  const gaps_count = (Array.isArray(data?.seasons_with_gaps) && data.seasons_with_gaps.length > 0) ? 1 : 0;
-  
-  let parts = [];
-  if (season_count > 0) parts.push(`缺 ${season_count} 季`);
-  if (gaps_count > 0) parts.push(`有分集缺失`);
-  return parts.join(' | ');
+  if (item.is_aggregated) {
+    const count = item.seasons_missing?.length || 0;
+    return count > 0 ? `缺 ${count} 季` : '';
+  } else {
+    return '查看缺失详情';
+  }
 };
 
 const statusFilterOptions = [
@@ -1059,19 +1075,6 @@ const emptyStateDescription = computed(() => {
   return '还没有已完结的剧集。';
 });
 
-const missingData = computed(() => {
-  const defaults = { 
-    missing_seasons: [], 
-    seasons_with_gaps: []
-  };
-  const infoFromServer = selectedSeries.value?.missing_info;
-  
-  if (infoFromServer && !Array.isArray(infoFromServer.seasons_with_gaps)) {
-    infoFromServer.seasons_with_gaps = [];
-  }
-
-  return { ...defaults, ...infoFromServer };
-});
 
 const nextEpisode = (item) => {
   const ep = item.next_episode_to_air;
@@ -1355,17 +1358,50 @@ const triggerAllWatchlistUpdate = async () => {
   }
 };
 
-const openMissingInfoModal = (item) => {
+// ★ 新增状态变量
+const loadingMissing = ref(false);
+const realtimeMissingSeasons = ref([]);
+const subscribingSeasonId = ref(null);
+
+// ★ 替换原有的 openMissingInfoModal 方法
+const openMissingInfoModal = async (item) => {
   selectedSeries.value = item;
-  const info = item.missing_info || {};
-  if (info.missing_seasons && info.missing_seasons.length > 0) {
-    activeTab.value = 'seasons';
-  } else if (info.seasons_with_gaps && info.seasons_with_gaps.length > 0) {
-    activeTab.value = 'gaps';
-  } else {
-    activeTab.value = 'seasons';
-  }
   showModal.value = true;
+  loadingMissing.value = true;
+  realtimeMissingSeasons.value = [];
+  
+  try {
+    const res = await axios.get(`/api/watchlist/missing_seasons/${item.parent_tmdb_id}`);
+    realtimeMissingSeasons.value = res.data;
+  } catch (e) {
+    message.error("获取缺失详情失败");
+  } finally {
+    loadingMissing.value = false;
+  }
+};
+
+// ★ 新增：单季补订方法
+const subscribeMissingSeason = async (season) => {
+  subscribingSeasonId.value = season.tmdb_id;
+  try {
+    const payload = {
+      tmdb_id: selectedSeries.value.parent_tmdb_id,
+      item_type: 'Season',
+      season_number: season.season_number,
+      season_tmdb_id: season.tmdb_id,
+      item_name: `${selectedSeries.value.item_name} 第 ${season.season_number} 季`
+    };
+    
+    const res = await axios.post('/api/portal/subscribe', payload);
+    message.success(res.data.message || '补订请求已提交！');
+    
+    // 乐观更新按钮状态
+    season.subscription_status = res.data.status === 'approved' ? 'SUBSCRIBED' : 'REQUESTED';
+  } catch (e) {
+    message.error(e.response?.data?.message || '补订失败');
+  } finally {
+    subscribingSeasonId.value = null;
+  }
 };
 
 watch(() => props.taskStatus.is_running, (isRunning, wasRunning) => {

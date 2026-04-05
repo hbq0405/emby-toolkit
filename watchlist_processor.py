@@ -1202,10 +1202,8 @@ class WatchlistProcessor:
         new_tmdb_status = latest_series_data.get("status")
         is_ended_on_tmdb = new_tmdb_status in ["Ended", "Canceled"]
         
-        # 依然计算缺失信息，用于后续的“补旧番”订阅，但不影响状态判定
+        # 计算真正的“下一集”
         real_next_episode_to_air = self._calculate_real_next_episode(all_tmdb_episodes, emby_seasons)
-        missing_info = self._calculate_missing_info(latest_series_data.get('seasons', []), all_tmdb_episodes, emby_seasons)
-        has_missing_media = bool(missing_info["missing_seasons"] or missing_info["missing_episodes"])
 
          # 1. 第一步：必须先定义 today，否则后面计算日期差会报错
         today = datetime.now(timezone.utc).date()
@@ -1518,13 +1516,11 @@ class WatchlistProcessor:
         if final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]:
             set_waiting_flag = False
 
-        # 更新追剧数据库
         updates_to_db = {
             "watching_status": final_status, 
             "paused_until": paused_until_date.isoformat() if paused_until_date else None,
             "watchlist_tmdb_status": new_tmdb_status, 
             "watchlist_next_episode_json": json.dumps(real_next_episode_to_air) if real_next_episode_to_air else None,
-            "watchlist_missing_info_json": json.dumps(missing_info),
             "last_episode_to_air_json": json.dumps(last_episode_to_air) if last_episode_to_air else None,
             "watchlist_is_airing": is_truly_airing
         }
@@ -1558,29 +1554,20 @@ class WatchlistProcessor:
         self._update_watchlist_entry(tmdb_id, item_name, updates_to_db)
 
         # ======================================================================
-        # ★★★ 提前计算季的活跃状态 (供数据库同步和目录重组使用) ★★★
+        # ★★★ 极简活跃季计算 (只看现在和未来) ★★★
         # ======================================================================
         active_seasons = set()
+        
         # 规则 A: 如果有明确的下一集待播，该集所属的季肯定是活跃的
         if real_next_episode_to_air and real_next_episode_to_air.get('season_number'):
             active_seasons.add(real_next_episode_to_air['season_number'])
-        # 规则 B: 如果有缺失的集（补番），这些集所属的季也是活跃的
-        if missing_info.get('missing_episodes'):
-            for ep in missing_info['missing_episodes']:
-                if ep.get('season_number'): active_seasons.add(ep['season_number'])
-        # 规则 C: 如果有整季缺失，且该季已播出，也视为活跃
-        if missing_info.get('missing_seasons'):
-            for s in missing_info['missing_seasons']:
-                if s.get('air_date') and s.get('season_number'):
-                    try:
-                        s_date = datetime.strptime(s['air_date'], '%Y-%m-%d').date()
-                        if s_date <= today: active_seasons.add(s['season_number'])
-                    except ValueError: pass
-        # 规则 D (兜底规则)
+            
+        # 规则 B: 本地已有的最大季号视为活跃季 (用户当前进度)
         valid_local_seasons = [s for s in emby_seasons.keys() if s > 0]
         if valid_local_seasons:
             active_seasons.add(max(valid_local_seasons))
         else:
+            # 兜底：本地一集都没有，取 TMDb 的最新季
             tmdb_seasons_list = latest_series_data.get('seasons', [])
             valid_tmdb_seasons = [s for s in tmdb_seasons_list if s.get('season_number', 0) > 0]
             if valid_tmdb_seasons:
@@ -1739,32 +1726,3 @@ class WatchlistProcessor:
         # 4. 如果循环完成，说明本地拥有TMDb上所有的剧集 (或者只缺了未来的)
         logger.info("  ➜ 本地媒体库已拥有当前进度所有剧集，无待播信息。")
         return None
-    # --- 计算缺失的季和集 ---
-    def _calculate_missing_info(self, tmdb_seasons: List[Dict], all_tmdb_episodes: List[Dict], emby_seasons: Dict) -> Dict:
-        """
-        【逻辑重生】计算所有缺失的季和集，不再关心播出日期。
-        """
-        missing_info = {"missing_seasons": [], "missing_episodes": []}
-        
-        tmdb_episodes_by_season = {}
-        for ep in all_tmdb_episodes:
-            s_num = ep.get('season_number')
-            if s_num is not None and s_num != 0:
-                tmdb_episodes_by_season.setdefault(s_num, []).append(ep)
-
-        for season_summary in tmdb_seasons:
-            s_num = season_summary.get('season_number')
-            if s_num is None or s_num == 0: 
-                continue
-
-            # 如果本地没有这个季，则整个季都算缺失
-            if s_num not in emby_seasons:
-                missing_info["missing_seasons"].append(season_summary)
-            else:
-                # 如果季存在，则逐集检查缺失
-                if s_num in tmdb_episodes_by_season:
-                    for episode in tmdb_episodes_by_season[s_num]:
-                        e_num = episode.get('episode_number')
-                        if e_num is not None and e_num not in emby_seasons.get(s_num, set()):
-                            missing_info["missing_episodes"].append(episode)
-        return missing_info

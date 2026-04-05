@@ -1096,3 +1096,31 @@ def get_series_deletion_info(tmdb_id: str) -> tuple:
         logger.error(f"DB: 获取剧集 {tmdb_id} 删除评估信息失败: {e}", exc_info=True)
         
     return series_emby_id, in_library_seasons
+
+def get_missing_seasons_for_series(parent_tmdb_id: str) -> List[Dict[str, Any]]:
+    """
+    【前端弹窗专用】实时查询某部剧缺失的季。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            sql = """
+                SELECT 
+                    tmdb_id, 
+                    title as name, 
+                    season_number, 
+                    release_date as air_date, 
+                    total_episodes as episode_count,
+                    subscription_status
+                FROM media_metadata
+                WHERE parent_series_tmdb_id = %s 
+                  AND item_type = 'Season' 
+                  AND season_number > 0 
+                  AND in_library = FALSE
+                ORDER BY season_number ASC
+            """
+            cursor.execute(sql, (parent_tmdb_id,))
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"  ➜ 查询剧集 {parent_tmdb_id} 缺失季失败: {e}")
+        return []
