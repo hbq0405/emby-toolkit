@@ -449,9 +449,13 @@ const openHDHiveModal = (item) => {
 };
 
 const handleHDHiveDownloadSuccess = () => {
-  // ★ 核心修复：什么都不做！
-  // 坚决不调用 updateItemStatus，防止触发后端的 MP 联动逻辑。
-  // 影巢转存后，等待 115 整理 -> Emby 扫描 -> Webhook 自动入库即可，全程无感。
+  if (currentHDHiveMedia.value) {
+    // ★ 核心逻辑：将状态置为 NONE
+    // 1. 后端收到 NONE 状态，会自动去 MoviePilot 取消对应的订阅（如果有的话）。
+    // 2. 前端卡片会从当前列表中移除，保持列表清爽。
+    // 3. 115 后台默默下载整理，完成后 Emby 扫描自动入库。
+    updateItemStatus(currentHDHiveMedia.value, 'NONE');
+  }
 };
 
 const loadStrategyConfig = async () => {

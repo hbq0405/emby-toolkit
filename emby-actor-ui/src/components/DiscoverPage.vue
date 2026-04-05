@@ -4,7 +4,7 @@
   <div>
     <n-page-header title="影视探索" subtitle="发现您感兴趣的下一部作品" />
       <!-- ★★★ 新增：影巢 (HDHive) 配置与信息面板 ★★★ -->
-      <n-card class="dashboard-card" style="margin-top: 16px;">
+      <n-card v-if="authStore.isAdmin" class="dashboard-card" style="margin-top: 16px;">
         <n-space align="center" justify="space-between" :wrap="isMobile">
           <n-space align="center">
             <n-icon :component="CloudDownloadIcon" size="28" color="#f0a020" />
@@ -299,7 +299,19 @@
                 </div>
 
                 <div class="actions-container">
-                  <!-- ★ 核心修改：剧集始终显示列表图标，电影未入库时显示心形图标 -->
+                  <!-- ★ 新增：影巢专属秒传/洗版按钮 (仅管理员可见，无视任何状态始终显示) -->
+                  <div 
+                    v-if="authStore.isAdmin"
+                    class="action-btn"
+                    @click.stop="openHDHiveResourceModal(media)"
+                    title="影巢秒传/手动洗版"
+                  >
+                    <n-icon size="18" color="#f0a020" class="shadow-icon">
+                      <CloudDownloadIcon />
+                    </n-icon>
+                  </div>
+
+                  <!-- 原有的常规订阅/想看按钮 -->
                   <div 
                     v-if="media.media_type === 'tv' || (!media.in_library && ((isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE')))"
                     class="action-btn"
@@ -362,7 +374,7 @@
             <n-button block type="primary" @click="submitAllSeasonsSubscription" :loading="subscribingAllSeasons">
               一键提交整剧到 MoviePilot
             </n-button>
-            <n-button block color="#f0a020" secondary @click="openHDHiveResourceModal(currentSeriesForSearch, null)">
+            <n-button v-if="authStore.isAdmin" block color="#f0a020" secondary @click="openHDHiveResourceModal(currentSeriesForSearch, null)">
               <template #icon><n-icon><CloudDownloadIcon/></n-icon></template>
               从 影巢 (HDHive) 搜索整剧资源
             </n-button>
@@ -378,7 +390,7 @@
           <template #icon><n-icon size="20"><LightningIcon/></n-icon></template>
           提交到 MoviePilot (常规挂机)
         </n-button>
-        <n-button block color="#f0a020" size="large" secondary @click="openHDHiveResourceModal(currentMovieForChoice, null)">
+        <n-button v-if="authStore.isAdmin" block color="#f0a020" size="large" secondary @click="openHDHiveResourceModal(currentMovieForChoice, null)">
           <template #icon><n-icon size="20"><CloudDownloadIcon/></n-icon></template>
           从 影巢 (HDHive) 极速秒传
         </n-button>
