@@ -758,7 +758,7 @@ def find_missing_old_seasons(library_ids: Optional[List[str]] = None) -> List[Di
                     -- 1. 计算每部剧的最大季号
                     SELECT parent_series_tmdb_id, MAX(season_number) as max_seq
                     FROM media_metadata
-                    WHERE item_type = 'Season' AND season_number > 0
+                    WHERE item_type = 'Season' AND season_number > 0 AND in_library = TRUE
                     GROUP BY parent_series_tmdb_id
                 )
                 SELECT 
