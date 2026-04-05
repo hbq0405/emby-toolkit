@@ -449,10 +449,9 @@ const openHDHiveModal = (item) => {
 };
 
 const handleHDHiveDownloadSuccess = () => {
-  // 当在统一订阅页面通过影巢成功转存后，乐观地将状态更新为“已订阅”
-  if (currentHDHiveMedia.value) {
-    updateItemStatus(currentHDHiveMedia.value, 'SUBSCRIBED');
-  }
+  // ★ 核心修复：什么都不做！
+  // 坚决不调用 updateItemStatus，防止触发后端的 MP 联动逻辑。
+  // 影巢转存后，等待 115 整理 -> Emby 扫描 -> Webhook 自动入库即可，全程无感。
 };
 
 const loadStrategyConfig = async () => {
