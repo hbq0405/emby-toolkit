@@ -480,7 +480,7 @@
                 </n-switch>
               </div>
               <div class="setting-desc">
-                开启后，订阅及洗版将不再提交给MP。
+                开启后，建议覆盖模式设为跳过，避免转存重复整理。
               </div>
             </div>
           </div>  
