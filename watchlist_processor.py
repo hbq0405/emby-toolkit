@@ -1473,17 +1473,16 @@ class WatchlistProcessor:
         logger.info(f"  ➜ 最终判定 '{item_name}' 的真实连载状态为: {is_truly_airing} (内部状态: {translate_internal_status(final_status)})")
 
         # ======================================================================
-        # ★★★ 完结自动洗版逻辑 (V4 - 纯状态流转驱动) ★★★
+        # ★★★ 完结自动洗版逻辑 (TG解耦 + 标志位驱动) ★★★
         # ======================================================================
-        # 核心逻辑：只有从“活跃追剧状态”转变为“完结状态”时，才视为“新鲜完结”
         logger.debug(f"  ➜ [状态流转] 剧名: {item_name}, 旧状态: {translate_internal_status(old_status)}, 新状态: {translate_internal_status(final_status)}")
+        
+        # 定义一个变量，用于控制是否更新等待标志
+        set_waiting_flag = None
+
         if final_status == STATUS_COMPLETED and old_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING] and not is_force_ended:
-            
-            # 检查功能开关
             watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
             if watchlist_cfg.get('auto_resub_ended', False):
-                
-                # 获取最后一季信息
                 seasons = latest_series_data.get('seasons', [])
                 valid_seasons = sorted([s for s in seasons if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
                 
@@ -1492,9 +1491,23 @@ class WatchlistProcessor:
                     last_s_num = target_season.get('season_number')
                     last_ep_count = target_season.get('episode_count', 0)
                     
-                    # ➜ 直接触发洗版，不再检查 TMDb 的日期（充分信赖本地判定和状态流转）
-                    logger.info(f"  ➜ [完结洗版] 《{item_name}》由 {translate_internal_status(old_status)} 转为完结，立即提交 S{last_s_num} 的洗版订阅。")
-                    self._handle_auto_resub_ended(tmdb_id, item_name, last_s_num, last_ep_count)
+                    tg_channel_tracking = watchlist_cfg.get('tg_channel_tracking', False)
+                    
+                    if tg_channel_tracking:
+                        if self._check_season_consistency(tmdb_id, last_s_num, last_ep_count):
+                            logger.info(f"  ➜ [TG洗版拦截] 《{item_name}》S{last_s_num} 本地文件一致性完美，无需洗版。")
+                        else:
+                            # ★ 核心：不一致，开启等待标志！
+                            set_waiting_flag = True
+                            logger.info(f"  ➜ [TG洗版拦截] 《{item_name}》S{last_s_num} 完结但文件不一致。已开启 '等待完结包' 标志，静候 TG 频道发布。")
+                    else:
+                        # 未开启 TG 追更，走原来的 MP 洗版逻辑
+                        logger.info(f"  ➜ [完结洗版] 《{item_name}》由 {translate_internal_status(old_status)} 转为完结，立即提交 MP 洗版。")
+                        self._handle_auto_resub_ended(tmdb_id, item_name, last_s_num, last_ep_count)
+
+        # 如果剧集恢复连载（出新季了），必须清除等待标志，防止误判
+        if final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]:
+            set_waiting_flag = False
 
         # 更新追剧数据库
         updates_to_db = {
@@ -1506,6 +1519,10 @@ class WatchlistProcessor:
             "last_episode_to_air_json": json.dumps(last_episode_to_air) if last_episode_to_air else None,
             "watchlist_is_airing": is_truly_airing
         }
+        
+        # ★ 将标志位合入数据库更新字典
+        if set_waiting_flag is not None:
+            updates_to_db['waiting_for_completed_pack'] = set_waiting_flag
         # 如果是待定状态，强制修改总集数为“虚标”值
         if final_status == STATUS_PENDING:
             # 获取配置的默认集数，默认为 99

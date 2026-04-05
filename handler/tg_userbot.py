@@ -259,7 +259,13 @@ class TGUserBotManager:
         # 7. 提取季号和集号 (泥石流级增强版 + 合集包识别)
         season_number = None
         episode_number = None
-        is_pack = False # ★ 新增：标记是否为合集包
+        is_pack = False # 标记是否为合集包
+        is_completed_pack = False # ★ 新增：标记是否为“完结洗版包”
+
+        # ★ 识别完结包特征
+        if re.search(r'(完结|全\d+集|\d+集全)', text, re.IGNORECASE):
+            is_completed_pack = True
+            is_pack = True
         
         # 规则 A: 范围匹配合集包 (例如 S01E01-E19, S1 EP01~10)
         range_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})\s*(?:-|~|至)\s*(?:E|EP)?\s*(\d{1,4})', text, re.IGNORECASE)
@@ -531,10 +537,27 @@ def _process_tg_queue():
                                         break
                             
                             if not should_process:
-                                cursor.execute("SELECT watching_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
+                                # ★ 注意：这里多查了一个 waiting_for_completed_pack 字段
+                                cursor.execute("SELECT watching_status, waiting_for_completed_pack FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
                                 row = cursor.fetchone()
-                                if row and row['watching_status'] in ['Watching', 'Paused', 'Pending']:
-                                    should_process = True
+                                if row:
+                                    status = row['watching_status']
+                                    is_waiting = row.get('waiting_for_completed_pack', False)
+
+                                    if status in ['Watching', 'Paused', 'Pending']:
+                                        should_process = True
+                                    
+                                    # ★ 核心逻辑：如果是完结包，且状态是已完结
+                                    elif status == 'Completed' and task.get('is_completed_pack'):
+                                        if is_waiting:
+                                            should_process = True
+                                            logger.info(f"  ➜ [TG洗版特权] 识别到完结包，且剧集正在等待洗版，特权放行！(TMDB: {tmdb_id})")
+                                            
+                                            # ★★★ 阅后即焚：立刻将标志位改为 False，彻底阻断频道 B、C 的后续推送 ★★★
+                                            cursor.execute("UPDATE media_metadata SET waiting_for_completed_pack = FALSE WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
+                                            conn.commit()
+                                        else:
+                                            logger.info(f"  ➜ [TG洗版拦截] 识别到完结包，但该剧集不需要洗版 (标志位为False)，已忽略。")
                 except Exception as e:
                     logger.error(f"  ➜ [频道监听] 查库失败: {e}")
                     continue
@@ -549,8 +572,9 @@ def _process_tg_queue():
                 if season_number is not None and episode_number is not None:
                     from database import media_db
                     local_seasons = media_db.get_series_local_children_info(tmdb_id)
-                    
-                    if is_pack:
+                    if task.get('is_completed_pack'):
+                        logger.info(f"  ➜ [频道监听] 这是一个完结洗版包，无视本地已有集数，强制放行转存！")
+                    elif is_pack:
                         # 如果是合集包，检查本地该季的总集数是否满足
                         local_ep_count = len(local_seasons.get(season_number, []))
                         if local_ep_count >= episode_number:

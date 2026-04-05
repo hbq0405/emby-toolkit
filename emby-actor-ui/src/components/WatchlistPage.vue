@@ -480,7 +480,7 @@
                 </n-switch>
               </div>
               <div class="setting-desc">
-                开启后，未完结的剧集将跳过 MoviePilot 订阅，已完结剧集仍会通过 MP 洗版订阅。
+                开启后，待订阅剧集不再提交给MP。
               </div>
             </div>
           </div>  
