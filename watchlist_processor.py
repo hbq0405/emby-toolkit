@@ -1311,9 +1311,15 @@ class WatchlistProcessor:
         # ★★★ 重构后的状态判定逻辑 ★★★
         # ==============================================================================
 
-        # ★ 新增：TG 追更绝对保护锁
         # 如果开启了 TG 追更，且本地最新季还没集齐，绝对不允许系统将其判定为“已完结”！
         tg_protection_active = tg_channel_tracking and (local_latest_s_episodes < latest_s_total_episodes) and (latest_s_total_episodes > 0)
+
+        # 防无限洗版死循环 
+        # 如果旧状态已经是“已完结”，且没有明确的未来新集排期，说明当前的“缺集”是因为洗版删除了旧文件。
+        # 此时必须临时解除 TG 保护锁，防止状态倒退回“追剧中”从而引发无限洗版。
+        if tg_protection_active and old_status == STATUS_COMPLETED and not effective_next_episode:
+            logger.info(f"  ➜ [防洗版死循环] 《{item_name}》当前缺集，但旧状态已是完结，判定为洗版下载中，临时解除 TG 追更保护锁。")
+            tg_protection_active = False
 
         # 规则 1: 激进策略优先 -> 直接完结
         if is_aggressive_completed:

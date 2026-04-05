@@ -560,14 +560,16 @@ def sync_seasons_watching_status(parent_tmdb_id: str, active_season_numbers: Lis
                     cursor.execute(reset_sql, (parent_tmdb_id, max_active_season))
                 
                     # 3. 【最新季】只更新最大那一季 -> 标记为 series_status
+                    # 增加防退化锁：如果该季已经是 Completed，且传入的新状态不是 Completed，则拒绝更新，防止洗版期间视觉闪烁
                     update_active_sql = """
                         UPDATE media_metadata
                         SET watching_status = %s
                         WHERE parent_series_tmdb_id = %s 
                           AND item_type = 'Season'
-                          AND season_number = %s;
+                          AND season_number = %s
+                          AND (watching_status != 'Completed' OR %s = 'Completed');
                     """
-                    cursor.execute(update_active_sql, (series_status, parent_tmdb_id, max_active_season))
+                    cursor.execute(update_active_sql, (series_status, parent_tmdb_id, max_active_season, series_status))
                     
                     logger.info(f"  ➜ 更新剧集 《{series_name}》 第 {max_active_season} 季 状态 -> {status_cn}。")
 
