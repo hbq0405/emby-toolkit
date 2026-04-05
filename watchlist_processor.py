@@ -1521,6 +1521,7 @@ class WatchlistProcessor:
             "paused_until": paused_until_date.isoformat() if paused_until_date else None,
             "watchlist_tmdb_status": new_tmdb_status, 
             "watchlist_next_episode_json": json.dumps(real_next_episode_to_air) if real_next_episode_to_air else None,
+            "watchlist_missing_info_json": None,
             "last_episode_to_air_json": json.dumps(last_episode_to_air) if last_episode_to_air else None,
             "watchlist_is_airing": is_truly_airing
         }
