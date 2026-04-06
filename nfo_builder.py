@@ -176,14 +176,11 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
         _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)
 
     _add_actors(root, cast) 
-    crew = data.get('casts', {}).get('crew', [])
-    for member in crew:
-        if member.get('job') == 'Director':
-            dir_elem = ET.SubElement(root, 'director')
-            if member.get('id'):
-                dir_elem.set('tmdbid', str(member.get('id')))
-            dir_elem.text = member.get('name')
-
+    for creator in data.get('created_by', []):
+        dir_elem = ET.SubElement(root, 'director')
+        if creator.get('id'):
+            dir_elem.set('tmdbid', str(creator.get('id')))
+        dir_elem.text = creator.get('name')
 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
