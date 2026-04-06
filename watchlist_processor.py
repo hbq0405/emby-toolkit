@@ -582,6 +582,9 @@ class WatchlistProcessor:
         countries = latest_series_data.get("origin_country", [])
         countries_json = countries if isinstance(countries, list) else [countries]
 
+        # ★★★ 核心修复：提取导演 (剧集对应 created_by) ★★★
+        directors = [{'id': c.get('id'), 'name': c.get('name')} for c in latest_series_data.get('created_by', [])]
+
         # 构造更新字典
         series_updates = {
             "original_title": latest_series_data.get("original_name"),
@@ -598,7 +601,10 @@ class WatchlistProcessor:
             "keywords_json": json.dumps(keywords_json) if keywords_json else None,
             "production_companies_json": json.dumps(production_companies_json) if production_companies_json else None,
             "networks_json": json.dumps(networks_json) if networks_json else None,
-            "countries_json": json.dumps(countries_json) if countries_json else None
+            "countries_json": json.dumps(countries_json) if countries_json else None,
+            "directors_json": json.dumps(directors, ensure_ascii=False),
+            "imdb_id": latest_series_data.get("external_ids", {}).get("imdb_id"),
+            "tvdb_id": latest_series_data.get("external_ids", {}).get("tvdb_id")
         }
         
         media_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
