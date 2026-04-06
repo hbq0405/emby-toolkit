@@ -660,6 +660,45 @@ def _process_tg_queue():
                     continue
 
                 # -----------------------------------------------------------
+                # 4.5. 体积限制校验 (防爆盘机制，复用订阅策略配置)
+                # -----------------------------------------------------------
+                try:
+                    from database import settings_db
+                    strategy_cfg = settings_db.get_setting('subscription_strategy_config') or {}
+                    max_size_gb = float(strategy_cfg.get('hdhive_max_size_gb', 120))
+                    max_size_bytes = max_size_gb * 1024 * 1024 * 1024
+
+                    logger.debug(f"  ➜ [频道监听] 正在获取分享链接快照以校验体积...")
+                    snap_res = client.share_snap(share_code, receive_code)
+                    
+                    if snap_res and snap_res.get('state'):
+                        data = snap_res.get('data', {})
+                        total_size = 0
+                        
+                        # 115 API 返回的结构可能不同，做多重兼容解析
+                        if data.get('size'):
+                            total_size = int(data['size'])
+                        elif data.get('file_info'):
+                            total_size = sum(int(f.get('s', 0) or f.get('size', 0)) for f in data['file_info'])
+                        elif data.get('list'):
+                            total_size = sum(int(f.get('s', 0) or f.get('size', 0)) for f in data['list'])
+                            
+                        if total_size > 0:
+                            size_gb = total_size / (1024 ** 3)
+                            if size_gb > max_size_gb:
+                                logger.warning(f"  ➜ [频道监听] 拦截！资源体积 ({size_gb:.2f} GB) 超过配置的最大限制 ({max_size_gb} GB)，已放弃转存。")
+                                continue
+                            else:
+                                logger.debug(f"  ➜ [频道监听] 体积校验通过: {size_gb:.2f} GB <= {max_size_gb} GB")
+                        else:
+                            logger.warning(f"  ➜ [频道监听] 无法从快照中解析出体积，放行转存。")
+                    else:
+                        err_msg = snap_res.get('error_msg') or snap_res.get('message') if snap_res else '未知错误'
+                        logger.warning(f"  ➜ [频道监听] 获取分享快照失败 ({err_msg})，可能是链接失效或密码错误，尝试强行转存...")
+                except Exception as e:
+                    logger.error(f"  ➜ [频道监听] 体积校验过程发生异常: {e}，放行转存。")
+
+                # -----------------------------------------------------------
                 # 5. 执行转存
                 # -----------------------------------------------------------
                 logger.debug(f"  ➜ [频道监听] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
