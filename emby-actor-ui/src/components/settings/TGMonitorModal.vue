@@ -44,6 +44,10 @@
           <n-select v-model:value="config.channels" multiple filterable tag placeholder="输入频道 Username 或 ID 并回车 (如 hdtv115)" :options="[]" />
         </n-form-item>
 
+        <n-form-item label="拦截关键词" path="block_keywords">
+          <n-select v-model:value="config.block_keywords" multiple filterable tag placeholder="输入关键词并回车 (如: 合集, 原盘, 大包)" :options="[]" />
+        </n-form-item>
+
         <n-divider title-placement="left">登录授权</n-divider>
         <n-alert type="info" :show-icon="true" style="margin-bottom: 16px;">
           修改 API 信息后，请务必先点击右下角的 <b>"保存配置"</b>，然后再获取验证码登录。
@@ -104,7 +108,8 @@ const config = ref({
   phone: '',
   password: '',
   channels: [],
-  monitor_types: ['movie', 'tv']
+  monitor_types: ['movie', 'tv'],
+  block_keywords: []
 });
 
 // 授权状态
