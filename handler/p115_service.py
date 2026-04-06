@@ -402,6 +402,16 @@ class P115CookieClient:
         r = self.request(url, method='POST', data=payload)
         return r.json() if hasattr(r, 'json') else r
     
+    def share_snap(self, share_code, receive_code=''):
+        if self.webapi and hasattr(self.webapi, 'share_snap'):
+            return self.webapi.share_snap(share_code, receive_code)
+        
+        # 兜底：手动调用原生接口
+        url = "https://webapi.115.com/share/snap"
+        params = {'share_code': share_code, 'receive_code': receive_code}
+        r = self.request(url, method='GET', params=params)
+        return r.json() if hasattr(r, 'json') else r
+    
     def life_batch_delete(self, delete_data_list):
         url = "https://life.115.com/api/1.0/web/1.0/life/life_batch_delete"
         # 115 要求 delete_data 是一个 JSON 字符串
@@ -731,6 +741,12 @@ class P115Service:
                 if not self._cookie:
                     raise Exception("未配置 115 Cookie，无法执行转存")
                 return self._cookie.share_import(share_code, receive_code, cid)
+            
+            def share_snap(self, share_code, receive_code=''):
+                self._rate_limit()
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法获取分享快照")
+                return self._cookie.share_snap(share_code, receive_code)
 
         return StrictSplitClient(openapi, cookie)
     
