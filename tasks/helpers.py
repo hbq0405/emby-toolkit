@@ -1263,6 +1263,27 @@ def construct_metadata_payload(item_type: str, tmdb_data: Dict[str, Any],
                 }
             payload['episodes_details'] = formatted_episodes
 
+    # 4. 提取外部 ID (IMDb / TVDb) 和入库时间
+    if emby_data_fallback and emby_data_fallback.get('ProviderIds'):
+        providers = emby_data_fallback['ProviderIds']
+        if 'Imdb' in providers: payload['imdb_id'] = providers['Imdb']
+        if 'Tvdb' in providers: payload['tvdb_id'] = providers['Tvdb']
+        
+    if 'external_ids' in tmdb_data:
+        ext = tmdb_data['external_ids']
+        if 'imdb_id' in ext and ext['imdb_id']: payload['imdb_id'] = ext['imdb_id']
+        if 'tvdb_id' in ext and ext['tvdb_id']: payload['tvdb_id'] = ext['tvdb_id']
+
+    if emby_data_fallback and emby_data_fallback.get('DateCreated'):
+        payload['date_added'] = emby_data_fallback['DateCreated']
+
+    # 5. 提取导演 (修复原版过滤掉 credits 导致导演丢失的问题)
+    credits_data = tmdb_data.get('credits') or tmdb_data.get('casts') or {}
+    crew = credits_data.get('crew', [])
+    directors = [d for d in crew if d.get('job') == 'Director']
+    if directors:
+        payload.setdefault('casts', {})['crew'] = directors
+
     return payload
 
 def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -1282,6 +1303,12 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
     payload['homepage'] = db_row.get('homepage')
     payload['vote_average'] = db_row.get('rating')
     payload['poster_path'] = db_row.get('poster_path')
+    payload['imdb_id'] = db_row.get('imdb_id')
+    payload['tvdb_id'] = db_row.get('tvdb_id')
+    
+    date_added = db_row.get('date_added')
+    if date_added:
+        payload['date_added'] = str(date_added)
 
     # 标题与日期
     if item_type == "Movie":

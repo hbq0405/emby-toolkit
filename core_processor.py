@@ -1710,7 +1710,8 @@ class MediaProcessor:
                 "file_sha1_json", "file_pickcode_json", 
                 "date_added", "official_rating_json", "genres_json", "directors_json", "production_companies_json", 
                 "networks_json", "countries_json", "keywords_json", "ignore_reason", "asset_details_json",
-                "runtime_minutes", "overview_embedding", "total_episodes", "watchlist_tmdb_status"
+                "runtime_minutes", "overview_embedding", "total_episodes", "watchlist_tmdb_status",
+                "imdb_id", "tvdb_id"
             ]
             data_for_batch = []
             for record in records_to_upsert:
@@ -1730,7 +1731,9 @@ class MediaProcessor:
                 if not is_valid:
                     logger.warning(f"  ➜ [入库拦截] 发现无效的 TMDb ID: '{rec_id}' (类型: {rec_type})，已丢弃该条记录。")
                     continue
-
+                # 确保继承顶层的 IMDb/TVDb ID
+                if not record.get('imdb_id'): record['imdb_id'] = source_data_package.get('imdb_id')
+                if not record.get('tvdb_id'): record['tvdb_id'] = source_data_package.get('tvdb_id')
                 db_row_complete = {col: record.get(col) for col in all_possible_columns}
                 
                 if db_row_complete['in_library'] is None: db_row_complete['in_library'] = False

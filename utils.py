@@ -638,3 +638,20 @@ def extract_pickcode_from_strm_url(url: str) -> Optional[str]:
     if match: return match.group(1)
         
     return None
+
+def get_pinyin_initials(text: str) -> str:
+    """获取中文拼音首字母大写，用于 Emby 的 sorttitle"""
+    if not text:
+        return ""
+    if not PYPINYIN_AVAILABLE:
+        return text
+    try:
+        initials = pinyin(text, style=Style.FIRST_LETTER, strict=False)
+        result = ""
+        for i in initials:
+            char = i[0]
+            if char.isalnum():
+                result += char.upper()
+        return result if result else text
+    except Exception:
+        return text

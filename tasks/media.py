@@ -1027,6 +1027,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 top_record = {
                     "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
                     "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
+                    "imdb_id": item.get("ProviderIds", {}).get("Imdb") or (tmdb_details.get("imdb_id") if tmdb_details else None), 
+                    "tvdb_id": item.get("ProviderIds", {}).get("Tvdb") or (tmdb_details.get("tvdb_id") if tmdb_details else None),
                     "original_language": tmdb_details.get('original_language') if tmdb_details else None,
                     "watchlist_tmdb_status": tmdb_details.get('status') if tmdb_details else None,
                     "in_library": True, 
@@ -1137,6 +1139,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                                 season_record = {
                                     "tmdb_id": real_season_tmdb_id,
                                     "item_type": "Season",
+                                    "imdb_id": matched_emby_seasons[0].get("ProviderIds", {}).get("Imdb") if matched_emby_seasons else None, 
+                                    "tvdb_id": matched_emby_seasons[0].get("ProviderIds", {}).get("Tvdb") if matched_emby_seasons else None,
                                     "parent_series_tmdb_id": tmdb_id_str,
                                     "season_number": s_num,
                                     "title": s_info.get('name'),
@@ -1180,6 +1184,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             season_record = {
                                 "tmdb_id": fallback_season_tmdb_id,
                                 "item_type": "Season",
+                                "imdb_id": s.get("ProviderIds", {}).get("Imdb"), 
+                                "tvdb_id": s.get("ProviderIds", {}).get("Tvdb"),
                                 "parent_series_tmdb_id": tmdb_id_str,
                                 "season_number": s_num,
                                 "title": s.get('Name') or f"Season {s_num}",
@@ -1219,6 +1225,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                             ep_release_date = tmdb_ep_info.get('air_date') or None
                         child_record = {
                             "item_type": "Episode",
+                            "imdb_id": emby_ep.get("ProviderIds", {}).get("Imdb"), 
+                            "tvdb_id": emby_ep.get("ProviderIds", {}).get("Tvdb"),
                             "parent_series_tmdb_id": tmdb_id_str,
                             "season_number": s_n,
                             "episode_number": e_n,

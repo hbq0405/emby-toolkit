@@ -193,6 +193,8 @@ def init_db():
                         last_subscribed_at TIMESTAMP WITH TIME ZONE,
 
                         -- 核心与扩展元数据
+                        imdb_id TEXT,
+                        tvdb_id TEXT,
                         title TEXT,
                         original_title TEXT,
                         original_language TEXT,
@@ -524,7 +526,9 @@ def init_db():
                             "file_sha1_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
                             "file_pickcode_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
                             "waiting_for_completed_pack": "BOOLEAN DEFAULT FALSE",
-                            "active_washing": "BOOLEAN DEFAULT FALSE"
+                            "active_washing": "BOOLEAN DEFAULT FALSE",
+                            "imdb_id": "TEXT",
+                            "tvdb_id": "TEXT"
                         },
                         'resubscribe_rules': {
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE",
