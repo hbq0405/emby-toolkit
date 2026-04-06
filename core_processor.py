@@ -2462,7 +2462,7 @@ class MediaProcessor:
                             if not ep.get("overview"):
                                 ep_key = f"S{ep.get('season_number')}E{ep.get('episode_number')}"
                                 old_overview = old_episodes.get(ep_key, {}).get("overview") or ""
-                                if "【老六专属占位笑话】" in old_overview:
+                                if "【老六占位简介】" in old_overview:
                                     ep["overview"] = old_overview # 继承老笑话，不花冤枉钱
                                 else:
                                     jokes_to_generate[ep_key] = f"{formatted_metadata.get('name')} {ep_key}"

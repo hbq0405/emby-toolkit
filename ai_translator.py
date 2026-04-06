@@ -345,9 +345,9 @@ class AITranslator:
         
     def batch_generate_jokes(self, items_dict: Dict[str, str]) -> Dict[str, str]:
         """
-        批量生成老六专属占位笑话。
+        批量生成老六占位简介。
         :param items_dict: 字典格式 { "ID": "影视标题/集号" }
-        :return: 字典格式 { "ID": "【老六专属占位笑话】..." }
+        :return: 字典格式 { "ID": "【老六占位简介】..." }
         """
         if not items_dict:
             return {}
