@@ -382,6 +382,66 @@ class MediaProcessor:
                                 
                             logger.info(f"  ➜ [实时监控] 已从数据库恢复 {len(seasons_data)} 个季和 {len(episodes_data)} 个分集的数据。")
                     
+                    # =========================================================
+                    # ★★★ 新增：电影合集补全逻辑 (防止洗版丢失合集 NFO) ★★★
+                    # =========================================================
+                    if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
+                        logger.info(f"  ➜ [实时监控] 电影合集 NFO 开关已开启，正在从 TMDb 获取合集信息以补全缓存...")
+                        try:
+                            movie_details = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key)
+                            if movie_details and movie_details.get("belongs_to_collection"):
+                                collection_info = movie_details.get("belongs_to_collection")
+                                col_id = collection_info.get("id")
+                                col_name = collection_info.get("name", "")
+                                col_overview = ""
+                                
+                                import requests
+                                base_url = self.config.get(constants.CONFIG_OPTION_TMDB_API_BASE_URL, 'https://api.themoviedb.org/3')
+                                try:
+                                    # 尝试获取中文合集简介
+                                    url_zh = f"{base_url}/collection/{col_id}?api_key={self.tmdb_api_key}&language=zh-CN"
+                                    resp_zh = requests.get(url_zh, timeout=10, proxies=config_manager.get_proxies_for_requests())
+                                    if resp_zh.status_code == 200:
+                                        col_details_zh = resp_zh.json()
+                                        col_overview = col_details_zh.get("overview", "")
+                                        if not col_name: col_name = col_details_zh.get("name", "")
+                                    # 兜底获取英文合集简介
+                                    if not col_overview:
+                                        url_en = f"{base_url}/collection/{col_id}?api_key={self.tmdb_api_key}&language=en-US"
+                                        resp_en = requests.get(url_en, timeout=10, proxies=config_manager.get_proxies_for_requests())
+                                        if resp_en.status_code == 200:
+                                            col_details_en = resp_en.json()
+                                            col_overview = col_details_en.get("overview", "")
+                                            if not col_name: col_name = col_details_en.get("name", "")
+                                except Exception as e_col:
+                                    pass
+
+                                # 保持与完整刮削一致的 AI 翻译逻辑
+                                if self.ai_translator:
+                                    if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False) and col_name and not utils.contains_chinese(col_name):
+                                        trans_col_name = self.ai_translator.translate_title(col_name, media_type="Movie")
+                                        if trans_col_name and utils.contains_chinese(trans_col_name):
+                                            if trans_col_name.endswith("合集"): trans_col_name = trans_col_name[:-2] + "（系列）"
+                                            collection_info["name"] = trans_col_name
+                                            col_name = trans_col_name 
+                                    else: 
+                                        collection_info["name"] = col_name
+
+                                    if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False) and col_overview and not utils.contains_chinese(col_overview):
+                                        trans_col_overview = self.ai_translator.translate_overview(col_overview, title=col_name)
+                                        if trans_col_overview: collection_info["overview"] = trans_col_overview
+                                    elif col_overview: 
+                                        collection_info["overview"] = col_overview
+                                else:
+                                    collection_info["name"] = col_name
+                                    if col_overview: collection_info["overview"] = col_overview
+                                    
+                                payload["belongs_to_collection"] = collection_info
+                                logger.info(f"  ➜ [实时监控] 成功补全合集信息: {collection_info.get('name')}")
+                        except Exception as e:
+                            logger.warning(f"  ➜ [实时监控] 补全合集信息失败: {e}")
+                    # =========================================================
+
                     # 2. 构造上下文对象
                     fake_item_details = {
                         "Id": "pending", 
