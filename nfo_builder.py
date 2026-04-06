@@ -83,15 +83,6 @@ def build_movie_nfo(data: dict, cast: list) -> str:
     _add_element(root, 'rating', data.get('vote_average'))
     _add_element(root, 'mpaa', data.get('mpaa') or data.get('certification'))
     
-    # 补全导演
-    crew = data.get('casts', {}).get('crew', [])
-    for member in crew:
-        if member.get('job') == 'Director':
-            dir_elem = ET.SubElement(root, 'director')
-            if member.get('id'):
-                dir_elem.set('tmdbid', str(member.get('id')))
-            dir_elem.text = member.get('name')
-
     # 外部ID
     tmdb_id = data.get('id')
     imdb_id = data.get('imdb_id')
@@ -119,6 +110,13 @@ def build_movie_nfo(data: dict, cast: list) -> str:
 
     _add_genres_and_tags(root, data)
     _add_actors(root, cast) 
+    crew = data.get('casts', {}).get('crew', [])
+    for member in crew:
+        if member.get('job') == 'Director':
+            dir_elem = ET.SubElement(root, 'director')
+            if member.get('id'):
+                dir_elem.set('tmdbid', str(member.get('id')))
+            dir_elem.text = member.get('name')
 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
@@ -178,6 +176,14 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
         _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)
 
     _add_actors(root, cast) 
+    crew = data.get('casts', {}).get('crew', [])
+    for member in crew:
+        if member.get('job') == 'Director':
+            dir_elem = ET.SubElement(root, 'director')
+            if member.get('id'):
+                dir_elem.set('tmdbid', str(member.get('id')))
+            dir_elem.text = member.get('name')
+
 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
