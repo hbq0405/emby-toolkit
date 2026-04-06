@@ -2912,6 +2912,7 @@ class SmartOrganizer:
                 # === 本地擦屁股逻辑 ===
                 local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
                 old_strm_paths_for_emby = []
+                old_dirs_to_check = set() # ★ 新增：记录需要检查是否为空的旧目录
                 
                 if local_root and os.path.exists(local_root):
                     try:
@@ -2940,16 +2941,51 @@ class SmartOrganizer:
                                     if os.path.exists(old_mi_full_path):
                                         os.remove(old_mi_full_path)
                                         
-                                    # 3. 删除关联字幕
+                                    # 3. 删除关联字幕和专属 NFO
                                     old_dir_full_path = os.path.dirname(old_strm_full_path)
                                     old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
                                     if os.path.exists(old_dir_full_path):
+                                        old_dirs_to_check.add(old_dir_full_path) # ★ 记录旧目录
                                         for f in os.listdir(old_dir_full_path):
-                                            if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
+                                            # ★ 核心修复：把 nfo 也加进去，连同字幕一起删
+                                            if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo']:
                                                 sub_to_del = os.path.join(old_dir_full_path, f)
                                                 try:
                                                     os.remove(sub_to_del)
+                                                    logger.debug(f"  ➜ 删除本地旧附属文件: {sub_to_del}")
                                                 except: pass
+                                                
+                        # ★ 4. 向上递归清理本地空目录 (连锅端海报和tvshow.nfo)
+                        if old_dirs_to_check:
+                            import shutil
+                            protected_dirs = {os.path.abspath(local_root)}
+                            for rule in self.rules:
+                                cat_path = rule.get('category_path') or rule.get('dir_name')
+                                if cat_path:
+                                    protected_dirs.add(os.path.abspath(os.path.join(local_root, cat_path.lstrip('\\/'))))
+                            protected_dirs.add(os.path.abspath(os.path.join(local_root, "未识别")))
+
+                            for old_dir in list(old_dirs_to_check):
+                                curr_dir = old_dir
+                                while curr_dir and curr_dir not in protected_dirs:
+                                    if os.path.exists(curr_dir):
+                                        has_media = False
+                                        for root_dir, _, files in os.walk(curr_dir):
+                                            for f in files:
+                                                ext = f.split('.')[-1].lower()
+                                                if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov'}:
+                                                    has_media = True
+                                                    break
+                                            if has_media: break
+
+                                        if not has_media:
+                                            shutil.rmtree(curr_dir)
+                                            logger.info(f"  ➜ [完美擦屁股] 本地旧目录已无媒体文件，连锅端删除: {curr_dir}")
+                                            curr_dir = os.path.dirname(curr_dir)
+                                        else:
+                                            break
+                                    else:
+                                        break
                     except Exception as e:
                         logger.warning(f"  ➜ 清理本地旧文件失败: {e}")
                 
@@ -3781,7 +3817,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
             old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
             if os.path.exists(old_dir_full_path):
                 for f in os.listdir(old_dir_full_path):
-                    if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
+                    if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo']:
                         sub_to_del = os.path.join(old_dir_full_path, f)
                         try:
                             os.remove(sub_to_del)
