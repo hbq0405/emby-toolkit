@@ -342,6 +342,47 @@ class AITranslator:
         except Exception as e:
             logger.error(f"  ➜ [批量标题翻译] 翻译失败: {e}")
             return {}
+        
+    def batch_generate_jokes(self, items_dict: Dict[str, str]) -> Dict[str, str]:
+        """
+        批量生成老六专属占位笑话。
+        :param items_dict: 字典格式 { "ID": "影视标题/集号" }
+        :return: 字典格式 { "ID": "【老六专属占位笑话】..." }
+        """
+        if not items_dict:
+            return {}
+
+        raw_prompt = self._get_prompt("batch_joke_fallback")
+        system_prompt = raw_prompt
+        user_prompt = json.dumps(items_dict, ensure_ascii=False)
+
+        try:
+            response_content = ""
+            if self.provider == 'openai' and self.client:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    response_format={"type": "json_object"}, temperature=0.8 # 稍微调高温度，让笑话更有创意
+                )
+                response_content = resp.choices[0].message.content
+            elif self.provider == 'zhipuai' and self.client:
+                resp = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
+                    response_format={"type": "json_object"}, temperature=0.8
+                )
+                response_content = resp.choices[0].message.content
+            elif self.provider == 'gemini' and self.client:
+                config = types.GenerateContentConfig(response_mime_type="application/json", temperature=0.8, system_instruction=system_prompt)
+                resp = self.client.models.generate_content(model=self.model, contents=user_prompt, config=config)
+                response_content = resp.text
+
+            result = _safe_json_loads(response_content)
+            return result if isinstance(result, dict) else {}
+
+        except Exception as e:
+            logger.error(f"  ➜ [老六笑话生成] AI 翻车了: {e}")
+            return {}
 
     def parse_media_filename(self, filename: str) -> Optional[Dict[str, str]]:
         """

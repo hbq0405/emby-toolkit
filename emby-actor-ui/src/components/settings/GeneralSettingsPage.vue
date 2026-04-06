@@ -942,6 +942,11 @@
                               辅助识别
                             </n-checkbox>
                           </n-gi>
+                          <n-gi>
+                            <n-checkbox v-model:checked="configModel.ai_joke_fallback">
+                              无简介小笑话占位
+                            </n-checkbox>
+                          </n-gi>
                         </n-grid>
                       </n-form-item>
 

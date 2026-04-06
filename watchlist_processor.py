@@ -468,6 +468,49 @@ class WatchlistProcessor:
                 item_name=item_name
             )
 
+        # ======================================================================
+        # ★★★ 老六专属：无简介笑话占位功能 (追剧刷新) ★★★
+        # ======================================================================
+        if self.config.get("ai_joke_fallback", False) and self.ai_translator:
+            jokes_to_generate = {}
+            
+            # 1. 检查主干
+            if not aggregated_data['series_details'].get("overview"):
+                jokes_to_generate["main"] = item_name
+                
+            # 2. 检查分集
+            # 尝试从数据库读取旧数据，继承已有笑话，省 Token！
+            import extensions
+            old_payload, _ = extensions.media_processor_instance._reconstruct_full_data_from_db(tmdb_id, 'Series') if hasattr(extensions, 'media_processor_instance') else (None, None)
+            old_episodes = {}
+            if old_payload and "episodes_details" in old_payload:
+                old_eps = old_payload["episodes_details"]
+                old_episodes = old_eps if isinstance(old_eps, dict) else {f"S{e.get('season_number')}E{e.get('episode_number')}": e for e in old_eps}
+
+            for season_details in aggregated_data['seasons_details']:
+                for ep in season_details.get("episodes", []):
+                    if not ep.get("overview"):
+                        ep_key = f"S{ep.get('season_number')}E{ep.get('episode_number')}"
+                        old_overview = old_episodes.get(ep_key, {}).get("overview", "")
+                        if "【老六专属占位笑话】" in old_overview:
+                            ep["overview"] = old_overview # 继承老笑话
+                        else:
+                            jokes_to_generate[ep_key] = f"{item_name} {ep_key}"
+
+            # 3. 批量生成并回填
+            if jokes_to_generate:
+                logger.info(f"  ➜ [老六模式] 追剧刷新发现 {len(jokes_to_generate)} 处缺失简介，正在呼叫 AI 编段子...")
+                generated_jokes = self.ai_translator.batch_generate_jokes(jokes_to_generate)
+                
+                if "main" in generated_jokes:
+                    aggregated_data['series_details']["overview"] = generated_jokes["main"]
+                
+                for season_details in aggregated_data['seasons_details']:
+                    for ep in season_details.get("episodes", []):
+                        ep_key = f"S{ep.get('season_number')}E{ep.get('episode_number')}"
+                        if ep_key in generated_jokes:
+                            ep["overview"] = generated_jokes[ep_key]
+
         # 解包数据
         latest_series_data = aggregated_data['series_details']
         seasons_list = aggregated_data['seasons_details'] # 这是一个包含完整集信息的季列表
