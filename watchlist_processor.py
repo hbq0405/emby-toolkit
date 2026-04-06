@@ -491,7 +491,7 @@ class WatchlistProcessor:
                 for ep in season_details.get("episodes", []):
                     if not ep.get("overview"):
                         ep_key = f"S{ep.get('season_number')}E{ep.get('episode_number')}"
-                        old_overview = old_episodes.get(ep_key, {}).get("overview", "")
+                        old_overview = old_episodes.get(ep_key, {}).get("overview") or ""
                         if "【老六专属占位笑话】" in old_overview:
                             ep["overview"] = old_overview # 继承老笑话
                         else:
