@@ -1579,8 +1579,11 @@ class MediaProcessor:
                             mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
                             file_sha1 = self._get_sha1_by_pickcode(file_pc)
                             
+                            temp_version = version.copy()
+                            temp_version['Path'] = emby_path
+                            
                             details = parse_full_asset_details(
-                                version,
+                                temp_version,
                                 local_mediainfo_path=mediainfo_path
                             )
                             details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
@@ -1676,8 +1679,11 @@ class MediaProcessor:
                         mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
                         file_sha1 = self._get_sha1_by_pickcode(file_pc)
                         
+                        temp_version = version.copy()
+                        temp_version['Path'] = emby_path
+                        
                         details = parse_full_asset_details(
-                            version,
+                            temp_version,
                             local_mediainfo_path=mediainfo_path
                         )
                         details['source_library_id'] = item_details_from_emby.get('_SourceLibraryId')
