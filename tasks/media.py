@@ -989,6 +989,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                 final_release_date = emby_date or tmdb_date
                 # 提取全量分级数据
                 raw_ratings_map = _extract_and_map_tmdb_ratings(tmdb_details, item_type)
+                if not raw_ratings_map and item.get('OfficialRating'):
+                    raw_ratings_map['US'] = item.get('OfficialRating')
                 # 序列化为 JSON 字符串，准备存入数据库
                 rating_json_str = json.dumps(raw_ratings_map, ensure_ascii=False)
                 # 构建 Genres 数据 
@@ -1044,6 +1046,7 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     "networks_json": json.dumps(fmt_networks, ensure_ascii=False),
                     "tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
                     "official_rating_json": rating_json_str,
+                    "custom_rating": item.get('CustomRating'),
                     "runtime_minutes": emby_runtime if (item_type == 'Movie' and emby_runtime) else tmdb_details.get('runtime') if (item_type == 'Movie' and tmdb_details) else None
                 }
                 if tmdb_details:

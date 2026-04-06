@@ -81,6 +81,7 @@ def build_movie_nfo(data: dict, cast: list) -> str:
     _add_element(root, 'year', data.get('release_year') or (data.get('release_date')[:4] if data.get('release_date') else ''))
     _add_element(root, 'premiered', data.get('release_date'))
     _add_element(root, 'rating', data.get('vote_average'))
+    _add_element(root, 'mpaa', data.get('mpaa') or data.get('certification'))
     
     # 补全导演
     crew = data.get('casts', {}).get('crew', [])
@@ -136,6 +137,7 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     _add_element(root, 'premiered', data.get('first_air_date'))
     _add_element(root, 'rating', data.get('vote_average'))
     _add_element(root, 'status', data.get('status')) 
+    _add_element(root, 'mpaa', data.get('mpaa') or data.get('certification'))
     
     tmdb_id = data.get('id')
     imdb_id = data.get('imdb_id')

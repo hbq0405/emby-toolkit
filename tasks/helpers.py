@@ -1173,8 +1173,6 @@ def apply_rating_logic(payload: Dict[str, Any], tmdb_data: Dict[str, Any], item_
                     logger.info(f"  ➜ [分级映射] 将 {search_country}:{source_rating} 映射为 US:{target_us_code}")
                     final_rating_str = target_us_code
                     break
-                elif not final_rating_str:
-                    final_rating_str = source_rating
 
     if target_us_code:
         final_rating_str = target_us_code
@@ -1410,9 +1408,10 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
         try:
             raw_rating = db_row['official_rating_json']
             ratings_map = json.loads(raw_rating) if isinstance(raw_rating, str) else raw_rating
+            
+            # ★★★ 核心修复：严格只取映射后的 US 分级。绝不拿其他国家的原始分级兜底 ★★★
             rating_val = ratings_map.get('US')
-            if not rating_val and ratings_map:
-                rating_val = list(ratings_map.values())[0]
+            
             if rating_val:
                 payload['mpaa'] = rating_val
                 payload['certification'] = rating_val
