@@ -13,9 +13,16 @@
             <n-space>
               <n-checkbox value="movie" label="电影" />
               <n-checkbox value="tv" label="电视剧" />
+              <n-checkbox value="all" label="无脑转存" />
             </n-space>
           </n-checkbox-group>
         </n-form-item>
+        
+        <!-- 当勾选无脑转存时显示警告提示 -->
+        <n-alert v-if="config.monitor_types && config.monitor_types.includes('all')" type="warning" style="margin-bottom: 24px;" :show-icon="true">
+          <b>警告：</b>开启“无脑转存”后，将无视您的订阅列表、追剧状态和本地去重逻辑，全盘接收频道发布的所有 115 资源！<br/>
+          这可能会快速消耗您的 115 空间配额和影巢积分，请谨慎使用。
+        </n-alert>
 
         <n-form-item label="API ID" path="api_id">
           <n-input v-model:value="config.api_id" placeholder="例如: 1234567" />

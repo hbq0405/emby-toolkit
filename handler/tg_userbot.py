@@ -332,7 +332,9 @@ class TGUserBotManager:
         # 根据用户配置的订阅类型进行拦截
         # =================================================================
         allowed_types = cfg.get('monitor_types', ['movie', 'tv'])
-        if item_type not in allowed_types:
+        is_brainless = 'all' in allowed_types # ★ 新增：判断是否开启了无脑转存
+        
+        if item_type not in allowed_types and not is_brainless:
             logger.debug(f"  ➜ [频道监听] 资源类型为 {'剧集' if item_type=='tv' else '电影'}，未在允许的订阅类型中，已忽略。")
             return
 
@@ -345,8 +347,8 @@ class TGUserBotManager:
         # ★ 核心分流逻辑
         # =================================================================
         
-        # 情况 A：找到了目标链接 (115 或 中间页)，且 (有 TMDB ID 或 有标题)
-        if target_link and (tmdb_id or title):
+        # 情况 A：找到了目标链接 (115 或 中间页)，且 (有 TMDB ID 或 有标题 或 开启了无脑转存)
+        if target_link and (tmdb_id or title or is_brainless):
             logger.debug(f"  ➜ [频道监听] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 判定类型: {'剧集' if item_type=='tv' else '电影'}, 准备推入处理队列...")
             
             tg_task_queue.put({
@@ -359,7 +361,8 @@ class TGUserBotManager:
                 "receive_code": receive_code,
                 "season_number": season_number,
                 "episode_number": episode_number,
-                "is_pack": is_pack  # <--- ★ 新增这行，传给消费者
+                "is_pack": is_pack,
+                "is_brainless": is_brainless  # <--- ★ 传递无脑转存标志给消费者
             })
             
         # 情况 B：手动发的磁力链或 ED2K
@@ -465,11 +468,11 @@ class TGUserBotManager:
 # =================================================================
 def _process_tg_queue():
     """死循环读取队列，执行查库和 115 转存/离线下载 (在 gevent 协程中运行)"""
-    import requests # 确保引入 requests
+    import requests 
     
     while True:
         try:
-            task = tg_task_queue.get() # 阻塞等待
+            task = tg_task_queue.get() 
             task_type = task.get('type')
             
             client = P115Service.get_client()
@@ -479,9 +482,6 @@ def _process_tg_queue():
                 logger.error("  ➜ [频道监听] 115 客户端未初始化，无法执行任务。")
                 continue
 
-            # =================================================================
-            # ★ 任务类型 A：处理 115 频道分享链接 (支持隐藏链接、中间页、无 TMDB ID)
-            # =================================================================
             if task_type == "115_share_complex":
                 tmdb_id = task.get('tmdb_id')
                 title = task.get('title')
@@ -490,10 +490,11 @@ def _process_tg_queue():
                 receive_code = task.get('receive_code', '')
                 season_number = task.get('season_number')
                 episode_number = task.get('episode_number')
-                is_pack = task.get('is_pack', False) # 获取合集标记
+                is_pack = task.get('is_pack', False) 
+                is_brainless = task.get('is_brainless', False) # ★ 获取无脑转存标志
 
                 # -----------------------------------------------------------
-                # 1. 最强大脑：缺失 TMDB ID 时自动反查 (必须最先执行，拿到ID)
+                # 1. 最强大脑：缺失 TMDB ID 时自动反查
                 # -----------------------------------------------------------
                 item_type = task.get('item_type', 'movie')
                 if not tmdb_id and title:
@@ -503,78 +504,82 @@ def _process_tg_queue():
                     results = tmdb.search_media(title, api_key, item_type=item_type, year=year)
                     if results:
                         tmdb_id = str(results[0]['id'])
-                        task['tmdb_id'] = tmdb_id # 更新任务字典，供后续步骤使用
+                        task['tmdb_id'] = tmdb_id 
                         logger.debug(f"  ➜ [频道监听] 反查成功！精准匹配到 TMDB ID: {tmdb_id}")
                     else:
-                        logger.warning(f"  ➜ [频道监听] 反查失败，TMDb 未找到该{'剧集' if item_type=='tv' else '电影'}，任务终止。")
-                        continue
+                        if is_brainless:
+                            logger.warning(f"  ➜ [频道监听] 反查失败，但当前为【无脑转存】模式，强制放行！")
+                        else:
+                            logger.warning(f"  ➜ [频道监听] 反查失败，TMDb 未找到该{'剧集' if item_type=='tv' else '电影'}，任务终止。")
+                            continue
 
-                if not tmdb_id: continue
+                if not tmdb_id and not is_brainless: continue # ★ 无脑模式下，没有 TMDB ID 也放行
 
                 # -----------------------------------------------------------
-                # 2. 查库校验 (判断是否在追剧列表中，不在直接扔掉，绝不浪费积分)
+                # 2. 查库校验 (判断是否在追剧列表中)
                 # -----------------------------------------------------------
-                should_process = False
-                try:
-                    with get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            cursor.execute("SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (tmdb_id,))
-                            row = cursor.fetchone()
-                            if row and row['subscription_status'] in ['SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
-                                should_process = True
-                            
-                            if not should_process:
-                                cursor.execute("""
-                                    SELECT subscription_status 
-                                    FROM media_metadata 
-                                    WHERE (tmdb_id = %s OR parent_series_tmdb_id = %s) 
-                                      AND item_type = 'Season'
-                                """, (tmdb_id, tmdb_id))
-                                rows = cursor.fetchall()
-                                for r in rows:
-                                    if r['subscription_status'] in ['SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
-                                        should_process = True
-                                        break
-                            
-                            if not should_process:
-                                # ★ 注意：这里多查了一个 waiting_for_completed_pack 字段
-                                cursor.execute("SELECT watching_status, waiting_for_completed_pack FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
+                should_process = is_brainless # ★ 无脑模式直接设为 True，跳过查库
+                if not should_process:
+                    try:
+                        with get_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute("SELECT subscription_status FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (tmdb_id,))
                                 row = cursor.fetchone()
-                                if row:
-                                    status = row['watching_status']
-                                    is_waiting = row.get('waiting_for_completed_pack', False)
-
-                                    if status in ['Watching', 'Paused', 'Pending']:
-                                        should_process = True
-                                    
-                                    # ★ 核心逻辑：如果是完结包，且状态是已完结
-                                    elif status == 'Completed' and task.get('is_completed_pack'):
-                                        if is_waiting:
+                                if row and row['subscription_status'] in ['SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
+                                    should_process = True
+                                
+                                if not should_process:
+                                    cursor.execute("""
+                                        SELECT subscription_status 
+                                        FROM media_metadata 
+                                        WHERE (tmdb_id = %s OR parent_series_tmdb_id = %s) 
+                                        AND item_type = 'Season'
+                                    """, (tmdb_id, tmdb_id))
+                                    rows = cursor.fetchall()
+                                    for r in rows:
+                                        if r['subscription_status'] in ['SUBSCRIBED', 'PENDING_RELEASE', 'PAUSED']:
                                             should_process = True
-                                            logger.info(f"  ➜ [TG洗版特权] 识别到完结包，且剧集正在等待洗版，特权放行！(TMDB: {tmdb_id})")
-                                            
-                                            # ★★★ 阅后即焚 + 点亮洗版特权灯 ★★★
-                                            cursor.execute("""
-                                                UPDATE media_metadata 
-                                                SET waiting_for_completed_pack = FALSE,
-                                                    active_washing = TRUE
-                                                WHERE tmdb_id = %s AND item_type = 'Series'
-                                            """, (tmdb_id,))
-                                            conn.commit()
-                                        else:
-                                            logger.info(f"  ➜ [TG洗版拦截] 识别到完结包，但该剧集不需要洗版 (标志位为False)，已忽略。")
-                except Exception as e:
-                    logger.error(f"  ➜ [频道监听] 查库失败: {e}")
-                    continue
+                                            break
+                                
+                                if not should_process:
+                                    # ★ 注意：这里多查了一个 waiting_for_completed_pack 字段
+                                    cursor.execute("SELECT watching_status, waiting_for_completed_pack FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
+                                    row = cursor.fetchone()
+                                    if row:
+                                        status = row['watching_status']
+                                        is_waiting = row.get('waiting_for_completed_pack', False)
+
+                                        if status in ['Watching', 'Paused', 'Pending']:
+                                            should_process = True
+                                        
+                                        # ★ 核心逻辑：如果是完结包，且状态是已完结
+                                        elif status == 'Completed' and task.get('is_completed_pack'):
+                                            if is_waiting:
+                                                should_process = True
+                                                logger.info(f"  ➜ [TG洗版特权] 识别到完结包，且剧集正在等待洗版，特权放行！(TMDB: {tmdb_id})")
+                                                
+                                                # ★★★ 阅后即焚 + 点亮洗版特权灯 ★★★
+                                                cursor.execute("""
+                                                    UPDATE media_metadata 
+                                                    SET waiting_for_completed_pack = FALSE,
+                                                        active_washing = TRUE
+                                                    WHERE tmdb_id = %s AND item_type = 'Series'
+                                                """, (tmdb_id,))
+                                                conn.commit()
+                                            else:
+                                                logger.info(f"  ➜ [TG洗版拦截] 识别到完结包，但该剧集不需要洗版 (标志位为False)，已忽略。")
+                    except Exception as e:
+                        logger.error(f"  ➜ [频道监听] 查库失败: {e}")
+                        continue
 
                 if not should_process:
                     logger.debug(f"  ➜ [频道监听] 资源 (TMDB: {tmdb_id}) 不在已订阅/追剧列表中，已忽略。")
                     continue
 
                 # -----------------------------------------------------------
-                # 3. 精准去重逻辑 (本地已有的集数直接跳过，绝不浪费积分)
+                # 3. 精准去重逻辑 (本地已有的集数直接跳过)
                 # -----------------------------------------------------------
-                if season_number is not None and episode_number is not None:
+                if not is_brainless and season_number is not None and episode_number is not None: # ★ 无脑模式跳过去重
                     from database import media_db
                     local_seasons = media_db.get_series_local_children_info(tmdb_id)
                     if task.get('is_completed_pack'):
