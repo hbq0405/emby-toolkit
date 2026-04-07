@@ -176,11 +176,21 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
         _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)
 
     _add_actors(root, cast) 
+    seen_dirs = set()
     for creator in data.get('created_by', []):
-        dir_elem = ET.SubElement(root, 'director')
-        if creator.get('id'):
-            dir_elem.set('tmdbid', str(creator.get('id')))
-        dir_elem.text = creator.get('name')
+        if creator.get('name') not in seen_dirs:
+            dir_elem = ET.SubElement(root, 'director')
+            if creator.get('id'): dir_elem.set('tmdbid', str(creator.get('id')))
+            dir_elem.text = creator.get('name')
+            seen_dirs.add(creator.get('name'))
+            
+    crew_list = data.get('credits', {}).get('crew', []) + data.get('casts', {}).get('crew', [])
+    for member in crew_list:
+        if member.get('job') in ['Director', 'Series Director'] and member.get('name') not in seen_dirs:
+            dir_elem = ET.SubElement(root, 'director')
+            if member.get('id'): dir_elem.set('tmdbid', str(member.get('id')))
+            dir_elem.text = member.get('name')
+            seen_dirs.add(member.get('name'))
 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
@@ -223,5 +233,14 @@ def build_episode_nfo(data: dict, cast: list) -> str:
         _add_element(root, 'tmdbid', data.get('id'))
 
     _add_actors(root, cast) 
+
+    crew_list = data.get('credits', {}).get('crew', []) + data.get('casts', {}).get('crew', [])
+    seen_dirs = set()
+    for member in crew_list:
+        if member.get('job') == 'Director' and member.get('name') not in seen_dirs:
+            dir_elem = ET.SubElement(root, 'director')
+            if member.get('id'): dir_elem.set('tmdbid', str(member.get('id')))
+            dir_elem.text = member.get('name')
+            seen_dirs.add(member.get('name'))
 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
