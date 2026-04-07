@@ -2138,6 +2138,7 @@ class SmartOrganizer:
             # ★ 新增：分组字典
             grouped_sub_items = {}
             unidentified_sub_fids = []
+            unidentified_video_names = []
             
             for sub_item in sub_items:
                 sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name')
@@ -2205,6 +2206,10 @@ class SmartOrganizer:
                     grouped_sub_items[key].append(sub_item)
                 else:
                     unidentified_sub_fids.append(sub_id)
+                    # ★ 检查是否为真正的视频文件
+                    sub_ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
+                    if sub_ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                        unidentified_video_names.append(sub_name)
             
             # ★ 核心修改：遍历分组，批量执行
             for (tmdb_id, sub_type, sub_title), items in grouped_sub_items.items():
@@ -2222,9 +2227,10 @@ class SmartOrganizer:
                 logger.warning(f"    ➜ 无法识别合集子项 {len(unidentified_sub_fids)} 个，批量移入未识别。")
                 try: 
                     self.client.fs_move(unidentified_sub_fids, unidentified_cid)
-                    # ★★★ 触发通知 ★★★
-                    from handler.telegram import send_unrecognized_notification
-                    send_unrecognized_notification(f"合集包 {root_name} 内的 {len(unidentified_sub_fids)} 个子项", reason="合集拆解时无法匹配到 TMDb 数据")
+                    # ★★★ 核心修复：只有当存在真正的视频文件时，才发送通知 ★★★
+                    if unidentified_video_names:
+                        from handler.telegram import send_unrecognized_notification
+                        send_unrecognized_notification(f"合集包 [{root_name}] 内的 {len(unidentified_video_names)} 个视频文件", reason="合集拆解时无法匹配到 TMDb 数据")
                 except Exception as e: 
                     logger.error(f"    ➜ 移入未识别失败: {e}")
             

@@ -321,11 +321,13 @@ def task_scan_and_organize_115(processor=None):
                         item_id = item.get('fid') or item.get('file_id')
                         ext = name.split('.')[-1].lower() if '.' in name else ''
                         
-                        # ★★★ 触发 Telegram 识别失败通知 ★★★
-                        # 无论是不是视频文件，只要被打入未识别，都发通知提醒用户
-                        send_unrecognized_notification(name, reason="正则、MP辅助与AI均无法匹配到有效的 TMDb 数据")
-                        
+                        # ★★★ 核心修复：只有真正的视频文件识别失败，才发送通知并写入数据库供前端纠错 ★★★
                         if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                            
+                            # 1. 触发 Telegram 识别失败通知
+                            send_unrecognized_notification(name, reason="正则、MP辅助与AI均无法匹配到有效的 TMDb 数据")
+                            
+                            # 2. 写入数据库，供前端手动纠错页面展示
                             pc = item.get('pc') or item.get('pick_code') 
                             P115RecordManager.add_or_update_record(
                                 item_id, name, 'unrecognized', 
