@@ -760,12 +760,28 @@ class MediaProcessor:
 
         # 2. ★★★ 极速批量通知 Emby ★★★
         if valid_files_to_notify:
-            #logger.info(f"  ➜ [实时监控] 预处理完成，正在向 Emby 发送 {len(valid_files_to_notify)} 个文件的极速入库通知...")
+            # ★★★ 核心修复：按剧集/电影主目录进行去重，每部剧只挑一个代表文件发给 Emby ★★★
+            # 避免 emby.py 内部按季处理导致同一部剧触发多次重复的父目录扫描
+            representative_files = {}
+            for path in valid_files_to_notify:
+                target_dir = os.path.dirname(path)
+                dir_name = os.path.basename(target_dir)
+                
+                # 如果当前在 Season 文件夹内，退回上一级（剧集主目录）
+                if re.match(r'^(Season|S)\s*\d+|Specials', dir_name, re.IGNORECASE):
+                    target_dir = os.path.dirname(target_dir)
+                
+                # 使用主目录作为 key，只保留第一个遇到的文件作为代表
+                if target_dir not in representative_files:
+                    representative_files[target_dir] = path
+
+            files_to_send = list(representative_files.values())
+            logger.info(f"  ➜ [实时监控] 预处理完成，已将 {len(valid_files_to_notify)} 个文件合并去重为 {len(files_to_send)} 个通知请求。")
             
-            # 直接把所有文件路径打包发给 Emby 的轻量级接口
-            emby.notify_emby_file_changes(list(valid_files_to_notify), self.emby_url, self.emby_api_key)
+            # 发送去重后的代表文件列表给 Emby
+            emby.notify_emby_file_changes(files_to_send, self.emby_url, self.emby_api_key)
             
-            logger.info(f"  ➜ [实时监控] 预处理完成，等待视频流数据...")
+            logger.info(f"  ➜ [实时监控] 极速通知发送完毕，等待视频流数据...")
         else:
             logger.warning(f"  ➜ [实时监控] 未收集到有效的文件路径，任务结束。")
 
