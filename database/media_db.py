@@ -559,52 +559,6 @@ def get_series_local_children_info(parent_tmdb_id: str) -> dict:
         logger.error(f"从本地数据库获取剧集 {parent_tmdb_id} 的子项目结构时失败: {e}")
         return {}
 
-# 动态更新媒体元数据字段
-def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str, Any]):
-    """
-    根据传入的 updates 字典，动态更新指定媒体的字段。
-    常态化更新逻辑：更新除片名/演员表之外的所有元数据。
-    """
-    if not tmdb_id or not item_type or not updates:
-        return
-
-    safe_updates = {
-        k: v for k, v in updates.items() 
-        if k not in ['title', 'actors_json', 'tmdb_id', 'item_type', 'last_updated_at', 'subscription_sources_json']
-    }
-    
-    if not safe_updates:
-        return
-
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cursor:
-                # 动态构建 SET 子句
-                set_clauses = []
-                for key in safe_updates.keys():
-                    # ★★★ 核心修复：如果是 JSON 字段，显式转换类型 ★★★
-                    if key.endswith('_json'):
-                        set_clauses.append(f"{key} = %s::jsonb")
-                    else:
-                        set_clauses.append(f"{key} = %s")
-                # 总是更新时间戳
-                set_clauses.append("last_updated_at = NOW()")
-                
-                sql = f"""
-                    UPDATE media_metadata 
-                    SET {', '.join(set_clauses)}
-                    WHERE tmdb_id = %s AND item_type = %s
-                """
-                
-                # 构建参数列表：更新值 + WHERE条件值
-                params = list(safe_updates.values())
-                params.extend([tmdb_id, item_type])
-                
-                cursor.execute(sql, tuple(params))
-            conn.commit()
-    except Exception as e:
-        logger.error(f"更新媒体 {tmdb_id} ({item_type}) 的元数据字段时失败: {e}", exc_info=True)
-
 # 从数据库生成全量映射表
 def get_tmdb_to_emby_map(library_ids: Optional[List[str]] = None) -> Dict[str, Dict[str, Any]]:
     """

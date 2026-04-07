@@ -607,7 +607,7 @@ class WatchlistProcessor:
             "tvdb_id": latest_series_data.get("external_ids", {}).get("tvdb_id")
         }
         
-        media_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
+        watchlist_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)
         logger.debug(f"  ➜ 已全量刷新 '{item_name}' 的 Series 元数据。")
 
         # 4. 处理季和集的数据 (保存 JSON + 收集列表)
