@@ -1627,3 +1627,61 @@ def evaluate_season_airing_status(tmdb_id: str, season_number: int, api_key: str
     except Exception as e:
         logger.warning(f"  ➜ 预检连载状态失败 (TMDb:{tmdb_id} S{season_number}): {e}")
         return False
+    
+def extract_top_directors(tmdb_data: dict, max_count: int = 3) -> list:
+    """
+    综合提取剧集/电影的导演，并按权重排序截断。
+    权重：主创(Creator) > 执导集数(Episode Count) > 有头像(Profile Path)
+    返回格式: [{'id': 123, 'name': 'Director Name', 'job': 'Director'}]
+    """
+    dir_map = {}
+    
+    # 1. 提取 created_by (主创，赋予最高集数权重)
+    for c in tmdb_data.get('created_by', []):
+        d_id = c.get('id')
+        if d_id:
+            dir_map[d_id] = {
+                'id': d_id, 'name': c.get('name'),
+                'is_creator': True, 'ep_count': 9999,
+                'has_profile': bool(c.get('profile_path'))
+            }
+            
+    # 2. 提取 crew 中的 Director
+    credits_data = tmdb_data.get('aggregate_credits') or tmdb_data.get('credits') or tmdb_data.get('casts') or {}
+    for c in credits_data.get('crew', []):
+        d_id = c.get('id')
+        if not d_id: continue
+        
+        ep_count = 0
+        is_director = False
+        
+        # 普通 credits 格式
+        if c.get('job') in ['Director', 'Series Director']:
+            is_director = True
+            ep_count = 1
+            
+        # aggregate_credits 格式 (剧集特有，带执导集数)
+        for j in c.get('jobs', []):
+            if j.get('job') in ['Director', 'Series Director']:
+                is_director = True
+                ep_count += j.get('episode_count', 1)
+                
+        if is_director:
+            if d_id not in dir_map:
+                dir_map[d_id] = {
+                    'id': d_id, 'name': c.get('name'),
+                    'is_creator': False, 'ep_count': ep_count,
+                    'has_profile': bool(c.get('profile_path'))
+                }
+            else:
+                # 如果已经是 creator，累加真实集数作为次要排序依据
+                dir_map[d_id]['ep_count'] += ep_count
+
+    # 3. 排序并截断 (优先主创 -> 优先集数多 -> 优先有头像)
+    sorted_dirs = sorted(
+        dir_map.values(),
+        key=lambda x: (x['is_creator'], x['ep_count'], x['has_profile']),
+        reverse=True
+    )[:max_count]
+    
+    return [{'id': d['id'], 'name': d['name'], 'job': 'Director'} for d in sorted_dirs]

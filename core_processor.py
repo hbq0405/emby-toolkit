@@ -20,7 +20,7 @@ from database.connection import get_db_connection
 from database import media_db, settings_db
 import handler.emby as emby
 import handler.tmdb as tmdb
-from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids, construct_metadata_payload, translate_tmdb_metadata_recursively
+from tasks.helpers import parse_full_asset_details, calculate_ancestor_ids, construct_metadata_payload, extract_top_directors, translate_tmdb_metadata_recursively
 import utils
 import constants
 import logging
@@ -652,21 +652,7 @@ class MediaProcessor:
 
                 # 将提取到的导演强行塞入 formatted_metadata 供 NFO 使用 
                 if item_type == "Series":
-                    series_directors = []
-                    seen_dir_ids = set()
-                    # 1. 优先获取 created_by (主创)
-                    for c in details.get('created_by', []):
-                        if c.get('id') not in seen_dir_ids:
-                            series_directors.append(c)
-                            seen_dir_ids.add(c.get('id'))
-                    
-                    # 2. 补充从 credits / aggregate_credits 中获取的 Director
-                    series_credits = details.get('aggregate_credits') or details.get('credits') or {}
-                    for c in series_credits.get('crew', []):
-                        is_dir = c.get('job') in ['Director', 'Series Director'] or any(j.get('job') in ['Director', 'Series Director'] for j in c.get('jobs', []))
-                        if is_dir and c.get('id') not in seen_dir_ids:
-                            series_directors.append(c)
-                            seen_dir_ids.add(c.get('id'))
+                    top_directors = extract_top_directors(details, max_count=3)
                     
                     if 'credits' not in formatted_metadata:
                         formatted_metadata['credits'] = {'crew': []}
@@ -674,13 +660,9 @@ class MediaProcessor:
                         formatted_metadata['credits']['crew'] = []
                         
                     existing_crew_ids = {c.get('id') for c in formatted_metadata['credits']['crew'] if c.get('job') in ['Director', 'Series Director']}
-                    for d in series_directors:
-                        if d.get('id') not in existing_crew_ids:
-                            formatted_metadata['credits']['crew'].append({
-                                'id': d.get('id'),
-                                'name': d.get('name'),
-                                'job': 'Director'
-                            })
+                    for d in top_directors:
+                        if d['id'] not in existing_crew_ids:
+                            formatted_metadata['credits']['crew'].append(d)
 
                 # 3. 写入本地文件
                 logger.info(f"  ➜ [实时监控] 正在写入本地元数据文件...")
@@ -1456,33 +1438,8 @@ class MediaProcessor:
                 series_record['countries_json'] = c_json
                 
                 # ★★★ 综合提取剧集导演 (created_by + crew) ★★★
-                series_directors = []
-                seen_director_ids = set()
-
-                # 1. 优先获取 created_by (主创)
-                for c in series_details.get('created_by', []):
-                    if c.get('id') not in seen_director_ids:
-                        series_directors.append({'id': c.get('id'), 'name': c.get('name')})
-                        seen_director_ids.add(c.get('id'))
-
-                # 2. 补充从 credits / aggregate_credits 中获取的 Director
-                series_credits = series_details.get('aggregate_credits') or series_details.get('credits') or {}
-                for c in series_credits.get('crew', []):
-                    is_director = False
-                    # 兼容普通 credits 格式
-                    if c.get('job') in ['Director', 'Series Director']:
-                        is_director = True
-                    # 兼容 aggregate_credits 格式 (TMDb 剧集特有)
-                    for j in c.get('jobs', []):
-                        if j.get('job') in ['Director', 'Series Director']:
-                            is_director = True
-                            break
-                            
-                    if is_director and c.get('id') not in seen_director_ids:
-                        series_directors.append({'id': c.get('id'), 'name': c.get('name')})
-                        seen_director_ids.add(c.get('id'))
-
-                series_record['directors_json'] = json.dumps(series_directors, ensure_ascii=False)
+                top_directors = extract_top_directors(series_details, max_count=3)
+                series_record['directors_json'] = json.dumps([{'id': d['id'], 'name': d['name']} for d in top_directors], ensure_ascii=False)
                 
                 languages_list = series_details.get('languages', [])
                 series_record['original_language'] = series_details.get('original_language') or (languages_list[0] if languages_list else None)
@@ -2574,19 +2531,8 @@ class MediaProcessor:
 
                 # ★★★ 首次入库时，将提取到的导演强行塞入 formatted_metadata 供 NFO 使用 ★★★
                 if item_type == "Series":
-                    series_directors = []
-                    seen_dir_ids = set()
-                    for c in fresh_data.get('created_by', []):
-                        if c.get('id') not in seen_dir_ids:
-                            series_directors.append(c)
-                            seen_dir_ids.add(c.get('id'))
-                    
-                    series_credits = fresh_data.get('aggregate_credits') or fresh_data.get('credits') or {}
-                    for c in series_credits.get('crew', []):
-                        is_dir = c.get('job') in ['Director', 'Series Director'] or any(j.get('job') in ['Director', 'Series Director'] for j in c.get('jobs', []))
-                        if is_dir and c.get('id') not in seen_dir_ids:
-                            series_directors.append(c)
-                            seen_dir_ids.add(c.get('id'))
+                    from tasks.helpers import extract_top_directors
+                    top_directors = extract_top_directors(fresh_data, max_count=3)
                     
                     if 'credits' not in formatted_metadata:
                         formatted_metadata['credits'] = {'crew': []}
@@ -2594,13 +2540,9 @@ class MediaProcessor:
                         formatted_metadata['credits']['crew'] = []
                         
                     existing_crew_ids = {c.get('id') for c in formatted_metadata['credits']['crew'] if c.get('job') in ['Director', 'Series Director']}
-                    for d in series_directors:
-                        if d.get('id') not in existing_crew_ids:
-                            formatted_metadata['credits']['crew'].append({
-                                'id': d.get('id'),
-                                'name': d.get('name'),
-                                'job': 'Director'
-                            })
+                    for d in top_directors:
+                        if d['id'] not in existing_crew_ids:
+                            formatted_metadata['credits']['crew'].append(d)
 
                 # 5. 生成 NFO 和 图片
                 logger.info(f"  ➜ 正在生成(NFO文件 & 图片)...")

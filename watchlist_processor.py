@@ -583,31 +583,8 @@ class WatchlistProcessor:
         countries_json = countries if isinstance(countries, list) else [countries]
 
         # ★★★ 综合提取剧集导演 (created_by + crew) 保持与 core_processor 一致 ★★★
-        series_directors = []
-        seen_director_ids = set()
-
-        # 1. 优先获取 created_by (主创)
-        for c in latest_series_data.get('created_by', []):
-            if c.get('id') not in seen_director_ids:
-                series_directors.append({'id': c.get('id'), 'name': c.get('name')})
-                seen_director_ids.add(c.get('id'))
-
-        # 2. 补充从 credits / aggregate_credits 中获取的 Director
-        series_credits = latest_series_data.get('aggregate_credits') or latest_series_data.get('credits') or {}
-        for c in series_credits.get('crew', []):
-            is_director = False
-            if c.get('job') in ['Director', 'Series Director']:
-                is_director = True
-            for j in c.get('jobs', []):
-                if j.get('job') in ['Director', 'Series Director']:
-                    is_director = True
-                    break
-                    
-            if is_director and c.get('id') not in seen_director_ids:
-                series_directors.append({'id': c.get('id'), 'name': c.get('name')})
-                seen_director_ids.add(c.get('id'))
-                
-        directors = series_directors # 赋值给原变量名，供后续写入数据库
+        top_directors = helpers.extract_top_directors(latest_series_data, max_count=3)
+        directors = [{'id': d['id'], 'name': d['name']} for d in top_directors]
 
         # 构造更新字典
         series_updates = {
