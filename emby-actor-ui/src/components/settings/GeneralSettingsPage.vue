@@ -990,11 +990,11 @@
                       </n-gi>
 
                       <n-gi span="1 m:2">
-                        <n-form-item-grid-item label="MoviePilot 辅助识别" path="moviepilot_recognition">
+                        <n-form-item-grid-item label="辅助识别" path="moviepilot_recognition">
                           <n-switch v-model:value="configModel.moviepilot_recognition" :disabled="!isMoviePilotConfigured" />
                           <template #feedback>
                             <n-text depth="3" style="font-size:0.8em;">
-                              开启后，当本地正则无法识别文件名时，将优先调用 MP 的接口进行识别（速度快、免费），失败后再交由 AI 兜底。
+                              开启后，整理网盘资源时，当正则无法识别文件名时，将优先调用 MP 的接口进行识别，失败后再交由 AI 兜底。
                             </n-text>
                           </template>
                         </n-form-item-grid-item>
