@@ -604,8 +604,7 @@ class WatchlistProcessor:
             "networks_json": json.dumps(networks_json) if networks_json else None,
             "countries_json": json.dumps(countries_json) if countries_json else None,
             "directors_json": json.dumps(directors, ensure_ascii=False),
-            "imdb_id": latest_series_data.get("external_ids", {}).get("imdb_id"),
-            "tvdb_id": latest_series_data.get("external_ids", {}).get("tvdb_id")
+            "imdb_id": latest_series_data.get("external_ids", {}).get("imdb_id")
         }
         
         watchlist_db.update_media_metadata_fields(tmdb_id, 'Series', series_updates)

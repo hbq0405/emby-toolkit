@@ -146,7 +146,6 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     
     tmdb_id = data.get('id')
     imdb_id = data.get('imdb_id')
-    tvdb_id = data.get('tvdb_id')
     
     if tmdb_id:
         ET.SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(tmdb_id)
@@ -156,20 +155,14 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
         ET.SubElement(root, 'uniqueid', type='imdb').text = str(imdb_id)
         _add_element(root, 'imdb_id', imdb_id)
         
-    if tvdb_id:
-        ET.SubElement(root, 'uniqueid', type='tvdb').text = str(tvdb_id)
-        _add_element(root, 'tvdbid', tvdb_id)
-
     # 补全 episodeguide
     guide_dict = {}
     if tmdb_id: guide_dict["tmdb"] = str(tmdb_id)
     if imdb_id: guide_dict["imdb"] = str(imdb_id)
-    if tvdb_id: guide_dict["tvdb"] = str(tvdb_id)
     if guide_dict:
         _add_element(root, 'episodeguide', json.dumps(guide_dict))
         
-    if tvdb_id: _add_element(root, 'id', tvdb_id)
-    elif imdb_id: _add_element(root, 'id', imdb_id)
+    if imdb_id: _add_element(root, 'id', imdb_id)
     elif tmdb_id: _add_element(root, 'id', tmdb_id)
 
     # 补全剧集专属占位符

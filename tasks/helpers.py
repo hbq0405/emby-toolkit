@@ -1265,12 +1265,10 @@ def construct_metadata_payload(item_type: str, tmdb_data: Dict[str, Any],
     if emby_data_fallback and emby_data_fallback.get('ProviderIds'):
         providers = emby_data_fallback['ProviderIds']
         if 'Imdb' in providers: payload['imdb_id'] = providers['Imdb']
-        if 'Tvdb' in providers: payload['tvdb_id'] = providers['Tvdb']
         
     if 'external_ids' in tmdb_data:
         ext = tmdb_data['external_ids']
         if 'imdb_id' in ext and ext['imdb_id']: payload['imdb_id'] = ext['imdb_id']
-        if 'tvdb_id' in ext and ext['tvdb_id']: payload['tvdb_id'] = ext['tvdb_id']
 
     if emby_data_fallback and emby_data_fallback.get('DateCreated'):
         payload['date_added'] = emby_data_fallback['DateCreated']
@@ -1302,7 +1300,6 @@ def reconstruct_metadata_from_db(db_row: Dict[str, Any], actors_list: List[Dict[
     payload['vote_average'] = db_row.get('rating')
     payload['poster_path'] = db_row.get('poster_path')
     payload['imdb_id'] = db_row.get('imdb_id')
-    payload['tvdb_id'] = db_row.get('tvdb_id')
     
     date_added = db_row.get('date_added')
     if date_added:

@@ -194,7 +194,6 @@ def init_db():
 
                         -- 核心与扩展元数据
                         imdb_id TEXT,
-                        tvdb_id TEXT,
                         title TEXT,
                         original_title TEXT,
                         original_language TEXT,
@@ -527,8 +526,7 @@ def init_db():
                             "file_pickcode_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
                             "waiting_for_completed_pack": "BOOLEAN DEFAULT FALSE",
                             "active_washing": "BOOLEAN DEFAULT FALSE",
-                            "imdb_id": "TEXT",
-                            "tvdb_id": "TEXT"
+                            "imdb_id": "TEXT"
                         },
                         'resubscribe_rules': {
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE",
@@ -690,7 +688,8 @@ def init_db():
                     # ★★★ 核心修复：使用字典来管理多个表的废弃列 ★★★
                     deprecated_columns_map = {
                         'media_metadata': [
-                            'emby_item_id'
+                            'emby_item_id',
+                            'tvdb_id'
                         ],
                         'cleanup_index': [
                             'best_version_id'
