@@ -582,8 +582,32 @@ class WatchlistProcessor:
         countries = latest_series_data.get("origin_country", [])
         countries_json = countries if isinstance(countries, list) else [countries]
 
-        # ★★★ 核心修复：提取导演 (剧集对应 created_by) ★★★
-        directors = [{'id': c.get('id'), 'name': c.get('name')} for c in latest_series_data.get('created_by', [])]
+        # ★★★ 综合提取剧集导演 (created_by + crew) 保持与 core_processor 一致 ★★★
+        series_directors = []
+        seen_director_ids = set()
+
+        # 1. 优先获取 created_by (主创)
+        for c in latest_series_data.get('created_by', []):
+            if c.get('id') not in seen_director_ids:
+                series_directors.append({'id': c.get('id'), 'name': c.get('name')})
+                seen_director_ids.add(c.get('id'))
+
+        # 2. 补充从 credits / aggregate_credits 中获取的 Director
+        series_credits = latest_series_data.get('aggregate_credits') or latest_series_data.get('credits') or {}
+        for c in series_credits.get('crew', []):
+            is_director = False
+            if c.get('job') in ['Director', 'Series Director']:
+                is_director = True
+            for j in c.get('jobs', []):
+                if j.get('job') in ['Director', 'Series Director']:
+                    is_director = True
+                    break
+                    
+            if is_director and c.get('id') not in seen_director_ids:
+                series_directors.append({'id': c.get('id'), 'name': c.get('name')})
+                seen_director_ids.add(c.get('id'))
+                
+        directors = series_directors # 赋值给原变量名，供后续写入数据库
 
         # 构造更新字典
         series_updates = {
@@ -649,6 +673,22 @@ class WatchlistProcessor:
                     payload_for_nfo = latest_series_data.copy()
                     payload_for_nfo['seasons_details'] = aggregated_data.get('seasons_details', [])
                     payload_for_nfo['episodes_details'] = aggregated_data.get('episodes_details', {})
+                    
+                    # ★★★ 将辛苦抓取的导演强行塞入 payload，确保 NFO Builder 能读到 ★★★
+                    # 兼容 NFO Builder 的读取习惯，把导演伪装成 crew 塞进 credits 里
+                    if 'credits' not in payload_for_nfo:
+                        payload_for_nfo['credits'] = {'crew': []}
+                    elif 'crew' not in payload_for_nfo['credits']:
+                        payload_for_nfo['credits']['crew'] = []
+                        
+                    existing_crew_ids = {c.get('id') for c in payload_for_nfo['credits']['crew'] if c.get('job') in ['Director', 'Series Director']}
+                    for d in directors:
+                        if d.get('id') not in existing_crew_ids:
+                            payload_for_nfo['credits']['crew'].append({
+                                'id': d.get('id'),
+                                'name': d.get('name'),
+                                'job': 'Director'
+                            })
                     
                     # B. 从数据库逆向恢复之前精修过的演员表 (防止 NFO 演员表被清空)
                     _, db_actors = extensions.media_processor_instance._reconstruct_full_data_from_db(tmdb_id, 'Series')

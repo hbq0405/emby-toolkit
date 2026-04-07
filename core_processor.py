@@ -2524,6 +2524,36 @@ class MediaProcessor:
                             if ep_key in generated_jokes:
                                 ep["overview"] = generated_jokes[ep_key]
 
+                # ★★★ 首次入库时，将提取到的导演强行塞入 formatted_metadata 供 NFO 使用 ★★★
+                if item_type == "Series":
+                    series_directors = []
+                    seen_dir_ids = set()
+                    for c in fresh_data.get('created_by', []):
+                        if c.get('id') not in seen_dir_ids:
+                            series_directors.append(c)
+                            seen_dir_ids.add(c.get('id'))
+                    
+                    series_credits = fresh_data.get('aggregate_credits') or fresh_data.get('credits') or {}
+                    for c in series_credits.get('crew', []):
+                        is_dir = c.get('job') in ['Director', 'Series Director'] or any(j.get('job') in ['Director', 'Series Director'] for j in c.get('jobs', []))
+                        if is_dir and c.get('id') not in seen_dir_ids:
+                            series_directors.append(c)
+                            seen_dir_ids.add(c.get('id'))
+                    
+                    if 'credits' not in formatted_metadata:
+                        formatted_metadata['credits'] = {'crew': []}
+                    elif 'crew' not in formatted_metadata['credits']:
+                        formatted_metadata['credits']['crew'] = []
+                        
+                    existing_crew_ids = {c.get('id') for c in formatted_metadata['credits']['crew'] if c.get('job') in ['Director', 'Series Director']}
+                    for d in series_directors:
+                        if d.get('id') not in existing_crew_ids:
+                            formatted_metadata['credits']['crew'].append({
+                                'id': d.get('id'),
+                                'name': d.get('name'),
+                                'job': 'Director'
+                            })
+
                 # 5. 生成 NFO 和 图片
                 logger.info(f"  ➜ 正在生成(NFO文件 & 图片)...")
                 self.sync_item_metadata(
