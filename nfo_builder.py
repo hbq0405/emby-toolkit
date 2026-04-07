@@ -3,7 +3,7 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 import logging
 import json
-# ★★★ 引入拼音首字母转换函数 ★★★
+from tasks.helpers import extract_top_directors
 from utils import GENRE_TRANSLATION_PATCH, get_pinyin_initials
 
 logger = logging.getLogger(__name__)
@@ -32,7 +32,7 @@ def _add_actors(root, cast):
         actor_elem = ET.SubElement(root, 'actor')
         _add_element(actor_elem, 'name', actor.get('name'))
         _add_element(actor_elem, 'role', actor.get('character'))
-        _add_element(actor_elem, 'type', 'Actor')  # ★ 补全 Type
+        _add_element(actor_elem, 'type', actor.get('type', 'Actor'))
         _add_element(actor_elem, 'order', actor.get('order'))
         
         if actor.get('profile_path'):
@@ -110,14 +110,21 @@ def build_movie_nfo(data: dict, cast: list) -> str:
 
     _add_genres_and_tags(root, data)
     _add_actors(root, cast) 
-    crew = data.get('casts', {}).get('crew', [])
-    for member in crew:
-        if member.get('job') == 'Director':
-            dir_elem = ET.SubElement(root, 'director')
-            if member.get('id'):
-                dir_elem.set('tmdbid', str(member.get('id')))
-            dir_elem.text = member.get('name')
-
+    extended_cast = list(cast)
+    top_directors = extract_top_directors(data, max_count=3)
+    for d in top_directors:
+        # 1. 写入标准的 director 标签 (兼容 Kodi)
+        dir_elem = ET.SubElement(root, 'director')
+        if d.get('id'): dir_elem.set('tmdbid', str(d.get('id')))
+        dir_elem.text = d.get('name')
+        
+        # 2. 伪装成 Actor 塞进列表 (让 Emby 能读取头像)
+        d_copy = d.copy()
+        d_copy['type'] = 'Director'
+        d_copy['character'] = 'Director'
+        extended_cast.append(d_copy)
+        
+    _add_actors(root, extended_cast) 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
 def build_tvshow_nfo(data: dict, cast: list) -> str:
@@ -176,22 +183,19 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
         _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)
 
     _add_actors(root, cast) 
-    seen_dirs = set()
-    for creator in data.get('created_by', []):
-        if creator.get('name') not in seen_dirs:
-            dir_elem = ET.SubElement(root, 'director')
-            if creator.get('id'): dir_elem.set('tmdbid', str(creator.get('id')))
-            dir_elem.text = creator.get('name')
-            seen_dirs.add(creator.get('name'))
-            
-    crew_list = data.get('credits', {}).get('crew', []) + data.get('casts', {}).get('crew', [])
-    for member in crew_list:
-        if member.get('job') in ['Director', 'Series Director'] and member.get('name') not in seen_dirs:
-            dir_elem = ET.SubElement(root, 'director')
-            if member.get('id'): dir_elem.set('tmdbid', str(member.get('id')))
-            dir_elem.text = member.get('name')
-            seen_dirs.add(member.get('name'))
-
+    extended_cast = list(cast)
+    top_directors = extract_top_directors(data, max_count=3)
+    for d in top_directors:
+        dir_elem = ET.SubElement(root, 'director')
+        if d.get('id'): dir_elem.set('tmdbid', str(d.get('id')))
+        dir_elem.text = d.get('name')
+        
+        d_copy = d.copy()
+        d_copy['type'] = 'Director'
+        d_copy['character'] = 'Director'
+        extended_cast.append(d_copy)
+        
+    _add_actors(root, extended_cast) 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
 def build_season_nfo(data: dict) -> str:
@@ -234,13 +238,21 @@ def build_episode_nfo(data: dict, cast: list) -> str:
 
     _add_actors(root, cast) 
 
-    crew_list = data.get('credits', {}).get('crew', []) + data.get('casts', {}).get('crew', [])
-    seen_dirs = set()
-    for member in crew_list:
-        if member.get('job') == 'Director' and member.get('name') not in seen_dirs:
-            dir_elem = ET.SubElement(root, 'director')
-            if member.get('id'): dir_elem.set('tmdbid', str(member.get('id')))
-            dir_elem.text = member.get('name')
-            seen_dirs.add(member.get('name'))
+    if data.get('id'):
+        ET.SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(data.get('id'))
+        _add_element(root, 'tmdbid', data.get('id'))
 
+    extended_cast = list(cast)
+    top_directors = extract_top_directors(data, max_count=3)
+    for d in top_directors:
+        dir_elem = ET.SubElement(root, 'director')
+        if d.get('id'): dir_elem.set('tmdbid', str(d.get('id')))
+        dir_elem.text = d.get('name')
+        
+        d_copy = d.copy()
+        d_copy['type'] = 'Director'
+        d_copy['character'] = 'Director'
+        extended_cast.append(d_copy)
+        
+    _add_actors(root, extended_cast) 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")

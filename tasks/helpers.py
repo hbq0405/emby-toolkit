@@ -1632,7 +1632,6 @@ def extract_top_directors(tmdb_data: dict, max_count: int = 3) -> list:
     """
     综合提取剧集/电影的导演，并按权重排序截断。
     权重：主创(Creator) > 执导集数(Episode Count) > 有头像(Profile Path)
-    返回格式: [{'id': 123, 'name': 'Director Name', 'job': 'Director'}]
     """
     dir_map = {}
     
@@ -1643,7 +1642,7 @@ def extract_top_directors(tmdb_data: dict, max_count: int = 3) -> list:
             dir_map[d_id] = {
                 'id': d_id, 'name': c.get('name'),
                 'is_creator': True, 'ep_count': 9999,
-                'has_profile': bool(c.get('profile_path'))
+                'profile_path': c.get('profile_path') # ★ 提取头像
             }
             
     # 2. 提取 crew 中的 Director
@@ -1655,12 +1654,10 @@ def extract_top_directors(tmdb_data: dict, max_count: int = 3) -> list:
         ep_count = 0
         is_director = False
         
-        # 普通 credits 格式
         if c.get('job') in ['Director', 'Series Director']:
             is_director = True
             ep_count = 1
             
-        # aggregate_credits 格式 (剧集特有，带执导集数)
         for j in c.get('jobs', []):
             if j.get('job') in ['Director', 'Series Director']:
                 is_director = True
@@ -1671,17 +1668,19 @@ def extract_top_directors(tmdb_data: dict, max_count: int = 3) -> list:
                 dir_map[d_id] = {
                     'id': d_id, 'name': c.get('name'),
                     'is_creator': False, 'ep_count': ep_count,
-                    'has_profile': bool(c.get('profile_path'))
+                    'profile_path': c.get('profile_path') # ★ 提取头像
                 }
             else:
-                # 如果已经是 creator，累加真实集数作为次要排序依据
                 dir_map[d_id]['ep_count'] += ep_count
+                if not dir_map[d_id]['profile_path'] and c.get('profile_path'):
+                    dir_map[d_id]['profile_path'] = c.get('profile_path')
 
-    # 3. 排序并截断 (优先主创 -> 优先集数多 -> 优先有头像)
+    # 3. 排序并截断
     sorted_dirs = sorted(
         dir_map.values(),
-        key=lambda x: (x['is_creator'], x['ep_count'], x['has_profile']),
+        key=lambda x: (x['is_creator'], x['ep_count'], bool(x['profile_path'])),
         reverse=True
     )[:max_count]
     
-    return [{'id': d['id'], 'name': d['name'], 'job': 'Director'} for d in sorted_dirs]
+    # ★ 返回时带上 profile_path
+    return [{'id': d['id'], 'name': d['name'], 'job': 'Director', 'profile_path': d['profile_path']} for d in sorted_dirs]
