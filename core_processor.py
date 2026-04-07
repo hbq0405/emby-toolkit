@@ -650,6 +650,38 @@ class MediaProcessor:
                     aggregated_tmdb_data=aggregated_tmdb_data
                 )
 
+                # 将提取到的导演强行塞入 formatted_metadata 供 NFO 使用 
+                if item_type == "Series":
+                    series_directors = []
+                    seen_dir_ids = set()
+                    # 1. 优先获取 created_by (主创)
+                    for c in details.get('created_by', []):
+                        if c.get('id') not in seen_dir_ids:
+                            series_directors.append(c)
+                            seen_dir_ids.add(c.get('id'))
+                    
+                    # 2. 补充从 credits / aggregate_credits 中获取的 Director
+                    series_credits = details.get('aggregate_credits') or details.get('credits') or {}
+                    for c in series_credits.get('crew', []):
+                        is_dir = c.get('job') in ['Director', 'Series Director'] or any(j.get('job') in ['Director', 'Series Director'] for j in c.get('jobs', []))
+                        if is_dir and c.get('id') not in seen_dir_ids:
+                            series_directors.append(c)
+                            seen_dir_ids.add(c.get('id'))
+                    
+                    if 'credits' not in formatted_metadata:
+                        formatted_metadata['credits'] = {'crew': []}
+                    elif 'crew' not in formatted_metadata['credits']:
+                        formatted_metadata['credits']['crew'] = []
+                        
+                    existing_crew_ids = {c.get('id') for c in formatted_metadata['credits']['crew'] if c.get('job') in ['Director', 'Series Director']}
+                    for d in series_directors:
+                        if d.get('id') not in existing_crew_ids:
+                            formatted_metadata['credits']['crew'].append({
+                                'id': d.get('id'),
+                                'name': d.get('name'),
+                                'job': 'Director'
+                            })
+
                 # 3. 写入本地文件
                 logger.info(f"  ➜ [实时监控] 正在写入本地元数据文件...")
                 self.sync_item_metadata(
