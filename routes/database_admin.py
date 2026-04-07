@@ -81,7 +81,8 @@ def api_get_stats_subscription():
         
         # MP 配额计算
         mp_available = settings_db.get_subscription_quota()
-        mp_total = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
+        mp_config = settings_db.get_setting('mp_config') or {}
+        mp_total = mp_config.get('resubscribe_daily_cap', 200)
         mp_consumed = max(0, mp_total - mp_available)
 
 

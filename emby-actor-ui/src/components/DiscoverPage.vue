@@ -3,52 +3,6 @@
   <n-layout :content-style="{ padding: isMobile ? '12px' : '24px' }">
   <div>
     <n-page-header title="影视探索" subtitle="发现您感兴趣的下一部作品" />
-      <!-- ★★★ 新增：影巢 (HDHive) 配置与信息面板 ★★★ -->
-      <n-card v-if="authStore.isAdmin" class="dashboard-card" style="margin-top: 16px;">
-        <n-space align="center" justify="space-between" :wrap="isMobile">
-          <n-space align="center">
-            <n-icon :component="CloudDownloadIcon" size="28" color="#f0a020" />
-            <span style="font-weight: bold; font-size: 16px; color: #f0a020;">影巢 (HDHive) 极速秒传</span>
-          </n-space>
-          <n-space align="center">
-            <n-input v-model:value="hdhiveApiKey" type="password" placeholder="输入 X-API-Key" show-password-on="click" style="width: 250px;" />
-            <n-button type="primary" color="#f0a020" @click="saveHDHiveConfig" :loading="savingHdhive">保存并连接</n-button>
-          </n-space>
-        </n-space>
-        
-        <div v-if="hdhiveUserInfo" style="margin-top: 16px;">
-          <n-divider style="margin: 12px 0;" />
-          <n-space align="center" justify="space-between" :wrap="isMobile">
-            <!-- 左侧：用户信息 -->
-            <n-space align="center" :size="24">
-              <n-tag type="success" :bordered="false">
-                <template #icon><n-icon :component="PersonIcon" /></template>
-                用户: {{ hdhiveUserInfo.nickname || '未知用户' }}
-              </n-tag>
-              <n-tag type="warning" :bordered="false">
-                <template #icon><n-icon :component="StarIcon" /></template>
-                积分: {{ hdhiveUserInfo.user_meta?.points || '未知 (需Premium)' }}
-              </n-tag>
-              <n-tag type="info" :bordered="false" v-if="hdhiveQuotaInfo">
-                <template #icon><n-icon :component="TicketIcon" /></template>
-                今日剩余请求: {{ hdhiveQuotaInfo.endpoint_remaining ?? '无限' }}
-              </n-tag>
-            </n-space>
-            
-            <!-- 右侧：签到按钮 -->
-            <n-space align="center">
-              <n-button size="small" type="primary" secondary @click="doHDHiveCheckin(false)" :loading="checkingIn">
-                <template #icon><n-icon><CalendarIcon/></n-icon></template>
-                每日签到
-              </n-button>
-              <n-button size="small" type="error" secondary @click="doHDHiveCheckin(true)" :loading="checkingIn">
-                <template #icon><n-icon><DiceIcon/></n-icon></template>
-                赌狗签到
-              </n-button>
-            </n-space>
-          </n-space>
-        </div>
-      </n-card>
       <n-grid :x-gap="24" :y-gap="24" :cols="isMobile ? 1 : 2" style="margin-top: 24px;">
         <!-- 左侧筛选面板 (占1列) -->
         <n-gi :span="1">
@@ -299,9 +253,9 @@
                 </div>
 
                 <div class="actions-container">
-                  <!-- ★ 新增：影巢专属秒传/洗版按钮 (仅管理员可见，无视任何状态始终显示) -->
+                  <!-- ★ 影巢专属秒传按钮 (仅管理员且配置了影巢时可见) -->
                   <div 
-                    v-if="authStore.isAdmin"
+                    v-if="authStore.isAdmin && isHdhiveConfigured"
                     class="action-btn"
                     @click.stop="openHDHiveResourceModal(media)"
                     title="影巢秒传/手动洗版"
@@ -311,9 +265,9 @@
                     </n-icon>
                   </div>
 
-                  <!-- 原有的常规订阅/想看按钮 -->
+                  <!-- ★ 常规订阅/想看按钮 (仅配置了MP时可见) -->
                   <div 
-                    v-if="media.media_type === 'tv' || (!media.in_library && ((isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE')))"
+                    v-if="isMpConfigured && (media.media_type === 'tv' || (!media.in_library && ((isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE'))))"
                     class="action-btn"
                     @click.stop="handleSubscribe(media)"
                     :title="media.media_type === 'tv' ? '选择季' : (isPrivilegedUser ? '订阅' : '想看')"
@@ -328,7 +282,6 @@
                   </div>
                 </div>
               </div>
-
             </div>
           </n-card>
         </div>
@@ -344,12 +297,11 @@
 
     <div ref="sentinel" style="height: 50px;"></div>
     
-    <!-- ★★★ 季选择模态框 (加入影巢按钮) ★★★ -->
+    <!-- 季选择模态框 -->
     <n-modal v-model:show="showSeasonModal" preset="card" title="选择要订阅的季" style="width: 600px; max-width: 95%;">
       <n-spin :show="loadingSeasons">
         <div v-if="seasonList.length === 0 && !loadingSeasons" style="text-align: center; color: #888; padding: 20px;">未找到季信息</div>
         <n-space vertical v-else>
-          <!-- ★ 修复：去掉了 style="background: #222;"，自适应浅色/深色主题 -->
           <n-card v-for="season in seasonList" :key="season.id" size="small" hoverable>
             <div style="display: flex; align-items: center; gap: 12px;">
               <img v-if="season.poster_path" :src="`https://image.tmdb.org/t/p/w92${season.poster_path}`" style="width: 40px; border-radius: 4px;" />
@@ -371,38 +323,19 @@
           </n-card>
           <n-divider style="margin: 12px 0;" />
           <n-space vertical>
-            <n-button block type="primary" @click="submitAllSeasonsSubscription" :loading="subscribingAllSeasons">
+            <n-button v-if="isMpConfigured" block type="primary" @click="submitAllSeasonsSubscription" :loading="subscribingAllSeasons">
               一键提交整剧到 MoviePilot
-            </n-button>
-            <n-button v-if="authStore.isAdmin" block color="#f0a020" secondary @click="openHDHiveResourceModal(currentSeriesForSearch, null)">
-              <template #icon><n-icon><CloudDownloadIcon/></n-icon></template>
-              从 影巢 (HDHive) 搜索整剧资源
             </n-button>
           </n-space>
         </n-space>
       </n-spin>
     </n-modal>
 
-    <!-- ★★★ 电影订阅方式选择模态框 ★★★ -->
-    <n-modal v-model:show="showMovieChoiceModal" preset="card" title="选择获取方式" style="width: 400px;">
-      <n-space vertical size="large">
-        <n-button block type="primary" size="large" secondary @click="submitMovieToMP">
-          <template #icon><n-icon size="20"><LightningIcon/></n-icon></template>
-          提交到 MoviePilot (常规挂机)
-        </n-button>
-        <n-button v-if="authStore.isAdmin" block color="#f0a020" size="large" secondary @click="openHDHiveResourceModal(currentMovieForChoice, null)">
-          <template #icon><n-icon size="20"><CloudDownloadIcon/></n-icon></template>
-          从 影巢 (HDHive) 极速秒传
-        </n-button>
-      </n-space>
-    </n-modal>
-
-    <!-- ★★★ 影巢资源列表模态框 (独立组件) ★★★ -->
+    <!-- 影巢资源列表模态框 -->
     <HDHiveResourceModal 
       v-model:show="showHDHiveResourceModal" 
       :media="currentHDHiveMedia" 
       :season-number="currentHDHiveSeason"
-      @download-success="fetchHDHiveConfig" 
     />
     
   </div>
@@ -444,6 +377,21 @@ const keywordOptions = ref([]);
 const selectedKeywords = ref([]); 
 const allStudios = ref([]); 
 const selectedStudios = ref([]);
+// ★ 新增：订阅源状态
+const isMpConfigured = ref(false);
+const isHdhiveConfigured = ref(false);
+
+const fetchSubscriptionStatus = async () => {
+  try {
+    const res = await axios.get('/api/subscription/status');
+    if (res.data.success) {
+      isMpConfigured.value = res.data.mp_configured;
+      isHdhiveConfigured.value = res.data.hdhive_configured;
+    }
+  } catch (e) {
+    console.error("获取订阅源状态失败", e);
+  }
+};
 const studioOptions = computed(() => {
   if (!allStudios.value || allStudios.value.length === 0) return [];
 
@@ -705,95 +653,19 @@ const updateMediaStatus = (mediaId, newStatus) => {
   }
 };
 
-// ★★★ 影巢相关状态 ★★★
-const hdhiveApiKey = ref('');
-const hdhiveUserInfo = ref(null);
-const hdhiveQuotaInfo = ref(null);
-const savingHdhive = ref(false);
-
-const showMovieChoiceModal = ref(false);
-const currentMovieForChoice = ref(null);
 
 const showHDHiveResourceModal = ref(false);
-const loadingHDHiveResources = ref(false);
-const hdhiveResources = ref([]);
 const currentHDHiveMedia = ref(null);
-const downloadingSlug = ref(null);
 const currentHDHiveSeason = ref(null);
 
-// ★★★ 影巢 API 调用逻辑 ★★★
-const fetchHDHiveConfig = async () => {
-  try {
-    const res = await axios.get('/api/hdhive/config');
-    if (res.data.success) {
-      hdhiveApiKey.value = res.data.api_key;
-      hdhiveUserInfo.value = res.data.user_info;
-      hdhiveQuotaInfo.value = res.data.quota_info;
-    }
-  } catch (e) {
-    console.error("获取影巢配置失败", e);
-  }
-};
-
-const checkingIn = ref(false);
-
-const doHDHiveCheckin = async (isGambler) => {
-  if (!hdhiveApiKey.value) return message.warning("请先配置 API Key");
-  
-  checkingIn.value = true;
-  try {
-    const res = await axios.post('/api/hdhive/checkin', { is_gambler: isGambler });
-    if (res.data.success) {
-      // 签到成功，弹出后端返回的 message（里面包含本次获得的积分）
-      message.success(res.data.message, { duration: 5000 });
-      // ★ 签到成功后，刷新一下用户信息，让积分变动实时显示出来
-      fetchHDHiveConfig(); 
-    } else {
-      // 可能是已经签到过了
-      message.warning(res.data.message);
-    }
-  } catch (e) {
-    message.error("签到请求失败");
-  } finally {
-    checkingIn.value = false;
-  }
-};
-
-const saveHDHiveConfig = async () => {
-  if (!hdhiveApiKey.value) return message.warning("请输入 API Key");
-  savingHdhive.value = true;
-  try {
-    const res = await axios.post('/api/hdhive/config', { api_key: hdhiveApiKey.value });
-    if (res.data.success) {
-      message.success(res.data.message);
-      hdhiveUserInfo.value = res.data.user_info;
-      hdhiveQuotaInfo.value = res.data.quota_info;
-    } else {
-      message.error(res.data.message);
-    }
-  } catch (e) {
-    message.error("保存失败");
-  } finally {
-    savingHdhive.value = false;
-  }
-};
-
-// 打开影巢资源列表弹窗
 const openHDHiveResourceModal = async (media, seasonNumber = null) => {
-  if (!hdhiveApiKey.value) {
-    message.warning("请先在页面顶部配置影巢 API Key！");
-    return;
-  }
-  
-  showMovieChoiceModal.value = false; // 如果是从电影弹窗来的，关掉它
   currentHDHiveMedia.value = media;
-  currentHDHiveSeason.value = seasonNumber; // 传递季号
+  currentHDHiveSeason.value = seasonNumber;
   showHDHiveResourceModal.value = true;
 };
 
-// ★★★ 改造原有的 handleSubscribe ★★★
+// ★ 修改：直接提交 MP，不再弹窗
 const handleSubscribe = async (media) => {
-  // 1. 如果是剧集，弹出季选择模态框 (逻辑不变，模板里已经加了影巢按钮)
   if (media.media_type === 'tv' || mediaType.value === 'tv') {
     currentSeriesForSearch.value = media;
     showSeasonModal.value = true;
@@ -815,16 +687,12 @@ const handleSubscribe = async (media) => {
     return;
   }
 
-  // 2. 如果是电影，弹出选择模态框 (MP or 影巢)
-  currentMovieForChoice.value = media;
-  showMovieChoiceModal.value = true;
+  // 如果是电影，直接提交到 MP
+  await submitMovieToMP(media);
 };
 
 // 电影：提交到 MP 的实际逻辑 (从原 handleSubscribe 拆分出来)
-const submitMovieToMP = async () => {
-  const media = currentMovieForChoice.value;
-  showMovieChoiceModal.value = false;
-  
+const submitMovieToMP = async (media) => {
   if (subscribingId.value === media.id) return;
   const originalStatus = media.subscription_status || 'NONE';
   subscribingId.value = media.id;
@@ -965,7 +833,7 @@ onMounted(() => {
   fetchStudios();
   fetchRatings();
   fetchEmbyConfig(); 
-  fetchHDHiveConfig();
+  fetchSubscriptionStatus(); // ★ 获取订阅状态
   fetchRecommendationPool();
   resetAndFetch();
   observer = new IntersectionObserver((entries) => {

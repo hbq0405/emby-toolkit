@@ -73,7 +73,8 @@ def get_subscription_quota() -> int:
     """【V3 - 终极健壮版】获取当前可用的订阅配额。"""
     
     try:
-        current_max_quota = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP, 200)
+        mp_config = get_setting('mp_config') or {}
+        current_max_quota = mp_config.get('resubscribe_daily_cap', 200)
         today_str = datetime.now(pytz.timezone(constants.TIMEZONE)).strftime('%Y-%m-%d')
 
         with get_db_connection() as conn:

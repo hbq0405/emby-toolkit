@@ -13,7 +13,7 @@ import concurrent.futures
 import handler.tmdb as tmdb
 from tasks.helpers import parse_series_title_and_season, process_subscription_items_and_update_db
 from database.connection import get_db_connection
-from database import media_db, request_db, actor_db
+from database import media_db, request_db, actor_db, settings_db
 import constants
 import utils
 
@@ -37,7 +37,8 @@ class ActorSubscriptionProcessor:
         self.emby_url = config.get('emby_server_url')
         self.emby_api_key = config.get('emby_api_key')
         self.emby_user_id = config.get('emby_user_id')
-        self.subscribe_delay_sec = config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5)
+        mp_config = settings_db.get_setting('mp_config') or {}
+        self.subscribe_delay_sec = mp_config.get('resubscribe_delay_seconds', 1.5)
         self._stop_event = threading.Event()
         self._quota_warning_logged = False
 

@@ -3448,7 +3448,8 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
     # =================================================================
     # ★ 第三步：MoviePilot 辅助识别 (免费、快速、高准确率)
     # =================================================================
-    use_mp_recognition = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_RECOGNITION, False)
+    mp_config = settings_db.get_setting('mp_config') or {}
+    use_mp_recognition = mp_config.get('moviepilot_recognition', False)
     if use_mp_recognition:
         import handler.moviepilot as mp
         target_mp_name = main_dir_name if main_dir_name else filename

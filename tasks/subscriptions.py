@@ -475,7 +475,8 @@ def task_auto_subscribe(processor):
     
     # 2. 读取请求延迟配置
     try:
-        request_delay = int(config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 0))
+        mp_config = settings_db.get_setting('mp_config') or {}
+        request_delay = int(mp_config.get('resubscribe_delay_seconds', 0))
     except:
         request_delay = 0
 

@@ -145,16 +145,6 @@ CONFIG_OPTION_DOUBAN_DEFAULT_COOLDOWN = "api_douban_default_cooldown_seconds" # 
 CONFIG_OPTION_DOUBAN_COOKIE = "douban_cookie" # 用于身份验证的豆瓣登录Cookie
 CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API = "douban_enable_online_api" # 是否启用豆瓣在线API
 
-# --- MoviePilot ---
-CONFIG_SECTION_MOVIEPILOT = "MoviePilot"
-CONFIG_OPTION_MOVIEPILOT_URL = "moviepilot_url"
-CONFIG_OPTION_MOVIEPILOT_USERNAME = "moviepilot_username"
-CONFIG_OPTION_MOVIEPILOT_PASSWORD = "moviepilot_password"
-CONFIG_OPTION_MOVIEPILOT_RECOGNITION = "moviepilot_recognition" # 是否启用 MoviePilot 辅助识别功能
-# --- 智能订阅相关配置 ---
-CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP = "resubscribe_daily_cap"
-CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS = "resubscribe_delay_seconds"
-
 # --- AI 翻译 ---
 CONFIG_SECTION_AI_TRANSLATION = "AITranslation"
 CONFIG_OPTION_AI_PROVIDER = "ai_provider"                       # AI服务提供商 (如 'siliconflow', 'openai')

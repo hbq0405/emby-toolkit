@@ -986,7 +986,8 @@ def _execute_resubscribe(processor, task_name: str, target):
 
     all_rules = resubscribe_db.get_all_resubscribe_rules()
     config = processor.config
-    delay = float(config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5))
+    mp_config = settings_db.get_setting('mp_config') or {}
+    delay = float(mp_config.get('resubscribe_delay_seconds', 1.5))
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     resubscribed_count, deleted_count = 0, 0
 

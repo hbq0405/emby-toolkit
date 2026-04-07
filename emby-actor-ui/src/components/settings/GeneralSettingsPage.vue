@@ -857,7 +857,7 @@
             </n-tab-pane>
 
             <!-- ================== 标签页 3: 智能服务  ================== -->
-            <n-tab-pane name="services" tab="智能服务">
+            <n-tab-pane name="services" tab="智能服务 & 订阅源">
               <!-- ★★★ 修改点1: cols 改为 "1 l:3"，总共3列 ★★★ -->
               <n-grid cols="1 l:2" :x-gap="24" :y-gap="24" responsive="screen">
                 
@@ -964,62 +964,59 @@
                   </n-card>
                 </n-gi>
 
-                <!-- 右侧: MoviePilot订阅 -->
+                <!-- 右侧: 订阅源配置 (独立卡片布局) -->
                 <n-gi>
-                  <n-card :bordered="false" class="dashboard-card" style="height: 100%;">
-                    <template #header><span class="card-title">MoviePilot订阅</span></template>
+                  <n-space vertical :size="24" style="height: 100%;">
                     
-                    <!-- ★★★ 修改点3: 内部使用 Grid 布局实现双列内容，压缩高度 ★★★ -->
-                    <n-grid cols="1 m:2" :x-gap="24" responsive="screen">
-                      
-                      <!-- 1. 连接设置区域 -->
-                      <n-gi span="1 m:2">
-                        <n-form-item-grid-item label="MoviePilot URL" path="moviepilot_url">
-                          <n-input v-model:value="configModel.moviepilot_url" placeholder="例如: http://192.168.1.100:3000"/>
-                        </n-form-item-grid-item>
-                      </n-gi>
-                      <n-gi span="1 m:2">
-                        <n-form-item-grid-item label="用户名" path="moviepilot_username">
-                          <n-input v-model:value="configModel.moviepilot_username" placeholder="登录用户名"/>
-                        </n-form-item-grid-item>
-                      </n-gi>
-                      <n-gi span="1 m:2">
-                        <n-form-item-grid-item label="密码" path="moviepilot_password">
-                          <n-input type="password" show-password-on="mousedown" v-model:value="configModel.moviepilot_password" placeholder="登录密码"/>
-                        </n-form-item-grid-item>
-                      </n-gi>
+                    <!-- 卡片 1：MoviePilot -->
+                    <n-card :bordered="false" class="dashboard-card">
+                      <template #header>
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <span class="card-title">MoviePilot</span>
+                          <n-button secondary type="primary" @click="mpModalRef?.open()">
+                            <template #icon><n-icon :component="ListIcon" /></template>
+                            配置
+                          </n-button>
+                        </div>
+                      </template>
+                      <n-alert type="info" :show-icon="true">
+                        配置 MoviePilot 订阅源，实现自动化追剧、洗版及下载管理。
+                      </n-alert>
+                    </n-card>
 
-                      <n-gi span="1 m:2">
-                        <n-form-item-grid-item label="辅助识别" path="moviepilot_recognition">
-                          <n-switch v-model:value="configModel.moviepilot_recognition" :disabled="!isMoviePilotConfigured" />
-                          <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">
-                              开启后，整理网盘资源时，当正则无法识别文件名时，将优先调用 MP 的接口进行识别，失败后再交由 AI 兜底。
-                            </n-text>
-                          </template>
-                        </n-form-item-grid-item>
-                      </n-gi>
+                    <!-- 卡片 2：影巢 (HDHive) -->
+                    <n-card :bordered="false" class="dashboard-card">
+                      <template #header>
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <span class="card-title">影巢 (HDHive)</span>
+                          <n-button secondary type="warning" @click="hdhiveModalRef?.open()">
+                            <template #icon><n-icon :component="CloudDownloadIcon" /></template>
+                            配置
+                          </n-button>
+                        </div>
+                      </template>
+                      <n-alert type="success" :show-icon="true">
+                        配置影巢 API，解锁 115 网盘极速秒传，海量资源一键入库。
+                      </n-alert>
+                    </n-card>
 
-                      <!-- 分割线 -->
-                      <n-gi span="1 m:2">
-                        <n-divider title-placement="left" style="margin: 10px 0 20px 0;">每日订阅额度</n-divider>
-                      </n-gi>
+                    <!-- 卡片 3：TG 频道监听 -->
+                    <n-card :bordered="false" class="dashboard-card">
+                      <template #header>
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <span class="card-title">TG 频道监听 (Pro)</span>
+                          <n-button secondary type="info" @click="tgMonitorModalRef?.open()">
+                            <template #icon><n-icon :component="PaperPlaneIcon" /></template>
+                            配置
+                          </n-button>
+                        </div>
+                      </template>
+                      <n-alert type="warning" :show-icon="true">
+                        自动监听 Telegram 频道消息，根据订阅规则选择性转存 115 资源。
+                      </n-alert>
+                    </n-card>
 
-                      <!-- 3. 额度区域 (左右并排) -->
-                      <n-gi>
-                        <n-form-item-grid-item label="每日订阅上限" path="resubscribe_daily_cap">
-                          <n-input-number v-model:value="configModel.resubscribe_daily_cap" :min="1" :disabled="!isMoviePilotConfigured" style="width: 100%;" />
-                          <template #feedback><n-text depth="3" style="font-size:0.8em;">超过数量停止任务，0点重置。</n-text></template>
-                        </n-form-item-grid-item>
-                      </n-gi>
-                      <n-gi>
-                        <n-form-item-grid-item label="订阅请求间隔 (秒)" path="resubscribe_delay_seconds">
-                          <n-input-number v-model:value="configModel.resubscribe_delay_seconds" :min="0.1" :step="0.1" :disabled="!isMoviePilotConfigured" style="width: 100%;" />
-                          <template #feedback><n-text depth="3" style="font-size:0.8em;">避免请求过快冲击服务器。</n-text></template>
-                        </n-form-item-grid-item>
-                      </n-gi>
-                    </n-grid>
-                  </n-card>
+                  </n-space>
                 </n-gi>
               </n-grid>
             </n-tab-pane>
@@ -1176,18 +1173,6 @@
                         </n-space>
                       </n-checkbox-group>
                     </n-form-item-grid-item>
-
-                    <!-- ★ 修改点：移除原有的表单，换成呼出模态框的按钮 -->
-                    <n-divider title-placement="left" style="margin-top: 15px;">频道订阅监听 (Pro)</n-divider>
-                    <n-alert type="warning" :show-icon="true" style="margin-bottom: 12px;">
-                      自动监听频道消息，根据订阅选择性转存资源。为防止冲突，此功能已独立配置。
-                    </n-alert>
-                    
-                    <n-button block type="primary" secondary @click="tgMonitorModalRef?.open()">
-                      <template #icon><n-icon :component="ListIcon" /></template>
-                      配置频道订阅监听
-                    </n-button>
-
                   </n-card>
                 </n-gi>
 
@@ -1457,6 +1442,9 @@
       ref="ruleManagerRef" 
       @open-folder-selector="(context, cid) => openFolderSelector(context, cid)" 
     />
+    <!-- 订阅源配置模态框 -->
+    <MoviePilotConfigModal ref="mpModalRef" />
+    <HDHiveConfigModal ref="hdhiveModalRef" />
   </n-layout>
   
   <!-- 导出选项模态框 -->
@@ -1868,13 +1856,20 @@ import {
   SearchOutline as SearchIcon,
   DiamondOutline as DiamondIcon,
   ArrowUpOutline as ArrowUpIcon,
-  RefreshOutline as RefreshIcon
+  RefreshOutline as RefreshIcon,
+  PaperPlaneOutline as PaperPlaneIcon,
+  CloudDownloadOutline as CloudDownloadIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
 import MusicManagerModal from './MusicManagerModal.vue';
 import RuleManagerModal from './RuleManagerModal.vue'; 
 import axios from 'axios';
+import MoviePilotConfigModal from './MoviePilotConfigModal.vue';
+import HDHiveConfigModal from './HDHiveConfigModal.vue';
+
+const mpModalRef = ref(null);
+const hdhiveModalRef = ref(null);
 const tgMonitorModalRef = ref(null);
 const renameModalRef = ref(null);
 const musicModalRef = ref(null);
@@ -2179,10 +2174,6 @@ const handleResetActorMappings = async () => {
     isResettingMappings.value = false;
   }
 };
-const isMoviePilotConfigured = computed(() => {
-  if (!configModel.value) return false;
-  return !!(configModel.value.moviepilot_url && configModel.value.moviepilot_username && configModel.value.moviepilot_password);
-});
 const testProxy = async () => {
   if (!configModel.value.network_http_proxy_url) {
     message.warning('请先填写 HTTP 代理地址再进行测试。');

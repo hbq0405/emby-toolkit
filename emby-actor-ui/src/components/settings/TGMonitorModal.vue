@@ -131,7 +131,7 @@ const open = async () => {
 const fetchConfig = async () => {
   isLoading.value = true;
   try {
-    const res = await axios.get('/api/tg_userbot/config');
+    const res = await axios.get('/api/subscription/tg_userbot/config');
     if (res.data.success) {
       config.value = res.data.data;
     }
@@ -145,7 +145,7 @@ const fetchConfig = async () => {
 const saveConfig = async () => {
   isSaving.value = true;
   try {
-    const res = await axios.post('/api/tg_userbot/config', config.value);
+    const res = await axios.post('/api/subscription/tg_userbot/config', config.value);
     if (res.data.success) {
       message.success(res.data.message);
       await checkUserBotStatus(); // 保存后重新刷新状态
@@ -160,7 +160,7 @@ const saveConfig = async () => {
 // --- 授权相关 API ---
 const checkUserBotStatus = async () => {
   try {
-    const res = await axios.get('/api/tg_userbot/status');
+    const res = await axios.get('/api/subscription/tg_userbot/status');
     if (res.data.success) {
       userBotStatus.value = res.data.data.status;
     }
@@ -173,7 +173,7 @@ const sendUserBotCode = async () => {
   }
   isSendingCode.value = true;
   try {
-    const res = await axios.post('/api/tg_userbot/send_code');
+    const res = await axios.post('/api/subscription/tg_userbot/send_code');
     if (res.data.success) {
       message.success(res.data.message);
       showCodeInput.value = true;
@@ -191,7 +191,7 @@ const submitUserBotCode = async () => {
   if (!userBotCode.value) return message.warning('请输入验证码');
   isSubmittingCode.value = true;
   try {
-    const res = await axios.post('/api/tg_userbot/login', { code: userBotCode.value });
+    const res = await axios.post('/api/subscription/tg_userbot/login', { code: userBotCode.value });
     if (res.data.success) {
       message.success(res.data.message);
       showCodeInput.value = false;
@@ -208,7 +208,7 @@ const submitUserBotCode = async () => {
 
 const logoutUserBot = async () => {
   try {
-    await axios.post('/api/tg_userbot/logout');
+    await axios.post('/api/subscription/tg_userbot/logout');
     message.success('已注销');
     await checkUserBotStatus();
   } catch (e) {

@@ -87,14 +87,6 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_DOUBAN_COOKIE: (constants.CONFIG_SECTION_API_DOUBAN, 'string', ""),
     constants.CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API: (constants.CONFIG_SECTION_API_DOUBAN, 'boolean', True),
 
-    # [MoviePilot]
-    constants.CONFIG_OPTION_MOVIEPILOT_URL: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
-    constants.CONFIG_OPTION_MOVIEPILOT_USERNAME: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
-    constants.CONFIG_OPTION_MOVIEPILOT_PASSWORD: (constants.CONFIG_SECTION_MOVIEPILOT, 'string', ""),
-    constants.CONFIG_OPTION_RESUBSCRIBE_DAILY_CAP: (constants.CONFIG_SECTION_MOVIEPILOT, 'int', 200),
-    constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS: (constants.CONFIG_SECTION_MOVIEPILOT, 'float', 1.5),
-    constants.CONFIG_OPTION_MOVIEPILOT_RECOGNITION: (constants.CONFIG_SECTION_MOVIEPILOT, 'boolean', False), # 是否启用 MoviePilot 辅助识别功能
-    
     # [Monitor] 
     constants.CONFIG_OPTION_MONITOR_ENABLED: (constants.CONFIG_SECTION_MONITOR, 'boolean', False),
     constants.CONFIG_OPTION_MONITOR_PATHS: (constants.CONFIG_SECTION_MONITOR, 'list', []),

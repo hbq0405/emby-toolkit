@@ -86,7 +86,7 @@ const fetchResources = async () => {
       params.season = season;
     }
 
-    const res = await axios.get('/api/hdhive/resources', { params });
+    const res = await axios.get('/api/subscription/hdhive/resources', { params });
     if (res.data.success) {
       resources.value = res.data.data;
     } else {
@@ -120,7 +120,7 @@ const download = async (resource) => {
       media_type: mediaType,
       title: mediaTitle.value
     };
-    const res = await axios.post('/api/hdhive/download', payload);
+    const res = await axios.post('/api/subscription/hdhive/download', payload);
     if (res.data.success) {
       message.success(res.data.message);
       emit('download-success');
