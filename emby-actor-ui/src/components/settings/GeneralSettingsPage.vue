@@ -989,6 +989,17 @@
                         </n-form-item-grid-item>
                       </n-gi>
 
+                      <n-gi span="1 m:2">
+                        <n-form-item-grid-item label="MoviePilot 辅助识别" path="moviepilot_recognition">
+                          <n-switch v-model:value="configModel.moviepilot_recognition" :disabled="!isMoviePilotConfigured" />
+                          <template #feedback>
+                            <n-text depth="3" style="font-size:0.8em;">
+                              开启后，当本地正则无法识别文件名时，将优先调用 MP 的接口进行识别（速度快、免费），失败后再交由 AI 兜底。
+                            </n-text>
+                          </template>
+                        </n-form-item-grid-item>
+                      </n-gi>
+
                       <!-- 分割线 -->
                       <n-gi span="1 m:2">
                         <n-divider title-placement="left" style="margin: 10px 0 20px 0;">每日订阅额度</n-divider>

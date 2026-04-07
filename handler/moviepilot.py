@@ -526,3 +526,35 @@ def search_subscription(sub_id: int, config: Dict[str, Any]) -> bool:
     except Exception as e:
         logger.error(f"  ➜ 触发 MP 订阅搜索失败: {e}")
         return False
+    
+def recognize_media(title: str, config: Dict[str, Any]) -> Optional[tuple]:
+    """
+    【辅助识别】调用 MoviePilot 的识别接口解析文件名。
+    返回: (tmdb_id, media_type, title) 或 None
+    """
+    try:
+        moviepilot_url = config.get(constants.CONFIG_OPTION_MOVIEPILOT_URL, '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token or not moviepilot_url:
+            return None
+
+        url = f"{moviepilot_url}/api/v1/media/recognize"
+        headers = {"Authorization": f"Bearer {access_token}"}
+        params = {"title": title}
+
+        res = requests.get(url, headers=headers, params=params, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            media_info = data.get("media_info")
+            
+            if media_info and media_info.get("tmdb_id"):
+                tmdb_id = str(media_info.get("tmdb_id"))
+                # MP 返回的 type 是中文 "电影" 或 "电视剧"
+                m_type = "tv" if media_info.get("type") == "电视剧" else "movie"
+                m_title = media_info.get("title") or media_info.get("name")
+                return tmdb_id, m_type, m_title
+                
+        return None
+    except Exception as e:
+        logger.warning(f"  ➜ 调用 MoviePilot 识别接口失败: {e}")
+        return None

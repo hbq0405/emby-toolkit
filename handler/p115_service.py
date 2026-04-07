@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 _TMDB_METADATA_CACHE = {}
 _TMDB_SEARCH_CACHE = {}
 _AI_PARSE_CACHE = {}
+_MP_PARSE_CACHE = {}
 
 # 全局直链缓存池，供反向代理和Web路由共享 
 _DIRECT_URL_CACHE = {}
@@ -3436,7 +3437,39 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
         if res: return res
 
     # =================================================================
-    # ★ 第三步：AI 辅助识别 (终极兜底 + 记忆体优化)
+    # ★ 第三步：MoviePilot 辅助识别 (免费、快速、高准确率)
+    # =================================================================
+    use_mp_recognition = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_MOVIEPILOT_RECOGNITION, False)
+    if use_mp_recognition:
+        import handler.moviepilot as mp
+        target_mp_name = main_dir_name if main_dir_name else filename
+        
+        def _do_mp_search(target_name):
+            if target_name in _MP_PARSE_CACHE:
+                return _MP_PARSE_CACHE[target_name]
+                
+            logger.debug(f"  ➜ 本地正则失败，尝试调用 MoviePilot 辅助识别: {target_name}")
+            mp_res = mp.recognize_media(target_name, config_manager.APP_CONFIG)
+            
+            if mp_res:
+                logger.info(f"  ➜ [MP辅助识别] 成功命中: {mp_res[2]} (ID:{mp_res[0]})")
+                _MP_PARSE_CACHE[target_name] = mp_res
+                return mp_res
+            
+            _MP_PARSE_CACHE[target_name] = None
+            return None
+
+        # 优先尝试主目录
+        res = _do_mp_search(target_mp_name)
+        if res: return res
+        
+        # 如果主目录失败，且当前是文件，尝试解析文件名
+        if main_dir_name and not is_same_name:
+            res_file = _do_mp_search(filename)
+            if res_file: return res_file
+
+    # =================================================================
+    # ★ 第四步：AI 辅助识别 (终极兜底 + 记忆体优化)
     # =================================================================
     if use_ai and ai_translator:
         target_ai_name = main_dir_name if main_dir_name else filename
