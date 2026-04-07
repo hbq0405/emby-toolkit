@@ -1407,7 +1407,34 @@ class MediaProcessor:
                 series_record['keywords_json'] = k_json
                 series_record['countries_json'] = c_json
                 
-                series_record['directors_json'] = json.dumps([{'id': c.get('id'), 'name': c.get('name')} for c in series_details.get('created_by', [])], ensure_ascii=False)
+                # ★★★ 综合提取剧集导演 (created_by + crew) ★★★
+                series_directors = []
+                seen_director_ids = set()
+
+                # 1. 优先获取 created_by (主创)
+                for c in series_details.get('created_by', []):
+                    if c.get('id') not in seen_director_ids:
+                        series_directors.append({'id': c.get('id'), 'name': c.get('name')})
+                        seen_director_ids.add(c.get('id'))
+
+                # 2. 补充从 credits / aggregate_credits 中获取的 Director
+                series_credits = series_details.get('aggregate_credits') or series_details.get('credits') or {}
+                for c in series_credits.get('crew', []):
+                    is_director = False
+                    # 兼容普通 credits 格式
+                    if c.get('job') in ['Director', 'Series Director']:
+                        is_director = True
+                    # 兼容 aggregate_credits 格式 (TMDb 剧集特有)
+                    for j in c.get('jobs', []):
+                        if j.get('job') in ['Director', 'Series Director']:
+                            is_director = True
+                            break
+                            
+                    if is_director and c.get('id') not in seen_director_ids:
+                        series_directors.append({'id': c.get('id'), 'name': c.get('name')})
+                        seen_director_ids.add(c.get('id'))
+
+                series_record['directors_json'] = json.dumps(series_directors, ensure_ascii=False)
                 
                 languages_list = series_details.get('languages', [])
                 series_record['original_language'] = series_details.get('original_language') or (languages_list[0] if languages_list else None)
@@ -1523,6 +1550,10 @@ class MediaProcessor:
 
                     final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
 
+                    # ★★★ 提取分集专属导演 ★★★
+                    ep_crew = episode.get('crew', [])
+                    ep_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in ep_crew if p.get('job') == 'Director']
+
                     episode_record = {
                         "tmdb_id": e_tmdb_id_str, 
                         "item_type": "Episode", 
@@ -1532,7 +1563,8 @@ class MediaProcessor:
                         "season_number": s_num, "episode_number": e_num,
                         "runtime_minutes": final_runtime,
                         "poster_path": episode.get('still_path'),
-                        "backdrop_path": episode.get('still_path')
+                        "backdrop_path": episode.get('still_path'),
+                        "directors_json": json.dumps(ep_directors, ensure_ascii=False) # 新增写入
                     }
                     
                     # ★ 资产信息处理 (支持多版本)
@@ -1639,8 +1671,9 @@ class MediaProcessor:
                         "release_date": emby_ep.get('PremiereDate'), 
                         "season_number": s_num, "episode_number": e_num,
                         "runtime_minutes": final_runtime,
-                        "poster_path": None,    # ★★★ 新增
-                        "backdrop_path": None,   # ★★★ 新增
+                        "poster_path": None,
+                        "backdrop_path": None,
+                        "directors_json": "[]"   
                     }
 
                     all_assets = []
