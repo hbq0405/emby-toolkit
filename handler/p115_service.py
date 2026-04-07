@@ -3368,54 +3368,62 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
 
     # 优先级 2: 提取 Title (Year) 进行搜索 (仅限文件)
     def _search_by_title_year(text):
-        # 剔除 S01E01 等干扰字符
-        clean_text = re.sub(r'(?i)\s*s\d{1,4}(?:e\d{1,4})?\b.*$', '', text).strip()
-        clean_text = re.sub(r'(?i)\s*ep?\d{1,4}\b.*$', '', clean_text).strip()
-        clean_text = re.sub(r'(?i)\s*season\s*\d{1,4}\b.*$', '', clean_text).strip()
-        clean_text = re.sub(r'(?i)\s*第[一二三四五六七八九十\d]+季.*$', '', clean_text).strip()
+        # 剔除 S01E01 等干扰字符 (连同前面的点和下划线一起剔除，防止留下 "The.Crown.")
+        clean_text = re.sub(r'(?i)[\.\s\-_]*s\d{1,4}(?:e\d{1,4})?\b.*$', '', text).strip()
+        clean_text = re.sub(r'(?i)[\.\s\-_]*ep?\d{1,4}\b.*$', '', clean_text).strip()
+        clean_text = re.sub(r'(?i)[\.\s\-_]*season\s*\d{1,4}\b.*$', '', clean_text).strip()
+        clean_text = re.sub(r'(?i)[\.\s\-_]*第[一二三四五六七八九十\d]+季.*$', '', clean_text).strip()
 
-        match_std = re.match(r'^(.+?)(?:\s+[\(\[]|\.|\s+)(\d{4})(?:[\)\]]|\.|\s+|$)', clean_text)
+        # 尝试提取年份 (不再强制要求必须有年份)
+        name_part = clean_text
+        year_part = None
+        match_std = re.search(r'[\(\[\.\s_-](\d{4})(?:[\)\]\.\s_-]|$)', clean_text)
         if match_std:
-            name_part = match_std.group(1).replace('.', ' ').strip()
-            year_part = match_std.group(2)
-            try:
-                if api_key:
-                    search_key = f"{name_part}_{year_part}_{media_type}"
-                    if search_key in _TMDB_SEARCH_CACHE:
-                        results = _TMDB_SEARCH_CACHE[search_key]
-                    else:
-                        # 严格按照锁定的 media_type 搜索
-                        results = tmdb.search_media(query=name_part, api_key=api_key, item_type=media_type, year=year_part)
-                        _TMDB_SEARCH_CACHE[search_key] = results
+            year_part = match_std.group(1)
+            # 把年份从名字里剔除
+            name_part = clean_text[:match_std.start()].strip()
 
-                    if results and len(results) > 0:
-                        best = results[0]
-                        # ★★★ 核心修复：精准匹配，防止 TMDb 瞎给结果 (如 狗镇 Dogville 匹配到 狗镇的告白) ★★★
-                        name_lower = name_part.lower()
-                        name_parts = [p for p in name_lower.split() if p]
+        # 清理名字里的点和下划线
+        name_part = name_part.replace('.', ' ').replace('_', ' ').strip()
+
+        if not name_part: return None
+
+        try:
+            if api_key:
+                search_key = f"{name_part}_{year_part}_{media_type}"
+                if search_key in _TMDB_SEARCH_CACHE:
+                    results = _TMDB_SEARCH_CACHE[search_key]
+                else:
+                    # 严格按照锁定的 media_type 搜索
+                    results = tmdb.search_media(query=name_part, api_key=api_key, item_type=media_type, year=year_part)
+                    _TMDB_SEARCH_CACHE[search_key] = results
+
+                if results and len(results) > 0:
+                    best = results[0]
+                    # ★★★ 核心修复：精准匹配，防止 TMDb 瞎给结果 ★★★
+                    name_lower = name_part.lower()
+                    name_parts = [p for p in name_lower.split() if p]
+                    
+                    for res in results:
+                        res_title = (res.get('title') or res.get('name') or '').lower()
+                        res_orig = (res.get('original_title') or res.get('original_name') or '').lower()
                         
-                        for res in results:
-                            res_title = (res.get('title') or res.get('name') or '').lower()
-                            res_orig = (res.get('original_title') or res.get('original_name') or '').lower()
+                        if name_lower == res_title or name_lower == res_orig:
+                            best = res
+                            break
                             
-                            # 1. 完整精确匹配
-                            if name_lower == res_title or name_lower == res_orig:
+                        part_match = False
+                        for part in name_parts:
+                            if part == res_title or part == res_orig:
                                 best = res
+                                part_match = True
                                 break
-                                
-                            # 2. 拆分精确匹配 (完美解决 中文名.英文名.年份 格式)
-                            part_match = False
-                            for part in name_parts:
-                                if part == res_title or part == res_orig:
-                                    best = res
-                                    part_match = True
-                                    break
-                            if part_match:
-                                break
-                                
-                        return str(best['id']), media_type, (best.get('title') or best.get('name'))
-            except Exception:
-                pass
+                        if part_match:
+                            break
+                            
+                    return str(best['id']), media_type, (best.get('title') or best.get('name'))
+        except Exception:
+            pass
         return None
 
     # 2.1 优先从 filename 搜索
