@@ -137,7 +137,7 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     _add_element(root, 'originaltitle', data.get('original_name') or data.get('original_title'))
     # ★★★ 自动生成拼音首字母用于排序 (如果已有 sorttitle 则优先使用) ★★★
     _add_element(root, 'sorttitle', data.get('sorttitle') or get_pinyin_initials(title))
-    
+    _add_element(root, 'tagline', data.get('tagline'))
     _add_element(root, 'year', data.get('first_air_date')[:4] if data.get('first_air_date') else '')
     _add_element(root, 'premiered', data.get('first_air_date'))
     _add_element(root, 'rating', data.get('vote_average'))
