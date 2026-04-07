@@ -1813,52 +1813,6 @@ def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server
         logger.error(f"  ➜ 更新项目详情失败 (ID: {item_id}): {e}")
         return False
 
-# --- 删除媒体项神医接口 (带自动回退) ---    
-def delete_item_sy(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
-    """
-    删除媒体项神医接口
-    逻辑：优先尝试神医专用接口 /DeleteVersion，如果失败（如未安装插件或报错），
-    则自动降级调用官方接口 /Delete 进行重试。
-    """
-    wait_for_server_idle(emby_server_url, emby_api_key)
-    logger.warning(f"  ➜ 检测到删除请求，优先尝试使用 [神医Pro接口] 执行...")
-
-    # 1. 登录获取临时令牌
-    access_token, logged_in_user_id = get_admin_access_token()
-    
-    if not access_token:
-        logger.error("  ➜ 无法获取临时 AccessToken，删除操作中止。请检查管理员账号密码是否正确。")
-        return False
-
-    # 2. 使用临时令牌执行删除
-    # 使用神医Pro专用的 POST /Items/{Id}/DeleteVersion 接口
-    api_url = f"{emby_server_url.rstrip('/')}/Items/{item_id}/DeleteVersion"
-    
-    headers = {
-        'X-Emby-Token': access_token  # ★ 使用临时的 AccessToken
-    }
-    
-    params = {
-        'UserId': logged_in_user_id # ★ 使用登录后返回的 UserId
-    }
-    
-    try:
-        response = emby_client.post(api_url, headers=headers, params=params)
-        response.raise_for_status()
-        logger.info(f"  ➜ [神医接口] 成功删除 Emby 媒体项 ID: {item_id}。")
-        return True
-    except Exception as e:
-        # 区分一下错误类型，方便排查，但处理逻辑是一样的：都去试官方接口
-        if isinstance(e, requests.exceptions.HTTPError) and e.response.status_code == 404:
-            logger.warning(f"  ➜ [神医接口] 调用失败 (404): 服务端未安装神医Pro插件或接口不匹配。")
-        else:
-            logger.warning(f"  ➜ [神医接口] 调用异常: {e}")
-            
-        logger.info(f"  ➜ 正在自动切换至 [官方接口] 重试删除 ID: {item_id} ...")
-        
-        # ★★★ 核心修改：失败后直接调用官方接口函数 ★★★
-        return delete_item(item_id, emby_server_url, emby_api_key, user_id)
-
 # --- 删除媒体项官方接口 ---
 def delete_item(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     """
