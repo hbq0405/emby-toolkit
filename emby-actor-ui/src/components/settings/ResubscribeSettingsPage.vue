@@ -426,27 +426,11 @@
                 <!-- 模式 B: 删除设置 -->
                 <div v-else>
                   <n-alert type="error" :show-icon="true" style="margin-bottom: 16px;">
-                    危险操作：符合左侧条件的项目将被直接删除！
+                    危险操作：符合左侧条件的项目将被直接物理删除（包含网盘文件、本地STRM及字幕），且不可恢复！
                   </n-alert>
-
-                  <n-form-item label="删除策略">
-                    <n-radio-group v-model:value="currentRule.delete_mode">
-                      <n-space vertical>
-                        <n-radio value="episode">
-                          逐集删除 (安全模式)
-                          <div class="tip">
-                            推荐。找出该季下的所有单集，<b>一集一集</b>地删除。<br>
-                          </div>
-                        </n-radio>
-                        <n-radio value="series">
-                          整季/剧删除 (快速模式)
-                          <div class="tip">
-                            直接删除整季或整部剧。<br>
-                          </div>
-                        </n-radio>
-                      </n-space>
-                    </n-radio-group>
-                  </n-form-item>
+                  <div class="tip" style="margin-left: 4px;">
+                    系统会自动找出所有匹配的底层物理文件进行精准打击，并在删空后自动清理残留的空目录。
+                  </div>
                 </div>
               </n-card>
             </n-gi>
@@ -634,8 +618,7 @@ const openRuleModal = async (rule = null) => {
       resubscribe_subtitle_effect_only: false,
       consistency_check_enabled: false, consistency_must_match_resolution: false, consistency_must_match_group: false,
       resubscribe_source: 'moviepilot', 
-      resubscribe_entire_season: false,
-      delete_mode: 'episode'
+      resubscribe_entire_season: false
     };
     addScopeRule();
   }

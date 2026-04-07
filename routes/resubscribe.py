@@ -1,4 +1,4 @@
-# routes/resubscribe.py (V3 - 完整注释最终版)
+# routes/resubscribe.py
 
 from flask import Blueprint, request, jsonify
 import logging

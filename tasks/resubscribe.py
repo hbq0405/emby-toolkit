@@ -1,6 +1,8 @@
 # tasks/resubscribe.py
-# 媒体整理任务模块 (V4 - 范围筛选增强版)
+# 媒体整理任务模块 
 
+import os
+import shutil
 import re 
 import time
 import logging
@@ -14,7 +16,8 @@ import task_manager
 import handler.emby as emby
 import handler.moviepilot as moviepilot
 import constants  
-from database import resubscribe_db, settings_db, maintenance_db, request_db, queries_db, media_db
+from database import connection, resubscribe_db, settings_db, maintenance_db, request_db, queries_db, media_db
+from handler.p115_service import WebhookDeleteBuffer
 
 # 从 helpers 导入的辅助函数和常量
 from .helpers import (
@@ -984,7 +987,12 @@ def _execute_resubscribe(processor, task_name: str, target):
     all_rules = resubscribe_db.get_all_resubscribe_rules()
     config = processor.config
     delay = float(config.get(constants.CONFIG_OPTION_RESUBSCRIBE_DELAY_SECONDS, 1.5))
+    local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     resubscribed_count, deleted_count = 0, 0
+
+    # 用于在所有任务结束后统一执行批量操作
+    all_deleted_paths = []
+    all_pickcodes_to_delete = []
 
     for i, item in enumerate(items_to_subscribe):
         if processor.is_stop_requested(): break
@@ -1000,7 +1008,7 @@ def _execute_resubscribe(processor, task_name: str, target):
         item_type = item.get('item_type') # Movie, Season
         season_number = item.get('season_number') if item_type == 'Season' else None
 
-        task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) [配额:{current_quota}] 正在订阅: {item_name}")
+        task_manager.update_status_from_thread(int((i / total) * 100), f"({i+1}/{total}) [配额:{current_quota}] 正在处理: {item_name}")
 
         rule = next((r for r in all_rules if r['id'] == item.get('matched_rule_id')), None)
         if not rule: continue
@@ -1008,75 +1016,111 @@ def _execute_resubscribe(processor, task_name: str, target):
         # ==================== 分支逻辑 ====================
         rule_type = rule.get('rule_type', 'resubscribe')
 
-        # --- 分支 1: 仅删除模式 ---
+        # --- 分支 1: 仅删除模式 (物理删除 + 联动网盘 + 极速刷新) ---
         if rule_type == 'delete':
-            delete_mode = rule.get('delete_mode', 'episode') # 'episode' (逐集) or 'series' (整锅端)
+            # 1. 获取要删除的物理文件和 Emby ID
+            targets_to_delete = [] # list of (emby_id, path, specific_item_type)
             
-            # 1. 确定要删除的目标 ID 列表
-            ids_to_delete_queue = []
-            main_target_id = item.get('emby_item_id') # 季ID 或 电影ID
-            
-            # 如果是电影，无论什么模式，都只有一个 ID
-            if item_type == 'Movie':
-                if main_target_id:
-                    ids_to_delete_queue.append(main_target_id)
-            
-            # 如果是季 (Season)
-            elif item_type == 'Season':
-                if delete_mode == 'series':
-                    # 模式 A: 整季删除 (直接删季 ID)
-                    if main_target_id:
-                        ids_to_delete_queue.append(main_target_id)
-                else:
-                    # 模式 B: 逐集删除 (查询所有集 ID)
-                    tmdb_id = item.get('tmdb_id')
-                    season_number = item.get('season_number')
-                    episode_ids = resubscribe_db.get_episode_ids_for_season(tmdb_id, season_number)
-                    
-                    if episode_ids:
-                        ids_to_delete_queue.extend(episode_ids)
-                        logger.info(f"  ➜ [防风控] 已获取《{item_name}》下的 {len(episode_ids)} 个分集，将逐一删除。")
-                    else:
-                        # 如果没找到分集（可能是空季），则回退到删除季本身
-                        if main_target_id:
-                            ids_to_delete_queue.append(main_target_id)
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    if item_type == 'Movie':
+                        cursor.execute("SELECT asset_details_json FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (str(tmdb_id),))
+                        row = cursor.fetchone()
+                        if row and row['asset_details_json']:
+                            for asset in row['asset_details_json']:
+                                eid = asset.get('emby_item_id')
+                                path = asset.get('path')
+                                if eid: targets_to_delete.append((eid, path, 'Movie'))
+                    elif item_type == 'Season':
+                        cursor.execute("SELECT asset_details_json FROM media_metadata WHERE parent_series_tmdb_id = %s AND season_number = %s AND item_type = 'Episode'", (str(tmdb_id), season_number))
+                        rows = cursor.fetchall()
+                        for row in rows:
+                            if row['asset_details_json']:
+                                for asset in row['asset_details_json']:
+                                    eid = asset.get('emby_item_id')
+                                    path = asset.get('path')
+                                    if eid: targets_to_delete.append((eid, path, 'Episode'))
 
-            if not ids_to_delete_queue:
-                logger.warning(f"  ➜ 无法执行删除 {item_name}: 未找到有效的 Emby ID。")
+            if not targets_to_delete:
+                logger.warning(f"  ➜ 无法执行删除 {item_name}: 未找到有效的物理文件或 Emby ID。")
                 continue
 
-            # 2. 执行删除队列
             success_count = 0
-            total_files = len(ids_to_delete_queue)
+            total_files = len(targets_to_delete)
             
-            task_manager.update_status_from_thread(int((i / total) * 100), f"正在清理: {item_name} ({total_files}个文件)")
+            task_manager.update_status_from_thread(int((i / total) * 100), f"正在物理清理: {item_name} ({total_files}个文件)")
 
-            for idx, target_id in enumerate(ids_to_delete_queue):
+            for idx, (target_eid, file_path, specific_item_type) in enumerate(targets_to_delete):
                 if processor.is_stop_requested(): break
                 
-                # 执行删除
-                if emby.delete_item(target_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id):
-                    success_count += 1
-                    logger.info(f"    - 已删除文件 ({idx+1}/{total_files}): ID {target_id}")
-                else:
-                    logger.error(f"    - 删除失败: ID {target_id}")
-
-            # 3. 善后处理
-            if success_count > 0:
-                # 如果是逐集删除模式，删完所有集后，尝试把那个空的“季”文件夹也删了（清理垃圾）
-                if item_type == 'Season' and delete_mode == 'episode' and main_target_id:
+                # 1. 获取 PC 码 (用于后续联动删除 115 网盘文件)
+                pc = media_db.get_pickcode_by_emby_id(target_eid)
+                if pc:
+                    all_pickcodes_to_delete.append(pc)
+                    
+                # 2. 物理删除本地文件 (STRM, mediainfo, 字幕, NFO)
+                if file_path and os.path.exists(file_path):
                     try:
-                        logger.info(f"    - 分集清理完毕，正在移除空的季容器: {main_target_id}")
-                        emby.delete_item(main_target_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id)
-                    except:
-                        pass # 删不掉也无所谓，Emby 扫库后会自动处理
+                        os.remove(file_path)
+                        all_deleted_paths.append(file_path)
+                        logger.debug(f"    - 已删除主文件: {file_path}")
+                        
+                        base_dir = os.path.dirname(file_path)
+                        base_name = os.path.splitext(os.path.basename(file_path))[0]
+                        
+                        # 删除 mediainfo.json
+                        mi_path = os.path.join(base_dir, f"{base_name}-mediainfo.json")
+                        if os.path.exists(mi_path):
+                            os.remove(mi_path)
+                            
+                        # 删除同名字幕和 NFO
+                        for f in os.listdir(base_dir):
+                            if f.startswith(base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo']:
+                                sub_path = os.path.join(base_dir, f)
+                                try:
+                                    os.remove(sub_path)
+                                except: pass
+                                
+                        # 3. 向上追溯删除空目录 (连锅端)
+                        curr_dir = base_dir
+                        protected_dirs = {os.path.abspath(local_root)} if local_root else set()
+                        
+                        while curr_dir and os.path.abspath(curr_dir) not in protected_dirs:
+                            if os.path.exists(curr_dir):
+                                has_media = False
+                                for root_dir, _, files in os.walk(curr_dir):
+                                    for f in files:
+                                        ext = f.split('.')[-1].lower()
+                                        if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov'}:
+                                            has_media = True
+                                            break
+                                    if has_media: break
+                                
+                                if not has_media:
+                                    shutil.rmtree(curr_dir)
+                                    logger.info(f"    - [完美擦屁股] 目录已无媒体文件，连锅端删除: {curr_dir}")
+                                    curr_dir = os.path.dirname(curr_dir)
+                                else:
+                                    break
+                            else:
+                                break
+                    except Exception as e:
+                        logger.error(f"    - 物理删除文件失败: {e}")
+                else:
+                    logger.debug(f"    - 本地文件不存在或路径无法访问，跳过物理删除: {file_path}")
+                    # 即使本地文件不存在，也把路径加进去，让 Emby 去扫这个路径发现它没了
+                    if file_path:
+                        all_deleted_paths.append(file_path)
 
-                # 数据库清理
+                # 4. 清理本地数据库记录 (善后)
                 try:
-                    maintenance_db.cleanup_deleted_media_item(main_target_id, item_name, item_type)
+                    maintenance_db.cleanup_deleted_media_item(target_eid, item_name, specific_item_type)
                 except Exception as e:
                     logger.error(f"  ➜ 善后清理失败: {e}")
-                
+
+                success_count += 1
+
+            if success_count > 0:
                 deleted_count += 1
                 # 从洗版索引中移除
                 resubscribe_db.delete_resubscribe_index_by_keys([item.get('tmdb_id') if item_type == 'Movie' else f"{item.get('tmdb_id')}-S{item.get('season_number')}"])
@@ -1088,17 +1132,6 @@ def _execute_resubscribe(processor, task_name: str, target):
         sub_source = rule.get('resubscribe_source', 'moviepilot')
         is_entire_season = rule.get('resubscribe_entire_season', False)
         
-        # 获取缺集信息 (从数据库或 item 中获取，这里假设 item 已经包含了从 media_metadata 联查出来的 missing_info)
-        # 注意：get_resubscribe_library_status 需要修改 SQL 才能带出 missing_info，
-        # 或者我们在这里简单处理：如果是缺集原因，我们假设是部分洗版
-        
-        # 为了简单起见，我们重新查一下该季的缺集信息 (如果需要精准补集)
-        missing_episodes = []
-        if item_type == 'Season' and not is_entire_season:
-            # 这里可以调用一个轻量级 DB 查询获取 missing_episodes
-            # 暂且假设如果是 "缺失集数" 原因，则尝试去 media_metadata 拿
-            pass # 实际实现建议在 get_resubscribe_library_status SQL 中 join 出来
-
         # =======================================================
         # 场景 A: MoviePilot 订阅
         # =======================================================
@@ -1126,7 +1159,6 @@ def _execute_resubscribe(processor, task_name: str, target):
                 logger.info(f"  ➜ 正在检查并清理《{item_name}》的旧订阅...")
                 
                 # 调用 moviepilot.cancel_subscription
-                # 即使订阅不存在，该函数也会返回 True，所以直接调用即可
                 if moviepilot.cancel_subscription(str(tmdb_id), item_type, config, season=season_number):
                     logger.info(f"  ➜ 旧订阅清理指令已发送，等待 2 秒以确保 MoviePilot 数据库同步...")
                     time.sleep(2) # <--- 增加延时，防止竞态条件
@@ -1147,5 +1179,21 @@ def _execute_resubscribe(processor, task_name: str, target):
                 logger.error(f"  ➜ 提交订阅到 MoviePilot 失败: {item_name}")                
                 if i < total - 1: time.sleep(delay)
 
-    final_message = f"任务完成！成功提交 {resubscribed_count} 个订阅，删除 {deleted_count} 个媒体项。"
+    # ======================================================================
+    # 统一执行批量操作 (115 联动删除 & Emby 极速刷新)
+    # ======================================================================
+    if all_pickcodes_to_delete:
+        logger.info(f"  ➜ 正在将 {len(all_pickcodes_to_delete)} 个文件加入 115 网盘联动删除队列...")
+        WebhookDeleteBuffer.add(all_pickcodes_to_delete)
+
+    if all_deleted_paths:
+        logger.info(f"  ➜ 正在通知 Emby 刷新 {len(all_deleted_paths)} 个被删除的路径...")
+        emby.notify_emby_file_changes(
+            file_paths=all_deleted_paths,
+            base_url=processor.emby_url,
+            api_key=processor.emby_api_key,
+            update_type="Deleted"
+        )
+
+    final_message = f"任务完成！成功提交 {resubscribed_count} 个订阅，物理删除了 {deleted_count} 个媒体项。"
     task_manager.update_status_from_thread(100, final_message)
