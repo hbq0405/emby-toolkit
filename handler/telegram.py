@@ -464,6 +464,43 @@ def send_playback_notification(data: dict):
     except Exception as e:
         logger.error(f"  ➜ 组装/发送播放图文通知时发生异常: {e}")
 
+def send_unrecognized_notification(file_name: str, reason: str = "未匹配到有效的 TMDb 数据"):
+    """
+    发送文件识别失败/打入未识别目录的 Telegram 通知
+    """
+    try:
+        notify_types = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
+        # 检查用户是否在设置中勾选了“识别失败”通知
+        if 'recognize_fail' not in notify_types:
+            return
+
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        escaped_file_name = escape_markdown(file_name)
+        escaped_reason = escape_markdown(reason)
+
+        caption = (
+            f"⚠️ *识别失败通知*\n\n"
+            f"📁 *文件名*: `{escaped_file_name}`\n"
+            f"❓ *原因*: {escaped_reason}\n"
+            f"🕒 *时间*: `{current_time}`\n\n"
+            f"💡 _文件已被移入「未识别」目录，请前往 WebUI 手动纠错。_"
+        )
+
+        global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+        admin_ids = set(user_db.get_admin_telegram_chat_ids())
+
+        targets = set()
+        if global_channel_id:
+            targets.add(str(global_channel_id))
+        for aid in admin_ids:
+            targets.add(str(aid))
+
+        for target in targets:
+            send_telegram_message(target, caption)
+
+    except Exception as e:
+        logger.error(f"  ➜ 发送识别失败通知时出错: {e}", exc_info=True)
+
 # ======================================================================
 # ★★★ Telegram 机器人交互监听 (长轮询) ★★★
 # ======================================================================

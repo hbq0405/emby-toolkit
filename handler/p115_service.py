@@ -2222,6 +2222,9 @@ class SmartOrganizer:
                 logger.warning(f"    ➜ 无法识别合集子项 {len(unidentified_sub_fids)} 个，批量移入未识别。")
                 try: 
                     self.client.fs_move(unidentified_sub_fids, unidentified_cid)
+                    # ★★★ 触发通知 ★★★
+                    from handler.telegram import send_unrecognized_notification
+                    send_unrecognized_notification(f"合集包 {root_name} 内的 {len(unidentified_sub_fids)} 个子项", reason="合集拆解时无法匹配到 TMDb 数据")
                 except Exception as e: 
                     logger.error(f"    ➜ 移入未识别失败: {e}")
             
