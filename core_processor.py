@@ -1052,7 +1052,7 @@ class MediaProcessor:
 
                 # 恢复标语
                 if db_record.get('tagline'):
-                    payload['tagline'] = db_record.get('tagline'
+                    payload['tagline'] = db_record.get('tagline')
 
                 # 4. 如果是剧集，补充季和集
                 if item_type == "Series":
