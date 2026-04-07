@@ -907,23 +907,23 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     t_id_str, details = future.result()
                     if t_id_str and details: tmdb_details_map[t_id_str] = details
 
-            # 在写入数据库之前，对获取到的 TMDb 数据进行翻译
-            if processor.ai_translator and processor.config.get("ai_translate_episode_overview", False):
+            # 在写入数据库之前，对获取到的 TMDb 数据进行翻译 (大一统引擎)
+            if processor.ai_translator:
                 for item_group in batch_item_groups:
                     if not item_group: continue
                     item = item_group[0]
                     t_id = str(item.get("ProviderIds", {}).get("Tmdb"))
                     i_type = item.get("Type")
                     
-                    # 获取刚才下载的数据
                     data_to_translate = tmdb_details_map.get(t_id)
                     if data_to_translate:
-                        # 调用 helper 进行原地修改
                         translate_tmdb_metadata_recursively(
                             item_type=i_type,
                             tmdb_data=data_to_translate,
                             ai_translator=processor.ai_translator,
-                            item_name=item.get('Name', '')
+                            item_name=item.get('Name', ''),
+                            tmdb_api_key=processor.tmdb_api_key,
+                            config=processor.config
                         )
 
             metadata_batch = []
@@ -1046,7 +1046,8 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     "tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
                     "official_rating_json": rating_json_str,
                     "custom_rating": item.get('CustomRating'),
-                    "runtime_minutes": emby_runtime if (item_type == 'Movie' and emby_runtime) else tmdb_details.get('runtime') if (item_type == 'Movie' and tmdb_details) else None
+                    "runtime_minutes": emby_runtime if (item_type == 'Movie' and emby_runtime) else tmdb_details.get('runtime') if (item_type == 'Movie' and tmdb_details) else None,
+                    "tagline": tmdb_details.get('tagline') if tmdb_details else None
                 }
                 if tmdb_details:
                     top_record['poster_path'] = tmdb_details.get('poster_path')

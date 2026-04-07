@@ -459,13 +459,15 @@ class WatchlistProcessor:
             logger.error(f"  ➜ 无法聚合 '{item_name}' 的TMDb详情，元数据刷新中止。")
             return None
 
-        # 翻译简介
-        if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False):
+        # 翻译简介、标题、标语 (大一统引擎)
+        if self.ai_translator:
             helpers.translate_tmdb_metadata_recursively(
                 item_type='Series',
                 tmdb_data=aggregated_data,
                 ai_translator=self.ai_translator,
-                item_name=item_name
+                item_name=item_name,
+                tmdb_api_key=self.tmdb_api_key,
+                config=self.config
             )
 
         # ======================================================================
