@@ -3390,6 +3390,29 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
 
                     if results and len(results) > 0:
                         best = results[0]
+                        # ★★★ 核心修复：精准匹配，防止 TMDb 瞎给结果 (如 狗镇 Dogville 匹配到 狗镇的告白) ★★★
+                        name_lower = name_part.lower()
+                        name_parts = [p for p in name_lower.split() if p]
+                        
+                        for res in results:
+                            res_title = (res.get('title') or res.get('name') or '').lower()
+                            res_orig = (res.get('original_title') or res.get('original_name') or '').lower()
+                            
+                            # 1. 完整精确匹配
+                            if name_lower == res_title or name_lower == res_orig:
+                                best = res
+                                break
+                                
+                            # 2. 拆分精确匹配 (完美解决 中文名.英文名.年份 格式)
+                            part_match = False
+                            for part in name_parts:
+                                if part == res_title or part == res_orig:
+                                    best = res
+                                    part_match = True
+                                    break
+                            if part_match:
+                                break
+                                
                         return str(best['id']), media_type, (best.get('title') or best.get('name'))
             except Exception:
                 pass
@@ -3439,6 +3462,27 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
 
                     if results and len(results) > 0:
                         best = results[0]
+                        # ★★★ 核心修复：精准匹配 ★★★
+                        ai_title_lower = ai_title.lower()
+                        ai_title_parts = [p for p in ai_title_lower.split() if p]
+                        
+                        for res in results:
+                            res_title = (res.get('title') or res.get('name') or '').lower()
+                            res_orig = (res.get('original_title') or res.get('original_name') or '').lower()
+                            
+                            if ai_title_lower == res_title or ai_title_lower == res_orig:
+                                best = res
+                                break
+                                
+                            part_match = False
+                            for part in ai_title_parts:
+                                if part == res_title or part == res_orig:
+                                    best = res
+                                    part_match = True
+                                    break
+                            if part_match:
+                                break
+                                
                         return str(best['id']), ai_type, (best.get('title') or best.get('name'))
                     else:
                         logger.debug(f"  🤖 AI 提取了标题 '{ai_title}'，但在 TMDb 未搜索到结果。")
