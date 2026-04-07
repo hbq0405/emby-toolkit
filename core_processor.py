@@ -589,6 +589,21 @@ class MediaProcessor:
                                         aggregated_tmdb_data["series_details"]["name"] = translated_title
                             else:
                                 logger.warning(f"  ➜ [实时监控] 标题翻译结果仍为外文或为空，丢弃: {translated_title}")
+                    # ====== 3. 标语(Tagline)翻译模块 (跟随标题翻译开关) ======
+                    if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False):
+                        current_tagline = details.get("tagline", "")
+                        if current_tagline and not utils.contains_chinese(current_tagline):
+                            logger.info(f"  ➜ [实时监控] 检测到标语为纯外文 ('{current_tagline}')，准备进行 AI 翻译...")
+                            # 借用 translate_overview 方法翻译句子，传入标题作为上下文
+                            translated_tagline = self.ai_translator.translate_overview(current_tagline, title=current_title)
+                            
+                            if translated_tagline and utils.contains_chinese(translated_tagline):
+                                logger.info(f"  ➜ [实时监控] 标语翻译成功: '{current_tagline}' -> '{translated_tagline}'")
+                                details["tagline"] = translated_tagline
+                                if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                    aggregated_tmdb_data["series_details"]["tagline"] = translated_tagline
+                            else:
+                                logger.warning(f"  ➜ [实时监控] 标语翻译结果仍为外文或为空，丢弃: {translated_tagline}")
 
                 # 准备演员源数据
                 authoritative_cast_source = []
@@ -2432,6 +2447,20 @@ class MediaProcessor:
                                         formatted_metadata["name"] = trans_title
                                         if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                             aggregated_tmdb_data["series_details"]["name"] = trans_title
+
+                    # 标语翻译 (跟随标题翻译开关)
+                    if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False):
+                        current_tagline = formatted_metadata.get("tagline", "")
+                        if current_tagline and not utils.contains_chinese(current_tagline):
+                            current_title = formatted_metadata.get("title") if item_type == "Movie" else formatted_metadata.get("name")
+                            logger.info(f"  ➜ 正在调用 AI 翻译标语: {current_tagline}")
+                            
+                            trans_tagline = self.ai_translator.translate_overview(current_tagline, title=current_title)
+                            
+                            if trans_tagline and utils.contains_chinese(trans_tagline):
+                                formatted_metadata["tagline"] = trans_tagline
+                                if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                    aggregated_tmdb_data["series_details"]["tagline"] = trans_tagline
 
                     # 合集翻译
                     if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
