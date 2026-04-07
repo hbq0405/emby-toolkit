@@ -198,6 +198,7 @@ def init_db():
                         original_title TEXT,
                         original_language TEXT,
                         overview TEXT,
+                        tagline TEXT,
                         overview_embedding JSONB,
                         release_date DATE,
                         release_year INTEGER,
@@ -516,17 +517,8 @@ def init_db():
                             "best_version_json": "JSONB"
                         },
                         'media_metadata': {
-                            "original_language": "TEXT",
-                            "last_air_date": "DATE",
-                            "backdrop_path": "TEXT",  
-                            "homepage": "TEXT", 
-                            "production_companies_json": "JSONB",
-                            "networks_json": "JSONB",
-                            "file_sha1_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
-                            "file_pickcode_json": "JSONB NOT NULL DEFAULT '[]'::jsonb",
-                            "waiting_for_completed_pack": "BOOLEAN DEFAULT FALSE",
-                            "active_washing": "BOOLEAN DEFAULT FALSE",
-                            "imdb_id": "TEXT"
+                            "imdb_id": "TEXT",
+                            "tagline": "TEXT"
                         },
                         'resubscribe_rules': {
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE",

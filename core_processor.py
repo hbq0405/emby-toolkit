@@ -592,18 +592,34 @@ class MediaProcessor:
                     # ====== 3. 标语(Tagline)翻译模块 (跟随标题翻译开关) ======
                     if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False):
                         current_tagline = details.get("tagline", "")
-                        if current_tagline and not utils.contains_chinese(current_tagline):
-                            logger.info(f"  ➜ [实时监控] 检测到标语为纯外文 ('{current_tagline}')，准备进行 AI 翻译...")
-                            # 借用 translate_overview 方法翻译句子，传入标题作为上下文
-                            translated_tagline = self.ai_translator.translate_overview(current_tagline, title=current_title)
+                        
+                        # 如果标语为空，或者不包含中文，则尝试翻译
+                        if not current_tagline or not utils.contains_chinese(current_tagline):
+                            english_tagline = current_tagline if current_tagline else ""
                             
-                            if translated_tagline and utils.contains_chinese(translated_tagline):
-                                logger.info(f"  ➜ [实时监控] 标语翻译成功: '{current_tagline}' -> '{translated_tagline}'")
-                                details["tagline"] = translated_tagline
-                                if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
-                                    aggregated_tmdb_data["series_details"]["tagline"] = translated_tagline
-                            else:
-                                logger.warning(f"  ➜ [实时监控] 标语翻译结果仍为外文或为空，丢弃: {translated_tagline}")
+                            # 如果当前标语为空，主动请求英文版数据获取标语
+                            if not english_tagline and self.tmdb_api_key:
+                                try:
+                                    if item_type == "Movie":
+                                        en_data = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, language="en-US")
+                                        english_tagline = en_data.get("tagline", "")
+                                    elif item_type == "Series":
+                                        en_data = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, language="en-US")
+                                        english_tagline = en_data.get("tagline", "")
+                                except Exception as e_en:
+                                    logger.warning(f"  ➜ [实时监控] 获取英文标语失败: {e_en}")
+
+                            if english_tagline:
+                                current_title = details.get("title") if item_type == "Movie" else details.get("name")
+                                logger.info(f"  ➜ [实时监控] 准备进行 AI 翻译标语: '{english_tagline}'")
+                                
+                                translated_tagline = self.ai_translator.translate_overview(english_tagline, title=current_title)
+                                
+                                if translated_tagline and utils.contains_chinese(translated_tagline):
+                                    logger.info(f"  ➜ [实时监控] 标语翻译成功: '{translated_tagline}'")
+                                    details["tagline"] = translated_tagline
+                                    if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                        aggregated_tmdb_data["series_details"]["tagline"] = translated_tagline
 
                 # 准备演员源数据
                 authoritative_cast_source = []
@@ -1034,6 +1050,10 @@ class MediaProcessor:
                 from tasks.helpers import reconstruct_metadata_from_db
                 payload = reconstruct_metadata_from_db(db_record, db_actors)
 
+                # 恢复标语
+                if db_record.get('tagline'):
+                    payload['tagline'] = db_record.get('tagline'
+
                 # 4. 如果是剧集，补充季和集
                 if item_type == "Series":
                     # A. 查分季
@@ -1394,6 +1414,7 @@ class MediaProcessor:
                 series_record = {
                     "item_type": "Series", "tmdb_id": str(series_details.get('id')) if series_details.get('id') else "", "title": series_details.get('name'),
                     "original_title": series_details.get('original_name'), "overview": series_details.get('overview'),
+                    "tagline": series_details.get('tagline'),
                     "release_date": series_details.get('first_air_date'), 
                     "last_air_date": series_details.get('last_air_date'),
                     "poster_path": series_details.get('poster_path'),
@@ -1754,7 +1775,7 @@ class MediaProcessor:
                 "date_added", "official_rating_json", "genres_json", "directors_json", "production_companies_json", 
                 "networks_json", "countries_json", "keywords_json", "ignore_reason", "asset_details_json",
                 "runtime_minutes", "overview_embedding", "total_episodes", "watchlist_tmdb_status",
-                "imdb_id"
+                "imdb_id", "tagline"
             ]
             data_for_batch = []
             for record in records_to_upsert:
@@ -2451,16 +2472,31 @@ class MediaProcessor:
                     # 标语翻译 (跟随标题翻译开关)
                     if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False):
                         current_tagline = formatted_metadata.get("tagline", "")
-                        if current_tagline and not utils.contains_chinese(current_tagline):
-                            current_title = formatted_metadata.get("title") if item_type == "Movie" else formatted_metadata.get("name")
-                            logger.info(f"  ➜ 正在调用 AI 翻译标语: {current_tagline}")
+                        
+                        if not current_tagline or not utils.contains_chinese(current_tagline):
+                            english_tagline = current_tagline if current_tagline else ""
                             
-                            trans_tagline = self.ai_translator.translate_overview(current_tagline, title=current_title)
-                            
-                            if trans_tagline and utils.contains_chinese(trans_tagline):
-                                formatted_metadata["tagline"] = trans_tagline
-                                if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
-                                    aggregated_tmdb_data["series_details"]["tagline"] = trans_tagline
+                            if not english_tagline and self.tmdb_api_key:
+                                try:
+                                    if item_type == "Movie":
+                                        en_data = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key, language="en-US")
+                                        english_tagline = en_data.get("tagline", "")
+                                    elif item_type == "Series":
+                                        en_data = tmdb.get_tv_details(int(tmdb_id), self.tmdb_api_key, language="en-US")
+                                        english_tagline = en_data.get("tagline", "")
+                                except Exception as e_en:
+                                    pass
+
+                            if english_tagline:
+                                current_title = formatted_metadata.get("title") if item_type == "Movie" else formatted_metadata.get("name")
+                                logger.info(f"  ➜ 正在调用 AI 翻译标语: {english_tagline}")
+                                
+                                trans_tagline = self.ai_translator.translate_overview(english_tagline, title=current_title)
+                                
+                                if trans_tagline and utils.contains_chinese(trans_tagline):
+                                    formatted_metadata["tagline"] = trans_tagline
+                                    if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                        aggregated_tmdb_data["series_details"]["tagline"] = trans_tagline
 
                     # 合集翻译
                     if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
