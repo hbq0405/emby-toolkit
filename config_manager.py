@@ -74,6 +74,7 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_PROXY_NATIVE_VIEW_ORDER: (constants.CONFIG_SECTION_REVERSE_PROXY, 'str', 'before'),
     constants.CONFIG_OPTION_PROXY_NATIVE_VIEW_ORDER: (constants.CONFIG_SECTION_REVERSE_PROXY, 'str', 'before'),
     constants.CONFIG_OPTION_PROXY_SHOW_MISSING_PLACEHOLDERS: (constants.CONFIG_SECTION_REVERSE_PROXY, 'boolean', False),
+    constants.CONFIG_OPTION_THIRD_PARTY_302_URL: (constants.CONFIG_SECTION_REVERSE_PROXY, 'string', "http://192.168.31.170:9096"),
 
     # [TMDB]
     constants.CONFIG_OPTION_TMDB_API_KEY: (constants.CONFIG_SECTION_TMDB, 'string', ""),

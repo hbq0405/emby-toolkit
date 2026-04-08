@@ -347,12 +347,18 @@ def ensure_nginx_config():
             logger.error("  ➜ config.ini 中未配置 Emby 服务器地址，无法生成 Nginx 配置！")
             sys.exit(1) # 严重错误，直接退出
 
+        # ★★★ 新增：获取第三方 302 URL 并去除末尾斜杠 ★★★
+        third_party_302_url = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_THIRD_PARTY_302_URL, "").strip()
+        if third_party_302_url.endswith('/'):
+            third_party_302_url = third_party_302_url[:-1]
+
         # 4. 填充模板
         context = {
             'EMBY_UPSTREAM': emby_upstream,
             'PROXY_UPSTREAM': proxy_upstream,
             'NGINX_LISTEN_PORT': nginx_listen_port,
-            'NGINX_MAX_BODY_SIZE': '128m'
+            'NGINX_MAX_BODY_SIZE': '128m',
+            'THIRD_PARTY_302_URL': third_party_302_url  # ★★★ 传入模板
         }
         final_config_content = template.render(context)
 
