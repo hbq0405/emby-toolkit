@@ -539,10 +539,6 @@ class WatchlistProcessor:
             old_poster = old_data.get('poster_path')
             new_poster = new_ep_data.get('still_path')
             
-            # 打印前3集的调试信息，看看究竟拿到了什么
-            if new_ep_data.get('episode_number') in [1, 2, 3]:
-                logger.debug(f"  ➜ [图片对比调试] {ep_key} | 旧图: {old_poster} | 新图: {new_poster}")
-            
             # 如果旧的没图，新的有图，加入强制下载列表
             if _is_empty_val(old_poster) and not _is_empty_val(new_poster):
                 force_download_eps.append(ep_key)
