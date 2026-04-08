@@ -488,30 +488,65 @@ class WatchlistProcessor:
         aggregated_data['episodes_details'] = unified_episodes_dict
 
         # ======================================================================
-        # ★★★ 强制下载新出图的分集 ★★★
+        # ★★★ 强制下载新出图的分集 & 同步数据库 ★★★
         # ======================================================================
-        import extensions
-        old_payload, _ = extensions.media_processor_instance._reconstruct_full_data_from_db(tmdb_id, 'Series') if hasattr(extensions, 'media_processor_instance') else (None, None)
-        old_episodes = {}
-        if old_payload and "episodes_details" in old_payload:
-            old_eps = old_payload["episodes_details"]
-            old_episodes = old_eps if isinstance(old_eps, dict) else {f"S{e.get('season_number')}E{e.get('episode_number')}": e for e in old_eps}
+        old_episodes_db = {}
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT season_number, episode_number, poster_path, overview FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode'", (tmdb_id,))
+                    for row in cursor.fetchall():
+                        s_num = row['season_number']
+                        e_num = row['episode_number']
+                        if s_num is not None and e_num is not None:
+                            old_episodes_db[f"S{s_num}E{e_num}"] = {
+                                'poster_path': row['poster_path'],
+                                'overview': row['overview']
+                            }
+        except Exception as e:
+            logger.warning(f"  ➜ 查询旧分集数据失败: {e}")
 
         force_download_eps = []
-        if old_episodes and unified_episodes_dict:
-            for ep_key, new_ep_data in unified_episodes_dict.items():
-                old_ep_data = old_episodes.get(ep_key, {})
-                # 检查旧数据是否有图 (数据库恢复出来的是 still_path)
-                old_poster = old_ep_data.get('still_path') or old_ep_data.get('poster_path')
-                # 检查新数据是否有图
-                new_poster = new_ep_data.get('still_path')
+        episodes_to_update_in_db = []
+
+        for ep_key, new_ep_data in unified_episodes_dict.items():
+            old_data = old_episodes_db.get(ep_key, {})
+            old_poster = old_data.get('poster_path')
+            new_poster = new_ep_data.get('still_path')
+            
+            # 如果旧的没图，新的有图，加入强制下载列表
+            if not old_poster and new_poster:
+                force_download_eps.append(ep_key)
+                # 收集需要更新数据库的记录
+                episodes_to_update_in_db.append((
+                    new_poster, 
+                    new_ep_data.get('overview'),
+                    new_ep_data.get('vote_average'),
+                    tmdb_id, 
+                    new_ep_data.get('season_number'), 
+                    new_ep_data.get('episode_number')
+                ))
                 
-                # 如果旧的没图，新的有图，加入强制下载列表
-                if not old_poster and new_poster:
-                    force_download_eps.append(ep_key)
-                    
         if force_download_eps:
             logger.info(f"  ➜ 发现 {len(force_download_eps)} 个分集在 TMDb 上有了新图片，将强制覆盖本地临时截图。")
+            # 立即更新数据库，防止数据库一直为 NULL
+            if episodes_to_update_in_db:
+                try:
+                    with connection.get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            from psycopg2.extras import execute_batch
+                            sql = """
+                                UPDATE media_metadata 
+                                SET poster_path = %s, 
+                                    overview = CASE WHEN overview IS NULL OR overview = '' THEN %s ELSE overview END, 
+                                    rating = CASE WHEN rating IS NULL THEN %s ELSE rating END
+                                WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND season_number = %s AND episode_number = %s
+                            """
+                            execute_batch(cursor, sql, episodes_to_update_in_db)
+                            conn.commit()
+                            logger.info(f"  ➜ 已将 {len(episodes_to_update_in_db)} 个分集的新图片路径更新至数据库。")
+                except Exception as e:
+                    logger.warning(f"  ➜ 更新分集图片路径至数据库失败: {e}")
 
         # ======================================================================
         # ★★★ 老六专属：无简介笑话占位功能 (追剧刷新) ★★★
@@ -526,7 +561,7 @@ class WatchlistProcessor:
             # 2. 检查分集
             for ep_key, ep in unified_episodes_dict.items():
                 if not ep.get("overview"):
-                    old_overview = old_episodes.get(ep_key, {}).get("overview") or ""
+                    old_overview = old_episodes_db.get(ep_key, {}).get("overview") or ""
                     if "【老六占位简介】" in old_overview:
                         ep["overview"] = old_overview # 继承老笑话
                     else:
