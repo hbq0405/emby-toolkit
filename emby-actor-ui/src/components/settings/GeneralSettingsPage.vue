@@ -808,7 +808,7 @@
                       <n-form-item-grid-item span="1 m:2" label-width="100">
                         <template #label>
                           <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
-                            <span>302重定向</span>
+                            <span>第三方302</span>
                             <n-tooltip trigger="hover">
                               <template #trigger>
                                 <n-icon :component="AlertIcon" class="info-icon" style="margin-left: 4px;" />
