@@ -473,6 +473,33 @@ class WatchlistProcessor:
         # ======================================================================
         # ★★★ 老六专属：无简介笑话占位功能 (追剧刷新) ★★★
         # ======================================================================
+        import extensions
+        old_payload, _ = extensions.media_processor_instance._reconstruct_full_data_from_db(tmdb_id, 'Series') if hasattr(extensions, 'media_processor_instance') else (None, None)
+        old_episodes = {}
+        if old_payload and "episodes_details" in old_payload:
+            old_eps = old_payload["episodes_details"]
+            old_episodes = old_eps if isinstance(old_eps, dict) else {f"S{e.get('season_number')}E{e.get('episode_number')}": e for e in old_eps}
+
+        # ★★★ 新增：找出新出图的分集，准备强制覆盖本地临时截图 ★★★
+        force_download_eps = []
+        if old_episodes and 'episodes_details' in aggregated_data:
+            new_eps = aggregated_data['episodes_details']
+            new_eps_dict = new_eps if isinstance(new_eps, dict) else {f"S{e.get('season_number')}E{e.get('episode_number')}": e for e in new_eps}
+            
+            for ep_key, new_ep_data in new_eps_dict.items():
+                old_ep_data = old_episodes.get(ep_key, {})
+                # 检查旧数据是否有图
+                old_poster = old_ep_data.get('still_path') or old_ep_data.get('poster_path')
+                # 检查新数据是否有图
+                new_poster = new_ep_data.get('still_path')
+                
+                # 如果旧的没图，新的有图，加入强制下载列表
+                if not old_poster and new_poster:
+                    force_download_eps.append(ep_key)
+                    
+        if force_download_eps:
+            logger.info(f"  ➜ 发现 {len(force_download_eps)} 个分集在 TMDb 上有了新图片，将强制覆盖本地临时截图。")
+
         if self.config.get("ai_joke_fallback", False) and self.ai_translator:
             jokes_to_generate = {}
             
@@ -481,14 +508,6 @@ class WatchlistProcessor:
                 jokes_to_generate["main"] = item_name
                 
             # 2. 检查分集
-            # 尝试从数据库读取旧数据，继承已有笑话，省 Token！
-            import extensions
-            old_payload, _ = extensions.media_processor_instance._reconstruct_full_data_from_db(tmdb_id, 'Series') if hasattr(extensions, 'media_processor_instance') else (None, None)
-            old_episodes = {}
-            if old_payload and "episodes_details" in old_payload:
-                old_eps = old_payload["episodes_details"]
-                old_episodes = old_eps if isinstance(old_eps, dict) else {f"S{e.get('season_number')}E{e.get('episode_number')}": e for e in old_eps}
-
             for season_details in aggregated_data['seasons_details']:
                 for ep in season_details.get("episodes", []):
                     if not ep.get("overview"):
@@ -640,7 +659,8 @@ class WatchlistProcessor:
                     tmdb_id=tmdb_id,
                     item_type='Series',
                     aggregated_tmdb_data=aggregated_data,
-                    item_details=current_item_details
+                    item_details=current_item_details,
+                    force_overwrite_episodes=force_download_eps # ★ 传入强制覆盖列表
                 )
 
                 # 2. ★★★ 核心修复：NFO 模式下，追剧刷新必须补全 NFO 文件 ★★★

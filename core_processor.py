@@ -3670,7 +3670,7 @@ class MediaProcessor:
             return None
     
     # --- 从 TMDb 直接下载图片 (用于实时监控/预处理/追剧刷新) ---
-    def download_images_from_tmdb(self, tmdb_id: str, item_type: str, aggregated_tmdb_data: Optional[Dict[str, Any]] = None, item_details: Optional[Dict[str, Any]] = None) -> bool:
+    def download_images_from_tmdb(self, tmdb_id: str, item_type: str, aggregated_tmdb_data: Optional[Dict[str, Any]] = None, item_details: Optional[Dict[str, Any]] = None, force_overwrite_episodes: Optional[List[str]] = None) -> bool:
         if not tmdb_id: return False
 
         try:
@@ -3728,23 +3728,23 @@ class MediaProcessor:
             # =========================================================
             # 4. 图片选择与命名逻辑 (存入绝对路径)
             # =========================================================
-            downloads = [] # 存储 (url, 绝对保存路径)
+            downloads = [] # 存储 (url, 绝对保存路径, 是否强制覆盖)
             images_node = tmdb_data.get("images", {})
 
             # --- A. 海报 (Poster) -> 根目录 ---
             if images_node.get("posters"):
-                downloads.append((images_node["posters"][0]["file_path"], os.path.join(series_root_dir, "poster.jpg")))
+                downloads.append((images_node["posters"][0]["file_path"], os.path.join(series_root_dir, "poster.jpg"), False))
             
             # --- B. 背景 (Backdrop) -> 根目录 ---
             backdrops_list = images_node.get("backdrops", [])
             selected_backdrop = backdrops_list[0]["file_path"] if backdrops_list else tmdb_data.get("backdrop_path")
             if selected_backdrop:
-                downloads.append((selected_backdrop, os.path.join(series_root_dir, "fanart.jpg")))
-                downloads.append((selected_backdrop, os.path.join(series_root_dir, "landscape.jpg")))
+                downloads.append((selected_backdrop, os.path.join(series_root_dir, "fanart.jpg"), False))
+                downloads.append((selected_backdrop, os.path.join(series_root_dir, "landscape.jpg"), False))
 
             # --- C. Logo -> 根目录 ---
             if images_node.get("logos"):
-                downloads.append((images_node["logos"][0]["file_path"], os.path.join(series_root_dir, "clearlogo.png")))
+                downloads.append((images_node["logos"][0]["file_path"], os.path.join(series_root_dir, "clearlogo.png"), False))
 
             # --- D. 剧集季海报 & 分集图 ---
             if item_type == "Series":
@@ -3754,7 +3754,7 @@ class MediaProcessor:
                     s_num = season.get("season_number")
                     s_poster = season.get("poster_path")
                     if s_num is not None and s_poster:
-                        downloads.append((s_poster, os.path.join(series_root_dir, f"season{s_num:02d}-poster.jpg")))
+                        downloads.append((s_poster, os.path.join(series_root_dir, f"season{s_num:02d}-poster.jpg"), False))
                 # 分集图 -> 深度遍历寻找视频文件
                 if aggregated_tmdb_data and "episodes_details" in aggregated_tmdb_data:
                     episodes = aggregated_tmdb_data["episodes_details"]
@@ -3776,8 +3776,10 @@ class MediaProcessor:
                                             e_still = ep.get("still_path")
                                             if e_still:
                                                 thumb_name = os.path.splitext(filename)[0] + "-thumb.jpg"
-                                                # 注意：保存在 root (当前视频所在的真实子目录)
-                                                downloads.append((e_still, os.path.join(root, thumb_name)))
+                                                # 检查是否需要强制覆盖
+                                                ep_key = f"S{target_s}E{target_e}"
+                                                force_overwrite = force_overwrite_episodes and ep_key in force_overwrite_episodes
+                                                downloads.append((e_still, os.path.join(root, thumb_name), force_overwrite))
                                             break
 
             # 5. 执行下载
@@ -3786,10 +3788,11 @@ class MediaProcessor:
             import concurrent.futures
             proxies = config_manager.get_proxies_for_requests()
             
-            def _download_single_image(tmdb_path, save_path): # 接收绝对路径
+            def _download_single_image(tmdb_path, save_path, force_overwrite=False): 
                 if not tmdb_path: return 0
                 full_url = f"{base_image_url}{tmdb_path}"
-                if os.path.exists(save_path) and os.path.getsize(save_path) > 0: return 0
+                # ★ 如果没有开启强制覆盖，且文件已存在，则跳过
+                if not force_overwrite and os.path.exists(save_path) and os.path.getsize(save_path) > 0: return 0
                 try:
                     resp = requests.get(full_url, timeout=15, proxies=proxies)
                     if resp.status_code == 200:
