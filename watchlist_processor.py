@@ -471,7 +471,24 @@ class WatchlistProcessor:
             )
 
         # ======================================================================
-        # ★★★ 老六专属：无简介笑话占位功能 (追剧刷新) ★★★
+        # ★★★ 统一构建 episodes_details 字典，防止结构混乱 ★★★
+        # ======================================================================
+        unified_episodes_dict = {}
+        for season_details in aggregated_data.get('seasons_details', []):
+            for ep in season_details.get('episodes', []):
+                s_num = ep.get('season_number')
+                e_num = ep.get('episode_number')
+                if s_num is not None and e_num is not None:
+                    # ★ 双保险：确保 episodes 里的字典同时拥有 still_path 和 poster_path
+                    if ep.get('still_path') and not ep.get('poster_path'):
+                        ep['poster_path'] = ep['still_path']
+                    unified_episodes_dict[f"S{s_num}E{e_num}"] = ep
+        
+        # 强制覆盖 aggregated_data 中的 episodes_details，供后续 NFO 和图片下载使用
+        aggregated_data['episodes_details'] = unified_episodes_dict
+
+        # ======================================================================
+        # ★★★ 强制下载新出图的分集 ★★★
         # ======================================================================
         import extensions
         old_payload, _ = extensions.media_processor_instance._reconstruct_full_data_from_db(tmdb_id, 'Series') if hasattr(extensions, 'media_processor_instance') else (None, None)
@@ -480,15 +497,11 @@ class WatchlistProcessor:
             old_eps = old_payload["episodes_details"]
             old_episodes = old_eps if isinstance(old_eps, dict) else {f"S{e.get('season_number')}E{e.get('episode_number')}": e for e in old_eps}
 
-        # ★★★ 新增：找出新出图的分集，准备强制覆盖本地临时截图 ★★★
         force_download_eps = []
-        if old_episodes and 'episodes_details' in aggregated_data:
-            new_eps = aggregated_data['episodes_details']
-            new_eps_dict = new_eps if isinstance(new_eps, dict) else {f"S{e.get('season_number')}E{e.get('episode_number')}": e for e in new_eps}
-            
-            for ep_key, new_ep_data in new_eps_dict.items():
+        if old_episodes and unified_episodes_dict:
+            for ep_key, new_ep_data in unified_episodes_dict.items():
                 old_ep_data = old_episodes.get(ep_key, {})
-                # 检查旧数据是否有图
+                # 检查旧数据是否有图 (数据库恢复出来的是 still_path)
                 old_poster = old_ep_data.get('still_path') or old_ep_data.get('poster_path')
                 # 检查新数据是否有图
                 new_poster = new_ep_data.get('still_path')
@@ -500,6 +513,9 @@ class WatchlistProcessor:
         if force_download_eps:
             logger.info(f"  ➜ 发现 {len(force_download_eps)} 个分集在 TMDb 上有了新图片，将强制覆盖本地临时截图。")
 
+        # ======================================================================
+        # ★★★ 老六专属：无简介笑话占位功能 (追剧刷新) ★★★
+        # ======================================================================
         if self.config.get("ai_joke_fallback", False) and self.ai_translator:
             jokes_to_generate = {}
             
@@ -508,15 +524,13 @@ class WatchlistProcessor:
                 jokes_to_generate["main"] = item_name
                 
             # 2. 检查分集
-            for season_details in aggregated_data['seasons_details']:
-                for ep in season_details.get("episodes", []):
-                    if not ep.get("overview"):
-                        ep_key = f"S{ep.get('season_number')}E{ep.get('episode_number')}"
-                        old_overview = old_episodes.get(ep_key, {}).get("overview") or ""
-                        if "【老六占位简介】" in old_overview:
-                            ep["overview"] = old_overview # 继承老笑话
-                        else:
-                            jokes_to_generate[ep_key] = f"{item_name} {ep_key}"
+            for ep_key, ep in unified_episodes_dict.items():
+                if not ep.get("overview"):
+                    old_overview = old_episodes.get(ep_key, {}).get("overview") or ""
+                    if "【老六占位简介】" in old_overview:
+                        ep["overview"] = old_overview # 继承老笑话
+                    else:
+                        jokes_to_generate[ep_key] = f"{item_name} {ep_key}"
 
             # 3. 批量生成并回填
             if jokes_to_generate:
@@ -526,11 +540,9 @@ class WatchlistProcessor:
                 if "main" in generated_jokes:
                     aggregated_data['series_details']["overview"] = generated_jokes["main"]
                 
-                for season_details in aggregated_data['seasons_details']:
-                    for ep in season_details.get("episodes", []):
-                        ep_key = f"S{ep.get('season_number')}E{ep.get('episode_number')}"
-                        if ep_key in generated_jokes:
-                            ep["overview"] = generated_jokes[ep_key]
+                for ep_key, ep in unified_episodes_dict.items():
+                    if ep_key in generated_jokes:
+                        ep["overview"] = generated_jokes[ep_key]
 
         # 解包数据
         latest_series_data = aggregated_data['series_details']
@@ -632,16 +644,8 @@ class WatchlistProcessor:
         logger.debug(f"  ➜ 已全量刷新 '{item_name}' 的 Series 元数据。")
 
         # 4. 处理季和集的数据 (保存 JSON + 收集列表)
-        # 这里不需要再发网络请求了，直接从 aggregated_data 里拿
-        all_tmdb_episodes = []
-        
-        for season_details in seasons_list:
-            season_num = season_details.get("season_number")
-            if season_num is None: continue
-            
-            # 👇 补回缺失的代码：提取该季的所有集并加入总列表
-            episodes = season_details.get("episodes", [])
-            all_tmdb_episodes.extend(episodes)
+        # 直接使用我们刚才统一构建的 unified_episodes_dict
+        all_tmdb_episodes = list(unified_episodes_dict.values())
             
         # ★★★ 4.5 新增：并发下载缺失的图片 & 补全 NFO ★★★
         try:
