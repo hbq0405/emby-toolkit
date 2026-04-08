@@ -3804,7 +3804,8 @@ class MediaProcessor:
 
             success_count = 0
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                futures = [executor.submit(_download_single_image, path, save_path) for path, save_path in downloads]
+                # ★★★ 核心修复：这里必须用 3 个变量解包！ ★★★
+                futures = [executor.submit(_download_single_image, path, save_path, force_overwrite) for path, save_path, force_overwrite in downloads]
                 for future in concurrent.futures.as_completed(futures):
                     success_count += future.result()
 
