@@ -758,24 +758,39 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
             logger.error(f"  ➜ [P115Center] 联动异常: {e}")
 
     # =========================================================
-    # 2. 物理文件检查逻辑 
+    # 2. 物理文件与视频流兜底检查逻辑 
     # =========================================================
     for i in range(STREAM_CHECK_MAX_RETRIES):
         try:
             has_valid_video_stream = False
             
+            # 1. 优先检查物理文件
             if file_path:
                 mediainfo_path = os.path.splitext(file_path)[0] + "-mediainfo.json"
                 if os.path.exists(mediainfo_path):
                     has_valid_video_stream = True
             
+            # 2. 兜底检查：实时查询 Emby 的 MediaSources
+            if not has_valid_video_stream:
+                current_details = emby.get_emby_item_details(
+                    item_id, emby_url, emby_key, emby_user_id, fields="MediaSources"
+                )
+                if current_details and current_details.get("MediaSources"):
+                    for source in current_details["MediaSources"]:
+                        for stream in source.get("MediaStreams", []):
+                            if stream.get("Type") == "Video" and stream.get("Width") and stream.get("Height"):
+                                has_valid_video_stream = True
+                                break
+                        if has_valid_video_stream:
+                            break
+            
             if has_valid_video_stream:
-                logger.info(f"  ➜ [预检] 成功检测到 '{item_name}' 的媒体信息文件，准备分发。")
-                # ★ 修改：改为调用智能分发
+                logger.info(f"  ➜ [预检] 成功检测到 '{item_name}' 的有效视频流数据，准备分发。")
+                # 调用智能分发
                 _dispatch_item(item_id, item_name, item_type)
                 return
             
-            logger.debug(f"  ➜ [预检] '{item_name}' 暂无媒体信息文件，等待神医提取 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
+            logger.debug(f"  ➜ [预检] '{item_name}' 暂无有效视频流数据，等待提取 ({i+1}/{STREAM_CHECK_MAX_RETRIES})...")
             sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
         except Exception as e:
@@ -783,7 +798,7 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
             sleep(STREAM_CHECK_INTERVAL + random.uniform(0, 2))
 
     # 超时强制入库
-    logger.warning(f"  ➜ [预检] 超时！未检测到 '{item_name}' 的媒体信息文件。强制分发。")
+    logger.warning(f"  ➜ [预检] 超时！未检测到 '{item_name}' 的有效视频流数据。强制分发。")
     # ★ 修改：改为调用智能分发
     _dispatch_item(item_id, item_name, item_type)
 
