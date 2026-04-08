@@ -805,19 +805,23 @@
                       </n-form-item-grid-item>
 
                       <!-- 第三方302 URL -->
-                      <n-form-item-grid-item label="第三方302服务" path="third_party_302_url" span="1 m:2" label-width="100">
+                      <n-form-item-grid-item span="1 m:2" label-width="100">
                         <template #label>
                           <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
-                            <span>第三方302服务</span>
+                            <span>302重定向</span>
                             <n-tooltip trigger="hover">
                               <template #trigger>
                                 <n-icon :component="AlertIcon" class="info-icon" style="margin-left: 4px;" />
                               </template>
-                              配置后，将有第三方302服务代理，需重启容器生效。
+                              需重启容器生效
                             </n-tooltip>
                           </div>
                         </template>
-                        <n-input v-model:value="configModel.third_party_302_url" :disabled="!configModel.proxy_enabled" placeholder="例如: http://192.168.1.100:8096" clearable />
+                        <n-input 
+                          v-model:value="configModel.proxy_302_redirect_url" 
+                          placeholder="例如: http://192.168.31.177:9096" 
+                          :disabled="!configModel.proxy_enabled"
+                        />
                       </n-form-item-grid-item>
                       
                       <!-- 3. 缺失占位符 (占满一行，因为说明文字较长) -->
