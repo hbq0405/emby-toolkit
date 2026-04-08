@@ -474,15 +474,34 @@ class WatchlistProcessor:
         # ★★★ 统一构建 episodes_details 字典，防止结构混乱 ★★★
         # ======================================================================
         unified_episodes_dict = {}
+        
+        # 来源 1: seasons_details
         for season_details in aggregated_data.get('seasons_details', []):
             for ep in season_details.get('episodes', []):
                 s_num = ep.get('season_number')
                 e_num = ep.get('episode_number')
                 if s_num is not None and e_num is not None:
-                    # ★ 双保险：确保 episodes 里的字典同时拥有 still_path 和 poster_path
-                    if ep.get('still_path') and not ep.get('poster_path'):
-                        ep['poster_path'] = ep['still_path']
                     unified_episodes_dict[f"S{s_num}E{e_num}"] = ep
+                    
+        # 来源 2: episodes_details (兜底，防止 tmdb.py 提前提取了数据)
+        if 'episodes_details' in aggregated_data:
+            existing_eps = aggregated_data['episodes_details']
+            if isinstance(existing_eps, dict):
+                for k, ep in existing_eps.items():
+                    unified_episodes_dict[k] = ep
+            elif isinstance(existing_eps, list):
+                for ep in existing_eps:
+                    s_num = ep.get('season_number')
+                    e_num = ep.get('episode_number')
+                    if s_num is not None and e_num is not None:
+                        unified_episodes_dict[f"S{s_num}E{e_num}"] = ep
+
+        # 确保 poster_path 存在
+        for ep_key, ep in unified_episodes_dict.items():
+            if ep.get('still_path') and not ep.get('poster_path'):
+                ep['poster_path'] = ep['still_path']
+                
+        logger.debug(f"  ➜ [调试] 成功构建 unified_episodes_dict，共 {len(unified_episodes_dict)} 集。")
         
         # 强制覆盖 aggregated_data 中的 episodes_details，供后续 NFO 和图片下载使用
         aggregated_data['episodes_details'] = unified_episodes_dict
@@ -506,6 +525,12 @@ class WatchlistProcessor:
         except Exception as e:
             logger.warning(f"  ➜ 查询旧分集数据失败: {e}")
 
+        # 严格的空值判定函数，专治各种脏数据
+        def _is_empty_val(val):
+            if not val: return True
+            if str(val).strip().lower() in ['none', 'null', '']: return True
+            return False
+
         force_download_eps = []
         episodes_to_update_in_db = []
 
@@ -514,8 +539,12 @@ class WatchlistProcessor:
             old_poster = old_data.get('poster_path')
             new_poster = new_ep_data.get('still_path')
             
+            # 打印前3集的调试信息，看看究竟拿到了什么
+            if new_ep_data.get('episode_number') in [1, 2, 3]:
+                logger.debug(f"  ➜ [图片对比调试] {ep_key} | 旧图: {old_poster} | 新图: {new_poster}")
+            
             # 如果旧的没图，新的有图，加入强制下载列表
-            if not old_poster and new_poster:
+            if _is_empty_val(old_poster) and not _is_empty_val(new_poster):
                 force_download_eps.append(ep_key)
                 # 收集需要更新数据库的记录
                 episodes_to_update_in_db.append((
