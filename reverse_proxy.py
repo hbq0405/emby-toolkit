@@ -834,40 +834,45 @@ def proxy_all(path):
             display_name = "未知文件" # ★ 新增：用于记录人看的文件名
             base_url, api_key = _get_real_emby_url_and_key()
 
-            try:
-                playback_info_url = f"{base_url}/emby/Items/{item_id}/PlaybackInfo"
-                params = {
-                    'api_key': api_key,
-                    'UserId': request.args.get('UserId', ''),
-                    'MaxStreamingBitrate': 140000000,
-                    'PlaySessionId': play_session_id,
-                }
-                
-                forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
-                forward_headers['Host'] = urlparse(base_url).netloc
-                
-                resp = requests.get(playback_info_url, params=params, headers=forward_headers, timeout=10)
-                
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for source in data.get('MediaSources', []):
-                        strm_url = source.get('Path', '')
-                        
-                        # ★ 优先从 Emby 的数据源里提取友好的文件名
-                        name_from_emby = source.get('Name', '')
-                        if name_from_emby:
-                            display_name = name_from_emby
-                        elif isinstance(strm_url, str) and strm_url:
-                            display_name = os.path.basename(strm_url).replace('.strm', '')
+            # ★★★ 新增：检查是否配置了第三方 302 服务 ★★★
+            third_party_302_url = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_THIRD_PARTY_302_URL, "").strip()
 
-                        if isinstance(strm_url, str):
-                            pick_code = extract_pickcode_from_strm_url(strm_url)
-                            if not pick_code:
-                                pick_code = media_db.get_pickcode_by_emby_id(item_id)
-                            if pick_code:
-                                break # 找到 pick_code，跳出循环
-            except Exception as e:
-                logger.error(f"  ❌ [STREAM] 获取 PlaybackInfo 失败: {e}")
+            # 如果没有配置第三方302，才去执行内置的 115 解析逻辑
+            if not third_party_302_url:
+                try:
+                    playback_info_url = f"{base_url}/emby/Items/{item_id}/PlaybackInfo"
+                    params = {
+                        'api_key': api_key,
+                        'UserId': request.args.get('UserId', ''),
+                        'MaxStreamingBitrate': 140000000,
+                        'PlaySessionId': play_session_id,
+                    }
+                    
+                    forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
+                    forward_headers['Host'] = urlparse(base_url).netloc
+                    
+                    resp = requests.get(playback_info_url, params=params, headers=forward_headers, timeout=10)
+                    
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        for source in data.get('MediaSources', []):
+                            strm_url = source.get('Path', '')
+                            
+                            # ★ 优先从 Emby 的数据源里提取友好的文件名
+                            name_from_emby = source.get('Name', '')
+                            if name_from_emby:
+                                display_name = name_from_emby
+                            elif isinstance(strm_url, str) and strm_url:
+                                display_name = os.path.basename(strm_url).replace('.strm', '')
+
+                            if isinstance(strm_url, str):
+                                pick_code = extract_pickcode_from_strm_url(strm_url)
+                                if not pick_code:
+                                    pick_code = media_db.get_pickcode_by_emby_id(item_id)
+                                if pick_code:
+                                    break # 找到 pick_code，跳出循环
+                except Exception as e:
+                    logger.error(f"  ❌ [STREAM] 获取 PlaybackInfo 失败: {e}")
             
             # ====================================================================
             # ★ 核心逻辑 1：如果是 115 文件，进入“115”模式，彻底干掉中转！
@@ -919,7 +924,11 @@ def proxy_all(path):
             # ====================================================================
             # ★ 核心逻辑 2：如果没有 pick_code (例如本地硬盘文件)，走正常的 Emby 代理流式传输
             # ====================================================================
-            logger.info(f"  ▶️ [本地/非115文件] 未检测到 pick_code，正常代理 Emby 视频流...")
+            if third_party_302_url:
+                logger.info(f"  ▶️ [第三方302兜底] 已配置第三方302，Python层不处理直链，直接放行视频流...")
+            else:
+                logger.info(f"  ▶️ [本地/非115文件] 未检测到 pick_code，正常代理 Emby 视频流...")
+                
             target_url = f"{base_url}/{path.lstrip('/')}"
             forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
             forward_headers['Host'] = urlparse(base_url).netloc

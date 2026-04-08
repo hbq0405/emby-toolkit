@@ -803,6 +803,22 @@
                         </template>
                         <n-input-number v-model:value="configModel.proxy_port" :min="1025" :max="65535" :disabled="!configModel.proxy_enabled" style="width: 100%;" placeholder="8096"/>
                       </n-form-item-grid-item>
+
+                      <!-- 第三方302 URL -->
+                      <n-form-item-grid-item label="第三方302服务" path="third_party_302_url" span="1 m:2" label-width="100">
+                        <template #label>
+                          <div style="display: flex; align-items: center; justify-content: flex-end; width: 100%;">
+                            <span>第三方302服务</span>
+                            <n-tooltip trigger="hover">
+                              <template #trigger>
+                                <n-icon :component="AlertIcon" class="info-icon" style="margin-left: 4px;" />
+                              </template>
+                              配置后，将有第三方302服务代理，需重启容器生效。
+                            </n-tooltip>
+                          </div>
+                        </template>
+                        <n-input v-model:value="configModel.third_party_302_url" :disabled="!configModel.proxy_enabled" placeholder="例如: http://192.168.1.100:8096" clearable />
+                      </n-form-item-grid-item>
                       
                       <!-- 3. 缺失占位符 (占满一行，因为说明文字较长) -->
                       <n-form-item-grid-item label="缺失占位符" path="proxy_show_missing_placeholders" span="1 m:2" label-width="100">
