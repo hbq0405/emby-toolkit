@@ -782,6 +782,7 @@ class MediaProcessor:
         else:
             logger.warning(f"  ➜ [实时监控] 未收集到有效的文件路径，任务结束。")
 
+    # --- 媒体库 GUID 映射维护 ---
     def _refresh_lib_guid_map(self):
         """从 Emby 实时获取所有媒体库的 ID 到 GUID 映射"""
         try:
@@ -846,6 +847,7 @@ class MediaProcessor:
 
         return id_to_parent_map, lib_guid
 
+    # --- 115 提取码和 SHA1 相关的核心函数 ---
     def _get_115_info_by_local_path(self, file_path: str) -> Tuple[Optional[str], Optional[str]]:
         """
         【挂载模式核心】通过 local_path 精准匹配 115 缓存表。
@@ -898,7 +900,7 @@ class MediaProcessor:
             
         return None, None
 
-    # 直接从 STRM 文件、HTTP 链接 或 挂载路径中抠出 115 提取码 (PC) 和 SHA1
+    # --- 直接从 STRM 文件、HTTP 链接 或 挂载路径中抠出 115 提取码 (PC) 和 SHA1 ---
     def _extract_115_fingerprints(self, file_path: str) -> Tuple[Optional[str], Optional[str]]:
         if not self.config.get("monitor_sha1_pc_search", True):
             return None, None
@@ -939,7 +941,7 @@ class MediaProcessor:
 
         return pc, sha1
 
-    # 通过 PC 码反查 SHA1 (自带 115 API 兜底)
+    # --- 通过 PC 码反查 SHA1 (自带 115 API 兜底) ---
     def _get_sha1_by_pickcode(self, pick_code: str) -> Optional[str]:
         if not self.config.get("monitor_sha1_pc_search", True):
             return None
@@ -986,6 +988,7 @@ class MediaProcessor:
 
         return None
 
+    # --- 通过 PC 码反查 local_path (专治第三方 STRM 和挂载路径) ---
     def _get_local_path_by_pickcode(self, pick_code: str) -> Optional[str]:
         """
         通过 pick_code 反查 115 缓存表获取 local_path (相对路径)
@@ -1003,10 +1006,10 @@ class MediaProcessor:
             logger.warning(f"通过 pick_code 查询 local_path 失败: {e}")
         return None
 
+    # --- 从数据库逆向重建完整元数据 ---
     def _reconstruct_full_data_from_db(self, tmdb_id: str, item_type: str) -> Tuple[Optional[Dict[str, Any]], Optional[List[Dict[str, Any]]]]:
         """
-        【核心桥梁】从数据库逆向重建完整的元数据 Payload 和演员表。
-        用于 NFO 模式下的 Webhook 回流，完美替代 override 文件的作用，避免重复刮削。
+        从数据库逆向重建完整的元数据 Payload 和演员表。
         """
         try:
             with get_central_db_connection() as conn:
@@ -1884,7 +1887,7 @@ class MediaProcessor:
             # 3. ★★★ 重新抛出异常，通知上游调用者操作失败 ★★★
             raise
     
-    # 公开的、独立的追剧判断方法
+    # --- 公开的、独立的追剧判断方法 ---
     def check_and_add_to_watchlist(self, item_details: Dict[str, Any]):
         """
         检查一个媒体项目是否为剧集，如果是，则执行智能追剧判断并添加到待看列表。
@@ -1904,16 +1907,20 @@ class MediaProcessor:
         except Exception as e_watchlist:
             logger.error(f"  ➜ 在自动添加 '{item_name_for_log}' 到追剧列表时发生错误: {e_watchlist}", exc_info=True)
     
+    # --- 停止信号机制 ---
     def signal_stop(self):
         self._stop_event.set()
 
+    # --- 公开一个方法来重置停止信号，允许在同一实例上重复使用 ---
     def clear_stop_signal(self):
         self._stop_event.clear()
 
+    # --- 公开一个方法来检查是否已请求停止，供长时间运行的函数调用 ---
     def get_stop_event(self) -> threading.Event:
         """返回内部的停止事件对象，以便传递给其他函数。"""
         return self._stop_event
 
+    # --- 公开一个方法来检查是否已请求停止，供长时间运行的函数调用 ---
     def is_stop_requested(self) -> bool:
         return self._stop_event.is_set()
 
@@ -1941,33 +1948,7 @@ class MediaProcessor:
             logger.error(f"从数据库读取已处理记录失败: {e}", exc_info=True)
         return log_dict
 
-    # --- 在本地缓存中查找豆瓣JSON文件 ---
-    def _find_local_douban_json(self, imdb_id: Optional[str], douban_id: Optional[str], douban_cache_dir: str) -> Optional[str]:
-        """根据 IMDb ID 或 豆瓣 ID 在本地缓存目录中查找对应的豆瓣JSON文件。"""
-        if not os.path.exists(douban_cache_dir):
-            return None
-        
-        # 优先使用 IMDb ID 匹配，更准确
-        if imdb_id:
-            for dirname in os.listdir(douban_cache_dir):
-                if dirname.startswith('0_'): continue
-                if imdb_id in dirname:
-                    dir_path = os.path.join(douban_cache_dir, dirname)
-                    for filename in os.listdir(dir_path):
-                        if filename.endswith('.json'):
-                            return os.path.join(dir_path, filename)
-                            
-        # 其次使用豆瓣 ID 匹配
-        if douban_id:
-            for dirname in os.listdir(douban_cache_dir):
-                if dirname.startswith(f"{douban_id}_"):
-                    dir_path = os.path.join(douban_cache_dir, dirname)
-                    for filename in os.listdir(dir_path):
-                        if filename.endswith('.json'):
-                            return os.path.join(dir_path, filename)
-        return None
-
-    # --- 获取豆瓣数据（演员+评分） 封装了“优先本地缓存，失败则在线获取”的逻辑 ---
+    # --- 获取豆瓣数据（演员+评分）---
     def _get_douban_data_with_local_cache(self, media_info: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[float]]:
         """
         获取豆瓣数据（演员+评分）。直接使用在线 API。
@@ -2003,23 +1984,6 @@ class MediaProcessor:
             mtype=douban_type
         )
         return cast_data.get("cast", []), None
-    
-    # --- 通过TmdbID查找映射表 ---
-    def _find_person_in_map_by_tmdb_id(self, tmdb_id: str, cursor: psycopg2.extensions.cursor) -> Optional[Dict[str, Any]]:
-        """
-        根据 TMDB ID 在 person_identity_map 表中查找对应的记录。
-        """
-        if not tmdb_id:
-            return None
-        try:
-            cursor.execute(
-                "SELECT * FROM person_identity_map WHERE tmdb_person_id = %s",
-                (tmdb_id,)
-            )
-            return cursor.fetchone()
-        except psycopg2.Error as e:
-            logger.error(f"通过 TMDB ID '{tmdb_id}' 查询 person_identity_map 时出错: {e}")
-            return None
     
     # --- 通过 API 更新 Emby 中演员名字 ---
     def _update_emby_person_names_from_final_cast(self, final_cast: List[Dict[str, Any]], item_name_for_log: str):
@@ -2236,6 +2200,7 @@ class MediaProcessor:
             specific_episode_ids=specific_episode_ids
         )
 
+    # --- 辅助函数：丰富合集信息（名称、简介） ---
     def _enrich_collection_info(self, collection_info: Dict[str, Any]) -> Dict[str, Any]:
         """
         辅助函数：获取并翻译电影合集信息 (名称、简介)。
@@ -3847,7 +3812,7 @@ class MediaProcessor:
             logger.error(f"{log_prefix} 发生未知错误: {e}", exc_info=True)
             return False
 
-    # 手动替换媒体图片 (物理覆盖)
+    # --- 手动替换媒体图片 ---
     def update_media_image_manually(self, item_id: str, image_type: str, image_url: Optional[str] = None, image_bytes: Optional[bytes] = None) -> Tuple[bool, str]:
         """
         手动更新媒体图片。直接覆盖物理文件，并通知 Emby 刷新。
@@ -4124,22 +4089,6 @@ class MediaProcessor:
 
         except Exception as e:
             logger.error(f"  ➜ 写入 NFO 文件失败: {e}")
-
-    # --- 辅助函数：从不同数据源构建演员列表 ---
-    def _build_cast_from_final_data(self, final_cast_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """辅助函数：从主流程的最终结果构建演员列表"""
-        cast_list = []
-        for i, actor_info in enumerate(final_cast_data):
-            if not actor_info.get("id"): continue
-            cast_list.append({
-                "id": actor_info.get("id"), "name": actor_info.get("name"), "character": actor_info.get("character"),
-                "original_name": actor_info.get("original_name"), "profile_path": actor_info.get("profile_path"),
-                "adult": actor_info.get("adult", False), "gender": actor_info.get("gender", 0),
-                "known_for_department": actor_info.get("known_for_department", "Acting"),
-                "popularity": actor_info.get("popularity", 0.0), "cast_id": actor_info.get("cast_id"),
-                "credit_id": actor_info.get("credit_id"), "order": actor_info.get("order", i)
-            })
-        return cast_list
 
     # --- 提取标签 ---
     def extract_tag_names(item_data):
