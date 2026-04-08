@@ -2164,3 +2164,161 @@ def task_contribute_mediainfo_to_center(processor):
     msg = f"反哺任务完成！成功为中心服务器贡献了 {success_count} 条媒体信息。"
     logger.info(f"  🎉 {msg}")
     task_manager.update_status_from_thread(100, msg)
+
+# --- 从数据库恢复物理 NFO 和图片 ---
+def task_restore_nfo_and_images(processor):
+    """
+    【灾难恢复】从数据库读取元数据，重新生成物理目录下的 NFO 文件并补齐图片。
+    用于 NFO 丢失、图片丢失或洗版后的数据恢复。
+    """
+    task_name = "恢复NFO与图片"
+    logger.trace(f"--- 开始执行 '{task_name}' ---")
+    
+    try:
+        task_manager.update_status_from_thread(5, "正在读取数据库...")
+        
+        items_to_restore = []
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            # 只恢复当前在库的项目
+            cursor.execute("""
+                SELECT * FROM media_metadata 
+                WHERE item_type IN ('Movie', 'Series') 
+                  AND tmdb_id IS NOT NULL 
+                  AND tmdb_id NOT IN ('0', 'None', 'null', '')
+                  AND in_library = TRUE
+            """)
+            items_to_restore = [dict(row) for row in cursor.fetchall()]
+
+        total = len(items_to_restore)
+        if total == 0:
+            task_manager.update_status_from_thread(100, "数据库中没有可恢复的在线项目。")
+            return
+
+        logger.info(f"  ➜ 发现 {total} 个项目需要恢复 NFO 和图片。")
+        success_count = 0
+        
+        for i, item in enumerate(items_to_restore):
+            if processor.is_stop_requested():
+                logger.warning("  ➜ 任务被中止。")
+                break
+
+            if i % 10 == 0: time.sleep(0.1)
+
+            tmdb_id = item['tmdb_id']
+            item_type = item['item_type']
+            title = item.get('title', tmdb_id)
+            
+            if i % 5 == 0:
+                progress = int((i / total) * 100)
+                task_manager.update_status_from_thread(progress, f"正在恢复 ({i+1}/{total}): {title}")
+
+            try:
+                # ★★★ 1. 获取真实的物理路径 (直接从数据库提取，免 API 请求) ★★★
+                asset_details_str = item.get('asset_details_json')
+                assets = []
+                if asset_details_str:
+                    assets = json.loads(asset_details_str) if isinstance(asset_details_str, str) else asset_details_str
+                
+                if not assets or not isinstance(assets, list) or not assets[0].get('path'):
+                    logger.warning(f"  ➜ 无法从数据库获取项目 '{title}' 的物理路径，跳过。")
+                    continue
+                
+                # 构造一个伪装的 item_details 供后续生成函数使用
+                item_details = {
+                    "Path": assets[0].get('path'),
+                    "Type": item_type
+                }
+
+                # --- A. 准备演员数据 ---
+                db_actors = []
+                if item.get('actors_json'):
+                    try:
+                        raw_actors = item['actors_json']
+                        actors_link = json.loads(raw_actors) if isinstance(raw_actors, str) else raw_actors
+                        actor_tmdb_ids = [a['tmdb_id'] for a in actors_link if 'tmdb_id' in a]
+                        if actor_tmdb_ids:
+                            with connection.get_db_connection() as conn:
+                                cursor = conn.cursor()
+                                placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
+                                sql = f"""
+                                    SELECT am.*, pim.primary_name as name
+                                    FROM actor_metadata am
+                                    LEFT JOIN person_identity_map pim ON am.tmdb_id = pim.tmdb_person_id
+                                    WHERE am.tmdb_id IN ({placeholders})
+                                """
+                                cursor.execute(sql, tuple(actor_tmdb_ids))
+                                actor_rows = cursor.fetchall()
+                                actor_map = {r['tmdb_id']: dict(r) for r in actor_rows}
+                                for link in actors_link:
+                                    tid = link.get('tmdb_id')
+                                    if tid in actor_map:
+                                        full_actor = actor_map[tid].copy()
+                                        full_actor['character'] = link.get('character')
+                                        full_actor['order'] = link.get('order')
+                                        db_actors.append(full_actor)
+                                db_actors.sort(key=lambda x: x.get('order', 999))
+                    except Exception as e_actor:
+                        logger.warning(f"  ➜ 解析演员数据失败 ({title}): {e_actor}")
+
+                # --- B. 重建主 Payload ---
+                payload = reconstruct_metadata_from_db(item, db_actors)
+
+                # --- C. 如果是剧集，注入分季/分集数据 ---
+                if item_type == "Series":
+                    with connection.get_db_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT * FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Season'", (tmdb_id,))
+                        seasons_data = []
+                        for s_row in cursor.fetchall():
+                            if not str(s_row['tmdb_id']).isdigit(): continue
+                            seasons_data.append({
+                                "id": int(s_row['tmdb_id']), "name": s_row['title'], "overview": s_row['overview'],
+                                "season_number": s_row['season_number'], "air_date": str(s_row['release_date']) if s_row['release_date'] else None,
+                                "poster_path": s_row['poster_path']
+                            })
+                        
+                        cursor.execute("SELECT * FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode'", (tmdb_id,))
+                        episodes_data = {} 
+                        for e_row in cursor.fetchall():
+                            if not str(e_row['tmdb_id']).isdigit(): continue
+                            s_num, e_num = e_row['season_number'], e_row['episode_number']
+                            episodes_data[f"S{s_num}E{e_num}"] = {
+                                "id": int(e_row['tmdb_id']), "name": e_row['title'], "overview": e_row['overview'],
+                                "season_number": s_num, "episode_number": e_num,
+                                "air_date": str(e_row['release_date']) if e_row['release_date'] else None,
+                                "vote_average": e_row['rating'], "still_path": e_row['poster_path']
+                            }
+                        if seasons_data: payload['seasons_details'] = seasons_data
+                        if episodes_data: payload['episodes_details'] = episodes_data
+
+                # --- D. 写入 NFO ---
+                logger.info(f"  ➜ 正在为 '{title}' 生成物理 NFO 文件...")
+                processor.sync_item_metadata(
+                    item_details=item_details, # 传入真实的 item_details (包含 Path)
+                    tmdb_id=tmdb_id,
+                    final_cast_override=db_actors,
+                    metadata_override=payload
+                )
+                
+                # --- E. 下载图片 ---
+                logger.info(f"  ➜ 正在为 '{title}' 补齐缺失图片...")
+                processor.download_images_from_tmdb(
+                    tmdb_id=tmdb_id,
+                    item_type=item_type,
+                    aggregated_tmdb_data=payload,
+                    item_details=item_details
+                )
+                
+                success_count += 1
+                
+            except Exception as e_item:
+                logger.error(f"  ➜ 恢复项目 '{title}' 失败: {e_item}", exc_info=True)
+
+        final_msg = f"恢复完成！成功为 {success_count}/{total} 个项目生成了 NFO 和图片。"
+        logger.info(f"  ➜ {final_msg}")
+        task_manager.update_status_from_thread(100, final_msg)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")

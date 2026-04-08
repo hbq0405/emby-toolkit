@@ -13,7 +13,7 @@ import task_manager
 from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_translation, 
                      task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
-from .media import task_role_translation, task_populate_metadata_cache, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_backup_mediainfo, task_restore_mediainfo, task_contribute_mediainfo_to_center
+from .media import task_role_translation, task_populate_metadata_cache, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_backup_mediainfo, task_restore_mediainfo, task_contribute_mediainfo_to_center, task_restore_nfo_and_images
 from .watchlist import task_process_watchlist, task_refresh_completed_series, task_scan_old_seasons_backfill, task_add_all_series_to_watchlist
 from .custom_collections import task_process_all_custom_collections, process_single_custom_collection
 from .tmdb_collections import task_refresh_collections
@@ -206,6 +206,7 @@ def get_task_registry(context: str = 'all'):
         'backup-mediainfo': (task_backup_mediainfo, "备份媒体信息", 'media', True),
         'restore_mediainfo': (task_restore_mediainfo, "还原媒体信息", 'media', True),
         'hdhive-auto-checkin': (task_hdhive_auto_checkin, "影巢自动签到", 'media', True),
+        'restore-nfo-and-images': (task_restore_nfo_and_images, "还原NFO和封面", 'media', True),
         
         # --- 不适合任务链的、需要特定参数的任务 ---
         'add-all-series-to-watchlist': (task_add_all_series_to_watchlist, "扫描全库剧集", 'watchlist', False),
