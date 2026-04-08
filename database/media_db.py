@@ -412,9 +412,9 @@ def sync_series_children_metadata(parent_tmdb_id: str, seasons: List[Dict], epis
             "tmdb_id": str(episode_tmdb_id), "item_type": "Episode",
             "parent_series_tmdb_id": parent_tmdb_id, "title": episode.get('name'),
             "overview": episode.get('overview'), "release_date": episode.get('air_date'),
+            "poster_path": episode.get('still_path'), 
             "season_number": season_num, "episode_number": episode_num,
             "in_library": is_episode_in_library,
-            # ★★★ 新增：单集没有总集数概念，设为 0 以保持字典结构一致 ★★★
             "total_episodes": 0 
         })
 

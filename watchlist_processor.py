@@ -558,25 +558,6 @@ class WatchlistProcessor:
                 
         if force_download_eps:
             logger.info(f"  ➜ 发现 {len(force_download_eps)} 个分集在 TMDb 上有了新图片，将强制覆盖本地临时截图。")
-            # 立即更新数据库，防止数据库一直为 NULL
-            if episodes_to_update_in_db:
-                try:
-                    with connection.get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            from psycopg2.extras import execute_batch
-                            sql = """
-                                UPDATE media_metadata 
-                                SET poster_path = %s, 
-                                    overview = CASE WHEN overview IS NULL OR overview = '' THEN %s ELSE overview END, 
-                                    rating = CASE WHEN rating IS NULL THEN %s ELSE rating END
-                                WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND season_number = %s AND episode_number = %s
-                            """
-                            execute_batch(cursor, sql, episodes_to_update_in_db)
-                            conn.commit()
-                            logger.info(f"  ➜ 已将 {len(episodes_to_update_in_db)} 个分集的新图片路径更新至数据库。")
-                except Exception as e:
-                    logger.warning(f"  ➜ 更新分集图片路径至数据库失败: {e}")
-
         # ======================================================================
         # ★★★ 老六专属：无简介笑话占位功能 (追剧刷新) ★★★
         # ======================================================================
