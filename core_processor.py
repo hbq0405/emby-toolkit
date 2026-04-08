@@ -2556,15 +2556,32 @@ class MediaProcessor:
                 stream_check_passed = True
                 stream_fail_reason = ""
                 
-                def _check_mediainfo_file(file_path, label_prefix=""):
+                def _check_stream_validity(file_path, label_prefix="", emby_item=None, db_assets=None):
                     if not file_path: return False, f"{label_prefix} 缺失文件路径"
+                    
+                    # 1. 检查物理文件
                     mediainfo_path = os.path.splitext(file_path)[0] + "-mediainfo.json"
                     if os.path.exists(mediainfo_path): return True, ""
-                    else: return False, f"{label_prefix}缺失媒体信息: 文件 (-mediainfo.json)"
+                    
+                    # 2. 检查 Emby 的 MediaSources (针对 Movie/Episode)
+                    if emby_item and emby_item.get("MediaSources"):
+                        for source in emby_item["MediaSources"]:
+                            for stream in source.get("MediaStreams", []):
+                                if stream.get("Type") == "Video" and stream.get("Width") and stream.get("Height"):
+                                    return True, ""
+                                    
+                    # 3. 检查数据库的 asset_details_json (针对 Series 中的 Episode)
+                    if db_assets and isinstance(db_assets, list):
+                        for asset in db_assets:
+                            for stream in asset.get("video_streams", []):
+                                if stream.get("width") and stream.get("height"):
+                                    return True, ""
+                                    
+                    return False, f"{label_prefix}缺失媒体信息: 文件 (-mediainfo.json) 且无有效视频流数据"
 
                 if item_type in ['Movie', 'Episode']:
                     emby_path = item_details_from_emby.get("Path")
-                    passed, reason = _check_mediainfo_file(emby_path, "")
+                    passed, reason = _check_stream_validity(emby_path, "", emby_item=item_details_from_emby)
                     if not passed:
                         stream_check_passed = False
                         stream_fail_reason = reason
@@ -2581,7 +2598,7 @@ class MediaProcessor:
                             raw_assets = db_ep['asset_details_json']
                             assets = json.loads(raw_assets) if isinstance(raw_assets, str) else (raw_assets if isinstance(raw_assets, list) else [])
                             ep_path = assets[0].get('path') if assets and len(assets) > 0 else None
-                            passed, reason = _check_mediainfo_file(ep_path, f"[S{s_idx}E{e_idx}]")
+                            passed, reason = _check_stream_validity(ep_path, f"[S{s_idx}E{e_idx}]", db_assets=assets)
                             if not passed:
                                 stream_check_passed = False
                                 stream_fail_reason = reason
