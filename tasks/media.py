@@ -24,6 +24,7 @@ from extensions import UPDATING_METADATA
 
 logger = logging.getLogger(__name__)
 
+# --- 辅助函数：严格校验 TMDb ID ---
 def is_valid_tmdb_id(tmdb_id) -> bool:
     """
     严格校验 TMDb ID 是否有效。
@@ -40,7 +41,7 @@ def is_valid_tmdb_id(tmdb_id) -> bool:
         return False
     return True
 
-# ★★★ 中文化角色名 ★★★
+# --- 中文化角色名 ---
 def task_role_translation(processor, force_full_update: bool = False):
     """
     根据传入的 force_full_update 参数，决定是执行标准扫描还是深度更新。
@@ -73,6 +74,7 @@ def task_manual_update(processor, item_id: str, manual_cast_list: list, item_nam
         item_name=item_name
     )
 
+# --- 全能元数据同步器 ---
 def task_sync_all_metadata(processor, item_id: str, item_name: str):
     """
     【任务：全能元数据同步器】
@@ -104,6 +106,7 @@ def task_sync_all_metadata(processor, item_id: str, item_name: str):
         logger.error(f"  ➜ 任务失败：{log_prefix} 时发生错误: {e}", exc_info=True)
         raise
 
+# --- 核心辅助函数：轮询等待媒体信息修复完成 ---
 def _wait_for_items_recovery(processor, item_ids: list, max_retries=6, interval=10) -> bool:
     """
     轮询检查指定的一组 Emby ID 是否都已具备有效的媒体信息文件 (-mediainfo.json)。
@@ -286,7 +289,7 @@ def task_reprocess_all_review_items(processor, reason_filter: Optional[str] = No
         logger.error(f"重新处理待复核项时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务失败")
 
-# 提取标签
+# --- 提取标签 ---
 def extract_tag_names(item_data):
     """
     兼容新旧版 Emby API 提取标签名。
@@ -440,7 +443,7 @@ def _extract_and_map_tmdb_ratings(tmdb_details, item_type):
 
     return ratings_map
 
-# ★★★ 重量级的元数据缓存填充任务 (内存优化版) ★★★
+# --- 重量级的元数据缓存填充任务 ---
 def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_update: bool = False):
     """
     - 重量级的元数据缓存填充任务 (类型安全版)。
@@ -1427,7 +1430,7 @@ def task_execute_auto_tagging_rules(processor):
 
     task_manager.update_status_from_thread(100, "自动打标规则执行完毕")
 
-# --- 自动打标 (修复进度条卡顿版) ---
+# --- 自动打标 ---
 def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], rating_filters: Optional[List[str]] = None):
     """
     后台任务：支持为多个媒体库批量打标签 (支持分级过滤，优先使用自定义分级)。
@@ -1503,6 +1506,7 @@ def task_bulk_auto_tag(processor, library_ids: List[str], tags: List[str], ratin
         logger.error(f"  ➜ 批量打标任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务异常中止")
 
+# --- 批量移除标签 ---
 def task_bulk_remove_tags(processor, library_ids: List[str], tags: List[str], rating_filters: Optional[List[str]] = None):
     """
     后台任务：从指定媒体库中批量移除特定标签 (支持分级过滤，优先使用自定义分级)。
@@ -1728,6 +1732,7 @@ def task_scan_monitor_folders(processor):
     logger.info(f"  ➜ 监控目录扫描完成。扫描: {scan_count}, 触发处理: {trigger_count}")
     task_manager.update_status_from_thread(100, f"扫描完成，处理了 {trigger_count} 个新项目")
 
+# --- 终极媒体信息备份任务 ---
 def task_backup_mediainfo(processor):
     """
     【终极媒体信息备份任务】(精准过滤版 + 待复核标记)
@@ -1949,6 +1954,7 @@ def task_backup_mediainfo(processor):
         logger.error(f"执行备份任务失败: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "任务失败")
 
+# --- 终极媒体信息还原任务 ---
 def task_restore_mediainfo(processor):
     """
     【恢复媒体信息任务】(万能指纹提取 + I/O 节流优化版)
@@ -2041,6 +2047,7 @@ def task_restore_mediainfo(processor):
     logger.info(f"  ➜ {msg}")
     task_manager.update_status_from_thread(100, msg)
 
+# --- 终极媒体信息反哺中心服务器任务 ---
 def task_contribute_mediainfo_to_center(processor):
     """
     【人人为我，我为人人】专属反哺任务 (批量上传优化版)
