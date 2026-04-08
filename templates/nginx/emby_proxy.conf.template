@@ -35,6 +35,14 @@ server {
     # ====================================================================
     #  核心路由规则 (V4)
     # ====================================================================
+    # ★★★ 第三方302 ★★★
+    # 如果设置了 REDIRECT_UPSTREAM，此规则块将生效。
+    # 它会捕获所有主流视频格式、转码流和 .strm 文件，并因为位置靠前而被优先匹配。
+    {% if REDIRECT_UPSTREAM %}
+    location ~* (\.strm$|\.(mkv|mp4|ts|avi|iso|mov|webm|flv)$|/videos/.*stream) {
+        proxy_pass http://redirect_service;
+    }
+    {% endif %}
 
     # --- 以下是虚拟库路由规则 ---
     location /api/p115 {
@@ -77,21 +85,7 @@ server {
         proxy_pass http://emby_server;
     }
 
-    # ====================================================================
-    # ★★★ 规则 5：拦截视频播放和嗅探请求 (动态路由) ★★★
-    # ====================================================================
-    {% if THIRD_PARTY_302_URL %}
-    # 已配置第三方302服务，Nginx直接将流媒体请求转发给第三方 (如 Emby2Alist)
-    location ~* /(videos/.*(?:stream|original)|Items/.*/(?:PlaybackInfo|Download)) {
-        proxy_pass {{ THIRD_PARTY_302_URL }};
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_pass_request_headers on;
-    }
-    {% else %}
-    # 默认交由 Python 代理处理 115 直链 
+    # 规则 5：拦截视频播放和嗅探请求，交由 Python 代理处理 302 直链 
     location ~* /(videos/.*(?:stream|original)|Items/.*/(?:PlaybackInfo|Download)) {
         proxy_pass http://virtual_library_proxy;
         proxy_set_header Host $host;
@@ -101,7 +95,6 @@ server {
         # 确保跨域和客户端信息透传给 Python
         proxy_pass_request_headers on;
     }
-    {% endif %}
 
     # 规则 6: WebSocket (保持不变)
     location /embywebsocket {
