@@ -178,12 +178,15 @@
         @update:collapsed="val => collapsed = val"
         :class="{ 'mobile-sider': isMobile }"
       >
+        <!-- ★ 增加 v-if 确保数据加载完成后再渲染，以使 default-expanded-keys 生效 -->
         <n-menu
+          v-if="isMenuReady"
           :collapsed="collapsed"
           :collapsed-width="64"
           :collapsed-icon-size="22"
           :options="menuOptions"
           :value="activeMenuKey"
+          :default-expanded-keys="defaultExpandedKeys"
           @update:value="handleMenuUpdate"
         />
       </n-layout-sider>
@@ -209,34 +212,69 @@
     <LogViewer v-model:show="isHistoryLogVisible" />
 
     <!-- ★★★ 自定义菜单编辑器模态框 ★★★ -->
-    <n-modal v-model:show="isMenuEditorVisible" preset="card" style="width: 95%; max-width: 600px;" title="自定义侧边栏菜单 (全局生效)">
-      <div style="max-height: 60vh; overflow-y: auto; padding-right: 10px;">
-        <div v-for="group in baseMenuOptions" :key="group.key" style="margin-bottom: 20px;">
+    <n-modal v-model:show="isMenuEditorVisible" preset="card" style="width: 95%; max-width: 650px;" title="自定义侧边栏菜单 (全局生效)">
+      <div style="max-height: 60vh; overflow-y: auto; padding-right: 10px; user-select: none;">
+        
+        <div v-for="(group, gIndex) in menuConfigTree" :key="group.key" style="margin-bottom: 20px;">
           <!-- 一级菜单配置 -->
           <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; background: rgba(128,128,128,0.1); padding: 8px; border-radius: 6px;">
-            <n-switch v-model:value="menuConfig[group.key].visible" size="small" />
-            <n-input v-model:value="menuConfig[group.key].label" :placeholder="group.defaultLabel" size="small" style="width: 200px;" />
-            <span style="color: #888; font-size: 12px;">(一级菜单)</span>
+            <n-switch v-model:value="group.visible" size="small" />
+            <n-input v-model:value="group.label" :placeholder="getOriginalLabel(group.key)" size="small" style="width: 180px;" />
+            <span style="color: #888; font-size: 12px; flex: 1;">(一级菜单)</span>
+            
+            <!-- 默认展开/折叠控制 -->
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <span style="font-size: 12px; color: #666;">默认展开:</span>
+              <n-switch v-model:value="group.expanded" size="small" />
+            </div>
           </div>
           
-          <!-- 二级菜单配置 -->
-          <div v-if="group.children && group.children.length > 0" style="padding-left: 24px;">
-            <div v-for="child in group.children" :key="child.key" style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px;">
-              <n-switch v-model:value="menuConfig[child.key].visible" size="small" />
-              <n-input v-model:value="menuConfig[child.key].label" :placeholder="child.defaultLabel" size="small" style="width: 200px;" />
+          <!-- 二级菜单配置 (支持拖拽) -->
+          <div 
+            style="padding-left: 24px; min-height: 10px;"
+            @dragover.prevent="onDragOverEmpty($event, gIndex)"
+            @drop="onDropEmpty($event, gIndex)"
+          >
+            <div 
+              v-for="(child, cIndex) in group.children" 
+              :key="child.key" 
+              class="draggable-item"
+              :class="{
+                'drag-over-top': dragTarget?.gIndex === gIndex && dragTarget?.cIndex === cIndex && dragPosition === 'top',
+                'drag-over-bottom': dragTarget?.gIndex === gIndex && dragTarget?.cIndex === cIndex && dragPosition === 'bottom',
+                'is-dragging': dragSource?.gIndex === gIndex && dragSource?.cIndex === cIndex
+              }"
+              draggable="true"
+              @dragstart="onDragStart($event, gIndex, cIndex)"
+              @dragover.prevent="onDragOver($event, gIndex, cIndex)"
+              @drop="onDrop($event, gIndex, cIndex)"
+              @dragend="onDragEnd"
+            >
+              <n-icon size="18" style="cursor: grab; color: #999;"><MenuOutline /></n-icon>
+              <n-switch v-model:value="child.visible" size="small" />
+              <n-input v-model:value="child.label" :placeholder="getOriginalLabel(child.key)" size="small" style="width: 200px;" />
+            </div>
+            
+            <!-- 空组提示 -->
+            <div v-if="group.children.length === 0" class="empty-group-dropzone">
+              拖拽菜单至此处
             </div>
           </div>
         </div>
+
       </div>
       <template #footer>
-        <n-space justify="end">
-          <n-popconfirm @positive-click="resetMenuConfig" negative-text="取消" positive-text="确定">
-            <template #trigger>
-              <n-button type="error" ghost :loading="isSavingMenu">恢复默认</n-button>
-            </template>
-            确定要恢复所有菜单的默认名称和显示状态吗？
-          </n-popconfirm>
-          <n-button type="primary" @click="saveMenuConfig" :loading="isSavingMenu">保存并应用</n-button>
+        <n-space justify="space-between">
+          <span style="font-size: 12px; color: #888; line-height: 34px;">提示：按住左侧图标可拖拽排序，支持跨组拖拽。</span>
+          <n-space>
+            <n-popconfirm @positive-click="resetMenuConfig" negative-text="取消" positive-text="确定">
+              <template #trigger>
+                <n-button type="error" ghost :loading="isSavingMenu">恢复默认</n-button>
+              </template>
+              确定要恢复所有菜单的默认名称、顺序和显示状态吗？
+            </n-popconfirm>
+            <n-button type="primary" @click="saveMenuConfig" :loading="isSavingMenu">保存并应用</n-button>
+          </n-space>
         </n-space>
       </template>
     </n-modal>
@@ -307,7 +345,7 @@ const checkMobile = () => {
 onMounted(() => {
   checkMobile();
   window.addEventListener('resize', checkMobile);
-  initMenuConfig(); // 初始化菜单配置
+  initMenuConfig(); 
 });
 
 onUnmounted(() => {
@@ -372,7 +410,6 @@ const userOptions = computed(() => {
   const options = [];
 
   if (authStore.isAdmin) {
-    // ★ 仅管理员可以编辑全局菜单
     options.push({
       label: '自定义菜单',
       key: 'edit-menu',
@@ -438,10 +475,11 @@ const handleUserSelect = async (key) => {
   }
 };
 
-// ================= 自定义菜单逻辑 (对接后端数据库) =================
+// ================= 自定义菜单逻辑 (树形结构 + 拖拽) =================
 const isMenuEditorVisible = ref(false);
 const isSavingMenu = ref(false);
-const menuConfig = ref({}); // 存储 { key: { label: '新名字', visible: true } }
+const isMenuReady = ref(false); // 控制 n-menu 渲染时机
+const menuConfigTree = ref([]); // 树形配置数据
 
 // 1. 基础菜单（包含所有权限允许的菜单，带有 defaultLabel 用于重置）
 const baseMenuOptions = computed(() => {
@@ -504,52 +542,130 @@ const baseMenuOptions = computed(() => {
   return finalMenu;
 });
 
-// 2. 初始化配置（从后端 API 读取）
+// 辅助函数：获取原始名称和图标
+const baseMenuMap = computed(() => {
+  const map = new Map();
+  baseMenuOptions.value.forEach(group => {
+    map.set(group.key, { ...group, isGroup: true });
+    if (group.children) {
+      group.children.forEach(child => {
+        map.set(child.key, { ...child, isGroup: false });
+      });
+    }
+  });
+  return map;
+});
+
+const getOriginalLabel = (key) => {
+  return baseMenuMap.value.get(key)?.defaultLabel || '';
+};
+
+// 核心合并算法：将后端保存的树与当前代码中的 baseMenuOptions 合并
+const syncMenuConfig = (savedTree) => {
+  const resultTree = [];
+  const usedKeys = new Set();
+
+  // 1. 遍历保存的树，保留存在的项
+  if (Array.isArray(savedTree)) {
+    savedTree.forEach(savedGroup => {
+      const baseGroup = baseMenuMap.value.get(savedGroup.key);
+      if (!baseGroup || !baseGroup.isGroup) return; // 废弃的组
+
+      usedKeys.add(savedGroup.key);
+      const newGroup = {
+        key: savedGroup.key,
+        label: savedGroup.label || baseGroup.defaultLabel,
+        visible: savedGroup.visible !== false,
+        expanded: savedGroup.expanded !== false, // 默认展开
+        children: []
+      };
+
+      if (Array.isArray(savedGroup.children)) {
+        savedGroup.children.forEach(savedChild => {
+          const baseChild = baseMenuMap.value.get(savedChild.key);
+          if (!baseChild || baseChild.isGroup) return; // 废弃的子项
+          usedKeys.add(savedChild.key);
+          newGroup.children.push({
+            key: savedChild.key,
+            label: savedChild.label || baseChild.defaultLabel,
+            visible: savedChild.visible !== false
+          });
+        });
+      }
+      resultTree.push(newGroup);
+    });
+  }
+
+  // 2. 找出 baseOptions 中有，但 savedTree 中没有的新增项
+  baseMenuOptions.value.forEach(baseGroup => {
+    if (!usedKeys.has(baseGroup.key)) {
+      // 整个组都是新的
+      resultTree.push({
+        key: baseGroup.key,
+        label: baseGroup.defaultLabel,
+        visible: true,
+        expanded: true,
+        children: baseGroup.children ? baseGroup.children.map(c => ({
+          key: c.key,
+          label: c.defaultLabel,
+          visible: true
+        })) : []
+      });
+    } else {
+      // 组存在，检查是否有新的子项
+      const targetGroup = resultTree.find(g => g.key === baseGroup.key);
+      if (baseGroup.children) {
+        baseGroup.children.forEach(baseChild => {
+          if (!usedKeys.has(baseChild.key)) {
+            targetGroup.children.push({
+              key: baseChild.key,
+              label: baseChild.defaultLabel,
+              visible: true
+            });
+          }
+        });
+      }
+    }
+  });
+
+  return resultTree;
+};
+
+// 初始化配置
 const initMenuConfig = async () => {
+  isMenuReady.value = false;
   try {
     const response = await axios.get('/api/system/menu_config');
-    const saved = response.data || {};
-    const newConfig = {};
-    
-    const traverse = (items) => {
-      items.forEach(item => {
-        newConfig[item.key] = {
-          label: saved[item.key]?.label || item.defaultLabel,
-          visible: saved[item.key]?.visible !== false // 默认 true
-        };
-        if (item.children) traverse(item.children);
-      });
-    };
-    
-    traverse(baseMenuOptions.value);
-    menuConfig.value = newConfig;
+    const saved = response.data || [];
+    menuConfigTree.value = syncMenuConfig(saved);
   } catch (error) {
     console.error("获取菜单配置失败", error);
-    // 失败时回退到默认配置
-    const fallbackConfig = {};
-    const traverse = (items) => {
-      items.forEach(item => {
-        fallbackConfig[item.key] = { label: item.defaultLabel, visible: true };
-        if (item.children) traverse(item.children);
-      });
-    };
-    traverse(baseMenuOptions.value);
-    menuConfig.value = fallbackConfig;
+    menuConfigTree.value = syncMenuConfig([]); // 失败时回退到默认
+  } finally {
+    // 确保数据加载完再渲染菜单
+    nextTick(() => {
+      isMenuReady.value = true;
+    });
   }
 };
 
-// 监听基础菜单变化（比如登录/登出导致权限变化），重新初始化配置
+// 监听基础菜单变化（权限变化）
 watch(baseMenuOptions, () => {
-  initMenuConfig();
+  // 重新合并，保留用户已有的排序和名称，加入新权限的菜单
+  menuConfigTree.value = syncMenuConfig(menuConfigTree.value);
 }, { deep: true });
 
-// 3. 保存配置到后端
+// 保存配置到后端
 const saveMenuConfig = async () => {
   isSavingMenu.value = true;
   try {
-    await axios.post('/api/system/menu_config', menuConfig.value);
+    await axios.post('/api/system/menu_config', menuConfigTree.value);
     isMenuEditorVisible.value = false;
     message.success('菜单配置已保存，全局生效');
+    
+    // 强制重新渲染菜单以应用新的展开状态
+    isMenuReady.value = false;
+    nextTick(() => { isMenuReady.value = true; });
   } catch (error) {
     message.error(error.response?.data?.error || '保存菜单配置失败');
   } finally {
@@ -557,13 +673,16 @@ const saveMenuConfig = async () => {
   }
 };
 
-// 4. 恢复默认并清除后端数据
+// 恢复默认
 const resetMenuConfig = async () => {
   isSavingMenu.value = true;
   try {
     await axios.post('/api/system/menu_config/reset');
-    await initMenuConfig(); // 重新拉取（此时为空，会走默认逻辑）
+    menuConfigTree.value = syncMenuConfig([]); // 传入空数组生成默认树
     message.success('已恢复默认菜单');
+    
+    isMenuReady.value = false;
+    nextTick(() => { isMenuReady.value = true; });
   } catch (error) {
     message.error(error.response?.data?.error || '重置菜单配置失败');
   } finally {
@@ -571,37 +690,128 @@ const resetMenuConfig = async () => {
   }
 };
 
-// 5. 最终渲染的菜单（应用了自定义名称和隐藏逻辑）
+// 计算默认展开的 keys
+const defaultExpandedKeys = computed(() => {
+  return menuConfigTree.value.filter(g => g.expanded).map(g => g.key);
+});
+
+// 最终渲染的菜单
 const menuOptions = computed(() => {
-  // 如果配置还没加载完，先返回基础菜单防止闪烁
-  if (Object.keys(menuConfig.value).length === 0) {
-    return baseMenuOptions.value;
-  }
+  if (menuConfigTree.value.length === 0) return [];
 
-  const applyConfig = (items) => {
-    return items.map(item => {
-      const config = menuConfig.value[item.key];
-      // 如果被隐藏，直接返回 null
-      if (config && !config.visible) return null;
+  const buildMenu = (treeNodes) => {
+    return treeNodes.map(node => {
+      if (!node.visible) return null;
+      
+      const baseNode = baseMenuMap.value.get(node.key);
+      if (!baseNode) return null; // 防御性检查
 
-      const newItem = { ...item };
-      // 应用自定义名称
-      if (config && config.label) {
-        newItem.label = config.label;
+      const result = {
+        key: node.key,
+        label: node.label || baseNode.defaultLabel,
+        icon: baseNode.icon
+      };
+
+      if (node.children && node.children.length > 0) {
+        result.children = buildMenu(node.children);
+        if (result.children.length === 0) return null; // 子项全隐藏，父项也隐藏
       }
-
-      // 递归处理子菜单
-      if (newItem.children) {
-        newItem.children = applyConfig(newItem.children);
-        // 如果子菜单全部被隐藏了，父菜单也隐藏
-        if (newItem.children.length === 0) return null;
-      }
-      return newItem;
-    }).filter(Boolean); // 过滤掉 null 的项
+      return result;
+    }).filter(Boolean);
   };
 
-  return applyConfig(baseMenuOptions.value);
+  return buildMenu(menuConfigTree.value);
 });
+
+// ================= 原生拖拽逻辑 =================
+const dragSource = ref(null); // { gIndex, cIndex }
+const dragTarget = ref(null); // { gIndex, cIndex }
+const dragPosition = ref(''); // 'top' 或 'bottom'
+
+const onDragStart = (e, gIndex, cIndex) => {
+  dragSource.value = { gIndex, cIndex };
+  e.dataTransfer.effectAllowed = 'move';
+  // 设置一个透明的拖拽图像，或者让浏览器默认处理
+};
+
+const onDragOver = (e, gIndex, cIndex) => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  
+  // 计算鼠标在元素上半部还是下半部
+  const rect = e.currentTarget.getBoundingClientRect();
+  const midY = rect.top + rect.height / 2;
+  dragPosition.value = e.clientY < midY ? 'top' : 'bottom';
+  dragTarget.value = { gIndex, cIndex };
+};
+
+const onDragOverEmpty = (e, gIndex) => {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  // 拖入空组
+  if (menuConfigTree.value[gIndex].children.length === 0) {
+    dragTarget.value = { gIndex, cIndex: -1 };
+    dragPosition.value = 'inside';
+  }
+};
+
+const onDrop = (e, targetGIndex, targetCIndex) => {
+  e.preventDefault();
+  if (!dragSource.value) return;
+
+  const { gIndex: fromGIndex, cIndex: fromCIndex } = dragSource.value;
+  
+  // 如果是同一个元素，不操作
+  if (fromGIndex === targetGIndex && fromCIndex === targetCIndex) {
+    clearDragState();
+    return;
+  }
+
+  // 1. 取出被拖拽的元素
+  const item = menuConfigTree.value[fromGIndex].children.splice(fromCIndex, 1)[0];
+
+  // 2. 计算插入位置
+  let insertIndex = targetCIndex;
+  
+  // 如果在同一个组内往下拖，因为前面删除了一个元素，目标索引需要 -1
+  if (fromGIndex === targetGIndex && fromCIndex < targetCIndex) {
+    insertIndex -= 1;
+  }
+  
+  // 如果放在下半部，插入到目标后面
+  if (dragPosition.value === 'bottom') {
+    insertIndex += 1;
+  }
+
+  // 3. 插入元素
+  menuConfigTree.value[targetGIndex].children.splice(insertIndex, 0, item);
+  
+  clearDragState();
+};
+
+const onDropEmpty = (e, targetGIndex) => {
+  e.preventDefault();
+  if (!dragSource.value) return;
+  
+  // 只有当目标组真的为空时才处理
+  if (menuConfigTree.value[targetGIndex].children.length === 0) {
+    const { gIndex: fromGIndex, cIndex: fromCIndex } = dragSource.value;
+    const item = menuConfigTree.value[fromGIndex].children.splice(fromCIndex, 1)[0];
+    menuConfigTree.value[targetGIndex].children.push(item);
+  }
+  clearDragState();
+};
+
+const onDragEnd = () => {
+  clearDragState();
+};
+
+const clearDragState = () => {
+  dragSource.value = null;
+  dragTarget.value = null;
+  dragPosition.value = '';
+};
+
 // ==================================================
 
 function handleMenuUpdate(key) {
@@ -640,5 +850,51 @@ html.dark .status-content { background-color: rgba(255, 255, 255, 0.05); border:
   .mobile-sider { position: absolute; left: 0; top: 0; bottom: 0; z-index: 1000; height: 100%; box-shadow: 2px 0 8px rgba(0,0,0,0.15); }
   .mobile-sider-mask { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0,0,0,0.4); z-index: 999; backdrop-filter: blur(2px); }
   .n-layout-content .page-content-inner-wrapper { padding: 12px !important; }
+}
+
+/* ★★★ 拖拽相关样式 ★★★ */
+.draggable-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 8px;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background-color 0.2s;
+  border: 1px solid transparent;
+}
+
+.draggable-item:hover {
+  background-color: rgba(128, 128, 128, 0.05);
+}
+
+/* 正在被拖拽的元素半透明 */
+.draggable-item.is-dragging {
+  opacity: 0.4;
+}
+
+/* 拖拽目标指示线 */
+.drag-over-top {
+  border-top: 2px solid #2080f0 !important;
+}
+
+.drag-over-bottom {
+  border-bottom: 2px solid #2080f0 !important;
+}
+
+/* 空组的拖拽区域 */
+.empty-group-dropzone {
+  height: 32px;
+  border: 1px dashed #ccc;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #999;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+html.dark .empty-group-dropzone {
+  border-color: #555;
 }
 </style>
