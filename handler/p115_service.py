@@ -1271,8 +1271,13 @@ class SmartOrganizer:
             # 补充标题日期供重命名
             current_title = raw_details.get('title') or raw_details.get('name')
             
-            # ★★★ 如果标题不是中文，尝试从别名中寻找中文名 ★★★
-            if current_title and not utils.contains_chinese(current_title):
+            # ★ 广告拦截：如果是垃圾标题，直接清空，强制进入后续的别名流程
+            if utils.is_spam_title(current_title):
+                logger.warning(f"  ➜ [115整理] 拦截到恶意广告片名: '{current_title}'，准备寻找干净的别名...")
+                current_title = ""
+
+            # ★★★ 如果标题为空（被拦截）或不是中文，尝试从别名中寻找中文名 ★★★
+            if not current_title or not utils.contains_chinese(current_title):
                 chinese_alias = None
                 alt_titles_data = raw_details.get("alternative_titles", {})
                 alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
@@ -1283,7 +1288,8 @@ class SmartOrganizer:
                 
                 for alt in alt_list:
                     alt_title = alt.get("title", "")
-                    if utils.contains_chinese(alt_title):
+                    # ★ 核心：别名也必须经过广告过滤！
+                    if utils.contains_chinese(alt_title) and not utils.is_spam_title(alt_title):
                         iso_country = alt.get("iso_3166_1", "").upper()
                         current_priority = priority_map.get(iso_country, 5) # 其他包含中文的地区优先级为5
                         
@@ -1295,8 +1301,13 @@ class SmartOrganizer:
                             break # 找到最高优先级(CN)，直接跳出
                 
                 if chinese_alias:
-                    logger.info(f"  ➜ [115整理] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")
+                    logger.info(f"  ➜ [115整理] 发现干净的 TMDb 官方中文别名: '{chinese_alias}'")
                     current_title = chinese_alias
+                else:
+                    # ★ 核心：如果没有干净的中文别名，强制回退到原名(通常是英文)
+                    original_title = raw_details.get("original_title") or raw_details.get("original_name")
+                    logger.info(f"  ➜ [115整理] 未找到干净的中文别名，回退到原名: '{original_title}'")
+                    current_title = original_title
 
             data['title'] = current_title
             data['original_title'] = raw_details.get('original_title') or raw_details.get('original_name') or data['title']
