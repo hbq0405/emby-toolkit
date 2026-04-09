@@ -482,6 +482,90 @@ class WatchlistProcessor:
             )
 
         # ======================================================================
+        # ★★★ 统一构建 episodes_details 字典，防止结构混乱 ★★★
+        # ======================================================================
+        unified_episodes_dict = {}
+        
+        # 来源 1: seasons_details
+        for season_details in aggregated_data.get('seasons_details', []):
+            for ep in season_details.get('episodes', []):
+                s_num = ep.get('season_number')
+                e_num = ep.get('episode_number')
+                if s_num is not None and e_num is not None:
+                    unified_episodes_dict[f"S{s_num}E{e_num}"] = ep
+                    
+        # 来源 2: episodes_details (兜底，防止 tmdb.py 提前提取了数据)
+        if 'episodes_details' in aggregated_data:
+            existing_eps = aggregated_data['episodes_details']
+            if isinstance(existing_eps, dict):
+                for k, ep in existing_eps.items():
+                    unified_episodes_dict[k] = ep
+            elif isinstance(existing_eps, list):
+                for ep in existing_eps:
+                    s_num = ep.get('season_number')
+                    e_num = ep.get('episode_number')
+                    if s_num is not None and e_num is not None:
+                        unified_episodes_dict[f"S{s_num}E{e_num}"] = ep
+
+        # 确保 poster_path 存在
+        for ep_key, ep in unified_episodes_dict.items():
+            if ep.get('still_path') and not ep.get('poster_path'):
+                ep['poster_path'] = ep['still_path']
+                
+        logger.debug(f"  ➜ [调试] 成功构建 unified_episodes_dict，共 {len(unified_episodes_dict)} 集。")
+        
+        # 强制覆盖 aggregated_data 中的 episodes_details，供后续 NFO 和图片下载使用
+        aggregated_data['episodes_details'] = unified_episodes_dict
+
+        # ======================================================================
+        # ★★★ 强制下载新出图的分集 & 同步数据库 ★★★
+        # ======================================================================
+        old_episodes_db = {}
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT season_number, episode_number, poster_path, overview FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode'", (tmdb_id,))
+                    for row in cursor.fetchall():
+                        s_num = row['season_number']
+                        e_num = row['episode_number']
+                        if s_num is not None and e_num is not None:
+                            old_episodes_db[f"S{s_num}E{e_num}"] = {
+                                'poster_path': row['poster_path'],
+                                'overview': row['overview']
+                            }
+        except Exception as e:
+            logger.warning(f"  ➜ 查询旧分集数据失败: {e}")
+
+        # 严格的空值判定函数，专治各种脏数据
+        def _is_empty_val(val):
+            if not val: return True
+            if str(val).strip().lower() in ['none', 'null', '']: return True
+            return False
+
+        force_download_eps = []
+        episodes_to_update_in_db = []
+
+        for ep_key, new_ep_data in unified_episodes_dict.items():
+            old_data = old_episodes_db.get(ep_key, {})
+            old_poster = old_data.get('poster_path')
+            new_poster = new_ep_data.get('still_path')
+            
+            # 如果旧的没图，新的有图，加入强制下载列表
+            if _is_empty_val(old_poster) and not _is_empty_val(new_poster):
+                force_download_eps.append(ep_key)
+                # 收集需要更新数据库的记录
+                episodes_to_update_in_db.append((
+                    new_poster, 
+                    new_ep_data.get('overview'),
+                    new_ep_data.get('vote_average'),
+                    tmdb_id, 
+                    new_ep_data.get('season_number'), 
+                    new_ep_data.get('episode_number')
+                ))
+                
+        if force_download_eps:
+            logger.info(f"  ➜ 发现 {len(force_download_eps)} 个分集在 TMDb 上有了新图片，将强制覆盖本地临时截图。")
+        # ======================================================================
         # ★★★ 老六专属：无简介笑话占位功能 (追剧刷新) ★★★
         # ======================================================================
         if self.config.get("ai_joke_fallback", False) and self.ai_translator:
@@ -492,23 +576,13 @@ class WatchlistProcessor:
                 jokes_to_generate["main"] = item_name
                 
             # 2. 检查分集
-            # 尝试从数据库读取旧数据，继承已有笑话，省 Token！
-            import extensions
-            old_payload, _ = extensions.media_processor_instance._reconstruct_full_data_from_db(tmdb_id, 'Series') if hasattr(extensions, 'media_processor_instance') else (None, None)
-            old_episodes = {}
-            if old_payload and "episodes_details" in old_payload:
-                old_eps = old_payload["episodes_details"]
-                old_episodes = old_eps if isinstance(old_eps, dict) else {f"S{e.get('season_number')}E{e.get('episode_number')}": e for e in old_eps}
-
-            for season_details in aggregated_data['seasons_details']:
-                for ep in season_details.get("episodes", []):
-                    if not ep.get("overview"):
-                        ep_key = f"S{ep.get('season_number')}E{ep.get('episode_number')}"
-                        old_overview = old_episodes.get(ep_key, {}).get("overview") or ""
-                        if "【老六占位简介】" in old_overview:
-                            ep["overview"] = old_overview # 继承老笑话
-                        else:
-                            jokes_to_generate[ep_key] = f"{item_name} {ep_key}"
+            for ep_key, ep in unified_episodes_dict.items():
+                if not ep.get("overview"):
+                    old_overview = old_episodes_db.get(ep_key, {}).get("overview") or ""
+                    if "【老六占位简介】" in old_overview:
+                        ep["overview"] = old_overview # 继承老笑话
+                    else:
+                        jokes_to_generate[ep_key] = f"{item_name} {ep_key}"
 
             # 3. 批量生成并回填
             if jokes_to_generate:
@@ -518,11 +592,9 @@ class WatchlistProcessor:
                 if "main" in generated_jokes:
                     aggregated_data['series_details']["overview"] = generated_jokes["main"]
                 
-                for season_details in aggregated_data['seasons_details']:
-                    for ep in season_details.get("episodes", []):
-                        ep_key = f"S{ep.get('season_number')}E{ep.get('episode_number')}"
-                        if ep_key in generated_jokes:
-                            ep["overview"] = generated_jokes[ep_key]
+                for ep_key, ep in unified_episodes_dict.items():
+                    if ep_key in generated_jokes:
+                        ep["overview"] = generated_jokes[ep_key]
 
         # 解包数据
         latest_series_data = aggregated_data['series_details']
@@ -624,16 +696,8 @@ class WatchlistProcessor:
         logger.debug(f"  ➜ 已全量刷新 '{item_name}' 的 Series 元数据。")
 
         # 4. 处理季和集的数据 (保存 JSON + 收集列表)
-        # 这里不需要再发网络请求了，直接从 aggregated_data 里拿
-        all_tmdb_episodes = []
-        
-        for season_details in seasons_list:
-            season_num = season_details.get("season_number")
-            if season_num is None: continue
-            
-            # 👇 补回缺失的代码：提取该季的所有集并加入总列表
-            episodes = season_details.get("episodes", [])
-            all_tmdb_episodes.extend(episodes)
+        # 直接使用我们刚才统一构建的 unified_episodes_dict
+        all_tmdb_episodes = list(unified_episodes_dict.values())
             
         # ★★★ 4.5 新增：并发下载缺失的图片 & 补全 NFO ★★★
         try:
@@ -651,7 +715,8 @@ class WatchlistProcessor:
                     tmdb_id=tmdb_id,
                     item_type='Series',
                     aggregated_tmdb_data=aggregated_data,
-                    item_details=current_item_details
+                    item_details=current_item_details,
+                    force_overwrite_episodes=force_download_eps # ★ 传入强制覆盖列表
                 )
 
                 # 2. ★★★ 核心修复：NFO 模式下，追剧刷新必须补全 NFO 文件 ★★★
