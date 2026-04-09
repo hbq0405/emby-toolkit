@@ -1268,64 +1268,89 @@ class SmartOrganizer:
             # 只取前 3 名主演，避免客串演员乱入导致规则匹配不准确
             data['actor_ids'] = [cast.get('id') for cast in raw_details.get('credits', {}).get('cast', [])[:3]]
 
-            # 补充标题日期供重命名
-            raw_title = raw_details.get('title') or raw_details.get('name')
-            # ★ 核心：第一时间清洗掉所有零宽字符和隐身符！
-            current_title = utils.clean_invisible_chars(raw_title)
+            # =====================================================================
+            # ★★★ 5. 标题提取 (本地缓存优先 -> 隐身符清洗 -> 广告拦截 -> 别名兜底) ★★★
+            # =====================================================================
+            cached_title = None
+            cached_original_title = None
             
-            # ★ 广告拦截：如果是垃圾标题，直接清空，强制进入后续的别名流程
-            if utils.is_spam_title(current_title):
-                logger.warning(f"  ➜ [115整理] 拦截到恶意广告片名: '{current_title}'，准备寻找干净的别名...")
-                current_title = ""
+            # 5.1 优先查询本地数据库缓存 (免疫 TMDb 后期篡改，保持网盘与 Emby 绝对一致)
+            try:
+                from database.connection import get_db_connection
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        db_item_type = 'Movie' if self.media_type == 'movie' else 'Series'
+                        cursor.execute(
+                            "SELECT title, original_title FROM media_metadata WHERE tmdb_id = %s AND item_type = %s",
+                            (str(self.tmdb_id), db_item_type)
+                        )
+                        row = cursor.fetchone()
+                        if row and row['title']:
+                            cached_title = row['title']
+                            cached_original_title = row['original_title']
+            except Exception as e:
+                logger.warning(f"  ➜ [115整理] 查询本地标题缓存失败: {e}")
 
-            # ★★★ 如果标题为空（被拦截）或不是中文，尝试从别名中寻找中文名 ★★★
-            if not current_title or not utils.contains_chinese(current_title):
-                chinese_alias = None
-                alt_titles_data = raw_details.get("alternative_titles", {})
-                alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
+            if cached_title:
+                logger.info(f"  ➜ [115整理] 命中本地数据库片名: '{cached_title}'，无视 TMDb 最新变动。")
+                current_title = cached_title
+                original_title = cached_original_title or cached_title
+            else:
+                # 5.2 本地无缓存 (首次入库)，走 TMDb 提取与清洗流程
+                raw_title = raw_details.get('title') or raw_details.get('name')
+                current_title = utils.clean_invisible_chars(raw_title)
                 
-                priority_map = {"CN": 1, "SG": 2, "TW": 3, "HK": 4}
-                best_priority = 99
-                
-                for alt in alt_list:
-                    # ★ 核心：对别名也必须进行隐身符清洗！
-                    alt_title = utils.clean_invisible_chars(alt.get("title", ""))
+                if utils.is_spam_title(current_title):
+                    logger.warning(f"  ➜ [115整理] 拦截到恶意广告片名: '{current_title}'，准备寻找干净的别名...")
+                    current_title = ""
+
+                if not current_title or not utils.contains_chinese(current_title):
+                    chinese_alias = None
+                    alt_titles_data = raw_details.get("alternative_titles", {})
+                    alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
                     
-                    if utils.contains_chinese(alt_title) and not utils.is_spam_title(alt_title):
-                        iso_country = alt.get("iso_3166_1", "").upper()
-                        current_priority = priority_map.get(iso_country, 5) 
-                        
-                        if current_priority < best_priority:
-                            chinese_alias = alt_title
-                            best_priority = current_priority
+                    priority_map = {"CN": 1, "SG": 2, "TW": 3, "HK": 4}
+                    best_priority = 99
+                    
+                    for alt in alt_list:
+                        alt_title = utils.clean_invisible_chars(alt.get("title", ""))
+                        if utils.contains_chinese(alt_title) and not utils.is_spam_title(alt_title):
+                            iso_country = alt.get("iso_3166_1", "").upper()
+                            current_priority = priority_map.get(iso_country, 5) 
                             
-                        if best_priority == 1:
-                            break 
-                
-                if chinese_alias:
-                    logger.info(f"  ➜ [115整理] 发现干净的 TMDb 官方中文别名: '{chinese_alias}'")
-                    current_title = chinese_alias
+                            if current_priority < best_priority:
+                                chinese_alias = alt_title
+                                best_priority = current_priority
+                                
+                            if best_priority == 1:
+                                break 
+                    
+                    if chinese_alias:
+                        logger.info(f"  ➜ [115整理] 发现干净的 TMDb 官方中文别名: '{chinese_alias}'")
+                        current_title = chinese_alias
+                    else:
+                        raw_original = raw_details.get("original_title") or raw_details.get("original_name")
+                        original_title = utils.clean_invisible_chars(raw_original)
+                        logger.info(f"  ➜ [115整理] 未找到干净的中文别名，回退到原名: '{original_title}'")
+                        current_title = original_title
                 else:
-                    # ★ 核心：如果没有干净的中文别名，强制回退到原名，原名也要清洗！
+                    # 如果主标题正常，提取原名
                     raw_original = raw_details.get("original_title") or raw_details.get("original_name")
                     original_title = utils.clean_invisible_chars(raw_original)
-                    logger.info(f"  ➜ [115整理] 未找到干净的中文别名，回退到原名: '{original_title}'")
-                    current_title = original_title
 
             data['title'] = current_title
+            data['original_title'] = original_title
             
-            # 确保 original_title 也被清洗干净
-            raw_orig_final = raw_details.get('original_title') or raw_details.get('original_name') or data['title']
-            data['original_title'] = utils.clean_invisible_chars(raw_orig_final)
+            # 提取年份
             date_str = raw_details.get('release_date') or raw_details.get('first_air_date')
             data['date'] = date_str
             data['year'] = 0
-            
             if date_str and len(str(date_str)) >= 4:
                 try:
                     data['year'] = int(str(date_str)[:4])
                 except: 
                     pass
+            
             # 补充评分供规则匹配
             data['vote_average'] = raw_details.get('vote_average', 0)
 
