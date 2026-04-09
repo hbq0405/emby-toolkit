@@ -81,27 +81,24 @@
 
         <!-- 右侧：工具栏 -->
         <div style="display: flex; align-items: center; gap: 8px;">
-            <!-- 桌面端显示的工具按钮 -->
-            <template v-if="!isMobile">
-              <n-button-group v-if="authStore.isAdmin" size="small">
-                <n-tooltip>
-                  <template #trigger>
-                    <n-button @click="isRealtimeLogVisible = true" circle>
-                      <template #icon><n-icon :component="ReaderOutline" /></template>
-                    </n-button>
-                  </template>
-                  实时日志
-                </n-tooltip>
-                <n-tooltip>
-                  <template #trigger>
-                    <n-button @click="isHistoryLogVisible = true" circle>
-                      <template #icon><n-icon :component="ArchiveOutline" /></template>
-                    </n-button>
-                  </template>
-                  历史日志
-                </n-tooltip>
-              </n-button-group>
-            </template>
+            <n-button-group v-if="authStore.isAdmin" size="small">
+              <n-tooltip>
+                <template #trigger>
+                  <n-button @click="isRealtimeLogVisible = true" circle>
+                    <template #icon><n-icon :component="ReaderOutline" /></template>
+                  </n-button>
+                </template>
+                实时日志
+              </n-tooltip>
+              <n-tooltip>
+                <template #trigger>
+                  <n-button @click="isHistoryLogVisible = true" circle>
+                    <template #icon><n-icon :component="ArchiveOutline" /></template>
+                  </n-button>
+                </template>
+                历史日志
+              </n-tooltip>
+            </n-button-group>
 
             <!-- 用户名下拉菜单 (移动端简化显示) -->
             <n-dropdown 
