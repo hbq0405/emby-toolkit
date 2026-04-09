@@ -161,8 +161,8 @@ def set_media_status_wanted(
                                     -- 4.A 正常情况：非忽略状态，允许更新
                                     media_metadata.subscription_status != 'IGNORED'
                                     
-                                    -- 4.B 特殊豁免：如果是 gap_scan (缺集扫描)，拥有最高权限，允许复活
-                                    OR EXCLUDED.subscription_sources_json->0->>'type' = 'gap_scan'
+                                    -- 4.B/C/D 特殊豁免：缺集扫描、洗版、新季复活 拥有最高权限，允许强制复活
+                                    OR EXCLUDED.subscription_sources_json->0->>'type' IN ('gap_scan', 'resubscribe', 'revived_season')
                                     
                                     -- 4.C 特殊豁免：如果是 resubscribe (洗版)，也允许复活
                                     OR EXCLUDED.subscription_sources_json->0->>'type' = 'resubscribe'
@@ -213,7 +213,12 @@ def set_media_status_pending_release(
                         first_requested_at = COALESCE(media_metadata.first_requested_at, EXCLUDED.first_requested_at),
                         ignore_reason = NULL, parent_series_tmdb_id = COALESCE(EXCLUDED.parent_series_tmdb_id, media_metadata.parent_series_tmdb_id)
                     WHERE media_metadata.in_library = FALSE AND media_metadata.subscription_status NOT IN ('SUBSCRIBED', 'WANTED', 'PAUSED')
-                      AND (EXCLUDED.subscription_sources_json = '[]'::jsonb OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json));
+                      AND (
+                          EXCLUDED.subscription_sources_json = '[]'::jsonb 
+                          OR NOT (media_metadata.subscription_sources_json @> EXCLUDED.subscription_sources_json)
+                          -- ★ 赋予新季复活特权，无视来源重复检查
+                          OR EXCLUDED.subscription_sources_json->0->>'type' = 'revived_season'
+                      );
                 """
                 execute_batch(cursor, sql, data_to_upsert)
                 conn.commit()
