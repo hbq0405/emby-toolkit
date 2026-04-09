@@ -1269,7 +1269,9 @@ class SmartOrganizer:
             data['actor_ids'] = [cast.get('id') for cast in raw_details.get('credits', {}).get('cast', [])[:3]]
 
             # 补充标题日期供重命名
-            current_title = raw_details.get('title') or raw_details.get('name')
+            raw_title = raw_details.get('title') or raw_details.get('name')
+            # ★ 核心：第一时间清洗掉所有零宽字符和隐身符！
+            current_title = utils.clean_invisible_chars(raw_title)
             
             # ★ 广告拦截：如果是垃圾标题，直接清空，强制进入后续的别名流程
             if utils.is_spam_title(current_title):
@@ -1282,35 +1284,39 @@ class SmartOrganizer:
                 alt_titles_data = raw_details.get("alternative_titles", {})
                 alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
                 
-                # ★ 优先级映射：数字越小优先级越高 (CN/SG 简体优先)
                 priority_map = {"CN": 1, "SG": 2, "TW": 3, "HK": 4}
                 best_priority = 99
                 
                 for alt in alt_list:
-                    alt_title = alt.get("title", "")
-                    # ★ 核心：别名也必须经过广告过滤！
+                    # ★ 核心：对别名也必须进行隐身符清洗！
+                    alt_title = utils.clean_invisible_chars(alt.get("title", ""))
+                    
                     if utils.contains_chinese(alt_title) and not utils.is_spam_title(alt_title):
                         iso_country = alt.get("iso_3166_1", "").upper()
-                        current_priority = priority_map.get(iso_country, 5) # 其他包含中文的地区优先级为5
+                        current_priority = priority_map.get(iso_country, 5) 
                         
                         if current_priority < best_priority:
                             chinese_alias = alt_title
                             best_priority = current_priority
                             
                         if best_priority == 1:
-                            break # 找到最高优先级(CN)，直接跳出
+                            break 
                 
                 if chinese_alias:
                     logger.info(f"  ➜ [115整理] 发现干净的 TMDb 官方中文别名: '{chinese_alias}'")
                     current_title = chinese_alias
                 else:
-                    # ★ 核心：如果没有干净的中文别名，强制回退到原名(通常是英文)
-                    original_title = raw_details.get("original_title") or raw_details.get("original_name")
+                    # ★ 核心：如果没有干净的中文别名，强制回退到原名，原名也要清洗！
+                    raw_original = raw_details.get("original_title") or raw_details.get("original_name")
+                    original_title = utils.clean_invisible_chars(raw_original)
                     logger.info(f"  ➜ [115整理] 未找到干净的中文别名，回退到原名: '{original_title}'")
                     current_title = original_title
 
             data['title'] = current_title
-            data['original_title'] = raw_details.get('original_title') or raw_details.get('original_name') or data['title']
+            
+            # 确保 original_title 也被清洗干净
+            raw_orig_final = raw_details.get('original_title') or raw_details.get('original_name') or data['title']
+            data['original_title'] = utils.clean_invisible_chars(raw_orig_final)
             date_str = raw_details.get('release_date') or raw_details.get('first_air_date')
             data['date'] = date_str
             data['year'] = 0

@@ -461,11 +461,13 @@ class MediaProcessor:
                     return None
                 
                 # 提取 TMDb 官方中文别名 & 卖片哥广告拦截
-                current_title = details.get("title") if item_type == "Movie" else details.get("name")
+                raw_title = details.get("title") if item_type == "Movie" else details.get("name")
+                # ★ 核心：第一时间清洗掉所有零宽字符和隐身符！
+                current_title = utils.clean_invisible_chars(raw_title)
                 
                 # 1. 广告拦截：如果是垃圾标题，直接清空，强制进入后续的别名/翻译流程
                 if utils.is_spam_title(current_title):
-                    logger.warning(f"  ➜ [实时监控] 拦截到恶意广告片名: '{current_title}'，准备寻找干净的别名或进行翻译...")
+                    logger.warning(f"  ➜ [拦截] 拦截到恶意广告片名: '{current_title}'，准备寻找干净的别名或进行翻译...")
                     current_title = "" 
 
                 # 2. 如果标题为空（被拦截）或不包含中文，则寻找别名
@@ -478,8 +480,9 @@ class MediaProcessor:
                     best_priority = 99
                     
                     for alt in alt_list:
-                        alt_title = alt.get("title", "")
-                        # ★ 核心：别名也必须经过广告过滤！
+                        # ★ 核心：对别名也必须进行隐身符清洗！
+                        alt_title = utils.clean_invisible_chars(alt.get("title", ""))
+                        
                         if utils.contains_chinese(alt_title) and not utils.is_spam_title(alt_title):
                             iso_country = alt.get("iso_3166_1", "").upper()
                             current_priority = priority_map.get(iso_country, 5)
@@ -492,7 +495,7 @@ class MediaProcessor:
                                 break
                     
                     if chinese_alias:
-                        logger.info(f"  ➜ [实时监控] 发现干净的 TMDb 官方中文别名: '{chinese_alias}'")
+                        logger.info(f"  ➜ 发现干净的 TMDb 官方中文别名: '{chinese_alias}'")
                         if item_type == "Movie":
                             details["title"] = chinese_alias
                         else:
@@ -500,9 +503,11 @@ class MediaProcessor:
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                 aggregated_tmdb_data["series_details"]["name"] = chinese_alias
                     else:
-                        # ★ 核心：如果没有干净的中文别名，强制回退到原名(通常是英文)，交给后续的 AI 翻译
-                        original_title = details.get("original_title") if item_type == "Movie" else details.get("original_name")
-                        logger.info(f"  ➜ [实时监控] 未找到干净的中文别名，回退到原名: '{original_title}'，等待 AI 翻译。")
+                        # ★ 核心：如果没有干净的中文别名，回退到原名，原名也要清洗！
+                        raw_original = details.get("original_title") if item_type == "Movie" else details.get("original_name")
+                        original_title = utils.clean_invisible_chars(raw_original)
+                        
+                        logger.info(f"  ➜ 未找到干净的中文别名，回退到原名: '{original_title}'，等待 AI 翻译。")
                         if item_type == "Movie":
                             details["title"] = original_title
                         else:
@@ -2341,7 +2346,8 @@ class MediaProcessor:
                     return False
 
                 # 提取 TMDb 官方中文别名 & 卖片哥广告拦截
-                current_title = fresh_data.get("title") if item_type == "Movie" else fresh_data.get("name")
+                raw_title = fresh_data.get("title") if item_type == "Movie" else fresh_data.get("name")
+                current_title = utils.clean_invisible_chars(raw_title)
                 
                 if utils.is_spam_title(current_title):
                     logger.warning(f"  ➜ [拦截] 检测到恶意广告片名: '{current_title}'，准备寻找替代片名...")
@@ -2354,7 +2360,7 @@ class MediaProcessor:
                     priority_map = {"CN": 1, "SG": 2, "TW": 3, "HK": 4}
                     best_priority = 99
                     for alt in alt_list:
-                        alt_title = alt.get("title", "")
+                        alt_title = utils.clean_invisible_chars(alt.get("title", ""))
                         # 别名也必须经过广告过滤
                         if utils.contains_chinese(alt_title) and not utils.is_spam_title(alt_title):
                             iso_country = alt.get("iso_3166_1", "").upper()

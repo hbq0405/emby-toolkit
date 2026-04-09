@@ -682,3 +682,27 @@ def is_spam_title(title: str) -> bool:
         return True
         
     return False
+
+def clean_invisible_chars(text: str) -> str:
+    """
+    终极字符串清洗：去除所有不可见的零宽字符、特殊排版符号，并将特殊空格转换为普通空格。
+    """
+    if not text:
+        return ""
+    
+    # 1. 替换特殊空格为普通空格
+    # \xa0: 不换行空格 (NBSP)
+    # \u3000: 全角空格 (中文输入法下的空格)
+    text = text.replace('\xa0', ' ').replace('\u3000', ' ')
+    
+    # 2. 使用正则剔除所有“零宽字符”和“排版控制字符”
+    # \u200b-\u200f: 零宽空格、零宽连字、从左至右标记等
+    # \u202a-\u202e: 文本方向控制符
+    # \u2060-\u206f: 词语连接符等不可见数学符号
+    # \ufeff: 字节顺序标记 (BOM)
+    text = re.sub(r'[\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]', '', text)
+    
+    # 3. 将连续的多个空格压缩为一个，并去除首尾空格
+    text = re.sub(r'\s+', ' ', text)
+    
+    return text.strip()
