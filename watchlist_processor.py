@@ -1737,8 +1737,11 @@ class WatchlistProcessor:
                 # 判断是否发生了关键的状态流转
                 status_changed_to_watching = (old_status in [None, 'NONE'] and final_status in ['Watching', 'Paused', 'Pending'])
                 status_changed_to_completed = (old_status in ['Watching', 'Paused', 'Pending'] and final_status == 'Completed')
+                
+                # 新季复活流转 (完结 -> 追剧/待定/暂停) ★★★
+                status_revived = (old_status == 'Completed' and final_status in ['Watching', 'Paused', 'Pending'])
 
-                if status_changed_to_watching or status_changed_to_completed:
+                if status_changed_to_watching or status_changed_to_completed or status_revived:
                     logger.info(f"  ➜ [智能追剧] 检测到状态流转 ({old_status} -> {final_status})，准备重新评估 115 目录分类...")
                     
                     target_seasons_for_move = set(active_seasons)
