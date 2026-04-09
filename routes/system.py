@@ -576,3 +576,49 @@ def transfer_pro():
     except Exception as e:
         logger.error(f"换绑请求异常: {e}")
         return jsonify({"success": False, "message": "连接验证服务器失败，请检查网络"}), 500
+    
+# --- 自定义菜单配置 ---
+@system_bp.route('/system/menu_config', methods=['GET'])
+def api_get_menu_config():
+    """
+    获取自定义菜单配置。
+    所有登录用户都可以获取，以便渲染侧边栏。
+    """
+    try:
+        menu_config = settings_db.get_setting('custom_menu_config') or {}
+        return jsonify(menu_config)
+    except Exception as e:
+        logger.error(f"获取菜单配置失败: {e}", exc_info=True)
+        return jsonify({"error": "获取菜单配置失败"}), 500
+
+@system_bp.route('/system/menu_config', methods=['POST'])
+@admin_required
+def api_save_menu_config():
+    """
+    保存自定义菜单配置（仅管理员可用）。
+    """
+    try:
+        new_config = request.json
+        if not isinstance(new_config, dict):
+            return jsonify({"error": "无效的数据格式"}), 400
+            
+        settings_db.save_setting('custom_menu_config', new_config)
+        logger.info("  ➜ 管理员已更新自定义菜单配置。")
+        return jsonify({"message": "菜单配置已保存"})
+    except Exception as e:
+        logger.error(f"保存菜单配置失败: {e}", exc_info=True)
+        return jsonify({"error": "保存失败"}), 500
+
+@system_bp.route('/system/menu_config/reset', methods=['POST'])
+@admin_required
+def api_reset_menu_config():
+    """
+    重置自定义菜单配置为默认值（仅管理员可用）。
+    """
+    try:
+        settings_db.delete_setting('custom_menu_config')
+        logger.info("  ➜ 自定义菜单配置已重置为默认值。")
+        return jsonify({"message": "已恢复默认菜单"})
+    except Exception as e:
+        logger.error(f"重置菜单配置失败: {e}", exc_info=True)
+        return jsonify({"error": "重置失败"}), 500
