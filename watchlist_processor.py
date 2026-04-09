@@ -1738,7 +1738,7 @@ class WatchlistProcessor:
                 status_changed_to_watching = (old_status in [None, 'NONE'] and final_status in ['Watching', 'Paused', 'Pending'])
                 status_changed_to_completed = (old_status in ['Watching', 'Paused', 'Pending'] and final_status == 'Completed')
                 
-                # 新季复活流转 (完结 -> 追剧/待定/暂停) ★★★
+                # 新季复活流转 (完结 -> 追剧/待定/暂停)
                 status_revived = (old_status == 'Completed' and final_status in ['Watching', 'Paused', 'Pending'])
 
                 if status_changed_to_watching or status_changed_to_completed or status_revived:
