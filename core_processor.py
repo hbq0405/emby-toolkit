@@ -88,6 +88,33 @@ def is_valid_tmdb_id(tmdb_id) -> bool:
         return False
     return True
 
+def is_spam_title(title: str) -> bool:
+    """
+    检测标题是否包含卖片、博彩等恶意广告信息。
+    """
+    if not title:
+        return False
+    
+    # 1. 恶意关键词黑名单 (可根据需要自行添加)
+    spam_keywords = [
+        '看黄', '片网', '色网', '澳门', '赌场', '真人发牌', 
+        '加微', '微信', '网址', '在线观看', '免费看', 'AV'
+    ]
+    for kw in spam_keywords:
+        if kw in title:
+            return True
+            
+    # 2. 正则匹配：检测是否包含域名后缀 (如 .com, .net, .xyz 等) 或连续的长串数字(QQ号)
+    # 匹配类似 4488469.com 或 www.xxx.vip
+    if re.search(r'[a-zA-Z0-9-]+\.(com|net|org|xyz|cc|tv|vip|top|me)\b', title, re.IGNORECASE):
+        return True
+        
+    # 匹配连续6位以上的数字 (正常电影名很少有连续6位数字，年份最多4位)
+    if re.search(r'\d{6,}', title):
+        return True
+        
+    return False
+
 def _aggregate_series_cast_from_tmdb_data(series_data: Dict[str, Any], all_episodes_data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     【新】从内存中的TMDB数据聚合一个剧集的所有演员。
@@ -460,9 +487,16 @@ class MediaProcessor:
                     logger.error("  ➜ [实时监控] 无法获取 TMDb 详情，中止处理。")
                     return None
                 
-                # 提取 TMDb 官方中文别名
+                # 提取 TMDb 官方中文别名 & 卖片哥广告拦截
                 current_title = details.get("title") if item_type == "Movie" else details.get("name")
-                if current_title and not utils.contains_chinese(current_title):
+                
+                # 1. 广告拦截：如果是垃圾标题，直接清空，强制进入后续的别名/翻译流程
+                if is_spam_title(current_title):
+                    logger.warning(f"  ➜ [实时监控] 拦截到恶意广告片名: '{current_title}'，准备寻找干净的别名或进行翻译...")
+                    current_title = "" 
+
+                # 2. 如果标题为空（被拦截）或不包含中文，则寻找别名
+                if not current_title or not utils.contains_chinese(current_title):
                     chinese_alias = None
                     alt_titles_data = details.get("alternative_titles", {})
                     alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
@@ -472,7 +506,8 @@ class MediaProcessor:
                     
                     for alt in alt_list:
                         alt_title = alt.get("title", "")
-                        if utils.contains_chinese(alt_title):
+                        # ★ 核心：别名也必须经过广告过滤！
+                        if utils.contains_chinese(alt_title) and not is_spam_title(alt_title):
                             iso_country = alt.get("iso_3166_1", "").upper()
                             current_priority = priority_map.get(iso_country, 5)
                             
@@ -484,13 +519,23 @@ class MediaProcessor:
                                 break
                     
                     if chinese_alias:
-                        logger.info(f"  ➜ [实时监控] 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")
+                        logger.info(f"  ➜ [实时监控] 发现干净的 TMDb 官方中文别名: '{chinese_alias}'")
                         if item_type == "Movie":
                             details["title"] = chinese_alias
                         else:
                             details["name"] = chinese_alias
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                 aggregated_tmdb_data["series_details"]["name"] = chinese_alias
+                    else:
+                        # ★ 核心：如果没有干净的中文别名，强制回退到原名(通常是英文)，交给后续的 AI 翻译
+                        original_title = details.get("original_title") if item_type == "Movie" else details.get("original_name")
+                        logger.info(f"  ➜ [实时监控] 未找到干净的中文别名，回退到原名: '{original_title}'，等待 AI 翻译。")
+                        if item_type == "Movie":
+                            details["title"] = original_title
+                        else:
+                            details["name"] = original_title
+                            if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                aggregated_tmdb_data["series_details"]["name"] = original_title
                 
                 # --- 标题与简介 AI 翻译 ---
                 if self.ai_translator:
@@ -2322,9 +2367,14 @@ class MediaProcessor:
                     logger.error("  ➜ 无法获取 TMDb 详情，中止处理。")
                     return False
 
-                # 提取 TMDb 官方中文别名
+                # 提取 TMDb 官方中文别名 & 卖片哥广告拦截
                 current_title = fresh_data.get("title") if item_type == "Movie" else fresh_data.get("name")
-                if current_title and not utils.contains_chinese(current_title):
+                
+                if is_spam_title(current_title):
+                    logger.warning(f"  ➜ [拦截] 检测到恶意广告片名: '{current_title}'，准备寻找替代片名...")
+                    current_title = ""
+                
+                if not current_title or not utils.contains_chinese(current_title):
                     chinese_alias = None
                     alt_titles_data = fresh_data.get("alternative_titles", {})
                     alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
@@ -2332,20 +2382,31 @@ class MediaProcessor:
                     best_priority = 99
                     for alt in alt_list:
                         alt_title = alt.get("title", "")
-                        if utils.contains_chinese(alt_title):
+                        # 别名也必须经过广告过滤
+                        if utils.contains_chinese(alt_title) and not is_spam_title(alt_title):
                             iso_country = alt.get("iso_3166_1", "").upper()
                             current_priority = priority_map.get(iso_country, 5)
                             if current_priority < best_priority:
                                 chinese_alias = alt_title
                                 best_priority = current_priority
                             if best_priority == 1: break
+                    
                     if chinese_alias:
-                        logger.info(f"  ➜ 发现 TMDb 官方中文别名: '{current_title}' -> '{chinese_alias}'")
+                        logger.info(f"  ➜ 发现干净的 TMDb 官方中文别名: '{chinese_alias}'")
                         if item_type == "Movie": fresh_data["title"] = chinese_alias
                         else:
                             fresh_data["name"] = chinese_alias
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                 aggregated_tmdb_data["series_details"]["name"] = chinese_alias
+                    else:
+                        # 回退到原名，交给 AI 翻译
+                        original_title = fresh_data.get("original_title") if item_type == "Movie" else fresh_data.get("original_name")
+                        logger.info(f"  ➜ 未找到干净的中文别名，回退到原名: '{original_title}'，等待 AI 翻译。")
+                        if item_type == "Movie": fresh_data["title"] = original_title
+                        else:
+                            fresh_data["name"] = original_title
+                            if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
+                                aggregated_tmdb_data["series_details"]["name"] = original_title
 
                 # 2. 填充骨架
                 formatted_metadata = construct_metadata_payload(
