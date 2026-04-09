@@ -599,7 +599,9 @@ def api_save_menu_config():
     """
     try:
         new_config = request.json
-        if not isinstance(new_config, dict):
+        
+        # ★★★ 修改这里：允许接收 list (数组) 格式的数据 ★★★
+        if not isinstance(new_config, (dict, list)):
             return jsonify({"error": "无效的数据格式"}), 400
             
         settings_db.save_setting('custom_menu_config', new_config)
