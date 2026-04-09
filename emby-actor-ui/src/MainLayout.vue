@@ -372,7 +372,15 @@ const router = useRouter();
 const route = useRoute(); 
 const authStore = useAuthStore();
 
-const collapsed = ref(true);
+// 侧边栏状态：移动端默认收起，桌面端读取上次的习惯（首次访问默认展开）
+const collapsed = ref(window.innerWidth < 768 ? true : localStorage.getItem('sidebar_collapsed') === 'true');
+
+// 记住用户对侧边栏的展开/收起操作（仅限桌面端）
+watch(collapsed, (newVal) => {
+  if (!isMobile.value) {
+    localStorage.setItem('sidebar_collapsed', String(newVal));
+  }
+});
 const activeMenuKey = computed(() => route.name);
 const appVersion = ref(__APP_VERSION__);
 
