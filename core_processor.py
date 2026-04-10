@@ -4196,7 +4196,7 @@ class MediaProcessor:
                                         else:
                                             skipped_count += 1
                                         break
-                    logger.info(f"  ➜ 深度扫描目录完成，实际更新了 {generated_count} 个集 NFO (跳过了 {skipped_count} 个未变更的)。")
+                    logger.info(f"  ➜ 深度扫描目录完成，实际更新了 {generated_count} 集 NFO (跳过了 {skipped_count} 集未变更的)。")
 
             elif item_type == "Episode":
                 nfo_content = nfo_builder.build_episode_nfo(data_to_write, cast_to_write)
