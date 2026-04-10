@@ -259,7 +259,7 @@ def task_scan_for_cleanup_issues(processor):
     task_manager.update_status_from_thread(0, "正在准备扫描...")
 
     try:
-        # ★ 适配集中式配置读取
+        # 配置读取
         config_data = settings_db.get_setting('media_cleanup_config') or {}
         library_ids_to_scan = config_data.get('library_ids') or settings_db.get_setting('media_cleanup_library_ids') or []
         
@@ -472,7 +472,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                 version_id_to_check = str(version.get('id'))
                 file_path = version.get('path')
                 
-                # ★★★ 核心修复：先判断是不是劣质版本，如果是，再判断用什么模式删 ★★★
+                # 先判断是不是劣质版本，如果是，再判断用什么模式删 
                 if version_id_to_check not in safe_ids_set:
                     
                     if delete_mode == 'api':
@@ -533,7 +533,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                                         
                                         if not has_media:
                                             shutil.rmtree(curr_dir)
-                                            logger.info(f"  ➜ [完美擦屁股] 目录已无媒体文件，连锅端删除: {curr_dir}")
+                                            logger.info(f"  ➜ 目录已无媒体文件，连目录一起删除: {curr_dir}")
                                             curr_dir = os.path.dirname(curr_dir)
                                         else:
                                             break
