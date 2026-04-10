@@ -417,8 +417,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
     config = config_manager.APP_CONFIG
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
     sync_delete = config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False) 
-    cfg = settings_db.get_setting('media_cleanup_rules') or [] 
-    api_delete = cfg.get('media_cleanup_api_delete', False)  
+    api_delete = settings_db.get_setting('media_cleanup_api_delete', False)  
     
     try:
         tasks_to_execute = cleanup_db.get_cleanup_index_by_ids(task_ids)
