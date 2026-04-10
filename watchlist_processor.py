@@ -518,6 +518,72 @@ class WatchlistProcessor:
         aggregated_data['episodes_details'] = unified_episodes_dict
 
         # ======================================================================
+        # ★★★ 核心修复：真假美猴王 (临时 ID 资产转移) ★★★
+        # 如果 TMDb 更新了真实 ID，我们需要把之前绑在临时 ID (如 318892-S1E2)
+        # 上的物理资产转移给真实 ID，并删除临时 ID。
+        # ======================================================================
+        try:
+            with connection.get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # 查找当前剧集下所有的临时 ID (包含 '-')
+                    cursor.execute("""
+                        SELECT tmdb_id, season_number, episode_number,
+                               emby_item_ids_json, asset_details_json, file_sha1_json, file_pickcode_json, in_library
+                        FROM media_metadata
+                        WHERE parent_series_tmdb_id = %s
+                          AND item_type = 'Episode'
+                          AND tmdb_id LIKE '%%-%%'
+                    """, (tmdb_id,))
+                    dummy_records = cursor.fetchall()
+
+                    for dummy in dummy_records:
+                        s_num = dummy['season_number']
+                        e_num = dummy['episode_number']
+                        dummy_id = dummy['tmdb_id']
+
+                        # 检查 TMDb 最新数据中是否已经有了这一集的真实 ID
+                        ep_key = f"S{s_num}E{e_num}"
+                        real_ep_data = unified_episodes_dict.get(ep_key)
+
+                        if real_ep_data and str(real_ep_data.get('id')).isdigit():
+                            real_id = str(real_ep_data['id'])
+
+                            logger.info(f"  ➜ [真假美猴王] 发现 S{s_num}E{e_num} 的真实 TMDb ID ({real_id})，正在从临时 ID ({dummy_id}) 转移资产...")
+
+                            # 1. 检查真实 ID 是否已经在数据库中存在
+                            cursor.execute("SELECT 1 FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Episode'", (real_id,))
+                            real_exists = cursor.fetchone()
+
+                            if real_exists:
+                                # 如果真实 ID 已存在，把临时 ID 的资产 UPDATE 过去
+                                cursor.execute("""
+                                    UPDATE media_metadata
+                                    SET in_library = %s,
+                                        emby_item_ids_json = %s,
+                                        asset_details_json = %s,
+                                        file_sha1_json = %s,
+                                        file_pickcode_json = %s
+                                    WHERE tmdb_id = %s AND item_type = 'Episode'
+                                """, (
+                                    dummy['in_library'], dummy['emby_item_ids_json'],
+                                    dummy['asset_details_json'], dummy['file_sha1_json'],
+                                    dummy['file_pickcode_json'], real_id
+                                ))
+                                # 删除临时 ID
+                                cursor.execute("DELETE FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Episode'", (dummy_id,))
+                            else:
+                                # 如果真实 ID 还没建表，直接把临时 ID 的主键 UPDATE 成真实 ID 即可！
+                                cursor.execute("""
+                                    UPDATE media_metadata
+                                    SET tmdb_id = %s
+                                    WHERE tmdb_id = %s AND item_type = 'Episode'
+                                """, (real_id, dummy_id))
+
+                    conn.commit()
+        except Exception as e:
+            logger.error(f"  ➜ 转移临时 ID 资产时出错: {e}", exc_info=True)
+
+        # ======================================================================
         # ★★★ 强制下载新出图的分集 & 同步数据库 ★★★
         # ======================================================================
         old_episodes_db = {}
