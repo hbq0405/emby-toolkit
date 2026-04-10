@@ -989,6 +989,7 @@ def _execute_resubscribe(processor, task_name: str, target):
     mp_config = settings_db.get_setting('mp_config') or {}
     delay = float(mp_config.get('resubscribe_delay_seconds', 1.5))
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+    sync_delete = config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False)
     resubscribed_count, deleted_count = 0, 0
 
     # 用于在所有任务结束后统一执行批量操作
@@ -1183,7 +1184,7 @@ def _execute_resubscribe(processor, task_name: str, target):
     # ======================================================================
     # 统一执行批量操作 (115 联动删除 & Emby 极速刷新)
     # ======================================================================
-    if all_pickcodes_to_delete:
+    if all_pickcodes_to_delete and sync_delete:
         logger.info(f"  ➜ 正在将 {len(all_pickcodes_to_delete)} 个文件加入 115 网盘联动删除队列...")
         WebhookDeleteBuffer.add(all_pickcodes_to_delete)
 

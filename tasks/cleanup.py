@@ -416,6 +416,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
     
     config = config_manager.APP_CONFIG
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+    sync_delete = config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False)    
     
     try:
         tasks_to_execute = cleanup_db.get_cleanup_index_by_ids(task_ids)
@@ -541,7 +542,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
             cleanup_db.batch_update_cleanup_index_status(processed_task_ids, 'processed')
 
         # 5. 联动删除 115 网盘文件 (利用 WebhookDeleteBuffer 的批量处理能力)
-        if all_pickcodes_to_delete:
+        if all_pickcodes_to_delete and sync_delete:
             logger.info(f"  ➜ 正在将 {len(all_pickcodes_to_delete)} 个文件加入 115 网盘联动删除队列...")
             WebhookDeleteBuffer.add(all_pickcodes_to_delete)
 
