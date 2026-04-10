@@ -1187,12 +1187,14 @@ def _execute_resubscribe(processor, task_name: str, target):
                                     SET status = 'subscribed' 
                                     WHERE tmdb_id = %s AND item_type = 'Movie'
                                 """, (str(tmdb_id),))
+                                conn.commit()
                             elif item_type == 'Season':
                                 cursor.execute("""
                                     UPDATE resubscribe_index 
                                     SET status = 'subscribed' 
                                     WHERE tmdb_id = %s AND item_type = 'Season' AND season_number = %s
                                 """, (str(tmdb_id), season_number))
+                                conn.commit()
                 except Exception as e:
                     logger.error(f"  ➜ 更新洗版状态到数据库失败: {e}")
 
