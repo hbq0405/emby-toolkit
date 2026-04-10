@@ -4075,12 +4075,32 @@ class MediaProcessor:
         if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(episode_dir), re.IGNORECASE):
             series_root_dir = os.path.dirname(episode_dir)
 
+        # --- ★★★ 新增：智能比对写入函数 (保护硬盘 I/O) ★★★ ---
+        def _write_nfo_if_changed(file_path: str, content: str) -> bool:
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        old_content = f.read()
+                    if old_content == content:
+                        return False # 内容完全一致，跳过硬盘写入
+                except Exception:
+                    pass # 读取失败则走正常覆盖流程
+            try:
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                return True
+            except Exception as e:
+                logger.error(f"  ➜ 写入 NFO 失败 {file_path}: {e}")
+                return False
+
         try:
             if item_type == "Movie":
                 nfo_content = nfo_builder.build_movie_nfo(data_to_write, cast_to_write)
                 nfo_path = os.path.splitext(media_path)[0] + ".nfo"
-                with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
-                logger.info(f"  ➜ 成功写入电影 NFO: {nfo_path}")
+                if _write_nfo_if_changed(nfo_path, nfo_content):
+                    logger.info(f"  ➜ 成功写入电影 NFO: {nfo_path}")
+                else:
+                    logger.debug(f"  ➜ 电影 NFO 内容未变，跳过写入: {nfo_path}")
 
             elif item_type == "Series":
                 nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
@@ -4119,8 +4139,8 @@ class MediaProcessor:
                         logger.warning(f"  ➜ 读取原有 NFO 失败: {e}")
 
                 nfo_content = nfo_builder.build_tvshow_nfo(data_to_write, cast_to_write)
-                with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
-                logger.info(f"  ➜ 成功写入剧 NFO: {nfo_path}")
+                if _write_nfo_if_changed(nfo_path, nfo_content):
+                    logger.info(f"  ➜ 成功写入剧 NFO: {nfo_path}")
                 
                 episodes_data = data_to_write.get("episodes_details", {})
                 seasons_data = data_to_write.get("seasons_details", [])
@@ -4128,6 +4148,7 @@ class MediaProcessor:
                 if episodes_data and os.path.isdir(series_root_dir):
                     valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
                     generated_count = 0
+                    skipped_count = 0
                     season_dirs_processed = set()
                     
                     for root_dir, dirs, files in os.walk(series_root_dir):
@@ -4142,8 +4163,8 @@ class MediaProcessor:
                                     if season_info:
                                         season_nfo_content = nfo_builder.build_season_nfo(season_info)
                                         season_nfo_path = os.path.join(root_dir, "season.nfo")
-                                        with open(season_nfo_path, 'w', encoding='utf-8') as f: f.write(season_nfo_content)
-                                        logger.info(f"  ➜ 成功写入季 NFO: {season_nfo_path}")
+                                        if _write_nfo_if_changed(season_nfo_path, season_nfo_content):
+                                            logger.info(f"  ➜ 成功写入季 NFO: {season_nfo_path}")
                                     season_dirs_processed.add(root_dir)
 
                                 ep_list = episodes_data.values() if isinstance(episodes_data, dict) else (episodes_data if isinstance(episodes_data, list) else [])
@@ -4153,16 +4174,22 @@ class MediaProcessor:
                                         if not ep_cast: ep_cast = cast_to_write 
                                         ep_nfo_content = nfo_builder.build_episode_nfo(ep, ep_cast)
                                         ep_nfo_path = os.path.join(root_dir, os.path.splitext(filename)[0] + ".nfo")
-                                        with open(ep_nfo_path, 'w', encoding='utf-8') as f: f.write(ep_nfo_content)
-                                        generated_count += 1
+                                        
+                                        # ★★★ 核心比对逻辑 ★★★
+                                        if _write_nfo_if_changed(ep_nfo_path, ep_nfo_content):
+                                            generated_count += 1
+                                        else:
+                                            skipped_count += 1
                                         break
-                    logger.info(f"  ➜ 深度扫描目录完成，批量生成了 {generated_count} 个集 NFO。")
+                    logger.info(f"  ➜ 深度扫描目录完成，实际更新了 {generated_count} 个集 NFO (跳过了 {skipped_count} 个未变更的)。")
 
             elif item_type == "Episode":
                 nfo_content = nfo_builder.build_episode_nfo(data_to_write, cast_to_write)
                 nfo_path = os.path.splitext(media_path)[0] + ".nfo"
-                with open(nfo_path, 'w', encoding='utf-8') as f: f.write(nfo_content)
-                logger.info(f"  ➜ 成功写入分集 NFO: {nfo_path}")
+                if _write_nfo_if_changed(nfo_path, nfo_content):
+                    logger.info(f"  ➜ 成功写入分集 NFO: {nfo_path}")
+                else:
+                    logger.debug(f"  ➜ 分集 NFO 内容未变，跳过写入: {nfo_path}")
 
         except Exception as e:
             logger.error(f"  ➜ 写入 NFO 文件失败: {e}")
