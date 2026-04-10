@@ -9,6 +9,7 @@ from .connection import get_db_connection
 from . import request_db
 from utils import contains_chinese
 from handler.emby import get_emby_item_details
+import handler.moviepilot as moviepilot
 from config_manager import APP_CONFIG
 import extensions 
 import utils
@@ -602,14 +603,16 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
 
 #   --- 删除演员订阅 ---
 def delete_actor_subscription(subscription_id: int) -> bool:
+    """删除一个演员订阅，并智能清理其在 media_metadata 中的追踪记录及 MoviePilot 订阅。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
+            # 1. 获取订阅详情
             cursor.execute("SELECT actor_name, tmdb_person_id FROM actor_subscriptions WHERE id = %s", (subscription_id,))
             sub_info = cursor.fetchone()
             if not sub_info:
-                logger.warning(f"尝试删除一个不存在的订阅 (ID: {subscription_id})。")
+                logger.warning(f"  ➜ 尝试删除一个不存在的订阅 (ID: {subscription_id})。")
                 return True
 
             source_to_remove = {
@@ -619,20 +622,60 @@ def delete_actor_subscription(subscription_id: int) -> bool:
                 "person_id": sub_info['tmdb_person_id']
             }
             source_filter = json.dumps([source_to_remove])
+            
+            # 2. 获取所有包含该订阅源的媒体项 (包含 season_number 以防万一)
             cursor.execute(
-                "SELECT tmdb_id, item_type FROM media_metadata WHERE subscription_sources_json @> %s::jsonb",
+                "SELECT tmdb_id, item_type, season_number, subscription_sources_json FROM media_metadata WHERE subscription_sources_json @> %s::jsonb",
                 (source_filter,)
             )
             items_to_clean = cursor.fetchall()
 
             logger.info(f"  ➜ 正在从 {len(items_to_clean)} 个媒体项中移除订阅源 (ID: {subscription_id})...")
+            
+            # 3. 遍历清理并智能联动 MoviePilot
             for item in items_to_clean:
-                request_db.remove_subscription_source(item['tmdb_id'], item['item_type'], source_to_remove)
+                tmdb_id = item['tmdb_id']
+                item_type = item['item_type']
+                season_num = item['season_number']
+                sources = item['subscription_sources_json']
+                
+                if isinstance(sources, str):
+                    try: sources = json.loads(sources)
+                    except: sources = []
+                        
+                if not isinstance(sources, list):
+                    sources = []
+                    
+                # 过滤掉当前要删除的演员源
+                new_sources = [s for s in sources if not (s.get('type') == source_to_remove['type'] and s.get('id') == source_to_remove['id'])]
+                
+                if not new_sources:
+                    # ★★★ 核心逻辑 A：如果没有其他订阅源了，彻底取消 MoviePilot 订阅 ★★★
+                    logger.info(f"  ➜ 媒体项 {tmdb_id} ({item_type}) 已无其他订阅源，正在同步取消 MoviePilot 订阅...")
+                    moviepilot.cancel_subscription(tmdb_id, item_type, APP_CONFIG, season=season_num)
+                    
+                    cursor.execute("""
+                        UPDATE media_metadata 
+                        SET subscription_sources_json = '[]'::jsonb,
+                            subscription_status = 'NONE'
+                        WHERE tmdb_id = %s AND item_type = %s
+                    """, (tmdb_id, item_type))
+                else:
+                    # ★★★ 核心逻辑 B：如果还有其他源，仅更新 JSON，保留 MoviePilot 订阅 ★★★
+                    other_names = [s.get('name', '未知') for s in new_sources]
+                    logger.info(f"  ➜ 媒体项 {tmdb_id} ({item_type}) 仍被 {other_names} 订阅，仅移除当前演员源。")
+                    cursor.execute("""
+                        UPDATE media_metadata 
+                        SET subscription_sources_json = %s::jsonb
+                        WHERE tmdb_id = %s AND item_type = %s
+                    """, (json.dumps(new_sources, ensure_ascii=False), tmdb_id, item_type))
 
+            # 4. 最后删除订阅本身
             cursor.execute("DELETE FROM actor_subscriptions WHERE id = %s", (subscription_id,))
             conn.commit()
             logger.info(f"  ➜ 成功删除订阅ID {subscription_id} 及其所有追踪记录。")
             return True
+            
     except Exception as e:
         logger.error(f"  ➜ 删除订阅 {subscription_id} 失败: {e}", exc_info=True)
         raise
