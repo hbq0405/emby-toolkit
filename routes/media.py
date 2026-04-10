@@ -577,7 +577,7 @@ def api_batch_delete_media():
 
     try:
         deleted_count = media_db.delete_media_metadata_batch(items_to_delete)
-        logger.info(f"API: 已物理删除 {deleted_count} 条媒体元数据记录。")
+        logger.info(f"  ➜ 已物理删除 {deleted_count} 条媒体元数据记录。")
         return jsonify({
             "message": f"成功删除了 {deleted_count} 条记录。",
             "deleted_count": deleted_count
