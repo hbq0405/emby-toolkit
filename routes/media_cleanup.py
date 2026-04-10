@@ -219,6 +219,10 @@ def get_cleanup_settings():
         if keep_one_per_res is None:
             keep_one_per_res = False # 默认关闭，保持原有逻辑
 
+        api_delete = settings_db.get_setting('media_cleanup_api_delete')
+        if api_delete is None:
+            api_delete = False # 默认关闭，保持原有逻辑
+
         # --- ★★★ Part 4: 获取删除延迟  ★★★ ---
         delete_delay = settings_db.get_setting('media_cleanup_delete_delay')
         if delete_delay is None:
@@ -246,6 +250,7 @@ def save_cleanup_settings():
     new_rules = data.get('rules')
     library_ids = data.get('library_ids')
     keep_one_per_res = data.get('keep_one_per_res')
+    api_delete = data.get('api_delete')
     delete_delay = data.get('delete_delay')
 
     if not isinstance(new_rules, list):
@@ -260,6 +265,7 @@ def save_cleanup_settings():
         settings_db.save_setting('media_cleanup_rules', new_rules)
         settings_db.save_setting('media_cleanup_library_ids', library_ids)
         settings_db.save_setting('media_cleanup_keep_one_per_res', bool(keep_one_per_res))
+        settings_db.save_setting('media_cleanup_api_delete', bool(api_delete))
         settings_db.save_setting('media_cleanup_delete_delay', int(delete_delay or 0))
         
         return jsonify({"message": "清理设置已成功保存！"}), 200
