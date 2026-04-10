@@ -74,6 +74,7 @@ def build_movie_nfo(data: dict, cast: list) -> str:
     title = data.get('title')
     _add_element(root, 'title', title)
     _add_element(root, 'originaltitle', data.get('original_title'))
+    # ★★★ 自动生成拼音首字母用于排序 ★★★
     _add_element(root, 'sorttitle', get_pinyin_initials(title))
     
     _add_element(root, 'tagline', data.get('tagline'))
@@ -108,38 +109,20 @@ def build_movie_nfo(data: dict, cast: list) -> str:
             _add_element(set_elem, 'overview', collection.get('overview'))
 
     _add_genres_and_tags(root, data)
-    
-    # =================================================================
-    # ★★★ 终极修复：导演去重、职务汉化与强制后排 ★★★
-    # =================================================================
-    # 1. 过滤掉 cast 里可能因为读取旧 NFO 而残留的旧导演数据，防止无限影分身
-    extended_cast = [a for a in cast if a.get('type', 'Actor') != 'Director']
-    
+    _add_actors(root, cast) 
+    extended_cast = list(cast)
     top_directors = extract_top_directors(data, max_count=3)
-    base_director_order = 1000 # 给导演分配 1000 起步的超大 order
-    
-    for i, d in enumerate(top_directors):
-        # A. 写入标准的 director 标签 (兼容 Kodi 等其他播放器)
+    for d in top_directors:
+        # 1. 写入标准的 director 标签 (兼容 Kodi)
         dir_elem = ET.SubElement(root, 'director')
         if d.get('id'): dir_elem.set('tmdbid', str(d.get('id')))
         dir_elem.text = d.get('name')
         
-        # B. 伪装成 Actor 塞进列表 (专供 Emby 读取头像)
+        # 2. 伪装成 Actor 塞进列表 (让 Emby 能读取头像)
         d_copy = d.copy()
         d_copy['type'] = 'Director'
-        
-        # 智能区分并汉化职务
-        job = d.get('job', 'Director')
-        if job == 'Series Director':
-            d_copy['character'] = '总导演'
-        else:
-            d_copy['character'] = '导演'
-            
-        d_copy['order'] = base_director_order + i
+        d_copy['character'] = 'Director'
         extended_cast.append(d_copy)
-        
-    # 2. 在最终写入前，对整个列表按 order 重新严格排序
-    extended_cast.sort(key=lambda x: int(x.get('order', 999)) if x.get('order') not in [None, ''] else 999)
         
     _add_actors(root, extended_cast) 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
@@ -152,6 +135,7 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     title = data.get('name') or data.get('title')
     _add_element(root, 'title', title)
     _add_element(root, 'originaltitle', data.get('original_name') or data.get('original_title'))
+    # ★★★ 自动生成拼音首字母用于排序 (如果已有 sorttitle 则优先使用) ★★★
     _add_element(root, 'sorttitle', data.get('sorttitle') or get_pinyin_initials(title))
     _add_element(root, 'tagline', data.get('tagline'))
     _add_element(root, 'year', data.get('first_air_date')[:4] if data.get('first_air_date') else '')
@@ -171,6 +155,7 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
         ET.SubElement(root, 'uniqueid', type='imdb').text = str(imdb_id)
         _add_element(root, 'imdb_id', imdb_id)
         
+    # 补全 episodeguide
     guide_dict = {}
     if tmdb_id: guide_dict["tmdb"] = str(tmdb_id)
     if imdb_id: guide_dict["imdb"] = str(imdb_id)
@@ -180,6 +165,7 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     if imdb_id: _add_element(root, 'id', imdb_id)
     elif tmdb_id: _add_element(root, 'id', tmdb_id)
 
+    # 补全剧集专属占位符
     _add_element(root, 'season', '-1')
     _add_element(root, 'episode', '-1')
     _add_element(root, 'displayorder', 'aired')
@@ -189,37 +175,18 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     for studio in data.get('networks', []) + data.get('production_companies', []):
         _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)
 
-    # =================================================================
-    # ★★★ 终极修复：导演去重、职务汉化与强制后排 ★★★
-    # =================================================================
-    # 1. 过滤掉 cast 里可能因为读取旧 NFO 而残留的旧导演数据，防止无限影分身
-    extended_cast = [a for a in cast if a.get('type', 'Actor') != 'Director']
-    
+    _add_actors(root, cast) 
+    extended_cast = list(cast)
     top_directors = extract_top_directors(data, max_count=3)
-    base_director_order = 1000 # 给导演分配 1000 起步的超大 order
-    
-    for i, d in enumerate(top_directors):
-        # A. 写入标准的 director 标签 (兼容 Kodi 等其他播放器)
+    for d in top_directors:
         dir_elem = ET.SubElement(root, 'director')
         if d.get('id'): dir_elem.set('tmdbid', str(d.get('id')))
         dir_elem.text = d.get('name')
         
-        # B. 伪装成 Actor 塞进列表 (专供 Emby 读取头像)
         d_copy = d.copy()
         d_copy['type'] = 'Director'
-        
-        # 智能区分并汉化职务
-        job = d.get('job', 'Director')
-        if job == 'Series Director':
-            d_copy['character'] = '总导演'
-        else:
-            d_copy['character'] = '导演'
-            
-        d_copy['order'] = base_director_order + i
+        d_copy['character'] = 'Director'
         extended_cast.append(d_copy)
-        
-    # 2. 在最终写入前，对整个列表按 order 重新严格排序
-    extended_cast.sort(key=lambda x: int(x.get('order', 999)) if x.get('order') not in [None, ''] else 999)
         
     _add_actors(root, extended_cast) 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
@@ -231,6 +198,7 @@ def build_season_nfo(data: dict) -> str:
     
     title = data.get('name')
     _add_element(root, 'title', title)
+    # ★★★ 季也加上拼音排序 ★★★
     _add_element(root, 'sorttitle', get_pinyin_initials(title))
     
     _add_element(root, 'seasonnumber', data.get('season_number'))
@@ -261,37 +229,23 @@ def build_episode_nfo(data: dict, cast: list) -> str:
         ET.SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(data.get('id'))
         _add_element(root, 'tmdbid', data.get('id'))
 
-    # =================================================================
-    # ★★★ 终极修复：导演去重、职务汉化与强制后排 ★★★
-    # =================================================================
-    # 1. 过滤掉 cast 里可能因为读取旧 NFO 而残留的旧导演数据，防止无限影分身
-    extended_cast = [a for a in cast if a.get('type', 'Actor') != 'Director']
-    
+    _add_actors(root, cast) 
+
+    if data.get('id'):
+        ET.SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(data.get('id'))
+        _add_element(root, 'tmdbid', data.get('id'))
+
+    extended_cast = list(cast)
     top_directors = extract_top_directors(data, max_count=3)
-    base_director_order = 1000 # 给导演分配 1000 起步的超大 order
-    
-    for i, d in enumerate(top_directors):
-        # A. 写入标准的 director 标签 (兼容 Kodi 等其他播放器)
+    for d in top_directors:
         dir_elem = ET.SubElement(root, 'director')
         if d.get('id'): dir_elem.set('tmdbid', str(d.get('id')))
         dir_elem.text = d.get('name')
         
-        # B. 伪装成 Actor 塞进列表 (专供 Emby 读取头像)
         d_copy = d.copy()
         d_copy['type'] = 'Director'
-        
-        # 智能区分并汉化职务
-        job = d.get('job', 'Director')
-        if job == 'Series Director':
-            d_copy['character'] = '总导演'
-        else:
-            d_copy['character'] = '导演'
-            
-        d_copy['order'] = base_director_order + i
+        d_copy['character'] = 'Director'
         extended_cast.append(d_copy)
-        
-    # 2. 在最终写入前，对整个列表按 order 重新严格排序
-    extended_cast.sort(key=lambda x: int(x.get('order', 999)) if x.get('order') not in [None, ''] else 999)
         
     _add_actors(root, extended_cast) 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
