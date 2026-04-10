@@ -1149,7 +1149,7 @@ def update_media_metadata_fields(tmdb_id: str, item_type: str, updates: Dict[str
 # --- 临时内部ID转移剧集资产 ---
 def transfer_dummy_episode_assets(parent_tmdb_id: str, unified_episodes_dict: dict):
     """
-    资产转移逻辑。
+    【真假美猴王】资产转移逻辑。
     当 TMDb 更新了真实 ID 后，将之前绑在临时 ID (如 318892-S1E2) 上的物理资产
     无缝转移给真实 ID，并清理临时 ID。
     """
@@ -1189,19 +1189,25 @@ def transfer_dummy_episode_assets(parent_tmdb_id: str, unified_episodes_dict: di
                         real_exists = cursor.fetchone()
 
                         if real_exists:
-                            # 如果真实 ID 已存在，把临时 ID 的资产 UPDATE 过去
+                            # ★★★ 核心修复：将 Python 字典/列表重新序列化为 JSON 字符串 ★★★
+                            emby_ids_str = json.dumps(dummy['emby_item_ids_json'], ensure_ascii=False) if dummy['emby_item_ids_json'] is not None else '[]'
+                            assets_str = json.dumps(dummy['asset_details_json'], ensure_ascii=False) if dummy['asset_details_json'] is not None else None
+                            sha1_str = json.dumps(dummy['file_sha1_json'], ensure_ascii=False) if dummy['file_sha1_json'] is not None else '[]'
+                            pc_str = json.dumps(dummy['file_pickcode_json'], ensure_ascii=False) if dummy['file_pickcode_json'] is not None else '[]'
+
+                            # 如果真实 ID 已存在，把临时 ID 的资产 UPDATE 过去 (加上 ::jsonb 转换)
                             cursor.execute("""
                                 UPDATE media_metadata
                                 SET in_library = %s,
-                                    emby_item_ids_json = %s,
-                                    asset_details_json = %s,
-                                    file_sha1_json = %s,
-                                    file_pickcode_json = %s
+                                    emby_item_ids_json = %s::jsonb,
+                                    asset_details_json = %s::jsonb,
+                                    file_sha1_json = %s::jsonb,
+                                    file_pickcode_json = %s::jsonb
                                 WHERE tmdb_id = %s AND item_type = 'Episode'
                             """, (
-                                dummy['in_library'], dummy['emby_item_ids_json'],
-                                dummy['asset_details_json'], dummy['file_sha1_json'],
-                                dummy['file_pickcode_json'], real_id
+                                dummy['in_library'], emby_ids_str,
+                                assets_str, sha1_str,
+                                pc_str, real_id
                             ))
                             # 删除临时 ID
                             cursor.execute("DELETE FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Episode'", (dummy_id,))
