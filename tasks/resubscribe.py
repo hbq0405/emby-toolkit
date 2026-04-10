@@ -1178,7 +1178,9 @@ def _execute_resubscribe(processor, task_name: str, target):
                 
                 logger.info(f"  ➜ 成功提交订阅到 MoviePilot: {item_name}")
                 
-                resubscribe_db.batch_update_resubscribe_index_status(str(tmdb_id), "subscribed")
+                actual_season = int(season_number) if season_number is not None else -1
+                key_tuple = (str(tmdb_id), item_type, actual_season)
+                resubscribe_db.batch_update_resubscribe_index_status([key_tuple], "subscribed")
 
             else:
                 logger.error(f"  ➜ 提交订阅到 MoviePilot 失败: {item_name}")                
