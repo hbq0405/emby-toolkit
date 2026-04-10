@@ -1184,13 +1184,13 @@ def _execute_resubscribe(processor, task_name: str, target):
                             if item_type == 'Movie':
                                 cursor.execute("""
                                     UPDATE resubscribe_index 
-                                    SET status = 'auto_subscribed' 
+                                    SET status = 'subscribed' 
                                     WHERE tmdb_id = %s AND item_type = 'Movie'
                                 """, (str(tmdb_id),))
                             elif item_type == 'Season':
                                 cursor.execute("""
                                     UPDATE resubscribe_index 
-                                    SET status = 'auto_subscribed' 
+                                    SET status = 'subscribed' 
                                     WHERE tmdb_id = %s AND item_type = 'Season' AND season_number = %s
                                 """, (str(tmdb_id), season_number))
                 except Exception as e:
