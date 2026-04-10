@@ -24,8 +24,7 @@
 
 ## 演员与订阅
 
-- `person_identity_map`：演员身份映射。
-- `actor_metadata`：演员元数据与别名。
+- `person_metadata`：人物元数据。
 - `actor_subscriptions`：演员订阅配置。
 
 ## 订阅与清理

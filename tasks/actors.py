@@ -233,10 +233,10 @@ def task_actor_translation(processor):
             tmdb_id_to_original_name = {}
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    query = "SELECT tmdb_id, original_name FROM actor_metadata WHERE tmdb_id = ANY(%s)"
+                    query = "SELECT tmdb_person_id, original_name FROM person_metadata WHERE tmdb_person_id = ANY(%s)"
                     cursor.execute(query, (tmdb_ids_to_query,))
                     for row in cursor.fetchall():
-                        tmdb_id_to_original_name[str(row['tmdb_id'])] = row['original_name']
+                        tmdb_id_to_original_name[str(row['tmdb_person_id'])] = row['original_name']
             
             logger.trace(f"  ➜ 成功从本地数据库为 {len(tmdb_id_to_original_name)} 个TMDb ID找到了original_name。")
 
@@ -563,13 +563,13 @@ def task_merge_duplicate_actors(processor):
                             with conn.cursor() as cursor:
                                 # ★★★ 修正 2/2: 更新映射表，而不是删除 ★★★
                                 cursor.execute(
-                                    "UPDATE person_identity_map SET emby_person_id = %s WHERE tmdb_person_id = %s",
+                                    "UPDATE person_metadata SET emby_person_id = %s WHERE tmdb_person_id = %s",
                                     (keeper['Id'], tmdb_id)
                                 )
                                 if cursor.rowcount > 0:
                                     logger.info(f"  ➜ 同步成功: 已将数据库中 TMDb ID '{tmdb_id}' 的映射更新为 Emby ID '{keeper['Id']}'。")
                                 else:
-                                    logger.warning(f"  ➜ 同步提醒: 在 person_identity_map 中未找到 TMDb ID '{tmdb_id}'，无法更新。")
+                                    logger.warning(f"  ➜ 同步提醒: 在 person_metadata 中未找到 TMDb ID '{tmdb_id}'，无法更新。")
                     except Exception as db_exc:
                         logger.error(f"  ➜ 同步失败: 尝试更新 TMDb ID '{tmdb_id}' 的映射时出错: {db_exc}")
             else:
@@ -694,9 +694,9 @@ def task_purge_ghost_actors(processor):
                 try:
                     with get_db_connection() as conn:
                         with conn.cursor() as cursor:
-                            cursor.execute("DELETE FROM person_identity_map WHERE emby_person_id = %s", (person_id,))
+                            cursor.execute("UPDATE person_metadata SET emby_person_id = NULL WHERE emby_person_id = %s", (person_id,))
                             if cursor.rowcount > 0:
-                                logger.info(f"  ➜ 同步成功: 已从本地数据库移除 ID '{person_id}'。")
+                                logger.info(f"  ➜ 同步成功: 已从本地数据库解绑 Emby ID '{person_id}'。")
                 except Exception as db_exc:
                     logger.error(f"  ➜ 同步失败: 尝试从本地数据库删除 ID '{person_id}' 时出错: {db_exc}")
             
@@ -837,17 +837,11 @@ def task_purge_unregistered_actors(processor):
                 try:
                     with get_db_connection() as conn:
                         with conn.cursor() as cursor:
-                            cursor.execute(
-                                "DELETE FROM person_identity_map WHERE emby_person_id = %s",
-                                (person_id,)
-                            )
-                            # 记录数据库操作结果
+                            cursor.execute("UPDATE person_metadata SET emby_person_id = NULL WHERE emby_person_id = %s", (person_id,))
                             if cursor.rowcount > 0:
-                                logger.info(f"  ➜ 同步成功: 已从 person_identity_map 中移除 ID '{person_id}'。")
-                            else:
-                                logger.info(f"  ➜ 同步提醒: 在 person_identity_map 中未找到 ID '{person_id}'，无需删除。")
+                                logger.info(f"  ➜ 同步成功: 已从本地数据库解绑 Emby ID '{person_id}'。")
                 except Exception as db_exc:
-                    logger.error(f"      ➜ 同步失败: 尝试从 person_identity_map 删除 ID '{person_id}' 时出错: {db_exc}")
+                    logger.error(f"      ➜ 同步失败: 尝试从 person_metadata 更新 ID '{person_id}' 时出错: {db_exc}")
             
             time.sleep(0.2)
 

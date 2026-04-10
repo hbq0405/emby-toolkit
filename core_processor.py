@@ -305,10 +305,9 @@ class MediaProcessor:
                             if actor_tmdb_ids:
                                 placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
                                 sql = f"""
-                                    SELECT am.*, pim.primary_name as name
-                                    FROM actor_metadata am
-                                    LEFT JOIN person_identity_map pim ON am.tmdb_id = pim.tmdb_person_id
-                                    WHERE am.tmdb_id IN ({placeholders})
+                                    SELECT *, primary_name AS name, tmdb_person_id AS tmdb_id
+                                    FROM person_metadata
+                                    WHERE tmdb_person_id IN ({placeholders})
                                 """
                                 cursor.execute(sql, tuple(actor_tmdb_ids))
                                 actor_rows = cursor.fetchall()
@@ -1053,10 +1052,9 @@ class MediaProcessor:
                     if actor_tmdb_ids:
                         placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
                         sql = f"""
-                            SELECT am.*, pim.primary_name as name
-                            FROM actor_metadata am
-                            LEFT JOIN person_identity_map pim ON am.tmdb_id = pim.tmdb_person_id
-                            WHERE am.tmdb_id IN ({placeholders})
+                            SELECT *, primary_name AS name, tmdb_person_id AS tmdb_id
+                            FROM person_metadata
+                            WHERE tmdb_person_id IN ({placeholders})
                         """
                         cursor.execute(sql, tuple(actor_tmdb_ids))
                         actor_map = {r['tmdb_id']: dict(r) for r in cursor.fetchall()}

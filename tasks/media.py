@@ -2245,17 +2245,16 @@ def task_restore_nfo_and_images(processor):
                         actors_link = json.loads(raw_actors) if isinstance(raw_actors, str) else raw_actors
                         actor_tmdb_ids = [a['tmdb_id'] for a in actors_link if 'tmdb_id' in a]
                         if actor_tmdb_ids:
-                            with connection.get_db_connection() as conn:
-                                cursor = conn.cursor()
-                                placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
-                                sql = f"""
-                                    SELECT am.*, pim.primary_name as name
-                                    FROM actor_metadata am
-                                    LEFT JOIN person_identity_map pim ON am.tmdb_id = pim.tmdb_person_id
-                                    WHERE am.tmdb_id IN ({placeholders})
-                                """
-                                cursor.execute(sql, tuple(actor_tmdb_ids))
-                                actor_rows = cursor.fetchall()
+                                with connection.get_db_connection() as conn:
+                                    cursor = conn.cursor()
+                                    placeholders = ','.join(['%s'] * len(actor_tmdb_ids))
+                                    sql = f"""
+                                        SELECT *, primary_name AS name, tmdb_person_id AS tmdb_id
+                                        FROM person_metadata
+                                        WHERE tmdb_person_id IN ({placeholders})
+                                    """
+                                    cursor.execute(sql, tuple(actor_tmdb_ids))
+                                    actor_rows = cursor.fetchall()
                                 actor_map = {r['tmdb_id']: dict(r) for r in actor_rows}
                                 for link in actors_link:
                                     tid = link.get('tmdb_id')

@@ -352,10 +352,9 @@ def enrich_all_actor_aliases_task(
     force_full_update: bool = False
 ):
     """
-    - 解决了在合并IMDb冲突记录时，由于emby_person_id等其他ID已存在于第三方记录而导致的二次唯一键冲突。
-    - 合并逻辑现在会预先检查每个待合并的ID，如果发现新冲突，会尝试将冲突的ID从其旧记录中剥离，再赋给新记录。
-    - 增强了日志记录，清晰地展示了每一步合并决策。
-    - 保持了原有的三阶段处理（TMDb元数据、豆瓣IMDb、豆瓣头像）。
+    【重构版】适配单表 person_metadata 架构。
+    - 极大地简化了查询和更新逻辑。
+    - 解决了合并冲突时的外键约束问题。
     """
     task_mode = "(全量)" if force_full_update else "(增量)"
     logger.trace(f"--- 开始执行“演员数据补充”计划任务 [{task_mode}] ---")
@@ -383,22 +382,20 @@ def enrich_all_actor_aliases_task(
             logger.info("  ➜ 阶段一：从 TMDb 补充演员元数据 (IMDb ID, 头像等) ---")
             cursor = conn.cursor()
             
+            # ★ 重构点 1：查询极简化，不再需要 LEFT JOIN
             if force_full_update:
                 logger.info("  ➜ 深度模式已激活：将扫描所有演员，无视现有数据。")
                 sql_find_actors = """
-                    SELECT p.* FROM person_identity_map p
-                    LEFT JOIN actor_metadata m ON p.tmdb_person_id = m.tmdb_id
-                    WHERE p.tmdb_person_id IS NOT NULL
-                    ORDER BY m.last_updated_at ASC NULLS FIRST
+                    SELECT * FROM person_metadata
+                    ORDER BY last_updated_at ASC NULLS FIRST
                 """
             else:
                 logger.info(f"  ➜ 标准模式：将仅扫描需要补充数据且冷却期已过的演员 (冷却期: {sync_interval_days} 天)。")
                 sql_find_actors = f"""
-                    SELECT p.* FROM person_identity_map p
-                    LEFT JOIN actor_metadata m ON p.tmdb_person_id = m.tmdb_id
-                    WHERE p.tmdb_person_id IS NOT NULL AND (p.imdb_id IS NULL OR m.tmdb_id IS NULL OR m.profile_path IS NULL OR m.gender IS NULL OR m.original_name IS NULL)
-                    AND (m.last_updated_at IS NULL OR m.last_updated_at < NOW() - INTERVAL '{sync_interval_days} days')
-                    ORDER BY m.last_updated_at ASC
+                    SELECT * FROM person_metadata
+                    WHERE (imdb_id IS NULL OR profile_path IS NULL OR gender IS NULL OR original_name IS NULL)
+                    AND (last_updated_at IS NULL OR last_updated_at < NOW() - INTERVAL '{sync_interval_days} days')
+                    ORDER BY last_updated_at ASC
                 """
             
             cursor.execute(sql_find_actors)
@@ -425,8 +422,8 @@ def enrich_all_actor_aliases_task(
                     chunk = actors_for_tmdb[i:i + CHUNK_SIZE]
                     logger.info(f"  ➜ 开始处理 TMDb 第 {chunk_num} 批次，共 {len(chunk)} 个演员 ---")
 
-                    imdb_updates_to_commit = []
-                    metadata_to_commit = []
+                    # ★ 重构点 2：合并更新列表
+                    updates_to_commit = []
                     invalid_tmdb_ids = []
                     
                     tmdb_success_count, imdb_found_count, metadata_added_count, not_found_count = 0, 0, 0, 0
@@ -451,7 +448,6 @@ def enrich_all_actor_aliases_task(
                                 imdb_id = details.get("external_ids", {}).get("imdb_id")
                                 if imdb_id:
                                     imdb_found_count += 1
-                                    imdb_updates_to_commit.append((imdb_id, tmdb_id))
                                 
                                 best_original_name = None
                                 if details.get("english_name_from_translations"):
@@ -459,15 +455,17 @@ def enrich_all_actor_aliases_task(
                                 elif details.get("original_name") and not contains_chinese(details.get("original_name")):
                                     best_original_name = details.get("original_name")
                                 
-                                metadata_entry = {
-                                    "tmdb_id": tmdb_id,
+                                # 统一构建更新字典
+                                update_entry = {
+                                    "tmdb_person_id": tmdb_id,
+                                    "imdb_id": imdb_id,
                                     "profile_path": details.get("profile_path"),
                                     "gender": details.get("gender"),
                                     "adult": details.get("adult", False),
                                     "popularity": details.get("popularity"),
                                     "original_name": best_original_name
                                 }
-                                metadata_to_commit.append(metadata_entry)
+                                updates_to_commit.append(update_entry)
                                 metadata_added_count += 1
                             
                             elif status == "not_found":
@@ -480,92 +478,88 @@ def enrich_all_actor_aliases_task(
                         f"新增元数据({metadata_added_count}), 未找到({not_found_count})."
                     )
                     
-                    if imdb_updates_to_commit or metadata_to_commit or invalid_tmdb_ids:
+                    if updates_to_commit or invalid_tmdb_ids:
                         try:
                             logger.info(f"  ➜ 批次完成，准备写入数据库...")
 
-                            if metadata_to_commit:
-                                cols = metadata_to_commit[0].keys()
-                                cols_str = ", ".join(cols)
-                                placeholders_str = ", ".join([f"%({k})s" for k in cols])
-                                update_cols = [f"{col} = EXCLUDED.{col}" for col in cols if col != 'tmdb_id']
-                                update_str = ", ".join(update_cols)
-                                
-                                sql_upsert_metadata = f"""
-                                    INSERT INTO actor_metadata ({cols_str}, last_updated_at)
-                                    VALUES ({placeholders_str}, NOW())
-                                    ON CONFLICT (tmdb_id) DO UPDATE SET {update_str}, last_updated_at = NOW()
-                                """
-                                cursor.executemany(sql_upsert_metadata, metadata_to_commit)
-                                logger.trace(f"  ➜ 成功批量写入 {len(metadata_to_commit)} 条演员元数据。")
-
-                            for imdb_id, tmdb_id in imdb_updates_to_commit:
+                            # ★ 重构点 3：统一写入与冲突合并逻辑
+                            for entry in updates_to_commit:
                                 try:
-                                    cursor.execute("SAVEPOINT imdb_update_savepoint")
-                                    cursor.execute("UPDATE person_identity_map SET imdb_id = %s WHERE tmdb_person_id = %s", (imdb_id, tmdb_id))
-                                    cursor.execute("RELEASE SAVEPOINT imdb_update_savepoint")
+                                    cursor.execute("SAVEPOINT actor_update")
+                                    # 使用 COALESCE 保护已有的 imdb_id 不被 NULL 覆盖
+                                    cursor.execute("""
+                                        UPDATE person_metadata 
+                                        SET imdb_id = COALESCE(%(imdb_id)s, imdb_id),
+                                            profile_path = %(profile_path)s,
+                                            gender = %(gender)s,
+                                            adult = %(adult)s,
+                                            popularity = %(popularity)s,
+                                            original_name = %(original_name)s,
+                                            last_updated_at = NOW()
+                                        WHERE tmdb_person_id = %(tmdb_person_id)s
+                                    """, entry)
+                                    cursor.execute("RELEASE SAVEPOINT actor_update")
                                 except psycopg2.IntegrityError as ie:
-                                    cursor.execute("ROLLBACK TO SAVEPOINT imdb_update_savepoint")
+                                    cursor.execute("ROLLBACK TO SAVEPOINT actor_update")
                                     if "violates unique constraint" in str(ie) and "imdb_id" in str(ie):
+                                        imdb_id = entry['imdb_id']
+                                        tmdb_id = entry['tmdb_person_id']
                                         logger.warning(f"  ➜ [合并逻辑] 检测到 IMDb ID '{imdb_id}' (来自TMDb: {tmdb_id}) 冲突。")
                                         
-                                        cursor.execute("SELECT * FROM person_identity_map WHERE imdb_id = %s", (imdb_id,))
+                                        cursor.execute("SELECT * FROM person_metadata WHERE imdb_id = %s", (imdb_id,))
                                         target_actor = cursor.fetchone()
-                                        cursor.execute("SELECT * FROM person_identity_map WHERE tmdb_person_id = %s", (tmdb_id,))
+                                        cursor.execute("SELECT * FROM person_metadata WHERE tmdb_person_id = %s", (tmdb_id,))
                                         source_actor = cursor.fetchone()
 
-                                        if not target_actor or not source_actor or source_actor['map_id'] == target_actor['map_id']:
+                                        if not target_actor or not source_actor or source_actor['tmdb_person_id'] == target_actor['tmdb_person_id']:
                                             logger.warning(f"  ➜ 合并中止：源或目标记录不存在，或它们本就是同一条记录。")
                                             continue
 
-                                        target_map_id = target_actor['map_id']
-                                        source_map_id = source_actor['map_id']
-                                        logger.info(f"  ➜ 准备合并：源(map_id:{source_map_id}, tmdb:{tmdb_id}) -> 目标(map_id:{target_map_id}, imdb:{imdb_id})")
+                                        target_tmdb_id = target_actor['tmdb_person_id']
+                                        source_tmdb_id = source_actor['tmdb_person_id']
+                                        logger.info(f"  ➜ 准备合并：源(tmdb:{source_tmdb_id}) -> 目标(tmdb:{target_tmdb_id}, imdb:{imdb_id})")
 
                                         # --- 定义一个可重用的、安全的ID合并函数 ---
-                                        def safe_merge_id(id_field_name: str, id_value: Any, source_id: int, target_id: int):
+                                        def safe_merge_id(id_field_name: str, id_value: Any, target_id: int):
                                             if not id_value or target_actor.get(id_field_name):
                                                 return # 如果源ID为空，或目标已有同类ID，则不合并
 
                                             # 预检查：这个ID是否已存在于其他记录中？
-                                            cursor.execute(f"SELECT map_id FROM person_identity_map WHERE {id_field_name} = %s", (id_value,))
+                                            cursor.execute(f"SELECT tmdb_person_id FROM person_metadata WHERE {id_field_name} = %s", (id_value,))
                                             conflicting_record = cursor.fetchone()
                                             
-                                            if conflicting_record and conflicting_record['map_id'] != target_id:
-                                                # 存在冲突！这个ID属于另一个记录。我们需要先把它从旧记录上剥离。
-                                                logger.warning(f"  ➜ 检测到 {id_field_name} '{id_value}' 存在于第三方记录 (map_id: {conflicting_record['map_id']})。将从旧记录中移除。")
-                                                
-                                                # ★ 核心修复：如果剥离的是 tmdb_person_id，必须先删除 actor_metadata 中的关联记录，否则会触发外键约束报错
-                                                if id_field_name == 'tmdb_person_id':
-                                                    cursor.execute("DELETE FROM actor_metadata WHERE tmdb_id = %s", (id_value,))
-                                                    
-                                                cursor.execute(f"UPDATE person_identity_map SET {id_field_name} = NULL WHERE map_id = %s", (conflicting_record['map_id'],))
+                                            if conflicting_record and conflicting_record['tmdb_person_id'] != target_id:
+                                                logger.warning(f"  ➜ 检测到 {id_field_name} '{id_value}' 存在于第三方记录 (tmdb: {conflicting_record['tmdb_person_id']})。将从旧记录中移除。")
+                                                cursor.execute(f"UPDATE person_metadata SET {id_field_name} = NULL WHERE tmdb_person_id = %s", (conflicting_record['tmdb_person_id'],))
 
-                                            # 现在可以安全地更新到目标记录了
-                                            logger.info(f"  ➜ 正在将 {id_field_name} '{id_value}' 合并到目标记录 (map_id: {target_id})。")
-                                            cursor.execute(f"UPDATE person_identity_map SET {id_field_name} = %s WHERE map_id = %s", (id_value, target_id))
+                                            logger.info(f"  ➜ 正在将 {id_field_name} '{id_value}' 合并到目标记录 (tmdb: {target_id})。")
+                                            cursor.execute(f"UPDATE person_metadata SET {id_field_name} = %s WHERE tmdb_person_id = %s", (id_value, target_id))
 
-                                        # --- 依次安全地合并各个ID ---
-                                        # 1. 合并 TMDb ID
-                                        safe_merge_id('tmdb_person_id', source_actor.get('tmdb_person_id'), source_map_id, target_map_id)
-                                        # 2. 合并 Douban ID
-                                        safe_merge_id('douban_celebrity_id', source_actor.get('douban_celebrity_id'), source_map_id, target_map_id)
-                                        # 3. 合并 Emby ID
-                                        safe_merge_id('emby_person_id', source_actor.get('emby_person_id'), source_map_id, target_map_id)
+                                        # 依次安全地合并各个ID
+                                        safe_merge_id('douban_celebrity_id', source_actor.get('douban_celebrity_id'), target_tmdb_id)
+                                        safe_merge_id('emby_person_id', source_actor.get('emby_person_id'), target_tmdb_id)
 
-                                        # 4. 最后，删除现在已经为空壳的源记录
-                                        logger.info(f"  ➜ 所有ID合并完成，准备删除源记录 (map_id: {source_map_id})。")
-                                        cursor.execute("DELETE FROM person_identity_map WHERE map_id = %s", (source_map_id,))
-                                        logger.info(f"  ➜ 成功将记录 (map_id:{source_map_id}) 合并到 (map_id:{target_map_id})。")
+                                        # 最后，删除现在已经为空壳的源记录 (因为是单表，直接删除即可，没有外键烦恼)
+                                        logger.info(f"  ➜ 所有ID合并完成，准备删除源记录 (tmdb: {source_tmdb_id})。")
+                                        cursor.execute("DELETE FROM person_metadata WHERE tmdb_person_id = %s", (source_tmdb_id,))
+                                        
+                                        # 顺便把刚才获取到的最新元数据更新给目标记录
+                                        entry['tmdb_person_id'] = target_tmdb_id
+                                        cursor.execute("""
+                                            UPDATE person_metadata 
+                                            SET profile_path = %(profile_path)s, gender = %(gender)s, adult = %(adult)s, 
+                                                popularity = %(popularity)s, original_name = %(original_name)s, last_updated_at = NOW()
+                                            WHERE tmdb_person_id = %(tmdb_person_id)s
+                                        """, entry)
+                                        
+                                        logger.info(f"  ➜ 成功将记录 (tmdb:{source_tmdb_id}) 合并到 (tmdb:{target_tmdb_id})。")
                                     else:
-                                        # 如果是其他类型的唯一键冲突，则重新抛出异常
                                         raise ie
 
+                            # ★ 重构点 4：清理无效 TMDb ID 极简化
                             if invalid_tmdb_ids:
-                                # ★ 核心修复：先删除 actor_metadata 中的关联记录，解除外键约束
-                                cursor.executemany("DELETE FROM actor_metadata WHERE tmdb_id = %s", [(tid,) for tid in invalid_tmdb_ids])
-                                # 然后再将 person_identity_map 中的 tmdb_person_id 置空
-                                cursor.executemany("UPDATE person_identity_map SET tmdb_person_id = NULL WHERE tmdb_person_id = %s", [(tid,) for tid in invalid_tmdb_ids])
+                                cursor.executemany("DELETE FROM person_metadata WHERE tmdb_person_id = %s", [(tid,) for tid in invalid_tmdb_ids])
+                                logger.info(f"  ➜ 删除了 {len(invalid_tmdb_ids)} 个在 TMDb 上已失效的演员记录。")
 
                             conn.commit()
                             logger.info("  ➜ 数据库更改已成功提交。")
@@ -583,7 +577,6 @@ def enrich_all_actor_aliases_task(
         logger.error(f"  ➜ 演员数据补充任务发生严重错误: {e}", exc_info=True)
         if conn: conn.rollback()
     finally:
-        # 将关闭操作移到 finally 块，确保无论如何都能执行
         if douban_api:
             douban_api.close()
         if update_status_callback:

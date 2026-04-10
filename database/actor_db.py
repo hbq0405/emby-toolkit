@@ -15,19 +15,19 @@ import utils
 logger = logging.getLogger(__name__)
 
 # ======================================================================
-# 模块: 演员数据访问 
+# 模块: 演员数据访问 (单表重构版)
 # ======================================================================
 
 class ActorDBManager:
     """
     一个专门负责与演员身份相关的数据库表进行交互的类。
+    【重构版】适配 person_metadata 单表架构。
     """
     def __init__(self):
-        logger.trace("ActorDBManager 初始化 (PostgreSQL mode)。")
+        logger.trace("ActorDBManager 初始化 (PostgreSQL mode - Single Table)。")
 
     def get_translation_from_db(self, cursor: psycopg2.extensions.cursor, text: str, by_translated_text: bool = False) -> Optional[Dict[str, Any]]:
         """【PostgreSQL版】从数据库获取翻译缓存，并自我净化坏数据。"""
-        
         try:
             if by_translated_text:
                 sql = "SELECT original_text, translated_text, engine_used FROM translation_cache WHERE translated_text = %s"
@@ -57,10 +57,8 @@ class ActorDBManager:
             logger.error(f"  ➜ 读取翻译缓存时发生错误 for '{text}': {e}", exc_info=True)
             return None
 
-
     def save_translation_to_db(self, cursor: psycopg2.extensions.cursor, original_text: str, translated_text: Optional[str], engine_used: Optional[str]):
         """将翻译结果保存到数据库，增加中文校验。"""
-        
         if translated_text and translated_text.strip() and not contains_chinese(translated_text):
             logger.warning(f"  ➜ 翻译结果 '{translated_text}' 不含中文，已丢弃。原文: '{original_text}'")
             return
@@ -80,11 +78,9 @@ class ActorDBManager:
         except Exception as e:
             logger.error(f"  ➜ DB保存翻译缓存失败 for '{original_text}': {e}", exc_info=True)
 
-    # 核心批量读取函数
     def get_full_actor_details_by_tmdb_ids(self, cursor: psycopg2.extensions.cursor, tmdb_ids: List[Any]) -> Dict[int, Dict[str, Any]]:
         """
-        根据一组 TMDB ID，从 actor_metadata 表中高效地获取所有演员的详细信息。
-        返回一个以 TMDB ID 为键，演员信息字典为值的映射。
+        根据一组 TMDB ID，从 person_metadata 表中高效地获取所有演员的详细信息。
         """
         if not tmdb_ids:
             return {}
@@ -92,17 +88,17 @@ class ActorDBManager:
         logger.debug(f"  ➜ [演员数据管家] 正在批量查询 {len(tmdb_ids)} 位演员的详细元数据...")
         
         try:
-            try:
-                int_tmdb_ids = [int(tid) for tid in tmdb_ids]
-            except (ValueError, TypeError):
-                logger.error("  ➜ [演员数据管家] 转换演员 TMDb ID 为整数时失败，列表可能包含无效数据。")
-                return {}
+            int_tmdb_ids = [int(tid) for tid in tmdb_ids]
+        except (ValueError, TypeError):
+            logger.error("  ➜ [演员数据管家] 转换演员 TMDb ID 为整数时失败，列表可能包含无效数据。")
+            return {}
 
-            sql = "SELECT * FROM actor_metadata WHERE tmdb_id = ANY(%s)"
+        try:
+            # 使用 AS tmdb_id 兼容旧代码的键名习惯
+            sql = "SELECT tmdb_person_id AS tmdb_id, * FROM person_metadata WHERE tmdb_person_id = ANY(%s)"
             cursor.execute(sql, (int_tmdb_ids,))
             
             results = cursor.fetchall()
-            
             actor_details_map = {row['tmdb_id']: dict(row) for row in results}
             
             logger.debug(f"  ➜ [演员数据管家] 成功从数据库中找到了 {len(actor_details_map)} 条匹配的演员元数据。")
@@ -113,7 +109,6 @@ class ActorDBManager:
             raise
 
     def find_person_by_any_id(self, cursor: psycopg2.extensions.cursor, **kwargs) -> Optional[dict]:
-        
         search_criteria = [
             ("tmdb_person_id", kwargs.get("tmdb_id")),
             ("emby_person_id", kwargs.get("emby_id")),
@@ -123,37 +118,31 @@ class ActorDBManager:
         for column, value in search_criteria:
             if not value: continue
             try:
-                cursor.execute(f"SELECT * FROM person_identity_map WHERE {column} = %s", (value,))
+                cursor.execute(f"SELECT * FROM person_metadata WHERE {column} = %s", (value,))
                 result = cursor.fetchone()
                 if result:
-                    logger.debug(f"  ➜ 通过 {column}='{value}' 找到了演员记录 (map_id: {result['map_id']})。")
+                    logger.debug(f"  ➜ 通过 {column}='{value}' 找到了演员记录 (tmdb: {result['tmdb_person_id']})。")
                     return result
             except psycopg2.Error as e:
-                logger.error(f"  ➜ 查询 person_identity_map 时出错 ({column}={value}): {e}")
+                logger.error(f"  ➜ 查询 person_metadata 时出错 ({column}={value}): {e}")
         return None
     
     def enrich_actors_with_provider_ids(self, cursor: psycopg2.extensions.cursor, raw_emby_actors: List[Dict[str, Any]], emby_config: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        接收一个来自 Emby 的原始演员列表，
-        高效地为他们补充 ProviderIds。
-        策略：优先从本地数据库批量查询，对未找到的演员再通过 Emby API 补漏。
+        接收一个来自 Emby 的原始演员列表，高效地为他们补充 ProviderIds。
         """
         if not raw_emby_actors:
             return []
 
         logger.info(f"  ➜ [演员数据管家] 开始为 {len(raw_emby_actors)} 位演员丰富外部ID...")
-        
-        # 准备一个最终结果的映射，用 emby_id 作为 key
         enriched_actors_map = {actor['Id']: actor.copy() for actor in raw_emby_actors}
         
-        # --- 阶段一：从本地数据库批量获取数据 ---
         emby_ids_to_check = list(enriched_actors_map.keys())
         ids_found_in_db = set()
         
         try:
             if emby_ids_to_check:
-                # 使用 ANY(%s) 进行高效的批量查询
-                sql = "SELECT emby_person_id, tmdb_person_id, imdb_id, douban_celebrity_id FROM person_identity_map WHERE emby_person_id = ANY(%s)"
+                sql = "SELECT emby_person_id, tmdb_person_id, imdb_id, douban_celebrity_id FROM person_metadata WHERE emby_person_id = ANY(%s)"
                 cursor.execute(sql, (emby_ids_to_check,))
                 db_results = cursor.fetchall()
 
@@ -161,7 +150,6 @@ class ActorDBManager:
                     emby_id = row["emby_person_id"]
                     ids_found_in_db.add(emby_id)
                     
-                    # 构建 ProviderIds 字典并注入回结果
                     provider_ids = {}
                     if row.get("tmdb_person_id"):
                         provider_ids["Tmdb"] = str(row.get("tmdb_person_id"))
@@ -177,96 +165,75 @@ class ActorDBManager:
         except Exception as e:
             logger.error(f"  ➜ [演员数据管家] 批量查询演员外部ID时失败: {e}", exc_info=True)
 
-        # --- 阶段二：为未找到的演员实时查询 Emby API ---
         ids_to_fetch_from_api = [pid for pid in emby_ids_to_check if pid not in ids_found_in_db]
 
         if ids_to_fetch_from_api:
             logger.info(f"  ➜ [演员数据管家] 将通过 Emby API 为剩余 {len(ids_to_fetch_from_api)} 位演员获取外部ID...")
-            
             for person_id in ids_to_fetch_from_api:
                 person_details = get_emby_item_details(
                     item_id=person_id, 
                     emby_server_url=emby_config['url'], 
                     emby_api_key=emby_config['api_key'], 
                     user_id=emby_config['user_id'],
-                    fields="ProviderIds" # 我们只需要这一个字段
+                    fields="ProviderIds"
                 )
-                
                 if person_details and person_details.get("ProviderIds"):
                     if person_id in enriched_actors_map:
                         enriched_actors_map[person_id]["ProviderIds"] = person_details.get("ProviderIds")
 
-        # --- 阶段三：返回最终的列表 ---
         return list(enriched_actors_map.values())
     
     def rehydrate_slim_actors(self, cursor: psycopg2.extensions.cursor, slim_actors_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """
-        接收一个简单的演员关系列表，
-        从数据库中查询完整的演员信息，将其恢复成一个完整的演员列表。
+        【重构版】不再需要 JOIN，直接从 person_metadata 单表查询。
         """
         if not slim_actors_list:
             return []
 
         logger.debug(f"  ➜ [演员数据管家-恢复] 开始为 {len(slim_actors_list)} 位演员从缓存恢复完整元数据...")
         
-        # 1. 提取所有需要查询的 TMDB ID
         tmdb_ids_to_fetch = [actor['tmdb_id'] for actor in slim_actors_list if 'tmdb_id' in actor]
         if not tmdb_ids_to_fetch:
             return []
 
-        # 2. 一次性批量查询所有演员的完整信息
-        #    我们 JOIN 两张表，把所有需要的信息都拿出来
         sql = """
             SELECT
-                pim.primary_name AS name,
-                pim.emby_person_id,
-                pim.imdb_id,
-                pim.douban_celebrity_id AS douban_id,
-                am.* 
-            FROM
-                person_identity_map pim
-            JOIN
-                actor_metadata am ON pim.tmdb_person_id = am.tmdb_id
-            WHERE
-                am.tmdb_id = ANY(%s);
+                primary_name AS name,
+                emby_person_id,
+                imdb_id,
+                douban_celebrity_id AS douban_id,
+                tmdb_person_id AS tmdb_id,
+                profile_path,
+                gender,
+                adult,
+                popularity,
+                original_name
+            FROM person_metadata
+            WHERE tmdb_person_id = ANY(%s);
         """
         cursor.execute(sql, (tmdb_ids_to_fetch,))
         full_details_rows = cursor.fetchall()
         
-        # 3. 将查询结果处理成一个 {tmdb_id: {full_details}} 的字典，方便快速查找
         details_map = {row['tmdb_id']: dict(row) for row in full_details_rows}
         
-        # 4. 遍历原始的“脱水”列表，进行“复水”合并
         rehydrated_list = []
         for slim_actor in slim_actors_list:
             tmdb_id = slim_actor.get('tmdb_id')
             if tmdb_id in details_map:
-                # 从数据库查到的完整信息
                 full_details = details_map[tmdb_id]
-                
-                # 合并！
-                # 用 full_details 做基础，因为它包含了大部分信息
-                # 然后用 slim_actor 里的 character 和 order 覆盖/补充，因为这是关系特有的
                 hydrated_actor = {**full_details, **slim_actor}
-                
-                # 兼容一下主流程里常用的 'id' 键
                 hydrated_actor['id'] = tmdb_id
-                
                 rehydrated_list.append(hydrated_actor)
             else:
-                # 如果因为某些原因在数据库里没找到，至少保留基本信息
                 rehydrated_list.append(slim_actor)
                 
-        # 按照原始的 order 排序
         rehydrated_list.sort(key=lambda x: x.get('order', 999))
-        
         logger.debug(f"  ➜ [演员数据管家-恢复] 成功恢复 {len(rehydrated_list)} 位演员的元数据。")
         return rehydrated_list
 
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
         """
-        通过为 ON CONFLICT DO UPDATE 增加 WHERE 条件，实现真正的条件更新。
-        这能准确区分数据实际被“更新”和数据因无变化而“未变”的情况，从而解决统计不准的问题。
+        【重构版】单表 Upsert，直接返回 tmdb_person_id。
         """
         emby_id = str(person_data.get("emby_id") or '').strip() or None
         tmdb_id_raw = person_data.get("id") or person_data.get("tmdb_id")
@@ -293,56 +260,38 @@ class ActorDBManager:
 
         try:
             sql = """
-                INSERT INTO person_identity_map 
-                (primary_name, emby_person_id, tmdb_person_id, imdb_id, douban_celebrity_id, last_updated_at)
+                INSERT INTO person_metadata 
+                (tmdb_person_id, primary_name, emby_person_id, imdb_id, douban_celebrity_id, last_updated_at)
                 VALUES (%s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (tmdb_person_id) DO UPDATE SET
-                    -- 名字总是更新为最新的
                     primary_name = EXCLUDED.primary_name,
-                    
-                    -- ID字段：优先使用新传入的非空值，否则保留数据库中已有的值
-                    emby_person_id = COALESCE(EXCLUDED.emby_person_id, person_identity_map.emby_person_id),
-                    imdb_id = COALESCE(EXCLUDED.imdb_id, person_identity_map.imdb_id),
-                    douban_celebrity_id = COALESCE(EXCLUDED.douban_celebrity_id, person_identity_map.douban_celebrity_id),
-                    
+                    emby_person_id = COALESCE(EXCLUDED.emby_person_id, person_metadata.emby_person_id),
+                    imdb_id = COALESCE(EXCLUDED.imdb_id, person_metadata.imdb_id),
+                    douban_celebrity_id = COALESCE(EXCLUDED.douban_celebrity_id, person_metadata.douban_celebrity_id),
                     last_updated_at = NOW()
                 WHERE
-                    -- 使用 IS DISTINCT FROM 来正确处理 NULL 值，确保只有在数据实际变化时才更新
-                    person_identity_map.primary_name IS DISTINCT FROM EXCLUDED.primary_name OR
-                    person_identity_map.emby_person_id IS DISTINCT FROM COALESCE(EXCLUDED.emby_person_id, person_identity_map.emby_person_id) OR
-                    person_identity_map.imdb_id IS DISTINCT FROM COALESCE(EXCLUDED.imdb_id, person_identity_map.imdb_id) OR
-                    person_identity_map.douban_celebrity_id IS DISTINCT FROM COALESCE(EXCLUDED.douban_celebrity_id, person_identity_map.douban_celebrity_id)
-                RETURNING map_id, (CASE xmax WHEN 0 THEN 'INSERTED' ELSE 'UPDATED' END) as action;
+                    person_metadata.primary_name IS DISTINCT FROM EXCLUDED.primary_name OR
+                    person_metadata.emby_person_id IS DISTINCT FROM COALESCE(EXCLUDED.emby_person_id, person_metadata.emby_person_id) OR
+                    person_metadata.imdb_id IS DISTINCT FROM COALESCE(EXCLUDED.imdb_id, person_metadata.imdb_id) OR
+                    person_metadata.douban_celebrity_id IS DISTINCT FROM COALESCE(EXCLUDED.douban_celebrity_id, person_metadata.douban_celebrity_id)
+                RETURNING tmdb_person_id, (CASE xmax WHEN 0 THEN 'INSERTED' ELSE 'UPDATED' END) as action;
             """
             
-            cursor.execute(sql, (name, emby_id, tmdb_id, imdb_id, douban_id))
+            cursor.execute(sql, (tmdb_id, name, emby_id, imdb_id, douban_id))
             result = cursor.fetchone()
 
-            action: str
-            map_id: int
-
             if result:
-                # 如果有返回结果，说明发生了 INSERT 或 UPDATE
-                map_id = result['map_id']
                 action = result['action']
-                logger.debug(f"  ├─ 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action} (map_id: {map_id})")
+                logger.debug(f"  ├─ 演员 '{name}' (TMDb: {tmdb_id}) 处理完成。结果: {action}")
             else:
-                # 如果没有返回结果，说明存在冲突但 WHERE 条件不满足，数据未发生变化
                 action = "UNCHANGED"
-                # 需要手动查询一下 map_id，以便后续流程使用
-                cursor.execute("SELECT map_id FROM person_identity_map WHERE tmdb_person_id = %s", (tmdb_id,))
-                existing_record = cursor.fetchone()
-                if not existing_record:
-                    logger.error(f"upsert_person 逻辑错误: 未能更新也未能找到现有演员记录 for tmdb_id={tmdb_id}")
-                    return -1, "ERROR"
-                map_id = existing_record['map_id']
                 logger.trace(f"  ➜ 演员 '{name}' (TMDb: {tmdb_id}) 数据无变化，标记为 UNCHANGED。")
 
-            # 统一处理元数据更新
+            # 统一处理元数据更新 (现在也是更新同一张表)
             if 'profile_path' in person_data or 'gender' in person_data or 'popularity' in person_data:
                 self.update_actor_metadata_from_tmdb(cursor, tmdb_id, person_data)
 
-            return map_id, action
+            return tmdb_id, action
 
         except psycopg2.IntegrityError as ie:
             conn = cursor.connection
@@ -356,21 +305,13 @@ class ActorDBManager:
             return -1, "ERROR"
         
     def disassociate_emby_ids(self, cursor: psycopg2.extensions.cursor, emby_ids: set) -> int:
-        """
-        将一组给定的 emby_person_id 在数据库中设为 NULL。
-        这用于清理那些在 Emby 中已被删除的演员的关联关系。
-
-        :param cursor: 数据库游标。
-        :param emby_ids: 需要被清理的 Emby Person ID 集合。
-        :return: 成功更新的行数。
-        """
+        """将一组给定的 emby_person_id 在数据库中设为 NULL。"""
         if not emby_ids:
             return 0
         
         try:
-            # 使用元组(tuple)作为IN子句的参数
             sql = """
-                UPDATE person_identity_map 
+                UPDATE person_metadata 
                 SET emby_person_id = NULL, last_updated_at = NOW() 
                 WHERE emby_person_id IN %s
             """
@@ -380,47 +321,40 @@ class ActorDBManager:
             return updated_rows
         except Exception as e:
             logger.error(f"  ➜ 批量清理 Emby ID 关联时失败: {e}", exc_info=True)
-            # 即使失败也应该抛出异常，让上层事务回滚
             raise
         
     def update_actor_metadata_from_tmdb(self, cursor: psycopg2.extensions.cursor, tmdb_id: int, tmdb_data: Dict[str, Any]):
         """
-        将从 TMDb API 获取的演员详情数据，更新或插入到 actor_metadata 表中。
-        此函数与 init_db() 中定义的表结构完全匹配。
+        【重构版】将从 TMDb API 获取的演员详情数据，更新到 person_metadata 表中。
         """
         if not tmdb_id or not tmdb_data:
             return
 
         try:
-            # 从 TMDb 数据中精确提取 actor_metadata 表需要的字段
             metadata = {
-                "tmdb_id": tmdb_id,
                 "profile_path": tmdb_data.get("profile_path"),
                 "gender": tmdb_data.get("gender"),
                 "adult": tmdb_data.get("adult", False),
                 "popularity": tmdb_data.get("popularity"),
-                "original_name": tmdb_data.get("original_name") # 演员的原始（通常是外文）姓名
+                "original_name": tmdb_data.get("original_name")
             }
 
-            # 准备 SQL 语句
             columns = list(metadata.keys())
             columns_str = ', '.join(columns)
             placeholders_str = ', '.join(['%s'] * len(columns))
             
-            # ON CONFLICT 语句的核心：当 tmdb_id 冲突时，更新哪些字段
-            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns if col != "tmdb_id"]
-            # 无论如何都更新时间戳
-            update_clauses.append("last_updated_at = NOW()")
-            update_str = ', '.join(update_clauses)
+            update_clauses = [f"{col} = EXCLUDED.{col}" for col in columns]
+            update_str = ', '.join(update_clauses) + ", last_updated_at = NOW()"
 
+            # 使用 INSERT ... ON CONFLICT 确保即使该演员还没被 upsert_person 插入，也能安全写入
             sql = f"""
-                INSERT INTO actor_metadata ({columns_str}, last_updated_at)
-                VALUES ({placeholders_str}, NOW())
-                ON CONFLICT (tmdb_id) DO UPDATE SET {update_str}
+                INSERT INTO person_metadata (tmdb_person_id, primary_name, {columns_str}, last_updated_at)
+                VALUES (%s, 'Unknown', {placeholders_str}, NOW())
+                ON CONFLICT (tmdb_person_id) DO UPDATE SET {update_str}
             """
             
-            # 执行
-            cursor.execute(sql, tuple(metadata.values()))
+            params = [tmdb_id] + list(metadata.values())
+            cursor.execute(sql, tuple(params))
             logger.trace(f"  ➜ 成功将演员 (TMDb ID: {tmdb_id}) 的元数据缓存到数据库。")
 
         except Exception as e:
@@ -428,8 +362,6 @@ class ActorDBManager:
 
 #   --- 获取所有演员订阅的简略列表 ---
 def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
-    """获取所有演员订阅的简略列表。"""
-    
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
@@ -441,18 +373,15 @@ def get_all_actor_subscriptions() -> List[Dict[str, Any]]:
 
 #   --- 获取单个订阅的完整详情 ---
 def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, Any]]:
-    """获取单个订阅的完整详情，从 media_metadata 读取追踪媒体。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 步骤 1: 获取订阅本身的信息 (保持不变)
             cursor.execute("SELECT * FROM actor_subscriptions WHERE id = %s", (subscription_id,))
             sub_row = cursor.fetchone()
             if not sub_row:
                 return None
             
-            # ★★★ 步骤 2: 修改查询逻辑，关联获取父剧集信息 ★★★
             source_filter = json.dumps([{"type": "actor_subscription", "id": subscription_id}])
             cursor.execute(
                 """
@@ -466,8 +395,8 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
                         m.emby_item_ids_json,
                         m.in_library,
                         m.ignore_reason,
-                        m.season_number,          -- 新增：获取季号
-                        p.title as parent_title   -- 新增：获取父剧集标题
+                        m.season_number,
+                        p.title as parent_title
                     FROM media_metadata m
                     LEFT JOIN media_metadata p ON m.parent_series_tmdb_id = p.tmdb_id
                     WHERE m.subscription_sources_json @> %s::jsonb
@@ -480,30 +409,24 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
             for row in cursor.fetchall():
                 media_item = dict(row)
                 
-                # ★★★ 新增：强制格式化季的标题 (剧名 第 X 季) ★★★
                 if media_item['media_type'] == 'Season':
                     parent_title = media_item.get('parent_title')
                     season_num = media_item.get('season_number')
-                    # 只有当父标题和季号都存在时才格式化，否则保持原样
                     if parent_title and season_num is not None:
                         media_item['title'] = f"{parent_title} 第 {season_num} 季"
                 
-                # ▼▼▼ 全新的、更精确的状态判断逻辑 ▼▼▼
                 final_status = ''
-                # 最高优先级：在库
                 if media_item.get('in_library'):
                     final_status = 'IN_LIBRARY'
                 else:
-                    # 如果不在库，则根据订阅状态来决定
-                    backend_status = media_item.get('status') # 这是从 subscription_status 来的
+                    backend_status = media_item.get('status')
                     if backend_status == 'SUBSCRIBED':
                         final_status = 'SUBSCRIBED'
                     elif backend_status == 'WANTED':
-                        final_status = 'WANTED' # ★★★ 核心修正：直接传递 WANTED 状态
+                        final_status = 'WANTED'
                     elif backend_status == 'IGNORED':
                         final_status = 'IGNORED'
-                    else: # 包含 'NONE' 和其他所有情况
-                        # 检查发行日期，判断是“未发行”还是“缺失”
+                    else:
                         release_date = media_item.get('release_date')
                         if release_date and release_date.strftime('%Y-%m-%d') > datetime.now().strftime('%Y-%m-%d'):
                             final_status = 'PENDING_RELEASE'
@@ -512,12 +435,10 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
                 
                 media_item['status'] = final_status
                 
-                # 从 emby_item_ids_json 中取第一个 ID 给前端用
                 emby_ids = media_item.get('emby_item_ids_json', [])
                 media_item['emby_item_id'] = emby_ids[0] if emby_ids else None
                 tracked_media.append(media_item)
 
-            # 步骤 3: 组装最终返回的数据
             emby_url = APP_CONFIG.get("emby_server_url", "").rstrip('/')
             emby_api_key = APP_CONFIG.get("emby_api_key", "")
             emby_server_id = extensions.EMBY_SERVER_ID
@@ -553,8 +474,6 @@ def get_single_subscription_details(subscription_id: int) -> Optional[Dict[str, 
 
 #   --- 新增演员订阅 ---
 def safe_json_dumps(value):
-    """安全地将Python对象转换为JSON字符串。"""
-    
     if isinstance(value, str):
         try:
             parsed = json.loads(value)
@@ -563,9 +482,8 @@ def safe_json_dumps(value):
             return json.dumps(value, ensure_ascii=False)
     else:
         return json.dumps(value, ensure_ascii=False)
+
 def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: str, config: dict) -> int:
-    """新增一个演员订阅。"""
-    
     start_year = config.get('start_year', 1900)
     media_types_list = config.get('media_types', ['Movie','TV'])
     if isinstance(media_types_list, list):
@@ -585,13 +503,13 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
             
             sql = """
                 INSERT INTO actor_subscriptions 
-                (tmdb_person_id, actor_name, profile_path, status, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating, config_main_role_only, config_min_vote_count) -- <--- 新增字段
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) -- <--- 增加占位符
+                (tmdb_person_id, actor_name, profile_path, status, config_start_year, config_media_types, config_genres_include_json, config_genres_exclude_json, config_min_rating, config_main_role_only, config_min_vote_count)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
             cursor.execute(
                 sql,
-                (tmdb_person_id, actor_name, profile_path, 'active', start_year, media_types, genres_include, genres_exclude, min_rating, main_role_only, min_vote_count) # <--- 增加新值
+                (tmdb_person_id, actor_name, profile_path, 'active', start_year, media_types, genres_include, genres_exclude, min_rating, main_role_only, min_vote_count)
             )
             
             result = cursor.fetchone()
@@ -611,18 +529,15 @@ def add_actor_subscription(tmdb_person_id: int, actor_name: str, profile_path: s
 
 #   --- 更新演员订阅 ---
 def update_actor_subscription(subscription_id: int, data: dict) -> bool:
-    """更新订阅，并在配置变化时自动清理已忽略的记录。"""
     logger.debug(f"  ➜ 准备更新订阅ID {subscription_id}，接收到的原始数据: {data}")
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 步骤 1: 获取当前数据库中的订阅配置，作为基础
                 cursor.execute("SELECT * FROM actor_subscriptions WHERE id = %s", (subscription_id,))
                 current_sub = cursor.fetchone()
                 if not current_sub:
                     return False
 
-                # 将数据库行转换为一个字典，方便操作
                 current_config = {
                     'start_year': current_sub['config_start_year'],
                     'min_rating': float(current_sub['config_min_rating']),
@@ -630,26 +545,17 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
                     'genres_include_json': current_sub.get('config_genres_include_json') or [],
                     'genres_exclude_json': current_sub.get('config_genres_exclude_json') or [],
                     'main_role_only': current_sub.get('config_main_role_only', False),
-                    # ▼▼▼ 核心：从数据库读取新增的字段 ▼▼▼
                     'min_vote_count': current_sub.get('config_min_vote_count', 10)
                 }
                 
-                # 创建一个快照，用于稍后比较配置是否真的发生了变化
                 old_config_snapshot = current_config.copy()
-
-                # 步骤 2: 获取从前端传来的新配置
-                # 前端可能把配置放在 'config' 键里，也可能直接放在顶层，这里做兼容
                 incoming_config = data.get('config', data)
-
-                # 步骤 3: 将新配置合并到当前配置中，新值会覆盖旧值
                 final_config = {**current_config, **incoming_config}
 
-                # 步骤 4: 准备最终要写入数据库的、格式化好的值
                 final_media_types_str = ','.join(final_config.get('media_types', []))
                 final_genres_include_json = json.dumps(final_config.get('genres_include_json', []), ensure_ascii=False)
                 final_genres_exclude_json = json.dumps(final_config.get('genres_exclude_json', []), ensure_ascii=False)
 
-                # 步骤 5: 准备并执行 SQL 更新语句
                 sql = """
                     UPDATE actor_subscriptions SET
                     status = %s, config_start_year = %s, config_media_types = %s, 
@@ -672,14 +578,10 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
                 cursor.execute(sql, params)
                 logger.info(f"  ➜ 成功更新订阅ID {subscription_id} 的配置。")
 
-                # 步骤 6: 比较新旧配置，如果筛选条件变了，就清理掉旧的“忽略”记录
                 if final_config != old_config_snapshot:
                     logger.info(f"  ➜ 检测到订阅ID {subscription_id} 的筛选配置发生变更，将重置检查时间并清理历史忽略记录...")
-                    
-                    #  重置扫描缓存 
                     cursor.execute("UPDATE actor_subscriptions SET last_scanned_tmdb_ids_json = NULL WHERE id = %s", (subscription_id,))
 
-                    # 清理旧的忽略记录 
                     source_to_remove = {"type": "actor_subscription", "id": subscription_id}
                     source_filter = json.dumps([source_to_remove])
                     cursor.execute(
@@ -700,19 +602,16 @@ def update_actor_subscription(subscription_id: int, data: dict) -> bool:
 
 #   --- 删除演员订阅 ---
 def delete_actor_subscription(subscription_id: int) -> bool:
-    """删除一个演员订阅，并清理其在 media_metadata 中的所有追踪记录。"""
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
 
-            # 步骤 1: 获取订阅详情，以便知道要移除哪个 source
             cursor.execute("SELECT actor_name, tmdb_person_id FROM actor_subscriptions WHERE id = %s", (subscription_id,))
             sub_info = cursor.fetchone()
             if not sub_info:
                 logger.warning(f"尝试删除一个不存在的订阅 (ID: {subscription_id})。")
-                return True # 已经不存在了，也算成功
+                return True
 
-            # 步骤 2: 找到所有被此订阅追踪的媒体
             source_to_remove = {
                 "type": "actor_subscription", 
                 "id": subscription_id,
@@ -726,12 +625,10 @@ def delete_actor_subscription(subscription_id: int) -> bool:
             )
             items_to_clean = cursor.fetchall()
 
-            # 步骤 3: 逐个清理媒体的订阅源
             logger.info(f"  ➜ 正在从 {len(items_to_clean)} 个媒体项中移除订阅源 (ID: {subscription_id})...")
             for item in items_to_clean:
                 request_db.remove_subscription_source(item['tmdb_id'], item['item_type'], source_to_remove)
 
-            # 步骤 4: 最后删除订阅本身
             cursor.execute("DELETE FROM actor_subscriptions WHERE id = %s", (subscription_id,))
             conn.commit()
             logger.info(f"  ➜ 成功删除订阅ID {subscription_id} 及其所有追踪记录。")
@@ -742,18 +639,10 @@ def delete_actor_subscription(subscription_id: int) -> bool:
 
 #   --- 为演员订阅任务获取所有在库媒体数据 ---
 def get_all_in_library_media_for_actor_sync() -> Tuple[Dict[str, str], Dict[str, Set[int]], Dict[str, str]]:
-    """
-    为演员订阅任务，一次性从 media_metadata 表中提取所有需要的数据。
-    返回三个核心映射:
-    1. emby_media_map: {tmdb_id: emby_id}
-    2. emby_series_seasons_map: {series_tmdb_id: {season_number, ...}}
-    3. emby_series_name_to_tmdb_id_map: {normalized_name: tmdb_id}
-    """
     emby_media_map = {}
     emby_series_seasons_map = {}
     emby_series_name_to_tmdb_id_map = {}
 
-    # SQL 查询所有在库的、顶层的电影和剧集
     sql = """
         SELECT tmdb_id, item_type, title, emby_item_ids_json 
         FROM media_metadata 
@@ -770,18 +659,15 @@ def get_all_in_library_media_for_actor_sync() -> Tuple[Dict[str, str], Dict[str,
                     tmdb_id = str(item['tmdb_id'])
                     emby_ids = item.get('emby_item_ids_json')
                     
-                    # 我们只需要第一个 Emby ID 用于映射
                     if emby_ids and len(emby_ids) > 0:
                         emby_media_map[tmdb_id] = emby_ids[0]
 
                     if item['item_type'] == 'Series':
                         series_tmdb_ids.append(tmdb_id)
-                        # 构建剧名到 ID 的映射
                         normalized_name = utils.normalize_name_for_matching(item.get('title', ''))
                         if normalized_name:
                             emby_series_name_to_tmdb_id_map[normalized_name] = tmdb_id
                 
-                # 如果有剧集，再批量查询所有在库的季信息
                 if series_tmdb_ids:
                     cursor.execute(
                         """
@@ -802,14 +688,12 @@ def get_all_in_library_media_for_actor_sync() -> Tuple[Dict[str, str], Dict[str,
 
     except Exception as e:
         logger.error(f"DB: 为演员同步任务准备在库媒体数据时失败: {e}", exc_info=True)
-        # 即使失败也返回空字典，避免上层任务崩溃
         return {}, {}, {}
 
 #   --- 批量获取演员中文名 ---    
 def get_actor_chinese_names_by_tmdb_ids(tmdb_ids: List[int]) -> Dict[int, str]:
     """
-    根据 TMDb Person ID 列表，高效地批量查询演员的中文名。
-    返回一个以 tmdb_id 为键，中文名 (primary_name) 为值的字典。
+    【重构版】从 person_metadata 单表查询。
     """
     if not tmdb_ids:
         return {}
@@ -818,19 +702,17 @@ def get_actor_chinese_names_by_tmdb_ids(tmdb_ids: List[int]) -> Dict[int, str]:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 使用 ANY(%s) 语法进行高效的批量查询
                 sql = """
                     SELECT tmdb_person_id, primary_name 
-                    FROM person_identity_map 
+                    FROM person_metadata 
                     WHERE tmdb_person_id = ANY(%s)
                 """
                 cursor.execute(sql, (tmdb_ids,))
                 rows = cursor.fetchall()
                 for row in rows:
-                    # 我们只关心包含中文名的映射
                     if row['primary_name'] and contains_chinese(row['primary_name']):
                         name_map[row['tmdb_person_id']] = row['primary_name']
         return name_map
     except Exception as e:
         logger.error(f"DB: 批量查询演员中文名时失败: {e}", exc_info=True)
-        return {} # 即使出错也返回空字典，避免上层任务崩溃
+        return {}

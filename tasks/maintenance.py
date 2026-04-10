@@ -109,11 +109,10 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
     这会尝试插入新行，如果主键或唯一约束冲突，则静默忽略。
     """
     CONFLICT_TARGETS = {
-        'person_identity_map': 'tmdb_person_id',
-        'actor_metadata': 'tmdb_id',
+        'person_metadata': 'tmdb_person_id',
         'translation_cache': 'original_text',
         'media_metadata': 'tmdb_id, item_type', 
-        'p115_mediainfo_cache': 'sha1'  # ★★★ 修复：告诉数据库用 sha1 字段来防止重复插入 ★★★
+        'p115_mediainfo_cache': 'sha1'
     }
     
     db_table_name = table_name.lower()
@@ -139,79 +138,65 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
     logger.info(f"  ➜ 成功向表 '{db_table_name}' 合并 {inserted_count} 条新记录（总共尝试 {len(data)} 条）。")
     return inserted_count
 
-# ★★★ 辅助函数 4: 专门用于合并 person_identity_map 的智能函数 ★★★
-def _merge_person_identity_map_data(cursor, table_name: str, columns: List[str], data: List[tuple]) -> dict:
+# ★★★ 辅助函数 4: 专门用于合并 person_metadata 的智能函数 ★★★
+def _merge_person_metadata_data(cursor, table_name: str, columns: List[str], data: List[tuple]) -> dict:
     """
-    【V2 - 终极修复版】为 person_identity_map 表提供一个健壮的合并策略。
+    【重构版】为 person_metadata 表提供一个健壮的合并策略。
     """
     logger.info(f"  ➜ 执行智能合并模式：将合并数据到表 '{table_name}'...")
     
     stats = {'inserted': 0, 'updated': 0, 'merged_and_deleted': 0}
-    
     data_dicts = [dict(zip(columns, row)) for row in data]
 
     for row_to_merge in data_dicts:
-        ids_to_check = {
-            'tmdb_person_id': row_to_merge.get('tmdb_person_id'),
-            'imdb_id': row_to_merge.get('imdb_id'),
-            'douban_celebrity_id': row_to_merge.get('douban_celebrity_id')
-        }
-        
-        query_parts = []
-        params = []
-        for key, value in ids_to_check.items():
-            if value:
-                query_parts.append(sql.SQL("{} = %s").format(sql.Identifier(key)))
-                params.append(value)
-            
-        if not query_parts:
+        tmdb_id = row_to_merge.get('tmdb_person_id')
+        if not tmdb_id:
             continue
 
-        find_sql = sql.SQL("SELECT * FROM person_identity_map WHERE {}").format(sql.SQL(' OR ').join(query_parts))
-        cursor.execute(find_sql, tuple(params))
-        existing_records = cursor.fetchall()
+        # 1. 检查是否存在
+        cursor.execute("SELECT * FROM person_metadata WHERE tmdb_person_id = %s", (tmdb_id,))
+        existing = cursor.fetchone()
 
-        if not existing_records:
-            all_cols_in_order = [col for col in columns if col != 'map_id']
-            values_to_insert = [row_to_merge.get(col) for col in all_cols_in_order]
+        if not existing:
+            # 插入前，检查唯一键冲突 (imdb_id, douban_celebrity_id)
+            for unique_col in ['imdb_id', 'douban_celebrity_id']:
+                val = row_to_merge.get(unique_col)
+                if val:
+                    cursor.execute(sql.SQL("SELECT tmdb_person_id FROM person_metadata WHERE {} = %s").format(sql.Identifier(unique_col)), (val,))
+                    if cursor.fetchone():
+                        row_to_merge[unique_col] = None # 发生冲突，置空以保证主数据能插入
 
-            insert_sql = sql.SQL("INSERT INTO person_identity_map ({}) VALUES ({})").format(
-                sql.SQL(', ').join(map(sql.Identifier, all_cols_in_order)),
-                sql.SQL(', ').join(sql.Placeholder() * len(all_cols_in_order))
+            cols = [c for c in columns]
+            vals = [row_to_merge.get(c) for c in cols]
+            insert_sql = sql.SQL("INSERT INTO person_metadata ({}) VALUES ({})").format(
+                sql.SQL(', ').join(map(sql.Identifier, cols)),
+                sql.SQL(', ').join(sql.Placeholder() * len(cols))
             )
-            cursor.execute(insert_sql, values_to_insert)
+            cursor.execute(insert_sql, vals)
             stats['inserted'] += 1
         else:
-            sorted_records = sorted(existing_records, key=lambda r: r['map_id'])
-            master_record_original = dict(sorted_records[0])
-            records_to_delete = sorted_records[1:]
-            
-            merged_data = master_record_original.copy()
-            all_sources = records_to_delete + [row_to_merge]
-            
-            for source in all_sources:
-                for key, value in source.items():
-                    if key in ['tmdb_person_id', 'imdb_id', 'douban_celebrity_id', 'primary_name'] and value and not merged_data.get(key):
-                        merged_data[key] = value
+            # 2. 如果存在，则用新数据填补空缺 (COALESCE 逻辑)
+            updates = {}
+            for col in columns:
+                if col == 'tmdb_person_id': continue
+                new_val = row_to_merge.get(col)
+                old_val = existing[col]
+                
+                if new_val and not old_val:
+                    # 同样需要检查唯一键冲突
+                    if col in ['imdb_id', 'douban_celebrity_id']:
+                        cursor.execute(sql.SQL("SELECT tmdb_person_id FROM person_metadata WHERE {} = %s").format(sql.Identifier(col)), (new_val,))
+                        if cursor.fetchone():
+                            continue # 冲突，跳过更新此字段
+                    updates[col] = new_val
 
-            if records_to_delete:
-                ids_to_delete = [r['map_id'] for r in records_to_delete]
-                delete_sql = sql.SQL("DELETE FROM person_identity_map WHERE map_id = ANY(%s)")
-                cursor.execute(delete_sql, (ids_to_delete,))
-                stats['merged_and_deleted'] += len(ids_to_delete)
-
-            updates = {
-                k: v for k, v in merged_data.items() 
-                if k != 'map_id' and v != master_record_original.get(k)
-            }
-            
             if updates:
                 set_clauses = [sql.SQL("{} = %s").format(sql.Identifier(k)) for k in updates.keys()]
-                update_sql = sql.SQL("UPDATE person_identity_map SET {} WHERE map_id = %s").format(sql.SQL(', ').join(set_clauses))
-                cursor.execute(update_sql, tuple(updates.values()) + (merged_data['map_id'],))
+                update_sql = sql.SQL("UPDATE person_metadata SET {} WHERE tmdb_person_id = %s").format(sql.SQL(', ').join(set_clauses))
+                cursor.execute(update_sql, tuple(updates.values()) + (tmdb_id,))
                 stats['updated'] += 1
             
-    logger.info(f"  ➜ 智能合并完成：新增 {stats['inserted']} 条，更新 {stats['updated']} 条，合并删除 {stats['merged_and_deleted']} 条记录。")
+    logger.info(f"  ➜ 智能合并完成：新增 {stats['inserted']} 条，更新 {stats['updated']} 条记录。")
     return stats
 
 # ★★★ 辅助函数 5: 同步主键序列 ★★★
@@ -222,7 +207,6 @@ def _resync_primary_key_sequence(cursor, table_name: str):
     # ★★★ 在这里注册新表的 SERIAL 主键 ★★★
     PRIMARY_KEY_COLUMNS = {
         'custom_collections': 'id',
-        'person_identity_map': 'map_id',
         'actor_subscriptions': 'id',
         'resubscribe_rules': 'id',
         'media_cleanup_tasks': 'id',
@@ -265,12 +249,11 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
     logger.info(f"  ➜ 后台任务开始：{task_name}，将恢复表: {tables_to_import}。")
     
     # ★★★ 共享白名单 ★★★
-    SHARABLE_TABLES = {'person_identity_map', 'actor_metadata', 'translation_cache', 'media_metadata', 'p115_mediainfo_cache'}
+    SHARABLE_TABLES = {'person_metadata', 'translation_cache', 'media_metadata', 'p115_mediainfo_cache'}
     
     # ★★★ 为新表添加中文名 ★★★
     TABLE_TRANSLATIONS = {
-        'person_identity_map': '演员映射表', 
-        'actor_metadata': '演员元数据', 
+        'person_metadata': '人物元数据', 
         'translation_cache': '翻译缓存',
         'actor_subscriptions': '演员订阅配置', 
         'collections_info': '电影合集信息', 
@@ -298,17 +281,14 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
             # ★★★ 设置导入顺序 ★★★
             order = {
                 # --- 级别 0: 无任何依赖的核心表 ---
-                'person_identity_map': 0,
+                'person_metadata': 0,
                 'user_templates': 1,
                 'emby_users': 2,
 
                 # --- 级别 1: 依赖级别 0 的表 ---
                 'emby_users_extended': 3,
                 'invitations': 4,
-                'actor_subscriptions': 10,
-
-                # --- 级别 2: 依赖更早级别的表 ---
-                'actor_metadata': 11
+                'actor_subscriptions': 10
             }
             return order.get(table_name.lower(), 100)
 
@@ -345,7 +325,7 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                         cleaned_data = []
                         for row in table_data:
                             new_row = row.copy()
-                            if table_name.lower() == 'person_identity_map':
+                            if table_name.lower() == 'person_metadata':
                                 new_row.pop('map_id', None)
                                 new_row.pop('emby_person_id', None)
                             elif table_name.lower() == 'media_metadata':
@@ -357,9 +337,9 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                         columns, prepared_data = _prepare_data_for_insert(table_name, cleaned_data)
                         if not prepared_data: continue
                         
-                        if table_name.lower() == 'person_identity_map':
-                            merge_stats = _merge_person_identity_map_data(cursor, table_name, columns, prepared_data)
-                            summary_lines.append(f"  - 表 '{cn_name}': 智能合并完成 (新增 {merge_stats['inserted']}, 更新 {merge_stats['updated']}, 清理 {merge_stats['merged_and_deleted']})。")
+                        if table_name.lower() == 'person_metadata':
+                            merge_stats = _merge_person_metadata_data(cursor, table_name, columns, prepared_data)
+                            summary_lines.append(f"  - 表 '{cn_name}': 智能合并完成 (新增 {merge_stats['inserted']}, 更新 {merge_stats['updated']})。")
                         else:
                             inserted_count = _share_import_table_data(cursor, table_name, columns, prepared_data)
                             summary_lines.append(f"  - 表 '{cn_name}': 成功合并 {inserted_count} / {len(prepared_data)} 条新记录。")

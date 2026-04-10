@@ -107,7 +107,7 @@ def get_stats_core() -> dict:
         (SELECT COUNT(*) FROM media_metadata WHERE item_type IN ('Movie', 'Series')) AS media_cached_total,
         (SELECT COUNT(*) FROM p115_mediainfo_cache) AS mediainfo_backed_up_total,
         (SELECT COALESCE(SUM(hit_count), 0) FROM p115_mediainfo_cache) AS mediainfo_hits_total,
-        (SELECT COUNT(*) FROM person_identity_map) AS actor_mappings_total
+        (SELECT COUNT(*) FROM person_metadata) AS actor_mappings_total
     """
     return _execute_single_row_query(sql)
 
@@ -127,8 +127,8 @@ def get_stats_system() -> dict:
     """3. 系统日志与缓存 (快)"""
     sql = """
     SELECT
-        (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NOT NULL) AS actor_mappings_linked,
-        (SELECT COUNT(*) FROM person_identity_map WHERE emby_person_id IS NULL) AS actor_mappings_unlinked,
+        (SELECT COUNT(*) FROM person_metadata WHERE emby_person_id IS NOT NULL) AS actor_mappings_linked,
+        (SELECT COUNT(*) FROM person_metadata WHERE emby_person_id IS NULL) AS actor_mappings_unlinked,
         (SELECT COUNT(*) FROM translation_cache) AS translation_cache_count,
         (SELECT COUNT(*) FROM processed_log) AS processed_log_count,
         (SELECT COUNT(*) FROM failed_log) AS failed_log_count
@@ -538,13 +538,13 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
                 results["updated_rows"]["media_metadata"] = cursor.rowcount
                 logger.info(f"  ➜ media_metadata 表重置完成，影响了 {cursor.rowcount} 行。")
 
-                logger.info("第三步：重置 演员映射表 (person_identity_map)...")
+                logger.info("第三步：重置 演员映射表 (person_metadata)...")
                 cursor.execute("""
-                    UPDATE person_identity_map 
+                    UPDATE person_metadata 
                     SET emby_person_id = NULL 
                     WHERE emby_person_id IS NOT NULL;
                 """)
-                results["updated_rows"]["person_identity_map"] = cursor.rowcount
+                results["updated_rows"]["person_metadata"] = cursor.rowcount
 
                 logger.info("第四步：重置 自建合集表 (custom_collections)...")
                 cursor.execute("""

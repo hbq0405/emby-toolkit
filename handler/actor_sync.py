@@ -38,7 +38,7 @@ class UnifiedSyncHandler:
                     # --- 阶段一：从本地数据库读取所有现存的 Emby ID ---
                     if update_status_callback: update_status_callback(0, "正在读取本地演员数据...")
                     logger.info("  ➜ 正在从本地数据库读取现有的 Emby 演员 ID...")
-                    cursor.execute("SELECT emby_person_id FROM person_identity_map WHERE emby_person_id IS NOT NULL")
+                    cursor.execute("SELECT emby_person_id FROM person_metadata WHERE emby_person_id IS NOT NULL")
                     # 使用 set 以获得 O(1) 的查找效率
                     local_emby_ids = {row['emby_person_id'] for row in cursor.fetchall()}
                     logger.info(f"  ➜ 本地数据库中找到 {len(local_emby_ids)} 个已关联 Emby ID 的演员。")
