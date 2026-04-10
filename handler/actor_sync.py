@@ -115,7 +115,7 @@ class UnifiedSyncHandler:
 
         # --- 最终统计 ---
         logger.info("  ➜ 同步演员数据完成")
-        logger.info(f"  📊 : 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}, 清理关联 {stats['db_cleaned']}.")
+        logger.info(f"  ➜ 统计信息: 新增 {stats['db_inserted']}, 更新 {stats['db_updated']}, 清理关联 {stats['db_cleaned']}.")
 
         if update_status_callback:
             final_message = f"同步完成！新增 {stats['db_inserted']}, 更新 {stats['db_updated']}, 清理 {stats['db_cleaned']}。"
