@@ -1182,7 +1182,7 @@ def transfer_dummy_episode_assets(parent_tmdb_id: str, unified_episodes_dict: di
                     if real_ep_data and str(real_ep_data.get('id')).isdigit():
                         real_id = str(real_ep_data['id'])
 
-                        logger.info(f"  ➜ [真假美猴王] 发现 S{s_num}E{e_num} 的真实 TMDb ID ({real_id})，正在从临时 ID ({dummy_id}) 转移资产...")
+                        logger.info(f"  ➜ 发现 S{s_num}E{e_num} 的真实 TMDb ID ({real_id})，正在从临时 ID ({dummy_id}) 转移资产...")
 
                         # 3. 检查真实 ID 是否已经在数据库中存在
                         cursor.execute("SELECT 1 FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Episode'", (real_id,))
