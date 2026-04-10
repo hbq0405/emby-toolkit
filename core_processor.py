@@ -432,7 +432,6 @@ class MediaProcessor:
                         metadata_override=payload
                     )
                     should_skip_full_processing = True
-                    logger.info(f"  ➜ [实时监控] 物理 NFO 已生成。跳过在线刮削。")
                 except Exception as e:
                     logger.error(f"  ➜ [实时监控] 从数据库恢复 NFO 失败: {e}，将回退到在线刮削。")
             else:
@@ -777,7 +776,8 @@ class MediaProcessor:
                 emby.notify_emby_file_changes([file_path], self.emby_url, self.emby_api_key)
                 logger.info(f"  ➜ [实时监控] 预处理完成，Emby 将进行秒级精准入库...")
             else:
-                logger.info(f"  ➜ [实时监控] 缓存已生成，等待批量极速通知...")
+                pass
+                # logger.info(f"  ➜ [实时监控] 缓存已生成，等待批量极速通知...")
             
             # ★★★ 核心修改：直接返回具体的文件路径，不再返回父目录 ★★★
             return file_path
@@ -4196,7 +4196,7 @@ class MediaProcessor:
                                         else:
                                             skipped_count += 1
                                         break
-                    logger.info(f"  ➜ 深度扫描目录完成，实际更新了 {generated_count} 集 NFO (跳过了 {skipped_count} 集未变更的)。")
+                    logger.info(f"  ➜ 生成NFO完成，实际更新了 {generated_count} 个 NFO (跳过了 {skipped_count} 个未变更的)。")
 
             elif item_type == "Episode":
                 nfo_content = nfo_builder.build_episode_nfo(data_to_write, cast_to_write)

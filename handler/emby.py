@@ -838,7 +838,7 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
                     target_id = items[0].get("Id")
                     target_name = items[0].get("Name", current_path)
                     
-                    #logger.info(f"  ➜ [定点扫描] 找到已存在的父目录: '{target_name}'，准备扫描...")
+                    #logger.info(f"  ➜ [精准扫描] 找到已存在的父目录: '{target_name}'，准备扫描...")
                     
                     # 对这个特定的父目录触发刷新
                     refresh_url = f"{base_url.rstrip('/')}/Items/{target_id}/Refresh"
@@ -851,7 +851,7 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
                         "ReplaceAllMetadata": "false"
                     }
                     emby_client.post(refresh_url, params=refresh_params)
-                    logger.info(f"  ➜ [定点扫描] 已通知 Emby 对 '{target_name}' 立即扫描！")
+                    logger.info(f"  ➜ [精准扫描] 已通知 Emby 对 '{target_name}' 立即扫描！")
                     return True
         except Exception as e:
             pass # 忽略查询错误，继续向上找
@@ -859,7 +859,7 @@ def _force_refresh_directory_tree(target_dir: str, base_url: str, api_key: str):
         # 向上退一级 (例如从 /strm/电影/超级英雄/奇异博士 退到 /strm/电影/超级英雄)
         current_path = os.path.dirname(current_path)
         
-    logger.warning(f"  ➜ [定点扫描] 未能在 Emby 中找到 {target_dir} 的有效父目录，将等待 90 秒后自动扫描。")
+    logger.warning(f"  ➜ [精准扫描] 未能在 Emby 中找到 {target_dir} 的有效父目录，将等待 90 秒后自动扫描。")
     return False
 
 # --- 极速轻量级文件变更通知 ---
