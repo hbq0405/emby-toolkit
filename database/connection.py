@@ -275,34 +275,6 @@ def init_db():
                     )
                 """)
 
-                # logger.trace("  ➜ 正在创建 'person_identity_map' 表...")
-                # cursor.execute("""
-                #     CREATE TABLE IF NOT EXISTS person_identity_map (
-                #         map_id SERIAL PRIMARY KEY, 
-                #         primary_name TEXT NOT NULL, 
-                #         emby_person_id TEXT UNIQUE,
-                #         tmdb_person_id INTEGER UNIQUE, 
-                #         imdb_id TEXT UNIQUE, 
-                #         douban_celebrity_id TEXT UNIQUE,
-                #         last_synced_at TIMESTAMP WITH TIME ZONE, 
-                #         last_updated_at TIMESTAMP WITH TIME ZONE
-                #     )
-                # """)
-
-                # logger.trace("  ➜ 正在创建 'actor_metadata' 表...")
-                # cursor.execute("""
-                #     CREATE TABLE IF NOT EXISTS actor_metadata (
-                #         tmdb_id INTEGER PRIMARY KEY, 
-                #         profile_path TEXT, 
-                #         gender INTEGER, 
-                #         adult BOOLEAN,
-                #         popularity REAL, 
-                #         original_name TEXT, 
-                #         last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                #         FOREIGN KEY(tmdb_id) REFERENCES person_identity_map(tmdb_person_id) ON DELETE CASCADE
-                #     )
-                # """)
-
                 logger.trace("  ➜ 正在创建 'actor_subscriptions' 表...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS actor_subscriptions (
