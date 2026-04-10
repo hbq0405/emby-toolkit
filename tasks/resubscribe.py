@@ -1178,25 +1178,7 @@ def _execute_resubscribe(processor, task_name: str, target):
                 
                 logger.info(f"  ➜ 成功提交订阅到 MoviePilot: {item_name}")
                 
-                try:
-                    with connection.get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            if item_type == 'Movie':
-                                cursor.execute("""
-                                    UPDATE resubscribe_index 
-                                    SET status = 'subscribed' 
-                                    WHERE tmdb_id = %s AND item_type = 'Movie'
-                                """, (str(tmdb_id),))
-                                conn.commit()
-                            elif item_type == 'Season':
-                                cursor.execute("""
-                                    UPDATE resubscribe_index 
-                                    SET status = 'subscribed' 
-                                    WHERE tmdb_id = %s AND item_type = 'Season' AND season_number = %s
-                                """, (str(tmdb_id), season_number))
-                                conn.commit()
-                except Exception as e:
-                    logger.error(f"  ➜ 更新洗版状态到数据库失败: {e}")
+                resubscribe_db.batch_update_resubscribe_index_status(str(tmdb_id), "subscribed")
 
             else:
                 logger.error(f"  ➜ 提交订阅到 MoviePilot 失败: {item_name}")                
