@@ -537,14 +537,17 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                     deleted_count += 1
                     logger.info(f"  ➜ 成功处理劣质版本 ID: {version_id_to_check}")
                 else:
-                    emby.delete_item_sy(
+                    success = emby.delete_item_sy(
                         item_id=version_id_to_check, 
                         emby_server_url=processor.emby_url, 
                         emby_api_key=processor.emby_api_key, 
-                        user_id=processor.user_id
+                        user_id=processor.emby_user_id
                         )
-                    logger.info(f"  ➜ 通过 API 删除了版本 ID: {version_id_to_check}")
-                    deleted_count += 1
+                    if success:
+                        deleted_count += 1
+                        logger.info(f"  ➜ 通过 API 删除了版本 ID: {version_id_to_check}")
+                    else:
+                        logger.error(f"  ➜ 删除 ID: {version_id_to_check} 失败！")
 
             processed_task_ids.append(task['id'])
 
