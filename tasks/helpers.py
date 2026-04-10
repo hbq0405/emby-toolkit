@@ -22,8 +22,8 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "eng": ["English", "ENG", "英语"],
     "jpn": ["Japanese", "JPN", "日语"],
     "kor": ["Korean", "KOR", "韩语"],
-    "sub_chi": ["CHS", "SC", "GB", "简体", "简中", "简", "中字"], 
-    "sub_yue": ["CHT", "TC", "BIG5", "繁體", "繁体", "繁"], 
+    "sub_chi": ["CHS", "SC", "GB", "简体", "简中", "简", "中字", "Simplified"],  
+    "sub_yue": ["CHT", "TC", "BIG5", "繁體", "繁体", "繁", "Traditional"],    
     "sub_eng": ["ENG", "英字"],
     "sub_jpn": ["JPN", "日字", "日文"],
     "sub_kor": ["KOR", "韩字", "韩文"],
@@ -291,9 +291,12 @@ def _get_detected_languages_from_streams(
                     if lang_code in codes:
                         detected_langs.add(key)
             
-            # 检查标题字段
-            title_string = (stream.get('Title', '') + stream.get('DisplayTitle', '')).lower()
-            if not title_string: continue
+            # 检查标题字段 (修复 None 值拼接报错，并加空格防止粘连)
+            raw_title = stream.get('Title') or ''
+            raw_display = stream.get('DisplayTitle') or ''
+            title_string = f"{raw_title} {raw_display}".lower()
+            
+            if not title_string.strip(): continue
             for lang_key, keywords in AUDIO_SUBTITLE_KEYWORD_MAP.items():
                 normalized_lang_key = lang_key.replace('sub_', '')
                 if any(keyword.lower() in title_string for keyword in keywords):
