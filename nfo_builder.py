@@ -74,7 +74,6 @@ def build_movie_nfo(data: dict, cast: list) -> str:
     title = data.get('title')
     _add_element(root, 'title', title)
     _add_element(root, 'originaltitle', data.get('original_title'))
-    # ★★★ 自动生成拼音首字母用于排序 ★★★
     _add_element(root, 'sorttitle', get_pinyin_initials(title))
     
     _add_element(root, 'tagline', data.get('tagline'))
@@ -109,7 +108,7 @@ def build_movie_nfo(data: dict, cast: list) -> str:
             _add_element(set_elem, 'overview', collection.get('overview'))
 
     _add_genres_and_tags(root, data)
-    _add_actors(root, cast) 
+    
     extended_cast = list(cast)
     top_directors = extract_top_directors(data, max_count=3)
     for d in top_directors:
@@ -135,7 +134,6 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     title = data.get('name') or data.get('title')
     _add_element(root, 'title', title)
     _add_element(root, 'originaltitle', data.get('original_name') or data.get('original_title'))
-    # ★★★ 自动生成拼音首字母用于排序 (如果已有 sorttitle 则优先使用) ★★★
     _add_element(root, 'sorttitle', data.get('sorttitle') or get_pinyin_initials(title))
     _add_element(root, 'tagline', data.get('tagline'))
     _add_element(root, 'year', data.get('first_air_date')[:4] if data.get('first_air_date') else '')
@@ -155,7 +153,6 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
         ET.SubElement(root, 'uniqueid', type='imdb').text = str(imdb_id)
         _add_element(root, 'imdb_id', imdb_id)
         
-    # 补全 episodeguide
     guide_dict = {}
     if tmdb_id: guide_dict["tmdb"] = str(tmdb_id)
     if imdb_id: guide_dict["imdb"] = str(imdb_id)
@@ -165,7 +162,6 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     if imdb_id: _add_element(root, 'id', imdb_id)
     elif tmdb_id: _add_element(root, 'id', tmdb_id)
 
-    # 补全剧集专属占位符
     _add_element(root, 'season', '-1')
     _add_element(root, 'episode', '-1')
     _add_element(root, 'displayorder', 'aired')
@@ -175,7 +171,6 @@ def build_tvshow_nfo(data: dict, cast: list) -> str:
     for studio in data.get('networks', []) + data.get('production_companies', []):
         _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)
 
-    _add_actors(root, cast) 
     extended_cast = list(cast)
     top_directors = extract_top_directors(data, max_count=3)
     for d in top_directors:
@@ -198,7 +193,6 @@ def build_season_nfo(data: dict) -> str:
     
     title = data.get('name')
     _add_element(root, 'title', title)
-    # ★★★ 季也加上拼音排序 ★★★
     _add_element(root, 'sorttitle', get_pinyin_initials(title))
     
     _add_element(root, 'seasonnumber', data.get('season_number'))
@@ -229,12 +223,7 @@ def build_episode_nfo(data: dict, cast: list) -> str:
         ET.SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(data.get('id'))
         _add_element(root, 'tmdbid', data.get('id'))
 
-    _add_actors(root, cast) 
-
-    if data.get('id'):
-        ET.SubElement(root, 'uniqueid', type='tmdb', default='true').text = str(data.get('id'))
-        _add_element(root, 'tmdbid', data.get('id'))
-
+    # ★ 修复：移除重复的 _add_actors(root, cast)
     extended_cast = list(cast)
     top_directors = extract_top_directors(data, max_count=3)
     for d in top_directors:
