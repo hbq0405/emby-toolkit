@@ -333,14 +333,14 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
             try:
                 watching_ids = watchlist_db.get_watching_tmdb_ids()
                 if str(tmdb_id) not in watching_ids:
-                    logger.debug(f"  ➜ [智能追剧] 剧集 {tmdb_id} 当前不在追剧列表中 (状态非 Watching)，跳过刷新。")
+                    logger.debug(f"  ➜ [智能追剧] 剧集 《{item_name_for_log}》 当前不在追剧列表中，跳过刷新。")
                     return
                 # =======================================================
 
                 logger.info(f"  ➜ [智能追剧] 触发单项刷新...")
                 task_manager.submit_task(
                     task_process_watchlist,
-                    task_name=f"刷新智能追剧: {item_name_for_log}",
+                    task_name=f"刷新智能追剧: 《{item_name_for_log}》",
                     processor_type='watchlist', 
                     tmdb_id=str(tmdb_id)
                 )
