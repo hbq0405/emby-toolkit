@@ -416,7 +416,9 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
     
     config = config_manager.APP_CONFIG
     local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
-    sync_delete = config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False)    
+    sync_delete = config.get(constants.CONFIG_OPTION_115_ENABLE_SYNC_DELETE, False) 
+    cfg = settings_db.get_setting('media_cleanup_rules') or [] 
+    apidelete = cfg.get('apidelete', False)  
     
     try:
         tasks_to_execute = cleanup_db.get_cleanup_index_by_ids(task_ids)
@@ -463,7 +465,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                 version_id_to_check = str(version.get('id'))
                 file_path = version.get('path')
                 
-                if version_id_to_check not in safe_ids_set:
+                if version_id_to_check not in safe_ids_set and apidelete == False:
                     logger.warning(f"  ➜ 准备物理删除劣质版本 (ID: {version_id_to_check}): {file_path}")
                     
                     # 1. 获取 PC 码 (用于后续联动删除 115 网盘文件)
@@ -535,19 +537,23 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                     
                     deleted_count += 1
                     logger.info(f"  ➜ 成功处理劣质版本 ID: {version_id_to_check}")
-            
+                else:
+                    emby.delete_item_sy(version_id_to_check, processor.emby_url, processor.emby_api_key, processor.user_id)
+                    logger.info(f"  ➜ 通过 API 删除了版本 ID: {version_id_to_check}")
+                    deleted_count += 1
+
             processed_task_ids.append(task['id'])
 
         if processed_task_ids:
             cleanup_db.batch_update_cleanup_index_status(processed_task_ids, 'processed')
 
         # 5. 联动删除 115 网盘文件 (利用 WebhookDeleteBuffer 的批量处理能力)
-        if all_pickcodes_to_delete and sync_delete:
+        if all_pickcodes_to_delete and sync_delete and apidelete == False:
             logger.info(f"  ➜ 正在将 {len(all_pickcodes_to_delete)} 个文件加入 115 网盘联动删除队列...")
             WebhookDeleteBuffer.add(all_pickcodes_to_delete)
 
         # 6. 通知 Emby 刷新 (让 Emby 自己发现文件没了并清理数据库)
-        if all_deleted_paths:
+        if all_deleted_paths and sync_delete and apidelete == False:
             logger.info(f"  ➜ 正在通知 Emby 刷新 {len(all_deleted_paths)} 个被删除的路径...")
             emby.notify_emby_file_changes(
                 file_paths=all_deleted_paths,

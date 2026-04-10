@@ -111,6 +111,16 @@
                 </div>
                 <n-switch v-model:value="keepOnePerRes" />
               </div>
+              <!-- 删除模式 -->
+              <div class="setting-row">
+                <div class="setting-info">
+                  <div class="setting-title">API删除</div>
+                  <div class="setting-desc">
+                    开启后，将通过Emby API删除劣质版本。<br>
+                  </div>
+                </div>
+                <n-switch v-model:value="apidelete" />
+              </div>
             </n-space>
           </n-card>
         </n-gi>
@@ -187,6 +197,7 @@ const emit = defineEmits(['on-close']);
 const saving = ref(false);
 const showEditModal = ref(false);
 const keepOnePerRes = ref(false);
+const apidelete = ref(false);
 const draggableRules = ref([]);
 const fallbackRule = ref(null);
 const currentEditingRule = ref({ priority: [] });
@@ -266,6 +277,7 @@ const fetchSettings = async () => {
 
     let loadedRules = settingsRes.data.rules || [];
     keepOnePerRes.value = settingsRes.data.keep_one_per_res || false;
+    apidelete.value = settingsRes.data.apidelete || false;
     
     loadedRules = loadedRules.map(rule => {
         if (rule.id === 'effect' && Array.isArray(rule.priority)) {
@@ -317,6 +329,7 @@ const saveSettings = async () => {
       rules: rulesToSave,
       library_ids: selectedLibraryIds.value,
       keep_one_per_res: keepOnePerRes.value,
+      apidelete: apidelete.value
     };
 
     await axios.post('/api/cleanup/settings', payload);
