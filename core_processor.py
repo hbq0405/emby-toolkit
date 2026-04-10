@@ -4075,26 +4075,29 @@ class MediaProcessor:
         if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(episode_dir), re.IGNORECASE):
             series_root_dir = os.path.dirname(episode_dir)
 
-        # --- 智能比对写入函数 (无视 Emby 格式化干扰) ---
+        # --- 智能比对写入函数 ---
         def _write_nfo_if_changed(file_path: str, content: str) -> bool:
             if os.path.exists(file_path):
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         old_content = f.read()
                     
-                    # 核心优化：去噪与格式归一化比对
                     import re
-                    def _normalize_xml(xml_str):
-                        if not xml_str: return ""
-                        # 1. 剔除 Emby 自动注入的易变标签和物理文件信息
-                        xml_str = re.sub(r'<(dateadded|fileinfo|lockdata|epbookmark|playcount|watched|resume|position)[^>]*>.*?</\1>', '', xml_str, flags=re.IGNORECASE|re.DOTALL)
-                        # 2. 统一空标签格式: <tag></tag> 转换为 <tag/>
-                        xml_str = re.sub(r'<([^>]+)></\1>', r'<\1/>', xml_str)
-                        # 3. 暴力移除所有空白字符（空格、换行、制表符），彻底无视缩进差异
-                        return re.sub(r'\s+', '', xml_str)
+                    def _get_tag_text(xml_str, tag):
+                        # 提取指定标签的内容，忽略大小写和换行
+                        match = re.search(f'<{tag}[^>]*>(.*?)</{tag}>', xml_str, re.IGNORECASE | re.DOTALL)
+                        return match.group(1).strip() if match else ""
 
-                    if _normalize_xml(old_content) == _normalize_xml(content):
-                        return False # 核心内容完全一致，跳过硬盘写入
+                    # 只比对最核心的两个字段：标题和简介
+                    old_title = _get_tag_text(old_content, 'title')
+                    old_plot = _get_tag_text(old_content, 'plot')
+                    
+                    new_title = _get_tag_text(content, 'title')
+                    new_plot = _get_tag_text(content, 'plot')
+
+                    # 只要标题和简介都没变，就认为核心数据没变，坚决不写硬盘！
+                    if old_title == new_title and old_plot == new_plot:
+                        return False 
                 except Exception:
                     pass # 读取或解析失败则走正常覆盖流程
             try:
