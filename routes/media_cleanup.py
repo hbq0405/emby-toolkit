@@ -233,6 +233,7 @@ def get_cleanup_settings():
             "rules": final_rules,
             "library_ids": saved_library_ids,
             "keep_one_per_res": keep_one_per_res,
+            "api_delete": api_delete,
             "delete_delay": delete_delay 
         })
         
