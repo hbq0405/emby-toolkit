@@ -741,8 +741,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
                                user_id_for_ops: str,
                                replace_all_metadata_param: bool = False,
                                replace_all_images_param: bool = False,
-                               item_name_for_log: Optional[str] = None,
-                               lock_metadata: bool = False 
+                               item_name_for_log: Optional[str] = None
                                ) -> bool:
     if not all([item_emby_id, emby_server_url, emby_api_key, user_id_for_ops]):
         logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL、API Key或UserID。")
@@ -765,7 +764,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
                 item_data["LockData"] = False
                 item_needs_update = True
             if item_data.get("LockedFields"):
-                item_data["LockedFields"] = [] # ★ 刷新前全量解锁，确保能读入最新的 NFO
+                item_data["LockedFields"] = []
                 item_needs_update = True
         
         if item_needs_update:
@@ -776,6 +775,8 @@ def refresh_emby_item_metadata(item_emby_id: str,
             update_response = emby_client.post(update_url, json=item_data, headers=headers, params=update_params)
             update_response.raise_for_status()
             logger.trace(f"  ➜ 成功更新 {log_identifier} 的锁状态。")
+        else:
+            logger.trace(f"  ➜ 项目 {log_identifier} 的锁状态无需更新。")
 
     except Exception as e:
         logger.warning(f"  ➜ 在刷新前更新锁状态时失败: {e}。刷新将继续，但可能受影响。")
@@ -794,35 +795,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
     try:
         response = emby_client.post(refresh_url, params=params)
         if response.status_code == 204:
-            logger.info(f"  ➜ 已成功为 {log_identifier} 触发刷新。")
-            
-            # =================================================================
-            # ★★★ 核心修复：延迟锁定演员表 (Cast) ★★★
-            # 因为 Emby 的 Refresh 是异步的，我们需要等它读完 NFO 后再上锁
-            # =================================================================
-            if lock_metadata:
-                def _delayed_lock():
-                    time.sleep(5) # 等待 5 秒，让 Emby 充分读取本地 NFO
-                    try:
-                        latest_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
-                        if latest_data:
-                            locked_fields = latest_data.get("LockedFields", [])
-                            fields_to_lock = ["Cast", "Taglines", "OfficialRating", "Studios"]
-                            if fields_to_lock not in locked_fields:
-                                locked_fields.append(fields_to_lock)
-                                latest_data["LockedFields"] = locked_fields
-                                
-                                update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
-                                update_params = {"api_key": emby_api_key}
-                                headers = {'Content-Type': 'application/json'}
-                                emby_client.post(update_url, json=latest_data, headers=headers, params=update_params)
-                                logger.info(f"  ➜ [锁定保护] 已成功锁定 {log_identifier} 的演员表(Cast)，防止被刮削器覆盖。")
-                    except Exception as e:
-                        logger.error(f"  ➜ 延迟锁定演员表失败: {e}")
-                
-                # 开启后台线程执行延迟锁定，不阻塞主流程
-                threading.Thread(target=_delayed_lock, daemon=True).start()
-
+            logger.info(f"  ➜ 已成功为 {log_identifier} 刷新元数据。")
             return True
         else:
             logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")

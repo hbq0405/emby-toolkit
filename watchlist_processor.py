@@ -772,8 +772,7 @@ class WatchlistProcessor:
                 emby_api_key=self.emby_api_key,
                 user_id_for_ops=self.emby_user_id,
                 replace_all_metadata_param=True,
-                item_name_for_log=item_name,
-                lock_metadata=True
+                item_name_for_log=item_name
             )
 
         # 6. 同步季和集到数据库 
