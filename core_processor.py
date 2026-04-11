@@ -2451,8 +2451,8 @@ class MediaProcessor:
                     item_details=item_details_from_emby,
                     tmdb_id=tmdb_id,
                     final_cast_override=final_processed_cast,
-                    episode_ids_to_sync=specific_episode_ids,
-                    metadata_override=formatted_metadata
+                    metadata_override=formatted_metadata,
+                    force_write=True
                 )
                 self.download_images_from_tmdb(
                     tmdb_id=tmdb_id,
@@ -3545,7 +3545,8 @@ class MediaProcessor:
                 item_details=item_details,
                 tmdb_id=tmdb_id,
                 final_cast_override=final_formatted_cast,
-                metadata_override=payload
+                metadata_override=payload,
+                force_write=True
             )
 
             # ======================================================================
@@ -3902,12 +3903,12 @@ class MediaProcessor:
             logger.error(f"  ➜ [手动换图] 失败: {e}", exc_info=True)
             return False, f"替换失败: {str(e)}"
 
-    # --- 备份元数据 ---
+    # --- 生成NFO元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str,
                        final_cast_override: Optional[List[Dict[str, Any]]] = None,
-                       episode_ids_to_sync: Optional[List[str]] = None,
                        metadata_override: Optional[Dict[str, Any]] = None,
-                       is_series_refresh: bool = False):
+                       is_series_refresh: bool = False,
+                       force_write: bool = False):
         """
         【纯净 NFO 模式】基于模板和现有数据构建元数据文件，生成 XML 写入物理目录。
         """
@@ -4021,7 +4022,10 @@ class MediaProcessor:
 
         # --- 智能比对写入函数 ---
         def _write_nfo_if_changed(file_path: str, content: str) -> bool:
-            if os.path.exists(file_path):
+            # ★ 如果开启了强制写入，直接跳过比对，执行覆盖
+            if force_write:
+                pass # 往下走，直接执行 try 里的写入逻辑
+            elif os.path.exists(file_path):
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         old_content = f.read()
