@@ -764,16 +764,12 @@ class WatchlistProcessor:
         except Exception as e_img:
             logger.warning(f"  ➜ 追剧刷新时处理物理资产失败: {e_img}")
 
-        # 5. 通知 Emby 刷新元数据 
-        if item_id:
-            emby.refresh_emby_item_metadata(
-                item_emby_id=item_id,
-                emby_server_url=self.emby_url,
-                emby_api_key=self.emby_api_key,
-                user_id_for_ops=self.emby_user_id,
-                replace_all_metadata_param=True,
-                item_name_for_log=item_name
-            )
+        # 5. 通知 Emby 扫描目录读取 NFO 
+        if item_id and current_item_details:
+            media_path = current_item_details.get("Path")
+            if media_path:
+                logger.debug(f"  ➜ 正在通知 Emby 扫描剧集目录...")
+                emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
 
         # 6. 同步季和集到数据库 
         emby_seasons_state = media_db.get_series_local_children_info(tmdb_id)

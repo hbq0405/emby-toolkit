@@ -601,6 +601,29 @@ class MediaProcessor:
 
                 logger.info(f"  ➜ [实时监控] 正在按照骨架模板格式化元数据...")
 
+                # =================================================================
+                # ★★★ 大一统 AI 翻译引擎 (必须在构建骨架前，直接作用于原始数据) ★★★
+                # =================================================================
+                if self.ai_translator and details:
+                    from tasks.helpers import translate_tmdb_metadata_recursively
+                    # 针对剧集，传入完整的聚合数据；针对电影，传入单体数据
+                    target_tmdb_data = aggregated_tmdb_data if item_type == "Series" else details
+                    
+                    translate_tmdb_metadata_recursively(
+                        item_type=item_type,
+                        tmdb_data=target_tmdb_data,
+                        ai_translator=self.ai_translator,
+                        item_name=search_query or filename, # ★ 修正：使用搜索标题或文件名
+                        tmdb_api_key=self.tmdb_api_key,
+                        config=self.config
+                    )
+                    
+                    # 合集翻译 (电影专属)
+                    if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
+                        collection_info = details.get("belongs_to_collection") # ★ 修正：使用 details
+                        if collection_info and isinstance(collection_info, dict) and collection_info.get("id"):
+                            details["belongs_to_collection"] = self._enrich_collection_info(collection_info)
+
                 # 2. 初始化骨架
                 formatted_metadata = construct_metadata_payload(
                     item_type=item_type,
@@ -2198,7 +2221,6 @@ class MediaProcessor:
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
         tmdb_id = item_details_from_emby.get("ProviderIds", {}).get("Tmdb")
         item_type = item_details_from_emby.get("Type")
-        file_paths = [source.get("Path") for source in item_details_from_emby.get("MediaSources", []) if source.get("Path")]
 
         logger.trace(f"--- 开始处理 '{item_name_for_log}' (TMDb ID: {tmdb_id}) ---")
 
@@ -2291,29 +2313,6 @@ class MediaProcessor:
                             fresh_data["name"] = original_title
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                 aggregated_tmdb_data["series_details"]["name"] = original_title
-
-                # =================================================================
-                # ★★★ 核心修复：大一统 AI 翻译引擎 (必须在构建骨架前，直接作用于原始数据) ★★★
-                # =================================================================
-                if self.ai_translator:
-                    from tasks.helpers import translate_tmdb_metadata_recursively
-                    # 针对剧集，传入完整的聚合数据；针对电影，传入单体数据
-                    target_tmdb_data = aggregated_tmdb_data if item_type == "Series" else fresh_data
-                    
-                    translate_tmdb_metadata_recursively(
-                        item_type=item_type,
-                        tmdb_data=target_tmdb_data,
-                        ai_translator=self.ai_translator,
-                        item_name=item_name_for_log,
-                        tmdb_api_key=self.tmdb_api_key,
-                        config=self.config
-                    )
-                    
-                    # 合集翻译 (电影专属)
-                    if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
-                        collection_info = fresh_data.get("belongs_to_collection")
-                        if collection_info and isinstance(collection_info, dict) and collection_info.get("id"):
-                            fresh_data["belongs_to_collection"] = self._enrich_collection_info(collection_info)
 
                 # 2. 填充骨架
                 formatted_metadata = construct_metadata_payload(
@@ -2455,22 +2454,20 @@ class MediaProcessor:
                 )
 
                 # 6. 更新 Emby 演员名并通知刷新
-                # self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
-                logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
-                emby.notify_emby_file_changes(
-                    file_paths=file_paths,
-                    base_url=self.emby_url,
-                    api_key=self.emby_api_key,
-                    update_type="Modified"
-                )
-                # emby.refresh_emby_item_metadata(
-                #     item_emby_id=item_id,
-                #     emby_server_url=self.emby_url,
-                #     emby_api_key=self.emby_api_key,
-                #     user_id_for_ops=self.emby_user_id,
-                #     replace_all_metadata_param=True, 
-                #     item_name_for_log=item_name_for_log
-                # )
+                self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
+                # ======================================================================
+                # ★★★ 统一扫描与唤醒流程 (彻底抛弃危险的 Refresh API) ★★★
+                # ======================================================================
+                media_path = item_details_from_emby.get("Path")
+                if media_path:
+                    logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
+                    emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
+                    
+                    # 延迟 3 秒执行演员唤醒，给 Emby 留出读取 NFO 的时间
+                    if final_processed_cast:
+                        person_ids = [actor.get("emby_person_id") for actor in final_processed_cast if actor.get("emby_person_id")]
+                        if person_ids:
+                            threading.Timer(3.0, emby.wakeup_persons, args=(person_ids, self.emby_url, self.emby_api_key)).start()
             else:
                 logger.debug(f"  ➜ [webhook回流] 开始质检...")
 
@@ -3499,37 +3496,31 @@ class MediaProcessor:
             )
 
             # ======================================================================
-            # 步骤 6: 触发刷新并更新日志
+            # 步骤 6: 触发扫描并更新日志
             # ======================================================================
-            logger.info("  ➜ 手动处理：步骤 6/6: 触发 Emby 刷新并更新内部日志...")
+            logger.info("  ➜ 手动处理：步骤 6/6: 触发 Emby 目录扫描并更新内部日志...")
             
-            emby.refresh_emby_item_metadata(
-                item_emby_id=item_id,
-                emby_server_url=self.emby_url,
-                emby_api_key=self.emby_api_key,
-                user_id_for_ops=self.emby_user_id,
-                replace_all_metadata_param=True,
-                item_name_for_log=item_name
-            )
+            media_path = item_details.get("Path")
+            if media_path:
+                emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
+                
+                # 唤醒演员
+                person_ids = [actor.get("emby_person_id") for actor in final_formatted_cast if actor.get("emby_person_id")]
+                if person_ids:
+                    threading.Timer(3.0, emby.wakeup_persons, args=(person_ids, self.emby_url, self.emby_api_key)).start()
 
             # 更新我们自己的数据库日志和缓存
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
-                formatted_manual_metadata = None
-                if tmdb_details_for_manual_extra:
-                    formatted_manual_metadata = construct_metadata_payload(
-                        item_type=item_type,
-                        tmdb_data=tmdb_details_for_manual_extra,
-                        aggregated_tmdb_data=aggregated_tmdb_data_manual,
-                        emby_data_fallback=item_details
-                    )
-                # 写入数据库
+                
+                # ★★★ 核心修复：不要去 TMDb 重新拉取未翻译的数据！直接用第 4 步从数据库重建的 payload ★★★
+                # 这样宣传语、翻译好的简介等就全部保留下来了！
                 self._upsert_media_metadata(
                     cursor=cursor,
                     item_type=item_type,
                     item_details_from_emby=item_details,
                     final_processed_cast=final_formatted_cast, 
-                    source_data_package=formatted_manual_metadata, 
+                    source_data_package=payload, # <--- 直接用 payload
                 )
                 
                 logger.info(f"  ➜ 正在将手动处理完成的《{item_name}》写入已处理日志...")
