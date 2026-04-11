@@ -2453,18 +2453,24 @@ class MediaProcessor:
                     item_details=item_details_from_emby
                 )
 
-                # 6. 更新 Emby 演员名并通知刷新
+                # 6. 更新 Emby 演员名
                 self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
-                logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
-                emby.refresh_emby_item_metadata(
-                    item_emby_id=item_id,
-                    emby_server_url=self.emby_url,
-                    emby_api_key=self.emby_api_key,
-                    user_id_for_ops=self.emby_user_id,
-                    replace_all_metadata_param=True, 
-                    item_name_for_log=item_name_for_log
-                )
-            else:
+                
+            # ======================================================================
+            # ★★★ 统一刷新与锁定流程 (无论是完整处理还是 Webhook 回流) ★★★
+            # ======================================================================
+            logger.info(f"  ➜ 正在通知 Emby 刷新并锁定演员表...")
+            emby.refresh_emby_item_metadata(
+                item_emby_id=item_id,
+                emby_server_url=self.emby_url,
+                emby_api_key=self.emby_api_key,
+                user_id_for_ops=self.emby_user_id,
+                replace_all_metadata_param=not is_webhook_feedback, # 回流时不需要完全替换元数据
+                item_name_for_log=item_name_for_log,
+                lock_cast=True # ★ 核心：触发延迟锁定
+            )
+
+            if is_webhook_feedback:
                 logger.debug(f"  ➜ [webhook回流] 开始质检...")
 
             # ======================================================================
@@ -3502,7 +3508,8 @@ class MediaProcessor:
                 emby_api_key=self.emby_api_key,
                 user_id_for_ops=self.emby_user_id,
                 replace_all_metadata_param=True,
-                item_name_for_log=item_name
+                item_name_for_log=item_name,
+                lock_cast=True # ★ 核心：手动编辑后也必须锁定
             )
 
             # 更新我们自己的数据库日志和缓存
