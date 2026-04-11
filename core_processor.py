@@ -2456,14 +2456,20 @@ class MediaProcessor:
                 # 6. 更新 Emby 演员名并通知刷新
                 self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
                 logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
-                emby.refresh_emby_item_metadata(
-                    item_emby_id=item_id,
-                    emby_server_url=self.emby_url,
-                    emby_api_key=self.emby_api_key,
-                    user_id_for_ops=self.emby_user_id,
-                    replace_all_metadata_param=True, 
-                    item_name_for_log=item_name_for_log
+                emby.notify_emby_file_changes(
+                    file_paths=[item_details_from_emby.get("path")],
+                    base_url=self.emby_url,
+                    api_key=self.emby_api_key,
+                    update_type="Modified"
                 )
+                # emby.refresh_emby_item_metadata(
+                #     item_emby_id=item_id,
+                #     emby_server_url=self.emby_url,
+                #     emby_api_key=self.emby_api_key,
+                #     user_id_for_ops=self.emby_user_id,
+                #     replace_all_metadata_param=True, 
+                #     item_name_for_log=item_name_for_log
+                # )
             else:
                 logger.debug(f"  ➜ [webhook回流] 开始质检...")
 
