@@ -601,29 +601,6 @@ class MediaProcessor:
 
                 logger.info(f"  ➜ [实时监控] 正在按照骨架模板格式化元数据...")
 
-                # =================================================================
-                # ★★★ 大一统 AI 翻译引擎 (必须在构建骨架前，直接作用于原始数据) ★★★
-                # =================================================================
-                if self.ai_translator and details:
-                    from tasks.helpers import translate_tmdb_metadata_recursively
-                    # 针对剧集，传入完整的聚合数据；针对电影，传入单体数据
-                    target_tmdb_data = aggregated_tmdb_data if item_type == "Series" else details
-                    
-                    translate_tmdb_metadata_recursively(
-                        item_type=item_type,
-                        tmdb_data=target_tmdb_data,
-                        ai_translator=self.ai_translator,
-                        item_name=search_query or filename, # ★ 修正：使用搜索标题或文件名
-                        tmdb_api_key=self.tmdb_api_key,
-                        config=self.config
-                    )
-                    
-                    # 合集翻译 (电影专属)
-                    if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
-                        collection_info = details.get("belongs_to_collection") # ★ 修正：使用 details
-                        if collection_info and isinstance(collection_info, dict) and collection_info.get("id"):
-                            details["belongs_to_collection"] = self._enrich_collection_info(collection_info)
-
                 # 2. 初始化骨架
                 formatted_metadata = construct_metadata_payload(
                     item_type=item_type,
@@ -2314,12 +2291,43 @@ class MediaProcessor:
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                 aggregated_tmdb_data["series_details"]["name"] = original_title
 
+                # =================================================================
+                # ★★★ 核心修复：大一统 AI 翻译引擎 (必须在构建骨架前，直接作用于原始数据) ★★★
+                # =================================================================
+                if self.ai_translator:
+                    from tasks.helpers import translate_tmdb_metadata_recursively
+                    # 针对剧集，传入完整的聚合数据；针对电影，传入单体数据
+                    target_tmdb_data = aggregated_tmdb_data if item_type == "Series" else fresh_data
+                    
+                    translate_tmdb_metadata_recursively(
+                        item_type=item_type,
+                        tmdb_data=target_tmdb_data,
+                        ai_translator=self.ai_translator,
+                        item_name=item_name_for_log,
+                        tmdb_api_key=self.tmdb_api_key,
+                        config=self.config
+                    )
+                    
+                    # 合集翻译 (电影专属)
+                    if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
+                        collection_info = fresh_data.get("belongs_to_collection")
+                        if collection_info and isinstance(collection_info, dict) and collection_info.get("id"):
+                            fresh_data["belongs_to_collection"] = self._enrich_collection_info(collection_info)
+
                 # 2. 填充骨架
                 formatted_metadata = construct_metadata_payload(
                     item_type=item_type,
                     tmdb_data=fresh_data or {},
                     aggregated_tmdb_data=aggregated_tmdb_data,
                     emby_data_fallback=item_details_from_emby
+                )
+
+                # 3. 尝试从数据库中恢复缺失的字段
+                formatted_metadata = self._restore_fields_from_db_if_missing(
+                    tmdb_id=tmdb_id,
+                    item_type=item_type,
+                    metadata=formatted_metadata,
+                    fields=["tagline"]
                 )
 
                 if not item_details_from_emby.get("Genres") and fresh_data.get("genres"):
@@ -2453,22 +2461,24 @@ class MediaProcessor:
                     item_details=item_details_from_emby
                 )
 
-                # 6. 更新 Emby 演员名并通知刷新
+                # 6. 更新 Emby 演员名
                 self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
-                # ======================================================================
-                # ★★★ 统一扫描与唤醒流程 (彻底抛弃危险的 Refresh API) ★★★
-                # ======================================================================
-                media_path = item_details_from_emby.get("Path")
-                if media_path:
-                    logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
-                    emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
-                    
-                    # 延迟 3 秒执行演员唤醒，给 Emby 留出读取 NFO 的时间
-                    if final_processed_cast:
-                        person_ids = [actor.get("emby_person_id") for actor in final_processed_cast if actor.get("emby_person_id")]
-                        if person_ids:
-                            threading.Timer(3.0, emby.wakeup_persons, args=(person_ids, self.emby_url, self.emby_api_key)).start()
-            else:
+                
+            # ======================================================================
+            # ★★★ 统一扫描与唤醒流程 (彻底抛弃危险的 Refresh API) ★★★
+            # ======================================================================
+            media_path = item_details_from_emby.get("Path")
+            if media_path:
+                logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
+                emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
+                
+                # 延迟 3 秒执行演员唤醒，给 Emby 留出读取 NFO 的时间
+                if final_processed_cast:
+                    person_ids = [actor.get("emby_person_id") for actor in final_processed_cast if actor.get("emby_person_id")]
+                    if person_ids:
+                        threading.Timer(3.0, emby.wakeup_persons, args=(person_ids, self.emby_url, self.emby_api_key)).start()
+
+            if is_webhook_feedback:
                 logger.debug(f"  ➜ [webhook回流] 开始质检...")
 
             # ======================================================================
@@ -3274,6 +3284,53 @@ class MediaProcessor:
 
         logger.info("手动编辑-翻译完成。")
         return translated_cast
+    
+    # --- 数据库保底 ---
+    def _restore_fields_from_db_if_missing(self, tmdb_id: str, item_type: str, metadata: dict, fields: list):
+        """从数据库补回缺失的字段"""
+        try:
+            if not fields:
+                return metadata
+
+            need_restore = [f for f in fields if not metadata.get(f)]
+            if not need_restore:
+                return metadata
+
+            sql_fields = ", ".join(need_restore)
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f"""
+                    SELECT {sql_fields}
+                    FROM media_metadata
+                    WHERE tmdb_id = %s AND item_type = %s
+                    LIMIT 1
+                    """,
+                    (str(tmdb_id), item_type)
+                )
+                row = cursor.fetchone()
+
+            if not row:
+                return metadata
+
+            for field in need_restore:
+                value = None
+                if isinstance(row, dict):
+                    value = row.get(field)
+                else:
+                    try:
+                        value = row[field]
+                    except Exception:
+                        pass
+
+                if value:
+                    metadata[field] = value
+                    logger.info(f"  ➜ [数据库保底] 已补回字段: {field}")
+
+        except Exception as e:
+            logger.warning(f"  ➜ [数据库保底] 补回字段失败: {e}")
+
+        return metadata
     
     # --- 手动处理 ---
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
