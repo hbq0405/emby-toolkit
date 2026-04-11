@@ -2198,6 +2198,7 @@ class MediaProcessor:
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
         tmdb_id = item_details_from_emby.get("ProviderIds", {}).get("Tmdb")
         item_type = item_details_from_emby.get("Type")
+        file_paths = [source.get("Path") for source in item_details_from_emby.get("MediaSources", []) if source.get("Path")]
 
         logger.trace(f"--- 开始处理 '{item_name_for_log}' (TMDb ID: {tmdb_id}) ---")
 
@@ -2454,10 +2455,10 @@ class MediaProcessor:
                 )
 
                 # 6. 更新 Emby 演员名并通知刷新
-                self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
+                # self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
                 logger.info(f"  ➜ 处理完成，正在通知 Emby 刷新...")
                 emby.notify_emby_file_changes(
-                    file_paths=[item_details_from_emby.get("path")],
+                    file_paths=file_paths,
                     base_url=self.emby_url,
                     api_key=self.emby_api_key,
                     update_type="Modified"
