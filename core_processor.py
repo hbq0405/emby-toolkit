@@ -2322,6 +2322,14 @@ class MediaProcessor:
                     emby_data_fallback=item_details_from_emby
                 )
 
+                # 3. 尝试从数据库中恢复缺失的字段
+                formatted_metadata = self._restore_fields_from_db_if_missing(
+                    tmdb_id=tmdb_id,
+                    item_type=item_type,
+                    metadata=formatted_metadata,
+                    fields=["tagline"]
+                )
+
                 if not item_details_from_emby.get("Genres") and fresh_data.get("genres"):
                     item_details_from_emby["Genres"] = fresh_data.get("genres")
 
@@ -3270,6 +3278,53 @@ class MediaProcessor:
 
         logger.info("手动编辑-翻译完成。")
         return translated_cast
+    
+    # --- 数据库保底 ---
+    def _restore_fields_from_db_if_missing(self, tmdb_id: str, item_type: str, metadata: dict, fields: list):
+        """从数据库补回缺失的字段"""
+        try:
+            if not fields:
+                return metadata
+
+            need_restore = [f for f in fields if not metadata.get(f)]
+            if not need_restore:
+                return metadata
+
+            sql_fields = ", ".join(need_restore)
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    f"""
+                    SELECT {sql_fields}
+                    FROM media_metadata
+                    WHERE tmdb_id = %s AND item_type = %s
+                    LIMIT 1
+                    """,
+                    (str(tmdb_id), item_type)
+                )
+                row = cursor.fetchone()
+
+            if not row:
+                return metadata
+
+            for field in need_restore:
+                value = None
+                if isinstance(row, dict):
+                    value = row.get(field)
+                else:
+                    try:
+                        value = row[field]
+                    except Exception:
+                        pass
+
+                if value:
+                    metadata[field] = value
+                    logger.info(f"  ➜ [数据库保底] 已补回字段: {field}")
+
+        except Exception as e:
+            logger.warning(f"  ➜ [数据库保底] 补回字段失败: {e}")
+
+        return metadata
     
     # --- 手动处理 ---
     def process_item_with_manual_cast(self, item_id: str, manual_cast_list: List[Dict[str, Any]], item_name: str) -> bool:
