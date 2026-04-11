@@ -20,7 +20,6 @@ def _format_dateadded(date_str):
 
 def _add_common_elements(root, data):
     """添加所有 NFO 共用的基础标签"""
-    _add_element(root, 'outline', data.get('overview'))
     _add_element(root, 'lockdata', 'false')
     date_added = data.get('date_added')
     if date_added:
@@ -68,7 +67,7 @@ def _add_genres_and_tags(root, data):
 
 def build_movie_nfo(data: dict, cast: list) -> str:
     root = ET.Element('movie')
-    # _add_element(root, 'plot', data.get('overview'))
+    _add_element(root, 'plot', data.get('overview'))
     _add_common_elements(root, data)
     
     title = data.get('title')
