@@ -2470,7 +2470,8 @@ class MediaProcessor:
                 user_id_for_ops=self.emby_user_id,
                 replace_all_metadata_param=False, 
                 replace_all_images_param=False,
-                item_name_for_log=item_name_for_log
+                item_name_for_log=item_name_for_log,
+                lock_cast=True
             )
 
             if is_webhook_feedback:
