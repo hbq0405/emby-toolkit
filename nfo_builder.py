@@ -109,7 +109,7 @@ def build_movie_nfo(data: dict, cast: list) -> str:
             _add_element(set_elem, 'overview', collection.get('overview'))
 
     _add_genres_and_tags(root, data)
-    _add_actors(root, cast) 
+    # _add_actors(root, cast) 
     extended_cast = list(cast)
     top_directors = extract_top_directors(data, max_count=3)
     for d in top_directors:
@@ -122,6 +122,7 @@ def build_movie_nfo(data: dict, cast: list) -> str:
         d_copy = d.copy()
         d_copy['type'] = 'Director'
         d_copy['character'] = 'Director'
+        d_copy['order'] = d_copy.get('order', 999)  # 导演优先级放在演员后面
         extended_cast.append(d_copy)
         
     _add_actors(root, extended_cast) 
