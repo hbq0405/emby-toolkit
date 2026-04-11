@@ -601,29 +601,6 @@ class MediaProcessor:
 
                 logger.info(f"  ➜ [实时监控] 正在按照骨架模板格式化元数据...")
 
-                # =================================================================
-                # ★★★ 大一统 AI 翻译引擎 (必须在构建骨架前，直接作用于原始数据) ★★★
-                # =================================================================
-                if self.ai_translator and details:
-                    from tasks.helpers import translate_tmdb_metadata_recursively
-                    # 针对剧集，传入完整的聚合数据；针对电影，传入单体数据
-                    target_tmdb_data = aggregated_tmdb_data if item_type == "Series" else details
-                    
-                    translate_tmdb_metadata_recursively(
-                        item_type=item_type,
-                        tmdb_data=target_tmdb_data,
-                        ai_translator=self.ai_translator,
-                        item_name=search_query or filename, # ★ 修正：使用搜索标题或文件名
-                        tmdb_api_key=self.tmdb_api_key,
-                        config=self.config
-                    )
-                    
-                    # 合集翻译 (电影专属)
-                    if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
-                        collection_info = details.get("belongs_to_collection") # ★ 修正：使用 details
-                        if collection_info and isinstance(collection_info, dict) and collection_info.get("id"):
-                            details["belongs_to_collection"] = self._enrich_collection_info(collection_info)
-
                 # 2. 初始化骨架
                 formatted_metadata = construct_metadata_payload(
                     item_type=item_type,
@@ -2313,6 +2290,29 @@ class MediaProcessor:
                             fresh_data["name"] = original_title
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                 aggregated_tmdb_data["series_details"]["name"] = original_title
+
+                # =================================================================
+                # ★★★ 核心修复：大一统 AI 翻译引擎 (必须在构建骨架前，直接作用于原始数据) ★★★
+                # =================================================================
+                if self.ai_translator:
+                    from tasks.helpers import translate_tmdb_metadata_recursively
+                    # 针对剧集，传入完整的聚合数据；针对电影，传入单体数据
+                    target_tmdb_data = aggregated_tmdb_data if item_type == "Series" else fresh_data
+                    
+                    translate_tmdb_metadata_recursively(
+                        item_type=item_type,
+                        tmdb_data=target_tmdb_data,
+                        ai_translator=self.ai_translator,
+                        item_name=item_name_for_log,
+                        tmdb_api_key=self.tmdb_api_key,
+                        config=self.config
+                    )
+                    
+                    # 合集翻译 (电影专属)
+                    if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
+                        collection_info = fresh_data.get("belongs_to_collection")
+                        if collection_info and isinstance(collection_info, dict) and collection_info.get("id"):
+                            fresh_data["belongs_to_collection"] = self._enrich_collection_info(collection_info)
 
                 # 2. 填充骨架
                 formatted_metadata = construct_metadata_payload(
