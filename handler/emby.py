@@ -2846,7 +2846,7 @@ def wakeup_persons(person_ids: List[str], base_url: str, api_key: str):
     此函数通过向 Emby 发送轻量级的刷新请求，模拟用户点击演员详情页，强制触发头像下载。
     """
     if not person_ids: return
-    logger.info(f"  ➜ [演员唤醒] 准备唤醒 {len(person_ids)} 位演员，强制 Emby 加载头像...")
+    logger.info(f"  ➜ [演员头像] 准备唤醒 {len(person_ids)} 位演员，强制 Emby 加载头像...")
     
     def _poke(pid):
         # 触发单体轻量级刷新，不替换现有数据，只为了激活图片下载队列
@@ -2867,4 +2867,4 @@ def wakeup_persons(person_ids: List[str], base_url: str, api_key: str):
     with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
         executor.map(_poke, person_ids)
         
-    logger.info(f"  ➜ [演员唤醒] {len(person_ids)} 位演员唤醒指令发送完毕。")
+    logger.info(f"  ➜ [演员头像] {len(person_ids)} 位演员唤醒指令发送完毕。")
