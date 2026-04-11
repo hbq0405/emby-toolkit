@@ -109,7 +109,7 @@ def build_movie_nfo(data: dict, cast: list) -> str:
             _add_element(set_elem, 'overview', collection.get('overview'))
 
     _add_genres_and_tags(root, data)
-    # _add_actors(root, cast) 
+    _add_actors(root, cast) 
     extended_cast = list(cast)
     top_directors = extract_top_directors(data, max_count=3)
     for d in top_directors:
@@ -119,13 +119,13 @@ def build_movie_nfo(data: dict, cast: list) -> str:
         dir_elem.text = d.get('name')
         
         # 2. 伪装成 Actor 塞进列表 (让 Emby 能读取头像)
-        d_copy = d.copy()
-        d_copy['type'] = 'Director'
-        d_copy['character'] = 'Director'
-        d_copy['order'] = d_copy.get('order', 999)  # 导演优先级放在演员后面
-        extended_cast.append(d_copy)
+    #     d_copy = d.copy()
+    #     d_copy['type'] = 'Director'
+    #     d_copy['character'] = 'Director'
+    #     d_copy['order'] = d_copy.get('order', 999)  # 导演优先级放在演员后面
+    #     extended_cast.append(d_copy)
         
-    _add_actors(root, extended_cast) 
+    # _add_actors(root, extended_cast) 
     return minidom.parseString(ET.tostring(root, encoding='utf-8')).toprettyxml(indent="  ")
 
 def build_tvshow_nfo(data: dict, cast: list) -> str:
