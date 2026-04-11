@@ -2461,22 +2461,18 @@ class MediaProcessor:
                     item_details=item_details_from_emby
                 )
 
-                # 6. 更新 Emby 演员名
+                # 6. 更新 Emby 演员名以及扫描目录
                 self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
+                media_path = item_details_from_emby.get("Path")
+                if media_path:
+                    logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
+                    emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
                 
-            # ======================================================================
-            # ★★★ 统一扫描与唤醒流程 (彻底抛弃危险的 Refresh API) ★★★
-            # ======================================================================
-            media_path = item_details_from_emby.get("Path")
-            if media_path:
-                logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
-                emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
-                
-                # 延迟 3 秒执行演员唤醒，给 Emby 留出读取 NFO 的时间
-                if final_processed_cast:
-                    person_ids = [actor.get("emby_person_id") for actor in final_processed_cast if actor.get("emby_person_id")]
-                    if person_ids:
-                        threading.Timer(3.0, emby.wakeup_persons, args=(person_ids, self.emby_url, self.emby_api_key)).start()
+            # 延迟 3 秒执行演员唤醒，给 Emby 留出读取 NFO 的时间
+            if final_processed_cast:
+                person_ids = [actor.get("emby_person_id") for actor in final_processed_cast if actor.get("emby_person_id")]
+                if person_ids:
+                    threading.Timer(3.0, emby.wakeup_persons, args=(person_ids, self.emby_url, self.emby_api_key)).start()
 
             if is_webhook_feedback:
                 logger.debug(f"  ➜ [webhook回流] 开始质检...")
