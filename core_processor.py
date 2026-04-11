@@ -2463,6 +2463,12 @@ class MediaProcessor:
 
                 # 6. 更新 Emby 演员名以及扫描目录
                 self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
+                media_path = item_details_from_emby.get("Path")
+                if media_path:
+                    logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
+                    emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
+                    time.sleep(5) # 等待 Emby 处理文件变更事件
+
             emby.refresh_emby_item_metadata(
                 item_emby_id=item_id,
                 emby_server_url=self.emby_url,
@@ -3558,11 +3564,6 @@ class MediaProcessor:
             if media_path:
                 emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
                 
-                # 唤醒演员
-                person_ids = [actor.get("emby_person_id") for actor in final_formatted_cast if actor.get("emby_person_id")]
-                if person_ids:
-                    threading.Timer(3.0, emby.wakeup_persons, args=(person_ids, self.emby_url, self.emby_api_key)).start()
-
             # 更新我们自己的数据库日志和缓存
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
@@ -3887,15 +3888,8 @@ class MediaProcessor:
             else:
                 return False, "未提供图片 URL 或文件数据。"
 
-            # 4. 通知 Emby 刷新 (局部刷新，仅让 Emby 重新读取本地文件)
-            emby.refresh_emby_item_metadata(
-                item_emby_id=item_id,
-                emby_server_url=self.emby_url,
-                emby_api_key=self.emby_api_key,
-                user_id_for_ops=self.emby_user_id,
-                replace_all_metadata_param=False, # ★ 设为 False，防止覆盖其他元数据，只扫本地图
-                item_name_for_log=item_details.get("Name", "未知项目")
-            )
+            # 4. 通知 Emby 扫描新图片
+            emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
             
             return True, f"{image_type} 替换成功！"
 

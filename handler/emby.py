@@ -2863,34 +2863,3 @@ def clear_item_media_info(item_id: str, base_url: str, api_key: str) -> bool:
     except Exception as e:
         logger.error(f"  ➜ [神医] 调用清除媒体信息接口时发生网络异常: {e}")
         return False
-
-# ✨✨✨ 唤醒演员，强制加载头像 ✨✨✨
-def wakeup_persons(person_ids: List[str], base_url: str, api_key: str):
-    """
-    【暗度陈仓】
-    当媒体库关闭在线刮削器时，Emby 不会自动下载 NFO 中的演员头像。
-    此函数通过向 Emby 发送轻量级的刷新请求，模拟用户点击演员详情页，强制触发头像下载。
-    """
-    if not person_ids: return
-    logger.info(f"  ➜ [演员头像] 准备唤醒 {len(person_ids)} 位演员，强制 Emby 加载头像...")
-    
-    def _poke(pid):
-        # 触发单体轻量级刷新，不替换现有数据，只为了激活图片下载队列
-        url = f"{base_url.rstrip('/')}/Items/{pid}/Refresh"
-        params = {
-            "api_key": api_key, 
-            "Recursive": "false", 
-            "ImageRefreshMode": "Default", 
-            "MetadataRefreshMode": "Default", 
-            "ReplaceAllImages": "false", 
-            "ReplaceAllMetadata": "false"
-        }
-        try:
-            emby_client.post(url, params=params)
-        except: pass
-
-    # 后台并发戳他们，速度极快
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-        executor.map(_poke, person_ids)
-        
-    logger.info(f"  ➜ [演员头像] {len(person_ids)} 位演员唤醒指令发送完毕。")
