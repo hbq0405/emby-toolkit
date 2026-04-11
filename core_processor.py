@@ -2467,7 +2467,7 @@ class MediaProcessor:
                 user_id_for_ops=self.emby_user_id,
                 replace_all_metadata_param=not is_webhook_feedback, # 回流时不需要完全替换元数据
                 item_name_for_log=item_name_for_log,
-                lock_cast=True # ★ 核心：触发延迟锁定
+                lock_metadata=True # ★ 核心：触发延迟锁定
             )
 
             if is_webhook_feedback:
@@ -3509,7 +3509,7 @@ class MediaProcessor:
                 user_id_for_ops=self.emby_user_id,
                 replace_all_metadata_param=True,
                 item_name_for_log=item_name,
-                lock_cast=True # ★ 核心：手动编辑后也必须锁定
+                lock_metadata=True # ★ 核心：手动编辑后也必须锁定
             )
 
             # 更新我们自己的数据库日志和缓存

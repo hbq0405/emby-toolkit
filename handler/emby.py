@@ -742,14 +742,17 @@ def refresh_emby_item_metadata(item_emby_id: str,
                                replace_all_metadata_param: bool = False,
                                replace_all_images_param: bool = False,
                                item_name_for_log: Optional[str] = None,
-                               lock_cast: bool = False # ★ 新增参数：是否在刷新后锁定演员表
+                               lock_metadata: bool = False  
                                ) -> bool:
     if not all([item_emby_id, emby_server_url, emby_api_key, user_id_for_ops]):
         logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return False
+
     wait_for_server_idle(emby_server_url, emby_api_key)
     log_identifier = f"'{item_name_for_log}'" if item_name_for_log else f"ItemID: {item_emby_id}"
-    
+
+    item_data = None
+
     try:
         logger.trace(f"  ➜ 正在为 {log_identifier} 获取当前详情...")
         item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
@@ -758,16 +761,16 @@ def refresh_emby_item_metadata(item_emby_id: str,
             return False
 
         item_needs_update = False
-        
+
         if replace_all_metadata_param:
             logger.trace(f"  ➜ 检测到 ReplaceAllMetadata=True，执行解锁...")
             if item_data.get("LockData") is True:
                 item_data["LockData"] = False
                 item_needs_update = True
             if item_data.get("LockedFields"):
-                item_data["LockedFields"] = [] # ★ 刷新前全量解锁，确保能读入最新的 NFO
+                item_data["LockedFields"] = []  # 刷新前全量解锁，确保能读入最新的 NFO
                 item_needs_update = True
-        
+
         if item_needs_update:
             logger.trace(f"  ➜ 正在为 {log_identifier} 提交锁状态更新...")
             update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
@@ -784,48 +787,84 @@ def refresh_emby_item_metadata(item_emby_id: str,
     refresh_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}/Refresh"
     params = {
         "api_key": emby_api_key,
-        "Recursive": str(item_data.get("Type") == "Series").lower(),
+        "Recursive": str(item_data.get("Type") == "Series").lower() if item_data else "false",
         "MetadataRefreshMode": "Default",
         "ImageRefreshMode": "Default",
         "ReplaceAllMetadata": str(replace_all_metadata_param).lower(),
         "ReplaceAllImages": str(replace_all_images_param).lower()
     }
-    
+
     try:
         response = emby_client.post(refresh_url, params=params)
         if response.status_code == 204:
             logger.info(f"  ➜ 已成功为 {log_identifier} 触发刷新。")
-            
-            # =================================================================
-            # ★★★ 核心修复：延迟锁定演员表 (Cast) ★★★
-            # 因为 Emby 的 Refresh 是异步的，我们需要等它读完 NFO 后再上锁
-            # =================================================================
-            if lock_cast:
+
+            # 延迟锁定字段，避免 Emby 异步刷新时被覆盖
+            if lock_metadata:
                 def _delayed_lock():
-                    time.sleep(5) # 等待 5 秒，让 Emby 充分读取本地 NFO
+                    time.sleep(5)  # 等待 Emby 读取本地 NFO
+
                     try:
-                        latest_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
-                        if latest_data:
-                            locked_fields = latest_data.get("LockedFields", [])
-                            if "Cast" not in locked_fields:
-                                locked_fields.append("Cast")
-                                latest_data["LockedFields"] = locked_fields
-                                
-                                update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
-                                update_params = {"api_key": emby_api_key}
-                                headers = {'Content-Type': 'application/json'}
-                                emby_client.post(update_url, json=latest_data, headers=headers, params=update_params)
-                                logger.info(f"  ➜ [锁定保护] 已成功锁定 {log_identifier} 的演员表(Cast)，防止被刮削器覆盖。")
+                        latest_data = get_emby_item_details(
+                            item_emby_id,
+                            emby_server_url,
+                            emby_api_key,
+                            user_id_for_ops
+                        )
+                        if not latest_data:
+                            logger.error(f"  ➜ [锁定保护] 无法获取 {log_identifier} 的最新详情，锁定失败。")
+                            return
+
+                        # 需要锁定的字段
+                        fields_to_lock = ["Cast", "Taglines", "OfficialRating", "Studios"]
+
+                        locked_fields = latest_data.get("LockedFields", [])
+                        if locked_fields is None:
+                            locked_fields = []
+
+                        added_fields = []
+                        for field in fields_to_lock:
+                            if field not in locked_fields:
+                                locked_fields.append(field)
+                                added_fields.append(field)
+
+                        # 可选：确保总锁开关开启
+                        if latest_data.get("LockData") is not True:
+                            latest_data["LockData"] = True
+
+                        latest_data["LockedFields"] = locked_fields
+
+                        if added_fields or latest_data.get("LockData") is True:
+                            update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
+                            update_params = {"api_key": emby_api_key}
+                            headers = {'Content-Type': 'application/json'}
+
+                            update_response = emby_client.post(
+                                update_url,
+                                json=latest_data,
+                                headers=headers,
+                                params=update_params
+                            )
+                            update_response.raise_for_status()
+
+                            logger.info(
+                                f"  ➜ [锁定保护] 已成功锁定 {log_identifier} 的字段: "
+                                f"{', '.join(fields_to_lock)}"
+                            )
+                        else:
+                            logger.trace(f"  ➜ [锁定保护] {log_identifier} 的目标字段已全部处于锁定状态。")
+
                     except Exception as e:
-                        logger.error(f"  ➜ 延迟锁定演员表失败: {e}")
-                
-                # 开启后台线程执行延迟锁定，不阻塞主流程
+                        logger.error(f"  ➜ 延迟锁定字段失败: {e}")
+
+                # 后台线程执行延迟锁定
                 threading.Thread(target=_delayed_lock, daemon=True).start()
 
             return True
         else:
             logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
             return False
+
     except requests.exceptions.RequestException as e:
         logger.error(f"  - 刷新请求时发生网络错误: {e}")
         return False
