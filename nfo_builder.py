@@ -68,7 +68,7 @@ def _add_genres_and_tags(root, data):
 
 def build_movie_nfo(data: dict, cast: list) -> str:
     root = ET.Element('movie')
-    _add_element(root, 'plot', data.get('overview'))
+    # _add_element(root, 'plot', data.get('overview'))
     _add_common_elements(root, data)
     
     title = data.get('title')
