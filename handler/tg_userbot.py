@@ -252,7 +252,8 @@ class TGUserBotManager:
 
         # 5. 提取 TMDB ID (如果有)
         tmdb_id = None
-        tmdb_match = re.search(r'TMDB ID[:：\s]*(\d+)', text, re.IGNORECASE)
+        # 修改正则：(?:\s*ID)? 表示 " ID" 这部分是可选的
+        tmdb_match = re.search(r'TMDB(?:\s*ID)?[:：\s]*(\d+)', text, re.IGNORECASE)
         if tmdb_match:
             tmdb_id = tmdb_match.group(1)
 
@@ -265,6 +266,8 @@ class TGUserBotManager:
             
         if title_match:
             title = title_match.group(1).strip()
+            # 新增：先去掉开头的 [剧集]、[电影] 等方括号标签
+            title = re.sub(r'^\[.*?\]\s*', '', title).strip()
             title = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', title).strip()
             year = title_match.group(2)
 
