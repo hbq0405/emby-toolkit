@@ -1018,8 +1018,11 @@ def _execute_resubscribe(processor, task_name: str, target):
         # ==================== 分支逻辑 ====================
         rule_type = rule.get('rule_type', 'resubscribe')
 
-        # --- 分支 1: 仅删除模式 (物理删除 + 联动网盘 + 极速刷新) ---
+        # --- 分支 1: 仅删除模式 ---
         if rule_type == 'delete':
+            # ★ 获取删除模式 (默认物理删除)
+            delete_mode = rule.get('delete_mode', 'physical')
+            
             # 1. 获取要删除的物理文件和 Emby ID
             targets_to_delete = [] # list of (emby_id, path, specific_item_type)
             
@@ -1050,77 +1053,100 @@ def _execute_resubscribe(processor, task_name: str, target):
             success_count = 0
             total_files = len(targets_to_delete)
             
-            task_manager.update_status_from_thread(int((i / total) * 100), f"正在物理清理: {item_name} ({total_files}个文件)")
+            mode_str = "API删除" if delete_mode == 'api' else "物理清理"
+            task_manager.update_status_from_thread(int((i / total) * 100), f"正在{mode_str}: {item_name} ({total_files}个文件)")
 
             for idx, (target_eid, file_path, specific_item_type) in enumerate(targets_to_delete):
                 if processor.is_stop_requested(): break
                 
-                # 1. 获取 PC 码 (用于后续联动删除 115 网盘文件)
-                pc = media_db.get_pickcode_by_emby_id(target_eid)
-                if pc:
-                    all_pickcodes_to_delete.append(pc)
-                    
-                # 2. 物理删除本地文件 (STRM, mediainfo, 字幕, NFO)
-                if file_path and os.path.exists(file_path):
-                    try:
-                        os.remove(file_path)
-                        all_deleted_paths.append(file_path)
-                        logger.debug(f"    - 已删除主文件: {file_path}")
+                # ★★★ 核心修改：API 删除模式 ★★★
+                if delete_mode == 'api':
+                    logger.warning(f"  ➜ 准备通过 API 删除项目 (ID: {target_eid})")
+                    # 调用官方接口
+                    success = emby.delete_item(
+                        item_id=target_eid,
+                        emby_server_url=processor.emby_url,
+                        emby_api_key=processor.emby_api_key,
+                        user_id=processor.emby_user_id
+                    )
+                    if success:
+                        logger.info(f"    - 通过 API 成功删除版本 ID: {target_eid}")
+                        try:
+                            maintenance_db.cleanup_deleted_media_item(target_eid, item_name, specific_item_type)
+                        except Exception as e:
+                            logger.error(f"  ➜ 善后清理失败: {e}")
+                        success_count += 1
+                    else:
+                        logger.error(f"    - 通过 API 删除 ID: {target_eid} 失败！")
+                
+                # ★★★ 物理删除模式 ★★★
+                else:
+                    # 1. 获取 PC 码 (用于后续联动删除 115 网盘文件)
+                    pc = media_db.get_pickcode_by_emby_id(target_eid)
+                    if pc:
+                        all_pickcodes_to_delete.append(pc)
                         
-                        base_dir = os.path.dirname(file_path)
-                        base_name = os.path.splitext(os.path.basename(file_path))[0]
-                        
-                        # 删除 mediainfo.json
-                        mi_path = os.path.join(base_dir, f"{base_name}-mediainfo.json")
-                        if os.path.exists(mi_path):
-                            os.remove(mi_path)
+                    # 2. 物理删除本地文件 (STRM, mediainfo, 字幕, NFO)
+                    if file_path and os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                            all_deleted_paths.append(file_path)
+                            logger.debug(f"    - 已删除主文件: {file_path}")
                             
-                        # 删除同名字幕和 NFO
-                        for f in os.listdir(base_dir):
-                            if f.startswith(base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo']:
-                                sub_path = os.path.join(base_dir, f)
-                                try:
-                                    os.remove(sub_path)
-                                except: pass
+                            base_dir = os.path.dirname(file_path)
+                            base_name = os.path.splitext(os.path.basename(file_path))[0]
+                            
+                            # 删除 mediainfo.json
+                            mi_path = os.path.join(base_dir, f"{base_name}-mediainfo.json")
+                            if os.path.exists(mi_path):
+                                os.remove(mi_path)
                                 
-                        # 3. 向上追溯删除空目录 (连锅端)
-                        curr_dir = base_dir
-                        protected_dirs = {os.path.abspath(local_root)} if local_root else set()
-                        
-                        while curr_dir and os.path.abspath(curr_dir) not in protected_dirs:
-                            if os.path.exists(curr_dir):
-                                has_media = False
-                                for root_dir, _, files in os.walk(curr_dir):
-                                    for f in files:
-                                        ext = f.split('.')[-1].lower()
-                                        if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov'}:
-                                            has_media = True
-                                            break
-                                    if has_media: break
-                                
-                                if not has_media:
-                                    shutil.rmtree(curr_dir)
-                                    logger.info(f"    - [完美擦屁股] 目录已无媒体文件，连锅端删除: {curr_dir}")
-                                    curr_dir = os.path.dirname(curr_dir)
+                            # 删除同名字幕和 NFO
+                            for f in os.listdir(base_dir):
+                                if f.startswith(base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo']:
+                                    sub_path = os.path.join(base_dir, f)
+                                    try:
+                                        os.remove(sub_path)
+                                    except: pass
+                                    
+                            # 3. 向上追溯删除空目录 (连锅端)
+                            curr_dir = base_dir
+                            protected_dirs = {os.path.abspath(local_root)} if local_root else set()
+                            
+                            while curr_dir and os.path.abspath(curr_dir) not in protected_dirs:
+                                if os.path.exists(curr_dir):
+                                    has_media = False
+                                    for root_dir, _, files in os.walk(curr_dir):
+                                        for f in files:
+                                            ext = f.split('.')[-1].lower()
+                                            if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov'}:
+                                                has_media = True
+                                                break
+                                        if has_media: break
+                                    
+                                    if not has_media:
+                                        shutil.rmtree(curr_dir)
+                                        logger.info(f"    - [完美擦屁股] 目录已无媒体文件，连锅端删除: {curr_dir}")
+                                        curr_dir = os.path.dirname(curr_dir)
+                                    else:
+                                        break
                                 else:
                                     break
-                            else:
-                                break
+                        except Exception as e:
+                            logger.error(f"    - 物理删除文件失败: {e}")
+                    else:
+                        logger.debug(f"    - 本地文件不存在或路径无法访问，跳过物理删除: {file_path}")
+                        # 即使本地文件不存在，也把路径加进去，让 Emby 去扫这个路径发现它没了
+                        if file_path:
+                            all_deleted_paths.append(file_path)
+
+                    # 4. 清理本地数据库记录 (善后)
+                    try:
+                        maintenance_db.cleanup_deleted_media_item(target_eid, item_name, specific_item_type)
                     except Exception as e:
-                        logger.error(f"    - 物理删除文件失败: {e}")
-                else:
-                    logger.debug(f"    - 本地文件不存在或路径无法访问，跳过物理删除: {file_path}")
-                    # 即使本地文件不存在，也把路径加进去，让 Emby 去扫这个路径发现它没了
-                    if file_path:
-                        all_deleted_paths.append(file_path)
+                        logger.error(f"  ➜ 善后清理失败: {e}")
 
-                # 4. 清理本地数据库记录 (善后)
-                try:
-                    maintenance_db.cleanup_deleted_media_item(target_eid, item_name, specific_item_type)
-                except Exception as e:
-                    logger.error(f"  ➜ 善后清理失败: {e}")
-
-                success_count += 1
+                    success_count += 1
 
             if success_count > 0:
                 deleted_count += 1
@@ -1188,6 +1214,7 @@ def _execute_resubscribe(processor, task_name: str, target):
 
     # ======================================================================
     # 统一执行批量操作 (115 联动删除 & Emby 极速刷新)
+    # 注意：API 删除模式下，这两个列表为空，会自动跳过，符合预期
     # ======================================================================
     if all_pickcodes_to_delete and sync_delete:
         logger.info(f"  ➜ 正在将 {len(all_pickcodes_to_delete)} 个文件加入 115 网盘联动删除队列...")
@@ -1202,5 +1229,5 @@ def _execute_resubscribe(processor, task_name: str, target):
             update_type="Deleted"
         )
 
-    final_message = f"任务完成！成功提交 {resubscribed_count} 个订阅，物理删除了 {deleted_count} 个媒体项。"
+    final_message = f"任务完成！成功提交 {resubscribed_count} 个订阅，删除了 {deleted_count} 个媒体项。"
     task_manager.update_status_from_thread(100, final_message)

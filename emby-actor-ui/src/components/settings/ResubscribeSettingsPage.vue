@@ -426,11 +426,25 @@
                 <!-- 模式 B: 删除设置 -->
                 <div v-else>
                   <n-alert type="error" :show-icon="true" style="margin-bottom: 16px;">
-                    危险操作：符合左侧条件的项目将被直接物理删除（包含网盘文件、本地STRM及字幕），且不可恢复！
+                    危险操作：符合左侧条件的项目将被直接删除，且不可恢复！
                   </n-alert>
-                  <div class="tip" style="margin-left: 4px;">
-                    系统会自动找出所有匹配的底层物理文件进行精准打击，并在删空后自动清理残留的空目录。
-                  </div>
+                  
+                  <!-- ★★★ 新增：删除模式选择 ★★★ -->
+                  <n-form-item label="删除模式">
+                    <n-radio-group v-model:value="currentRule.delete_mode" size="small">
+                      <n-radio-button value="physical">物理删除</n-radio-button>
+                      <n-radio-button value="api">API 删除</n-radio-button>
+                    </n-radio-group>
+                    <template #feedback>
+                      <span v-if="currentRule.delete_mode === 'physical'">
+                        物理删除：删除本地文件、并通知Emby刷新。
+                      </span>
+                      <span v-else>
+                        API 删除：调用 Emby 接口让服务端自行处理删除。
+                      </span>
+                    </template>
+                  </n-form-item>
+                  
                 </div>
               </n-card>
             </n-gi>
@@ -603,9 +617,11 @@ const openRuleModal = async (rule = null) => {
     currentRule.value = JSON.parse(JSON.stringify(rule));
     if (!currentRule.value.scope_rules) currentRule.value.scope_rules = [];
     if (!currentRule.value.resubscribe_source) currentRule.value.resubscribe_source = 'moviepilot';
+    if (!currentRule.value.delete_mode) currentRule.value.delete_mode = 'physical'; 
   } else {
     currentRule.value = {
       name: '', enabled: true, rule_type: 'resubscribe',
+      delete_mode: 'physical', 
       scope_rules: [],
       filter_rating_enabled: false, filter_rating_min: 0, filter_rating_ignore_zero: false,
       resubscribe_resolution_enabled: false, resubscribe_resolution_threshold: 1920,
