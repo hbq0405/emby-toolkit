@@ -2463,16 +2463,15 @@ class MediaProcessor:
 
                 # 6. 更新 Emby 演员名以及扫描目录
                 self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
-                media_path = item_details_from_emby.get("Path")
-                if media_path:
-                    logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
-                    emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
-                
-            # 延迟 3 秒执行演员唤醒，给 Emby 留出读取 NFO 的时间
-            if final_processed_cast:
-                person_ids = [actor.get("emby_person_id") for actor in final_processed_cast if actor.get("emby_person_id")]
-                if person_ids:
-                    threading.Timer(3.0, emby.wakeup_persons, args=(person_ids, self.emby_url, self.emby_api_key)).start()
+            emby.refresh_emby_item_metadata(
+                item_emby_id=item_id,
+                emby_server_url=self.emby_url,
+                emby_api_key=self.emby_api_key,
+                user_id_for_ops=self.emby_user_id,
+                replace_all_metadata_param=False, 
+                replace_all_images_param=False,
+                item_name_for_log=item_name_for_log
+            )
 
             if is_webhook_feedback:
                 logger.debug(f"  ➜ [webhook回流] 开始质检...")

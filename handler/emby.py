@@ -786,8 +786,8 @@ def refresh_emby_item_metadata(item_emby_id: str,
     params = {
         "api_key": emby_api_key,
         "Recursive": str(item_data.get("Type") == "Series").lower(),
-        "MetadataRefreshMode": "Default",
-        "ImageRefreshMode": "Default",
+        "MetadataRefreshMode": "FullRefresh",
+        "ImageRefreshMode": "FullRefresh",
         "ReplaceAllMetadata": str(replace_all_metadata_param).lower(),
         "ReplaceAllImages": str(replace_all_images_param).lower()
     }
