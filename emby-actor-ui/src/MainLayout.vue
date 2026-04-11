@@ -265,7 +265,10 @@
       </div>
       <template #footer>
         <n-space justify="space-between">
-          <span style="font-size: 12px; color: #888; line-height: 34px;">提示：按住左侧图标可拖拽排序，支持跨组拖拽。</span>
+          <span style="font-size: 12px; color: #888; line-height: 1.5; display: inline-block; max-width: 380px;">
+            提示：按住左侧图标可拖拽排序，支持跨组拖拽。<br/>
+            <span style="color: #d0a000;">★ 关闭一级菜单显示，可将其下开启的二级菜单自动提升为一级。</span>
+          </span>
           <n-space>
             <n-popconfirm @positive-click="resetMenuConfig" negative-text="取消" positive-text="确定">
               <template #trigger>
@@ -707,28 +710,47 @@ const defaultExpandedKeys = computed(() => {
 const menuOptions = computed(() => {
   if (menuConfigTree.value.length === 0) return [];
 
-  const buildMenu = (treeNodes) => {
-    return treeNodes.map(node => {
-      if (!node.visible) return null;
-      
-      const baseNode = baseMenuMap.value.get(node.key);
-      if (!baseNode) return null; // 防御性检查
+  const finalMenu = [];
 
-      const result = {
-        key: node.key,
-        label: node.label || baseNode.defaultLabel,
-        icon: baseNode.icon
-      };
+  menuConfigTree.value.forEach(group => {
+    const baseGroup = baseMenuMap.value.get(group.key);
+    if (!baseGroup) return;
 
-      if (node.children && node.children.length > 0) {
-        result.children = buildMenu(node.children);
-        if (result.children.length === 0) return null; // 子项全隐藏，父项也隐藏
-      }
-      return result;
-    }).filter(Boolean);
-  };
+    // 1. 先筛选出该组下所有可见的二级菜单
+    const visibleChildren = [];
+    if (group.children && group.children.length > 0) {
+      group.children.forEach(child => {
+        if (child.visible) {
+          const baseChild = baseMenuMap.value.get(child.key);
+          if (baseChild) {
+            visibleChildren.push({
+              key: child.key,
+              label: child.label || baseChild.defaultLabel,
+              icon: baseChild.icon
+            });
+          }
+        }
+      });
+    }
 
-  return buildMenu(menuConfigTree.value);
+    // 如果该组下没有任何可见的子菜单，则直接跳过（不渲染组，也不渲染子项）
+    if (visibleChildren.length === 0) return;
+
+    if (group.visible) {
+      // 2. 如果一级菜单可见，正常渲染为包含 children 的折叠组
+      finalMenu.push({
+        key: group.key,
+        label: group.label || baseGroup.defaultLabel,
+        icon: baseGroup.icon,
+        children: visibleChildren
+      });
+    } else {
+      // 3. 【核心逻辑】如果一级菜单不可见，将可见的二级菜单直接“扁平化”提升为一级菜单
+      finalMenu.push(...visibleChildren);
+    }
+  });
+
+  return finalMenu;
 });
 
 // ================= 原生拖拽逻辑 =================
