@@ -1071,10 +1071,6 @@ def _execute_resubscribe(processor, task_name: str, target):
                     )
                     if success:
                         logger.info(f"    - 通过 API 成功删除版本 ID: {target_eid}")
-                        try:
-                            maintenance_db.cleanup_deleted_media_item(target_eid, item_name, specific_item_type)
-                        except Exception as e:
-                            logger.error(f"  ➜ 善后清理失败: {e}")
                         success_count += 1
                     else:
                         logger.error(f"    - 通过 API 删除 ID: {target_eid} 失败！")
