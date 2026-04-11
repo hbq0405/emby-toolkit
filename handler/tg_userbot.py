@@ -12,6 +12,7 @@ import config_manager
 import constants
 from database import settings_db
 from handler.p115_service import P115Service
+from utils import DEFAULT_TG_REGEX
 from database.connection import get_db_connection
 from gevent import spawn
 
@@ -225,6 +226,34 @@ class TGUserBotManager:
                     if hasattr(button, 'url') and button.url:
                         all_urls.append(button.url)
 
+        # --- 辅助正则执行函数 ---
+        def _apply_regex(text, custom_rules, default_rules, flags=re.IGNORECASE):
+            rules = (custom_rules or []) + default_rules
+            for rule in rules:
+                if not rule or not rule.strip(): continue
+                try:
+                    match = re.search(rule, text, flags)
+                    if match: return match
+                except Exception as e:
+                    logger.error(f"  ➜ [频道监听] 自定义正则执行错误: {rule} -> {e}")
+            return None
+
+        custom_regex = cfg.get('custom_regex', {})
+        all_urls = []
+
+        # 1. 提取 Markdown/HTML 隐藏的超链接
+        if event.message.entities:
+            for entity in event.message.entities:
+                if hasattr(entity, 'url') and entity.url:
+                    all_urls.append(entity.url)
+
+        # 2. 提取底部内联键盘 (Inline Keyboard) 的按钮链接 (解决星河频道)
+        if event.message.reply_markup and hasattr(event.message.reply_markup, 'rows'):
+            for row in event.message.reply_markup.rows:
+                for button in row.buttons:
+                    if hasattr(button, 'url') and button.url:
+                        all_urls.append(button.url)
+
         # 3. 寻找目标链接 (115 或 中间页) 和 提取码
         target_link = None
         receive_code = ""
@@ -238,35 +267,31 @@ class TGUserBotManager:
         for url in all_urls:
             if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/115/' in url:
                 target_link = url
-                # ★ 核心修复：尝试直接从 URL 中提取密码 (解决 ?password=8888 的情况)
-                pwd_in_url = re.search(r'(?:password|pwd)=([a-zA-Z0-9]{4})', url, re.IGNORECASE)
+                # ★ 尝试从 URL 中提取密码 (优先自定义，后默认)
+                pwd_in_url = _apply_regex(url, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_url'])
                 if pwd_in_url:
                     receive_code = pwd_in_url.group(1)
                 break
 
         # 4. 如果 URL 里没有密码，再从正文里找
         if not receive_code:
-            pwd_match = re.search(r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})', text, re.IGNORECASE)
+            pwd_match = _apply_regex(text, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_text'])
             if pwd_match:
                 receive_code = pwd_match.group(1)
 
         # 5. 提取 TMDB ID (如果有)
         tmdb_id = None
-        # 修改正则：(?:\s*ID)? 表示 " ID" 这部分是可选的
-        tmdb_match = re.search(r'TMDB(?:\s*ID)?[:：\s]*(\d+)', text, re.IGNORECASE)
+        tmdb_match = _apply_regex(text, custom_regex.get('tmdb', []), DEFAULT_TG_REGEX['tmdb'])
         if tmdb_match:
             tmdb_id = tmdb_match.group(1)
 
         # 6. 提取标题和年份 (用于没有 TMDB ID 时的反查)
         title = None
         year = None
-        title_match = re.search(r'(?:电视剧|电影|名称)[:：\s]*([^\n]+?)\s*\((\d{4})\)', text)
-        if not title_match:
-            title_match = re.search(r'^([^\n]+?)\s*\((\d{4})\)', text)
-            
+        # 标题提取通常不忽略大小写，所以 flags=0
+        title_match = _apply_regex(text, custom_regex.get('title_year', []), DEFAULT_TG_REGEX['title_year'], flags=0)
         if title_match:
             title = title_match.group(1).strip()
-            # 新增：先去掉开头的 [剧集]、[电影] 等方括号标签
             title = re.sub(r'^\[.*?\]\s*', '', title).strip()
             title = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', title).strip()
             year = title_match.group(2)
@@ -282,33 +307,54 @@ class TGUserBotManager:
             is_completed_pack = True
             is_pack = True
         
-        # 规则 A: 范围匹配合集包 (例如 S01E01-E19, S1 EP01~10)
-        range_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})\s*(?:-|~|至)\s*(?:E|EP)?\s*(\d{1,4})', text, re.IGNORECASE)
-        if range_match:
-            season_number = int(range_match.group(1))
-            episode_number = int(range_match.group(3)) # 记录最大集号
-            is_pack = True
-        else:
-            # 规则 B: 标准单集 S01E01 或 S1 EP10
-            se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
-            if se_match:
-                season_number = int(se_match.group(1))
-                episode_number = int(se_match.group(2))
+        # ★ 先尝试用户自定义的季集正则
+        custom_se = custom_regex.get('season_episode', [])
+        se_matched = False
+        for rule in custom_se:
+            if not rule.strip(): continue
+            try:
+                match = re.search(rule, text, re.IGNORECASE)
+                if match:
+                    groups = match.groups()
+                    if len(groups) >= 2:
+                        season_number = int(groups[0])
+                        episode_number = int(groups[1])
+                    elif len(groups) == 1:
+                        episode_number = int(groups[0])
+                    se_matched = True
+                    break
+            except Exception as e:
+                logger.error(f"  ➜ [频道监听] 季集自定义正则错误: {rule} -> {e}")
+
+        # 如果自定义正则没匹配上，走默认的硬编码逻辑
+        if not se_matched:
+            # 规则 A: 范围匹配合集包 (例如 S01E01-E19, S1 EP01~10)
+            range_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})\s*(?:-|~|至)\s*(?:E|EP)?\s*(\d{1,4})', text, re.IGNORECASE)
+            if range_match:
+                season_number = int(range_match.group(1))
+                episode_number = int(range_match.group(3)) # 记录最大集号
+                is_pack = True
             else:
-                # 规则 C: 第x季 第x集
-                s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
-                e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)', text, re.IGNORECASE)
-                if s_match: season_number = int(s_match.group(1))
-                if e_match: episode_number = int(e_match.group(1))
-                
-                # 规则 D: 应对群魔乱舞的合集包 (更新至X集, 全X集, 1-X集)
-                if episode_number is None:
-                    bulk_match = re.search(r'(?:更新至|全|至)(?:第)?\s*(\d{1,4})\s*(?:集|话)|(?:^|\s)\d{1,3}-(\d{1,4})(?:集|话)?', text)
-                    if bulk_match:
-                        ep_str = bulk_match.group(1) or bulk_match.group(2)
-                        if ep_str:
-                            episode_number = int(ep_str)
-                            is_pack = True # 标记为合集
+                # 规则 B: 标准单集 S01E01 或 S1 EP10
+                se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
+                if se_match:
+                    season_number = int(se_match.group(1))
+                    episode_number = int(se_match.group(2))
+                else:
+                    # 规则 C: 第x季 第x集
+                    s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
+                    e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)', text, re.IGNORECASE)
+                    if s_match: season_number = int(s_match.group(1))
+                    if e_match: episode_number = int(e_match.group(1))
+                    
+                    # 规则 D: 应对群魔乱舞的合集包 (更新至X集, 全X集, 1-X集)
+                    if episode_number is None:
+                        bulk_match = re.search(r'(?:更新至|全|至)(?:第)?\s*(\d{1,4})\s*(?:集|话)|(?:^|\s)\d{1,3}-(\d{1,4})(?:集|话)?', text)
+                        if bulk_match:
+                            ep_str = bulk_match.group(1) or bulk_match.group(2)
+                            if ep_str:
+                                episode_number = int(ep_str)
+                                is_pack = True # 标记为合集
 
         # ★ 兜底神技：国产剧/韩剧通常不写季号，如果提取到了集号但没季号，默认第一季！
         if episode_number is not None and season_number is None:

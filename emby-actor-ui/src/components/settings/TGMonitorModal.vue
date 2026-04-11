@@ -76,6 +76,60 @@
           </n-input-group>
         </n-form-item>
 
+        <!-- ★★★ 高级设置：自定义正则 ★★★ -->
+        <n-collapse style="margin-top: 24px; border-top: 1px solid rgba(128,128,128,0.2); padding-top: 16px;">
+          <n-collapse-item title="高级设置：自定义正则提取 (点击展开)" name="1">
+            <n-alert type="info" style="margin-bottom: 16px; font-size: 13px;">
+              当默认规则无法识别某些奇葩频道的格式时，可在此添加自定义正则表达式。<br/>
+              <b>注意：</b>必须使用 <code>()</code> 捕获组来提取目标内容。自定义正则优先级高于系统默认。
+            </n-alert>
+
+            <n-form-item>
+              <template #label>
+                TMDB ID 提取
+                <n-tooltip trigger="hover">
+                  <template #trigger><n-icon style="margin-left:4px; cursor:help;"><HelpCircleOutline /></n-icon></template>
+                  需 1 个捕获组。例如：<code>TMDB:\s*(\d+)</code>
+                </n-tooltip>
+              </template>
+              <n-dynamic-input v-model:value="config.custom_regex.tmdb" placeholder="输入正则表达式" :min="0" />
+            </n-form-item>
+
+            <n-form-item>
+              <template #label>
+                标题与年份提取
+                <n-tooltip trigger="hover">
+                  <template #trigger><n-icon style="margin-left:4px; cursor:help;"><HelpCircleOutline /></n-icon></template>
+                  需 2 个捕获组 (标题, 年份)。例如：<code>名称:\s*(.*?)\s*\((\d{4})\)</code>
+                </n-tooltip>
+              </template>
+              <n-dynamic-input v-model:value="config.custom_regex.title_year" placeholder="输入正则表达式" :min="0" />
+            </n-form-item>
+
+            <n-form-item>
+              <template #label>
+                季与集提取
+                <n-tooltip trigger="hover">
+                  <template #trigger><n-icon style="margin-left:4px; cursor:help;"><HelpCircleOutline /></n-icon></template>
+                  需 2 个捕获组 (季, 集) 或 1 个捕获组 (集)。例如：<code>S(\d+)E(\d+)</code>
+                </n-tooltip>
+              </template>
+              <n-dynamic-input v-model:value="config.custom_regex.season_episode" placeholder="输入正则表达式" :min="0" />
+            </n-form-item>
+
+            <n-form-item>
+              <template #label>
+                提取码(密码)提取
+                <n-tooltip trigger="hover">
+                  <template #trigger><n-icon style="margin-left:4px; cursor:help;"><HelpCircleOutline /></n-icon></template>
+                  需 1 个捕获组。例如：<code>密码:\s*([a-zA-Z0-9]{4})</code>
+                </n-tooltip>
+              </template>
+              <n-dynamic-input v-model:value="config.custom_regex.password" placeholder="输入正则表达式" :min="0" />
+            </n-form-item>
+          </n-collapse-item>
+        </n-collapse>
+
       </n-form>
     </n-spin>
 
@@ -90,9 +144,11 @@
 
 <script setup>
 import { ref } from 'vue';
+import { HelpCircleOutline } from '@vicons/ionicons5';
 import { 
   NModal, NSpin, NForm, NFormItem, NInput, NSwitch, NCheckboxGroup, NCheckbox, 
-  NSpace, NSelect, NDivider, NAlert, NTag, NButton, NInputGroup, useMessage 
+  NSpace, NSelect, NDivider, NAlert, NTag, NButton, NInputGroup, useMessage,
+  NCollapse, NCollapseItem, NTooltip, NIcon, NDynamicInput 
 } from 'naive-ui';
 import axios from 'axios';
 
@@ -109,7 +165,13 @@ const config = ref({
   password: '',
   channels: [],
   monitor_types: ['movie', 'tv'],
-  block_keywords: []
+  block_keywords: [],
+  custom_regex: {
+    tmdb: [],
+    title_year: [],
+    season_episode: [],
+    password: []
+  }
 });
 
 // 授权状态
@@ -134,6 +196,9 @@ const fetchConfig = async () => {
     const res = await axios.get('/api/subscription/tg_userbot/config');
     if (res.data.success) {
       config.value = res.data.data;
+      if (!config.value.custom_regex) {
+        config.value.custom_regex = { tmdb: [], title_year: [], season_episode: [], password: [] };
+      }
     }
   } catch (e) {
     message.error('读取配置失败');

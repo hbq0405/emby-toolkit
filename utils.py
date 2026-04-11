@@ -706,3 +706,20 @@ def clean_invisible_chars(text: str) -> str:
     text = re.sub(r'\s+', ' ', text)
     
     return text.strip()
+
+# --- TG 频道监听默认正则预设 ---
+DEFAULT_TG_REGEX = {
+    "tmdb": [
+        r'TMDB(?:\s*ID)?[:：\s]*(\d+)'
+    ],
+    "title_year": [
+        r'(?:电视剧|电影|名称)[:：\s]*([^\n]+?)\s*\((\d{4})\)',
+        r'^([^\n]+?)\s*\((\d{4})\)'
+    ],
+    "password_url": [
+        r'(?:password|pwd)=([a-zA-Z0-9]{4})'
+    ],
+    "password_text": [
+        r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})'
+    ]
+}
