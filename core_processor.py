@@ -4001,34 +4001,30 @@ class MediaProcessor:
         if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(episode_dir), re.IGNORECASE):
             series_root_dir = os.path.dirname(episode_dir)
 
-        # --- 智能比对写入函数 ---
+        # --- 智能比稳写入函数 ---
         def _write_nfo_if_changed(file_path: str, content: str) -> bool:
-            # ★ 如果开启了强制写入，直接跳过比对，执行覆盖
-            if force_write:
-                pass # 往下走，直接执行 try 里的写入逻辑
-            elif os.path.exists(file_path):
+            # ★ 核心修复：如果开启了强制写入，直接跳过比对！
+            if not force_write and os.path.exists(file_path):
                 try:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         old_content = f.read()
                     
                     import re
                     def _get_tag_text(xml_str, tag):
-                        # 提取指定标签的内容，忽略大小写和换行
                         match = re.search(f'<{tag}[^>]*>(.*?)</{tag}>', xml_str, re.IGNORECASE | re.DOTALL)
                         return match.group(1).strip() if match else ""
 
-                    # 只比对最核心的两个字段：标题和简介
                     old_title = _get_tag_text(old_content, 'title')
                     old_plot = _get_tag_text(old_content, 'plot')
-                    
                     new_title = _get_tag_text(content, 'title')
                     new_plot = _get_tag_text(content, 'plot')
 
-                    # 只要标题和简介都没变，就认为核心数据没变，坚决不写硬盘！
                     if old_title == new_title and old_plot == new_plot:
                         return False 
                 except Exception:
-                    pass # 读取或解析失败则走正常覆盖流程
+                    pass 
+            
+            # 执行写入
             try:
                 with open(file_path, 'w', encoding='utf-8') as f:
                     f.write(content)
