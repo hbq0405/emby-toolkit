@@ -742,7 +742,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
                                replace_all_metadata_param: bool = False,
                                replace_all_images_param: bool = False,
                                item_name_for_log: Optional[str] = None,
-                               lock_fields: bool = False  # 💡 修改点1：将 lock_cast 改为 lock_fields
+                               lock_cast: bool = False
                                ) -> bool:
     if not all([item_emby_id, emby_server_url, emby_api_key, user_id_for_ops]):
         logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL、API Key或UserID。")
@@ -798,38 +798,27 @@ def refresh_emby_item_metadata(item_emby_id: str,
         if response.status_code == 204:
             logger.info(f"  ➜ 已成功为 {log_identifier} 刷新元数据。")
             # =================================================================
-            # ★★★ 延迟锁定指定字段 ★★★
+            # ★★★ 延迟锁定演员表 (Cast) ★★★
             # 因为 Emby 的 Refresh 是异步的，我们需要等它读完 NFO 后再上锁
             # =================================================================
-            if lock_fields:
+            if lock_cast:
                 def _delayed_lock():
-                    time.sleep(3) # 等待 3 秒，让 Emby 充分读取本地 NFO
+                    time.sleep(5) # 等待 5 秒，让 Emby 充分读取本地 NFO
                     try:
                         latest_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
                         if latest_data:
-                            # 使用 or [] 防止 Emby 返回 None 导致 append 报错
-                            locked_fields = latest_data.get("LockedFields") or []
-                            
-                            # 💡 修改点2：定义需要锁定的字段列表 (Emby API 中对应的字段名)
-                            target_fields = ["Cast", "Taglines", "Studios"]
-                            needs_lock_update = False
-                            
-                            for field in target_fields:
-                                if field not in locked_fields:
-                                    locked_fields.append(field)
-                                    needs_lock_update = True
-                            
-                            # 💡 修改点3：只有当确实有新字段被加入时，才发起网络请求
-                            if needs_lock_update:
+                            locked_fields = latest_data.get("LockedFields", [])
+                            if "Cast" not in locked_fields:
+                                locked_fields.append("Cast")
                                 latest_data["LockedFields"] = locked_fields
                                 
                                 update_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}"
                                 update_params = {"api_key": emby_api_key}
                                 headers = {'Content-Type': 'application/json'}
                                 emby_client.post(update_url, json=latest_data, headers=headers, params=update_params)
-                                logger.info(f"  ➜ [锁定保护] 已成功锁定 {log_identifier} 的字段(演员, 宣传语, 工作室)，防止被无意中覆盖。")
+                                logger.info(f"  ➜ [锁定保护] 已成功锁定 {log_identifier} 的演员表(Cast)，防止被无意中覆盖。")
                     except Exception as e:
-                        logger.error(f"  ➜ 延迟锁定字段失败: {e}")
+                        logger.error(f"  ➜ 延迟锁定演员表失败: {e}")
                 
                 # 开启后台线程执行延迟锁定，不阻塞主流程
                 threading.Thread(target=_delayed_lock, daemon=True).start()
