@@ -2999,8 +2999,8 @@ class SmartOrganizer:
                                     if os.path.exists(old_dir_full_path):
                                         old_dirs_to_check.add(old_dir_full_path) # ★ 记录旧目录
                                         for f in os.listdir(old_dir_full_path):
-                                            # ★ 核心修复：把 nfo 也加进去，连同字幕一起删
-                                            if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo']:
+                                            # ★ 核心修复：把 nfo 和图片也加进去，连同字幕一起删，彻底擦干净屁股
+                                            if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo', 'jpg', 'png', 'jpeg', 'bif']:
                                                 sub_to_del = os.path.join(old_dir_full_path, f)
                                                 try:
                                                     os.remove(sub_to_del)
