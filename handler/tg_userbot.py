@@ -197,15 +197,18 @@ class TGUserBotManager:
             return
 
         # =================================================================
-        # 自定义关键词拦截逻辑 (最高优先级，命中即杀)
+        # 自定义关键词拦截逻辑 (最高优先级，命中即杀，支持正则)
         # =================================================================
         block_keywords = cfg.get('block_keywords', [])
         if block_keywords:
-            text_lower = text.lower()
             for kw in block_keywords:
-                if kw and kw.strip().lower() in text_lower:
-                    logger.debug(f"  ➜ [频道监听] 消息触发拦截关键词 '{kw}'，已直接丢弃。")
-                    return
+                if not kw or not kw.strip(): continue
+                try:
+                    if re.search(kw, text, re.IGNORECASE):
+                        logger.debug(f"  ➜ [频道监听] 消息触发拦截规则 '{kw}'，已直接丢弃。")
+                        return
+                except Exception as e:
+                    logger.error(f"  ➜ [频道监听] 拦截规则正则解析错误 '{kw}': {e}")
 
         # =================================================================
         # ★ 史诗级增强 2.0：全方位雷达 (提取实体链接 + 按钮链接 + URL密码)

@@ -44,8 +44,15 @@
           <n-select v-model:value="config.channels" multiple filterable tag placeholder="输入频道 Username 或 ID 并回车 (如 hdtv115)" :options="[]" />
         </n-form-item>
 
-        <n-form-item label="拦截关键词" path="block_keywords">
-          <n-select v-model:value="config.block_keywords" multiple filterable tag placeholder="输入关键词并回车 (如: 合集, 原盘, 大包)" :options="[]" />
+        <n-form-item path="block_keywords">
+          <template #label>
+            拦截规则 (支持正则)
+            <n-tooltip trigger="hover">
+              <template #trigger><n-icon style="margin-left:4px; cursor:help;"><HelpCircleOutline /></n-icon></template>
+              命中规则的消息将被直接丢弃。支持普通关键词或正则表达式 (如: <code>合集|原盘|大包</code> 或 <code>^\[广告\]</code>)
+            </n-tooltip>
+          </template>
+          <n-dynamic-input v-model:value="config.block_keywords" placeholder="输入拦截关键词或正则表达式" :min="0" />
         </n-form-item>
 
         <n-divider title-placement="left">登录授权</n-divider>
