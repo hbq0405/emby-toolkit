@@ -1664,8 +1664,8 @@ class SmartOrganizer:
 
         # 4. 编码 (Codec) - ★ 统一使用商业名
         codec = ""
-        if re.search(r'[HX]265|HEVC', name_upper): codec = 'HEVC'
-        elif re.search(r'[HX]264|AVC', name_upper): codec = 'AVC'
+        if re.search(r'[HX][\.\s]?265|HEVC', name_upper): codec = 'HEVC'
+        elif re.search(r'[HX][\.\s]?264|AVC', name_upper): codec = 'AVC'
         elif re.search(r'AV1', name_upper): codec = 'AV1'
         
         bit_match = re.search(r'(\d{1,2})BIT', name_upper)
