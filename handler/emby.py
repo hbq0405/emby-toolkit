@@ -2068,10 +2068,6 @@ def set_user_disabled_status(
         logger.error(f"{action_text}用户 '{user_name_for_log}' 时发生严重错误: {e}", exc_info=True)
         return False
 
-    except Exception as e:
-        logger.error(f"{action_text}用户 {user_id} 时发生严重错误: {e}", exc_info=True)
-        return False
-
 # --- 获取用户完整详情 (含 Policy 和 Configuration) ---
 def get_user_details(user_id: str, base_url: str, api_key: str) -> Optional[Dict[str, Any]]:
     """
@@ -2767,3 +2763,53 @@ def clear_item_media_info(item_id: str, base_url: str, api_key: str) -> bool:
     except Exception as e:
         logger.error(f"  ➜ [神医] 调用清除媒体信息接口时发生网络异常: {e}")
         return False
+
+# --- 锁定 Emby 项目元数据 ---    
+def lock_item_metadata(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str, item_name_for_log: Optional[str] = None) -> bool:
+    """锁定 Emby 项目元数据，防止误操作。"""
+    item_details = get_emby_item_details(
+        item_id, emby_server_url, emby_api_key, user_id, fields="LockData,LockedFields"
+    )
+    if not item_details:
+        return False
+    if item_details.get("LockData") is True:
+        return True
+
+    result = update_emby_item_details(
+        item_id,
+        {
+            "LockData": True,
+            "LockedFields": item_details.get("LockedFields", [])
+        },
+        emby_server_url,
+        emby_api_key,
+        user_id
+    )
+    if result:
+        logger.info(f"  ➜ 《{item_name_for_log}》 的元数据已锁定。")
+    return result
+
+# --- 解锁 Emby 项目元数据 ---
+def unlock_item_metadata(item_id: str, emby_server_url: str, emby_api_key: str, user_id: str, item_name_for_log: Optional[str] = None) -> bool:
+    """解锁 Emby 项目元数据，允许核心处理器修改元数据。"""
+    item_details = get_emby_item_details(
+        item_id, emby_server_url, emby_api_key, user_id, fields="LockData,LockedFields"
+    )
+    if not item_details:
+        return False
+    if item_details.get("LockData") is not True:
+        return True
+
+    result = update_emby_item_details(
+        item_id,
+        {
+            "LockData": False,
+            "LockedFields": []  # 全字段解锁：清空所有锁定字段
+        },
+        emby_server_url,
+        emby_api_key,
+        user_id
+    )
+    if result:
+        logger.info(f"  ➜ 《{item_name_for_log}》 的元数据已解锁。")
+    return result

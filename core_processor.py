@@ -2209,6 +2209,7 @@ class MediaProcessor:
             return False
 
         try:
+            emby.unlock_item_metadata(item_id, self.emby_url, self.emby_api_key, self.emby_user_id)
             # ======================================================================
             # ★★★ 核心重构：极速回流模式拦截 (Webhook Feedback) ★★★
             # ======================================================================
@@ -2467,7 +2468,9 @@ class MediaProcessor:
                 if media_path:
                     logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
                     emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
+                    time.sleep(3) # 等待 Emby 处理扫描通知
 
+            emby.lock_item_metadata(item_id, self.emby_url, self.emby_api_key, self.emby_user_id, item_name_for_log)
             if is_webhook_feedback:
                 logger.debug(f"  ➜ [webhook回流] 开始质检...")
 
