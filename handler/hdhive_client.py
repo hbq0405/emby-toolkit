@@ -1,4 +1,5 @@
 # handler/hdhive_client.py
+import time
 import requests
 import logging
 import re
@@ -119,21 +120,84 @@ class HDHiveClient:
             self._handle_error(e, "获取资源列表")
             return []
 
-    def unlock_resource(self, slug):
-        """解锁资源"""
-        try:
-            payload = {"slug": slug}
-            res = requests.post(f"{self.BASE_URL}/resources/unlock", headers=self.headers, json=payload, proxies=self.proxies, timeout=15)
-            res.raise_for_status()
-            data = res.json()
-            if data.get("success"):
-                return data.get("data")
-            else:
+    def unlock_resource(self, slug, max_retries=3, timeout=15):
+        """解锁资源（带网络异常重试）"""
+        payload = {"slug": slug}
+        url = f"{self.BASE_URL}/resources/unlock"
+
+        # 只对这些“偶发网络类异常”重试
+        retryable_exceptions = (
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.SSLError,
+        )
+
+        last_exception = None
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                res = requests.post(
+                    url,
+                    headers=self.headers,
+                    json=payload,
+                    proxies=self.proxies,
+                    timeout=timeout
+                )
+
+                # 5xx 可视为服务端临时异常，允许重试
+                if 500 <= res.status_code < 600:
+                    raise requests.exceptions.HTTPError(response=res)
+
+                # 4xx 直接按业务/鉴权失败处理，不重试
+                res.raise_for_status()
+
+                data = res.json()
+                if data.get("success"):
+                    return data.get("data")
+
+                # 接口正常返回，但业务失败：不重试
                 logger.error(f"  ➜ 影巢解锁失败: {data.get('message')}")
                 return None
-        except Exception as e:
-            self._handle_error(e, "解锁资源")
-            return None
+
+            except retryable_exceptions as e:
+                last_exception = e
+                if attempt < max_retries:
+                    wait_seconds = 2 ** (attempt - 1)  # 1s, 2s, 4s
+                    logger.warning(
+                        f"  ➜ 影巢解锁请求异常，第 {attempt}/{max_retries} 次失败: {e}，"
+                        f"{wait_seconds}s 后重试..."
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+
+                self._handle_error(e, "解锁资源")
+                return None
+
+            except requests.exceptions.HTTPError as e:
+                last_exception = e
+                status = e.response.status_code if e.response is not None else None
+
+                # 仅 5xx 重试，4xx 不重试
+                if status and 500 <= status < 600 and attempt < max_retries:
+                    wait_seconds = 2 ** (attempt - 1)
+                    logger.warning(
+                        f"  ➜ 影巢解锁请求异常: HTTP {status}，"
+                        f"第 {attempt}/{max_retries} 次失败，{wait_seconds}s 后重试..."
+                    )
+                    time.sleep(wait_seconds)
+                    continue
+
+                self._handle_error(e, "解锁资源")
+                return None
+
+            except Exception as e:
+                # 未知异常不重试，避免掩盖真实 bug
+                self._handle_error(e, "解锁资源")
+                return None
+
+        if last_exception:
+            self._handle_error(last_exception, "解锁资源")
+        return None
 
     def checkin(self, is_gambler=False):
         """每日签到"""
