@@ -3954,7 +3954,7 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
             old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
             if os.path.exists(old_dir_full_path):
                 for f in os.listdir(old_dir_full_path):
-                    if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo']:
+                    if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo', 'jpg', 'png', 'jpeg', 'bif']:
                         sub_to_del = os.path.join(old_dir_full_path, f)
                         try:
                             os.remove(sub_to_del)
