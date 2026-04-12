@@ -20,7 +20,7 @@ def _format_dateadded(date_str):
 
 def _add_common_elements(root, data):
     """添加所有 NFO 共用的基础标签"""
-    _add_element(root, 'lockdata', 'false')
+    _add_element(root, 'lockdata', 'true')
     date_added = data.get('date_added')
     if date_added:
         _add_element(root, 'dateadded', _format_dateadded(date_added))
