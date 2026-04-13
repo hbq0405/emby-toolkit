@@ -632,7 +632,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
+import { ref, shallowRef, triggerRef, onMounted, onBeforeUnmount, h, computed, watch } from 'vue';
 import axios from 'axios';
 import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, useMessage, useDialog, NPopconfirm, NTooltip, NCard, NImage, NEllipsis, NSpin, NAlert, NRadioGroup, NRadioButton, NModal, NTabs, NTabPane, NList, NListItem, NCheckbox, NDropdown, NInput, NSelect, NButtonGroup, NProgress, useThemeVars, NPopover, NInputNumber, NSwitch, NCollapseTransition, NText } from 'naive-ui';
 import { SyncOutline, TvOutline as TvIcon, TrashOutline as TrashIcon, EyeOutline as EyeIcon, CalendarOutline as CalendarIcon, TimeOutline as TimeIcon, PlayCircleOutline as WatchingIcon, PauseCircleOutline as PausedIcon, CheckmarkCircleOutline as CompletedIcon, ScanCircleOutline as ScanIcon, CaretDownOutline as CaretDownIcon, FlashOffOutline as ForceEndIcon, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, DownloadOutline as DownloadIcon, AlbumsOutline as CollectionsIcon, SettingsOutline as SettingsIcon, HourglassOutline as PendingIcon, TimerOutline as TimerIcon, RefreshCircleOutline as RefreshIcon, GitNetworkOutline as GapIcon, RepeatOutline as MPSyncIcon, CloudDownloadOutline as BackfillIcon, EarthOutline as DoubanIcon, PaperPlaneOutline as PaperPlaneIcon } from '@vicons/ionicons5';
@@ -653,7 +653,7 @@ const message = useMessage();
 const dialog = useDialog();
 const props = defineProps({ taskStatus: { type: Object, required: true } });
 
-const rawWatchlist = ref([]);
+const rawWatchlist = shallowRef([]);
 const currentView = ref('inProgress');
 const isLoading = ref(true);
 const isBatchUpdating = ref(false);
@@ -1301,29 +1301,28 @@ const fetchWatchlist = async () => {
 };
 
 const updateStatus = async (itemId, newStatus) => {
-  // 1. 先找到当前点击的那个对象 (itemId 是季ID)
   const item = rawWatchlist.value.find(i => i.tmdb_id === itemId);
   if (!item) return;
 
-  // 记录旧状态用于回滚
   const oldStatus = item.status;
-  const parentId = item.parent_tmdb_id; // 获取父剧集ID
+  const parentId = item.parent_tmdb_id; 
 
-  // 2. 本地乐观更新：把该剧集下所有季的状态都改了
-  // (因为状态是跟着剧走的，改了剧的状态，所有季都应该变)
   const relatedItems = rawWatchlist.value.filter(i => i.parent_tmdb_id === parentId);
   relatedItems.forEach(i => i.status = newStatus);
+  
+  // ★★★ 核心修复：手动触发视图更新 ★★★
+  triggerRef(rawWatchlist);
 
   try {
-    // 3. 发送请求：★ 关键点：传 parent_tmdb_id 给后端 ★
     await axios.post('/api/watchlist/update_status', { 
       item_id: parentId, 
       new_status: newStatus 
     });
     message.success('状态更新成功！');
   } catch (err) {
-    // 4. 失败回滚：把所有相关季的状态改回去
     relatedItems.forEach(i => i.status = oldStatus);
+    // ★★★ 核心修复：失败回滚后也要手动触发视图更新 ★★★
+    triggerRef(rawWatchlist);
     message.error(err.response?.data?.error || '更新状态失败。');
   }
 };
@@ -1417,6 +1416,9 @@ const saveTotalEpisodes = async (item) => {
     item.total_count = newTotal;
     item.total_episodes_locked = true;
     item.show_edit_popover = false; 
+    
+    // ★★★ 核心修复：手动触发视图更新 ★★★
+    triggerRef(rawWatchlist);
   } catch (err) {
     message.error('修正失败');
   }
