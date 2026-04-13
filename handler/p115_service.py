@@ -2691,16 +2691,19 @@ class SmartOrganizer:
         # =================================================================
         memory_dir_cache = {}
         
-        # 提前拉取目标主目录下的现有文件夹，填充到内存缓存中 (只需 1 次 API 请求)
+        # 提前拉取目标主目录下的现有文件夹，填充到内存缓存中 (★ 优化：直接查本地数据库，零 API 消耗)
         if final_home_cid:
             try:
-                existing_dirs_res = self.client.fs_files({'cid': final_home_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
-                for item in existing_dirs_res.get('data', []):
-                    if str(item.get('fc') or item.get('type')) == '0':
-                        d_name = item.get('fn') or item.get('n') or item.get('file_name')
-                        d_id = item.get('fid') or item.get('file_id')
-                        if d_name and d_id:
-                            memory_dir_cache[f"{final_home_cid}_{d_name}"] = d_id
+                from database.connection import get_db_connection
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        # 直接拉取该目录下的所有缓存项，利用 parent_id 索引极速返回
+                        cursor.execute("SELECT id, name FROM p115_filesystem_cache WHERE parent_id = %s", (str(final_home_cid),))
+                        for row in cursor.fetchall():
+                            d_name = row['name']
+                            d_id = str(row['id'])
+                            if d_name and d_id:
+                                memory_dir_cache[f"{final_home_cid}_{d_name}"] = d_id
             except Exception as e:
                 pass
 
@@ -2878,31 +2881,35 @@ class SmartOrganizer:
         
         for batch_target_cid, items in move_groups.items():
             # -----------------------------------------------------------
-            # ★ 1. 移动前：拉取目标目录现有文件，进行冲突检测
+            # ★ 1. 移动前：拉取目标目录现有文件，进行冲突检测 (★ 优化：直接查本地数据库缓存，零 API 消耗)
             # -----------------------------------------------------------
-            existing_res = self.client.fs_files({'cid': batch_target_cid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
-            existing_files = [f for f in existing_res.get('data', []) if str(f.get('fc') or f.get('type')) == '1']
-            
             existing_names = {}      # name -> fid (用于精准同名覆盖)
             existing_tv_eps = {}     # (s, e) -> [fid1, fid2] (用于剧集洗版)
             existing_movie_vids = [] # [fid1, fid2] (用于电影洗版)
             
-            for ef in existing_files:
-                e_name = ef.get('fn') or ef.get('n') or ef.get('file_name')
-                e_fid = str(ef.get('fid') or ef.get('file_id'))
-                e_ext = e_name.split('.')[-1].lower() if '.' in e_name else ''
-                
-                if e_ext in known_video_exts:
-                    existing_names[e_name] = e_fid
-                    if self.media_type == 'tv':
-                        # 提取目标目录已有文件的 SxxEyy
-                        match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b', e_name, re.IGNORECASE)
-                        if match:
-                            s, e = int(match.group(1)), int(match.group(2))
-                            if (s, e) not in existing_tv_eps: existing_tv_eps[(s, e)] = []
-                            existing_tv_eps[(s, e)].append(e_fid)
-                    else:
-                        existing_movie_vids.append(e_fid)
+            try:
+                from database.connection import get_db_connection
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("SELECT id, name FROM p115_filesystem_cache WHERE parent_id = %s", (str(batch_target_cid),))
+                        for row in cursor.fetchall():
+                            e_name = row['name']
+                            e_fid = str(row['id'])
+                            e_ext = e_name.split('.')[-1].lower() if '.' in e_name else ''
+                            
+                            if e_ext in known_video_exts:
+                                existing_names[e_name] = e_fid
+                                if self.media_type == 'tv':
+                                    # 提取目标目录已有文件的 SxxEyy
+                                    match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b', e_name, re.IGNORECASE)
+                                    if match:
+                                        s, e = int(match.group(1)), int(match.group(2))
+                                        if (s, e) not in existing_tv_eps: existing_tv_eps[(s, e)] = []
+                                        existing_tv_eps[(s, e)].append(e_fid)
+                                else:
+                                    existing_movie_vids.append(e_fid)
+            except Exception as e:
+                logger.warning(f"  ➜ [冲突检测] 查询本地缓存失败: {e}")
 
             valid_items = []
             fids_to_delete = set()
