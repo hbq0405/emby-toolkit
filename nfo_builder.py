@@ -108,8 +108,10 @@ def build_movie_nfo(data: dict, cast: list) -> str:
             _add_element(set_elem, 'overview', collection.get('overview'))
 
     _add_genres_and_tags(root, data)
-    # for studio in data.get('production_companies', []):
-    #     _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)    
+
+    for studio in data.get('production_companies', []):
+        _add_element(root, 'studio', studio.get('name') if isinstance(studio, dict) else studio)  
+          
     _add_actors(root, cast) 
     extended_cast = list(cast)
     top_directors = extract_top_directors(data, max_count=3)
