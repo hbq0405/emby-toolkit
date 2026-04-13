@@ -61,9 +61,6 @@ def api_get_stats_system():
     try:
         raw = maintenance_db.get_stats_system()
         formatted_data = {
-            "actor_mappings_total": raw.get('actor_mappings_linked', 0) + raw.get('actor_mappings_unlinked', 0),
-            "actor_mappings_linked": raw.get('actor_mappings_linked', 0),
-            "actor_mappings_unlinked": raw.get('actor_mappings_unlinked', 0),
             "translation_cache_count": raw.get('translation_cache_count', 0),
             "processed_log_count": raw.get('processed_log_count', 0),
             "failed_log_count": raw.get('failed_log_count', 0),

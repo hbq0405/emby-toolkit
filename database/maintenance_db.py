@@ -106,8 +106,7 @@ def get_stats_core() -> dict:
     SELECT
         (SELECT COUNT(*) FROM media_metadata WHERE item_type IN ('Movie', 'Series')) AS media_cached_total,
         (SELECT COUNT(*) FROM p115_mediainfo_cache) AS mediainfo_backed_up_total,
-        (SELECT COALESCE(SUM(hit_count), 0) FROM p115_mediainfo_cache) AS mediainfo_hits_total,
-        (SELECT COUNT(*) FROM person_metadata) AS actor_mappings_total
+        (SELECT COALESCE(SUM(hit_count), 0) FROM p115_mediainfo_cache) AS mediainfo_hits_total
     """
     return _execute_single_row_query(sql)
 
@@ -127,8 +126,6 @@ def get_stats_system() -> dict:
     """3. 系统日志与缓存 (快)"""
     sql = """
     SELECT
-        (SELECT COUNT(*) FROM person_metadata WHERE emby_person_id IS NOT NULL) AS actor_mappings_linked,
-        (SELECT COUNT(*) FROM person_metadata WHERE emby_person_id IS NULL) AS actor_mappings_unlinked,
         (SELECT COUNT(*) FROM translation_cache) AS translation_cache_count,
         (SELECT COUNT(*) FROM processed_log) AS processed_log_count,
         (SELECT COUNT(*) FROM failed_log) AS failed_log_count

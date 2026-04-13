@@ -19,7 +19,7 @@
             </template>
             <n-space vertical :size="20">
               <!-- 顶部关键指标 (改为3列) -->
-              <n-grid :cols="3" :x-gap="12">
+              <n-grid :cols="2" :x-gap="12">
                 <n-gi>
                   <n-statistic label="已缓存媒体" class="centered-statistic">
                     <span class="stat-value">{{ stats.media_library.cached_total }}</span>
@@ -42,11 +42,6 @@
                     </div>
                   </n-statistic>
                 </n-gi>
-                <n-gi>
-                  <n-statistic label="已归档演员" class="centered-statistic">
-                    <span class="stat-value">{{ stats.system.actor_mappings_total }}</span>
-                  </n-statistic>
-                </n-gi>
               </n-grid>
   
               <n-divider />
@@ -60,7 +55,7 @@
                   </n-gi>
                   <n-gi>
                     <n-space vertical justify="center" style="height: 100%;">
-                      <n-grid :cols="2" :x-gap="12" :y-gap="16">
+                      <n-grid :cols="3" :x-gap="12" :y-gap="16">
                         <!-- 电影 -->
                         <n-gi>
                           <n-statistic label="电影">
@@ -92,17 +87,6 @@
                               </n-icon-wrapper>
                             </template>
                             {{ stats.media_library.episodes_in_library }}
-                          </n-statistic>
-                        </n-gi>
-                        <!-- 演员 -->
-                        <n-gi>
-                          <n-statistic label="演员">
-                            <template #prefix>
-                              <n-icon-wrapper :size="20" :border-radius="5" color="rgba(100, 100, 100, 0.15)">
-                                <n-icon :size="14" :component="PersonOutline" color="#999" />
-                              </n-icon-wrapper>
-                            </template>
-                            {{ stats.system.actor_mappings_linked }}
                           </n-statistic>
                         </n-gi>
                       </n-grid>
@@ -282,7 +266,7 @@
   <n-layout v-else content-style="padding: 12px; background-color: transparent;">
     <div class="mobile-container">
       <!-- 1. 核心数据概览 (改为3列) -->
-      <n-grid :cols="3" :x-gap="8" :y-gap="8">
+      <n-grid :cols="2" :x-gap="8" :y-gap="8">
         <n-gi>
           <n-card size="small" :bordered="false" class="mobile-stat-card">
             <n-statistic label="已缓存媒体">
@@ -309,19 +293,12 @@
             </n-statistic>
           </n-card>
         </n-gi>
-        <n-gi>
-          <n-card size="small" :bordered="false" class="mobile-stat-card">
-            <n-statistic label="已归档演员">
-              <span class="mobile-stat-value">{{ stats.system.actor_mappings_total }}</span>
-            </n-statistic>
-          </n-card>
-        </n-gi>
       </n-grid>
 
       <!-- 2. 媒体库分布 (图表 + 统计) -->
       <n-card size="small" :bordered="false" title="媒体库分布" style="margin-top: 12px;">
         <v-chart class="chart" :option="resolutionChartOptions" autoresize style="height: 200px;" />
-        <n-grid :cols="2" :x-gap="12" :y-gap="12" style="text-align: center; margin-top: 10px;">
+        <n-grid :cols="3" :x-gap="12" :y-gap="12" style="text-align: center; margin-top: 10px;">
           <n-gi>
             <n-statistic label="电影">
               <template #prefix>
@@ -350,16 +327,6 @@
                 </n-icon-wrapper>
               </template>
               {{ stats.media_library.episodes_in_library }}
-            </n-statistic>
-          </n-gi>
-          <n-gi>
-            <n-statistic label="演员">
-              <template #prefix>
-                <n-icon-wrapper :size="16" :border-radius="4" color="rgba(100, 100, 100, 0.15)">
-                  <n-icon :size="12" :component="PersonOutline" color="#999" />
-                </n-icon-wrapper>
-              </template>
-              {{ stats.system.actor_mappings_linked }}
             </n-statistic>
           </n-gi>
         </n-grid>
@@ -453,7 +420,7 @@ const loading = reactive({
 
 const stats = reactive({
   media_library: { cached_total: 0, mediainfo_backed_up_total: 0, mediainfo_hits_total: 0, movies_in_library: 0, series_in_library: 0, episodes_in_library: 0, resolution_stats: [] },
-  system: { actor_mappings_total: 0, actor_mappings_linked: 0, actor_mappings_unlinked: 0, translation_cache_count: 0, processed_log_count: 0, failed_log_count: 0 },
+  system: { translation_cache_count: 0, processed_log_count: 0, failed_log_count: 0 },
   subscriptions_card: {
     watchlist: { watching: 0, paused: 0, completed: 0 },
     actors: { subscriptions: 0, tracked_total: 0, tracked_in_library: 0 },
@@ -480,7 +447,7 @@ const fetchCore = async () => {
         mediainfo_backed_up_total: res.data.data.mediainfo_backed_up_total,
         mediainfo_hits_total: res.data.data.mediainfo_hits_total
       });
-      Object.assign(stats.system, { actor_mappings_total: res.data.data.actor_mappings_total });
+      Object.assign(stats.system, { });
     }
   } catch (e) { console.error(e); } finally { loading.core = false; }
 };
