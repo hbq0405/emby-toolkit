@@ -397,8 +397,7 @@ import {
   NPageHeader, NLayout, NGrid, NGi, NCard, NStatistic, NSpin, NIcon, NSpace, NDivider, NIconWrapper,
   NProgress, NEmpty, useThemeVars, NTag
 } from 'naive-ui';
-import { PersonOutline, FilmOutline, TvOutline, LayersOutline, CheckmarkCircleOutline as CheckIcon,
-  FlashOutline as FlashIcon } from '@vicons/ionicons5';
+import { FilmOutline, TvOutline, LayersOutline, CheckmarkCircleOutline as CheckIcon } from '@vicons/ionicons5';
 import { use } from 'echarts/core';
 import { CanvasRenderer } from 'echarts/renderers';
 import { PieChart } from 'echarts/charts';
