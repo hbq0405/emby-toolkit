@@ -3039,7 +3039,7 @@ class SmartOrganizer:
 
                                         if not has_media:
                                             shutil.rmtree(curr_dir)
-                                            logger.info(f"  ➜ [完美擦屁股] 本地旧目录已无媒体文件，连锅端删除: {curr_dir}")
+                                            logger.info(f"  ➜ 本地旧目录已无媒体文件，连目录删除: {curr_dir}")
                                             curr_dir = os.path.dirname(curr_dir)
                                         else:
                                             break

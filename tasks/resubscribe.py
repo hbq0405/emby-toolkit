@@ -1070,10 +1070,10 @@ def _execute_resubscribe(processor, task_name: str, target):
                         user_id=processor.emby_user_id
                     )
                     if success:
-                        logger.info(f"    - 通过 API 成功删除版本 ID: {target_eid}")
+                        logger.info(f"  ➜ 通过 API 成功删除版本 ID: {target_eid}")
                         success_count += 1
                     else:
-                        logger.error(f"    - 通过 API 删除 ID: {target_eid} 失败！")
+                        logger.error(f"  ➜ 通过 API 删除 ID: {target_eid} 失败！")
                 
                 # ★★★ 物理删除模式 ★★★
                 else:
@@ -1087,7 +1087,7 @@ def _execute_resubscribe(processor, task_name: str, target):
                         try:
                             os.remove(file_path)
                             all_deleted_paths.append(file_path)
-                            logger.debug(f"    - 已删除主文件: {file_path}")
+                            logger.debug(f"  ➜ 已删除主文件: {file_path}")
                             
                             base_dir = os.path.dirname(file_path)
                             base_name = os.path.splitext(os.path.basename(file_path))[0]
@@ -1122,16 +1122,16 @@ def _execute_resubscribe(processor, task_name: str, target):
                                     
                                     if not has_media:
                                         shutil.rmtree(curr_dir)
-                                        logger.info(f"    - [完美擦屁股] 目录已无媒体文件，连锅端删除: {curr_dir}")
+                                        logger.info(f"  ➜ 目录已无媒体文件，连目录删除: {curr_dir}")
                                         curr_dir = os.path.dirname(curr_dir)
                                     else:
                                         break
                                 else:
                                     break
                         except Exception as e:
-                            logger.error(f"    - 物理删除文件失败: {e}")
+                            logger.error(f"  ➜ 物理删除文件失败: {e}")
                     else:
-                        logger.debug(f"    - 本地文件不存在或路径无法访问，跳过物理删除: {file_path}")
+                        logger.debug(f"  ➜ 本地文件不存在或路径无法访问，跳过物理删除: {file_path}")
                         # 即使本地文件不存在，也把路径加进去，让 Emby 去扫这个路径发现它没了
                         if file_path:
                             all_deleted_paths.append(file_path)
