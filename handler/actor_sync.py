@@ -20,7 +20,6 @@ class UnifiedSyncHandler:
         
     def sync_emby_person_map_to_db(self, update_status_callback: Optional[Callable] = None, stop_event: Optional[threading.Event] = None):
         """
-        【V4 - 增量更新与清理版】
         - 同步 Emby 中的演员信息到本地数据库（添加与更新）。
         - 新增清理功能：将在本地数据库中存在、但已从 Emby 中删除的演员记录的 emby_person_id 字段置为 NULL。
         """
@@ -69,12 +68,12 @@ class UnifiedSyncHandler:
                             
                             emby_server_ids.add(emby_pid) # 记录从 Emby 扫描到的 ID
                             
-                            provider_ids = person_emby.get("ProviderIds", {})
+                            provider_ids = person_emby.get("ProviderIds") or {}
                             person_data_for_db = { 
                                 "emby_id": emby_pid, 
                                 "name": person_name, 
-                                "tmdb_id": provider_ids.get("Tmdb"), 
-                                "imdb_id": provider_ids.get("Imdb"), 
+                                "tmdb_id": provider_ids.get("Tmdb") or provider_ids.get("TmdbPerson"), 
+                                "imdb_id": provider_ids.get("Imdb") or provider_ids.get("ImdbPerson"), 
                                 "douban_id": provider_ids.get("Douban"), 
                             }
                             
