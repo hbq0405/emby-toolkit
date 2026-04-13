@@ -183,6 +183,7 @@ def get_task_registry(context: str = 'all'):
         # --- 适合任务链的常规任务 ---
         'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", 'media', True),
         'role-translation': (task_role_translation, "中文化角色名", 'media', True),
+        'actor-translation': (task_actor_translation, "中文化演员名", 'media', True),
         'process-watchlist': (task_process_watchlist, "刷新智能追剧", 'watchlist', True),
         'actor-tracking': (task_process_actor_subscriptions, "刷新演员订阅", 'actor', True),
         'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
@@ -218,7 +219,6 @@ def get_task_registry(context: str = 'all'):
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', False),
         'execute-auto-tagging-rules': (task_execute_auto_tagging_rules, "自动打标规则", 'media', False),
         'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', False),
-        'actor-translation': (task_actor_translation, "中文化演员名", 'media', False),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', False),
         'purge-unregistered-actors': (task_purge_unregistered_actors, "删除黑户演员", 'media', False),
         'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', False),
