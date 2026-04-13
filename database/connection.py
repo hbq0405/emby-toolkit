@@ -653,6 +653,10 @@ def init_db():
                     # 加速 "全局搜索某个文件"
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_name ON p115_filesystem_cache (name);")
 
+                    # 13. 【海量数据优化】加速追剧列表的聚合查询
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_type_parent ON media_metadata (item_type, parent_series_tmdb_id);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_watching_status ON media_metadata (watching_status) WHERE watching_status != 'NONE';")
+
                 except Exception as e_index:
                     logger.error(f"  ➜ 创建索引时出错: {e_index}", exc_info=True)
                 logger.trace("  ➜ 数据库升级检查完成。")

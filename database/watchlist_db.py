@@ -14,12 +14,22 @@ logger = logging.getLogger(__name__)
 
 def get_all_watchlist_items() -> List[Dict[str, Any]]:
     """ 
-    【性能优化版】获取追剧列表。
-    使用 CTE 预先聚合集数统计，避免对每一行进行相关子查询，大幅提升大数据量下的性能。
+    【亿级数据性能优化版】获取追剧列表。
+    核心优化：先过滤出活跃剧集，再进行集数统计，避免对 120 万集进行全表扫描聚合。
     """
     sql = """
-        WITH episode_stats AS (
-            -- 1. 预先计算每一季的集数统计 (一次性扫描)
+        -- 1. 核心优化：先找出所有正在追的剧集 (极大地缩小数据范围)
+        WITH active_series AS (
+            SELECT tmdb_id, title, watching_status, watchlist_last_checked_at,
+                   watchlist_next_episode_json, watchlist_missing_info_json,
+                   emby_item_ids_json, watchlist_tmdb_status, total_episodes,
+                   first_requested_at
+            FROM media_metadata
+            WHERE item_type = 'Series' 
+              AND watching_status != 'NONE'
+        ),
+        -- 2. 仅针对活跃剧集计算每一季的集数统计 (计算量从百万级降至千级)
+        episode_stats AS (
             SELECT
                 parent_series_tmdb_id,
                 season_number,
@@ -27,26 +37,30 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
                 COUNT(*) as total_count
             FROM media_metadata
             WHERE item_type = 'Episode'
+              AND parent_series_tmdb_id IN (SELECT tmdb_id FROM active_series)
             GROUP BY parent_series_tmdb_id, season_number
         ),
+        -- 3. 仅针对活跃剧集计算整部剧的集数统计
         series_stats AS (
-            -- 2. 预先计算整部剧的集数统计
             SELECT
                 parent_series_tmdb_id,
                 COUNT(*) FILTER (WHERE in_library = TRUE) as series_collected_count
             FROM media_metadata
             WHERE item_type = 'Episode'
+              AND parent_series_tmdb_id IN (SELECT tmdb_id FROM active_series)
             GROUP BY parent_series_tmdb_id
         ),
+        -- 4. 仅针对活跃剧集找出最新季号
         latest_seasons AS (
-            -- 3. 预先找出每部剧的最新季号
             SELECT 
                 parent_series_tmdb_id, 
                 MAX(season_number) as max_season_number
             FROM media_metadata
             WHERE item_type = 'Season'
+              AND parent_series_tmdb_id IN (SELECT tmdb_id FROM active_series)
             GROUP BY parent_series_tmdb_id
         )
+        -- 5. 最终组装数据
         SELECT 
             s.tmdb_id, 
             'Season' as item_type,
@@ -55,10 +69,7 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             p.tmdb_id as parent_tmdb_id,
             s.release_date as release_year,
             
-            -- 季的状态
             s.watching_status as status,
-            
-            -- 剧集层面的状态
             p.watching_status as series_status,
 
             p.watchlist_last_checked_at as last_checked_at,
@@ -67,19 +78,15 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
             p.emby_item_ids_json,
             p.watchlist_tmdb_status as tmdb_status,
             
-            -- 使用预计算的统计数据 (COALESCE 处理无数据的情况)
             COALESCE(es.collected_count, 0) as collected_count,
-               
             COALESCE(NULLIF(s.total_episodes, 0), COALESCE(es.total_count, 0)) as total_count,
-            
             COALESCE(ss.series_collected_count, 0) as series_collected_count,
                
             p.total_episodes as series_total_episodes,
             s.total_episodes_locked
 
         FROM media_metadata s
-        JOIN media_metadata p ON s.parent_series_tmdb_id = p.tmdb_id
-        -- 关联统计表
+        JOIN active_series p ON s.parent_series_tmdb_id = p.tmdb_id
         LEFT JOIN episode_stats es ON s.parent_series_tmdb_id = es.parent_series_tmdb_id AND s.season_number = es.season_number
         LEFT JOIN series_stats ss ON s.parent_series_tmdb_id = ss.parent_series_tmdb_id
         LEFT JOIN latest_seasons ls ON s.parent_series_tmdb_id = ls.parent_series_tmdb_id
@@ -87,21 +94,12 @@ def get_all_watchlist_items() -> List[Dict[str, Any]]:
         WHERE 
             s.item_type = 'Season'
             AND s.season_number > 0
-            AND p.item_type = 'Series'
-            AND p.watching_status != 'NONE'
             AND s.watching_status != 'NONE'
             AND (s.watching_status != 'Completed' OR s.in_library = TRUE)
             AND (
-                -- 1. 缺集 (未集齐) -> 显示
                 (s.total_episodes = 0 OR COALESCE(es.collected_count, 0) < s.total_episodes)
-                OR
-                -- 2. 最新季 -> 显示 (使用预计算的最新季)
-                s.season_number = ls.max_season_number
-                OR 
-                -- 3. 剧集整体已完结或暂停 -> 显示
-                p.watching_status IN ('Completed', 'Paused')
-                
-                -- 季本身已完结 -> 显示 
+                OR s.season_number = ls.max_season_number
+                OR p.watching_status IN ('Completed', 'Paused')
                 OR s.watching_status = 'Completed'
             )
         ORDER BY p.first_requested_at DESC, s.season_number ASC;
