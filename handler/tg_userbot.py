@@ -189,18 +189,34 @@ class TGUserBotManager:
             return
 
         # =================================================================
-        # 自定义关键词拦截逻辑
+        # 自定义关键词拦截逻辑 (支持频道隔离)
         # =================================================================
         block_keywords = cfg.get('block_keywords', [])
         if block_keywords:
-            for kw in block_keywords:
-                if not kw or not kw.strip(): continue
+            for rule_obj in block_keywords:
+                # 兼容旧版纯字符串
+                if isinstance(rule_obj, str):
+                    pattern = rule_obj
+                    target_channel = ""
+                else:
+                    pattern = rule_obj.get('pattern', '').strip()
+                    target_channel = rule_obj.get('channel', '').strip().lower()
+
+                if not pattern: continue
+
+                # 校验频道归属
+                if target_channel:
+                    target_clean = target_channel.replace('-100', '') if target_channel.startswith('-100') else target_channel
+                    curr_id_clean = chat_id.replace('-100', '') if chat_id.startswith('-100') else chat_id
+                    if not (chat_username.lower() == target_clean or chat_id == target_channel or curr_id_clean == target_clean):
+                        continue # 频道不匹配，跳过此条拦截规则
+
                 try:
-                    if re.search(kw, text, re.IGNORECASE):
-                        logger.debug(f"  ➜ [频道监听] 消息触发拦截规则 '{kw}'，已直接丢弃。")
+                    if re.search(pattern, text, re.IGNORECASE):
+                        logger.debug(f"  ➜ [频道监听] 消息触发拦截规则 '{pattern}'，已直接丢弃。")
                         return
                 except Exception as e:
-                    logger.error(f"  ➜ [频道监听] 拦截规则正则解析错误 '{kw}': {e}")
+                    logger.error(f"  ➜ [频道监听] 拦截规则正则解析错误 '{pattern}': {e}")
 
         # =================================================================
         # ★ 辅助正则执行函数 (支持频道隔离)

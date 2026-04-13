@@ -51,7 +51,14 @@
               命中规则的消息将被直接丢弃。支持普通关键词或正则表达式 (如: <code>合集|原盘|大包</code> 或 <code>^\[广告\]</code>)
             </n-tooltip>
           </template>
-          <n-dynamic-input v-model:value="config.block_keywords" placeholder="输入拦截关键词或正则表达式" :min="0" />
+          <n-dynamic-input v-model:value="config.block_keywords" @create="onCreateRegexObj" :min="0">
+            <template #default="{ value }">
+              <n-space align="center" :wrap="false" style="width: 100%">
+                <n-input v-model:value="value.pattern" placeholder="拦截关键词或正则" style="flex: 2" />
+                <n-select v-model:value="value.channel" :options="channelOptions" placeholder="指定频道" style="flex: 1" />
+              </n-space>
+            </template>
+          </n-dynamic-input>
         </n-form-item>
 
         <n-divider title-placement="left">登录授权</n-divider>
@@ -101,7 +108,7 @@
                 <template #default="{ value }">
                   <n-space align="center" :wrap="false" style="width: 100%">
                     <n-input v-model:value="value.pattern" placeholder="正则表达式" style="flex: 2" />
-                    <n-input v-model:value="value.channel" placeholder="指定频道(留空全局)" style="flex: 1" />
+                    <n-select v-model:value="value.channel" :options="channelOptions" placeholder="指定频道" style="flex: 1" />
                   </n-space>
                 </template>
               </n-dynamic-input>
@@ -119,7 +126,7 @@
                 <template #default="{ value }">
                   <n-space align="center" :wrap="false" style="width: 100%">
                     <n-input v-model:value="value.pattern" placeholder="正则表达式" style="flex: 2" />
-                    <n-input v-model:value="value.channel" placeholder="指定频道(留空全局)" style="flex: 1" />
+                    <n-select v-model:value="value.channel" :options="channelOptions" placeholder="指定频道" style="flex: 1" />
                   </n-space>
                 </template>
               </n-dynamic-input>
@@ -137,7 +144,7 @@
                 <template #default="{ value }">
                   <n-space align="center" :wrap="false" style="width: 100%">
                     <n-input v-model:value="value.pattern" placeholder="正则表达式" style="flex: 2" />
-                    <n-input v-model:value="value.channel" placeholder="指定频道(留空全局)" style="flex: 1" />
+                    <n-select v-model:value="value.channel" :options="channelOptions" placeholder="指定频道" style="flex: 1" />
                   </n-space>
                 </template>
               </n-dynamic-input>
@@ -155,7 +162,7 @@
                 <template #default="{ value }">
                   <n-space align="center" :wrap="false" style="width: 100%">
                     <n-input v-model:value="value.pattern" placeholder="正则表达式" style="flex: 2" />
-                    <n-input v-model:value="value.channel" placeholder="指定频道(留空全局)" style="flex: 1" />
+                    <n-select v-model:value="value.channel" :options="channelOptions" placeholder="指定频道" style="flex: 1" />
                   </n-space>
                 </template>
               </n-dynamic-input>
@@ -176,7 +183,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { ref, computed } from 'vue';
 import { HelpCircleOutline } from '@vicons/ionicons5';
 import { 
   NModal, NSpin, NForm, NFormItem, NInput, NSwitch, NCheckboxGroup, NCheckbox, 
@@ -214,6 +221,17 @@ const userBotCode = ref('');
 const isSendingCode = ref(false);
 const isSubmittingCode = ref(false);
 
+// 生成频道下拉选项
+const channelOptions = computed(() => {
+  const options = [{ label: '全局生效 (不限频道)', value: '' }];
+  if (config.value.channels && config.value.channels.length > 0) {
+    config.value.channels.forEach(c => {
+      options.push({ label: c, value: c });
+    });
+  }
+  return options;
+});
+
 // 创建新的正则对象
 const onCreateRegexObj = () => {
   return { pattern: '', channel: '' };
@@ -236,6 +254,11 @@ const fetchConfig = async () => {
       config.value = res.data.data;
       
       // ★ 兼容旧版数据：将纯字符串数组转换为对象数组
+      if (Array.isArray(config.value.block_keywords)) {
+        config.value.block_keywords = config.value.block_keywords.map(item => {
+          return typeof item === 'string' ? { pattern: item, channel: '' } : item;
+        });
+      }
       if (!config.value.custom_regex) {
         config.value.custom_regex = { tmdb: [], title_year: [], season_episode: [], password: [] };
       } else {
