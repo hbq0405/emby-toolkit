@@ -11,7 +11,7 @@ import task_manager
 
 # 导入各个模块的任务函数
 from .actors import (task_enrich_aliases, task_actor_translation, 
-                     task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
+                     task_process_actor_subscriptions, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
 from .media import task_role_translation, task_populate_metadata_cache, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_backup_mediainfo, task_restore_mediainfo, task_contribute_mediainfo_to_center, task_restore_nfo_and_images
 from .watchlist import task_process_watchlist, task_refresh_completed_series, task_scan_old_seasons_backfill, task_add_all_series_to_watchlist
@@ -220,7 +220,6 @@ def get_task_registry(context: str = 'all'):
         'execute-auto-tagging-rules': (task_execute_auto_tagging_rules, "自动打标规则", 'media', False),
         'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', False),
         'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', False),
-        'purge-unregistered-actors': (task_purge_unregistered_actors, "删除黑户演员", 'media', False),
         'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', False),
     }
 
