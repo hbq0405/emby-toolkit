@@ -537,7 +537,6 @@ def enrich_all_actor_aliases_task(
 
                                         # 依次安全地合并各个ID
                                         safe_merge_id('douban_celebrity_id', source_actor.get('douban_celebrity_id'), target_tmdb_id)
-                                        safe_merge_id('emby_person_id', source_actor.get('emby_person_id'), target_tmdb_id)
 
                                         # 最后，删除现在已经为空壳的源记录 (因为是单表，直接删除即可，没有外键烦恼)
                                         logger.info(f"  ➜ 所有ID合并完成，准备删除源记录 (tmdb: {source_tmdb_id})。")

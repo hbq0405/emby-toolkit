@@ -535,15 +535,7 @@ def prepare_for_library_rebuild() -> Dict[str, Dict]:
                 results["updated_rows"]["media_metadata"] = cursor.rowcount
                 logger.info(f"  ➜ media_metadata 表重置完成，影响了 {cursor.rowcount} 行。")
 
-                logger.info("第三步：重置 演员映射表 (person_metadata)...")
-                cursor.execute("""
-                    UPDATE person_metadata 
-                    SET emby_person_id = NULL 
-                    WHERE emby_person_id IS NOT NULL;
-                """)
-                results["updated_rows"]["person_metadata"] = cursor.rowcount
-
-                logger.info("第四步：重置 自建合集表 (custom_collections)...")
+                logger.info("第三步：重置 自建合集表 (custom_collections)...")
                 cursor.execute("""
                     UPDATE custom_collections 
                     SET 

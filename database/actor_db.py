@@ -112,7 +112,6 @@ class ActorDBManager:
     def find_person_by_any_id(self, cursor: psycopg2.extensions.cursor, **kwargs) -> Optional[dict]:
         search_criteria = [
             ("tmdb_person_id", kwargs.get("tmdb_id")),
-            ("emby_person_id", kwargs.get("emby_id")),
             ("imdb_id", kwargs.get("imdb_id")),
             ("douban_celebrity_id", kwargs.get("douban_id")),
         ]
@@ -130,46 +129,22 @@ class ActorDBManager:
     
     def enrich_actors_with_provider_ids(self, cursor: psycopg2.extensions.cursor, raw_emby_actors: List[Dict[str, Any]], emby_config: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
-        接收一个来自 Emby 的原始演员列表，高效地为他们补充 ProviderIds。
+        接收一个来自 Emby 的原始演员列表，检查并补充 ProviderIds。
+        (已移除本地数据库缓存逻辑，直接依赖 Emby 自身数据或 API)
         """
         if not raw_emby_actors:
             return []
 
-        logger.info(f"  ➜ [演员数据管家] 开始为 {len(raw_emby_actors)} 位演员丰富外部ID...")
         enriched_actors_map = {actor['Id']: actor.copy() for actor in raw_emby_actors}
-        
-        emby_ids_to_check = list(enriched_actors_map.keys())
-        ids_found_in_db = set()
-        
-        try:
-            if emby_ids_to_check:
-                sql = "SELECT emby_person_id, tmdb_person_id, imdb_id, douban_celebrity_id FROM person_metadata WHERE emby_person_id = ANY(%s)"
-                cursor.execute(sql, (emby_ids_to_check,))
-                db_results = cursor.fetchall()
+        ids_to_fetch_from_api = []
 
-                for row in db_results:
-                    emby_id = row["emby_person_id"]
-                    ids_found_in_db.add(emby_id)
-                    
-                    provider_ids = {}
-                    if row.get("tmdb_person_id"):
-                        provider_ids["Tmdb"] = str(row.get("tmdb_person_id"))
-                    if row.get("imdb_id"):
-                        provider_ids["Imdb"] = row.get("imdb_id")
-                    if row.get("douban_celebrity_id"):
-                        provider_ids["Douban"] = str(row.get("douban_celebrity_id"))
-                    
-                    if emby_id in enriched_actors_map:
-                        enriched_actors_map[emby_id]["ProviderIds"] = provider_ids
-                
-                logger.info(f"  ➜ [演员数据管家] 从数据库缓存中找到了 {len(ids_found_in_db)} 位演员的外部ID。")
-        except Exception as e:
-            logger.error(f"  ➜ [演员数据管家] 批量查询演员外部ID时失败: {e}", exc_info=True)
-
-        ids_to_fetch_from_api = [pid for pid in emby_ids_to_check if pid not in ids_found_in_db]
+        # 检查哪些演员缺少 Tmdb ID
+        for actor in enriched_actors_map.values():
+            if not actor.get("ProviderIds", {}).get("Tmdb"):
+                ids_to_fetch_from_api.append(actor['Id'])
 
         if ids_to_fetch_from_api:
-            logger.info(f"  ➜ [演员数据管家] 将通过 Emby API 为剩余 {len(ids_to_fetch_from_api)} 位演员获取外部ID...")
+            logger.info(f"  ➜ [演员数据管家] 将通过 Emby API 为 {len(ids_to_fetch_from_api)} 位演员获取外部ID...")
             for person_id in ids_to_fetch_from_api:
                 person_details = get_emby_item_details(
                     item_id=person_id, 
@@ -179,16 +154,15 @@ class ActorDBManager:
                     fields="ProviderIds"
                 )
                 if person_details and person_details.get("ProviderIds"):
-                    if person_id in enriched_actors_map:
-                        enriched_actors_map[person_id]["ProviderIds"] = person_details.get("ProviderIds")
+                    enriched_actors_map[person_id]["ProviderIds"] = person_details.get("ProviderIds")
 
         return list(enriched_actors_map.values())
     
     def upsert_person(self, cursor: psycopg2.extensions.cursor, person_data: Dict[str, Any], emby_config: Dict[str, Any]) -> Tuple[int, str]:
         """
         【重构版】单表 Upsert，直接返回 tmdb_person_id。
+        (已彻底移除 emby_person_id 字段)
         """
-        emby_id = str(person_data.get("emby_id") or '').strip() or None
         tmdb_id_raw = person_data.get("id") or person_data.get("tmdb_id")
         imdb_id = str(person_data.get("imdb_id") or '').strip() or None
         douban_id = str(person_data.get("douban_id") or '').strip() or None
@@ -205,32 +179,27 @@ class ActorDBManager:
             logger.warning(f"upsert_person 调用缺少有效的 tmdb_person_id，跳过。 (原始值: {tmdb_id_raw})")
             return -1, "SKIPPED"
 
-        if not name and emby_id:
-            details = get_emby_item_details(emby_id, emby_config['url'], emby_config['api_key'], emby_config['user_id'], fields="Name")
-            name = details.get("Name") if details else "Unknown Actor"
-        elif not name:
+        if not name:
             name = "Unknown Actor"
 
         try:
             sql = """
                 INSERT INTO person_metadata 
-                (tmdb_person_id, primary_name, emby_person_id, imdb_id, douban_celebrity_id, last_updated_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                (tmdb_person_id, primary_name, imdb_id, douban_celebrity_id, last_updated_at)
+                VALUES (%s, %s, %s, %s, NOW())
                 ON CONFLICT (tmdb_person_id) DO UPDATE SET
                     primary_name = EXCLUDED.primary_name,
-                    emby_person_id = COALESCE(EXCLUDED.emby_person_id, person_metadata.emby_person_id),
                     imdb_id = COALESCE(EXCLUDED.imdb_id, person_metadata.imdb_id),
                     douban_celebrity_id = COALESCE(EXCLUDED.douban_celebrity_id, person_metadata.douban_celebrity_id),
                     last_updated_at = NOW()
                 WHERE
                     person_metadata.primary_name IS DISTINCT FROM EXCLUDED.primary_name OR
-                    person_metadata.emby_person_id IS DISTINCT FROM COALESCE(EXCLUDED.emby_person_id, person_metadata.emby_person_id) OR
                     person_metadata.imdb_id IS DISTINCT FROM COALESCE(EXCLUDED.imdb_id, person_metadata.imdb_id) OR
                     person_metadata.douban_celebrity_id IS DISTINCT FROM COALESCE(EXCLUDED.douban_celebrity_id, person_metadata.douban_celebrity_id)
                 RETURNING tmdb_person_id, (CASE xmax WHEN 0 THEN 'INSERTED' ELSE 'UPDATED' END) as action;
             """
             
-            cursor.execute(sql, (tmdb_id, name, emby_id, imdb_id, douban_id))
+            cursor.execute(sql, (tmdb_id, name, imdb_id, douban_id))
             result = cursor.fetchone()
 
             if result:
@@ -240,7 +209,7 @@ class ActorDBManager:
                 action = "UNCHANGED"
                 logger.trace(f"  ➜ 演员 '{name}' (TMDb: {tmdb_id}) 数据无变化，标记为 UNCHANGED。")
 
-            # 统一处理元数据更新 (现在也是更新同一张表)
+            # 统一处理元数据更新
             if 'profile_path' in person_data or 'gender' in person_data or 'popularity' in person_data:
                 self.update_actor_metadata_from_tmdb(cursor, tmdb_id, person_data)
 
@@ -249,12 +218,12 @@ class ActorDBManager:
         except psycopg2.IntegrityError as ie:
             conn = cursor.connection
             conn.rollback()
-            logger.error(f"upsert_person 发生数据库完整性冲突，可能是 emby_id 或其他唯一键重复。emby_id={emby_id}, tmdb_id={tmdb_id}: {ie}")
+            logger.error(f"upsert_person 发生数据库完整性冲突，tmdb_id={tmdb_id}: {ie}")
             return -1, "ERROR"
         except Exception as e:
             conn = cursor.connection
             conn.rollback()
-            logger.error(f"upsert_person 发生未知异常，emby_person_id={emby_id}: {e}", exc_info=True)
+            logger.error(f"upsert_person 发生未知异常，tmdb_id={tmdb_id}: {e}", exc_info=True)
             return -1, "ERROR"
     def update_actor_metadata_from_tmdb(self, cursor: psycopg2.extensions.cursor, tmdb_id: int, tmdb_data: Dict[str, Any]):
         """

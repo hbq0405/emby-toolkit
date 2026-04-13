@@ -257,7 +257,6 @@ def init_db():
                         tmdb_person_id INTEGER PRIMARY KEY, 
                         
                         -- 其他平台的 ID 映射
-                        emby_person_id TEXT UNIQUE,
                         imdb_id TEXT UNIQUE, 
                         douban_celebrity_id TEXT UNIQUE,
                         
@@ -478,63 +477,6 @@ def init_db():
                 """)
 
                 # ======================================================================
-                # ★★★ 数据库重构：合并 person_identity_map 和 actor_metadata ★★★
-                # ======================================================================
-                logger.trace("  ➜ 检查是否需要合并演员元数据表...")
-                cursor.execute("""
-                    SELECT EXISTS (
-                        SELECT FROM information_schema.tables 
-                        WHERE table_schema = current_schema() AND table_name = 'person_identity_map'
-                    );
-                """)
-                has_old_map_table = cursor.fetchone()['exists']
-
-                if has_old_map_table:
-                    logger.info("  ➜ [数据库重构] 正在将 person_identity_map 和 actor_metadata 合并为 person_metadata...")
-                    
-                    # 1. 创建新表
-                    cursor.execute("""
-                        CREATE TABLE IF NOT EXISTS person_metadata (
-                            tmdb_person_id INTEGER PRIMARY KEY, 
-                            emby_person_id TEXT UNIQUE,
-                            imdb_id TEXT UNIQUE, 
-                            douban_celebrity_id TEXT UNIQUE,
-                            primary_name TEXT NOT NULL, 
-                            original_name TEXT, 
-                            profile_path TEXT, 
-                            gender INTEGER, 
-                            adult BOOLEAN,
-                            popularity REAL, 
-                            last_synced_at TIMESTAMP WITH TIME ZONE, 
-                            last_updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
-                        )
-                    """)
-                    
-                    # 2. 将旧表数据 JOIN 后插入新表
-                    # 注意：这里使用 LEFT JOIN 确保即使没有 actor_metadata 的人也能迁移过来
-                    cursor.execute("""
-                        INSERT INTO person_metadata (
-                            tmdb_person_id, emby_person_id, imdb_id, douban_celebrity_id, 
-                            primary_name, original_name, profile_path, gender, adult, 
-                            popularity, last_synced_at, last_updated_at
-                        )
-                        SELECT 
-                            p.tmdb_person_id, p.emby_person_id, p.imdb_id, p.douban_celebrity_id,
-                            p.primary_name, a.original_name, a.profile_path, a.gender, a.adult,
-                            a.popularity, p.last_synced_at, p.last_updated_at
-                        FROM person_identity_map p
-                        LEFT JOIN actor_metadata a ON p.tmdb_person_id = a.tmdb_id
-                        WHERE p.tmdb_person_id IS NOT NULL
-                        ON CONFLICT (tmdb_person_id) DO NOTHING;
-                    """)
-                    
-                    # 3. 移除旧表 (注意 CASCADE 会自动处理依赖的外键)
-                    cursor.execute("DROP TABLE IF EXISTS actor_metadata CASCADE;")
-                    cursor.execute("DROP TABLE IF EXISTS person_identity_map CASCADE;")
-                    
-                    logger.info("  ➜ [数据库重构] 演员表合并完成！")
-
-                # ======================================================================
                 # ★★★ 数据库平滑升级 (START) ★★★
                 # 此处代码用于新增在新版本中添加的列。
                 # ======================================================================
@@ -750,6 +692,9 @@ def init_db():
                         ],
                         'custom_collections': [
                             'missing_count'
+                        ],
+                        'person_metadata': [
+                            'emby_person_id'
                         ]
                     }
 
