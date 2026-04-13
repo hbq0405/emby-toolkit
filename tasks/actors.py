@@ -14,38 +14,8 @@ import handler.emby as emby
 import task_manager
 import utils
 from actor_utils import enrich_all_actor_aliases_task
-from handler.actor_sync import UnifiedSyncHandler
 
 logger = logging.getLogger(__name__)
-
-# --- 同步演员映射表 ---
-def task_sync_person_map(processor):
-    """
-    【V2 - 支持进度反馈】任务：同步演员映射表。
-    """
-    task_name = "同步演员映射"
-    logger.trace(f"开始执行 '{task_name}'...")
-    
-    try:
-        config = processor.config
-        
-        sync_handler = UnifiedSyncHandler(
-            emby_url=config.get("emby_server_url"),
-            emby_api_key=config.get("emby_api_key"),
-            emby_user_id=config.get("emby_user_id"),
-            tmdb_api_key=config.get("tmdb_api_key", "")
-        )
-        
-        # ### 修改点：将任务管理器的回调函数传递给处理器 ###
-        sync_handler.sync_emby_person_map_to_db(
-            update_status_callback=task_manager.update_status_from_thread
-        )
-        
-        logger.trace(f"'{task_name}' 成功完成。")
-
-    except Exception as e:
-        logger.error(f"'{task_name}' 执行过程中发生严重错误: {e}", exc_info=True)
-        task_manager.update_status_from_thread(-1, f"错误：同步失败 ({str(e)[:50]}...)")
 
 # ✨✨✨ 演员数据补充函数 ✨✨✨
 def task_enrich_aliases(processor, force_full_update: bool = False):

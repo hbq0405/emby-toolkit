@@ -10,7 +10,7 @@ import extensions
 import task_manager
 
 # 导入各个模块的任务函数
-from .actors import (task_sync_person_map, task_enrich_aliases, task_actor_translation, 
+from .actors import (task_enrich_aliases, task_actor_translation, 
                      task_process_actor_subscriptions, task_purge_unregistered_actors, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
 from .media import task_role_translation, task_populate_metadata_cache, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_backup_mediainfo, task_restore_mediainfo, task_contribute_mediainfo_to_center, task_restore_nfo_and_images
@@ -181,24 +181,18 @@ def get_task_registry(context: str = 'all'):
         'task-chain-low-freq': (task_run_chain_low_freq, "低频维护任务链", 'media', False),
 
         # --- 适合任务链的常规任务 ---
-        'sync-person-map': (task_sync_person_map, "同步演员数据", 'media', True),
-        'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', True),
         'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", 'media', True),
         'role-translation': (task_role_translation, "中文化角色名", 'media', True),
-        'actor-translation': (task_actor_translation, "中文化演员名", 'media', True),
         'process-watchlist': (task_process_watchlist, "刷新智能追剧", 'watchlist', True),
         'actor-tracking': (task_process_actor_subscriptions, "刷新演员订阅", 'actor', True),
         'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),
         'auto-subscribe': (task_auto_subscribe, "统一订阅处理", 'media', True),
         'generate-all-covers': (task_generate_all_covers, "生成原生封面", 'media', True),
         'generate-custom-collection-covers': (task_generate_all_custom_collection_covers, "生成合集封面", 'media', True),
-        'purge-unregistered-actors': (task_purge_unregistered_actors, "删除黑户演员", 'media', True),
-        'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', True),
         'check-expired-users': (task_check_expired_users, "检查过期用户", 'media', True),
         'refresh_completed_series': (task_refresh_completed_series, "全量刷新剧集", 'watchlist', True),
         'scan-monitor-folders': (task_scan_monitor_folders, "扫描监控目录", 'media', True),
         'system-auto-update': (task_check_and_update_container, "系统自动更新", 'media', True),
-        'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', True),
         'scan-organize-115': (task_scan_and_organize_115, "网盘文件整理", 'media', True),
         'full-sync-strm': (task_full_sync_strm_and_subs, "全量生成STRM", 'media', True),
         'monitor-115-life-events': (task_monitor_115_life_events, "增量生成STRM", 'media', True),
@@ -223,6 +217,11 @@ def get_task_registry(context: str = 'all'):
         'merge-duplicate-actors': (task_merge_duplicate_actors, "合并分身演员", 'media', False),
         'sync-all-user-data': (task_sync_all_user_data, "同步用户数据", 'media', False),
         'execute-auto-tagging-rules': (task_execute_auto_tagging_rules, "自动打标规则", 'media', False),
+        'enrich-aliases': (task_enrich_aliases, "演员数据补充", 'media', False),
+        'actor-translation': (task_actor_translation, "中文化演员名", 'media', False),
+        'purge-ghost-actors': (task_purge_ghost_actors, "删除幽灵演员", 'media', False),
+        'purge-unregistered-actors': (task_purge_unregistered_actors, "删除黑户演员", 'media', False),
+        'sync-115-directory-tree': (task_sync_115_directory_tree, "同步网盘目录", 'media', False),
     }
 
     if context == 'chain':
