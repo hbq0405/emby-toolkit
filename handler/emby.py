@@ -690,12 +690,6 @@ def get_emby_library_items(
             if media_type_filter:
                 params["IncludeItemTypes"] = media_type_filter
             
-            # ==========================================================
-            # ★★★ 核心修复：强制 Emby 在返回演员表时，带上演员的外部 ID ★★★
-            # ==========================================================
-            if "People" in fields_to_request:
-                params["PersonFields"] = "ProviderIds"
-            
             # ★★★ 核心修复：应用服务器端优化参数 ★★★
             if sort_by:
                 params["SortBy"] = sort_by
@@ -862,48 +856,42 @@ def get_all_persons_from_emby(
             library_ids=library_ids, media_type_filter="Movie,Series", fields="People"
         )
 
-        unique_persons_map = {} # 用于存储 person_id -> person_dict
+        unique_person_ids = set()
         if media_items:
             for item in media_items:
                 if stop_event and stop_event.is_set(): return
                 for person in item.get("People", []):
-                    person_id = person.get("Id")
-                    if person_id:
-                        # ★★★ 核心修复：直接从媒体关联数据中截胡 ProviderIds ★★★
-                        if person_id not in unique_persons_map:
-                            unique_persons_map[person_id] = {
-                                "Id": person_id,
-                                "Name": person.get("Name"),
-                                "ProviderIds": person.get("ProviderIds") or {}
-                            }
-                        else:
-                            # 如果同一个演员在多部剧出现，合并他们可能缺失的 ProviderIds
-                            existing_pids = unique_persons_map[person_id]["ProviderIds"]
-                            new_pids = person.get("ProviderIds") or {}
-                            for k, v in new_pids.items():
-                                if k not in existing_pids:
-                                    existing_pids[k] = v
+                    if person_id := person.get("Id"):
+                        unique_person_ids.add(person_id)
 
         # ★★★ 核心智能检测逻辑 ★★★
-        if unique_persons_map:
-            logger.info(f"  ➜ 精准扫描成功，提取了 {len(unique_persons_map)} 位独立演员。")
-            person_list = list(unique_persons_map.values())
+        # 如果成功通过精准模式获取到了演员ID，则继续执行并返回
+        if unique_person_ids:
+            logger.info(f"  ➜ 精准扫描成功，发现 {len(unique_person_ids)} 位独立演员需要同步。")
+            person_ids_to_fetch = list(unique_person_ids)
             
             precise_batch_size = 500
-            total_precise = len(person_list)
+            total_precise = len(person_ids_to_fetch)
             processed_precise = 0
             for i in range(0, total_precise, precise_batch_size):
                 if stop_event and stop_event.is_set(): return
-                batch = person_list[i:i + precise_batch_size]
-                yield batch
-                processed_precise += len(batch)
-                if update_status_callback:
-                    progress = int((processed_precise / total_precise) * 95)
-                    update_status_callback(progress, f"已处理 {processed_precise}/{total_precise} 名演员...")
+                batch_ids = person_ids_to_fetch[i:i + precise_batch_size]
+                person_details_batch = get_emby_items_by_id(
+                    base_url=base_url, api_key=api_key, user_id=user_id,
+                    item_ids=batch_ids, fields="ProviderIds,Name"
+                )
+                if person_details_batch:
+                    yield person_details_batch
+                    processed_precise += len(person_details_batch)
+                    if update_status_callback:
+                        progress = int((processed_precise / total_precise) * 95)
+                        update_status_callback(progress, f"已扫描 {processed_precise}/{total_precise} 名演员...")
             return # ★★★ 精准模式成功，任务结束 ★★★
 
-        if media_items is not None: 
-             logger.warning("  ➜ 精准扫描未返回任何演员，将自动降级为全量扫描模式...")
+        # ★★★ 自动降级触发点 ★★★
+        # 如果代码执行到这里，说明精准模式没找到任何演员，需要降级
+        if media_items is not None: # 仅在API调用成功但结果为空时显示警告
+             logger.warning("  ➜ 精准扫描未返回任何演员（可能您是 beta 版本），将自动降级为全量扫描模式...")
     
     # ======================================================================
     # 模式二：执行全量扫描 (在未配置媒体库、强制全量或精准扫描失败时)
