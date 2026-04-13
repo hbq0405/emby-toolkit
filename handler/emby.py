@@ -690,6 +690,12 @@ def get_emby_library_items(
             if media_type_filter:
                 params["IncludeItemTypes"] = media_type_filter
             
+            # ==========================================================
+            # ★★★ 核心修复：强制 Emby 在返回演员表时，带上演员的外部 ID ★★★
+            # ==========================================================
+            if "People" in fields_to_request:
+                params["PersonFields"] = "ProviderIds"
+            
             # ★★★ 核心修复：应用服务器端优化参数 ★★★
             if sort_by:
                 params["SortBy"] = sort_by
