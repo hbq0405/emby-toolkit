@@ -45,7 +45,7 @@
 
         <n-form-item path="block_keywords">
           <template #label>
-            拦截规则 (支持正则)
+            拦截规则
             <n-tooltip trigger="hover">
               <template #trigger><n-icon style="margin-left:4px; cursor:help;"><HelpCircleOutline /></n-icon></template>
               命中规则的消息将被直接丢弃。支持普通关键词或正则表达式 (如: <code>合集|原盘|大包</code> 或 <code>^\[广告\]</code>)
