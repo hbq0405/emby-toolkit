@@ -677,8 +677,10 @@ def get_user_request_stats(user_id: str) -> Dict[str, int]:
 # 批量物理删除媒体元数据    
 def delete_media_metadata_batch(items: List[Dict[str, str]]) -> int:
     """
-    【批量物理删除媒体元数据。
-    仅删除 in_library = FALSE 的记录，防止误删已入库项目。
+    【批量物理删除/重置媒体元数据】
+    - 对于 in_library = FALSE 的记录，执行物理删除。
+    - 对于 in_library = TRUE 的记录，重置其订阅状态 (subscription_status = 'NONE', subscription_sources_json = '[]')。
+    返回被物理删除的记录数。
     """
     if not items:
         return 0
@@ -695,24 +697,39 @@ def delete_media_metadata_batch(items: List[Dict[str, str]]) -> int:
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 构造 SQL：WHERE (tmdb_id, item_type) IN ((id1, type1), (id2, type2)...)
-                # 且必须不在库中
                 placeholders = ",".join(["(%s, %s)"] * len(targets))
-                sql = f"""
+                flat_params = [val for pair in targets for val in pair]
+                
+                # 1. 更新在库记录的订阅状态 (剥离订阅属性)
+                update_sql = f"""
+                    UPDATE media_metadata 
+                    SET subscription_status = 'NONE',
+                        ignore_reason = NULL,
+                        subscription_sources_json = '[]'::jsonb,
+                        last_updated_at = NOW()
+                    WHERE (tmdb_id, item_type) IN ({placeholders})
+                      AND in_library = TRUE
+                """
+                cursor.execute(update_sql, tuple(flat_params))
+                updated_count = cursor.rowcount
+                
+                # 2. 物理删除不在库的记录 (彻底清理垃圾)
+                delete_sql = f"""
                     DELETE FROM media_metadata 
                     WHERE (tmdb_id, item_type) IN ({placeholders})
                       AND in_library = FALSE
                 """
-                
-                # 扁平化参数
-                flat_params = [val for pair in targets for val in pair]
-                
-                cursor.execute(sql, tuple(flat_params))
+                cursor.execute(delete_sql, tuple(flat_params))
                 deleted_count = cursor.rowcount
+                
                 conn.commit()
+                
+                if updated_count > 0:
+                    logger.info(f"  ➜ 批量删除时，发现 {updated_count} 个项目已在库，已重置其订阅状态。")
+                    
                 return deleted_count
     except Exception as e:
-        logger.error(f"DB: 批量物理删除媒体元数据失败: {e}", exc_info=True)
+        logger.error(f"DB: 批量物理删除/重置媒体元数据失败: {e}", exc_info=True)
         return 0
 
 # 批量插入基础电影条目    
