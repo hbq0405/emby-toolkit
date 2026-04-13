@@ -79,15 +79,15 @@
                 <n-radio-group v-model:value="config.conflict_mode">
                   <n-space vertical>
                     <n-radio value="replace">
-                      <b>仅保留最新 (洗版推荐)</b>
-                      <div style="font-size: 12px; color: gray;">删除目标目录中同一集/同一电影的所有旧版本，移入新版本。</div>
+                      <b>替换</b>
+                      <div style="font-size: 12px; color: gray;">删除目标目录中同一集/同一电影的旧版本，移入新版本。</div>
                     </n-radio>
                     <n-radio value="keep_both">
-                      <b>多版本共存</b>
+                      <b>共存</b>
                       <div style="font-size: 12px; color: gray;">只要文件名不同，同一集的不同版本(如 1080p 和 4K)将共存。</div>
                     </n-radio>
                     <n-radio value="skip">
-                      <b>跳过 (防重复下载)</b>
+                      <b>跳过</b>
                       <div style="font-size: 12px; color: gray;">只要目标目录已有该集/该电影，新文件直接丢弃打入未识别。</div>
                     </n-radio>
                   </n-space>
