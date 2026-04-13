@@ -62,11 +62,10 @@ class TGUserBotManager:
                 self.stop()
             return
 
-        # ★ 绝对安全锁：只要线程活着，绝不重复启动，防止 asyncio 炸膛！
         if self.is_running and self.thread and self.thread.is_alive():
             return
 
-        self.stop() # 确保旧的残骸清理干净
+        self.stop() 
 
         self.is_running = True
         self.thread = threading.Thread(target=self._run_loop, daemon=True, name="TG_UserBot_Thread")
@@ -77,7 +76,6 @@ class TGUserBotManager:
         self.is_running = False
         if self.client and self.loop and self.loop.is_running():
             try:
-                # 优雅地断开连接，设置超时防止卡死
                 asyncio.run_coroutine_threadsafe(self.client.disconnect(), self.loop).result(timeout=3)
             except Exception:
                 pass
@@ -85,8 +83,6 @@ class TGUserBotManager:
         if self.thread and self.thread.is_alive():
             self.thread.join(timeout=2)
             
-        # ★★★ 核心修复：必须彻底清空旧实例和事件循环！
-        # 否则下次 start 时复用旧实例会导致 Event Loop 冲突崩溃
         self.client = None
         self.loop = None
 
@@ -97,7 +93,6 @@ class TGUserBotManager:
         
         cfg = self._get_config()
         try:
-            # --- 代理设置 ---
             telethon_proxy = None
             app_cfg = config_manager.APP_CONFIG
             if app_cfg.get(constants.CONFIG_OPTION_NETWORK_PROXY_ENABLED) and app_cfg.get(constants.CONFIG_OPTION_NETWORK_HTTP_PROXY):
@@ -141,14 +136,13 @@ class TGUserBotManager:
                         await self.client.disconnect()
                     if os.path.exists(self.session_path):
                         os.remove(self.session_path)
-                    return # 退出当前 daemon，等待前端重新触发 start()
+                    return 
 
                 if is_auth:
                     logger.info("  ➜ [频道监听] 服务已启动，开始监听频道消息...")
                     await self.client.run_until_disconnected()
                 else:
                     logger.info("  ➜ [频道监听] Telegram 客户端已连接，等待前端输入验证码授权...")
-                    # 保持协程存活，等待前端调用登录接口
                     while self.is_running:
                         if await self.client.is_user_authorized():
                             logger.info("  ➜ [频道监听] 授权成功，开始监听频道消息...")
@@ -188,8 +182,6 @@ class TGUserBotManager:
                 break
 
         if not matched:
-            # 如果你想知道为什么某个频道没被监听到，可以把下面这行注释打开看日志
-            # logger.debug(f"  [UserBot 忽略] 收到消息 -> Username: {chat_username}, ID: {chat_id}")
             return
 
         text = event.raw_text
@@ -197,7 +189,7 @@ class TGUserBotManager:
             return
 
         # =================================================================
-        # 自定义关键词拦截逻辑 (最高优先级，命中即杀，支持正则)
+        # 自定义关键词拦截逻辑
         # =================================================================
         block_keywords = cfg.get('block_keywords', [])
         if block_keywords:
@@ -211,34 +203,43 @@ class TGUserBotManager:
                     logger.error(f"  ➜ [频道监听] 拦截规则正则解析错误 '{kw}': {e}")
 
         # =================================================================
-        # ★ 史诗级增强 2.0：全方位雷达 (提取实体链接 + 按钮链接 + URL密码)
+        # ★ 辅助正则执行函数 (支持频道隔离)
         # =================================================================
-        
-        all_urls = []
+        def _apply_regex(text, custom_rules, default_rules, curr_username, curr_id, flags=re.IGNORECASE):
+            applicable_rules = []
+            
+            # 1. 筛选适用于当前频道的自定义规则
+            for rule_obj in (custom_rules or []):
+                # 兼容旧版纯字符串配置
+                if isinstance(rule_obj, str):
+                    applicable_rules.append(rule_obj)
+                    continue
+                    
+                pattern = rule_obj.get('pattern', '').strip()
+                target_channel = rule_obj.get('channel', '').strip().lower()
+                
+                if not pattern: continue
+                
+                if not target_channel:
+                    # 未指定频道，全局生效
+                    applicable_rules.append(pattern)
+                else:
+                    # 指定了频道，进行匹配校验
+                    target_clean = target_channel.replace('-100', '') if target_channel.startswith('-100') else target_channel
+                    curr_id_clean = curr_id.replace('-100', '') if curr_id.startswith('-100') else curr_id
+                    if curr_username.lower() == target_clean or curr_id == target_channel or curr_id_clean == target_clean:
+                        applicable_rules.append(pattern)
 
-        # 1. 提取 Markdown/HTML 隐藏的超链接
-        if event.message.entities:
-            for entity in event.message.entities:
-                if hasattr(entity, 'url') and entity.url:
-                    all_urls.append(entity.url)
-
-        # 2. 提取底部内联键盘 (Inline Keyboard) 的按钮链接 (解决星河频道)
-        if event.message.reply_markup and hasattr(event.message.reply_markup, 'rows'):
-            for row in event.message.reply_markup.rows:
-                for button in row.buttons:
-                    if hasattr(button, 'url') and button.url:
-                        all_urls.append(button.url)
-
-        # --- 辅助正则执行函数 ---
-        def _apply_regex(text, custom_rules, default_rules, flags=re.IGNORECASE):
-            rules = (custom_rules or []) + default_rules
+            # 2. 合并默认规则
+            rules = applicable_rules + default_rules
+            
             for rule in rules:
                 if not rule or not rule.strip(): continue
                 try:
                     match = re.search(rule, text, flags)
                     if match: return match
                 except Exception as e:
-                    logger.error(f"  ➜ [频道监听] 自定义正则执行错误: {rule} -> {e}")
+                    logger.error(f"  ➜ [频道监听] 正则执行错误: {rule} -> {e}")
             return None
 
         custom_regex = cfg.get('custom_regex', {})
@@ -250,7 +251,7 @@ class TGUserBotManager:
                 if hasattr(entity, 'url') and entity.url:
                     all_urls.append(entity.url)
 
-        # 2. 提取底部内联键盘 (Inline Keyboard) 的按钮链接 (解决星河频道)
+        # 2. 提取底部内联键盘 (Inline Keyboard) 的按钮链接
         if event.message.reply_markup and hasattr(event.message.reply_markup, 'rows'):
             for row in event.message.reply_markup.rows:
                 for button in row.buttons:
@@ -261,62 +262,72 @@ class TGUserBotManager:
         target_link = None
         receive_code = ""
 
-        # 先看文本里有没有明文的 115 链接，有的话插到最前面优先处理
         link_match = re.search(r'(https?://(?:115cdn|115)\.com/s/[a-zA-Z0-9]+(?:[?&]password=[a-zA-Z0-9]+)?)', text, re.IGNORECASE)
         if link_match:
             all_urls.insert(0, link_match.group(1))
 
-        # 遍历所有收集到的链接
         for url in all_urls:
             if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/115/' in url:
                 target_link = url
-                # ★ 尝试从 URL 中提取密码 (优先自定义，后默认)
-                pwd_in_url = _apply_regex(url, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_url'])
+                pwd_in_url = _apply_regex(url, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_url'], chat_username, chat_id)
                 if pwd_in_url:
                     receive_code = pwd_in_url.group(1)
                 break
 
         # 4. 如果 URL 里没有密码，再从正文里找
         if not receive_code:
-            pwd_match = _apply_regex(text, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_text'])
+            pwd_match = _apply_regex(text, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_text'], chat_username, chat_id)
             if pwd_match:
                 receive_code = pwd_match.group(1)
 
-        # 5. 提取 TMDB ID (如果有)
+        # 5. 提取 TMDB ID
         tmdb_id = None
-        tmdb_match = _apply_regex(text, custom_regex.get('tmdb', []), DEFAULT_TG_REGEX['tmdb'])
+        tmdb_match = _apply_regex(text, custom_regex.get('tmdb', []), DEFAULT_TG_REGEX['tmdb'], chat_username, chat_id)
         if tmdb_match:
             tmdb_id = tmdb_match.group(1)
 
-        # 6. 提取标题和年份 (用于没有 TMDB ID 时的反查)
+        # 6. 提取标题和年份
         title = None
         year = None
-        # 标题提取通常不忽略大小写，所以 flags=0
-        title_match = _apply_regex(text, custom_regex.get('title_year', []), DEFAULT_TG_REGEX['title_year'], flags=0)
+        title_match = _apply_regex(text, custom_regex.get('title_year', []), DEFAULT_TG_REGEX['title_year'], chat_username, chat_id, flags=0)
         if title_match:
             title = title_match.group(1).strip()
             title = re.sub(r'^\[.*?\]\s*', '', title).strip()
             title = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', title).strip()
             year = title_match.group(2)
 
-        # 7. 提取季号和集号 (泥石流级增强版 + 合集包识别)
+        # 7. 提取季号和集号
         season_number = None
         episode_number = None
-        is_pack = False # 标记是否为合集包
-        is_completed_pack = False # ★ 新增：标记是否为“完结洗版包”
+        is_pack = False 
+        is_completed_pack = False 
 
-        # ★ 识别完结包特征
         if re.search(r'(完结|全\d+集|\d+集全)', text, re.IGNORECASE):
             is_completed_pack = True
             is_pack = True
         
-        # ★ 先尝试用户自定义的季集正则
+        # ★ 季集自定义正则 (支持频道隔离)
         custom_se = custom_regex.get('season_episode', [])
         se_matched = False
-        for rule in custom_se:
-            if not rule.strip(): continue
+        for rule_obj in custom_se:
+            if isinstance(rule_obj, str):
+                pattern = rule_obj
+                target_channel = ""
+            else:
+                pattern = rule_obj.get('pattern', '').strip()
+                target_channel = rule_obj.get('channel', '').strip().lower()
+                
+            if not pattern: continue
+            
+            # 校验频道
+            if target_channel:
+                target_clean = target_channel.replace('-100', '') if target_channel.startswith('-100') else target_channel
+                curr_id_clean = chat_id.replace('-100', '') if chat_id.startswith('-100') else chat_id
+                if not (chat_username.lower() == target_clean or chat_id == target_channel or curr_id_clean == target_clean):
+                    continue
+                    
             try:
-                match = re.search(rule, text, re.IGNORECASE)
+                match = re.search(pattern, text, re.IGNORECASE)
                 if match:
                     groups = match.groups()
                     if len(groups) >= 2:
@@ -327,64 +338,51 @@ class TGUserBotManager:
                     se_matched = True
                     break
             except Exception as e:
-                logger.error(f"  ➜ [频道监听] 季集自定义正则错误: {rule} -> {e}")
+                logger.error(f"  ➜ [频道监听] 季集自定义正则错误: {pattern} -> {e}")
 
-        # 如果自定义正则没匹配上，走默认的硬编码逻辑
         if not se_matched:
-            # 规则 A: 范围匹配合集包 (例如 S01E01-E19, S1 EP01~10)
             range_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})\s*(?:-|~|至)\s*(?:E|EP)?\s*(\d{1,4})', text, re.IGNORECASE)
             if range_match:
                 season_number = int(range_match.group(1))
-                episode_number = int(range_match.group(3)) # 记录最大集号
+                episode_number = int(range_match.group(3)) 
                 is_pack = True
             else:
-                # 规则 B: 标准单集 S01E01 或 S1 EP10
                 se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
                 if se_match:
                     season_number = int(se_match.group(1))
                     episode_number = int(se_match.group(2))
                 else:
-                    # 规则 C: 第x季 第x集
                     s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
                     e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)', text, re.IGNORECASE)
                     if s_match: season_number = int(s_match.group(1))
                     if e_match: episode_number = int(e_match.group(1))
                     
-                    # 规则 D: 应对群魔乱舞的合集包 (更新至X集, 全X集, 1-X集)
                     if episode_number is None:
                         bulk_match = re.search(r'(?:更新至|全|至)(?:第)?\s*(\d{1,4})\s*(?:集|话)|(?:^|\s)\d{1,3}-(\d{1,4})(?:集|话)?', text)
                         if bulk_match:
                             ep_str = bulk_match.group(1) or bulk_match.group(2)
                             if ep_str:
                                 episode_number = int(ep_str)
-                                is_pack = True # 标记为合集
+                                is_pack = True 
 
-        # ★ 兜底神技：国产剧/韩剧通常不写季号，如果提取到了集号但没季号，默认第一季！
         if episode_number is not None and season_number is None:
             season_number = 1
 
-        # 8. 精准判定媒体类型 (防张冠李戴 - 优先级隔离版)
-        item_type = 'movie' # 默认兜底为电影
+        # 8. 精准判定媒体类型
+        item_type = 'movie' 
         
-        # 优先级 1: 明确的标题前缀 (最高优先级，直接秒杀)
         if re.search(r'(?:📺|🖥️)?\s*(?:电视剧|剧集|动漫|番剧)[:：]', text):
             item_type = 'tv'
         elif re.search(r'(?:🎬|🎥|🎞️)?\s*电影[:：]', text):
             item_type = 'movie'
-            
-        # 优先级 2: 季号和集号特征 (只要带 S01E01 或 更新至X集，绝对是剧集)
         elif season_number is not None or episode_number is not None:
             item_type = 'tv'
-            
-        # 优先级 3: 标签特征 (只在 #标签 里找，防止被简介误伤)
         else:
             tags = " ".join(re.findall(r'#\w+', text))
             if re.search(r'#(?:电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|剧集|动画)', tags, re.IGNORECASE):
                 item_type = 'tv'
             elif re.search(r'#(?:电影|Movie)', tags, re.IGNORECASE):
                 item_type = 'movie'
-                
-            # 优先级 4: 头部文本特征 (只看前8行，坚决不看简介)
             else:
                 header_text = "\n".join(text.split('\n')[:8])
                 if re.search(r'(电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|剧集)', header_text, re.IGNORECASE):
@@ -392,17 +390,12 @@ class TGUserBotManager:
                 elif re.search(r'(电影|Movie)', header_text, re.IGNORECASE):
                     item_type = 'movie'
 
-        # =================================================================
-        # 根据用户配置的订阅类型进行拦截
-        # =================================================================
         allowed_types = cfg.get('monitor_types', ['movie', 'tv'])
-        is_brainless = 'all' in allowed_types # ★ 新增：判断是否开启了无脑转存
+        is_brainless = 'all' in allowed_types 
         
         if item_type not in allowed_types and not is_brainless:
-            logger.debug(f"  ➜ [频道监听] 资源类型为 {'剧集' if item_type=='tv' else '电影'}，未在允许的订阅类型中，已忽略。")
             return
 
-        # 9. 解析磁力/ED2K 链接
         is_magnet = text.lower().startswith('magnet:?')
         is_ed2k = text.lower().startswith('ed2k://')
         magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
@@ -410,8 +403,6 @@ class TGUserBotManager:
         # =================================================================
         # ★ 核心分流逻辑
         # =================================================================
-        
-        # 情况 A：找到了目标链接 (115 或 中间页)，且 (有 TMDB ID 或 有标题 或 开启了无脑转存)
         if target_link and (tmdb_id or title or is_brainless):
             logger.debug(f"  ➜ [频道监听] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 判定类型: {'剧集' if item_type=='tv' else '电影'}, 准备推入处理队列...")
             
@@ -426,10 +417,10 @@ class TGUserBotManager:
                 "season_number": season_number,
                 "episode_number": episode_number,
                 "is_pack": is_pack,
-                "is_brainless": is_brainless  # <--- ★ 传递无脑转存标志给消费者
+                "is_completed_pack": is_completed_pack,
+                "is_brainless": is_brainless 
             })
             
-        # 情况 B：手动发的磁力链或 ED2K
         elif is_magnet or is_ed2k or magnet_ed2k_match:
             target_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else text
             logger.info(f"  ➜ [频道监听] 收到手动离线下载请求 -> {target_url[:30]}...")
@@ -440,7 +431,7 @@ class TGUserBotManager:
             })
 
     # ==========================================
-    # 以下是供前端 API 调用的登录交互方法
+    # 以下是供前端 API 调用的登录交互方法 (保持不变)
     # ==========================================
     def get_status(self):
         if not self.client or not self.loop:
@@ -476,7 +467,6 @@ class TGUserBotManager:
                 if not self.client.is_connected(): 
                     await self.client.connect()
                 res = await self.client.send_code_request(phone)
-                # 只要后台拿到 hash，就存起来供提交时使用
                 self.phone_code_hash = res.phone_code_hash
                 logger.info("  ➜ [频道监听] 验证码发送请求已成功响应！")
                 return True
@@ -487,12 +477,9 @@ class TGUserBotManager:
         future = asyncio.run_coroutine_threadsafe(_send(), self.loop)
         
         try:
-            # 我们只等 20 秒
             return future.result(timeout=20)
         except TimeoutError:
             logger.warning("  ➜ [频道监听] 请求验证码超时！但后台仍在尝试发送。")
-            # ★★★ 老六的终极骗术：捕获超时错误，不抛出异常，强行让前端弹出输入框！ ★★★
-            # 只要这里不抛出异常，routes/system.py 就会给前端返回 success: True
             return True
 
     def submit_login_code(self, code):
@@ -514,7 +501,6 @@ class TGUserBotManager:
                 logger.error(f"  ➜ [频道监听] 提交验证码失败: {e}")
                 raise e
                 
-        # 同样放宽到 60 秒
         future = asyncio.run_coroutine_threadsafe(_submit(), self.loop)
         return future.result(timeout=60)
 
@@ -528,10 +514,9 @@ class TGUserBotManager:
 
 
 # =================================================================
-# ★★★ ETK 侧的消费者协程 (处理队列中的任务) ★★★
+# ★★★ ETK 侧的消费者协程 (处理队列中的任务) (保持不变)
 # =================================================================
 def _process_tg_queue():
-    """死循环读取队列，执行查库和 115 转存/离线下载 (在 gevent 协程中运行)"""
     import requests 
     
     while True:
@@ -555,11 +540,8 @@ def _process_tg_queue():
                 season_number = task.get('season_number')
                 episode_number = task.get('episode_number')
                 is_pack = task.get('is_pack', False) 
-                is_brainless = task.get('is_brainless', False) # ★ 获取无脑转存标志
+                is_brainless = task.get('is_brainless', False) 
 
-                # -----------------------------------------------------------
-                # 1. 最强大脑：缺失 TMDB ID 时自动反查
-                # -----------------------------------------------------------
                 item_type = task.get('item_type', 'movie')
                 if not tmdb_id and title:
                     logger.debug(f"  ➜ [频道监听] 缺失 TMDB ID，正在通过 TMDb 接口反查: {title} ({year}), 严格限定类型: {'剧集' if item_type=='tv' else '电影'}...")
@@ -577,12 +559,9 @@ def _process_tg_queue():
                             logger.warning(f"  ➜ [频道监听] 反查失败，TMDb 未找到该{'剧集' if item_type=='tv' else '电影'}，任务终止。")
                             continue
 
-                if not tmdb_id and not is_brainless: continue # ★ 无脑模式下，没有 TMDB ID 也放行
+                if not tmdb_id and not is_brainless: continue 
 
-                # -----------------------------------------------------------
-                # 2. 查库校验 (判断是否在追剧列表中)
-                # -----------------------------------------------------------
-                should_process = is_brainless # ★ 无脑模式直接设为 True，跳过查库
+                should_process = is_brainless 
                 if not should_process:
                     try:
                         with get_db_connection() as conn:
@@ -606,7 +585,6 @@ def _process_tg_queue():
                                             break
                                 
                                 if not should_process:
-                                    # ★ 注意：这里多查了一个 waiting_for_completed_pack 字段
                                     cursor.execute("SELECT watching_status, waiting_for_completed_pack FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
                                     row = cursor.fetchone()
                                     if row:
@@ -616,13 +594,11 @@ def _process_tg_queue():
                                         if status in ['Watching', 'Paused', 'Pending']:
                                             should_process = True
                                         
-                                        # ★ 核心逻辑：如果是完结包，且状态是已完结
                                         elif status == 'Completed' and task.get('is_completed_pack'):
                                             if is_waiting:
                                                 should_process = True
                                                 logger.info(f"  ➜ [TG洗版特权] 识别到完结包，且剧集正在等待洗版，特权放行！(TMDB: {tmdb_id})")
                                                 
-                                                # ★★★ 阅后即焚 + 点亮洗版特权灯 ★★★
                                                 cursor.execute("""
                                                     UPDATE media_metadata 
                                                     SET waiting_for_completed_pack = FALSE,
@@ -640,16 +616,12 @@ def _process_tg_queue():
                     logger.debug(f"  ➜ [频道监听] 资源 (TMDB: {tmdb_id}) 不在已订阅/追剧列表中，已忽略。")
                     continue
 
-                # -----------------------------------------------------------
-                # 3. 精准去重逻辑 (本地已有的集数直接跳过)
-                # -----------------------------------------------------------
-                if not is_brainless and season_number is not None and episode_number is not None: # ★ 无脑模式跳过去重
+                if not is_brainless and season_number is not None and episode_number is not None: 
                     from database import media_db
                     local_seasons = media_db.get_series_local_children_info(tmdb_id)
                     if task.get('is_completed_pack'):
                         logger.info(f"  ➜ [频道监听] 这是一个完结洗版包，无视本地已有集数，强制放行转存！")
                     elif is_pack:
-                        # 如果是合集包，检查本地该季的总集数是否满足
                         local_ep_count = len(local_seasons.get(season_number, []))
                         if local_ep_count >= episode_number:
                             logger.debug(f"  ➜ [频道监听] 合集包 (TMDB: {tmdb_id} S{season_number:02d} 宣称 {episode_number} 集)，本地已有 {local_ep_count} 集，判定为已满足，跳过转存！")
@@ -657,14 +629,10 @@ def _process_tg_queue():
                         else:
                             logger.info(f"  ➜ [频道监听] 发现合集包 (S{season_number:02d} 宣称 {episode_number} 集)，本地仅有 {local_ep_count} 集，放行转存以补齐缺集！")
                     else:
-                        # 如果是单集，严格检查该集是否存在
                         if season_number in local_seasons and episode_number in local_seasons[season_number]:
                             logger.debug(f"  ➜ [频道监听] 单集资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
                             continue
 
-                # -----------------------------------------------------------
-                # 4. 追踪弹：解析真实的 115 Share Code (★★★ 此时才允许扣积分解锁 ★★★)
-                # -----------------------------------------------------------
                 share_code = None
                 
                 if 'hdhive.com' in target_link:
@@ -695,7 +663,6 @@ def _process_tg_queue():
                             if match:
                                 share_code = match.group(1)
                                 
-                                # 提取码兜底逻辑
                                 if resource_data.get('access_code'):
                                     receive_code = resource_data.get('access_code')
                                 if not receive_code:
@@ -715,7 +682,6 @@ def _process_tg_queue():
                         logger.error(f"  ➜ [频道监听] 请求影巢 API 异常: {e}")
                         continue
                 else:
-                    # 普通 115 链接，直接提取
                     match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', target_link)
                     if match: share_code = match.group(1)
 
@@ -723,16 +689,12 @@ def _process_tg_queue():
                     logger.error("  ➜ [频道监听] 无法获取有效的 115 Share Code，任务终止。")
                     continue
 
-                # -----------------------------------------------------------
-                # 5. 执行转存
-                # -----------------------------------------------------------
                 logger.debug(f"  ➜ [频道监听] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
                 
                 res = client.share_import(share_code, receive_code, target_cid)
                 if res and res.get('state'):
                     logger.info(f"  ➜ [频道监听] 资源转存成功！正在触发整理...")
                     
-                    # ★★★ 发送转存成功通知 ★★★
                     notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
                     if 'transfer_success' in notify_types:
                         try:
@@ -750,9 +712,6 @@ def _process_tg_queue():
                     err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
                     logger.error(f"  ➜ [频道监听] 转存失败: {err}")
 
-            # =================================================================
-            # ★ 任务类型 B：处理手动发送的磁力/ED2K 离线下载 (保持不变)
-            # =================================================================
             elif task_type == "offline_download":
                 target_url = task['url']
                 payload = {"url[0]": target_url, "wp_path_id": target_cid}
@@ -772,5 +731,4 @@ def _process_tg_queue():
         except Exception as e:
             logger.error(f"  ➜ [频道监听] 队列处理异常: {e}")
 
-# 启动消费者协程
 spawn(_process_tg_queue)

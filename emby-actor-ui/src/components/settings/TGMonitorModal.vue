@@ -18,7 +18,6 @@
           </n-checkbox-group>
         </n-form-item>
         
-        <!-- 当勾选无脑转存时显示警告提示 -->
         <n-alert v-if="config.monitor_types && config.monitor_types.includes('all')" type="warning" style="margin-bottom: 24px;" :show-icon="true">
           <b>警告：</b>开启“无脑转存”后，将无视您的订阅列表、追剧状态和本地去重逻辑，全盘接收频道发布的所有 115 资源！<br/>
           这可能会快速消耗您的 115 空间配额和影巢积分，请谨慎使用。
@@ -75,7 +74,6 @@
           </n-space>
         </n-form-item>
 
-        <!-- 验证码输入框 -->
         <n-form-item v-if="showCodeInput" label="输入验证码">
           <n-input-group>
             <n-input v-model:value="userBotCode" placeholder="输入 TG 收到的验证码" />
@@ -83,12 +81,12 @@
           </n-input-group>
         </n-form-item>
 
-        <!-- ★★★ 高级设置：自定义正则 ★★★ -->
+        <!-- ★★★ 高级设置：自定义正则 (支持频道隔离) ★★★ -->
         <n-collapse style="margin-top: 24px; border-top: 1px solid rgba(128,128,128,0.2); padding-top: 16px;">
           <n-collapse-item title="高级设置：自定义正则提取 (点击展开)" name="1">
             <n-alert type="info" style="margin-bottom: 16px; font-size: 13px;">
               当默认规则无法识别某些奇葩频道的格式时，可在此添加自定义正则表达式。<br/>
-              <b>注意：</b>必须使用 <code>()</code> 捕获组来提取目标内容。自定义正则优先级高于系统默认。
+              <b>注意：</b>必须使用 <code>()</code> 捕获组来提取目标内容。支持指定频道 (填 Username 或 ID)，<b>留空则全局生效</b>。
             </n-alert>
 
             <n-form-item>
@@ -99,7 +97,14 @@
                   需 1 个捕获组。例如：<code>TMDB:\s*(\d+)</code>
                 </n-tooltip>
               </template>
-              <n-dynamic-input v-model:value="config.custom_regex.tmdb" placeholder="输入正则表达式" :min="0" />
+              <n-dynamic-input v-model:value="config.custom_regex.tmdb" @create="onCreateRegexObj" :min="0">
+                <template #default="{ value }">
+                  <n-space align="center" :wrap="false" style="width: 100%">
+                    <n-input v-model:value="value.pattern" placeholder="正则表达式" style="flex: 2" />
+                    <n-input v-model:value="value.channel" placeholder="指定频道(留空全局)" style="flex: 1" />
+                  </n-space>
+                </template>
+              </n-dynamic-input>
             </n-form-item>
 
             <n-form-item>
@@ -110,7 +115,14 @@
                   需 2 个捕获组 (标题, 年份)。例如：<code>名称:\s*(.*?)\s*\((\d{4})\)</code>
                 </n-tooltip>
               </template>
-              <n-dynamic-input v-model:value="config.custom_regex.title_year" placeholder="输入正则表达式" :min="0" />
+              <n-dynamic-input v-model:value="config.custom_regex.title_year" @create="onCreateRegexObj" :min="0">
+                <template #default="{ value }">
+                  <n-space align="center" :wrap="false" style="width: 100%">
+                    <n-input v-model:value="value.pattern" placeholder="正则表达式" style="flex: 2" />
+                    <n-input v-model:value="value.channel" placeholder="指定频道(留空全局)" style="flex: 1" />
+                  </n-space>
+                </template>
+              </n-dynamic-input>
             </n-form-item>
 
             <n-form-item>
@@ -121,7 +133,14 @@
                   需 2 个捕获组 (季, 集) 或 1 个捕获组 (集)。例如：<code>S(\d+)E(\d+)</code>
                 </n-tooltip>
               </template>
-              <n-dynamic-input v-model:value="config.custom_regex.season_episode" placeholder="输入正则表达式" :min="0" />
+              <n-dynamic-input v-model:value="config.custom_regex.season_episode" @create="onCreateRegexObj" :min="0">
+                <template #default="{ value }">
+                  <n-space align="center" :wrap="false" style="width: 100%">
+                    <n-input v-model:value="value.pattern" placeholder="正则表达式" style="flex: 2" />
+                    <n-input v-model:value="value.channel" placeholder="指定频道(留空全局)" style="flex: 1" />
+                  </n-space>
+                </template>
+              </n-dynamic-input>
             </n-form-item>
 
             <n-form-item>
@@ -132,7 +151,14 @@
                   需 1 个捕获组。例如：<code>密码:\s*([a-zA-Z0-9]{4})</code>
                 </n-tooltip>
               </template>
-              <n-dynamic-input v-model:value="config.custom_regex.password" placeholder="输入正则表达式" :min="0" />
+              <n-dynamic-input v-model:value="config.custom_regex.password" @create="onCreateRegexObj" :min="0">
+                <template #default="{ value }">
+                  <n-space align="center" :wrap="false" style="width: 100%">
+                    <n-input v-model:value="value.pattern" placeholder="正则表达式" style="flex: 2" />
+                    <n-input v-model:value="value.channel" placeholder="指定频道(留空全局)" style="flex: 1" />
+                  </n-space>
+                </template>
+              </n-dynamic-input>
             </n-form-item>
           </n-collapse-item>
         </n-collapse>
@@ -188,6 +214,11 @@ const userBotCode = ref('');
 const isSendingCode = ref(false);
 const isSubmittingCode = ref(false);
 
+// 创建新的正则对象
+const onCreateRegexObj = () => {
+  return { pattern: '', channel: '' };
+};
+
 // 暴露给父组件调用的方法
 const open = async () => {
   showModal.value = true;
@@ -203,8 +234,24 @@ const fetchConfig = async () => {
     const res = await axios.get('/api/subscription/tg_userbot/config');
     if (res.data.success) {
       config.value = res.data.data;
+      
+      // ★ 兼容旧版数据：将纯字符串数组转换为对象数组
       if (!config.value.custom_regex) {
         config.value.custom_regex = { tmdb: [], title_year: [], season_episode: [], password: [] };
+      } else {
+        const keys = ['tmdb', 'title_year', 'season_episode', 'password'];
+        keys.forEach(key => {
+          if (Array.isArray(config.value.custom_regex[key])) {
+            config.value.custom_regex[key] = config.value.custom_regex[key].map(item => {
+              if (typeof item === 'string') {
+                return { pattern: item, channel: '' }; // 旧版数据默认全局生效
+              }
+              return item;
+            });
+          } else {
+            config.value.custom_regex[key] = [];
+          }
+        });
       }
     }
   } catch (e) {
@@ -220,7 +267,7 @@ const saveConfig = async () => {
     const res = await axios.post('/api/subscription/tg_userbot/config', config.value);
     if (res.data.success) {
       message.success(res.data.message);
-      await checkUserBotStatus(); // 保存后重新刷新状态
+      await checkUserBotStatus(); 
     }
   } catch (e) {
     message.error('保存失败');
