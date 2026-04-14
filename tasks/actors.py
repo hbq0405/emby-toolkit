@@ -526,6 +526,8 @@ def task_merge_duplicate_actors(processor):
                 delete_success = emby.delete_person_custom_api(
                     base_url=processor.emby_url, api_key=processor.emby_api_key, person_id=deletee['Id']
                 )
+                if delete_success:
+                    deleted_count += 1
             else:
                 logger.error(f"  ➜ 由于媒体项更新失败，演员 '{deletee['Name']}' (ID: {deletee['Id']}) 将被跳过，不予删除，以保证数据安全。")
             
@@ -642,7 +644,8 @@ def task_purge_ghost_actors(processor):
             success = emby.delete_person_custom_api(
                 base_url=processor.emby_url, api_key=processor.emby_api_key, person_id=person_id
             )
-            
+            if success:
+                deleted_count += 1
             time.sleep(0.2)
 
         final_message = f"“幽灵演员”清理完成！共找到 {total_to_delete} 个目标，成功删除了 {deleted_count} 个。"
