@@ -526,22 +526,6 @@ def task_merge_duplicate_actors(processor):
                 delete_success = emby.delete_person_custom_api(
                     base_url=processor.emby_url, api_key=processor.emby_api_key, person_id=deletee['Id']
                 )
-                if delete_success:
-                    deleted_count += 1
-                    try:
-                        with get_db_connection() as conn:
-                            with conn.cursor() as cursor:
-                                # ★★★ 修正 2/2: 更新映射表，而不是删除 ★★★
-                                cursor.execute(
-                                    "UPDATE person_metadata SET emby_person_id = %s WHERE tmdb_person_id = %s",
-                                    (keeper['Id'], tmdb_id)
-                                )
-                                if cursor.rowcount > 0:
-                                    logger.info(f"  ➜ 同步成功: 已将数据库中 TMDb ID '{tmdb_id}' 的映射更新为 Emby ID '{keeper['Id']}'。")
-                                else:
-                                    logger.warning(f"  ➜ 同步提醒: 在 person_metadata 中未找到 TMDb ID '{tmdb_id}'，无法更新。")
-                    except Exception as db_exc:
-                        logger.error(f"  ➜ 同步失败: 尝试更新 TMDb ID '{tmdb_id}' 的映射时出错: {db_exc}")
             else:
                 logger.error(f"  ➜ 由于媒体项更新失败，演员 '{deletee['Name']}' (ID: {deletee['Id']}) 将被跳过，不予删除，以保证数据安全。")
             
@@ -658,17 +642,6 @@ def task_purge_ghost_actors(processor):
             success = emby.delete_person_custom_api(
                 base_url=processor.emby_url, api_key=processor.emby_api_key, person_id=person_id
             )
-            
-            if success:
-                deleted_count += 1
-                try:
-                    with get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            cursor.execute("UPDATE person_metadata SET emby_person_id = NULL WHERE emby_person_id = %s", (person_id,))
-                            if cursor.rowcount > 0:
-                                logger.info(f"  ➜ 同步成功: 已从本地数据库解绑 Emby ID '{person_id}'。")
-                except Exception as db_exc:
-                    logger.error(f"  ➜ 同步失败: 尝试从本地数据库删除 ID '{person_id}' 时出错: {db_exc}")
             
             time.sleep(0.2)
 

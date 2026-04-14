@@ -2069,25 +2069,7 @@ class MediaProcessor:
                 emby_id_to_new_name[str(emby_id)] = persons_to_update[tmdb_id]
                 del persons_to_update[tmdb_id]
 
-        # 3.2 从本地数据库查询剩余的 TMDb ID (针对导演和客串)
-        if persons_to_update:
-            tmdb_ids_to_query = list(persons_to_update.keys())
-            try:
-                with get_central_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        placeholders = ','.join(['%s'] * len(tmdb_ids_to_query))
-                        query = f"SELECT tmdb_person_id, emby_person_id FROM person_metadata WHERE tmdb_person_id IN ({placeholders}) AND emby_person_id IS NOT NULL"
-                        cursor.execute(query, tuple(tmdb_ids_to_query))
-                        for row in cursor.fetchall():
-                            t_id = str(row['tmdb_person_id'])
-                            e_id = str(row['emby_person_id'])
-                            if t_id in persons_to_update:
-                                emby_id_to_new_name[e_id] = persons_to_update[t_id]
-                                del persons_to_update[t_id]
-            except Exception as e:
-                logger.warning(f"  ➜ 查询本地人物映射库失败: {e}")
-
-        # 3.3 从 Emby API 实时查询剩余的 TMDb ID (终极兜底：解决以前存在于Emby但未被系统记录的导演)
+        # 3.2 从 Emby API 实时查询剩余的 TMDb ID (终极兜底：解决以前存在于Emby但未被系统记录的导演)
         if persons_to_update:
             remaining_tmdb_ids = list(persons_to_update.keys())
             BATCH_SIZE = 50
@@ -2967,7 +2949,7 @@ class MediaProcessor:
                     match_found = False
                     if d_douban_id:
                         entry = self.actor_db_manager.find_person_by_any_id(cursor, douban_id=d_douban_id)
-                        if entry and entry.get("tmdb_person_id") and entry.get("emby_person_id"):
+                        if entry and entry.get("tmdb_person_id"):
                             tmdb_id_from_map = str(entry.get("tmdb_person_id"))
                             if tmdb_id_from_map not in final_cast_map:
                                 logger.info(f"    ├─ 匹配成功 (通过 豆瓣ID映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
@@ -3019,7 +3001,7 @@ class MediaProcessor:
                                 logger.debug(f"  ➜ 为 '{d_actor.get('Name')}' 获取到 IMDb ID: {d_imdb_id}，开始匹配...")
                                 
                                 entry_from_map = self.actor_db_manager.find_person_by_any_id(cursor, imdb_id=d_imdb_id)
-                                if entry_from_map and entry_from_map.get("tmdb_person_id") and entry_from_map.get("emby_person_id"):
+                                if entry_from_map and entry_from_map.get("tmdb_person_id"):
                                     tmdb_id_from_map = str(entry_from_map.get("tmdb_person_id"))
                                     if tmdb_id_from_map not in final_cast_map:
                                         logger.debug(f"    ├─ 匹配成功 (通过 IMDb映射): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
@@ -3044,7 +3026,7 @@ class MediaProcessor:
                                         d_actor['imdb_id_from_api'] = d_imdb_id
 
                                         final_check_row = self.actor_db_manager.find_person_by_any_id(cursor, tmdb_id=tmdb_id_from_find)
-                                        if final_check_row and dict(final_check_row).get("emby_person_id"):
+                                        if final_check_row:
                                             emby_pid_from_final_check = dict(final_check_row).get("emby_person_id")
                                             if tmdb_id_from_find not in final_cast_map:
                                                 logger.info(f"    ├─ 匹配成功 (通过 TMDb反查): 豆瓣演员 '{d_actor.get('Name')}' -> 加入最终演员表")
