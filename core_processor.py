@@ -1503,7 +1503,13 @@ class MediaProcessor:
                         try: episodes_grouped_by_number[(int(s_num), int(e_num))].append(ep_version)
                         except: pass
 
-                processed_emby_episodes = set() # ★ 新增：记录已处理的 Emby 分集
+                processed_emby_episodes = set() # 记录已处理的 Emby 分集
+                # 构建已翻译角色的映射表 (tmdb_id -> 翻译后的 character) ★★★
+                translated_character_map = {}
+                if final_processed_cast:
+                    for p in final_processed_cast:
+                        if p.get("id") and p.get("character"):
+                            translated_character_map[int(p["id"])] = p["character"]
 
                 for episode in episodes_details:
                     # 1. 必须有季号和集号 (提前解析，用于生成内部ID)
@@ -1558,42 +1564,13 @@ class MediaProcessor:
                     ep_actors_json_list = []
                     
                     if ep_cast_raw:
-                        # 1. 优先使用分集专属演员
-                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in ep_cast_raw if p.get("id")]
+                        # 1. 优先使用分集专属演员 (查字典翻译角色名)
+                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": translated_character_map.get(int(p.get("id")), p.get("character")), "order": p.get("order", 999)} for p in ep_cast_raw if p.get("id")]
                     elif season_cast:
-                        # 2. 其次使用季(Season)演员表兜底
-                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
+                        # 2. 其次使用季(Season)演员表兜底 (查字典翻译角色名)
+                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": translated_character_map.get(int(p.get("id")), p.get("character")), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
                     else:
-                        # 3. 终极兜底：使用剧集(Series)总演员表
-                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
-
-                    # ★ 提取季(Season)元数据作为兜底
-                    current_season_info = next((s for s in seasons_details if s.get('season_number') == s_num), {})
-                    season_credits = current_season_info.get('credits') or current_season_info.get('aggregate_credits') or {}
-                    season_cast = season_credits.get('cast', [])
-                    season_crew = season_credits.get('crew', [])
-
-                    # ★★★ 提取分集专属导演 ★★★
-                    ep_crew = episode.get('crew', [])
-                    if not ep_crew:
-                        ep_crew = episode.get('credits', {}).get('crew', [])
-                    if not ep_crew:
-                        ep_crew = season_crew # 季导演兜底
-                        
-                    ep_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in ep_crew if p.get('job') == 'Director']
-
-                    # ★★★ 提取分集专属演员表 (含客串) ★★★
-                    ep_cast_raw = episode.get('credits', {}).get('cast', []) + episode.get('credits', {}).get('guest_stars', [])
-                    ep_actors_json_list = []
-                    
-                    if ep_cast_raw:
-                        # 1. 优先使用分集专属演员
-                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in ep_cast_raw if p.get("id")]
-                    elif season_cast:
-                        # 2. 其次使用季(Season)演员表兜底
-                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
-                    else:
-                        # 3. 终极兜底：使用剧集(Series)总演员表
+                        # 3. 终极兜底：使用剧集(Series)总演员表 (本身已翻译)
                         ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
                     episode_record = {
@@ -1715,7 +1692,7 @@ class MediaProcessor:
                     fallback_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in season_crew if p.get('job') == 'Director']
                     
                     if season_cast:
-                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
+                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": translated_character_map.get(int(p.get("id")), p.get("character")), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
                     else:
                         fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
