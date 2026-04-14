@@ -1001,12 +1001,31 @@ class MediaProcessor:
                     
                     # B. 查分集
                     cursor.execute("SELECT * FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode'", (str(tmdb_id),))
+                    episodes_rows = cursor.fetchall()
+                    
+                    # ★★★ 新增：批量查询分集演员详情，防止 N+1 查询问题 ★★★
+                    ep_actor_ids = set()
+                    for e_row in episodes_rows:
+                        if e_row['actors_json']:
+                            try:
+                                links = json.loads(e_row['actors_json']) if isinstance(e_row['actors_json'], str) else e_row['actors_json']
+                                for link in links:
+                                    if 'tmdb_id' in link: ep_actor_ids.add(link['tmdb_id'])
+                            except: pass
+
+                    ep_actor_map = {}
+                    if ep_actor_ids:
+                        placeholders = ','.join(['%s'] * len(ep_actor_ids))
+                        sql = f"SELECT *, primary_name AS name, tmdb_person_id AS tmdb_id FROM person_metadata WHERE tmdb_person_id IN ({placeholders})"
+                        cursor.execute(sql, tuple(ep_actor_ids))
+                        ep_actor_map = {r['tmdb_id']: dict(r) for r in cursor.fetchall()}
+                    
                     episodes_data = {}
-                    for e_row in cursor.fetchall():
+                    for e_row in episodes_rows:
                         s_num = e_row['season_number']
                         e_num = e_row['episode_number']
                         key = f"S{s_num}E{e_num}"
-                        episodes_data[key] = {
+                        e_data = {
                             "id": int(e_row['tmdb_id']) if str(e_row['tmdb_id']).isdigit() else e_row['tmdb_id'],
                             "name": e_row['title'],
                             "overview": e_row['overview'],
@@ -1016,6 +1035,35 @@ class MediaProcessor:
                             "vote_average": e_row['rating'],
                             "still_path": e_row['poster_path']
                         }
+                        
+                        # ★★★ 新增：完美还原分集专属 credits (演员和导演) ★★★
+                        e_credits = {'cast': [], 'crew': []}
+
+                        # 还原演员
+                        if e_row['actors_json']:
+                            try:
+                                links = json.loads(e_row['actors_json']) if isinstance(e_row['actors_json'], str) else e_row['actors_json']
+                                for link in links:
+                                    tid = link.get('tmdb_id')
+                                    if tid in ep_actor_map:
+                                        actor_obj = ep_actor_map[tid].copy()
+                                        actor_obj['id'] = tid
+                                        actor_obj['character'] = link.get('character')
+                                        actor_obj['order'] = link.get('order', 999)
+                                        e_credits['cast'].append(actor_obj)
+                                e_credits['cast'].sort(key=lambda x: x.get('order', 999))
+                            except: pass
+
+                        # 还原导演
+                        if e_row['directors_json']:
+                            try:
+                                dirs = json.loads(e_row['directors_json']) if isinstance(e_row['directors_json'], str) else e_row['directors_json']
+                                for d in dirs:
+                                    e_credits['crew'].append({'id': d.get('id'), 'name': d.get('name'), 'job': 'Director'})
+                            except: pass
+
+                        e_data['credits'] = e_credits
+                        episodes_data[key] = e_data
 
                     if seasons_data: payload['seasons_details'] = seasons_data
                     if episodes_data: payload['episodes_details'] = episodes_data
@@ -1492,7 +1540,19 @@ class MediaProcessor:
 
                     # ★★★ 提取分集专属导演 ★★★
                     ep_crew = episode.get('crew', [])
+                    if not ep_crew:
+                        ep_crew = episode.get('credits', {}).get('crew', [])
                     ep_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in ep_crew if p.get('job') == 'Director']
+
+                    # ★★★ 提取分集专属演员表 (含客串) ★★★
+                    ep_cast_raw = episode.get('credits', {}).get('cast', []) + episode.get('credits', {}).get('guest_stars', [])
+                    ep_actors_json_list = []
+                    if ep_cast_raw:
+                        # 使用分集专属演员
+                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in ep_cast_raw if p.get("id")]
+                    else:
+                        # 兜底：如果该集没有专属演员，使用剧集总演员表
+                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
                     episode_record = {
                         "tmdb_id": e_tmdb_id_str, 
@@ -1504,7 +1564,8 @@ class MediaProcessor:
                         "runtime_minutes": final_runtime,
                         "poster_path": episode.get('still_path'),
                         "backdrop_path": episode.get('still_path'),
-                        "directors_json": json.dumps(ep_directors, ensure_ascii=False) # 新增写入
+                        "directors_json": json.dumps(ep_directors, ensure_ascii=False),
+                        "actors_json": json.dumps(ep_actors_json_list, ensure_ascii=False) # ★ 新增：独立写入分集演员表
                     }
                     
                     # ★ 资产信息处理 (支持多版本)
@@ -1613,7 +1674,8 @@ class MediaProcessor:
                         "runtime_minutes": final_runtime,
                         "poster_path": None,
                         "backdrop_path": None,
-                        "directors_json": "[]"   
+                        "directors_json": "[]",
+                        "actors_json": json.dumps([{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")], ensure_ascii=False)   
                     }
 
                     all_assets = []
@@ -4114,8 +4176,13 @@ class MediaProcessor:
                                 
                                 if matched_ep:
                                     # 正常生成 TMDb 数据的 NFO
-                                    ep_cast = matched_ep.get('credits', {}).get('cast', [])
-                                    if not ep_cast: ep_cast = cast_to_write 
+                                    # ★ 核心：合并常规演员和客串演员
+                                    ep_cast = matched_ep.get('credits', {}).get('cast', []) + matched_ep.get('credits', {}).get('guest_stars', [])
+                                    
+                                    # ★ 核心：如果当前集完全没有专属演员表，才使用剧集总演员表兜底
+                                    if not ep_cast: 
+                                        ep_cast = cast_to_write 
+                                        
                                     ep_nfo_content = nfo_builder.build_episode_nfo(matched_ep, ep_cast)
                                 else:
                                     # 2. ★★★ 核心修复：TMDb 缺失时，生成兜底 NFO，防止 Emby 显示丑陋的文件名 ★★★
