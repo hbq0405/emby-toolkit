@@ -10,7 +10,7 @@ import extensions
 import task_manager
 
 # 导入各个模块的任务函数
-from .actors import (task_enrich_aliases, task_actor_translation, 
+from .actors import (task_enrich_aliases, task_persons_translation, 
                      task_process_actor_subscriptions, task_merge_duplicate_actors,
                      task_purge_ghost_actors)
 from .media import task_role_translation, task_populate_metadata_cache, task_execute_auto_tagging_rules, task_scan_monitor_folders, task_backup_mediainfo, task_restore_mediainfo, task_contribute_mediainfo_to_center, task_restore_nfo_and_images
@@ -183,7 +183,7 @@ def get_task_registry(context: str = 'all'):
         # --- 适合任务链的常规任务 ---
         'populate-metadata': (task_populate_metadata_cache, "同步媒体数据", 'media', True),
         'role-translation': (task_role_translation, "中文化角色名", 'media', True),
-        'actor-translation': (task_actor_translation, "中文化演员名", 'media', True),
+        'actor-translation': (task_persons_translation, "中文化人物名", 'media', True),
         'process-watchlist': (task_process_watchlist, "刷新智能追剧", 'watchlist', True),
         'actor-tracking': (task_process_actor_subscriptions, "刷新演员订阅", 'actor', True),
         'custom-collections': (task_process_all_custom_collections, "刷新自建合集", 'media', True),

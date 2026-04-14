@@ -826,66 +826,67 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
 
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
 def get_all_persons_from_emby(
-    base_url: str, 
-    api_key: str, 
-    user_id: Optional[str], 
+    base_url: str,
+    api_key: str,
+    user_id: Optional[str],
     stop_event: Optional[threading.Event] = None,
     batch_size: int = 500,
     update_status_callback: Optional[Callable] = None,
-    force_full_scan: bool = False
+    force_full_scan: bool = False,
+    source_item_types: str = "Movie,Series,Season,Episode",
 ) -> Generator[List[Dict[str, Any]], None, None]:
-    """
-    【V6.0 - 4.9+ 终极兼容版】
-    - 修正了全量扫描模式，使其在 Emby 4.9+ 上能正常工作。
-    - 同样切换到 /Items 端点并移除了 UserId 参数。
-    """
     if not user_id:
-        logger.error("  ➜ 获取所有演员需要提供 User ID，但未提供。任务中止。")
+        logger.error("  ➜ 获取所有人物需要提供 User ID，但未提供。任务中止。")
         return
 
     library_ids = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS)
-    
-    # ======================================================================
-    # 模式一：尝试按媒体库进行精准扫描 (如果配置了媒体库且未强制全量)
-    # ======================================================================
+
     if library_ids and not force_full_scan:
         logger.info(f"  ➜ 检测到配置了 {len(library_ids)} 个媒体库，将优先尝试精准扫描...")
-        
+
         media_items = get_emby_library_items(
-            base_url=base_url, api_key=api_key, user_id=user_id,
-            library_ids=library_ids, media_type_filter="Movie,Series", fields="People"
+            base_url=base_url,
+            api_key=api_key,
+            user_id=user_id,
+            library_ids=library_ids,
+            media_type_filter=source_item_types,
+            fields="People"
         )
 
         unique_person_ids = set()
         if media_items:
             for item in media_items:
-                if stop_event and stop_event.is_set(): return
+                if stop_event and stop_event.is_set():
+                    return
                 for person in item.get("People", []):
-                    if person_id := person.get("Id"):
+                    person_id = person.get("Id")
+                    if person_id:
                         unique_person_ids.add(person_id)
 
-        # ★★★ 核心智能检测逻辑 ★★★
-        # 如果成功通过精准模式获取到了演员ID，则继续执行并返回
         if unique_person_ids:
-            logger.info(f"  ➜ 精准扫描成功，发现 {len(unique_person_ids)} 位独立演员需要同步。")
+            logger.info(f"  ➜ 精准扫描成功，发现 {len(unique_person_ids)} 位独立人物需要同步。")
             person_ids_to_fetch = list(unique_person_ids)
-            
+
             precise_batch_size = 500
             total_precise = len(person_ids_to_fetch)
             processed_precise = 0
             for i in range(0, total_precise, precise_batch_size):
-                if stop_event and stop_event.is_set(): return
+                if stop_event and stop_event.is_set():
+                    return
                 batch_ids = person_ids_to_fetch[i:i + precise_batch_size]
                 person_details_batch = get_emby_items_by_id(
-                    base_url=base_url, api_key=api_key, user_id=user_id,
-                    item_ids=batch_ids, fields="ProviderIds,Name"
+                    base_url=base_url,
+                    api_key=api_key,
+                    user_id=user_id,
+                    item_ids=batch_ids,
+                    fields="ProviderIds,Name"
                 )
                 if person_details_batch:
                     yield person_details_batch
                     processed_precise += len(person_details_batch)
                     if update_status_callback:
                         progress = int((processed_precise / total_precise) * 95)
-                        update_status_callback(progress, f"已扫描 {processed_precise}/{total_precise} 名演员...")
+                        update_status_callback(progress, f"已扫描 {processed_precise}/{total_precise} 名人物...")
             return # ★★★ 精准模式成功，任务结束 ★★★
 
         # ★★★ 自动降级触发点 ★★★
