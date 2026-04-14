@@ -4185,6 +4185,30 @@ class MediaProcessor:
                     generated_count = 0
                     skipped_count = 0
                     season_dirs_processed = set()
+
+                    # ★★★ 新增：构建已翻译演员的映射表，用于 NFO 角色名和演员名翻译 ★★★
+                    translated_actor_map = {}
+                    if cast_to_write:
+                        for p in cast_to_write:
+                            p_id = str(p.get("id") or p.get("tmdb_id") or "")
+                            if p_id:
+                                translated_actor_map[p_id] = p
+
+                    def _translate_raw_cast(raw_cast_list):
+                        """辅助函数：将原始 TMDb 演员表中的名字和角色名替换为已翻译的中文"""
+                        if not raw_cast_list: return []
+                        translated_list = []
+                        for raw_actor in raw_cast_list:
+                            actor_id = str(raw_actor.get("id") or "")
+                            if actor_id in translated_actor_map:
+                                new_actor = raw_actor.copy()
+                                # 替换为翻译后的名字和角色名
+                                new_actor['name'] = translated_actor_map[actor_id].get('name', raw_actor.get('name'))
+                                new_actor['character'] = translated_actor_map[actor_id].get('character', raw_actor.get('character'))
+                                translated_list.append(new_actor)
+                            else:
+                                translated_list.append(raw_actor)
+                        return translated_list
                     
                     for root_dir, dirs, files in os.walk(series_root_dir):
                         for filename in files:
@@ -4199,7 +4223,8 @@ class MediaProcessor:
                                 season_crew = []
                                 if season_info:
                                     s_credits = season_info.get('credits') or season_info.get('aggregate_credits') or {}
-                                    season_cast = s_credits.get('cast', [])
+                                    # ★ 核心：翻译季演员表
+                                    season_cast = _translate_raw_cast(s_credits.get('cast', []))
                                     season_crew = s_credits.get('crew', [])
 
                                 if root_dir not in season_dirs_processed:
@@ -4217,7 +4242,9 @@ class MediaProcessor:
                                 
                                 if matched_ep:
                                     # 正常生成 TMDb 数据的 NFO
-                                    ep_cast = matched_ep.get('credits', {}).get('cast', []) + matched_ep.get('credits', {}).get('guest_stars', [])
+                                    raw_ep_cast = matched_ep.get('credits', {}).get('cast', []) + matched_ep.get('credits', {}).get('guest_stars', [])
+                                    # ★ 核心：翻译分集演员表
+                                    ep_cast = _translate_raw_cast(raw_ep_cast)
                                     
                                     # 演员兜底：分集 -> 季 -> 剧
                                     if not ep_cast: 
