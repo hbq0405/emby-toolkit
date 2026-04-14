@@ -1640,8 +1640,19 @@ def translate_tmdb_metadata_recursively(
                         for i in range(0, len(api_list), BATCH_SIZE):
                             batch_names = api_list[i:i+BATCH_SIZE]
                             trans_results = ai_translator.batch_translate(batch_names, mode='transliterate')
+
+                            # 兼容返回 list
+                            if isinstance(trans_results, list) and len(trans_results) == len(batch_names):
+                                trans_results = {batch_names[i]: trans_results[i] for i in range(len(batch_names))}
+                            elif not isinstance(trans_results, dict):
+                                trans_results = {}
+
                             for k, v in trans_results.items():
-                                if v and utils.contains_chinese(v):
+                                # 兼容 value 本身也是 list
+                                if isinstance(v, list):
+                                    v = next((x for x in v if isinstance(x, str) and x.strip()), None)
+
+                                if isinstance(v, str) and v.strip() and utils.contains_chinese(v):
                                     person_trans_map[k] = v
                                     db_manager.save_translation_to_db(cursor, k, v, ai_translator.provider)
                             import time; time.sleep(1)

@@ -58,8 +58,13 @@ class ActorDBManager:
             logger.error(f"  ➜ 读取翻译缓存时发生错误 for '{text}': {e}", exc_info=True)
             return None
 
-    def save_translation_to_db(self, cursor: psycopg2.extensions.cursor, original_text: str, translated_text: Optional[str], engine_used: Optional[str]):
-        """将翻译结果保存到数据库，增加中文校验。"""
+    def save_translation_to_db(self, cursor, original_text, translated_text, engine_used):
+        if isinstance(translated_text, list):
+            translated_text = next((x for x in translated_text if isinstance(x, str) and x.strip()), None)
+
+        if translated_text is not None and not isinstance(translated_text, str):
+            translated_text = str(translated_text)
+
         if translated_text and translated_text.strip() and not contains_chinese(translated_text):
             logger.warning(f"  ➜ 翻译结果 '{translated_text}' 不含中文，已丢弃。原文: '{original_text}'")
             return
