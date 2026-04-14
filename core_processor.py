@@ -1538,34 +1538,61 @@ class MediaProcessor:
 
                     final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
 
+                    # ★★★ 提取季(Season)元数据作为第一兜底 ★★★
+                    current_season_info = next((s for s in seasons_details if s.get('season_number') == s_num), {})
+                    season_credits = current_season_info.get('credits') or current_season_info.get('aggregate_credits') or {}
+                    season_cast = season_credits.get('cast', [])
+                    season_crew = season_credits.get('crew', [])
+
                     # ★★★ 提取分集专属导演 ★★★
                     ep_crew = episode.get('crew', [])
                     if not ep_crew:
                         ep_crew = episode.get('credits', {}).get('crew', [])
+                    if not ep_crew:
+                        ep_crew = season_crew # 季导演兜底
+                        
                     ep_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in ep_crew if p.get('job') == 'Director']
 
                     # ★★★ 提取分集专属演员表 (含客串) ★★★
                     ep_cast_raw = episode.get('credits', {}).get('cast', []) + episode.get('credits', {}).get('guest_stars', [])
                     ep_actors_json_list = []
+                    
                     if ep_cast_raw:
-                        # 使用分集专属演员
+                        # 1. 优先使用分集专属演员
                         ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in ep_cast_raw if p.get("id")]
+                    elif season_cast:
+                        # 2. 其次使用季(Season)演员表兜底
+                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
                     else:
-                        # 兜底：如果该集没有专属演员，使用剧集总演员表
+                        # 3. 终极兜底：使用剧集(Series)总演员表
                         ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
+                    # ★ 提取季(Season)元数据作为兜底
+                    current_season_info = next((s for s in seasons_details if s.get('season_number') == s_num), {})
+                    season_credits = current_season_info.get('credits') or current_season_info.get('aggregate_credits') or {}
+                    season_cast = season_credits.get('cast', [])
+                    season_crew = season_credits.get('crew', [])
+                    
+                    fallback_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in season_crew if p.get('job') == 'Director']
+                    
+                    if season_cast:
+                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
+                    else:
+                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
+
                     episode_record = {
-                        "tmdb_id": e_tmdb_id_str, 
+                        "tmdb_id": fallback_e_tmdb_id, 
                         "item_type": "Episode", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
-                        "title": episode.get('name'), "overview": episode.get('overview'), 
-                        "release_date": episode.get('air_date'), 
+                        "title": emby_ep.get('Name') or f"Episode {e_num}", 
+                        "overview": emby_ep.get('Overview'), 
+                        "release_date": emby_ep.get('PremiereDate'), 
                         "season_number": s_num, "episode_number": e_num,
                         "runtime_minutes": final_runtime,
-                        "poster_path": episode.get('still_path'),
-                        "backdrop_path": episode.get('still_path'),
-                        "directors_json": json.dumps(ep_directors, ensure_ascii=False),
-                        "actors_json": json.dumps(ep_actors_json_list, ensure_ascii=False) # ★ 新增：独立写入分集演员表
+                        "poster_path": None,
+                        "backdrop_path": None,
+                        "directors_json": json.dumps(fallback_directors, ensure_ascii=False),
+                        "actors_json": json.dumps(fallback_actors, ensure_ascii=False)
                     }
                     
                     # ★ 资产信息处理 (支持多版本)
@@ -4160,8 +4187,16 @@ class MediaProcessor:
                             if match:
                                 target_s, target_e = int(match.group(1)), int(match.group(2))
                                 
+                                # ★ 提前提取季(Season)信息，供季 NFO 和分集兜底使用
+                                season_info = next((s for s in seasons_data if s.get('season_number') == target_s), None)
+                                season_cast = []
+                                season_crew = []
+                                if season_info:
+                                    s_credits = season_info.get('credits') or season_info.get('aggregate_credits') or {}
+                                    season_cast = s_credits.get('cast', [])
+                                    season_crew = s_credits.get('crew', [])
+
                                 if root_dir not in season_dirs_processed:
-                                    season_info = next((s for s in seasons_data if s.get('season_number') == target_s), None)
                                     if season_info:
                                         season_nfo_content = nfo_builder.build_season_nfo(season_info)
                                         season_nfo_path = os.path.join(root_dir, "season.nfo")
@@ -4176,12 +4211,20 @@ class MediaProcessor:
                                 
                                 if matched_ep:
                                     # 正常生成 TMDb 数据的 NFO
-                                    # ★ 核心：合并常规演员和客串演员
                                     ep_cast = matched_ep.get('credits', {}).get('cast', []) + matched_ep.get('credits', {}).get('guest_stars', [])
                                     
-                                    # ★ 核心：如果当前集完全没有专属演员表，才使用剧集总演员表兜底
+                                    # 演员兜底：分集 -> 季 -> 剧
                                     if not ep_cast: 
-                                        ep_cast = cast_to_write 
+                                        ep_cast = season_cast if season_cast else cast_to_write 
+                                    
+                                    # 导演兜底：分集 -> 季
+                                    ep_crew = matched_ep.get('crew', [])
+                                    if not ep_crew:
+                                        ep_crew = matched_ep.get('credits', {}).get('crew', [])
+                                    if not ep_crew and season_crew:
+                                        if 'credits' not in matched_ep:
+                                            matched_ep['credits'] = {}
+                                        matched_ep['credits']['crew'] = season_crew
                                         
                                     ep_nfo_content = nfo_builder.build_episode_nfo(matched_ep, ep_cast)
                                 else:
@@ -4191,9 +4234,12 @@ class MediaProcessor:
                                         "episode_number": target_e,
                                         "name": f"第 {target_e} 集", # 优雅的占位标题
                                         "overview": "",
-                                        "id": "" # 留空，nfo_builder 会自动跳过 tmdbid 和 uniqueid 标签
+                                        "id": "", # 留空，nfo_builder 会自动跳过 tmdbid 和 uniqueid 标签
+                                        "credits": {"crew": season_crew} # 注入季导演
                                     }
-                                    ep_nfo_content = nfo_builder.build_episode_nfo(dummy_ep, cast_to_write)
+                                    # 演员兜底：季 -> 剧
+                                    ep_cast = season_cast if season_cast else cast_to_write
+                                    ep_nfo_content = nfo_builder.build_episode_nfo(dummy_ep, ep_cast)
 
                                 ep_nfo_path = os.path.join(root_dir, os.path.splitext(filename)[0] + ".nfo")
                                 
