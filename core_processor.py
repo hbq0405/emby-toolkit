@@ -1572,27 +1572,42 @@ class MediaProcessor:
                     season_credits = current_season_info.get('credits') or current_season_info.get('aggregate_credits') or {}
                     season_cast = season_credits.get('cast', [])
                     season_crew = season_credits.get('crew', [])
+
+                    # ★★★ 提取分集专属导演 ★★★
+                    ep_crew = episode.get('crew', [])
+                    if not ep_crew:
+                        ep_crew = episode.get('credits', {}).get('crew', [])
+                    if not ep_crew:
+                        ep_crew = season_crew # 季导演兜底
+                        
+                    ep_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in ep_crew if p.get('job') == 'Director']
+
+                    # ★★★ 提取分集专属演员表 (含客串) ★★★
+                    ep_cast_raw = episode.get('credits', {}).get('cast', []) + episode.get('credits', {}).get('guest_stars', [])
+                    ep_actors_json_list = []
                     
-                    fallback_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in season_crew if p.get('job') == 'Director']
-                    
-                    if season_cast:
-                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
+                    if ep_cast_raw:
+                        # 1. 优先使用分集专属演员
+                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in ep_cast_raw if p.get("id")]
+                    elif season_cast:
+                        # 2. 其次使用季(Season)演员表兜底
+                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
                     else:
-                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
+                        # 3. 终极兜底：使用剧集(Series)总演员表
+                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
                     episode_record = {
-                        "tmdb_id": fallback_e_tmdb_id, 
+                        "tmdb_id": e_tmdb_id_str, 
                         "item_type": "Episode", 
                         "parent_series_tmdb_id": str(series_details.get('id')), 
-                        "title": emby_ep.get('Name') or f"Episode {e_num}", 
-                        "overview": emby_ep.get('Overview'), 
-                        "release_date": emby_ep.get('PremiereDate'), 
+                        "title": episode.get('name'), "overview": episode.get('overview'), 
+                        "release_date": episode.get('air_date'), 
                         "season_number": s_num, "episode_number": e_num,
                         "runtime_minutes": final_runtime,
-                        "poster_path": None,
-                        "backdrop_path": None,
-                        "directors_json": json.dumps(fallback_directors, ensure_ascii=False),
-                        "actors_json": json.dumps(fallback_actors, ensure_ascii=False)
+                        "poster_path": episode.get('still_path'),
+                        "backdrop_path": episode.get('still_path'),
+                        "directors_json": json.dumps(ep_directors, ensure_ascii=False),
+                        "actors_json": json.dumps(ep_actors_json_list, ensure_ascii=False)
                     }
                     
                     # ★ 资产信息处理 (支持多版本)
