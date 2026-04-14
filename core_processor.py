@@ -4108,19 +4108,33 @@ class MediaProcessor:
                                     season_dirs_processed.add(root_dir)
 
                                 ep_list = episodes_data.values() if isinstance(episodes_data, dict) else (episodes_data if isinstance(episodes_data, list) else [])
-                                for ep in ep_list:
-                                    if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
-                                        ep_cast = ep.get('credits', {}).get('cast', [])
-                                        if not ep_cast: ep_cast = cast_to_write 
-                                        ep_nfo_content = nfo_builder.build_episode_nfo(ep, ep_cast)
-                                        ep_nfo_path = os.path.join(root_dir, os.path.splitext(filename)[0] + ".nfo")
-                                        
-                                        # ★★★ 核心比对逻辑 ★★★
-                                        if _write_nfo_if_changed(ep_nfo_path, ep_nfo_content):
-                                            generated_count += 1
-                                        else:
-                                            skipped_count += 1
-                                        break
+                                
+                                # 1. 尝试在 TMDb 数据中寻找这一集
+                                matched_ep = next((ep for ep in ep_list if ep.get("season_number") == target_s and ep.get("episode_number") == target_e), None)
+                                
+                                if matched_ep:
+                                    # 正常生成 TMDb 数据的 NFO
+                                    ep_cast = matched_ep.get('credits', {}).get('cast', [])
+                                    if not ep_cast: ep_cast = cast_to_write 
+                                    ep_nfo_content = nfo_builder.build_episode_nfo(matched_ep, ep_cast)
+                                else:
+                                    # 2. ★★★ 核心修复：TMDb 缺失时，生成兜底 NFO，防止 Emby 显示丑陋的文件名 ★★★
+                                    dummy_ep = {
+                                        "season_number": target_s,
+                                        "episode_number": target_e,
+                                        "name": f"第 {target_e} 集", # 优雅的占位标题
+                                        "overview": "",
+                                        "id": "" # 留空，nfo_builder 会自动跳过 tmdbid 和 uniqueid 标签
+                                    }
+                                    ep_nfo_content = nfo_builder.build_episode_nfo(dummy_ep, cast_to_write)
+
+                                ep_nfo_path = os.path.join(root_dir, os.path.splitext(filename)[0] + ".nfo")
+                                
+                                # ★★★ 核心比对逻辑 ★★★
+                                if _write_nfo_if_changed(ep_nfo_path, ep_nfo_content):
+                                    generated_count += 1
+                                else:
+                                    skipped_count += 1
                     logger.info(f"  ➜ 生成NFO完成，实际更新了 {generated_count} 个 NFO (跳过了 {skipped_count} 个未变更的)。")
 
             elif item_type == "Episode":
