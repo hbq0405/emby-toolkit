@@ -1623,7 +1623,7 @@ def translate_tmdb_metadata_recursively(
         from database import actor_db
         db_manager = actor_db.ActorDBManager()
         
-        with connection.get_central_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             with conn.cursor() as cursor:
                 # 处理人名 (音译模式)
                 if pending_persons:
