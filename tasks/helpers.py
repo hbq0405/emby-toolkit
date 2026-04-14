@@ -1534,10 +1534,10 @@ def translate_tmdb_metadata_recursively(
                         pending_persons.add(name)
             
             # 收集主创
-            for creator in data_dict.get('created_by', []):
-                name = creator.get('name')
-                if name and not utils.contains_chinese(name):
-                    pending_persons.add(name)
+            # for creator in data_dict.get('created_by', []):
+            #     name = creator.get('name')
+            #     if name and not utils.contains_chinese(name):
+            #         pending_persons.add(name)
 
             # 收集演员和客串 (应用无头像过滤，省钱)
             all_actors = credits_data.get('cast', []) + credits_data.get('guest_stars', [])
