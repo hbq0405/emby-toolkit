@@ -4165,7 +4165,7 @@ class MediaProcessor:
             return False, f"替换失败: {str(e)}"
 
     # --- 格式化演员列表用于 NFO 写入 ---
-    def _format_episode_cast_for_nfo(self, raw_cast_list: List[Dict[str, Any]], item_details_from_emby: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def _format_episode_cast_for_nfo(self, raw_cast_list: List[Dict[str, Any]], item_details: Dict[str, Any]) -> List[Dict[str, Any]]:
         """
         分集演员表专用格式化：
         1. 先清洗角色名，去掉 AI 或原始数据里残留的“饰/配/as”前后缀
@@ -4184,7 +4184,7 @@ class MediaProcessor:
                 new_actor["character"] = utils.clean_character_name_static(new_actor["character"])
             normalized.append(new_actor)
 
-        raw_genres = item_details_from_emby.get("Genres", [])
+        raw_genres = item_details.get("Genres", [])
         if raw_genres and isinstance(raw_genres[0], dict):
             genres = [g.get('name') for g in raw_genres if g.get('name')]
         else:
