@@ -1695,18 +1695,23 @@ class MediaProcessor:
                     
                     if ep_cast_raw:
                         # 1. 优先使用分集专属演员 (过滤无头像，数据已在源头翻译)
+                        filtered_ep_cast = [p for p in ep_cast_raw if p.get("id") and (not remove_no_avatar or p.get("profile_path"))]
+                        # ★ 核心修复：在存入数据库前，先进行格式化，确保 "饰 xxx" 前缀被正确写入数据库
+                        formatted_ep_cast = self._format_episode_cast_for_nfo(filtered_ep_cast, item_details_from_emby)
                         ep_actors_json_list = [
                             {"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} 
-                            for p in ep_cast_raw if p.get("id") and (not remove_no_avatar or p.get("profile_path"))
+                            for p in formatted_ep_cast
                         ]
                     elif season_cast:
-                        # 2. 其次使用季(Season)演员表兜底 (过滤无头像，数据已在源头翻译)
+                        # 2. 其次使用季(Season)演员表兜底
+                        filtered_season_cast = [p for p in season_cast if p.get("id") and (not remove_no_avatar or p.get("profile_path"))]
+                        formatted_season_cast = self._format_episode_cast_for_nfo(filtered_season_cast, item_details_from_emby)
                         ep_actors_json_list = [
                             {"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} 
-                            for p in season_cast if p.get("id") and (not remove_no_avatar or p.get("profile_path"))
+                            for p in formatted_season_cast
                         ]
                     else:
-                        # 3. 终极兜底：使用剧集(Series)总演员表
+                        # 3. 终极兜底：使用剧集(Series)总演员表 (final_processed_cast 已经格式化过了)
                         ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
                     episode_record = {
@@ -2269,15 +2274,22 @@ class MediaProcessor:
         for person in item_details_from_emby.get("People", []) or []:
             e_id = str(person.get("Id") or "").strip()
             t_id = str(person.get("ProviderIds", {}).get("Tmdb") or "").strip()
+            current_name = str(person.get("Name") or "").strip() # ★ 获取当前 Emby 中的名字
+            
             if e_id and t_id and t_id in persons_to_update:
-                emby_id_to_new_name[e_id] = persons_to_update[t_id]
+                new_name = persons_to_update[t_id]
+                # ★ 核心修复：只有当名字确实不同时，才加入更新队列，节约 API 资源
+                if current_name != new_name:
+                    emby_id_to_new_name[e_id] = new_name
+                else:
+                    logger.debug(f"    - [跳过更新] 人物 ID {e_id} 已经是目标名称 '{new_name}'")
                 resolved_tmdb_ids.add(t_id)
 
         # 2.2 final_cast 里如果已带 emby_person_id，也直接命中
         for actor in final_cast or []:
             tmdb_id = str(actor.get("id") or actor.get("tmdb_id") or "").strip()
             emby_id = str(actor.get("emby_person_id") or "").strip()
-            if tmdb_id and emby_id and tmdb_id in persons_to_update:
+            if tmdb_id and emby_id and tmdb_id in persons_to_update and tmdb_id not in resolved_tmdb_ids:
                 emby_id_to_new_name[emby_id] = persons_to_update[tmdb_id]
                 resolved_tmdb_ids.add(tmdb_id)
 
@@ -2318,8 +2330,15 @@ class MediaProcessor:
                         continue
 
                     emby_person_id = str(matched_person.get("Id") or "").strip()
+                    current_name = str(matched_person.get("Name") or "").strip() # ★ 获取全局查询到的当前名字
+                    new_name = persons_to_update[t_id]
+                    
                     if emby_person_id:
-                        emby_id_to_new_name[emby_person_id] = persons_to_update[t_id]
+                        # ★ 核心修复：同样做重复判断
+                        if current_name != new_name:
+                            emby_id_to_new_name[emby_person_id] = new_name
+                        else:
+                            logger.debug(f"    - [跳过更新] 全局人物 ID {emby_person_id} 已经是目标名称 '{new_name}'")
 
                 except Exception as e:
                     logger.warning(f"    - 查询 Emby Person 失败 (TMDb: {t_id}): {e}")
@@ -3044,7 +3063,10 @@ class MediaProcessor:
         # 使用清洗后的列表进行后续所有操作
         tmdb_cast_people = cleaned_tmdb_cast
 
-        # ★★★ 在流程开始时，记录下来自TMDb的原始演员ID ★★★
+        for actor in tmdb_cast_people:
+            if actor.get("character"):
+                actor["character"] = utils.clean_character_name_static(actor["character"])
+
         original_tmdb_ids = {str(actor.get("id")) for actor in tmdb_cast_people if actor.get("id")}
         # ======================================================================
         # 步骤 1: ★★★ 数据适配 ★★★
@@ -3084,7 +3106,10 @@ class MediaProcessor:
                     merged_actor["name"] = emby_actor.get("Name")
                 else:
                     merged_actor["name"] = tmdb_match.get("name")
-                merged_actor["character"] = emby_actor.get("Role")
+                
+                raw_role = emby_actor.get("Role")
+                merged_actor["character"] = utils.clean_character_name_static(raw_role) if raw_role else None
+                
                 final_cast_list.append(merged_actor)
                 used_tmdb_ids.add(tmdb_id_str)
 
@@ -3774,7 +3799,8 @@ class MediaProcessor:
                     if tmdb_id_str in original_cast_map:
                         updated_actor_entry = original_cast_map[tmdb_id_str].copy()
                         updated_actor_entry['name'] = actor_from_frontend.get('name')
-                        updated_actor_entry['character'] = actor_from_frontend.get('role')
+                        raw_role = actor_from_frontend.get('role')
+                        updated_actor_entry['character'] = utils.clean_character_name_static(raw_role) if raw_role else ""
                         new_cast_built.append(updated_actor_entry)
                     
                     # --- B. 处理新增演员 ---
@@ -3792,7 +3818,7 @@ class MediaProcessor:
                         new_actor_entry = {
                             "id": int(tmdb_id_str),
                             "name": actor_from_frontend.get('name'),
-                            "character": actor_from_frontend.get('role'),
+                            "character": utils.clean_character_name_static(raw_role) if raw_role else "",
                             "original_name": person_details.get("original_name"),
                             "profile_path": person_details.get("profile_path"),
                             "adult": person_details.get("adult", False),
