@@ -8,7 +8,7 @@ from datetime import datetime
 from config_manager import APP_CONFIG, get_proxies_for_requests
 from handler.emby import get_emby_item_details
 from database import user_db, request_db, media_db
-from database.connection import get_central_db_connection
+from database.connection import get_db_connection
 import constants
 
 logger = logging.getLogger(__name__)
@@ -218,7 +218,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             if item_type == 'Episode' and item_details.get('SeriesId'):
                 check_id = str(item_details.get('SeriesId'))
                 
-            with get_central_db_connection() as conn:
+            with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("SELECT error_message FROM failed_log WHERE item_id = %s", (check_id,))
                     row = cursor.fetchone()
