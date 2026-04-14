@@ -648,7 +648,7 @@ def task_purge_ghost_actors(processor):
                 deleted_count += 1
             time.sleep(0.2)
 
-        final_message = f"“幽灵演员”清理完成！共找到 {total_to_delete} 个目标，成功删除了 {deleted_count} 个。"
+        final_message = f"  ➜ “幽灵演员”清理完成！共找到 {total_to_delete} 个目标，成功删除了 {deleted_count} 个。"
         if processor.is_stop_requested():
             final_message = f"任务已中止。本次运行成功删除了 {deleted_count} 个“幽灵演员”。"
         
