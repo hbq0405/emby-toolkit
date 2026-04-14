@@ -1573,19 +1573,19 @@ class MediaProcessor:
                     ep_actors_json_list = []
                     
                     if ep_cast_raw:
-                        # 1. 优先使用分集专属演员 (过滤无头像 + 查字典)
+                        # 1. 优先使用分集专属演员 (过滤无头像，数据已在源头翻译)
                         ep_actors_json_list = [
-                            {"tmdb_id": int(p.get("id")), "character": translated_character_map.get(int(p.get("id")), p.get("character")), "order": p.get("order", 999)} 
+                            {"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} 
                             for p in ep_cast_raw if p.get("id") and (not remove_no_avatar or p.get("profile_path"))
                         ]
                     elif season_cast:
-                        # 2. 其次使用季(Season)演员表兜底 (过滤无头像 + 查字典)
+                        # 2. 其次使用季(Season)演员表兜底 (过滤无头像，数据已在源头翻译)
                         ep_actors_json_list = [
-                            {"tmdb_id": int(p.get("id")), "character": translated_character_map.get(int(p.get("id")), p.get("character")), "order": p.get("order", 999)} 
+                            {"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} 
                             for p in season_cast if p.get("id") and (not remove_no_avatar or p.get("profile_path"))
                         ]
                     else:
-                        # 3. 终极兜底：使用剧集(Series)总演员表 (主流程已过滤)
+                        # 3. 终极兜底：使用剧集(Series)总演员表
                         ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
                     episode_record = {
@@ -1707,7 +1707,7 @@ class MediaProcessor:
                     fallback_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in season_crew if p.get('job') == 'Director']
                     
                     if season_cast:
-                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": translated_character_map.get(int(p.get("id")), p.get("character")), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
+                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in season_cast if p.get("id") and (not remove_no_avatar or p.get("profile_path"))]
                     else:
                         fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
@@ -4285,37 +4285,13 @@ class MediaProcessor:
                     skipped_count = 0
                     season_dirs_processed = set()
 
-                    # 构建已翻译演员的映射表，用于 NFO 角色名和演员名翻译
-                    translated_actor_map = {}
-                    if cast_to_write:
-                        for p in cast_to_write:
-                            p_id = str(p.get("id") or p.get("tmdb_id") or "")
-                            if p_id:
-                                translated_actor_map[p_id] = p
-
-                    # 获取无头像过滤开关
+                    # ★★★ 新增：获取无头像过滤开关 ★★★
                     remove_no_avatar = self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
 
-                    def _translate_raw_cast(raw_cast_list):
-                        """辅助函数：过滤无头像演员，并替换为已翻译的中文"""
+                    def _filter_raw_cast(raw_cast_list):
+                        """辅助函数：仅过滤无头像演员，无需再翻译，因为源头已翻译"""
                         if not raw_cast_list: return []
-                        translated_list = []
-                        for raw_actor in raw_cast_list:
-                            # ★ 核心修复：在这里拦截无头像的龙套演员！
-                            if remove_no_avatar and not raw_actor.get('profile_path'):
-                                continue
-                                
-                            actor_id = str(raw_actor.get("id") or "")
-                            if actor_id in translated_actor_map:
-                                new_actor = raw_actor.copy()
-                                # 替换为翻译后的名字和角色名
-                                new_actor['name'] = translated_actor_map[actor_id].get('name', raw_actor.get('name'))
-                                new_actor['character'] = translated_actor_map[actor_id].get('character', raw_actor.get('character'))
-                                translated_list.append(new_actor)
-                            else:
-                                # 有头像，但没进主翻译列表的客串演员，保留英文原名
-                                translated_list.append(raw_actor)
-                        return translated_list
+                        return [a for a in raw_cast_list if not remove_no_avatar or a.get('profile_path')]
                     
                     for root_dir, dirs, files in os.walk(series_root_dir):
                         for filename in files:
@@ -4330,8 +4306,8 @@ class MediaProcessor:
                                 season_crew = []
                                 if season_info:
                                     s_credits = season_info.get('credits') or season_info.get('aggregate_credits') or {}
-                                    # ★ 核心：翻译季演员表
-                                    season_cast = _translate_raw_cast(s_credits.get('cast', []))
+                                    # ★ 核心：过滤季演员表
+                                    season_cast = _filter_raw_cast(s_credits.get('cast', []))
                                     season_crew = s_credits.get('crew', [])
 
                                 if root_dir not in season_dirs_processed:
@@ -4350,8 +4326,8 @@ class MediaProcessor:
                                 if matched_ep:
                                     # 正常生成 TMDb 数据的 NFO
                                     raw_ep_cast = matched_ep.get('credits', {}).get('cast', []) + matched_ep.get('credits', {}).get('guest_stars', [])
-                                    # ★ 核心：翻译分集演员表
-                                    ep_cast = _translate_raw_cast(raw_ep_cast)
+                                    # ★ 核心：过滤分集演员表
+                                    ep_cast = _filter_raw_cast(raw_ep_cast)
                                     
                                     # 演员兜底：分集 -> 季 -> 剧
                                     if not ep_cast: 
