@@ -4164,6 +4164,44 @@ class MediaProcessor:
             logger.error(f"  ➜ [手动换图] 失败: {e}", exc_info=True)
             return False, f"替换失败: {str(e)}"
 
+    # --- 格式化演员列表用于 NFO 写入 ---
+    def _format_episode_cast_for_nfo(self, raw_cast_list: List[Dict[str, Any]], item_details_from_emby: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """
+        分集演员表专用格式化：
+        1. 先清洗角色名，去掉 AI 或原始数据里残留的“饰/配/as”前后缀
+        2. 再走和主演相同的 actor_utils.format_and_complete_cast_list 统一格式化逻辑
+        """
+        if not raw_cast_list:
+            return []
+
+        normalized = []
+        for actor in raw_cast_list:
+            if not isinstance(actor, dict):
+                continue
+
+            new_actor = actor.copy()
+            if new_actor.get("character"):
+                new_actor["character"] = utils.clean_character_name_static(new_actor["character"])
+            normalized.append(new_actor)
+
+        raw_genres = item_details_from_emby.get("Genres", [])
+        if raw_genres and isinstance(raw_genres[0], dict):
+            genres = [g.get('name') for g in raw_genres if g.get('name')]
+        else:
+            genres = raw_genres
+
+        is_animation = (
+            "Animation" in genres or "动画" in genres or
+            "Documentary" in genres or "纪录" in genres or "记录" in genres
+        )
+
+        return actor_utils.format_and_complete_cast_list(
+            normalized,
+            is_animation,
+            self.config,
+            mode='auto'
+        )
+    
     # --- 生成NFO元数据 ---
     def sync_item_metadata(self, item_details: Dict[str, Any], tmdb_id: str,
                        final_cast_override: Optional[List[Dict[str, Any]]] = None,
@@ -4373,7 +4411,7 @@ class MediaProcessor:
 
                     # ★★★ 新增：获取无头像过滤开关 ★★★
                     remove_no_avatar = self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
-
+                    
                     def _filter_raw_cast(raw_cast_list):
                         """辅助函数：仅过滤无头像演员，无需再翻译，因为源头已翻译"""
                         if not raw_cast_list: return []
@@ -4412,13 +4450,16 @@ class MediaProcessor:
                                 if matched_ep:
                                     # 正常生成 TMDb 数据的 NFO
                                     raw_ep_cast = matched_ep.get('credits', {}).get('cast', []) + matched_ep.get('credits', {}).get('guest_stars', [])
-                                    # ★ 核心：过滤分集演员表
+                                    # 先做基础过滤
                                     ep_cast = _filter_raw_cast(raw_ep_cast)
-                                    
+
                                     # 演员兜底：分集 -> 季 -> 剧
-                                    if not ep_cast: 
-                                        ep_cast = season_cast if season_cast else cast_to_write 
-                                    
+                                    if not ep_cast:
+                                        ep_cast = season_cast if season_cast else cast_to_write
+
+                                    # ★ 核心修复：分集演员表也走统一格式化逻辑
+                                    ep_cast = self._format_episode_cast_for_nfo(ep_cast, item_details)
+
                                     # 导演兜底：分集 -> 季
                                     ep_crew = matched_ep.get('crew', [])
                                     if not ep_crew:
@@ -4427,20 +4468,25 @@ class MediaProcessor:
                                         if 'credits' not in matched_ep:
                                             matched_ep['credits'] = {}
                                         matched_ep['credits']['crew'] = season_crew
-                                        
+
                                     ep_nfo_content = nfo_builder.build_episode_nfo(matched_ep, ep_cast)
+
                                 else:
-                                    # 2. ★★★ 核心修复：TMDb 缺失时，生成兜底 NFO，防止 Emby 显示丑陋的文件名 ★★★
                                     dummy_ep = {
                                         "season_number": target_s,
                                         "episode_number": target_e,
-                                        "name": f"第 {target_e} 集", # 优雅的占位标题
+                                        "name": f"第 {target_e} 集",
                                         "overview": "",
-                                        "id": "", # 留空，nfo_builder 会自动跳过 tmdbid 和 uniqueid 标签
-                                        "credits": {"crew": season_crew} # 注入季导演
+                                        "id": "",
+                                        "credits": {"crew": season_crew}
                                     }
+
                                     # 演员兜底：季 -> 剧
                                     ep_cast = season_cast if season_cast else cast_to_write
+
+                                    # ★ 兜底分集同样走统一格式化
+                                    ep_cast = self._format_episode_cast_for_nfo(ep_cast, item_details)
+
                                     ep_nfo_content = nfo_builder.build_episode_nfo(dummy_ep, ep_cast)
 
                                 ep_nfo_path = os.path.join(root_dir, os.path.splitext(filename)[0] + ".nfo")

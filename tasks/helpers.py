@@ -1672,10 +1672,19 @@ def translate_tmdb_metadata_recursively(
                         for i in range(0, len(api_list), BATCH_SIZE):
                             batch_roles = api_list[i:i+BATCH_SIZE]
                             trans_results = ai_translator.batch_translate(batch_roles, mode='fast')
+
                             for k, v in trans_results.items():
-                                if v and utils.contains_chinese(v):
-                                    role_trans_map[k] = v
-                                    db_manager.save_translation_to_db(cursor, k, v, ai_translator.provider)
+                                if not v or not utils.contains_chinese(v):
+                                    continue
+
+                                # ★ 核心修复：AI 返回值也要再次清洗，防止 "饰路飞" 这种结果被后续再加前缀
+                                cleaned_v = utils.clean_character_name_static(v)
+                                if not cleaned_v:
+                                    continue
+
+                                role_trans_map[k] = cleaned_v
+                                db_manager.save_translation_to_db(cursor, k, cleaned_v, ai_translator.provider)
+
                             import time; time.sleep(1)
         
         # 回填翻译结果到 JSON 树
@@ -1710,7 +1719,7 @@ def translate_tmdb_metadata_recursively(
                     if character:
                         cleaned_char = utils.clean_character_name_static(character)
                         if cleaned_char in role_trans_map:
-                            actor['character'] = role_trans_map[cleaned_char]
+                            actor['character'] = utils.clean_character_name_static(role_trans_map[cleaned_char])
 
             if item_type == 'Movie':
                 _apply_person_trans(tmdb_data)
