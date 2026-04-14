@@ -2167,24 +2167,40 @@ class MediaProcessor:
         """
         根据最终处理好的翻译结果，通过 API 更新 Emby 中人物（演员/客串/导演/主创）的名字。
 
-        设计原则：
-        1. 不再假设 final_cast 包含所有需要更新的人物。
-        2. 递归扫描 formatted_metadata：
-        - 主条目 credits.cast / guest_stars
-        - seasons_details[*]
-        - episodes_details[*]
-        - crew(导演) / created_by(主创)
-        3. 只要该人物在元数据里已经被翻成中文，就尝试按 TMDb ID 找到对应 Emby Person 并改名。
-        4. 这只会改“人物条目名称”，不会影响主演/客串在 NFO 中各自待的位置。
+        优化点：
+        1. 对“演员/客串”启用白名单：只允许 final_cast 中保留下来的演员写回。
+        - 这意味着被 _process_cast_list 智能截断掉的人物，不再尝试 API 写回。
+        2. 对“导演/主创”不走演员截断白名单，仍允许写回。
+        3. 当前 Emby 条目 People 中已经存在的人物，也允许直接写回。
         """
         persons_to_update: Dict[str, str] = {}   # tmdb_id(str) -> new_name(str)
 
+        # ------------------------------------------------------------------
+        # 阶段 0：建立白名单
+        # ------------------------------------------------------------------
+
+        # A. 演员白名单：只有 final_cast 里的演员，才算“最终保留”
+        allowed_actor_tmdb_ids = {
+            str(a.get("id") or a.get("tmdb_id")).strip()
+            for a in (final_cast or [])
+            if a.get("id") or a.get("tmdb_id")
+        }
+
+        # B. 当前 Emby 条目里已存在的人物（允许直接写回，不必再全局找）
+        current_emby_people_tmdb_ids = {
+            str(p.get("ProviderIds", {}).get("Tmdb") or "").strip()
+            for p in (item_details_from_emby.get("People", []) or [])
+            if p.get("ProviderIds", {}).get("Tmdb")
+        }
+
+        def _is_valid_chinese_name(name: Any) -> bool:
+            return bool(name) and utils.contains_chinese(str(name))
+
         def _add_person(tmdb_id_raw: Any, new_name: Any):
             tmdb_id = str(tmdb_id_raw or "").strip()
-            if not tmdb_id or not new_name:
+            if not tmdb_id or not _is_valid_chinese_name(new_name):
                 return
-            if utils.contains_chinese(str(new_name)):
-                persons_to_update[tmdb_id] = str(new_name).strip()
+            persons_to_update[tmdb_id] = str(new_name).strip()
 
         def _collect_people_from_one_node(data_dict: Dict[str, Any]):
             if not isinstance(data_dict, dict):
@@ -2192,7 +2208,7 @@ class MediaProcessor:
 
             credits_data = data_dict.get("credits") or data_dict.get("aggregate_credits") or data_dict.get("casts") or {}
 
-            # 1) 导演 / 主创
+            # 1) 导演 / 主创：不受演员截断限制
             for crew_member in credits_data.get("crew", []):
                 if crew_member.get("job") in ["Director", "Series Director"]:
                     _add_person(crew_member.get("id") or crew_member.get("tmdb_id"), crew_member.get("name"))
@@ -2200,78 +2216,72 @@ class MediaProcessor:
             for creator in data_dict.get("created_by", []):
                 _add_person(creator.get("id") or creator.get("tmdb_id"), creator.get("name"))
 
-            # 2) 主演 + 客串
+            # 2) 演员 / 客串：必须命中白名单或当前 Emby 条目已存在
             all_actors = credits_data.get("cast", []) + credits_data.get("guest_stars", [])
             for actor in all_actors:
-                _add_person(actor.get("id") or actor.get("tmdb_id"), actor.get("name"))
+                tmdb_id = str(actor.get("id") or actor.get("tmdb_id") or "").strip()
+                new_name = actor.get("name")
+
+                if not tmdb_id or not _is_valid_chinese_name(new_name):
+                    continue
+
+                # 命中条件：
+                # - 在 final_cast 白名单里（通过了智能截断）
+                # - 或当前 Emby 条目的 People 里已经存在（直接允许）
+                if tmdb_id in allowed_actor_tmdb_ids or tmdb_id in current_emby_people_tmdb_ids:
+                    persons_to_update[tmdb_id] = str(new_name).strip()
+                else:
+                    logger.debug(f"    - [跳过写回] 人物 TMDb:{tmdb_id} '{new_name}' 不在最终演员白名单中，视为被截断或非目标人物。")
 
         # ------------------------------------------------------------------
         # 阶段 1：收集所有需要更新的人物名
         # ------------------------------------------------------------------
 
-        # 1.1 兼容旧逻辑：先吃 final_cast（通常是主演员）
+        # 1.1 final_cast 本身（最终演员白名单）
         for actor in final_cast or []:
             _add_person(actor.get("id") or actor.get("tmdb_id"), actor.get("name"))
 
-        # 1.2 再递归扫描 formatted_metadata（这是本次修复核心）
+        # 1.2 递归扫描 formatted_metadata
         if formatted_metadata:
-            # 主条目
             _collect_people_from_one_node(formatted_metadata)
 
-            # 分季
             for season in formatted_metadata.get("seasons_details", []) or []:
                 _collect_people_from_one_node(season)
 
-            # 分集（兼容 dict / list）
             episodes = formatted_metadata.get("episodes_details", {})
             ep_list = episodes.values() if isinstance(episodes, dict) else (episodes if isinstance(episodes, list) else [])
             for ep in ep_list:
                 _collect_people_from_one_node(ep)
 
         if not persons_to_update:
-            logger.info(f"  ➜ 无需通过 API 更新人物名字 (没有找到需要翻译的 Emby 人物)。")
+            logger.info("  ➜ 无需通过 API 更新人物名字 (没有命中白名单的人物)。")
             return
 
         logger.info(f"  ➜ 准备通过 API 更新 {len(persons_to_update)} 位人物的名字...")
 
         # ------------------------------------------------------------------
-        # 阶段 2：将 TMDb ID 映射成 Emby Person ID
+        # 阶段 2：TMDb ID -> Emby Person ID
         # ------------------------------------------------------------------
-        emby_id_to_new_name: Dict[str, str] = {}   # emby_person_id -> new_name
+        emby_id_to_new_name: Dict[str, str] = {}
+        resolved_tmdb_ids = set()
 
-        # 2.1 优先从当前媒体项自带的 People 列表里直接取（最快最稳）
+        # 2.1 当前条目自带 People：优先直接命中
         for person in item_details_from_emby.get("People", []) or []:
             e_id = str(person.get("Id") or "").strip()
             t_id = str(person.get("ProviderIds", {}).get("Tmdb") or "").strip()
             if e_id and t_id and t_id in persons_to_update:
                 emby_id_to_new_name[e_id] = persons_to_update[t_id]
+                resolved_tmdb_ids.add(t_id)
 
-        # 2.2 再尝试从 final_cast 中取 emby_person_id（兼容你原有演员处理链）
+        # 2.2 final_cast 里如果已带 emby_person_id，也直接命中
         for actor in final_cast or []:
             tmdb_id = str(actor.get("id") or actor.get("tmdb_id") or "").strip()
             emby_id = str(actor.get("emby_person_id") or "").strip()
             if tmdb_id and emby_id and tmdb_id in persons_to_update:
                 emby_id_to_new_name[emby_id] = persons_to_update[tmdb_id]
-
-        # 2.3 对剩余没命中的人物，按 TMDb ID 去 Emby 全局查 Person
-        unresolved_tmdb_ids = [
-            t_id for t_id in persons_to_update.keys()
-            if persons_to_update.get(t_id)
-            and persons_to_update[t_id] not in emby_id_to_new_name.values()
-        ]
-
-        # 为了避免“不同人同名”导致误删，这里重新按 TMDb ID 判重
-        resolved_tmdb_ids = set()
-        for person in item_details_from_emby.get("People", []) or []:
-            t_id = str(person.get("ProviderIds", {}).get("Tmdb") or "").strip()
-            if t_id:
-                resolved_tmdb_ids.add(t_id)
-        for actor in final_cast or []:
-            tmdb_id = str(actor.get("id") or actor.get("tmdb_id") or "").strip()
-            emby_id = str(actor.get("emby_person_id") or "").strip()
-            if tmdb_id and emby_id:
                 resolved_tmdb_ids.add(tmdb_id)
 
+        # 2.3 剩余未解析的人物，再按 TMDb ID 去 Emby 全局查
         unresolved_tmdb_ids = [t_id for t_id in persons_to_update.keys() if t_id not in resolved_tmdb_ids]
 
         if unresolved_tmdb_ids:
@@ -2315,7 +2325,7 @@ class MediaProcessor:
                     logger.warning(f"    - 查询 Emby Person 失败 (TMDb: {t_id}): {e}")
 
         if not emby_id_to_new_name:
-            logger.info(f"  ➜ 没有找到可更新的 Emby Person 条目，跳过人物名写回。")
+            logger.info("  ➜ 没有找到可更新的 Emby Person 条目，跳过人物名写回。")
             return
 
         # ------------------------------------------------------------------
@@ -2343,9 +2353,7 @@ class MediaProcessor:
                 fail_count += 1
                 logger.warning(f"    - 更新人物异常 ID {emby_person_id} -> '{new_name}': {e}")
 
-        logger.info(
-            f"  ➜ 人物名 API 写回完成：成功 {success_count}，失败 {fail_count}。({item_name_for_log})"
-        )
+        logger.info(f"  ➜ 人物名 API 写回完成：成功 {success_count}，失败 {fail_count}。({item_name_for_log})")
     
     # --- 全量处理的入口 ---
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
@@ -2830,7 +2838,6 @@ class MediaProcessor:
                             formatted_metadata['credits']['crew'].append(d)
 
                 # 5. 生成 NFO 和 图片
-                logger.info(f"  ➜ 正在生成(NFO文件 & 图片)...")
                 self.sync_item_metadata(
                     item_details=item_details_from_emby,
                     tmdb_id=tmdb_id,
