@@ -549,14 +549,20 @@ class MediaProcessor:
                         "Id": "pending",
                         "Name": details.get('title') or details.get('name'),
                         "OriginalTitle": details.get('original_title') or details.get('original_name'),
+                        "Type": item_type, # ★ 必须加上 Type，否则豆瓣匹配会失败
+                        "ProductionYear": (details.get('release_date') or details.get('first_air_date') or "")[:4],
                         "People": [],
                         "Genres": details.get('genres', [])
                     }
+                    
+                    # 调用豆瓣 API 获取演员表原始数据 (如果可用)，并传入核心处理函数进行翻译/去重/头像检查
+                    douban_cast_raw, _ = self._fetch_douban_cast_data(dummy_emby_item, details)
+
                     logger.info(f"  ➜ [实时监控] 启动演员表核心处理 (AI翻译/去重/头像检查)...")
                     final_processed_cast = self._process_cast_list(
                         tmdb_cast_people=authoritative_cast_source,
                         emby_cast_people=[],
-                        douban_cast_list=[],
+                        douban_cast_list=douban_cast_raw, # ★ 传入豆瓣数据
                         item_details_from_emby=dummy_emby_item,
                         cursor=cursor,
                         tmdb_api_key=self.tmdb_api_key,
@@ -1980,20 +1986,33 @@ class MediaProcessor:
         return log_dict
 
     # --- 获取豆瓣数据（演员+评分）---
-    def _get_douban_data_with_local_cache(self, media_info: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], Optional[float]]:
+    def _fetch_douban_cast_data(self, media_info: Dict[str, Any], tmdb_data: Optional[Dict[str, Any]] = None) -> Tuple[List[Dict[str, Any]], Optional[float]]:
         """
         获取豆瓣数据（演员+评分）。直接使用在线 API。
+        优先从 tmdb_data 提取 imdb_id 进行精准匹配。
         """
-        provider_ids = media_info.get("ProviderIds", {})
-        item_name = media_info.get("Name", "")
-        imdb_id = provider_ids.get("Imdb")
-        item_type = media_info.get("Type")
-        item_year = str(media_info.get("ProductionYear", ""))
-
         if not self.config.get(constants.CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API, True):
             return [], None
         
-        logger.info("  ➜ 准备通过豆瓣在线 API 获取演员信息...")
+        item_name = media_info.get("Name", "")
+        item_type = media_info.get("Type")
+        
+        # 1. 优先从 TMDb 数据提取 IMDb ID 和年份
+        imdb_id = None
+        item_year = ""
+        if tmdb_data:
+            imdb_id = tmdb_data.get("external_ids", {}).get("imdb_id")
+            release_date = tmdb_data.get("release_date") or tmdb_data.get("first_air_date") or ""
+            if release_date:
+                item_year = release_date[:4]
+        
+        # 2. 兜底从 Emby 数据提取
+        if not imdb_id:
+            imdb_id = media_info.get("ProviderIds", {}).get("Imdb")
+        if not item_year:
+            item_year = str(media_info.get("ProductionYear", ""))
+
+        logger.info(f"  ➜ 准备通过豆瓣在线 API 获取演员信息 (IMDb: {imdb_id or '无'}, 年份: {item_year})...")
 
         match_info_result = self.douban_api.match_info(
             name=item_name, imdbid=imdb_id, mtype=item_type, year=item_year
@@ -2017,7 +2036,7 @@ class MediaProcessor:
         return cast_data.get("cast", []), None
     
     # --- 通过 API 更新 Emby 中人物(演员/导演)名字 ---
-    def _update_emby_person_names(self, final_cast: List[Dict[str, Any]], formatted_metadata: Dict[str, Any], item_name_for_log: str):
+    def _update_emby_person_names(self, final_cast: List[Dict[str, Any]], formatted_metadata: Dict[str, Any], item_details_from_emby: Dict[str, Any], item_name_for_log: str):
         """
         根据最终处理好的演员列表和翻译后的元数据，通过 API 更新 Emby 中人物（演员、导演）的名字。
         """
@@ -2061,40 +2080,42 @@ class MediaProcessor:
         # 3. 将 TMDb ID 转换为 Emby Person ID
         emby_id_to_new_name = {}
         
-        # 3.1 从 final_cast 中直接获取 (最快)
+        # 3.1 优先从 Emby 当前媒体项的 People 列表中提取 (最准最快，完美解决导演问题)
+        for person in item_details_from_emby.get("People", []):
+            e_id = str(person.get("Id", ""))
+            t_id = str(person.get("ProviderIds", {}).get("Tmdb", ""))
+            if e_id and t_id and t_id in persons_to_update:
+                emby_id_to_new_name[e_id] = persons_to_update[t_id]
+                del persons_to_update[t_id]
+
+        # 3.2 从 final_cast 中直接获取 (兜底演员)
         for actor in final_cast:
             tmdb_id = str(actor.get("id") or actor.get("tmdb_id") or "")
-            emby_id = actor.get("emby_person_id")
+            emby_id = str(actor.get("emby_person_id") or "")
             if tmdb_id in persons_to_update and emby_id:
-                emby_id_to_new_name[str(emby_id)] = persons_to_update[tmdb_id]
+                emby_id_to_new_name[emby_id] = persons_to_update[tmdb_id]
                 del persons_to_update[tmdb_id]
 
-        # 3.2 从 Emby API 实时查询剩余的 TMDb ID (终极兜底：解决以前存在于Emby但未被系统记录的导演)
+        # 3.3 从 Emby API 实时查询剩余的 TMDb ID (逐个查询，确保准确)
         if persons_to_update:
-            remaining_tmdb_ids = list(persons_to_update.keys())
-            BATCH_SIZE = 50
-            for i in range(0, len(remaining_tmdb_ids), BATCH_SIZE):
-                batch_ids = remaining_tmdb_ids[i:i+BATCH_SIZE]
-                provider_query = ",".join([f"tmdb.{tid}" for tid in batch_ids])
+            for t_id in list(persons_to_update.keys()):
                 try:
                     api_url = f"{self.emby_url.rstrip('/')}/Items"
                     params = {
                         "api_key": self.emby_api_key,
                         "IncludeItemTypes": "Person",
                         "Recursive": "true",
-                        "AnyProviderIdEquals": provider_query,
+                        "AnyProviderIdEquals": f"tmdb.{t_id}",
                         "Fields": "ProviderIds"
                     }
                     resp = emby.emby_client.get(api_url, params=params)
                     if resp.status_code == 200:
                         items = resp.json().get("Items", [])
-                        for item in items:
-                            e_id = str(item.get("Id"))
-                            t_id = str(item.get("ProviderIds", {}).get("Tmdb", ""))
-                            if t_id in persons_to_update:
-                                emby_id_to_new_name[e_id] = persons_to_update[t_id]
-                                del persons_to_update[t_id]
-                except Exception as e:
+                        if items:
+                            e_id = str(items[0].get("Id"))
+                            emby_id_to_new_name[e_id] = persons_to_update[t_id]
+                            del persons_to_update[t_id]
+                except Exception:
                     pass
 
         if not emby_id_to_new_name:
@@ -2129,6 +2150,7 @@ class MediaProcessor:
                     user_id=self.emby_user_id
                 )
                 updated_count += 1
+                import time
                 time.sleep(0.2) 
 
         logger.info(f"  ➜ 成功通过 API 更新了 {updated_count} 位人物的名字。")
@@ -2524,7 +2546,7 @@ class MediaProcessor:
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
                     emby_config = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
                     enriched_emby_cast = self.actor_db_manager.enrich_actors_with_provider_ids(cursor, current_emby_cast_raw, emby_config)
-                    douban_cast_raw, _ = self._get_douban_data_with_local_cache(item_details_from_emby)
+                    douban_cast_raw, _ = self._fetch_douban_cast_data(item_details_from_emby, fresh_data)
 
                     final_processed_cast = self._process_cast_list(
                         tmdb_cast_people=authoritative_cast_source,
@@ -2634,11 +2656,7 @@ class MediaProcessor:
                 )
 
                 # 6. 更新 Emby 人物名(演员/导演)以及扫描目录
-                self._update_emby_person_names(
-                    final_cast=final_processed_cast, 
-                    formatted_metadata=formatted_metadata, 
-                    item_name_for_log=item_name_for_log
-                )
+                self._update_emby_person_names(final_cast=final_processed_cast, formatted_metadata=formatted_metadata, item_details_from_emby=item_details_from_emby, item_name_for_log=item_name_for_log)
                 media_path = item_details_from_emby.get("Path")
                 if media_path:
                     logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
