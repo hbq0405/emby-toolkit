@@ -6,9 +6,9 @@ import requests
 import logging
 from datetime import datetime
 from config_manager import APP_CONFIG, get_proxies_for_requests
-from database import media_db
 from handler.emby import get_emby_item_details
-from database import user_db, request_db
+from database import user_db, request_db, media_db
+from database.connection import get_central_db_connection
 import constants
 
 logger = logging.getLogger(__name__)
@@ -178,7 +178,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             api_key = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_KEY)
             user_id = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_USER_ID)
 
-            # ★★★ 修改开始：收集原始数据而不是直接格式化字符串 ★★★
+            # 收集原始数据而不是直接格式化字符串，这样我们可以在格式化字符串时使用
             raw_episodes = [] 
             for ep_id in new_episode_ids:
                 detail = get_emby_item_details(ep_id, emby_url, api_key, user_id, fields="IndexNumber,ParentIndexNumber")
@@ -206,6 +206,27 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
                     photo_url = f"https://image.tmdb.org/t/p/w780{path}"
         except Exception as e:
             logger.error(f"  ➜ [通知] 从本地数据库获取图片信息时出错: {e}", exc_info=True)
+
+        # =================================================================
+        # ★★★ 查询该项目是否被标记为【待复核】 ★★★
+        # =================================================================
+        needs_review = False
+        review_reason = ""
+        try:
+            # 核心处理器中，分集的报错是挂在父剧集 ID 下的，所以这里要做个转换
+            check_id = str(item_id)
+            if item_type == 'Episode' and item_details.get('SeriesId'):
+                check_id = str(item_details.get('SeriesId'))
+                
+            with get_central_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT error_message FROM failed_log WHERE item_id = %s", (check_id,))
+                    row = cursor.fetchone()
+                    if row:
+                        needs_review = True
+                        review_reason = row['error_message']
+        except Exception as e:
+            logger.error(f"  ➜ [通知] 查询待复核状态失败: {e}")
         
         # --- 4. 组装最终的通知文本 (Caption) ---
         notification_title_map = {
@@ -216,12 +237,23 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         media_icon = "🎬" if item_type == "Movie" else "📺"
         
-        # 使用转义后的变量来构建消息，同时保留我们自己的格式化符号
+        # ★★★ 构建待复核警告文本 ★★★
+        review_warning = ""
+        if needs_review:
+            escaped_reason = escape_markdown(review_reason)
+            review_warning = (
+                f"\n\n⚠️ *系统提示*: 本次处理被标记为【待复核】\n"
+                f"🔍 *原因*: {escaped_reason}\n"
+                f"💡 _请前往 WebUI 手动介入处理_"
+            )
+
+        # ★★★ 修改：将 review_warning 追加到 caption 尾部 ★★★
         caption = (
             f"{media_icon} *{escaped_title}* {notification_title}\n\n"
             f"{episode_info_text}"
             f"⏰ *时间*: `{current_time}`\n"
             f"📝 *剧情*: {escaped_overview}"
+            f"{review_warning}"
         )
         
         # --- 5. 查询订阅者 ---
