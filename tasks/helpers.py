@@ -1599,7 +1599,7 @@ def translate_tmdb_metadata_recursively(
         from database import actor_db
         db_manager = actor_db.ActorDBManager()
         
-        with connection.get_central_db_connection() as conn:
+        with connection.get_db_connection() as conn:
             with conn.cursor() as cursor:
                 api_list = []
                 for name in person_list:
