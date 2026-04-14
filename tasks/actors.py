@@ -230,7 +230,7 @@ def task_actor_translation(processor):
         # 阶段 3: 分批翻译并并发写回
         # ======================================================================
         all_names_list = list(texts_to_translate)
-        TRANSLATION_BATCH_SIZE = 50
+        TRANSLATION_BATCH_SIZE = 20
         total_names_to_process = len(all_names_list)
         total_batches = (total_names_to_process + TRANSLATION_BATCH_SIZE - 1) // TRANSLATION_BATCH_SIZE
         
