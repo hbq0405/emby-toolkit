@@ -1559,18 +1559,27 @@ class MediaProcessor:
                         
                     ep_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in ep_crew if p.get('job') == 'Director']
 
+                    # ★★★ 获取无头像过滤开关 ★★★
+                    remove_no_avatar = self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
+
                     # ★★★ 提取分集专属演员表 (含客串) ★★★
                     ep_cast_raw = episode.get('credits', {}).get('cast', []) + episode.get('credits', {}).get('guest_stars', [])
                     ep_actors_json_list = []
                     
                     if ep_cast_raw:
-                        # 1. 优先使用分集专属演员 (查字典翻译角色名)
-                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": translated_character_map.get(int(p.get("id")), p.get("character")), "order": p.get("order", 999)} for p in ep_cast_raw if p.get("id")]
+                        # 1. 优先使用分集专属演员 (过滤无头像 + 查字典)
+                        ep_actors_json_list = [
+                            {"tmdb_id": int(p.get("id")), "character": translated_character_map.get(int(p.get("id")), p.get("character")), "order": p.get("order", 999)} 
+                            for p in ep_cast_raw if p.get("id") and (not remove_no_avatar or p.get("profile_path"))
+                        ]
                     elif season_cast:
-                        # 2. 其次使用季(Season)演员表兜底 (查字典翻译角色名)
-                        ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": translated_character_map.get(int(p.get("id")), p.get("character")), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
+                        # 2. 其次使用季(Season)演员表兜底 (过滤无头像 + 查字典)
+                        ep_actors_json_list = [
+                            {"tmdb_id": int(p.get("id")), "character": translated_character_map.get(int(p.get("id")), p.get("character")), "order": p.get("order", 999)} 
+                            for p in season_cast if p.get("id") and (not remove_no_avatar or p.get("profile_path"))
+                        ]
                     else:
-                        # 3. 终极兜底：使用剧集(Series)总演员表 (本身已翻译)
+                        # 3. 终极兜底：使用剧集(Series)总演员表 (主流程已过滤)
                         ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
                     episode_record = {
@@ -4186,7 +4195,7 @@ class MediaProcessor:
                     skipped_count = 0
                     season_dirs_processed = set()
 
-                    # ★★★ 新增：构建已翻译演员的映射表，用于 NFO 角色名和演员名翻译 ★★★
+                    # 构建已翻译演员的映射表，用于 NFO 角色名和演员名翻译
                     translated_actor_map = {}
                     if cast_to_write:
                         for p in cast_to_write:
@@ -4194,11 +4203,18 @@ class MediaProcessor:
                             if p_id:
                                 translated_actor_map[p_id] = p
 
+                    # 获取无头像过滤开关
+                    remove_no_avatar = self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
+
                     def _translate_raw_cast(raw_cast_list):
-                        """辅助函数：将原始 TMDb 演员表中的名字和角色名替换为已翻译的中文"""
+                        """辅助函数：过滤无头像演员，并替换为已翻译的中文"""
                         if not raw_cast_list: return []
                         translated_list = []
                         for raw_actor in raw_cast_list:
+                            # ★ 核心修复：在这里拦截无头像的龙套演员！
+                            if remove_no_avatar and not raw_actor.get('profile_path'):
+                                continue
+                                
                             actor_id = str(raw_actor.get("id") or "")
                             if actor_id in translated_actor_map:
                                 new_actor = raw_actor.copy()
@@ -4207,6 +4223,7 @@ class MediaProcessor:
                                 new_actor['character'] = translated_actor_map[actor_id].get('character', raw_actor.get('character'))
                                 translated_list.append(new_actor)
                             else:
+                                # 有头像，但没进主翻译列表的客串演员，保留英文原名
                                 translated_list.append(raw_actor)
                         return translated_list
                     
