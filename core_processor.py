@@ -2171,19 +2171,13 @@ class MediaProcessor:
     ):
         """
         根据最终处理好的翻译结果，通过 API 更新 Emby 中人物（演员/客串/导演/主创）的名字。
-
-        优化点：
-        1. 对“演员/客串”启用白名单：只允许 final_cast 中保留下来的演员写回。
-        - 这意味着被 _process_cast_list 智能截断掉的人物，不再尝试 API 写回。
-        2. 对“导演/主创”不走演员截断白名单，仍允许写回。
-        3. 当前 Emby 条目 People 中已经存在的人物，也允许直接写回。
+        结合了白名单机制与精准的 Diff 比对，拒绝无脑更新。
         """
         persons_to_update: Dict[str, str] = {}   # tmdb_id(str) -> new_name(str)
 
         # ------------------------------------------------------------------
         # 阶段 0：建立白名单
         # ------------------------------------------------------------------
-
         # A. 演员白名单：只有 final_cast 里的演员，才算“最终保留”
         allowed_actor_tmdb_ids = {
             str(a.get("id") or a.get("tmdb_id")).strip()
@@ -2230,23 +2224,17 @@ class MediaProcessor:
                 if not tmdb_id or not _is_valid_chinese_name(new_name):
                     continue
 
-                # 命中条件：
-                # - 在 final_cast 白名单里（通过了智能截断）
-                # - 或当前 Emby 条目的 People 里已经存在（直接允许）
                 if tmdb_id in allowed_actor_tmdb_ids or tmdb_id in current_emby_people_tmdb_ids:
                     persons_to_update[tmdb_id] = str(new_name).strip()
-                else:
-                    logger.debug(f"    - [跳过写回] 人物 TMDb:{tmdb_id} '{new_name}' 不在最终演员白名单中，视为被截断或非目标人物。")
 
         # ------------------------------------------------------------------
         # 阶段 1：收集所有需要更新的人物名
         # ------------------------------------------------------------------
-
         # 1.1 final_cast 本身（最终演员白名单）
         for actor in final_cast or []:
             _add_person(actor.get("id") or actor.get("tmdb_id"), actor.get("name"))
 
-        # 1.2 递归扫描 formatted_metadata
+        # 1.2 递归扫描 formatted_metadata (包含客串和分集导演)
         if formatted_metadata:
             _collect_people_from_one_node(formatted_metadata)
 
@@ -2262,8 +2250,6 @@ class MediaProcessor:
             logger.info("  ➜ 无需通过 API 更新人物名字 (没有命中白名单的人物)。")
             return
 
-        logger.info(f"  ➜ 准备通过 API 更新 {len(persons_to_update)} 位人物的名字...")
-
         # ------------------------------------------------------------------
         # 阶段 2：TMDb ID -> Emby Person ID
         # ------------------------------------------------------------------
@@ -2274,15 +2260,8 @@ class MediaProcessor:
         for person in item_details_from_emby.get("People", []) or []:
             e_id = str(person.get("Id") or "").strip()
             t_id = str(person.get("ProviderIds", {}).get("Tmdb") or "").strip()
-            current_name = str(person.get("Name") or "").strip() # ★ 获取当前 Emby 中的名字
-            
             if e_id and t_id and t_id in persons_to_update:
-                new_name = persons_to_update[t_id]
-                # ★ 核心修复：只有当名字确实不同时，才加入更新队列，节约 API 资源
-                if current_name != new_name:
-                    emby_id_to_new_name[e_id] = new_name
-                else:
-                    logger.debug(f"    - [跳过更新] 人物 ID {e_id} 已经是目标名称 '{new_name}'")
+                emby_id_to_new_name[e_id] = persons_to_update[t_id]
                 resolved_tmdb_ids.add(t_id)
 
         # 2.2 final_cast 里如果已带 emby_person_id，也直接命中
@@ -2297,8 +2276,6 @@ class MediaProcessor:
         unresolved_tmdb_ids = [t_id for t_id in persons_to_update.keys() if t_id not in resolved_tmdb_ids]
 
         if unresolved_tmdb_ids:
-            logger.info(f"  ➜ 当前条目未直接携带 {len(unresolved_tmdb_ids)} 位人物，准备按 TMDb ID 从 Emby 全局查询...")
-
             for t_id in unresolved_tmdb_ids:
                 try:
                     api_url = f"{self.emby_url.rstrip('/')}/Items"
@@ -2307,72 +2284,69 @@ class MediaProcessor:
                         "IncludeItemTypes": "Person",
                         "Recursive": "true",
                         "AnyProviderIdEquals": f"tmdb.{t_id}",
-                        "Fields": "ProviderIds,Name",
+                        "Fields": "ProviderIds",
                         "Limit": 5
                     }
                     resp = emby.emby_client.get(api_url, params=params)
-                    resp.raise_for_status()
-
-                    items = resp.json().get("Items", [])
-                    if not items:
-                        logger.debug(f"    - 未在 Emby 中查到 TMDb Person {t_id}")
-                        continue
-
-                    matched_person = None
-                    for p in items:
-                        pid_tmdb = str(p.get("ProviderIds", {}).get("Tmdb") or "").strip()
-                        if pid_tmdb == t_id:
-                            matched_person = p
-                            break
-
-                    if not matched_person:
-                        logger.debug(f"    - Emby 返回了候选人物，但没有精确匹配到 TMDb ID {t_id}")
-                        continue
-
-                    emby_person_id = str(matched_person.get("Id") or "").strip()
-                    current_name = str(matched_person.get("Name") or "").strip() # ★ 获取全局查询到的当前名字
-                    new_name = persons_to_update[t_id]
-                    
-                    if emby_person_id:
-                        # ★ 核心修复：同样做重复判断
-                        if current_name != new_name:
-                            emby_id_to_new_name[emby_person_id] = new_name
-                        else:
-                            logger.debug(f"    - [跳过更新] 全局人物 ID {emby_person_id} 已经是目标名称 '{new_name}'")
-
-                except Exception as e:
-                    logger.warning(f"    - 查询 Emby Person 失败 (TMDb: {t_id}): {e}")
+                    if resp.status_code == 200:
+                        items = resp.json().get("Items", [])
+                        if items:
+                            for p in items:
+                                if str(p.get("ProviderIds", {}).get("Tmdb") or "").strip() == t_id:
+                                    e_id = str(p.get("Id") or "").strip()
+                                    if e_id:
+                                        emby_id_to_new_name[e_id] = persons_to_update[t_id]
+                                    break
+                except Exception:
+                    pass
 
         if not emby_id_to_new_name:
-            logger.info("  ➜ 没有找到可更新的 Emby Person 条目，跳过人物名写回。")
             return
 
         # ------------------------------------------------------------------
-        # 阶段 3：实际写回 Emby Person 名称
+        # 阶段 3：批量获取 Emby 当前名字并比对更新 (恢复老版本的神级逻辑)
         # ------------------------------------------------------------------
+        logger.info(f"  ➜ 准备为 {len(emby_id_to_new_name)} 位人物检查并更新名字...")
+        
+        person_ids = list(emby_id_to_new_name.keys())
+        
+        # ★ 核心：一次性批量获取这些人物在 Emby 中的当前名字
+        current_person_details = emby.get_emby_items_by_id(
+            base_url=self.emby_url,
+            api_key=self.emby_api_key,
+            user_id=self.emby_user_id,
+            item_ids=person_ids,
+            fields="Name"
+        )
+        
+        current_names_map = {str(p["Id"]): p.get("Name") for p in current_person_details} if current_person_details else {}
+
         success_count = 0
-        fail_count = 0
+        skip_count = 0
 
         for emby_person_id, new_name in emby_id_to_new_name.items():
-            try:
-                ok = emby.update_person_details(
-                    person_id=emby_person_id,
-                    new_data={"Name": new_name},
-                    emby_server_url=self.emby_url,
-                    emby_api_key=self.emby_api_key,
-                    user_id=self.emby_user_id
-                )
-                if ok:
-                    success_count += 1
-                    logger.info(f"    - 已更新人物 ID {emby_person_id} -> '{new_name}'")
-                else:
-                    fail_count += 1
-                    logger.warning(f"    - 更新人物失败 ID {emby_person_id} -> '{new_name}'")
-            except Exception as e:
-                fail_count += 1
-                logger.warning(f"    - 更新人物异常 ID {emby_person_id} -> '{new_name}': {e}")
+            current_name = current_names_map.get(emby_person_id)
+            
+            # ★ 只有当新名字和当前名字不同时，才执行更新
+            if current_name != new_name:
+                try:
+                    ok = emby.update_person_details(
+                        person_id=emby_person_id,
+                        new_data={"Name": new_name},
+                        emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key,
+                        user_id=self.emby_user_id
+                    )
+                    if ok:
+                        success_count += 1
+                        import time
+                        time.sleep(0.2) 
+                except Exception as e:
+                    logger.warning(f"    - 更新人物异常 ID {emby_person_id}: {e}")
+            else:
+                skip_count += 1
 
-        logger.info(f"  ➜ 人物名 API 写回完成：成功 {success_count}，失败 {fail_count}。({item_name_for_log})")
+        logger.info(f"  ➜ 人物名 API 更新完成：成功更新 {success_count} 位，跳过 {skip_count} 位(名字已是最新)。")
     
     # --- 全量处理的入口 ---
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
