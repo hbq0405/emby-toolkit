@@ -1435,19 +1435,19 @@ def translate_tmdb_metadata_recursively(
     config: dict = None
 ):
     """
-    【大一统翻译引擎】递归翻译 TMDb 数据的标题、简介 (Overview) 和 标语 (Tagline)。
-    支持空数据自动拉取英文版兜底。
+    【大一统翻译引擎】递归翻译 TMDb 数据的标题、简介、标语，以及导演/主创姓名。
     """
     if not ai_translator or not tmdb_data or not config:
         return
 
     pending_items = {}
+    pending_persons = set() # ★ 新增：收集待翻译的导演/主创
     translated_count = 0
     
     translate_title_enabled = config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False)
     translate_overview_enabled = config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False)
-    # 剧集分集简介翻译开关
     translate_ep_overview_enabled = config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False)
+    translate_actor_enabled = config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False) # ★ 新增
 
     # --- 1. 收集与缓存检查阶段 ---
     def _collect_single_item(data_dict: Dict, specific_item_type: str):
@@ -1471,7 +1471,6 @@ def translate_tmdb_metadata_recursively(
                 if local_info and local_info.get('overview') and utils.contains_chinese(local_info['overview']):
                     data_dict['overview'] = local_info['overview']
                 else:
-                    # 尝试拉取英文兜底
                     if not overview and tmdb_api_key:
                         try:
                             if specific_item_type == 'Movie':
@@ -1493,11 +1492,10 @@ def translate_tmdb_metadata_recursively(
                 else:
                     needs_title = True
 
-        # C. 检查标语 (Tagline) - 仅限电影和剧集，跟随标题翻译开关
+        # C. 检查标语 (Tagline)
         if translate_title_enabled and specific_item_type in ['Movie', 'Series']:
             tagline = data_dict.get('tagline')
             if not tagline or not utils.contains_chinese(tagline):
-                # 尝试拉取英文兜底
                 if not tagline and tmdb_api_key:
                     try:
                         if specific_item_type == 'Movie':
@@ -1520,6 +1518,20 @@ def translate_tmdb_metadata_recursively(
                 "ref": data_dict 
             }
 
+        # ★ D. 检查导演/主创 (Crew/Created By)
+        if translate_actor_enabled:
+            credits_data = data_dict.get('credits') or data_dict.get('aggregate_credits') or data_dict.get('casts') or {}
+            for crew_member in credits_data.get('crew', []):
+                if crew_member.get('job') in ['Director', 'Series Director']:
+                    name = crew_member.get('name')
+                    if name and not utils.contains_chinese(name):
+                        pending_persons.add(name)
+            
+            for creator in data_dict.get('created_by', []):
+                name = creator.get('name')
+                if name and not utils.contains_chinese(name):
+                    pending_persons.add(name)
+
     # --- 遍历收集 ---
     if item_type == 'Movie':
         _collect_single_item(tmdb_data, 'Movie')
@@ -1534,50 +1546,109 @@ def translate_tmdb_metadata_recursively(
             _collect_single_item(ep, 'Episode')
 
     # --- 2. 批量翻译阶段 ---
-    if not pending_items: return
-
-    logger.info(f"  ➜ [AI翻译引擎] 共收集到 {len(pending_items)} 个条目需要翻译...")
     BATCH_SIZE = 20 
 
-    # 1. 翻译简介
-    overviews_to_translate = {k: v["overview"] for k, v in pending_items.items() if v["overview"]}
-    if overviews_to_translate:
-        items_list = list(overviews_to_translate.items())
-        for i in range(0, len(items_list), BATCH_SIZE):
-            batch_dict = dict(items_list[i:i+BATCH_SIZE])
-            trans_results = ai_translator.batch_translate_overviews(batch_dict, context_title=item_name)
-            for tid, trans_text in trans_results.items():
-                if trans_text and utils.contains_chinese(trans_text) and tid in pending_items:
-                    pending_items[tid]["ref"]['overview'] = trans_text
-                    translated_count += 1
-            import time; time.sleep(1)
+    if pending_items:
+        logger.info(f"  ➜ [AI翻译引擎] 共收集到 {len(pending_items)} 个条目需要翻译...")
+        
+        # 1. 翻译简介
+        overviews_to_translate = {k: v["overview"] for k, v in pending_items.items() if v["overview"]}
+        if overviews_to_translate:
+            items_list = list(overviews_to_translate.items())
+            for i in range(0, len(items_list), BATCH_SIZE):
+                batch_dict = dict(items_list[i:i+BATCH_SIZE])
+                trans_results = ai_translator.batch_translate_overviews(batch_dict, context_title=item_name)
+                for tid, trans_text in trans_results.items():
+                    if trans_text and utils.contains_chinese(trans_text) and tid in pending_items:
+                        pending_items[tid]["ref"]['overview'] = trans_text
+                        translated_count += 1
+                import time; time.sleep(1)
 
-    # 2. 翻译标语 (复用简介翻译的 Prompt，效果最好)
-    taglines_to_translate = {k: v["tagline"] for k, v in pending_items.items() if v["tagline"]}
-    if taglines_to_translate:
-        items_list = list(taglines_to_translate.items())
-        for i in range(0, len(items_list), BATCH_SIZE):
-            batch_dict = dict(items_list[i:i+BATCH_SIZE])
-            trans_results = ai_translator.batch_translate_overviews(batch_dict, context_title=item_name)
-            for tid, trans_text in trans_results.items():
-                if trans_text and utils.contains_chinese(trans_text) and tid in pending_items:
-                    pending_items[tid]["ref"]['tagline'] = trans_text
-                    translated_count += 1
-            import time; time.sleep(1)
+        # 2. 翻译标语
+        taglines_to_translate = {k: v["tagline"] for k, v in pending_items.items() if v["tagline"]}
+        if taglines_to_translate:
+            items_list = list(taglines_to_translate.items())
+            for i in range(0, len(items_list), BATCH_SIZE):
+                batch_dict = dict(items_list[i:i+BATCH_SIZE])
+                trans_results = ai_translator.batch_translate_overviews(batch_dict, context_title=item_name)
+                for tid, trans_text in trans_results.items():
+                    if trans_text and utils.contains_chinese(trans_text) and tid in pending_items:
+                        pending_items[tid]["ref"]['tagline'] = trans_text
+                        translated_count += 1
+                import time; time.sleep(1)
 
-    # 3. 翻译标题
-    titles_to_translate = {k: v["title"] for k, v in pending_items.items() if v["title"]}
-    if titles_to_translate:
-        items_list = list(titles_to_translate.items())
-        for i in range(0, len(items_list), BATCH_SIZE):
-            batch_dict = dict(items_list[i:i+BATCH_SIZE])
-            trans_results = ai_translator.batch_translate_titles(batch_dict, media_type="Episode")
-            for tid, trans_text in trans_results.items():
-                if trans_text and utils.contains_chinese(trans_text) and tid in pending_items:
-                    title_key = pending_items[tid]["title_key"]
-                    pending_items[tid]["ref"][title_key] = trans_text
-                    translated_count += 1
-            import time; time.sleep(1)
+        # 3. 翻译标题
+        titles_to_translate = {k: v["title"] for k, v in pending_items.items() if v["title"]}
+        if titles_to_translate:
+            items_list = list(titles_to_translate.items())
+            for i in range(0, len(items_list), BATCH_SIZE):
+                batch_dict = dict(items_list[i:i+BATCH_SIZE])
+                trans_results = ai_translator.batch_translate_titles(batch_dict, media_type="Episode")
+                for tid, trans_text in trans_results.items():
+                    if trans_text and utils.contains_chinese(trans_text) and tid in pending_items:
+                        title_key = pending_items[tid]["title_key"]
+                        pending_items[tid]["ref"][title_key] = trans_text
+                        translated_count += 1
+                import time; time.sleep(1)
+
+    # ★ 4. 翻译导演/主创
+    if pending_persons:
+        person_list = list(pending_persons)
+        person_trans_map = {}
+        
+        from database import actor_db
+        db_manager = actor_db.ActorDBManager()
+        
+        with connection.get_central_db_connection() as conn:
+            with conn.cursor() as cursor:
+                api_list = []
+                for name in person_list:
+                    cached = db_manager.get_translation_from_db(cursor, name)
+                    if cached and cached.get('translated_text'):
+                        person_trans_map[name] = cached['translated_text']
+                    else:
+                        api_list.append(name)
+                        
+                if api_list:
+                    logger.info(f"  ➜ [AI翻译引擎] 提交 {len(api_list)} 个导演/主创姓名进行翻译...")
+                    for i in range(0, len(api_list), BATCH_SIZE):
+                        batch_names = api_list[i:i+BATCH_SIZE]
+                        trans_results = ai_translator.batch_translate(batch_names, mode='transliterate')
+                        for k, v in trans_results.items():
+                            if v and utils.contains_chinese(v):
+                                person_trans_map[k] = v
+                                db_manager.save_translation_to_db(cursor, k, v, ai_translator.provider)
+                        import time; time.sleep(1)
+        
+        # 回填翻译结果
+        if person_trans_map:
+            def _apply_person_trans(data_dict):
+                credits_data = data_dict.get('credits') or data_dict.get('aggregate_credits') or data_dict.get('casts') or {}
+                for crew_member in credits_data.get('crew', []):
+                    if crew_member.get('job') in ['Director', 'Series Director']:
+                        name = crew_member.get('name')
+                        if name in person_trans_map:
+                            crew_member['original_name'] = name
+                            crew_member['name'] = person_trans_map[name]
+                            
+                for creator in data_dict.get('created_by', []):
+                    name = creator.get('name')
+                    if name in person_trans_map:
+                        creator['original_name'] = name
+                        creator['name'] = person_trans_map[name]
+
+            if item_type == 'Movie':
+                _apply_person_trans(tmdb_data)
+            elif item_type == 'Series':
+                _apply_person_trans(tmdb_data.get('series_details', tmdb_data))
+                for season in tmdb_data.get("seasons_details", []):
+                    _apply_person_trans(season)
+                episodes_container = tmdb_data.get("episodes_details", {})
+                episodes_list = episodes_container.values() if isinstance(episodes_container, dict) else episodes_container
+                for ep in episodes_list:
+                    _apply_person_trans(ep)
+            
+            translated_count += len(person_trans_map)
 
     if translated_count > 0:
         logger.info(f"  ➜ [AI翻译引擎] 本次成功翻译了 {translated_count} 项数据 ({item_name})。")
@@ -1650,18 +1721,17 @@ def evaluate_season_airing_status(tmdb_id: str, season_number: int, api_key: str
 def extract_top_directors(tmdb_data: dict, max_count: int = 3) -> list:
     """
     综合提取剧集/电影的导演，并按权重排序截断。
-    权重：主创(Creator) > 执导集数(Episode Count) > 有头像(Profile Path)
     """
     dir_map = {}
     
-    # 1. 提取 created_by (主创，赋予最高集数权重)
+    # 1. 提取 created_by
     for c in tmdb_data.get('created_by', []):
         d_id = c.get('id')
         if d_id:
             dir_map[d_id] = {
-                'id': d_id, 'name': c.get('name'),
+                'id': d_id, 'name': c.get('name'), 'original_name': c.get('original_name'),
                 'is_creator': True, 'ep_count': 9999,
-                'profile_path': c.get('profile_path') # ★ 提取头像
+                'profile_path': c.get('profile_path')
             }
             
     # 2. 提取 crew 中的 Director
@@ -1685,9 +1755,9 @@ def extract_top_directors(tmdb_data: dict, max_count: int = 3) -> list:
         if is_director:
             if d_id not in dir_map:
                 dir_map[d_id] = {
-                    'id': d_id, 'name': c.get('name'),
+                    'id': d_id, 'name': c.get('name'), 'original_name': c.get('original_name'),
                     'is_creator': False, 'ep_count': ep_count,
-                    'profile_path': c.get('profile_path') # ★ 提取头像
+                    'profile_path': c.get('profile_path')
                 }
             else:
                 dir_map[d_id]['ep_count'] += ep_count
@@ -1701,5 +1771,5 @@ def extract_top_directors(tmdb_data: dict, max_count: int = 3) -> list:
         reverse=True
     )[:max_count]
     
-    # ★ 返回时带上 profile_path
-    return [{'id': d['id'], 'name': d['name'], 'job': 'Director', 'profile_path': d['profile_path']} for d in sorted_dirs]
+    # ★ 返回时带上 original_name
+    return [{'id': d['id'], 'name': d['name'], 'original_name': d.get('original_name'), 'job': 'Director', 'profile_path': d['profile_path']} for d in sorted_dirs]
