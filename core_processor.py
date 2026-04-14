@@ -2016,24 +2016,113 @@ class MediaProcessor:
         )
         return cast_data.get("cast", []), None
     
-    # --- 通过 API 更新 Emby 中演员名字 ---
-    def _update_emby_person_names_from_final_cast(self, final_cast: List[Dict[str, Any]], item_name_for_log: str):
+    # --- 通过 API 更新 Emby 中人物(演员/导演)名字 ---
+    def _update_emby_person_names(self, final_cast: List[Dict[str, Any]], formatted_metadata: Dict[str, Any], item_name_for_log: str):
         """
-        根据最终处理好的演员列表，通过 API 更新 Emby 中“演员”项目的名字。
+        根据最终处理好的演员列表和翻译后的元数据，通过 API 更新 Emby 中人物（演员、导演）的名字。
         """
-        actors_to_update = [
-            actor for actor in final_cast 
-            if actor.get("emby_person_id") and utils.contains_chinese(actor.get("name"))
-        ]
+        persons_to_update = {} # tmdb_id (str) -> new_name (str)
 
-        if not actors_to_update:
-            logger.info(f"  ➜ 无需通过 API 更新演员名字 (没有找到需要翻译的 Emby 演员)。")
+        # 1. 收集演员 (Actors)
+        for actor in final_cast:
+            tmdb_id = str(actor.get("id") or actor.get("tmdb_id") or "")
+            new_name = actor.get("name")
+            if tmdb_id and new_name and utils.contains_chinese(new_name):
+                persons_to_update[tmdb_id] = new_name
+
+        # 2. 收集导演 (Directors) - 遍历整个 formatted_metadata 提取所有导演
+        if formatted_metadata:
+            from tasks.helpers import extract_top_directors
+            # 提取主剧/电影导演
+            top_dirs = extract_top_directors(formatted_metadata, max_count=50)
+            for d in top_dirs:
+                if d.get('id') and utils.contains_chinese(d.get('name', '')):
+                    persons_to_update[str(d['id'])] = d['name']
+            
+            # 提取分季/分集导演
+            for season in formatted_metadata.get('seasons_details', []):
+                s_dirs = extract_top_directors(season, max_count=10)
+                for d in s_dirs:
+                    if d.get('id') and utils.contains_chinese(d.get('name', '')):
+                        persons_to_update[str(d['id'])] = d['name']
+                        
+            episodes = formatted_metadata.get('episodes_details', {})
+            ep_list = episodes.values() if isinstance(episodes, dict) else (episodes if isinstance(episodes, list) else [])
+            for ep in ep_list:
+                ep_dirs = extract_top_directors(ep, max_count=10)
+                for d in ep_dirs:
+                    if d.get('id') and utils.contains_chinese(d.get('name', '')):
+                        persons_to_update[str(d['id'])] = d['name']
+
+        if not persons_to_update:
+            logger.info(f"  ➜ 无需通过 API 更新人物名字 (没有找到需要翻译的 Emby 人物)。")
             return
 
-        logger.info(f"  ➜ 开始为《{item_name_for_log}》的 {len(actors_to_update)} 位演员通过 API 更新名字...")
+        # 3. 将 TMDb ID 转换为 Emby Person ID
+        emby_id_to_new_name = {}
         
-        # 批量获取这些演员在 Emby 中的当前信息，以减少 API 请求
-        person_ids = [actor["emby_person_id"] for actor in actors_to_update]
+        # 3.1 从 final_cast 中直接获取 (最快)
+        for actor in final_cast:
+            tmdb_id = str(actor.get("id") or actor.get("tmdb_id") or "")
+            emby_id = actor.get("emby_person_id")
+            if tmdb_id in persons_to_update and emby_id:
+                emby_id_to_new_name[str(emby_id)] = persons_to_update[tmdb_id]
+                del persons_to_update[tmdb_id]
+
+        # 3.2 从本地数据库查询剩余的 TMDb ID (针对导演和客串)
+        if persons_to_update:
+            tmdb_ids_to_query = list(persons_to_update.keys())
+            try:
+                with get_central_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        placeholders = ','.join(['%s'] * len(tmdb_ids_to_query))
+                        query = f"SELECT tmdb_person_id, emby_person_id FROM person_metadata WHERE tmdb_person_id IN ({placeholders}) AND emby_person_id IS NOT NULL"
+                        cursor.execute(query, tuple(tmdb_ids_to_query))
+                        for row in cursor.fetchall():
+                            t_id = str(row['tmdb_person_id'])
+                            e_id = str(row['emby_person_id'])
+                            if t_id in persons_to_update:
+                                emby_id_to_new_name[e_id] = persons_to_update[t_id]
+                                del persons_to_update[t_id]
+            except Exception as e:
+                logger.warning(f"  ➜ 查询本地人物映射库失败: {e}")
+
+        # 3.3 从 Emby API 实时查询剩余的 TMDb ID (终极兜底：解决以前存在于Emby但未被系统记录的导演)
+        if persons_to_update:
+            remaining_tmdb_ids = list(persons_to_update.keys())
+            BATCH_SIZE = 50
+            for i in range(0, len(remaining_tmdb_ids), BATCH_SIZE):
+                batch_ids = remaining_tmdb_ids[i:i+BATCH_SIZE]
+                provider_query = ",".join([f"tmdb.{tid}" for tid in batch_ids])
+                try:
+                    api_url = f"{self.emby_url.rstrip('/')}/Items"
+                    params = {
+                        "api_key": self.emby_api_key,
+                        "IncludeItemTypes": "Person",
+                        "Recursive": "true",
+                        "AnyProviderIdEquals": provider_query,
+                        "Fields": "ProviderIds"
+                    }
+                    resp = emby.emby_client.get(api_url, params=params)
+                    if resp.status_code == 200:
+                        items = resp.json().get("Items", [])
+                        for item in items:
+                            e_id = str(item.get("Id"))
+                            t_id = str(item.get("ProviderIds", {}).get("Tmdb", ""))
+                            if t_id in persons_to_update:
+                                emby_id_to_new_name[e_id] = persons_to_update[t_id]
+                                del persons_to_update[t_id]
+                except Exception as e:
+                    pass
+
+        if not emby_id_to_new_name:
+            logger.info(f"  ➜ 无需通过 API 更新人物名字 (待更新人物均为新入库，Emby将自动读取NFO)。")
+            return
+
+        logger.info(f"  ➜ 开始为《{item_name_for_log}》的 {len(emby_id_to_new_name)} 位人物(演员/导演)通过 API 更新名字...")
+        
+        # 4. 批量获取这些人物在 Emby 中的当前信息，以减少 API 请求
+        person_ids = list(emby_id_to_new_name.keys())
         current_person_details = emby.get_emby_items_by_id(
             base_url=self.emby_url,
             api_key=self.emby_api_key,
@@ -2042,12 +2131,10 @@ class MediaProcessor:
             fields="Name"
         )
         
-        current_names_map = {p["Id"]: p.get("Name") for p in current_person_details} if current_person_details else {}
+        current_names_map = {str(p["Id"]): p.get("Name") for p in current_person_details} if current_person_details else {}
 
         updated_count = 0
-        for actor in actors_to_update:
-            person_id = actor["emby_person_id"]
-            new_name = actor["name"]
+        for person_id, new_name in emby_id_to_new_name.items():
             current_name = current_names_map.get(person_id)
 
             # 只有当新名字和当前名字不同时，才执行更新
@@ -2060,10 +2147,9 @@ class MediaProcessor:
                     user_id=self.emby_user_id
                 )
                 updated_count += 1
-                # 加个小延迟避免请求过快
                 time.sleep(0.2) 
 
-        logger.info(f"  ➜ 成功通过 API 更新了 {updated_count} 位演员的名字。")
+        logger.info(f"  ➜ 成功通过 API 更新了 {updated_count} 位人物的名字。")
     
     # --- 全量处理的入口 ---
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
@@ -2565,8 +2651,12 @@ class MediaProcessor:
                     item_details=item_details_from_emby
                 )
 
-                # 6. 更新 Emby 演员名以及扫描目录
-                self._update_emby_person_names_from_final_cast(final_processed_cast, item_name_for_log)
+                # 6. 更新 Emby 人物名(演员/导演)以及扫描目录
+                self._update_emby_person_names(
+                    final_cast=final_processed_cast, 
+                    formatted_metadata=formatted_metadata, 
+                    item_name_for_log=item_name_for_log
+                )
                 media_path = item_details_from_emby.get("Path")
                 if media_path:
                     logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
