@@ -1684,11 +1684,25 @@ class MediaProcessor:
                         if not is_target:
                             continue
 
+                    # ★ 确保变量在这里被正确赋值，不要漏掉这行！
                     fallback_e_tmdb_id = f"{series_details.get('id')}-S{s_num}E{e_num}"
                     logger.debug(f"  ➜ [入库兜底] 发现 Emby 本地分集 S{s_num}E{e_num} 在 TMDb 中不存在，生成内部 ID: {fallback_e_tmdb_id}")
 
                     emby_ep = versions[0]
                     final_runtime = round(emby_ep['RunTimeTicks'] / 600000000) if emby_ep.get('RunTimeTicks') else None
+
+                    # ★ 提取季(Season)元数据作为兜底
+                    current_season_info = next((s for s in seasons_details if s.get('season_number') == s_num), {})
+                    season_credits = current_season_info.get('credits') or current_season_info.get('aggregate_credits') or {}
+                    season_cast = season_credits.get('cast', [])
+                    season_crew = season_credits.get('crew', [])
+                    
+                    fallback_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in season_crew if p.get('job') == 'Director']
+                    
+                    if season_cast:
+                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in season_cast if p.get("id")]
+                    else:
+                        fallback_actors = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
                     episode_record = {
                         "tmdb_id": fallback_e_tmdb_id, 
@@ -1701,8 +1715,8 @@ class MediaProcessor:
                         "runtime_minutes": final_runtime,
                         "poster_path": None,
                         "backdrop_path": None,
-                        "directors_json": "[]",
-                        "actors_json": json.dumps([{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")], ensure_ascii=False)   
+                        "directors_json": json.dumps(fallback_directors, ensure_ascii=False),
+                        "actors_json": json.dumps(fallback_actors, ensure_ascii=False)
                     }
 
                     all_assets = []
