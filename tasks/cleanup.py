@@ -182,7 +182,7 @@ def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[s
         elif rule_type == 'subtitle':
             # 如果是华语片区，直接跳过中文字幕的PK
             if is_chinese_media:
-                logger.info(f"  ➜ 跳过中文字幕策略判断，因为 '{item_name}' 可能是华语片区媒体。")
+                logger.info(f"  ➜ 跳过中文字幕策略判断，因为 '{item_name}' 是华语片。")
                 continue
 
             # 扩充中文字幕代码库，防止误判
