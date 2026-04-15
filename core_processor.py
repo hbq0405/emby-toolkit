@@ -1671,7 +1671,8 @@ class MediaProcessor:
                             continue # 不是本次入库的分集，直接跳过！
 
                     final_runtime = get_representative_runtime(versions_of_episode, episode.get('runtime'))
-
+                    # ★★★ 获取无头像过滤开关 ★★★
+                    remove_no_avatar = self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
                     # ★★★ 提取季(Season)元数据作为第一兜底 ★★★
                     current_season_info = next((s for s in seasons_details if s.get('season_number') == s_num), {})
                     season_credits = current_season_info.get('credits') or current_season_info.get('aggregate_credits') or {}
@@ -1694,9 +1695,6 @@ class MediaProcessor:
                         ep_crew = season_crew # 季导演兜底
                         
                     ep_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in ep_crew if p.get('job') == 'Director']
-
-                    # ★★★ 获取无头像过滤开关 ★★★
-                    remove_no_avatar = self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
 
                     # ★★★ 提取分集专属演员表 (含客串) ★★★
                     ep_cast_raw = episode.get('credits', {}).get('cast', []) + episode.get('credits', {}).get('guest_stars', [])
