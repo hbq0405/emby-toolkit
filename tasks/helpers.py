@@ -1797,7 +1797,7 @@ def translate_tmdb_metadata_recursively(
     
     logger.info(
         f"  ➜ [AI翻译引擎] 翻译统计汇总 ({item_name}):\n"
-        f"    📊 演员表: 原始 {stats['original_cast_count']} 人 → 截断后 {stats['truncated_cast_count']} 人\n"
+        f"    📊 演员表: 原始 {stats['original_cast_count']} 人 → 移除无头像后 {stats['truncated_cast_count']} 人 → 最终保留 {stats['final_cast_count']} 人\n"
         f"    📝 待翻译: 标题 {stats['title_needs_translation']} | 简介 {stats['overview_needs_translation']} | 标语 {stats['tagline_needs_translation']} | 人名 {stats['person_ai_calls']} | 角色名 {stats['role_ai_calls']}\n"
         f"    💾 缓存命中: 标题 {stats['title_cache_hits']} | 简介 {stats['overview_cache_hits']} | 标语 {stats['tagline_cache_hits']} | 人名 {stats['person_cache_hits']} | 角色名 {stats['role_cache_hits']}\n"
         f"    🤖 AI调用: {total_needs} 项 | 💾 缓存节省: {total_cache} 项 | ✅ 成功回填: {translated_count} 项"
