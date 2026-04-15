@@ -197,7 +197,6 @@ def _compare_versions(v1: Dict[str, Any], v2: Dict[str, Any], rules: List[Dict[s
             if has_chi1 != has_chi2:
                 result = 1 if has_chi1 else -1
                 reason_detail = f"中字: {'有' if has_chi1 else '无'} vs {'有' if has_chi2 else '无'}"
-            # 如果都有中字，或者都没有中字，result 保持为 0，进入平局，交给下一条规则判断！
 
         # --- 8. 按入库时间 (Date Added / ID) ---
         elif rule_type == 'date_added':
@@ -246,6 +245,7 @@ def _determine_best_version_by_rules(versions: List[Dict[str, Any]], item_name: 
     version_properties = [_get_properties_for_comparison(v) for v in versions if v]
 
     def compare_wrapper(v1, v2):
+        # 将 is_chinese_media 传递给比较函数
         return _compare_versions(v1, v2, rules, item_name, is_chinese_media)
 
     sorted_versions = sorted(version_properties, key=cmp_to_key(compare_wrapper), reverse=True)
@@ -264,6 +264,8 @@ def task_scan_for_cleanup_issues(processor):
     task_manager.update_status_from_thread(0, "正在准备扫描...")
 
     try:
+        import json # 确保导入了 json
+        
         # 配置读取
         config_data = settings_db.get_setting('media_cleanup_config') or {}
         library_ids_to_scan = config_data.get('library_ids') or settings_db.get_setting('media_cleanup_library_ids') or []
@@ -294,6 +296,7 @@ def task_scan_for_cleanup_issues(processor):
             task_manager.update_status_from_thread(100, "扫描中止：当前用户视角下没有可见的媒体项。")
             return
 
+        # ★★★ 修复 1：确保 SELECT 语句中包含了 original_language 和 countries_json ★★★
         sql_query = sql.SQL("""
             SELECT t.tmdb_id, t.item_type, t.asset_details_json, t.original_language, t.countries_json
             FROM media_metadata AS t
@@ -336,14 +339,23 @@ def task_scan_for_cleanup_issues(processor):
             
             task_manager.update_status_from_thread(progress, f"({i+1}/{total_items}) 正在分析: {display_title}")
 
-            # 判断是否为华语片区
+            # ★★★ 修复 2：安全解析 JSON 字符串，判定是否为华语媒体 ★★★
             orig_lang = str(item.get('original_language') or '').lower()
-            countries = item.get('countries_json') or []
-            is_chinese_media = False
+            raw_countries = item.get('countries_json')
             
+            countries_list = []
+            if isinstance(raw_countries, str):
+                try:
+                    countries_list = json.loads(raw_countries)
+                except Exception:
+                    pass
+            elif isinstance(raw_countries, list):
+                countries_list = raw_countries
+                
+            is_chinese_media = False
             if orig_lang in ['zh', 'cn', 'zh-cn', 'zh-tw', 'zh-hk', 'yue', 'cmn']:
                 is_chinese_media = True
-            elif isinstance(countries, list) and any(c in ['CN', 'HK', 'TW', 'MO'] for c in countries):
+            elif any(c in ['CN', 'HK', 'TW', 'MO'] for c in countries_list):
                 is_chinese_media = True
 
             raw_versions = item['asset_details_json']
@@ -368,7 +380,7 @@ def task_scan_for_cleanup_issues(processor):
                 
                 best_ids_set = set()
                 for res, group_versions in res_groups.items():
-                    # ★ 传入 display_title 以便打印日志
+                    # 传入 is_chinese_media
                     best_in_group = _determine_best_version_by_rules(group_versions, item_name=f"{display_title} ({res})", is_chinese_media=is_chinese_media)
                     if best_in_group:
                         best_ids_set.add(best_in_group)
@@ -379,8 +391,8 @@ def task_scan_for_cleanup_issues(processor):
                 best_id_or_ids = list(best_ids_set)
                 
             else:
-                # ★ 传入 display_title 以便打印日志
-                best_id_or_ids = _determine_best_version_by_rules(versions_from_db, item_name=display_title)
+                # 传入 is_chinese_media
+                best_id_or_ids = _determine_best_version_by_rules(versions_from_db, item_name=display_title, is_chinese_media=is_chinese_media)
 
             versions_for_frontend = []
             for v in versions_from_db:
