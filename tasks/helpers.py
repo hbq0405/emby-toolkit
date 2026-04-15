@@ -1624,7 +1624,7 @@ def translate_tmdb_metadata_recursively(
     BATCH_SIZE = 20 
 
     if pending_items:
-        logger.info(f"  ➜ [AI翻译引擎] 共收集到 {len(pending_items)} 个条目需要翻译...")
+        logger.info(f"  ➜ [AI翻译引擎] 开始进行翻译...")
         
         # 1. 翻译简介
         overviews_to_translate = {k: v["overview"] for k, v in pending_items.items() if v["overview"]}
@@ -1674,71 +1674,106 @@ def translate_tmdb_metadata_recursively(
         from database import actor_db
         db_manager = actor_db.ActorDBManager()
         
+        # 读取配置的翻译模式 (仅用于角色名)
+        role_translation_mode = config.get(constants.CONFIG_OPTION_AI_TRANSLATION_MODE, 'fast')
+        
+        # 提取上下文信息 (供角色名的顾问模式 quality 使用)
+        item_title = tmdb_data.get('title') or tmdb_data.get('name') or item_name
+        item_year = None
+        release_date = tmdb_data.get('release_date') or tmdb_data.get('first_air_date')
+        if release_date and len(release_date) >= 4:
+            item_year = release_date[:4]
+        
         with connection.get_db_connection() as conn:
             with conn.cursor() as cursor:
-                # 处理人名 (音译模式)
+                # ==========================================
+                # 处理人名 (导演/演员) - 固定音译模式 + 强制缓存
+                # ==========================================
                 if pending_persons:
                     api_list = []
                     for name in pending_persons:
                         cached = db_manager.get_translation_from_db(cursor, name)
                         if cached and cached.get('translated_text'):
                             person_trans_map[name] = cached['translated_text']
-                            stats['person_cache_hits'] += 1  # ★ 人名命中缓存
+                            stats['person_cache_hits'] += 1
                         else:
                             api_list.append(name)
                     
-                    stats['person_ai_calls'] = len(api_list)  # ★ 人名需AI翻译数
+                    stats['person_ai_calls'] = len(api_list)
                     if api_list:
-                        logger.info(f"  ➜ [AI翻译引擎] 提交 {len(api_list)} 个人物姓名进行音译 (缓存命中: {stats['person_cache_hits']})...")
+                        logger.info(f"  ➜ [AI翻译引擎] 提交 {len(api_list)} 个人物姓名进行翻译 (模式: transliterate, 缓存命中: {stats['person_cache_hits']})...")
                         for i in range(0, len(api_list), BATCH_SIZE):
                             batch_names = api_list[i:i+BATCH_SIZE]
+                            # 人名永远使用音译模式
                             trans_results = ai_translator.batch_translate(batch_names, mode='transliterate')
 
-                            # 兼容返回 list
                             if isinstance(trans_results, list) and len(trans_results) == len(batch_names):
-                                trans_results = {batch_names[i]: trans_results[i] for i in range(len(batch_names))}
+                                trans_results = {batch_names[j]: trans_results[j] for j in range(len(batch_names))}
                             elif not isinstance(trans_results, dict):
                                 trans_results = {}
 
                             for k, v in trans_results.items():
-                                # 兼容 value 本身也是 list
-                                if isinstance(v, list):
+                                # 终极类型防御：确保提取出纯字符串
+                                if isinstance(v, (list, tuple, set)):
                                     v = next((x for x in v if isinstance(x, str) and x.strip()), None)
-
-                                if isinstance(v, str) and v.strip() and utils.contains_chinese(v):
+                                if not v: continue
+                                v = str(v).strip()
+                                    
+                                if v and utils.contains_chinese(v):
                                     person_trans_map[k] = v
+                                    # 人名永远写入缓存
                                     db_manager.save_translation_to_db(cursor, k, v, ai_translator.provider)
                             import time; time.sleep(1)
 
-                # 处理角色名 (快速模式)
+                # ==========================================
+                # 处理角色名 (Character) - 根据配置模式，顾问模式跳过缓存
+                # ==========================================
                 if pending_roles:
                     api_list = []
-                    for role in pending_roles:
-                        cached = db_manager.get_translation_from_db(cursor, role)
-                        if cached and cached.get('translated_text'):
-                            role_trans_map[role] = cached['translated_text']
-                            stats['role_cache_hits'] += 1  # ★ 角色名命中缓存
-                        else:
-                            api_list.append(role)
                     
-                    stats['role_ai_calls'] = len(api_list)  # ★ 角色名需AI翻译数
+                    # 如果是顾问模式，跳过缓存读取，全部重新翻译
+                    if role_translation_mode == 'quality':
+                        api_list = list(pending_roles)
+                    else:
+                        for role in pending_roles:
+                            cached = db_manager.get_translation_from_db(cursor, role)
+                            if cached and cached.get('translated_text'):
+                                role_trans_map[role] = cached['translated_text']
+                                stats['role_cache_hits'] += 1
+                            else:
+                                api_list.append(role)
+                    
+                    stats['role_ai_calls'] = len(api_list)
                     if api_list:
-                        logger.info(f"  ➜ [AI翻译引擎] 提交 {len(api_list)} 个角色名进行意译 (缓存命中: {stats['role_cache_hits']})...")
+                        logger.info(f"  ➜ [AI翻译引擎] 提交 {len(api_list)} 个角色名进行翻译 (模式: {role_translation_mode}, 缓存命中: {stats['role_cache_hits']})...")
                         for i in range(0, len(api_list), BATCH_SIZE):
                             batch_roles = api_list[i:i+BATCH_SIZE]
-                            trans_results = ai_translator.batch_translate(batch_roles, mode='fast')
+                            # 角色名使用配置的模式，并传入上下文
+                            trans_results = ai_translator.batch_translate(batch_roles, mode=role_translation_mode, title=item_title, year=item_year)
+
+                            if isinstance(trans_results, list) and len(trans_results) == len(batch_roles):
+                                trans_results = {batch_roles[j]: trans_results[j] for j in range(len(batch_roles))}
+                            elif not isinstance(trans_results, dict):
+                                trans_results = {}
 
                             for k, v in trans_results.items():
+                                # 终极类型防御：确保提取出纯字符串
+                                if isinstance(v, (list, tuple, set)):
+                                    v = next((x for x in v if isinstance(x, str) and x.strip()), None)
+                                if not v: continue
+                                v = str(v).strip()
+                                    
                                 if not v or not utils.contains_chinese(v):
                                     continue
 
-                                # ★ 核心修复：AI 返回值也要再次清洗，防止 "饰路飞" 这种结果被后续再加前缀
                                 cleaned_v = utils.clean_character_name_static(v)
                                 if not cleaned_v:
                                     continue
 
                                 role_trans_map[k] = cleaned_v
-                                db_manager.save_translation_to_db(cursor, k, cleaned_v, ai_translator.provider)
+                                # 顾问模式不写缓存，其他模式写缓存
+                                if role_translation_mode != 'quality':
+                                    db_manager.save_translation_to_db(cursor, k, cleaned_v, ai_translator.provider)
 
                             import time; time.sleep(1)
         
