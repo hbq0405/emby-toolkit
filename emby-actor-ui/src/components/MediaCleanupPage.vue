@@ -136,8 +136,8 @@ const selectedTaskIds = computed(() => {
 // 判断特定名称的任务是否正在运行
 const isTaskRunning = (taskName) => props.taskStatus.is_running && props.taskStatus.current_action.includes(taskName);
 
-// ★★★ 核心：创建一个计算属性，专门跟踪扫描任务的状态 (使用正确的任务名) ★★★
-const isScanTaskActive = computed(() => isTaskRunning('扫描媒体重复项'));
+// 跟踪扫描任务的状态
+const isScanTaskActive = computed(() => isTaskRunning('扫描媒体库重复项'));
 
 // 将从后端获取的扁平任务列表，按剧集/电影进行分组
 const groupedTasks = computed(() => {
@@ -156,7 +156,7 @@ const groupedTasks = computed(() => {
       groupName = task.parent_series_name || '未知剧集';
       groupKey = `series-${task.parent_series_tmdb_id}`;
       isMovie = false;
-    } else { // 顶层剧集多版本 (item_type === 'Series')
+    } else { 
       groupName = task.item_name;
       groupKey = `series-${task.tmdb_id}`;
       isMovie = false;
@@ -178,11 +178,11 @@ const groupedTasks = computed(() => {
 
 // 主表格的列定义
 const seriesColumns = computed(() => [
-  { type: 'selection', width: 40 }, // 给勾选框固定宽度
+  { type: 'selection', width: 40 },
   { 
     type: 'expand',
-    width: 40, // 给展开按钮固定宽度
-    expandable: (rowData) => !rowData.isMovie, // 电影行不可展开
+    width: 40,
+    expandable: (rowData) => !rowData.isMovie,
     renderExpand: (rowData) => {
       return h(NDataTable, {
         columns: episodeColumns,
@@ -200,25 +200,21 @@ const seriesColumns = computed(() => [
     title: '媒体详情',
     key: 'details',
     render(row) {
-      // 1. 标题部分 (图标 + 片名 + 数量)
       const iconComponent = row.isMovie ? MovieIcon : SeriesIcon;
       const headerNode = h(NSpace, { align: 'center', style: 'margin-bottom: 12px;' }, {
         default: () => [
-          h(NIcon, { component: iconComponent, size: 24, color: '#2080f0' }), // 图标稍微大一点，加个颜色
-          h('span', { style: 'font-size: 18px; font-weight: bold;' }, row.seriesName), // 片名加大加粗
+          h(NIcon, { component: iconComponent, size: 24, color: '#2080f0' }),
+          h('span', { style: 'font-size: 18px; font-weight: bold;' }, row.seriesName),
           h(NTag, { type: 'info', round: true, size: 'small', bordered: false }, { default: () => `${row.episodes.length} 项` }),
         ]
       });
 
-      // 2. 表格部分 (仅电影显示，剧集在展开行里)
       let tableNode = null;
       if (row.isMovie && row.episodes && row.episodes.length > 0) {
         const movieTask = row.episodes[0];
-        // 直接调用之前的 renderVersions，它现在返回的是一个 NDataTable
         tableNode = renderVersions(movieTask);
       }
 
-      // 3. 垂直堆叠返回
       return h('div', { style: 'padding: 8px 0;' }, [
         headerNode,
         tableNode
@@ -254,42 +250,50 @@ const pagination = computed(() => {
 
 const parseBestIds = (val) => {
   if (!val) return [];
-  
   let ids = [];
-  
-  // 情况 1: 后端传过来已经是数组了 (JSONB 的正常情况)
   if (Array.isArray(val)) {
     ids = val;
-  } 
-  // 情况 2: 是字符串，尝试解析 JSON
-  else if (typeof val === 'string') {
+  } else if (typeof val === 'string') {
     try {
       const trimmed = val.trim();
-      // 如果是 '["123"]' 这种格式
       if (trimmed.startsWith('[')) {
         const parsed = JSON.parse(trimmed);
         if (Array.isArray(parsed)) ids = parsed;
       } else {
-        // 如果是纯字符串 ID "123"
         ids = [trimmed];
       }
     } catch (e) {
-      // 解析失败，当做普通 ID
       ids = [val];
     }
-  } 
-  // 情况 3: 是数字或其他类型
-  else {
+  } else {
     ids = [val];
   }
-
-  // ★★★ 关键：统一转为字符串，防止 123 (Number) != "123" (String) 的问题
   return ids.map(id => String(id));
+};
+
+// ★★★ 手动删除单一版本的处理函数 ★★★
+const handleDeleteVersion = (row) => {
+  dialog.warning({
+    title: '手动删除确认',
+    content: `确定要永久删除该版本 (ID: ${row.id}) 吗？此操作将无视规则PK结果，直接删除对应的媒体文件！`,
+    positiveText: '确定删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await axios.post('/api/cleanup/delete_version', { 
+          emby_id: String(row.id)
+        });
+        message.success('版本删除成功');
+        fetchData(); // 删除成功后刷新列表
+      } catch (err) {
+        message.error(err.response?.data?.error || '删除失败');
+      }
+    }
+  });
 };
 
 // 定义版本详情表格的列结构
 const createVersionColumns = (bestVersionJson) => {
-  // 1. 解析出最佳ID列表 (全是字符串)
   const bestIds = parseBestIds(bestVersionJson);
 
   return [
@@ -299,7 +303,6 @@ const createVersionColumns = (bestVersionJson) => {
       width: 60,
       align: 'center',
       render(row) {
-        // 2. 判断当前行ID是否在最佳列表中
         const currentIdStr = String(row.id);
         const isBest = bestIds.includes(currentIdStr);
         return h(NIcon, { 
@@ -313,6 +316,7 @@ const createVersionColumns = (bestVersionJson) => {
       title: 'ID',
       key: 'id',
       width: 90,
+      // ★★★ 恢复为普通的 Tag 显示，移除跳转逻辑 ★★★
       render: (row) => h(NTag, { size: 'small', bordered: false, type: 'default' }, { default: () => row.id })
     },
     {
@@ -338,7 +342,6 @@ const createVersionColumns = (bestVersionJson) => {
           : h(NText, { depth: 3, style: 'font-size: 12px' }, { default: () => 'SDR' });
       }
     },
-    // ★★★ 新增：编码列 ★★★
     {
       title: '编码',
       key: 'codec',
@@ -352,28 +355,19 @@ const createVersionColumns = (bestVersionJson) => {
       render: (row) => {
         const count = row.subtitle_count || 0;
         const langs = row.subtitle_languages || [];
-        
-        // 检查是否有中文
         const hasChinese = langs.includes('chi') || langs.includes('yue');
         
-        // 构建显示内容
         let content;
         if (count === 0) {
           content = h(NText, { depth: 3, style: 'font-size: 12px' }, { default: () => '无' });
         } else {
-          // 如果有中文，显示绿色 Tag，否则显示普通 Tag
           content = h(
             NTag, 
-            { 
-              size: 'small', 
-              bordered: false, 
-              type: hasChinese ? 'success' : 'default' 
-            }, 
+            { size: 'small', bordered: false, type: hasChinese ? 'success' : 'default' }, 
             { default: () => hasChinese ? '中文' : `${count}种` }
           );
         }
 
-        // 添加 Tooltip 显示详细语言
         if (count > 0) {
           return h(NTooltip, { trigger: 'hover' }, {
             trigger: () => content,
@@ -387,7 +381,6 @@ const createVersionColumns = (bestVersionJson) => {
       title: '码率',
       key: 'video_bitrate_mbps',
       width: 100,
-      // 直接读取原始字段 video_bitrate_mbps 并加上单位
       render: (row) => row.video_bitrate_mbps ? h(NTag, { size: 'small', bordered: false, color: { color: '#fafafa', textColor: '#333' } }, { default: () => `${row.video_bitrate_mbps} Mbps` }) : '-'
     },
     {
@@ -418,22 +411,32 @@ const createVersionColumns = (bestVersionJson) => {
       title: '路径',
       key: 'path',
       minWidth: 200,
-      ellipsis: {
-        tooltip: true
-      },
+      ellipsis: { tooltip: true },
       render: (row) => h(NText, { depth: 3, style: 'font-size: 12px; font-family: monospace;' }, { default: () => row.path })
+    },
+    // ★★★ 手动操作列 ★★★
+    {
+      title: '操作',
+      key: 'actions',
+      width: 60,
+      align: 'center',
+      render: (row) => {
+        return h(NButton, {
+          size: 'small',
+          type: 'error',
+          quaternary: true,
+          onClick: () => handleDeleteVersion(row)
+        }, { icon: () => h(NIcon, null, { default: () => h(DeleteIcon) }) });
+      }
     }
   ];
 };
-// ★★★ 核心修改：renderVersions 现在返回一个 NDataTable ★★★
+
 const renderVersions = (row) => {
   const versions = row.versions_info_json || [];
-  // 传入 best_version_json
   const bestIds = parseBestIds(row.best_version_json);
 
-  // 排序：保留的版本排在前面
   const sortedVersions = [...versions].sort((a, b) => {
-    // ★★★ 修复：转字符串比对
     const aIsBest = bestIds.includes(String(a.id));
     const bIsBest = bestIds.includes(String(b.id));
     
@@ -452,35 +455,29 @@ const renderVersions = (row) => {
   });
 };
 
-// 内层展开表格的列定义
 const episodeColumns = [
   {
-    // title: '媒体项', // 表头已隐藏，title 不再重要
     key: 'item_name',
-    width: 100, // ★★★ 核心修改 2：给左侧分集号固定宽度，防止挤压右侧表格 ★★★
+    width: 100, 
     align: 'center',
     render(row) {
       let displayName = row.item_name;
-      // 尝试提取 S01E01
       if (row.item_type === 'Episode' && row.season_number !== undefined && row.episode_number !== undefined) {
           const season = String(row.season_number).padStart(2, '0');
           const episode = String(row.episode_number).padStart(2, '0');
-          // 使用 Tag 样式显示分集号，更醒目
           return h(NTag, { bordered: false, type: 'default' }, { default: () => `S${season}E${episode}` });
       }
       return h('span', displayName);
     }
   },
   {
-    // title: '版本详情',
     key: 'versions_info_json',
-    render: renderVersions // 复用渲染函数
+    render: renderVersions
   }
 ];
 
 // --- 5. 方法和事件处理 ---
 
-// 从后端获取待清理任务列表
 const fetchData = async () => {
   isLoading.value = true;
   error.value = null;
@@ -495,7 +492,6 @@ const fetchData = async () => {
   }
 };
 
-// 触发后台扫描任务
 const triggerScan = async () => {
   try {
     await axios.post('/api/tasks/run', { task_name: 'scan-cleanup-issues' });
@@ -505,7 +501,6 @@ const triggerScan = async () => {
   }
 };
 
-// 处理批量操作
 const handleBatchAction = (key) => {
   const ids = selectedTaskIds.value;
   if (ids.length === 0) return;
@@ -525,7 +520,6 @@ const handleBatchAction = (key) => {
   }
 };
 
-// 执行清理
 const executeCleanup = async (ids) => {
   try {
     await axios.post('/api/cleanup/execute', { task_ids: ids });
@@ -536,7 +530,6 @@ const executeCleanup = async (ids) => {
   }
 };
 
-// 忽略任务
 const ignoreTasks = async (ids) => {
   try {
     const response = await axios.post('/api/cleanup/ignore', { task_ids: ids });
@@ -547,7 +540,6 @@ const ignoreTasks = async (ids) => {
   }
 };
 
-// 从列表删除任务
 const deleteTasks = async (ids) => {
   try {
     const response = await axios.post('/api/cleanup/delete', { task_ids: ids });
@@ -558,7 +550,6 @@ const deleteTasks = async (ids) => {
   }
 };
 
-// 一键清理所有
 const handleClearAllTasks = () => {
   dialog.warning({
     title: '高危操作确认',
@@ -602,7 +593,6 @@ const formatEffectTagForDisplay = (tag) => {
 
 // --- 7. 生命周期钩子和监听器 ---
 
-// 监听扫描任务状态变化，实现自动刷新
 watch(isScanTaskActive, (isActive, wasActive) => {
   if (wasActive && !isActive) {
     message.success('扫描已完成，正在自动刷新列表...');
@@ -610,8 +600,9 @@ watch(isScanTaskActive, (isActive, wasActive) => {
   }
 });
 
-// 组件挂载时，获取初始数据
-onMounted(fetchData);
+onMounted(() => {
+  fetchData();
+});
 
 </script>
 
