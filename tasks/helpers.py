@@ -1789,19 +1789,17 @@ def translate_tmdb_metadata_recursively(
             
             translated_count += len(person_trans_map) + len(role_trans_map)
 
-    # ★★★ 排版精美的统计汇总日志 ★★★
+    # 统计汇总日志
     total_needs = (stats['title_needs_translation'] + stats['overview_needs_translation'] + 
                    stats['tagline_needs_translation'] + stats['person_ai_calls'] + stats['role_ai_calls'])
     total_cache = (stats['title_cache_hits'] + stats['overview_cache_hits'] + 
                    stats['tagline_cache_hits'] + stats['person_cache_hits'] + stats['role_cache_hits'])
     
-    logger.info(
-        f"  ➜ [AI翻译引擎] 翻译统计汇总 ({item_name}):\n"
-        f"    ├─ 👥 演员节点: 原始 {stats['original_cast_count']} 人次 → 截断保留 {stats['truncated_cast_count']} 人次 (含主剧/分季/分集)\n"
-        f"    ├─ 📝 待翻词条: 标题 {stats['title_needs_translation']} | 简介 {stats['overview_needs_translation']} | 标语 {stats['tagline_needs_translation']} | 人名 {stats['person_ai_calls']} | 角色 {stats['role_ai_calls']}\n"
-        f"    ├─ 💾 缓存命中: 标题 {stats['title_cache_hits']} | 简介 {stats['overview_cache_hits']} | 标语 {stats['tagline_cache_hits']} | 人名 {stats['person_cache_hits']} | 角色 {stats['role_cache_hits']}\n"
-        f"    └─ 📊 最终消耗: 调用AI {total_needs} 次 | 节省 {total_cache} 次 | 成功回填 {translated_count} 项"
-    )
+    logger.info(f"  ➜ [AI翻译引擎] 翻译统计汇总 ({item_name}):")
+    logger.info(f"  ➜ 演员节点: 原始 {stats['original_cast_count']} 人次 → 截断保留 {stats['truncated_cast_count']} 人次 (含主剧/分季/分集)")
+    logger.info(f"  ➜ 待翻词条: 标题 {stats['title_needs_translation']} | 简介 {stats['overview_needs_translation']} | 标语 {stats['tagline_needs_translation']} | 人名 {stats['person_ai_calls']} | 角色 {stats['role_ai_calls']}")
+    logger.info(f"  ➜ 缓存命中: 标题 {stats['title_cache_hits']} | 简介 {stats['overview_cache_hits']} | 标语 {stats['tagline_cache_hits']} | 人名 {stats['person_cache_hits']} | 角色 {stats['role_cache_hits']}")
+    logger.info(f"  ➜ 最终消耗: 调用AI {total_needs} 次 | 节省 {total_cache} 次 | 成功回填 {translated_count} 项")
 
 def evaluate_season_airing_status(tmdb_id: str, season_number: int, api_key: str) -> bool:
     """
