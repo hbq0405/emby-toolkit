@@ -266,7 +266,7 @@ def format_and_complete_cast_list(
     add_role_prefix = config.get(constants.CONFIG_OPTION_ACTOR_ROLE_ADD_PREFIX, False)
     generic_roles = {"演员", "配音"}
 
-    logger.debug(f"  ➜ 格式化演员列表，调用模式: '{mode}' (前缀开关: {'开' if add_role_prefix else '关'})")
+    logger.trace(f"  ➜ 格式化演员列表，调用模式: '{mode}' (前缀开关: {'开' if add_role_prefix else '关'})")
     # --- 阶段1: 统一的角色名格式化 (所有模式通用) ---
     for idx, actor in enumerate(cast_list):
         new_actor = actor.copy()
@@ -295,14 +295,14 @@ def format_and_complete_cast_list(
     # --- 阶段2: 根据模式执行不同的排序策略 ---
     if mode == 'manual':
         # 【手动模式】：以用户自定义顺序为基础，并增强（通用角色后置）
-        logger.debug("  ➜ 应用 'manual' 排序策略：保留用户自定义顺序，并将通用角色后置。")
+        logger.trace("  ➜ 应用 'manual' 排序策略：保留用户自定义顺序，并将通用角色后置。")
         processed_cast.sort(key=lambda actor: (
             1 if actor.get("character") in generic_roles else 0,  # 1. 通用角色排在后面
             actor.get("original_index")                          # 2. 在此基础上，保持原始手动顺序
         ))
     else: # mode == 'auto' 或其他任何默认情况
         # 【自动模式】：严格按照TMDb原始的 'order' 字段排序
-        logger.debug("  ➜ 应用 'auto' 排序策略：严格按原始TMDb 'order' 字段排序。")
+        logger.trace("  ➜ 应用 'auto' 排序策略：严格按原始TMDb 'order' 字段排序。")
         processed_cast.sort(key=lambda actor: actor.get('order', 999))
         
     # --- 阶段3: 最终重置 order 索引 (所有模式通用) ---
