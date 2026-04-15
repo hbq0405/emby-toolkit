@@ -1901,8 +1901,8 @@ def translate_tmdb_metadata_recursively(
 
     logger.info("  ➜ [AI翻译引擎] 翻译统计汇总")
     logger.info(
-        f"  ➜ 演员节点: 原始 {stats['original_cast_count']} 人次 → "
-        f"截断保留 {stats['truncated_cast_count']} 人次（含主剧/分季/分集）"
+        f"  ➜ 演员节点: 原始 {stats['original_cast_count']} 人 → "
+        f"最终保留 {stats['truncated_cast_count']} 人（含剧/季/集）"
     )
     logger.info(
         f"  ➜ 待翻词条: 标题 {stats['title_pending_count']} | "
