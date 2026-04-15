@@ -1539,13 +1539,38 @@ def translate_tmdb_metadata_recursively(
             #     if name and not utils.contains_chinese(name):
             #         pending_persons.add(name)
 
-            # 收集演员和客串 (应用无头像过滤，省钱)
+            # =================================================================
+            # 在翻译前进行智能截断
+            # =================================================================
+            max_actors = config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
+            try:
+                limit = int(max_actors)
+                if limit <= 0: limit = 30
+            except:
+                limit = 30
+
+            def _smart_truncate(actor_list, max_limit):
+                if not actor_list: return []
+                # 1. 优先保留有头像的
+                if remove_no_avatar:
+                    valid_actors = [a for a in actor_list if a.get('profile_path')]
+                else:
+                    valid_actors = actor_list
+                # 2. 按 order 排序 (主演在前，客串在后)
+                valid_actors.sort(key=lambda x: x.get('order') if x.get('order') is not None else 999)
+                # 3. 截断
+                return valid_actors[:max_limit]
+
+            # 对原始数据进行原地截断 (这样后续的 NFO 和 DB 写入也会直接使用截断后的干净数据)
+            if 'cast' in credits_data:
+                credits_data['cast'] = _smart_truncate(credits_data['cast'], limit)
+            if 'guest_stars' in credits_data:
+                # 客串演员通常不需要太多，限制在 10 个以内即可，进一步省钱
+                credits_data['guest_stars'] = _smart_truncate(credits_data['guest_stars'], 10)
+
+            # 收集演员和客串 (此时已经是截断后的精华名单了)
             all_actors = credits_data.get('cast', []) + credits_data.get('guest_stars', [])
             for actor in all_actors:
-                # 如果开启了无头像过滤，且该演员无头像，直接跳过，不浪费 Token 翻译
-                if remove_no_avatar and not actor.get('profile_path'):
-                    continue
-                    
                 name = actor.get('name')
                 if name and not utils.contains_chinese(name):
                     pending_persons.add(name)

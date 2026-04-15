@@ -1638,6 +1638,7 @@ class MediaProcessor:
                         if p.get("id") and p.get("character"):
                             translated_character_map[int(p["id"])] = p["character"]
 
+                formatted_season_casts_db_cache = {} # 季演员表格式化缓存，避免重复计算
                 for episode in episodes_details:
                     # 1. 必须有季号和集号 (提前解析，用于生成内部ID)
                     if episode.get('episode_number') is None: continue
@@ -1677,6 +1678,14 @@ class MediaProcessor:
                     season_cast = season_credits.get('cast', [])
                     season_crew = season_credits.get('crew', [])
 
+                    # ★ 缓存季演员表的格式化结果
+                    if s_num not in formatted_season_casts_db_cache:
+                        if season_cast:
+                            filtered_s_cast = [p for p in season_cast if p.get("id") and (not remove_no_avatar or p.get("profile_path"))]
+                            formatted_season_casts_db_cache[s_num] = self._format_episode_cast_for_nfo(filtered_s_cast, item_details_from_emby)
+                        else:
+                            formatted_season_casts_db_cache[s_num] = []
+
                     # ★★★ 提取分集专属导演 ★★★
                     ep_crew = episode.get('crew', [])
                     if not ep_crew:
@@ -1694,24 +1703,22 @@ class MediaProcessor:
                     ep_actors_json_list = []
                     
                     if ep_cast_raw:
-                        # 1. 优先使用分集专属演员 (过滤无头像，数据已在源头翻译)
+                        # 1. 优先使用分集专属演员
                         filtered_ep_cast = [p for p in ep_cast_raw if p.get("id") and (not remove_no_avatar or p.get("profile_path"))]
-                        # ★ 核心修复：在存入数据库前，先进行格式化，确保 "饰 xxx" 前缀被正确写入数据库
+                        # 只有分集独有演员才调用格式化
                         formatted_ep_cast = self._format_episode_cast_for_nfo(filtered_ep_cast, item_details_from_emby)
                         ep_actors_json_list = [
                             {"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} 
                             for p in formatted_ep_cast
                         ]
-                    elif season_cast:
-                        # 2. 其次使用季(Season)演员表兜底
-                        filtered_season_cast = [p for p in season_cast if p.get("id") and (not remove_no_avatar or p.get("profile_path"))]
-                        formatted_season_cast = self._format_episode_cast_for_nfo(filtered_season_cast, item_details_from_emby)
+                    elif formatted_season_casts_db_cache.get(s_num):
+                        # 2. 其次使用季(Season)演员表兜底 (直接拿缓存)
                         ep_actors_json_list = [
                             {"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} 
-                            for p in formatted_season_cast
+                            for p in formatted_season_casts_db_cache[s_num]
                         ]
                     else:
-                        # 3. 终极兜底：使用剧集(Series)总演员表 (final_processed_cast 已经格式化过了)
+                        # 3. 终极兜底：使用剧集(Series)总演员表 (直接拿已格式化好的 final_processed_cast)
                         ep_actors_json_list = [{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order", 999)} for p in final_processed_cast if p.get("id")]
 
                     episode_record = {
@@ -3341,42 +3348,42 @@ class MediaProcessor:
         # ======================================================================
         # 步骤 5: ★★★ 从演员表移除无头像演员 ★★★
         # ======================================================================
-        if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True):
-            actors_with_avatars = [actor for actor in current_cast_list if actor.get("profile_path")]
-            actors_without_avatars = [actor for actor in current_cast_list if not actor.get("profile_path")]
+        # if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True):
+        #     actors_with_avatars = [actor for actor in current_cast_list if actor.get("profile_path")]
+        #     actors_without_avatars = [actor for actor in current_cast_list if not actor.get("profile_path")]
 
-            if actors_without_avatars:
-                removed_names = [a.get('name', f"TMDbID:{a.get('id')}") for a in actors_without_avatars]
-                logger.info(f"  ➜ 将移除 {len(actors_without_avatars)} 位无头像的演员: {removed_names}")
-                current_cast_list = actors_with_avatars
-        else:
-            logger.info("  ➜ 未启用移除无头像演员。")
+        #     if actors_without_avatars:
+        #         removed_names = [a.get('name', f"TMDbID:{a.get('id')}") for a in actors_without_avatars]
+        #         logger.info(f"  ➜ 将移除 {len(actors_without_avatars)} 位无头像的演员: {removed_names}")
+        #         current_cast_list = actors_with_avatars
+        # else:
+        #     logger.info("  ➜ 未启用移除无头像演员。")
 
         # ======================================================================
         # 步骤 6：智能截断逻辑 (Smart Truncation) ★★★
         # ======================================================================
-        max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
-        try:
-            limit = int(max_actors)
-            if limit <= 0: limit = 30
-        except (ValueError, TypeError):
-            limit = 30
+        # max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
+        # try:
+        #     limit = int(max_actors)
+        #     if limit <= 0: limit = 30
+        # except (ValueError, TypeError):
+        #     limit = 30
 
-        original_count = len(current_cast_list)
+        # original_count = len(current_cast_list)
         
-        if original_count > limit:
-            logger.info(f"  ➜ 演员列表总数 ({original_count}) 超过上限 ({limit})，将优先保留有头像的演员后进行截断。")
-            sort_key = lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999
-            with_profile = [actor for actor in current_cast_list if actor.get("profile_path")]
-            without_profile = [actor for actor in current_cast_list if not actor.get("profile_path")]
-            with_profile.sort(key=sort_key)
-            without_profile.sort(key=sort_key)
-            prioritized_list = with_profile + without_profile
-            current_cast_list = prioritized_list[:limit]
-            logger.debug(f"  ➜ 截断后，保留了 {len(with_profile)} 位有头像演员中的 {len([a for a in current_cast_list if a.get('profile_path')])} 位。")
-        else:
-            # ▼▼▼ 核心修改：直接在 current_cast_list 上排序 ▼▼▼
-            current_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
+        # if original_count > limit:
+        #     logger.info(f"  ➜ 演员列表总数 ({original_count}) 超过上限 ({limit})，将优先保留有头像的演员后进行截断。")
+        #     sort_key = lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999
+        #     with_profile = [actor for actor in current_cast_list if actor.get("profile_path")]
+        #     without_profile = [actor for actor in current_cast_list if not actor.get("profile_path")]
+        #     with_profile.sort(key=sort_key)
+        #     without_profile.sort(key=sort_key)
+        #     prioritized_list = with_profile + without_profile
+        #     current_cast_list = prioritized_list[:limit]
+        #     logger.debug(f"  ➜ 截断后，保留了 {len(with_profile)} 位有头像演员中的 {len([a for a in current_cast_list if a.get('profile_path')])} 位。")
+        # else:
+        #     # ▼▼▼ 核心修改：直接在 current_cast_list 上排序 ▼▼▼
+        #     current_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
 
         # ======================================================================
         # 步骤 7: 格式化 ★★★
@@ -4417,6 +4424,10 @@ class MediaProcessor:
                         if not raw_cast_list: return []
                         return [a for a in raw_cast_list if not remove_no_avatar or a.get('profile_path')]
                     
+                    formatted_season_casts_cache = {}
+                    # 剧集总演员表其实在传入时 (cast_to_write) 已经是格式化好的了，直接复用
+                    formatted_series_cast = cast_to_write 
+
                     for root_dir, dirs, files in os.walk(series_root_dir):
                         for filename in files:
                             if os.path.splitext(filename)[1].lower() not in valid_exts: continue
@@ -4424,15 +4435,19 @@ class MediaProcessor:
                             if match:
                                 target_s, target_e = int(match.group(1)), int(match.group(2))
                                 
-                                # ★ 提前提取季(Season)信息，供季 NFO 和分集兜底使用
                                 season_info = next((s for s in seasons_data if s.get('season_number') == target_s), None)
-                                season_cast = []
                                 season_crew = []
-                                if season_info:
-                                    s_credits = season_info.get('credits') or season_info.get('aggregate_credits') or {}
-                                    # ★ 核心：过滤季演员表
-                                    season_cast = _filter_raw_cast(s_credits.get('cast', []))
-                                    season_crew = s_credits.get('crew', [])
+                                
+                                # ★ 缓存季演员表格式化结果
+                                if target_s not in formatted_season_casts_cache:
+                                    if season_info:
+                                        s_credits = season_info.get('credits') or season_info.get('aggregate_credits') or {}
+                                        raw_s_cast = _filter_raw_cast(s_credits.get('cast', []))
+                                        season_crew = s_credits.get('crew', [])
+                                        # 仅在这里调用一次格式化
+                                        formatted_season_casts_cache[target_s] = self._format_episode_cast_for_nfo(raw_s_cast, item_details)
+                                    else:
+                                        formatted_season_casts_cache[target_s] = []
 
                                 if root_dir not in season_dirs_processed:
                                     if season_info:
@@ -4443,24 +4458,21 @@ class MediaProcessor:
                                     season_dirs_processed.add(root_dir)
 
                                 ep_list = episodes_data.values() if isinstance(episodes_data, dict) else (episodes_data if isinstance(episodes_data, list) else [])
-                                
-                                # 1. 尝试在 TMDb 数据中寻找这一集
                                 matched_ep = next((ep for ep in ep_list if ep.get("season_number") == target_s and ep.get("episode_number") == target_e), None)
                                 
+                                final_ep_cast = []
+
                                 if matched_ep:
-                                    # 正常生成 TMDb 数据的 NFO
                                     raw_ep_cast = matched_ep.get('credits', {}).get('cast', []) + matched_ep.get('credits', {}).get('guest_stars', [])
-                                    # 先做基础过滤
                                     ep_cast = _filter_raw_cast(raw_ep_cast)
 
-                                    # 演员兜底：分集 -> 季 -> 剧
-                                    if not ep_cast:
-                                        ep_cast = season_cast if season_cast else cast_to_write
+                                    if ep_cast:
+                                        # 只有当这一集有自己独有的演员表时，才调用格式化
+                                        final_ep_cast = self._format_episode_cast_for_nfo(ep_cast, item_details)
+                                    else:
+                                        # 兜底：直接拿缓存好的季演员表或剧演员表，不重复格式化！
+                                        final_ep_cast = formatted_season_casts_cache.get(target_s) or formatted_series_cast
 
-                                    # ★ 核心修复：分集演员表也走统一格式化逻辑
-                                    ep_cast = self._format_episode_cast_for_nfo(ep_cast, item_details)
-
-                                    # 导演兜底：分集 -> 季
                                     ep_crew = matched_ep.get('crew', [])
                                     if not ep_crew:
                                         ep_crew = matched_ep.get('credits', {}).get('crew', [])
@@ -4469,7 +4481,7 @@ class MediaProcessor:
                                             matched_ep['credits'] = {}
                                         matched_ep['credits']['crew'] = season_crew
 
-                                    ep_nfo_content = nfo_builder.build_episode_nfo(matched_ep, ep_cast)
+                                    ep_nfo_content = nfo_builder.build_episode_nfo(matched_ep, final_ep_cast)
 
                                 else:
                                     dummy_ep = {
@@ -4480,18 +4492,12 @@ class MediaProcessor:
                                         "id": "",
                                         "credits": {"crew": season_crew}
                                     }
-
-                                    # 演员兜底：季 -> 剧
-                                    ep_cast = season_cast if season_cast else cast_to_write
-
-                                    # ★ 兜底分集同样走统一格式化
-                                    ep_cast = self._format_episode_cast_for_nfo(ep_cast, item_details)
-
-                                    ep_nfo_content = nfo_builder.build_episode_nfo(dummy_ep, ep_cast)
+                                    # 兜底：直接拿缓存
+                                    final_ep_cast = formatted_season_casts_cache.get(target_s) or formatted_series_cast
+                                    ep_nfo_content = nfo_builder.build_episode_nfo(dummy_ep, final_ep_cast)
 
                                 ep_nfo_path = os.path.join(root_dir, os.path.splitext(filename)[0] + ".nfo")
                                 
-                                # ★★★ 核心比对逻辑 ★★★
                                 if _write_nfo_if_changed(ep_nfo_path, ep_nfo_content):
                                     generated_count += 1
                                 else:
