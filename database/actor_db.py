@@ -59,14 +59,18 @@ class ActorDBManager:
             return None
 
     def save_translation_to_db(self, cursor, original_text, translated_text, engine_used):
-        if isinstance(translated_text, list):
+        # 终极防御：无论传入什么鬼东西，都安全地提取为字符串
+        if isinstance(translated_text, (list, tuple, set)):
             translated_text = next((x for x in translated_text if isinstance(x, str) and x.strip()), None)
 
-        if translated_text is not None and not isinstance(translated_text, str):
-            translated_text = str(translated_text)
+        if not translated_text:
+            return
 
-        if translated_text and translated_text.strip() and not contains_chinese(translated_text):
-            logger.warning(f"  ➜ 翻译结果 '{translated_text}' 不含中文，已丢弃。原文: '{original_text}'")
+        # 强制转为字符串并去除首尾空格
+        translated_text = str(translated_text).strip()
+
+        if not translated_text or not contains_chinese(translated_text):
+            logger.warning(f"  ➜ 翻译结果 '{translated_text}' 不含中文或为空，已丢弃。原文: '{original_text}'")
             return
 
         try:

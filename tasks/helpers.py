@@ -1695,30 +1695,31 @@ def translate_tmdb_metadata_recursively(
                         cached = db_manager.get_translation_from_db(cursor, name)
                         if cached and cached.get('translated_text'):
                             person_trans_map[name] = cached['translated_text']
-                            stats['person_cache_hits'] += 1  # ★ 人名命中缓存
+                            stats['person_cache_hits'] += 1
                         else:
                             api_list.append(name)
                     
-                    stats['person_ai_calls'] = len(api_list)  # ★ 人名需AI翻译数
+                    stats['person_ai_calls'] = len(api_list)
                     if api_list:
                         logger.info(f"  ➜ [AI翻译引擎] 提交 {len(api_list)} 个人物姓名进行翻译 (模式: transliterate, 缓存命中: {stats['person_cache_hits']})...")
                         for i in range(0, len(api_list), BATCH_SIZE):
                             batch_names = api_list[i:i+BATCH_SIZE]
-                            # 人名固定使用 transliterate 音译模式
+                            # 人名永远使用音译模式
                             trans_results = ai_translator.batch_translate(batch_names, mode='transliterate')
 
-                            # 兼容返回 list
                             if isinstance(trans_results, list) and len(trans_results) == len(batch_names):
-                                trans_results = {batch_names[i]: trans_results[i] for i in range(len(batch_names))}
+                                trans_results = {batch_names[j]: trans_results[j] for j in range(len(batch_names))}
                             elif not isinstance(trans_results, dict):
                                 trans_results = {}
 
                             for k, v in trans_results.items():
-                                # 兼容 value 本身也是 list
-                                if isinstance(v, list):
+                                # 终极类型防御：确保提取出纯字符串
+                                if isinstance(v, (list, tuple, set)):
                                     v = next((x for x in v if isinstance(x, str) and x.strip()), None)
-
-                                if isinstance(v, str) and v.strip() and utils.contains_chinese(v):
+                                if not v: continue
+                                v = str(v).strip()
+                                    
+                                if v and utils.contains_chinese(v):
                                     person_trans_map[k] = v
                                     # 人名永远写入缓存
                                     db_manager.save_translation_to_db(cursor, k, v, ai_translator.provider)
@@ -1738,11 +1739,11 @@ def translate_tmdb_metadata_recursively(
                             cached = db_manager.get_translation_from_db(cursor, role)
                             if cached and cached.get('translated_text'):
                                 role_trans_map[role] = cached['translated_text']
-                                stats['role_cache_hits'] += 1  # ★ 角色名命中缓存
+                                stats['role_cache_hits'] += 1
                             else:
                                 api_list.append(role)
                     
-                    stats['role_ai_calls'] = len(api_list)  # ★ 角色名需AI翻译数
+                    stats['role_ai_calls'] = len(api_list)
                     if api_list:
                         logger.info(f"  ➜ [AI翻译引擎] 提交 {len(api_list)} 个角色名进行翻译 (模式: {role_translation_mode}, 缓存命中: {stats['role_cache_hits']})...")
                         for i in range(0, len(api_list), BATCH_SIZE):
@@ -1750,17 +1751,21 @@ def translate_tmdb_metadata_recursively(
                             # 角色名使用配置的模式，并传入上下文
                             trans_results = ai_translator.batch_translate(batch_roles, mode=role_translation_mode, title=item_title, year=item_year)
 
-                            # 兼容返回 list
                             if isinstance(trans_results, list) and len(trans_results) == len(batch_roles):
-                                trans_results = {batch_roles[i]: trans_results[i] for i in range(len(batch_roles))}
+                                trans_results = {batch_roles[j]: trans_results[j] for j in range(len(batch_roles))}
                             elif not isinstance(trans_results, dict):
                                 trans_results = {}
 
                             for k, v in trans_results.items():
+                                # 终极类型防御：确保提取出纯字符串
+                                if isinstance(v, (list, tuple, set)):
+                                    v = next((x for x in v if isinstance(x, str) and x.strip()), None)
+                                if not v: continue
+                                v = str(v).strip()
+                                    
                                 if not v or not utils.contains_chinese(v):
                                     continue
 
-                                # ★ 核心修复：AI 返回值也要再次清洗，防止 "饰路飞" 这种结果被后续再加前缀
                                 cleaned_v = utils.clean_character_name_static(v)
                                 if not cleaned_v:
                                     continue
