@@ -285,17 +285,6 @@ def trigger_cleanup_scan():
         logger.error(f"提交扫描任务时失败: {e}", exc_info=True)
         return jsonify({"error": f"提交扫描任务失败: {e}"}), 500
 
-@media_cleanup_bp.route('/api/cleanup/emby_url', methods=['GET'])
-@admin_required
-def get_emby_url():
-    """获取 Emby 的访问地址，优先返回公网地址"""
-    import config_manager
-    config = config_manager.APP_CONFIG
-    return jsonify({
-        "public_url": config.get('emby_public_url', ''),
-        "server_url": config.get('emby_server_url', '')
-    })
-
 @media_cleanup_bp.route('/api/cleanup/delete_version', methods=['POST'])
 @admin_required
 def delete_single_version():
