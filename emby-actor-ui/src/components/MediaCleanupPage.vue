@@ -115,6 +115,7 @@ const showSettingsModal = ref(false);
 const selectedSeriesNames = ref([]); 
 const currentPage = ref(1);
 const currentPageSize = ref(20);
+const embyBaseUrl = ref('');
 
 // --- 3. 计算属性 ---
 
@@ -287,6 +288,27 @@ const parseBestIds = (val) => {
   return ids.map(id => String(id));
 };
 
+// ★★★ 新增：手动删除单一版本的处理函数 ★★★
+const handleDeleteVersion = (row) => {
+  dialog.warning({
+    title: '手动删除确认',
+    content: `确定要永久删除该版本 (ID: ${row.id}) 吗？此操作将无视规则PK结果，直接删除对应的媒体文件！`,
+    positiveText: '确定删除',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        await axios.post('/api/cleanup/delete_version', { 
+          emby_id: String(row.id),
+          path: row.path
+        });
+        message.success('版本删除成功');
+        fetchData(); // 删除成功后刷新列表
+      } catch (err) {
+        message.error(err.response?.data?.error || '删除失败');
+      }
+    }
+  });
+};
 // 定义版本详情表格的列结构
 const createVersionColumns = (bestVersionJson) => {
   // 1. 解析出最佳ID列表 (全是字符串)
@@ -313,7 +335,20 @@ const createVersionColumns = (bestVersionJson) => {
       title: 'ID',
       key: 'id',
       width: 90,
-      render: (row) => h(NTag, { size: 'small', bordered: false, type: 'default' }, { default: () => row.id })
+      render: (row) => {
+        // ★★★ 修改：渲染为可点击的超链接 ★★★
+        if (embyBaseUrl.value) {
+          const cleanBaseUrl = embyBaseUrl.value.replace(/\/$/, '');
+          const targetUrl = `${cleanBaseUrl}/web/index.html#!/item?id=${row.id}`;
+          return h('a', { 
+            href: targetUrl, 
+            target: '_blank',
+            style: 'color: var(--n-info-color); text-decoration: none; font-weight: bold;'
+          }, row.id);
+        } else {
+          return h(NTag, { size: 'small', bordered: false, type: 'default' }, { default: () => row.id });
+        }
+      }
     },
     {
       title: '分辨率',
@@ -422,9 +457,24 @@ const createVersionColumns = (bestVersionJson) => {
         tooltip: true
       },
       render: (row) => h(NText, { depth: 3, style: 'font-size: 12px; font-family: monospace;' }, { default: () => row.path })
+    },
+    {
+      title: '操作',
+      key: 'actions',
+      width: 60,
+      align: 'center',
+      render: (row) => {
+        return h(NButton, {
+          size: 'small',
+          type: 'error',
+          quaternary: true,
+          onClick: () => handleDeleteVersion(row)
+        }, { icon: () => h(NIcon, null, { default: () => h(DeleteIcon) }) });
+      }
     }
   ];
 };
+
 // ★★★ 核心修改：renderVersions 现在返回一个 NDataTable ★★★
 const renderVersions = (row) => {
   const versions = row.versions_info_json || [];
@@ -479,7 +529,16 @@ const episodeColumns = [
 ];
 
 // --- 5. 方法和事件处理 ---
-
+// ★★★ 新增：获取 Emby URL ★★★
+const fetchEmbyUrl = async () => {
+  try {
+    const response = await axios.get('/api/cleanup/emby_url');
+    // 优先使用 public_url，如果没有则使用 server_url
+    embyBaseUrl.value = response.data.public_url || response.data.server_url || '';
+  } catch (err) {
+    console.error('获取 Emby URL 失败:', err);
+  }
+};
 // 从后端获取待清理任务列表
 const fetchData = async () => {
   isLoading.value = true;
@@ -611,7 +670,10 @@ watch(isScanTaskActive, (isActive, wasActive) => {
 });
 
 // 组件挂载时，获取初始数据
-onMounted(fetchData);
+onMounted(() => {
+  fetchEmbyUrl(); // ★★★ 获取 URL
+  fetchData();
+});
 
 </script>
 

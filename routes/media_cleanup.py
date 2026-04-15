@@ -1,7 +1,7 @@
 # routes/media_cleanup.py
 
 from flask import Blueprint, jsonify, request
-from extensions import task_lock_required, processor_ready_required
+from extensions import task_lock_required, processor_ready_required, admin_required
 
 import task_manager
 from tasks.cleanup import task_execute_cleanup, task_scan_for_cleanup_issues
@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 media_cleanup_bp = Blueprint('media_cleanup_bp', __name__)
 
 @media_cleanup_bp.route('/api/cleanup/tasks', methods=['GET'])
+@admin_required
 def get_cleanup_tasks():
     """
     【V2 - 瘦身关联版】
@@ -51,6 +52,7 @@ def get_cleanup_tasks():
 @media_cleanup_bp.route('/api/cleanup/execute', methods=['POST'])
 @task_lock_required
 @processor_ready_required
+@admin_required
 def execute_cleanup_tasks():
     data = request.get_json()
     task_ids = data.get('task_ids')
@@ -65,6 +67,7 @@ def execute_cleanup_tasks():
     return jsonify({"message": "清理任务已提交到后台执行。"}), 202
 
 @media_cleanup_bp.route('/api/cleanup/ignore', methods=['POST'])
+@admin_required
 def ignore_cleanup_tasks():
     data = request.get_json()
     task_ids = data.get('task_ids')
@@ -78,6 +81,7 @@ def ignore_cleanup_tasks():
         return jsonify({"error": f"忽略任务时失败: {e}"}), 500
 
 @media_cleanup_bp.route('/api/cleanup/delete', methods=['POST'])
+@admin_required
 def delete_cleanup_tasks():
     data = request.get_json()
     task_ids = data.get('task_ids')
@@ -91,6 +95,7 @@ def delete_cleanup_tasks():
         return jsonify({"error": f"删除任务时失败: {e}"}), 500
 
 @media_cleanup_bp.route('/api/cleanup/clear_all', methods=['POST'])
+@admin_required
 @task_lock_required
 @processor_ready_required
 def clear_all_cleanup_tasks():
@@ -111,6 +116,7 @@ def clear_all_cleanup_tasks():
         return jsonify({"error": f"一键清理失败: {e}"}), 500
     
 @media_cleanup_bp.route('/api/cleanup/settings', methods=['GET'])
+@admin_required
 def get_cleanup_settings():
     """获取所有媒体去重设置（集中式读取，带向下兼容）。"""
     try:
@@ -227,6 +233,7 @@ def get_cleanup_settings():
         return jsonify({"error": f"获取清理设置失败: {e}"}), 500
 
 @media_cleanup_bp.route('/api/cleanup/settings', methods=['POST'])
+@admin_required
 def save_cleanup_settings():
     """保存新的媒体去重设置（集中存入一个 JSON 键）。"""
     data = request.get_json()
@@ -262,6 +269,7 @@ def save_cleanup_settings():
         return jsonify({"error": f"保存清理设置时失败: {e}"}), 500
 # 这个路由会调用更新后的 task_scan_for_cleanup_issues 任务
 @media_cleanup_bp.route('/api/cleanup/scan', methods=['POST'])
+@admin_required
 @task_lock_required
 @processor_ready_required
 def trigger_cleanup_scan():
@@ -276,3 +284,73 @@ def trigger_cleanup_scan():
     except Exception as e:
         logger.error(f"提交扫描任务时失败: {e}", exc_info=True)
         return jsonify({"error": f"提交扫描任务失败: {e}"}), 500
+
+@media_cleanup_bp.route('/api/cleanup/emby_url', methods=['GET'])
+@admin_required
+def get_emby_url():
+    """获取 Emby 的访问地址，优先返回公网地址"""
+    import config_manager
+    config = config_manager.APP_CONFIG
+    return jsonify({
+        "public_url": config.get('emby_public_url', ''),
+        "server_url": config.get('emby_server_url', '')
+    })
+
+@media_cleanup_bp.route('/api/cleanup/delete_version', methods=['POST'])
+@admin_required
+def delete_single_version():
+    """手动删除指定的单一版本 (纯 API 模式，依赖 Webhook 回流处理后续清理)"""
+    data = request.get_json()
+    emby_id = data.get('emby_id')
+    
+    if not emby_id:
+        return jsonify({"error": "缺少 emby_id"}), 400
+        
+    import config_manager
+    import handler.emby as emby
+    import json
+    from database.connection import get_db_connection
+    
+    config = config_manager.APP_CONFIG
+    
+    try:
+        # 1. 直接调用 Emby API 删除物理文件和条目
+        # (Emby 删除成功后会触发 Webhook，Webhook 会自动接管 115 联动删除和本地数据库清理)
+        success = emby.delete_item_sy(
+            item_id=emby_id, 
+            emby_server_url=config.get('emby_server_url'), 
+            emby_api_key=config.get('emby_api_key'), 
+            user_id=config.get('emby_user_id')
+        )
+        
+        if not success:
+            return jsonify({"error": "通过 API 删除失败，请检查 Emby 权限或文件状态"}), 500
+            
+        # 2. 从清理任务索引中剔除该版本，保证前端刷新完美同步
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id, versions_info_json FROM cleanup_index WHERE status = 'pending'")
+                for row in cursor.fetchall():
+                    task_id = row['id']
+                    versions = row['versions_info_json']
+                    if isinstance(versions, list):
+                        # 过滤掉刚刚被删除的 ID
+                        new_versions = [v for v in versions if str(v.get('id')) != str(emby_id)]
+                        
+                        if len(new_versions) < len(versions):
+                            if len(new_versions) <= 1:
+                                # 如果删完只剩 1 个版本了，说明没重复了，直接把这个任务干掉
+                                cursor.execute("DELETE FROM cleanup_index WHERE id = %s", (task_id,))
+                            else:
+                                # 否则更新 JSON，把删掉的版本剔除
+                                cursor.execute(
+                                    "UPDATE cleanup_index SET versions_info_json = %s::jsonb WHERE id = %s", 
+                                    (json.dumps(new_versions), task_id)
+                                )
+                conn.commit()
+        
+        return jsonify({"message": "删除成功"}), 200
+        
+    except Exception as e:
+        logger.error(f"手动删除版本失败: {e}", exc_info=True)
+        return jsonify({"error": f"删除失败: {e}"}), 500
