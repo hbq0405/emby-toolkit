@@ -22,7 +22,6 @@ services:
     volumes:
       - /path/emby-toolkit:/config
       - /path/media:/media
-      - /path/tmdb:/tmdb
       - /var/run/docker.sock:/var/run/docker.sock
     environment:
       - APP_DATA_DIR=/config
