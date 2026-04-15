@@ -1624,7 +1624,7 @@ def translate_tmdb_metadata_recursively(
     BATCH_SIZE = 20 
 
     if pending_items:
-        logger.info(f"  ➜ [AI翻译引擎] 共收集到 {len(pending_items)} 个条目需要翻译...")
+        logger.info(f"  ➜ [AI翻译引擎] 开始进行翻译...")
         
         # 1. 翻译简介
         overviews_to_translate = {k: v["overview"] for k, v in pending_items.items() if v["overview"]}
