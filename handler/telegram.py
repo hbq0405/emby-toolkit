@@ -220,11 +220,11 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
                 
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT error_message FROM failed_log WHERE item_id = %s", (check_id,))
+                    cursor.execute("SELECT reason FROM failed_log WHERE item_id = %s", (check_id,))
                     row = cursor.fetchone()
                     if row:
                         needs_review = True
-                        review_reason = row['error_message']
+                        review_reason = row['reason']
         except Exception as e:
             logger.error(f"  ➜ [通知] 查询待复核状态失败: {e}")
         
