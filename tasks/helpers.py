@@ -74,7 +74,7 @@ RELEASE_GROUPS: Dict[str, List[str]] = {
     "nanyangpt": [],
     "老师": ['nicept'],
     "oshen": [],
-    "我堡": ['Our(?:Bits|TV)', 'FLTTH', 'Ao', 'PbK', 'MGs', 'iLove(?:HD|TV)'],
+    "我堡": ['Our(?:Bits|TV)', 'FLTTH', 'PbK', 'MGs', 'iLove(?:HD|TV)'],
     "猪猪": ['PiGo(?:NF|(?:H|WE)B)'],
     "铂金学院": ['ptchina'],
     "猫站": ['PTer(?:DIY|Game|(?:M|T)V|WEB|)'],
