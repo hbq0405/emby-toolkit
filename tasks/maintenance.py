@@ -42,7 +42,8 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             'resubscribe_effect_include', 'resubscribe_codec_include'
         },
         'user_templates': {'emby_policy_json', 'emby_configuration_json'},
-        'p115_mediainfo_cache': {'mediainfo_json'}
+        'p115_mediainfo_cache': {'mediainfo_json'},
+        'washing_priority_groups': {'target_cids', 'priorities'}
     }
 
     LIST_TO_STRING_COLUMNS = {
@@ -269,7 +270,11 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'media_cleanup_tasks': '媒体清理任务',
         'user_templates': '用户权限模板', 
         'invitations': '邀请码', 
-        'emby_users_extended': 'Emby用户扩展信息'
+        'emby_users_extended': 'Emby用户扩展信息',
+        'p115_mediainfo_cache': '115媒体信息缓存',
+        'p115_organize_records': '115整理记录',
+        'washing_priority_groups': '115洗版规则',
+        'p115_filesystem_cache': '115目录缓存'
     }
     summary_lines = []
     conn = None
