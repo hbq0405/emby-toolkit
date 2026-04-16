@@ -2878,7 +2878,7 @@ class SmartOrganizer:
             if not s_name: s_name = f"Season {season_num:02d}"
 
         # ★ 返回值增加 s_name, video_info, has_real_info
-        return new_name, season_num, episode_num, s_name, is_center_cached, video_info, bool(real_info if enable_smart_rename and not is_sub else False)
+        return new_name, season_num, episode_num, s_name, is_center_cached, video_info, bool(real_info and not is_sub)
 
     def _scan_files_recursively(self, cid, depth=0, max_depth=3, current_rel_path=""):
         all_files = []
