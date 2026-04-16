@@ -3963,11 +3963,12 @@ class MediaProcessor:
                     tmdb_id_str = str(actor_from_frontend.get("tmdbId"))
                     if not tmdb_id_str: continue
                     
+                    raw_role = actor_from_frontend.get('role')
+                    
                     # --- A. 处理现有演员 ---
                     if tmdb_id_str in original_cast_map:
                         updated_actor_entry = original_cast_map[tmdb_id_str].copy()
                         updated_actor_entry['name'] = actor_from_frontend.get('name')
-                        raw_role = actor_from_frontend.get('role')
                         updated_actor_entry['character'] = utils.clean_character_name_static(raw_role) if raw_role else ""
                         new_cast_built.append(updated_actor_entry)
                     
