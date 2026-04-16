@@ -937,14 +937,33 @@ def get_organize_records():
 @p115_bp.route('/records/<int:record_id>', methods=['DELETE'])
 @admin_required
 def delete_organize_record(record_id):
-    """删除单条整理记录 (仅删数据库，不影响网盘文件)"""
+    """删除单条整理记录，并同步清理对应的文件和文件夹缓存 (不影响网盘物理文件)"""
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM p115_organize_records WHERE id = %s", (record_id,))
+                # 1. 先查出该记录对应的 file_id 和 target_cid
+                cursor.execute("SELECT file_id, target_cid FROM p115_organize_records WHERE id = %s", (record_id,))
+                record = cursor.fetchone()
+                
+                if record:
+                    file_id = record['file_id']
+                    target_cid = record['target_cid']
+                    
+                    # 2. 删除整理记录
+                    cursor.execute("DELETE FROM p115_organize_records WHERE id = %s", (record_id,))
+                    
+                    # 3. 同步删除文件本身的缓存
+                    if file_id:
+                        cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s", (file_id,))
+                        
+                    # 4. 同步删除目标文件夹的缓存 (连同其下的子项缓存一并清理，促使下次强制从 115 拉取最新状态)
+                    if target_cid:
+                        cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = %s OR parent_id = %s", (target_cid, target_cid))
+                        
                 conn.commit()
-        return jsonify({"success": True, "message": "记录已删除"})
+        return jsonify({"success": True, "message": "记录及相关目录缓存已清理"})
     except Exception as e:
+        logger.error(f"  ➜ 删除整理记录及缓存失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": str(e)}), 500
 
 @p115_bp.route('/records/correct', methods=['POST'])

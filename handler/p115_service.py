@@ -1753,7 +1753,231 @@ class SmartOrganizer:
 
         return info_dict
 
-    def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, silent_log=False):
+    def _parse_ffprobe_rate(self, value):
+        """解析 ffprobe 的帧率字段，例如 24000/1001 -> 23.976"""
+        if not value or value == "0/0":
+            return None
+        try:
+            if "/" in str(value):
+                a, b = str(value).split("/", 1)
+                a = float(a)
+                b = float(b)
+                if b == 0:
+                    return None
+                return a / b
+            return float(value)
+        except Exception:
+            return None
+
+    def _probe_mediainfo_with_ffprobe(self, file_node, sha1=None, silent_log=False):
+        """
+        最终兜底：通过 115 直链调用容器内 ffprobe 解析媒体信息。
+        返回 Emby MediaSourceInfo 兼容结构，供现有解析逻辑复用。
+        """
+        if not file_node:
+            return None
+
+        pick_code = file_node.get('pc') or file_node.get('pick_code') or file_node.get('pickcode')
+        original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name') or sha1 or "unknown"
+
+        if not pick_code:
+            if not silent_log:
+                logger.debug(f"  ➜ [ffprobe兜底] 缺少 pick_code，跳过: {original_name}")
+            return None
+
+        try:
+            import shutil
+            import subprocess
+            import json as _json
+
+            if not shutil.which("ffprobe"):
+                if not silent_log:
+                    logger.warning("  ➜ [ffprobe兜底] 容器内未找到 ffprobe，请在镜像中安装 ffmpeg。")
+                return None
+
+            direct_url = None
+
+            # 1. Cookie 直链优先
+            try:
+                direct_url = self.client.download_url(pick_code, user_agent="Mozilla/5.0")
+            except Exception as e:
+                if not silent_log:
+                    logger.debug(f"  ➜ [ffprobe兜底] Cookie 直链获取失败: {e}")
+
+            # 2. OpenAPI 直链兜底
+            if not direct_url:
+                try:
+                    direct_url = self.client.openapi_downurl(pick_code, user_agent="Mozilla/5.0")
+                except Exception as e:
+                    if not silent_log:
+                        logger.debug(f"  ➜ [ffprobe兜底] OpenAPI 直链获取失败: {e}")
+
+            if not direct_url:
+                if not silent_log:
+                    logger.warning(f"  ➜ [ffprobe兜底] 无法获取直链，跳过: {original_name}")
+                return None
+
+            cmd = [
+                "ffprobe",
+                "-hide_banner",
+                "-v", "error",
+                "-user_agent", "Mozilla/5.0",
+                "-analyzeduration", "20000000",
+                "-probesize", "20000000",
+                "-print_format", "json",
+                "-show_streams",
+                str(direct_url)
+            ]
+
+            proc = subprocess.run(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=30
+            )
+
+            if proc.returncode != 0:
+                err = (proc.stderr or "").strip()
+                if not silent_log:
+                    logger.warning(f"  ➜ [ffprobe兜底] 解析失败: {original_name} -> {err[:200]}")
+                return None
+
+            probe_data = _json.loads(proc.stdout or "{}")
+            streams = probe_data.get("streams") or []
+            if not streams:
+                return None
+
+            media_streams = []
+
+            for s in streams:
+                codec_type = (s.get("codec_type") or "").lower()
+                codec_name = (s.get("codec_name") or "").lower()
+
+                if codec_type == "video":
+                    width = int(s.get("width") or 0)
+                    height = int(s.get("height") or 0)
+
+                    bit_depth = None
+                    for key in ("bits_per_raw_sample", "bits_per_sample"):
+                        val = s.get(key)
+                        if val:
+                            try:
+                                bit_depth = int(val)
+                                break
+                            except Exception:
+                                pass
+
+                    # 某些 10bit HEVC 只写在 pix_fmt 里
+                    pix_fmt = (s.get("pix_fmt") or "").lower()
+                    if not bit_depth:
+                        if "10" in pix_fmt:
+                            bit_depth = 10
+                        elif "12" in pix_fmt:
+                            bit_depth = 12
+                        elif pix_fmt:
+                            bit_depth = 8
+
+                    fps = self._parse_ffprobe_rate(s.get("avg_frame_rate")) or self._parse_ffprobe_rate(s.get("r_frame_rate"))
+
+                    color_transfer = s.get("color_transfer") or ""
+                    color_primaries = s.get("color_primaries") or ""
+                    profile = s.get("profile") or ""
+                    side_data_list = s.get("side_data_list") or []
+
+                    video_range = ""
+                    extended_video_type = ""
+                    extended_video_sub_type = ""
+                    extended_video_desc = ""
+
+                    side_text = _json.dumps(side_data_list, ensure_ascii=False)
+
+                    # Dolby Vision
+                    if "DOVI configuration record" in side_text or "Dolby Vision" in side_text:
+                        video_range = "DolbyVision"
+                        extended_video_type = "DolbyVision"
+
+                        # ffprobe 里常见字段：dv_profile
+                        dv_profile = None
+                        for sd in side_data_list:
+                            if isinstance(sd, dict):
+                                dv_profile = sd.get("dv_profile") or sd.get("profile")
+                                if dv_profile:
+                                    break
+
+                        if dv_profile:
+                            extended_video_sub_type = f"Profile{dv_profile}"
+                            extended_video_desc = f"Profile {dv_profile}"
+
+                    # HDR10+
+                    if "HDR10+" in side_text or "SMPTE2094-40" in side_text:
+                        video_range = "HDR10+"
+
+                    # HDR10 / HDR
+                    elif color_transfer == "smpte2084":
+                        video_range = "HDR10"
+                    elif color_primaries == "bt2020":
+                        video_range = "HDR"
+
+                    media_streams.append({
+                        "Type": "Video",
+                        "Codec": codec_name,
+                        "Width": width,
+                        "Height": height,
+                        "BitDepth": bit_depth,
+                        "Profile": profile,
+                        "RealFrameRate": fps,
+                        "AverageFrameRate": fps,
+                        "ColorTransfer": color_transfer,
+                        "VideoRange": video_range,
+                        "ExtendedVideoType": extended_video_type,
+                        "ExtendedVideoSubType": extended_video_sub_type,
+                        "ExtendedVideoSubTypeDescription": extended_video_desc
+                    })
+
+                elif codec_type == "audio":
+                    channels = s.get("channels")
+                    try:
+                        channels = int(channels) if channels is not None else None
+                    except Exception:
+                        channels = None
+
+                    disposition = s.get("disposition") or {}
+                    is_default = bool(disposition.get("default"))
+
+                    profile = s.get("profile") or ""
+                    tags = s.get("tags") or {}
+                    title = tags.get("title") or ""
+
+                    # Atmos 通常藏在 profile/title 里
+                    profile_mix = f"{profile} {title}".strip()
+
+                    media_streams.append({
+                        "Type": "Audio",
+                        "Codec": codec_name,
+                        "Profile": profile_mix,
+                        "Channels": channels,
+                        "IsDefault": is_default
+                    })
+
+            if not media_streams:
+                return None
+
+            if not silent_log:
+                logger.info(f"  ➜ [ffprobe兜底] 成功解析媒体信息 -> {original_name}")
+
+            return {"MediaStreams": media_streams}
+
+        except subprocess.TimeoutExpired:
+            if not silent_log:
+                logger.warning(f"  ➜ [ffprobe兜底] 解析超时，跳过: {original_name}")
+            return None
+        except Exception as e:
+            if not silent_log:
+                logger.warning(f"  ➜ [ffprobe兜底] 解析异常: {original_name} -> {e}")
+            return None
+    
+    def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, file_node=None, silent_log=False):
         """
         通过 SHA1 获取真实的媒体信息，并转换为乐高重命名参数
         """
@@ -1773,7 +1997,7 @@ class SmartOrganizer:
             is_center = True
             data_source = "中心服务器(批量)"
 
-        # 3. 兜底：尝试查 P115Center 中心服务器 (单次查询)
+        # 3. 尝试查 P115Center 中心服务器 (单次查询)
         if not raw_json and pre_fetched_mediainfo is None:
             try:
                 import extensions
@@ -1787,9 +2011,18 @@ class SmartOrganizer:
             except Exception:
                 pass
 
-        if not raw_json: return {}, False
+        # 4. 最终兜底：本地和中心服务器都没有时，直接用 ffprobe 解析 115 直链
+        if not raw_json and file_node:
+            logger.info(f"  ➜ [ffprobe兜底] 尝试用 ffprobe 解析媒体信息 -> {file_node.original_name}")
+            raw_json = self._probe_mediainfo_with_ffprobe(file_node, sha1=sha1, silent_log=silent_log)
+            if raw_json:
+                data_source = "ffprobe兜底"
+                is_center = False
 
-        # 3. 开始解析 Emby 的真实数据
+        if not raw_json:
+            return {}, False
+
+        # 5. 开始解析 Emby 的真实数据
         info = {}
         try:
             if isinstance(raw_json, list) and len(raw_json) > 0:
@@ -2009,7 +2242,14 @@ class SmartOrganizer:
         if not is_sub and enable_smart_rename:
             sha1 = file_node.get('sha1') or file_node.get('sha')
             if sha1:
-                real_info, is_center_cached = self._fetch_and_parse_mediainfo(sha1, video_info, pre_fetched_mediainfo, local_pre_fetched_mediainfo, silent_log=silent_log)
+                real_info, is_center_cached = self._fetch_and_parse_mediainfo(
+                    sha1,
+                    video_info,
+                    pre_fetched_mediainfo,
+                    local_pre_fetched_mediainfo,
+                    file_node=file_node,
+                    silent_log=silent_log
+                )
                 if real_info:
                     for k, v in real_info.items():
                         video_info[k] = v
