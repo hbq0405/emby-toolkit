@@ -632,7 +632,7 @@
                           <span class="card-title">洗版优先级</span>
                           <n-button secondary type="warning" @click="washingPriorityModalRef?.open()">
                             <template #icon><n-icon :component="LayersIcon" /></template>
-                            配置优先级
+                            配置洗版规则
                           </n-button>
                         </div>
                       </template>
@@ -1896,7 +1896,8 @@ import {
   ArrowUpOutline as ArrowUpIcon,
   RefreshOutline as RefreshIcon,
   PaperPlaneOutline as PaperPlaneIcon,
-  CloudDownloadOutline as CloudDownloadIcon
+  CloudDownloadOutline as CloudDownloadIcon,
+  LayersOutline as LayersIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
