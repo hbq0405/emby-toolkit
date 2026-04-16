@@ -1841,7 +1841,7 @@ class SmartOrganizer:
 
         if not pick_code:
             if not silent_log:
-                logger.debug(f"  ➜ [ffprobe兜底] 缺少 pick_code，跳过: {original_name}")
+                logger.debug(f"  ➜ [ffprobe] 缺少 pick_code，跳过: {original_name}")
             return None
 
         try:
@@ -1850,7 +1850,7 @@ class SmartOrganizer:
 
             if not shutil.which("ffprobe"):
                 if not silent_log:
-                    logger.warning("  ➜ [ffprobe兜底] 容器内未找到 ffprobe，请在镜像中安装 ffmpeg。")
+                    logger.warning("  ➜ [ffprobe] 容器内未找到 ffprobe，请在镜像中安装 ffmpeg。")
                 return None
 
             direct_url = None
@@ -1860,7 +1860,7 @@ class SmartOrganizer:
                 direct_url = self.client.download_url(pick_code, user_agent="Mozilla/5.0")
             except Exception as e:
                 if not silent_log:
-                    logger.debug(f"  ➜ [ffprobe兜底] Cookie 直链获取失败: {e}")
+                    logger.debug(f"  ➜ [ffprobe] Cookie 直链获取失败: {e}")
 
             # 2. OpenAPI 直链兜底
             if not direct_url:
@@ -1868,15 +1868,15 @@ class SmartOrganizer:
                     direct_url = self.client.openapi_downurl(pick_code, user_agent="Mozilla/5.0")
                 except Exception as e:
                     if not silent_log:
-                        logger.debug(f"  ➜ [ffprobe兜底] OpenAPI 直链获取失败: {e}")
+                        logger.debug(f"  ➜ [ffprobe] OpenAPI 直链获取失败: {e}")
 
             if not direct_url:
                 if not silent_log:
-                    logger.warning(f"  ➜ [ffprobe兜底] 无法获取直链，跳过: {original_name}")
+                    logger.warning(f"  ➜ [ffprobe] 无法获取直链，跳过: {original_name}")
                 return None
 
             if not silent_log:
-                logger.info(f"  ➜ [ffprobe兜底] 尝试用 ffprobe 解析媒体信息")
+                logger.info(f"  ➜ [ffprobe] 尝试用 ffprobe 解析媒体信息")
 
             cmd = [
                 "ffprobe",
@@ -1904,7 +1904,7 @@ class SmartOrganizer:
             if proc.returncode != 0:
                 err = (proc.stderr or "").strip()
                 if not silent_log:
-                    logger.warning(f"  ➜ [ffprobe兜底] 解析失败: {original_name} -> {err[:300]}")
+                    logger.warning(f"  ➜ [ffprobe] 解析失败: {original_name} -> {err[:300]}")
                 return None
 
             probe_data = json.loads(proc.stdout or "{}")
@@ -1916,21 +1916,21 @@ class SmartOrganizer:
 
             if not emby_json:
                 if not silent_log:
-                    logger.warning(f"  ➜ [ffprobe兜底] 未解析出有效 MediaStreams: {original_name}")
+                    logger.warning(f"  ➜ [ffprobe] 未解析出有效 MediaStreams: {original_name}")
                 return None
 
             if not silent_log:
-                logger.info(f"  ➜ [ffprobe兜底] 成功生成媒体信息 -> {original_name}")
+                logger.info(f"  ➜ [ffprobe] 成功生成媒体信息 -> {original_name}")
 
             return emby_json
 
         except subprocess.TimeoutExpired:
             if not silent_log:
-                logger.warning(f"  ➜ [ffprobe兜底] 解析超时，跳过: {original_name}")
+                logger.warning(f"  ➜ [ffprobe] 解析超时，跳过: {original_name}")
             return None
         except Exception as e:
             if not silent_log:
-                logger.warning(f"  ➜ [ffprobe兜底] 解析异常: {original_name} -> {e}", exc_info=True)
+                logger.warning(f"  ➜ [ffprobe] 解析异常: {original_name} -> {e}", exc_info=True)
             return None
     
     def _ffprobe_rate_to_float(self, value):
@@ -2507,7 +2507,7 @@ class SmartOrganizer:
 
             if raw_json:
                 is_center = False
-                data_source = "ffprobe兜底"
+                data_source = "ffprobe解析"
 
                 # 写入 p115_mediainfo_cache，后续同 SHA1 直接走本地缓存
                 P115CacheManager.save_mediainfo_cache(sha1, raw_json)
