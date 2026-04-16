@@ -112,29 +112,48 @@ class P115OpenAPIClient:
         }
 
     def _do_request(self, method, url, **kwargs):
-        try:
-            current_token = self.access_token # 记录当前请求使用的 token
-            
-            # 支持自定义 headers 覆盖 (用于透传播放器 UA)
-            req_headers = self.headers.copy()
-            if 'headers' in kwargs:
-                req_headers.update(kwargs.pop('headers'))
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                current_token = self.access_token # 记录当前请求使用的 token
                 
-            resp = requests.request(method, url, headers=req_headers, timeout=30, **kwargs).json()
-            
-            if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
-                logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
+                # 支持自定义 headers 覆盖 (用于透传播放器 UA)
+                req_headers = self.headers.copy()
+                if 'headers' in kwargs:
+                    req_headers.update(kwargs.pop('headers'))
+                    
+                raw_resp = requests.request(method, url, headers=req_headers, timeout=30, **kwargs)
                 
-                # ★ 传入 current_token 进行比对
-                if refresh_115_token(current_token):
-                    logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
-                    return requests.request(method, url, headers=self.headers, timeout=30, **kwargs).json()
-                else:
-                    logger.error("  ➜ [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
-            
-            return resp
-        except Exception as e:
-            return {"state": False, "error_msg": str(e)}
+                try:
+                    resp = raw_resp.json()
+                except Exception as json_err:
+                    # 核心修复：捕获 115 返回非 JSON (如 502/405 网页) 的情况
+                    err_detail = f"HTTP {raw_resp.status_code}, Body: {raw_resp.text[:150]}"
+                    if attempt < max_retries - 1:
+                        logger.warning(f"  ➜ [115 API] 接口返回异常非JSON数据，等待 2 秒后重试 ({attempt+1}/{max_retries})... 详情: {err_detail}")
+                        time.sleep(2)
+                        continue
+                    return {"state": False, "error_msg": f"JSON解析失败: {json_err}. 详情: {err_detail}"}
+                
+                if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
+                    logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
+                    if refresh_115_token(current_token):
+                        logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
+                        # 续期成功后重试一次
+                        return requests.request(method, url, headers=self.headers, timeout=30, **kwargs).json()
+                    else:
+                        logger.error("  ➜ [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
+                
+                return resp
+            except requests.exceptions.RequestException as req_err:
+                # 捕获网络连接超时等错误
+                if attempt < max_retries - 1:
+                    logger.warning(f"  ➜ [115 API] 网络请求异常，等待 2 秒后重试 ({attempt+1}/{max_retries})...")
+                    time.sleep(2)
+                    continue
+                return {"state": False, "error_msg": f"网络请求彻底失败: {str(req_err)}"}
+            except Exception as e:
+                return {"state": False, "error_msg": str(e)}
 
     def get_user_info(self):
         url = f"{self.base_url}/open/user/info"
