@@ -158,7 +158,7 @@ const activeGroup = computed(() => groups.value.find(g => g.id === activeGroupId
 // 选项字典
 const resOptions = [{label:'4K/2160p', value:'4k'}, {label:'1080p', value:'1080p'}, {label:'720p', value:'720p'}];
 const codecOptions = [{label:'HEVC/H.265', value:'hevc'}, {label:'AVC/H.264', value:'avc'}];
-const effectOptions = [{label:'DoVi P8', value:'dovi_p8'}, {label:'DoVi P7', value:'dovi_p7'}, {label:'DoVi P5', value:'dovi_p5'}, {label:'HDR10+', value:'hdr10+'}, {label:'HDR', value:'hdr'}];
+const effectOptions = [{label:'DoVi P8', value:'dovi_p8'}, {label:'DoVi P7', value:'dovi_p7'}, {label:'DoVi P5', value:'dovi_p5'}, {label:'HDR10+', value:'hdr10+'}, {label:'HDR', value:'hdr'}, {label:'SDR', value:'sdr'}];
 const langOptions = [{label:'中文 (chi)', value:'chi'}, {label:'英文 (eng)', value:'eng'}, {label:'日文 (jpn)', value:'jpn'}, {label:'韩文 (kor)', value:'kor'}];
 
 const open = async () => {
