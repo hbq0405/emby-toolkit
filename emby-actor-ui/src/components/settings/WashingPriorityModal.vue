@@ -53,7 +53,7 @@
                   </n-form-item>
                 </n-gi>
                 <n-gi span="2">
-                  <n-form-item label="适用 115 目录">
+                  <n-form-item label="适用分类目录">
                     <n-select 
                       v-model:value="activeGroup.target_cids" 
                       multiple 
