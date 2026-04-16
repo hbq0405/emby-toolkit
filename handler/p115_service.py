@@ -2585,6 +2585,15 @@ class SmartOrganizer:
                     fps = video_stream.get("RealFrameRate") or video_stream.get("AverageFrameRate")
                     if fps: info['fps'] = f"{round(fps)}fps"
 
+                # ★ 提取真实的音轨和字幕语言数组，供洗版裁判使用
+                info['audio_langs'] = []
+                info['sub_langs'] = []
+                for s in streams:
+                    if s.get("Type") == "Audio" and s.get("Language"):
+                        info['audio_langs'].append(s.get("Language"))
+                    elif s.get("Type") == "Subtitle" and s.get("Language"):
+                        info['sub_langs'].append(s.get("Language"))
+
                 if audio_streams:
                     audio_tags = []
                     
@@ -3690,7 +3699,7 @@ class SmartOrganizer:
                     # 重新提取一次 video_info，因为前面可能被覆盖了
                     video_info = self._extract_video_info(new_name)
                     
-                    action, _, reason = WashingService.decide_washing_action(
+                    action, reason = WashingService.decide_washing_action(
                         new_video_info=video_info,
                         file_size=file_size,
                         target_cid=batch_target_cid,

@@ -97,9 +97,6 @@
                       <n-select v-model:value="priority.resolution" multiple tag :options="resOptions" placeholder="分辨率 (如 4K, 1080p)" @update:value="saveGroups" />
                     </n-gi>
                     <n-gi>
-                      <n-select v-model:value="priority.source" multiple tag :options="sourceOptions" placeholder="质量 (如 BluRay, WEB-DL)" @update:value="saveGroups" />
-                    </n-gi>
-                    <n-gi>
                       <n-select v-model:value="priority.codec" multiple tag :options="codecOptions" placeholder="编码 (如 HEVC)" @update:value="saveGroups" />
                     </n-gi>
                     <n-gi>
@@ -110,6 +107,9 @@
                     </n-gi>
                     <n-gi>
                       <n-select v-model:value="priority.subtitle" multiple tag :options="langOptions" placeholder="必须包含的字幕 (如 chi)" @update:value="saveGroups" />
+                    </n-gi>
+                    <n-gi>
+                      <!-- 占位，保持布局对称 -->
                     </n-gi>
                     <n-gi>
                       <n-input-group>
@@ -157,7 +157,6 @@ const activeGroup = computed(() => groups.value.find(g => g.id === activeGroupId
 
 // 选项字典
 const resOptions = [{label:'4K/2160p', value:'4k'}, {label:'1080p', value:'1080p'}, {label:'720p', value:'720p'}];
-const sourceOptions = [{label:'Remux', value:'remux'}, {label:'BluRay', value:'bluray'}, {label:'WEB-DL', value:'web-dl'}, {label:'HDTV', value:'hdtv'}];
 const codecOptions = [{label:'HEVC/H.265', value:'hevc'}, {label:'AVC/H.264', value:'avc'}];
 const effectOptions = [{label:'DoVi P8', value:'dovi_p8'}, {label:'DoVi P7', value:'dovi_p7'}, {label:'DoVi P5', value:'dovi_p5'}, {label:'HDR10+', value:'hdr10+'}, {label:'HDR', value:'hdr'}];
 const langOptions = [{label:'中文 (chi)', value:'chi'}, {label:'英文 (eng)', value:'eng'}, {label:'日文 (jpn)', value:'jpn'}, {label:'韩文 (kor)', value:'kor'}];
@@ -228,7 +227,7 @@ const addPriority = () => {
   if (!activeGroup.value.priorities) activeGroup.value.priorities = [];
   activeGroup.value.priorities.push({
     _uid: Math.random().toString(36).substr(2, 9),
-    resolution: [], source: [], codec: [], effect: [], audio: [], subtitle: [], min_size_gb: null, max_size_gb: null
+    resolution: [], codec: [], effect: [], audio: [], subtitle: [], min_size_gb: null, max_size_gb: null
   });
   saveGroups();
 };
