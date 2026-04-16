@@ -21,11 +21,12 @@ class WashingService:
     def _normalize_info(cls, info: dict, is_db_asset=False) -> dict:
         """将 115/ffprobe 的 video_info 或 数据库的 asset_details 统一标准化为字符串标签"""
         norm = {
-            "resolution": "unknown", 
-            "codec": "unknown", 
-            "effect": "sdr", # 默认兜底为 SDR
-            "audio_langs": set(), 
-            "sub_langs": set(), 
+            "resolution": "unknown",
+            "codec": "unknown",
+            "effect": "sdr",
+            "original_lang": "",
+            "audio_langs": set(),
+            "sub_langs": set(),
             "size_gb": 0.0
         }
 
@@ -75,6 +76,14 @@ class WashingService:
         norm["audio_langs"] = {cls._normalize_lang(a) for a in raw_audio_langs if a}
         norm["sub_langs"] = {cls._normalize_lang(s) for s in raw_sub_langs if s}
 
+        raw_original_lang = (
+            info.get('_original_lang')
+            or info.get('original_lang')
+            or info.get('lang_code')
+            or ""
+        )
+        norm["original_lang"] = cls._normalize_lang(raw_original_lang)
+
         return norm
 
     @classmethod
@@ -118,21 +127,45 @@ class WashingService:
             if file_effect not in req_effect_lower:
                 return False, f"特效未命中 ({file_effect})"
             
-        # 4. 音轨 (必须包含)
+        # 4. 音轨 (必须包含，但“原语言=规则语言”时自动豁免)
+        original_lang = norm_info.get('original_lang') or ""
+
         req_audio = priority_rule.get('audio', [])
         if req_audio:
-            if not norm_info['audio_langs']: return False, "未提取到音轨语言"
-            normalized_req_audio = {cls._normalize_lang(a) for a in req_audio}
-            if not any(a in norm_info['audio_langs'] for a in normalized_req_audio): 
-                return False, f"缺少必须的音轨"
-            
-        # 5. 字幕 (必须包含)
+            normalized_req_audio = {
+                cls._normalize_lang(a) for a in req_audio if a
+            }
+
+            # ★ 原语言就是规则要求的音轨时，忽略这条音轨要求
+            effective_req_audio = {
+                a for a in normalized_req_audio
+                if a and a != original_lang
+            }
+
+            if effective_req_audio:
+                if not norm_info['audio_langs']:
+                    return False, "未提取到音轨语言"
+                if not any(a in norm_info['audio_langs'] for a in effective_req_audio):
+                    return False, "缺少必须的音轨"
+
+        # 5. 字幕 (必须包含，但“原语言=规则语言”时自动豁免)
         req_sub = priority_rule.get('subtitle', [])
         if req_sub:
-            if not norm_info['sub_langs']: return False, "未提取到字幕语言"
-            normalized_req_sub = {cls._normalize_lang(s) for s in req_sub}
-            if not any(s in norm_info['sub_langs'] for s in normalized_req_sub): 
-                return False, f"缺少必须的字幕"
+            normalized_req_sub = {
+                cls._normalize_lang(s) for s in req_sub if s
+            }
+
+            # ★ 原语言就是规则要求的字幕时，忽略这条字幕要求
+            effective_req_sub = {
+                s for s in normalized_req_sub
+                if s and s != original_lang
+            }
+
+            if effective_req_sub:
+                if not norm_info['sub_langs']:
+                    return False, "未提取到字幕语言"
+                if not any(s in norm_info['sub_langs'] for s in effective_req_sub):
+                    return False, "缺少必须的字幕"
             
         # 6. 文件大小
         min_size = priority_rule.get('min_size_gb')
@@ -155,13 +188,25 @@ class WashingService:
         return 0, " | ".join(fail_reasons)
 
     @classmethod
-    def decide_washing_action(cls, new_video_info: dict, file_size: int, target_cid: str, media_type: str, tmdb_id: str, season_num: int=None, episode_num: int=None) -> tuple[str, str]:
+    def decide_washing_action(
+            cls,
+            new_video_info: dict,
+            file_size: int,
+            target_cid: str,
+            media_type: str,
+            tmdb_id: str,
+            season_num: int=None,
+            episode_num: int=None,
+            original_lang: str=None
+        ) -> tuple[str, str]:
         """
         核心决策函数
         返回: (ACTION, reason)
         ACTION: 'ACCEPT' (入库), 'REPLACE' (替换旧版), 'SKIP' (已有更好版本), 'REJECT' (不合格)
         """
+        new_video_info = dict(new_video_info or {})
         new_video_info['_file_size'] = file_size
+        new_video_info['_original_lang'] = original_lang
         norm_new = cls._normalize_info(new_video_info, is_db_asset=False)
         
         db_media_type = 'Movie' if media_type.lower() == 'movie' else 'Series'
@@ -224,7 +269,9 @@ class WashingService:
         # 5. 评估旧文件级别，寻找最好的一个 (数字越小越好)
         best_old_level = 999
         for asset in existing_assets:
-            norm_old = cls._normalize_info(asset, is_db_asset=True)
+            old_asset = dict(asset or {})
+            old_asset['_original_lang'] = original_lang
+            norm_old = cls._normalize_info(old_asset, is_db_asset=True)
             old_level, _ = cls.get_level(norm_old, priorities)
             if old_level == 0: old_level = 999 # 旧版不合格，视为最低级
             if old_level < best_old_level:

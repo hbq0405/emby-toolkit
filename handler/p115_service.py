@@ -3719,7 +3719,7 @@ class SmartOrganizer:
             fids_to_delete = set()
             
             from handler.resubscribe_service import WashingService
-            
+            original_lang = (self.raw_metadata or {}).get('lang_code')
             for item in items:
                 new_name = item['_new_filename']
                 s_num = item.get('_season_num')
@@ -3742,7 +3742,8 @@ class SmartOrganizer:
                         media_type=self.media_type,
                         tmdb_id=self.tmdb_id,
                         season_num=s_num,
-                        episode_num=e_num
+                        episode_num=e_num,
+                        original_lang=original_lang
                     )
                     
                     if action == 'REJECT':
