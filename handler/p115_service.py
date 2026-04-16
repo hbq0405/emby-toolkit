@@ -3696,14 +3696,14 @@ class SmartOrganizer:
                 
                 # ★★★ 核心升级：调用阶梯洗版优先级服务 ★★★
                 if is_vid and conflict_mode == 'replace':
-                    logger.info(f"  ➜ [覆盖模式:洗版] 正在调用洗版规则评估文件: {new_name}")
+                    logger.debug(f"  ➜ [覆盖模式:洗版] 正在调用洗版规则评估文件: {new_name}")
                     # 重新提取一次 video_info，因为前面可能被覆盖了
                     video_info = self._extract_video_info(new_name)
                     
                     action, reason = WashingService.decide_washing_action(
                         new_video_info=video_info,
                         file_size=file_size,
-                        target_cid=batch_target_cid,
+                        target_cid=target_cid, # ★ 核心修复：使用外层的分类目录 CID，而不是最终的子目录 CID
                         media_type=self.media_type,
                         tmdb_id=self.tmdb_id,
                         season_num=s_num,

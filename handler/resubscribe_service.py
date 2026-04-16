@@ -78,53 +78,57 @@ class WashingService:
         return norm
 
     @classmethod
-    def _match_priority(cls, norm_info: dict, priority_rule: dict) -> bool:
+    def _match_priority(cls, norm_info: dict, priority_rule: dict) -> tuple[bool, str]:
         """检查标准化信息是否满足某一个优先级规则 (宁缺毋滥)"""
         # 1. 分辨率
         req_res = priority_rule.get('resolution', [])
         if req_res:
             req_tier = min([cls.RES_TIER.get(r.lower(), 0) for r in req_res])
-            if norm_info['res_tier'] < req_tier: return False
+            if norm_info['res_tier'] < req_tier: return False, f"分辨率未达标"
             
         # 2. 编码
         req_codec = priority_rule.get('codec', [])
         if req_codec:
             req_tier = min([cls.CODEC_TIER.get(c.lower(), 0) for c in req_codec])
-            if norm_info['codec_tier'] < req_tier: return False
+            if norm_info['codec_tier'] < req_tier: return False, f"编码未达标"
             
         # 3. 特效
         req_effect = priority_rule.get('effect', [])
         if req_effect:
             req_tier = min([cls.EFFECT_TIER.get(e.lower(), 0) for e in req_effect])
-            if norm_info['effect_tier'] < req_tier: return False
+            if norm_info['effect_tier'] < req_tier: return False, f"特效未达标"
             
         # 4. 音轨 (宁缺毋滥：如果规则要求了，但文件没提取到，直接拦截！)
         req_audio = priority_rule.get('audio', [])
         if req_audio:
-            if not norm_info['audio_langs']: return False
-            if not any(a in norm_info['audio_langs'] for a in req_audio): return False
+            if not norm_info['audio_langs']: return False, "未提取到音轨语言"
+            if not any(a in norm_info['audio_langs'] for a in req_audio): return False, f"缺少必须的音轨"
             
         # 5. 字幕 (宁缺毋滥)
         req_sub = priority_rule.get('subtitle', [])
         if req_sub:
-            if not norm_info['sub_langs']: return False
-            if not any(s in norm_info['sub_langs'] for s in req_sub): return False
+            if not norm_info['sub_langs']: return False, "未提取到字幕语言"
+            if not any(s in norm_info['sub_langs'] for s in req_sub): return False, f"缺少必须的字幕"
             
         # 6. 文件大小
         min_size = priority_rule.get('min_size_gb')
         max_size = priority_rule.get('max_size_gb')
-        if min_size and norm_info['size_gb'] > 0 and norm_info['size_gb'] < float(min_size): return False
-        if max_size and norm_info['size_gb'] > 0 and norm_info['size_gb'] > float(max_size): return False
+        if min_size and norm_info['size_gb'] > 0 and norm_info['size_gb'] < float(min_size): return False, f"体积过小"
+        if max_size and norm_info['size_gb'] > 0 and norm_info['size_gb'] > float(max_size): return False, f"体积过大"
 
-        return True
+        return True, "匹配成功"
 
     @classmethod
-    def get_level(cls, norm_info: dict, priorities: list) -> int:
+    def get_level(cls, norm_info: dict, priorities: list) -> tuple[int, str]:
         """获取匹配的优先级级别 (1 是最高级，0 表示不合格)"""
+        fail_reasons = []
         for i, p_rule in enumerate(priorities):
-            if cls._match_priority(norm_info, p_rule):
-                return i + 1 # 优先级 1, 2, 3...
-        return 0 # 不合格
+            is_match, reason = cls._match_priority(norm_info, p_rule)
+            if is_match:
+                return i + 1, f"命中优先级 {i + 1}"
+            else:
+                fail_reasons.append(f"P{i+1}[{reason}]")
+        return 0, " | ".join(fail_reasons)
 
     @classmethod
     def decide_washing_action(cls, new_video_info: dict, file_size: int, target_cid: str, media_type: str, tmdb_id: str, season_num: int=None, episode_num: int=None) -> tuple[str, str]:
@@ -171,9 +175,9 @@ class WashingService:
         priorities = rule_group['priorities']
         
         # 2. 评估新文件级别
-        new_level = cls.get_level(norm_new, priorities)
+        new_level, new_reason_detail = cls.get_level(norm_new, priorities)
         if new_level == 0:
-            return 'REJECT', f"未达到任何优先级标准 (规则组: {rule_group['name']})"
+            return 'REJECT', f"未达标 ({new_reason_detail})"
 
         # 3. 获取库内现有资产
         existing_assets = []
@@ -200,7 +204,7 @@ class WashingService:
         best_old_level = 999
         for asset in existing_assets:
             norm_old = cls._normalize_info(asset, is_db_asset=True)
-            old_level = cls.get_level(norm_old, priorities)
+            old_level, _ = cls.get_level(norm_old, priorities)
             if old_level == 0: old_level = 999 # 旧版不合格，视为最低级
             if old_level < best_old_level:
                 best_old_level = old_level
