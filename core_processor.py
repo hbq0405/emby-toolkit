@@ -1141,6 +1141,77 @@ class MediaProcessor:
             logger.warning(f"通过 pick_code 查询 local_path 失败: {e}")
         return None
 
+    # --- 多版本电影资产路径修复 (STRM/HTTP 模式) ---
+    def _resolve_strm_path_for_media_source(
+        self,
+        raw_path: str,
+        file_pc: Optional[str],
+        main_emby_path: str
+    ) -> Optional[str]:
+        """
+        多版本电影资产路径修复：
+        当 Emby 的辅助 MediaSource.Path 是 HTTP/真实媒体路径时，
+        如果主条目来自 STRM 库，则应优先还原为同目录下对应的 .strm 文件路径，
+        而不是用 p115_filesystem_cache.local_path 拼出 .mkv/.mp4 真实文件路径。
+        """
+        if not main_emby_path or not main_emby_path.lower().endswith(".strm"):
+            return None
+
+        base_dir = os.path.dirname(main_emby_path)
+        if not base_dir or not os.path.isdir(base_dir):
+            return None
+
+        # 1. 最准：用 pickcode 扫描同目录 STRM 内容
+        if file_pc:
+            try:
+                for name in os.listdir(base_dir):
+                    if not name.lower().endswith(".strm"):
+                        continue
+
+                    candidate = os.path.join(base_dir, name)
+                    if not os.path.isfile(candidate):
+                        continue
+
+                    try:
+                        with open(candidate, "r", encoding="utf-8", errors="ignore") as f:
+                            content = f.read(8192)
+                        if file_pc in content:
+                            return candidate
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.warning(f"  ➜ [资产路径] 扫描同目录 STRM 失败: {e}")
+
+        # 2. 次准：通过 pickcode 找真实文件名，再在 STRM 目录里找同 stem 的 .strm
+        if file_pc:
+            try:
+                db_local_path = self._get_local_path_by_pickcode(file_pc)
+                if db_local_path:
+                    real_name = os.path.basename(db_local_path.replace("\\", "/"))
+                    real_stem = os.path.splitext(real_name)[0]
+
+                    candidate = os.path.join(base_dir, real_stem + ".strm")
+                    if os.path.exists(candidate):
+                        return candidate
+
+                    # 有些 STRM 文件名可能被规范化过，做一次宽松匹配
+                    normalized_real_stem = re.sub(r"\s+", " ", real_stem).strip().lower()
+                    for name in os.listdir(base_dir):
+                        if not name.lower().endswith(".strm"):
+                            continue
+                        strm_stem = os.path.splitext(name)[0]
+                        normalized_strm_stem = re.sub(r"\s+", " ", strm_stem).strip().lower()
+                        if normalized_real_stem == normalized_strm_stem:
+                            return os.path.join(base_dir, name)
+            except Exception as e:
+                logger.warning(f"  ➜ [资产路径] 通过 pickcode 反查 STRM 路径失败: {e}")
+
+        # 3. 最后兜底：如果 raw_path 自己就是本地 STRM，直接用它
+        if raw_path and raw_path.lower().endswith(".strm") and os.path.exists(raw_path):
+            return raw_path
+
+        return None
+
     # --- 从数据库逆向重建完整元数据 ---
     def _reconstruct_full_data_from_db(self, tmdb_id: str, item_type: str) -> Tuple[Optional[Dict[str, Any]], Optional[List[Dict[str, Any]]]]:
         """
@@ -1446,30 +1517,40 @@ class MediaProcessor:
                             raw_source_id = str(source.get('Id') or item_id)
                             source_id = raw_source_id.replace("mediasource_", "")
                             
-                            # ★★★ 终极修复：利用 local_strm_root + local_path 完美还原物理路径 ★★★
+                            # ★★★ STRM 多版本路径修复 ★★★
+                            # 资产展示路径必须优先使用 Emby/STRM 库路径。
+                            # p115_filesystem_cache.local_path 是真实媒体文件路径，不能直接当成 STRM 资产 path。
                             emby_path = raw_path
+                            main_emby_path = item_details_from_emby.get('Path', '')
+
                             if emby_path.startswith('http'):
-                                main_emby_path = item_details_from_emby.get('Path', '')
                                 if source_id == item_id:
-                                    # 主版本：直接使用顶层 Path
+                                    # 主版本：直接使用顶层 Path，通常就是 .strm
                                     emby_path = main_emby_path
                                 else:
-                                    # 辅版本：查库获取相对路径，与 local_strm_root 拼接
-                                    db_local_path = self._get_local_path_by_pickcode(file_pc)
-                                    if db_local_path:
-                                        local_strm_root = self.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
-                                        if local_strm_root:
-                                            # 完美拼接：/strm/媒体库 + 电影/.../xxx.mkv
-                                            emby_path = os.path.join(local_strm_root, db_local_path.lstrip('/\\'))
-                                        elif main_emby_path:
-                                            # 兜底：如果没配 root，用主版本的目录 + 真实文件名
-                                            real_filename = os.path.basename(db_local_path.replace('\\', '/'))
-                                            base_dir = os.path.dirname(main_emby_path)
-                                            emby_path = os.path.join(base_dir, real_filename)
+                                    # 辅版本：如果主版本是 STRM，则从同目录 STRM 文件反查
+                                    strm_path = self._resolve_strm_path_for_media_source(
+                                        raw_path=raw_path,
+                                        file_pc=file_pc,
+                                        main_emby_path=main_emby_path
+                                    )
+                                    if strm_path:
+                                        emby_path = strm_path
+                                    else:
+                                        # 非 STRM 库或反查失败时，才允许回退到真实路径
+                                        db_local_path = self._get_local_path_by_pickcode(file_pc)
+                                        if db_local_path:
+                                            local_strm_root = self.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
+                                            if local_strm_root:
+                                                emby_path = os.path.join(local_strm_root, db_local_path.lstrip('/\\'))
+                                            elif main_emby_path:
+                                                real_filename = os.path.basename(db_local_path.replace('\\', '/'))
+                                                base_dir = os.path.dirname(main_emby_path)
+                                                emby_path = os.path.join(base_dir, real_filename)
+                                            else:
+                                                emby_path = ''
                                         else:
                                             emby_path = ''
-                                    else:
-                                        emby_path = ''
                                 
                             mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
                             file_sha1 = self._get_sha1_by_pickcode(file_pc)
@@ -1511,7 +1592,7 @@ class MediaProcessor:
                         emby_path = item_details_from_emby.get('Path', '')
                         mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json"
                         
-                        file_pc, file_sha1 = self._extract_115_fingerprints(raw_path)
+                        file_pc, file_sha1 = self._extract_115_fingerprints(emby_path)
                         if not file_sha1 and file_pc:
                             file_sha1 = self._get_sha1_by_pickcode(file_pc)
 
@@ -1831,28 +1912,42 @@ class MediaProcessor:
                             if not file_sha1 and file_pc:
                                 file_sha1 = self._get_sha1_by_pickcode(file_pc)
                             
-                            # ★★★ 终极修复：利用 local_strm_root + local_path 完美还原物理路径 ★★★
+                            # ★★★ STRM 分集多版本路径修复 ★★★
+                            # 资产 path 应该保存 Emby 入库路径。
+                            # 如果主分集是 .strm，辅版本也优先还原为同目录下对应的 .strm，
+                            # 不能直接把 p115_filesystem_cache.local_path 拼成 .mkv/.mp4。
                             emby_path = raw_path
+                            main_emby_path = item_details_from_emby.get('Path', '')
+
                             if emby_path.startswith('http'):
-                                main_emby_path = item_details_from_emby.get('Path', '')
                                 if clean_v_id == item_id:
-                                    # 主版本：直接使用顶层 Path
+                                    # 主版本：直接使用顶层 Path，通常就是当前分集的 .strm
                                     emby_path = main_emby_path
                                 else:
-                                    # 辅版本：查库获取相对路径，与 local_strm_root 拼接
-                                    db_local_path = self._get_local_path_by_pickcode(file_pc)
-                                    if db_local_path:
-                                        local_strm_root = self.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
-                                        if local_strm_root:
-                                            emby_path = os.path.join(local_strm_root, db_local_path.lstrip('/\\'))
-                                        elif main_emby_path:
-                                            real_filename = os.path.basename(db_local_path.replace('\\', '/'))
-                                            base_dir = os.path.dirname(main_emby_path)
-                                            emby_path = os.path.join(base_dir, real_filename)
+                                    # 辅版本：主版本来自 STRM 库时，先反查同目录 STRM
+                                    strm_path = self._resolve_strm_path_for_media_source(
+                                        raw_path=raw_path,
+                                        file_pc=file_pc,
+                                        main_emby_path=main_emby_path
+                                    )
+
+                                    if strm_path:
+                                        emby_path = strm_path
+                                    else:
+                                        # 非 STRM 库或反查失败时，才允许 fallback 到真实文件路径
+                                        db_local_path = self._get_local_path_by_pickcode(file_pc)
+                                        if db_local_path:
+                                            local_strm_root = self.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
+                                            if local_strm_root:
+                                                emby_path = os.path.join(local_strm_root, db_local_path.lstrip('/\\'))
+                                            elif main_emby_path:
+                                                real_filename = os.path.basename(db_local_path.replace('\\', '/'))
+                                                base_dir = os.path.dirname(main_emby_path)
+                                                emby_path = os.path.join(base_dir, real_filename)
+                                            else:
+                                                emby_path = ''
                                         else:
                                             emby_path = ''
-                                    else:
-                                        emby_path = ''
                                 
                             mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
                             file_sha1 = self._get_sha1_by_pickcode(file_pc)
@@ -1950,25 +2045,39 @@ class MediaProcessor:
                         if not file_sha1 and file_pc:
                             file_sha1 = self._get_sha1_by_pickcode(file_pc)
                         
+                        # ★★★ STRM 分集多版本路径修复 ★★★
                         emby_path = raw_path
+                        main_emby_path = item_details_from_emby.get('Path', '')
+
                         if emby_path.startswith('http'):
-                            main_emby_path = item_details_from_emby.get('Path', '')
                             if clean_v_id == item_id:
+                                # 主版本：直接使用顶层 Path
                                 emby_path = main_emby_path
                             else:
-                                db_local_path = self._get_local_path_by_pickcode(file_pc)
-                                if db_local_path:
-                                    local_strm_root = self.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
-                                    if local_strm_root:
-                                        emby_path = os.path.join(local_strm_root, db_local_path.lstrip('/\\'))
-                                    elif main_emby_path:
-                                        real_filename = os.path.basename(db_local_path.replace('\\', '/'))
-                                        base_dir = os.path.dirname(main_emby_path)
-                                        emby_path = os.path.join(base_dir, real_filename)
+                                # 辅版本：优先还原为同目录 .strm
+                                strm_path = self._resolve_strm_path_for_media_source(
+                                    raw_path=raw_path,
+                                    file_pc=file_pc,
+                                    main_emby_path=main_emby_path
+                                )
+
+                                if strm_path:
+                                    emby_path = strm_path
+                                else:
+                                    # 找不到 STRM 才 fallback 到真实路径
+                                    db_local_path = self._get_local_path_by_pickcode(file_pc)
+                                    if db_local_path:
+                                        local_strm_root = self.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
+                                        if local_strm_root:
+                                            emby_path = os.path.join(local_strm_root, db_local_path.lstrip('/\\'))
+                                        elif main_emby_path:
+                                            real_filename = os.path.basename(db_local_path.replace('\\', '/'))
+                                            base_dir = os.path.dirname(main_emby_path)
+                                            emby_path = os.path.join(base_dir, real_filename)
+                                        else:
+                                            emby_path = ''
                                     else:
                                         emby_path = ''
-                                else:
-                                    emby_path = ''
                             
                         mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
                         file_sha1 = self._get_sha1_by_pickcode(file_pc)
