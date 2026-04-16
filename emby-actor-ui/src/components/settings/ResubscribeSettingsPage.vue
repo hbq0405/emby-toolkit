@@ -389,6 +389,24 @@
                 
                 <!-- 模式 A: 洗版设置 -->
                 <div v-if="currentRule.rule_type === 'resubscribe'">
+                  <!-- 入库质检开关 -->
+                  <n-form-item label="入库质检">
+                    <n-space vertical>
+                      <n-space align="center">
+                        <n-switch v-model:value="currentRule.inbound_quality_check_enabled" />
+                        <span class="tip">开启后，整理时将按左侧条件进行质检，不达标的媒体将被打入未识别。</span>
+                      </n-space>
+                      
+                      <div v-if="currentRule.inbound_quality_check_enabled" style="margin-left: 34px; margin-top: 4px; padding: 8px; background: var(--n-color-embedded); border-radius: 4px;">
+                        <n-checkbox v-model:checked="currentRule.inbound_abort_on_probe_fail">
+                          媒体信息提取失败时放弃入库
+                        </n-checkbox>
+                        <div class="tip" style="margin-top: 4px;">
+                          勾选后，如果无法通过 ffprobe 或中心缓存获取到真实的媒体信息，将直接判定为不合格。
+                        </div>
+                      </div>
+                    </n-space>
+                  </n-form-item>
                   <!-- 缺集洗版整季开关 -->
                   <n-form-item label="缺集处理策略 (仅剧集)">
                     <n-space vertical>
@@ -634,7 +652,9 @@ const openRuleModal = async (rule = null) => {
       resubscribe_subtitle_effect_only: false,
       consistency_check_enabled: false, consistency_must_match_resolution: false, consistency_must_match_group: false,
       resubscribe_source: 'moviepilot', 
-      resubscribe_entire_season: false
+      resubscribe_entire_season: false,
+      inbound_quality_check_enabled: false,
+      inbound_abort_on_probe_fail: false
     };
     addScopeRule();
   }

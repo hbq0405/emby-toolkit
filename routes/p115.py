@@ -911,6 +911,9 @@ def get_organize_records():
                 cursor.execute("SELECT COUNT(*) as unrecognized FROM p115_organize_records WHERE status = 'unrecognized'")
                 stat_unrecognized = cursor.fetchone()['unrecognized']
                 
+                cursor.execute("SELECT COUNT(*) as unqualified FROM p115_organize_records WHERE status = 'unqualified'")
+                stat_unqualified = cursor.fetchone()['unqualified']
+                
                 cursor.execute("SELECT COUNT(*) as this_week FROM p115_organize_records WHERE processed_at >= NOW() - INTERVAL '7 days'")
                 stat_week = cursor.fetchone()['this_week']
 
@@ -926,6 +929,7 @@ def get_organize_records():
                         "total": stat_total,
                         "success": stat_success,
                         "unrecognized": stat_unrecognized,
+                        "unqualified": stat_unqualified,
                         "thisWeek": stat_week,
                         "center_cached": stat_center_cached
                     }

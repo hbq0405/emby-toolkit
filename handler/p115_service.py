@@ -997,7 +997,7 @@ class P115CacheManager:
 # ======================================================================
 class P115RecordManager:
     @staticmethod
-    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None, is_center_cached=False, pick_code=None, season_number=None):
+    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None, is_center_cached=False, pick_code=None, season_number=None, fail_reason=None):
         """添加或更新整理记录（基于 file_id 和 pick_code 唯一约束，智能继承原名）"""
         if not file_id or not original_name: return
         try:
@@ -1014,8 +1014,8 @@ class P115RecordManager:
 
                     cursor.execute("""
                         INSERT INTO p115_organize_records 
-                        (file_id, pick_code, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at, is_center_cached, season_number)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s)
+                        (file_id, pick_code, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at, is_center_cached, season_number, fail_reason)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s)
                         ON CONFLICT (file_id) 
                         DO UPDATE SET 
                             pick_code = EXCLUDED.pick_code,
@@ -1027,10 +1027,11 @@ class P115RecordManager:
                             renamed_name = EXCLUDED.renamed_name,
                             processed_at = NOW(),
                             is_center_cached = p115_organize_records.is_center_cached OR EXCLUDED.is_center_cached,
-                            season_number = EXCLUDED.season_number
+                            season_number = EXCLUDED.season_number,
+                            fail_reason = EXCLUDED.fail_reason
                     """, (str(file_id), pick_code, str(original_name), str(status), str(tmdb_id) if tmdb_id else None, 
                           str(media_type) if media_type else None, str(target_cid) if target_cid else None, 
-                          str(category_name) if category_name else None, str(renamed_name) if renamed_name else None, bool(is_center_cached), season_number))
+                          str(category_name) if category_name else None, str(renamed_name) if renamed_name else None, bool(is_center_cached), season_number, fail_reason))
                     conn.commit()
         except Exception as e:
             logger.error(f"  ➜ 写入 115 整理记录失败: {e}")
@@ -2847,8 +2848,73 @@ class SmartOrganizer:
             )
             if not s_name: s_name = f"Season {season_num:02d}"
 
-        # ★ 返回值增加 s_name
-        return new_name, season_num, episode_num, s_name, is_center_cached
+        # ★ 返回值增加 s_name, video_info, has_real_info
+        return new_name, season_num, episode_num, s_name, is_center_cached, video_info, bool(real_info if enable_smart_rename and not is_sub else False)
+
+    def _evaluate_inbound_quality(self, video_info, file_size, rule):
+        """入库质检评估逻辑"""
+        reasons = []
+        
+        # 1. 分辨率检查
+        if rule.get("resubscribe_resolution_enabled"):
+            RESOLUTION_ORDER = {"2160p": 4, "4k": 4, "1080p": 3, "720p": 2, "480p": 1, "": 0}
+            current_tier = RESOLUTION_ORDER.get(video_info.get('resolution', '').lower(), 0)
+            req_width = int(rule.get("resubscribe_resolution_threshold", 1920))
+            req_tier = 4 if req_width >= 3800 else (3 if req_width >= 1900 else (2 if req_width >= 1200 else 1))
+            if current_tier < req_tier:
+                reasons.append("分辨率不达标")
+
+        # 2. 质量检查
+        if rule.get("resubscribe_quality_enabled"):
+            req_qualities = rule.get("resubscribe_quality_include", [])
+            if req_qualities:
+                QUALITY_HIERARCHY = {'remux': 6, 'bluray': 5, 'web-dl': 4, 'webrip': 3, 'hdtv': 2, 'dvdrip': 1, 'uhd': 5, 'uhd bluray': 5}
+                highest_req = max([QUALITY_HIERARCHY.get(q.lower(), 0) for q in req_qualities], default=0)
+                curr_tier = QUALITY_HIERARCHY.get(video_info.get('source', '').lower(), 0)
+                if curr_tier < highest_req:
+                    reasons.append("质量不符")
+
+        # 3. 编码检查
+        if rule.get("resubscribe_codec_enabled"):
+            req_codecs = rule.get("resubscribe_codec_include", [])
+            if req_codecs:
+                CODEC_HIERARCHY = {'hevc': 2, 'h265': 2, 'h264': 1, 'avc': 1}
+                highest_req = max([CODEC_HIERARCHY.get(c.lower(), 0) for c in req_codecs], default=0)
+                curr_codec = video_info.get('codec', '').lower()
+                curr_tier = 2 if 'hevc' in curr_codec or 'h265' in curr_codec else (1 if 'avc' in curr_codec or 'h264' in curr_codec else 0)
+                if curr_tier < highest_req:
+                    reasons.append("编码不符")
+
+        # 4. 特效检查
+        if rule.get("resubscribe_effect_enabled"):
+            req_effects = rule.get("resubscribe_effect_include", [])
+            if req_effects:
+                EFFECT_HIERARCHY = {"dovi_p8": 7, "dovi_p7": 6, "dovi_p5": 5, "dovi_other": 4, "hdr10+": 3, "hdr10": 2, "hdr": 2, "sdr": 1}
+                highest_req = max([EFFECT_HIERARCHY.get(e.lower(), 0) for e in req_effects], default=0)
+                curr_effect = video_info.get('effect', '').lower()
+                curr_tier = 1
+                if 'dv' in curr_effect or 'dovi' in curr_effect:
+                    if 'p8' in curr_effect: curr_tier = 7
+                    elif 'p7' in curr_effect: curr_tier = 6
+                    elif 'p5' in curr_effect: curr_tier = 5
+                    else: curr_tier = 4
+                elif 'hdr10+' in curr_effect: curr_tier = 3
+                elif 'hdr' in curr_effect: curr_tier = 2
+                
+                if curr_tier < highest_req:
+                    reasons.append("特效不达标")
+
+        # 5. 文件大小检查
+        if rule.get("resubscribe_filesize_enabled"):
+            op = rule.get("resubscribe_filesize_operator", 'lt')
+            th_gb = float(rule.get("resubscribe_filesize_threshold_gb", 10.0))
+            fs_gb = file_size / (1024**3)
+            if op == 'lt' and fs_gb < th_gb:
+                reasons.append(f"文件 < {th_gb}GB")
+            elif op == 'gt' and fs_gb > th_gb:
+                reasons.append(f"文件 > {th_gb}GB")
+
+        return reasons
 
     def _scan_files_recursively(self, cid, depth=0, max_depth=3, current_rel_path=""):
         all_files = []
@@ -3322,6 +3388,7 @@ class SmartOrganizer:
         moved_count = 0
         move_groups = {}
         unrecognized_fids = [] # ★ 终极垃圾桶：收集所有不符合要求的文件
+        unqualified_items = [] # ★ 质检不合格垃圾桶
         
         # ★ 新增：用于记录本批次已经生成的目标文件名，防止同名冲突
         seen_new_filenames = set()
@@ -3504,6 +3571,8 @@ class SmartOrganizer:
                 s_name = None
                 is_center_cached = False
                 real_target_cid = final_home_cid
+                video_info = {}
+                has_real_info = False
                 
                 # 1:1 复刻原始目录架构
                 rel_path = file_item.get('rel_path', '')
@@ -3544,13 +3613,42 @@ class SmartOrganizer:
                             break
                     real_target_cid = current_parent
             else:
-                new_filename, season_num, episode_num, s_name, is_center_cached = self._rename_file_node(
+                new_filename, season_num, episode_num, s_name, is_center_cached, video_info, has_real_info = self._rename_file_node(
                     file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
                     pre_fetched_mediainfo=pre_fetched_mediainfo,
                     local_pre_fetched_mediainfo=local_pre_fetched_mediainfo 
                 )
 
                 real_target_cid = final_home_cid
+                
+                # =================================================================
+                # ★★★ 入库质检逻辑 (仅洗版模式有效) ★★★
+                # =================================================================
+                matched_rule = next((r for r in self.rules if str(r.get('cid')) == str(target_cid)), None)
+                is_vid = ext in known_video_exts
+                
+                if matched_rule and matched_rule.get('inbound_quality_check_enabled') and is_vid:
+                    # 1. 检查是否要求必须提取到真实媒体信息
+                    if matched_rule.get('inbound_abort_on_probe_fail') and not has_real_info:
+                        logger.warning(f"  ➜ [入库质检] 媒体信息提取失败，拒绝入库: {file_name}")
+                        unqualified_items.append({
+                            'fid': fid, 'name': file_name, 'reason': "媒体信息提取失败", 
+                            'pc': file_item.get('pc') or file_item.get('pick_code'), 'season_num': season_num
+                        })
+                        if progress_callback: progress_callback()
+                        continue
+                    
+                    # 2. 执行各项指标评估
+                    reasons = self._evaluate_inbound_quality(video_info, file_size, matched_rule)
+                    if reasons:
+                        reason_str = "; ".join(reasons)
+                        logger.warning(f"  ➜ [入库质检] 不合格，拒绝入库: {file_name} -> {reason_str}")
+                        unqualified_items.append({
+                            'fid': fid, 'name': file_name, 'reason': reason_str, 
+                            'pc': file_item.get('pc') or file_item.get('pick_code'), 'season_num': season_num
+                        })
+                        if progress_callback: progress_callback()
+                        continue
                 
                 # ★ 直接使用返回的 s_name 创建/查找季目录
                 if self.media_type == 'tv' and season_num is not None and s_name:
@@ -4045,6 +4143,26 @@ class SmartOrganizer:
             logger.info(f"  ➜ 发现 {len(unrecognized_fids)} 个不合规文件(扩展名不符/花絮/样本/广告)，正在移入未识别目录...")
             # 同样传入列表，防止 115 API 报错
             self.client.fs_move(unrecognized_fids, unidentified_cid)
+            
+        if unqualified_items and unidentified_cid:
+            logger.info(f"  ➜ 发现 {len(unqualified_items)} 个质检不合格文件，正在移入未识别目录...")
+            unq_fids = [item['fid'] for item in unqualified_items if item['fid']]
+            self.client.fs_move(unq_fids, unidentified_cid)
+            
+            for item in unqualified_items:
+                P115RecordManager.add_or_update_record(
+                    file_id=item['fid'],
+                    original_name=item['name'],
+                    status='unqualified',
+                    tmdb_id=self.tmdb_id,
+                    media_type=self.media_type,
+                    target_cid=target_cid,
+                    category_name="质检不合格",
+                    renamed_name=None,
+                    pick_code=item['pc'],
+                    season_number=item['season_num'],
+                    fail_reason=item['reason']
+                )
 
         # =================================================================
         # ★ 极简垃圾回收：直接通知缓冲队列检查“待整理”目录

@@ -334,7 +334,9 @@ def init_db():
                         filter_rating_ignore_zero BOOLEAN DEFAULT FALSE,
                         filter_missing_episodes_enabled BOOLEAN DEFAULT FALSE,
                         resubscribe_source TEXT DEFAULT 'moviepilot',
-                        resubscribe_entire_season BOOLEAN DEFAULT FALSE
+                        resubscribe_entire_season BOOLEAN DEFAULT FALSE,
+                        inbound_quality_check_enabled BOOLEAN DEFAULT FALSE,
+                        inbound_abort_on_probe_fail BOOLEAN DEFAULT FALSE
                     )
                 """)
 
@@ -466,6 +468,7 @@ def init_db():
                         original_name TEXT NOT NULL,   -- 原始名称
                         renamed_name TEXT,             -- 整理后的名称
                         status TEXT NOT NULL,          -- 'success' 或 'unrecognized'
+                        fail_reason TEXT,              -- 识别失败原因
                         tmdb_id TEXT,
                         media_type TEXT,
                         target_cid TEXT,               -- 目标分类CID
@@ -504,7 +507,8 @@ def init_db():
                         'p115_organize_records': {
                             "is_center_cached": "BOOLEAN DEFAULT FALSE",
                             "pick_code": "TEXT UNIQUE",
-                            "season_number": "INTEGER"
+                            "season_number": "INTEGER",
+                            "fail_reason": "TEXT"
                         },
                         'emby_users': {
                             "policy_json": "JSONB"  
@@ -520,6 +524,8 @@ def init_db():
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE",
                             "resubscribe_source": "TEXT DEFAULT 'moviepilot'", 
                             "resubscribe_entire_season": "BOOLEAN DEFAULT FALSE",
+                            "inbound_quality_check_enabled": "BOOLEAN DEFAULT FALSE",
+                            "inbound_abort_on_probe_fail": "BOOLEAN DEFAULT FALSE"
                         },
                         'collections_info': {
                             "poster_path": "TEXT",

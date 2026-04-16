@@ -2,11 +2,12 @@
 <template>
   <n-layout content-style="padding: 24px;">
     <!-- 顶部统计仪表盘 (占满整行，大气！) -->
-    <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:5" responsive="screen" style="margin-bottom: 24px;">
+    <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:6" responsive="screen" style="margin-bottom: 24px;">
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="总处理记录"><template #prefix><n-icon :component="LayersIcon" color="#2080f0" /></template>{{ stats.total || 0 }}</n-statistic></n-card></n-gi>
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="识别成功"><template #prefix><n-icon :component="CheckmarkCircleIcon" color="#18a058" /></template>{{ stats.success || 0 }}</n-statistic></n-card></n-gi>
-      <n-gi><n-card class="stat-card" size="small"><n-statistic label="未识别 / 失败"><template #prefix><n-icon :component="HelpCircleIcon" color="#f0a020" /></template>{{ stats.unrecognized || 0 }}</n-statistic></n-card></n-gi>
-      <n-gi><n-card class="stat-card" size="small"><n-statistic label="本周处理"><template #prefix><n-icon :component="TrendingUpIcon" color="#d03050" /></template>{{ stats.thisWeek || 0 }}</n-statistic></n-card></n-gi>
+      <n-gi><n-card class="stat-card" size="small"><n-statistic label="未识别 / 异常"><template #prefix><n-icon :component="HelpCircleIcon" color="#f0a020" /></template>{{ stats.unrecognized || 0 }}</n-statistic></n-card></n-gi>
+      <n-gi><n-card class="stat-card" size="small"><n-statistic label="质检不合格"><template #prefix><n-icon :component="CloseCircleIcon" color="#d03050" /></template>{{ stats.unqualified || 0 }}</n-statistic></n-card></n-gi>
+      <n-gi><n-card class="stat-card" size="small"><n-statistic label="本周处理"><template #prefix><n-icon :component="TrendingUpIcon" color="#2080f0" /></template>{{ stats.thisWeek || 0 }}</n-statistic></n-card></n-gi>
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="命中中心缓存"><template #prefix><n-icon :component="CloudDoneIcon" color="#18a058" /></template>{{ stats.center_cached || 0 }}</n-statistic></n-card></n-gi>
     </n-grid>
 
@@ -158,6 +159,7 @@ import {
   LayersOutline as LayersIcon,
   CheckmarkCircleOutline as CheckmarkCircleIcon,
   HelpCircleOutline as HelpCircleIcon,
+  CloseCircleOutline as CloseCircleIcon,
   TrendingUpOutline as TrendingUpIcon,
   SearchOutline as SearchIcon,
   RefreshOutline as RefreshIcon,
@@ -190,6 +192,7 @@ const statusOptions = [
   { label: '全部状态', value: 'all' },
   { label: '识别成功', value: 'success' },
   { label: '未识别/异常', value: 'unrecognized' },
+  { label: '质检不合格', value: 'unqualified' },
   { label: '命中中心缓存', value: 'center_cached' }
 ];
 const categoryOptions = ref([{ label: '所有分类', value: null }]);
@@ -273,18 +276,34 @@ const columns = computed(() => [
     title: '状态', key: 'status', width: 100, align: 'center',
     render(row) {
       if (row.isGroup) return h(NTag, { type: 'info', bordered: false, size: 'small', round: true }, { icon: () => h(NIcon, { component: FolderIcon }), default: () => '剧集包' });
-      const isSuccess = row.status === 'success';
-      return h(NTag, { type: isSuccess ? 'success' : 'warning', bordered: false, size: 'small', round: true, style: row.isChild ? 'transform: scale(0.85); opacity: 0.85;' : '' }, { icon: () => h(NIcon, { component: isSuccess ? CheckmarkCircleIcon : HelpCircleIcon }), default: () => isSuccess ? '已整理' : '未识别' });
+      
+      let type = 'warning';
+      let icon = HelpCircleIcon;
+      let text = '未识别';
+      
+      if (row.status === 'success') {
+        type = 'success'; icon = CheckmarkCircleIcon; text = '已整理';
+      } else if (row.status === 'unqualified') {
+        type = 'error'; icon = CloseCircleIcon; text = '不合格';
+      }
+      
+      return h(NTag, { type: type, bordered: false, size: 'small', round: true, style: row.isChild ? 'transform: scale(0.85); opacity: 0.85;' : '' }, { icon: () => h(NIcon, { component: icon }), default: () => text });
     }
   },
   {
     title: '名称演变 (原文件 ➔ 整理后)', key: 'name_evolution',
     render(row) {
       const childStyle = row.isChild ? 'padding-left: 20px; border-left: 2px solid rgba(144, 147, 153, 0.25); margin-left: 6px;' : '';
-      return h('div', { style: `display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 300px; ${childStyle}` }, [
+      const children = [
         h(NText, { strong: row.isGroup, depth: row.isGroup ? 1 : 3, style: 'font-size: 13px; display: flex; align-items: center;' }, { default: () => [!row.isGroup ? h(NTag, { size: 'tiny', bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '原' }) : null, h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.original_name })] }),
-        h(NText, { strong: !row.isGroup, type: row.status === 'success' ? 'primary' : 'default', style: 'font-size: 13px; display: flex; align-items: center;' }, { default: () => [!row.isGroup ? h(NTag, { size: 'tiny', type: row.status === 'success' ? 'success' : 'warning', bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '新' }) : null, h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.renamed_name || '等待分配 TMDb ID 手动整理...' })] })
-      ]);
+        h(NText, { strong: !row.isGroup, type: row.status === 'success' ? 'primary' : 'default', style: 'font-size: 13px; display: flex; align-items: center;' }, { default: () => [!row.isGroup ? h(NTag, { size: 'tiny', type: row.status === 'success' ? 'success' : (row.status === 'unqualified' ? 'error' : 'warning'), bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '新' }) : null, h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.renamed_name || '等待分配 TMDb ID 手动整理...' })] })
+      ];
+      
+      if (row.status === 'unqualified' && row.fail_reason) {
+        children.push(h(NTag, { type: 'error', size: 'small', bordered: false, style: 'margin-top: 4px; width: fit-content;' }, { default: () => `退回原因: ${row.fail_reason}` }));
+      }
+      
+      return h('div', { style: `display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 300px; ${childStyle}` }, children);
     }
   },
   {
