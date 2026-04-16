@@ -98,7 +98,7 @@
               <n-form-item label="智能重命名">
                 <n-switch v-model:value="config.enable_smart_rename" />
                 <template #feedback>
-                  <span style="font-size: 12px; color: gray;">开启后将通过中心服务器查询媒体信息补齐缺失的参数（较慢）。关闭则仅通过文件名猜测(极速)。</span>
+                  <span style="font-size: 12px; color: gray;">开启后将依次通过本地缓存->中心服务器->ffprobe方式查询媒体信息补齐缺失的参数。</span>
                 </template>
               </n-form-item>
               <n-form-item label="STRM 链接格式">
