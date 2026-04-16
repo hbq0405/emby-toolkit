@@ -92,23 +92,35 @@ class WashingService:
             req_tier = min([cls.CODEC_TIER.get(c.lower(), 0) for c in req_codec])
             if norm_info['codec_tier'] < req_tier: return False, f"编码未达标"
             
-        # 3. 特效
+         # 3. 特效
         req_effect = priority_rule.get('effect', [])
         if req_effect:
+            # ★ 修复：如果规则要求了多个特效（比如同时勾了 P8 和 P7），只要满足其中最低的一个要求即可
             req_tier = min([cls.EFFECT_TIER.get(e.lower(), 0) for e in req_effect])
-            if norm_info['effect_tier'] < req_tier: return False, f"特效未达标"
+            
+            # ★ 核心：文件的实际特效层级 必须 大于等于 规则要求的最低层级
+            if norm_info['effect_tier'] < req_tier: 
+                return False, f"特效未达标 (文件:Tier{norm_info['effect_tier']} < 规则:Tier{req_tier})"
             
         # 4. 音轨 (宁缺毋滥：如果规则要求了，但文件没提取到，直接拦截！)
         req_audio = priority_rule.get('audio', [])
         if req_audio:
             if not norm_info['audio_langs']: return False, "未提取到音轨语言"
-            if not any(a in norm_info['audio_langs'] for a in req_audio): return False, f"缺少必须的音轨"
+            
+            # ★ 修复：将规则要求的语言也进行归一化，防止大小写或别名不匹配
+            normalized_req_audio = {cls._normalize_lang(a) for a in req_audio}
+            if not any(a in norm_info['audio_langs'] for a in normalized_req_audio): 
+                return False, f"缺少必须的音轨"
             
         # 5. 字幕 (宁缺毋滥)
         req_sub = priority_rule.get('subtitle', [])
         if req_sub:
             if not norm_info['sub_langs']: return False, "未提取到字幕语言"
-            if not any(s in norm_info['sub_langs'] for s in req_sub): return False, f"缺少必须的字幕"
+            
+            # ★ 修复：将规则要求的语言也进行归一化
+            normalized_req_sub = {cls._normalize_lang(s) for s in req_sub}
+            if not any(s in norm_info['sub_langs'] for s in normalized_req_sub): 
+                return False, f"缺少必须的字幕"
             
         # 6. 文件大小
         min_size = priority_rule.get('min_size_gb')

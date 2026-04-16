@@ -3426,7 +3426,7 @@ class SmartOrganizer:
                 ext = fn.split('.')[-1].lower() if '.' in fn else ''
                 if ext in known_video_exts:
                     # 临时调用重命名获取名字
-                    v_name, v_s, v_e, _, _ = self._rename_file_node(
+                    v_name, v_s, v_e, _, _, _, _ = self._rename_file_node(
                         file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), 
                         original_title=original_title, pre_fetched_mediainfo=pre_fetched_mediainfo, 
                         local_pre_fetched_mediainfo=local_pre_fetched_mediainfo,
