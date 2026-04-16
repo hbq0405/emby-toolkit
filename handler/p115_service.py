@@ -1777,8 +1777,36 @@ class SmartOrganizer:
         if not file_node:
             return None
 
-        pick_code = file_node.get('pc') or file_node.get('pick_code') or file_node.get('pickcode')
-        original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name') or sha1 or "unknown"
+        # file_node 在当前项目里是 dict，不是对象，不能用 file_node.original_name
+        if isinstance(file_node, dict):
+            pick_code = (
+                file_node.get('pc')
+                or file_node.get('pick_code')
+                or file_node.get('pickcode')
+            )
+            original_name = (
+                file_node.get('fn')
+                or file_node.get('n')
+                or file_node.get('file_name')
+                or file_node.get('original_name')
+                or sha1
+                or "unknown"
+            )
+        else:
+            # 极少数情况下兼容对象式节点
+            pick_code = (
+                getattr(file_node, 'pc', None)
+                or getattr(file_node, 'pick_code', None)
+                or getattr(file_node, 'pickcode', None)
+            )
+            original_name = (
+                getattr(file_node, 'fn', None)
+                or getattr(file_node, 'n', None)
+                or getattr(file_node, 'file_name', None)
+                or getattr(file_node, 'original_name', None)
+                or sha1
+                or "unknown"
+            )
 
         if not pick_code:
             if not silent_log:
