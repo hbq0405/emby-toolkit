@@ -6,11 +6,6 @@ from database.connection import get_db_connection
 logger = logging.getLogger(__name__)
 
 class WashingService:
-    # 统一的层级定义 (数字越大越好)
-    RES_TIER = {"8k": 5, "4k": 4, "2160p": 4, "1080p": 3, "720p": 2, "480p": 1}
-    CODEC_TIER = {"av1": 3, "hevc": 2, "h265": 2, "avc": 1, "h264": 1}
-    EFFECT_TIER = {"dovi_p8": 7, "dovi_p7": 6, "dovi_p5": 5, "dovi_other": 4, "hdr10+": 3, "hdr10": 2, "hdr": 2, "sdr": 1}
-
     @classmethod
     def _normalize_lang(cls, lang_str: str) -> str:
         """将各种语言标识统一归一化为标准 3 字母代码"""
@@ -24,129 +19,117 @@ class WashingService:
 
     @classmethod
     def _normalize_info(cls, info: dict, is_db_asset=False) -> dict:
-        """将 115/ffprobe 的 video_info 或 数据库的 asset_details 统一标准化"""
+        """将 115/ffprobe 的 video_info 或 数据库的 asset_details 统一标准化为字符串标签"""
         norm = {
-            "res_tier": 0, "codec_tier": 0, "effect_tier": 0,
-            "audio_langs": set(), "sub_langs": set(), "size_gb": 0.0
+            "resolution": "unknown", 
+            "codec": "unknown", 
+            "effect": "sdr", # 默认兜底为 SDR
+            "audio_langs": set(), 
+            "sub_langs": set(), 
+            "size_gb": 0.0
         }
 
         if not info: return norm
 
+        # 1. 提取基础字符串
         if is_db_asset:
-            # 解析数据库 asset_details_json 格式 (旧文件)
-            res_str = str(info.get('resolution_display', '')).lower()
-            norm["res_tier"] = cls.RES_TIER.get(res_str, 0)
-            
-            codec_str = str(info.get('codec_display', '')).lower()
-            norm["codec_tier"] = max([v for k, v in cls.CODEC_TIER.items() if k in codec_str] + [0])
-            
+            norm["resolution"] = str(info.get('resolution_display', '')).lower()
+            norm["codec"] = str(info.get('codec_display', '')).lower()
             effect_str = str(info.get('effect_display', '')).lower()
-            if 'dovi' in effect_str or 'dolby vision' in effect_str:
-                if 'p8' in effect_str: norm["effect_tier"] = 7
-                elif 'p7' in effect_str: norm["effect_tier"] = 6
-                elif 'p5' in effect_str: norm["effect_tier"] = 5
-                else: norm["effect_tier"] = 4
-            else:
-                norm["effect_tier"] = cls.EFFECT_TIER.get(effect_str, 1)
+        else:
+            norm["resolution"] = str(info.get('resolution', '')).lower()
+            norm["codec"] = str(info.get('codec', '')).lower()
+            effect_str = str(info.get('effect', '')).lower()
 
-            def _safe_parse_list(val):
-                if isinstance(val, list): return val
-                if isinstance(val, str):
-                    try:
-                        import ast
-                        parsed = ast.literal_eval(val)
-                        if isinstance(parsed, list): return parsed
-                    except:
-                        pass
-                return []
-                
+        # 2. 特效精准归一化 (映射为前端选项的标准名称)
+        if 'dovi' in effect_str or 'dv' in effect_str or 'dolby vision' in effect_str:
+            if 'p8' in effect_str: norm["effect"] = 'dovi p8'
+            elif 'p7' in effect_str: norm["effect"] = 'dovi p7'
+            elif 'p5' in effect_str: norm["effect"] = 'dovi p5'
+            else: norm["effect"] = 'dovi'
+        elif 'hdr10+' in effect_str: norm["effect"] = 'hdr10+'
+        elif 'hdr10' in effect_str: norm["effect"] = 'hdr10'
+        elif 'hdr' in effect_str: norm["effect"] = 'hdr'
+        else: norm["effect"] = 'sdr'
+
+        # 3. 语言与大小归一化
+        def _safe_parse_list(val):
+            if isinstance(val, list): return val
+            if isinstance(val, str):
+                try:
+                    import ast
+                    parsed = ast.literal_eval(val)
+                    if isinstance(parsed, list): return parsed
+                except: pass
+            return []
+            
+        if is_db_asset:
             raw_audio_langs = _safe_parse_list(info.get('audio_languages_raw', []))
             raw_sub_langs = _safe_parse_list(info.get('subtitle_languages_raw', []))
-            
-            norm["audio_langs"] = {cls._normalize_lang(a) for a in raw_audio_langs if a}
-            norm["sub_langs"] = {cls._normalize_lang(s) for s in raw_sub_langs if s}
             norm["size_gb"] = info.get('size_bytes', 0) / (1024**3)
         else:
-            # 解析 115/ffprobe 的 video_info 格式 (新文件)
-            res_str = str(info.get('resolution', '')).lower()
-            norm["res_tier"] = cls.RES_TIER.get(res_str, 0)
-            
-            codec_str = str(info.get('codec', '')).lower()
-            norm["codec_tier"] = max([v for k, v in cls.CODEC_TIER.items() if k in codec_str] + [0])
-            
-            effect_str = str(info.get('effect', '')).lower()
-            if 'dv' in effect_str or 'dovi' in effect_str:
-                if 'p8' in effect_str: norm["effect_tier"] = 7
-                elif 'p7' in effect_str: norm["effect_tier"] = 6
-                elif 'p5' in effect_str: norm["effect_tier"] = 5
-                else: norm["effect_tier"] = 4
-            else:
-                norm["effect_tier"] = cls.EFFECT_TIER.get(effect_str, 1)
-                
-            # ★ 严格读取由 ffprobe/中心缓存 提取的真实语言数组
-            # 修复 Bug：防止传入的是字符串形式的列表 (如 "['chi', 'eng']")
-            def _safe_parse_list(val):
-                if isinstance(val, list): return val
-                if isinstance(val, str):
-                    try:
-                        import ast
-                        parsed = ast.literal_eval(val)
-                        if isinstance(parsed, list): return parsed
-                    except:
-                        pass
-                return []
-                
             raw_audio_langs = _safe_parse_list(info.get('audio_langs', []))
             raw_sub_langs = _safe_parse_list(info.get('sub_langs', []))
-            
-            norm["audio_langs"] = {cls._normalize_lang(a) for a in raw_audio_langs if a}
-            norm["sub_langs"] = {cls._normalize_lang(s) for s in raw_sub_langs if s}
-            
             norm["size_gb"] = info.get('_file_size', 0) / (1024**3)
+            
+        norm["audio_langs"] = {cls._normalize_lang(a) for a in raw_audio_langs if a}
+        norm["sub_langs"] = {cls._normalize_lang(s) for s in raw_sub_langs if s}
 
         return norm
 
     @classmethod
     def _match_priority(cls, norm_info: dict, priority_rule: dict) -> tuple[bool, str]:
-        """检查标准化信息是否满足某一个优先级规则 (宁缺毋滥)"""
-        # 1. 分辨率
+        """★ 核心重构：严格白名单匹配逻辑 (宁缺毋滥)"""
+        
+        # 1. 分辨率 (白名单)
         req_res = priority_rule.get('resolution', [])
         if req_res:
-            req_tier = min([cls.RES_TIER.get(r.lower(), 0) for r in req_res])
-            if norm_info['res_tier'] < req_tier: return False, f"分辨率未达标)"
+            req_res_lower = [r.lower() for r in req_res]
+            file_res = norm_info['resolution']
+            match = False
+            for r in req_res_lower:
+                # 兼容 4K 和 2160p 的同义词
+                if r == file_res or (r in ['4k', '2160p'] and file_res in ['4k', '2160p']):
+                    match = True
+                    break
+            if not match: return False, f"分辨率未命中 ({file_res})"
             
-        # 2. 编码
+        # 2. 编码 (白名单)
         req_codec = priority_rule.get('codec', [])
         if req_codec:
-            req_tier = min([cls.CODEC_TIER.get(c.lower(), 0) for c in req_codec])
-            if norm_info['codec_tier'] < req_tier: return False, f"编码未达标)"
+            req_codec_lower = [c.lower() for c in req_codec]
+            file_codec = norm_info['codec']
+            match = False
+            for c in req_codec_lower:
+                # 兼容 hevc 10bit 这种带后缀的情况
+                if c in file_codec or file_codec in c: 
+                    match = True
+                    break
+                # 兼容同义词
+                if c in ['hevc', 'h265'] and ('hevc' in file_codec or 'h265' in file_codec): match = True
+                if c in ['avc', 'h264'] and ('avc' in file_codec or 'h264' in file_codec): match = True
+            if not match: return False, f"编码未命中 ({file_codec})"
             
-         # 3. 特效
+        # 3. 特效 (白名单)
         req_effect = priority_rule.get('effect', [])
         if req_effect:
-            # ★ 修复：如果规则要求了多个特效（比如同时勾了 P8 和 P7），只要满足其中最低的一个要求即可
-            req_tier = min([cls.EFFECT_TIER.get(e.lower(), 0) for e in req_effect])
+            req_effect_lower = [e.lower() for e in req_effect]
+            file_effect = norm_info['effect']
+            if file_effect not in req_effect_lower:
+                return False, f"特效未命中 ({file_effect})"
             
-            # ★ 核心：文件的实际特效层级 必须 大于等于 规则要求的最低层级
-            if norm_info['effect_tier'] < req_tier: 
-                return False, f"特效未达标)"
-            
-        # 4. 音轨 (宁缺毋滥：如果规则要求了，但文件没提取到，直接拦截！)
+        # 4. 音轨 (必须包含)
         req_audio = priority_rule.get('audio', [])
         if req_audio:
             if not norm_info['audio_langs']: return False, "未提取到音轨语言"
-            
-            # ★ 修复：将规则要求的语言也进行归一化，防止大小写或别名不匹配
             normalized_req_audio = {cls._normalize_lang(a) for a in req_audio}
             if not any(a in norm_info['audio_langs'] for a in normalized_req_audio): 
                 return False, f"缺少必须的音轨"
             
-        # 5. 字幕 (宁缺毋滥)
+        # 5. 字幕 (必须包含)
         req_sub = priority_rule.get('subtitle', [])
         if req_sub:
             if not norm_info['sub_langs']: return False, "未提取到字幕语言"
-            
-            # ★ 修复：将规则要求的语言也进行归一化
             normalized_req_sub = {cls._normalize_lang(s) for s in req_sub}
             if not any(s in norm_info['sub_langs'] for s in normalized_req_sub): 
                 return False, f"缺少必须的字幕"
@@ -181,7 +164,6 @@ class WashingService:
         new_video_info['_file_size'] = file_size
         norm_new = cls._normalize_info(new_video_info, is_db_asset=False)
         
-        # ★ 核心修复：精准映射底层 media_type 到数据库存储的类型
         db_media_type = 'Movie' if media_type.lower() == 'movie' else 'Series'
         
         # 1. 查找适用的规则组
@@ -191,7 +173,6 @@ class WashingService:
                 with conn.cursor() as cursor:
                     cursor.execute("SELECT * FROM washing_priority_groups WHERE media_type = %s ORDER BY sort_order ASC", (db_media_type,))
                     for row in cursor.fetchall():
-                        # ★ 核心修复：确保 JSONB 字段被正确解析为 Python 列表
                         cids = row.get('target_cids', [])
                         if isinstance(cids, str):
                             try: cids = json.loads(cids)
@@ -199,7 +180,6 @@ class WashingService:
                             
                         if not cids or str(target_cid) in cids:
                             rule_group = dict(row)
-                            # 顺手解析 priorities
                             priorities = rule_group.get('priorities', [])
                             if isinstance(priorities, str):
                                 try: priorities = json.loads(priorities)
@@ -250,7 +230,7 @@ class WashingService:
             if old_level < best_old_level:
                 best_old_level = old_level
 
-        # 6. 核心对比逻辑
+        # 6. 核心对比逻辑 (直接对比命中的优先级阶梯)
         if new_level < best_old_level:
             return 'REPLACE', f"新版(优先级{new_level}) 优于 旧版(优先级{best_old_level if best_old_level!=999 else '不合格'})，执行洗版替换"
         elif new_level == best_old_level:

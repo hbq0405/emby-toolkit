@@ -2766,6 +2766,7 @@ class SmartOrganizer:
 
         # 基于 SHA1 获取真实参数
         is_center_cached = False
+        real_info = None
         
         if not is_sub:
             sha1 = file_node.get('sha1') or file_node.get('sha')
@@ -2877,8 +2878,7 @@ class SmartOrganizer:
             )
             if not s_name: s_name = f"Season {season_num:02d}"
 
-        # ★ 返回值增加 s_name, video_info, has_real_info
-        return new_name, season_num, episode_num, s_name, is_center_cached, video_info, bool(real_info and not is_sub)
+        return new_name, season_num, episode_num, s_name, is_center_cached, video_info, bool(real_info)
 
     def _scan_files_recursively(self, cid, depth=0, max_depth=3, current_rel_path=""):
         all_files = []
