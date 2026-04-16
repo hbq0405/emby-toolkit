@@ -2027,17 +2027,16 @@ class SmartOrganizer:
         if codec == "truehd":
             return "TRUEHD Atmos" if "atmos" in profile_mix else "TRUEHD"
 
+        if codec == "eac3":
+            return "DDP Atmos" if "atmos" in profile_mix else "DDP"
+
         if codec == "dts":
-            if "ma" in profile_mix or "master" in profile_mix:
+            if "ma" in profile_mix or "master" in profile_mix or "xll" in profile_mix:
                 return "DTS-HD MA"
             if "hra" in profile_mix or "high resolution" in profile_mix:
                 return "DTS-HD HRA"
-            if "xll" in profile_mix:
-                return "DTS-HD MA"
             return "DTS"
 
-        if codec == "eac3":
-            return "DDP"
         if codec == "ac3":
             return "AC3"
         if codec == "aac":
@@ -2407,6 +2406,29 @@ class SmartOrganizer:
                     "SupportsExternalStream": False,
                     "ExtendedVideoSubTypeDescription": "None"
                 })
+
+        # 归一化默认轨道：避免 MKV 多条字幕都带 default flag，导致显示一堆“默认”
+        seen_default_by_type = {
+            "Audio": False,
+            "Subtitle": False
+        }
+
+        for stream in media_streams:
+            stream_type = stream.get("Type")
+
+            if stream_type not in seen_default_by_type:
+                continue
+
+            if stream.get("IsDefault"):
+                if seen_default_by_type[stream_type]:
+                    stream["IsDefault"] = False
+
+                    display_title = stream.get("DisplayTitle") or ""
+                    display_title = display_title.replace("默认 ", "").replace("(默认 ", "(").replace("默认", "")
+                    display_title = display_title.replace("  ", " ").strip()
+                    stream["DisplayTitle"] = display_title
+                else:
+                    seen_default_by_type[stream_type] = True
 
         if not media_streams:
             return None
