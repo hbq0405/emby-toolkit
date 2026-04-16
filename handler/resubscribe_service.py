@@ -113,13 +113,13 @@ class WashingService:
         req_res = priority_rule.get('resolution', [])
         if req_res:
             req_tier = min([cls.RES_TIER.get(r.lower(), 0) for r in req_res])
-            if norm_info['res_tier'] < req_tier: return False, f"分辨率未达标"
+            if norm_info['res_tier'] < req_tier: return False, f"分辨率未达标 (需要至少 {req_res}，实际 {norm_info['res_tier']})"
             
         # 2. 编码
         req_codec = priority_rule.get('codec', [])
         if req_codec:
             req_tier = min([cls.CODEC_TIER.get(c.lower(), 0) for c in req_codec])
-            if norm_info['codec_tier'] < req_tier: return False, f"编码未达标"
+            if norm_info['codec_tier'] < req_tier: return False, f"编码未达标 (需要至少 {req_codec}，实际 {norm_info['codec_tier']})"
             
          # 3. 特效
         req_effect = priority_rule.get('effect', [])
@@ -129,7 +129,7 @@ class WashingService:
             
             # ★ 核心：文件的实际特效层级 必须 大于等于 规则要求的最低层级
             if norm_info['effect_tier'] < req_tier: 
-                return False, f"特效未达标 (文件:Tier{norm_info['effect_tier']} < 规则:Tier{req_tier})"
+                return False, f"特效未达标 (需要至少 {req_effect}，实际 {norm_info['effect_tier']})"
             
         # 4. 音轨 (宁缺毋滥：如果规则要求了，但文件没提取到，直接拦截！)
         req_audio = priority_rule.get('audio', [])
@@ -139,7 +139,7 @@ class WashingService:
             # ★ 修复：将规则要求的语言也进行归一化，防止大小写或别名不匹配
             normalized_req_audio = {cls._normalize_lang(a) for a in req_audio}
             if not any(a in norm_info['audio_langs'] for a in normalized_req_audio): 
-                return False, f"缺少必须的音轨"
+                return False, f"缺少必须的音轨 语言 ({', '.join(req_audio)})"
             
         # 5. 字幕 (宁缺毋滥)
         req_sub = priority_rule.get('subtitle', [])
@@ -149,7 +149,7 @@ class WashingService:
             # ★ 修复：将规则要求的语言也进行归一化
             normalized_req_sub = {cls._normalize_lang(s) for s in req_sub}
             if not any(s in norm_info['sub_langs'] for s in normalized_req_sub): 
-                return False, f"缺少必须的字幕"
+                return False, f"缺少必须的字幕 语言 ({', '.join(req_sub)})"
             
         # 6. 文件大小
         min_size = priority_rule.get('min_size_gb')
@@ -168,7 +168,7 @@ class WashingService:
             if is_match:
                 return i + 1, f"命中优先级 {i + 1}"
             else:
-                fail_reasons.append(f"P{i+1}[{reason}]")
+                fail_reasons.append(f"优先级{i+1}[{reason}]")
         return 0, " | ".join(fail_reasons)
 
     @classmethod
