@@ -138,15 +138,24 @@ def _wait_for_items_recovery(processor, item_ids: list, max_retries=6, interval=
                 if item_details:
                     # ★★★ 核心修改：直接查找物理文件 ★★★
                     file_path = item_details.get("Path")
-                    if not file_path:
-                        media_sources = item_details.get("MediaSources", [])
-                        if media_sources:
-                            file_path = media_sources[0].get("Path")
+                    media_sources = item_details.get("MediaSources", [])
+                    if not file_path and media_sources:
+                        file_path = media_sources[0].get("Path")
                     
                     if file_path:
                         mediainfo_path = os.path.splitext(file_path)[0] + "-mediainfo.json"
                         if os.path.exists(mediainfo_path):
                             is_healed = True
+                            
+                    # ★★★ 补充检查：如果没有检测到物理文件，检查 MediaSources 是否有分辨率数据 ★★★
+                    if not is_healed and media_sources:
+                        for source in media_sources:
+                            for stream in source.get("MediaStreams", []):
+                                if stream.get("Type") == "Video" and (stream.get("Width") or stream.get("Height")):
+                                    is_healed = True
+                                    break
+                            if is_healed:
+                                break
                 
                 if is_healed:
                     logger.debug(f"    ✔ 项目 {eid} 已检测到媒体信息文件，移除监控队列。")
