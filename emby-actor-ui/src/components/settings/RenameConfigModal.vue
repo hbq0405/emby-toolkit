@@ -79,7 +79,7 @@
                 <n-radio-group v-model:value="config.conflict_mode">
                   <n-space vertical>
                     <n-radio value="replace">
-                      <b>替换</b>
+                      <b>洗版</b>
                       <div style="font-size: 12px; color: gray;">删除目标目录中同一集/同一电影的旧版本，移入新版本。</div>
                     </n-radio>
                     <n-radio value="keep_both">

@@ -3696,6 +3696,7 @@ class SmartOrganizer:
                 
                 # ★★★ 核心升级：调用阶梯洗版优先级服务 ★★★
                 if is_vid and conflict_mode == 'replace':
+                    logger.info(f"  ➜ [覆盖模式:洗版] 正在调用洗版规则评估文件: {new_name}")
                     # 重新提取一次 video_info，因为前面可能被覆盖了
                     video_info = self._extract_video_info(new_name)
                     
@@ -3748,9 +3749,11 @@ class SmartOrganizer:
                     
                     if is_conflict:
                         if conflict_mode == 'skip':
+                            logger.info(f"  ➜ [覆盖模式:跳过] 目标目录已存在同集/同电影，放弃处理: {new_name}")
                             unrecognized_fids.append(item.get('fid') or item.get('file_id'))
                             continue 
                         elif conflict_mode == 'keep_both':
+                            logger.info(f"  ➜ [覆盖模式:共存] 目标目录已存在同集/同电影，保留两者: {new_name}")
                             if new_name in existing_names: fids_to_delete.add(existing_names[new_name])
                             valid_items.append(item)
                     else:

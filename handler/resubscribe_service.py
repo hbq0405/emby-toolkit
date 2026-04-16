@@ -15,7 +15,7 @@ class WashingService:
     def _normalize_lang(cls, lang_str: str) -> str:
         """将各种语言标识统一归一化为标准 3 字母代码"""
         if not lang_str: return ""
-        lang_str = str(lang_str).lower()
+        lang_str = str(lang_str).lower().strip()
         if lang_str in ['chi', 'zho', 'zh', 'cn', 'tw', 'hk', 'chs', 'cht', '国语', '粤语', '简体', '繁体', '中文']: return 'chi'
         if lang_str in ['eng', 'en', '英语', '英文']: return 'eng'
         if lang_str in ['jpn', 'ja', 'jp', '日语', '日文']: return 'jpn'
@@ -136,16 +136,30 @@ class WashingService:
         new_video_info['_file_size'] = file_size
         norm_new = cls._normalize_info(new_video_info, is_db_asset=False)
         
+        # ★ 核心修复：精准映射底层 media_type 到数据库存储的类型
+        db_media_type = 'Movie' if media_type.lower() == 'movie' else 'Series'
+        
         # 1. 查找适用的规则组
         rule_group = None
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT * FROM washing_priority_groups WHERE media_type = %s ORDER BY sort_order ASC", (media_type.capitalize(),))
+                    cursor.execute("SELECT * FROM washing_priority_groups WHERE media_type = %s ORDER BY sort_order ASC", (db_media_type,))
                     for row in cursor.fetchall():
-                        cids = row['target_cids']
+                        # ★ 核心修复：确保 JSONB 字段被正确解析为 Python 列表
+                        cids = row.get('target_cids', [])
+                        if isinstance(cids, str):
+                            try: cids = json.loads(cids)
+                            except: cids = []
+                            
                         if not cids or str(target_cid) in cids:
-                            rule_group = row
+                            rule_group = dict(row)
+                            # 顺手解析 priorities
+                            priorities = rule_group.get('priorities', [])
+                            if isinstance(priorities, str):
+                                try: priorities = json.loads(priorities)
+                                except: priorities = []
+                            rule_group['priorities'] = priorities
                             break
         except Exception as e:
             logger.warning(f"  ➜ 获取洗版优先级规则失败: {e}")
@@ -166,7 +180,7 @@ class WashingService:
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    if media_type.lower() == 'tv' and season_num is not None and episode_num is not None:
+                    if db_media_type == 'Series' and season_num is not None and episode_num is not None:
                         cursor.execute("SELECT asset_details_json FROM media_metadata WHERE parent_series_tmdb_id = %s AND season_number = %s AND episode_number = %s AND item_type = 'Episode'", (str(tmdb_id), season_num, episode_num))
                     else:
                         cursor.execute("SELECT asset_details_json FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (str(tmdb_id),))

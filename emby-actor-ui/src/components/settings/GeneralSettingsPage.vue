@@ -629,7 +629,7 @@
                     <n-card :bordered="false" class="dashboard-card">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
-                          <span class="card-title">阶梯洗版优先级</span>
+                          <span class="card-title">洗版优先级</span>
                           <n-button secondary type="warning" @click="washingPriorityModalRef?.open()">
                             <template #icon><n-icon :component="LayersIcon" /></template>
                             配置优先级
@@ -637,7 +637,7 @@
                         </div>
                       </template>
                       <n-alert type="warning" :show-icon="true">
-                        定义入库与洗版的阶梯标准（如：优先级1必须原盘，优先级2允许WEB-DL）。新文件入库时将自动对比库内旧版，实现平滑升级。
+                        定义入库与洗版的标准（如：优先级1必须原盘，优先级2允许WEB-DL）。新文件入库时将自动对比库内旧版，实现平滑升级。
                       </n-alert>
                     </n-card>
 
