@@ -2588,11 +2588,31 @@ class SmartOrganizer:
                 # ★ 提取真实的音轨和字幕语言数组，供洗版裁判使用
                 info['audio_langs'] = []
                 info['sub_langs'] = []
+                
+                def _extract_lang_from_stream(stream_dict):
+                    # 1. 优先取 Language 字段
+                    lang = stream_dict.get("Language")
+                    if lang: return lang
+                    
+                    # 2. 其次从 Title 或 DisplayTitle 中模糊匹配
+                    text_to_search = f"{stream_dict.get('Title', '')} {stream_dict.get('DisplayTitle', '')}".lower()
+                    if 'chi' in text_to_search or 'zh' in text_to_search or '中' in text_to_search or '国语' in text_to_search or '粤语' in text_to_search:
+                        return 'chi'
+                    if 'eng' in text_to_search or 'en' in text_to_search or '英' in text_to_search:
+                        return 'eng'
+                    if 'jpn' in text_to_search or 'ja' in text_to_search or '日' in text_to_search:
+                        return 'jpn'
+                    if 'kor' in text_to_search or 'ko' in text_to_search or '韩' in text_to_search:
+                        return 'kor'
+                    return None
+
                 for s in streams:
-                    if s.get("Type") == "Audio" and s.get("Language"):
-                        info['audio_langs'].append(s.get("Language"))
-                    elif s.get("Type") == "Subtitle" and s.get("Language"):
-                        info['sub_langs'].append(s.get("Language"))
+                    if s.get("Type") == "Audio":
+                        l = _extract_lang_from_stream(s)
+                        if l: info['audio_langs'].append(l)
+                    elif s.get("Type") == "Subtitle":
+                        l = _extract_lang_from_stream(s)
+                        if l: info['sub_langs'].append(l)
 
                 if audio_streams:
                     audio_tags = []

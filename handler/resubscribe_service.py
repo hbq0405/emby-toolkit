@@ -49,8 +49,22 @@ class WashingService:
             else:
                 norm["effect_tier"] = cls.EFFECT_TIER.get(effect_str, 1)
 
-            norm["audio_langs"] = {cls._normalize_lang(a) for a in info.get('audio_languages_raw', [])}
-            norm["sub_langs"] = {cls._normalize_lang(s) for s in info.get('subtitle_languages_raw', [])}
+            def _safe_parse_list(val):
+                if isinstance(val, list): return val
+                if isinstance(val, str):
+                    try:
+                        import ast
+                        parsed = ast.literal_eval(val)
+                        if isinstance(parsed, list): return parsed
+                    except:
+                        pass
+                return []
+                
+            raw_audio_langs = _safe_parse_list(info.get('audio_languages_raw', []))
+            raw_sub_langs = _safe_parse_list(info.get('subtitle_languages_raw', []))
+            
+            norm["audio_langs"] = {cls._normalize_lang(a) for a in raw_audio_langs if a}
+            norm["sub_langs"] = {cls._normalize_lang(s) for s in raw_sub_langs if s}
             norm["size_gb"] = info.get('size_bytes', 0) / (1024**3)
         else:
             # 解析 115/ffprobe 的 video_info 格式 (新文件)
@@ -70,8 +84,23 @@ class WashingService:
                 norm["effect_tier"] = cls.EFFECT_TIER.get(effect_str, 1)
                 
             # ★ 严格读取由 ffprobe/中心缓存 提取的真实语言数组
-            norm["audio_langs"] = {cls._normalize_lang(a) for a in info.get('audio_langs', [])}
-            norm["sub_langs"] = {cls._normalize_lang(s) for s in info.get('sub_langs', [])}
+            # 修复 Bug：防止传入的是字符串形式的列表 (如 "['chi', 'eng']")
+            def _safe_parse_list(val):
+                if isinstance(val, list): return val
+                if isinstance(val, str):
+                    try:
+                        import ast
+                        parsed = ast.literal_eval(val)
+                        if isinstance(parsed, list): return parsed
+                    except:
+                        pass
+                return []
+                
+            raw_audio_langs = _safe_parse_list(info.get('audio_langs', []))
+            raw_sub_langs = _safe_parse_list(info.get('sub_langs', []))
+            
+            norm["audio_langs"] = {cls._normalize_lang(a) for a in raw_audio_langs if a}
+            norm["sub_langs"] = {cls._normalize_lang(s) for s in raw_sub_langs if s}
             
             norm["size_gb"] = info.get('_file_size', 0) / (1024**3)
 
