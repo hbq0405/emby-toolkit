@@ -2851,6 +2851,36 @@ class SmartOrganizer:
         # ★ 返回值增加 s_name, video_info, has_real_info
         return new_name, season_num, episode_num, s_name, is_center_cached, video_info, bool(real_info if enable_smart_rename and not is_sub else False)
 
+    def _is_rule_applicable(self, rule):
+        """判断质检规则是否适用于当前媒体"""
+        scope_rules = rule.get('scope_rules') or []
+        if not scope_rules:
+            return True
+            
+        for scope in scope_rules:
+            field = scope.get('field')
+            op = scope.get('operator')
+            val = scope.get('value')
+            
+            if not val: continue
+            
+            if field == 'genres':
+                tmdb_genres = [g.get('name') for g in self.details.get('genres', []) if isinstance(g, dict)]
+                if op == 'is_one_of' and not any(v in tmdb_genres for v in val): return False
+                if op == 'is_none_of' and any(v in tmdb_genres for v in val): return False
+            elif field == 'release_year':
+                year = self.details.get('year', 0)
+                if op == 'eq' and year != val: return False
+                if op == 'gte' and year < val: return False
+                if op == 'lte' and year > val: return False
+            elif field == 'rating':
+                rating = self.details.get('vote_average', 0)
+                if op == 'eq' and rating != val: return False
+                if op == 'gte' and rating < val: return False
+                if op == 'lte' and rating > val: return False
+                
+        return True
+
     def _evaluate_inbound_quality(self, video_info, file_size, rule):
         """入库质检评估逻辑"""
         reasons = []
@@ -3159,6 +3189,24 @@ class SmartOrganizer:
                     # 同步更新 dest_parent_cid，防止后面创建目录时用错
                     dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
 
+        # =================================================================
+        # ★ 预取入库质检规则 (从 resubscribe_rules 表获取)
+        # =================================================================
+        inbound_rules = []
+        try:
+            from database.connection import get_db_connection
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT * FROM resubscribe_rules WHERE enabled = TRUE AND inbound_quality_check_enabled = TRUE ORDER BY sort_order ASC")
+                    inbound_rules = cursor.fetchall()
+        except Exception as e:
+            logger.warning(f"  ➜ 获取入库质检规则失败: {e}")
+            
+        applicable_inbound_rule = None
+        for rule in inbound_rules:
+            if self._is_rule_applicable(rule):
+                applicable_inbound_rule = rule
+                break
         # =================================================================
         # 1. 拦截合集包 (Collection Breakdown) - 仅限单项传入时触发
         # =================================================================
@@ -3624,12 +3672,11 @@ class SmartOrganizer:
                 # =================================================================
                 # ★★★ 入库质检逻辑 (仅洗版模式有效) ★★★
                 # =================================================================
-                matched_rule = next((r for r in self.rules if str(r.get('cid')) == str(target_cid)), None)
                 is_vid = ext in known_video_exts
                 
-                if matched_rule and matched_rule.get('inbound_quality_check_enabled') and is_vid:
+                if applicable_inbound_rule and is_vid:
                     # 1. 检查是否要求必须提取到真实媒体信息
-                    if matched_rule.get('inbound_abort_on_probe_fail') and not has_real_info:
+                    if applicable_inbound_rule.get('inbound_abort_on_probe_fail') and not has_real_info:
                         logger.warning(f"  ➜ [入库质检] 媒体信息提取失败，拒绝入库: {file_name}")
                         unqualified_items.append({
                             'fid': fid, 'name': file_name, 'reason': "媒体信息提取失败", 
@@ -3639,10 +3686,10 @@ class SmartOrganizer:
                         continue
                     
                     # 2. 执行各项指标评估
-                    reasons = self._evaluate_inbound_quality(video_info, file_size, matched_rule)
+                    reasons = self._evaluate_inbound_quality(video_info, file_size, applicable_inbound_rule)
                     if reasons:
                         reason_str = "; ".join(reasons)
-                        logger.warning(f"  ➜ [入库质检] 不合格，拒绝入库: {file_name} -> {reason_str}")
+                        logger.warning(f"  ➜ [入库质检] 命中规则 [{applicable_inbound_rule.get('name')}] 不合格，拒绝入库: {file_name} -> {reason_str}")
                         unqualified_items.append({
                             'fid': fid, 'name': file_name, 'reason': reason_str, 
                             'pc': file_item.get('pc') or file_item.get('pick_code'), 'season_num': season_num
