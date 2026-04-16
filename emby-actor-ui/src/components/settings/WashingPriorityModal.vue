@@ -103,10 +103,10 @@
                       <n-select v-model:value="priority.effect" multiple tag :options="effectOptions" placeholder="特效 (如 DoVi P8)" @update:value="saveGroups" />
                     </n-gi>
                     <n-gi>
-                      <n-select v-model:value="priority.audio" multiple tag :options="langOptions" placeholder="必须包含的音轨 (如 chi)" @update:value="saveGroups" />
+                      <n-select v-model:value="priority.audio" multiple tag :options="audioOptions" placeholder="必须包含的音轨 (如 chi)" @update:value="saveGroups" />
                     </n-gi>
                     <n-gi>
-                      <n-select v-model:value="priority.subtitle" multiple tag :options="langOptions" placeholder="必须包含的字幕 (如 chi)" @update:value="saveGroups" />
+                      <n-select v-model:value="priority.subtitle" multiple tag :options="subOptions" placeholder="必须包含的字幕 (如 chi)" @update:value="saveGroups" />
                     </n-gi>
                     <n-gi>
                       <!-- 占位，保持布局对称 -->
@@ -141,7 +141,7 @@
 <script setup>
 import { ref, computed } from 'vue';
 import axios from 'axios';
-import { useMessage } from 'naive-ui';
+import { c, useMessage } from 'naive-ui';
 import draggable from 'vuedraggable';
 import { Add as AddIcon, Menu as MenuIcon, TrashOutline as TrashIcon } from '@vicons/ionicons5';
 
@@ -159,8 +159,8 @@ const activeGroup = computed(() => groups.value.find(g => g.id === activeGroupId
 const resOptions = [{label:'4K/2160p', value:'4k'}, {label:'1080p', value:'1080p'}, {label:'720p', value:'720p'}];
 const codecOptions = [{label:'HEVC/H.265', value:'hevc'}, {label:'AVC/H.264', value:'avc'}];
 const effectOptions = [{label:'DoVi P8', value:'dovi_p8'}, {label:'DoVi P7', value:'dovi_p7'}, {label:'DoVi P5', value:'dovi_p5'}, {label:'HDR10+', value:'hdr10+'}, {label:'HDR', value:'hdr'}, {label:'SDR', value:'sdr'}];
-const langOptions = [{label:'中文 (chi)', value:'chi'}, {label:'英文 (eng)', value:'eng'}, {label:'日文 (jpn)', value:'jpn'}, {label:'韩文 (kor)', value:'kor'}];
-
+const audioOptions = [{label:'国语', value:'chi'}, {label:'英语', value:'eng'}, {label:'日语', value:'jpn'}, {label:'韩语', value:'kor'}];
+const subOptions = [{label:'中文', value:'chi'}, {label:'英文', value:'eng'}, {label:'日文', value:'jpn'}, {label:'韩文', value:'kor'}];
 const open = async () => {
   showModal.value = true;
   loading.value = true;
