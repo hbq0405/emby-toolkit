@@ -1920,7 +1920,7 @@ class SmartOrganizer:
                 return None
 
             if not silent_log:
-                logger.info(f"  ➜ [ffprobe兜底] 成功生成 Emby 标准媒体信息 -> {original_name}")
+                logger.info(f"  ➜ [ffprobe兜底] 成功生成媒体信息 -> {original_name}")
 
             return emby_json
 
