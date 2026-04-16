@@ -171,6 +171,75 @@ class MediaProcessor:
                     pass
 
         return None, None
+    
+    # -- [追更补洞专用] 从文件路径提取电影版本文件列表 --
+    def _collect_movie_version_files_from_dir(self, media_path: str) -> List[str]:
+        """
+        实时监控电影 NFO 专用：
+        给定一个代表电影文件，自动收集同目录下的其它电影版本文件，
+        用于为多版本电影生成同名 .nfo。
+
+        注意：
+        - 只扫描当前目录，不递归，避免误扫 Extras / Behind the Scenes 等子目录。
+        - 跳过明显的样片、预告、花絮、字幕、mediainfo 等非正片文件。
+        - 跳过 SxxEyy 文件，避免剧集被误判成电影多版本。
+        """
+        if not media_path:
+            return []
+
+        movie_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
+        if not movie_dir or not os.path.isdir(movie_dir):
+            return [media_path] if os.path.isfile(media_path) else []
+
+        valid_exts = {
+            ".mp4", ".mkv", ".avi", ".ts", ".iso", ".rmvb", ".strm", ".mov", ".m2ts", ".webm"
+        }
+
+        # 明显不是正片的文件名关键词
+        skip_pattern = re.compile(
+            r"(^|[\s._\-\[\]()])"
+            r"(sample|trailer|trailers|preview|teaser|extra|extras|behind|featurette|"
+            r"花絮|预告|样片|片花|彩蛋|特辑|访谈)"
+            r"($|[\s._\-\[\]()])",
+            re.IGNORECASE
+        )
+
+        result = []
+
+        try:
+            for filename in os.listdir(movie_dir):
+                full_path = os.path.join(movie_dir, filename)
+                if not os.path.isfile(full_path):
+                    continue
+
+                stem, ext = os.path.splitext(filename)
+                ext = ext.lower()
+
+                if ext not in valid_exts:
+                    continue
+
+                if filename.startswith("."):
+                    continue
+
+                # 防止电影分支误扫剧集文件
+                if re.search(r"[sS]\d{1,4}[eE]\d{1,4}", filename):
+                    continue
+
+                # 跳过明显非正片
+                if skip_pattern.search(filename):
+                    continue
+
+                result.append(full_path)
+
+        except Exception as e:
+            logger.warning(f"  ➜ [元数据写入] 扫描电影多版本文件失败: {e}")
+            return [media_path] if os.path.isfile(media_path) else []
+
+        # 至少保证代表文件自己在里面
+        if os.path.isfile(media_path) and media_path not in result:
+            result.append(media_path)
+
+        return sorted(set(result))
 
     # -- [追更补洞专用] 从 TMDb 补齐连载季缓存 --
     def _patch_ongoing_series_cache_from_tmdb(
@@ -386,7 +455,7 @@ class MediaProcessor:
                 
                 if current_filename in known_files:
                     logger.info(f"  ➜ [实时监控] 文件已完美入库 ({current_filename})，直接跳过。")
-                    return folder_path # 即使跳过处理，也返回路径以便后续刷新检查
+                    return file_path
             except Exception as e:
                 logger.warning(f"  ➜ [实时监控] 查重失败，将继续常规流程: {e}")
 
@@ -786,16 +855,24 @@ class MediaProcessor:
             # 步骤 6: 通知 Emby 刷新 (可选)
             # =========================================================
             
+            # 电影多版本：代表文件处理完成后，同目录其它版本也应该一起通知 Emby。
+            notify_paths = [file_path]
+            if item_type == "Movie":
+                movie_files = self._collect_movie_version_files_from_dir(file_path)
+                if movie_files:
+                    notify_paths = movie_files
+
             if not skip_refresh:
-                logger.info(f"  ➜ [实时监控] 极速通知 Emby 单文件入库: {os.path.basename(file_path)}")
-                emby.notify_emby_file_changes([file_path], self.emby_url, self.emby_api_key)
+                if len(notify_paths) == 1:
+                    logger.info(f"  ➜ [实时监控] 极速通知 Emby 单文件入库: {os.path.basename(notify_paths[0])}")
+                else:
+                    logger.info(f"  ➜ [实时监控] 极速通知 Emby 电影多版本入库: {len(notify_paths)} 个文件")
+
+                emby.notify_emby_file_changes(notify_paths, self.emby_url, self.emby_api_key)
                 logger.info(f"  ➜ [实时监控] 预处理完成，Emby 将进行秒级精准入库...")
-            else:
-                pass
-                # logger.info(f"  ➜ [实时监控] 缓存已生成，等待批量极速通知...")
-            
-            # ★★★ 核心修改：直接返回具体的文件路径，不再返回父目录 ★★★
-            return file_path
+
+            # 批量模式下返回所有需要通知的文件
+            return notify_paths if item_type == "Movie" else file_path
 
         except Exception as e:
             logger.error(f"  ➜ [实时监控] 处理文件 {file_path} 时发生错误: {e}", exc_info=True)
@@ -822,7 +899,10 @@ class MediaProcessor:
                 # 现在返回的是具体的文件路径
                 processed_file = self.process_file_actively(file_path, skip_refresh=True)
                 if processed_file:
-                    valid_files_to_notify.add(processed_file)
+                    if isinstance(processed_file, (list, tuple, set)):
+                        valid_files_to_notify.update([p for p in processed_file if p])
+                    else:
+                        valid_files_to_notify.add(processed_file)
             except Exception as e:
                 logger.error(f"  ➜ [实时监控] 处理文件 '{file_path}' 失败: {e}")
 
@@ -4359,11 +4439,27 @@ class MediaProcessor:
         try:
             if item_type == "Movie":
                 nfo_content = nfo_builder.build_movie_nfo(data_to_write, cast_to_write)
-                nfo_path = os.path.splitext(media_path)[0] + ".nfo"
-                if _write_nfo_if_changed(nfo_path, nfo_content):
-                    logger.info(f"  ➜ 成功写入电影 NFO: {nfo_path}")
-                else:
-                    logger.debug(f"  ➜ 电影 NFO 内容未变，跳过写入: {nfo_path}")
+
+                movie_files = self._collect_movie_version_files_from_dir(media_path)
+                if not movie_files:
+                    movie_files = [media_path]
+
+                generated_count = 0
+                skipped_count = 0
+
+                for movie_file in movie_files:
+                    nfo_path = os.path.splitext(movie_file)[0] + ".nfo"
+                    if _write_nfo_if_changed(nfo_path, nfo_content):
+                        generated_count += 1
+                        logger.info(f"  ➜ 成功写入电影 NFO: {nfo_path}")
+                    else:
+                        skipped_count += 1
+                        logger.debug(f"  ➜ 电影 NFO 内容未变，跳过写入: {nfo_path}")
+
+                if len(movie_files) > 1:
+                    logger.info(
+                        f"  ➜ 电影多版本 NFO 生成完成：实际更新 {generated_count} 个，跳过 {skipped_count} 个未变更。"
+                    )
 
             elif item_type == "Series":
                 nfo_path = os.path.join(series_root_dir, "tvshow.nfo")
