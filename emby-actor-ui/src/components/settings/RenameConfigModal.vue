@@ -95,12 +95,6 @@
               </n-form-item>
               <n-divider style="margin: 12px 0;" />
 
-              <n-form-item label="智能重命名">
-                <n-switch v-model:value="config.enable_smart_rename" />
-                <template #feedback>
-                  <span style="font-size: 12px; color: gray;">开启后将依次通过本地缓存->中心服务器->ffprobe方式查询媒体信息补齐缺失的参数。</span>
-                </template>
-              </n-form-item>
               <n-form-item label="STRM 链接格式">
                 <n-radio-group v-model:value="config.strm_url_fmt">
                   <n-space vertical>
@@ -187,7 +181,6 @@ const saving = ref(false);
 // 默认配置
 const config = ref({
   keep_original_name: false,
-  enable_smart_rename: true,
   conflict_mode: 'replace',
   main_dir_format: ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'],
   season_dir_format: ['season_name_en'],

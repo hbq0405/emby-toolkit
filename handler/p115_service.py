@@ -2495,6 +2495,7 @@ class SmartOrganizer:
                         raw_json = resp[sha1]
                         is_center = True
                         data_source = "中心服务器(单次)"
+                        P115CacheManager.save_mediainfo_cache(sha1, raw_json)
             except Exception:
                 pass
 
@@ -2763,11 +2764,10 @@ class SmartOrganizer:
             search_name = f"{name_body[:-len(lang_suffix)]}.mkv"
         video_info = self._extract_video_info(search_name)
 
-        # ★★★ 神医降维打击：基于 SHA1 获取真实参数并覆盖猜测 ★★★
-        enable_smart_rename = cfg.get('enable_smart_rename', False)
+        # 基于 SHA1 获取真实参数
         is_center_cached = False
         
-        if not is_sub and enable_smart_rename:
+        if not is_sub:
             sha1 = file_node.get('sha1') or file_node.get('sha')
             if sha1:
                 real_info, is_center_cached = self._fetch_and_parse_mediainfo(
@@ -3361,75 +3361,80 @@ class SmartOrganizer:
         pre_fetched_mediainfo = {}
         local_pre_fetched_mediainfo = {} # ★ 新增：本地预获取字典
         
-        if cfg.get('enable_smart_rename', False) and not keep_original:
-            video_sha1s = []
-            for file_item in candidates:
-                file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
-                ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
-                if ext in known_video_exts:
-                    sha1 = file_item.get('sha1') or file_item.get('sha')
-                    
-                    # =========================================================
-                    # ★ 核心修复：在收集阶段，如果发现缺失 SHA1，提前主动请求补齐！
-                    # =========================================================
-                    if not sha1:
-                        fid = file_item.get('fid') or file_item.get('file_id')
-                        if fid:
-                            try:
-                                info_res = self.client.fs_get_info(fid)
-                                if info_res.get('state') and info_res.get('data'):
-                                    sha1 = info_res['data'].get('sha1')
-                                    if sha1:
-                                        file_item['sha1'] = sha1 # 存回字典，供后续主循环直接使用
-                            except Exception:
-                                pass
-                                
-                    if sha1: 
-                        video_sha1s.append(sha1)
-            
-            if video_sha1s:
-                # 先查本地缓存，剔除已有的，只查缺失的
-                local_cached_sha1s = set()
-                try:
-                    from database.connection import get_db_connection
-                    with get_db_connection() as conn:
-                        with conn.cursor() as cursor:
-                            # ★ 核心优化：直接把 json 也查出来放进内存！
-                            cursor.execute("SELECT sha1, mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", (list(video_sha1s),))
-                            for row in cursor.fetchall():
-                                local_cached_sha1s.add(row['sha1'])
-                                if row['mediainfo_json']:
-                                    local_pre_fetched_mediainfo[row['sha1']] = row['mediainfo_json'] if isinstance(row['mediainfo_json'], list) else json.loads(row['mediainfo_json'])
-                except Exception: pass
+        # ★ 核心修复：移除开关限制，强制批量预取真实媒体信息
+        video_sha1s = []
+        for file_item in candidates:
+            file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
+            ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
+            if ext in known_video_exts:
+                sha1 = file_item.get('sha1') or file_item.get('sha')
                 
-                missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
-                if missing_sha1s:
-                    req_count = len(missing_sha1s)
-                    logger.info(f"  ➜ [批量查询] 准备向中心服务器查询 {req_count} 个文件的媒体信息...")
-                    try:
-                        import extensions
-                        processor = extensions.media_processor_instance
-                        if processor and getattr(processor, 'p115_center', None):
-                            resp = processor.p115_center.download_emby_mediainfo_data(missing_sha1s)
+                # =========================================================
+                # ★ 核心修复：在收集阶段，如果发现缺失 SHA1，提前主动请求补齐！
+                # =========================================================
+                if not sha1:
+                    fid = file_item.get('fid') or file_item.get('file_id')
+                    if fid:
+                        try:
+                            info_res = self.client.fs_get_info(fid)
+                            if info_res.get('state') and info_res.get('data'):
+                                sha1 = info_res['data'].get('sha1')
+                                if sha1:
+                                    file_item['sha1'] = sha1 # 存回字典，供后续主循环直接使用
+                        except Exception:
+                            pass
                             
-                            if isinstance(resp, dict):
-                                # ★ 核心优化：过滤掉可能返回的空值/None，只统计真正有数据的命中项
-                                valid_hits = {k: v for k, v in resp.items() if v}
-                                hit_count = len(valid_hits)
+                if sha1: 
+                    video_sha1s.append(sha1)
+        
+        if video_sha1s:
+            # 先查本地缓存，剔除已有的，只查缺失的
+            local_cached_sha1s = set()
+            try:
+                from database.connection import get_db_connection
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        # ★ 核心优化：直接把 json 也查出来放进内存！
+                        cursor.execute("SELECT sha1, mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", (list(video_sha1s),))
+                        for row in cursor.fetchall():
+                            local_cached_sha1s.add(row['sha1'])
+                            if row['mediainfo_json']:
+                                local_pre_fetched_mediainfo[row['sha1']] = row['mediainfo_json'] if isinstance(row['mediainfo_json'], list) else json.loads(row['mediainfo_json'])
+            except Exception: pass
+            
+            missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
+            if missing_sha1s:
+                req_count = len(missing_sha1s)
+                logger.info(f"  ➜ [批量查询] 准备向中心服务器查询 {req_count} 个文件的媒体信息...")
+                try:
+                    import extensions
+                    processor = extensions.media_processor_instance
+                    if processor and getattr(processor, 'p115_center', None):
+                        resp = processor.p115_center.download_emby_mediainfo_data(missing_sha1s)
+                        
+                        if isinstance(resp, dict):
+                            # ★ 核心优化：过滤掉可能返回的空值/None，只统计真正有数据的命中项
+                            valid_hits = {k: v for k, v in resp.items() if v}
+                            hit_count = len(valid_hits)
+                            
+                            if hit_count > 0:
+                                pre_fetched_mediainfo = valid_hits
+                                # ★ 核心修复：批量查询中心服务器后，立即写入本地缓存！
+                                for k_sha1, v_json in valid_hits.items():
+                                    P115CacheManager.save_mediainfo_cache(k_sha1, v_json)
+                                    local_pre_fetched_mediainfo[k_sha1] = v_json
                                 
-                                if hit_count > 0:
-                                    pre_fetched_mediainfo = valid_hits
-                                    if hit_count == req_count:
-                                        logger.info(f"  ➜ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
-                                    else:
-                                        logger.info(f"  ➜ [批量查询] 部分命中：成功获取 {hit_count}/{req_count} 个文件的媒体信息。")
+                                if hit_count == req_count:
+                                    logger.info(f"  ➜ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
                                 else:
-                                    logger.info(f"  ➜ [批量查询] 中心服务器暂无这 {req_count} 个文件的媒体信息。")
+                                    logger.info(f"  ➜ [批量查询] 部分命中：成功获取 {hit_count}/{req_count} 个文件的媒体信息。")
                             else:
-                                logger.warning(f"  ➜ [批量查询] 中心服务器返回数据格式异常。")
-                                
-                    except Exception as e:
-                        logger.warning(f"  ➜ [批量查询] 中心服务器查询失败: {e}")
+                                logger.info(f"  ➜ [批量查询] 中心服务器暂无这 {req_count} 个文件的媒体信息。")
+                        else:
+                            logger.warning(f"  ➜ [批量查询] 中心服务器返回数据格式异常。")
+                            
+                except Exception as e:
+                    logger.warning(f"  ➜ [批量查询] 中心服务器查询失败: {e}")
 
         # 确保 allowed_exts 有兜底，防止用户清空列表导致报错
         if not allowed_exts:
@@ -3535,8 +3540,16 @@ class SmartOrganizer:
                 s_name = None
                 is_center_cached = False
                 real_target_cid = final_home_cid
-                video_info = {}
                 has_real_info = False
+                
+                # 即使保留原名，也要提取真实参数供洗版使用
+                video_info = self._extract_video_info(file_name)
+                if ext in known_video_exts:
+                    if file_sha1:
+                        real_info, is_center_cached = self._fetch_and_parse_mediainfo(file_sha1, video_info, pre_fetched_mediainfo, local_pre_fetched_mediainfo, file_node=file_item, silent_log=True)
+                        if real_info:
+                            video_info.update(real_info)
+                            has_real_info = True
                 
                 # 1:1 复刻原始目录架构
                 rel_path = file_item.get('rel_path', '')
@@ -3643,6 +3656,7 @@ class SmartOrganizer:
             file_item['_episode_num'] = episode_num
             file_item['_s_name'] = s_name
             file_item['_is_center_cached'] = is_center_cached
+            file_item['_video_info'] = video_info
             
             if real_target_cid not in move_groups:
                 move_groups[real_target_cid] = []
@@ -3717,13 +3731,14 @@ class SmartOrganizer:
                 # ★★★ 核心升级：调用阶梯洗版优先级服务 ★★★
                 if is_vid and conflict_mode == 'replace':
                     logger.debug(f"  ➜ [覆盖模式:洗版] 正在调用洗版规则评估文件: {new_name}")
-                    # 重新提取一次 video_info，因为前面可能被覆盖了
-                    video_info = self._extract_video_info(new_name)
+                    
+                    # ★ 核心修复：直接使用前面提取的真实 video_info，绝不靠文件名瞎猜！
+                    video_info = item.get('_video_info') or self._extract_video_info(new_name)
                     
                     action, reason = WashingService.decide_washing_action(
                         new_video_info=video_info,
                         file_size=file_size,
-                        target_cid=target_cid, # ★ 核心修复：使用外层的分类目录 CID，而不是最终的子目录 CID
+                        target_cid=target_cid,
                         media_type=self.media_type,
                         tmdb_id=self.tmdb_id,
                         season_num=s_num,
