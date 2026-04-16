@@ -2013,7 +2013,7 @@ class SmartOrganizer:
 
         # 4. 最终兜底：本地和中心服务器都没有时，直接用 ffprobe 解析 115 直链
         if not raw_json and file_node:
-            logger.info(f"  ➜ [ffprobe兜底] 尝试用 ffprobe 解析媒体信息 -> {file_node.original_name}")
+            logger.info(f"  ➜ [ffprobe兜底] 尝试用 ffprobe 解析媒体信息")
             raw_json = self._probe_mediainfo_with_ffprobe(file_node, sha1=sha1, silent_log=silent_log)
             if raw_json:
                 data_source = "ffprobe兜底"
