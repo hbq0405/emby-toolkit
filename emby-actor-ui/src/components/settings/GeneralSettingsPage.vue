@@ -625,7 +625,23 @@
                       </n-alert>
                     </n-card>
 
-                    <!-- ★ 卡片 2：自定义重命名 (移到这里) -->
+                    <!-- 卡片 2：阶梯洗版优先级 -->
+                    <n-card :bordered="false" class="dashboard-card">
+                      <template #header>
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <span class="card-title">阶梯洗版优先级</span>
+                          <n-button secondary type="warning" @click="washingPriorityModalRef?.open()">
+                            <template #icon><n-icon :component="LayersIcon" /></template>
+                            配置优先级
+                          </n-button>
+                        </div>
+                      </template>
+                      <n-alert type="warning" :show-icon="true">
+                        定义入库与洗版的阶梯标准（如：优先级1必须原盘，优先级2允许WEB-DL）。新文件入库时将自动对比库内旧版，实现平滑升级。
+                      </n-alert>
+                    </n-card>
+
+                    <!-- ★ 卡片 3：自定义重命名 (移到这里) -->
                     <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -643,7 +659,7 @@
                       </n-alert>
                     </n-card>
 
-                    <!-- ★ 卡片 3：独立音乐库管理 -->
+                    <!-- ★ 卡片 4：独立音乐库管理 -->
                     <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -661,7 +677,7 @@
                       </n-alert>
                     </n-card>
 
-                    <!-- ★ 卡片 4：第三方 STRM 兼容 -->
+                    <!-- ★ 卡片 5：第三方 STRM 兼容 -->
                     <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -1462,6 +1478,8 @@
       ref="ruleManagerRef" 
       @open-folder-selector="(context, cid) => openFolderSelector(context, cid)" 
     />
+    <!-- ★ 引入阶梯洗版优先级模态框 -->
+    <WashingPriorityModal ref="washingPriorityModalRef" />
     <!-- 订阅源配置模态框 -->
     <MoviePilotConfigModal ref="mpModalRef" />
     <HDHiveConfigModal ref="hdhiveModalRef" />
@@ -1884,11 +1902,13 @@ import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
 import MusicManagerModal from './MusicManagerModal.vue';
 import RuleManagerModal from './RuleManagerModal.vue'; 
+import WashingPriorityModal from './WashingPriorityModal.vue';
 import axios from 'axios';
 import MoviePilotConfigModal from './MoviePilotConfigModal.vue';
 import HDHiveConfigModal from './HDHiveConfigModal.vue';
 
 const mpModalRef = ref(null);
+const washingPriorityModalRef = ref(null);
 const hdhiveModalRef = ref(null);
 const tgMonitorModalRef = ref(null);
 const renameModalRef = ref(null);

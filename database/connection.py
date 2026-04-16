@@ -295,6 +295,18 @@ def init_db():
                     )
                 """)
 
+                logger.trace("  ➜ 正在创建 'washing_priority_groups' 表 (阶梯洗版优先级)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS washing_priority_groups (
+                        id SERIAL PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        media_type TEXT NOT NULL, -- 'Movie' 或 'Series'
+                        target_cids JSONB DEFAULT '[]'::jsonb, -- 适用的 115 目录 CID
+                        priorities JSONB DEFAULT '[]'::jsonb, -- 优先级规则数组
+                        sort_order INTEGER DEFAULT 0
+                    )
+                """)
+
                 logger.trace("  ➜ 正在创建 'resubscribe_rules' 表 (多规则洗版)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS resubscribe_rules (
@@ -334,9 +346,7 @@ def init_db():
                         filter_rating_ignore_zero BOOLEAN DEFAULT FALSE,
                         filter_missing_episodes_enabled BOOLEAN DEFAULT FALSE,
                         resubscribe_source TEXT DEFAULT 'moviepilot',
-                        resubscribe_entire_season BOOLEAN DEFAULT FALSE,
-                        inbound_quality_check_enabled BOOLEAN DEFAULT FALSE,
-                        inbound_abort_on_probe_fail BOOLEAN DEFAULT FALSE
+                        resubscribe_entire_season BOOLEAN DEFAULT FALSE
                     )
                 """)
 
@@ -523,9 +533,7 @@ def init_db():
                         'resubscribe_rules': {
                             "filter_missing_episodes_enabled": "BOOLEAN DEFAULT FALSE",
                             "resubscribe_source": "TEXT DEFAULT 'moviepilot'", 
-                            "resubscribe_entire_season": "BOOLEAN DEFAULT FALSE",
-                            "inbound_quality_check_enabled": "BOOLEAN DEFAULT FALSE",
-                            "inbound_abort_on_probe_fail": "BOOLEAN DEFAULT FALSE"
+                            "resubscribe_entire_season": "BOOLEAN DEFAULT FALSE"
                         },
                         'collections_info': {
                             "poster_path": "TEXT",

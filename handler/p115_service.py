@@ -3190,24 +3190,6 @@ class SmartOrganizer:
                     dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
 
         # =================================================================
-        # ★ 预取入库质检规则 (从 resubscribe_rules 表获取)
-        # =================================================================
-        inbound_rules = []
-        try:
-            from database.connection import get_db_connection
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT * FROM resubscribe_rules WHERE enabled = TRUE AND inbound_quality_check_enabled = TRUE ORDER BY sort_order ASC")
-                    inbound_rules = cursor.fetchall()
-        except Exception as e:
-            logger.warning(f"  ➜ 获取入库质检规则失败: {e}")
-            
-        applicable_inbound_rule = None
-        for rule in inbound_rules:
-            if self._is_rule_applicable(rule):
-                applicable_inbound_rule = rule
-                break
-        # =================================================================
         # 1. 拦截合集包 (Collection Breakdown) - 仅限单项传入时触发
         # =================================================================
         if not is_batch and not is_source_file and re.search(r'(合集|部曲|系列|Collection|Pack|Trilogy|Quadrilogy|\d+-\d+)', root_name, re.IGNORECASE):
@@ -3669,34 +3651,6 @@ class SmartOrganizer:
 
                 real_target_cid = final_home_cid
                 
-                # =================================================================
-                # ★★★ 入库质检逻辑 (仅洗版模式有效) ★★★
-                # =================================================================
-                is_vid = ext in known_video_exts
-                
-                if applicable_inbound_rule and is_vid:
-                    # 1. 检查是否要求必须提取到真实媒体信息
-                    if applicable_inbound_rule.get('inbound_abort_on_probe_fail') and not has_real_info:
-                        logger.warning(f"  ➜ [入库质检] 媒体信息提取失败，拒绝入库: {file_name}")
-                        unqualified_items.append({
-                            'fid': fid, 'name': file_name, 'reason': "媒体信息提取失败", 
-                            'pc': file_item.get('pc') or file_item.get('pick_code'), 'season_num': season_num
-                        })
-                        if progress_callback: progress_callback()
-                        continue
-                    
-                    # 2. 执行各项指标评估
-                    reasons = self._evaluate_inbound_quality(video_info, file_size, applicable_inbound_rule)
-                    if reasons:
-                        reason_str = "; ".join(reasons)
-                        logger.warning(f"  ➜ [入库质检] 命中规则 [{applicable_inbound_rule.get('name')}] 不合格，拒绝入库: {file_name} -> {reason_str}")
-                        unqualified_items.append({
-                            'fid': fid, 'name': file_name, 'reason': reason_str, 
-                            'pc': file_item.get('pc') or file_item.get('pick_code'), 'season_num': season_num
-                        })
-                        if progress_callback: progress_callback()
-                        continue
-                
                 # ★ 直接使用返回的 s_name 创建/查找季目录
                 if self.media_type == 'tv' and season_num is not None and s_name:
                     cache_key = f"{final_home_cid}_{s_name}"
@@ -3816,50 +3770,78 @@ class SmartOrganizer:
             valid_items = []
             fids_to_delete = set()
             
+            from handler.resubscribe_service import WashingService
+            
             for item in items:
                 new_name = item['_new_filename']
                 s_num = item.get('_season_num')
                 e_num = item.get('_episode_num')
                 ext = new_name.split('.')[-1].lower() if '.' in new_name else ''
                 is_vid = ext in known_video_exts
+                file_size = _parse_115_size(item.get('fs') or item.get('size'))
                 
-                is_conflict = False
-                conflict_old_fids = []
-                
-                # 判定是否冲突
-                if is_vid:
-                    if self.media_type == 'tv' and s_num is not None and e_num is not None:
-                        if (s_num, e_num) in existing_tv_eps:
-                            is_conflict = True
-                            conflict_old_fids = existing_tv_eps[(s_num, e_num)]
-                    elif self.media_type == 'movie':
-                        if existing_movie_vids:
-                            is_conflict = True
-                            conflict_old_fids = existing_movie_vids
-                
-                # 根据模式处理冲突
-                if is_conflict:
-                    if conflict_mode == 'skip':
-                        logger.info(f"  ➜ [覆盖模式:跳过] 目标目录已存在同集/同电影，放弃处理: {new_name}")
+                # ★★★ 核心升级：调用阶梯洗版优先级服务 ★★★
+                if is_vid and conflict_mode == 'replace':
+                    # 重新提取一次 video_info，因为前面可能被覆盖了
+                    video_info = self._extract_video_info(new_name)
+                    
+                    action, _, reason = WashingService.decide_washing_action(
+                        new_video_info=video_info,
+                        file_size=file_size,
+                        target_cid=batch_target_cid,
+                        media_type=self.media_type,
+                        tmdb_id=self.tmdb_id,
+                        season_num=s_num,
+                        episode_num=e_num
+                    )
+                    
+                    if action == 'REJECT':
+                        logger.warning(f"  ➜ [洗版拦截] {new_name} -> {reason}")
+                        unqualified_items.append({
+                            'fid': item.get('fid') or item.get('file_id'), 'name': item.get('fn') or item.get('file_name'), 
+                            'reason': reason, 'pc': item.get('pc') or item.get('pick_code'), 'season_num': s_num
+                        })
+                        continue
+                    elif action == 'SKIP':
+                        logger.info(f"  ➜ [洗版跳过] {new_name} -> {reason}")
                         unrecognized_fids.append(item.get('fid') or item.get('file_id'))
-                        continue # 丢弃新文件
-                    elif conflict_mode == 'replace':
-                        logger.info(f"  ➜ [覆盖模式:替换] 目标目录存在旧版本，准备删除旧版保留最新: {new_name}")
-                        fids_to_delete.update(conflict_old_fids)
-                        valid_items.append(item)
-                    elif conflict_mode == 'keep_both':
-                        # 多版本共存，但如果名字完全一样，必须删旧的防报错
-                        if new_name in existing_names:
-                            logger.info(f"  ➜ [覆盖模式:共存] 允许共存，但发现完全同名文件，执行同名覆盖: {new_name}")
-                            fids_to_delete.add(existing_names[new_name])
+                        continue
+                    elif action == 'REPLACE':
+                        logger.info(f"  ➜ [洗版替换] {new_name} -> {reason}")
+                        # 获取旧文件的 FID 用于删除
+                        if self.media_type == 'tv' and s_num is not None and e_num is not None:
+                            fids_to_delete.update(existing_tv_eps.get((s_num, e_num), []))
                         else:
-                            logger.info(f"  ➜ [覆盖模式:共存] 目标目录已存在同集，作为多版本共存: {new_name}")
+                            fids_to_delete.update(existing_movie_vids)
+                        valid_items.append(item)
+                    elif action == 'ACCEPT':
+                        logger.info(f"  ➜ [洗版入库] {new_name} -> {reason}")
+                        if new_name in existing_names: fids_to_delete.add(existing_names[new_name])
                         valid_items.append(item)
                 else:
-                    # 不冲突，但也要防完全同名
-                    if new_name in existing_names:
-                        fids_to_delete.add(existing_names[new_name])
-                    valid_items.append(item)
+                    # 非视频文件，或非替换模式，走老逻辑
+                    is_conflict = False
+                    conflict_old_fids = []
+                    if is_vid:
+                        if self.media_type == 'tv' and s_num is not None and e_num is not None:
+                            if (s_num, e_num) in existing_tv_eps:
+                                is_conflict = True
+                                conflict_old_fids = existing_tv_eps[(s_num, e_num)]
+                        elif self.media_type == 'movie':
+                            if existing_movie_vids:
+                                is_conflict = True
+                                conflict_old_fids = existing_movie_vids
+                    
+                    if is_conflict:
+                        if conflict_mode == 'skip':
+                            unrecognized_fids.append(item.get('fid') or item.get('file_id'))
+                            continue 
+                        elif conflict_mode == 'keep_both':
+                            if new_name in existing_names: fids_to_delete.add(existing_names[new_name])
+                            valid_items.append(item)
+                    else:
+                        if new_name in existing_names: fids_to_delete.add(existing_names[new_name])
+                        valid_items.append(item)
             
             if not valid_items:
                 continue # 这批全被 skip 了

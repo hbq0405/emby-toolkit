@@ -1,0 +1,211 @@
+# handler/resubscribe_service.py
+import logging
+import json
+from database.connection import get_db_connection
+
+logger = logging.getLogger(__name__)
+
+class WashingService:
+    # 统一的层级定义 (数字越大越好)
+    RES_TIER = {"8k": 5, "4k": 4, "2160p": 4, "1080p": 3, "720p": 2, "480p": 1}
+    SOURCE_TIER = {"remux": 6, "bluray": 5, "uhd": 5, "web-dl": 4, "webrip": 3, "hdtv": 2, "dvd": 1}
+    CODEC_TIER = {"av1": 3, "hevc": 2, "h265": 2, "avc": 1, "h264": 1}
+    EFFECT_TIER = {"dovi_p8": 7, "dovi_p7": 6, "dovi_p5": 5, "dovi_other": 4, "hdr10+": 3, "hdr10": 2, "hdr": 2, "sdr": 1}
+
+    @classmethod
+    def _normalize_info(cls, info: dict, is_db_asset=False) -> dict:
+        """将 115/ffprobe 的 video_info 或 数据库的 asset_details 统一标准化"""
+        norm = {
+            "res_tier": 0, "source_tier": 0, "codec_tier": 0, "effect_tier": 0,
+            "audio_langs": set(), "sub_langs": set(), "size_gb": 0.0
+        }
+
+        if not info: return norm
+
+        if is_db_asset:
+            # 解析数据库 asset_details_json 格式
+            res_str = str(info.get('resolution_display', '')).lower()
+            norm["res_tier"] = cls.RES_TIER.get(res_str, 0)
+            
+            src_str = str(info.get('quality_display', '')).lower()
+            norm["source_tier"] = cls.SOURCE_TIER.get(src_str, 0)
+            
+            codec_str = str(info.get('codec_display', '')).lower()
+            norm["codec_tier"] = max([v for k, v in cls.CODEC_TIER.items() if k in codec_str] + [0])
+            
+            effect_str = str(info.get('effect_display', '')).lower()
+            if 'dovi' in effect_str or 'dolby vision' in effect_str:
+                if 'p8' in effect_str: norm["effect_tier"] = 7
+                elif 'p7' in effect_str: norm["effect_tier"] = 6
+                elif 'p5' in effect_str: norm["effect_tier"] = 5
+                else: norm["effect_tier"] = 4
+            else:
+                norm["effect_tier"] = cls.EFFECT_TIER.get(effect_str, 1)
+
+            norm["audio_langs"] = set(info.get('audio_languages_raw', []))
+            norm["sub_langs"] = set(info.get('subtitle_languages_raw', []))
+            norm["size_gb"] = info.get('size_bytes', 0) / (1024**3)
+        else:
+            # 解析 115/ffprobe 的 video_info 格式
+            res_str = str(info.get('resolution', '')).lower()
+            norm["res_tier"] = cls.RES_TIER.get(res_str, 0)
+            
+            src_str = str(info.get('source', '')).lower()
+            norm["source_tier"] = cls.SOURCE_TIER.get(src_str, 0)
+            
+            codec_str = str(info.get('codec', '')).lower()
+            norm["codec_tier"] = max([v for k, v in cls.CODEC_TIER.items() if k in codec_str] + [0])
+            
+            effect_str = str(info.get('effect', '')).lower()
+            if 'dv' in effect_str or 'dovi' in effect_str:
+                if 'p8' in effect_str: norm["effect_tier"] = 7
+                elif 'p7' in effect_str: norm["effect_tier"] = 6
+                elif 'p5' in effect_str: norm["effect_tier"] = 5
+                else: norm["effect_tier"] = 4
+            else:
+                norm["effect_tier"] = cls.EFFECT_TIER.get(effect_str, 1)
+                
+            # 新文件在入库前很难精准提取音轨/字幕语言(除非ffprobe)，这里做宽松处理或依赖后续完善
+            audio_str = str(info.get('audio', '')).lower()
+            if '国语' in audio_str or 'chi' in audio_str: norm["audio_langs"].add('chi')
+            
+            norm["size_gb"] = info.get('_file_size', 0) / (1024**3)
+
+        return norm
+
+    @classmethod
+    def _match_priority(cls, norm_info: dict, priority_rule: dict) -> bool:
+        """检查标准化信息是否满足某一个优先级规则"""
+        # 1. 分辨率
+        req_res = priority_rule.get('resolution', [])
+        if req_res:
+            req_tier = min([cls.RES_TIER.get(r.lower(), 0) for r in req_res])
+            if norm_info['res_tier'] < req_tier: return False
+            
+        # 2. 质量/来源
+        req_src = priority_rule.get('source', [])
+        if req_src:
+            req_tier = min([cls.SOURCE_TIER.get(s.lower(), 0) for s in req_src])
+            if norm_info['source_tier'] < req_tier: return False
+            
+        # 3. 编码
+        req_codec = priority_rule.get('codec', [])
+        if req_codec:
+            req_tier = min([cls.CODEC_TIER.get(c.lower(), 0) for c in req_codec])
+            if norm_info['codec_tier'] < req_tier: return False
+            
+        # 4. 特效
+        req_effect = priority_rule.get('effect', [])
+        if req_effect:
+            req_tier = min([cls.EFFECT_TIER.get(e.lower(), 0) for e in req_effect])
+            if norm_info['effect_tier'] < req_tier: return False
+            
+        # 5. 音轨 (包含任意一个即可)
+        req_audio = priority_rule.get('audio', [])
+        if req_audio and not any(a in norm_info['audio_langs'] for a in req_audio):
+            # 如果新文件没有提取出语言，但规则有要求，暂时放行还是拦截？
+            # 为了防止误杀，如果新文件 audio_langs 为空，我们假设它可能符合，交由后续处理。
+            # 但如果是严格洗版，应该 return False。这里采用严格模式。
+            if not norm_info['audio_langs']: pass # 视情况而定，这里暂不严格拦截音轨
+            # return False
+            
+        # 6. 字幕
+        req_sub = priority_rule.get('subtitle', [])
+        if req_sub and not any(s in norm_info['sub_langs'] for s in req_sub):
+            if not norm_info['sub_langs']: pass
+            
+        # 7. 文件大小
+        min_size = priority_rule.get('min_size_gb')
+        max_size = priority_rule.get('max_size_gb')
+        if min_size and norm_info['size_gb'] > 0 and norm_info['size_gb'] < float(min_size): return False
+        if max_size and norm_info['size_gb'] > 0 and norm_info['size_gb'] > float(max_size): return False
+
+        return True
+
+    @classmethod
+    def get_level(cls, norm_info: dict, priorities: list) -> int:
+        """获取匹配的优先级级别 (1 是最高级，0 表示不合格)"""
+        for i, p_rule in enumerate(priorities):
+            if cls._match_priority(norm_info, p_rule):
+                return i + 1 # 优先级 1, 2, 3...
+        return 0 # 不合格
+
+    @classmethod
+    def decide_washing_action(cls, new_video_info: dict, file_size: int, target_cid: str, media_type: str, tmdb_id: str, season_num: int=None, episode_num: int=None) -> tuple[str, list, str]:
+        """
+        核心决策函数
+        返回: (ACTION, old_fids_to_delete, reason)
+        ACTION: 'ACCEPT' (入库), 'REPLACE' (替换旧版), 'SKIP' (已有更好版本), 'REJECT' (不合格)
+        """
+        new_video_info['_file_size'] = file_size
+        norm_new = cls._normalize_info(new_video_info, is_db_asset=False)
+        
+        # 1. 查找适用的规则组
+        rule_group = None
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT * FROM washing_priority_groups WHERE media_type = %s ORDER BY sort_order ASC", (media_type.capitalize(),))
+                    for row in cursor.fetchall():
+                        cids = row['target_cids']
+                        if not cids or str(target_cid) in cids:
+                            rule_group = row
+                            break
+        except Exception as e:
+            logger.warning(f"  ➜ 获取洗版优先级规则失败: {e}")
+
+        # 如果没有配置规则，默认放行
+        if not rule_group or not rule_group.get('priorities'):
+            return 'ACCEPT', [], "未配置优先级规则，默认放行"
+
+        priorities = rule_group['priorities']
+        
+        # 2. 评估新文件级别
+        new_level = cls.get_level(norm_new, priorities)
+        if new_level == 0:
+            return 'REJECT', [], f"未达到任何优先级标准 (规则组: {rule_group['name']})"
+
+        # 3. 获取库内现有资产
+        existing_assets = []
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    if media_type.lower() == 'tv' and season_num is not None and episode_num is not None:
+                        cursor.execute("SELECT asset_details_json FROM media_metadata WHERE parent_series_tmdb_id = %s AND season_number = %s AND episode_number = %s AND item_type = 'Episode'", (str(tmdb_id), season_num, episode_num))
+                    else:
+                        cursor.execute("SELECT asset_details_json FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (str(tmdb_id),))
+                    
+                    row = cursor.fetchone()
+                    if row and row['asset_details_json']:
+                        assets = row['asset_details_json']
+                        existing_assets = json.loads(assets) if isinstance(assets, str) else assets
+        except Exception as e:
+            logger.warning(f"  ➜ 获取现有资产失败: {e}")
+
+        # 4. 如果库内没有旧文件，直接入库
+        if not existing_assets:
+            return 'ACCEPT', [], f"命中优先级 {new_level}，库内无旧版，直接入库"
+
+        # 5. 评估旧文件级别，寻找最好的一个 (数字越小越好)
+        best_old_level = 999
+        old_fids = []
+        for asset in existing_assets:
+            norm_old = cls._normalize_info(asset, is_db_asset=True)
+            old_level = cls.get_level(norm_old, priorities)
+            if old_level == 0: old_level = 999 # 旧版不合格，视为最低级
+            if old_level < best_old_level:
+                best_old_level = old_level
+            
+            # 收集旧文件的 115 FID 用于替换
+            if asset.get('path'):
+                # 这里简化处理，实际需要通过 path 反查 p115_filesystem_cache 获取 fid
+                # 在 p115_service 中已经有 existing_names/existing_tv_eps 字典，可以交由外部处理删除
+                pass
+
+        # 6. 核心对比逻辑
+        if new_level < best_old_level:
+            return 'REPLACE', [], f"新版(优先级{new_level}) 优于 旧版(优先级{best_old_level if best_old_level!=999 else '不合格'})，执行洗版替换"
+        elif new_level == best_old_level:
+            return 'SKIP', [], f"新版(优先级{new_level}) 与旧版同级，跳过"
+        else:
+            return 'SKIP', [], f"新版(优先级{new_level}) 劣于 旧版(优先级{best_old_level})，跳过"
