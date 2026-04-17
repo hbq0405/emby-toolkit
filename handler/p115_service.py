@@ -2739,27 +2739,27 @@ class SmartOrganizer:
             if not lang_suffix:
                 match = re.search(r'(?:\.|-|_|\s)(chs|cht|zh-cn|zh-tw|eng|jpn|kor|tc|sc)(?:\.|-|_|$)', name_body, re.IGNORECASE)
                 if match: lang_suffix = f".{match.group(1)}"
-                # ★★★ 强制基础名注入 (专为 MP 字幕挂起等待机制设计) ★★★
-                forced_base_name = file_node.get('_forced_base_name')
-                if forced_base_name:
-                    new_name = f"{forced_base_name}{lang_suffix}.{ext}"
-                    season_num = file_node.get('_forced_season')
-                    episode_num = file_node.get('_forced_episode')
-                    s_name = None
-                    if is_tv and season_num is not None:
-                        cfg = self.rename_config
-                        season_format = cfg.get('season_dir_format', ['season_name_en'])
-                        s_name = self._build_name_from_format(
-                            season_format, 
-                            is_tv=True, 
-                            season_num=season_num, 
-                            original_title=original_title, 
-                            safe_title=new_base_name
-                        )
-                        if not s_name: s_name = f"Season {season_num:02d}"
-                    
-                    # ★ 修复 2：字幕文件的提前返回，补齐为 7 个返回值 (追加 {}, False)
-                    return new_name, season_num, episode_num, s_name, False, {}, False
+            # ★★★ 强制基础名注入 (专为 MP 字幕挂起等待机制设计) ★★★
+            forced_base_name = file_node.get('_forced_base_name')
+            if forced_base_name:
+                new_name = f"{forced_base_name}{lang_suffix}.{ext}"
+                season_num = file_node.get('_forced_season')
+                episode_num = file_node.get('_forced_episode')
+                s_name = None
+                if is_tv and season_num is not None:
+                    cfg = self.rename_config
+                    season_format = cfg.get('season_dir_format', ['season_name_en'])
+                    s_name = self._build_name_from_format(
+                        season_format, 
+                        is_tv=True, 
+                        season_num=season_num, 
+                        original_title=original_title, 
+                        safe_title=new_base_name
+                    )
+                    if not s_name: s_name = f"Season {season_num:02d}"
+                
+                # ★ 修复 2：字幕文件的提前返回，补齐为 7 个返回值 (追加 {}, False)
+                return new_name, season_num, episode_num, s_name, False, {}, False
 
         cfg = self.rename_config
         
@@ -3481,6 +3481,9 @@ class SmartOrganizer:
                         key = (s_num, e_num) if self.media_type == 'tv' else 'movie'
                         if key in batch_video_names:
                             file_item['_forced_base_name'] = batch_video_names[key]
+                            # ★ 核心修复：将解析出的季集号写回字典，供 _rename_file_node 生成季目录名
+                            file_item['_forced_season'] = s_num
+                            file_item['_forced_episode'] = e_num
                             logger.debug(f"  ➜ [字幕对齐] 成功将字幕 '{fn}' 绑定至视频基础名 '{batch_video_names[key]}'")
 
         # =================================================================
