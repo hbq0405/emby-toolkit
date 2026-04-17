@@ -3732,11 +3732,12 @@ class SmartOrganizer:
                 if is_vid and conflict_mode == 'replace':
                     logger.debug(f"  ➜ [覆盖模式:洗版] 正在调用洗版规则评估文件: {new_name}")
                     
-                    # ★ 核心修复：直接使用前面提取的真实 video_info，绝不靠文件名瞎猜！
-                    video_info = item.get('_video_info') or self._extract_video_info(new_name)
+                    # ★ 核心修复：直接传 SHA1 和文件名，让洗版处理器自己去查原始流
+                    file_sha1 = item.get('sha1') or item.get('sha')
                     
                     action, reason = WashingService.decide_washing_action(
-                        new_video_info=video_info,
+                        sha1=file_sha1,
+                        file_name=new_name,
                         file_size=file_size,
                         target_cid=target_cid,
                         media_type=self.media_type,

@@ -481,9 +481,25 @@ class WashingService:
         return raw_infos
 
     @classmethod
+    def _get_raw_info_by_sha1(cls, sha1: str) -> Optional[dict]:
+        if not sha1:
+            return None
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s", (str(sha1),))
+                    row = cursor.fetchone()
+                    if row and row['mediainfo_json']:
+                        return cls._safe_parse_jsonish(row['mediainfo_json'])
+        except Exception as e:
+            logger.warning(f"  ➜ 从 p115_mediainfo_cache 获取 SHA1 {sha1} 失败: {e}")
+        return None
+   
+    @classmethod
     def decide_washing_action(
         cls,
-        new_video_info: dict,
+        sha1: str,          # ★ 改为接收 sha1
+        file_name: str,     # ★ 接收文件名（用于特效兜底）
         file_size: int,
         target_cid: str,
         media_type: str,
@@ -499,9 +515,23 @@ class WashingService:
         SKIP    已有更好版本/同级版本
         REJECT  不符合优先级规则
         """
-        new_video_info = dict(new_video_info or {})
+        # 1. ★ 直接通过 SHA1 获取最原始的视频流 JSON
+        raw_info = cls._get_raw_info_by_sha1(sha1)
+        
+        # 2. 转换为字典以便注入辅助信息
+        if isinstance(raw_info, list) and len(raw_info) > 0:
+            new_video_info = dict(raw_info[0])
+        elif isinstance(raw_info, dict):
+            new_video_info = dict(raw_info)
+        else:
+            new_video_info = {}
+
+        # 3. 注入辅助信息供 _normalize_info 兜底使用
+        new_video_info["filename"] = file_name
         new_video_info["_file_size"] = file_size
         new_video_info["_original_lang"] = original_lang
+
+        # 4. 统一调用标准化解析
         norm_new = cls._normalize_info(new_video_info)
 
         db_media_type = "Movie" if media_type.lower() == "movie" else "Series"
