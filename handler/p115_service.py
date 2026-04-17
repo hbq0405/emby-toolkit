@@ -2720,7 +2720,10 @@ class SmartOrganizer:
 
     def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, silent_log=False):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
-        if '.' not in original_name: return original_name, None, False
+        
+        # ★ 修复 1：无后缀文件的提前返回，补齐为 7 个返回值
+        if '.' not in original_name: 
+            return original_name, None, None, None, False, {}, False
 
         parts = original_name.rsplit('.', 1)
         name_body = parts[0]
@@ -2754,7 +2757,9 @@ class SmartOrganizer:
                             safe_title=new_base_name
                         )
                         if not s_name: s_name = f"Season {season_num:02d}"
-                    return new_name, season_num, episode_num, s_name, False
+                    
+                    # ★ 修复 2：字幕文件的提前返回，补齐为 7 个返回值 (追加 {}, False)
+                    return new_name, season_num, episode_num, s_name, False, {}, False
 
         cfg = self.rename_config
         
