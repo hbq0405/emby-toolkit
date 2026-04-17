@@ -567,7 +567,15 @@ class WashingService:
         # 5. 找最优旧版
         best_old_level = 999
         for raw_old_info in existing_raw_infos:
-            old_info = dict(raw_old_info or {})
+            
+            # 安全地将旧版 JSON 转换为字典，防止列表强转报错 ★★★
+            if isinstance(raw_old_info, list) and len(raw_old_info) > 0:
+                old_info = dict(raw_old_info[0])
+            elif isinstance(raw_old_info, dict):
+                old_info = dict(raw_old_info)
+            else:
+                old_info = {}
+
             old_info["_original_lang"] = original_lang
             norm_old = cls._normalize_info(old_info)
 
