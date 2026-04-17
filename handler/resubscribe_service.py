@@ -1,27 +1,126 @@
 # handler/resubscribe_service.py
-import logging
+import ast
 import json
+import logging
+from typing import Any, Dict, List, Optional, Tuple
+
 from database.connection import get_db_connection
 
 logger = logging.getLogger(__name__)
+
 
 class WashingService:
     @classmethod
     def _normalize_lang(cls, lang_str: str) -> str:
         """将各种语言标识统一归一化为标准 3 字母代码"""
-        if not lang_str: return ""
+        if not lang_str:
+            return ""
+
         lang_str = str(lang_str).lower().strip()
-        if lang_str in ['chi', 'zho', 'zh', 'cn', 'tw', 'hk', 'chs', 'cht', '国语', '粤语', '简体', '繁体', '中文']: return 'chi'
-        if lang_str in ['eng', 'en', '英语', '英文']: return 'eng'
-        if lang_str in ['jpn', 'ja', 'jp', '日语', '日文']: return 'jpn'
-        if lang_str in ['kor', 'ko', 'kr', '韩语', '韩文']: return 'kor'
+
+        if lang_str in ['chi', 'zho', 'zh', 'cn', 'tw', 'hk', 'chs', 'cht', '国语', '粤语', '简体', '繁体', '中文']:
+            return 'chi'
+        if lang_str in ['eng', 'en', '英语', '英文']:
+            return 'eng'
+        if lang_str in ['jpn', 'ja', 'jp', '日语', '日文']:
+            return 'jpn'
+        if lang_str in ['kor', 'ko', 'kr', '韩语', '韩文']:
+            return 'kor'
+
         return lang_str
 
     @classmethod
-    def _normalize_info(cls, info: dict, is_db_asset=False) -> dict:
-        """将 115/ffprobe 的 video_info 或 数据库的 asset_details 统一标准化为字符串标签"""
-        # 局部导入 helpers 中成熟的分析引擎，避免循环依赖
-        from tasks.helpers import _get_resolution_tier, _get_standardized_effect
+    def _safe_parse_jsonish(cls, val: Any) -> Any:
+        """兼容 JSONB / JSON字符串 / Python字面量字符串"""
+        if val is None:
+            return None
+
+        if isinstance(val, (dict, list)):
+            return val
+
+        if isinstance(val, str):
+            s = val.strip()
+            if not s:
+                return None
+
+            try:
+                return json.loads(s)
+            except Exception:
+                try:
+                    return ast.literal_eval(s)
+                except Exception:
+                    return None
+
+        return None
+
+    @classmethod
+    def _safe_parse_list(cls, val: Any) -> List[Any]:
+        parsed = cls._safe_parse_jsonish(val)
+        return parsed if isinstance(parsed, list) else []
+
+    @classmethod
+    def _extract_media_source_info(cls, info: Any) -> Dict[str, Any]:
+        """
+        统一抽取原始媒体源对象，兼容：
+        1. list[{"MediaSourceInfo": {...}}]
+        2. {"MediaSourceInfo": {...}}
+        3. {"MediaStreams": [...]}
+        4. 扁平化后的单文件资产 dict
+        """
+        parsed = cls._safe_parse_jsonish(info)
+        if parsed is None:
+            parsed = info
+
+        if isinstance(parsed, list):
+            if not parsed:
+                return {}
+            first = parsed[0]
+            if isinstance(first, dict):
+                if isinstance(first.get("MediaSourceInfo"), dict):
+                    return first["MediaSourceInfo"]
+                return first
+            return {}
+
+        if isinstance(parsed, dict):
+            if isinstance(parsed.get("MediaSourceInfo"), dict):
+                return parsed["MediaSourceInfo"]
+            return parsed
+
+        return {}
+
+    @classmethod
+    def _extract_media_streams(cls, info: Any) -> List[Dict[str, Any]]:
+        media_source = cls._extract_media_source_info(info)
+        streams = media_source.get("MediaStreams", [])
+        return streams if isinstance(streams, list) else []
+
+    @classmethod
+    def _extract_video_stream(cls, info: Any) -> Dict[str, Any]:
+        media_source = cls._extract_media_source_info(info)
+        media_streams = cls._extract_media_streams(info)
+
+        # 1. 优先从 MediaStreams 找视频流
+        for stream in media_streams:
+            if isinstance(stream, dict) and str(stream.get("Type", "")).lower() == "video":
+                return stream
+
+        # 2. 如果传进来的本身就是视频流 dict
+        if isinstance(media_source, dict) and str(media_source.get("Type", "")).lower() == "video":
+            return media_source
+
+        return {}
+
+    @classmethod
+    def _normalize_info(cls, info: dict) -> dict:
+        """
+        统一把“原始视频流/原始媒体信息”标准化。
+        不再区分 is_db_asset，彻底放弃 asset_details_json 参与洗版比较。
+        """
+        from tasks.helpers import (
+            _get_detected_languages_from_streams,
+            _get_resolution_tier,
+            _get_standardized_effect,
+        )
 
         norm = {
             "resolution": "unknown",
@@ -33,150 +132,210 @@ class WashingService:
             "size_gb": 0.0
         }
 
-        if not info: return norm
+        if not info:
+            return norm
 
-        # 1. 提取基础字符串与特效
-        if is_db_asset:
-            norm["resolution"] = str(info.get('resolution_display', '')).lower()
-            norm["codec"] = str(info.get('codec_display', '')).lower()
-            
-            effect_str = str(info.get('effect_display', '')).lower()
-            if 'dovi' in effect_str or 'dv' in effect_str or 'dolby vision' in effect_str:
-                if 'p8' in effect_str: norm["effect"] = 'dovi p8'
-                elif 'p7' in effect_str: norm["effect"] = 'dovi p7'
-                elif 'p5' in effect_str: norm["effect"] = 'dovi p5'
-                else: norm["effect"] = 'dovi'
-            elif 'hdr10+' in effect_str: norm["effect"] = 'hdr10+'
-            elif 'hdr10' in effect_str: norm["effect"] = 'hdr10'
-            elif 'hdr' in effect_str: norm["effect"] = 'hdr'
-            else: norm["effect"] = 'sdr'
+        parsed = cls._safe_parse_jsonish(info)
+        if parsed is None:
+            parsed = info
+
+        media_source = cls._extract_media_source_info(parsed)
+        media_streams = cls._extract_media_streams(parsed)
+        video_stream = cls._extract_video_stream(parsed)
+
+        # A. 分辨率
+        width = (
+            video_stream.get("Width")
+            or media_source.get("Width")
+            or (parsed.get("width") if isinstance(parsed, dict) else 0)
+            or (parsed.get("Width") if isinstance(parsed, dict) else 0)
+            or 0
+        )
+        height = (
+            video_stream.get("Height")
+            or media_source.get("Height")
+            or (parsed.get("height") if isinstance(parsed, dict) else 0)
+            or (parsed.get("Height") if isinstance(parsed, dict) else 0)
+            or 0
+        )
+
+        try:
+            width, height = int(width), int(height)
+        except (ValueError, TypeError):
+            width, height = 0, 0
+
+        if width > 0 or height > 0:
+            _, res_str = _get_resolution_tier(width, height)
+            norm["resolution"] = str(res_str).lower()
         else:
-            # ★ 核心修复：调用 helpers.py 的成熟引擎分析视频流
-            
-            # A. 分辨率 (通过宽高计算)
-            width = info.get('width') or info.get('Width') or 0
-            height = info.get('height') or info.get('Height') or 0
-            try:
-                width, height = int(width), int(height)
-            except (ValueError, TypeError):
-                width, height = 0, 0
-
-            if width > 0 or height > 0:
-                _, res_str = _get_resolution_tier(width, height)
-                norm["resolution"] = res_str.lower()
-            else:
-                # 兜底：如果流里没有宽高，尝试解析 resolution 字符串 (如 "3840x2160")
-                raw_res = str(info.get('resolution', '')).lower()
-                if 'x' in raw_res:
-                    try:
-                        w, h = map(int, raw_res.split('x'))
-                        _, res_str = _get_resolution_tier(w, h)
-                        norm["resolution"] = res_str.lower()
-                    except:
-                        norm["resolution"] = raw_res
-                else:
-                    norm["resolution"] = raw_res
-
-            # B. 编码 (兼容 ffprobe 字段)
-            raw_codec = str(info.get('codec') or info.get('video_codec') or info.get('codec_name') or '').lower()
-            if raw_codec in ['hevc', 'h265', 'x265']: norm["codec"] = 'hevc'
-            elif raw_codec in ['h264', 'avc', 'x264']: norm["codec"] = 'h264'
-            else: norm["codec"] = raw_codec
-
-            # C. 特效 (调用 helpers 引擎)
-            filename = str(info.get('filename') or info.get('name') or info.get('Path') or '').lower()
-            effect_tag = _get_standardized_effect(filename, info)
-            # 将 helpers 的输出 (如 dovi_p8, dovi_other) 映射为洗版规则的标准名称 (dovi p8, dovi)
-            norm["effect"] = effect_tag.replace('_', ' ').replace('dovi other', 'dovi').strip()
-
-        # 2. 语言与大小归一化
-        def _safe_parse_list(val):
-            if isinstance(val, list): return val
-            if isinstance(val, str):
+            raw_res = str((parsed.get('resolution', '') if isinstance(parsed, dict) else '')).lower()
+            if 'x' in raw_res:
                 try:
-                    import ast
-                    parsed = ast.literal_eval(val)
-                    if isinstance(parsed, list): return parsed
-                except: pass
-            return []
-            
-        if is_db_asset:
-            raw_audio_langs = _safe_parse_list(info.get('audio_languages_raw', []))
-            raw_sub_langs = _safe_parse_list(info.get('subtitle_languages_raw', []))
-            norm["size_gb"] = info.get('size_bytes', 0) / (1024**3)
+                    w, h = map(int, raw_res.split('x', 1))
+                    _, res_str = _get_resolution_tier(w, h)
+                    norm["resolution"] = str(res_str).lower()
+                except Exception:
+                    norm["resolution"] = raw_res or "unknown"
+            else:
+                norm["resolution"] = raw_res or "unknown"
+
+        # B. 编码
+        raw_codec = str(
+            video_stream.get('Codec')
+            or media_source.get('Codec')
+            or (parsed.get('codec') if isinstance(parsed, dict) else '')
+            or (parsed.get('video_codec') if isinstance(parsed, dict) else '')
+            or (parsed.get('codec_name') if isinstance(parsed, dict) else '')
+            or ''
+        ).lower()
+
+        if raw_codec in ['hevc', 'h265', 'x265']:
+            norm["codec"] = 'hevc'
+        elif raw_codec in ['h264', 'avc', 'x264']:
+            norm["codec"] = 'h264'
         else:
-            raw_audio_langs = _safe_parse_list(info.get('audio_langs', []))
-            raw_sub_langs = _safe_parse_list(info.get('sub_langs', []))
-            norm["size_gb"] = info.get('_file_size', 0) / (1024**3)
-            
+            norm["codec"] = raw_codec or "unknown"
+
+        # C. 特效 —— 统一按原始视频流判断
+        filename = str(
+            (parsed.get('path') if isinstance(parsed, dict) else '')
+            or (parsed.get('Path') if isinstance(parsed, dict) else '')
+            or (parsed.get('filename') if isinstance(parsed, dict) else '')
+            or (parsed.get('name') if isinstance(parsed, dict) else '')
+            or media_source.get('Path')
+            or ''
+        ).lower()
+
+        effect_tag = _get_standardized_effect(filename, video_stream or media_source or {})
+        norm["effect"] = effect_tag.replace('_', ' ').replace('dovi other', 'dovi').strip()
+
+        # D. 音轨/字幕语言
+        raw_audio_langs = set()
+        raw_sub_langs = set()
+
+        if media_streams:
+            try:
+                raw_audio_langs |= set(_get_detected_languages_from_streams(media_streams, 'Audio'))
+            except Exception:
+                pass
+
+            try:
+                raw_sub_langs |= set(_get_detected_languages_from_streams(media_streams, 'Subtitle'))
+            except Exception:
+                pass
+
+        # 扁平结构补充：audio_tracks / subtitles
+        if isinstance(parsed, dict):
+            for track in cls._safe_parse_list(parsed.get('audio_tracks', [])):
+                if not isinstance(track, dict):
+                    continue
+                lang = track.get('language') or track.get('Language')
+                if lang:
+                    raw_audio_langs.add(cls._normalize_lang(lang))
+
+            for sub in cls._safe_parse_list(parsed.get('subtitles', [])):
+                if not isinstance(sub, dict):
+                    continue
+                lang = sub.get('language') or sub.get('Language')
+                if lang:
+                    raw_sub_langs.add(cls._normalize_lang(lang))
+
+            for lang in cls._safe_parse_list(parsed.get('audio_langs', [])):
+                if lang:
+                    raw_audio_langs.add(cls._normalize_lang(lang))
+
+            for lang in cls._safe_parse_list(parsed.get('sub_langs', [])):
+                if lang:
+                    raw_sub_langs.add(cls._normalize_lang(lang))
+
+            for lang in cls._safe_parse_list(parsed.get('audio_languages_raw', [])):
+                if lang:
+                    raw_audio_langs.add(cls._normalize_lang(lang))
+
+            for lang in cls._safe_parse_list(parsed.get('subtitle_languages_raw', [])):
+                if lang:
+                    raw_sub_langs.add(cls._normalize_lang(lang))
+
         norm["audio_langs"] = {cls._normalize_lang(a) for a in raw_audio_langs if a}
         norm["sub_langs"] = {cls._normalize_lang(s) for s in raw_sub_langs if s}
 
-        raw_original_lang = (
-            info.get('_original_lang')
-            or info.get('original_lang')
-            or info.get('lang_code')
-            or ""
+        # E. 文件大小
+        size_bytes = (
+            media_source.get('Size')
+            or (parsed.get('size_bytes') if isinstance(parsed, dict) else 0)
+            or (parsed.get('_file_size') if isinstance(parsed, dict) else 0)
+            or (parsed.get('Size') if isinstance(parsed, dict) else 0)
+            or 0
         )
+        try:
+            size_bytes = int(size_bytes)
+        except (ValueError, TypeError):
+            size_bytes = 0
+
+        norm["size_gb"] = size_bytes / (1024 ** 3)
+
+        # F. 原语言
+        raw_original_lang = ""
+        if isinstance(parsed, dict):
+            raw_original_lang = (
+                parsed.get('_original_lang')
+                or parsed.get('original_lang')
+                or parsed.get('lang_code')
+                or ""
+            )
         norm["original_lang"] = cls._normalize_lang(raw_original_lang)
 
         return norm
 
     @classmethod
-    def _match_priority(cls, norm_info: dict, priority_rule: dict) -> tuple[bool, str]:
-        """★ 核心重构：严格白名单匹配逻辑 (宁缺毋滥)"""
-        
-        # 1. 分辨率 (白名单)
+    def _match_priority(cls, norm_info: dict, priority_rule: dict) -> Tuple[bool, str]:
+        """严格白名单匹配逻辑"""
+
+        # 1. 分辨率
         req_res = priority_rule.get('resolution', [])
         if req_res:
-            req_res_lower = [r.lower() for r in req_res]
+            req_res_lower = [str(r).lower() for r in req_res]
             file_res = norm_info['resolution']
             match = False
             for r in req_res_lower:
-                # 兼容 4K 和 2160p 的同义词
                 if r == file_res or (r in ['4k', '2160p'] and file_res in ['4k', '2160p']):
                     match = True
                     break
-            if not match: return False, f"分辨率未命中 ({file_res})"
-            
-        # 2. 编码 (白名单)
+            if not match:
+                return False, f"分辨率未命中 ({file_res})"
+
+        # 2. 编码
         req_codec = priority_rule.get('codec', [])
         if req_codec:
-            req_codec_lower = [c.lower() for c in req_codec]
+            req_codec_lower = [str(c).lower() for c in req_codec]
             file_codec = norm_info['codec']
             match = False
             for c in req_codec_lower:
-                # 兼容 hevc 10bit 这种带后缀的情况
-                if c in file_codec or file_codec in c: 
+                if c in file_codec or file_codec in c:
                     match = True
                     break
-                # 兼容同义词
-                if c in ['hevc', 'h265'] and ('hevc' in file_codec or 'h265' in file_codec): match = True
-                if c in ['avc', 'h264'] and ('avc' in file_codec or 'h264' in file_codec): match = True
-            if not match: return False, f"编码未命中 ({file_codec})"
-            
-        # 3. 特效 (白名单)
+                if c in ['hevc', 'h265'] and ('hevc' in file_codec or 'h265' in file_codec):
+                    match = True
+                if c in ['avc', 'h264'] and ('avc' in file_codec or 'h264' in file_codec):
+                    match = True
+            if not match:
+                return False, f"编码未命中 ({file_codec})"
+
+        # 3. 特效
         req_effect = priority_rule.get('effect', [])
         if req_effect:
-            req_effect_lower = [e.lower() for e in req_effect]
+            req_effect_lower = [str(e).lower() for e in req_effect]
             file_effect = norm_info['effect']
             if file_effect not in req_effect_lower:
                 return False, f"特效未命中 ({file_effect})"
-            
-        # 4. 音轨 (必须包含，但“原语言=规则语言”时自动豁免)
+
+        # 4. 音轨
         original_lang = norm_info.get('original_lang') or ""
 
         req_audio = priority_rule.get('audio', [])
         if req_audio:
-            normalized_req_audio = {
-                cls._normalize_lang(a) for a in req_audio if a
-            }
-
-            # ★ 原语言就是规则要求的音轨时，忽略这条音轨要求
-            effective_req_audio = {
-                a for a in normalized_req_audio
-                if a and a != original_lang
-            }
+            normalized_req_audio = {cls._normalize_lang(a) for a in req_audio if a}
+            effective_req_audio = {a for a in normalized_req_audio if a and a != original_lang}
 
             if effective_req_audio:
                 if not norm_info['audio_langs']:
@@ -184,57 +343,159 @@ class WashingService:
                 if not any(a in norm_info['audio_langs'] for a in effective_req_audio):
                     return False, "缺少必须的音轨"
 
-        # 5. 字幕 (必须包含，但“原语言=规则语言”时自动豁免)
+        # 5. 字幕
         req_sub = priority_rule.get('subtitle', [])
         if req_sub:
-            normalized_req_sub = {
-                cls._normalize_lang(s) for s in req_sub if s
-            }
-
-            # ★ 原语言就是规则要求的字幕时，忽略这条字幕要求
-            effective_req_sub = {
-                s for s in normalized_req_sub
-                if s and s != original_lang
-            }
+            normalized_req_sub = {cls._normalize_lang(s) for s in req_sub if s}
+            effective_req_sub = {s for s in normalized_req_sub if s and s != original_lang}
 
             if effective_req_sub:
                 if not norm_info['sub_langs']:
                     return False, "未提取到字幕语言"
                 if not any(s in norm_info['sub_langs'] for s in effective_req_sub):
                     return False, "缺少必须的字幕"
-            
+
         # 6. 文件大小
         min_size = priority_rule.get('min_size_gb')
         max_size = priority_rule.get('max_size_gb')
-        if min_size and norm_info['size_gb'] > 0 and norm_info['size_gb'] < float(min_size): return False, f"体积过小"
-        if max_size and norm_info['size_gb'] > 0 and norm_info['size_gb'] > float(max_size): return False, f"体积过大"
+        if min_size and norm_info['size_gb'] > 0 and norm_info['size_gb'] < float(min_size):
+            return False, "体积过小"
+        if max_size and norm_info['size_gb'] > 0 and norm_info['size_gb'] > float(max_size):
+            return False, "体积过大"
 
         return True, "匹配成功"
 
     @classmethod
-    def get_level(cls, norm_info: dict, priorities: list) -> tuple[int, str]:
-        """获取匹配的优先级级别 (1 是最高级，0 表示不合格)"""
+    def get_level(cls, norm_info: dict, priorities: list) -> Tuple[int, str]:
+        """获取匹配的优先级级别（1 是最高级，0 表示不合格）"""
         fail_reasons = []
         for i, p_rule in enumerate(priorities):
             is_match, reason = cls._match_priority(norm_info, p_rule)
             if is_match:
                 return i + 1, f"命中优先级 {i + 1}"
-            else:
-                fail_reasons.append(f"优先级{i+1}[{reason}]")
+            fail_reasons.append(f"优先级{i+1}[{reason}]")
         return 0, " | ".join(fail_reasons)
 
     @classmethod
+    def _load_rule_group(cls, db_media_type: str, target_cid: str) -> Optional[dict]:
+        rule_group = None
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT * FROM washing_priority_groups WHERE media_type = %s ORDER BY sort_order ASC",
+                        (db_media_type,)
+                    )
+                    for row in cursor.fetchall():
+                        cids = row.get('target_cids', [])
+                        if isinstance(cids, str):
+                            try:
+                                cids = json.loads(cids)
+                            except Exception:
+                                cids = []
+
+                        if not cids or str(target_cid) in cids:
+                            rule_group = dict(row)
+                            priorities = rule_group.get('priorities', [])
+                            if isinstance(priorities, str):
+                                try:
+                                    priorities = json.loads(priorities)
+                                except Exception:
+                                    priorities = []
+                            rule_group['priorities'] = priorities
+                            break
+        except Exception as e:
+            logger.warning(f"  ➜ 获取洗版优先级规则失败: {e}")
+
+        return rule_group
+
+    @classmethod
+    def _load_existing_raw_infos(
+        cls,
+        db_media_type: str,
+        tmdb_id: str,
+        season_num: Optional[int] = None,
+        episode_num: Optional[int] = None
+    ) -> List[dict]:
+        """
+        从 media_metadata.file_sha1_json -> p115_mediainfo_cache.mediainfo_json
+        读取库内现有版本的原始媒体信息。
+        """
+        rows = []
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    if db_media_type == 'Series' and season_num is not None and episode_num is not None:
+                        where_sql = """
+                            mm.parent_series_tmdb_id = %s
+                            AND mm.season_number = %s
+                            AND mm.episode_number = %s
+                            AND mm.item_type = 'Episode'
+                        """
+                        params = (str(tmdb_id), season_num, episode_num)
+                    elif db_media_type == 'Series' and season_num is not None:
+                        where_sql = """
+                            mm.parent_series_tmdb_id = %s
+                            AND mm.season_number = %s
+                            AND mm.item_type = 'Season'
+                        """
+                        params = (str(tmdb_id), season_num)
+                    elif db_media_type == 'Series':
+                        where_sql = """
+                            mm.tmdb_id = %s
+                            AND mm.item_type = 'Series'
+                        """
+                        params = (str(tmdb_id),)
+                    else:
+                        where_sql = """
+                            mm.tmdb_id = %s
+                            AND mm.item_type = 'Movie'
+                        """
+                        params = (str(tmdb_id),)
+
+                    sql = f"""
+                        SELECT DISTINCT pmc.sha1, pmc.mediainfo_json
+                        FROM media_metadata mm
+                        JOIN LATERAL jsonb_array_elements_text(
+                            CASE
+                                WHEN mm.file_sha1_json IS NOT NULL
+                                     AND jsonb_typeof(mm.file_sha1_json) = 'array'
+                                THEN mm.file_sha1_json
+                                ELSE '[]'::jsonb
+                            END
+                        ) AS sha(sha1) ON TRUE
+                        JOIN p115_mediainfo_cache pmc
+                          ON pmc.sha1 = sha.sha1
+                        WHERE {where_sql}
+                    """
+
+                    cursor.execute(sql, params)
+                    rows = cursor.fetchall() or []
+
+        except Exception as e:
+            logger.warning(f"  ➜ 从 p115_mediainfo_cache 获取库内原始视频流失败: {e}")
+
+        raw_infos = []
+        for row in rows:
+            raw = row.get('mediainfo_json')
+            parsed = cls._safe_parse_jsonish(raw)
+            if parsed:
+                raw_infos.append(parsed)
+
+        return raw_infos
+
+    @classmethod
     def decide_washing_action(
-            cls,
-            new_video_info: dict,
-            file_size: int,
-            target_cid: str,
-            media_type: str,
-            tmdb_id: str,
-            season_num: int=None,
-            episode_num: int=None,
-            original_lang: str=None
-        ) -> tuple[str, str]:
+        cls,
+        new_video_info: dict,
+        file_size: int,
+        target_cid: str,
+        media_type: str,
+        tmdb_id: str,
+        season_num: int = None,
+        episode_num: int = None,
+        original_lang: str = None
+    ) -> Tuple[str, str]:
         """
         核心决策函数
         返回: (ACTION, reason)
@@ -243,79 +504,55 @@ class WashingService:
         new_video_info = dict(new_video_info or {})
         new_video_info['_file_size'] = file_size
         new_video_info['_original_lang'] = original_lang
-        norm_new = cls._normalize_info(new_video_info, is_db_asset=False)
-        
-        db_media_type = 'Movie' if media_type.lower() == 'movie' else 'Series'
-        
-        # 1. 查找适用的规则组
-        rule_group = None
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute("SELECT * FROM washing_priority_groups WHERE media_type = %s ORDER BY sort_order ASC", (db_media_type,))
-                    for row in cursor.fetchall():
-                        cids = row.get('target_cids', [])
-                        if isinstance(cids, str):
-                            try: cids = json.loads(cids)
-                            except: cids = []
-                            
-                        if not cids or str(target_cid) in cids:
-                            rule_group = dict(row)
-                            priorities = rule_group.get('priorities', [])
-                            if isinstance(priorities, str):
-                                try: priorities = json.loads(priorities)
-                                except: priorities = []
-                            rule_group['priorities'] = priorities
-                            break
-        except Exception as e:
-            logger.warning(f"  ➜ 获取洗版优先级规则失败: {e}")
+        norm_new = cls._normalize_info(new_video_info)
 
-        # 如果没有配置规则，默认放行
+        db_media_type = 'Movie' if media_type.lower() == 'movie' else 'Series'
+
+        # 1. 查找适用规则组
+        rule_group = cls._load_rule_group(db_media_type, target_cid)
         if not rule_group or not rule_group.get('priorities'):
             return 'ACCEPT', "未配置优先级规则，默认放行"
 
         priorities = rule_group['priorities']
-        
-        # 2. 评估新文件级别
+
+        # 2. 评估新文件
         new_level, new_reason_detail = cls.get_level(norm_new, priorities)
         if new_level == 0:
             return 'REJECT', f"未达标 ({new_reason_detail})"
 
-        # 3. 获取库内现有资产
-        existing_assets = []
-        try:
-            with get_db_connection() as conn:
-                with conn.cursor() as cursor:
-                    if db_media_type == 'Series' and season_num is not None and episode_num is not None:
-                        cursor.execute("SELECT asset_details_json FROM media_metadata WHERE parent_series_tmdb_id = %s AND season_number = %s AND episode_number = %s AND item_type = 'Episode'", (str(tmdb_id), season_num, episode_num))
-                    else:
-                        cursor.execute("SELECT asset_details_json FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (str(tmdb_id),))
-                    
-                    row = cursor.fetchone()
-                    if row and row['asset_details_json']:
-                        assets = row['asset_details_json']
-                        existing_assets = json.loads(assets) if isinstance(assets, str) else assets
-        except Exception as e:
-            logger.warning(f"  ➜ 获取现有资产失败: {e}")
+        # 3. 获取库内旧版原始视频流
+        existing_raw_infos = cls._load_existing_raw_infos(
+            db_media_type=db_media_type,
+            tmdb_id=tmdb_id,
+            season_num=season_num,
+            episode_num=episode_num
+        )
 
-        # 4. 如果库内没有旧文件，直接入库
-        if not existing_assets:
+        # 4. 库内无旧版，直接入库
+        if not existing_raw_infos:
             return 'ACCEPT', f"命中优先级 {new_level}，库内无旧版，直接入库"
 
-        # 5. 评估旧文件级别，寻找最好的一个 (数字越小越好)
+        # 5. 评估旧版，取最优级别
         best_old_level = 999
-        for asset in existing_assets:
-            old_asset = dict(asset or {})
-            old_asset['_original_lang'] = original_lang
-            norm_old = cls._normalize_info(old_asset, is_db_asset=True)
+
+        for raw_info in existing_raw_infos:
+            old_info = dict(raw_info or {})
+            old_info['_original_lang'] = original_lang
+            norm_old = cls._normalize_info(old_info)
+
             old_level, _ = cls.get_level(norm_old, priorities)
-            if old_level == 0: old_level = 999 # 旧版不合格，视为最低级
+            if old_level == 0:
+                old_level = 999
+
             if old_level < best_old_level:
                 best_old_level = old_level
 
-        # 6. 核心对比逻辑 (直接对比命中的优先级阶梯)
+        # 6. 对比
         if new_level < best_old_level:
-            return 'REPLACE', f"新版(优先级{new_level}) 优于 旧版(优先级{best_old_level if best_old_level!=999 else '不合格'})，执行洗版替换"
+            return 'REPLACE', (
+                f"新版(优先级{new_level}) 优于 "
+                f"旧版(优先级{best_old_level if best_old_level != 999 else '不合格'})，执行洗版替换"
+            )
         elif new_level == best_old_level:
             return 'SKIP', f"新版(优先级{new_level}) 与旧版同级，跳过"
         else:

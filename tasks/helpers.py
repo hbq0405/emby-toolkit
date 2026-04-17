@@ -185,34 +185,97 @@ def build_exclusion_regex_from_groups(group_names: List[str]) -> str:
 
 def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> str:
     """
-    【V10 - 优先 JSON 数据版】
-    优先从视频流(JSON)中提取精确的 HDR/DV 信息，如果流中没有，再从文件名兜底。
+    优先从原始视频流(JSON)中提取精确的 HDR / DV 信息。
+    识别顺序：
+    1. ExtendedVideoSubType / ExtendedVideoSubTypeDescription
+    2. ExtendedVideoType / VideoRange / DisplayTitle 等原始字段
+    3. 文件名兜底
     """
-    # 1. 优先对视频流进行精确分析 (JSON数据为准)
+    path_lower = str(path_lower or "").lower()
+
     if video_stream and isinstance(video_stream, dict):
+        ext_subtype = str(video_stream.get("ExtendedVideoSubType") or "").lower()
+        ext_subtype_desc = str(video_stream.get("ExtendedVideoSubTypeDescription") or "").lower()
+        ext_type = str(video_stream.get("ExtendedVideoType") or "").lower()
+        video_range = str(video_stream.get("VideoRange") or "").lower()
+        display_title = str(video_stream.get("DisplayTitle") or "").lower()
+        profile = str(video_stream.get("Profile") or "").lower()
+        codec = str(video_stream.get("Codec") or "").lower()
+        color_transfer = str(video_stream.get("ColorTransfer") or "").lower()
+
+        # 1. 最高优先级：直接识别 ExtendedVideoSubType
+        if ext_subtype in ["doviprofile81", "doviprofile8", "dvhe.08", "dvh1.08"]:
+            return "dovi_p8"
+        if ext_subtype in ["doviprofile76", "doviprofile7", "dvhe.07", "dvh1.07"]:
+            return "dovi_p7"
+        if ext_subtype in ["doviprofile5", "dvhe.05", "dvh1.05"]:
+            return "dovi_p5"
+
+        # 2. 描述字段补充判断
+        combined_info = " ".join([
+            ext_subtype,
+            ext_subtype_desc,
+            ext_type,
+            video_range,
+            display_title,
+            profile,
+            codec,
+            color_transfer,
+        ])
+
+        if "profile 8.1" in combined_info or "hdr10 compatible" in combined_info:
+            return "dovi_p8"
+        if "profile 7" in combined_info:
+            return "dovi_p7"
+        if "profile 5" in combined_info:
+            return "dovi_p5"
+
+        has_dv = any(x in combined_info for x in ["dovi", "dolbyvision", "dolby vision"])
+        has_hdr10_plus = any(x in combined_info for x in ["hdr10+", "hdr10plus"])
+        has_hdr = has_hdr10_plus or any(x in combined_info for x in ["hdr10", "hdr", "smpte2084"])
+
+        if has_dv and has_hdr:
+            return "dovi_p8"
+        if has_dv:
+            return "dovi_other"
+        if has_hdr10_plus:
+            return "hdr10+"
+        if has_hdr:
+            return "hdr"
+
+        # 3. 为了兼容旧数据结构，再兜底扫整条 dict
         all_stream_info = []
         for key, value in video_stream.items():
             all_stream_info.append(str(key).lower())
             if isinstance(value, str):
                 all_stream_info.append(value.lower())
-        combined_info = " ".join(all_stream_info)
+        whole_info = " ".join(all_stream_info)
 
-        if "doviprofile81" in combined_info: return "dovi_p8"
-        if "doviprofile76" in combined_info: return "dovi_p7"
-        if "doviprofile5" in combined_info: return "dovi_p5"
-        if any(s in combined_info for s in ["dvhe.08", "dvh1.08"]): return "dovi_p8"
-        if any(s in combined_info for s in ["dvhe.07", "dvh1.07"]): return "dovi_p7"
-        if any(s in combined_info for s in ["dvhe.05", "dvh1.05"]): return "dovi_p5"
-        
-        has_dv = "dovi" in combined_info or "dolby" in combined_info or "dolbyvision" in combined_info
-        has_hdr = "hdr10+" in combined_info or "hdr10plus" in combined_info or "hdr" in combined_info
-        
-        if has_dv and has_hdr: return "dovi_p8"
-        if has_dv: return "dovi_other"
-        if "hdr10+" in combined_info or "hdr10plus" in combined_info: return "hdr10+"
-        if "hdr" in combined_info: return "hdr"
+        if "doviprofile81" in whole_info:
+            return "dovi_p8"
+        if "doviprofile76" in whole_info:
+            return "dovi_p7"
+        if "doviprofile5" in whole_info:
+            return "dovi_p5"
+        if any(s in whole_info for s in ["dvhe.08", "dvh1.08"]):
+            return "dovi_p8"
+        if any(s in whole_info for s in ["dvhe.07", "dvh1.07"]):
+            return "dovi_p7"
+        if any(s in whole_info for s in ["dvhe.05", "dvh1.05"]):
+            return "dovi_p5"
 
-    # 2. 如果视频流没有提取到特效信息，再从文件名判断 (补充兜底)
+        has_dv = "dovi" in whole_info or "dolby" in whole_info or "dolbyvision" in whole_info
+        has_hdr = "hdr10+" in whole_info or "hdr10plus" in whole_info or "hdr" in whole_info
+        if has_dv and has_hdr:
+            return "dovi_p8"
+        if has_dv:
+            return "dovi_other"
+        if "hdr10+" in whole_info or "hdr10plus" in whole_info:
+            return "hdr10+"
+        if "hdr" in whole_info:
+            return "hdr"
+
+    # 4. 文件名兜底
     if ("dovi" in path_lower or "dolbyvision" in path_lower or "dv" in path_lower) and "hdr" in path_lower:
         return "dovi_p8"
     if any(s in path_lower for s in ["dovi p7", "dovi.p7", "dv.p7", "profile 7", "profile7"]):
@@ -226,7 +289,6 @@ def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> s
     if "hdr" in path_lower:
         return "hdr"
 
-    # 3. 默认是SDR
     return "sdr"
 
 def _extract_quality_tag_from_filename(filename_lower: str) -> str:
