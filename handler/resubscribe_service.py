@@ -498,8 +498,8 @@ class WashingService:
     @classmethod
     def decide_washing_action(
         cls,
-        sha1: str,          # ★ 改为接收 sha1
-        file_name: str,     # ★ 接收文件名（用于特效兜底）
+        sha1: str,
+        file_name: str,
         file_size: int,
         target_cid: str,
         media_type: str,
@@ -517,6 +517,10 @@ class WashingService:
         """
         # 1. ★ 直接通过 SHA1 获取最原始的视频流 JSON
         raw_info = cls._get_raw_info_by_sha1(sha1)
+        
+        # ★★★ 新增拦截逻辑：如果没有获取到媒体信息，直接视为不达标 ★★★
+        if not raw_info:
+            return "REJECT", "无法获取媒体流信息(可能是不支持的格式如ISO或文件损坏)"
         
         # 2. 转换为字典以便注入辅助信息
         if isinstance(raw_info, list) and len(raw_info) > 0:
@@ -562,8 +566,8 @@ class WashingService:
 
         # 5. 找最优旧版
         best_old_level = 999
-        for raw_info in existing_raw_infos:
-            old_info = dict(raw_info or {})
+        for raw_old_info in existing_raw_infos:
+            old_info = dict(raw_old_info or {})
             old_info["_original_lang"] = original_lang
             norm_old = cls._normalize_info(old_info)
 
