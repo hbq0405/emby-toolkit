@@ -20,6 +20,9 @@ class WashingService:
     @classmethod
     def _normalize_info(cls, info: dict, is_db_asset=False) -> dict:
         """将 115/ffprobe 的 video_info 或 数据库的 asset_details 统一标准化为字符串标签"""
+        # 局部导入 helpers 中成熟的分析引擎，避免循环依赖
+        from tasks.helpers import _get_resolution_tier, _get_standardized_effect
+
         norm = {
             "resolution": "unknown",
             "codec": "unknown",
@@ -32,28 +35,61 @@ class WashingService:
 
         if not info: return norm
 
-        # 1. 提取基础字符串
+        # 1. 提取基础字符串与特效
         if is_db_asset:
             norm["resolution"] = str(info.get('resolution_display', '')).lower()
             norm["codec"] = str(info.get('codec_display', '')).lower()
+            
             effect_str = str(info.get('effect_display', '')).lower()
+            if 'dovi' in effect_str or 'dv' in effect_str or 'dolby vision' in effect_str:
+                if 'p8' in effect_str: norm["effect"] = 'dovi p8'
+                elif 'p7' in effect_str: norm["effect"] = 'dovi p7'
+                elif 'p5' in effect_str: norm["effect"] = 'dovi p5'
+                else: norm["effect"] = 'dovi'
+            elif 'hdr10+' in effect_str: norm["effect"] = 'hdr10+'
+            elif 'hdr10' in effect_str: norm["effect"] = 'hdr10'
+            elif 'hdr' in effect_str: norm["effect"] = 'hdr'
+            else: norm["effect"] = 'sdr'
         else:
-            norm["resolution"] = str(info.get('resolution', '')).lower()
-            norm["codec"] = str(info.get('codec', '')).lower()
-            effect_str = str(info.get('effect', '')).lower()
+            # ★ 核心修复：调用 helpers.py 的成熟引擎分析视频流
+            
+            # A. 分辨率 (通过宽高计算)
+            width = info.get('width') or info.get('Width') or 0
+            height = info.get('height') or info.get('Height') or 0
+            try:
+                width, height = int(width), int(height)
+            except (ValueError, TypeError):
+                width, height = 0, 0
 
-        # 2. 特效精准归一化 (映射为前端选项的标准名称)
-        if 'dovi' in effect_str or 'dv' in effect_str or 'dolby vision' in effect_str:
-            if 'p8' in effect_str: norm["effect"] = 'dovi p8'
-            elif 'p7' in effect_str: norm["effect"] = 'dovi p7'
-            elif 'p5' in effect_str: norm["effect"] = 'dovi p5'
-            else: norm["effect"] = 'dovi'
-        elif 'hdr10+' in effect_str: norm["effect"] = 'hdr10+'
-        elif 'hdr10' in effect_str: norm["effect"] = 'hdr10'
-        elif 'hdr' in effect_str: norm["effect"] = 'hdr'
-        else: norm["effect"] = 'sdr'
+            if width > 0 or height > 0:
+                _, res_str = _get_resolution_tier(width, height)
+                norm["resolution"] = res_str.lower()
+            else:
+                # 兜底：如果流里没有宽高，尝试解析 resolution 字符串 (如 "3840x2160")
+                raw_res = str(info.get('resolution', '')).lower()
+                if 'x' in raw_res:
+                    try:
+                        w, h = map(int, raw_res.split('x'))
+                        _, res_str = _get_resolution_tier(w, h)
+                        norm["resolution"] = res_str.lower()
+                    except:
+                        norm["resolution"] = raw_res
+                else:
+                    norm["resolution"] = raw_res
 
-        # 3. 语言与大小归一化
+            # B. 编码 (兼容 ffprobe 字段)
+            raw_codec = str(info.get('codec') or info.get('video_codec') or info.get('codec_name') or '').lower()
+            if raw_codec in ['hevc', 'h265', 'x265']: norm["codec"] = 'hevc'
+            elif raw_codec in ['h264', 'avc', 'x264']: norm["codec"] = 'h264'
+            else: norm["codec"] = raw_codec
+
+            # C. 特效 (调用 helpers 引擎)
+            filename = str(info.get('filename') or info.get('name') or info.get('Path') or '').lower()
+            effect_tag = _get_standardized_effect(filename, info)
+            # 将 helpers 的输出 (如 dovi_p8, dovi_other) 映射为洗版规则的标准名称 (dovi p8, dovi)
+            norm["effect"] = effect_tag.replace('_', ' ').replace('dovi other', 'dovi').strip()
+
+        # 2. 语言与大小归一化
         def _safe_parse_list(val):
             if isinstance(val, list): return val
             if isinstance(val, str):
