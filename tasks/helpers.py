@@ -17,13 +17,16 @@ import constants
 logger = logging.getLogger(__name__)
 
 AUDIO_SUBTITLE_KEYWORD_MAP = {
+    # 音轨：chi=国语, yue=粤语
     "chi": ["Mandarin", "CHI", "ZHO", "国语", "国配", "国英双语", "公映", "台配", "京译", "上译", "央译"],
     "yue": ["Cantonese", "YUE", "粤语"],
     "eng": ["English", "ENG", "英语"],
     "jpn": ["Japanese", "JPN", "日语"],
     "kor": ["Korean", "KOR", "韩语"],
-    "sub_chi": ["CHS", "SC", "GB", "简体", "简中", "简", "中字", "Simplified"],  
-    "sub_yue": ["CHT", "TC", "BIG5", "繁體", "繁体", "繁", "Traditional"],    
+
+    # 字幕：chi=简体, yue=繁体
+    "sub_chi": ["CHS", "SC", "GB", "简体", "简中", "Simplified"],
+    "sub_yue": ["CHT", "TC", "BIG5", "繁體", "繁体", "Traditional"],
     "sub_eng": ["ENG", "英字"],
     "sub_jpn": ["JPN", "日字", "日文"],
     "sub_kor": ["KOR", "韩字", "韩文"],
@@ -185,11 +188,10 @@ def build_exclusion_regex_from_groups(group_names: List[str]) -> str:
 
 def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> str:
     """
-    优先从原始视频流(JSON)中提取精确的 HDR / DV 信息。
-    识别顺序：
-    1. ExtendedVideoSubType / ExtendedVideoSubTypeDescription
-    2. ExtendedVideoType / VideoRange / DisplayTitle 等原始字段
-    3. 文件名兜底
+    统一返回规则值：
+    dovi_p8 / dovi_p7 / dovi_p5 / dovi_other / hdr10+ / hdr / sdr
+
+    只认原始视频流，不做资产显示值兼容。
     """
     path_lower = str(path_lower or "").lower()
 
@@ -211,7 +213,6 @@ def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> s
         if ext_subtype in ["doviprofile5", "dvhe.05", "dvh1.05"]:
             return "dovi_p5"
 
-        # 2. 描述字段补充判断
         combined_info = " ".join([
             ext_subtype,
             ext_subtype_desc,
@@ -223,6 +224,7 @@ def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> s
             color_transfer,
         ])
 
+        # 2. 描述字段补充判断
         if "profile 8.1" in combined_info or "hdr10 compatible" in combined_info:
             return "dovi_p8"
         if "profile 7" in combined_info:
@@ -243,39 +245,7 @@ def _get_standardized_effect(path_lower: str, video_stream: Optional[Dict]) -> s
         if has_hdr:
             return "hdr"
 
-        # 3. 为了兼容旧数据结构，再兜底扫整条 dict
-        all_stream_info = []
-        for key, value in video_stream.items():
-            all_stream_info.append(str(key).lower())
-            if isinstance(value, str):
-                all_stream_info.append(value.lower())
-        whole_info = " ".join(all_stream_info)
-
-        if "doviprofile81" in whole_info:
-            return "dovi_p8"
-        if "doviprofile76" in whole_info:
-            return "dovi_p7"
-        if "doviprofile5" in whole_info:
-            return "dovi_p5"
-        if any(s in whole_info for s in ["dvhe.08", "dvh1.08"]):
-            return "dovi_p8"
-        if any(s in whole_info for s in ["dvhe.07", "dvh1.07"]):
-            return "dovi_p7"
-        if any(s in whole_info for s in ["dvhe.05", "dvh1.05"]):
-            return "dovi_p5"
-
-        has_dv = "dovi" in whole_info or "dolby" in whole_info or "dolbyvision" in whole_info
-        has_hdr = "hdr10+" in whole_info or "hdr10plus" in whole_info or "hdr" in whole_info
-        if has_dv and has_hdr:
-            return "dovi_p8"
-        if has_dv:
-            return "dovi_other"
-        if "hdr10+" in whole_info or "hdr10plus" in whole_info:
-            return "hdr10+"
-        if "hdr" in whole_info:
-            return "hdr"
-
-    # 4. 文件名兜底
+    # 文件名兜底
     if ("dovi" in path_lower or "dolbyvision" in path_lower or "dv" in path_lower) and "hdr" in path_lower:
         return "dovi_p8"
     if any(s in path_lower for s in ["dovi p7", "dovi.p7", "dv.p7", "profile 7", "profile7"]):
@@ -333,36 +303,48 @@ def _get_resolution_tier(width: int, height: int) -> tuple[int, str]:
     return 0, "未知"
 
 def _get_detected_languages_from_streams(
-    media_streams: List[dict], 
+    media_streams: List[dict],
     stream_type: str
 ) -> set:
+    """
+    返回统一规则代码：
+    音轨：chi/yue/eng/jpn/kor
+    字幕：chi(简体)/yue(繁体)/eng/jpn/kor
+    """
     detected_langs = set()
+
     standard_codes = {
-        'chi': {'chi', 'zho', 'chs', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn'}, 
-        'yue': {'yue', 'cht'}, 
+        'chi': {'chi', 'zho', 'chs', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn'},
+        'yue': {'yue', 'cht'},
         'eng': {'eng'},
         'jpn': {'jpn'},
         'kor': {'kor'},
     }
-    
+
     for stream in media_streams:
-        if stream.get('Type') == stream_type:
-            # 检查 Language 字段
-            if lang_code := str(stream.get('Language', '')).lower():
-                for key, codes in standard_codes.items():
-                    if lang_code in codes:
-                        detected_langs.add(key)
-            
-            # 检查标题字段 (修复 None 值拼接报错，并加空格防止粘连)
-            raw_title = stream.get('Title') or ''
-            raw_display = stream.get('DisplayTitle') or ''
-            title_string = f"{raw_title} {raw_display}".lower()
-            
-            if not title_string.strip(): continue
-            for lang_key, keywords in AUDIO_SUBTITLE_KEYWORD_MAP.items():
-                normalized_lang_key = lang_key.replace('sub_', '')
-                if any(keyword.lower() in title_string for keyword in keywords):
-                    detected_langs.add(normalized_lang_key)
+        if stream.get('Type') != stream_type:
+            continue
+
+        # 1. 先看 Language 字段
+        lang_code = str(stream.get('Language', '')).lower().strip()
+        if lang_code:
+            for key, codes in standard_codes.items():
+                if lang_code in codes:
+                    detected_langs.add(key)
+
+        # 2. 再看标题和显示标题
+        raw_title = stream.get('Title') or ''
+        raw_display = stream.get('DisplayTitle') or ''
+        title_string = f"{raw_title} {raw_display}".lower().strip()
+
+        if not title_string:
+            continue
+
+        for lang_key, keywords in AUDIO_SUBTITLE_KEYWORD_MAP.items():
+            normalized_lang_key = lang_key.replace('sub_', '')
+            if any(keyword.lower() in title_string for keyword in keywords):
+                detected_langs.add(normalized_lang_key)
+
     return detected_langs
 
 def analyze_media_asset(item_details: dict) -> dict:

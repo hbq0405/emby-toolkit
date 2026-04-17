@@ -159,8 +159,8 @@ const activeGroup = computed(() => groups.value.find(g => g.id === activeGroupId
 const resOptions = [{label:'4K/2160p', value:'4k'}, {label:'1080p', value:'1080p'}, {label:'720p', value:'720p'}];
 const codecOptions = [{label:'HEVC/H.265', value:'hevc'}, {label:'AVC/H.264', value:'avc'}];
 const effectOptions = [{label:'DoVi P8', value:'dovi_p8'}, {label:'DoVi P7', value:'dovi_p7'}, {label:'DoVi P5', value:'dovi_p5'}, {label:'HDR10+', value:'hdr10+'}, {label:'HDR', value:'hdr'}, {label:'SDR', value:'sdr'}];
-const audioOptions = [{label:'国语', value:'chi'}, {label:'英语', value:'eng'}, {label:'日语', value:'jpn'}, {label:'韩语', value:'kor'}];
-const subOptions = [{label:'中文', value:'chi'}, {label:'英文', value:'eng'}, {label:'日文', value:'jpn'}, {label:'韩文', value:'kor'}];
+const audioOptions = [{label:'国语', value:'chi'}, {label:'粤语', value:'yue'}, {label:'英语', value:'eng'}, {label:'日语', value:'jpn'}, {label:'韩语', value:'kor'}];
+const subOptions = [{label:'简体', value:'chi'}, {label:'繁体', value:'yue'}, {label:'英文', value:'eng'}, {label:'日文', value:'jpn'}, {label:'韩文', value:'kor'}];
 const open = async () => {
   showModal.value = true;
   loading.value = true;
