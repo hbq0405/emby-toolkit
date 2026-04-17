@@ -507,6 +507,7 @@ class WashingService:
         season_num: int = None,
         episode_num: int = None,
         original_lang: str = None,
+        is_active_washing: bool = False, # ★★★ 新增：接收洗版特权标志 ★★★
     ) -> tuple[str, str]:
         """
         返回:
@@ -515,12 +516,16 @@ class WashingService:
         SKIP    已有更好版本/同级版本
         REJECT  不符合优先级规则
         """
-        # 1. ★ 直接通过 SHA1 获取最原始的视频流 JSON
+        # 1. 直接通过 SHA1 获取最原始的视频流 JSON
         raw_info = cls._get_raw_info_by_sha1(sha1)
         
-        # ★★★ 新增拦截逻辑：如果没有获取到媒体信息，直接视为不达标 ★★★
+        # 拦截逻辑：如果没有获取到媒体信息，直接视为不达标 (即使有特权也不能放行坏文件)
         if not raw_info:
             return "REJECT", "无法获取媒体流信息(可能是不支持的格式如ISO或文件损坏)"
+        
+        # ★★★ 核心修改：完结洗版特权通道 ★★★
+        if is_active_washing:
+            return "REPLACE", "完结洗版特权：无视优先级规则，强制替换零散旧版"
         
         # 2. 转换为字典以便注入辅助信息
         if isinstance(raw_info, list) and len(raw_info) > 0:

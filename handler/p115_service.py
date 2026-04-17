@@ -3675,21 +3675,27 @@ class SmartOrganizer:
         # =================================================================
         conflict_mode = cfg.get('conflict_mode', 'replace') # 获取覆盖模式，默认洗版替换
         
-        # ★★★ 洗版特权检测 ★★★
-        force_replace = False
+        # ★★★ 洗版特权检测 (细化到单集) ★★★
+        active_washing_eps = set()
+        movie_active_washing = False
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT active_washing FROM media_metadata WHERE tmdb_id = %s AND item_type = %s", (str(self.tmdb_id), 'Series' if self.media_type == 'tv' else 'Movie'))
-                    row = cursor.fetchone()
-                    if row and row.get('active_washing'):
-                        force_replace = True
+                    if self.media_type == 'tv':
+                        # 查出该剧所有带有特权的分集
+                        cursor.execute("SELECT season_number, episode_number FROM media_metadata WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND active_washing = TRUE", (str(self.tmdb_id),))
+                        for row in cursor.fetchall():
+                            active_washing_eps.add((row['season_number'], row['episode_number']))
+                    else:
+                        cursor.execute("SELECT active_washing FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Movie'", (str(self.tmdb_id),))
+                        row = cursor.fetchone()
+                        if row and row.get('active_washing'):
+                            movie_active_washing = True
         except Exception as e:
             pass
 
-        if force_replace:
-            conflict_mode = 'replace'
-            logger.info(f"  ➜ [洗版特权] 检测到当前剧集处于洗版状态，强制将覆盖模式切换为 '仅保留最新(替换)'！")
+        if active_washing_eps or movie_active_washing:
+            logger.info(f"  ➜ [洗版特权] 检测到当前媒体存在洗版特权标记，命中特权的文件将强制替换旧版！")
         
         for batch_target_cid, items in move_groups.items():
             # -----------------------------------------------------------
@@ -3736,11 +3742,21 @@ class SmartOrganizer:
                 is_vid = ext in known_video_exts
                 file_size = _parse_115_size(item.get('fs') or item.get('size'))
                 
+                # ★ 判断当前文件是否享有洗版特权
+                is_ep_active_washing = False
+                if self.media_type == 'tv' and s_num is not None and e_num is not None:
+                    is_ep_active_washing = (s_num, e_num) in active_washing_eps
+                elif self.media_type == 'movie':
+                    is_ep_active_washing = movie_active_washing
+                
+                # ★ 如果享有特权，强制将冲突模式设为 replace
+                effective_conflict_mode = 'replace' if is_ep_active_washing else conflict_mode
+
                 # ★★★ 核心升级：调用阶梯洗版优先级服务 ★★★
-                if is_vid and conflict_mode == 'replace':
+                if is_vid and effective_conflict_mode == 'replace':
                     logger.debug(f"  ➜ [覆盖模式:洗版] 正在调用洗版规则评估文件: {new_name}")
                     
-                    # ★ 核心修复：直接传 SHA1 和文件名，让洗版处理器自己去查原始流
+                    video_info = item.get('_video_info') or self._extract_video_info(new_name)
                     file_sha1 = item.get('sha1') or item.get('sha')
                     
                     action, reason = WashingService.decide_washing_action(
@@ -3752,7 +3768,8 @@ class SmartOrganizer:
                         tmdb_id=self.tmdb_id,
                         season_num=s_num,
                         episode_num=e_num,
-                        original_lang=original_lang
+                        original_lang=original_lang,
+                        is_active_washing=is_ep_active_washing # ★ 传入单集特权标志
                     )
                     
                     if action == 'REJECT':
@@ -3928,6 +3945,8 @@ class SmartOrganizer:
                 # -----------------------------------------------------------
                 # ★ 5. 生成 STRM 和记录日志
                 # -----------------------------------------------------------
+                processed_episodes_for_flag = set() # ★ 新增：记录成功处理的集数
+                
                 for file_item in valid_items:
                     fid = file_item.get('fid') or file_item.get('file_id')
                     file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
@@ -3937,6 +3956,10 @@ class SmartOrganizer:
                     is_center_cached = file_item['_is_center_cached']
                     
                     moved_count += 1
+                    
+                    # ★ 记录成功处理的集数，用于后续精准核销特权
+                    if self.media_type == 'tv' and season_num is not None and file_item.get('_episode_num') is not None:
+                        processed_episodes_for_flag.add((season_num, file_item.get('_episode_num')))
                     pick_code = file_item.get('pc') or file_item.get('pick_code') 
                     file_sha1 = file_item.get('sha1') or file_item.get('sha')
                     ext = new_filename.split('.')[-1].lower() if '.' in new_filename else ''
@@ -4169,23 +4192,28 @@ class SmartOrganizer:
             logger.debug("  ➜ [清理空目录] 批量任务模式，跳过单次垃圾回收检查，等待统一清理。")
 
         # --- 整理记录 ---
-        if moved_count > 0 or keep_original:
-            category_name = "未识别"
-            for rule in self.rules:
-                if str(rule.get('cid')) == str(target_cid):
-                    category_name = rule.get('dir_name', '未识别')
-                    break
-            
-        # ★★★ 解除洗版状态 ★★★
-        if force_replace and moved_count > 0:
+        if moved_count > 0:
             try:
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        cursor.execute("UPDATE media_metadata SET active_washing = FALSE WHERE tmdb_id = %s AND item_type = %s", (str(self.tmdb_id), 'Series' if self.media_type == 'tv' else 'Movie'))
+                        if self.media_type == 'tv' and processed_episodes_for_flag:
+                            from psycopg2.extras import execute_batch
+                            update_data = [(str(self.tmdb_id), s, e) for s, e in processed_episodes_for_flag]
+                            execute_batch(cursor, """
+                                UPDATE media_metadata 
+                                SET active_washing = FALSE 
+                                WHERE parent_series_tmdb_id = %s 
+                                  AND item_type = 'Episode' 
+                                  AND season_number = %s 
+                                  AND episode_number = %s
+                            """, update_data)
+                            logger.info(f"  ➜ [洗版特权] 已精准核销 {len(processed_episodes_for_flag)} 个分集的洗版特权状态。")
+                        elif self.media_type == 'movie' and movie_active_washing:
+                            cursor.execute("UPDATE media_metadata SET active_washing = FALSE WHERE tmdb_id = %s AND item_type = 'Movie'", (str(self.tmdb_id),))
+                            logger.info(f"  ➜ [洗版特权] 已核销电影的洗版特权状态。")
                         conn.commit()
-                logger.info(f"  ➜ [洗版特权] 洗版文件整理完成，已解除洗版状态。")
             except Exception as e:
-                pass
+                logger.error(f"  ➜ 解除洗版状态失败: {e}")
 
         return True
 

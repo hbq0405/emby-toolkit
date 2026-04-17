@@ -1095,15 +1095,21 @@ class WatchlistProcessor:
                 settings_db.decrement_subscription_quota()
                 logger.info(f"  ➜ [完结洗版] 《{series_name}》 第 {season_number} 季 已提交洗版订阅。")
                 
-                # -- 7. 如果开启了 tg 追更， 数据库状态为洗版中 (active_washing = TRUE) --
-                if watchlist_cfg.get('tgtg_channel_tracking', False):
-                    try:
-                        with connection.get_db_connection() as conn:
-                            with conn.cursor() as cursor:
-                                cursor.execute("UPDATE media_metadata SET active_washing = TRUE WHERE tmdb_id = %s AND item_type = 'Series'", (tmdb_id,))
-                                conn.commit()
-                    except Exception as e:
-                        logger.error(f"  ➜ 开启洗版状态失败: {e}")
+                # ★★★ 核心修改：将 active_washing 标记下放到该季的每一集 ★★★
+                try:
+                    with connection.get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute("""
+                                UPDATE media_metadata 
+                                SET active_washing = TRUE 
+                                WHERE parent_series_tmdb_id = %s 
+                                  AND season_number = %s 
+                                  AND item_type = 'Episode'
+                            """, (tmdb_id, season_number))
+                            conn.commit()
+                    logger.info(f"  ➜ [完结洗版] 已为 第 {season_number} 季的所有分集开启 'active_washing' 特权标志，等待入库替换。")
+                except Exception as e:
+                    logger.error(f"  ➜ 开启洗版状态失败: {e}")
             else:
                 logger.error(f"  ➜ [完结洗版] 《{series_name}》 第 {season_number} 季 提交失败。")
 
