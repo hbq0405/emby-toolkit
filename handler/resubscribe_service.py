@@ -283,6 +283,8 @@ class WashingService:
 
     @classmethod
     def _match_priority(cls, norm_info: dict, priority_rule: dict) -> tuple[bool, str]:
+        is_exclude = priority_rule.get('is_exclude', False)
+
         # 1. 分辨率
         req_res = priority_rule.get("resolution", [])
         if req_res:
@@ -295,8 +297,10 @@ class WashingService:
                     match = True
                     break
 
-            if not match:
-                return False, f"分辨率未命中 ({file_res})"
+            if is_exclude:
+                if match: return True, f"命中排除条件: 分辨率 ({file_res})"
+            else:
+                if not match: return False, f"分辨率未命中 ({file_res})"
 
         # 2. 编码
         req_codec = priority_rule.get("codec", [])
@@ -314,16 +318,22 @@ class WashingService:
                 if c in ["avc", "h264"] and ("avc" in file_codec or "h264" in file_codec):
                     match = True
 
-            if not match:
-                return False, f"编码未命中 ({file_codec})"
+            if is_exclude:
+                if match: return True, f"命中排除条件: 编码 ({file_codec})"
+            else:
+                if not match: return False, f"编码未命中 ({file_codec})"
 
         # 3. 特效
         req_effect = priority_rule.get("effect", [])
         if req_effect:
             req_effect_lower = [str(e).lower().strip() for e in req_effect]
             file_effect = norm_info["effect"]
-            if file_effect not in req_effect_lower:
-                return False, f"特效未命中 ({file_effect})"
+            match = file_effect in req_effect_lower
+            
+            if is_exclude:
+                if match: return True, f"命中排除条件: 特效 ({file_effect})"
+            else:
+                if not match: return False, f"特效未命中 ({file_effect})"
 
         # 4. 音轨
         original_lang = norm_info.get("original_lang") or ""
@@ -335,9 +345,13 @@ class WashingService:
 
             if effective_req_audio:
                 if not norm_info["audio_langs"]:
-                    return False, "未提取到音轨语言"
-                if not any(a in norm_info["audio_langs"] for a in effective_req_audio):
-                    return False, "缺少必须的音轨"
+                    if not is_exclude: return False, "未提取到音轨语言"
+                else:
+                    match = any(a in norm_info["audio_langs"] for a in effective_req_audio)
+                    if is_exclude:
+                        if match: return True, f"命中排除条件: 包含不想要的音轨"
+                    else:
+                        if not match: return False, "缺少必须的音轨"
 
         # 5. 字幕
         req_sub = priority_rule.get("subtitle", [])
@@ -347,19 +361,39 @@ class WashingService:
 
             if effective_req_sub:
                 if not norm_info["sub_langs"]:
-                    return False, "未提取到字幕语言"
-                if not any(s in norm_info["sub_langs"] for s in effective_req_sub):
-                    return False, "缺少必须的字幕"
+                    if not is_exclude: return False, "未提取到字幕语言"
+                else:
+                    match = any(s in norm_info["sub_langs"] for s in effective_req_sub)
+                    if is_exclude:
+                        if match: return True, f"命中排除条件: 包含不想要的字幕"
+                    else:
+                        if not match: return False, "缺少必须的字幕"
 
         # 6. 体积
         min_size = priority_rule.get("min_size_gb")
         max_size = priority_rule.get("max_size_gb")
-        if min_size and norm_info["size_gb"] > 0 and norm_info["size_gb"] < float(min_size):
-            return False, "体积过小"
-        if max_size and norm_info["size_gb"] > 0 and norm_info["size_gb"] > float(max_size):
-            return False, "体积过大"
+        
+        if is_exclude:
+            # 排除模式下：如果设置了最小体积，意味着“排除小于等于该体积的资源”
+            if min_size and norm_info["size_gb"] > 0 and norm_info["size_gb"] <= float(min_size):
+                return True, f"命中排除条件: 体积过小 ({norm_info['size_gb']:.1f}GB <= {min_size}GB)"
+            # 排除模式下：如果设置了最大体积，意味着“排除大于等于该体积的资源”
+            if max_size and norm_info["size_gb"] > 0 and norm_info["size_gb"] >= float(max_size):
+                return True, f"命中排除条件: 体积过大 ({norm_info['size_gb']:.1f}GB >= {max_size}GB)"
+        else:
+            # 普通模式下：必须在区间内
+            if min_size and norm_info["size_gb"] > 0 and norm_info["size_gb"] < float(min_size):
+                return False, "体积过小"
+            if max_size and norm_info["size_gb"] > 0 and norm_info["size_gb"] > float(max_size):
+                return False, "体积过大"
 
-        return True, "匹配成功"
+        # 最终返回
+        if is_exclude:
+            # 如果跑完了所有的 if 都没有 return True，说明没有任何排除条件被命中，安全放行
+            return False, "未命中任何排除条件"
+        else:
+            # 普通模式，跑完了所有的 if 都没有 return False，说明全部满足，成功命中
+            return True, "匹配成功"
 
     @classmethod
     def get_level(cls, norm_info: dict, priorities: list) -> tuple[int, str]:
