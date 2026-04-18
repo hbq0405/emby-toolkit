@@ -705,24 +705,62 @@ class MediaProcessor:
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                 aggregated_tmdb_data["series_details"]["name"] = original_title
                 
-                # =================================================================
-                # ★★★ 大一统 AI 翻译引擎 (直接作用于原始数据) ★★★
-                # =================================================================
+                # 先准备一个 dummy_emby_item，供豆瓣预合并使用
+                dummy_emby_item = {
+                    "Id": "pending",
+                    "Name": details.get('title') or details.get('name'),
+                    "OriginalTitle": details.get('original_title') or details.get('original_name'),
+                    "Type": item_type,  # ★ 必须加上 Type，否则豆瓣匹配会失败
+                    "ProductionYear": (details.get('release_date') or details.get('first_air_date') or "")[:4],
+                    "People": [],
+                    "Genres": details.get('genres', [])
+                }
+
+                # 先提取演员源数据
+                authoritative_cast_source = []
+                credits_source = None
+
+                if item_type == "Movie":
+                    credits_source = details.get('credits') or details.get('casts') or {}
+                    authoritative_cast_source = credits_source.get('cast', [])
+                elif item_type == "Series":
+                    if aggregated_tmdb_data:
+                        authoritative_cast_source = _get_series_main_cast_from_tmdb(details)
+                    else:
+                        credits_source = details.get('aggregate_credits') or details.get('credits') or {}
+                        authoritative_cast_source = credits_source.get('cast', [])
+
+                # 先拿豆瓣，再预合并，最后再进统一翻译
+                douban_cast_raw, _ = self._fetch_douban_cast_data(dummy_emby_item, details)
+                authoritative_cast_source = self._premerge_douban_roles_into_tmdb_cast(
+                    authoritative_cast_source,
+                    douban_cast_raw
+                )
+
+                # 回写进原始 TMDb 数据，确保统一翻译能扫到
+                if item_type == "Movie":
+                    if credits_source is not None:
+                        credits_source["cast"] = authoritative_cast_source
+                elif item_type == "Series":
+                    if isinstance(details.get("credits"), dict):
+                        details["credits"]["cast"] = authoritative_cast_source
+                    elif isinstance(details.get("aggregate_credits"), dict):
+                        details["aggregate_credits"]["cast"] = authoritative_cast_source
+
+                # ★★★ 大一统 AI 翻译引擎 (现在是在豆瓣预合并之后执行) ★★★
                 if self.ai_translator:
-                    # 针对剧集，传入完整的聚合数据；针对电影，传入单体数据
                     target_tmdb_data = aggregated_tmdb_data if item_type == "Series" else details
                     
                     translate_tmdb_metadata_recursively(
                         item_type=item_type,
                         tmdb_data=target_tmdb_data,
                         ai_translator=self.ai_translator,
-                        item_name=current_title or original_title, # 使用清理后的标题作为日志名
+                        item_name=current_title or original_title,
                         tmdb_api_key=self.tmdb_api_key,
                         config=self.config
                     )
 
-                # 准备演员源数据
-                authoritative_cast_source = []
+                # 翻译后重新取一次演员源数据，确保拿到翻译后的角色
                 if item_type == "Movie":
                     credits_source = details.get('credits') or details.get('casts') or {}
                     authoritative_cast_source = credits_source.get('cast', [])
@@ -735,24 +773,12 @@ class MediaProcessor:
 
                 with get_db_connection() as conn:
                     cursor = conn.cursor()
-                    dummy_emby_item = {
-                        "Id": "pending",
-                        "Name": details.get('title') or details.get('name'),
-                        "OriginalTitle": details.get('original_title') or details.get('original_name'),
-                        "Type": item_type, # ★ 必须加上 Type，否则豆瓣匹配会失败
-                        "ProductionYear": (details.get('release_date') or details.get('first_air_date') or "")[:4],
-                        "People": [],
-                        "Genres": details.get('genres', [])
-                    }
-                    
-                    # 调用豆瓣 API 获取演员表原始数据 (如果可用)，并传入核心处理函数进行翻译/去重/头像检查
-                    douban_cast_raw, _ = self._fetch_douban_cast_data(dummy_emby_item, details)
 
                     logger.info(f"  ➜ [实时监控] 启动演员表核心处理 (AI翻译/去重/头像检查)...")
                     final_processed_cast = self._process_cast_list(
                         tmdb_cast_people=authoritative_cast_source,
                         emby_cast_people=[],
-                        douban_cast_list=douban_cast_raw, # ★ 传入豆瓣数据
+                        douban_cast_list=douban_cast_raw,
                         item_details_from_emby=dummy_emby_item,
                         cursor=cursor,
                         tmdb_api_key=self.tmdb_api_key,
@@ -2355,6 +2381,69 @@ class MediaProcessor:
         )
         return cast_data.get("cast", []), None
     
+    # --- 预合并豆瓣角色信息到 TMDb 演员表，提升角色准确性 ---
+    def _premerge_douban_roles_into_tmdb_cast(
+        self,
+        tmdb_cast_people: List[Dict[str, Any]],
+        douban_cast_list: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """
+        在“大一统翻译”之前，先把豆瓣已匹配到的演员名/角色名预合并进 TMDb 演员表。
+        目的：
+        1. 豆瓣新增/修正的角色名也能进入统一翻译链
+        2. 不改动后续 _process_cast_list 的匹配框架，只做翻译前预热
+        """
+        local_cast = [a.copy() for a in (tmdb_cast_people or []) if isinstance(a, dict)]
+        if not local_cast:
+            return []
+
+        douban_candidates = actor_utils.format_douban_cast(douban_cast_list or [])
+        if not douban_candidates:
+            return local_cast
+
+        for d_actor in douban_candidates:
+            douban_name_zh = str(d_actor.get("Name") or "").strip().lower()
+            douban_name_en = str(d_actor.get("OriginalName") or "").strip().lower()
+            cleaned_douban_role = utils.clean_character_name_static(d_actor.get("Role"))
+            douban_id_to_add = d_actor.get("DoubanCelebrityId")
+
+            matched_actor = None
+            for l_actor in local_cast:
+                local_name = str(l_actor.get("name") or "").strip().lower()
+                local_original_name = str(l_actor.get("original_name") or "").strip().lower()
+
+                is_match = False
+                if douban_name_zh and (douban_name_zh == local_name or douban_name_zh == local_original_name):
+                    is_match = True
+                elif douban_name_en and (douban_name_en == local_name or douban_name_en == local_original_name):
+                    is_match = True
+
+                if is_match:
+                    matched_actor = l_actor
+                    break
+
+            if not matched_actor:
+                continue
+
+            # 名字：豆瓣中文名优先，便于后续统一翻译/入库
+            if d_actor.get("Name") and utils.contains_chinese(d_actor.get("Name")):
+                matched_actor["name"] = d_actor.get("Name")
+
+            # 原名：尽量保留英文原名，方便后续匹配
+            if d_actor.get("OriginalName") and not matched_actor.get("original_name"):
+                matched_actor["original_name"] = d_actor.get("OriginalName")
+
+            # 角色：这里先预合并，让它进入统一翻译链
+            matched_actor["character"] = actor_utils.select_best_role(
+                utils.clean_character_name_static(matched_actor.get("character")),
+                cleaned_douban_role
+            )
+
+            if douban_id_to_add:
+                matched_actor["douban_id"] = douban_id_to_add
+
+        return local_cast
+    
     # --- 通过 API 更新 Emby 中人物(演员/导演)名字 ---
     def _update_emby_person_names(
         self,
@@ -2872,11 +2961,35 @@ class MediaProcessor:
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
                                 aggregated_tmdb_data["series_details"]["name"] = original_title
 
-                # =================================================================
-                # ★★★ 核心修复：大一统 AI 翻译引擎 (必须在构建骨架前，直接作用于原始数据) ★★★
-                # =================================================================
+                # 先提取演员源数据，供“豆瓣预合并 -> 大一统翻译”使用
+                authoritative_cast_source = []
+                credits_source = None
+
+                if item_type == "Movie":
+                    credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
+                    authoritative_cast_source = credits_source.get('cast', [])
+                elif item_type == "Series":
+                    authoritative_cast_source = _get_series_main_cast_from_tmdb(fresh_data)
+
+                # 先拿豆瓣，再把豆瓣角色预合并进 TMDb 演员表
+                douban_cast_raw, _ = self._fetch_douban_cast_data(item_details_from_emby, fresh_data)
+                authoritative_cast_source = self._premerge_douban_roles_into_tmdb_cast(
+                    authoritative_cast_source,
+                    douban_cast_raw
+                )
+
+                # 把预合并后的演员表回写进源数据，确保后续统一翻译能扫到豆瓣补进来的角色
+                if item_type == "Movie":
+                    if credits_source is not None:
+                        credits_source["cast"] = authoritative_cast_source
+                elif item_type == "Series":
+                    if isinstance(fresh_data.get("credits"), dict):
+                        fresh_data["credits"]["cast"] = authoritative_cast_source
+                    elif isinstance(fresh_data.get("aggregate_credits"), dict):
+                        fresh_data["aggregate_credits"]["cast"] = authoritative_cast_source
+
+                # ★★★ 大一统 AI 翻译引擎 (现在是在豆瓣预合并之后执行) ★★★
                 if self.ai_translator:
-                    # 针对剧集，传入完整的聚合数据；针对电影，传入单体数据
                     target_tmdb_data = aggregated_tmdb_data if item_type == "Series" else fresh_data
                     
                     translate_tmdb_metadata_recursively(
@@ -2913,8 +3026,7 @@ class MediaProcessor:
                 if not item_details_from_emby.get("Genres") and fresh_data.get("genres"):
                     item_details_from_emby["Genres"] = fresh_data.get("genres")
 
-                # 提取演员源数据
-                authoritative_cast_source = []
+                # 翻译后重新取一次演员源数据，确保角色名拿到的是翻译后的最终值
                 if item_type == "Movie":
                     credits_source = fresh_data.get('credits') or fresh_data.get('casts') or {}
                     authoritative_cast_source = credits_source.get('cast', [])
@@ -2931,7 +3043,6 @@ class MediaProcessor:
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
                     emby_config = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
                     enriched_emby_cast = self.actor_db_manager.enrich_actors_with_provider_ids(cursor, current_emby_cast_raw, emby_config)
-                    douban_cast_raw, _ = self._fetch_douban_cast_data(item_details_from_emby, fresh_data)
 
                     final_processed_cast = self._process_cast_list(
                         tmdb_cast_people=authoritative_cast_source,
@@ -3276,7 +3387,17 @@ class MediaProcessor:
                     merged_actor["name"] = tmdb_match.get("name")
                 
                 raw_role = emby_actor.get("Role")
-                merged_actor["character"] = utils.clean_character_name_static(raw_role) if raw_role else None
+                cleaned_emby_role = utils.clean_character_name_static(raw_role) if raw_role else None
+                translated_tmdb_role = utils.clean_character_name_static(tmdb_match.get("character")) if tmdb_match.get("character") else None
+
+                # 规则：
+                # 1. Emby 角色名只有在它本身是中文时，才允许覆盖
+                # 2. 否则优先保留 TMDb/翻译缓存里的角色名
+                merged_actor["character"] = (
+                    cleaned_emby_role
+                    if cleaned_emby_role and utils.contains_chinese(cleaned_emby_role)
+                    else (translated_tmdb_role or cleaned_emby_role)
+                )
                 
                 final_cast_list.append(merged_actor)
                 used_tmdb_ids.add(tmdb_id_str)
