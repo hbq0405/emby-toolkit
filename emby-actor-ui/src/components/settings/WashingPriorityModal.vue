@@ -24,7 +24,7 @@
                 <n-icon class="drag-handle" :component="MenuIcon" />
                 <div class="group-info">
                   <div class="group-name">{{ group.name || '未命名规则组' }}</div>
-                  <div class="group-desc">{{ group.media_type === 'Movie' ? '电影' : '剧集' }}</div>
+                  <div class="group-desc">{{ group.media_type === 'All' ? '通用' : (group.media_type === 'Movie' ? '电影' : '剧集') }}</div>
                 </div>
                 <n-popconfirm @positive-click.stop="deleteGroup(index)">
                   <template #trigger>
@@ -50,7 +50,7 @@
                 </n-gi>
                 <n-gi>
                   <n-form-item label="媒体类型">
-                    <n-select v-model:value="activeGroup.media_type" :options="[{label:'电影', value:'Movie'}, {label:'剧集', value:'Series'}]" @update:value="saveGroups" />
+                    <n-select v-model:value="activeGroup.media_type" :options="[{label:'通用 (电影+剧集)', value:'All'}, {label:'电影', value:'Movie'}, {label:'剧集', value:'Series'}]" @update:value="saveGroups" />
                   </n-form-item>
                 </n-gi>
                 <n-gi span="2">
@@ -336,7 +336,7 @@ const addGroup = () => {
   const newGroup = {
     id: Date.now(), // 临时 ID
     name: '新规则组',
-    media_type: 'Movie',
+    media_type: 'All', // ★ 默认改为通用
     target_cids: [],
     priorities: []
   };

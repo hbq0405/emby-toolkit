@@ -403,21 +403,32 @@ class WashingService:
         for i, p_rule in enumerate(priorities):
             is_match, reason = cls._match_priority(norm_info, p_rule)
             if is_match:
-                # ★★★ 核心修改：直接使用底层返回的具体原因，不再写死 ★★★
                 if p_rule.get('is_exclude'):
                     return -1, reason 
                 return i + 1, f"命中优先级 {i + 1}"
-            fail_reasons.append(f"优先级{i+1}[{reason}]")
+            
+            # ★★★ 核心修复：如果没命中排除规则，这是好事！不要把它记入失败原因！ ★★★
+            if not p_rule.get('is_exclude'):
+                fail_reasons.append(f"优先级{i+1}[{reason}]")
+                
+        if not fail_reasons:
+            return 0, "未配置任何有效的普通优先级规则"
+            
         return 0, " | ".join(fail_reasons)
 
     @classmethod
-    def _load_rule_group(cls, db_media_type: str, target_cid: str) -> Optional[dict]:
-        rule_group = None
+    def _load_priorities(cls, db_media_type: str, target_cid: str) -> list:
+        """
+        加载并合并所有匹配的规则组中的优先级。
+        支持 'All' (通用) 类型的规则组，实现全局前置排除。
+        """
+        combined_priorities = []
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
+                    # ★ 核心修改：同时拉取 'All' 和对应媒体类型的规则组，并按排序合并
                     cursor.execute(
-                        "SELECT * FROM washing_priority_groups WHERE media_type = %s ORDER BY sort_order ASC",
+                        "SELECT * FROM washing_priority_groups WHERE media_type IN (%s, 'All') ORDER BY sort_order ASC",
                         (db_media_type,)
                     )
                     for row in cursor.fetchall():
@@ -428,20 +439,19 @@ class WashingService:
                             except Exception:
                                 cids = []
 
+                        # 如果没有限制目录，或者当前目录在限制列表中，则合并其优先级
                         if not cids or str(target_cid) in cids:
-                            rule_group = dict(row)
-                            priorities = rule_group.get("priorities", [])
+                            priorities = row.get("priorities", [])
                             if isinstance(priorities, str):
                                 try:
                                     priorities = json.loads(priorities)
                                 except Exception:
                                     priorities = []
-                            rule_group["priorities"] = priorities
-                            break
+                            combined_priorities.extend(priorities)
         except Exception as e:
             logger.warning(f"  ➜ 获取洗版优先级规则失败: {e}")
 
-        return rule_group
+        return combined_priorities
 
     @classmethod
     def _load_existing_raw_infos(
@@ -584,12 +594,10 @@ class WashingService:
 
         db_media_type = "Movie" if media_type.lower() == "movie" else "Series"
 
-        # 1. 规则组
-        rule_group = cls._load_rule_group(db_media_type, target_cid)
-        if not rule_group or not rule_group.get("priorities"):
+        # 1. 加载并合并所有匹配的优先级规则
+        priorities = cls._load_priorities(db_media_type, target_cid)
+        if not priorities:
             return "ACCEPT", "未配置优先级规则，默认放行"
-
-        priorities = rule_group["priorities"]
 
         # 2. 新文件是否达标
         new_level, new_reason_detail = cls.get_level(norm_new, priorities)
