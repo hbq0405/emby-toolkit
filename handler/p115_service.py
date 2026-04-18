@@ -845,37 +845,21 @@ class P115CacheManager:
             return None
 
     @staticmethod
-    def save_cid(cid, parent_cid, name, sha1=None, local_path=None):
-        """将目录 CID 存入本地数据库缓存，支持同时写入 local_path"""
-        if not cid or not parent_cid or not name:
-            return
-
+    def save_cid(cid, parent_cid, name, sha1=None):
+        """将 CID 和 SHA1 存入本地数据库缓存"""
+        if not cid or not parent_cid or not name: return
         try:
-            norm_local_path = None
-            if local_path:
-                norm_local_path = str(local_path).replace('\\', '/')
-
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1, local_path)
-                        VALUES (%s, %s, %s, %s, %s)
+                        INSERT INTO p115_filesystem_cache (id, parent_id, name, sha1)
+                        VALUES (%s, %s, %s, %s)
                         ON CONFLICT (parent_id, name)
-                        DO UPDATE SET
-                            id = EXCLUDED.id,
-                            sha1 = COALESCE(EXCLUDED.sha1, p115_filesystem_cache.sha1),
-                            local_path = COALESCE(EXCLUDED.local_path, p115_filesystem_cache.local_path),
-                            updated_at = NOW()
-                    """, (
-                        str(cid),
-                        str(parent_cid),
-                        str(name),
-                        sha1,
-                        norm_local_path
-                    ))
+                        DO UPDATE SET id = EXCLUDED.id, sha1 = EXCLUDED.sha1, updated_at = NOW()
+                    """, (str(cid), str(parent_cid), str(name), sha1))
                     conn.commit()
         except Exception as e:
-            logger.error(f"  ➜ 写入 115 目录缓存失败: {e}")
+            logger.error(f"  ➜ 写入 115 DB 缓存失败: {e}")
 
     @staticmethod
     def get_file_sha1(fid):
@@ -3337,19 +3321,19 @@ class SmartOrganizer:
 
         final_home_cid = None
         current_parent_cid = dest_parent_cid
-
+        
+        # ★★★ 核心升级：支持 / 分层创建多级目录 ★★★
         dir_parts = [p.strip() for p in std_root_name.split('/') if p.strip()]
-        base_local_path = str(relative_category_path).replace('\\', '/').strip('/')
-
+        
         for attempt in range(2):
             success_chain = True
             temp_parent_cid = current_parent_cid
-            current_chain_path = base_local_path
-
+            
+            # 逐级检查/创建目录
             for part_name in dir_parts:
-                current_chain_path = os.path.join(current_chain_path, part_name).replace('\\', '/')
                 part_cid = P115CacheManager.get_cid(temp_parent_cid, part_name)
-
+                
+                # 缓存自愈检查
                 if part_cid and str(part_cid) == str(source_root_id) and str(temp_parent_cid) != str(root_item.get('pid') or root_item.get('parent_id')):
                     P115CacheManager.delete_cid(part_cid)
                     part_cid = None
@@ -3358,8 +3342,9 @@ class SmartOrganizer:
                     mk_res = self.client.fs_mkdir(part_name, temp_parent_cid)
                     if mk_res.get('state'):
                         part_cid = mk_res.get('cid')
-                        P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name, local_path=current_chain_path)
+                        P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
                     else:
+                        # 只有疑似“已存在/重名”才补搜；其他错误不再二次轰炸 API
                         err_text = json.dumps(mk_res, ensure_ascii=False)
                         should_search_after_mkdir_fail = any(
                             kw in err_text.lower()
@@ -3380,30 +3365,28 @@ class SmartOrganizer:
                                     item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
                                     if item_name == part_name and item_fc == '0':
                                         part_cid = item.get('fid') or item.get('file_id')
-                                        P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name, local_path=current_chain_path)
+                                        P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
                                         break
                             except Exception:
                                 pass
-                else:
-                    # 老缓存命中但 local_path 可能为空，顺手补齐
-                    P115CacheManager.update_local_path(part_cid, current_chain_path)
-
+                
                 if part_cid:
                     temp_parent_cid = part_cid
                 else:
                     success_chain = False
                     break
-
+            
             if success_chain:
                 final_home_cid = temp_parent_cid
-                break
-
+                break # 成功获取最终层级，跳出重试循环
+                
+            # 失败回退逻辑
             if attempt == 0:
                 fallback_cid = self.get_target_cid(ignore_memory=True)
                 if fallback_cid and str(fallback_cid) != str(current_parent_cid):
                     P115CacheManager.delete_cid(current_parent_cid)
                     current_parent_cid = fallback_cid
-                    target_cid = fallback_cid
+                    target_cid = fallback_cid 
                 else:
                     break
 
@@ -3739,39 +3722,26 @@ class SmartOrganizer:
                         else:
                             s_mk = self.client.fs_mkdir(s_name, final_home_cid)
                             s_cid = s_mk.get('cid') if s_mk.get('state') else None
-
-                            if not s_cid:
-                                err_text = json.dumps(s_mk, ensure_ascii=False)
-                                should_search_after_mkdir_fail = any(
-                                    kw in err_text.lower()
-                                    for kw in ['exist', 'exists', 'already', '重复', '已存在', 'same_name', '文件名重复']
-                                )
-
-                                if should_search_after_mkdir_fail:
-                                    try:
-                                        s_search = self.client.fs_files({
-                                            'cid': final_home_cid,
-                                            'search_value': s_name,
-                                            'limit': 200,
-                                            'record_open_time': 0,
-                                            'count_folders': 0
-                                        })
-                                        for item in s_search.get('data', []):
-                                            item_name = item.get('fn') or item.get('n') or item.get('file_name')
-                                            item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                                            item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid'))
-                                            if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
-                                                s_cid = item.get('fid') or item.get('file_id')
-                                                break
-                                    except Exception:
-                                        pass
-
+                            
+                            if not s_cid: 
+                                try:
+                                    s_search = self.client.fs_files({'cid': final_home_cid, 'search_value': s_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
+                                    for item in s_search.get('data', []):
+                                        item_name = item.get('fn') or item.get('n') or item.get('file_name')
+                                        item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
+                                        item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid'))
+                                        
+                                        if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
+                                            s_cid = item.get('fid') or item.get('file_id')
+                                            break
+                                except: pass
+                            
                             if s_cid:
-                                season_local_path = os.path.join(relative_category_path, std_root_name, s_name).replace('\\', '/')
-                                P115CacheManager.save_cid(s_cid, final_home_cid, s_name, local_path=season_local_path)
-                                memory_dir_cache[cache_key] = s_cid
+                                P115CacheManager.save_cid(s_cid, final_home_cid, s_name)
+                                memory_dir_cache[cache_key] = s_cid # ★ 写入内存缓存
                                 real_target_cid = s_cid
                             else:
+                                # ★ 核心防御：如果创建和搜索都失败了，标记为 FAILED，同批次不再重试！
                                 memory_dir_cache[cache_key] = 'FAILED'
                                 real_target_cid = final_home_cid
 
