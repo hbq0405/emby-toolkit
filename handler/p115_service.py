@@ -3477,40 +3477,59 @@ class SmartOrganizer:
 
         # 去重
         video_sha1s = list(dict.fromkeys(video_sha1s))
-            
-        missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
-        if missing_sha1s:
-            req_count = len(missing_sha1s)
-            logger.info(f"  ➜ [批量查询] 准备向中心服务器查询 {req_count} 个文件的媒体信息...")
+
+        if video_sha1s:
+            # 先查本地媒体信息缓存，剔除已有的，只查缺失的
+            local_cached_mediainfo_sha1s = set()
             try:
-                import extensions
-                processor = extensions.media_processor_instance
-                if processor and getattr(processor, 'p115_center', None):
-                    resp = processor.p115_center.download_emby_mediainfo_data(missing_sha1s)
-                    
-                    if isinstance(resp, dict):
-                        # ★ 核心优化：过滤掉可能返回的空值/None，只统计真正有数据的命中项
-                        valid_hits = {k: v for k, v in resp.items() if v}
-                        hit_count = len(valid_hits)
-                        
-                        if hit_count > 0:
-                            pre_fetched_mediainfo = valid_hits
-                            # ★ 核心修复：批量查询中心服务器后，立即写入本地缓存！
-                            for k_sha1, v_json in valid_hits.items():
-                                P115CacheManager.save_mediainfo_cache(k_sha1, v_json)
-                                local_pre_fetched_mediainfo[k_sha1] = v_json
-                            
-                            if hit_count == req_count:
-                                logger.info(f"  ➜ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
+                from database.connection import get_db_connection
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute(
+                            "SELECT sha1, mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)",
+                            (list(video_sha1s),)
+                        )
+                        for row in cursor.fetchall():
+                            local_cached_mediainfo_sha1s.add(row['sha1'])
+                            if row['mediainfo_json']:
+                                local_pre_fetched_mediainfo[row['sha1']] = (
+                                    row['mediainfo_json']
+                                    if isinstance(row['mediainfo_json'], list)
+                                    else json.loads(row['mediainfo_json'])
+                                )
+            except Exception:
+                pass
+            
+            missing_sha1s = list(set(video_sha1s) - local_cached_mediainfo_sha1s)
+            if missing_sha1s:
+                req_count = len(missing_sha1s)
+                logger.info(f"  ➜ [批量查询] 准备向中心服务器查询 {req_count} 个文件的媒体信息.")
+                try:
+                    import extensions
+                    processor = extensions.media_processor_instance
+                    if processor and getattr(processor, 'p115_center', None):
+                        resp = processor.p115_center.download_emby_mediainfo_data(missing_sha1s)
+
+                        if isinstance(resp, dict):
+                            valid_hits = {k: v for k, v in resp.items() if v}
+                            hit_count = len(valid_hits)
+
+                            if hit_count > 0:
+                                pre_fetched_mediainfo = valid_hits
+                                for k_sha1, v_json in valid_hits.items():
+                                    P115CacheManager.save_mediainfo_cache(k_sha1, v_json)
+                                    local_pre_fetched_mediainfo[k_sha1] = v_json
+
+                                if hit_count == req_count:
+                                    logger.info(f"  ➜ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
+                                else:
+                                    logger.info(f"  ➜ [批量查询] 部分命中：成功获取 {hit_count}/{req_count} 个文件的媒体信息。")
                             else:
-                                logger.info(f"  ➜ [批量查询] 部分命中：成功获取 {hit_count}/{req_count} 个文件的媒体信息。")
+                                logger.info(f"  ➜ [批量查询] 中心服务器暂无这 {req_count} 个文件的媒体信息。")
                         else:
-                            logger.info(f"  ➜ [批量查询] 中心服务器暂无这 {req_count} 个文件的媒体信息。")
-                    else:
-                        logger.warning(f"  ➜ [批量查询] 中心服务器返回数据格式异常。")
-                        
-            except Exception as e:
-                logger.warning(f"  ➜ [批量查询] 中心服务器查询失败: {e}")
+                            logger.warning(f"  ➜ [批量查询] 中心服务器返回数据格式异常。")
+                except Exception as e:
+                    logger.warning(f"  ➜ [批量查询] 中心服务器请求失败: {e}")
 
         # 确保 allowed_exts 有兜底，防止用户清空列表导致报错
         if not allowed_exts:
