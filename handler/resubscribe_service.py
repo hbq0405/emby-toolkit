@@ -347,11 +347,12 @@ class WashingService:
                 if not norm_info["audio_langs"]:
                     if not is_exclude: return False, "未提取到音轨语言"
                 else:
-                    match = any(a in norm_info["audio_langs"] for a in effective_req_audio)
+                    # ★ 优化：找出具体命中了哪些不想要的音轨
+                    matched_audios = [a for a in norm_info["audio_langs"] if a in effective_req_audio]
                     if is_exclude:
-                        if match: return True, f"命中排除条件: 包含不想要的音轨"
+                        if matched_audios: return True, f"命中排除条件: 音轨 ({', '.join(matched_audios)})"
                     else:
-                        if not match: return False, "缺少必须的音轨"
+                        if not matched_audios: return False, "缺少必须的音轨"
 
         # 5. 字幕
         req_sub = priority_rule.get("subtitle", [])
@@ -363,11 +364,12 @@ class WashingService:
                 if not norm_info["sub_langs"]:
                     if not is_exclude: return False, "未提取到字幕语言"
                 else:
-                    match = any(s in norm_info["sub_langs"] for s in effective_req_sub)
+                    # ★ 优化：找出具体命中了哪些不想要的字幕
+                    matched_subs = [s for s in norm_info["sub_langs"] if s in effective_req_sub]
                     if is_exclude:
-                        if match: return True, f"命中排除条件: 包含不想要的字幕"
+                        if matched_subs: return True, f"命中排除条件: 字幕 ({', '.join(matched_subs)})"
                     else:
-                        if not match: return False, "缺少必须的字幕"
+                        if not matched_subs: return False, "缺少必须的字幕"
 
         # 6. 体积
         min_size = priority_rule.get("min_size_gb")
@@ -401,9 +403,9 @@ class WashingService:
         for i, p_rule in enumerate(priorities):
             is_match, reason = cls._match_priority(norm_info, p_rule)
             if is_match:
-                # ★★★ 核心修改：如果该层级被标记为排除规则，返回 -1 触发秒杀 ★★★
+                # ★★★ 核心修改：直接使用底层返回的具体原因，不再写死 ★★★
                 if p_rule.get('is_exclude'):
-                    return -1, f"命中排除规则 (第 {i + 1} 级)"
+                    return -1, reason 
                 return i + 1, f"命中优先级 {i + 1}"
             fail_reasons.append(f"优先级{i+1}[{reason}]")
         return 0, " | ".join(fail_reasons)
