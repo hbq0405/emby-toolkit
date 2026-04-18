@@ -218,6 +218,57 @@ def task_scan_and_organize_115(processor=None):
                 task_cond.wait()
 
         # =================================================================
+        # ★★★ 混合大杂烩目录智能打散机制 ★★★
+        # =================================================================
+        cleaned_groups = {}
+        for top_name, group_data in physical_groups.items():
+            files = group_data["files"]
+            is_tv = group_data["is_tv"]
+
+            has_tmdb = bool(re.search(r'(?:tmdb|tmdbid)[=\-_]*(\d+)', top_name, re.IGNORECASE))
+            has_year = bool(re.search(r'[\(\[\.\s_-](19\d{2}|20\d{2})(?:[\)\]\.\s_-]|$)', top_name))
+
+            video_files = [f for f in files if f.get('fn', '').split('.')[-1].lower() in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']]
+
+            # 判定条件：不是剧集，没TMDB，没年份，且包含超过1个视频
+            if not is_tv and not has_tmdb and not has_year and len(video_files) > 1:
+                logger.info(f"  ➜ [智能打散] 检测到疑似混合大目录 '{top_name}' (包含 {len(video_files)} 个独立视频)，执行打散处理...")
+                
+                assigned_fids = set()
+                # 1. 以视频文件为基准，创建独立的新组
+                for v_file in video_files:
+                    v_name = v_file.get('fn') or v_file.get('n') or v_file.get('file_name', '')
+                    v_base = v_name.rsplit('.', 1)[0] if '.' in v_name else v_name
+                    new_group_name = v_name # 用视频文件名作为新的顶层组名
+                    cleaned_groups[new_group_name] = {"files": [v_file], "is_tv": False, "has_season_dir": False}
+                    assigned_fids.add(v_file.get('fid') or v_file.get('file_id'))
+
+                    # 2. 寻找属于这个视频的字幕/NFO (前缀匹配)
+                    for other_file in files:
+                        o_fid = other_file.get('fid') or other_file.get('file_id')
+                        if o_fid in assigned_fids: continue
+                        
+                        o_name = other_file.get('fn') or other_file.get('n') or other_file.get('file_name', '')
+                        o_ext = o_name.split('.')[-1].lower() if '.' in o_name else ''
+                        if o_ext not in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                            if o_name.startswith(v_base):
+                                cleaned_groups[new_group_name]["files"].append(other_file)
+                                assigned_fids.add(o_fid)
+
+                # 3. 孤儿文件单独成组 (直接打入未识别)
+                for f in files:
+                    f_id = f.get('fid') or f.get('file_id')
+                    if f_id not in assigned_fids:
+                        o_name = f.get('fn') or f.get('n') or f.get('file_name', '')
+                        cleaned_groups[o_name] = {"files": [f], "is_tv": False, "has_season_dir": False}
+            else:
+                # 正常目录，保持原样
+                cleaned_groups[top_name] = group_data
+
+        # 用清洗后的分组替换原分组
+        physical_groups = cleaned_groups
+
+        # =================================================================
         # 阶段二：单次查询与并发批量整理
         # =================================================================
         processed_count = 0

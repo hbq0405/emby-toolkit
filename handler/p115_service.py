@@ -3730,15 +3730,23 @@ class SmartOrganizer:
 
             # =================================================================
             # ★★★ 核心修复 1：视频优先排序 ★★★
-            # 确保视频排在前面先被洗版规则评估，字幕排在后面
             # =================================================================
             items.sort(key=lambda x: 0 if (x['_new_filename'].split('.')[-1].lower() in known_video_exts) else 1)
+            known_sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
+
+            # =================================================================
+            # ★★★ 核心修复 4：外挂字幕豁免机制 ★★★
+            # 扫描本批次，记录哪些视频带有外挂字幕 (支持电影和剧集)
+            # =================================================================
+            episodes_with_ext_subs = set()
+            for item in items:
+                temp_name = item['_new_filename']
+                temp_ext = temp_name.split('.')[-1].lower() if '.' in temp_name else ''
+                if temp_ext in known_sub_exts:
+                    episodes_with_ext_subs.add((item.get('_season_num'), item.get('_episode_num')))
 
             valid_items = []
             fids_to_delete = set()
-            
-            # ★★★ 核心修复 2：株连黑名单 ★★★
-            # 记录本批次中被拦截或跳过的 剧集(季, 集) 或 电影
             rejected_episodes = set()
 
             from handler.resubscribe_service import WashingService
@@ -3752,7 +3760,7 @@ class SmartOrganizer:
                 is_vid = ext in known_video_exts
                 file_size = _parse_115_size(item.get('fs') or item.get('size'))
                 
-                # ★★★ 核心修复 3：检查带头大哥是否已经挂了 ★★★
+                # 检查带头大哥是否已经挂了
                 if (s_num, e_num) in rejected_episodes:
                     logger.info(f"  ➜ [关联跳过] 视频已被拦截/跳过，同步忽略字幕: {new_name}")
                     unrecognized_fids.append(item.get('fid') or item.get('file_id'))
@@ -3766,6 +3774,9 @@ class SmartOrganizer:
                     is_ep_active_washing = movie_active_washing
                 
                 effective_conflict_mode = 'replace' if is_ep_active_washing else conflict_mode
+
+                # ★ 判断是否享有外挂字幕豁免权
+                has_ext_sub = (s_num, e_num) in episodes_with_ext_subs
 
                 # 调用阶梯洗版优先级服务
                 if is_vid and effective_conflict_mode == 'replace':
@@ -3784,7 +3795,8 @@ class SmartOrganizer:
                         season_num=s_num,
                         episode_num=e_num,
                         original_lang=original_lang,
-                        is_active_washing=is_ep_active_washing 
+                        is_active_washing=is_ep_active_washing,
+                        has_external_subtitle=has_ext_sub # ★★★ 传入外挂字幕豁免标志 ★★★
                     )
                     
                     if action == 'REJECT':

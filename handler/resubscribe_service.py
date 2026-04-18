@@ -278,7 +278,7 @@ class WashingService:
                 or ""
             )
         norm["original_lang"] = cls._normalize_lang(raw_original_lang)
-
+        norm["has_external_subtitle"] = parsed.get("has_external_subtitle", False)
         return norm
 
     @classmethod
@@ -361,15 +361,16 @@ class WashingService:
             effective_req_sub = {s for s in normalized_req_sub if s and s != original_lang}
 
             if effective_req_sub:
-                if not norm_info["sub_langs"]:
-                    if not is_exclude: return False, "未提取到字幕语言"
+                has_ext_sub = norm_info.get("has_external_subtitle", False)
+                matched_subs = [s for s in norm_info["sub_langs"] if s in effective_req_sub]
+                
+                if is_exclude:
+                    # 排除模式：只有明确提取到了不想要的字幕，才排除。外挂字幕不作为排除依据（无罪推定）
+                    if matched_subs: return True, f"命中排除条件: 字幕 ({', '.join(matched_subs)})"
                 else:
-                    # ★ 优化：找出具体命中了哪些不想要的字幕
-                    matched_subs = [s for s in norm_info["sub_langs"] if s in effective_req_sub]
-                    if is_exclude:
-                        if matched_subs: return True, f"命中排除条件: 字幕 ({', '.join(matched_subs)})"
-                    else:
-                        if not matched_subs: return False, "缺少必须的字幕"
+                    # 普通模式：必须包含想要的字幕。如果有外挂字幕，豁免此检查（假设外挂字幕就是想要的）
+                    if not matched_subs and not has_ext_sub: 
+                        return False, "缺少必须的字幕"
 
         # 6. 体积
         min_size = priority_rule.get("min_size_gb")
@@ -558,7 +559,8 @@ class WashingService:
         season_num: int = None,
         episode_num: int = None,
         original_lang: str = None,
-        is_active_washing: bool = False, # ★★★ 新增：接收洗版特权标志 ★★★
+        is_active_washing: bool = False,
+        has_external_subtitle: bool = False, # ★★★ 新增参数 ★★★
     ) -> tuple[str, str]:
         """
         返回:
@@ -590,6 +592,7 @@ class WashingService:
         new_video_info["filename"] = file_name
         new_video_info["_file_size"] = file_size
         new_video_info["_original_lang"] = original_lang
+        new_video_info["has_external_subtitle"] = has_external_subtitle # ★★★ 注入字典 ★★★
 
         # 4. 统一调用标准化解析
         norm_new = cls._normalize_info(new_video_info)
