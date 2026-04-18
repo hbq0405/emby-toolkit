@@ -4285,11 +4285,10 @@ class SmartOrganizer:
             self.client.fs_move(unrecognized_fids, unidentified_cid)
             
         if unqualified_items and unidentified_cid:
-            logger.info(f"  ➜ 发现 {len(unqualified_items)} 个质检不合格文件，正在移入未识别目录.")
+            logger.info(f"  ➜ 发现 {len(unqualified_items)} 个质检不合格文件，正在移入未识别目录...")
             unq_fids = [item['fid'] for item in unqualified_items if item['fid']]
             self.client.fs_move(unq_fids, unidentified_cid)
-
-            # 1) 逐条写数据库记录 —— 保留
+            
             for item in unqualified_items:
                 P115RecordManager.add_or_update_record(
                     file_id=item['fid'],
@@ -4304,18 +4303,13 @@ class SmartOrganizer:
                     season_number=item['season_num'],
                     fail_reason=item['reason']
                 )
-
-            # ★★★ 一次聚合 TG 通知 ★★★
-            try:
-                from handler.telegram import send_intercept_batch_notification
-                send_intercept_batch_notification(
-                    media_title=self.details.get('title') or self.original_title or root_name,
-                    tmdb_id=self.tmdb_id,
-                    media_type=self.media_type,
-                    items=unqualified_items
-                )
-            except Exception as e:
-                logger.error(f"  ➜ 触发聚合拦截通知失败: {e}")
+                
+                # ★★★ 触发 TG 拦截通知 ★★★
+                try:
+                    from handler.telegram import send_intercept_notification
+                    send_intercept_notification(item['name'], item['reason'])
+                except Exception as e:
+                    logger.error(f"  ➜ 触发拦截通知失败: {e}")
 
         # =================================================================
         # ★ 极简垃圾回收：直接通知缓冲队列检查“待整理”目录

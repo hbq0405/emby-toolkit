@@ -4,10 +4,6 @@ import threading
 import extensions
 import requests
 import logging
-import re
-import time
-import threading
-from handler.p115_service import P115Service
 from datetime import datetime
 from config_manager import APP_CONFIG, get_proxies_for_requests
 from handler.emby import get_emby_item_details
@@ -16,34 +12,6 @@ from database.connection import get_db_connection
 import constants
 
 logger = logging.getLogger(__name__)
-
-_TG_NOTIFY_TARGETS_CACHE = {
-    "targets": None,
-    "expire_at": 0
-}
-def _get_intercept_notify_targets():
-    """缓存 5 分钟，避免每条通知都查一次管理员 Chat ID"""
-    now = time.time()
-    if _TG_NOTIFY_TARGETS_CACHE["targets"] and now < _TG_NOTIFY_TARGETS_CACHE["expire_at"]:
-        return _TG_NOTIFY_TARGETS_CACHE["targets"]
-
-    global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
-    admin_ids = set(user_db.get_admin_telegram_chat_ids())
-
-    targets = set()
-    if global_channel_id:
-        targets.add(str(global_channel_id))
-    for aid in admin_ids:
-        if aid:
-            targets.add(str(aid))
-
-    _TG_NOTIFY_TARGETS_CACHE["targets"] = targets
-    _TG_NOTIFY_TARGETS_CACHE["expire_at"] = now + 300
-    return targets
-
-def _send_text_to_targets(targets: set, text: str):
-    for target in targets:
-        send_telegram_message(target, text)
 
 def _format_episode_ranges(episode_list: list) -> str:
     """
@@ -570,13 +538,11 @@ def send_unrecognized_notification(file_name: str, reason: str = "未匹配到�
 
 def send_intercept_notification(file_name: str, reason: str):
     """
-    单文件洗版拦截通知（兼容老调用）
+    发送洗版拦截/质检不合格的 Telegram 通知
     """
     try:
-        notify_types = APP_CONFIG.get(
-            constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES,
-            constants.DEFAULT_TELEGRAM_NOTIFY_TYPES
-        )
+        notify_types = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
+        # 检查用户是否在设置中勾选了“拦截通知”
         if 'intercept_notify' not in notify_types:
             return
 
@@ -592,78 +558,29 @@ def send_intercept_notification(file_name: str, reason: str):
             f"💡 _文件未达到优先级标准，已被标记「质检不合格」。_"
         )
 
-        targets = _get_intercept_notify_targets()
-        _send_text_to_targets(targets, caption)
+        global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+        admin_ids = set(user_db.get_admin_telegram_chat_ids())
+
+        targets = set()
+        if global_channel_id:
+            targets.add(str(global_channel_id))
+        for aid in admin_ids:
+            targets.add(str(aid))
+
+        for target in targets:
+            send_telegram_message(target, caption)
 
     except Exception as e:
         logger.error(f"  ➜ 发送洗版拦截通知时出错: {e}", exc_info=True)
 
-
-def send_intercept_batch_notification(media_title: str, tmdb_id, media_type: str, items: list):
-    """
-    批量洗版拦截通知：同一任务组只发 1 条
-    items 结构示例:
-    [
-        {"name": "...", "reason": "...", "season_num": 1, ...},
-        ...
-    ]
-    """
-    try:
-        notify_types = APP_CONFIG.get(
-            constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES,
-            constants.DEFAULT_TELEGRAM_NOTIFY_TYPES
-        )
-        if 'intercept_notify' not in notify_types:
-            return
-
-        if not items:
-            return
-
-        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        media_type_name = "剧集" if str(media_type) == "tv" else "电影"
-
-        # 统计原因
-        reason_counter = {}
-        for item in items:
-            reason = item.get('reason') or '未知原因'
-            reason_counter[reason] = reason_counter.get(reason, 0) + 1
-
-        reason_lines = []
-        for reason, count in sorted(reason_counter.items(), key=lambda x: x[1], reverse=True):
-            reason_lines.append(f"• {count} 个：{escape_markdown(reason)}")
-
-        # 文件预览（最多 10 个）
-        preview_lines = []
-        for idx, item in enumerate(items[:10], 1):
-            preview_lines.append(f"{idx}\\. `{escape_markdown(item.get('name', '未知文件'))}`")
-
-        if len(items) > 10:
-            preview_lines.append(f"\\.\\.\\. 其余 {len(items) - 10} 个文件省略")
-
-        escaped_title = escape_markdown(media_title or "未知媒体")
-        escaped_tmdb = escape_markdown(str(tmdb_id or "未知"))
-
-        caption = (
-            f"⛔ *洗版拦截汇总*\n\n"
-            f"🎬 *媒体*: {escaped_title}\n"
-            f"🎞 *类型*: {escape_markdown(media_type_name)}\n"
-            f"🆔 *TMDb*: `{escaped_tmdb}`\n"
-            f"📦 *拦截数量*: `{len(items)}`\n"
-            f"🕒 *时间*: `{current_time}`\n\n"
-            f"📊 *原因统计*:\n" + "\n".join(reason_lines) + "\n\n"
-            f"📁 *文件预览*:\n" + "\n".join(preview_lines) + "\n\n"
-            f"💡 _以上文件未达到优先级标准，已被标记「质检不合格」。_"
-        )
-
-        targets = _get_intercept_notify_targets()
-        _send_text_to_targets(targets, caption)
-
-    except Exception as e:
-        logger.error(f"  ➜ 发送批量洗版拦截通知时出错: {e}", exc_info=True)
-
 # ======================================================================
 # ★★★ Telegram 机器人交互监听 (长轮询) ★★★
 # ======================================================================
+import re
+import time
+import threading
+from handler.p115_service import P115Service
+
 # 全局变量控制轮询线程
 _tg_polling_thread = None
 _tg_polling_active = False
