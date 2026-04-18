@@ -127,13 +127,15 @@ class P115OpenAPIClient:
                 try:
                     resp = raw_resp.json()
                 except Exception as json_err:
-                    # 核心修复：捕获 115 返回非 JSON (如 502/405 网页) 的情况
+                    # ★ 核心修复：捕获 115 返回非 JSON (如 502/405/WAF 网页) 的情况，引入指数退避
                     err_detail = f"HTTP {raw_resp.status_code}, Body: {raw_resp.text[:150]}"
                     if attempt < max_retries - 1:
-                        logger.warning(f"  ➜ [115 API] 接口返回异常非JSON数据，等待 2 秒后重试 ({attempt+1}/{max_retries})... 详情: {err_detail}")
-                        time.sleep(2)
+                        # 触发风控时，采用 5s, 10s 的递增休眠，强行让 WAF 冷却
+                        sleep_time = 5 * (attempt + 1)
+                        logger.warning(f"  🛑 [115 API] 触发风控(返回非JSON)，强制休眠 {sleep_time} 秒后重试 ({attempt+1}/{max_retries})... 详情: {err_detail}")
+                        time.sleep(sleep_time)
                         continue
-                    return {"state": False, "error_msg": f"JSON解析失败: {json_err}. 详情: {err_detail}"}
+                    return {"state": False, "error_msg": f"JSON解析失败(触发风控): {json_err}. 详情: {err_detail}"}
                 
                 if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
                     logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
@@ -3351,22 +3353,27 @@ class SmartOrganizer:
 
                         if should_search_after_mkdir_fail:
                             try:
+                                # ★ 核心优化：废弃高危的 fs_search，改用 fs_files 拉取列表，并全量缓存兄弟节点
                                 search_res = self.client.fs_files({
                                     'cid': temp_parent_cid,
-                                    'search_value': part_name,
-                                    'limit': 200,
-                                    'record_open_time': 0,
-                                    'count_folders': 0
+                                    'limit': 1000,
+                                    'show_dir': 1,
+                                    'record_open_time': 0
                                 })
                                 for item in search_res.get('data', []):
                                     item_name = item.get('fn') or item.get('n') or item.get('file_name')
                                     item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
-                                    if item_name == part_name and item_fc == '0':
-                                        part_cid = item.get('fid') or item.get('file_id')
-                                        P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
-                                        break
-                            except Exception:
-                                pass
+                                    item_cid = item.get('fid') or item.get('file_id')
+                                    
+                                    # 只要是目录，全部塞入缓存，造福后续同级目录的查询
+                                    if item_fc == '0' and item_name and item_cid:
+                                        P115CacheManager.save_cid(item_cid, temp_parent_cid, item_name)
+                                        # 同步写入内存缓存
+                                        memory_dir_cache[f"{temp_parent_cid}_{item_name}"] = item_cid
+                                        if item_name == part_name:
+                                            part_cid = item_cid
+                            except Exception as e:
+                                logger.debug(f"  ➜ 目录列表拉取失败: {e}")
                 
                 if part_cid:
                     temp_parent_cid = part_cid
@@ -3723,20 +3730,26 @@ class SmartOrganizer:
                             
                             if not s_cid: 
                                 try:
-                                    s_search = self.client.fs_files({'cid': final_home_cid, 'search_value': s_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
+                                    # ★ 核心优化：废弃 fs_search，改用 fs_files 全量拉取并缓存
+                                    s_search = self.client.fs_files({
+                                        'cid': final_home_cid, 
+                                        'limit': 1000, 
+                                        'show_dir': 1,
+                                        'record_open_time': 0
+                                    })
                                     for item in s_search.get('data', []):
                                         item_name = item.get('fn') or item.get('n') or item.get('file_name')
-                                        item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                                        item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid'))
+                                        item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
+                                        item_cid = item.get('fid') or item.get('file_id')
                                         
-                                        if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
-                                            s_cid = item.get('fid') or item.get('file_id')
-                                            break
-                                except: pass
+                                        if item_fc == '0' and item_name and item_cid:
+                                            P115CacheManager.save_cid(item_cid, final_home_cid, item_name)
+                                            memory_dir_cache[f"{final_home_cid}_{item_name}"] = item_cid
+                                            if item_name == s_name:
+                                                s_cid = item_cid
+                                except Exception: pass
                             
                             if s_cid:
-                                P115CacheManager.save_cid(s_cid, final_home_cid, s_name)
-                                memory_dir_cache[cache_key] = s_cid # ★ 写入内存缓存
                                 real_target_cid = s_cid
                             else:
                                 # ★ 核心防御：如果创建和搜索都失败了，标记为 FAILED，同批次不再重试！
@@ -4217,13 +4230,6 @@ class SmartOrganizer:
                                     from monitor_service import enqueue_file_actively
                                     enqueue_file_actively(strm_filepath)
                                 except Exception: pass
-
-                                if not file_sha1 and fid:
-                                    try:
-                                        info_res = self.client.fs_get_info(fid)
-                                        if info_res.get('state') and info_res.get('data'):
-                                            file_sha1 = info_res['data'].get('sha1')
-                                    except Exception: pass
 
                                 if keep_original:
                                     rel_path = file_item.get('rel_path', '')
