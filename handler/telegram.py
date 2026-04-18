@@ -382,8 +382,11 @@ def send_transfer_success_notification(task: dict):
                     logger.error(f"  ➜ 获取转存通知图片(本地查库)失败: {e}")
 
         # 组装卡片文本
+        # ★ 区分是 115 转存还是离线下载
+        action_title = "📥 *离线任务已提交*" if task.get('is_offline') else "📥 *转存成功*"
+        
         caption = (
-            f"📥 *转存成功*\n"
+            f"{action_title}\n"
             f"*{escaped_title}*\n\n"
             f"{season_info}"
             f"🕒 *时间*: `{current_time}`\n"

@@ -58,12 +58,12 @@
                   </n-form-item>
                 </n-gi>
                 <n-gi span="2">
-                  <n-form-item label="适用分类目录">
+                  <n-form-item label="适用分类">
                     <n-select 
                       v-model:value="activeGroup.target_cids" 
                       multiple 
                       :options="categoryOptions" 
-                      placeholder="留空则适用于所有目录" 
+                      placeholder="留空则适用于所有分类" 
                       @update:value="saveGroups"
                     />
                   </n-form-item>

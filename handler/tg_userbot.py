@@ -416,34 +416,34 @@ class TGUserBotManager:
         is_ed2k = text.lower().startswith('ed2k://')
         magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
 
+        # 提取磁力/ED2K
+        is_magnet = text.lower().startswith('magnet:?')
+        is_ed2k = text.lower().startswith('ed2k://')
+        magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
+        magnet_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else None
+        if not magnet_url and (is_magnet or is_ed2k):
+            magnet_url = text.strip()
+
         # =================================================================
-        # ★ 核心分流逻辑
+        # ★ 核心分流逻辑 (统一合并到复杂校验流水线)
         # =================================================================
-        if target_link and (tmdb_id or title or is_brainless):
+        if (target_link or magnet_url) and (tmdb_id or title or is_brainless):
             logger.debug(f"  ➜ [频道监听] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 判定类型: {'剧集' if item_type=='tv' else '电影'}, 准备推入处理队列...")
             
             tg_task_queue.put({
-                "type": "115_share_complex",
+                "type": "channel_resource_complex", # ★ 统一改名为频道资源复杂处理
                 "tmdb_id": tmdb_id,
                 "title": title,
                 "year": year,
                 "item_type": item_type,
-                "target_link": target_link,
+                "target_link": target_link, # 115 分享链接
+                "magnet_url": magnet_url,   # 磁力/ED2K 链接
                 "receive_code": receive_code,
                 "season_number": season_number,
                 "episode_number": episode_number,
                 "is_pack": is_pack,
                 "is_completed_pack": is_completed_pack,
                 "is_brainless": is_brainless 
-            })
-            
-        elif is_magnet or is_ed2k or magnet_ed2k_match:
-            target_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else text
-            logger.info(f"  ➜ [频道监听] 收到手动离线下载请求 -> {target_url[:30]}...")
-            
-            tg_task_queue.put({
-                "type": "offline_download",
-                "url": target_url
             })
 
     # ==========================================
@@ -547,7 +547,7 @@ def _process_tg_queue():
                 logger.error("  ➜ [频道监听] 115 客户端未初始化，无法执行任务。")
                 continue
 
-            if task_type == "115_share_complex":
+            if task_type == "channel_resource_complex":
                 tmdb_id = task.get('tmdb_id')
                 title = task.get('title')
                 year = task.get('year')
@@ -651,82 +651,115 @@ def _process_tg_queue():
 
                 share_code = None
                 
-                if 'hdhive.com' in target_link:
-                    logger.debug(f"  ➜ [频道监听] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址 (将扣除积分)...")
-                    try:
-                        slug_match = re.search(r'hdhive\.com/resource/115/([a-fA-F0-9]{32})', target_link)
-                        if not slug_match:
-                            logger.error(f"  ➜ [频道监听] 无法从影巢链接中提取 Slug 标识: {target_link}")
-                            continue
-                            
-                        slug = slug_match.group(1)
-                        from database import settings_db
-                        hdhive_api_key = settings_db.get_setting('hdhive_api_key')
-                        
-                        if not hdhive_api_key:
-                            logger.error("  ➜ [频道监听] 解析失败：未配置影巢 API Key！")
-                            continue
-                            
-                        from handler.hdhive_client import HDHiveClient
-                        hd_client = HDHiveClient(hdhive_api_key)
-                        resource_data = hd_client.unlock_resource(slug)
-                        
-                        if resource_data and resource_data.get('url'):
-                            real_url = resource_data.get('url')
-                            full_url = resource_data.get('full_url', '')
-                            
-                            match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', real_url)
-                            if match:
-                                share_code = match.group(1)
-                                
-                                if resource_data.get('access_code'):
-                                    receive_code = resource_data.get('access_code')
-                                if not receive_code:
-                                    pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', full_url + "&" + real_url, re.IGNORECASE)
-                                    if pwd_match:
-                                        receive_code = pwd_match.group(1)
-                                        
-                                logger.debug(f"  ➜ [频道监听] 影巢 API 解析成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
-                            else:
-                                logger.error(f"  ➜ [频道监听] 影巢 API 返回的 URL 中未找到 115 提取码: {real_url}")
-                                continue
-                        else:
-                            logger.error("  ➜ [频道监听] 影巢 API 未返回真实的 115 链接，可能是积分不足或资源已失效。")
-                            continue
-                            
-                    except Exception as e:
-                        logger.error(f"  ➜ [频道监听] 请求影巢 API 异常: {e}")
-                        continue
-                else:
-                    match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', target_link)
-                    if match: share_code = match.group(1)
+                target_link = task.get('target_link')
+                magnet_url = task.get('magnet_url')
 
-                if not share_code:
-                    logger.error("  ➜ [频道监听] 无法获取有效的 115 Share Code，任务终止。")
-                    continue
-
-                logger.debug(f"  ➜ [频道监听] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
-                
-                res = client.share_import(share_code, receive_code, target_cid)
-                if res and res.get('state'):
-                    logger.info(f"  ➜ [频道监听] 资源转存成功！正在触发整理...")
-                    
-                    notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
-                    if 'transfer_success' in notify_types:
+                # --- 分支 A: 处理 115 分享链接 ---
+                if target_link:
+                    share_code = None
+                    if 'hdhive.com' in target_link:
+                        logger.debug(f"  ➜ [频道监听] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址 (将扣除积分)...")
                         try:
-                            from handler.telegram import send_transfer_success_notification
-                            send_transfer_success_notification(task)
+                            slug_match = re.search(r'hdhive\.com/resource/115/([a-fA-F0-9]{32})', target_link)
+                            if not slug_match:
+                                logger.error(f"  ➜ [频道监听] 无法从影巢链接中提取 Slug 标识: {target_link}")
+                                continue
+                                
+                            slug = slug_match.group(1)
+                            from database import settings_db
+                            hdhive_api_key = settings_db.get_setting('hdhive_api_key')
+                            
+                            if not hdhive_api_key:
+                                logger.error("  ➜ [频道监听] 解析失败：未配置影巢 API Key！")
+                                continue
+                                
+                            from handler.hdhive_client import HDHiveClient
+                            hd_client = HDHiveClient(hdhive_api_key)
+                            resource_data = hd_client.unlock_resource(slug)
+                            
+                            if resource_data and resource_data.get('url'):
+                                real_url = resource_data.get('url')
+                                full_url = resource_data.get('full_url', '')
+                                
+                                match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', real_url)
+                                if match:
+                                    share_code = match.group(1)
+                                    
+                                    if resource_data.get('access_code'):
+                                        receive_code = resource_data.get('access_code')
+                                    if not receive_code:
+                                        pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', full_url + "&" + real_url, re.IGNORECASE)
+                                        if pwd_match:
+                                            receive_code = pwd_match.group(1)
+                                            
+                                    logger.debug(f"  ➜ [频道监听] 影巢 API 解析成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
+                                else:
+                                    logger.error(f"  ➜ [频道监听] 影巢 API 返回的 URL 中未找到 115 提取码: {real_url}")
+                                    continue
+                            else:
+                                logger.error("  ➜ [频道监听] 影巢 API 未返回真实的 115 链接，可能是积分不足或资源已失效。")
+                                continue
+                                
                         except Exception as e:
-                            logger.error(f"  ➜ [频道监听] 发送转存通知失败: {e}")
+                            logger.error(f"  ➜ [频道监听] 请求影巢 API 异常: {e}")
+                            continue
+                    else:
+                        match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', target_link)
+                        if match: share_code = match.group(1)
 
-                    try:
-                        import task_manager
-                        import threading
-                        threading.Timer(3.0, task_manager.trigger_115_organize_task).start()
-                    except: pass
-                else:
-                    err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
-                    logger.error(f"  ➜ [频道监听] 转存失败: {err}")
+                    if not share_code:
+                        logger.error("  ➜ [频道监听] 无法获取有效的 115 Share Code，任务终止。")
+                        continue
+
+                    logger.debug(f"  ➜ [频道监听] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
+                    
+                    res = client.share_import(share_code, receive_code, target_cid)
+                    if res and res.get('state'):
+                        logger.info(f"  ➜ [频道监听] 资源转存成功！正在触发整理...")
+                        
+                        notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
+                        if 'transfer_success' in notify_types:
+                            try:
+                                from handler.telegram import send_transfer_success_notification
+                                send_transfer_success_notification(task)
+                            except Exception as e:
+                                logger.error(f"  ➜ [频道监听] 发送转存通知失败: {e}")
+
+                        try:
+                            import task_manager
+                            import threading
+                            threading.Timer(3.0, task_manager.trigger_115_organize_task).start()
+                        except: pass
+                    else:
+                        err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
+                        logger.error(f"  ➜ [频道监听] 转存失败: {err}")
+
+                # --- 分支 B: 处理磁力/ED2K 离线下载 ---
+                elif magnet_url:
+                    logger.debug(f"  ➜ [频道监听] 命中订阅资源 (TMDB: {tmdb_id})！准备提交离线下载...")
+                    payload = {"url[0]": magnet_url, "wp_path_id": target_cid}
+                    
+                    res = client.offline_add_urls(payload)
+                    if res and res.get('state'):
+                        logger.info(f"  ➜ [频道监听] 离线下载任务提交成功！正在触发整理...")
+                        
+                        notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
+                        if 'transfer_success' in notify_types:
+                            try:
+                                from handler.telegram import send_transfer_success_notification
+                                task['is_offline'] = True # 标记为离线任务，供通知文案区分
+                                send_transfer_success_notification(task)
+                            except Exception as e:
+                                logger.error(f"  ➜ [频道监听] 发送离线通知失败: {e}")
+
+                        try:
+                            import task_manager
+                            import threading
+                            threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
+                        except: pass
+                    else:
+                        err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
+                        logger.error(f"  ➜ [频道监听] 离线提交失败: {err}")
 
             elif task_type == "offline_download":
                 target_url = task['url']
