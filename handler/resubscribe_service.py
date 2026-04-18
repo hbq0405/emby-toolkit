@@ -420,19 +420,16 @@ class WashingService:
     def _load_priorities(cls, db_media_type: str, target_cid: str) -> list:
         """
         加载并合并所有匹配的规则组中的优先级。
-        支持 media_type 为空 (通用) 的规则组，实现全局前置排除。
+        支持 'All' (通用) 类型的规则组，实现全局前置排除。
         """
         combined_priorities = []
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # ★ 核心修改：匹配指定的媒体类型，或者媒体类型为空/NULL (代表通用)
+                    # ★ 核心修改：使用 IN 语法，同时拉取当前类型和 'All' 类型的规则组
                     cursor.execute("""
                         SELECT * FROM washing_priority_groups 
-                        WHERE media_type = %s 
-                           OR media_type IS NULL 
-                           OR media_type = '' 
-                           OR media_type = 'All'
+                        WHERE media_type IN (%s, 'All') 
                         ORDER BY sort_order ASC
                     """, (db_media_type,))
                     
