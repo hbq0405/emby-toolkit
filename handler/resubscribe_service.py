@@ -367,6 +367,9 @@ class WashingService:
         for i, p_rule in enumerate(priorities):
             is_match, reason = cls._match_priority(norm_info, p_rule)
             if is_match:
+                # ★★★ 核心修改：如果该层级被标记为排除规则，返回 -1 触发秒杀 ★★★
+                if p_rule.get('is_exclude'):
+                    return -1, f"命中排除规则 (第 {i + 1} 级)"
                 return i + 1, f"命中优先级 {i + 1}"
             fail_reasons.append(f"优先级{i+1}[{reason}]")
         return 0, " | ".join(fail_reasons)
@@ -554,6 +557,10 @@ class WashingService:
 
         # 2. 新文件是否达标
         new_level, new_reason_detail = cls.get_level(norm_new, priorities)
+        
+        # ★★★ 核心修改：处理命中排除规则的情况 ★★★
+        if new_level == -1:
+            return "REJECT", new_reason_detail
         if new_level == 0:
             return "REJECT", f"未达标 ({new_reason_detail})"
 
@@ -572,8 +579,6 @@ class WashingService:
         # 5. 找最优旧版
         best_old_level = 999
         for raw_old_info in existing_raw_infos:
-            
-            # 安全地将旧版 JSON 转换为字典，防止列表强转报错 ★★★
             if isinstance(raw_old_info, list) and len(raw_old_info) > 0:
                 old_info = dict(raw_old_info[0])
             elif isinstance(raw_old_info, dict):
@@ -585,7 +590,9 @@ class WashingService:
             norm_old = cls._normalize_info(old_info)
 
             old_level, _ = cls.get_level(norm_old, priorities)
-            if old_level == 0:
+            
+            # ★★★ 核心修改：如果旧版命中了排除规则(-1)或未达标(0)，都视为最差等级 999 ★★★
+            if old_level <= 0:
                 old_level = 999
 
             if old_level < best_old_level:

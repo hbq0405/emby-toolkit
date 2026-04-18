@@ -572,6 +572,7 @@ def create_115_directory():
 @p115_bp.route('/washing_priority_groups', methods=['GET', 'POST'])
 @admin_required
 def handle_washing_priority_groups():
+    """处理 115 洗版优先级规则的增删改查"""
     from database.connection import get_db_connection
     if request.method == 'GET':
         try:

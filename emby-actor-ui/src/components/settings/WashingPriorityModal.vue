@@ -84,8 +84,9 @@
                   <n-card 
                     size="small" 
                     :style="{ 
-                      borderColor: editingUid === priority._uid ? 'var(--n-primary-color)' : 'var(--n-divider-color)',
-                      boxShadow: editingUid === priority._uid ? '0 0 0 1px var(--n-primary-color)' : 'none'
+                      borderColor: editingUid === priority._uid ? 'var(--n-primary-color)' : (priority.is_exclude ? 'var(--n-error-color)' : 'var(--n-divider-color)'),
+                      boxShadow: editingUid === priority._uid ? '0 0 0 1px var(--n-primary-color)' : 'none',
+                      backgroundColor: priority.is_exclude ? 'rgba(208, 48, 80, 0.03)' : 'var(--n-action-color)'
                     }"
                     style="transition: all 0.3s;"
                   >
@@ -93,7 +94,9 @@
                     <template #header>
                       <div style="display: flex; align-items: center; gap: 8px;">
                         <n-icon class="priority-drag-handle" :component="MenuIcon" style="cursor: grab; color: #999;" />
-                        <span style="font-weight: bold; color: var(--n-primary-color);">优先级 {{ index + 1 }}</span>
+                        <span :style="{ fontWeight: 'bold', color: priority.is_exclude ? 'var(--n-error-color)' : 'var(--n-primary-color)' }">
+                          {{ priority.is_exclude ? '排除规则' : '优先级 ' + (index + 1) }}
+                        </span>
                       </div>
                     </template>
                     <template #header-extra>
@@ -112,7 +115,7 @@
                               <template #icon><n-icon :component="TrashIcon" /></template>
                             </n-button>
                           </template>
-                          确定删除此优先级吗？
+                          确定删除此规则吗？
                         </n-popconfirm>
                       </n-space>
                     </template>
@@ -121,10 +124,11 @@
                     <div v-if="editingUid !== priority._uid" class="summary-view" @click="editPriority(priority._uid)">
                       <n-space :size="[8, 8]">
                         <n-tag v-for="(tag, tIdx) in getPrioritySummary(priority)" :key="tIdx" :type="tag.type" size="small" round>
+                          <template v-if="tag.icon" #icon><n-icon :component="tag.icon" /></template>
                           {{ tag.label }}
                         </n-tag>
-                        <n-text v-if="getPrioritySummary(priority).length === 0" depth="3" style="font-size: 13px; font-style: italic;">
-                          无限制 (任何版本均可命中此级)
+                        <n-text v-if="getPrioritySummary(priority).length === (priority.is_exclude ? 1 : 0)" depth="3" style="font-size: 13px; font-style: italic;">
+                          未配置任何条件
                         </n-text>
                       </n-space>
                     </div>
@@ -132,6 +136,23 @@
                     <!-- 编辑模式：完整表单 -->
                     <div v-else class="edit-view">
                       <n-grid :cols="2" :x-gap="16" :y-gap="12">
+                        <n-gi span="2">
+                          <n-alert v-if="priority.is_exclude" type="error" :show-icon="false" style="margin-bottom: 8px; padding: 8px 12px;">
+                            <div style="display: flex; align-items: center; justify-content: space-between;">
+                              <span style="font-weight: bold;">⛔ 排除模式：命中以下任意条件的资源将被直接丢弃，不再参与后续洗版。</span>
+                              <n-switch v-model:value="priority.is_exclude" @update:value="saveGroups">
+                                <template #checked>排除模式</template>
+                                <template #unchecked>普通模式</template>
+                              </n-switch>
+                            </div>
+                          </n-alert>
+                          <div v-else style="display: flex; justify-content: flex-end; margin-bottom: 8px;">
+                            <n-switch v-model:value="priority.is_exclude" @update:value="saveGroups">
+                              <template #checked>排除模式</template>
+                              <template #unchecked>设为排除规则</template>
+                            </n-switch>
+                          </div>
+                        </n-gi>
                         <n-gi>
                           <n-select v-model:value="priority.resolution" multiple tag :options="resOptions" placeholder="分辨率 (如 4K, 1080p)" @update:value="saveGroups" />
                         </n-gi>
@@ -189,7 +210,8 @@ import {
   Menu as MenuIcon, 
   TrashOutline as TrashIcon,
   CreateOutline as EditIcon,
-  CheckmarkOutline as CheckIcon
+  CheckmarkOutline as CheckIcon,
+  BanOutline as BanIcon
 } from '@vicons/ionicons5';
 
 const message = useMessage();
@@ -224,6 +246,10 @@ const getLabels = (values, options) => {
 // 生成简略展示的 Tag 列表
 const getPrioritySummary = (p) => {
   const tags = [];
+  
+  if (p.is_exclude) {
+    tags.push({ type: 'error', label: '排除以下条件', icon: BanIcon });
+  }
   
   const resLabels = getLabels(p.resolution, resOptions);
   if (resLabels.length) tags.push({ type: 'success', label: resLabels.join(' | ') });
@@ -323,6 +349,7 @@ const addPriority = () => {
   const newUid = Math.random().toString(36).substr(2, 9);
   activeGroup.value.priorities.push({
     _uid: newUid,
+    is_exclude: false, // ★ 默认不是排除规则
     resolution: [], codec: [], effect: [], audio: [], subtitle: [], min_size_gb: null, max_size_gb: null
   });
   
