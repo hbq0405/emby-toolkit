@@ -873,6 +873,30 @@ class P115CacheManager:
             return None
 
     @staticmethod
+    def get_file_sha1_map(fids):
+        """批量从本地数据库获取已缓存的文件 SHA1"""
+        if not fids:
+            return {}
+
+        try:
+            fid_list = [str(fid) for fid in fids if fid]
+            if not fid_list:
+                return {}
+
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("""
+                        SELECT id, sha1
+                        FROM p115_filesystem_cache
+                        WHERE id = ANY(%s) AND sha1 IS NOT NULL
+                    """, (fid_list,))
+                    rows = cursor.fetchall() or []
+                    return {str(row['id']): row['sha1'] for row in rows if row.get('sha1')}
+        except Exception as e:
+            logger.error(f"  ➜ 批量读取 115 文件 SHA1 缓存失败: {e}")
+            return {}
+
+    @staticmethod
     def get_cid_by_name(name):
         """仅通过名称查找 CID (适用于带有 {tmdb=xxx} 的唯一主目录)"""
         if not name: return None
@@ -3318,15 +3342,31 @@ class SmartOrganizer:
                         part_cid = mk_res.get('cid')
                         P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
                     else:
-                        # 模糊查找兜底
-                        try:
-                            search_res = self.client.fs_files({'cid': temp_parent_cid, 'search_value': part_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
-                            for item in search_res.get('data', []):
-                                if item.get('fn') == part_name and str(item.get('fc', item.get('type'))) == '0':
-                                    part_cid = item.get('fid') or item.get('file_id')
-                                    P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
-                                    break
-                        except: pass
+                        # 只有疑似“已存在/重名”才补搜；其他错误不再二次轰炸 API
+                        err_text = json.dumps(mk_res, ensure_ascii=False)
+                        should_search_after_mkdir_fail = any(
+                            kw in err_text.lower()
+                            for kw in ['exist', 'exists', 'already', '重复', '已存在', 'same_name', '文件名重复']
+                        )
+
+                        if should_search_after_mkdir_fail:
+                            try:
+                                search_res = self.client.fs_files({
+                                    'cid': temp_parent_cid,
+                                    'search_value': part_name,
+                                    'limit': 200,
+                                    'record_open_time': 0,
+                                    'count_folders': 0
+                                })
+                                for item in search_res.get('data', []):
+                                    item_name = item.get('fn') or item.get('n') or item.get('file_name')
+                                    item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
+                                    if item_name == part_name and item_fc == '0':
+                                        part_cid = item.get('fid') or item.get('file_id')
+                                        P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
+                                        break
+                            except Exception:
+                                pass
                 
                 if part_cid:
                     temp_parent_cid = part_cid
@@ -3366,80 +3406,111 @@ class SmartOrganizer:
         pre_fetched_mediainfo = {}
         local_pre_fetched_mediainfo = {} # ★ 新增：本地预获取字典
         
-        # ★ 核心修复：移除开关限制，强制批量预取真实媒体信息
+        # ★ 先批量补齐 SHA1，再批量查媒体信息，避免主循环重复请求 115
         video_sha1s = []
+        missing_sha1_fids = []
+        fid_to_item = {}
+
         for file_item in candidates:
             file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
             ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
-            if ext in known_video_exts:
-                sha1 = file_item.get('sha1') or file_item.get('sha')
-                
-                # =========================================================
-                # ★ 核心修复：在收集阶段，如果发现缺失 SHA1，提前主动请求补齐！
-                # =========================================================
-                if not sha1:
-                    fid = file_item.get('fid') or file_item.get('file_id')
-                    if fid:
-                        try:
-                            info_res = self.client.fs_get_info(fid)
-                            if info_res.get('state') and info_res.get('data'):
-                                sha1 = info_res['data'].get('sha1')
-                                if sha1:
-                                    file_item['sha1'] = sha1 # 存回字典，供后续主循环直接使用
-                        except Exception:
-                            pass
-                            
-                if sha1: 
-                    video_sha1s.append(sha1)
-        
-        if video_sha1s:
-            # 先查本地缓存，剔除已有的，只查缺失的
-            local_cached_sha1s = set()
-            try:
-                from database.connection import get_db_connection
-                with get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        # ★ 核心优化：直接把 json 也查出来放进内存！
-                        cursor.execute("SELECT sha1, mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", (list(video_sha1s),))
-                        for row in cursor.fetchall():
-                            local_cached_sha1s.add(row['sha1'])
-                            if row['mediainfo_json']:
-                                local_pre_fetched_mediainfo[row['sha1']] = row['mediainfo_json'] if isinstance(row['mediainfo_json'], list) else json.loads(row['mediainfo_json'])
-            except Exception: pass
-            
-            missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
-            if missing_sha1s:
-                req_count = len(missing_sha1s)
-                logger.info(f"  ➜ [批量查询] 准备向中心服务器查询 {req_count} 个文件的媒体信息...")
+            if ext not in known_video_exts:
+                continue
+
+            fid = file_item.get('fid') or file_item.get('file_id')
+            sha1 = file_item.get('sha1') or file_item.get('sha')
+
+            if sha1:
+                video_sha1s.append(sha1)
+            elif fid:
+                fid = str(fid)
+                missing_sha1_fids.append(fid)
+                fid_to_item[fid] = file_item
+
+        # 1) 先吃本地 sha1 缓存，零 API 或低成本
+        local_sha1_map = P115CacheManager.get_file_sha1_map(missing_sha1_fids)
+        for fid, sha1 in local_sha1_map.items():
+            file_item = fid_to_item.get(str(fid))
+            if file_item and sha1:
+                file_item['sha1'] = sha1
+                video_sha1s.append(sha1)
+
+        # 2) 只对本地也没有的项，串行补一次 fs_get_info
+        really_missing_fids = [fid for fid in missing_sha1_fids if str(fid) not in local_sha1_map]
+        if really_missing_fids:
+            logger.info(f"  ➜ [批量补齐] 本地缓存未命中，准备向 115 补齐 {len(really_missing_fids)} 个文件的 SHA1")
+            for idx, fid in enumerate(really_missing_fids, 1):
                 try:
-                    import extensions
-                    processor = extensions.media_processor_instance
-                    if processor and getattr(processor, 'p115_center', None):
-                        resp = processor.p115_center.download_emby_mediainfo_data(missing_sha1s)
+                    info_res = self.client.fs_get_info(fid)
+                    if info_res.get('state') and info_res.get('data'):
+                        fetched_sha1 = info_res['data'].get('sha1')
+                        file_item = fid_to_item.get(str(fid))
+                        if fetched_sha1 and file_item:
+                            file_item['sha1'] = fetched_sha1
+                            video_sha1s.append(fetched_sha1)
+
+                            # 顺手写回本地缓存，后续批次直接命中
+                            try:
+                                parent_id = file_item.get('pid') or file_item.get('parent_id')
+                                file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
+                                pick_code = file_item.get('pc') or file_item.get('pick_code')
+                                size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
+                                if parent_id and file_name:
+                                    P115CacheManager.save_file_cache(
+                                        fid=str(fid),
+                                        parent_id=str(parent_id),
+                                        name=file_name,
+                                        sha1=fetched_sha1,
+                                        pick_code=pick_code,
+                                        local_path=file_item.get('local_path'),
+                                        size=size
+                                    )
+                            except Exception:
+                                pass
+
+                    # 关键：SHA1 补齐单独放慢，别和普通接口一个节奏
+                    if idx < len(really_missing_fids):
+                        time.sleep(1.8)
+
+                except Exception:
+                    pass
+
+        # 去重
+        video_sha1s = list(dict.fromkeys(video_sha1s))
+            
+        missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
+        if missing_sha1s:
+            req_count = len(missing_sha1s)
+            logger.info(f"  ➜ [批量查询] 准备向中心服务器查询 {req_count} 个文件的媒体信息...")
+            try:
+                import extensions
+                processor = extensions.media_processor_instance
+                if processor and getattr(processor, 'p115_center', None):
+                    resp = processor.p115_center.download_emby_mediainfo_data(missing_sha1s)
+                    
+                    if isinstance(resp, dict):
+                        # ★ 核心优化：过滤掉可能返回的空值/None，只统计真正有数据的命中项
+                        valid_hits = {k: v for k, v in resp.items() if v}
+                        hit_count = len(valid_hits)
                         
-                        if isinstance(resp, dict):
-                            # ★ 核心优化：过滤掉可能返回的空值/None，只统计真正有数据的命中项
-                            valid_hits = {k: v for k, v in resp.items() if v}
-                            hit_count = len(valid_hits)
+                        if hit_count > 0:
+                            pre_fetched_mediainfo = valid_hits
+                            # ★ 核心修复：批量查询中心服务器后，立即写入本地缓存！
+                            for k_sha1, v_json in valid_hits.items():
+                                P115CacheManager.save_mediainfo_cache(k_sha1, v_json)
+                                local_pre_fetched_mediainfo[k_sha1] = v_json
                             
-                            if hit_count > 0:
-                                pre_fetched_mediainfo = valid_hits
-                                # ★ 核心修复：批量查询中心服务器后，立即写入本地缓存！
-                                for k_sha1, v_json in valid_hits.items():
-                                    P115CacheManager.save_mediainfo_cache(k_sha1, v_json)
-                                    local_pre_fetched_mediainfo[k_sha1] = v_json
-                                
-                                if hit_count == req_count:
-                                    logger.info(f"  ➜ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
-                                else:
-                                    logger.info(f"  ➜ [批量查询] 部分命中：成功获取 {hit_count}/{req_count} 个文件的媒体信息。")
+                            if hit_count == req_count:
+                                logger.info(f"  ➜ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
                             else:
-                                logger.info(f"  ➜ [批量查询] 中心服务器暂无这 {req_count} 个文件的媒体信息。")
+                                logger.info(f"  ➜ [批量查询] 部分命中：成功获取 {hit_count}/{req_count} 个文件的媒体信息。")
                         else:
-                            logger.warning(f"  ➜ [批量查询] 中心服务器返回数据格式异常。")
-                            
-                except Exception as e:
-                    logger.warning(f"  ➜ [批量查询] 中心服务器查询失败: {e}")
+                            logger.info(f"  ➜ [批量查询] 中心服务器暂无这 {req_count} 个文件的媒体信息。")
+                    else:
+                        logger.warning(f"  ➜ [批量查询] 中心服务器返回数据格式异常。")
+                        
+            except Exception as e:
+                logger.warning(f"  ➜ [批量查询] 中心服务器查询失败: {e}")
 
         # 确保 allowed_exts 有兜底，防止用户清空列表导致报错
         if not allowed_exts:
@@ -3530,17 +3601,7 @@ class SmartOrganizer:
                     if progress_callback: progress_callback()
                     continue
 
-            # 在重命名和查缓存前，如果缺失 SHA1，主动请求详情补齐 
             file_sha1 = file_item.get('sha1') or file_item.get('sha')
-            if not file_sha1 and fid and ext in known_video_exts:
-                try:
-                    info_res = self.client.fs_get_info(fid)
-                    if info_res.get('state') and info_res.get('data'):
-                        fetched_sha1 = info_res['data'].get('sha1')
-                        if fetched_sha1:
-                            file_item['sha1'] = fetched_sha1 
-                except Exception:
-                    pass
 
             if keep_original:
                 new_filename = file_name
@@ -3582,13 +3643,29 @@ class SmartOrganizer:
                             if mk_res.get('state'):
                                 part_cid = mk_res.get('cid')
                             else:
-                                try:
-                                    s_search = self.client.fs_files({'cid': current_parent, 'search_value': part, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
-                                    for s_item in s_search.get('data', []):
-                                        if s_item.get('fn') == part and str(s_item.get('fc', s_item.get('type'))) == '0':
-                                            part_cid = s_item.get('fid') or s_item.get('file_id')
-                                            break
-                                except: pass
+                                err_text = json.dumps(mk_res, ensure_ascii=False)
+                                should_search_after_mkdir_fail = any(
+                                    kw in err_text.lower()
+                                    for kw in ['exist', 'exists', 'already', '重复', '已存在', 'same_name', '文件名重复']
+                                )
+
+                                if should_search_after_mkdir_fail:
+                                    try:
+                                        s_search = self.client.fs_files({
+                                            'cid': current_parent,
+                                            'search_value': part,
+                                            'limit': 200,
+                                            'record_open_time': 0,
+                                            'count_folders': 0
+                                        })
+                                        for s_item in s_search.get('data', []):
+                                            item_name = s_item.get('fn') or s_item.get('n') or s_item.get('file_name')
+                                            item_fc = str(s_item.get('fc') if s_item.get('fc') is not None else s_item.get('type'))
+                                            if item_name == part and item_fc == '0':
+                                                part_cid = s_item.get('fid') or s_item.get('file_id')
+                                                break
+                                    except Exception:
+                                        pass
                         if part_cid:
                             P115CacheManager.save_cid(part_cid, current_parent, part)
                             memory_dir_cache[cache_key] = part_cid # ★ 写入内存缓存
