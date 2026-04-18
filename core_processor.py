@@ -3670,11 +3670,71 @@ class MediaProcessor:
                             logger.info(f"  ➜ 成功新增了 {added_count} 位演员到最终列表。")
         
         # ======================================================================
-        # 步骤 4: ★★★ 从TMDb补全头像 ★★★
+        # 步骤 4: ★★★ 针对新增演员的精准补漏翻译 ★★★
         # ======================================================================
         current_cast_list = list(final_cast_map.values())
         
-        # ★★★ 核心修改 2/3: 筛选需要补全的演员时，排除掉原始TMDb列表中的演员 ★★★
+        if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False):
+            texts_to_translate = set()
+            for actor in current_cast_list:
+                name = actor.get("name", "").strip()
+                role = actor.get("character", "").strip()
+                
+                # 只有不包含中文的才需要翻译（精准过滤，省Token）
+                if name and not utils.contains_chinese(name):
+                    texts_to_translate.add(name)
+                if role and not utils.contains_chinese(role):
+                    texts_to_translate.add(role)
+
+            if texts_to_translate:
+                logger.info(f"  ➜ [新增演员翻译] 发现 {len(texts_to_translate)} 个未翻译的新增演员名/角色名，开始极速补漏翻译...")
+                translation_mode = self.config.get(constants.CONFIG_OPTION_AI_TRANSLATION_MODE, "fast")
+                item_title = item_details_from_emby.get("Name")
+                item_year = item_details_from_emby.get("ProductionYear")
+
+                translation_cache = {}
+                api_texts = set()
+
+                # 1. 查本地缓存 (如果是 fast 模式)
+                if translation_mode == 'fast':
+                    for text in texts_to_translate:
+                        cached = self.actor_db_manager.get_translation_from_db(cursor=cursor, text=text)
+                        if cached:
+                            translation_cache[text] = cached.get("translated_text")
+                        else:
+                            api_texts.add(text)
+                else:
+                    api_texts = texts_to_translate
+
+                # 2. 调用 AI 批量翻译
+                if api_texts:
+                    api_results = self.ai_translator.batch_translate(
+                        texts=list(api_texts), mode=translation_mode, title=item_title, year=item_year
+                    )
+                    if api_results:
+                        translation_cache.update(api_results)
+                        # 存入数据库缓存
+                        if translation_mode == 'fast':
+                            for orig, trans in api_results.items():
+                                self.actor_db_manager.save_translation_to_db(
+                                    cursor=cursor, original_text=orig, translated_text=trans, engine_used=self.ai_translator.provider
+                                )
+
+                # 3. 回填翻译结果到 current_cast_list
+                if translation_cache:
+                    for actor in current_cast_list:
+                        name = actor.get("name", "").strip()
+                        role = actor.get("character", "").strip()
+                        if name in translation_cache:
+                            actor["name"] = translation_cache[name]
+                        if role in translation_cache:
+                            actor["character"] = translation_cache[role]
+                    logger.info("  ➜ [新增演员翻译] 翻译完成并已回填。")
+
+        # ======================================================================
+        # 步骤 5: ★★★ 从TMDb补全头像 ★★★
+        # ======================================================================
+        # ★★★ 筛选需要补全的演员时，排除掉原始TMDb列表中的演员 ★★★
         actors_to_supplement = [
             actor for actor in current_cast_list 
             if str(actor.get("id")) not in original_tmdb_ids and actor.get("id")
@@ -3711,48 +3771,9 @@ class MediaProcessor:
         else:
             logger.info("  ➜ 没有需要补充头像的新增演员。")
 
-        # ======================================================================
-        # 步骤 5: ★★★ 从演员表移除无头像演员 ★★★
-        # ======================================================================
-        # if self.config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True):
-        #     actors_with_avatars = [actor for actor in current_cast_list if actor.get("profile_path")]
-        #     actors_without_avatars = [actor for actor in current_cast_list if not actor.get("profile_path")]
-
-        #     if actors_without_avatars:
-        #         removed_names = [a.get('name', f"TMDbID:{a.get('id')}") for a in actors_without_avatars]
-        #         logger.info(f"  ➜ 将移除 {len(actors_without_avatars)} 位无头像的演员: {removed_names}")
-        #         current_cast_list = actors_with_avatars
-        # else:
-        #     logger.info("  ➜ 未启用移除无头像演员。")
 
         # ======================================================================
-        # 步骤 6：智能截断逻辑 (Smart Truncation) ★★★
-        # ======================================================================
-        # max_actors = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
-        # try:
-        #     limit = int(max_actors)
-        #     if limit <= 0: limit = 30
-        # except (ValueError, TypeError):
-        #     limit = 30
-
-        # original_count = len(current_cast_list)
-        
-        # if original_count > limit:
-        #     logger.info(f"  ➜ 演员列表总数 ({original_count}) 超过上限 ({limit})，将优先保留有头像的演员后进行截断。")
-        #     sort_key = lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999
-        #     with_profile = [actor for actor in current_cast_list if actor.get("profile_path")]
-        #     without_profile = [actor for actor in current_cast_list if not actor.get("profile_path")]
-        #     with_profile.sort(key=sort_key)
-        #     without_profile.sort(key=sort_key)
-        #     prioritized_list = with_profile + without_profile
-        #     current_cast_list = prioritized_list[:limit]
-        #     logger.debug(f"  ➜ 截断后，保留了 {len(with_profile)} 位有头像演员中的 {len([a for a in current_cast_list if a.get('profile_path')])} 位。")
-        # else:
-        #     # ▼▼▼ 核心修改：直接在 current_cast_list 上排序 ▼▼▼
-        #     current_cast_list.sort(key=lambda x: x.get('order') if x.get('order') is not None and x.get('order') >= 0 else 999)
-
-        # ======================================================================
-        # 步骤 7: 格式化 ★★★
+        # 步骤 6: 格式化 ★★★
         # ======================================================================
         tmdb_to_emby_id_map = {
             str(actor.get('id')): actor.get('emby_person_id')
@@ -3783,7 +3804,7 @@ class MediaProcessor:
             }
 
         # ======================================================================
-        # 步骤 8: ★★★ 最终数据回写/反哺 ★★★ 
+        # 步骤 7: ★★★ 最终数据回写/反哺 ★★★ 
         # ======================================================================
         logger.info(f"  ➜ 开始将 {len(final_cast_perfect)} 位最终演员的完整信息同步回数据库...")
         processed_count = 0
