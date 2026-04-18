@@ -3699,11 +3699,11 @@ class SmartOrganizer:
         
         for batch_target_cid, items in move_groups.items():
             # -----------------------------------------------------------
-            # ★ 1. 移动前：拉取目标目录现有文件，进行冲突检测 (★ 优化：直接查本地数据库缓存，零 API 消耗)
+            # ★ 1. 移动前：拉取目标目录现有文件，进行冲突检测 (保持不变)
             # -----------------------------------------------------------
-            existing_names = {}      # name -> fid (用于精准同名覆盖)
-            existing_tv_eps = {}     # (s, e) -> [fid1, fid2] (用于剧集洗版)
-            existing_movie_vids = [] # [fid1, fid2] (用于电影洗版)
+            existing_names = {}      
+            existing_tv_eps = {}     
+            existing_movie_vids = [] 
             
             try:
                 from database.connection import get_db_connection
@@ -3718,7 +3718,6 @@ class SmartOrganizer:
                             if e_ext in known_video_exts:
                                 existing_names[e_name] = e_fid
                                 if self.media_type == 'tv':
-                                    # 提取目标目录已有文件的 SxxEyy
                                     match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b', e_name, re.IGNORECASE)
                                     if match:
                                         s, e = int(match.group(1)), int(match.group(2))
@@ -3729,11 +3728,22 @@ class SmartOrganizer:
             except Exception as e:
                 logger.warning(f"  ➜ [冲突检测] 查询本地缓存失败: {e}")
 
+            # =================================================================
+            # ★★★ 核心修复 1：视频优先排序 ★★★
+            # 确保视频排在前面先被洗版规则评估，字幕排在后面
+            # =================================================================
+            items.sort(key=lambda x: 0 if (x['_new_filename'].split('.')[-1].lower() in known_video_exts) else 1)
+
             valid_items = []
             fids_to_delete = set()
             
+            # ★★★ 核心修复 2：株连黑名单 ★★★
+            # 记录本批次中被拦截或跳过的 剧集(季, 集) 或 电影
+            rejected_episodes = set()
+
             from handler.resubscribe_service import WashingService
             original_lang = (self.raw_metadata or {}).get('lang_code')
+            
             for item in items:
                 new_name = item['_new_filename']
                 s_num = item.get('_season_num')
@@ -3742,17 +3752,22 @@ class SmartOrganizer:
                 is_vid = ext in known_video_exts
                 file_size = _parse_115_size(item.get('fs') or item.get('size'))
                 
-                # ★ 判断当前文件是否享有洗版特权
+                # ★★★ 核心修复 3：检查带头大哥是否已经挂了 ★★★
+                if (s_num, e_num) in rejected_episodes:
+                    logger.info(f"  ➜ [关联跳过] 视频已被拦截/跳过，同步忽略字幕: {new_name}")
+                    unrecognized_fids.append(item.get('fid') or item.get('file_id'))
+                    continue
+
+                # 判断当前文件是否享有洗版特权
                 is_ep_active_washing = False
                 if self.media_type == 'tv' and s_num is not None and e_num is not None:
                     is_ep_active_washing = (s_num, e_num) in active_washing_eps
                 elif self.media_type == 'movie':
                     is_ep_active_washing = movie_active_washing
                 
-                # ★ 如果享有特权，强制将冲突模式设为 replace
                 effective_conflict_mode = 'replace' if is_ep_active_washing else conflict_mode
 
-                # ★★★ 核心升级：调用阶梯洗版优先级服务 ★★★
+                # 调用阶梯洗版优先级服务
                 if is_vid and effective_conflict_mode == 'replace':
                     logger.debug(f"  ➜ [覆盖模式:洗版] 正在调用洗版规则评估文件: {new_name}")
                     
@@ -3769,7 +3784,7 @@ class SmartOrganizer:
                         season_num=s_num,
                         episode_num=e_num,
                         original_lang=original_lang,
-                        is_active_washing=is_ep_active_washing # ★ 传入单集特权标志
+                        is_active_washing=is_ep_active_washing 
                     )
                     
                     if action == 'REJECT':
@@ -3778,14 +3793,17 @@ class SmartOrganizer:
                             'fid': item.get('fid') or item.get('file_id'), 'name': item.get('fn') or item.get('file_name'), 
                             'reason': reason, 'pc': item.get('pc') or item.get('pick_code'), 'season_num': s_num
                         })
+                        # ★ 记入黑名单，株连九族
+                        rejected_episodes.add((s_num, e_num))
                         continue
                     elif action == 'SKIP':
                         logger.info(f"  ➜ [洗版跳过] {new_name} -> {reason}")
                         unrecognized_fids.append(item.get('fid') or item.get('file_id'))
+                        # ★ 记入黑名单，株连九族
+                        rejected_episodes.add((s_num, e_num))
                         continue
                     elif action == 'REPLACE':
                         logger.info(f"  ➜ [洗版替换] {new_name} -> {reason}")
-                        # 获取旧文件的 FID 用于删除
                         if self.media_type == 'tv' and s_num is not None and e_num is not None:
                             fids_to_delete.update(existing_tv_eps.get((s_num, e_num), []))
                         else:
@@ -3796,7 +3814,7 @@ class SmartOrganizer:
                         if new_name in existing_names: fids_to_delete.add(existing_names[new_name])
                         valid_items.append(item)
                 else:
-                    # 非视频文件，或非替换模式，走老逻辑
+                    # 非视频文件，或非替换模式
                     is_conflict = False
                     conflict_old_fids = []
                     if is_vid:
@@ -3823,7 +3841,7 @@ class SmartOrganizer:
                         valid_items.append(item)
             
             if not valid_items:
-                continue # 这批全被 skip 了
+                continue # 这批全被 skip/reject 了
                 
             # -----------------------------------------------------------
             # ★ 2. 执行删除旧文件 (洗版/同名覆盖 + 完美擦屁股)
