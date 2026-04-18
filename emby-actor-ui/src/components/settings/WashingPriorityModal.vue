@@ -266,10 +266,20 @@ const getPrioritySummary = (p) => {
   const subLabels = getLabels(p.subtitle, subOptions);
   if (subLabels.length) tags.push({ type: 'default', label: '字: ' + subLabels.join(', ') });
   
+  // ★★★ 核心修改：根据是否为排除模式，动态调整体积的显示符号 ★★★
   let sizeStr = '';
-  if (p.min_size_gb && p.max_size_gb) sizeStr = `${p.min_size_gb}G - ${p.max_size_gb}G`;
-  else if (p.min_size_gb) sizeStr = `> ${p.min_size_gb}G`;
-  else if (p.max_size_gb) sizeStr = `< ${p.max_size_gb}G`;
+  if (p.is_exclude) {
+    // 排除模式：填了最大体积，意味着排除大于该体积的；填了最小体积，意味着排除小于该体积的
+    if (p.min_size_gb && p.max_size_gb) sizeStr = `< ${p.min_size_gb}G 或 > ${p.max_size_gb}G`;
+    else if (p.min_size_gb) sizeStr = `< ${p.min_size_gb}G`;
+    else if (p.max_size_gb) sizeStr = `> ${p.max_size_gb}G`;
+  } else {
+    // 普通模式：必须在区间内
+    if (p.min_size_gb && p.max_size_gb) sizeStr = `${p.min_size_gb}G - ${p.max_size_gb}G`;
+    else if (p.min_size_gb) sizeStr = `> ${p.min_size_gb}G`;
+    else if (p.max_size_gb) sizeStr = `< ${p.max_size_gb}G`;
+  }
+  
   if (sizeStr) tags.push({ type: 'primary', label: sizeStr });
 
   return tags;
