@@ -136,34 +136,63 @@ class ActorDBManager:
                 logger.error(f"  ➜ 查询 person_metadata 时出错 ({column}={value}): {e}")
         return None
     
-    def enrich_actors_with_provider_ids(self, cursor: psycopg2.extensions.cursor, raw_emby_actors: List[Dict[str, Any]], emby_config: Dict[str, Any]) -> List[Dict[str, Any]]:
+    def enrich_actors_with_provider_ids(
+        self,
+        cursor: psycopg2.extensions.cursor,
+        raw_emby_actors: List[Dict[str, Any]],
+        emby_config: Dict[str, Any]
+    ) -> List[Dict[str, Any]]:
         """
-        接收一个来自 Emby 的原始演员列表，检查并补充 ProviderIds。
-        (已移除本地数据库缓存逻辑，直接依赖 Emby 自身数据或 API)
+        接收一个来自 Emby 的原始演员列表，按需补充 ProviderIds。
+
+        优化策略：
+        1. 已有 Tmdb ProviderId 的，直接跳过
+        2. 中文名演员，默认不打 Emby API
+        - 这类演员通常已经完成中文化，后续对号入座主要靠名字即可
+        - 重点把 API 预算留给英文/拼音名演员
+        3. 只对“缺少 Tmdb 且演员名非中文”的演员调用 Emby API
         """
         if not raw_emby_actors:
             return []
 
-        enriched_actors_map = {actor['Id']: actor.copy() for actor in raw_emby_actors}
+        enriched_actors_map = {}
         ids_to_fetch_from_api = []
 
-        # 检查哪些演员缺少 Tmdb ID
-        for actor in enriched_actors_map.values():
-            if not actor.get("ProviderIds", {}).get("Tmdb"):
-                ids_to_fetch_from_api.append(actor['Id'])
+        for actor in raw_emby_actors:
+            person_id = actor.get("Id")
+            if not person_id:
+                continue
+
+            actor_copy = actor.copy()
+            enriched_actors_map[person_id] = actor_copy
+
+            provider_ids = actor_copy.get("ProviderIds") or {}
+            tmdb_provider_id = provider_ids.get("Tmdb")
+            if tmdb_provider_id:
+                continue
+
+            actor_name = str(actor_copy.get("Name") or "").strip()
+
+            # 只对非中文名演员补查外部ID，减少 Emby API 压力
+            if actor_name and contains_chinese(actor_name):
+                continue
+
+            ids_to_fetch_from_api.append(person_id)
 
         if ids_to_fetch_from_api:
-            logger.info(f"  ➜ [演员数据管家] 将通过 Emby API 为 {len(ids_to_fetch_from_api)} 位演员获取外部ID...")
+            logger.info(f"  ➜ [演员数据管家] 将通过 Emby API 为 {len(ids_to_fetch_from_api)} 位非中文名演员获取外部ID...")
             for person_id in ids_to_fetch_from_api:
                 person_details = get_emby_item_details(
-                    item_id=person_id, 
-                    emby_server_url=emby_config['url'], 
-                    emby_api_key=emby_config['api_key'], 
+                    item_id=person_id,
+                    emby_server_url=emby_config['url'],
+                    emby_api_key=emby_config['api_key'],
                     user_id=emby_config['user_id'],
                     fields="ProviderIds"
                 )
                 if person_details and person_details.get("ProviderIds"):
                     enriched_actors_map[person_id]["ProviderIds"] = person_details.get("ProviderIds")
+        else:
+            logger.info("  ➜ [演员数据管家] 无需通过 Emby API 补充演员外部ID。")
 
         return list(enriched_actors_map.values())
     

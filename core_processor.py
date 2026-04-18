@@ -731,11 +731,15 @@ class MediaProcessor:
                         authoritative_cast_source = credits_source.get('cast', [])
 
                 # 先拿豆瓣，再预合并，最后再进统一翻译
-                douban_cast_raw, _ = self._fetch_douban_cast_data(dummy_emby_item, details)
-                authoritative_cast_source = self._premerge_douban_roles_into_tmdb_cast(
-                    authoritative_cast_source,
-                    douban_cast_raw
-                )
+                douban_cast_raw = []
+                if self._should_fetch_douban_cast_before_translation(authoritative_cast_source):
+                    douban_cast_raw, _ = self._fetch_douban_cast_data(dummy_emby_item, details)
+                    authoritative_cast_source = self._premerge_douban_roles_into_tmdb_cast(
+                        authoritative_cast_source,
+                        douban_cast_raw
+                    )
+                else:
+                    logger.info("  ➜ [实时监控] 当前演员已满额且前排演员人名/角色均已中文化，跳过豆瓣预合并调用。")
 
                 # 回写进原始 TMDb 数据，确保统一翻译能扫到
                 if item_type == "Movie":
@@ -2381,6 +2385,56 @@ class MediaProcessor:
         )
         return cast_data.get("cast", []), None
     
+    # --- 判断是否需要在翻译前调用豆瓣演员表 ---
+    def _should_fetch_douban_cast_before_translation(
+        self,
+        authoritative_cast_source: List[Dict[str, Any]]
+    ) -> bool:
+        """
+        是否值得在“大一统翻译”前调用豆瓣演员表。
+
+        规则：
+        1. 豆瓣在线开关没开：不调
+        2. 当前演员数未满额：值得调（可能需要豆瓣补充演员）
+        3. 当前演员数已满额：只有前 limit 位里，存在非中文演员名或非中文角色名时才调，
+        因为此时豆瓣的价值主要是“修正/翻译前排演员的角色名”，不是补充新演员
+        """
+        if not self.config.get(constants.CONFIG_OPTION_DOUBAN_ENABLE_ONLINE_API, False):
+            return False
+
+        cast_list = [a for a in (authoritative_cast_source or []) if isinstance(a, dict)]
+        if not cast_list:
+            return False
+
+        limit = self.config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
+        try:
+            limit = int(limit)
+            if limit <= 0:
+                limit = 30
+        except (ValueError, TypeError):
+            limit = 30
+
+        # 未满额：可能需要靠豆瓣补充新演员，值得调
+        if len(cast_list) < limit:
+            return True
+
+        # 已满额：只检查最终最可能保留下来的前 limit 位
+        candidate_cast = sorted(
+            cast_list,
+            key=lambda x: x.get("order") if x.get("order") is not None and x.get("order") >= 0 else 999
+        )[:limit]
+
+        for actor in candidate_cast:
+            name = str(actor.get("name") or actor.get("original_name") or "").strip()
+            role = utils.clean_character_name_static(actor.get("character"))
+
+            if name and not utils.contains_chinese(name):
+                return True
+            if role and not utils.contains_chinese(role):
+                return True
+
+        return False
+
     # --- 预合并豆瓣角色信息到 TMDb 演员表，提升角色准确性 ---
     def _premerge_douban_roles_into_tmdb_cast(
         self,
@@ -2972,11 +3026,15 @@ class MediaProcessor:
                     authoritative_cast_source = _get_series_main_cast_from_tmdb(fresh_data)
 
                 # 先拿豆瓣，再把豆瓣角色预合并进 TMDb 演员表
-                douban_cast_raw, _ = self._fetch_douban_cast_data(item_details_from_emby, fresh_data)
-                authoritative_cast_source = self._premerge_douban_roles_into_tmdb_cast(
-                    authoritative_cast_source,
-                    douban_cast_raw
-                )
+                douban_cast_raw = []
+                if self._should_fetch_douban_cast_before_translation(authoritative_cast_source):
+                    douban_cast_raw, _ = self._fetch_douban_cast_data(item_details_from_emby, fresh_data)
+                    authoritative_cast_source = self._premerge_douban_roles_into_tmdb_cast(
+                        authoritative_cast_source,
+                        douban_cast_raw
+                    )
+                else:
+                    logger.info("  ➜ 当前演员已满额且前排演员人名/角色均已中文化，跳过豆瓣预合并调用。")
 
                 # 把预合并后的演员表回写进源数据，确保后续统一翻译能扫到豆瓣补进来的角色
                 if item_type == "Movie":
