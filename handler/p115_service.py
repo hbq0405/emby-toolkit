@@ -4177,6 +4177,13 @@ class SmartOrganizer:
                     season_number=item['season_num'],
                     fail_reason=item['reason']
                 )
+                
+                # ★★★ 触发 TG 拦截通知 ★★★
+                try:
+                    from handler.telegram import send_intercept_notification
+                    send_intercept_notification(item['name'], item['reason'])
+                except Exception as e:
+                    logger.error(f"  ➜ 触发拦截通知失败: {e}")
 
         # =================================================================
         # ★ 极简垃圾回收：直接通知缓冲队列检查“待整理”目录

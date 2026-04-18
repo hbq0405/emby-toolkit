@@ -85,7 +85,7 @@ DEFAULT_TELEGRAM_MENU_TASKS = [
     'system-auto-update',         # 系统自动更新
 ]
 CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES = "telegram_notify_types"      # TG通知类型多选
-DEFAULT_TELEGRAM_NOTIFY_TYPES = ['library_new', 'transfer_success', 'recognize_fail']
+DEFAULT_TELEGRAM_NOTIFY_TYPES = ['library_new', 'transfer_success', 'recognize_fail', 'intercept_notify']
 
 # ==============================================================================
 # ✨ 反向代理配置 (Reverse Proxy)

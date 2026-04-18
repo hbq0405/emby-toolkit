@@ -1206,6 +1206,7 @@
                           <n-checkbox value="playback" label="播放通知" />
                           <n-checkbox value="recognize_fail" label="识别失败" />
                           <n-checkbox value="hdhive_checkin" label="影巢签到通知" />
+                          <n-checkbox value="intercept_notify" label="拦截通知" />
                         </n-space>
                       </n-checkbox-group>
                     </n-form-item-grid-item>
