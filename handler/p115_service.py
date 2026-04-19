@@ -110,95 +110,35 @@ class P115OpenAPIClient:
             raise ValueError("Access Token 不能为空")
         self.access_token = access_token.strip()
         self.base_url = "https://proapi.115.com"
-        
         self.headers = {
             "Authorization": f"Bearer {self.access_token}",
-            "User-Agent": "115OpenAPI/1.0",
-            "Connection": "keep-alive"
+            "User-Agent": "Emby-toolkit/1.0 (OpenAPI)"
         }
-        # ★ 核心修复 1：废弃 threading.local()，使用全局共享 Session
-        # 挂载 HTTPAdapter 连接池，复用底层 TCP/TLS 连接，彻底消除握手风暴
-        self.session = requests.Session()
-        self.session.headers.update(self.headers)
-        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=1)
-        self.session.mount('http://', adapter)
-        self.session.mount('https://', adapter)
-        
-        self._token_lock = threading.Lock()
-
-    def _rebuild_session(self):
-        with self._token_lock:
-            self.session.close()
-            self.session = requests.Session()
-            self.session.headers.update(self.headers)
-            adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=1)
-            self.session.mount('http://', adapter)
-            self.session.mount('https://', adapter)
 
     def _do_request(self, method, url, **kwargs):
-        max_retries = 4
-        for attempt in range(max_retries):
-            try:
-                with self._token_lock:
-                    current_token = self.access_token
-                    req_headers = self.headers.copy()
+        try:
+            current_token = self.access_token # 记录当前请求使用的 token
+            
+            # 支持自定义 headers 覆盖 (用于透传播放器 UA)
+            req_headers = self.headers.copy()
+            if 'headers' in kwargs:
+                req_headers.update(kwargs.pop('headers'))
                 
-                req_kwargs = kwargs.copy()
-                if 'headers' in req_kwargs:
-                    req_headers.update(req_kwargs.pop('headers'))
-                req_kwargs['headers'] = req_headers
-                    
-                raw_resp = self.session.request(method, url, timeout=30, **req_kwargs)
+            resp = requests.request(method, url, headers=req_headers, timeout=30, **kwargs).json()
+            
+            if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
+                logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
                 
-                try:
-                    resp = raw_resp.json()
-                except Exception as json_err:
-                    try:
-                        body_text = raw_resp.content.decode('utf-8', errors='ignore')
-                    except:
-                        body_text = raw_resp.text
-                        
-                    if "很抱歉" in body_text or "网页服务" in body_text or "<html" in body_text.lower():
-                        import re
-                        title_match = re.search(r'<title>(.*?)</title>', body_text, re.IGNORECASE)
-                        page_title = title_match.group(1) if title_match else "未知拦截页面"
-                        
-                        logger.error(f"  🛑 [115 API] 致命流控拦截！接口返回网页: 【{page_title}】")
-                        return {"state": False, "error_msg": f"触发官方风控流控，请等待24小时。拦截页面: {page_title}"}
-
-                    err_detail = f"HTTP {raw_resp.status_code}, Body: {body_text[:150]}"
-                    if attempt < max_retries - 1:
-                        self._rebuild_session()
-                        sleep_time = 5 * (attempt + 1)
-                        logger.warning(f"  ⚠️ [115 API] 接口返回异常非JSON数据，已重建连接池并休眠 {sleep_time} 秒后重试 ({attempt+1}/{max_retries})...")
-                        time.sleep(sleep_time)
-                        continue
-                    return {"state": False, "error_msg": f"JSON解析失败: {json_err}. 详情: {err_detail}"}
-                
-                if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
-                    logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
-                    with self._token_lock:
-                        if refresh_115_token(current_token):
-                            logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
-                            self.access_token = get_115_tokens()[0]
-                            self.headers["Authorization"] = f"Bearer {self.access_token}"
-                            self.session.headers.update(self.headers)
-                            
-                            req_headers.update({"Authorization": f"Bearer {self.access_token}"})
-                            req_kwargs['headers'] = req_headers
-                            return self.session.request(method, url, timeout=30, **req_kwargs).json()
-                        else:
-                            logger.error("  ➜ [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
-                
-                return resp
-            except requests.exceptions.RequestException as req_err:
-                if attempt < max_retries - 1:
-                    logger.warning(f"  ➜ [115 API] 网络请求异常，等待 2 秒后重试 ({attempt+1}/{max_retries})...")
-                    time.sleep(2)
-                    continue
-                return {"state": False, "error_msg": f"网络请求彻底失败: {str(req_err)}"}
-            except Exception as e:
-                return {"state": False, "error_msg": str(e)}
+                # ★ 传入 current_token 进行比对
+                if refresh_115_token(current_token):
+                    logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
+                    return requests.request(method, url, headers=self.headers, timeout=30, **kwargs).json()
+                else:
+                    logger.error("  ➜ [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
+            
+            return resp
+        except Exception as e:
+            return {"state": False, "error_msg": str(e)}
 
     def get_user_info(self):
         url = f"{self.base_url}/open/user/info"
@@ -220,6 +160,7 @@ class P115OpenAPIClient:
         return self._do_request("GET", url, params=params)
     
     def fs_downurl(self, pick_code, user_agent=None):
+        """OpenAPI 获取下载直链"""
         url = f"{self.base_url}/open/ufile/downurl"
         headers = {}
         if user_agent:
@@ -239,6 +180,7 @@ class P115OpenAPIClient:
 
     def fs_move(self, fids, to_cid):
         url = f"{self.base_url}/open/ufile/move"
+        # ★ 支持传入列表，自动用逗号拼接
         fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
         return self._do_request("POST", url, data={"file_ids": fids_str, "to_cid": str(to_cid)})
 
@@ -259,6 +201,7 @@ class P115OpenAPIClient:
         return self._do_request("POST", url, data=data)
     
     def fs_upload_init(self, file_name, file_size, target_cid, sha1, preid, sign_key=None, sign_val=None):
+        """文件上传初始化调度接口"""
         url = f"{self.base_url}/open/upload/init"
         data = {
             "file_name": file_name,
@@ -273,12 +216,16 @@ class P115OpenAPIClient:
         return self._do_request("POST", url, data=data)
 
     def fs_upload_get_token(self):
+        """获取上传凭证"""
         url = f"{self.base_url}/open/upload/get_token"
         return self._do_request("GET", url)
 
     def upload_file_stream(self, file_stream, file_name, target_cid):
+        """
+        完整的文件上传流程 (支持秒传、二次认证、OSS直传带签名与网络容错)
+        """
         import urllib.parse 
-        import json 
+        import json # ★ 确保引入 json
         
         file_data = file_stream.read()
         file_size = len(file_data)
@@ -346,6 +293,9 @@ class P115OpenAPIClient:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
             }
             
+            # ==========================================
+            # ★ 核心修复：将 callback 转换为 Base64 编码
+            # ==========================================
             def _encode_cb(val):
                 if isinstance(val, dict):
                     val = json.dumps(val, separators=(',', ':'))
@@ -356,6 +306,7 @@ class P115OpenAPIClient:
             if 'callback_var' in callback_data:
                 headers["x-oss-callback-var"] = _encode_cb(callback_data['callback_var'])
             
+            # 计算签名
             oss_headers = {k.lower(): v for k, v in headers.items() if k.lower().startswith('x-oss-')}
             canonicalized_oss_headers = ""
             for k in sorted(oss_headers.keys()):
@@ -370,11 +321,11 @@ class P115OpenAPIClient:
             headers["Authorization"] = f"OSS {t_data['AccessKeyId']}:{signature}"
             
             try:
-                oss_res = self.session.put(upload_url, data=file_data, headers=headers, timeout=300)
+                oss_res = requests.put(upload_url, data=file_data, headers=headers, timeout=300)
             except requests.exceptions.ConnectionError as e:
                 logger.warning(f"  ➜ HTTPS 握手失败，尝试降级为 HTTP 上传... ({e})")
                 upload_url_http = upload_url.replace('https://', 'http://')
-                oss_res = self.session.put(upload_url_http, data=file_data, headers=headers, timeout=300)
+                oss_res = requests.put(upload_url_http, data=file_data, headers=headers, timeout=300)
             
             try:
                 oss_res_data = oss_res.json()
@@ -382,6 +333,7 @@ class P115OpenAPIClient:
                 raise Exception(f"OSS上传失败，返回非JSON数据: {oss_res.text}")
                 
             if oss_res_data.get('state') or oss_res_data.get('code') == 200:
+                # 115 的 callback 返回结构可能略有不同，只要有 state=True 或 code=200 就算成功
                 return oss_res_data.get('data', oss_res_data)
             else:
                 raise Exception(f"OSS上传失败: {oss_res_data}")
@@ -637,17 +589,7 @@ class P115Service:
             def fs_move(self, fids, to_cid):
                 self._check_openapi()
                 self._rate_limit()
-                
-                # 无论前面的缓存有多快，只要到了移动这一步，强制排队，两次移动之间绝对间隔 5 秒！
-                with P115Service._move_lock:
-                    now = time.time()
-                    elapsed = now - P115Service._last_move_time
-                    if elapsed < 5.0:
-                        time.sleep(5.0 - elapsed)
-                    
-                    res = self._openapi.fs_move(fids, to_cid)
-                    P115Service._last_move_time = time.time()
-                    return res
+                return self._openapi.fs_move(fids, to_cid)
 
             def fs_rename(self, fid_name_tuple):
                 self._check_openapi()
