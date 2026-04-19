@@ -112,11 +112,12 @@ class P115OpenAPIClient:
         self.base_url = "https://proapi.115.com"
         self.headers = {
             "Authorization": f"Bearer {self.access_token}",
-            "User-Agent": "Emby-toolkit/1.0 (OpenAPI)"
+            # ★ 核心修复 1：伪装成正常的 Chrome 浏览器，极大降低 WAF 拦截概率
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
         }
 
     def _do_request(self, method, url, **kwargs):
-        max_retries = 3
+        max_retries = 4 # ★ 核心修复 2：增加重试次数到 4 次
         for attempt in range(max_retries):
             try:
                 current_token = self.access_token # 记录当前请求使用的 token
@@ -131,13 +132,15 @@ class P115OpenAPIClient:
                 try:
                     resp = raw_resp.json()
                 except Exception as json_err:
-                    # 核心修复：捕获 115 返回非 JSON (如 502/405 网页) 的情况
+                    # ★ 核心修复 3：捕获 115 返回非 JSON (WAF 拦截网页) 的情况，执行指数退避冷却
                     err_detail = f"HTTP {raw_resp.status_code}, Body: {raw_resp.text[:150]}"
                     if attempt < max_retries - 1:
-                        logger.warning(f"  ➜ [115 API] 接口返回异常非JSON数据，等待 2 秒后重试 ({attempt+1}/{max_retries})... 详情: {err_detail}")
-                        time.sleep(2)
+                        # 触发风控时，采用 5s, 10s, 15s 的递增休眠，强行让 WAF 冷却消气
+                        sleep_time = 5 * (attempt + 1)
+                        logger.warning(f"  🛑 [115 API] 触发风控拦截(返回非JSON)，强制休眠 {sleep_time} 秒后重试 ({attempt+1}/{max_retries})...")
+                        time.sleep(sleep_time)
                         continue
-                    return {"state": False, "error_msg": f"JSON解析失败: {json_err}. 详情: {err_detail}"}
+                    return {"state": False, "error_msg": f"JSON解析失败(触发风控): {json_err}. 详情: {err_detail}"}
                 
                 if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
                     logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
@@ -220,7 +223,6 @@ class P115OpenAPIClient:
         return self._do_request("POST", url, data=data)
     
     def fs_upload_init(self, file_name, file_size, target_cid, sha1, preid, sign_key=None, sign_val=None):
-        """文件上传初始化调度接口"""
         url = f"{self.base_url}/open/upload/init"
         data = {
             "file_name": file_name,
@@ -235,16 +237,12 @@ class P115OpenAPIClient:
         return self._do_request("POST", url, data=data)
 
     def fs_upload_get_token(self):
-        """获取上传凭证"""
         url = f"{self.base_url}/open/upload/get_token"
         return self._do_request("GET", url)
 
     def upload_file_stream(self, file_stream, file_name, target_cid):
-        """
-        完整的文件上传流程 (支持秒传、二次认证、OSS直传带签名与网络容错)
-        """
         import urllib.parse 
-        import json # ★ 确保引入 json
+        import json 
         
         file_data = file_stream.read()
         file_size = len(file_data)
@@ -312,9 +310,6 @@ class P115OpenAPIClient:
                 "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
             }
             
-            # ==========================================
-            # ★ 核心修复：将 callback 转换为 Base64 编码
-            # ==========================================
             def _encode_cb(val):
                 if isinstance(val, dict):
                     val = json.dumps(val, separators=(',', ':'))
@@ -325,7 +320,6 @@ class P115OpenAPIClient:
             if 'callback_var' in callback_data:
                 headers["x-oss-callback-var"] = _encode_cb(callback_data['callback_var'])
             
-            # 计算签名
             oss_headers = {k.lower(): v for k, v in headers.items() if k.lower().startswith('x-oss-')}
             canonicalized_oss_headers = ""
             for k in sorted(oss_headers.keys()):
@@ -352,7 +346,6 @@ class P115OpenAPIClient:
                 raise Exception(f"OSS上传失败，返回非JSON数据: {oss_res.text}")
                 
             if oss_res_data.get('state') or oss_res_data.get('code') == 200:
-                # 115 的 callback 返回结构可能略有不同，只要有 state=True 或 code=200 就算成功
                 return oss_res_data.get('data', oss_res_data)
             else:
                 raise Exception(f"OSS上传失败: {oss_res_data}")
