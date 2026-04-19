@@ -634,9 +634,6 @@ class P115Service:
                 if cache_key in _DIRECT_URL_CACHE:
                     cached_data = _DIRECT_URL_CACHE[cache_key]
                     if now < cached_data['expire_at']:
-                        # ★ 提取缓存里的文件名打印
-                        #display_name = cached_data.get('name', pick_code[:8])
-                        #logger.info(f"  ➜ [直链缓存] 命中直链 -> {display_name} (UA: {str(user_agent)[:15]}...)")
                         return cached_data['url']
 
                 with P115Service._downurl_lock:
@@ -649,7 +646,17 @@ class P115Service:
                         time.sleep(1.5 - elapsed)
                     
                     try:
-                        res = self._cookie.download_url(pick_code, user_agent)
+                        # ★ 核心修复：使用独立线程池强制设置 15 秒超时，防止第三方库底层 Socket 死锁！
+                        from concurrent.futures import ThreadPoolExecutor, TimeoutError
+                        with ThreadPoolExecutor(max_workers=1) as executor:
+                            future = executor.submit(self._cookie.download_url, pick_code, user_agent)
+                            try:
+                                res = future.result(timeout=15)
+                            except TimeoutError:
+                                logger.error(f"  🛑 [超时拦截] 获取直链网络卡死超过 15 秒，已强制切断！")
+                                P115Service._last_downurl_time = time.time()
+                                return None
+
                         P115Service._last_downurl_time = time.time()
                         
                         if res:
@@ -4217,7 +4224,17 @@ class SmartOrganizer:
                     if progress_callback:
                         progress_callback()
             else:
-                err_msg = str(move_res.get('error_msg', move_res))
+                raw_err_msg = str(move_res.get('error_msg', move_res))
+                if (
+                    'Expecting value: line 1 column 1 (char 0)' in raw_err_msg
+                    or 'JSONDecodeError' in raw_err_msg
+                    or '<html' in raw_err_msg.lower()
+                    or '<!doctype html' in raw_err_msg.lower()
+                ):
+                    err_msg = '该片暂时无法整理，等待24小时后重试'
+                else:
+                    err_msg = raw_err_msg
+
                 logger.error(f"  ➜ [批量移动失败] 目标CID:{batch_target_cid}, 包含 {len(move_fids)} 个文件, 原因: {err_msg}")
                 
                 if '不存在' in err_msg or move_res.get('code') in [20004, 70004]:
