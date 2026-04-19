@@ -268,11 +268,11 @@
                       <n-input type="password" show-password-on="mousedown" v-model:value="configModel.github_token" placeholder="可选，用于提高API请求频率限制"/>
                       <template #feedback><n-text depth="3" style="font-size:0.8em;"><a href="https://github.com/settings/tokens/new" target="_blank" style="font-size: 1.3em; margin-left: 4px; color: var(--n-primary-color); text-decoration: underline;">免费申请GithubTOKEN</a></n-text></template>
                     </n-form-item>
-                    <n-form-item label="启用在线豆瓣API" path="douban_enable_online_api">
+                    <n-form-item label="启用豆瓣辅助" path="douban_enable_online_api">
                       <n-space align="center">
                         <n-switch v-model:value="configModel.douban_enable_online_api" />
                         <n-text depth="3" style="font-size: 0.9em; margin-left: 8px;">
-                          关闭后仅使用本地缓存。
+                          从豆瓣补充缺失的演员以及部分中文角色名。
                         </n-text>
                       </n-space>
                     </n-form-item>
