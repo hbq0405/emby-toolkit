@@ -127,15 +127,13 @@ class P115OpenAPIClient:
                 try:
                     resp = raw_resp.json()
                 except Exception as json_err:
-                    # ★ 核心修复：捕获 115 返回非 JSON (如 502/405/WAF 网页) 的情况，引入指数退避
+                    # 核心修复：捕获 115 返回非 JSON (如 502/405 网页) 的情况
                     err_detail = f"HTTP {raw_resp.status_code}, Body: {raw_resp.text[:150]}"
                     if attempt < max_retries - 1:
-                        # 触发风控时，采用 5s, 10s 的递增休眠，强行让 WAF 冷却
-                        sleep_time = 5 * (attempt + 1)
-                        logger.warning(f"  🛑 [115 API] 触发风控(返回非JSON)，强制休眠 {sleep_time} 秒后重试 ({attempt+1}/{max_retries})... 详情: {err_detail}")
-                        time.sleep(sleep_time)
+                        logger.warning(f"  ➜ [115 API] 接口返回异常非JSON数据，等待 2 秒后重试 ({attempt+1}/{max_retries})... 详情: {err_detail}")
+                        time.sleep(2)
                         continue
-                    return {"state": False, "error_msg": f"JSON解析失败(触发风控): {json_err}. 详情: {err_detail}"}
+                    return {"state": False, "error_msg": f"JSON解析失败: {json_err}. 详情: {err_detail}"}
                 
                 if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
                     logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
