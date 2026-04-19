@@ -237,7 +237,7 @@ def init_db():
                         watchlist_is_airing BOOLEAN DEFAULT FALSE,
                         last_episode_to_air_json JSONB,
                         total_episodes INTEGER DEFAULT 0,
-                        total_episodes_locked BOOLEAN DEFAULT FALSE, #
+                        total_episodes_locked BOOLEAN DEFAULT FALSE, 
                         waiting_for_completed_pack BOOLEAN DEFAULT FALSE,
                         active_washing BOOLEAN DEFAULT FALSE,
 
