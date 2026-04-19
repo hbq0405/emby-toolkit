@@ -116,32 +116,37 @@ class P115OpenAPIClient:
             "User-Agent": "115OpenAPI/1.0",
             "Connection": "keep-alive"
         }
-        # ★ 核心修复：使用 thread-local 保证多线程下的 Session 绝对安全，防止连接池错乱触发 WAF
-        self.local = threading.local()
-
-    @property
-    def session(self):
-        if not hasattr(self.local, 'session'):
-            self.local.session = requests.Session()
-            self.local.session.headers.update(self.headers)
-        return self.local.session
+        # ★ 核心修复 1：废弃 threading.local()，使用全局共享 Session
+        # 挂载 HTTPAdapter 连接池，复用底层 TCP/TLS 连接，彻底消除握手风暴
+        self.session = requests.Session()
+        self.session.headers.update(self.headers)
+        adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=1)
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+        
+        self._token_lock = threading.Lock()
 
     def _rebuild_session(self):
-        if hasattr(self.local, 'session'):
-            self.local.session.close()
-            del self.local.session
+        with self._token_lock:
+            self.session.close()
+            self.session = requests.Session()
+            self.session.headers.update(self.headers)
+            adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10, max_retries=1)
+            self.session.mount('http://', adapter)
+            self.session.mount('https://', adapter)
 
     def _do_request(self, method, url, **kwargs):
         max_retries = 4
         for attempt in range(max_retries):
             try:
-                current_token = self.access_token
+                with self._token_lock:
+                    current_token = self.access_token
+                    req_headers = self.headers.copy()
                 
                 req_kwargs = kwargs.copy()
                 if 'headers' in req_kwargs:
-                    custom_headers = self.headers.copy()
-                    custom_headers.update(req_kwargs.pop('headers'))
-                    req_kwargs['headers'] = custom_headers
+                    req_headers.update(req_kwargs.pop('headers'))
+                req_kwargs['headers'] = req_headers
                     
                 raw_resp = self.session.request(method, url, timeout=30, **req_kwargs)
                 
@@ -159,14 +164,11 @@ class P115OpenAPIClient:
                         page_title = title_match.group(1) if title_match else "未知拦截页面"
                         
                         logger.error(f"  🛑 [115 API] 致命流控拦截！接口返回网页: 【{page_title}】")
-                        logger.error(f"  🛑 您的账号/IP 已被 115 官方严格风控，继续重试毫无意义。请停止操作，静置等待 24 小时后再试！")
                         return {"state": False, "error_msg": f"触发官方风控流控，请等待24小时。拦截页面: {page_title}"}
 
                     err_detail = f"HTTP {raw_resp.status_code}, Body: {body_text[:150]}"
                     if attempt < max_retries - 1:
-                        # ★ 触发拦截时，销毁当前线程的残废 Session，重新建连
                         self._rebuild_session()
-                        
                         sleep_time = 5 * (attempt + 1)
                         logger.warning(f"  ⚠️ [115 API] 接口返回异常非JSON数据，已重建连接池并休眠 {sleep_time} 秒后重试 ({attempt+1}/{max_retries})...")
                         time.sleep(sleep_time)
@@ -175,14 +177,18 @@ class P115OpenAPIClient:
                 
                 if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
                     logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
-                    if refresh_115_token(current_token):
-                        logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
-                        self.access_token = get_115_tokens()[0]
-                        self.headers["Authorization"] = f"Bearer {self.access_token}"
-                        self.session.headers.update(self.headers)
-                        return self.session.request(method, url, timeout=30, **req_kwargs).json()
-                    else:
-                        logger.error("  ➜ [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
+                    with self._token_lock:
+                        if refresh_115_token(current_token):
+                            logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
+                            self.access_token = get_115_tokens()[0]
+                            self.headers["Authorization"] = f"Bearer {self.access_token}"
+                            self.session.headers.update(self.headers)
+                            
+                            req_headers.update({"Authorization": f"Bearer {self.access_token}"})
+                            req_kwargs['headers'] = req_headers
+                            return self.session.request(method, url, timeout=30, **req_kwargs).json()
+                        else:
+                            logger.error("  ➜ [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
                 
                 return resp
             except requests.exceptions.RequestException as req_err:
@@ -194,7 +200,6 @@ class P115OpenAPIClient:
             except Exception as e:
                 return {"state": False, "error_msg": str(e)}
 
-    # ... (下方保留原有的 get_user_info, fs_files, fs_mkdir, fs_move 等方法，无需改动) ...
     def get_user_info(self):
         url = f"{self.base_url}/open/user/info"
         return self._do_request("GET", url)
@@ -478,6 +483,9 @@ class P115Service:
     _lock = threading.Lock()
     _rate_limit_lock = threading.Lock() # 专用于 API 流控的锁
     _downurl_lock = threading.Lock() # 直链专用锁
+    # 移动接口的绝对互斥锁
+    _move_lock = threading.Lock()
+    _last_move_time = 0
     
     # 客户端缓存
     _openapi_client = None
@@ -630,10 +638,16 @@ class P115Service:
                 self._check_openapi()
                 self._rate_limit()
                 
-                # ★ 终极保护：移动前强制深呼吸 3 秒，让 WAF 嫌疑度彻底回落
-                time.sleep(3.0)
-                
-                return self._openapi.fs_move(fids, to_cid)
+                # 无论前面的缓存有多快，只要到了移动这一步，强制排队，两次移动之间绝对间隔 5 秒！
+                with P115Service._move_lock:
+                    now = time.time()
+                    elapsed = now - P115Service._last_move_time
+                    if elapsed < 5.0:
+                        time.sleep(5.0 - elapsed)
+                    
+                    res = self._openapi.fs_move(fids, to_cid)
+                    P115Service._last_move_time = time.time()
+                    return res
 
             def fs_rename(self, fid_name_tuple):
                 self._check_openapi()
