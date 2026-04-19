@@ -401,12 +401,12 @@ class WashingService:
     @classmethod
     def get_level(cls, norm_info: dict, priorities: list) -> tuple[int, str]:
         fail_reasons = []
-        normal_priority_index = 0  # ★ 新增：专门用于普通优先级的独立计数器
+        normal_priority_index = 0
         
         for p_rule in priorities:
             is_exclude = p_rule.get('is_exclude', False)
+            group_name = p_rule.get('_group_name', '未知规则组') # ★ 提取注入的规则组名称
             
-            # 只有遇到普通规则时，计数器才 +1
             if not is_exclude:
                 normal_priority_index += 1
                 
@@ -414,13 +414,12 @@ class WashingService:
             
             if is_match:
                 if is_exclude:
-                    return -1, reason 
-                # ★ 命中普通规则时，返回独立的计数器序号
-                return normal_priority_index, f"命中优先级 {normal_priority_index}"
+                    return -1, f"规则组[{group_name}] {reason}" 
+                # ★ 格式化输出：规则组->电影->优先级 3
+                return normal_priority_index, f"规则组[{group_name}] -> 优先级 {normal_priority_index}"
             
-            # 如果没命中排除规则，这是好事！不要把它记入失败原因！
             if not is_exclude:
-                fail_reasons.append(f"优先级{normal_priority_index}[{reason}]")
+                fail_reasons.append(f"规则组[{group_name}]-优先级{normal_priority_index}[{reason}]")
                 
         if not fail_reasons:
             return 0, "未配置任何有效的普通优先级规则"
@@ -437,7 +436,6 @@ class WashingService:
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    # ★ 核心修改：使用 IN 语法，同时拉取当前类型和 'All' 类型的规则组
                     cursor.execute("""
                         SELECT * FROM washing_priority_groups 
                         WHERE media_type IN (%s, 'All') 
@@ -446,6 +444,8 @@ class WashingService:
                     
                     for row in cursor.fetchall():
                         cids = row.get("target_cids", [])
+                        group_name = row.get("name", "未知规则组") # ★ 提取规则组名称
+                        
                         if isinstance(cids, str):
                             try:
                                 cids = json.loads(cids)
@@ -460,6 +460,11 @@ class WashingService:
                                     priorities = json.loads(priorities)
                                 except Exception:
                                     priorities = []
+                                    
+                            # ★ 将规则组名称悄悄注入到每一条具体的优先级规则中
+                            for p in priorities:
+                                p['_group_name'] = group_name
+                                
                             combined_priorities.extend(priorities)
         except Exception as e:
             logger.warning(f"  ➜ 获取洗版优先级规则失败: {e}")
@@ -633,7 +638,8 @@ class WashingService:
 
         # 4. 没有旧版
         if not existing_raw_infos:
-            return "ACCEPT", f"命中优先级 {new_level}，库内无旧版，直接入库"
+            # ★ 直接使用 new_reason_detail，它现在包含了规则组名称
+            return "ACCEPT", f"命中{new_reason_detail}，库内无旧版，直接入库"
 
         # 5. 找最优旧版
         best_old_level = 999
@@ -650,7 +656,6 @@ class WashingService:
 
             old_level, _ = cls.get_level(norm_old, priorities)
             
-            # ★★★ 核心修改：如果旧版命中了排除规则(-1)或未达标(0)，都视为最差等级 999 ★★★
             if old_level <= 0:
                 old_level = 999
 
@@ -660,10 +665,10 @@ class WashingService:
         # 6. 比较结果
         if new_level < best_old_level:
             return "REPLACE", (
-                f"新版(优先级{new_level}) 优于 "
-                f"旧版(优先级{best_old_level if best_old_level != 999 else '不合格'})，执行洗版替换"
+                f"新版(命中{new_reason_detail}) 优于 "
+                f"旧版(优先级 {best_old_level if best_old_level != 999 else '不合格'})，执行洗版替换"
             )
         elif new_level == best_old_level:
-            return "SKIP", f"新版(优先级{new_level}) 与旧版同级，跳过"
+            return "SKIP", f"新版(命中{new_reason_detail}) 与旧版同级，跳过"
         else:
-            return "SKIP", f"新版(优先级{new_level}) 劣于 旧版(优先级{best_old_level})，跳过"
+            return "SKIP", f"新版(命中{new_reason_detail}) 劣于 旧版(优先级 {best_old_level})，跳过"
