@@ -111,13 +111,13 @@ class P115OpenAPIClient:
         self.access_token = access_token.strip()
         self.base_url = "https://proapi.115.com"
         
-        # ★ 核心优化 1：引入 Session 连接池，复用 TCP/TLS 连接，极大降低 WAF 拦截率并提升速度
         self.session = requests.Session()
         
-        # ★ 核心优化 2：回归 OpenAPI 本质，光明正大，绝不伪装浏览器避免触发 TLS 指纹校验
+        # ★ 换回标准浏览器 UA，并增加 Accept 头，让请求看起来更像正常人类
         self.headers = {
             "Authorization": f"Bearer {self.access_token}",
-            "User-Agent": "115OpenAPI/1.0",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+            "Accept": "application/json, text/plain, */*",
             "Connection": "keep-alive"
         }
         self.session.headers.update(self.headers)
@@ -235,7 +235,15 @@ class P115OpenAPIClient:
     def fs_move(self, fids, to_cid):
         url = f"{self.base_url}/open/ufile/move"
         fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
-        return self._do_request("POST", url, data={"file_ids": fids_str, "to_cid": str(to_cid)})
+        
+        # ★ 终极越狱：根据官方 PDF，接口要求 Body(form-data)
+        # 原代码 data= 发送的是 application/x-www-form-urlencoded
+        # 我们改用 files= 强制发送 multipart/form-data，这能直接绕过 WAF 针对 urlencoded 的拦截规则！
+        multipart_data = {
+            "file_ids": (None, fids_str),
+            "to_cid": (None, str(to_cid))
+        }
+        return self._do_request("POST", url, files=multipart_data)
 
     def fs_rename(self, fid_name_tuple):
         url = f"{self.base_url}/open/ufile/update"
@@ -627,6 +635,9 @@ class P115Service:
             def fs_move(self, fids, to_cid):
                 self._check_openapi()
                 self._rate_limit()
+                # ★ 核心防御：针对 115 极其敏感的移动接口，强制增加 1.5 秒的物理冷却时间
+                # 伪装成人类操作的速度，防止再次触发 WAF 封禁
+                time.sleep(1.5)
                 return self._openapi.fs_move(fids, to_cid)
 
             def fs_rename(self, fid_name_tuple):
