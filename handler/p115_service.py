@@ -34,6 +34,9 @@ _MP_PARSE_CACHE = {}
 # 全局直链缓存池，供反向代理和Web路由共享 
 _DIRECT_URL_CACHE = {}
 
+_GLOBAL_DIR_CACHE = {}
+_GLOBAL_DIR_LOCK = threading.Lock()
+
 def get_115_tokens():
     """唯一真理：只从独立数据库获取 Token 和 Cookie"""
     auth_data = settings_db.get_setting('p115_auth_tokens')
@@ -3323,17 +3326,34 @@ class SmartOrganizer:
         # ★★★ 核心升级：支持 / 分层创建多级目录 ★★★
         dir_parts = [p.strip() for p in std_root_name.split('/') if p.strip()]
         
+        # 提前计算基础相对路径，用于逐级修复 local_path
+        category_rule = next((r for r in self.rules if str(r.get('cid')) == str(target_cid)), None)
+        base_rel_path = category_rule.get('category_path') or category_rule.get('dir_name', '未识别') if category_rule else "未识别"
+        
         for attempt in range(2):
             success_chain = True
             temp_parent_cid = current_parent_cid
             
             # 逐级检查/创建目录
             for part_name in dir_parts:
-                part_cid = P115CacheManager.get_cid(temp_parent_cid, part_name)
+                cache_key = f"{temp_parent_cid}_{part_name}"
                 
+                # 1. 优先查全局内存缓存 (抵抗并发)
+                with _GLOBAL_DIR_LOCK:
+                    part_cid = _GLOBAL_DIR_CACHE.get(cache_key)
+                
+                # 2. 查数据库缓存
+                if not part_cid:
+                    part_cid = P115CacheManager.get_cid(temp_parent_cid, part_name)
+                    if part_cid:
+                        with _GLOBAL_DIR_LOCK:
+                            _GLOBAL_DIR_CACHE[cache_key] = part_cid
+
                 # 缓存自愈检查
                 if part_cid and str(part_cid) == str(source_root_id) and str(temp_parent_cid) != str(root_item.get('pid') or root_item.get('parent_id')):
                     P115CacheManager.delete_cid(part_cid)
+                    with _GLOBAL_DIR_LOCK:
+                        _GLOBAL_DIR_CACHE.pop(cache_key, None)
                     part_cid = None
 
                 if not part_cid:
@@ -3341,8 +3361,9 @@ class SmartOrganizer:
                     if mk_res.get('state'):
                         part_cid = mk_res.get('cid')
                         P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
+                        with _GLOBAL_DIR_LOCK:
+                            _GLOBAL_DIR_CACHE[cache_key] = part_cid
                     else:
-                        # 只有疑似“已存在/重名”才补搜；其他错误不再二次轰炸 API
                         err_text = json.dumps(mk_res, ensure_ascii=False)
                         should_search_after_mkdir_fail = any(
                             kw in err_text.lower()
@@ -3351,25 +3372,34 @@ class SmartOrganizer:
 
                         if should_search_after_mkdir_fail:
                             try:
+                                # ★ 核心修复：使用 fs_files + search_value 精准定位！
+                                # 既突破了 1000 条限制，又不会触发全局 search 的 WAF 风控
                                 search_res = self.client.fs_files({
                                     'cid': temp_parent_cid,
                                     'search_value': part_name,
-                                    'limit': 200,
-                                    'record_open_time': 0,
-                                    'count_folders': 0
+                                    'limit': 100,
+                                    'show_dir': 1,
+                                    'record_open_time': 0
                                 })
                                 for item in search_res.get('data', []):
                                     item_name = item.get('fn') or item.get('n') or item.get('file_name')
                                     item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
-                                    if item_name == part_name and item_fc == '0':
-                                        part_cid = item.get('fid') or item.get('file_id')
+                                    item_cid = item.get('fid') or item.get('file_id')
+                                    
+                                    if item_fc == '0' and item_name == part_name and item_cid:
+                                        part_cid = item_cid
                                         P115CacheManager.save_cid(part_cid, temp_parent_cid, part_name)
+                                        with _GLOBAL_DIR_LOCK:
+                                            _GLOBAL_DIR_CACHE[cache_key] = part_cid
                                         break
-                            except Exception:
-                                pass
+                            except Exception as e:
+                                logger.debug(f"  ➜ 目录精准定位失败: {e}")
                 
                 if part_cid:
                     temp_parent_cid = part_cid
+                    # ★ 核心修复：逐级累加路径并更新 DB，彻底解决年份目录 local_path 为 NULL 的问题！
+                    base_rel_path = f"{base_rel_path}/{part_name}"
+                    P115CacheManager.update_local_path(part_cid, base_rel_path)
                 else:
                     success_chain = False
                     break
@@ -3705,9 +3735,10 @@ class SmartOrganizer:
                 # ★ 直接使用返回的 s_name 创建/查找季目录
                 if self.media_type == 'tv' and season_num is not None and s_name:
                     cache_key = f"{final_home_cid}_{s_name}"
-                    s_cid = memory_dir_cache.get(cache_key) # ★ 优先查内存缓存
                     
-                    # ★ 如果缓存里存的是 'FAILED'，说明之前尝试过且失败了，直接跳过，防止 API 风暴
+                    with _GLOBAL_DIR_LOCK:
+                        s_cid = _GLOBAL_DIR_CACHE.get(cache_key)
+                    
                     if s_cid == 'FAILED':
                         real_target_cid = final_home_cid
                     else:
@@ -3716,31 +3747,44 @@ class SmartOrganizer:
                         
                         if s_cid:
                             real_target_cid = s_cid
-                            memory_dir_cache[cache_key] = s_cid # 顺手存入内存
+                            with _GLOBAL_DIR_LOCK:
+                                _GLOBAL_DIR_CACHE[cache_key] = s_cid
                         else:
                             s_mk = self.client.fs_mkdir(s_name, final_home_cid)
                             s_cid = s_mk.get('cid') if s_mk.get('state') else None
                             
                             if not s_cid: 
                                 try:
-                                    s_search = self.client.fs_files({'cid': final_home_cid, 'search_value': s_name, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
+                                    # ★ 核心修复：使用 fs_files + search_value 精准定位
+                                    s_search = self.client.fs_files({
+                                        'cid': final_home_cid, 
+                                        'search_value': s_name,
+                                        'limit': 100, 
+                                        'show_dir': 1,
+                                        'record_open_time': 0
+                                    })
                                     for item in s_search.get('data', []):
                                         item_name = item.get('fn') or item.get('n') or item.get('file_name')
-                                        item_fc = item.get('fc') if item.get('fc') is not None else item.get('type')
-                                        item_pid = str(item.get('pid') or item.get('parent_id') or item.get('cid'))
+                                        item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
+                                        item_cid = item.get('fid') or item.get('file_id')
                                         
-                                        if item_name == s_name and str(item_fc) == '0' and item_pid == str(final_home_cid):
-                                            s_cid = item.get('fid') or item.get('file_id')
+                                        if item_fc == '0' and item_name == s_name and item_cid:
+                                            s_cid = item_cid
                                             break
-                                except: pass
+                                except Exception: pass
                             
                             if s_cid:
                                 P115CacheManager.save_cid(s_cid, final_home_cid, s_name)
-                                memory_dir_cache[cache_key] = s_cid # ★ 写入内存缓存
+                                with _GLOBAL_DIR_LOCK:
+                                    _GLOBAL_DIR_CACHE[cache_key] = s_cid
                                 real_target_cid = s_cid
+                                
+                                # ★ 同步更新季目录的 local_path
+                                season_rel_path = f"{base_rel_path}/{s_name}"
+                                P115CacheManager.update_local_path(s_cid, season_rel_path)
                             else:
-                                # ★ 核心防御：如果创建和搜索都失败了，标记为 FAILED，同批次不再重试！
-                                memory_dir_cache[cache_key] = 'FAILED'
+                                with _GLOBAL_DIR_LOCK:
+                                    _GLOBAL_DIR_CACHE[cache_key] = 'FAILED'
                                 real_target_cid = final_home_cid
 
             # =================================================================
