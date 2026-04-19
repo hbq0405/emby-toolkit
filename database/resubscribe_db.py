@@ -460,7 +460,7 @@ def fetch_episodes_simple_batch(series_tmdb_ids: List[str]) -> List[Dict[str, An
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
-            # 使用别名 e (Episode) 和 s (Season) 进行关联
+            # ★ 核心修改：把 Season 表里的 total_episodes 和 total_episodes_locked 一起查出来
             cursor.execute("""
                 SELECT 
                     e.parent_series_tmdb_id, 
@@ -468,7 +468,9 @@ def fetch_episodes_simple_batch(series_tmdb_ids: List[str]) -> List[Dict[str, An
                     e.episode_number, 
                     e.asset_details_json, 
                     e.emby_item_ids_json,
-                    s.tmdb_id AS season_tmdb_id
+                    s.tmdb_id AS season_tmdb_id,
+                    s.total_episodes AS season_total_episodes,
+                    s.total_episodes_locked AS season_total_episodes_locked
                 FROM media_metadata e
                 LEFT JOIN media_metadata s ON (
                     s.parent_series_tmdb_id = e.parent_series_tmdb_id 

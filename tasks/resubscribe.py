@@ -302,7 +302,7 @@ def task_update_resubscribe_cache(processor):
                         if season_num is None: continue
                         if int(season_num) == 0: continue
 
-                        # --- 1. 计算缺集 (逻辑保持不变) ---
+                        # --- 1. 计算缺集 (逻辑升级：支持锁定总集数的末尾缺集扫描) ---
                         missing_episodes = []
                         has_gaps = False
                         
@@ -310,7 +310,20 @@ def task_update_resubscribe_cache(processor):
                         if valid_eps:
                             existing_ep_nums = set(e['episode_number'] for e in valid_eps)
                             max_ep = max(existing_ep_nums)
-                            for i in range(1, max_ep):
+                            
+                            # ★ 获取季级别的总集数和锁定状态
+                            rep_ep = eps_in_season[0]
+                            season_total_episodes = rep_ep.get('season_total_episodes') or 0
+                            season_total_episodes_locked = rep_ep.get('season_total_episodes_locked') or False
+                            
+                            # ★ 确定扫描上限：
+                            # 如果未锁定，上限就是当前拥有的最大集数 (只扫中间缺集)
+                            # 如果已锁定且大于当前最大集数，上限就是官方总集数 (连同末尾缺集一起扫)
+                            check_up_to = max_ep
+                            if season_total_episodes_locked and season_total_episodes > max_ep:
+                                check_up_to = season_total_episodes
+
+                            for i in range(1, check_up_to + 1):
                                 if i not in existing_ep_nums:
                                     missing_episodes.append(i)
                             
@@ -686,7 +699,10 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     try:
         if rule.get("filter_missing_episodes_enabled") and media_metadata.get('item_type') == 'Season':
             if media_metadata.get('has_gaps'):
-                reasons.append("存在中间缺集")
+                reasons.append("存在缺失集数")
+                    
+    except Exception as e:
+        logger.warning(f"  ➜ [缺集检查] 处理时发生错误: {e}")
                     
     except Exception as e:
         logger.warning(f"  ➜ [缺集检查] 处理时发生错误: {e}")
