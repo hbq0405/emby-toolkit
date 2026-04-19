@@ -141,18 +141,36 @@ class P115OpenAPIClient:
                 try:
                     resp = raw_resp.json()
                 except Exception as json_err:
-                    err_detail = f"HTTP {raw_resp.status_code}, Body: {raw_resp.text[:150]}"
+                    # ★ 核心修复：强制使用 UTF-8 解码，解决乱码问题
+                    try:
+                        body_text = raw_resp.content.decode('utf-8', errors='ignore')
+                    except:
+                        body_text = raw_resp.text
+                        
+                    # ★ 致命风控检测：如果返回了 115 的 HTML 拦截页面，直接终止，绝不重试！
+                    if "很抱歉" in body_text or "网页服务" in body_text or "<html" in body_text.lower():
+                        import re
+                        title_match = re.search(r'<title>(.*?)</title>', body_text, re.IGNORECASE)
+                        page_title = title_match.group(1) if title_match else "未知拦截页面"
+                        
+                        logger.error(f"  🛑 [115 API] 致命流控拦截！接口返回网页: 【{page_title}】")
+                        logger.error(f"  🛑 您的账号/IP 已被 115 官方严格风控，继续重试毫无意义。请停止操作，静置等待 24 小时后再试！")
+                        
+                        # 直接返回失败，掐断后续流程
+                        return {"state": False, "error_msg": f"触发官方风控流控，请等待24小时。拦截页面: {page_title}"}
+
+                    # 如果是其他非 JSON 错误 (比如 502 Bad Gateway)，可以继续尝试重建连接池重试
+                    err_detail = f"HTTP {raw_resp.status_code}, Body: {body_text[:150]}"
                     if attempt < max_retries - 1:
-                        # ★ 核心优化 3：如果真触发了 WAF，说明当前 TCP 链路被盯上了，销毁重建！
                         self.session.close()
                         self.session = requests.Session()
                         self.session.headers.update(self.headers)
                         
                         sleep_time = 5 * (attempt + 1)
-                        logger.warning(f"  🛑 [115 API] 触发风控拦截(返回非JSON)，已重建连接池并休眠 {sleep_time} 秒后重试 ({attempt+1}/{max_retries})...")
+                        logger.warning(f"  ⚠️ [115 API] 接口返回异常非JSON数据，已重建连接池并休眠 {sleep_time} 秒后重试 ({attempt+1}/{max_retries})...")
                         time.sleep(sleep_time)
                         continue
-                    return {"state": False, "error_msg": f"JSON解析失败(触发风控): {json_err}. 详情: {err_detail}"}
+                    return {"state": False, "error_msg": f"JSON解析失败: {json_err}. 详情: {err_detail}"}
                 
                 if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
                     logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
