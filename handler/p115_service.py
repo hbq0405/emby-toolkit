@@ -989,6 +989,26 @@ class P115CacheManager:
             logger.error(f"  ➜ 写入 p115_mediainfo_cache 失败: {e}", exc_info=True)
             return False
 
+    @staticmethod
+    def get_mediainfo_cache_text(sha1):
+        """从本地 p115_mediainfo_cache 读取 JSON 原文，用于直接生成 -mediainfo.json 文件"""
+        if not sha1:
+            return None
+
+        try:
+            sha1 = str(sha1).upper()
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT mediainfo_json::text AS mediainfo_json_text FROM p115_mediainfo_cache WHERE sha1 = %s",
+                        (sha1,)
+                    )
+                    row = cursor.fetchone()
+                    return row['mediainfo_json_text'] if row and row.get('mediainfo_json_text') else None
+        except Exception as e:
+            logger.error(f"  ➜ 读取 p115_mediainfo_cache 失败: {e}")
+            return None
+
 # ======================================================================
 # ★★★ 115 整理记录 DB 管理器 ★★★
 # ======================================================================
@@ -4183,6 +4203,20 @@ class SmartOrganizer:
                                             file_sha1 = info_res['data'].get('sha1')
                                     except Exception: pass
 
+                                if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False):
+                                    try:
+                                        mediainfo_filename = os.path.splitext(new_filename)[0] + "-mediainfo.json"
+                                        mediainfo_filepath = os.path.join(local_dir, mediainfo_filename)
+                                        mediainfo_text = P115CacheManager.get_mediainfo_cache_text(file_sha1) if file_sha1 else None
+                                        if mediainfo_text:
+                                            with open(mediainfo_filepath, 'w', encoding='utf-8') as f:
+                                                f.write(mediainfo_text)
+                                            logger.info(f"  ➜ 媒体信息文件已生成 -> {mediainfo_filename}")
+                                        else:
+                                            logger.debug(f"  ➜ 跳过媒体信息文件生成，未命中本地缓存: {new_filename}")
+                                    except Exception as e:
+                                        logger.error(f"  ➜ 生成媒体信息文件失败: {e}")
+
                                 if keep_original:
                                     rel_path = file_item.get('rel_path', '')
                                     if rel_path: file_local_path = os.path.join(relative_category_path, std_root_name, rel_path.replace('/', os.sep), new_filename)
@@ -4237,7 +4271,7 @@ class SmartOrganizer:
 
                 logger.error(f"  ➜ [批量移动失败] 目标CID:{batch_target_cid}, 包含 {len(move_fids)} 个文件, 原因: {err_msg}")
                 
-                if '不存在' in err_msg or move_res.get('code') in [20004, 70004]:
+                if '不存在' in raw_err_msg or move_res.get('code') in [20004, 70004]:
                     logger.warning(f"  ➜ 检测到目标目录在网盘中已不存在，正在清理失效缓存: CID {batch_target_cid}")
                     P115CacheManager.delete_cid(batch_target_cid)
                 if progress_callback:

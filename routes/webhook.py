@@ -577,11 +577,12 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
     app_config = config_manager.APP_CONFIG
     emby_url = app_config.get("emby_server_url")
     emby_key = app_config.get("emby_api_key")
+    p115_generate_mediainfo = app_config.get("p115_generate_mediainfo", False)
     processor = extensions.media_processor_instance
     emby_user_id = processor.emby_user_id
 
     # =========================================================
-    # 1. 获取物理路径并触发神医联动 (路径仅用于提取 pickcode)
+    # 1. 获取物理路径
     # =========================================================
     # 如果 Webhook 没有传过来路径，才去主动请求 Emby API 兜底
     if not file_path:
@@ -593,8 +594,8 @@ def _wait_for_stream_data_and_enqueue(item_id, item_name, item_type, file_path=N
                     file_path = item_details["MediaSources"][0].get("Path")
         except Exception as e:
             logger.warning(f"  ➜ [预检] 获取路径失败: {e}")
-
-    if file_path:
+    
+    if not p115_generate_mediainfo:
         try:
             # =========================================================
             # 1. 统一调用核心处理器的双指纹提取方法 
