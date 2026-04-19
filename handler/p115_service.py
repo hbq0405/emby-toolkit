@@ -110,34 +110,46 @@ class P115OpenAPIClient:
             raise ValueError("Access Token 不能为空")
         self.access_token = access_token.strip()
         self.base_url = "https://proapi.115.com"
+        
+        # ★ 核心优化 1：引入 Session 连接池，复用 TCP/TLS 连接，极大降低 WAF 拦截率并提升速度
+        self.session = requests.Session()
+        
+        # ★ 核心优化 2：回归 OpenAPI 本质，光明正大，绝不伪装浏览器避免触发 TLS 指纹校验
         self.headers = {
             "Authorization": f"Bearer {self.access_token}",
-            # ★ 核心修复 1：伪装成正常的 Chrome 浏览器，极大降低 WAF 拦截概率
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            "User-Agent": "115OpenAPI/1.0",
+            "Connection": "keep-alive"
         }
+        self.session.headers.update(self.headers)
 
     def _do_request(self, method, url, **kwargs):
-        max_retries = 4 # ★ 核心修复 2：增加重试次数到 4 次
+        max_retries = 4
         for attempt in range(max_retries):
             try:
-                current_token = self.access_token # 记录当前请求使用的 token
+                current_token = self.access_token
                 
-                # 支持自定义 headers 覆盖 (用于透传播放器 UA)
-                req_headers = self.headers.copy()
-                if 'headers' in kwargs:
-                    req_headers.update(kwargs.pop('headers'))
+                # 支持自定义 headers 覆盖
+                req_kwargs = kwargs.copy()
+                if 'headers' in req_kwargs:
+                    custom_headers = self.headers.copy()
+                    custom_headers.update(req_kwargs.pop('headers'))
+                    req_kwargs['headers'] = custom_headers
                     
-                raw_resp = requests.request(method, url, headers=req_headers, timeout=30, **kwargs)
+                # ★ 使用 session 发起请求，享受长连接加持
+                raw_resp = self.session.request(method, url, timeout=30, **req_kwargs)
                 
                 try:
                     resp = raw_resp.json()
                 except Exception as json_err:
-                    # ★ 核心修复 3：捕获 115 返回非 JSON (WAF 拦截网页) 的情况，执行指数退避冷却
                     err_detail = f"HTTP {raw_resp.status_code}, Body: {raw_resp.text[:150]}"
                     if attempt < max_retries - 1:
-                        # 触发风控时，采用 5s, 10s, 15s 的递增休眠，强行让 WAF 冷却消气
+                        # ★ 核心优化 3：如果真触发了 WAF，说明当前 TCP 链路被盯上了，销毁重建！
+                        self.session.close()
+                        self.session = requests.Session()
+                        self.session.headers.update(self.headers)
+                        
                         sleep_time = 5 * (attempt + 1)
-                        logger.warning(f"  🛑 [115 API] 触发风控拦截(返回非JSON)，强制休眠 {sleep_time} 秒后重试 ({attempt+1}/{max_retries})...")
+                        logger.warning(f"  🛑 [115 API] 触发风控拦截(返回非JSON)，已重建连接池并休眠 {sleep_time} 秒后重试 ({attempt+1}/{max_retries})...")
                         time.sleep(sleep_time)
                         continue
                     return {"state": False, "error_msg": f"JSON解析失败(触发风控): {json_err}. 详情: {err_detail}"}
@@ -146,14 +158,17 @@ class P115OpenAPIClient:
                     logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
                     if refresh_115_token(current_token):
                         logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
-                        # 续期成功后重试一次
-                        return requests.request(method, url, headers=self.headers, timeout=30, **kwargs).json()
+                        # 续期成功后，更新 session 里的 token
+                        self.access_token = get_115_tokens()[0]
+                        self.headers["Authorization"] = f"Bearer {self.access_token}"
+                        self.session.headers.update(self.headers)
+                        
+                        return self.session.request(method, url, timeout=30, **req_kwargs).json()
                     else:
                         logger.error("  ➜ [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
                 
                 return resp
             except requests.exceptions.RequestException as req_err:
-                # 捕获网络连接超时等错误
                 if attempt < max_retries - 1:
                     logger.warning(f"  ➜ [115 API] 网络请求异常，等待 2 秒后重试 ({attempt+1}/{max_retries})...")
                     time.sleep(2)
@@ -182,7 +197,6 @@ class P115OpenAPIClient:
         return self._do_request("GET", url, params=params)
     
     def fs_downurl(self, pick_code, user_agent=None):
-        """OpenAPI 获取下载直链"""
         url = f"{self.base_url}/open/ufile/downurl"
         headers = {}
         if user_agent:
@@ -202,7 +216,6 @@ class P115OpenAPIClient:
 
     def fs_move(self, fids, to_cid):
         url = f"{self.base_url}/open/ufile/move"
-        # ★ 支持传入列表，自动用逗号拼接
         fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
         return self._do_request("POST", url, data={"file_ids": fids_str, "to_cid": str(to_cid)})
 
@@ -334,11 +347,11 @@ class P115OpenAPIClient:
             headers["Authorization"] = f"OSS {t_data['AccessKeyId']}:{signature}"
             
             try:
-                oss_res = requests.put(upload_url, data=file_data, headers=headers, timeout=300)
+                oss_res = self.session.put(upload_url, data=file_data, headers=headers, timeout=300)
             except requests.exceptions.ConnectionError as e:
                 logger.warning(f"  ➜ HTTPS 握手失败，尝试降级为 HTTP 上传... ({e})")
                 upload_url_http = upload_url.replace('https://', 'http://')
-                oss_res = requests.put(upload_url_http, data=file_data, headers=headers, timeout=300)
+                oss_res = self.session.put(upload_url_http, data=file_data, headers=headers, timeout=300)
             
             try:
                 oss_res_data = oss_res.json()
