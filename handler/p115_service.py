@@ -236,14 +236,10 @@ class P115OpenAPIClient:
         url = f"{self.base_url}/open/ufile/move"
         fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
         
-        # ★ 终极越狱：根据官方 PDF，接口要求 Body(form-data)
-        # 原代码 data= 发送的是 application/x-www-form-urlencoded
-        # 我们改用 files= 强制发送 multipart/form-data，这能直接绕过 WAF 针对 urlencoded 的拦截规则！
-        multipart_data = {
-            "file_ids": (None, fids_str),
-            "to_cid": (None, str(to_cid))
-        }
-        return self._do_request("POST", url, files=multipart_data)
+        # 强制休眠 1.5 秒，模拟人类操作速度，降低触发 115 WAF 的风险
+        time.sleep(1.5)
+        
+        return self._do_request("POST", url, data={"file_ids": fids_str, "to_cid": str(to_cid)})
 
     def fs_rename(self, fid_name_tuple):
         url = f"{self.base_url}/open/ufile/update"
