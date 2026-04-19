@@ -401,16 +401,26 @@ class WashingService:
     @classmethod
     def get_level(cls, norm_info: dict, priorities: list) -> tuple[int, str]:
         fail_reasons = []
-        for i, p_rule in enumerate(priorities):
-            is_match, reason = cls._match_priority(norm_info, p_rule)
-            if is_match:
-                if p_rule.get('is_exclude'):
-                    return -1, reason 
-                return i + 1, f"命中优先级 {i + 1}"
+        normal_priority_index = 0  # ★ 新增：专门用于普通优先级的独立计数器
+        
+        for p_rule in priorities:
+            is_exclude = p_rule.get('is_exclude', False)
             
-            # ★★★ 核心修复：如果没命中排除规则，这是好事！不要把它记入失败原因！ ★★★
-            if not p_rule.get('is_exclude'):
-                fail_reasons.append(f"优先级{i+1}[{reason}]")
+            # 只有遇到普通规则时，计数器才 +1
+            if not is_exclude:
+                normal_priority_index += 1
+                
+            is_match, reason = cls._match_priority(norm_info, p_rule)
+            
+            if is_match:
+                if is_exclude:
+                    return -1, reason 
+                # ★ 命中普通规则时，返回独立的计数器序号
+                return normal_priority_index, f"命中优先级 {normal_priority_index}"
+            
+            # 如果没命中排除规则，这是好事！不要把它记入失败原因！
+            if not is_exclude:
+                fail_reasons.append(f"优先级{normal_priority_index}[{reason}]")
                 
         if not fail_reasons:
             return 0, "未配置任何有效的普通优先级规则"
