@@ -111,16 +111,25 @@ class P115OpenAPIClient:
         self.access_token = access_token.strip()
         self.base_url = "https://proapi.115.com"
         
-        self.session = requests.Session()
-        
-        # ★ 换回标准浏览器 UA，并增加 Accept 头，让请求看起来更像正常人类
         self.headers = {
             "Authorization": f"Bearer {self.access_token}",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
-            "Accept": "application/json, text/plain, */*",
+            "User-Agent": "115OpenAPI/1.0",
             "Connection": "keep-alive"
         }
-        self.session.headers.update(self.headers)
+        # ★ 核心修复：使用 thread-local 保证多线程下的 Session 绝对安全，防止连接池错乱触发 WAF
+        self.local = threading.local()
+
+    @property
+    def session(self):
+        if not hasattr(self.local, 'session'):
+            self.local.session = requests.Session()
+            self.local.session.headers.update(self.headers)
+        return self.local.session
+
+    def _rebuild_session(self):
+        if hasattr(self.local, 'session'):
+            self.local.session.close()
+            del self.local.session
 
     def _do_request(self, method, url, **kwargs):
         max_retries = 4
@@ -128,26 +137,22 @@ class P115OpenAPIClient:
             try:
                 current_token = self.access_token
                 
-                # 支持自定义 headers 覆盖
                 req_kwargs = kwargs.copy()
                 if 'headers' in req_kwargs:
                     custom_headers = self.headers.copy()
                     custom_headers.update(req_kwargs.pop('headers'))
                     req_kwargs['headers'] = custom_headers
                     
-                # ★ 使用 session 发起请求，享受长连接加持
                 raw_resp = self.session.request(method, url, timeout=30, **req_kwargs)
                 
                 try:
                     resp = raw_resp.json()
                 except Exception as json_err:
-                    # ★ 核心修复：强制使用 UTF-8 解码，解决乱码问题
                     try:
                         body_text = raw_resp.content.decode('utf-8', errors='ignore')
                     except:
                         body_text = raw_resp.text
                         
-                    # ★ 致命风控检测：如果返回了 115 的 HTML 拦截页面，直接终止，绝不重试！
                     if "很抱歉" in body_text or "网页服务" in body_text or "<html" in body_text.lower():
                         import re
                         title_match = re.search(r'<title>(.*?)</title>', body_text, re.IGNORECASE)
@@ -155,16 +160,12 @@ class P115OpenAPIClient:
                         
                         logger.error(f"  🛑 [115 API] 致命流控拦截！接口返回网页: 【{page_title}】")
                         logger.error(f"  🛑 您的账号/IP 已被 115 官方严格风控，继续重试毫无意义。请停止操作，静置等待 24 小时后再试！")
-                        
-                        # 直接返回失败，掐断后续流程
                         return {"state": False, "error_msg": f"触发官方风控流控，请等待24小时。拦截页面: {page_title}"}
 
-                    # 如果是其他非 JSON 错误 (比如 502 Bad Gateway)，可以继续尝试重建连接池重试
                     err_detail = f"HTTP {raw_resp.status_code}, Body: {body_text[:150]}"
                     if attempt < max_retries - 1:
-                        self.session.close()
-                        self.session = requests.Session()
-                        self.session.headers.update(self.headers)
+                        # ★ 触发拦截时，销毁当前线程的残废 Session，重新建连
+                        self._rebuild_session()
                         
                         sleep_time = 5 * (attempt + 1)
                         logger.warning(f"  ⚠️ [115 API] 接口返回异常非JSON数据，已重建连接池并休眠 {sleep_time} 秒后重试 ({attempt+1}/{max_retries})...")
@@ -176,11 +177,9 @@ class P115OpenAPIClient:
                     logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
                     if refresh_115_token(current_token):
                         logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
-                        # 续期成功后，更新 session 里的 token
                         self.access_token = get_115_tokens()[0]
                         self.headers["Authorization"] = f"Bearer {self.access_token}"
                         self.session.headers.update(self.headers)
-                        
                         return self.session.request(method, url, timeout=30, **req_kwargs).json()
                     else:
                         logger.error("  ➜ [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
@@ -195,6 +194,7 @@ class P115OpenAPIClient:
             except Exception as e:
                 return {"state": False, "error_msg": str(e)}
 
+    # ... (下方保留原有的 get_user_info, fs_files, fs_mkdir, fs_move 等方法，无需改动) ...
     def get_user_info(self):
         url = f"{self.base_url}/open/user/info"
         return self._do_request("GET", url)
@@ -235,10 +235,6 @@ class P115OpenAPIClient:
     def fs_move(self, fids, to_cid):
         url = f"{self.base_url}/open/ufile/move"
         fids_str = ",".join([str(f) for f in fids]) if isinstance(fids, list) else str(fids)
-        
-        # 强制休眠 1.5 秒，模拟人类操作速度，降低触发 115 WAF 的风险
-        time.sleep(1.5)
-        
         return self._do_request("POST", url, data={"file_ids": fids_str, "to_cid": str(to_cid)})
 
     def fs_rename(self, fid_name_tuple):
@@ -583,18 +579,20 @@ class P115Service:
             def _rate_limit(self):
                 """底层统一 API 流控拦截器 """
                 try:
-                    # 默认 0.5 秒
-                    interval = float(get_config().get(constants.CONFIG_OPTION_115_INTERVAL, 0.5))
+                    interval = float(get_config().get(constants.CONFIG_OPTION_115_INTERVAL, 1.5))
+                    if interval < 1.5:
+                        interval = 1.5
                 except (ValueError, TypeError):
-                    interval = 0.5
+                    interval = 1.5
                 
-                # 将 sleep 放回锁内。
-                # 现在改为公平阻塞：谁拿到锁，谁就等够间隔再释放。前端请求最多只需等前面一个请求的 0.5 秒。
                 with P115Service._rate_limit_lock:
                     current_time = time.time()
                     elapsed = current_time - P115Service._last_request_time
                     if elapsed < interval:
-                        time.sleep(interval - elapsed)
+                        import random
+                        # ★ 核心修复：加入 0.1~0.5 秒的随机抖动，打破固定频率的机器人特征
+                        jitter = random.uniform(0.1, 0.5)
+                        time.sleep((interval - elapsed) + jitter)
                     P115Service._last_request_time = time.time()
 
             def get_user_info(self):
@@ -631,9 +629,10 @@ class P115Service:
             def fs_move(self, fids, to_cid):
                 self._check_openapi()
                 self._rate_limit()
-                # ★ 核心防御：针对 115 极其敏感的移动接口，强制增加 1.5 秒的物理冷却时间
-                # 伪装成人类操作的速度，防止再次触发 WAF 封禁
-                time.sleep(1.5)
+                
+                # ★ 终极保护：移动前强制深呼吸 3 秒，让 WAF 嫌疑度彻底回落
+                time.sleep(3.0)
+                
                 return self._openapi.fs_move(fids, to_cid)
 
             def fs_rename(self, fid_name_tuple):
