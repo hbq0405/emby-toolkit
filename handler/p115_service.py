@@ -1629,7 +1629,7 @@ class SmartOrganizer:
 
     def get_target_cid(self, ignore_memory=False, season_num=None):
         """获取目标 CID：优先查历史整理记录（记忆手动纠错），其次遍历规则"""
-        
+        self.is_from_memory = False # 初始化记忆标记
         # 辅助函数：校验历史 CID 是否仍在当前启用的规则中
         def _is_cid_valid_in_rules(check_cid):
             if not check_cid: return False
@@ -1669,6 +1669,7 @@ class SmartOrganizer:
                                     # ★ 核心修复：校验记忆是否失效
                                     if _is_cid_valid_in_rules(history_cid):
                                         logger.info(f"  ➜ [分季记忆体] 发现该剧 '第 {season_num} 季' 曾被整理过，沿用专属分类: {row['category_name']} (CID: {history_cid})")
+                                        self.is_from_memory = True # 打上记忆命中标记
                                         return history_cid
                                     else:
                                         logger.warning(f"  ➜ [分季记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
@@ -1689,6 +1690,7 @@ class SmartOrganizer:
                                 # ★ 核心修复：校验记忆是否失效
                                 if _is_cid_valid_in_rules(history_cid):
                                     logger.info(f"  ➜ [记忆体] 发现该媒体曾被整理过，沿用历史分类: {row['category_name']} (CID: {history_cid})")
+                                    self.is_from_memory = True # 打上记忆命中标记
                                     return history_cid
                                 else:
                                     logger.warning(f"  ➜ [记忆体] 历史分类 (CID: {history_cid}) 已不在当前规则中，记忆失效，交由规则引擎重新分配。")
@@ -3206,7 +3208,7 @@ class SmartOrganizer:
         # ★★★ 智能物理时长嗅探 (解决短剧 TMDb 缺乏时长元数据的问题) ★★★
         # =================================================================
         # 手动重组时，目标目录已由用户强制指定，直接跳过嗅探！
-        if not getattr(self, 'is_manual_correct', False):
+        if not getattr(self, 'is_manual_correct', False) and not getattr(self, 'is_from_memory', False):
             needs_runtime_check = False
             for r in self.rules:
                 if not r.get('enabled', True): continue
