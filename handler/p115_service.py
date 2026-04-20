@@ -3945,24 +3945,29 @@ class SmartOrganizer:
 
                 # 调用阶梯洗版优先级服务
                 if is_vid and effective_conflict_mode == 'replace':
-                    logger.debug(f"  ➜ [覆盖模式:洗版] 正在调用洗版规则评估文件: {new_name}")
-                    
-                    video_info = item.get('_video_info') or self._extract_video_info(new_name)
-                    file_sha1 = item.get('sha1') or item.get('sha')
-                    
-                    action, reason = WashingService.decide_washing_action(
-                        sha1=file_sha1,
-                        file_name=new_name,
-                        file_size=file_size,
-                        target_cid=target_cid,
-                        media_type=self.media_type,
-                        tmdb_id=self.tmdb_id,
-                        season_num=s_num,
-                        episode_num=e_num,
-                        original_lang=original_lang,
-                        is_active_washing=is_ep_active_washing,
-                        has_external_subtitle=has_ext_sub # ★★★ 传入外挂字幕豁免标志 ★★★
-                    )
+                    # ★ 核心修复：手动重组拥有最高特权，无视洗版规则直接放行！
+                    if getattr(self, 'is_manual_correct', False):
+                        action = 'REPLACE'
+                        reason = '手动重组，无视洗版规则强制放行'
+                    else:
+                        logger.debug(f"  ➜ [覆盖模式:洗版] 正在调用洗版规则评估文件: {new_name}")
+                        
+                        video_info = item.get('_video_info') or self._extract_video_info(new_name)
+                        file_sha1 = item.get('sha1') or item.get('sha')
+                        
+                        action, reason = WashingService.decide_washing_action(
+                            sha1=file_sha1,
+                            file_name=new_name,
+                            file_size=file_size,
+                            target_cid=target_cid,
+                            media_type=self.media_type,
+                            tmdb_id=self.tmdb_id,
+                            season_num=s_num,
+                            episode_num=e_num,
+                            original_lang=original_lang,
+                            is_active_washing=is_ep_active_washing,
+                            has_external_subtitle=has_ext_sub # ★★★ 传入外挂字幕豁免标志 ★★★
+                        )
                     
                     if action == 'REJECT':
                         logger.warning(f"  ➜ [洗版拦截] {new_name} -> {reason}")
