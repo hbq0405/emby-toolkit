@@ -23,9 +23,9 @@ class WashingService:
         lang_str = str(lang_str).lower().strip()
 
         # 中文相关：明确拆分
-        if lang_str in ['guo', 'zho', 'zh', 'cn', 'chs', 'zh-cn', 'zh-hans', 'cmn', '国语', '中文', '简体', '简中']:
+        if lang_str in ['guo', 'zho', 'zh', 'cn', 'chs', 'zh-cn', 'zh-hans', 'cmn', 'Mandarin', '国语', '中文', '简体', '简中']:
             return 'chi'
-        if lang_str in ['yue', 'cht', 'zh-hk', 'zh-tw', 'hk', 'tw', '粤语', '繁体', '繁中']:
+        if lang_str in ['yue', 'cht', 'zh-hk', 'zh-tw', 'hk', 'tw', 'Cantonese', '粤语', '繁体', '繁中']:
             return 'yue'
 
         # 其他语言

@@ -314,8 +314,8 @@ def _get_detected_languages_from_streams(
     detected_langs = set()
 
     standard_codes = {
-        'chi': {'chi', 'zho', 'chs', 'zh-cn', 'zh-hans', 'zh-sg', 'cmn'},
-        'yue': {'yue', 'cht'},
+        'chi': {'guo', 'zho', 'zh', 'cn', 'chs', 'zh-cn', 'zh-sg', 'zh-hans', 'cmn', 'Mandarin', '国语', '中文', '简体', '简中'},
+        'yue': {'yue', 'cht', 'zh-hk', 'zh-tw', 'hk', 'tw', 'Cantonese', '粤语', '繁体', '繁中'},
         'eng': {'eng'},
         'jpn': {'jpn'},
         'kor': {'kor'},
