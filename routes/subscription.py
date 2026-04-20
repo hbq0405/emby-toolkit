@@ -10,6 +10,7 @@ import threading
 
 subscription_bp = Blueprint('subscription_bp', __name__, url_prefix='/api/subscription')
 logger = logging.getLogger(__name__)
+
 # ==========================================
 # 状态查询 (供前端判断是否显示按钮)
 # ==========================================
@@ -154,7 +155,8 @@ def get_tg_config():
     # 提供默认值
     default_cfg = {
         'enabled': False, 'api_id': '', 'api_hash': '', 
-        'phone': '', 'password': '', 'channels': [], 'monitor_types': ['movie', 'tv']
+        'phone': '', 'password': '', 'channels': [], 'monitor_types': ['movie', 'tv'],
+        'transfer_mode': 'subscribe', 'transfer_keywords': [], 'block_keywords': []
     }
     default_cfg.update(cfg)
     return jsonify({"success": True, "data": default_cfg})

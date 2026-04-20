@@ -50,6 +50,8 @@ class TGUserBotManager:
             'password': cfg.get('password', ''),
             'channels': cfg.get('channels', []),
             'monitor_types': cfg.get('monitor_types', ['movie', 'tv']),
+            'transfer_mode': cfg.get('transfer_mode', 'subscribe'),
+            'transfer_keywords': cfg.get('transfer_keywords', []),
             'block_keywords': cfg.get('block_keywords', [])
         }
 
@@ -217,6 +219,39 @@ class TGUserBotManager:
                         return
                 except Exception as e:
                     logger.error(f"  ➜ [频道监听] 拦截规则正则解析错误 '{pattern}': {e}")
+
+        # =================================================================
+        # ★ 关键词转存匹配逻辑
+        # =================================================================
+        transfer_mode = cfg.get('transfer_mode', 'subscribe')
+        is_brainless = (transfer_mode == 'brainless')
+        is_keyword_matched = False
+        
+        if transfer_mode == 'keyword':
+            transfer_keywords = cfg.get('transfer_keywords', [])
+            for rule_obj in transfer_keywords:
+                if isinstance(rule_obj, str):
+                    pattern = rule_obj
+                    target_channel = ""
+                else:
+                    pattern = rule_obj.get('pattern', '').strip()
+                    target_channel = rule_obj.get('channel', '').strip().lower()
+
+                if not pattern: continue
+
+                if target_channel:
+                    target_clean = target_channel.replace('-100', '') if target_channel.startswith('-100') else target_channel
+                    curr_id_clean = chat_id.replace('-100', '') if chat_id.startswith('-100') else chat_id
+                    if not (chat_username.lower() == target_clean or chat_id == target_channel or curr_id_clean == target_clean):
+                        continue
+
+                try:
+                    if re.search(pattern, text, re.IGNORECASE):
+                        is_keyword_matched = True
+                        logger.debug(f"  ➜ [频道监听] 消息触发关键词转存规则 '{pattern}'")
+                        break
+                except Exception as e:
+                    logger.error(f"  ➜ [频道监听] 关键词转存正则解析错误 '{pattern}': {e}")
 
         # =================================================================
         # ★ 辅助正则执行函数 (支持频道隔离)
@@ -407,9 +442,9 @@ class TGUserBotManager:
                     item_type = 'movie'
 
         allowed_types = cfg.get('monitor_types', ['movie', 'tv'])
-        is_brainless = 'all' in allowed_types 
         
-        if item_type not in allowed_types and not is_brainless:
+        # ★ 如果既不是无脑转存，也没命中关键词，且类型不符，则丢弃
+        if item_type not in allowed_types and not is_brainless and not is_keyword_matched:
             return
 
         is_magnet = text.lower().startswith('magnet:?')
@@ -427,11 +462,11 @@ class TGUserBotManager:
         # =================================================================
         # ★ 核心分流逻辑 (统一合并到复杂校验流水线)
         # =================================================================
-        if (target_link or magnet_url) and (tmdb_id or title or is_brainless):
+        if (target_link or magnet_url) and (tmdb_id or title or is_brainless or is_keyword_matched):
             logger.debug(f"  ➜ [频道监听] 监听到频道资源 -> 标题: {title or '未知'}, TMDB: {tmdb_id or '缺失'} (S{season_number}E{episode_number}), 判定类型: {'剧集' if item_type=='tv' else '电影'}, 准备推入处理队列...")
             
             tg_task_queue.put({
-                "type": "channel_resource_complex", # ★ 统一改名为频道资源复杂处理
+                "type": "channel_resource_complex",
                 "tmdb_id": tmdb_id,
                 "title": title,
                 "year": year,
@@ -443,7 +478,8 @@ class TGUserBotManager:
                 "episode_number": episode_number,
                 "is_pack": is_pack,
                 "is_completed_pack": is_completed_pack,
-                "is_brainless": is_brainless 
+                "is_brainless": is_brainless,
+                "is_keyword_matched": is_keyword_matched
             })
 
     # ==========================================
@@ -557,6 +593,7 @@ def _process_tg_queue():
                 episode_number = task.get('episode_number')
                 is_pack = task.get('is_pack', False) 
                 is_brainless = task.get('is_brainless', False) 
+                is_keyword_matched = task.get('is_keyword_matched', False)
 
                 item_type = task.get('item_type', 'movie')
                 if not tmdb_id and title:
@@ -569,15 +606,15 @@ def _process_tg_queue():
                         task['tmdb_id'] = tmdb_id 
                         logger.debug(f"  ➜ [频道监听] 反查成功！精准匹配到 TMDB ID: {tmdb_id}")
                     else:
-                        if is_brainless:
-                            logger.warning(f"  ➜ [频道监听] 反查失败，但当前为【无脑转存】模式，强制放行！")
+                        if is_brainless or is_keyword_matched:
+                            logger.warning(f"  ➜ [频道监听] 反查失败，但当前为【无脑/关键词转存】模式，强制放行！")
                         else:
                             logger.warning(f"  ➜ [频道监听] 反查失败，TMDb 未找到该{'剧集' if item_type=='tv' else '电影'}，任务终止。")
                             continue
 
-                if not tmdb_id and not is_brainless: continue 
+                if not tmdb_id and not (is_brainless or is_keyword_matched): continue 
 
-                should_process = is_brainless 
+                should_process = is_brainless or is_keyword_matched
                 if not should_process:
                     try:
                         with get_db_connection() as conn:
@@ -632,7 +669,7 @@ def _process_tg_queue():
                     logger.debug(f"  ➜ [频道监听] 资源 (TMDB: {tmdb_id}) 不在已订阅/追剧列表中，已忽略。")
                     continue
 
-                if not is_brainless and season_number is not None and episode_number is not None: 
+                if not (is_brainless or is_keyword_matched) and season_number is not None and episode_number is not None: 
                     from database import media_db
                     local_seasons = media_db.get_series_local_children_info(tmdb_id)
                     if task.get('is_completed_pack'):
