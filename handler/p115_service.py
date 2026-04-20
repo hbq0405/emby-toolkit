@@ -4428,17 +4428,20 @@ class SmartOrganizer:
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
                         if self.media_type == 'tv' and processed_episodes_for_flag:
-                            from psycopg2.extras import execute_batch
-                            update_data = [(str(self.tmdb_id), s, e) for s, e in processed_episodes_for_flag]
-                            execute_batch(cursor, """
-                                UPDATE media_metadata 
-                                SET active_washing = FALSE 
-                                WHERE parent_series_tmdb_id = %s 
-                                  AND item_type = 'Episode' 
-                                  AND season_number = %s 
-                                  AND episode_number = %s
-                            """, update_data)
-                            logger.info(f"  ➜ [洗版特权] 已精准核销 {len(processed_episodes_for_flag)} 个分集的洗版特权状态。")
+                            # ★ 核心修复：取交集，只核销真正拥有特权且本次处理成功的集数
+                            actually_washed_eps = processed_episodes_for_flag.intersection(active_washing_eps)
+                            if actually_washed_eps:
+                                from psycopg2.extras import execute_batch
+                                update_data = [(str(self.tmdb_id), s, e) for s, e in actually_washed_eps]
+                                execute_batch(cursor, """
+                                    UPDATE media_metadata 
+                                    SET active_washing = FALSE 
+                                    WHERE parent_series_tmdb_id = %s 
+                                      AND item_type = 'Episode' 
+                                      AND season_number = %s 
+                                      AND episode_number = %s
+                                """, update_data)
+                                logger.info(f"  ➜ [洗版特权] 已精准核销 {len(actually_washed_eps)} 个分集的洗版特权状态。")
                         elif self.media_type == 'movie' and movie_active_washing:
                             cursor.execute("UPDATE media_metadata SET active_washing = FALSE WHERE tmdb_id = %s AND item_type = 'Movie'", (str(self.tmdb_id),))
                             logger.info(f"  ➜ [洗版特权] 已核销电影的洗版特权状态。")
