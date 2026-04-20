@@ -1989,70 +1989,67 @@ class SmartOrganizer:
             return default
 
     def _get_friendly_display_info(self, raw_lang, raw_title, stream_type):
-            """
-            返回: (底层ISO代码, UI主标题, UI副标题)
-            解决 Emby 选择失效问题，并提供完美的中文 UI 展示。
-            """
-            from tasks import helpers
-            import utils
+        """
+        返回: (底层ISO代码, UI主标题, UI副标题)
+        解决 Emby 选择失效问题，并提供完美的中文 UI 展示。
+        """
+        from tasks import helpers
+        import utils
 
-            raw_title = (raw_title or "").strip()
-            # 统一调用 helpers 里的标准化方法
-            norm_lang = helpers.normalize_lang_code(raw_lang)
+        raw_title = (raw_title or "").strip()
+        # 统一调用 helpers 里的标准化方法
+        norm_lang = helpers.normalize_lang_code(raw_lang)
 
-            friendly_title = raw_title
-            detected_sub_type = None
+        friendly_title = raw_title
 
-            # 1. 翻译副标题 (Title)：保留原有中文，只翻译拼音/英文
-            if raw_title and not utils.contains_chinese(raw_title):
-                title_lower = raw_title.lower()
-                for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
-                    if any(k.lower() in title_lower for k in keywords):
-                        if key == "chi": friendly_title = "国语"
-                        elif key == "yue": friendly_title = "粤语"
-                        elif key == "sub_chi": 
-                            friendly_title = "简体"
-                            detected_sub_type = "chi"
-                        elif key == "sub_yue": 
-                            friendly_title = "繁体"
-                            detected_sub_type = "yue"
-                        elif key in ["eng", "sub_eng"]: friendly_title = "英语"
-                        elif key in ["jpn", "sub_jpn"]: friendly_title = "日语"
-                        elif key in ["kor", "sub_kor"]: friendly_title = "韩语"
-                        break
+        # 1. 翻译副标题 (Title)：保留原有中文，只翻译拼音/英文
+        if raw_title and not utils.contains_chinese(raw_title):
+            title_lower = raw_title.lower()
+            for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
+                if any(k.lower() in title_lower for k in keywords):
+                    if key == "chi": friendly_title = "国语"
+                    elif key == "yue": friendly_title = "粤语"
+                    elif key == "sub_chi": friendly_title = "简中"
+                    elif key == "sub_yue": friendly_title = "繁中"
+                    elif key in ["eng", "sub_eng"]: friendly_title = "英语"
+                    elif key in ["jpn", "sub_jpn"]: friendly_title = "日语"
+                    elif key in ["kor", "sub_kor"]: friendly_title = "韩语"
+                    break
 
-            # 2. 生成 UI 主标题 (DisplayLanguage)
-            display_lang = "未知"
+        # 2. 终极增强：如果标题本来就是空的，根据底层语言智能补齐中文标签！
+        if not friendly_title:
             if stream_type == "Audio":
-                if norm_lang == "chi" or friendly_title == "国语": display_lang = "国语"
-                elif norm_lang == "yue" or friendly_title == "粤语": display_lang = "粤语"
-                elif norm_lang == "eng": display_lang = "英语"
-                elif norm_lang == "jpn": display_lang = "日语"
-                elif norm_lang == "kor": display_lang = "韩语"
-                elif norm_lang: display_lang = norm_lang.upper()
-            else: # Subtitle
-                if norm_lang == "chi" or detected_sub_type == "chi" or friendly_title == "简体": display_lang = "简中"
-                elif norm_lang == "yue" or detected_sub_type == "yue" or friendly_title == "繁体": display_lang = "繁中"
-                elif norm_lang == "eng": display_lang = "英语"
-                elif norm_lang == "jpn": display_lang = "日语"
-                elif norm_lang == "kor": display_lang = "韩语"
-                elif norm_lang: display_lang = norm_lang.upper()
-                
-                # 兜底：如果是中文但没识别出简繁，默认给简中
-                if display_lang == "未知" and norm_lang == "chi":
-                    display_lang = "简中"
+                if norm_lang == "chi": friendly_title = "国语"
+                elif norm_lang == "yue": friendly_title = "粤语"
+                elif norm_lang == "eng": friendly_title = "英语"
+                elif norm_lang == "jpn": friendly_title = "日语"
+                elif norm_lang == "kor": friendly_title = "韩语"
+            else:
+                if norm_lang == "chi": friendly_title = "简中"
+                elif norm_lang == "yue": friendly_title = "繁中"
+                elif norm_lang == "eng": friendly_title = "英语"
+                elif norm_lang == "jpn": friendly_title = "日语"
+                elif norm_lang == "kor": friendly_title = "韩语"
 
-            # 3. 生成底层语言代码 (Language) - 解决 Emby 时灵时不灵的核心！
-            # Emby 对 yue 的支持有 Bug，为了让“首选中文音轨”绝对生效，底层强制伪装成 chi
-            final_iso_lang = norm_lang
-            if norm_lang == "yue":
-                final_iso_lang = "chi"
+        # 3. 生成底层语言代码 (Language)
+        final_iso_lang = norm_lang
+        
+        # 修正：如果标题明确是粤语/繁体，但底层没识别出来，修正底层 ISO
+        if friendly_title in ["粤语", "繁中", "繁体"]:
+            final_iso_lang = "yue"
+        elif friendly_title in ["国语", "简中", "简体"]:
+            final_iso_lang = "chi"
 
-            # 4. UI 净化：如果副标题和主标题意思重复（比如都是“国语”），就把副标题清空，让下拉框更清爽
-            if friendly_title in ["国语", "粤语", "简体", "繁体", "简中", "繁中", "英语", "日语", "韩语"]:
-                friendly_title = ""
+        # ★ 底层伪装术：只要是中文（国语/粤语/简/繁），底层统统告诉 Emby 是 chi
+        # 这样 Emby 的“首选中文”就能 100% 命中！
+        if final_iso_lang in ["chi", "yue"]:
+            final_iso_lang = "chi"
 
-            return final_iso_lang, display_lang, friendly_title
+        # 4. 生成 UI 主标题 (DisplayLanguage)
+        display_lang = friendly_title if friendly_title else "未知"
+
+        # ★ 绝对不能清空 friendly_title！Emby 下拉框的第二行全靠它！
+        return final_iso_lang, display_lang, friendly_title
 
     def _channel_layout_label(self, channels, channel_layout=None):
         channel_layout = (channel_layout or "").lower()
