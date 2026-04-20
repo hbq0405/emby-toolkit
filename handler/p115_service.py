@@ -15,7 +15,6 @@ import time
 import config_manager
 import constants
 from database import settings_db
-from tasks.helpers import normalize_lang_code
 from database.connection import get_db_connection
 import handler.tmdb as tmdb
 import utils
@@ -1989,48 +1988,71 @@ class SmartOrganizer:
         except Exception:
             return default
 
-    def _normalize_lang_code(self, lang):
-        lang = (lang or "").lower().strip()
-        if lang in ("zh", "zho", "chi", "chs", "cht", "cmn"):
-            return "chi"
-        if lang in ("en", "eng"):
-            return "eng"
-        if lang in ("ja", "jpn", "jp"):
-            return "jpn"
-        if lang in ("ko", "kor", "kr"):
-            return "kor"
-        if lang in ("fr", "fre", "fra"):
-            return "fre"
-        if lang in ("es", "spa"):
-            return "spa"
-        if lang in ("de", "ger", "deu"):
-            return "ger"
-        return lang or None
+    def _get_friendly_display_info(self, raw_lang, raw_title, stream_type):
+            """
+            返回: (底层ISO代码, UI主标题, UI副标题)
+            解决 Emby 选择失效问题，并提供完美的中文 UI 展示。
+            """
+            from tasks import helpers
+            import utils
 
-    def _display_language(self, lang, title=""):
-        lang = normalize_lang_code(lang)
-        title = title or ""
+            raw_title = (raw_title or "").strip()
+            # 统一调用 helpers 里的标准化方法
+            norm_lang = helpers.normalize_lang_code(raw_lang)
 
-        if lang == "chi":
-            if any(k in title for k in ["简", "简体", "chs", "CHS", "Simplified"]):
-                return "Chinese Simplified"
-            if any(k in title for k in ["繁", "繁体", "cht", "CHT", "Traditional"]):
-                return "Chinese Traditional"
-            return "Chinese"
-        if lang == "eng":
-            return "English"
-        if lang == "jpn":
-            return "Japanese"
-        if lang == "kor":
-            return "Korean"
-        if lang == "fre":
-            return "French"
-        if lang == "spa":
-            return "Spanish"
-        if lang == "ger":
-            return "German"
+            friendly_title = raw_title
+            detected_sub_type = None
 
-        return lang.upper() if lang else "Unknown"
+            # 1. 翻译副标题 (Title)：保留原有中文，只翻译拼音/英文
+            if raw_title and not utils.contains_chinese(raw_title):
+                title_lower = raw_title.lower()
+                for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
+                    if any(k.lower() in title_lower for k in keywords):
+                        if key == "chi": friendly_title = "国语"
+                        elif key == "yue": friendly_title = "粤语"
+                        elif key == "sub_chi": 
+                            friendly_title = "简体"
+                            detected_sub_type = "chi"
+                        elif key == "sub_yue": 
+                            friendly_title = "繁体"
+                            detected_sub_type = "yue"
+                        elif key in ["eng", "sub_eng"]: friendly_title = "英语"
+                        elif key in ["jpn", "sub_jpn"]: friendly_title = "日语"
+                        elif key in ["kor", "sub_kor"]: friendly_title = "韩语"
+                        break
+
+            # 2. 生成 UI 主标题 (DisplayLanguage)
+            display_lang = "未知"
+            if stream_type == "Audio":
+                if norm_lang == "chi" or friendly_title == "国语": display_lang = "国语"
+                elif norm_lang == "yue" or friendly_title == "粤语": display_lang = "粤语"
+                elif norm_lang == "eng": display_lang = "英语"
+                elif norm_lang == "jpn": display_lang = "日语"
+                elif norm_lang == "kor": display_lang = "韩语"
+                elif norm_lang: display_lang = norm_lang.upper()
+            else: # Subtitle
+                if norm_lang == "chi" or detected_sub_type == "chi" or friendly_title == "简体": display_lang = "简中"
+                elif norm_lang == "yue" or detected_sub_type == "yue" or friendly_title == "繁体": display_lang = "繁中"
+                elif norm_lang == "eng": display_lang = "英语"
+                elif norm_lang == "jpn": display_lang = "日语"
+                elif norm_lang == "kor": display_lang = "韩语"
+                elif norm_lang: display_lang = norm_lang.upper()
+                
+                # 兜底：如果是中文但没识别出简繁，默认给简中
+                if display_lang == "未知" and norm_lang == "chi":
+                    display_lang = "简中"
+
+            # 3. 生成底层语言代码 (Language) - 解决 Emby 时灵时不灵的核心！
+            # Emby 对 yue 的支持有 Bug，为了让“首选中文音轨”绝对生效，底层强制伪装成 chi
+            final_iso_lang = norm_lang
+            if norm_lang == "yue":
+                final_iso_lang = "chi"
+
+            # 4. UI 净化：如果副标题和主标题意思重复（比如都是“国语”），就把副标题清空，让下拉框更清爽
+            if friendly_title in ["国语", "粤语", "简体", "繁体", "简中", "繁中", "英语", "日语", "韩语"]:
+                friendly_title = ""
+
+            return final_iso_lang, display_lang, friendly_title
 
     def _channel_layout_label(self, channels, channel_layout=None):
         channel_layout = (channel_layout or "").lower()
@@ -2177,13 +2199,11 @@ class SmartOrganizer:
             disposition = s.get("disposition") or {}
 
             index = self._safe_int(s.get("index"), len(media_streams))
-            title = tags.get("title") or ""
-            lang = self._normalize_lang_code(tags.get("language"))
-            display_lang = self._display_language(lang, title)
             is_default = bool(disposition.get("default"))
             is_forced = bool(disposition.get("forced"))
 
             if codec_type == "video":
+                title = tags.get("title") or ""
                 width = self._safe_int(s.get("width"))
                 height = self._safe_int(s.get("height"))
 
@@ -2348,6 +2368,12 @@ class SmartOrganizer:
                 })
 
             elif codec_type == "audio":
+                raw_lang = tags.get("language")
+                raw_title = tags.get("title")
+                
+                # ★ 调用新的智能解析方法
+                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Audio")
+
                 channels = self._safe_int(s.get("channels"))
                 channel_layout = self._channel_layout_label(channels, s.get("channel_layout"))
                 sample_rate = self._safe_int(s.get("sample_rate"))
@@ -2356,7 +2382,7 @@ class SmartOrganizer:
                 codec_display = self._audio_codec_profile_label(codec, profile, title)
 
                 display_title_parts = []
-                if display_lang and display_lang != "Unknown":
+                if display_lang and display_lang != "未知":
                     display_title_parts.append(display_lang)
                 if codec_display:
                     display_title_parts.append(codec_display)
@@ -2371,22 +2397,22 @@ class SmartOrganizer:
                     "Type": "Audio",
                     "Codec": codec,
                     "Index": index,
-                    "Title": title,
+                    "Title": title, # ★ 净化后的副标题
                     "BitRate": self._safe_int(s.get("bit_rate")),
                     "BitDepth": self._safe_int(s.get("bits_per_raw_sample") or s.get("bits_per_sample")),
                     "Channels": channels,
                     "IsForced": is_forced,
-                    "Language": lang,
+                    "Language": lang, # ★ 伪装后的底层 ISO 代码
                     "Protocol": "File",
                     "TimeBase": s.get("time_base") or "1/1000",
                     "IsDefault": is_default,
                     "IsExternal": False,
                     "SampleRate": sample_rate,
-                    "DisplayTitle": display_title,
+                    "DisplayTitle": display_title, # ★ 完美的 UI 标题 (如: 国语 AAC stereo (默认))
                     "IsInterlaced": False,
                     "ChannelLayout": channel_layout,
                     "AttachmentSize": 0,
-                    "DisplayLanguage": display_lang,
+                    "DisplayLanguage": display_lang, # ★ 完美的 UI 语言 (如: 国语)
                     "ExtendedVideoType": "None",
                     "IsHearingImpaired": False,
                     "ExtendedVideoSubType": "None",
@@ -2397,18 +2423,20 @@ class SmartOrganizer:
                 })
 
             elif codec_type == "subtitle":
-                sub_codec = self._subtitle_codec_label(codec)
+                raw_lang = tags.get("language")
+                raw_title = tags.get("title")
+                
+                # ★ 调用新的智能解析方法
+                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Subtitle")
 
-                is_text_sub = codec in {
-                    "subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"
-                }
+                sub_codec = self._subtitle_codec_label(codec)
+                is_text_sub = codec in {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
 
                 display_title_parts = []
-                if display_lang and display_lang != "Unknown":
+                if display_lang and display_lang != "未知":
                     display_title_parts.append(display_lang)
                 if is_default:
-                    display_title_parts.append("(默认")
-                    display_title_parts[-1] = display_title_parts[-1] + f" {sub_codec})"
+                    display_title_parts.append(f"(默认 {sub_codec})")
                 else:
                     display_title_parts.append(f"({sub_codec})")
 
@@ -2418,17 +2446,17 @@ class SmartOrganizer:
                     "Type": "Subtitle",
                     "Codec": sub_codec,
                     "Index": index,
-                    "Title": title,
+                    "Title": title, # ★ 净化后的副标题
                     "IsForced": is_forced,
-                    "Language": lang,
+                    "Language": lang, # ★ 伪装后的底层 ISO 代码
                     "Protocol": "File",
                     "TimeBase": s.get("time_base") or "1/1000",
                     "IsDefault": is_default,
                     "IsExternal": False,
-                    "DisplayTitle": display_title,
+                    "DisplayTitle": display_title, # ★ 完美的 UI 标题 (如: 简中 (默认 SRT))
                     "IsInterlaced": False,
                     "AttachmentSize": 0,
-                    "DisplayLanguage": display_lang,
+                    "DisplayLanguage": display_lang, # ★ 完美的 UI 语言 (如: 简中)
                     "ExtendedVideoType": "None",
                     "IsHearingImpaired": False,
                     "ExtendedVideoSubType": "None",
