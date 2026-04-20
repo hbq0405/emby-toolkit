@@ -2883,7 +2883,8 @@ class SmartOrganizer:
                 # 捷径：如果是最新集，直接取最新季
                 if last_ep_data and last_ep_data.get('episode_number') == episode_num:
                     season_num = last_ep_data.get('season_number', 1)
-                    logger.info(f"  ➜ [动漫分季修正] 命中最新集，自动修正为第 {season_num} 季")
+                    if not silent_log:
+                        logger.info(f"  ➜ [动漫分季修正] 命中最新集，自动修正为第 {season_num} 季")
                 elif seasons_data:
                     # 累加算法：排除第 0 季(SP)，按顺序累加集数，推算所属季
                     valid_seasons = sorted([s for s in seasons_data if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
@@ -2892,7 +2893,8 @@ class SmartOrganizer:
                         cumulative += s.get('episode_count', 0)
                         if episode_num <= cumulative:
                             season_num = s['season_number']
-                            logger.info(f"  ➜ [动漫分季修正] 绝对集数 {episode_num} 超出原季容量，已自动推算并修正为第 {season_num} 季！")
+                            if not silent_log:
+                                logger.info(f"  ➜ [动漫分季修正] 绝对集数 {episode_num} 超出原季容量，已自动推算并修正为第 {season_num} 季！")
                             break
 
         if hasattr(self, 'forced_season') and self.forced_season is not None:
