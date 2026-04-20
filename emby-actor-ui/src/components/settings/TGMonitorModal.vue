@@ -1,6 +1,6 @@
 <!-- src/components/settings/TGMonitorModal.vue -->
 <template>
-  <n-modal v-model:show="showModal" preset="card" title="频道订阅监听配置 (Pro)" style="width: 900px; max-width: 95vw;">
+  <n-modal v-model:show="showModal" preset="card" title="频道订阅监听配置 (Pro)" style="width: 1100px; max-width: 95vw;">
     <n-spin :show="isLoading">
       <n-grid :cols="2" :x-gap="24">
         
