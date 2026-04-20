@@ -15,6 +15,7 @@ import time
 import config_manager
 import constants
 from database import settings_db
+from tasks.helpers import normalize_lang_code
 from database.connection import get_db_connection
 import handler.tmdb as tmdb
 import utils
@@ -2007,7 +2008,7 @@ class SmartOrganizer:
         return lang or None
 
     def _display_language(self, lang, title=""):
-        lang = self._normalize_lang_code(lang)
+        lang = normalize_lang_code(lang)
         title = title or ""
 
         if lang == "chi":
