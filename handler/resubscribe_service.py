@@ -5,39 +5,12 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from database.connection import get_db_connection
+from tasks.helpers import normalize_lang_code
 
 logger = logging.getLogger(__name__)
 
 
 class WashingService:
-    @classmethod
-    def _normalize_lang(cls, lang_str: str) -> str:
-        """
-        统一规则值：
-        音轨：chi=国语, yue=粤语
-        字幕：chi=简体, yue=繁体
-        """
-        if not lang_str:
-            return ""
-
-        lang_str = str(lang_str).lower().strip()
-
-        # 中文相关：明确拆分
-        if lang_str in ['guo', 'zho', 'zh', 'cn', 'chs', 'zh-cn', 'zh-hans', 'cmn', 'Mandarin', '国语', '中文', '简体', '简中']:
-            return 'chi'
-        if lang_str in ['yue', 'cht', 'zh-hk', 'zh-tw', 'hk', 'tw', 'Cantonese', '粤语', '繁体', '繁中']:
-            return 'yue'
-
-        # 其他语言
-        if lang_str in ['eng', 'en', '英语', '英文']:
-            return 'eng'
-        if lang_str in ['jpn', 'ja', 'jp', '日语', '日文']:
-            return 'jpn'
-        if lang_str in ['kor', 'ko', 'kr', '韩语', '韩文']:
-            return 'kor'
-
-        return lang_str
-
     @classmethod
     def _safe_parse_jsonish(cls, val: Any) -> Any:
         if val is None:
@@ -125,6 +98,7 @@ class WashingService:
             _get_detected_languages_from_streams,
             _get_resolution_tier,
             _get_standardized_effect,
+            normalize_lang_code # ★ 确保引入
         )
 
         norm = {
@@ -225,33 +199,33 @@ class WashingService:
                     continue
                 lang = track.get("language") or track.get("Language")
                 if lang:
-                    raw_audio_langs.add(cls._normalize_lang(lang))
+                    raw_audio_langs.add(normalize_lang_code(lang)) # ★ 替换为全局方法
 
             for sub in cls._safe_parse_list(parsed.get("subtitles", [])):
                 if not isinstance(sub, dict):
                     continue
                 lang = sub.get("language") or sub.get("Language")
                 if lang:
-                    raw_sub_langs.add(cls._normalize_lang(lang))
+                    raw_sub_langs.add(normalize_lang_code(lang)) # ★ 替换为全局方法
 
             for lang in cls._safe_parse_list(parsed.get("audio_langs", [])):
                 if lang:
-                    raw_audio_langs.add(cls._normalize_lang(lang))
+                    raw_audio_langs.add(normalize_lang_code(lang)) # ★ 替换为全局方法
 
             for lang in cls._safe_parse_list(parsed.get("sub_langs", [])):
                 if lang:
-                    raw_sub_langs.add(cls._normalize_lang(lang))
+                    raw_sub_langs.add(normalize_lang_code(lang)) # ★ 替换为全局方法
 
             for lang in cls._safe_parse_list(parsed.get("audio_languages_raw", [])):
                 if lang:
-                    raw_audio_langs.add(cls._normalize_lang(lang))
+                    raw_audio_langs.add(normalize_lang_code(lang)) # ★ 替换为全局方法
 
             for lang in cls._safe_parse_list(parsed.get("subtitle_languages_raw", [])):
                 if lang:
-                    raw_sub_langs.add(cls._normalize_lang(lang))
+                    raw_sub_langs.add(normalize_lang_code(lang)) # ★ 替换为全局方法
 
-        norm["audio_langs"] = {cls._normalize_lang(a) for a in raw_audio_langs if a}
-        norm["sub_langs"] = {cls._normalize_lang(s) for s in raw_sub_langs if s}
+        norm["audio_langs"] = {normalize_lang_code(a) for a in raw_audio_langs if a}
+        norm["sub_langs"] = {normalize_lang_code(s) for s in raw_sub_langs if s}
 
         # 5. 体积
         size_bytes = (
@@ -277,7 +251,7 @@ class WashingService:
                 or parsed.get("lang_code")
                 or ""
             )
-        norm["original_lang"] = cls._normalize_lang(raw_original_lang)
+        norm["original_lang"] = normalize_lang_code(raw_original_lang) # ★ 替换为全局方法
         norm["has_external_subtitle"] = parsed.get("has_external_subtitle", False)
         return norm
 
@@ -340,7 +314,8 @@ class WashingService:
 
         req_audio = priority_rule.get("audio", [])
         if req_audio:
-            normalized_req_audio = {cls._normalize_lang(a) for a in req_audio if a}
+            # ★ 替换为全局方法
+            normalized_req_audio = {normalize_lang_code(a) for a in req_audio if a}
             effective_req_audio = {a for a in normalized_req_audio if a and a != original_lang}
 
             if effective_req_audio:
@@ -357,7 +332,8 @@ class WashingService:
         # 5. 字幕
         req_sub = priority_rule.get("subtitle", [])
         if req_sub:
-            normalized_req_sub = {cls._normalize_lang(s) for s in req_sub if s}
+            # ★ 替换为全局方法
+            normalized_req_sub = {normalize_lang_code(s) for s in req_sub if s}
             effective_req_sub = {s for s in normalized_req_sub if s and s != original_lang}
 
             if effective_req_sub:
