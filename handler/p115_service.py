@@ -2865,7 +2865,7 @@ class SmartOrganizer:
                 season_num = 1
 
             # ★★★ 动漫绝对集数转季号逻辑 (解决海贼王 S01E1158 的问题) ★★★
-            if is_tv and episode_num is not None and episode_num > 30:
+            if is_tv and season_num == 1 and episode_num is not None and episode_num > 30:
                 seasons_data = self.details.get('seasons', [])
                 last_ep_data = self.details.get('last_episode_to_air', {})
                 
