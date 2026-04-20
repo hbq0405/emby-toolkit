@@ -76,21 +76,21 @@
               </n-checkbox-group>
             </n-form-item>
 
-            <n-form-item label="转存方式" path="transfer_mode">
-              <n-radio-group v-model:value="config.transfer_mode">
+            <n-form-item label="转存方式" path="transfer_modes">
+              <n-checkbox-group v-model:value="config.transfer_modes">
                 <n-space>
-                  <n-radio value="subscribe">订阅转存</n-radio>
-                  <n-radio value="keyword">关键词转存</n-radio>
-                  <n-radio value="brainless">无脑转存</n-radio>
+                  <n-checkbox value="subscribe" label="订阅转存" />
+                  <n-checkbox value="keyword" label="关键词转存" />
+                  <n-checkbox value="brainless" label="无脑转存" />
                 </n-space>
-              </n-radio-group>
+              </n-checkbox-group>
             </n-form-item>
 
-            <n-alert v-if="config.transfer_mode === 'brainless'" type="warning" style="margin-bottom: 24px;" :show-icon="true">
+            <n-alert v-if="config.transfer_modes && config.transfer_modes.includes('brainless')" type="warning" style="margin-bottom: 24px;" :show-icon="true">
               <b>警告：</b>开启“无脑转存”后，将无视您的订阅列表、追剧状态和本地去重逻辑，全盘接收频道发布的所有 115 资源！这可能会快速消耗您的 115 空间配额和影巢积分，请谨慎使用。
             </n-alert>
 
-            <n-form-item v-if="config.transfer_mode === 'keyword'" path="transfer_keywords">
+            <n-form-item v-if="config.transfer_modes && config.transfer_modes.includes('keyword')" path="transfer_keywords">
               <template #label>
                 转存关键词
                 <n-tooltip trigger="hover">
@@ -311,14 +311,12 @@ const fetchConfig = async () => {
         config.value.transfer_keywords = [];
       }
       
-      // ★ 兼容旧版数据：将 monitor_types 中的 'all' 迁移到 transfer_mode
-      if (!config.value.transfer_mode) {
-        if (config.value.monitor_types && config.value.monitor_types.includes('all')) {
-          config.value.transfer_mode = 'brainless';
-          config.value.monitor_types = config.value.monitor_types.filter(t => t !== 'all');
-        } else {
-          config.value.transfer_mode = 'subscribe';
-        }
+      // ★ 兼容旧版数据：将单选的 transfer_mode 转换为多选的 transfer_modes
+      if (config.value.transfer_mode && !config.value.transfer_modes) {
+        config.value.transfer_modes = [config.value.transfer_mode];
+      }
+      if (!config.value.transfer_modes) {
+        config.value.transfer_modes = ['subscribe'];
       }
 
       if (!config.value.custom_regex) {

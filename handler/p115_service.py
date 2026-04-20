@@ -1430,6 +1430,10 @@ class SmartOrganizer:
             else:
                 data['episode_run_time'] = raw_details.get('episode_run_time', [])
 
+            # ★ 补充季集数据，供动漫绝对集数推算使用
+            data['seasons'] = raw_details.get('seasons', [])
+            data['last_episode_to_air'] = raw_details.get('last_episode_to_air', {})
+
             _TMDB_METADATA_CACHE[cache_key] = data # 写入缓存
 
             return data
@@ -2856,9 +2860,31 @@ class SmartOrganizer:
                         if mid_match:
                             episode_num = int(mid_match.group(1))
                 
-            # 4. 终极兜底
+            # 4. 终极兜底与动漫绝对集数修正
+            is_season_defaulted = False
             if season_num is None:
                 season_num = 1
+                is_season_defaulted = True
+                
+            # ★★★ 动漫绝对集数转季号逻辑 (解决海贼王 1158 集的问题) ★★★
+            if is_tv and is_season_defaulted and episode_num is not None and episode_num > 30:
+                seasons_data = self.details.get('seasons', [])
+                last_ep_data = self.details.get('last_episode_to_air', {})
+
+                # 捷径：如果是最新集，直接取最新季
+                if last_ep_data and last_ep_data.get('episode_number') == episode_num:
+                    season_num = last_ep_data.get('season_number', 1)
+                    logger.info(f"  ➜ [动漫分季修正] 命中最新集，自动修正为第 {season_num} 季")
+                elif seasons_data:
+                    # 累加算法：排除第 0 季(SP)，按顺序累加集数，推算所属季
+                    valid_seasons = sorted([s for s in seasons_data if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
+                    cumulative = 0
+                    for s in valid_seasons:
+                        cumulative += s.get('episode_count', 0)
+                        if episode_num <= cumulative:
+                            season_num = s['season_number']
+                            logger.info(f"  ➜ [动漫分季修正] 绝对集数 {episode_num} 落在第 {season_num} 季区间，已自动修正！")
+                            break
 
         if hasattr(self, 'forced_season') and self.forced_season is not None:
             # ★ 核心修复：防止批量整理时，第一个文件的季号污染后续所有不同季号的文件

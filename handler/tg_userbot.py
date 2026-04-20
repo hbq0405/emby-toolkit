@@ -50,7 +50,7 @@ class TGUserBotManager:
             'password': cfg.get('password', ''),
             'channels': cfg.get('channels', []),
             'monitor_types': cfg.get('monitor_types', ['movie', 'tv']),
-            'transfer_mode': cfg.get('transfer_mode', 'subscribe'),
+            'transfer_modes': cfg.get('transfer_modes', ['subscribe']),
             'transfer_keywords': cfg.get('transfer_keywords', []),
             'block_keywords': cfg.get('block_keywords', [])
         }
@@ -223,11 +223,13 @@ class TGUserBotManager:
         # =================================================================
         # ★ 关键词转存匹配逻辑
         # =================================================================
-        transfer_mode = cfg.get('transfer_mode', 'subscribe')
-        is_brainless = (transfer_mode == 'brainless')
+        transfer_modes = cfg.get('transfer_modes', ['subscribe'])
+        is_brainless = 'brainless' in transfer_modes
+        is_subscribe = 'subscribe' in transfer_modes
+        is_keyword_enabled = 'keyword' in transfer_modes
         is_keyword_matched = False
         
-        if transfer_mode == 'keyword':
+        if is_keyword_enabled:
             transfer_keywords = cfg.get('transfer_keywords', [])
             for rule_obj in transfer_keywords:
                 if isinstance(rule_obj, str):
@@ -479,7 +481,8 @@ class TGUserBotManager:
                 "is_pack": is_pack,
                 "is_completed_pack": is_completed_pack,
                 "is_brainless": is_brainless,
-                "is_keyword_matched": is_keyword_matched
+                "is_keyword_matched": is_keyword_matched,
+                "is_subscribe": is_subscribe
             })
 
     # ==========================================
@@ -594,6 +597,7 @@ def _process_tg_queue():
                 is_pack = task.get('is_pack', False) 
                 is_brainless = task.get('is_brainless', False) 
                 is_keyword_matched = task.get('is_keyword_matched', False)
+                is_subscribe = task.get('is_subscribe', True)
 
                 item_type = task.get('item_type', 'movie')
                 if not tmdb_id and title:
@@ -615,7 +619,8 @@ def _process_tg_queue():
                 if not tmdb_id and not (is_brainless or is_keyword_matched): continue 
 
                 should_process = is_brainless or is_keyword_matched
-                if not should_process:
+                # 如果没命中无脑/关键词，且开启了订阅转存，才去查库
+                if not should_process and is_subscribe:
                     try:
                         with get_db_connection() as conn:
                             with conn.cursor() as cursor:
