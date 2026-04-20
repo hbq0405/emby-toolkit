@@ -2864,36 +2864,36 @@ class SmartOrganizer:
             if season_num is None:
                 season_num = 1
 
-            # ★★★ 动漫绝对集数转季号逻辑 (解决海贼王 S01E1158 的问题) ★★★
-            if is_tv and season_num == 1 and episode_num is not None and episode_num > 30:
-                seasons_data = self.details.get('seasons', [])
-                last_ep_data = self.details.get('last_episode_to_air', {})
-                
-                # ★ 核心修复：容量校验。检查当前解析出的 season_num 是否真的能容纳这个 episode_num
-                # 如果不能容纳 (比如 S01 只有 61 集，但文件是 E1158)，说明这是绝对集数，强制反推！
-                needs_recalc = False
-                if seasons_data:
-                    current_season_data = next((s for s in seasons_data if s.get('season_number') == season_num), None)
-                    if not current_season_data or current_season_data.get('episode_count', 0) < episode_num:
-                        needs_recalc = True
-                elif season_num == 1:
+        # ★★★ 动漫绝对集数转季号逻辑 (解决海贼王 S01E1158 的问题) ★★★
+        if is_tv and episode_num is not None and episode_num > 30:
+            seasons_data = self.details.get('seasons', [])
+            last_ep_data = self.details.get('last_episode_to_air', {})
+            
+            # ★ 核心修复：容量校验。检查当前解析出的 season_num 是否真的能容纳这个 episode_num
+            # 如果不能容纳 (比如 S01 只有 61 集，但文件是 E1158)，说明这是绝对集数，强制反推！
+            needs_recalc = False
+            if seasons_data:
+                current_season_data = next((s for s in seasons_data if s.get('season_number') == season_num), None)
+                if not current_season_data or current_season_data.get('episode_count', 0) < episode_num:
                     needs_recalc = True
+            elif season_num == 1:
+                needs_recalc = True
 
-                if needs_recalc:
-                    # 捷径：如果是最新集，直接取最新季
-                    if last_ep_data and last_ep_data.get('episode_number') == episode_num:
-                        season_num = last_ep_data.get('season_number', 1)
-                        logger.info(f"  ➜ [动漫分季修正] 命中最新集，自动修正为第 {season_num} 季")
-                    elif seasons_data:
-                        # 累加算法：排除第 0 季(SP)，按顺序累加集数，推算所属季
-                        valid_seasons = sorted([s for s in seasons_data if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
-                        cumulative = 0
-                        for s in valid_seasons:
-                            cumulative += s.get('episode_count', 0)
-                            if episode_num <= cumulative:
-                                season_num = s['season_number']
-                                logger.info(f"  ➜ [动漫分季修正] 绝对集数 {episode_num} 超出原季容量，已自动推算并修正为第 {season_num} 季！")
-                                break
+            if needs_recalc:
+                # 捷径：如果是最新集，直接取最新季
+                if last_ep_data and last_ep_data.get('episode_number') == episode_num:
+                    season_num = last_ep_data.get('season_number', 1)
+                    logger.info(f"  ➜ [动漫分季修正] 命中最新集，自动修正为第 {season_num} 季")
+                elif seasons_data:
+                    # 累加算法：排除第 0 季(SP)，按顺序累加集数，推算所属季
+                    valid_seasons = sorted([s for s in seasons_data if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
+                    cumulative = 0
+                    for s in valid_seasons:
+                        cumulative += s.get('episode_count', 0)
+                        if episode_num <= cumulative:
+                            season_num = s['season_number']
+                            logger.info(f"  ➜ [动漫分季修正] 绝对集数 {episode_num} 超出原季容量，已自动推算并修正为第 {season_num} 季！")
+                            break
 
         if hasattr(self, 'forced_season') and self.forced_season is not None:
             # ★ 核心修复：防止批量整理时，第一个文件的季号污染后续所有不同季号的文件
