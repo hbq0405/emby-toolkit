@@ -3205,10 +3205,17 @@ class SmartOrganizer:
         # =================================================================
         # ★★★ 智能物理时长嗅探 (解决短剧 TMDb 缺乏时长元数据的问题) ★★★
         # =================================================================
+        # 手动重组时，目标目录已由用户强制指定，直接跳过嗅探！
         if not getattr(self, 'is_manual_correct', False):
             needs_runtime_check = False
             for r in self.rules:
-                if r.get('enabled', True) and (r.get('runtime_min') or r.get('runtime_max')):
+                if not r.get('enabled', True): continue
+                
+                # ★ 智能阻断：如果在遇到时长规则之前，就已经命中了当前的高优先级规则，说明大局已定，无需嗅探！
+                if str(r.get('cid')) == str(target_cid):
+                    break
+                    
+                if r.get('runtime_min') or r.get('runtime_max'):
                     needs_runtime_check = True
                     break
 
