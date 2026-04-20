@@ -2458,7 +2458,6 @@ def get_all_folder_mappings(base_url: str, api_key: str) -> dict:
                         'guid': str(folder.get('Guid') or ""),
                         'type': 'SelectableFolder'
                     }
-        logger.debug(f"  ➜ [权限调试] 已加载 {len(selectable_folders)} 个权限专用文件夹映射。")
     except Exception as e:
         logger.error(f"获取 SelectableMediaFolders 失败: {e}")
 

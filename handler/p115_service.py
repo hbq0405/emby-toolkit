@@ -3143,13 +3143,14 @@ class SmartOrganizer:
             
             if extracted_season is not None:
                 self.forced_season = extracted_season
-                logger.info(f"  ➜ [动态修正] 从物理文件名 '{parse_name}' 中提取到季号 S{extracted_season:02d}，正在重新评估目标分类...")
-                new_target_cid = self.get_target_cid()
-                if new_target_cid and str(new_target_cid) != str(target_cid):
-                    logger.info(f"  ➜ [动态修正] 目标分类已修正 (成功触发连载状态检查)")
-                    target_cid = new_target_cid
-                    # 同步更新 dest_parent_cid，防止后面创建目录时用错
-                    dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
+                if not getattr(self, 'is_manual_correct', False):
+                    logger.info(f"  ➜ [动态修正] 从物理文件名 '{parse_name}' 中提取到季号 S{extracted_season:02d}，正在重新评估目标分类...")
+                    new_target_cid = self.get_target_cid()
+                    if new_target_cid and str(new_target_cid) != str(target_cid):
+                        logger.info(f"  ➜ [动态修正] 目标分类已修正 (成功触发连载状态检查)")
+                        target_cid = new_target_cid
+                        # 同步更新 dest_parent_cid，防止后面创建目录时用错
+                        dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
 
         # =================================================================
         # 1. 拦截合集包 (Collection Breakdown) - 仅限单项传入时触发
@@ -3204,11 +3205,12 @@ class SmartOrganizer:
         # =================================================================
         # ★★★ 智能物理时长嗅探 (解决短剧 TMDb 缺乏时长元数据的问题) ★★★
         # =================================================================
-        needs_runtime_check = False
-        for r in self.rules:
-            if r.get('enabled', True) and (r.get('runtime_min') or r.get('runtime_max')):
-                needs_runtime_check = True
-                break
+        if not getattr(self, 'is_manual_correct', False):
+            needs_runtime_check = False
+            for r in self.rules:
+                if r.get('enabled', True) and (r.get('runtime_min') or r.get('runtime_max')):
+                    needs_runtime_check = True
+                    break
 
         if needs_runtime_check:
             current_runtime = 0
@@ -3244,18 +3246,22 @@ class SmartOrganizer:
                         except: pass
 
                     if sniff_sha1 or sniff_fid:
-                        # 调用现有的解析流程 (会依次走 本地缓存 -> 中心服务器 -> ffprobe)
-                        self._fetch_and_parse_mediainfo(
-                            sniff_sha1,
-                            guessed_info={},
-                            pre_fetched_mediainfo=None,
-                            local_pre_fetched_mediainfo=None,
-                            file_node=first_video,
-                            silent_log=True
-                        )
+                        # ★ 核心修复：先主动查一次本地数据库，避免已有缓存的文件重复跑 ffprobe
+                        cached_text = P115CacheManager.get_mediainfo_cache_text(sniff_sha1) if sniff_sha1 else None
+                        
+                        if not cached_text:
+                            # 只有本地真没有缓存时，才去调用解析流程 (跑 ffprobe)
+                            self._fetch_and_parse_mediainfo(
+                                sniff_sha1,
+                                guessed_info={},
+                                pre_fetched_mediainfo=None,
+                                local_pre_fetched_mediainfo=None,
+                                file_node=first_video,
+                                silent_log=True
+                            )
+                            # 跑完后再读一次刚写入的缓存
+                            cached_text = P115CacheManager.get_mediainfo_cache_text(sniff_sha1) if sniff_sha1 else None
 
-                        # 解析完后，从本地缓存把 JSON 拿出来读时长
-                        cached_text = P115CacheManager.get_mediainfo_cache_text(sniff_sha1)
                         if cached_text:
                             try:
                                 mi_json = json.loads(cached_text)
