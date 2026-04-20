@@ -2861,30 +2861,18 @@ class SmartOrganizer:
                             episode_num = int(mid_match.group(1))
                 
             # 4. 终极兜底与动漫绝对集数修正
-            is_season_defaulted = False
             if season_num is None:
                 season_num = 1
-                is_season_defaulted = True
-                
-            # ★★★ 动漫绝对集数转季号逻辑 (解决海贼王 1158 集的问题) ★★★
-            if is_tv and is_season_defaulted and episode_num is not None and episode_num > 30:
-                seasons_data = self.details.get('seasons', [])
-                last_ep_data = self.details.get('last_episode_to_air', {})
 
-                # 捷径：如果是最新集，直接取最新季
-                if last_ep_data and last_ep_data.get('episode_number') == episode_num:
-                    season_num = last_ep_data.get('season_number', 1)
-                    logger.info(f"  ➜ [动漫分季修正] 命中最新集，自动修正为第 {season_num} 季")
-                elif seasons_data:
-                    # 累加算法：排除第 0 季(SP)，按顺序累加集数，推算所属季
-                    valid_seasons = sorted([s for s in seasons_data if s.get('season_number', 0) > 0], key=lambda x: x['season_number'])
-                    cumulative = 0
-                    for s in valid_seasons:
-                        cumulative += s.get('episode_count', 0)
-                        if episode_num <= cumulative:
-                            season_num = s['season_number']
-                            logger.info(f"  ➜ [动漫分季修正] 绝对集数 {episode_num} 落在第 {season_num} 季区间，已自动修正！")
-                            break
+            # ★★★ 动漫绝对集数转季号逻辑 (安全阈值：集号 > 30) ★★★
+            if is_tv and episode_num is not None:
+                inferred_season = self._infer_season_from_absolute_episode(episode_num)
+                if inferred_season and inferred_season != season_num:
+                    old_season = season_num
+                    season_num = inferred_season
+                    logger.info(
+                        f"  ➜ [动漫分季修正] 检测到长篇番绝对集数命名，季号从 S{old_season:02d} 修正为 S{season_num:02d} (EP{episode_num})"
+                    )
 
         if hasattr(self, 'forced_season') and self.forced_season is not None:
             # ★ 核心修复：防止批量整理时，第一个文件的季号污染后续所有不同季号的文件
@@ -3130,6 +3118,45 @@ class SmartOrganizer:
             logger.error(f"  ➜ 拆解合集包失败: {e}")
             return False
 
+    def _infer_season_from_absolute_episode(self, episode_num):
+        """
+        仅当集号明显像长篇动漫绝对集数时，才尝试用 TMDb 反推季号。
+        安全阈值：episode_num > 30
+        """
+        if self.media_type != 'tv':
+            return None
+
+        try:
+            ep = int(episode_num or 0)
+        except (TypeError, ValueError):
+            return None
+
+        if ep <= 30:
+            return None
+
+        seasons_data = self.details.get('seasons', []) or []
+        last_ep_data = self.details.get('last_episode_to_air', {}) or {}
+
+        # 捷径：刚好是 TMDb 记录的最新集
+        if last_ep_data and int(last_ep_data.get('episode_number') or 0) == ep:
+            season_no = int(last_ep_data.get('season_number') or 0)
+            return season_no if season_no > 0 else None
+
+        # 常规：按每季 episode_count 累加反推
+        valid_seasons = sorted(
+            [s for s in seasons_data if int(s.get('season_number') or 0) > 0],
+            key=lambda x: int(x.get('season_number') or 0)
+        )
+
+        cumulative = 0
+        for s in valid_seasons:
+            cumulative += int(s.get('episode_count') or 0)
+            if ep <= cumulative:
+                season_no = int(s.get('season_number') or 0)
+                return season_no if season_no > 0 else None
+
+        return None
+
     def execute(self, root_item_or_items, target_cid, progress_callback=None, skip_gc=False):
         # 判断传入的是单个文件还是批量文件列表
         is_batch = isinstance(root_item_or_items, list)
@@ -3156,28 +3183,74 @@ class SmartOrganizer:
         # ★★★ 动态修正目标目录 (解决 TG/影巢 无法触发连载检查的问题) ★★★
         # =================================================================
         if self.media_type == 'tv' and getattr(self, 'forced_season', None) is None:
-            m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', parse_name, re.IGNORECASE)
-            m2 = re.search(r'Season\s*(\d{1,4})\b', parse_name, re.IGNORECASE)
-            m3 = re.search(r'第(\d{1,4})季', parse_name)
             extracted_season = None
-            
-            if m1: extracted_season = int(m1.group(1))
-            elif m2: extracted_season = int(m2.group(1))
-            elif m3: extracted_season = int(m3.group(1))
-            else:
-                # 动漫或无季号命名兜底：只要看起来像是有集号的，统统按第一季算
-                if re.search(r'(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话]', parse_name, re.IGNORECASE):
-                    extracted_season = 1
-            
+            extracted_episode = None
+
+            # 先同时解析季 / 集
+            se_match = re.search(
+                r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})\b|'
+                r'(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|'
+                r'(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|'
+                r'第(\d{1,4})[集话]',
+                parse_name,
+                re.IGNORECASE
+            )
+
+            if se_match:
+                s = se_match.group(1)
+                e = se_match.group(2)
+                ep_only = se_match.group(3)
+                e_only = se_match.group(4)
+                zh_ep = se_match.group(5)
+
+                if s:
+                    extracted_season = int(s)
+
+                if e:
+                    extracted_episode = int(e)
+                elif ep_only:
+                    extracted_episode = int(ep_only)
+                elif e_only:
+                    extracted_episode = int(e_only)
+                elif zh_ep:
+                    extracted_episode = int(zh_ep)
+
+            # 再补纯季号
+            if extracted_season is None:
+                m2 = re.search(r'Season\s*(\d{1,4})\b', parse_name, re.IGNORECASE)
+                m3 = re.search(r'第(\d{1,4})季', parse_name)
+                if m2:
+                    extracted_season = int(m2.group(1))
+                elif m3:
+                    extracted_season = int(m3.group(1))
+
+            # ★ 核心：大于 30 集才允许按绝对集数反推季号
+            if extracted_episode is not None and extracted_episode > 30:
+                inferred_season = self._infer_season_from_absolute_episode(extracted_episode)
+                if inferred_season:
+                    old_season = extracted_season
+                    extracted_season = inferred_season
+                    logger.info(
+                        f"  ➜ [动态修正] 检测到长篇番绝对集数命名，目录季号由 "
+                        f"{f'S{old_season:02d}' if old_season else '未指定'} "
+                        f"修正为 S{extracted_season:02d} (EP{extracted_episode})"
+                    )
+
+            # 普通无季号命名兜底：只有有集号但没季号时，默认第一季
+            if extracted_season is None and extracted_episode is not None:
+                extracted_season = 1
+
             if extracted_season is not None:
                 self.forced_season = extracted_season
                 if not getattr(self, 'is_manual_correct', False):
-                    logger.info(f"  ➜ [动态修正] 从物理文件名 '{parse_name}' 中提取到季号 S{extracted_season:02d}，正在重新评估目标分类...")
+                    logger.info(
+                        f"  ➜ [动态修正] 从物理文件名 '{parse_name}' 中提取到季号 "
+                        f"S{extracted_season:02d}，正在重新评估目标分类..."
+                    )
                     new_target_cid = self.get_target_cid()
                     if new_target_cid and str(new_target_cid) != str(target_cid):
-                        logger.info(f"  ➜ [动态修正] 目标分类已修正 (成功触发连载状态检查)")
+                        logger.info("  ➜ [动态修正] 目标分类已修正 (成功触发连载状态检查)")
                         target_cid = new_target_cid
-                        # 同步更新 dest_parent_cid，防止后面创建目录时用错
                         dest_parent_cid = target_cid if (target_cid and str(target_cid) != '0') else source_root_id
 
         # =================================================================
