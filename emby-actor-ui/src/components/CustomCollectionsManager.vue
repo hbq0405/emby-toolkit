@@ -1337,7 +1337,6 @@ const effectOptions = [
   { label: 'SDR', value: 'SDR' },
   { label: 'HDR', value: 'HDR' },
   { label: 'HDR10+', value: 'HDR10+' },
-  { label: '杜比视界 (所有)', value: 'DoVi' },
   { label: 'DoVi P5', value: 'DoVi_P5' },
   { label: 'DoVi P7', value: 'DoVi_P7' },
   { label: 'DoVi P8', value: 'DoVi_P8' }
