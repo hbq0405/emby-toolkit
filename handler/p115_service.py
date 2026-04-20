@@ -4972,28 +4972,46 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
         original_name = r['original_name']
         old_cache = old_caches.get(file_id)
 
-        info_res = client.fs_get_info(file_id)
-        if not info_res or not info_res.get('state') or not info_res.get('data'):
-            logger.warning(f"无法在 115 中定位到该文件(ID:{file_id})，可能已被删除。")
-            continue
+        old_pid = None
+        pick_code = None
+        sha1 = None
+        info_data = {}
 
-        info_data = info_res['data']
-        old_pid = info_data.get('parent_id') or info_data.get('cid')
+        # ★ 核心提速：优先使用本地缓存，彻底干掉 1.5 秒/次的 API 延迟！
+        if old_cache and old_cache.get('parent_id') and old_cache.get('pick_code'):
+            old_pid = old_cache['parent_id']
+            pick_code = old_cache['pick_code']
+            sha1 = old_cache.get('sha1')
+            info_data = {
+                'file_id': file_id, 
+                'file_name': original_name, 
+                'file_category': '1', 
+                'parent_id': old_pid, 
+                'pick_code': pick_code, 
+                'sha1': sha1
+            }
+        else:
+            # 只有当缓存丢失时，才迫不得已去请求 115 API
+            info_res = client.fs_get_info(file_id)
+            if not info_res or not info_res.get('state') or not info_res.get('data'):
+                logger.warning(f"无法在 115 中定位到该文件(ID:{file_id})，可能已被删除。")
+                continue
+            info_data = info_res['data']
+            old_pid = info_data.get('parent_id') or info_data.get('cid')
+            pick_code = info_data.get('pick_code')
+            sha1 = info_data.get('sha1')
+
         if old_pid: old_pids.add(str(old_pid))
 
-        pick_code = info_data.get('pick_code')
-        if not pick_code and old_cache:
-            pick_code = old_cache['pick_code']
-
         root_items.append({
-            'fid': info_data.get('file_id') or file_id,
-            'file_id': info_data.get('file_id') or file_id,
+            'fid': file_id,
+            'file_id': file_id,
             'fn': original_name,
             'fc': str(info_data.get('file_category', '1')),
             'pid': old_pid,
             'pc': pick_code,
             'pick_code': pick_code,
-            'sha1': info_data.get('sha1') or (old_cache['sha1'] if old_cache else None),
+            'sha1': sha1,
             '_record_id': r['id'],
             '_old_cache': old_cache,
             '_info_data': info_data
