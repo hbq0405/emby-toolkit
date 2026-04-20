@@ -2042,8 +2042,8 @@ class SmartOrganizer:
 
         # ★ 底层伪装术：只要是中文（国语/粤语/简/繁），底层统统告诉 Emby 是 chi
         # 这样 Emby 的“首选中文”就能 100% 命中！
-        if final_iso_lang in ["chi", "yue"]:
-            final_iso_lang = "chi"
+        # if final_iso_lang in ["chi", "yue"]:
+        #     final_iso_lang = "chi"
 
         # 4. 生成 UI 主标题 (DisplayLanguage)
         display_lang = friendly_title if friendly_title else "未知"
