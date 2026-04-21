@@ -724,14 +724,25 @@ def handle_sorting_rules():
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (双接口轮流尝试版)
+    终极极速 302 直链解析服务 (魔法日志 + 智能劫持中转版)
     """
+    # =================================================================
+    # ★★★ 1. 魔法日志：打印所有请求头，抓出 Emby 的真面目 ★★★
+    # =================================================================
+    client_ua = request.headers.get('User-Agent', '')
+    logger.info(f"========== [魔法日志] 收到直链请求 ==========")
+    logger.info(f"请求 IP: {request.remote_addr}")
+    logger.info(f"请求方法: {request.method}")
+    for k, v in request.headers.items():
+        logger.info(f"Header -> {k}: {v}")
+    logger.info(f"=============================================")
+
     if request.method == 'HEAD':
         return '', 200
 
     try:
-        # 恢复获取真实 UA
-        player_ua = request.headers.get('User-Agent', 'Mozilla/5.0')
+        # 伪装成标准浏览器去骗 115
+        fake_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
         
         client = P115Service.get_client()
         if not client:
@@ -746,22 +757,62 @@ def play_115_video(pick_code, filename=None):
         for i in range(max_retries):
             try:
                 if use_openapi:
-                    real_url = client.openapi_downurl(pick_code, user_agent=player_ua)
+                    real_url = client.openapi_downurl(pick_code, user_agent=fake_ua)
                 else:
-                    real_url = client.download_url(pick_code, user_agent=player_ua)
+                    real_url = client.download_url(pick_code, user_agent=fake_ua)
                     
                 if real_url:
                     break
             except Exception as e:
                 logger.warning(f"  ➜ [直链解析] {'OpenAPI' if use_openapi else 'Cookie'} 接口异常: {e}")
             
-            # 核心：如果没拿到，切换布尔值，下一次循环就换另一个接口
             use_openapi = not use_openapi
             time.sleep(0.5)
         
         if not real_url:
             return "Failed to get download URL or Rate Limited", 404
+
+        # =================================================================
+        # ★★★ 2. 核心劫持逻辑：如果是 Emby 服务端探测，直接走中转代理！★★★
+        # =================================================================
+        client_ua_lower = client_ua.lower()
+        needs_proxy = False
+        
+        # 识别 Emby 服务端的特征：
+        # 1. 没有 UA
+        # 2. UA 包含 emby, jellyfin, lavf (ffmpeg/ffprobe), kodi
+        if not client_ua: 
+            needs_proxy = True
+        elif any(kw in client_ua_lower for kw in ['emby', 'jellyfin', 'lavf', 'kodi']):
+            needs_proxy = True
+        
+        if needs_proxy:
+            logger.info(f"  🕵️‍♂️ [路由劫持] 检测到 Emby 探测或特殊客户端 ({client_ua})，启动无缝中转代理！")
             
+            # 构造请求 115 的 Headers，完美伪装
+            headers_to_115 = {
+                "User-Agent": fake_ua,
+                "Accept": "*/*",
+                "Connection": "keep-alive"
+            }
+            # 透传 Range 请求 (非常重要，Emby 探测需要这个来读取视频头)
+            if 'Range' in request.headers:
+                headers_to_115['Range'] = request.headers['Range']
+
+            # 发起流式请求，向 115 拿数据
+            resp = requests.get(real_url, headers=headers_to_115, stream=True, timeout=10)
+            
+            # 构造返回给 Emby 的 Headers
+            excluded_headers = ['content-encoding', 'transfer-encoding', 'connection', 'host']
+            response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_headers]
+            
+            # 将 115 的数据流直接喂给 Emby
+            return Response(stream_with_context(resp.iter_content(chunk_size=8192)), status=resp.status_code, headers=response_headers)
+
+        # =================================================================
+        # ★★★ 3. 正常客户端：下发 302 直链 ★★★
+        # =================================================================
+        logger.info(f"  🚀 [直链下发] 正常客户端 ({client_ua})，下发 302 直链。")
         response = redirect(real_url, code=302)
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
