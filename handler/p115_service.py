@@ -3222,7 +3222,7 @@ class SmartOrganizer:
             elif m3: extracted_season = int(m3.group(1))
             else:
                 # 动漫或无季号命名兜底：只要看起来像是有集号的，统统按第一季算
-                if re.search(r'(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话]', parse_name, re.IGNORECASE):
+                if re.search(r'(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话話回]', parse_name, re.IGNORECASE):
                     extracted_season = 1
             
             if extracted_season is not None:
@@ -3401,7 +3401,7 @@ class SmartOrganizer:
                     break
                 
                 # 2. 标准特征 (EP01, S01E01)
-                if re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第\d{1,4}[集话]', c_name, re.IGNORECASE):
+                if re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第\d{1,4}[集话話回]', c_name, re.IGNORECASE):
                     is_actually_tv = True
                     break
                 
@@ -3736,7 +3736,7 @@ class SmartOrganizer:
                         # ★ 剧集匹配逻辑：使用强大的正则和纯数字兜底提取集号
                         if self.media_type == 'tv' and (s_num is None or e_num is None):
                             # 1. 标准特征匹配
-                            match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话]', fn, re.IGNORECASE)
+                            match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话話回]', fn, re.IGNORECASE)
                             if match:
                                 s = match.group(1)
                                 e = match.group(2)
