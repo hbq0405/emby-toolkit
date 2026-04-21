@@ -2878,13 +2878,22 @@ class SmartOrganizer:
                     episode_num = int(name_without_ext)
                 else:
                     clean_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', name_without_ext)
-                    end_match = re.search(r'(?:^|[ \.\-\_\[\(])(\d{1,4})(?:[\]\)]|\s*)$', clean_name)
-                    if end_match:
-                        episode_num = int(end_match.group(1))
+                    
+                    # ★★★ 核心修复：新增动漫专属特征匹配，优先级高于普通数字兜底 ★★★
+                    anime_match = re.search(r'(?:\s-\s+)(\d{1,4})(?:\s|$)|\[(\d{1,4})\]|【(\d{1,4})】', clean_name)
+                    if anime_match:
+                        ep_str = anime_match.group(1) or anime_match.group(2) or anime_match.group(3)
+                        episode_num = int(ep_str)
                     else:
-                        mid_match = re.search(r'(?:^|[ \-\_\[\(])(\d{1,4})(?:[ \.\-\_\]\)]|$)', clean_name)
-                        if mid_match:
-                            episode_num = int(mid_match.group(1))
+                        # 结尾数字匹配
+                        end_match = re.search(r'(?:^|[ \.\-\_\[\(])(\d{1,4})(?:[\]\)]|\s*)$', clean_name)
+                        if end_match:
+                            episode_num = int(end_match.group(1))
+                        else:
+                            # 中间数字匹配 (最容易误伤，优先级最低)
+                            mid_match = re.search(r'(?:^|[ \-\_\[\(])(\d{1,4})(?:[ \.\-\_\]\)]|$)', clean_name)
+                            if mid_match:
+                                episode_num = int(mid_match.group(1))
                 
             # 4. 终极兜底
             if season_num is None:
