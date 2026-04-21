@@ -176,7 +176,7 @@
                           <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 8px; background: var(--n-color-modal); border-radius: 4px;">
                             <n-switch v-model:value="priority.exempt_original_lang" size="small" @update:value="saveGroups" />
                             <span style="font-size: 12px; color: var(--n-text-color-3);">
-                              <strong>原产国豁免音轨/字幕规则：</strong>
+                              <strong>原产国豁免音轨/字幕规则</strong>
                             </span>
                           </div>
                         </n-gi>
