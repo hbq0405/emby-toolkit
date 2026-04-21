@@ -751,7 +751,6 @@ def play_115_video(pick_code, filename=None):
         max_retries = 4
         real_url = None
         config = get_config()
-        emby_server_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL, '').lower()
         api_priority = config.get(constants.CONFIG_OPTION_115_PLAYBACK_API_PRIORITY, 'openapi')
         use_openapi = (api_priority != 'cookie')
         
@@ -784,10 +783,10 @@ def play_115_video(pick_code, filename=None):
         # 2. UA 包含 emby, jellyfin, lavf (ffmpeg/ffprobe), kodi
         if not client_ua: 
             needs_proxy = True
-        elif any(kw in client_ua_lower for kw in ['emby', 'jellyfin', 'lavf', 'kodi']):
+        elif any(kw in client_ua_lower for kw in ['lavf', 'kodi']):
             needs_proxy = True
         
-        if request.remote_addr == emby_server_url.replace('http://', '').replace('https://', '').split(':')[0]:
+        if needs_proxy:
             logger.info(f"  🕵️‍♂️ [路由劫持] 检测到 Emby 探测或特殊客户端 ({client_ua})，启动无缝中转代理！")
             
             # 构造请求 115 的 Headers，完美伪装
