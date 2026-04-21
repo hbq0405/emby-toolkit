@@ -3714,7 +3714,9 @@ class SmartOrganizer:
                         silent_log=True  # ★ 开启静默，防止预扫描时重复打印日志
                     )
                     key = (v_s, v_e) if self.media_type == 'tv' else 'movie'
-                    batch_video_names[key] = v_name.rsplit('.', 1)[0]
+                    # 电影只保留第一个视频作为基准 (通常电影只有一个正片)
+                    if key not in batch_video_names:
+                        batch_video_names[key] = v_name.rsplit('.', 1)[0]
             
             # 2. 将视频基础名注入到同批次的字幕中
             if batch_video_names:
@@ -3724,18 +3726,58 @@ class SmartOrganizer:
                     if ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
                         s_num = file_item.get('_forced_season')
                         e_num = file_item.get('_forced_episode')
-                        if self.media_type == 'tv' and (s_num is None or e_num is None):
-                            match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b', fn, re.IGNORECASE)
-                            if match:
-                                s_num, e_num = int(match.group(1)), int(match.group(2))
                         
-                        key = (s_num, e_num) if self.media_type == 'tv' else 'movie'
+                        # ★ 电影无脑匹配逻辑：只要是电影，且批次里有视频，无脑重命名成视频的形状！
+                        if self.media_type == 'movie' and 'movie' in batch_video_names:
+                            file_item['_forced_base_name'] = batch_video_names['movie']
+                            logger.debug(f"  ➜ [字幕对齐] 电影无脑绑定: 字幕 '{fn}' -> 视频 '{batch_video_names['movie']}'")
+                            continue
+
+                        # ★ 剧集匹配逻辑：使用强大的正则和纯数字兜底提取集号
+                        if self.media_type == 'tv' and (s_num is None or e_num is None):
+                            # 1. 标准特征匹配
+                            match = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*(?:e|E|p|P)(\d{1,4})\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话]', fn, re.IGNORECASE)
+                            if match:
+                                s = match.group(1)
+                                e = match.group(2)
+                                ep_only = match.group(3)
+                                e_only = match.group(4)
+                                zh_ep = match.group(5)
+                                if s_num is None: s_num = int(s) if s else None
+                                if e_num is None: e_num = int(e) if e else (int(ep_only) if ep_only else (int(e_only) if e_only else int(zh_ep)))
+                            
+                            # 2. 纯数字兜底 (针对 01.srt, 02.ass 这种)
+                            if e_num is None:
+                                name_without_ext = fn.rsplit('.', 1)[0]
+                                if name_without_ext.isdigit():
+                                    e_num = int(name_without_ext)
+                                else:
+                                    clean_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', name_without_ext)
+                                    anime_match = re.search(r'(?:\s-\s+)(\d{1,4})(?:\s|$)|\[(\d{1,4})\]|【(\d{1,4})】', clean_name)
+                                    if anime_match:
+                                        ep_str = anime_match.group(1) or anime_match.group(2) or anime_match.group(3)
+                                        e_num = int(ep_str)
+                                    else:
+                                        end_match = re.search(r'(?:^|[ \.\-\_\[\(])(\d{1,4})(?:[\]\)]|\s*)$', clean_name)
+                                        if end_match:
+                                            e_num = int(end_match.group(1))
+                                        else:
+                                            mid_match = re.search(r'(?:^|[ \-\_\[\(])(\d{1,4})(?:[ \.\-\_\]\)]|$)', clean_name)
+                                            if mid_match:
+                                                e_num = int(mid_match.group(1))
+                            
+                            # 3. 季号兜底
+                            if s_num is None:
+                                s_num = getattr(self, 'forced_season', 1)
+                        
+                        key = (s_num, e_num)
                         if key in batch_video_names:
                             file_item['_forced_base_name'] = batch_video_names[key]
-                            # ★ 核心修复：将解析出的季集号写回字典，供 _rename_file_node 生成季目录名
                             file_item['_forced_season'] = s_num
                             file_item['_forced_episode'] = e_num
-                            logger.debug(f"  ➜ [字幕对齐] 成功将字幕 '{fn}' 绑定至视频基础名 '{batch_video_names[key]}'")
+                            logger.debug(f"  ➜ [字幕对齐] 剧集精准绑定: 字幕 '{fn}' -> 视频 '{batch_video_names[key]}'")
+                        else:
+                            logger.warning(f"  ➜ [字幕对齐] 警告：字幕 '{fn}' 提取到 S{s_num}E{e_num}，但未找到对应的视频文件！")
 
         # =================================================================
         # ★★★ 核心性能修复：内存级目录缓存 ★★★
