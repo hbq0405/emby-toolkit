@@ -786,7 +786,7 @@ def play_115_video(pick_code, filename=None):
         elif any(kw in client_ua_lower for kw in ['emby', 'jellyfin', 'lavf', 'kodi']):
             needs_proxy = True
         
-        if needs_proxy:
+        if request.remote_addr:
             logger.info(f"  🕵️‍♂️ [路由劫持] 检测到 Emby 探测或特殊客户端 ({client_ua})，启动无缝中转代理！")
             
             # 构造请求 115 的 Headers，完美伪装
