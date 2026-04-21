@@ -13,6 +13,7 @@ from extensions import admin_required
 from database import settings_db
 from handler.p115_service import P115Service, get_config
 import constants
+from urllib.parse import urlparse
 from functools import lru_cache, wraps
 
 # 115扫码登录相关变量 (OAuth 2.0 + PKCE 模式)
@@ -720,6 +721,21 @@ def handle_sorting_rules():
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
+def _get_emby_server_ip():
+    config = get_config()
+    emby_url = (config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL, "") or "").strip()
+    if not emby_url:
+        return ""
+    if "://" not in emby_url:
+        emby_url = f"http://{emby_url}"
+    parsed = urlparse(emby_url)
+    return (parsed.hostname or "").strip()
+
+def _is_emby_server_request():
+    req_ip = (request.remote_addr or "").strip()
+    emby_ip = _get_emby_server_ip()
+    return bool(req_ip and emby_ip and req_ip == emby_ip)
+    
 @p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) 
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
@@ -772,40 +788,34 @@ def play_115_video(pick_code, filename=None):
         if not real_url:
             return "Failed to get download URL or Rate Limited", 404
 
-        # =================================================================
-        # ★★★ 2. 核心劫持逻辑：如果是 Emby 服务端探测，直接走中转代理！★★★
-        # =================================================================
-        client_ua_lower = client_ua.lower()
-        needs_proxy = False
-        
-        # 识别 Emby 服务端的特征：
-        # 1. 没有 UA
-        # 2. UA 包含 emby, jellyfin, lavf (ffmpeg/ffprobe), kodi
-        if not client_ua and any(kw in client_ua_lower for kw in ['lavf', 'kodi']): 
-            needs_proxy = True
-        
-        if needs_proxy:
-            logger.info(f"  🕵️‍♂️ [路由劫持] 检测到 Emby 探测或特殊客户端 ({client_ua})，启动无缝中转代理！")
-            
-            # 构造请求 115 的 Headers，完美伪装
+        # 只有 Emby Server 自己来拉流时才走中转
+        if _is_emby_server_request():
+            logger.info(f"  🕵️‍♂️ [IP命中] Emby Server 请求，启动中转代理")
+
             headers_to_115 = {
                 "User-Agent": fake_ua,
                 "Accept": "*/*",
                 "Connection": "keep-alive"
             }
-            # 透传 Range 请求 (非常重要，Emby 探测需要这个来读取视频头)
+
             if 'Range' in request.headers:
                 headers_to_115['Range'] = request.headers['Range']
 
-            # 发起流式请求，向 115 拿数据
+            if request.method == 'HEAD':
+                resp = requests.head(real_url, headers=headers_to_115, allow_redirects=True, timeout=10)
+                excluded_headers = ['content-encoding', 'transfer-encoding', 'connection', 'host']
+                response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_headers]
+                return Response(status=resp.status_code, headers=response_headers)
+
             resp = requests.get(real_url, headers=headers_to_115, stream=True, timeout=10)
-            
-            # 构造返回给 Emby 的 Headers
             excluded_headers = ['content-encoding', 'transfer-encoding', 'connection', 'host']
             response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_headers]
-            
-            # 将 115 的数据流直接喂给 Emby
-            return Response(stream_with_context(resp.iter_content(chunk_size=8192)), status=resp.status_code, headers=response_headers)
+
+            return Response(
+                stream_with_context(resp.iter_content(chunk_size=8192)),
+                status=resp.status_code,
+                headers=response_headers
+            )
 
         # =================================================================
         # ★★★ 3. 正常客户端：下发 302 直链 ★★★
