@@ -2486,19 +2486,18 @@ class SmartOrganizer:
 
         # 归一化默认轨道：避免 MKV 多条字幕都带 default flag，导致显示一堆“默认”
         config = get_config()
-        pref_language = config.get(constants.CONFIG_OPTION_115_DEFAULT_LANGUAGE, "")
+        pref_language_code = config.get(constants.CONFIG_OPTION_115_DEFAULT_LANGUAGE, "")
 
-        def _force_default_track(streams, stream_type, pref_lang):
+        def _force_default_track(streams, stream_type, pref_code):
             type_streams = [s for s in streams if s.get("Type") == stream_type]
             if not type_streams: return
 
             best_track = None
             
-            # 1. 强权模式：优先匹配用户配置的语言 (如 "国语" 或 "简中")
-            if pref_lang:
+            # 1. 强权模式：大道至简，直接精准匹配底层 Language 代码！
+            if pref_code:
                 for s in type_streams:
-                    # 只要 UI 语言或标题里包含目标关键字，直接钦定为太子！
-                    if pref_lang in s.get("DisplayLanguage", "") or pref_lang in s.get("Title", ""):
+                    if s.get("Language") == pref_code:
                         best_track = s
                         break
             
@@ -2531,8 +2530,8 @@ class SmartOrganizer:
                 s["DisplayTitle"] = dt.replace("  ", " ")
 
         # 执行音轨和字幕的强权篡改
-        _force_default_track(media_streams, "Audio", pref_language)
-        _force_default_track(media_streams, "Subtitle", pref_language)
+        _force_default_track(media_streams, "Audio", pref_language_code)
+        _force_default_track(media_streams, "Subtitle", pref_language_code)
 
         if not media_streams:
             return None
