@@ -724,7 +724,7 @@ def handle_sorting_rules():
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (智能 UA 穿透 + 无缝中转版)
+    302 直链解析服务
     """
     client_ua = request.headers.get('User-Agent', '')
     client_ua_lower = client_ua.lower()
@@ -776,7 +776,7 @@ def play_115_video(pick_code, filename=None):
         # ★★★ 核心分流逻辑 ★★★
         # =================================================================
         if is_emby_server:
-            logger.info(f"  🕵️‍♂️ [路由劫持] 检测到 Emby 服务端介入 ({client_ua})，启动无缝中转代理喂流！")
+            logger.info(f"  ➜ 检测到 Emby 服务端介入 ({client_ua})，启动中转代理！")
             
             headers_to_115 = {
                 "User-Agent": request_ua,
@@ -795,7 +795,7 @@ def play_115_video(pick_code, filename=None):
 
         else:
             # 正常第三方客户端，下发 302，让它自己去连 115！
-            logger.info(f"  🚀 [直链下发] 真实客户端 ({client_ua})，下发 302 直链，彻底解放 ETK！")
+            # logger.info(f"  ➜ 客户端 ({client_ua})，下发 302 直链！")
             response = redirect(real_url, code=302)
             response.headers['Access-Control-Allow-Origin'] = '*'
             return response
