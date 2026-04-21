@@ -4521,7 +4521,7 @@ class SmartOrganizer:
                     or '<html' in raw_err_msg.lower()
                     or '<!doctype html' in raw_err_msg.lower()
                 ):
-                    err_msg = '该片无法整理，可能是被115判为违规文件而无法移动。'
+                    err_msg = '该片无法整理，请手动重命名移动后增量生成STRM。'
                 else:
                     err_msg = raw_err_msg
 
