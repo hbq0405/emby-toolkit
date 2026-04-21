@@ -781,9 +781,7 @@ def play_115_video(pick_code, filename=None):
         # 识别 Emby 服务端的特征：
         # 1. 没有 UA
         # 2. UA 包含 emby, jellyfin, lavf (ffmpeg/ffprobe), kodi
-        if not client_ua: 
-            needs_proxy = True
-        elif any(kw in client_ua_lower for kw in ['lavf', 'kodi']):
+        if not client_ua and any(kw in client_ua_lower for kw in ['lavf', 'kodi']): 
             needs_proxy = True
         
         if needs_proxy:
