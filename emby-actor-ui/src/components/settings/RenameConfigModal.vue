@@ -191,7 +191,8 @@ const config = ref({
 // 乐高模块定义
 const allBlocks = [
   { id: 'title_zh', label: '中文片名' },
-  { id: 'title_en', label: '英文/原名' },
+  { id: 'title_en', label: '英文片名' },
+  { id: 'title_orig', label: '原文片名' }, // ★ 新增：原文片名
   { id: 'year', label: '年份 (2008)' },
   { id: 'year_pure', label: '纯年份 2008' },
   { id: 's_e', label: '季集号 (S01E01)' },
@@ -283,11 +284,11 @@ const drop = (event, dropIndex, targetTrackName) => {
   updateConfigFormat(targetTrackName);
 };
 
-// 模拟数据
-const mockMovie = { zh: '蝙蝠侠：黑暗骑士', en: 'The Dark Knight', year: '2008', tmdb: '155', res: '1080p', src: 'BluRay', codec: 'AVC', audio: 'DDP 5.1', group: 'CMCT', orig: 'The.Dark.Knight.2008.REMASTERED.1080p', ext: '.mkv' };
-const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', src: 'WEB-DL', stream: 'NF', effect: 'HDR', codec: 'HEVC', audio_count: '2Audios', audio: 'Atmos', fps: '60fps', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.NF.WEB-DL', ext: '.mp4' };
-const mockOriginalMovieDir = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264";
-const mockOriginalMovieFile = "The.Dark.Knight.2008.REMASTERED.1080p.BluRay.x264.mkv";
+// ★ 修改模拟数据：换成《寄生虫》，展示英文和原文的区别
+const mockMovie = { zh: '寄生虫', en: 'Parasite', orig_title: '기생충', year: '2019', tmdb: '496243', res: '1080p', src: 'BluRay', codec: 'AVC', audio: 'DDP 5.1', group: 'CMCT', orig: 'Parasite.2019.REMASTERED.1080p', ext: '.mkv' };
+const mockTv = { zh: '绝命毒师', en: 'Breaking Bad', orig_title: 'Breaking Bad', year: '2008', tmdb: '1396', s: '1', e: '1', res: '2160p', src: 'WEB-DL', stream: 'NF', effect: 'HDR', codec: 'HEVC', audio_count: '2Audios', audio: 'Atmos', fps: '60fps', group: 'HHWEB', orig: 'Breaking.Bad.S01E01.2160p.NF.WEB-DL', ext: '.mp4' };
+const mockOriginalMovieDir = "Parasite.2019.REMASTERED.1080p.BluRay.x264";
+const mockOriginalMovieFile = "Parasite.2019.REMASTERED.1080p.BluRay.x264.mkv";
 const mockOriginalTvDir = "Breaking.Bad.S01.2160p.WEB-DL.x265";
 const mockOriginalTvFile = "Breaking.Bad.S01E01.2160p.WEB-DL.x265.mp4";
 
@@ -304,6 +305,7 @@ const buildName = (mockData, formatArray, isTv) => {
     
     if (blockId === 'title_zh') val = mockData.zh;
     else if (blockId === 'title_en') val = mockData.en;
+    else if (blockId === 'title_orig') val = mockData.orig_title; // ★ 新增：原文片名
     else if (blockId === 'year') val = `(${mockData.year})`;
     else if (blockId === 'year_pure') val = mockData.year;
     else if (blockId === 's_e' && isTv) val = `S0${mockData.s}E0${mockData.e}`;

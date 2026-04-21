@@ -1410,6 +1410,23 @@ class SmartOrganizer:
 
             data['title'] = current_title
             data['original_title'] = original_title
+
+            # ★★★ 尝试提取纯英文名 (title_en) ★★★
+            english_title = None
+            # 如果原名本身就是英文，直接用原名
+            if original_title and not utils.contains_chinese(original_title) and re.match(r'^[a-zA-Z0-9\s\-_:\.,!\?\'"&]+$', original_title):
+                english_title = original_title
+            else:
+                # 否则去别名里找美国的别名
+                alt_titles_data = raw_details.get("alternative_titles", {})
+                alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
+                for alt in alt_list:
+                    if alt.get("iso_3166_1", "").upper() == "US":
+                        english_title = utils.clean_invisible_chars(alt.get("title", ""))
+                        break
+            
+            # 存入 data 供后续调用
+            data['title_en'] = english_title or original_title # 兜底用原名
             
             # 提取年份
             date_str = raw_details.get('release_date') or raw_details.get('first_air_date')
@@ -2732,7 +2749,8 @@ class SmartOrganizer:
             
             # 优先使用传入的 safe_title，防止文件名包含 \/:*?"<>| 导致报错
             if block == 'title_zh': val = safe_title if safe_title else (self.details.get('title') or self.original_title)
-            elif block == 'title_en': val = original_title or self.details.get('original_title') or self.original_title
+            elif block == 'title_en': val = self.details.get('title_en') or original_title or self.details.get('original_title') or self.original_title
+            elif block == 'title_orig': val = original_title or self.details.get('original_title') or self.original_title
             elif block == 'year': val = f"({self.details.get('date', '')[:4]})" if self.details.get('date') else None
             elif block == 'year_pure': val = self.details.get('date', '')[:4] if self.details.get('date') else None
             elif block == 'tmdb_bracket': val = f"{{tmdb={self.tmdb_id}}}"
