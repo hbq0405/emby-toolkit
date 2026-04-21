@@ -2850,7 +2850,13 @@ class SmartOrganizer:
         
         if is_tv and (season_num is None or episode_num is None):
             # 1. 标准特征匹配 (S01E01, EP01, 第1集)
-            pattern = r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话]'
+            pattern = (
+                r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})\b'
+                r'|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b'
+                r'|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b'
+                r'|第(\d{1,4})[集话話回](?=$|[^\u4e00-\u9fff]|完|完结|完結)'
+                r'|(?:^|[ \.\-\_\[\(])(\d{1,4})[集话話回](?=$|[^\u4e00-\u9fff]|完|完结|完結)'
+            )
             match = re.search(pattern, original_name, re.IGNORECASE)
             if match:
                 s = match.group(1)

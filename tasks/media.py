@@ -1966,14 +1966,12 @@ def task_backup_mediainfo(processor):
 # --- 终极媒体信息还原任务 ---
 def task_restore_mediainfo(processor):
     """
-    【恢复媒体信息任务】(数据库驱动 + FFprobe 提取版)
-    1. 查数据库所有在库媒体项（Movie和Episode）。
-    2. 查哪些缺失 -mediainfo.json。
-    3. 查 p115_mediainfo_cache 表获取媒体信息。
-    4. 如果没有就调用 ffprobe 访问网盘提取，同时写入缓存和生成 -mediainfo.json。
+    【恢复媒体信息任务】(万能指纹提取 + I/O 节流优化版)
+    遍历本地媒体库，查找缺少 -mediainfo.json 的 .strm 文件。
+    利用核心处理器的万能提取器获取 SHA1，从数据库指纹库中精准还原媒体信息。
     """
-    logger.info("--- 开始执行媒体信息还原/升级任务 ---")
-    task_manager.update_status_from_thread(0, "正在扫描数据库中所有在库媒体项...")
+    logger.info("--- 开始执行媒体信息还原任务 ---")
+    task_manager.update_status_from_thread(0, "正在扫描本地媒体库目录...")
     time.sleep(1)  # 增加短暂停顿，确保前端能渲染出初始状态
     
     local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
@@ -1982,162 +1980,125 @@ def task_restore_mediainfo(processor):
         task_manager.update_status_from_thread(100, "未配置本地媒体库目录或目录不存在")
         time.sleep(1)
         return
-        
-    # 1. 查数据库所有在库媒体项（Movie和Episode）
-    sql = """
-        SELECT 
-            m.tmdb_id, m.item_type, m.title, 
-            s.sha1_val, 
-            p.pc_val
-        FROM media_metadata m
-        JOIN LATERAL jsonb_array_elements(
-            CASE WHEN jsonb_typeof(m.asset_details_json) = 'array' THEN m.asset_details_json ELSE '[]'::jsonb END
-        ) WITH ORDINALITY AS a(asset, idx) ON true
-        LEFT JOIN LATERAL jsonb_array_elements_text(
-            CASE WHEN jsonb_typeof(m.file_sha1_json) = 'array' THEN m.file_sha1_json ELSE '[]'::jsonb END
-        ) WITH ORDINALITY AS s(sha1_val, idx2) ON a.idx = s.idx2
-        LEFT JOIN LATERAL jsonb_array_elements_text(
-            CASE WHEN jsonb_typeof(m.file_pickcode_json) = 'array' THEN m.file_pickcode_json ELSE '[]'::jsonb END
-        ) WITH ORDINALITY AS p(pc_val, idx3) ON a.idx = p.idx3
-        WHERE m.in_library = TRUE 
-          AND m.item_type IN ('Movie', 'Episode')
-    """
-    items = []
-    try:
-        with connection.get_db_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(sql)
-            items = [dict(row) for row in cursor.fetchall()]
-    except Exception as e:
-        logger.error(f"查询在库媒体项失败: {e}")
-        task_manager.update_status_from_thread(-1, "查询数据库失败")
-        return
 
-    if not items:
-        logger.info("  ➜ 数据库中没有在库的媒体项。")
-        task_manager.update_status_from_thread(100, "没有在库的媒体项")
-        return
-
-    logger.info(f"  ➜ 共扫描到 {len(items)} 个在库媒体资产，准备检查缺失情况...")
-    task_manager.update_status_from_thread(5, "正在比对本地文件...")
-
-    # 批量获取本地路径映射，极大地减少数据库查询次数
-    sha1_list = list(set([item['sha1_val'] for item in items if item.get('sha1_val')]))
-    pc_list = list(set([item['pc_val'] for item in items if item.get('pc_val')]))
-    
-    path_map = {}
-    try:
-        with connection.get_db_connection() as conn:
-            cursor = conn.cursor()
-            if sha1_list:
-                cursor.execute("SELECT sha1, local_path FROM p115_filesystem_cache WHERE sha1 = ANY(%s) AND local_path IS NOT NULL", (sha1_list,))
-                for row in cursor.fetchall():
-                    path_map[row['sha1']] = row['local_path']
-            if pc_list:
-                cursor.execute("SELECT pick_code, local_path FROM p115_filesystem_cache WHERE pick_code = ANY(%s) AND local_path IS NOT NULL", (pc_list,))
-                for row in cursor.fetchall():
-                    path_map[row['pick_code']] = row['local_path']
-    except Exception as e:
-        logger.error(f"批量查询本地路径失败: {e}")
-
-    items_to_restore = []
-
-    # 2. 查哪些缺失 -mediainfo.json
-    for item in items:
-        sha1 = item.get('sha1_val')
-        pc = item.get('pc_val')
-        if not sha1 and not pc:
-            continue
-
-        local_path_rel = path_map.get(sha1) or path_map.get(pc)
-        if local_path_rel:
-            base_local = os.path.join(local_root, str(local_path_rel).lstrip('\\/'))
-            json_path = os.path.splitext(base_local)[0] + "-mediainfo.json"
-            # 如果同名 json 不存在，说明缺失
-            if not os.path.exists(json_path):
-                item['json_path'] = json_path
-                items_to_restore.append(item)
-                
-    total = len(items_to_restore)
-    if total == 0:
-        logger.info("  ➜ 所有媒体项的 -mediainfo.json 均已存在，无需还原。")
-        task_manager.update_status_from_thread(100, "所有媒体信息均已存在，无需还原")
-        time.sleep(1)
-        return
-        
-    logger.info(f"  ➜ 发现 {total} 个缺失媒体信息的媒体项，准备提取并还原...")
-    
     from handler.p115_service import P115Service, P115CacheManager, SmartOrganizer
     client = P115Service.get_client()
+        
+    # 1. 收集所有需要恢复的 strm 文件路径
+    strm_files_to_restore = []
+    for root, _, files in os.walk(local_root):
+        if processor.is_stop_requested(): return
+        for file in files:
+            if file.lower().endswith('.strm'):
+                strm_path = os.path.join(root, file)
+                json_path = os.path.splitext(strm_path)[0] + "-mediainfo.json"
+                # 如果同名 json 不存在，说明缺失
+                if not os.path.exists(json_path):
+                    strm_files_to_restore.append(strm_path)
+                    
+    total = len(strm_files_to_restore)
+    if total == 0:
+        logger.info("  ➜ 本地媒体库完整，无需还原媒体信息。")
+        task_manager.update_status_from_thread(100, "本地媒体库完整，无需还原媒体信息")
+        time.sleep(1)  # 增加短暂停顿，确保前端能渲染出完成状态
+        return
+        
+    logger.info(f"  ➜ 发现 {total} 个缺失媒体信息的媒体项，准备还原...")
     
     restored_count = 0
     failed_count = 0
+
+    def _probe_and_cache_mediainfo_online(pc, sha1, filename):
+        """
+        当本地缓存没有媒体信息时，使用 115 直链 + ffprobe 在线提取，
+        成功后写入 p115_mediainfo_cache，并返回原始 mediainfo JSON。
+        """
+        if not client or not pc or not sha1:
+            return None
+
+        try:
+            # 只借用现成 ffprobe 逻辑，跳过 SmartOrganizer.__init__ 的 TMDb 初始化
+            probe_helper = SmartOrganizer.__new__(SmartOrganizer)
+            probe_helper.client = client
+
+            file_node = {
+                "pick_code": pc,
+                "pc": pc,
+                "file_name": filename,
+                "fn": filename,
+            }
+
+            raw_json = probe_helper._probe_mediainfo_with_ffprobe(
+                file_node=file_node,
+                sha1=sha1,
+                silent_log=False
+            )
+
+            if raw_json:
+                P115CacheManager.save_mediainfo_cache(sha1, raw_json)
+                logger.info(f"  ➜ [媒体信息还原] 本地缓存缺失，已在线 ffprobe 提取并写入缓存: {filename}")
+                return raw_json
+
+        except Exception as e:
+            logger.warning(f"  ➜ [媒体信息还原] 在线 ffprobe 提取失败 {filename}: {e}")
+
+        return None
     
-    for i, item in enumerate(items_to_restore):
+    for i, strm_path in enumerate(strm_files_to_restore):
         if processor.is_stop_requested(): break
         
-        if i % 5 == 0:
-            task_manager.update_status_from_thread(5 + int((i/total)*95), f"正在还原 ({i+1}/{total})...")
+        # ★ 优化 1：降低进度推送频率，每 50 个文件推送一次，防止前端 WebSocket 堵塞卡死
+        if i % 100 == 0:
+            task_manager.update_status_from_thread(int((i/total)*100), f"正在还原 ({i+1}/{total})...")
+            time.sleep(0.1) # 强制让出 CPU 时间片，让前端喘口气
             
-        sha1 = item.get('sha1_val')
-        pc = item.get('pc_val')
-        json_path = item.get('json_path')
-        title = item.get('title')
-        tmdb_id = item.get('tmdb_id')
-        item_type = item.get('item_type')
+        filename = os.path.basename(strm_path)
+        strm_content_path = None
+        
+        try:
+            with open(strm_path, 'r', encoding='utf-8') as f:
+                content = f.read().strip()
+                strm_content_path = content.replace('\\', '/')
+        except Exception as e:
+            logger.warning(f"  ➜ 读取 STRM 失败 {strm_path}: {e}")
+            failed_count += 1
+            continue
 
-        # 如果只有 PC 没有 SHA1，尝试转换
+        # 2. 调用核心处理器的万能指纹提取器
+        pc, sha1 = processor._extract_115_fingerprints(strm_content_path)
+        
+        # ★ 核心补全：如果只提取到了 PC 码（直链模式），需要转换成 SHA1
         if not sha1 and pc:
             sha1 = processor._get_sha1_by_pickcode(pc)
-
-        mediainfo_json = None
-
-        # 3. 查 p115_mediainfo_cache 表获取媒体信息
-        if sha1:
-            mediainfo_json = media_db.get_mediainfo_by_sha1(sha1)
             
-        # 4. 如果没有就调用 ffprobe 访问网盘提取
-        if not mediainfo_json and pc and client:
-            logger.info(f"  ➜ [{title}] 缓存未命中，正在调用 ffprobe 提取网盘媒体信息...")
-            try:
-                # 构造 file_node 供 ffprobe 使用
-                file_node = {
-                    'pc': pc,
-                    'pick_code': pc,
-                    'fn': os.path.basename(json_path).replace('-mediainfo.json', '.mkv') # 伪造一个文件名供日志显示
-                }
-                # 实例化 SmartOrganizer 调用 ffprobe
-                organizer = SmartOrganizer(client, tmdb_id, 'movie' if item_type == 'Movie' else 'tv', title)
-                extracted_info = organizer._probe_mediainfo_with_ffprobe(file_node, sha1=sha1, silent_log=True)
+        # 3. 通过 SHA1 精准获取媒体信息
+        mediainfo = media_db.get_mediainfo_by_sha1(sha1) if sha1 else None
 
-                if extracted_info:
-                    mediainfo_json = extracted_info
-                    # 写入缓存
-                    if sha1:
-                        P115CacheManager.save_mediainfo_cache(sha1, mediainfo_json)
-                    logger.info(f"  ➜ [{title}] ffprobe 提取成功并已写入缓存。")
-                else:
-                    logger.warning(f"  ➜ [{title}] ffprobe 提取失败。")
-            except Exception as e:
-                logger.error(f"  ➜ [{title}] ffprobe 提取异常: {e}")
-
-        # 5. 写入本地 -mediainfo.json
-        if mediainfo_json:
+        # 4. 如果缓存没有媒体信息，尝试在线 ffprobe 提取并回填缓存
+        if not mediainfo and sha1 and pc:
+            raw_json = _probe_and_cache_mediainfo_online(pc, sha1, filename)
+            if raw_json:
+                # 保险起见，重新从数据库读取一次，保证后续统一走同一套数据来源
+                mediainfo = media_db.get_mediainfo_by_sha1(sha1) or raw_json
+        
+        # 5. 写入本地文件
+        if mediainfo:
+            json_path = os.path.splitext(strm_path)[0] + "-mediainfo.json"
             try:
-                os.makedirs(os.path.dirname(json_path), exist_ok=True)
                 with open(json_path, 'w', encoding='utf-8') as f:
-                    json.dump(mediainfo_json, f, ensure_ascii=False)
+                    json.dump(mediainfo, f, ensure_ascii=False)
                 restored_count += 1
-                logger.debug(f"  ➜ 成功还原媒体信息: {os.path.basename(json_path)}")
+                logger.debug(f"  ➜ 成功还原媒体信息: {filename}")
             except Exception as e:
                 logger.error(f"  ➜ 写入 JSON 失败 {json_path}: {e}")
                 failed_count += 1
         else:
             failed_count += 1
             
-        time.sleep(0.1) # 稍微限速，防止 ffprobe 或 API 请求过快
+        # ★ 优化 2：每个文件处理完微小休眠，进行 I/O 节流，防止高速 SSD 瞬间写满队列导致系统卡顿
+        time.sleep(0.005)
             
-    msg = f"还原任务完成！成功还原: {restored_count} 个，失败/未找到: {failed_count} 个。"
+    msg = f"还原任务完成！成功还原: {restored_count} 个，未找到备份: {failed_count} 个。"
     logger.info(f"  ➜ {msg}")
     task_manager.update_status_from_thread(100, msg)
 
