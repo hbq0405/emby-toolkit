@@ -2485,27 +2485,54 @@ class SmartOrganizer:
                 })
 
         # 归一化默认轨道：避免 MKV 多条字幕都带 default flag，导致显示一堆“默认”
-        seen_default_by_type = {
-            "Audio": False,
-            "Subtitle": False
-        }
+        config = get_config()
+        pref_language = config.get(constants.CONFIG_OPTION_115_DEFAULT_LANGUAGE, "")
 
-        for stream in media_streams:
-            stream_type = stream.get("Type")
+        def _force_default_track(streams, stream_type, pref_lang):
+            type_streams = [s for s in streams if s.get("Type") == stream_type]
+            if not type_streams: return
 
-            if stream_type not in seen_default_by_type:
-                continue
+            best_track = None
+            
+            # 1. 强权模式：优先匹配用户配置的语言 (如 "国语" 或 "简中")
+            if pref_lang:
+                for s in type_streams:
+                    # 只要 UI 语言或标题里包含目标关键字，直接钦定为太子！
+                    if pref_lang in s.get("DisplayLanguage", "") or pref_lang in s.get("Title", ""):
+                        best_track = s
+                        break
+            
+            # 2. 兜底模式 1：如果没有配置，或者没找到目标语言，尊重文件原有的默认轨
+            if not best_track:
+                for s in type_streams:
+                    if s.get("IsDefault"):
+                        best_track = s
+                        break
+            
+            # 3. 兜底模式 2：如果连原文件都没有默认轨，强行把第一条轨设为默认
+            if not best_track:
+                best_track = type_streams[0]
 
-            if stream.get("IsDefault"):
-                if seen_default_by_type[stream_type]:
-                    stream["IsDefault"] = False
+            # 开始执行篡改
+            for s in type_streams:
+                is_target = (s == best_track)
+                s["IsDefault"] = is_target
+                
+                # 暴力清洗原有的 "(默认)" 字符串，防止出现 "(默认) (默认)" 的尴尬情况
+                import re
+                dt = s.get("DisplayTitle", "")
+                dt = re.sub(r'\(默认\s*', '(', dt)
+                dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
+                
+                # 为真太子打上思想钢印
+                if is_target:
+                    dt += " (默认)"
+                    
+                s["DisplayTitle"] = dt.replace("  ", " ")
 
-                    display_title = stream.get("DisplayTitle") or ""
-                    display_title = display_title.replace("默认 ", "").replace("(默认 ", "(").replace("默认", "")
-                    display_title = display_title.replace("  ", " ").strip()
-                    stream["DisplayTitle"] = display_title
-                else:
-                    seen_default_by_type[stream_type] = True
+        # 执行音轨和字幕的强权篡改
+        _force_default_track(media_streams, "Audio", pref_language)
+        _force_default_track(media_streams, "Subtitle", pref_language)
 
         if not media_streams:
             return None
