@@ -258,6 +258,7 @@ class WashingService:
     @classmethod
     def _match_priority(cls, norm_info: dict, priority_rule: dict) -> tuple[bool, str]:
         is_exclude = priority_rule.get('is_exclude', False)
+        exempt_original_lang = priority_rule.get('exempt_original_lang', False)
 
         # 1. 分辨率
         req_res = priority_rule.get("resolution", [])
@@ -316,9 +317,11 @@ class WashingService:
         if req_audio:
             # ★ 替换为全局方法
             normalized_req_audio = {normalize_lang_code(a) for a in req_audio if a}
-            # 豁免原语言
-            # effective_req_audio = {a for a in normalized_req_audio if a and a != original_lang}
-            effective_req_audio = {a for a in normalized_req_audio if a}
+            # ★ 核心逻辑：根据开关决定是否剔除原语言
+            if exempt_original_lang:
+                effective_req_audio = {a for a in normalized_req_audio if a and a != original_lang}
+            else:
+                effective_req_audio = {a for a in normalized_req_audio if a}
 
             if effective_req_audio:
                 if not norm_info["audio_langs"]:
@@ -336,9 +339,11 @@ class WashingService:
         if req_sub:
             # ★ 替换为全局方法
             normalized_req_sub = {normalize_lang_code(s) for s in req_sub if s}
-            # 豁免原语言和外挂字幕
-            # effective_req_sub = {s for s in normalized_req_sub if s and s != original_lang}
-            effective_req_sub = {s for s in normalized_req_sub if s}
+            # ★ 核心逻辑：根据开关决定是否剔除原语言
+            if exempt_original_lang:
+                effective_req_sub = {s for s in normalized_req_sub if s and s != original_lang}
+            else:
+                effective_req_sub = {s for s in normalized_req_sub if s}
 
             if effective_req_sub:
                 has_ext_sub = norm_info.get("has_external_subtitle", False)

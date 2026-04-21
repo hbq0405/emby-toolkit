@@ -172,8 +172,13 @@
                         <n-gi>
                           <n-select v-model:value="priority.subtitle" multiple tag :options="subOptions" placeholder="必须包含的字幕 (如 chi)" @update:value="saveGroups" />
                         </n-gi>
-                        <n-gi>
-                          <!-- 占位，保持布局对称 -->
+                        <n-gi span="1">
+                          <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px; padding: 8px; background: var(--n-color-modal); border-radius: 4px;">
+                            <n-switch v-model:value="priority.exempt_original_lang" size="small" @update:value="saveGroups" />
+                            <span style="font-size: 12px; color: var(--n-text-color-3);">
+                              <strong>原产国豁免音轨/字幕规则：</strong>
+                            </span>
+                          </div>
                         </n-gi>
                         <n-gi>
                           <n-input-group>
@@ -364,6 +369,7 @@ const addPriority = () => {
   activeGroup.value.priorities.push({
     _uid: newUid,
     is_exclude: false, // ★ 默认不是排除规则
+    exempt_original_lang: false,
     resolution: [], codec: [], effect: [], audio: [], subtitle: [], min_size_gb: null, max_size_gb: null
   });
   

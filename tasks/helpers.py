@@ -315,9 +315,9 @@ def normalize_lang_code(lang_str: str) -> str:
     lang_str = str(lang_str).lower().strip()
 
     # 中文相关：明确拆分
-    if lang_str in ['chi', 'guo', 'guoyu', 'zho', 'zh', 'cn', 'chs', 'zh-cn', 'zh-sg', 'zh-hans', 'cmn', 'mandarin', '国语', '普通话', '中文', '简体', '简中']:
+    if lang_str in ['chi', 'guo', 'guoyu', 'zho', 'zh', 'chs', 'zh-cn', 'zh-sg', 'zh-hans', 'cmn', 'mandarin', '国语', '普通话', '中文', '简体', '简中']:
         return 'chi'
-    if lang_str in ['yue', 'cht', 'zh-hk', 'zh-tw', 'hk', 'tw', 'cantonese', '粤语', '繁体', '繁中', '粤配', '粤英双语', '港配', '粤语配音', '广东话']:
+    if lang_str in ['yue', 'cht', 'cn', 'zh-hk', 'zh-tw', 'hk', 'tw', 'cantonese', '粤语', '繁体', '繁中', '粤配', '粤英双语', '港配', '粤语配音', '广东话']:
         return 'yue'
 
     # 其他语言
