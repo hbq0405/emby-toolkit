@@ -13,7 +13,6 @@ from extensions import admin_required
 from database import settings_db
 from handler.p115_service import P115Service, get_config
 import constants
-from urllib.parse import urlparse
 from functools import lru_cache, wraps
 
 # 115扫码登录相关变量 (OAuth 2.0 + PKCE 模式)
@@ -721,44 +720,29 @@ def handle_sorting_rules():
         settings_db.save_setting('p115_sorting_rules', rules)
         return jsonify({"status": "success", "message": "115 分类规则已保存"})
     
-def _get_emby_server_ip():
-    config = get_config()
-    emby_url = (config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL, "") or "").strip()
-    if not emby_url:
-        return ""
-    if "://" not in emby_url:
-        emby_url = f"http://{emby_url}"
-    parsed = urlparse(emby_url)
-    return (parsed.hostname or "").strip()
-
-def _is_emby_server_request():
-    req_ip = (request.remote_addr or "").strip()
-    emby_ip = _get_emby_server_ip()
-    return bool(req_ip and emby_ip and req_ip == emby_ip)
-    
 @p115_bp.route('/play/<pick_code>', methods=['GET', 'HEAD']) 
 @p115_bp.route('/play/<pick_code>/<path:filename>', methods=['GET', 'HEAD'])
 def play_115_video(pick_code, filename=None):
     """
-    终极极速 302 直链解析服务 (魔法日志 + 智能劫持中转版)
+    终极极速 302 直链解析服务 (智能 UA 穿透 + 无缝中转版)
     """
-    # =================================================================
-    # ★★★ 1. 魔法日志：打印所有请求头，抓出 Emby 的真面目 ★★★
-    # =================================================================
     client_ua = request.headers.get('User-Agent', '')
-    logger.info(f"========== [魔法日志] 收到直链请求 ==========")
-    logger.info(f"请求 IP: {request.remote_addr}")
-    logger.info(f"请求方法: {request.method}")
-    for k, v in request.headers.items():
-        logger.info(f"Header -> {k}: {v}")
-    logger.info(f"=============================================")
-
+    client_ua_lower = client_ua.lower()
+    
     if request.method == 'HEAD':
         return '', 200
 
     try:
-        # 伪装成标准浏览器去骗 115
+        # 1. 识别是否为 Emby 服务端 (Probe 或 ffmpeg Remux)
+        is_emby_server = False
+        if not client_ua or any(kw in client_ua_lower for kw in ['emby', 'jellyfin', 'lavf', 'kodi']):
+            is_emby_server = True
+
+        # 2. 决定申请直链使用的 UA
+        # 如果是 Emby 服务端，用标准 Chrome UA 伪装骗过 115
+        # 如果是真实客户端，必须用客户端自己的 UA，否则 302 后 115 会报 403 防盗链！
         fake_ua = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+        request_ua = fake_ua if is_emby_server else client_ua
         
         client = P115Service.get_client()
         if not client:
@@ -773,9 +757,9 @@ def play_115_video(pick_code, filename=None):
         for i in range(max_retries):
             try:
                 if use_openapi:
-                    real_url = client.openapi_downurl(pick_code, user_agent=fake_ua)
+                    real_url = client.openapi_downurl(pick_code, user_agent=request_ua)
                 else:
-                    real_url = client.download_url(pick_code, user_agent=fake_ua)
+                    real_url = client.download_url(pick_code, user_agent=request_ua)
                     
                 if real_url:
                     break
@@ -788,42 +772,33 @@ def play_115_video(pick_code, filename=None):
         if not real_url:
             return "Failed to get download URL or Rate Limited", 404
 
-        # 只有 Emby Server 自己来拉流时才走中转
-        if _is_emby_server_request():
-            logger.info(f"  🕵️‍♂️ [IP命中] Emby Server 请求，启动中转代理")
-
+        # =================================================================
+        # ★★★ 核心分流逻辑 ★★★
+        # =================================================================
+        if is_emby_server:
+            logger.info(f"  🕵️‍♂️ [路由劫持] 检测到 Emby 服务端介入 ({client_ua})，启动无缝中转代理喂流！")
+            
             headers_to_115 = {
-                "User-Agent": fake_ua,
+                "User-Agent": request_ua,
                 "Accept": "*/*",
                 "Connection": "keep-alive"
             }
-
             if 'Range' in request.headers:
                 headers_to_115['Range'] = request.headers['Range']
 
-            if request.method == 'HEAD':
-                resp = requests.head(real_url, headers=headers_to_115, allow_redirects=True, timeout=10)
-                excluded_headers = ['content-encoding', 'transfer-encoding', 'connection', 'host']
-                response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_headers]
-                return Response(status=resp.status_code, headers=response_headers)
-
             resp = requests.get(real_url, headers=headers_to_115, stream=True, timeout=10)
+            
             excluded_headers = ['content-encoding', 'transfer-encoding', 'connection', 'host']
             response_headers = [(name, value) for name, value in resp.headers.items() if name.lower() not in excluded_headers]
+            
+            return Response(stream_with_context(resp.iter_content(chunk_size=8192)), status=resp.status_code, headers=response_headers)
 
-            return Response(
-                stream_with_context(resp.iter_content(chunk_size=8192)),
-                status=resp.status_code,
-                headers=response_headers
-            )
-
-        # =================================================================
-        # ★★★ 3. 正常客户端：下发 302 直链 ★★★
-        # =================================================================
-        logger.info(f"  🚀 [直链下发] 正常客户端 ({client_ua})，下发 302 直链。")
-        response = redirect(real_url, code=302)
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return response
+        else:
+            # 正常第三方客户端，下发 302，让它自己去连 115！
+            logger.info(f"  🚀 [直链下发] 真实客户端 ({client_ua})，下发 302 直链，彻底解放 ETK！")
+            response = redirect(real_url, code=302)
+            response.headers['Access-Control-Allow-Origin'] = '*'
+            return response
         
     except Exception as e:
         logger.error(f"  ➜ 直链解析发生异常: {e}")
