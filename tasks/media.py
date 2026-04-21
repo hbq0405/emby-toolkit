@@ -2064,6 +2064,22 @@ def task_restore_mediainfo(processor):
             failed_count += 1
             continue
 
+        # =================================================================
+        # ★★★ 核心修复：从 STRM 内容中提取真实的视频扩展名 ★★★
+        # =================================================================
+        real_ext = ".mkv" # 默认兜底扩展名
+        if strm_content_path:
+            # 尝试从 URL 或路径的末尾提取扩展名
+            parsed_ext = os.path.splitext(strm_content_path)[1].lower()
+            # 确保提取到的是合法的视频扩展名，防止 URL 带有奇怪的参数
+            if parsed_ext in ['.mkv', '.mp4', '.ts', '.avi', '.rmvb', '.wmv', '.mov', '.m2ts', '.flv', '.mpg', '.iso']:
+                real_ext = parsed_ext
+                
+        # 构造真实的视频文件名 (将 .strm 替换为真实的扩展名)
+        real_filename = filename.replace('.strm', real_ext)
+        if real_filename == filename: # 兜底：如果文件名不叫 .strm
+            real_filename = os.path.splitext(filename)[0] + real_ext
+
         # 2. 调用核心处理器的万能指纹提取器
         pc, sha1 = processor._extract_115_fingerprints(strm_content_path)
         
@@ -2076,7 +2092,8 @@ def task_restore_mediainfo(processor):
 
         # 4. 如果缓存没有媒体信息，尝试在线 ffprobe 提取并回填缓存
         if not mediainfo and sha1 and pc:
-            raw_json = _probe_and_cache_mediainfo_online(pc, sha1, filename)
+            # ★ 传入伪装好的真实文件名 real_filename
+            raw_json = _probe_and_cache_mediainfo_online(pc, sha1, real_filename)
             if raw_json:
                 # 保险起见，重新从数据库读取一次，保证后续统一走同一套数据来源
                 mediainfo = media_db.get_mediainfo_by_sha1(sha1) or raw_json
