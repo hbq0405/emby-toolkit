@@ -2036,7 +2036,7 @@ def task_restore_mediainfo(processor):
 
             if raw_json:
                 P115CacheManager.save_mediainfo_cache(sha1, raw_json)
-                logger.info(f"  ➜ [媒体信息还原] 本地缓存缺失，已在线 ffprobe 提取并写入缓存: {filename}")
+                # logger.info(f"  ➜ [媒体信息还原] 本地缓存缺失，已在线 ffprobe 提取并写入缓存: {filename}")
                 return raw_json
 
         except Exception as e:
