@@ -2034,16 +2034,20 @@ class SmartOrganizer:
         # 3. 生成底层语言代码 (Language)
         final_iso_lang = norm_lang
         
-        # 修正：如果标题明确是粤语/繁体，但底层没识别出来，修正底层 ISO
-        if friendly_title in ["粤语", "繁中", "繁体"]:
-            final_iso_lang = "yue"
-        elif friendly_title in ["国语", "简中", "简体"]:
-            final_iso_lang = "chi"
+        # 修正：如果标题明确包含粤语/繁体关键字，修正底层 ISO (模糊匹配防漏)
+        title_lower = (raw_title or "").lower()
+        is_yue = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", [])) or \
+                 any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
+                 
+        is_chi = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", [])) or \
+                 any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
 
-        # ★ 底层伪装术：只要是中文（国语/粤语/简/繁），底层统统告诉 Emby 是 chi
-        # 这样 Emby 的“首选中文”就能 100% 命中！
-        # if final_iso_lang in ["chi", "yue"]:
-        #     final_iso_lang = "chi"
+        # 如果明确包含粤语关键字，且没有国语关键字，则底层强制给 yue
+        if is_yue and not is_chi:
+            final_iso_lang = "yue"
+        # 如果包含国语关键字，或者既有国语又有粤语(如"国粤双语")，底层给 chi
+        elif is_chi:
+            final_iso_lang = "chi"
 
         # 4. 生成 UI 主标题 (DisplayLanguage)
         display_lang = friendly_title if friendly_title else "未知"
