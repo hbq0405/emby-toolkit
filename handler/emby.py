@@ -824,6 +824,54 @@ def notify_emby_file_changes(file_paths: List[str], base_url: str, api_key: str,
         logger.error(f"  ➜ [极速通知] 触发扫描失败: {e}")
         return False
 
+# ✨✨✨ 刷新Emby元数据 ✨✨✨
+def refresh_emby_item_metadata(item_emby_id: str,
+                               emby_server_url: str,
+                               emby_api_key: str,
+                               user_id_for_ops: str,
+                               replace_all_metadata_param: bool = False,
+                               replace_all_images_param: bool = False,
+                               item_name_for_log: Optional[str] = None
+                               ) -> bool:
+    if not all([item_emby_id, emby_server_url, emby_api_key, user_id_for_ops]):
+        logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL、API Key或UserID。")
+        return False
+        
+    wait_for_server_idle(emby_server_url, emby_api_key)
+    log_identifier = f"'{item_name_for_log}'" if item_name_for_log else f"ItemID: {item_emby_id}"
+    
+    # 仅获取详情用于判断是否为剧集，以便决定是否递归刷新 (刷出分集字幕必须递归)
+    is_series = False
+    try:
+        item_data = get_emby_item_details(item_emby_id, emby_server_url, emby_api_key, user_id_for_ops)
+        if item_data and item_data.get("Type") == "Series":
+            is_series = True
+    except Exception as e:
+        logger.warning(f"  ➜ 获取 {log_identifier} 详情失败，将使用默认非递归刷新: {e}")
+
+    logger.debug(f"  ➜ 正在为 {log_identifier} 发送刷新请求...")
+    refresh_url = f"{emby_server_url.rstrip('/')}/Items/{item_emby_id}/Refresh"
+    params = {
+        "api_key": emby_api_key,
+        "Recursive": str(is_series).lower(),
+        "MetadataRefreshMode": "FullRefresh",
+        "ImageRefreshMode": "FullRefresh",
+        "ReplaceAllMetadata": str(replace_all_metadata_param).lower(),
+        "ReplaceAllImages": str(replace_all_images_param).lower()
+    }
+    
+    try:
+        response = emby_client.post(refresh_url, params=params)
+        if response.status_code == 204:
+            logger.info(f"  ➜ 已成功为 {log_identifier} 刷新元数据。")
+            return True
+        else:
+            logger.error(f"  - 刷新请求失败: HTTP状态码 {response.status_code}")
+            return False
+    except requests.exceptions.RequestException as e:
+        logger.error(f"  - 刷新请求时发生网络错误: {e}")
+        return False
+
 # ✨✨✨ 分批次地从 Emby 获取所有 Person 条目 ✨✨✨
 def get_all_persons_from_emby(
     base_url: str,

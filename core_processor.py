@@ -3212,6 +3212,18 @@ class MediaProcessor:
                 if media_path:
                     logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
                     emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
+                    time.sleep(3) # 等待 Emby 处理文件变更事件
+
+            # 7. 无论是预处理还是回流，都要刷新 Emby 元数据以确保外挂字幕可以加载
+            emby.refresh_emby_item_metadata(
+                item_emby_id=item_id,
+                emby_server_url=self.emby_url,
+                emby_api_key=self.emby_api_key,
+                user_id_for_ops=self.emby_user_id,
+                replace_all_metadata_param=False, 
+                replace_all_images_param=False,
+                item_name_for_log=item_name_for_log
+            )
 
             if is_webhook_feedback:
                 logger.debug(f"  ➜ [webhook回流] 开始质检...")
