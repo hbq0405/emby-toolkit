@@ -3,7 +3,8 @@
     v-model:show="show"
     preset="card"
     title="配置季集号识别正则"
-    style="width: 900px; max-width: 96vw;"
+    :style="modalStyle"
+    class="episode-regex-modal"
   >
     <n-space vertical :size="16">
       <n-alert type="warning" :show-icon="true">
@@ -37,13 +38,14 @@
         :key="index"
         size="small"
         :bordered="true"
-        style="background: #fafafa;"
+        class="rule-card"
+        :content-style="ruleCardContentStyle"
       >
         <template #header>
-          <div style="display: flex; align-items: center; justify-content: space-between; gap: 12px;">
+          <div class="rule-card-header">
             <n-space align="center" :size="10">
               <n-tag size="small" type="primary" :bordered="false">规则 {{ index + 1 }}</n-tag>
-              <span style="font-weight: 600;">
+              <span class="rule-title">
                 {{ rule.name?.trim() || '未命名规则' }}
               </span>
             </n-space>
@@ -146,7 +148,7 @@
           </template>
 
           <n-gi span="1 s:2">
-            <n-text depth="3" style="font-size: 12px;">
+            <n-text depth="3" class="desc-text">
               说明：正则里只需要把数字部分放进捕获组即可。比如
               <code>S(\d+)E(\d+)</code>、
               <code>第(\d+)季.*?第(\d+)话</code>、
@@ -156,7 +158,7 @@
         </n-grid>
       </n-card>
 
-      <n-divider title-placement="left" style="font-size: 12px; color: #999;">
+      <n-divider title-placement="left" class="test-divider">
         实时测试
       </n-divider>
 
@@ -168,7 +170,7 @@
           />
         </n-form-item>
         <n-form-item label="识别结果">
-          <n-alert :type="preview.type" :show-icon="true" style="width: 100%; word-break: break-all;">
+          <n-alert :type="preview.type" :show-icon="true" class="preview-alert">
             {{ preview.text }}
           </n-alert>
         </n-form-item>
@@ -207,7 +209,8 @@ import {
   NSwitch,
   NTag,
   NText,
-  useMessage
+  useMessage,
+  useThemeVars
 } from 'naive-ui';
 import {
   AddOutline as AddIcon,
@@ -221,6 +224,18 @@ const saving = ref(false);
 const rules = ref([]);
 const testFilename = ref('');
 const message = useMessage();
+const themeVars = useThemeVars();
+
+const modalStyle = computed(() => ({
+  width: '900px',
+  maxWidth: '96vw'
+}));
+
+const ruleCardContentStyle = computed(() => ({
+  backgroundColor: themeVars.value.actionColor,
+  borderRadius: themeVars.value.borderRadius,
+  transition: 'background-color .2s ease'
+}));
 
 const createEmptyRule = () => ({
   enabled: true,
@@ -417,3 +432,40 @@ const saveRules = async () => {
 
 defineExpose({ open });
 </script>
+
+<style scoped>
+.rule-card {
+  transition: background-color .2s ease, border-color .2s ease;
+}
+
+.rule-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rule-title {
+  font-weight: 600;
+}
+
+.desc-text {
+  font-size: 12px;
+}
+
+.test-divider {
+  font-size: 12px;
+}
+
+.preview-alert {
+  width: 100%;
+  word-break: break-all;
+}
+
+@media (max-width: 640px) {
+  .rule-card-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+</style>
