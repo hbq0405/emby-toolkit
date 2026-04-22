@@ -1239,10 +1239,6 @@ def emby_webhook():
             lib_name = library_info.get("Name", "未知库")
             allowed_libs = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_LIBRARIES_TO_PROCESS) or []
 
-            # 执行打标（全库生效）
-            if event_type in ["item.add", "library.new"]:
-                spawn(_handle_immediate_tagging_with_lib, original_item_id, original_item_name, lib_id, lib_name)
-
             # 【关键拦截点】
             if lib_id not in allowed_libs and original_item_type != "Audio":
                 logger.trace(f"  ➜ Webhook: 项目 '{original_item_name}' 所属库 '{lib_name}' (ID: {lib_id}) 不在处理范围内，已跳过。")
