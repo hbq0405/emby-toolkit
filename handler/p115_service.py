@@ -4760,13 +4760,14 @@ class SmartOrganizer:
     
     def execute_mp_passthrough(self, file_nodes):
         """
-        MP直出模式：
-        跳过整理 / 归类 / 重命名，只按当前 115 目录生成 STRM 和 -mediainfo.json
+        MP直出模式 (终极优化版)：
+        完全信任 115 现有的目录结构和文件名 (直接从 Webhook 传来的 115_path 提取)。
+        跳过整理、归类、移动、重命名。
+        直接在本地 1:1 映射生成 STRM 和 -mediainfo.json。
         """
         config = get_config()
         local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
         etk_url = (config.get(constants.CONFIG_OPTION_ETK_SERVER_URL) or "").rstrip("/")
-        media_root_cid = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID, "0"))
         media_root_name = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_NAME) or "").strip("/")
 
         if not local_root or not etk_url:
@@ -4778,106 +4779,54 @@ class SmartOrganizer:
         known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
         sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
 
-        def _resolve_parent_rel_path(parent_cid):
-            # 1. 优先查本地缓存
-            cached_local_path = P115CacheManager.get_local_path(parent_cid)
-            if cached_local_path:
-                return str(cached_local_path).replace("\\", "/").strip("/")
-
-            # 2. 缓存没有，再查 115 path
-            try:
-                dir_info = self.client.fs_files({
-                    'cid': parent_cid,
-                    'limit': 1,
-                    'record_open_time': 0,
-                    'count_folders': 0
-                })
-                path_nodes = dir_info.get("path", []) or []
-
-                start_idx = 0
-                found_root = False
-
-                if media_root_cid == "0":
-                    start_idx = 1 if str(parent_cid) != "0" else 0
-                    found_root = True
-                else:
-                    for i, node in enumerate(path_nodes):
-                        if str(node.get("cid") or node.get("file_id")) == media_root_cid:
-                            start_idx = i + 1
-                            found_root = True
-                            break
-
-                rel_segments = []
-                if found_root and start_idx < len(path_nodes):
-                    for n in path_nodes[start_idx:]:
-                        node_name = n.get("file_name") or n.get("fn") or n.get("name") or n.get("n")
-                        if node_name:
-                            rel_segments.append(str(node_name).strip())
-
-                rel_path = "/".join(rel_segments)
-                if rel_path:
-                    P115CacheManager.update_local_path(parent_cid, rel_path)
-
-                return rel_path
-            except Exception as e:
-                logger.warning(f"  ➜ [MP直出] 解析父目录路径失败 (CID:{parent_cid}): {e}")
-                return ""
-
         for file_item in file_nodes:
             original_name = file_item.get("fn") or file_item.get("file_name") or ""
             if "." not in original_name:
                 continue
 
-            ext = original_name.rsplit(".", 1)[1].lower()
+            # ★ 修复：使用 [-1] 提取后缀，防止文件名中包含多个点导致报错
+            ext = original_name.rsplit(".", 1)[-1].lower()
             fid = file_item.get("fid") or file_item.get("file_id")
             parent_id = file_item.get("pid") or file_item.get("parent_id")
             pick_code = file_item.get("pc") or file_item.get("pick_code")
             sha1 = file_item.get("sha1") or file_item.get("sha")
+            full_115_path = file_item.get("115_path")
 
             is_video = ext in known_video_exts
             is_sub = ext in sub_exts
-            parent_rel_path = _resolve_parent_rel_path(parent_id)
+            
+            if not is_video and not is_sub:
+                continue
 
             # ==========================================================
-            # ★ 核心修复：MP直出对剧集也要补一层季目录，保持和 ETK 一致
+            # ★ 核心优化：直接从 Webhook 传来的 115_path 提取相对路径，0 API 消耗！
+            # 彻底砍掉画蛇添足的 Season 拼接逻辑，完全 1:1 映射 115 物理路径
             # ==========================================================
-            season_num = file_item.get('_forced_season')
-            effective_rel_path = parent_rel_path
+            parent_rel_path = ""
+            if full_115_path:
+                path_parts = [p for p in full_115_path.split('/') if p]
+                
+                start_idx = 0
+                if media_root_name and media_root_name in path_parts:
+                    # 如果配置了根目录名称，从根目录的下一级开始截取
+                    start_idx = path_parts.index(media_root_name) + 1
+                elif len(path_parts) > 1:
+                    # 兜底：如果没有配置，默认剥离第一层目录 (如 /影视待整理/)
+                    start_idx = 1
+                    
+                if len(path_parts) > start_idx:
+                    # 剥离根目录，并去掉最后的文件名，剩下的就是纯净的相对目录！
+                    # 例如：['影视待整理', '虾路相逢', 'Season 01', 'S01E01.mkv'] -> '虾路相逢/Season 01'
+                    parent_rel_path = "/".join(path_parts[start_idx:-1])
+            else:
+                logger.warning(f"  ➜ [MP直出] 缺少 115_path 参数，无法映射目录结构: {original_name}")
+                continue
 
-            if str(self.media_type).lower() == 'tv' and season_num is not None:
-                try:
-                    season_num = int(season_num)
-                except Exception:
-                    season_num = None
-
-                if season_num is not None:
-                    s_name = None
-                    try:
-                        cfg = self.rename_config if hasattr(self, 'rename_config') and self.rename_config else {}
-                        season_format = cfg.get('season_dir_format', ['season_name_en'])
-
-                        s_name = self._build_name_from_format(
-                            season_format,
-                            is_tv=True,
-                            season_num=season_num,
-                            original_title=self.original_title,
-                            safe_title=self.details.get('title') or self.original_title or 'Unknown'
-                        )
-                    except Exception as e:
-                        logger.warning(f"  ➜ [MP直出] 生成季目录名失败，改用默认 Season xx: {e}")
-
-                    if not s_name:
-                        s_name = f"Season {season_num:02d}"
-
-                    effective_rel_path = os.path.join(parent_rel_path, s_name).replace("\\", "/") if parent_rel_path else s_name
-
-            # 当前目录直接落地，不改名
+            # 确定本地落盘目录
             local_dir = os.path.join(local_root, parent_rel_path) if parent_rel_path else local_root
             os.makedirs(local_dir, exist_ok=True)
 
-            # ==========================================================
-            # ★ 1：MP 直出写缓存前，主动补齐视频 SHA1
-            # ==========================================================
+            # 补齐 SHA1 (仅视频需要，用于缓存 mediainfo)
             if is_video and not sha1 and fid:
                 try:
                     info_res = self.client.fs_get_info(fid)
@@ -4886,73 +4835,55 @@ class SmartOrganizer:
                         if fetched_sha1:
                             sha1 = str(fetched_sha1).upper()
                             file_item['sha1'] = sha1
-                            logger.info(f"  ➜ [MP直出] 已补齐 SHA1 -> {original_name}")
-                except Exception as e:
-                    logger.warning(f"  ➜ [MP直出] 补齐 SHA1 失败 -> {original_name}: {e}")
+                except Exception:
+                    pass
 
-            # 1. 生成 STRM（只给视频）
+            # 1. 处理视频 (STRM + Mediainfo)
             if is_video and pick_code:
+                # 生成 STRM
                 strm_filename = os.path.splitext(original_name)[0] + ".strm"
                 strm_filepath = os.path.join(local_dir, strm_filename)
 
                 if not etk_url.startswith("http"):
-                    mount_path = os.path.join(etk_url, effective_rel_path, original_name).replace("\\", "/")
+                    # 挂载模式
+                    mount_path = os.path.join(etk_url, parent_rel_path, original_name).replace("\\", "/")
                     strm_content = mount_path
                 else:
+                    # API 模式
                     strm_content = f"{etk_url}/api/p115/play/{pick_code}/{original_name}"
 
                 with open(strm_filepath, "w", encoding="utf-8") as f:
                     f.write(strm_content)
-
                 logger.info(f"  ➜ [MP直出] STRM 已生成 -> {strm_filename}")
 
-                # 2. 生成 -mediainfo.json
+                # 生成 Mediainfo
                 if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False):
                     try:
                         mediainfo_text = None
-                        mediainfo_obj = None
-
-                        # 优先 1：已有 SHA1，先查本地缓存
                         if sha1:
                             mediainfo_text = P115CacheManager.get_mediainfo_cache_text(sha1)
 
-                        # 优先 2：缓存没命中，直接走 ffprobe 提取
                         if not mediainfo_text:
-                            mediainfo_obj = self._probe_mediainfo_with_ffprobe(
-                                file_item,
-                                sha1=sha1,
-                                silent_log=False
-                            )
-
+                            mediainfo_obj = self._probe_mediainfo_with_ffprobe(file_item, sha1=sha1, silent_log=False)
                             if mediainfo_obj:
-                                # ★ 核心修复 2：ffprobe 成功后，确保当前 sha1 变量和 file_item 同步
-                                try:
-                                    probe_sha1 = sha1 or file_item.get('sha1') or file_item.get('sha')
-                                    if probe_sha1:
-                                        probe_sha1 = str(probe_sha1).upper()
-                                        P115CacheManager.save_mediainfo_cache(probe_sha1, mediainfo_obj)
-                                        sha1 = probe_sha1
-                                        file_item['sha1'] = probe_sha1
-                                except Exception as e_save:
-                                    logger.warning(f"  ➜ [MP直出] ffprobe 结果写入缓存失败: {e_save}")
-
+                                probe_sha1 = sha1 or file_item.get('sha1') or file_item.get('sha')
+                                if probe_sha1:
+                                    probe_sha1 = str(probe_sha1).upper()
+                                    P115CacheManager.save_mediainfo_cache(probe_sha1, mediainfo_obj)
+                                    sha1 = probe_sha1
+                                    file_item['sha1'] = probe_sha1
                                 mediainfo_text = json.dumps(mediainfo_obj, ensure_ascii=False, indent=2)
 
                         if mediainfo_text:
                             mediainfo_filename = os.path.splitext(original_name)[0] + "-mediainfo.json"
                             mediainfo_filepath = os.path.join(local_dir, mediainfo_filename)
-
                             with open(mediainfo_filepath, "w", encoding="utf-8") as f:
                                 f.write(mediainfo_text)
-
-                            logger.info(f"  ➜ [MP直出] 媒体信息文件已生成 -> {mediainfo_filename}")
-                        else:
-                            logger.warning(f"  ➜ [MP直出] 未能生成媒体信息文件 -> {original_name}")
-
+                            logger.info(f"  ➜ [MP直出] 媒体信息已生成 -> {mediainfo_filename}")
                     except Exception as e:
-                        logger.error(f"  ➜ [MP直出] 生成媒体信息文件失败: {e}", exc_info=True)
+                        logger.error(f"  ➜ [MP直出] 生成媒体信息失败: {e}")
 
-            # 3. 字幕按原名直接下载到本地
+            # 2. 处理字幕 (直接下载)
             elif is_sub and config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True) and pick_code:
                 try:
                     sub_filepath = os.path.join(local_dir, original_name)
@@ -4960,10 +4891,7 @@ class SmartOrganizer:
                         url_obj = self.client.download_url(pick_code, user_agent="Mozilla/5.0")
                         if url_obj:
                             import requests
-                            headers = {
-                                "User-Agent": "Mozilla/5.0",
-                                "Cookie": P115Service.get_cookies()
-                            }
+                            headers = {"User-Agent": "Mozilla/5.0", "Cookie": P115Service.get_cookies()}
                             resp = requests.get(str(url_obj), stream=True, timeout=30, headers=headers)
                             resp.raise_for_status()
                             with open(sub_filepath, "wb") as f:
@@ -4973,20 +4901,20 @@ class SmartOrganizer:
                 except Exception as e:
                     logger.error(f"  ➜ [MP直出] 下载字幕失败: {e}")
 
-            # 4. 写文件缓存（名称就是原名，父目录就是当前目录）
+            # 3. 写入数据库缓存 (保持 Emby 扫库和后续删除的闭环)
             try:
                 file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
             except Exception:
                 file_size = 0
 
-            file_local_path = os.path.join(effective_rel_path, original_name).replace("\\", "/") if effective_rel_path else original_name
+            file_local_path = os.path.join(parent_rel_path, original_name).replace("\\", "/") if parent_rel_path else original_name
 
             if fid and pick_code:
                 P115CacheManager.save_file_cache(
                     fid=fid,
                     parent_id=parent_id,
                     name=original_name,
-                    sha1=sha1,   # ★ 用补齐后的 sha1
+                    sha1=sha1,
                     pick_code=pick_code,
                     local_path=file_local_path,
                     size=file_size

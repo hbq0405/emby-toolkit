@@ -1583,7 +1583,6 @@ class MediaProcessor:
                                             emby_path = ''
                                 
                             mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
-                            file_sha1 = self._get_sha1_by_pickcode(file_pc)
                             
                             # 构造临时 item 传递给 parse_full_asset_details，确保解析的是当前版本的属性
                             temp_item = item_details_from_emby.copy()
@@ -1980,7 +1979,6 @@ class MediaProcessor:
                                             emby_path = ''
                                 
                             mediainfo_path = os.path.splitext(emby_path)[0] + "-mediainfo.json" if emby_path and not emby_path.startswith('http') else None
-                            file_sha1 = self._get_sha1_by_pickcode(file_pc)
                             
                             temp_version = version.copy()
                             temp_version['Path'] = emby_path

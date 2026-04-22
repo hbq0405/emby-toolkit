@@ -105,10 +105,11 @@ def _flush_mp_batch(key):
                 'parent_id': f.get('parent_id'),
                 'pc': f.get('pickcode'),
                 'pick_code': f.get('pickcode'),
+                '115_path': f.get('115_path'), # ★ 核心新增：将 115 物理路径传递给底层
                 '_forced_season': f.get('season_num'),
                 '_forced_episode': f.get('episode_num'),
-                '_skip_gc': True,   # 批处理结束后统一 GC
-                '_from_mp': True    # 给底层打标，必要时可做特殊分支
+                '_skip_gc': True,   
+                '_from_mp': True    
             })
 
         config = get_config()
@@ -116,9 +117,7 @@ def _flush_mp_batch(key):
 
         if mp_classify_enabled:
             logger.info("  ➜ [MP直出] MP分类已开启：跳过整理/归类/重命名，直接生成 STRM 和 -mediainfo.json。")
-
             ok = organizer.execute_mp_passthrough(file_nodes)
-
             if not ok:
                 logger.warning("  ➜ [MP直出] 直出处理未完全成功。")
         else:
@@ -127,12 +126,10 @@ def _flush_mp_batch(key):
             )
 
             if target_cid:
-                # 原有正常整理链路
                 organizer.execute(file_nodes, target_cid)
             else:
                 logger.info("  ➜ [MP合并整理] 未命中分类规则，保持原样。")
 
-        # 批处理结束后统一触发垃圾回收
         from handler.p115_service import P115DeleteBuffer
         P115DeleteBuffer.add(check_save_path=True)
 
@@ -939,15 +936,14 @@ def emby_webhook():
         try:
             transfer_info = data.get("data", {}).get("transferinfo", {})
             media_info = data.get("data", {}).get("mediainfo", {})
-            meta_info = data.get("data", {}).get("meta", {}) # ★ 提取 meta 信息
+            meta_info = data.get("data", {}).get("meta", {}) 
             
             target_item = transfer_info.get("target_item", {})
             target_dir = transfer_info.get("target_diritem", {})
             
-            # 提取单文件信息
             file_id = target_item.get("fileid")
             file_name = target_item.get("name")
-            file_type = target_item.get("type") # 'file'
+            file_type = target_item.get("type") 
             pickcode = target_item.get("pickcode")
             dir_cid = target_dir.get("fileid")
             
@@ -964,7 +960,6 @@ def emby_webhook():
 
             media_type = 'tv' if media_type_cn == '电视剧' else 'movie'
             
-            # 极速单文件处理
             if file_type == 'file':
                 file_info = {
                     'file_id': file_id,
@@ -975,14 +970,13 @@ def emby_webhook():
                     'media_type': media_type,
                     'title': title,
                     'season_num': begin_season,
-                    'episode_num': begin_episode
+                    'episode_num': begin_episode,
+                    '115_path': target_item.get("path") # ★ 核心新增：直接提取 115 物理路径
                 }
                 
-                # ★ 区分日志前缀，方便排错
                 log_prefix = "MP字幕上传" if mp_event_type == "transfer.subtitle.complete" else "MP视频上传"
                 logger.info(f"  ➜ [{log_prefix}] 收到文件: {file_name}，进入合并缓冲池...")
                 
-                # ★ 修改为调用缓冲池入队函数
                 _enqueue_mp_file(file_info)
                 return jsonify({"status": "processing_single_file"}), 200
             else:
