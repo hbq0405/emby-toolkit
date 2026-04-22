@@ -94,7 +94,7 @@
       <!-- Tab 4: 原语言 -->
       <n-tab-pane name="languages" tab="原语言">
         <n-alert type="info" :bordered="false" class="mb-4">
-          配置语言代码映射。用于筛选器的语言选项。<b>别名</b>可用于兼容TMDb的历史遗留代码（如 cn 和 yue）。
+          配置语言代码映射。用于筛选器的语言选项。<b>别名</b>可用于兼容TMDb的历史遗留代码（如 cn 和 yue），以及压制组各种不规范的参数用于格式化媒体信息。
         </n-alert>
         <div class="list-header">
           <div class="col-handle"></div>
