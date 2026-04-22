@@ -74,7 +74,7 @@
           <div class="col-handle"></div>
           <div class="col-label">中文名称</div>
           <div class="col-en">ISO 代码 (如 US)</div>
-          <div class="col-extra">英文别名 (逗号分隔)</div>
+          <div class="col-extra">别名 (逗号分隔)</div>
           <div class="col-action">操作</div>
         </div>
         <div ref="countryListRef" class="sortable-list">
@@ -101,7 +101,7 @@
           <div class="col-label">中文名称</div>
           <div class="col-en">ISO 代码 (如 en)</div>
           <!-- ★★★ 核心修改：把 col-empty 换成别名输入框 ★★★ -->
-          <div class="col-extra">英文别名 (逗号分隔)</div>
+          <div class="col-extra">别名 (逗号分隔)</div>
           <div class="col-action">操作</div>
         </div>
         <div ref="languageListRef" class="sortable-list">
