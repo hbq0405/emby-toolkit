@@ -340,22 +340,22 @@ DEFAULT_COUNTRY_MAPPING = [
 
 # --- 语言预设表 ---
 DEFAULT_LANGUAGE_MAPPING = [
-    {"label": "国语", "value": "zh", "aliases": ["cmn"]}, 
-    {"label": "粤语", "value": "cn", "aliases": ["yue"]},
-    {"label": "英语", "value": "en"},
-    {"label": "日语", "value": "ja"},
-    {"label": "韩语", "value": "ko"},
-    {"label": "法语", "value": "fr"},
-    {"label": "德语", "value": "de"},
-    {"label": "西班牙语", "value": "es"},
-    {"label": "意大利语", "value": "it"},
-    {"label": "俄语", "value": "ru"},
-    {"label": "泰语", "value": "th"},
-    {"label": "印地语", "value": "hi"},
-    {"label": "葡萄牙语", "value": "pt"},
-    {"label": "阿拉伯语", "value": "ar"},
-    {"label": "拉丁语", "value": "la"},
-    {"label": "无语言", "value": "xx"},
+    {"label": "国语", "value": "zh", "aliases": ["chi", "guo", "guoyu", "zho", "zh", "chs", "Zh-cn", "zh-cn", "zh-sg", "zh-hans", "cmn", "mandarin", "国语", "普通话", "中文", "简体", "简中"]}, 
+    {"label": "粤语", "value": "cn", "aliases": ["yue", "cht", "cn", "zh-hk", "zh-tw", "hk", "tw", "cantonese", "粤语", "繁体", "繁中", "粤配", "粤英双语", "港配", "粤语配音", "广东话"]},
+    {"label": "英语", "value": "en", "aliases": ["eng"]},
+    {"label": "日语", "value": "ja", "aliases": ["jpn"]},
+    {"label": "韩语", "value": "ko", "aliases": ["kor"]},
+    {"label": "法语", "value": "fr", "aliases": ["fre", "fra"]},
+    {"label": "德语", "value": "de", "aliases": ["ger", "deu"]},
+    {"label": "西班牙语", "value": "es", "aliases": ["spa"]},
+    {"label": "意大利语", "value": "it", "aliases": ["ita"]},
+    {"label": "俄语", "value": "ru", "aliases": ["rus"]},
+    {"label": "泰语", "value": "th", "aliases": ["tha"]},
+    {"label": "印地语", "value": "hi", "aliases": ["hin"]},
+    {"label": "葡萄牙语", "value": "pt", "aliases": ["por"]},
+    {"label": "阿拉伯语", "value": "ar", "aliases": ["ara"]},
+    {"label": "拉丁语", "value": "la", "aliases": ["lat"]},
+    {"label": "无语言", "value": "xx", "aliases": ["und"]},
 ]
 
 # --- ★★★ AI 默认提示词 (中文优化版) ★★★ ---

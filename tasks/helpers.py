@@ -305,30 +305,77 @@ def _get_resolution_tier(width: int, height: int) -> tuple[int, str]:
 
 def normalize_lang_code(lang_str: str) -> str:
     """
-    统一语言代码标准化：
-    音轨：chi=国语, yue=粤语
-    字幕：chi=简体, yue=繁体
+    统一语言代码标准化 (动态映射版)：
+    读取用户配置的语言映射表，将各种奇葩的输入统一归一化为 3 位 ISO 代码。
+    如果匹配不到，返回原字符串的小写。
     """
     if not lang_str:
         return ""
 
     lang_str = str(lang_str).lower().strip()
 
-    # 中文相关：明确拆分
-    if lang_str in ['chi', 'guo', 'guoyu', 'zho', 'zh', 'chs', 'Zh-cn' 'zh-cn', 'zh-sg', 'zh-hans', 'cmn', 'mandarin', '国语', '普通话', '中文', '简体', '简中']:
+    # 1. 优先处理硬编码的常见中文别名 (防止用户把映射表删空导致核心逻辑崩溃)
+    if lang_str in ['guo', 'guoyu', 'chs', 'zh-cn', 'zh-sg', 'zh-hans', 'cmn', 'mandarin', '国语', '普通话', '中文', '简体', '简中']:
         return 'chi'
-    if lang_str in ['yue', 'cht', 'cn', 'zh-hk', 'zh-tw', 'hk', 'tw', 'cantonese', '粤语', '繁体', '繁中', '粤配', '粤英双语', '港配', '粤语配音', '广东话']:
+    if lang_str in ['cht', 'zh-hk', 'zh-tw', 'hk', 'tw', 'cantonese', '粤语', '繁体', '繁中', '粤配', '粤英双语', '港配', '粤语配音', '广东话']:
         return 'yue'
 
-    # 其他语言
-    if lang_str in ['eng', 'en', 'english', '英语', '英文']:
-        return 'eng'
-    if lang_str in ['jpn', 'ja', 'jp', 'japanese', '日语', '日文']:
-        return 'jpn'
-    if lang_str in ['kor', 'ko', 'kr', 'korean', '韩语', '韩文']:
-        return 'kor'
+    # 2. 动态读取用户配置的语言映射表
+    from database import settings_db
+    import utils
+    lang_mapping = settings_db.get_setting('language_mapping')
+    if not lang_mapping:
+        lang_mapping = utils.DEFAULT_LANGUAGE_MAPPING
 
+    # 3. 遍历映射表进行匹配
+    for item in lang_mapping:
+        val = (item.get('value') or '').lower() # 2位代码
+        aliases = item.get('aliases', [])       # 3位代码/别名
+        if isinstance(aliases, str):
+            aliases = [a.strip().lower() for a in aliases.split(',')]
+        else:
+            aliases = [str(a).lower() for a in aliases]
+
+        # 如果匹配到了 2位代码、3位别名，或者是中文标签本身
+        if lang_str == val or lang_str in aliases or lang_str == item.get('label', '').lower():
+            # 优先返回 3 位代码 (从别名里找长度为 3 的)
+            three_letter_aliases = [a for a in aliases if len(a) == 3]
+            if three_letter_aliases:
+                return three_letter_aliases[0]
+            # 如果没有 3 位代码，返回 2 位代码
+            if val:
+                return val
+
+    # 兜底：如果都没匹配上，返回原字符串
     return lang_str
+
+def get_lang_display_label(lang_code: str) -> str:
+    """
+    根据标准化的语言代码，反查其对应的中文显示标签。
+    """
+    if not lang_code:
+        return "未知"
+        
+    lang_code = lang_code.lower().strip()
+    
+    from database import settings_db
+    import utils
+    lang_mapping = settings_db.get_setting('language_mapping')
+    if not lang_mapping:
+        lang_mapping = utils.DEFAULT_LANGUAGE_MAPPING
+        
+    for item in lang_mapping:
+        val = (item.get('value') or '').lower()
+        aliases = item.get('aliases', [])
+        if isinstance(aliases, str):
+            aliases = [a.strip().lower() for a in aliases.split(',')]
+        else:
+            aliases = [str(a).lower() for a in aliases]
+            
+        if lang_code == val or lang_code in aliases:
+            return item.get('label', '未知')
+            
+    return lang_code.upper()
 
 def _get_detected_languages_from_streams(
     media_streams: List[dict],
