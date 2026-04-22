@@ -3,13 +3,19 @@ import time
 import requests
 import logging
 import re
+import threading
 from collections import deque
 import config_manager
+from database import settings_db
 
 logger = logging.getLogger(__name__)
 
 class HDHiveClient:
     BASE_URL = "https://hdhive.com/api/open"
+    
+    # 类级别的全局变量和锁，确保多线程下频率限制依然有效
+    _unlock_timestamps = deque()
+    _rate_limit_lock = threading.Lock()
 
     def __init__(self, api_key):
         self.api_key = api_key.strip() if api_key else ""
@@ -18,8 +24,10 @@ class HDHiveClient:
             "Content-Type": "application/json"
         }
         self.proxies = config_manager.get_proxies_for_requests()
-        # 用于记录最近3次解锁请求的时间戳，以应对 3次/分钟 的限制
-        self.unlock_timestamps = deque(maxlen=3)
+        
+        # 从数据库读取用户配置的频率限制，默认 3次 / 60秒
+        self.limit_count = int(settings_db.get_setting('hdhive_unlock_limit_count') or 3)
+        self.limit_window = int(settings_db.get_setting('hdhive_unlock_limit_window') or 60)
 
     def _handle_error(self, e, context="请求"):
         """统一处理 HTTP 错误，说人话"""
@@ -39,16 +47,25 @@ class HDHiveClient:
             logger.error(f"  ➜ 影巢 {context} 失败 (网络或代理解析异常): {e}")
 
     def _check_unlock_rate_limit(self):
-        """检查并处理解锁频率限制：1分钟最多3次"""
-        if len(self.unlock_timestamps) == 3:
-            elapsed = time.time() - self.unlock_timestamps[0]
-            if elapsed < 60.0:
-                wait_time = 60.0 - elapsed + 1.0  # 补齐60秒并加1秒缓冲
-                logger.info(f"  ➜ 触发影巢解锁频率限制 (3次/分钟)，主动等待 {wait_time:.1f} 秒...")
-                time.sleep(wait_time)
-        
-        # 记录本次请求的时间戳
-        self.unlock_timestamps.append(time.time())
+        """检查并处理解锁频率限制（多线程安全）"""
+        if self.limit_count <= 0:
+            return # 如果用户设置为0，则不限制
+            
+        with self._rate_limit_lock:
+            # 如果用户修改了配置，动态调整 deque 的最大长度
+            if self.__class__._unlock_timestamps.maxlen != self.limit_count:
+                items = list(self.__class__._unlock_timestamps)[-self.limit_count:] if self.__class__._unlock_timestamps else []
+                self.__class__._unlock_timestamps = deque(items, maxlen=self.limit_count)
+
+            if len(self.__class__._unlock_timestamps) == self.limit_count:
+                elapsed = time.time() - self.__class__._unlock_timestamps[0]
+                if elapsed < self.limit_window:
+                    wait_time = self.limit_window - elapsed + 1.0  # 补齐时间并加1秒缓冲
+                    logger.info(f"  ➜ 触发影巢解锁频率限制 ({self.limit_count}次/{self.limit_window}秒)，主动等待 {wait_time:.1f} 秒...")
+                    time.sleep(wait_time)
+            
+            # 记录本次请求的时间戳
+            self.__class__._unlock_timestamps.append(time.time())
 
     def ping(self):
         """测试 API Key 是否有效"""
@@ -65,7 +82,6 @@ class HDHiveClient:
         try:
             res = requests.get(f"{self.BASE_URL}/me", headers=self.headers, proxies=self.proxies, timeout=10)
             
-            # 记录异常状态码，方便排错
             if res.status_code != 200:
                 logger.warning(f"  ➜ 影巢获取用户信息异常: HTTP {res.status_code} - {res.text}")
                 
@@ -142,7 +158,6 @@ class HDHiveClient:
         payload = {"slug": slug}
         url = f"{self.BASE_URL}/resources/unlock"
 
-        # 只对这些“偶发网络类异常”重试
         retryable_exceptions = (
             requests.exceptions.Timeout,
             requests.exceptions.ConnectionError,
@@ -153,7 +168,7 @@ class HDHiveClient:
 
         for attempt in range(1, max_retries + 1):
             try:
-                # 发起请求前，检查并遵守 3次/分钟 的频率限制
+                # 发起请求前，检查并遵守用户配置的频率限制
                 self._check_unlock_rate_limit()
 
                 res = requests.post(
@@ -164,25 +179,22 @@ class HDHiveClient:
                     timeout=timeout
                 )
 
-                # 5xx 可视为服务端临时异常，允许重试
                 if 500 <= res.status_code < 600:
                     raise requests.exceptions.HTTPError(response=res)
 
-                # 4xx 直接按业务/鉴权失败处理，不重试 (429 除外，在下面单独捕获)
                 res.raise_for_status()
 
                 data = res.json()
                 if data.get("success"):
                     return data.get("data")
 
-                # 接口正常返回，但业务失败：不重试
                 logger.error(f"  ➜ 影巢解锁失败: {data.get('message')}")
                 return None
 
             except retryable_exceptions as e:
                 last_exception = e
                 if attempt < max_retries:
-                    wait_seconds = 2 ** (attempt - 1)  # 1s, 2s, 4s
+                    wait_seconds = 2 ** (attempt - 1)
                     logger.warning(
                         f"  ➜ 影巢解锁请求异常，第 {attempt}/{max_retries} 次失败: {e}，"
                         f"{wait_seconds}s 后重试..."
@@ -199,7 +211,7 @@ class HDHiveClient:
 
                 # 针对 429 (Too Many Requests) 的特殊重试处理
                 if status == 429 and attempt < max_retries:
-                    wait_seconds = 60  # 被服务端限流时，直接等待1分钟
+                    wait_seconds = self.limit_window if self.limit_window > 0 else 60
                     logger.warning(
                         f"  ➜ 影巢解锁触发 429 限制，第 {attempt}/{max_retries} 次失败，"
                         f"强制等待 {wait_seconds}s 后重试..."
@@ -207,7 +219,6 @@ class HDHiveClient:
                     time.sleep(wait_seconds)
                     continue
 
-                # 仅 5xx 重试，4xx 不重试
                 if status and 500 <= status < 600 and attempt < max_retries:
                     wait_seconds = 2 ** (attempt - 1)
                     logger.warning(
@@ -221,7 +232,6 @@ class HDHiveClient:
                 return None
 
             except Exception as e:
-                # 未知异常不重试，避免掩盖真实 bug
                 self._handle_error(e, "解锁资源")
                 return None
 

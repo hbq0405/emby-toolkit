@@ -4,10 +4,25 @@
     <n-spin :show="loading">
       <n-form label-placement="left" label-width="100">
         <n-form-item label="X-API-Key">
-          <n-input-group>
-            <n-input v-model:value="apiKey" type="password" placeholder="输入影巢 X-API-Key" show-password-on="click" />
-            <n-button type="primary" color="#f0a020" @click="saveConfig" :loading="saving">保存并连接</n-button>
-          </n-input-group>
+          <n-input v-model:value="apiKey" type="password" placeholder="输入影巢 X-API-Key" show-password-on="click" />
+        </n-form-item>
+        
+        <n-form-item label="解锁频率限制" feedback="防止触发影巢 429 限制，多线程下载时会自动排队等待">
+          <n-space align="center">
+            <n-input-number v-model:value="unlockLimitCount" :min="1" placeholder="次数" style="width: 120px;">
+              <template #suffix>次</template>
+            </n-input-number>
+            <span>/</span>
+            <n-input-number v-model:value="unlockLimitWindow" :min="1" placeholder="秒数" style="width: 120px;">
+              <template #suffix>秒</template>
+            </n-input-number>
+          </n-space>
+        </n-form-item>
+
+        <n-form-item>
+          <n-button type="primary" color="#f0a020" @click="saveConfig" :loading="saving" block>
+            保存并连接
+          </n-button>
         </n-form-item>
       </n-form>
 
@@ -52,6 +67,8 @@ const saving = ref(false);
 const checkingIn = ref(false);
 
 const apiKey = ref('');
+const unlockLimitCount = ref(3);
+const unlockLimitWindow = ref(60);
 const userInfo = ref(null);
 const quotaInfo = ref(null);
 
@@ -62,6 +79,8 @@ const open = async () => {
     const res = await axios.get('/api/subscription/hdhive/config');
     if (res.data.success) {
       apiKey.value = res.data.api_key;
+      unlockLimitCount.value = res.data.unlock_limit_count || 3;
+      unlockLimitWindow.value = res.data.unlock_limit_window || 60;
       userInfo.value = res.data.user_info;
       quotaInfo.value = res.data.quota_info;
     }
@@ -76,7 +95,11 @@ const saveConfig = async () => {
   if (!apiKey.value) return message.warning("请输入 API Key");
   saving.value = true;
   try {
-    const res = await axios.post('/api/subscription/hdhive/config', { api_key: apiKey.value });
+    const res = await axios.post('/api/subscription/hdhive/config', { 
+      api_key: apiKey.value,
+      unlock_limit_count: unlockLimitCount.value,
+      unlock_limit_window: unlockLimitWindow.value
+    });
     if (res.data.success) {
       message.success(res.data.message);
       userInfo.value = res.data.user_info;

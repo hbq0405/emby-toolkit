@@ -59,6 +59,9 @@ def save_mp_config():
 def handle_hdhive_config():
     if request.method == 'GET':
         api_key = settings_db.get_setting('hdhive_api_key') or ''
+        unlock_limit_count = settings_db.get_setting('hdhive_unlock_limit_count') or 3
+        unlock_limit_window = settings_db.get_setting('hdhive_unlock_limit_window') or 60
+        
         user_info = None
         quota_info = None
         if api_key:
@@ -69,13 +72,20 @@ def handle_hdhive_config():
         return jsonify({
             "success": True, 
             "api_key": api_key,
+            "unlock_limit_count": int(unlock_limit_count),
+            "unlock_limit_window": int(unlock_limit_window),
             "user_info": user_info,
             "quota_info": quota_info
         })
         
     if request.method == 'POST':
         api_key = request.json.get('api_key', '').strip()
+        unlock_limit_count = int(request.json.get('unlock_limit_count', 3))
+        unlock_limit_window = int(request.json.get('unlock_limit_window', 60))
+        
         settings_db.save_setting('hdhive_api_key', api_key)
+        settings_db.save_setting('hdhive_unlock_limit_count', unlock_limit_count)
+        settings_db.save_setting('hdhive_unlock_limit_window', unlock_limit_window)
         
         client = HDHiveClient(api_key)
         if client.ping():
@@ -83,7 +93,7 @@ def handle_hdhive_config():
             quota_info = client.get_quota()
             return jsonify({
                 "success": True, 
-                "message": "API Key 保存成功！",
+                "message": "API Key 及配置保存成功！",
                 "user_info": user_info,
                 "quota_info": quota_info
             })
