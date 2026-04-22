@@ -2947,13 +2947,17 @@ class SmartOrganizer:
         is_sub = ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']
         lang_suffix = ""
         if is_sub:
-            lang_keywords = ['zh', 'cn', 'tw', 'hk', 'en', 'jp', 'kr', 'chs', 'cht', 'eng', 'jpn', 'kor', 'fre', 'spa', 'default', 'forced', 'tc', 'sc']
-            sub_parts = name_body.split('.')
-            if len(sub_parts) > 1 and (sub_parts[-1].lower() in lang_keywords or '-' in sub_parts[-1].lower()):
-                lang_suffix = f".{sub_parts[-1]}"
-            if not lang_suffix:
-                match = re.search(r'(?:\.|-|_|\s)(chs|cht|zh-cn|zh-tw|eng|jpn|kor|tc|sc)(?:\.|-|_|$)', name_body, re.IGNORECASE)
-                if match: lang_suffix = f".{match.group(1)}"
+            # ★ 核心修复：支持提取无限连击的复合语言标签 (如 .chs&eng, .zh-cn.default, _eng.forced)
+            lang_keywords = r'(?:chs|cht|zh\-cn|zh\-tw|zh|cn|tw|hk|tc|sc|eng|en|jpn|jp|kor|kr|fre|spa|ara|ger|cze|dan|fin|fil|glg|heb|hin|hun|ind|ita|kan|mal|may|nob|dut|pol|por|rum|rus|swe|tam|tel|tha|tur|ukr|vie|default|forced|sdh|cc)'
+            
+            # 匹配结尾由分隔符(.-_&)和语言代码组成的字符串，最多允许4个组合连击
+            match = re.search(rf'((?:[\.\-\_\&]+{lang_keywords}){{1,4}})$', name_body, re.IGNORECASE)
+            
+            if match:
+                lang_suffix = match.group(1)
+                # 统一将第一个分隔符替换为点，符合 Emby 规范 (例如 _chs&eng 变成 .chs&eng)
+                lang_suffix = '.' + re.sub(r'^[\.\-\_\&]+', '', lang_suffix)
+
             # ★★★ 强制基础名注入 (专为 MP 字幕挂起等待机制设计) ★★★
             forced_base_name = file_node.get('_forced_base_name')
             if forced_base_name:
