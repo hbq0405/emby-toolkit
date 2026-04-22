@@ -4838,6 +4838,39 @@ class SmartOrganizer:
             is_sub = ext in sub_exts
             parent_rel_path = _resolve_parent_rel_path(parent_id)
 
+            # ==========================================================
+            # ★ 核心修复：MP直出对剧集也要补一层季目录，保持和 ETK 一致
+            # ==========================================================
+            season_num = file_item.get('_forced_season')
+            effective_rel_path = parent_rel_path
+
+            if str(self.media_type).lower() == 'tv' and season_num is not None:
+                try:
+                    season_num = int(season_num)
+                except Exception:
+                    season_num = None
+
+                if season_num is not None:
+                    s_name = None
+                    try:
+                        cfg = self.rename_config if hasattr(self, 'rename_config') and self.rename_config else {}
+                        season_format = cfg.get('season_dir_format', ['season_name_en'])
+
+                        s_name = self._build_name_from_format(
+                            season_format,
+                            is_tv=True,
+                            season_num=season_num,
+                            original_title=self.original_title,
+                            safe_title=self.details.get('title') or self.original_title or 'Unknown'
+                        )
+                    except Exception as e:
+                        logger.warning(f"  ➜ [MP直出] 生成季目录名失败，改用默认 Season xx: {e}")
+
+                    if not s_name:
+                        s_name = f"Season {season_num:02d}"
+
+                    effective_rel_path = os.path.join(parent_rel_path, s_name).replace("\\", "/") if parent_rel_path else s_name
+
             # 当前目录直接落地，不改名
             local_dir = os.path.join(local_root, parent_rel_path) if parent_rel_path else local_root
             os.makedirs(local_dir, exist_ok=True)
@@ -4863,7 +4896,7 @@ class SmartOrganizer:
                 strm_filepath = os.path.join(local_dir, strm_filename)
 
                 if not etk_url.startswith("http"):
-                    mount_path = os.path.join(etk_url, parent_rel_path, original_name).replace("\\", "/")
+                    mount_path = os.path.join(etk_url, effective_rel_path, original_name).replace("\\", "/")
                     strm_content = mount_path
                 else:
                     strm_content = f"{etk_url}/api/p115/play/{pick_code}/{original_name}"
@@ -4946,7 +4979,7 @@ class SmartOrganizer:
             except Exception:
                 file_size = 0
 
-            file_local_path = os.path.join(parent_rel_path, original_name).replace("\\", "/") if parent_rel_path else original_name
+            file_local_path = os.path.join(effective_rel_path, original_name).replace("\\", "/") if effective_rel_path else original_name
 
             if fid and pick_code:
                 P115CacheManager.save_file_cache(
