@@ -4775,6 +4775,9 @@ class SmartOrganizer:
 
         os.makedirs(local_root, exist_ok=True)
 
+        known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
+        sub_exts = {'srt', 'ass', 'ssa', 'sub', 'vtt', 'sup'}
+
         def _resolve_parent_rel_path(parent_cid):
             # 1. 优先查本地缓存
             cached_local_path = P115CacheManager.get_local_path(parent_cid)
@@ -4827,20 +4830,35 @@ class SmartOrganizer:
 
             ext = original_name.rsplit(".", 1)[1].lower()
             fid = file_item.get("fid") or file_item.get("file_id")
-            parent_id = file_item.get("pid")
+            parent_id = file_item.get("pid") or file_item.get("parent_id")
             pick_code = file_item.get("pc") or file_item.get("pick_code")
             sha1 = file_item.get("sha1") or file_item.get("sha")
 
-            is_sub = ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']
+            is_video = ext in known_video_exts
+            is_sub = ext in sub_exts
             parent_rel_path = _resolve_parent_rel_path(parent_id)
 
             # 当前目录直接落地，不改名
             local_dir = os.path.join(local_root, parent_rel_path) if parent_rel_path else local_root
             os.makedirs(local_dir, exist_ok=True)
 
+            # ==========================================================
+            # ★ 1：MP 直出写缓存前，主动补齐视频 SHA1
+            # ==========================================================
+            if is_video and not sha1 and fid:
+                try:
+                    info_res = self.client.fs_get_info(fid)
+                    if info_res.get('state') and info_res.get('data'):
+                        fetched_sha1 = info_res['data'].get('sha1')
+                        if fetched_sha1:
+                            sha1 = str(fetched_sha1).upper()
+                            file_item['sha1'] = sha1
+                            logger.info(f"  ➜ [MP直出] 已补齐 SHA1 -> {original_name}")
+                except Exception as e:
+                    logger.warning(f"  ➜ [MP直出] 补齐 SHA1 失败 -> {original_name}: {e}")
+
             # 1. 生成 STRM（只给视频）
-            known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
-            if ext in known_video_exts and pick_code:
+            if is_video and pick_code:
                 strm_filename = os.path.splitext(original_name)[0] + ".strm"
                 strm_filepath = os.path.join(local_dir, strm_filename)
 
@@ -4874,15 +4892,14 @@ class SmartOrganizer:
                             )
 
                             if mediainfo_obj:
-                                # ffprobe 成功后顺手回填缓存
+                                # ★ 核心修复 2：ffprobe 成功后，确保当前 sha1 变量和 file_item 同步
                                 try:
-                                    probe_sha1 = (
-                                        sha1
-                                        or file_item.get('sha1')
-                                        or file_item.get('sha')
-                                    )
+                                    probe_sha1 = sha1 or file_item.get('sha1') or file_item.get('sha')
                                     if probe_sha1:
+                                        probe_sha1 = str(probe_sha1).upper()
                                         P115CacheManager.save_mediainfo_cache(probe_sha1, mediainfo_obj)
+                                        sha1 = probe_sha1
+                                        file_item['sha1'] = probe_sha1
                                 except Exception as e_save:
                                     logger.warning(f"  ➜ [MP直出] ffprobe 结果写入缓存失败: {e_save}")
 
@@ -4936,7 +4953,7 @@ class SmartOrganizer:
                     fid=fid,
                     parent_id=parent_id,
                     name=original_name,
-                    sha1=sha1,
+                    sha1=sha1,   # ★ 用补齐后的 sha1
                     pick_code=pick_code,
                     local_path=file_local_path,
                     size=file_size
