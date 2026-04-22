@@ -691,10 +691,50 @@ def _process_tg_queue():
                             logger.debug(f"  ➜ [频道监听] 单集资源 (TMDB: {tmdb_id} S{season_number:02d}E{episode_number:02d}) 本地已存在，跳过转存！")
                             continue
 
-                share_code = None
-                
                 target_link = task.get('target_link')
                 magnet_url = task.get('magnet_url')
+
+                # =================================================================
+                # ★ 核心优化：预创建带 TMDB ID 的标准目录，防止整理时断档丢失 ID
+                # =================================================================
+                actual_target_cid = target_cid
+                if tmdb_id:
+                    safe_title = re.sub(r'[\\/:*?"<>|]', '', title or '未知影视').strip()
+                    folder_name = safe_title
+                    if year:
+                        folder_name += f" ({year})"
+                    folder_name += f" {{tmdb={tmdb_id}}}"
+
+                    try:
+                        # 1. 尝试创建目录
+                        mk_res = client.fs_mkdir(folder_name, target_cid)
+                        if mk_res.get('state') and mk_res.get('cid'):
+                            actual_target_cid = mk_res.get('cid')
+                            logger.info(f"  ➜ [频道监听] 预创建标准目录成功: {folder_name}")
+                        else:
+                            # 2. 如果创建失败，可能是已存在，尝试搜索获取 CID
+                            s_search = client.fs_files({
+                                'cid': target_cid,
+                                'search_value': folder_name,
+                                'limit': 100,
+                                'show_dir': 1,
+                                'record_open_time': 0
+                            })
+                            found = False
+                            for item in s_search.get('data', []):
+                                item_name = item.get('fn') or item.get('n') or item.get('file_name')
+                                item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
+                                if item_fc == '0' and item_name == folder_name:
+                                    actual_target_cid = item.get('fid') or item.get('file_id')
+                                    found = True
+                                    logger.debug(f"  ➜ [频道监听] 标准目录已存在，直接使用: {folder_name}")
+                                    break
+                            if not found:
+                                logger.warning(f"  ➜ [频道监听] 预创建目录失败且未找到，回退到根目录: {folder_name}")
+                    except Exception as e:
+                        logger.error(f"  ➜ [频道监听] 预创建目录异常: {e}")
+
+                share_code = None
 
                 # --- 分支 A: 处理 115 分享链接 ---
                 if target_link:
@@ -755,7 +795,7 @@ def _process_tg_queue():
 
                     logger.debug(f"  ➜ [频道监听] 命中订阅资源 (TMDB: {tmdb_id})！准备转存...")
                     
-                    res = client.share_import(share_code, receive_code, target_cid)
+                    res = client.share_import(share_code, receive_code, actual_target_cid)
                     if res and res.get('state'):
                         logger.info(f"  ➜ [频道监听] 资源转存成功！正在触发整理...")
                         
@@ -779,7 +819,7 @@ def _process_tg_queue():
                 # --- 分支 B: 处理磁力/ED2K 离线下载 ---
                 elif magnet_url:
                     logger.debug(f"  ➜ [频道监听] 命中订阅资源 (TMDB: {tmdb_id})！准备提交离线下载...")
-                    payload = {"url[0]": magnet_url, "wp_path_id": target_cid}
+                    payload = {"url[0]": magnet_url, "wp_path_id": actual_target_cid}
                     
                     res = client.offline_add_urls(payload)
                     if res and res.get('state'):
