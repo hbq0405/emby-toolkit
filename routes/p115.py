@@ -776,7 +776,7 @@ def play_115_video(pick_code, filename=None):
         # ★★★ 核心分流逻辑 ★★★
         # =================================================================
         if is_emby_server:
-            logger.info(f"  ➜ 检测到 Emby 服务端介入 ({client_ua})，启动中转代理！")
+            # logger.info(f"  ➜ 检测到 Emby 服务端介入 ({client_ua})，启动中转代理！")
             
             headers_to_115 = {
                 "User-Agent": request_ua,
