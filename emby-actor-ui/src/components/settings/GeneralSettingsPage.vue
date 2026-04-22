@@ -682,7 +682,25 @@
                       </n-alert>
                     </n-card>
 
-                    <!-- ★ 卡片 4：独立音乐库管理 -->
+                    <!-- ★ 卡片 4：自定义季集号识别 -->
+                    <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
+                      <template #header>
+                        <div style="display: flex; align-items: center; justify-content: space-between;">
+                          <span class="card-title">自定义季集号识别</span>
+                          <n-button secondary type="warning" @click="episodeRegexModalRef?.open()">
+                            <template #icon>
+                              <n-icon :component="SearchIcon" />
+                            </template>
+                            配置识别正则
+                          </n-button>
+                        </div>
+                      </template>
+                      <n-alert type="warning" :show-icon="true">
+                        动漫、番剧、字幕组资源命名过于混乱时，可由用户自己定义季集号提取规则。规则按顺序匹配，命中即返回，不再继续扩展硬编码识别。
+                      </n-alert>
+                    </n-card>
+
+                    <!-- ★ 卡片 5：独立音乐库管理 -->
                     <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -700,7 +718,7 @@
                       </n-alert>
                     </n-card>
 
-                    <!-- ★ 卡片 5：第三方 STRM 兼容 -->
+                    <!-- ★ 卡片 6：第三方 STRM 兼容 -->
                     <n-card :bordered="false" class="dashboard-card" style="flex: 1;">
                       <template #header>
                         <div style="display: flex; align-items: center; justify-content: space-between;">
@@ -1492,6 +1510,10 @@
     
     <!-- ★ 引入自定义重命名模态框 -->
     <RenameConfigModal ref="renameModalRef" />
+
+    <!-- ★ 引入自定义季集号识别模态框 -->
+    <EpisodeRegexConfigModal ref="episodeRegexModalRef" />
+
     <!-- ★ 引入音乐库管理模态框 -->
     <MusicManagerModal 
       ref="musicModalRef" 
@@ -1925,6 +1947,7 @@ import {
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
+import EpisodeRegexConfigModal from './EpisodeRegexConfigModal.vue';
 import MusicManagerModal from './MusicManagerModal.vue';
 import RuleManagerModal from './RuleManagerModal.vue'; 
 import WashingPriorityModal from './WashingPriorityModal.vue';
@@ -1937,6 +1960,7 @@ const washingPriorityModalRef = ref(null);
 const hdhiveModalRef = ref(null);
 const tgMonitorModalRef = ref(null);
 const renameModalRef = ref(null);
+const episodeRegexModalRef = ref(null);
 const musicModalRef = ref(null);
 const ruleManagerRef = ref(null);
 const promptModalVisible = ref(false);

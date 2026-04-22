@@ -911,6 +911,84 @@ def handle_custom_strm_regex():
         settings_db.save_setting("custom_strm_regex", clean_rules)
         return jsonify({"success": True, "message": "自定义正则已保存"})
     
+def _normalize_episode_regex_rules(raw_rules):
+    if not isinstance(raw_rules, list):
+        return [], "规则数据格式错误，必须是数组"
+
+    clean_rules = []
+
+    for i, item in enumerate(raw_rules):
+        if not isinstance(item, dict):
+            continue
+
+        name = str(item.get('name') or f'规则{i + 1}').strip()
+        pattern = str(item.get('pattern') or '').strip()
+        mode = str(item.get('mode') or 'episode_only').strip()
+        enabled = bool(item.get('enabled', True))
+
+        if not pattern:
+            continue
+
+        if mode not in ('season_episode', 'episode_only'):
+            return [], f"第 {i + 1} 条规则模式非法: {mode}"
+
+        try:
+            re.compile(pattern, re.IGNORECASE)
+        except re.error as e:
+            return [], f"第 {i + 1} 条规则正则语法错误: {e}"
+
+        try:
+            season_group = int(item.get('season_group') or 1)
+            episode_group = int(item.get('episode_group') or 1)
+            default_season = int(item.get('default_season') or 1)
+        except Exception:
+            return [], f"第 {i + 1} 条规则分组序号或默认季号必须是整数"
+
+        if season_group < 1 or episode_group < 1:
+            return [], f"第 {i + 1} 条规则捕获组序号必须 >= 1"
+
+        if default_season < 0:
+            return [], f"第 {i + 1} 条规则默认季号不能小于 0"
+
+        clean_rules.append({
+            "id": str(item.get('id') or f'episode_regex_{i + 1}'),
+            "enabled": enabled,
+            "name": name,
+            "pattern": pattern,
+            "mode": mode,  # season_episode | episode_only
+            "season_group": season_group,
+            "episode_group": episode_group,
+            "default_season": default_season,
+        })
+
+    return clean_rules, None
+
+@p115_bp.route('/episode_regex_rules', methods=['GET', 'POST'])
+@admin_required
+def handle_episode_regex_rules():
+    """管理自定义季集号识别正则"""
+    setting_key = 'p115_episode_regex_rules'
+
+    if request.method == 'GET':
+        rules = settings_db.get_setting(setting_key) or []
+        if not isinstance(rules, list):
+            rules = []
+        return jsonify({"success": True, "data": rules})
+
+    payload = request.json or {}
+    raw_rules = payload if isinstance(payload, list) else payload.get('rules', [])
+
+    clean_rules, error = _normalize_episode_regex_rules(raw_rules)
+    if error:
+        return jsonify({"success": False, "message": error}), 400
+
+    settings_db.save_setting(setting_key, clean_rules)
+    return jsonify({
+        "success": True,
+        "message": "自定义季集号识别规则已保存",
+        "data": clean_rules
+    })
+    
 # ======================================================================
 # ★★★ 115 整理记录面板 API ★★★
 # ======================================================================

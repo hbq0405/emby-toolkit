@@ -2821,6 +2821,93 @@ class SmartOrganizer:
 
         return "".join(final_parts)
 
+    def _get_episode_regex_rules(self):
+        """懒加载自定义季集号识别规则，避免每个文件都查数据库"""
+        cache_attr = '_episode_regex_rules_cache'
+
+        if not hasattr(self, cache_attr):
+            try:
+                rules = settings_db.get_setting('p115_episode_regex_rules') or []
+                if not isinstance(rules, list):
+                    rules = []
+            except Exception as e:
+                logger.warning(f"  ➜ [自定义季集号识别] 读取规则失败，已忽略: {e}")
+                rules = []
+
+            setattr(self, cache_attr, rules)
+
+        return getattr(self, cache_attr, [])
+    
+    def _safe_group_to_int(self, match, group_index):
+        """安全获取组索引，防止组索引不存在"""
+        try:
+            if not group_index:
+                return None
+            value = match.group(int(group_index))
+            if value is None:
+                return None
+            value = str(value).strip()
+            if not value:
+                return None
+            return int(value)
+        except Exception:
+            return None
+        
+    def _parse_season_episode_by_custom_regex(self, original_name, rel_path=''):
+        """
+        返回:
+            (season_num, episode_num, matched_rule_name) 或 (None, None, None)
+        """
+        rules = self._get_episode_regex_rules()
+        if not rules or not original_name:
+            return None, None, None
+
+        for idx, rule in enumerate(rules):
+            if not isinstance(rule, dict):
+                continue
+            if not rule.get('enabled', True):
+                continue
+
+            rule_name = str(rule.get('name') or f'规则{idx + 1}').strip()
+            pattern = str(rule.get('pattern') or '').strip()
+            mode = str(rule.get('mode') or 'episode_only').strip()
+
+            if not pattern:
+                continue
+
+            try:
+                match = re.search(pattern, original_name, re.IGNORECASE)
+                if not match and rel_path:
+                    # 可选增强：允许规则匹配相对路径，适合目录名里带季号、文件名只写 01 的情况
+                    match = re.search(pattern, rel_path, re.IGNORECASE)
+            except re.error as e:
+                logger.warning(f"  ➜ [自定义季集号识别] 规则 '{rule_name}' 正则非法，已跳过: {e}")
+                continue
+
+            if not match:
+                continue
+
+            if mode == 'season_episode':
+                season_group = int(rule.get('season_group') or 1)
+                episode_group = int(rule.get('episode_group') or 2)
+
+                season_num = self._safe_group_to_int(match, season_group)
+                episode_num = self._safe_group_to_int(match, episode_group)
+
+                if season_num is not None and episode_num is not None:
+                    return season_num, episode_num, rule_name
+
+            else:
+                # episode_only
+                episode_group = int(rule.get('episode_group') or 1)
+                default_season = int(rule.get('default_season') or 1)
+
+                episode_num = self._safe_group_to_int(match, episode_group)
+                if episode_num is not None:
+                    return default_season, episode_num, rule_name
+
+        return None, None, None
+
     def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, silent_log=False):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
         
@@ -2895,60 +2982,86 @@ class SmartOrganizer:
         # ★ 优先使用 Webhook 强塞进来的精准数据
         season_num = file_node.get('_forced_season')
         episode_num = file_node.get('_forced_episode')
-        
-        if is_tv and (season_num is None or episode_num is None):
-            # 1. 标准特征匹配 (S01E01, EP01, 第1集)
-            pattern = (
-                r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})\b'
-                r'|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b'
-                r'|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b'
-                r'|第(\d{1,4})[集话話回](?=$|[^\u4e00-\u9fff]|完|完结|完結)'
-                r'|(?:^|[ \.\-\_\[\(])(\d{1,4})[集话話回](?=$|[^\u4e00-\u9fff]|完|完结|完結)'
-            )
-            match = re.search(pattern, original_name, re.IGNORECASE)
-            if match:
-                s = match.group(1)
-                e = match.group(2)
-                ep_only = match.group(3)
-                e_only = match.group(4)
-                zh_ep = match.group(5)
-                if season_num is None:
-                    season_num = int(s) if s else None # 暂不兜底为1，留给相对路径提取
-                if episode_num is None:
-                    episode_num = int(e) if e else (int(ep_only) if ep_only else (int(e_only) if e_only else int(zh_ep)))
-            
-            # 2. 从相对路径提取季号 (解决多季目录混合选择，且文件名为纯数字/EP01的情况)
-            if season_num is None:
-                rel_path = file_node.get('rel_path', '')
-                if rel_path:
-                    m_rel = re.search(r'(?:Season\s*|S|第)(\d{1,4})(?:季)?(?:/|$)', rel_path, re.IGNORECASE)
-                    if m_rel:
-                        season_num = int(m_rel.group(1))
 
-            # 3. ★ 纯数字兜底提取集号
+        if is_tv and (season_num is None or episode_num is None):
+            rel_path = file_node.get('rel_path', '')
+
+            # 0. ★ 先跑用户自定义规则，命中即优先使用
+            custom_season, custom_episode, custom_rule_name = self._parse_season_episode_by_custom_regex(
+                original_name=original_name,
+                rel_path=rel_path
+            )
+
+            if custom_season is not None and season_num is None:
+                season_num = custom_season
+            if custom_episode is not None and episode_num is None:
+                episode_num = custom_episode
+
+            if custom_rule_name and not silent_log:
+                logger.info(
+                    f"  ➜ [自定义季集号识别] 命中规则 '{custom_rule_name}' -> "
+                    f"S{int(season_num or 1):02d}E{int(episode_num or 0):02d} | {original_name}"
+                )
+
+            # 1. 自定义没补全，再走原有硬编码识别
+            if season_num is None or episode_num is None:
+                pattern = (
+                    r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})[ \.\-]*?(?:e|E|p|P)(\d{1,4})\b'
+                    r'|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b'
+                    r'|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b'
+                    r'|第(\d{1,4})[集话話回](?=$|[^\u4e00-\u9fff]|完|完结|完結)'
+                    r'|(?:^|[ \.\-\_\[\(])(\d{1,4})[集话話回](?=$|[^\u4e00-\u9fff]|完|完结|完結)'
+                )
+
+                match = re.search(pattern, original_name, re.IGNORECASE)
+                if match:
+                    s = match.group(1)
+                    e = match.group(2)
+                    ep_only = match.group(3)
+                    e_only = match.group(4)
+                    zh_ep = match.group(5)
+
+                    if season_num is None:
+                        season_num = int(s) if s else None
+
+                    if episode_num is None:
+                        episode_num = int(e) if e else (
+                            int(ep_only) if ep_only else (
+                                int(e_only) if e_only else int(zh_ep)
+                            )
+                        )
+
+            # 2. 从相对路径提取季号
+            if season_num is None and rel_path:
+                m_rel = re.search(r'(?:Season\s*|S|第)(\d{1,4})(?:季)?(?:/|$)', rel_path, re.IGNORECASE)
+                if m_rel:
+                    season_num = int(m_rel.group(1))
+
+            # 3. ★ 纯数字 / 动漫数字兜底提取集号
             if episode_num is None:
                 name_without_ext = original_name.rsplit('.', 1)[0]
                 if name_without_ext.isdigit():
                     episode_num = int(name_without_ext)
                 else:
-                    clean_name = re.sub(r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0', '', name_without_ext)
-                    
-                    # ★★★ 核心修复：新增动漫专属特征匹配，优先级高于普通数字兜底 ★★★
+                    clean_name = re.sub(
+                        r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0',
+                        '',
+                        name_without_ext
+                    )
+
                     anime_match = re.search(r'(?:\s-\s+)(\d{1,4})(?:\s|$)|\[(\d{1,4})\]|【(\d{1,4})】', clean_name)
                     if anime_match:
                         ep_str = anime_match.group(1) or anime_match.group(2) or anime_match.group(3)
                         episode_num = int(ep_str)
                     else:
-                        # 结尾数字匹配
                         end_match = re.search(r'(?:^|[ \.\-\_\[\(])(\d{1,4})(?:[\]\)]|\s*)$', clean_name)
                         if end_match:
                             episode_num = int(end_match.group(1))
                         else:
-                            # 中间数字匹配 (最容易误伤，优先级最低)
                             mid_match = re.search(r'(?:^|[ \-\_\[\(])(\d{1,4})(?:[ \.\-\_\]\)]|$)', clean_name)
                             if mid_match:
                                 episode_num = int(mid_match.group(1))
-                
+
             # 4. 终极兜底
             if season_num is None:
                 season_num = 1
