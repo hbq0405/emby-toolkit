@@ -63,56 +63,82 @@ MP_BATCH_QUEUE = {}
 MP_BATCH_LOCK = threading.Lock()
 
 def _flush_mp_batch(key):
-    """缓冲结束，将收集到的同集视频和字幕打包送入核心整理"""
+    """缓冲结束，将收集到的同集视频和字幕打包送入核心处理"""
     with MP_BATCH_LOCK:
         if key not in MP_BATCH_QUEUE:
             return
         task = MP_BATCH_QUEUE.pop(key)
-        
-    files = task['files']
-    if not files: return
-    
+
+    files = task.get('files') or []
+    if not files:
+        return
+
     client = P115Service.get_client()
-    if not client: return
-    
+    if not client:
+        logger.warning("  ➜ [MP合并整理] 115 客户端未初始化，任务取消。")
+        return
+
     tmdb_id, media_type, season_num, episode_num = key
-    title = files[0]['title']
-    
-    logger.info(f"  ➜ [MP合并整理] 缓冲结束，开始打包整理 {len(files)} 个文件 (包含视频: {task['has_video']}) -> ID:{tmdb_id}")
-    
+    title = files[0].get('title') or ''
+
+    logger.info(
+        f"  ➜ [MP合并整理] 缓冲结束，开始处理 {len(files)} 个文件 "
+        f"(包含视频: {task.get('has_video', False)}) -> ID:{tmdb_id}"
+    )
+
     try:
         organizer = SmartOrganizer(client, tmdb_id, media_type, title)
+
         if season_num is not None and str(season_num).isdigit():
             organizer.forced_season = int(season_num)
-            
-        target_cid = organizer.get_target_cid(season_num=organizer.forced_season if hasattr(organizer, 'forced_season') else None)
-        
-        if target_cid:
-            file_nodes = []
-            for f in files:
-                file_nodes.append({
-                    'fid': f['file_id'],
-                    'file_id': f['file_id'],
-                    'fn': f['name'],
-                    'file_name': f['name'],
-                    'fc': '1',
-                    'type': '1',
-                    'pid': f['parent_id'],
-                    'pc': f['pickcode'],
-                    'pick_code': f['pickcode'],
-                    '_forced_season': f.get('season_num'),
-                    '_forced_episode': f.get('episode_num'),
-                    '_skip_gc': True # 批处理内部统一执行 GC
-                })
-            
-            # ★ 核心：将列表整体传给 execute，底层会自动对齐字幕和视频的名字！
-            organizer.execute(file_nodes, target_cid)
-            
-            # 批处理结束后统一触发垃圾回收
-            from handler.p115_service import P115DeleteBuffer
-            P115DeleteBuffer.add(check_save_path=True)
+
+        file_nodes = []
+        for f in files:
+            file_nodes.append({
+                'fid': f.get('file_id'),
+                'file_id': f.get('file_id'),
+                'fn': f.get('name'),
+                'file_name': f.get('name'),
+                'fc': '1',
+                'type': '1',
+                'pid': f.get('parent_id'),
+                'parent_id': f.get('parent_id'),
+                'pc': f.get('pickcode'),
+                'pick_code': f.get('pickcode'),
+                '_forced_season': f.get('season_num'),
+                '_forced_episode': f.get('episode_num'),
+                '_skip_gc': True,   # 批处理结束后统一 GC
+                '_from_mp': True    # 给底层打标，必要时可做特殊分支
+            })
+
+        config = get_config()
+        mp_classify_enabled = bool(config.get(constants.CONFIG_OPTION_115_MP_CLASSIFY, False))
+
+        if mp_classify_enabled:
+            logger.info("  ➜ [MP直出] MP分类已开启：跳过整理/归类/重命名，直接生成 STRM 和 -mediainfo.json。")
+
+            ok = organizer.execute_mp_passthrough(
+                file_nodes,
+                generate_mediainfo_with_ffprobe=True
+            )
+
+            if not ok:
+                logger.warning("  ➜ [MP直出] 直出处理未完全成功。")
         else:
-            logger.info(f"  ➜ [MP合并整理] 未命中分类规则，保持原样。")
+            target_cid = organizer.get_target_cid(
+                season_num=organizer.forced_season if hasattr(organizer, 'forced_season') else None
+            )
+
+            if target_cid:
+                # 原有正常整理链路
+                organizer.execute(file_nodes, target_cid)
+            else:
+                logger.info("  ➜ [MP合并整理] 未命中分类规则，保持原样。")
+
+        # 批处理结束后统一触发垃圾回收
+        from handler.p115_service import P115DeleteBuffer
+        P115DeleteBuffer.add(check_save_path=True)
+
     except Exception as e:
         logger.error(f"  ➜ [MP合并整理] 失败: {e}", exc_info=True)
 

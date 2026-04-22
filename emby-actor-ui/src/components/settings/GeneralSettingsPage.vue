@@ -532,10 +532,16 @@
                       </template>
                     </n-form-item>
                     
-                    <n-form-item label="智能整理开关" path="p115_enable_organize">
+                    <n-form-item label="智能整理" path="p115_enable_organize">
                         <n-switch v-model:value="configModel.p115_enable_organize">
                             <template #checked>整理并生成STRM</template>
                             <template #unchecked>仅转存</template>
+                        </n-switch>
+                    </n-form-item>
+                    <n-form-item label="MP分类" path="p115_mp_classify">
+                        <n-switch v-model:value="configModel.p115_mp_classify">
+                            <template #checked>由MP分类和重命名</template>
+                            <template #unchecked>仅上传待整理</template>
                         </n-switch>
                     </n-form-item>
                     <n-form-item label="忽略小视频" path="p115_min_video_size">

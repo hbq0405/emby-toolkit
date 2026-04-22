@@ -4757,6 +4757,205 @@ class SmartOrganizer:
                 logger.error(f"  ➜ 解除洗版状态失败: {e}")
 
         return True
+    
+    def execute_mp_passthrough(self, file_nodes):
+        """
+        MP直出模式：
+        跳过整理 / 归类 / 重命名，只按当前 115 目录生成 STRM 和 -mediainfo.json
+        """
+        config = get_config()
+        local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+        etk_url = (config.get(constants.CONFIG_OPTION_ETK_SERVER_URL) or "").rstrip("/")
+        media_root_cid = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID, "0"))
+        media_root_name = str(config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_NAME) or "").strip("/")
+
+        if not local_root or not etk_url:
+            logger.warning("  ➜ [MP直出] 未配置本地 STRM 根目录或 ETK 地址，跳过。")
+            return False
+
+        os.makedirs(local_root, exist_ok=True)
+
+        def _resolve_parent_rel_path(parent_cid):
+            # 1. 优先查本地缓存
+            cached_local_path = P115CacheManager.get_local_path(parent_cid)
+            if cached_local_path:
+                return str(cached_local_path).replace("\\", "/").strip("/")
+
+            # 2. 缓存没有，再查 115 path
+            try:
+                dir_info = self.client.fs_files({
+                    'cid': parent_cid,
+                    'limit': 1,
+                    'record_open_time': 0,
+                    'count_folders': 0
+                })
+                path_nodes = dir_info.get("path", []) or []
+
+                start_idx = 0
+                found_root = False
+
+                if media_root_cid == "0":
+                    start_idx = 1 if str(parent_cid) != "0" else 0
+                    found_root = True
+                else:
+                    for i, node in enumerate(path_nodes):
+                        if str(node.get("cid") or node.get("file_id")) == media_root_cid:
+                            start_idx = i + 1
+                            found_root = True
+                            break
+
+                rel_segments = []
+                if found_root and start_idx < len(path_nodes):
+                    for n in path_nodes[start_idx:]:
+                        node_name = n.get("file_name") or n.get("fn") or n.get("name") or n.get("n")
+                        if node_name:
+                            rel_segments.append(str(node_name).strip())
+
+                rel_path = "/".join(rel_segments)
+                if rel_path:
+                    P115CacheManager.update_local_path(parent_cid, rel_path)
+
+                return rel_path
+            except Exception as e:
+                logger.warning(f"  ➜ [MP直出] 解析父目录路径失败 (CID:{parent_cid}): {e}")
+                return ""
+
+        for file_item in file_nodes:
+            original_name = file_item.get("fn") or file_item.get("file_name") or ""
+            if "." not in original_name:
+                continue
+
+            ext = original_name.rsplit(".", 1)[1].lower()
+            fid = file_item.get("fid") or file_item.get("file_id")
+            parent_id = file_item.get("pid")
+            pick_code = file_item.get("pc") or file_item.get("pick_code")
+            sha1 = file_item.get("sha1") or file_item.get("sha")
+
+            is_sub = ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']
+            parent_rel_path = _resolve_parent_rel_path(parent_id)
+
+            # 当前目录直接落地，不改名
+            local_dir = os.path.join(local_root, parent_rel_path) if parent_rel_path else local_root
+            os.makedirs(local_dir, exist_ok=True)
+
+            # 1. 生成 STRM（只给视频）
+            known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
+            if ext in known_video_exts and pick_code:
+                strm_filename = os.path.splitext(original_name)[0] + ".strm"
+                strm_filepath = os.path.join(local_dir, strm_filename)
+
+                if not etk_url.startswith("http"):
+                    mount_path = os.path.join(etk_url, parent_rel_path, original_name).replace("\\", "/")
+                    strm_content = mount_path
+                else:
+                    strm_content = f"{etk_url}/api/p115/play/{pick_code}/{original_name}"
+
+                with open(strm_filepath, "w", encoding="utf-8") as f:
+                    f.write(strm_content)
+
+                logger.info(f"  ➜ [MP直出] STRM 已生成 -> {strm_filename}")
+
+                # 2. 生成 -mediainfo.json
+                if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False):
+                    try:
+                        mediainfo_text = None
+                        mediainfo_obj = None
+
+                        # 优先 1：已有 SHA1，先查本地缓存
+                        if sha1:
+                            mediainfo_text = P115CacheManager.get_mediainfo_cache_text(sha1)
+
+                        # 优先 2：缓存没命中，直接走 ffprobe 提取
+                        if not mediainfo_text:
+                            mediainfo_obj = self._probe_mediainfo_with_ffprobe(
+                                file_item,
+                                sha1=sha1,
+                                silent_log=False
+                            )
+
+                            if mediainfo_obj:
+                                # ffprobe 成功后顺手回填缓存
+                                try:
+                                    probe_sha1 = (
+                                        sha1
+                                        or file_item.get('sha1')
+                                        or file_item.get('sha')
+                                    )
+                                    if probe_sha1:
+                                        P115CacheManager.save_mediainfo_cache(probe_sha1, mediainfo_obj)
+                                except Exception as e_save:
+                                    logger.warning(f"  ➜ [MP直出] ffprobe 结果写入缓存失败: {e_save}")
+
+                                mediainfo_text = json.dumps(mediainfo_obj, ensure_ascii=False, indent=2)
+
+                        if mediainfo_text:
+                            mediainfo_filename = os.path.splitext(original_name)[0] + "-mediainfo.json"
+                            mediainfo_filepath = os.path.join(local_dir, mediainfo_filename)
+
+                            with open(mediainfo_filepath, "w", encoding="utf-8") as f:
+                                f.write(mediainfo_text)
+
+                            logger.info(f"  ➜ [MP直出] 媒体信息文件已生成 -> {mediainfo_filename}")
+                        else:
+                            logger.warning(f"  ➜ [MP直出] 未能生成媒体信息文件 -> {original_name}")
+
+                    except Exception as e:
+                        logger.error(f"  ➜ [MP直出] 生成媒体信息文件失败: {e}", exc_info=True)
+
+            # 3. 字幕按原名直接下载到本地
+            elif is_sub and config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True) and pick_code:
+                try:
+                    sub_filepath = os.path.join(local_dir, original_name)
+                    if not os.path.exists(sub_filepath):
+                        url_obj = self.client.download_url(pick_code, user_agent="Mozilla/5.0")
+                        if url_obj:
+                            import requests
+                            headers = {
+                                "User-Agent": "Mozilla/5.0",
+                                "Cookie": P115Service.get_cookies()
+                            }
+                            resp = requests.get(str(url_obj), stream=True, timeout=30, headers=headers)
+                            resp.raise_for_status()
+                            with open(sub_filepath, "wb") as f:
+                                for chunk in resp.iter_content(chunk_size=8192):
+                                    f.write(chunk)
+                            logger.info(f"  ➜ [MP直出] 字幕下载完成 -> {original_name}")
+                except Exception as e:
+                    logger.error(f"  ➜ [MP直出] 下载字幕失败: {e}")
+
+            # 4. 写文件缓存（名称就是原名，父目录就是当前目录）
+            try:
+                file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
+            except Exception:
+                file_size = 0
+
+            file_local_path = os.path.join(parent_rel_path, original_name).replace("\\", "/") if parent_rel_path else original_name
+
+            if fid and pick_code:
+                P115CacheManager.save_file_cache(
+                    fid=fid,
+                    parent_id=parent_id,
+                    name=original_name,
+                    sha1=sha1,
+                    pick_code=pick_code,
+                    local_path=file_local_path,
+                    size=file_size
+                )
+
+                P115RecordManager.add_or_update_record(
+                    file_id=fid,
+                    pick_code=pick_code,
+                    original_name=original_name,
+                    status="success",
+                    tmdb_id=self.tmdb_id,
+                    media_type=self.media_type,
+                    target_cid=parent_id,
+                    category_name="MP直出",
+                    renamed_name=original_name,
+                    season_number=file_item.get('_forced_season')
+                )
+
+        return True
 
 def _parse_115_size(size_val):
     """
