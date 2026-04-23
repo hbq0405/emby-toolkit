@@ -407,8 +407,8 @@
         <thead>
           <tr>
             <th style="width: 80px;">类型</th>
-            <th>标题 (Title)</th>
-            <th style="width: 200px;">语言 (Language)</th>
+            <th>当前标题 (Title)</th>
+            <th style="width: 200px;">修正语言 (Language)</th>
           </tr>
         </thead>
         <tbody>
@@ -419,9 +419,13 @@
               </n-tag>
             </td>
             <td>
-              <n-input v-model:value="stream.Title" placeholder="未命名" size="small" />
+              <!-- 动态展示当前标题，如果没有则显示“无标题” -->
+              <n-text :depth="stream.Title ? 1 : 3" :type="stream.Title ? 'default' : 'warning'">
+                {{ stream.Title || '无标题' }}
+              </n-text>
             </td>
             <td>
+              <!-- 增加 @update:value 事件来联动修改标题 -->
               <n-select 
                 v-model:value="stream.Language" 
                 :options="languageOptions" 
@@ -429,6 +433,7 @@
                 filterable
                 clearable
                 size="small"
+                @update:value="(val, option) => handleLanguageChange(stream, val, option)"
               />
             </td>
           </tr>
@@ -653,6 +658,21 @@ const openMediaInfoEditor = async () => {
     message.error(e.response?.data?.error || "获取媒体信息失败");
   } finally {
     loadingMsg.destroy();
+  }
+};
+
+// 处理语言选择变更，自动同步标题
+const handleLanguageChange = (stream, val, option) => {
+  // val 是选中的 value (如 'chi')
+  // option 是选中的完整对象 { label: '国语', value: 'chi' }
+  
+  if (option && option.label) {
+    // 自动将底层 JSON 的 Title 覆盖为中文标签 (如 '国语')
+    stream.Title = option.label;
+  } else if (!val) {
+    // 如果用户清空了选择，可以选择清空标题，或者保持原样
+    // 这里我们将其清空，保持数据干净
+    stream.Title = '';
   }
 };
 
