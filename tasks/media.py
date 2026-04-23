@@ -3,6 +3,7 @@
 
 import time
 import json
+import copy
 import gc
 import os
 import re
@@ -451,6 +452,50 @@ def _extract_and_map_tmdb_ratings(tmdb_details, item_type):
         ratings_map['US'] = target_us_code
 
     return ratings_map
+
+# --- 翻译前裁剪 TMDb 数据 ---
+def prune_tmdb_payload_for_translation(item_type: str, tmdb_data):
+    """
+    翻译前裁剪无用字段，减少 tokens。
+    只处理 Movie / Series 顶层标题和演员表；
+    Season / Episode 标题保留，避免影响分集标题翻译。
+    """
+    if not tmdb_data or item_type not in ("Movie", "Series"):
+        return tmdb_data
+
+    data = copy.deepcopy(tmdb_data)
+
+    def _drop_cast_fields(obj):
+        if not isinstance(obj, dict):
+            return
+        for credits_key in ("credits", "casts", "aggregate_credits"):
+            credits_obj = obj.get(credits_key)
+            if isinstance(credits_obj, dict):
+                credits_obj.pop("cast", None)
+
+    if item_type == "Movie":
+        # 电影标题
+        if isinstance(data, dict):
+            data.pop("title", None)
+            data.pop("original_title", None)
+            _drop_cast_fields(data)
+
+    elif item_type == "Series":
+        # 你的 Series 是 aggregate_full_series_data_from_tmdb 返回的聚合结构
+        # 顶层真正的剧集详情在 series_details 里
+        if isinstance(data, dict):
+            series_details = data.get("series_details")
+            if isinstance(series_details, dict):
+                series_details.pop("name", None)
+                series_details.pop("original_name", None)
+                _drop_cast_fields(series_details)
+            else:
+                # 兜底：万一不是聚合结构
+                data.pop("name", None)
+                data.pop("original_name", None)
+                _drop_cast_fields(data)
+
+    return data
 
 # --- 重量级的元数据缓存填充任务 ---
 def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_update: bool = False):
@@ -922,18 +967,22 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
             # 在写入数据库之前，对获取到的 TMDb 数据进行翻译 (大一统引擎)
             if processor.ai_translator:
                 for item_group in batch_item_groups:
-                    if not item_group: continue
+                    if not item_group:
+                        continue
+
                     item = item_group[0]
                     t_id = str(item.get("ProviderIds", {}).get("Tmdb"))
                     i_type = item.get("Type")
-                    
+
                     data_to_translate = tmdb_details_map.get(t_id)
                     if data_to_translate:
+                        pruned_data = prune_tmdb_payload_for_translation(i_type, data_to_translate)
+
                         translate_tmdb_metadata_recursively(
                             item_type=i_type,
-                            tmdb_data=data_to_translate,
+                            tmdb_data=pruned_data,
                             ai_translator=processor.ai_translator,
-                            item_name=item.get('Name', ''),
+                            item_name='' if i_type in ('Movie', 'Series') else item.get('Name', ''),
                             tmdb_api_key=processor.tmdb_api_key,
                             config=processor.config
                         )
@@ -1039,21 +1088,22 @@ def task_populate_metadata_cache(processor, batch_size: int = 10, force_full_upd
                     raw_networks = tmdb_details.get('networks') or []
                     fmt_networks = [{'id': n.get('id'), 'name': n.get('name')} for n in raw_networks if n.get('name')]
                 top_record = {
-                    "tmdb_id": tmdb_id_str, "item_type": item_type, "title": item.get('Name'),
-                    "original_title": item.get('OriginalTitle'), "release_year": item.get('ProductionYear'),
-                    "imdb_id": item.get("ProviderIds", {}).get("Imdb") or (tmdb_details.get("imdb_id") if tmdb_details else None), 
+                    "tmdb_id": tmdb_id_str,
+                    "item_type": item_type,
+                    "release_year": item.get('ProductionYear'),
+                    "imdb_id": item.get("ProviderIds", {}).get("Imdb") or (tmdb_details.get("imdb_id") if tmdb_details else None),
                     "original_language": tmdb_details.get('original_language') if tmdb_details else None,
                     "watchlist_tmdb_status": tmdb_details.get('status') if tmdb_details else None,
-                    "in_library": True, 
+                    "in_library": True,
                     "subscription_status": "NONE",
                     "emby_item_ids_json": json.dumps(list(set(v.get('Id') for v in item_group if v.get('Id') and v.get('Type') == item_type)), ensure_ascii=False),
                     "asset_details_json": json.dumps(asset_details_list, ensure_ascii=False),
                     "rating": item.get('CommunityRating'),
                     "date_added": item.get('DateCreated') or None,
-                    "release_date": final_release_date or None,  # 双保险：确保绝不传入 ""
-                    "last_air_date": tmdb_last_date or None,     # 双保险：确保绝不传入 ""
+                    "release_date": final_release_date or None,
+                    "last_air_date": tmdb_last_date or None,
                     "genres_json": json.dumps(final_genres_list, ensure_ascii=False),
-                    "production_companies_json": json.dumps(fmt_companies, ensure_ascii=False), 
+                    "production_companies_json": json.dumps(fmt_companies, ensure_ascii=False),
                     "networks_json": json.dumps(fmt_networks, ensure_ascii=False),
                     "tags_json": json.dumps(extract_tag_names(item), ensure_ascii=False),
                     "official_rating_json": rating_json_str,
