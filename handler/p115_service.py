@@ -17,6 +17,7 @@ import constants
 from database import settings_db
 from database.connection import get_db_connection
 import handler.tmdb as tmdb
+from tasks import helpers
 import utils
 try:
     from p115client import P115Client
@@ -2010,25 +2011,25 @@ class SmartOrganizer:
         返回: (底层ISO代码, UI主标题, UI副标题)
         Title 才是真理！强制纠错底层语言标签，并智能转换“语/文”。
         """
-        from tasks import helpers
-        import utils
-
         raw_lang = str(raw_lang or "").strip()
         raw_title = str(raw_title or "").strip()
 
-        # 辅助函数：根据原始标签和流类型智能转换显示标签
         def _format_label(label, s_type):
-            if not label or label == "未知": return label
+            if not label or label == "未知":
+                return label
             if s_type == "Subtitle":
-                if label in ["国语", "普通话", "中文"]: return "简中"
-                if label in ["粤语", "广东话"]: return "繁中"
-                if label.endswith("语") and label != "无语言": return label[:-1] + "文"
+                if label in ["国语", "普通话", "中文"]:
+                    return "简中"
+                if label in ["粤语", "广东话"]:
+                    return "繁中"
+                if label.endswith("语") and label != "无语言":
+                    return label[:-1] + "文"
             return label
 
         norm_lang = helpers.normalize_lang_code(raw_lang)
         title_lower = raw_title.lower()
 
-        # ★ 先处理复合字幕标题，只改 Title，不改 Language 主归属
+        # 先处理复合字幕标题
         if stream_type == "Subtitle":
             text = re.sub(r'[\.\-_+/|]+', ' ', title_lower)
 
@@ -2038,22 +2039,33 @@ class SmartOrganizer:
 
             if has_chs and has_eng and not has_cht:
                 return "chi", "简英双语", "简英双语"
-
             if has_cht and has_eng and not has_chs:
                 return "yue", "繁英双语", "繁英双语"
 
-        # ===== 下面保留你原来的单语言逻辑 =====
-        is_yue = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", [])) or \
-                any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
-        is_chi = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", [])) or \
-                any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
+            # ★ 字幕流只看字幕关键词，不看音轨关键词
+            is_yue = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
+            is_chi = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
+        else:
+            # 音轨流只看音轨关键词
+            is_yue = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", []))
+            is_chi = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", []))
 
         if is_yue and not is_chi:
             norm_lang = "yue"
-        elif is_chi:
+        elif is_chi and not is_yue:
             norm_lang = "chi"
+        elif stream_type == "Subtitle":
+            # 字幕流里若同时出现，繁中优先于简中，可按你的偏好调整
+            if is_yue:
+                norm_lang = "yue"
+            elif is_chi:
+                norm_lang = "chi"
         else:
             for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
+                if stream_type == "Subtitle" and not key.startswith("sub_"):
+                    continue
+                if stream_type != "Subtitle" and key.startswith("sub_"):
+                    continue
                 if any(k.lower() in title_lower for k in keywords):
                     norm_lang = key.replace('sub_', '')
                     break
