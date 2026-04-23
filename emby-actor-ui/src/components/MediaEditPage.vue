@@ -618,14 +618,41 @@ const languageOptions = ref([]);
 const fetchLanguageMapping = async () => {
   try {
     const res = await axios.get('/api/custom_collections/config/language_mapping');
-    // 提取 aliases 的第一个作为 3 位语言代码
     languageOptions.value = res.data.map(item => ({
       label: item.label,
       value: (item.aliases && item.aliases.length > 0) ? item.aliases[0] : item.value
     }));
+    
+    // ★★★ 兜底逻辑：如果用户的数据库里没有双语选项，前端强行塞一个进去 ★★★
+    if (!languageOptions.value.some(opt => opt.label.includes('双语'))) {
+      languageOptions.value.push({ label: '中英双语', value: 'mul' });
+    }
   } catch (e) {
     console.error("获取语言映射失败", e);
     message.error("获取语言映射表失败");
+  }
+};
+
+// 处理语言选择变更，自动同步标题 (带智能转换)
+const handleLanguageChange = (stream, val, option) => {
+  if (option && option.label) {
+    let newTitle = option.label;
+    
+    // ★★★ 智能转换逻辑：如果是字幕轨道，进行贴合习惯的文本替换 ★★★
+    if (stream.Type === 'Subtitle') {
+      if (newTitle === '国语' || newTitle === '普通话') {
+        newTitle = '简中';
+      } else if (newTitle === '粤语' || newTitle === '广东话') {
+        newTitle = '繁中';
+      } else if (newTitle.endsWith('语')) {
+        // 将结尾的“语”替换为“文”，例如“英语” -> “英文”，“日语” -> “日文”
+        newTitle = newTitle.slice(0, -1) + '文';
+      }
+    }
+    
+    stream.Title = newTitle;
+  } else if (!val) {
+    stream.Title = '';
   }
 };
 
