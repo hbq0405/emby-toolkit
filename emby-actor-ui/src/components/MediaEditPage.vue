@@ -403,6 +403,17 @@
         修改语言标签后保存，系统将自动覆盖底层指纹文件并通知 Emby 重新加载。
       </n-alert>
       
+      <!-- ★★★ 硬字幕标记按钮 ★★★ -->
+      <n-card title="标记硬字幕 (写入视频流 Title)" size="small" style="margin-bottom: 16px;">
+        <n-space>
+          <n-button @click="setHardcodedSubtitle('简中')" secondary>简中</n-button>
+          <n-button @click="setHardcodedSubtitle('繁中')" secondary>繁中</n-button>
+          <n-button @click="setHardcodedSubtitle('简英')" secondary>简英</n-button>
+          <n-button @click="setHardcodedSubtitle('繁英')" secondary>繁英</n-button>
+          <n-button @click="clearHardcodedSubtitle()" secondary>清除标记</n-button>
+        </n-space>
+      </n-card>
+      
       <n-table :bordered="true" :single-line="false" size="small">
         <thead>
           <tr>
@@ -413,14 +424,14 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(stream, index) in mediaStreams" :key="index">
+          <!-- ▼▼▼ 只显示音轨和字幕，隐藏视频流 ▼▼▼ -->
+          <tr v-for="(stream, index) in displayStreams" :key="index">
             <td>
-              <!-- ▼▼▼ 增加视频类型的标签颜色 ▼▼▼ -->
               <n-tag 
-                :type="stream.Type === 'Video' ? 'error' : (stream.Type === 'Audio' ? 'info' : 'success')" 
+                :type="stream.Type === 'Audio' ? 'info' : 'success'" 
                 size="small"
               >
-                {{ stream.Type === 'Video' ? '视频' : (stream.Type === 'Audio' ? '音轨' : '字幕') }}
+                {{ stream.Type === 'Audio' ? '音轨' : '字幕' }}
               </n-tag>
             </td>
             <td>
@@ -431,9 +442,7 @@
               />
             </td>
             <td>
-              <!-- ▼▼▼ 视频流不需要选择语言，直接禁用或隐藏 ▼▼▼ -->
               <n-select 
-                v-if="stream.Type !== 'Video'"
                 v-model:value="stream.Language" 
                 :options="languageOptions" 
                 placeholder="选择语言"
@@ -442,7 +451,6 @@
                 size="small"
                 @update:value="(val, option) => handleLanguageChange(stream, val, option)"
               />
-              <n-text v-else depth="3" style="font-size: 12px; padding-left: 8px;">(视频流无需语言)</n-text>
             </td>
             <td style="text-align: center;">
               <n-checkbox 
@@ -451,7 +459,7 @@
               />
             </td>
           </tr>
-          <tr v-if="mediaStreams.length === 0">
+          <tr v-if="displayStreams.length === 0">
             <td colspan="4" style="text-align: center; padding: 20px;">
               <n-text depth="3">未解析到媒体流</n-text>
             </td>
@@ -736,6 +744,32 @@ const handleDefaultChange = (changedStream, isChecked) => {
         s.IsDefault = false;
       }
     });
+  }
+};
+
+// 6. 计算属性：只显示音轨和字幕（过滤掉视频流）
+const displayStreams = computed(() => {
+  return mediaStreams.value.filter(s => s.Type === 'Audio' || s.Type === 'Subtitle');
+});
+
+// 7. 设置硬字幕标记（写入视频流 Title）
+const setHardcodedSubtitle = (subtitleType) => {
+  // 找到视频流
+  const videoStream = mediaStreams.value.find(s => s.Type === 'Video');
+  if (videoStream) {
+    videoStream.Title = subtitleType;
+    message.success(`已设置硬字幕标记：${subtitleType}`);
+  } else {
+    message.warning('未找到视频流');
+  }
+};
+
+// 8. 清除硬字幕标记
+const clearHardcodedSubtitle = () => {
+  const videoStream = mediaStreams.value.find(s => s.Type === 'Video');
+  if (videoStream) {
+    videoStream.Title = '';
+    message.success('已清除硬字幕标记');
   }
 };
 
