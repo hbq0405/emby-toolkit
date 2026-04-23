@@ -2016,16 +2016,13 @@ class SmartOrganizer:
         raw_lang = str(raw_lang or "").strip()
         raw_title = str(raw_title or "").strip()
 
-        def _format_label(base_label, stream_type):
-            if stream_type == "Subtitle":
-                return {
-                    "国语": "简中",
-                    "粤语": "繁中",
-                    "英语": "英文",
-                    "日语": "日文",
-                    "韩语": "韩文",
-                }.get(base_label, base_label)
-            return base_label
+        def _format_label(label, s_type):
+            if not label or label == "未知": return label
+            if s_type == "Subtitle":
+                if label in ["国语", "普通话", "中文"]: return "简中"
+                if label in ["粤语", "广东话"]: return "繁中"
+                if label.endswith("语") and label != "无语言": return label[:-1] + "文"
+            return label
 
         norm_lang = helpers.normalize_lang_code(raw_lang)
         title_lower = raw_title.lower()
