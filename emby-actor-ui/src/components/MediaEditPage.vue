@@ -409,7 +409,6 @@
             <th style="width: 80px;">类型</th>
             <th>当前标题 (Title)</th>
             <th style="width: 200px;">修正语言 (Language)</th>
-            <!-- ▼▼▼ 新增：默认列 ▼▼▼ -->
             <th style="width: 80px; text-align: center;">默认</th>
           </tr>
         </thead>
@@ -421,9 +420,12 @@
               </n-tag>
             </td>
             <td>
-              <n-text :depth="stream.Title ? 1 : 3" :type="stream.Title ? 'default' : 'warning'">
-                {{ stream.Title || '无标题' }}
-              </n-text>
+              <!-- ▼▼▼ 恢复为可编辑的输入框 ▼▼▼ -->
+              <n-input 
+                v-model:value="stream.Title" 
+                placeholder="无标题" 
+                size="small" 
+              />
             </td>
             <td>
               <n-select 
@@ -436,7 +438,6 @@
                 @update:value="(val, option) => handleLanguageChange(stream, val, option)"
               />
             </td>
-            <!-- ▼▼▼ 新增：复选框单元格 ▼▼▼ -->
             <td style="text-align: center;">
               <n-checkbox 
                 v-model:checked="stream.IsDefault" 
