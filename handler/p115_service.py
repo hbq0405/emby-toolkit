@@ -2013,59 +2013,67 @@ class SmartOrganizer:
         from tasks import helpers
         import utils
 
-        raw_title = (raw_title or "").strip()
-        raw_lang = (raw_lang or "").lower()
+        raw_lang = str(raw_lang or "").strip()
+        raw_title = str(raw_title or "").strip()
 
-        # --- ★ 智能变形器 ---
-        def _format_label(label, s_type):
-            if not label or label == "未知": return label
-            if s_type == "Subtitle":
-                if label in ["国语", "普通话", "中文"]: return "简中"
-                if label in ["粤语", "广东话"]: return "繁中"
-                if label.endswith("语") and label != "无语言": return label[:-1] + "文"
-            return label
+        def _format_label(base_label, stream_type):
+            if stream_type == "Subtitle":
+                return {
+                    "国语": "简中",
+                    "粤语": "繁中",
+                    "英语": "英文",
+                    "日语": "日文",
+                    "韩语": "韩文",
+                }.get(base_label, base_label)
+            return base_label
 
-        # 1. 初始获取底层标准代码
         norm_lang = helpers.normalize_lang_code(raw_lang)
-        
-        # 2. ★★★ 强权纠错：Title 才是真理！无视底层标签，强制扫描标题 ★★★
         title_lower = raw_title.lower()
-        
-        # 繁简通杀的关键字检测
-        is_yue = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", [])) or \
-                 any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
-        is_chi = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", [])) or \
-                 any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
 
-        # 如果标题明确指出了语言，强制篡改底层 ISO 代码！
+        # ★ 先处理复合字幕标题，只改 Title，不改 Language 主归属
+        if stream_type == "Subtitle":
+            text = re.sub(r'[\.\-_+/|]+', ' ', title_lower)
+
+            has_chs = any(x in text for x in ["chs", "sc", "gb", "zh-cn", "zh-hans", "简中", "简体", "简英"])
+            has_cht = any(x in text for x in ["cht", "tc", "big5", "zh-tw", "zh-hant", "繁中", "繁体", "繁英"])
+            has_eng = any(x in text for x in ["eng", "english", "英文", "英语", "英字"])
+
+            if has_chs and has_eng and not has_cht:
+                return "chi", "简英", "简英"
+
+            if has_cht and has_eng and not has_chs:
+                return "yue", "繁英", "繁英"
+
+        # ===== 下面保留你原来的单语言逻辑 =====
+        is_yue = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", [])) or \
+                any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
+        is_chi = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", [])) or \
+                any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
+
         if is_yue and not is_chi:
             norm_lang = "yue"
         elif is_chi:
             norm_lang = "chi"
         else:
-            # 尝试匹配其他语言 (如 ENG, JPN)
             for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
                 if any(k.lower() in title_lower for k in keywords):
                     norm_lang = key.replace('sub_', '')
                     break
 
-        # 3. 根据最终确定的 norm_lang 获取标准中文标签
         base_label = helpers.get_lang_display_label(norm_lang) if norm_lang else ""
         display_lang = _format_label(base_label, stream_type)
-        
-        # 4. 确定副标题 (friendly_title)
+
         friendly_title = raw_title
-        
-        # 如果原标题是纯英文/拼音/代码，或者原标题就是我们纠错后的语言名，用标准标签覆盖它
         if not utils.contains_chinese(raw_title) or \
-           raw_title.lower() in ["yue", "cn", "cht", "tc", "chi", "zho", "zh", "chs", "sc", "粵語", "國語", "粤语", "国语"] or \
-           friendly_title.lower() == raw_lang:
+        raw_title.lower() in ["yue", "cn", "cht", "tc", "chi", "zho", "zh", "chs", "sc", "粵語", "國語", "粤语", "国语"] or \
+        friendly_title.lower() == raw_lang:
             if display_lang and display_lang != "未知":
                 friendly_title = display_lang
 
-        # 兜底
-        if not display_lang: display_lang = "未知"
-        if not norm_lang: norm_lang = raw_lang
+        if not display_lang:
+            display_lang = "未知"
+        if not norm_lang:
+            norm_lang = raw_lang
 
         return norm_lang, display_lang, friendly_title
 
