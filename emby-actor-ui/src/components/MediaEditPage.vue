@@ -614,7 +614,7 @@ const mediaStreams = ref([]);    // 提取出来的音轨和字幕流引用
 const mediaInfoContext = ref({}); // 存储 sha1, media_path, mediainfo_path
 const languageOptions = ref([]);
 
-// 获取语言映射表
+// 1. 获取语言映射表
 const fetchLanguageMapping = async () => {
   try {
     const res = await axios.get('/api/custom_collections/config/language_mapping');
@@ -633,30 +633,7 @@ const fetchLanguageMapping = async () => {
   }
 };
 
-// 处理语言选择变更，自动同步标题 (带智能转换)
-const handleLanguageChange = (stream, val, option) => {
-  if (option && option.label) {
-    let newTitle = option.label;
-    
-    // ★★★ 智能转换逻辑：如果是字幕轨道，进行贴合习惯的文本替换 ★★★
-    if (stream.Type === 'Subtitle') {
-      if (newTitle === '国语' || newTitle === '普通话') {
-        newTitle = '简中';
-      } else if (newTitle === '粤语' || newTitle === '广东话') {
-        newTitle = '繁中';
-      } else if (newTitle.endsWith('语')) {
-        // 将结尾的“语”替换为“文”，例如“英语” -> “英文”，“日语” -> “日文”
-        newTitle = newTitle.slice(0, -1) + '文';
-      }
-    }
-    
-    stream.Title = newTitle;
-  } else if (!val) {
-    stream.Title = '';
-  }
-};
-
-// 打开编辑器并获取数据
+// 2. 打开编辑器并获取数据
 const openMediaInfoEditor = async () => {
   if (languageOptions.value.length === 0) {
     await fetchLanguageMapping();
@@ -684,7 +661,7 @@ const openMediaInfoEditor = async () => {
       streams = mediaInfoData.value.MediaStreams;
     }
     
-    // 过滤出音轨和字幕，由于是引用传递，修改 mediaStreams 里的对象会直接修改 mediaInfoData
+    // 过滤出音轨和字幕
     mediaStreams.value = streams.filter(s => s.Type === 'Audio' || s.Type === 'Subtitle');
     
     showMediaInfoEditor.value = true;
@@ -695,34 +672,7 @@ const openMediaInfoEditor = async () => {
   }
 };
 
-// 处理语言选择变更，自动同步标题
-const handleLanguageChange = (stream, val, option) => {
-  // val 是选中的 value (如 'chi')
-  // option 是选中的完整对象 { label: '国语', value: 'chi' }
-  
-  if (option && option.label) {
-    // 自动将底层 JSON 的 Title 覆盖为中文标签 (如 '国语')
-    stream.Title = option.label;
-  } else if (!val) {
-    // 如果用户清空了选择，可以选择清空标题，或者保持原样
-    // 这里我们将其清空，保持数据干净
-    stream.Title = '';
-  }
-};
-
-// 处理默认勾选变更（同类型单选互斥） ▼▼▼
-const handleDefaultChange = (changedStream, isChecked) => {
-  if (isChecked) {
-    // 如果勾选了当前流为默认，则将同类型的其他流的默认状态取消
-    mediaStreams.value.forEach(s => {
-      if (s !== changedStream && s.Type === changedStream.Type) {
-        s.IsDefault = false;
-      }
-    });
-  }
-};
-
-// 保存修改
+// 3. 保存修改
 const saveMediaInfo = async () => {
   isSavingMediaInfo.value = true;
   const loadingMsg = message.loading("正在覆盖指纹并通知 Emby 重新加载...", { duration: 0 });
@@ -742,6 +692,41 @@ const saveMediaInfo = async () => {
   } finally {
     loadingMsg.destroy();
     isSavingMediaInfo.value = false;
+  }
+};
+
+// 4. 处理语言选择变更，自动同步标题 (带智能转换)
+const handleLanguageChange = (stream, val, option) => {
+  if (option && option.label) {
+    let newTitle = option.label;
+    
+    // ★★★ 智能转换逻辑：如果是字幕轨道，进行贴合习惯的文本替换 ★★★
+    if (stream.Type === 'Subtitle') {
+      if (newTitle === '国语' || newTitle === '普通话') {
+        newTitle = '简中';
+      } else if (newTitle === '粤语' || newTitle === '广东话') {
+        newTitle = '繁中';
+      } else if (newTitle.endsWith('语')) {
+        // 将结尾的“语”替换为“文”，例如“英语” -> “英文”，“日语” -> “日文”
+        newTitle = newTitle.slice(0, -1) + '文';
+      }
+    }
+    
+    stream.Title = newTitle;
+  } else if (!val) {
+    stream.Title = '';
+  }
+};
+
+// 5. 处理默认勾选变更（同类型单选互斥）
+const handleDefaultChange = (changedStream, isChecked) => {
+  if (isChecked) {
+    // 如果勾选了当前流为默认，则将同类型的其他流的默认状态取消
+    mediaStreams.value.forEach(s => {
+      if (s !== changedStream && s.Type === changedStream.Type) {
+        s.IsDefault = false;
+      }
+    });
   }
 };
 
