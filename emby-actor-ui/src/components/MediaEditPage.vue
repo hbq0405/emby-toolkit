@@ -637,10 +637,6 @@ const fetchLanguageMapping = async () => {
       label: item.label,
       value: (item.aliases && item.aliases.length > 0) ? item.aliases[0] : item.value
     }));
-    
-    if (!languageOptions.value.some(opt => opt.label.includes('双语'))) {
-      languageOptions.value.push({ label: '中英双语', value: 'mul' });
-    }
   } catch (e) {
     console.error("获取语言映射失败", e);
   }
