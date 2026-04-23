@@ -632,12 +632,73 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
             
     # 生成前端展示用的 display 标签
     fake_details_for_analysis = item_details.copy()
-    fake_details_for_analysis['MediaStreams'] = media_streams 
-    
+
+    analysis_streams = list(media_streams)
+
+    video_stream = next((s for s in media_streams if s.get("Type") == "Video"), None)
+    if video_stream:
+        hard_sub_stream = _build_hardsub_for_analysis(video_stream.get("Title"))
+        if hard_sub_stream:
+            analysis_streams.append(hard_sub_stream)
+
+    fake_details_for_analysis['MediaStreams'] = analysis_streams
+
     display_tags = analyze_media_asset(fake_details_for_analysis)
     asset.update(display_tags)
     
     return asset
+
+# --- 从视频标题构建硬字幕流（仅用于分析，不会实际添加到媒体信息中） ---
+def _build_hardsub_for_analysis(video_title: str):
+    text = str(video_title or "").strip().lower()
+    if not text:
+        return None
+
+    if "简中" in text or text == "chs":
+        return {
+            "Type": "Subtitle",
+            "Language": "chi",
+            "Title": "简中",
+            "DisplayTitle": "简中",
+            "IsForced": False,
+            "Codec": "hardsub",
+            "IsExternal": False
+        }
+
+    if "繁中" in text or text == "cht":
+        return {
+            "Type": "Subtitle",
+            "Language": "yue",
+            "Title": "繁中",
+            "DisplayTitle": "繁中",
+            "IsForced": False,
+            "Codec": "hardsub",
+            "IsExternal": False
+        }
+
+    if "简英" in text or "chs&eng" in text:
+        return {
+            "Type": "Subtitle",
+            "Language": "chi",
+            "Title": "简英",
+            "DisplayTitle": "简英",
+            "IsForced": False,
+            "Codec": "hardsub",
+            "IsExternal": False
+        }
+
+    if "繁英" in text or "cht&eng" in text:
+        return {
+            "Type": "Subtitle",
+            "Language": "yue",
+            "Title": "繁英",
+            "DisplayTitle": "繁英",
+            "IsForced": False,
+            "Codec": "hardsub",
+            "IsExternal": False
+        }
+
+    return None
 
 # --- 判断电影是否满足订阅条件 ---
 def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:

@@ -402,6 +402,22 @@
       <n-alert type="info" style="margin-bottom: 16px;">
         修改语言标签后保存，系统将自动覆盖底层指纹文件并通知 Emby 重新加载。
       </n-alert>
+
+      <n-form-item label="硬字幕标记" label-placement="top" style="margin-bottom: 16px;">
+        <n-space>
+          <n-radio-group v-model:value="selectedHardSub">
+            <n-radio-button
+              v-for="opt in hardSubOptions"
+              :key="opt.value"
+              :value="opt.value"
+            >
+              {{ opt.label }}
+            </n-radio-button>
+          </n-radio-group>
+
+          <n-button quaternary @click="clearHardSub">清空</n-button>
+        </n-space>
+      </n-form-item>
       
       <n-table :bordered="true" :single-line="false" size="small">
         <thead>
@@ -415,15 +431,12 @@
         <tbody>
           <tr v-for="(stream, index) in mediaStreams" :key="index">
             <td>
-              <!-- ▼▼▼ 增加视频类型的标签颜色 ▼▼▼ -->
-              <n-tag 
-                :type="stream.Type === 'Video' ? 'error' : (stream.Type === 'Audio' ? 'info' : 'success')" 
-                size="small"
-              >
-                {{ stream.Type === 'Video' ? '视频' : (stream.Type === 'Audio' ? '音轨' : '字幕') }}
+              <n-tag :type="stream.Type === 'Audio' ? 'info' : 'success'" size="small">
+                {{ stream.Type === 'Audio' ? '音轨' : '字幕' }}
               </n-tag>
             </td>
             <td>
+              <!-- ▼▼▼ 恢复为可编辑的输入框 ▼▼▼ -->
               <n-input 
                 v-model:value="stream.Title" 
                 placeholder="无标题" 
@@ -431,9 +444,7 @@
               />
             </td>
             <td>
-              <!-- ▼▼▼ 视频流不需要选择语言，直接禁用或隐藏 ▼▼▼ -->
               <n-select 
-                v-if="stream.Type !== 'Video'"
                 v-model:value="stream.Language" 
                 :options="languageOptions" 
                 placeholder="选择语言"
@@ -442,7 +453,6 @@
                 size="small"
                 @update:value="(val, option) => handleLanguageChange(stream, val, option)"
               />
-              <n-text v-else depth="3" style="font-size: 12px; padding-left: 8px;">(视频流无需语言)</n-text>
             </td>
             <td style="text-align: center;">
               <n-checkbox 
@@ -453,7 +463,7 @@
           </tr>
           <tr v-if="mediaStreams.length === 0">
             <td colspan="4" style="text-align: center; padding: 20px;">
-              <n-text depth="3">未解析到媒体流</n-text>
+              <n-text depth="3">未解析到音轨或字幕流</n-text>
             </td>
           </tr>
         </tbody>
@@ -621,6 +631,51 @@ const mediaStreams = ref([]);
 const mediaInfoContext = ref({}); 
 const languageOptions = ref([]);
 
+const hardSubOptions = [
+  { label: '简中', value: '简中' },
+  { label: '繁中', value: '繁中' },
+  { label: '简英', value: '简英' },
+  { label: '繁英', value: '繁英' }
+];
+
+const videoStream = computed(() => {
+  return mediaStreams.value.find(s => s.Type === 'Video') || null;
+});
+
+const editableStreams = computed(() => {
+  return mediaStreams.value.filter(s => s.Type !== 'Video');
+});
+
+const normalizeHardSubTitle = (title) => {
+  const text = String(title || '').trim().toLowerCase();
+
+  if (!text) return '';
+
+  if (text.includes('简英') || text.includes('chs&eng')) return '简英';
+  if (text.includes('繁英') || text.includes('cht&eng')) return '繁英';
+  if (text.includes('简中') || text.includes('chs')) return '简中';
+  if (text.includes('繁中') || text.includes('cht')) return '繁中';
+
+  return '';
+};
+
+const selectedHardSub = computed({
+  get() {
+    return normalizeHardSubTitle(videoStream.value?.Title);
+  },
+  set(val) {
+    if (videoStream.value) {
+      videoStream.value.Title = val || '';
+    }
+  }
+});
+
+const clearHardSub = () => {
+  if (videoStream.value) {
+    videoStream.value.Title = '';
+  }
+};
+
 // 1. 获取语言映射表
 const fetchLanguageMapping = async () => {
   try {
@@ -665,8 +720,8 @@ const openMediaInfoEditor = async () => {
       streams = mediaInfoData.value.MediaStreams;
     }
     
-    // 过滤出视频、音轨和字幕
-    mediaStreams.value = streams.filter(s => s.Type === 'Video' || s.Type === 'Audio' || s.Type === 'Subtitle');
+    // 过滤出音轨和字幕
+    mediaStreams.value = streams.filter(s => s.Type === 'Audio' || s.Type === 'Subtitle');
     
     showMediaInfoEditor.value = true;
   } catch (e) {
