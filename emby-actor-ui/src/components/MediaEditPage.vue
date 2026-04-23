@@ -415,12 +415,15 @@
         <tbody>
           <tr v-for="(stream, index) in mediaStreams" :key="index">
             <td>
-              <n-tag :type="stream.Type === 'Audio' ? 'info' : 'success'" size="small">
-                {{ stream.Type === 'Audio' ? '音轨' : '字幕' }}
+              <!-- ▼▼▼ 增加视频类型的标签颜色 ▼▼▼ -->
+              <n-tag 
+                :type="stream.Type === 'Video' ? 'error' : (stream.Type === 'Audio' ? 'info' : 'success')" 
+                size="small"
+              >
+                {{ stream.Type === 'Video' ? '视频' : (stream.Type === 'Audio' ? '音轨' : '字幕') }}
               </n-tag>
             </td>
             <td>
-              <!-- ▼▼▼ 恢复为可编辑的输入框 ▼▼▼ -->
               <n-input 
                 v-model:value="stream.Title" 
                 placeholder="无标题" 
@@ -428,7 +431,9 @@
               />
             </td>
             <td>
+              <!-- ▼▼▼ 视频流不需要选择语言，直接禁用或隐藏 ▼▼▼ -->
               <n-select 
+                v-if="stream.Type !== 'Video'"
                 v-model:value="stream.Language" 
                 :options="languageOptions" 
                 placeholder="选择语言"
@@ -437,6 +442,7 @@
                 size="small"
                 @update:value="(val, option) => handleLanguageChange(stream, val, option)"
               />
+              <n-text v-else depth="3" style="font-size: 12px; padding-left: 8px;">(视频流无需语言)</n-text>
             </td>
             <td style="text-align: center;">
               <n-checkbox 
@@ -447,7 +453,7 @@
           </tr>
           <tr v-if="mediaStreams.length === 0">
             <td colspan="4" style="text-align: center; padding: 20px;">
-              <n-text depth="3">未解析到音轨或字幕流</n-text>
+              <n-text depth="3">未解析到媒体流</n-text>
             </td>
           </tr>
         </tbody>
@@ -662,8 +668,8 @@ const openMediaInfoEditor = async () => {
       streams = mediaInfoData.value.MediaStreams;
     }
     
-    // 过滤出音轨和字幕
-    mediaStreams.value = streams.filter(s => s.Type === 'Audio' || s.Type === 'Subtitle');
+    // 过滤出视频、音轨和字幕
+    mediaStreams.value = streams.filter(s => s.Type === 'Video' || s.Type === 'Audio' || s.Type === 'Subtitle');
     
     showMediaInfoEditor.value = true;
   } catch (e) {
