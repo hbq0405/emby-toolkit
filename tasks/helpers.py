@@ -26,7 +26,7 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
 
     # 字幕：chi=简体, yue=繁体
     "sub_chi": ["CHS", "SC", "GB", "简体", "簡體", "简中", "簡中", "Simplified"],
-    "sub_yue": ["CHT", "TC", "BIG5", "繁體", "繁体", "Traditional"],
+    "sub_yue": ["CHT", "TC", "BIG5", "繁體", "繁体", "繁中", "Traditional"],
     "sub_eng": ["ENG", "英字"],
     "sub_jpn": ["JPN", "日字", "日文"],
     "sub_kor": ["KOR", "韩字", "韩文"],
