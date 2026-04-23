@@ -52,14 +52,23 @@
                   </n-descriptions-item>
                 </n-descriptions>
                 
-                <!-- ★★★ 新增：编辑图像按钮 ★★★ -->
+                <!-- ★★★ 编辑图像按钮 ★★★ -->
                 <template #action>
-                  <n-button block type="primary" secondary @click="showImageEditor = true">
-                    <template #icon>
-                      <n-icon :component="ImagesIcon" />
-                    </template>
-                    编辑图像
-                  </n-button>
+                  <n-space vertical>
+                    <n-button block type="primary" secondary @click="showImageEditor = true">
+                      <template #icon>
+                        <n-icon :component="ImagesIcon" />
+                      </template>
+                      编辑图像
+                    </n-button>
+                    <!-- ▼▼▼ 编辑媒体信息按钮 ▼▼▼ -->
+                    <n-button block type="info" secondary @click="openMediaInfoEditor">
+                      <template #icon>
+                        <n-icon :component="DocumentTextIcon" />
+                      </template>
+                      编辑媒体信息 (音轨/字幕)
+                    </n-button>
+                  </n-space>
                 </template>
               </n-card>
 
@@ -381,6 +390,63 @@
         <n-button type="primary" @click="submitUrlImage" :loading="isUploadingImage">确定</n-button>
       </template>
     </n-modal>
+    <!-- ★★★ 媒体信息编辑模态框 ★★★ -->
+    <n-modal
+      v-model:show="showMediaInfoEditor"
+      preset="card"
+      style="width: 800px; max-width: 95vw;"
+      title="编辑媒体信息 (音轨/字幕)"
+      :bordered="false"
+      size="huge"
+    >
+      <n-alert type="info" style="margin-bottom: 16px;">
+        修改语言标签后保存，系统将自动覆盖底层指纹文件并通知 Emby 重新加载。
+      </n-alert>
+      
+      <n-table :bordered="true" :single-line="false" size="small">
+        <thead>
+          <tr>
+            <th style="width: 80px;">类型</th>
+            <th>标题 (Title)</th>
+            <th style="width: 200px;">语言 (Language)</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="(stream, index) in mediaStreams" :key="index">
+            <td>
+              <n-tag :type="stream.Type === 'Audio' ? 'info' : 'success'" size="small">
+                {{ stream.Type === 'Audio' ? '音轨' : '字幕' }}
+              </n-tag>
+            </td>
+            <td>
+              <n-input v-model:value="stream.Title" placeholder="未命名" size="small" />
+            </td>
+            <td>
+              <n-select 
+                v-model:value="stream.Language" 
+                :options="languageOptions" 
+                placeholder="选择语言"
+                filterable
+                clearable
+                size="small"
+              />
+            </td>
+          </tr>
+          <tr v-if="mediaStreams.length === 0">
+            <td colspan="3" style="text-align: center; padding: 20px;">
+              <n-text depth="3">未解析到音轨或字幕流</n-text>
+            </td>
+          </tr>
+        </tbody>
+      </n-table>
+      
+      <template #action>
+        <n-space justify="end">
+          <n-button @click="showMediaInfoEditor = false">取消</n-button>
+          <n-button type="primary" @click="saveMediaInfo" :loading="isSavingMediaInfo">保存并刷新</n-button>
+        </n-space>
+      </template>
+    </n-modal>
   </n-layout>
 </template>
 
@@ -401,7 +467,8 @@ import {
   ChevronDownOutline as ChevronDownIcon,
   CloudUploadOutline as CloudUploadIcon,
   LinkOutline as LinkIcon,
-  SearchOutline as SearchIcon
+  SearchOutline as SearchIcon,
+  DocumentTextOutline as DocumentTextIcon
 } from '@vicons/ionicons5';
 import { debounce } from 'lodash-es';
 
@@ -524,6 +591,93 @@ const uploadImagePayload = async (payload) => {
   }
 };
 // ★★★ 图像编辑逻辑结束 ★★★
+
+// =========================================================
+// ★★★ 媒体信息 (MediaInfo) 编辑相关状态与逻辑 ★★★
+// =========================================================
+const showMediaInfoEditor = ref(false);
+const isSavingMediaInfo = ref(false);
+const mediaInfoData = ref(null); // 完整的原始 JSON 数据
+const mediaStreams = ref([]);    // 提取出来的音轨和字幕流引用
+const mediaInfoContext = ref({}); // 存储 sha1, media_path, mediainfo_path
+const languageOptions = ref([]);
+
+// 获取语言映射表
+const fetchLanguageMapping = async () => {
+  try {
+    const res = await axios.get('/api/custom_collections/config/language_mapping');
+    // 提取 aliases 的第一个作为 3 位语言代码
+    languageOptions.value = res.data.map(item => ({
+      label: item.label,
+      value: (item.aliases && item.aliases.length > 0) ? item.aliases[0] : item.value
+    }));
+  } catch (e) {
+    console.error("获取语言映射失败", e);
+    message.error("获取语言映射表失败");
+  }
+};
+
+// 打开编辑器并获取数据
+const openMediaInfoEditor = async () => {
+  if (languageOptions.value.length === 0) {
+    await fetchLanguageMapping();
+  }
+  
+  const loadingMsg = message.loading("正在读取底层媒体指纹...", { duration: 0 });
+  try {
+    const res = await axios.get(`/api/media_info/edit/${itemId.value}`);
+    mediaInfoContext.value = {
+      sha1: res.data.sha1,
+      media_path: res.data.media_path,
+      mediainfo_path: res.data.mediainfo_path
+    };
+    mediaInfoData.value = res.data.mediainfo;
+    
+    // 兼容神医插件的两种 JSON 嵌套格式
+    let streams = [];
+    if (Array.isArray(mediaInfoData.value) && mediaInfoData.value.length > 0) {
+      if (mediaInfoData.value[0].MediaSourceInfo) {
+        streams = mediaInfoData.value[0].MediaSourceInfo.MediaStreams || [];
+      } else {
+        streams = mediaInfoData.value[0].MediaStreams || [];
+      }
+    } else if (mediaInfoData.value && mediaInfoData.value.MediaStreams) {
+      streams = mediaInfoData.value.MediaStreams;
+    }
+    
+    // 过滤出音轨和字幕，由于是引用传递，修改 mediaStreams 里的对象会直接修改 mediaInfoData
+    mediaStreams.value = streams.filter(s => s.Type === 'Audio' || s.Type === 'Subtitle');
+    
+    showMediaInfoEditor.value = true;
+  } catch (e) {
+    message.error(e.response?.data?.error || "获取媒体信息失败");
+  } finally {
+    loadingMsg.destroy();
+  }
+};
+
+// 保存修改
+const saveMediaInfo = async () => {
+  isSavingMediaInfo.value = true;
+  const loadingMsg = message.loading("正在覆盖指纹并通知 Emby 重新加载...", { duration: 0 });
+  
+  try {
+    const payload = {
+      ...mediaInfoContext.value,
+      mediainfo: mediaInfoData.value // 发送完整的修改后的 JSON
+    };
+    
+    const res = await axios.post(`/api/media_info/edit/${itemId.value}`, payload);
+    message.success(res.data.message || "媒体信息已更新！");
+    showMediaInfoEditor.value = false;
+  } catch (e) {
+    console.error("保存媒体信息失败:", e);
+    message.error(e.response?.data?.error || "保存失败，请检查后端日志");
+  } finally {
+    loadingMsg.destroy();
+    isSavingMediaInfo.value = false;
+  }
+};
 
 // ★★★ TMDb 选图相关状态 ★★★
 const showTmdbSelector = ref(false);

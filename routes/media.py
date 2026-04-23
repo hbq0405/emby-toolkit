@@ -2,7 +2,8 @@
 
 from flask import Blueprint, request, jsonify, Response, stream_with_context
 import logging
-
+import os
+import json
 import requests
 
 import handler.emby as emby
@@ -820,3 +821,107 @@ def api_get_tmdb_images(item_id):
     except Exception as e:
         logger.error(f"API /tmdb_images 发生错误: {e}", exc_info=True)
         return jsonify({"error": "获取 TMDb 图片失败"}), 500
+    
+# ======================================================================
+# ★★★ 媒体信息 (MediaInfo) 编辑 API ★★★
+# ======================================================================
+@media_api_bp.route('/media_info/edit/<item_id>', methods=['GET'])
+@processor_ready_required
+def api_get_media_info_for_edit(item_id):
+    """获取指定媒体的底层 MediaInfo JSON 数据"""
+    try:
+        # 1. 获取 Emby 物理路径
+        item_details = emby.get_emby_item_details(
+            item_id, 
+            extensions.media_processor_instance.emby_url, 
+            extensions.media_processor_instance.emby_api_key, 
+            extensions.media_processor_instance.emby_user_id,
+            fields="Path"
+        )
+        if not item_details or not item_details.get("Path"):
+            return jsonify({"error": "无法获取该媒体的物理路径"}), 404
+            
+        media_path = item_details["Path"]
+        
+        # 2. 提取 SHA1
+        _, sha1 = extensions.media_processor_instance._extract_115_fingerprints(media_path)
+        
+        # 3. 优先从数据库获取，兜底从本地文件获取
+        mediainfo_json = None
+        if sha1:
+            mediainfo_json = media_db.get_mediainfo_by_sha1(sha1)
+            
+        mediainfo_path = os.path.splitext(media_path)[0] + "-mediainfo.json"
+        
+        if not mediainfo_json and os.path.exists(mediainfo_path):
+            try:
+                with open(mediainfo_path, 'r', encoding='utf-8') as f:
+                    mediainfo_json = json.load(f)
+            except Exception as e:
+                logger.warning(f"读取本地 mediainfo.json 失败: {e}")
+                
+        if not mediainfo_json:
+            return jsonify({"error": "未找到该媒体的指纹信息或本地 JSON 文件"}), 404
+            
+        return jsonify({
+            "sha1": sha1,
+            "media_path": media_path,
+            "mediainfo_path": mediainfo_path,
+            "mediainfo": mediainfo_json
+        })
+        
+    except Exception as e:
+        logger.error(f"获取媒体信息失败: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500
+
+@media_api_bp.route('/media_info/edit/<item_id>', methods=['POST'])
+@admin_required
+@processor_ready_required
+def api_save_media_info_for_edit(item_id):
+    """保存修改后的 MediaInfo，更新数据库和文件，并触发 Emby 刷新"""
+    data = request.json
+    sha1 = data.get("sha1")
+    mediainfo_path = data.get("mediainfo_path")
+    media_path = data.get("media_path")
+    new_mediainfo = data.get("mediainfo")
+    
+    if not new_mediainfo or not mediainfo_path or not media_path:
+        return jsonify({"error": "参数不完整"}), 400
+        
+    try:
+        # 1. 更新数据库 p115_mediainfo_cache
+        if sha1:
+            from database import connection
+            with connection.get_db_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute(
+                    "UPDATE p115_mediainfo_cache SET mediainfo_json = %s WHERE sha1 = %s", 
+                    (json.dumps(new_mediainfo, ensure_ascii=False), sha1)
+                )
+                conn.commit()
+                
+        # 2. ★★★ 修正顺序：先调用神医接口清除 Emby 内部的媒体信息缓存 ★★★
+        # (神医在清除时会物理删除本地的 -mediainfo.json 文件)
+        emby.clear_item_media_info(
+            item_id, 
+            extensions.media_processor_instance.emby_url, 
+            extensions.media_processor_instance.emby_api_key
+        )
+
+        # 3. ★★★ 修正顺序：再覆盖写入物理文件 -mediainfo.json ★★★
+        # (确保我们新写入的文件不会被神医的清除操作误删)
+        with open(mediainfo_path, 'w', encoding='utf-8') as f:
+            json.dump(new_mediainfo, f, ensure_ascii=False, indent=4)
+            
+        # 4. 触发 Emby 局部目录扫描，重新加载刚刚写入的 -mediainfo.json
+        emby.notify_emby_file_changes(
+            [media_path], 
+            extensions.media_processor_instance.emby_url, 
+            extensions.media_processor_instance.emby_api_key
+        )
+        
+        return jsonify({"message": "媒体信息已更新，Emby 正在重新加载..."})
+        
+    except Exception as e:
+        logger.error(f"保存媒体信息失败: {e}", exc_info=True)
+        return jsonify({"error": f"保存失败: {str(e)}"}), 500
