@@ -2016,6 +2016,7 @@ class SmartOrganizer:
         raw_lang = str(raw_lang or "").strip()
         raw_title = str(raw_title or "").strip()
 
+        # 辅助函数：根据原始标签和流类型智能转换显示标签
         def _format_label(label, s_type):
             if not label or label == "未知": return label
             if s_type == "Subtitle":
