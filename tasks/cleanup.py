@@ -539,7 +539,7 @@ def task_execute_cleanup(processor, task_ids: List[int], **kwargs):
                                     os.remove(mi_path)
                                     
                                 for f in os.listdir(base_dir):
-                                    if f.startswith(base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo']:
+                                    if f.startswith(base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo', 'jpg', 'png']:
                                         sub_path = os.path.join(base_dir, f)
                                         try: os.remove(sub_path)
                                         except: pass
