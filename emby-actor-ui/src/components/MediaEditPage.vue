@@ -429,7 +429,7 @@
           </tr>
         </thead>
         <tbody>
-          <tr v-for="(stream, index) in mediaStreams" :key="index">
+          <tr v-for="(stream, index) in editableStreams" :key="index">
             <td>
               <n-tag :type="stream.Type === 'Audio' ? 'info' : 'success'" size="small">
                 {{ stream.Type === 'Audio' ? '音轨' : '字幕' }}
