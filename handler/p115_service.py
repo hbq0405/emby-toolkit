@@ -2039,10 +2039,10 @@ class SmartOrganizer:
             has_eng = any(x in text for x in ["eng", "english", "英文", "英语", "英字"])
 
             if has_chs and has_eng and not has_cht:
-                return "chi", "简英", "简英"
+                return "chi", "简英双语", "简英双语"
 
             if has_cht and has_eng and not has_chs:
-                return "yue", "繁英", "繁英"
+                return "yue", "繁英双语", "繁英双语"
 
         # ===== 下面保留你原来的单语言逻辑 =====
         is_yue = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", [])) or \

@@ -470,7 +470,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, watch, computed, nextTick } from 'vue';
+import { ref, shallowRef, onMounted, watch, computed, nextTick } from 'vue';
 import draggable from 'vuedraggable';
 import { NIcon, NInput, NGrid, NGridItem, NFormItem, NTag, NAvatar, NPopconfirm, NImage, NModal, NList, NListItem, NThing, NEmpty, NButtonGroup, NDropdown, NTooltip } from 'naive-ui';
 import { useRoute, useRouter } from 'vue-router';
@@ -616,9 +616,9 @@ const uploadImagePayload = async (payload) => {
 // =========================================================
 const showMediaInfoEditor = ref(false);
 const isSavingMediaInfo = ref(false);
-const mediaInfoData = ref(null); // 完整的原始 JSON 数据
-const mediaStreams = ref([]);    // 提取出来的音轨和字幕流引用
-const mediaInfoContext = ref({}); // 存储 sha1, media_path, mediainfo_path
+const mediaInfoData = shallowRef(null); 
+const mediaStreams = ref([]);    
+const mediaInfoContext = ref({}); 
 const languageOptions = ref([]);
 
 // 1. 获取语言映射表
@@ -630,13 +630,11 @@ const fetchLanguageMapping = async () => {
       value: (item.aliases && item.aliases.length > 0) ? item.aliases[0] : item.value
     }));
     
-    // ★★★ 兜底逻辑：如果用户的数据库里没有双语选项，前端强行塞一个进去 ★★★
     if (!languageOptions.value.some(opt => opt.label.includes('双语'))) {
       languageOptions.value.push({ label: '中英双语', value: 'mul' });
     }
   } catch (e) {
     console.error("获取语言映射失败", e);
-    message.error("获取语言映射表失败");
   }
 };
 
@@ -656,7 +654,6 @@ const openMediaInfoEditor = async () => {
     };
     mediaInfoData.value = res.data.mediainfo;
     
-    // 兼容神医插件的两种 JSON 嵌套格式
     let streams = [];
     if (Array.isArray(mediaInfoData.value) && mediaInfoData.value.length > 0) {
       if (mediaInfoData.value[0].MediaSourceInfo) {
@@ -687,14 +684,13 @@ const saveMediaInfo = async () => {
   try {
     const payload = {
       ...mediaInfoContext.value,
-      mediainfo: mediaInfoData.value // 发送完整的修改后的 JSON
+      mediainfo: mediaInfoData.value 
     };
     
     const res = await axios.post(`/api/media_info/edit/${itemId.value}`, payload);
     message.success(res.data.message || "媒体信息已更新！");
     showMediaInfoEditor.value = false;
   } catch (e) {
-    console.error("保存媒体信息失败:", e);
     message.error(e.response?.data?.error || "保存失败，请检查后端日志");
   } finally {
     loadingMsg.destroy();
@@ -707,14 +703,21 @@ const handleLanguageChange = (stream, val, option) => {
   if (option && option.label) {
     let newTitle = option.label;
     
-    // ★★★ 智能转换逻辑：如果是字幕轨道，进行贴合习惯的文本替换 ★★★
     if (stream.Type === 'Subtitle') {
-      if (newTitle === '国语' || newTitle === '普通话') {
+      // ★★★ 核心修复 2：获取原始标题，判断是否包含 Chs&Eng 等字眼 ★★★
+      const origTitle = (stream.Title || '').toLowerCase();
+      
+      if (origTitle.includes('chs&eng') || origTitle.includes('简英')) {
+        newTitle = '简英双语';
+      } else if (origTitle.includes('cht&eng') || origTitle.includes('繁英')) {
+        newTitle = '繁英双语';
+      } 
+      // 基础转换逻辑
+      else if (newTitle === '国语' || newTitle === '普通话') {
         newTitle = '简中';
       } else if (newTitle === '粤语' || newTitle === '广东话') {
         newTitle = '繁中';
       } else if (newTitle.endsWith('语')) {
-        // 将结尾的“语”替换为“文”，例如“英语” -> “英文”，“日语” -> “日文”
         newTitle = newTitle.slice(0, -1) + '文';
       }
     }
@@ -728,7 +731,6 @@ const handleLanguageChange = (stream, val, option) => {
 // 5. 处理默认勾选变更（同类型单选互斥）
 const handleDefaultChange = (changedStream, isChecked) => {
   if (isChecked) {
-    // 如果勾选了当前流为默认，则将同类型的其他流的默认状态取消
     mediaStreams.value.forEach(s => {
       if (s !== changedStream && s.Type === changedStream.Type) {
         s.IsDefault = false;

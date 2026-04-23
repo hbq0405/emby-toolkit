@@ -342,7 +342,6 @@ DEFAULT_COUNTRY_MAPPING = [
 DEFAULT_LANGUAGE_MAPPING = [
     {"label": "国语", "value": "zh", "aliases": ["chi", "guo", "guoyu", "zho", "zh", "chs", "Zh-cn", "zh-cn", "zh-sg", "zh-hans", "cmn", "mandarin", "国语", "普通话", "中文", "简体", "简中"]}, 
     {"label": "粤语", "value": "cn", "aliases": ["yue", "cht", "cn", "zh-hk", "zh-tw", "hk", "tw", "cantonese", "粤语", "繁体", "繁中", "粤配", "港配", "粤语配音", "广东话"]},
-    {"label": "中英", "value": "mul", "aliases": ["mul", "双语", "中英", "简英", "繁英", "中英对照"]},
     {"label": "英语", "value": "en", "aliases": ["eng", "english"]},
     {"label": "日语", "value": "ja", "aliases": ["jpn", "japanese"]},
     {"label": "韩语", "value": "ko", "aliases": ["kor", "korean"]},

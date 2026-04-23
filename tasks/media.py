@@ -226,17 +226,11 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
 
                     # B. 执行治疗与等待
                     if ids_to_heal:
-                        # 1. 触发
-                        task_manager.update_status_from_thread(10, f"正在触发神医插件重新提取 {len(ids_to_heal)} 个文件的媒体信息...")
-                        for eid in ids_to_heal:
-                            emby.trigger_media_info_refresh(
-                                eid, processor.emby_url, processor.emby_api_key, processor.emby_user_id
-                            )
-                            time.sleep(0.2) # 稍微间隔
+                        logger.info(f"  ➜ 检测到媒体信息缺失，直接调用本地万能提取器进行全库恢复...")
+                        task_manager.update_status_from_thread(10, "正在提取底层媒体信息...")
                         
-                        # 2. 轮询等待 (关键修改)
-                        task_manager.update_status_from_thread(20, f"等待媒体信息提取 (最长1分钟)...")
-                        _wait_for_items_recovery(processor, ids_to_heal, max_retries=6, interval=10)
+                        # ★★★ 核心修复：不再触发神医，直接调用我们自己写的终极还原任务 ★★★
+                        task_restore_mediainfo(processor)
                         
             except Exception as e_heal:
                 logger.warning(f"  ➜ 流程出现小插曲 (不影响后续重扫): {e_heal}")

@@ -32,30 +32,47 @@ def api_search_emby_library():
         return jsonify({"error": "搜索词不能为空"}), 400
 
     try:
-        # ✨✨✨ 调用改造后的函数，并传入 search_term ✨✨✨
-        search_results = emby.get_emby_library_items(
-            base_url=extensions.media_processor_instance.emby_url,
-            api_key=extensions.media_processor_instance.emby_api_key,
-            user_id=extensions.media_processor_instance.emby_user_id,
-            media_type_filter="Movie,Series",
-            search_term=query
-        )
-        
-        if search_results is None:
-            return jsonify({"error": "搜索时发生服务器错误"}), 500
+        # ★★★ 核心修复：直接搜索本地数据库，并展开 asset_details_json 显示所有版本 ★★★
+        from database import connection
+        with connection.get_db_connection() as conn:
+            cursor = conn.cursor()
+            
+            # 使用 LATERAL 展开 JSON 数组，让每个版本成为独立的一行
+            sql = """
+                SELECT 
+                    m.tmdb_id, 
+                    m.item_type, 
+                    m.title, 
+                    m.release_year,
+                    a.asset->>'emby_item_id' as emby_id,
+                    a.asset->>'resolution_display' as resolution,
+                    a.asset->>'quality_display' as quality
+                FROM media_metadata m
+                JOIN LATERAL jsonb_array_elements(
+                    CASE WHEN jsonb_typeof(m.asset_details_json) = 'array' THEN m.asset_details_json ELSE '[]'::jsonb END
+                ) AS a(asset) ON true
+                WHERE m.title ILIKE %s OR m.original_title ILIKE %s
+                LIMIT 50
+            """
+            search_term = f"%{query}%"
+            cursor.execute(sql, (search_term, search_term))
+            rows = cursor.fetchall()
 
-        # 将搜索结果转换为前端表格期望的格式 (这部分逻辑不变)
         formatted_results = []
-        for item in search_results:
+        for row in rows:
+            if not row['emby_id']: continue
+            
+            # 拼接版本信息到名字里，例如：阿凡达 [4k BluRay]
+            version_tag = f" [{row['resolution']} {row['quality']}]" if row['resolution'] else ""
+            
             formatted_results.append({
-                "item_id": item.get("Id"),
-                "item_name": item.get("Name"),
-                "item_type": item.get("Type"),
+                "item_id": row['emby_id'],
+                "item_name": f"{row['title']}{version_tag}",
+                "item_type": row['item_type'],
                 "failed_at": None,
-                "error_message": f"来自 Emby 库的搜索结果 (年份: {item.get('ProductionYear', 'N/A')})",
+                "error_message": f"本地数据库搜索结果 (年份: {row['release_year']})",
                 "score": None,
-                # ★★★ 核心修复：把 ProviderIds 也传递给前端 ★★★
-                "provider_ids": item.get("ProviderIds") 
+                "provider_ids": {"Tmdb": row['tmdb_id']} 
             })
         
         return jsonify({
