@@ -1887,7 +1887,14 @@ class MediaProcessor:
                     ep_directors = [{'id': p.get('id'), 'name': p.get('name')} for p in ep_crew if p.get('job') == 'Director']
 
                     # ★★★ 提取分集专属演员表 (含客串) ★★★
-                    ep_cast_raw = episode.get('credits', {}).get('cast', []) + episode.get('credits', {}).get('guest_stars', [])
+                    max_ep_actors = int(self.config.get(constants.CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS, 0))
+                    ep_cast_raw = []
+                    
+                    # 只有当配置 > 0 时，才提取分集专属演员并截断
+                    if max_ep_actors > 0:
+                        ep_cast_raw = episode.get('credits', {}).get('cast', []) + episode.get('credits', {}).get('guest_stars', [])
+                        ep_cast_raw = ep_cast_raw[:max_ep_actors]
+                        
                     ep_actors_json_list = []
                     
                     if ep_cast_raw:
@@ -4890,8 +4897,15 @@ class MediaProcessor:
                                 
                                 final_ep_cast = []
 
+                                max_ep_actors = int(self.config.get(constants.CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS, 0))
+                                
                                 if matched_ep:
-                                    raw_ep_cast = matched_ep.get('credits', {}).get('cast', []) + matched_ep.get('credits', {}).get('guest_stars', [])
+                                    raw_ep_cast = []
+                                    # 只有当配置 > 0 时，才提取分集专属演员并截断
+                                    if max_ep_actors > 0:
+                                        raw_ep_cast = matched_ep.get('credits', {}).get('cast', []) + matched_ep.get('credits', {}).get('guest_stars', [])
+                                        raw_ep_cast = raw_ep_cast[:max_ep_actors]
+                                        
                                     ep_cast = _filter_raw_cast(raw_ep_cast)
 
                                     if ep_cast:

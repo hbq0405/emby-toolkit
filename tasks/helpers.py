@@ -1701,35 +1701,41 @@ def translate_tmdb_metadata_recursively(
                         pending_persons.add(name)
 
             max_actors = config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
+            max_ep_actors = config.get(constants.CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS, 0) # 读取新配置
+            
             try:
                 limit = int(max_actors)
-                if limit <= 0:
-                    limit = 30
+                if limit <= 0: limit = 30
             except Exception:
                 limit = 30
+                
+            try:
+                ep_limit = int(max_ep_actors)
+            except Exception:
+                ep_limit = 0
 
             def _smart_truncate(actor_list, max_limit):
-                if not actor_list:
-                    return []
-
+                if not actor_list: return []
                 stats['original_cast_count'] += len(actor_list)
-
-                if remove_no_avatar:
-                    valid_actors = [a for a in actor_list if a.get('profile_path')]
-                else:
-                    valid_actors = actor_list
-
+                valid_actors = [a for a in actor_list if a.get('profile_path')] if remove_no_avatar else actor_list
                 valid_actors.sort(key=lambda x: x.get('order') if x.get('order') is not None else 999)
                 truncated = valid_actors[:max_limit]
-
                 stats['truncated_cast_count'] += len(truncated)
                 return truncated
 
-            if 'cast' in credits_data:
-                credits_data['cast'] = _smart_truncate(credits_data['cast'], limit)
-
-            if 'guest_stars' in credits_data:
-                credits_data['guest_stars'] = _smart_truncate(credits_data['guest_stars'], 10)
+            # ★★★ 核心优化：如果是分集，且配置为 0，直接清空演员表，不送去翻译 ★★★
+            if specific_item_type == 'Episode' and ep_limit == 0:
+                if 'cast' in credits_data: credits_data['cast'] = []
+                if 'guest_stars' in credits_data: credits_data['guest_stars'] = []
+            else:
+                # 动态决定当前层级的限制人数
+                current_limit = ep_limit if specific_item_type == 'Episode' else limit
+                guest_limit = ep_limit if specific_item_type == 'Episode' else 10
+                
+                if 'cast' in credits_data:
+                    credits_data['cast'] = _smart_truncate(credits_data['cast'], current_limit)
+                if 'guest_stars' in credits_data:
+                    credits_data['guest_stars'] = _smart_truncate(credits_data['guest_stars'], guest_limit)
 
             all_actors = credits_data.get('cast', []) + credits_data.get('guest_stars', [])
             for actor in all_actors:
