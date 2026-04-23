@@ -409,6 +409,8 @@
             <th style="width: 80px;">类型</th>
             <th>当前标题 (Title)</th>
             <th style="width: 200px;">修正语言 (Language)</th>
+            <!-- ▼▼▼ 新增：默认列 ▼▼▼ -->
+            <th style="width: 80px; text-align: center;">默认</th>
           </tr>
         </thead>
         <tbody>
@@ -419,13 +421,11 @@
               </n-tag>
             </td>
             <td>
-              <!-- 动态展示当前标题，如果没有则显示“无标题” -->
               <n-text :depth="stream.Title ? 1 : 3" :type="stream.Title ? 'default' : 'warning'">
                 {{ stream.Title || '无标题' }}
               </n-text>
             </td>
             <td>
-              <!-- 增加 @update:value 事件来联动修改标题 -->
               <n-select 
                 v-model:value="stream.Language" 
                 :options="languageOptions" 
@@ -436,9 +436,16 @@
                 @update:value="(val, option) => handleLanguageChange(stream, val, option)"
               />
             </td>
+            <!-- ▼▼▼ 新增：复选框单元格 ▼▼▼ -->
+            <td style="text-align: center;">
+              <n-checkbox 
+                v-model:checked="stream.IsDefault" 
+                @update:checked="(val) => handleDefaultChange(stream, val)"
+              />
+            </td>
           </tr>
           <tr v-if="mediaStreams.length === 0">
-            <td colspan="3" style="text-align: center; padding: 20px;">
+            <td colspan="4" style="text-align: center; padding: 20px;">
               <n-text depth="3">未解析到音轨或字幕流</n-text>
             </td>
           </tr>
@@ -673,6 +680,18 @@ const handleLanguageChange = (stream, val, option) => {
     // 如果用户清空了选择，可以选择清空标题，或者保持原样
     // 这里我们将其清空，保持数据干净
     stream.Title = '';
+  }
+};
+
+// 处理默认勾选变更（同类型单选互斥） ▼▼▼
+const handleDefaultChange = (changedStream, isChecked) => {
+  if (isChecked) {
+    // 如果勾选了当前流为默认，则将同类型的其他流的默认状态取消
+    mediaStreams.value.forEach(s => {
+      if (s !== changedStream && s.Type === changedStream.Type) {
+        s.IsDefault = false;
+      }
+    });
   }
 };
 
