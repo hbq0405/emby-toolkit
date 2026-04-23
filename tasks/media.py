@@ -457,43 +457,64 @@ def _extract_and_map_tmdb_ratings(tmdb_details, item_type):
 def prune_tmdb_payload_for_translation(item_type: str, tmdb_data):
     """
     翻译前裁剪无用字段，减少 tokens。
-    只处理 Movie / Series 顶层标题和演员表；
-    Season / Episode 标题保留，避免影响分集标题翻译。
+    目标：
+    1. Movie / Series 不翻译标题
+    2. Movie / Series 不翻译任何人物相关信息（演员 / 导演 / 主创 / 客串 / 剧组）
     """
+
     if not tmdb_data or item_type not in ("Movie", "Series"):
         return tmdb_data
 
     data = copy.deepcopy(tmdb_data)
 
-    def _drop_cast_fields(obj):
-        if not isinstance(obj, dict):
-            return
-        for credits_key in ("credits", "casts", "aggregate_credits"):
-            credits_obj = obj.get(credits_key)
-            if isinstance(credits_obj, dict):
-                credits_obj.pop("cast", None)
+    PEOPLE_KEYS = {
+        "cast",
+        "crew",
+        "guest_stars",
+        "created_by",
+    }
 
+    CONTAINER_KEYS = {
+        "credits",
+        "casts",
+        "aggregate_credits",
+    }
+
+    def _strip_people(obj):
+        if isinstance(obj, dict):
+            # 先删直接人物字段
+            for key in list(obj.keys()):
+                if key in PEOPLE_KEYS:
+                    obj.pop(key, None)
+
+            # 再删整块人物容器
+            for key in list(obj.keys()):
+                if key in CONTAINER_KEYS:
+                    obj.pop(key, None)
+
+            # 递归处理剩余字段
+            for v in obj.values():
+                _strip_people(v)
+
+        elif isinstance(obj, list):
+            for item in obj:
+                _strip_people(item)
+
+    # 1) 掐标题
     if item_type == "Movie":
-        # 电影标题
-        if isinstance(data, dict):
-            data.pop("title", None)
-            data.pop("original_title", None)
-            _drop_cast_fields(data)
-
+        data.pop("title", None)
+        data.pop("original_title", None)
     elif item_type == "Series":
-        # 你的 Series 是 aggregate_full_series_data_from_tmdb 返回的聚合结构
-        # 顶层真正的剧集详情在 series_details 里
-        if isinstance(data, dict):
-            series_details = data.get("series_details")
-            if isinstance(series_details, dict):
-                series_details.pop("name", None)
-                series_details.pop("original_name", None)
-                _drop_cast_fields(series_details)
-            else:
-                # 兜底：万一不是聚合结构
-                data.pop("name", None)
-                data.pop("original_name", None)
-                _drop_cast_fields(data)
+        # 聚合结构下真正的剧集详情通常在 series_details
+        if isinstance(data.get("series_details"), dict):
+            data["series_details"].pop("name", None)
+            data["series_details"].pop("original_name", None)
+        # 兜底
+        data.pop("name", None)
+        data.pop("original_name", None)
+
+    # 2) 全递归掐掉所有人物相关字段
+    _strip_people(data)
 
     return data
 
