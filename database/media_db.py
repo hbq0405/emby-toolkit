@@ -1107,13 +1107,13 @@ def get_timed_out_items_to_revive(revive_days: int) -> List[Dict[str, Any]]:
 # 获取本地翻译信息（标题和简介）    
 def get_local_translation_info(tmdb_id: str, item_type: str) -> Optional[Dict[str, str]]:
     """
-    获取本地数据库中存储的翻译信息（标题和简介）。
+    获取本地数据库中存储的翻译信息（标题、简介、标语）。
     用于在刮削时优先使用本地已有的中文数据，防止被 TMDb 的英文数据覆盖，并节省 AI Token。
     """
     if not tmdb_id or not item_type:
         return None
         
-    sql = "SELECT title, overview FROM media_metadata WHERE tmdb_id = %s AND item_type = %s"
+    sql = "SELECT title, overview, tagline FROM media_metadata WHERE tmdb_id = %s AND item_type = %s"
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cursor:
@@ -1121,8 +1121,9 @@ def get_local_translation_info(tmdb_id: str, item_type: str) -> Optional[Dict[st
                 row = cursor.fetchone()
                 if row:
                     return {
-                        'title': row['title'], 
-                        'overview': row['overview']
+                        'title': row['title'],
+                        'overview': row['overview'],
+                        'tagline': row['tagline'],
                     }
                 return None
     except Exception as e:

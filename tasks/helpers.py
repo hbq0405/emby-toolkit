@@ -1657,21 +1657,28 @@ def translate_tmdb_metadata_recursively(
         if translate_title_enabled and specific_item_type in ['Movie', 'Series']:
             tagline = data_dict.get('tagline')
             if not tagline or not utils.contains_chinese(tagline):
-                if not tagline and tmdb_api_key:
-                    try:
-                        if specific_item_type == 'Movie':
-                            en_data = get_movie_details(int(tmdb_id_str), tmdb_api_key, language="en-US")
-                            data_dict['tagline'] = en_data.get('tagline', '')
-                        elif specific_item_type == 'Series':
-                            en_data = get_tv_details(int(tmdb_id_str), tmdb_api_key, language="en-US")
-                            data_dict['tagline'] = en_data.get('tagline', '')
-                    except Exception:
-                        pass
-
-                if data_dict.get('tagline'):
-                    needs_tagline = True
+                # 先用本地缓存回填，避免重复翻译
+                if local_info and local_info.get('tagline') and utils.contains_chinese(local_info['tagline']):
+                    data_dict['tagline'] = local_info['tagline']
                     stats['tagline_pending_count'] += 1
-                    stats['tagline_needs_translation'] += 1
+                    stats['tagline_cache_hits'] += 1
+                else:
+                    # 本地没有中文标语，再去补英文原文，准备送翻译
+                    if not tagline and tmdb_api_key:
+                        try:
+                            if specific_item_type == 'Movie':
+                                en_data = get_movie_details(int(tmdb_id_str), tmdb_api_key, language="en-US")
+                                data_dict['tagline'] = en_data.get('tagline', '')
+                            elif specific_item_type == 'Series':
+                                en_data = get_tv_details(int(tmdb_id_str), tmdb_api_key, language="en-US")
+                                data_dict['tagline'] = en_data.get('tagline', '')
+                        except Exception:
+                            pass
+
+                    if data_dict.get('tagline'):
+                        needs_tagline = True
+                        stats['tagline_pending_count'] += 1
+                        stats['tagline_needs_translation'] += 1
 
         if needs_title or needs_overview or needs_tagline:
             pending_items[tmdb_id_str] = {
