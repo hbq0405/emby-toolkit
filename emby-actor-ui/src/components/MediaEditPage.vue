@@ -406,10 +406,10 @@
       <!-- ★★★ 硬字幕标记按钮 ★★★ -->
       <n-card title="标记硬字幕 (写入视频流 Title)" size="small" style="margin-bottom: 16px;">
         <n-space>
-          <n-button @click="setHardcodedSubtitle('简中')" secondary>简中</n-button>
-          <n-button @click="setHardcodedSubtitle('繁中')" secondary>繁中</n-button>
-          <n-button @click="setHardcodedSubtitle('简英')" secondary>简英</n-button>
-          <n-button @click="setHardcodedSubtitle('繁英')" secondary>繁英</n-button>
+          <n-button @click="setHardcodedSubtitle('简中硬字幕')" secondary>简中</n-button>
+          <n-button @click="setHardcodedSubtitle('繁中硬字幕')" secondary>繁中</n-button>
+          <n-button @click="setHardcodedSubtitle('简英硬字幕')" secondary>简英</n-button>
+          <n-button @click="setHardcodedSubtitle('繁英硬字幕')" secondary>繁英</n-button>
           <n-button @click="clearHardcodedSubtitle()" secondary>清除标记</n-button>
         </n-space>
       </n-card>
