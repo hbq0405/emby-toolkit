@@ -18,15 +18,14 @@ logger = logging.getLogger(__name__)
 
 AUDIO_SUBTITLE_KEYWORD_MAP = {
     # 音轨：chi=国语, yue=粤语
-    # ★ 补充 guoyu, guo 等拼音匹配
-    "chi": ["Mandarin", "CHI", "ZHO", "国语","普通话", "国配", "国英双语", "公映", "台配", "京译", "上译", "央译", "guoyu", "guo"],
-    "yue": ["Cantonese", "YUE", "粤语", "粤配", "粤英双语", "港配", "粤语配音", "广东话", "yueyu", "yue"],
+    "chi": ["Mandarin", "CHI", "ZHO", "国语", "國語", "普通话", "国配", "國配", "国英双语", "公映", "台配", "京译", "上译", "央译", "guoyu", "guo"],
+    "yue": ["Cantonese", "YUE", "粤语", "粵語", "粤配", "粵配", "粤英双语", "港配", "粤语配音", "广东话", "廣東話", "yueyu", "yue"],
     "eng": ["English", "ENG", "英语"],
     "jpn": ["Japanese", "JPN", "日语"],
     "kor": ["Korean", "KOR", "韩语"],
 
     # 字幕：chi=简体, yue=繁体
-    "sub_chi": ["CHS", "SC", "GB", "简体", "简中", "Simplified"],
+    "sub_chi": ["CHS", "SC", "GB", "简体", "簡體", "简中", "簡中", "Simplified"],
     "sub_yue": ["CHT", "TC", "BIG5", "繁體", "繁体", "Traditional"],
     "sub_eng": ["ENG", "英字"],
     "sub_jpn": ["JPN", "日字", "日文"],

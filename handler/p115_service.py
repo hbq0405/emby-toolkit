@@ -2008,7 +2008,7 @@ class SmartOrganizer:
     def _get_friendly_display_info(self, raw_lang, raw_title, stream_type):
         """
         返回: (底层ISO代码, UI主标题, UI副标题)
-        利用全局 helpers.normalize_lang_code 实现动态映射，并根据流类型智能转换“语/文”。
+        Title 才是真理！强制纠错底层语言标签，并智能转换“语/文”。
         """
         from tasks import helpers
         import utils
@@ -2016,79 +2016,51 @@ class SmartOrganizer:
         raw_title = (raw_title or "").strip()
         raw_lang = (raw_lang or "").lower()
 
-        # --- ★ 智能变形器：根据音轨/字幕类型，自动转换称呼 ★ ---
+        # --- ★ 智能变形器 ---
         def _format_label(label, s_type):
-            if not label or label == "未知": 
-                return label
+            if not label or label == "未知": return label
             if s_type == "Subtitle":
-                if label in ["国语", "普通话", "中文"]: 
-                    return "简中"
-                if label in ["粤语", "广东话"]: 
-                    return "繁中"
-                # 自动把“英语”、“日语”替换为“英文”、“日文”
-                if label.endswith("语") and label != "无语言": 
-                    return label[:-1] + "文"
+                if label in ["国语", "普通话", "中文"]: return "简中"
+                if label in ["粤语", "广东话"]: return "繁中"
+                if label.endswith("语") and label != "无语言": return label[:-1] + "文"
             return label
 
-        # 1. 获取底层标准代码和对应的基础中文标签
+        # 1. 初始获取底层标准代码
         norm_lang = helpers.normalize_lang_code(raw_lang)
-        base_label = helpers.get_lang_display_label(norm_lang) if norm_lang else ""
         
-        # 经过变形器处理后的显示语言
-        display_lang = _format_label(base_label, stream_type)
-        friendly_title = raw_title
-
-        # 2. 翻译副标题 (Title)：保留原有中文，只翻译拼音/英文
-        if raw_title and not utils.contains_chinese(raw_title):
-            title_lower = raw_title.lower()
-            
-            # A. 优先尝试用全局映射表直接翻译 Title (例如 Title="ARA", "GER", "English")
-            title_norm_lang = helpers.normalize_lang_code(title_lower)
-            if title_norm_lang:
-                title_base_label = helpers.get_lang_display_label(title_norm_lang)
-                title_display = _format_label(title_base_label, stream_type)
-                
-                if title_display and title_display != "未知" and title_display != title_norm_lang.upper():
-                    friendly_title = title_display
-                    if not norm_lang:
-                        norm_lang = title_norm_lang
-                        display_lang = title_display
-
-            # B. 模糊匹配兜底 (处理 "ENG Forced" 这种混合情况)
-            if friendly_title == raw_title: 
-                for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
-                    if any(k.lower() in title_lower for k in keywords):
-                        search_key = key.replace('sub_', '')
-                        matched_base_label = helpers.get_lang_display_label(search_key)
-                        friendly_title = _format_label(matched_base_label, stream_type)
-                        if not norm_lang:
-                            norm_lang = search_key
-                            display_lang = friendly_title
-                        break
-
-        # 3. 终极增强：如果标题本来就是空的，或者标题就是语言代码本身，用匹配到的中文标签强行补齐！
-        if (not friendly_title or friendly_title.lower() == raw_lang) and display_lang and display_lang != "未知":
-            friendly_title = display_lang
-
-        # 4. 修正底层 ISO (模糊匹配防漏，比如标题写了粤语，但底层是 chi)
-        title_lower = (raw_title or "").lower()
+        # 2. ★★★ 强权纠错：Title 才是真理！无视底层标签，强制扫描标题 ★★★
+        title_lower = raw_title.lower()
+        
+        # 繁简通杀的关键字检测
         is_yue = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", [])) or \
                  any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
         is_chi = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", [])) or \
                  any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
 
+        # 如果标题明确指出了语言，强制篡改底层 ISO 代码！
         if is_yue and not is_chi:
             norm_lang = "yue"
-            display_lang = _format_label(helpers.get_lang_display_label("yue"), stream_type)
-            # 兼容各种繁体/粤语的缩写
-            if not friendly_title or friendly_title.lower() in ["yue", "cn", "cht", "tc"]: 
-                friendly_title = display_lang
-            
         elif is_chi:
             norm_lang = "chi"
-            display_lang = _format_label(helpers.get_lang_display_label("chi"), stream_type)
-            # 兼容各种简体/国语的缩写
-            if not friendly_title or friendly_title.lower() in ["chi", "zho", "zh", "chs", "sc"]: 
+        else:
+            # 尝试匹配其他语言 (如 ENG, JPN)
+            for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
+                if any(k.lower() in title_lower for k in keywords):
+                    norm_lang = key.replace('sub_', '')
+                    break
+
+        # 3. 根据最终确定的 norm_lang 获取标准中文标签
+        base_label = helpers.get_lang_display_label(norm_lang) if norm_lang else ""
+        display_lang = _format_label(base_label, stream_type)
+        
+        # 4. 确定副标题 (friendly_title)
+        friendly_title = raw_title
+        
+        # 如果原标题是纯英文/拼音/代码，或者原标题就是我们纠错后的语言名，用标准标签覆盖它
+        if not utils.contains_chinese(raw_title) or \
+           raw_title.lower() in ["yue", "cn", "cht", "tc", "chi", "zho", "zh", "chs", "sc", "粵語", "國語", "粤语", "国语"] or \
+           friendly_title.lower() == raw_lang:
+            if display_lang and display_lang != "未知":
                 friendly_title = display_lang
 
         # 兜底
