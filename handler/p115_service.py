@@ -2111,6 +2111,10 @@ class SmartOrganizer:
         # ★ 智能标题处理：保留有用信息，替换不规范词，追加缺失属性
         # ==========================================
         # 抹杀冗余标题，强制使用我们精简的 display_lang
+        if stream_type == "Subtitle" and display_lang == "简英双语":
+            friendly_title = "简英双语（简体）"
+        elif stream_type == "Subtitle" and display_lang == "繁英双语":
+            friendly_title = "繁英双语（繁体）"
         redundant_exact_matches = {
             "yue", "cn", "cht", "tc", "chi", "zho", "zh", "chs", "sc", 
             "粵語", "國語", "粤语", "国语", "简中", "繁中", "简体", "繁体", 
@@ -2122,7 +2126,7 @@ class SmartOrganizer:
         
         if not friendly_title or friendly_title.lower().replace(" ", "") in redundant_exact_matches or friendly_title.lower() == raw_lang:
             friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
-        else:
+        elif not (stream_type == "Subtitle" and display_lang in ["简英双语", "繁英双语"]):
             # 2. 有实质内容的标题，进行智能替换和追加
             if stream_type == "Subtitle":
                 # 替换不规范的简繁称呼，确保能触发 Emby 的 Simplified/Traditional 机制
