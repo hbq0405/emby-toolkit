@@ -2022,61 +2022,56 @@ class SmartOrganizer:
         raw_lang = str(raw_lang or "").strip()
         raw_title = str(raw_title or "").strip()
 
-        def _format_label(label, s_type):
-            if not label or label == "未知":
-                return label
-            if s_type == "Subtitle":
-                if label in ["国语", "普通话", "中文"]:
-                    return "简中"
-                if label in ["粤语", "广东话"]:
-                    return "繁中"
-                if label.endswith("语") and label != "无语言":
-                    return label[:-1] + "文"
-            return label
-
         norm_lang = helpers.normalize_lang_code(raw_lang)
         title_lower = raw_title.lower()
         lang_lower = raw_lang.lower()
 
-        # ★ 核心修复：将 title 和 lang 结合起来判断，防止 title 为空但 lang 包含有效信息
         combined_text = f"{title_lower} {lang_lower}"
-        # 统一分隔符为空格，方便无缝匹配
         clean_text = re.sub(r'[\.\-_+/|]+', ' ', combined_text)
 
-        # 先处理复合字幕标题
+        display_lang = ""
+
+        # ==========================================
+        # ★ 核心重构：回归正道，字幕统统用 chi，靠 Title 区分简繁
+        # ==========================================
         if stream_type == "Subtitle":
-            # 注意：匹配词里的连字符也要换成空格，与 clean_text 保持一致
             has_chs = any(x in clean_text for x in ["chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英"])
             has_cht = any(x in clean_text for x in ["cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁英"])
             has_eng = any(x in clean_text for x in ["eng", "english", "英文", "英语", "英字"])
 
             if has_chs and has_eng and not has_cht:
-                return "chi", "简英双语", "简英双语"
-            if has_cht and has_eng and not has_chs:
-                return "yue", "繁英双语", "繁英双语"
-
-            # ★ 核心修复：强特征词具有最高优先级，无视“国语/粤语”等音轨词的干扰
-            if has_cht and not has_chs:
-                norm_lang = "yue"
+                norm_lang = "chi"
+                display_lang = "简英双语"
+            elif has_cht and has_eng and not has_chs:
+                norm_lang = "chi"
+                display_lang = "繁英双语"
+            elif has_cht and not has_chs:
+                norm_lang = "chi" # 繁体字幕底层依然是中文
+                display_lang = "繁体"
             elif has_chs and not has_cht:
                 norm_lang = "chi"
+                display_lang = "简体"
             elif has_cht and has_chs:
-                # 如果同时包含简繁（如“简繁双语”），默认归为简中
                 norm_lang = "chi"
+                display_lang = "简体"
             else:
                 # 兜底：走 AUDIO_SUBTITLE_KEYWORD_MAP
                 is_yue = any(k.lower() in combined_text for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
                 is_chi = any(k.lower() in combined_text for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
                 
-                # 特判：如果包含“台配”，字幕大概率是繁体，强制纠正
                 if "台配" in combined_text or "台灣" in combined_text or "台湾" in combined_text:
-                    norm_lang = "yue"
+                    norm_lang = "chi"
+                    display_lang = "繁体"
                 elif is_yue:
-                    norm_lang = "yue"
+                    norm_lang = "chi" # 即使是粤语压制组，字幕也是繁体中文
+                    display_lang = "繁体"
                 elif is_chi:
                     norm_lang = "chi"
+                    display_lang = "简体"
         else:
-            # 音轨流只看音轨关键词
+            # ==========================================
+            # 音轨流：保留 yue，专门用于标识粤语发音
+            # ==========================================
             is_yue = any(k.lower() in combined_text for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", []))
             is_chi = any(k.lower() in combined_text for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", []))
 
@@ -2092,15 +2087,57 @@ class SmartOrganizer:
                         norm_lang = key.replace('sub_', '')
                         break
 
-        base_label = helpers.get_lang_display_label(norm_lang) if norm_lang else ""
-        display_lang = _format_label(base_label, stream_type)
+        # 格式化兜底的 display_lang
+        if not display_lang:
+            base_label = helpers.get_lang_display_label(norm_lang) if norm_lang else ""
+            if not base_label or base_label == "未知":
+                display_lang = base_label
+            else:
+                if stream_type == "Subtitle":
+                    if base_label in ["国语", "普通话", "中文"]:
+                        display_lang = "简体"
+                    elif base_label in ["粤语", "广东话"]:
+                        display_lang = "繁体"
+                    elif base_label.endswith("语") and base_label != "无语言":
+                        display_lang = base_label[:-1] + "文"
+                    else:
+                        display_lang = base_label
+                else:
+                    display_lang = base_label
 
         friendly_title = raw_title
-        if not utils.contains_chinese(raw_title) or \
-        raw_title.lower() in ["yue", "cn", "cht", "tc", "chi", "zho", "zh", "chs", "sc", "粵語", "國語", "粤语", "国语"] or \
-        friendly_title.lower() == raw_lang:
-            if display_lang and display_lang != "未知":
-                friendly_title = display_lang
+        
+        # ==========================================
+        # ★ 智能标题处理：保留有用信息，替换不规范词，追加缺失属性
+        # ==========================================
+        # 1. 完全无意义的冗余词，直接抹杀覆盖
+        redundant_exact_matches = {
+            "yue", "cn", "cht", "tc", "chi", "zho", "zh", "chs", "sc", 
+            "粵語", "國語", "粤语", "国语", "简中", "繁中", "简体", "繁体", 
+            "中文", "英语", "英文", "english", "korean", "韩语", "韩文",
+            "中文(简体)", "中文（简体）", "简体中文", 
+            "中文(繁体)", "中文（繁體）", "繁体中文", "繁體中文"
+        }
+        
+        if not friendly_title or friendly_title.lower().replace(" ", "") in redundant_exact_matches or friendly_title.lower() == raw_lang:
+            friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
+        else:
+            # 2. 有实质内容的标题，进行智能替换和追加
+            if stream_type == "Subtitle":
+                # 替换不规范的简繁称呼，确保能触发 Emby 的 Simplified/Traditional 机制
+                replace_map = {
+                    "简中": "简体", "简体中文": "简体", "中文(简体)": "简体", "中文（简体）": "简体",
+                    "繁中": "繁体", "繁体中文": "繁体", "中文(繁体)": "繁体", "中文（繁體）": "繁体",
+                    "简英": "简英双语", "繁英": "繁英双语"
+                }
+                for old, new in replace_map.items():
+                    friendly_title = friendly_title.replace(old, new)
+
+                # 如果推导出了明确的简繁属性，且标题里没有，则在末尾追加
+                if display_lang in ["简体", "繁体", "简英双语", "繁英双语"]:
+                    core_keyword = display_lang.replace("双语", "") # 变成 简体, 繁体, 简英, 繁英
+                    if core_keyword not in friendly_title:
+                        friendly_title = f"{friendly_title} ({display_lang})"
 
         if not display_lang:
             display_lang = "未知"
