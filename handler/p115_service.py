@@ -2110,13 +2110,14 @@ class SmartOrganizer:
         # ==========================================
         # ★ 智能标题处理：保留有用信息，替换不规范词，追加缺失属性
         # ==========================================
-        # 1. 完全无意义的冗余词，直接抹杀覆盖
+        # 抹杀冗余标题，强制使用我们精简的 display_lang
         redundant_exact_matches = {
             "yue", "cn", "cht", "tc", "chi", "zho", "zh", "chs", "sc", 
             "粵語", "國語", "粤语", "国语", "简中", "繁中", "简体", "繁体", 
             "中文", "英语", "英文", "english", "korean", "韩语", "韩文",
             "中文(简体)", "中文（简体）", "简体中文", 
-            "中文(繁体)", "中文（繁體）", "繁体中文", "繁體中文"
+            "中文(繁体)", "中文（繁體）", "繁体中文", "繁體中文",
+            "simplified", "traditional", "simplified(简体)", "traditional(繁体)"
         }
         
         if not friendly_title or friendly_title.lower().replace(" ", "") in redundant_exact_matches or friendly_title.lower() == raw_lang:
@@ -2127,11 +2128,14 @@ class SmartOrganizer:
                 # 替换不规范的简繁称呼，确保能触发 Emby 的 Simplified/Traditional 机制
                 replace_map = {
                     "简中": "简体", "简体中文": "简体", "中文(简体)": "简体", "中文（简体）": "简体",
-                    "繁中": "繁体", "繁体中文": "繁体", "中文(繁体)": "繁体", "中文（繁體）": "繁体",
-                    "简英": "简英双语", "繁英": "繁英双语"
+                    "繁中": "繁体", "繁体中文": "繁体", "中文(繁体)": "繁体", "中文（繁體）": "繁体"
                 }
                 for old, new in replace_map.items():
                     friendly_title = friendly_title.replace(old, new)
+
+                # 修复“双语双语”的叠加 Bug
+                friendly_title = friendly_title.replace("简英双语", "简英").replace("简英", "简英双语")
+                friendly_title = friendly_title.replace("繁英双语", "繁英").replace("繁英", "繁英双语")
 
                 # 如果推导出了明确的简繁属性，且标题里没有，则在末尾追加
                 if display_lang in ["简体", "繁体", "简英双语", "繁英双语"]:
