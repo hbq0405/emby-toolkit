@@ -2573,10 +2573,12 @@ class SmartOrganizer:
             # 1. 从独立数据库读取用户配置
             stream_config = settings_db.get_setting('p115_default_stream_config') or {
                 "audio_lang": "",
+                "subtitle_lang": "",
                 "audio_features": ["国配", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"],
                 "sub_priority": ["effect", "chs_eng", "cht_eng", "chs", "cht"]
             }
-            pref_code = stream_config.get("audio_lang", "")
+            audio_pref_code = stream_config.get("audio_lang", "")
+            subtitle_pref = stream_config.get("subtitle_lang", "")
             audio_features_config = stream_config.get("audio_features", [])
             sub_priority = stream_config.get("sub_priority", [])
 
@@ -2590,9 +2592,8 @@ class SmartOrganizer:
             # -----------------------------------------
             if audio_streams:
                 candidates = audio_streams
-                if pref_code:
-                    lang_matched = [s for s in candidates if s.get("Language") == pref_code]
-                    if lang_matched: candidates = lang_matched
+                if audio_pref_code:
+                    lang_matched = [s for s in candidates if s.get("Language") == audio_pref_code]
                 
                 # 在候选者中，优先选原本就是默认的
                 default_audio = next((s for s in candidates if s.get("IsDefault")), candidates[0])
@@ -2648,9 +2649,16 @@ class SmartOrganizer:
                     
                     score += priority_score
 
-                    # 优先级 3: 基础语言匹配
-                    if pref_code and sub.get("Language") == pref_code:
-                        score += 50
+                    # 优先级 3: 字幕简繁偏好
+                    if subtitle_pref:
+                        if subtitle_pref == "chs" and (
+                            "简体" in sub_title or "简中" in sub_title or "简英" in sub_title or "chs" in sub_title
+                        ):
+                            score += 500
+                        elif subtitle_pref == "cht" and (
+                            "繁体" in sub_title or "繁中" in sub_title or "繁英" in sub_title or "cht" in sub_title
+                        ):
+                            score += 500
 
                     # 优先级 4: 原本就是默认的
                     if sub.get("IsDefault"):

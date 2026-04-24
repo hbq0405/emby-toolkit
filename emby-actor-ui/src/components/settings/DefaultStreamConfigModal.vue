@@ -6,7 +6,7 @@
         <n-divider title-placement="left" style="margin-top: 0;">默认音轨设置</n-divider>
         
         <n-form-item label="首选语言">
-          <n-select v-model:value="config.audio_lang" :options="langOptions" />
+          <n-select v-model:value="config.audio_lang" :options="audioLangOptions" />
         </n-form-item>
         
         <n-form-item label="音轨特征词">
@@ -16,6 +16,17 @@
               包含这些词的音轨将被优先选中，且<b>字幕会最高优先级跟随匹配</b>（如：音轨命中"上译"，则优先选择带"上译"的字幕）。
             </n-text>
           </template>
+        </n-form-item>
+
+        <n-divider title-placement="left">默认字幕设置</n-divider>
+
+        <n-form-item label="字幕偏好">
+        <n-select v-model:value="config.subtitle_lang" :options="subtitleLangOptions" />
+        <template #feedback>
+            <n-text depth="3" style="font-size: 12px;">
+            只控制简体/繁体方向；双语字幕仍由下方优先级决定。
+            </n-text>
+        </template>
         </n-form-item>
 
         <n-divider title-placement="left">默认字幕优先级</n-divider>
@@ -66,16 +77,23 @@ const showModal = ref(false);
 const loading = ref(false);
 const saving = ref(false);
 
-const langOptions = [
+const audioLangOptions = [
   { label: '不修改 (保留文件原始默认)', value: '' },
-  { label: '优先国语/简体 (chi)', value: 'chi' },
-  { label: '优先粤语/繁体 (yue)', value: 'yue' },
-  { label: '优先英语 (eng)', value: 'eng' },
-  { label: '优先日语 (jpn)', value: 'jpn' }
+  { label: '优先国语', value: 'chi' },
+  { label: '优先粤语', value: 'yue' },
+  { label: '优先英语', value: 'eng' },
+  { label: '优先日语', value: 'jpn' },
+  { label: '优先韩语', value: 'kor' }
+];
+
+const subtitleLangOptions = [
+  { label: '不修改 (只按下面优先级排序)', value: '' },
+  { label: '优先简体', value: 'chs' },
+  { label: '优先繁体', value: 'cht' }
 ];
 
 const subTypeMap = {
-  'effect': '特效字幕 (ASS / SSA / PGSSUB)',
+  'effect': '特效字幕',
   'chs_eng': '简英双语',
   'cht_eng': '繁英双语',
   'chs': '简体中文',
@@ -84,6 +102,7 @@ const subTypeMap = {
 
 const config = ref({
   audio_lang: '',
+  subtitle_lang: '',
   audio_features: [],
   sub_priority: []
 });
@@ -97,6 +116,7 @@ const loadConfig = async () => {
     if (res.data.success) {
       const data = res.data.data;
       config.value.audio_lang = data.audio_lang;
+      config.value.subtitle_lang = data.subtitle_lang || '';
       config.value.audio_features = data.audio_features;
       // 将字符串数组转为 vuedraggable 需要的对象数组
       config.value.sub_priority = data.sub_priority.map(id => ({ id }));
@@ -113,6 +133,7 @@ const saveConfig = async () => {
   try {
     const payload = {
       audio_lang: config.value.audio_lang,
+      subtitle_lang: config.value.subtitle_lang,
       audio_features: config.value.audio_features,
       // 将对象数组还原为字符串数组
       sub_priority: config.value.sub_priority.map(item => item.id)
