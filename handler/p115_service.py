@@ -3458,6 +3458,15 @@ class SmartOrganizer:
                 except: pass
 
             if v_sha1 or v_fid:
+                # ★★★ 核心修复：提前解析前，先主动查一次本地缓存，防止 ffprobe 击穿！
+                if v_sha1:
+                    cached_text = P115CacheManager.get_mediainfo_cache_text(v_sha1)
+                    if cached_text:
+                        try:
+                            local_pre_fetched_mediainfo[v_sha1] = json.loads(cached_text)
+                            logger.debug(f"  ➜ [提前解析] 命中本地媒体信息缓存: {v_sha1[:8]}")
+                        except: pass
+
                 # 提前解析媒体信息 (内部会自动走本地缓存 -> 中心 -> ffprobe)
                 self._fetch_and_parse_mediainfo(
                     v_sha1,

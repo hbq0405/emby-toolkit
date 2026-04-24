@@ -184,8 +184,19 @@ def task_scan_and_organize_115(processor=None):
                                 if is_season_dir:
                                     physical_groups[current_top_name]["has_season_dir"] = True
                         
-                        # 深入扫描子目录
-                        submit_task(scan_directory, item_id, current_top_name, depth + 1)
+                        with group_lock:
+                            is_currently_tv = physical_groups.get(current_top_name, {}).get("is_tv", False)
+                        has_tmdb = bool(re.search(r'(?:tmdb|tmdbid)[=\-_]*(\d+)', current_top_name, re.IGNORECASE))
+
+                        # ★★★ 核心提速优化 ★★★
+                        if depth > 0 and (is_currently_tv or has_tmdb):
+                            # 如果是剧集或已标记TMDB，绝不可能是大杂烩，直接把文件夹当做 item 塞进去，不再深入！
+                            # 这将砍掉阶段一 90% 的无用 API 递归请求，让任务秒进阶段二！
+                            with group_lock:
+                                physical_groups[current_top_name]["files"].append(item)
+                        else:
+                            # 只有根目录下的第一层，或者未定性的电影目录，才需要深入扫描以寻找正片
+                            submit_task(scan_directory, item_id, current_top_name, depth + 1)
                         
                         # 将目录加入垃圾回收器，整理完后自动清理空壳
                         from handler.p115_service import P115DeleteBuffer
