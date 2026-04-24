@@ -2592,19 +2592,24 @@ class SmartOrganizer:
             # -----------------------------------------
             if audio_streams:
                 candidates = audio_streams
+
                 if audio_pref_code:
                     lang_matched = [s for s in candidates if s.get("Language") == audio_pref_code]
-                
-                # 在候选者中，优先选原本就是默认的
+                    if lang_matched:
+                        candidates = lang_matched
+
+                # 在候选者中，优先选原本就是默认的；如果候选里没有默认，就选第一条
                 default_audio = next((s for s in candidates if s.get("IsDefault")), candidates[0])
 
                 for s in audio_streams:
                     is_target = (s == default_audio)
                     s["IsDefault"] = is_target
+
                     import re
                     dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
                     dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
-                    if is_target: dt += " (默认)"
+                    if is_target:
+                        dt += " (默认)"
                     s["DisplayTitle"] = dt.replace("  ", " ")
 
             # -----------------------------------------
