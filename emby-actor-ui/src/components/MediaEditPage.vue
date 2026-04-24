@@ -635,10 +635,18 @@ const languageOptions = ref([]);
 const fetchLanguageMapping = async () => {
   try {
     const res = await axios.get('/api/custom_collections/config/language_mapping');
-    languageOptions.value = res.data.map(item => ({
-      label: item.label,
-      value: (item.aliases && item.aliases.length > 0) ? item.aliases[0] : item.value
-    }));
+    languageOptions.value = res.data.map(item => {
+      const label = item.label;
+      const value = (item.aliases && item.aliases.length > 0) ? item.aliases[0] : item.value;
+      
+      // 对于字幕类型，将"国语/粤语"改为"简体/繁体"显示
+      if (label === '国语' || label === '普通话') {
+        return { label: '简体', value };
+      } else if (label === '粤语' || label === '广东话') {
+        return { label: '繁体', value };
+      }
+      return { label, value };
+    });
   } catch (e) {
     console.error("获取语言映射失败", e);
   }
@@ -711,8 +719,8 @@ const handleLanguageChange = (stream, val, option) => {
     
     if (stream.Type === 'Subtitle') {
       // ★★★ 核心修复：字幕流强制使用 chi，靠 Title 区分简繁 ★★★
-      if (['chi', 'yue'].includes(val)) {
-         // 即使下拉框选了“粤语(yue)”，底层语言也强制纠正为 chi(中文)
+      if (['chi', 'yue', 'zh', 'zh-CN', 'zh-TW'].includes(val)) {
+         // 所有中文字幕都使用 chi 作为底层语言
          stream.Language = 'chi';
       }
 
@@ -724,17 +732,17 @@ const handleLanguageChange = (stream, val, option) => {
       } else if (origTitle.includes('cht&eng') || origTitle.includes('繁英')) {
         newTitle = '繁英双语 (繁体)';
       } 
-      // 基础转换逻辑：将国粤语选项转化为简繁体
-      else if (['国语', '普通话', '简中'].includes(option.label)) {
+      // 基础转换逻辑：将语言选项转化为简繁体
+      else if (['国语', '普通话', '简中', '简体中文', 'zh-CN', 'chi'].includes(option.label) || val === 'zh-CN') {
         newTitle = '简体';
-      } else if (['粤语', '广东话', '繁中'].includes(option.label)) {
+      } else if (['粤语', '广东话', '繁中', '繁体中文', 'zh-TW', 'yue'].includes(option.label) || val === 'zh-TW') {
         newTitle = '繁体';
       } else if (newTitle.endsWith('语')) {
         newTitle = newTitle.slice(0, -1) + '文';
       }
 
       // 兜底：如果选了中文，但标题里既没有简体也没有繁体，强制追加
-      if (['chi', 'yue'].includes(val) && !newTitle.includes('简体') && !newTitle.includes('繁体')) {
+      if (['chi', 'yue', 'zh', 'zh-CN', 'zh-TW'].includes(val) && !newTitle.includes('简体') && !newTitle.includes('繁体')) {
          newTitle += ' (简体)'; 
       }
     }
