@@ -364,7 +364,6 @@ def task_scan_and_organize_115(processor=None):
                 update_progress(prog, f"正在并发整理... ({completed_roots}/{total_root_items})")
 
         # ★ 任务结束前，触发一次全局待整理目录清理
-        from handler.p115_service import P115DeleteBuffer
         P115DeleteBuffer.add(check_save_path=True)
         
         final_msg = f"扫描结束！成功归类 {total_processed} 个，移入未识别 {total_unidentified} 个。"
