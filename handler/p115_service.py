@@ -3771,10 +3771,20 @@ class SmartOrganizer:
                     with conn.cursor() as cursor:
                         # ★ 核心优化：直接把 json 也查出来放进内存！
                         cursor.execute("SELECT sha1, mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", (list(video_sha1s),))
-                        for row in cursor.fetchall():
-                            local_cached_sha1s.add(row['sha1'])
-                            if row['mediainfo_json']:
-                                local_pre_fetched_mediainfo[row['sha1']] = row['mediainfo_json'] if isinstance(row['mediainfo_json'], list) else json.loads(row['mediainfo_json'])
+                        rows = cursor.fetchall()
+                        if rows:
+                            hit_sha1s = []
+                            for row in rows:
+                                local_cached_sha1s.add(row['sha1'])
+                                hit_sha1s.append(row['sha1'])
+                                if row['mediainfo_json']:
+                                    val = row['mediainfo_json']
+                                    local_pre_fetched_mediainfo[row['sha1']] = val if isinstance(val, (list, dict)) else json.loads(val)
+                            
+                            # 批量更新命中计数
+                            if hit_sha1s:
+                                cursor.execute("UPDATE p115_mediainfo_cache SET hit_count = hit_count + 1 WHERE sha1 = ANY(%s)", (hit_sha1s,))
+                                conn.commit()
             except Exception: pass
             
             missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
