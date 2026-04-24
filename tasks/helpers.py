@@ -313,7 +313,7 @@ def normalize_lang_code(lang_str: str) -> str:
 
     lang_str = str(lang_str).lower().strip()
 
-    # 1. 优先处理硬编码的常见中文别名 (防止用户把映射表删空导致核心逻辑崩溃)
+    # 1. 优先处理硬编码的常见中文别名
     if lang_str in ['guo', 'guoyu', 'chs', 'zh-cn', 'zh-sg', 'zh-hans', 'cmn', 'mandarin', '国语', '普通话', '中文', '简体', '简中']:
         return 'chi'
     if lang_str in ['cht', 'zh-hk', 'zh-tw', 'hk', 'tw', 'cantonese', '粤语', '繁体', '繁中', '粤配', '粤英双语', '港配', '粤语配音', '广东话']:
