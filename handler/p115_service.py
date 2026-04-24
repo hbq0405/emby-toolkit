@@ -2627,42 +2627,72 @@ class SmartOrganizer:
                     sub_title = (sub.get("Title", "") + " " + sub.get("DisplayTitle", "")).lower()
                     codec = sub.get("Codec", "").upper()
 
-                    # 优先级 1: 智能跟随音轨特征 (最高硬编码优先级，无视用户排序)
+                    # 统一特征判断
+                    is_effect = (
+                        "特效" in sub_title
+                        or "effect" in sub_title
+                        or "effects" in sub_title
+                    )
+
+                    is_chs_eng = (
+                        "简英" in sub_title
+                        or "中英" in sub_title
+                        or "chs/eng" in sub_title
+                        or "chs&eng" in sub_title
+                        or "chs.eng" in sub_title
+                    )
+
+                    is_cht_eng = (
+                        "繁英" in sub_title
+                        or "cht/eng" in sub_title
+                        or "cht&eng" in sub_title
+                        or "cht.eng" in sub_title
+                    )
+
+                    is_chs = (
+                        "简体" in sub_title
+                        or "简中" in sub_title
+                        or "chs" in sub_title
+                    ) and not is_chs_eng
+
+                    is_cht = (
+                        "繁体" in sub_title
+                        or "繁中" in sub_title
+                        or "cht" in sub_title
+                    ) and not is_cht_eng
+
+                    # 优先级 1: 智能跟随音轨特征
                     if active_audio_features and any(f in sub_title for f in active_audio_features):
                         score += 100000
 
-                    # 优先级 2: 根据用户拖拽的顺序计算权重
+                    # 优先级 2: 用户拖拽顺序
                     priority_score = 0
-                    # 倒序遍历，越靠前的权重越大
                     for idx, p_type in enumerate(reversed(sub_priority)):
                         weight = (idx + 1) * 1000
-                        if p_type == "effect" and codec in ["PGSSUB", "ASS", "SSA"]:
+
+                        if p_type == "effect" and is_effect:
                             priority_score = max(priority_score, weight)
-                        elif p_type == "chs_eng" and ("简英" in sub_title or "中英" in sub_title):
+                        elif p_type == "chs_eng" and is_chs_eng:
                             priority_score = max(priority_score, weight)
-                        elif p_type == "cht_eng" and "繁英" in sub_title:
+                        elif p_type == "cht_eng" and is_cht_eng:
                             priority_score = max(priority_score, weight)
-                        elif p_type == "chs" and ("简" in sub_title or "chs" in sub_title) and "英" not in sub_title:
+                        elif p_type == "chs" and is_chs:
                             priority_score = max(priority_score, weight)
-                        elif p_type == "cht" and ("繁" in sub_title or "cht" in sub_title) and "英" not in sub_title:
+                        elif p_type == "cht" and is_cht:
                             priority_score = max(priority_score, weight)
-                    
+
                     score += priority_score
 
-                    # 优先级 3: 字幕简繁偏好
+                    # 字幕简繁偏好只能做小加分，不能推翻拖拽排序
                     if subtitle_pref:
-                        if subtitle_pref == "chs" and (
-                            "简体" in sub_title or "简中" in sub_title or "简英" in sub_title or "chs" in sub_title
-                        ):
-                            score += 500
-                        elif subtitle_pref == "cht" and (
-                            "繁体" in sub_title or "繁中" in sub_title or "繁英" in sub_title or "cht" in sub_title
-                        ):
-                            score += 500
+                        if subtitle_pref == "chs" and (is_chs or is_chs_eng):
+                            score += 50
+                        elif subtitle_pref == "cht" and (is_cht or is_cht_eng):
+                            score += 50
 
-                    # 优先级 4: 原本就是默认的
+                    # 原本默认只做极小兜底，不能压过用户排序
                     if sub.get("IsDefault"):
-                        score += 10
+                        score += 1
 
                     return score
 
