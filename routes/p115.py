@@ -1481,3 +1481,22 @@ def get_local_directories():
         return jsonify({'code': 403, 'message': '没有权限访问该目录，请检查 Docker 映射或系统权限'}), 403
     except Exception as e:
         return jsonify({'code': 500, 'message': str(e)}), 500
+
+@p115_bp.route('/default_stream_config', methods=['GET', 'POST'])
+@admin_required
+def handle_default_stream_config():
+    """管理默认音轨与字幕配置"""
+    if request.method == 'GET':
+        config = settings_db.get_setting('p115_default_stream_config') or {}
+        defaults = {
+            "audio_lang": "",
+            "audio_features": ["国配", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"],
+            "sub_priority": ["effect", "chs_eng", "cht_eng", "chs", "cht"]
+        }
+        defaults.update(config)
+        return jsonify({"success": True, "data": defaults})
+    
+    if request.method == 'POST':
+        new_config = request.json
+        settings_db.save_setting('p115_default_stream_config', new_config)
+        return jsonify({"success": True, "message": "默认音轨与字幕配置已保存"})

@@ -2563,12 +2563,19 @@ class SmartOrganizer:
                 })
 
         # =================================================================
-        # ★★★ 终极智能默认轨道选择算法 (跟随音轨 + 特效优先) ★★★
+        # ★★★ 终极智能默认轨道选择算法 (独立配置 + 拖拽优先级 + 智能跟随) ★★★
         # =================================================================
-        config = get_config()
-        pref_language_code = config.get(constants.CONFIG_OPTION_115_DEFAULT_LANGUAGE, "")
+        def _set_smart_default_streams(streams):
+            # 1. 从独立数据库读取用户配置
+            stream_config = settings_db.get_setting('p115_default_stream_config') or {
+                "audio_lang": "",
+                "audio_features": ["国配", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"],
+                "sub_priority": ["effect", "chs_eng", "cht_eng", "chs", "cht"]
+            }
+            pref_code = stream_config.get("audio_lang", "")
+            audio_features_config = stream_config.get("audio_features", [])
+            sub_priority = stream_config.get("sub_priority", [])
 
-        def _set_smart_default_streams(streams, pref_code):
             audio_streams = [s for s in streams if s.get("Type") == "Audio"]
             sub_streams = [s for s in streams if s.get("Type") == "Subtitle"]
 
@@ -2596,45 +2603,60 @@ class SmartOrganizer:
                     s["DisplayTitle"] = dt.replace("  ", " ")
 
             # -----------------------------------------
-            # 2. 决出默认字幕 (智能跟随 + 特效优先)
+            # 2. 决出默认字幕 (智能跟随最高优 + 用户自定义优先级打分)
             # -----------------------------------------
             if sub_streams:
                 default_sub = None
                 audio_title = (default_audio.get("Title", "") + " " + default_audio.get("DisplayTitle", "")) if default_audio else ""
                 audio_title_lower = audio_title.lower()
                 
-                # 提取真太子音轨的特征词
-                audio_features = []
-                for kw in ["国配", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"]:
-                    if kw in audio_title_lower:
-                        audio_features.append(kw)
+                # 提取真太子音轨命中的特征词
+                active_audio_features = []
+                for kw in audio_features_config:
+                    if kw.lower() in audio_title_lower:
+                        active_audio_features.append(kw.lower())
 
-                candidates = sub_streams
-                
-                # 优先级 1: 语言匹配 (必须满足偏好语言)
-                if pref_code:
-                    lang_matched = [s for s in candidates if s.get("Language") == pref_code]
-                    if lang_matched: candidates = lang_matched
+                # ★ 核心打分函数
+                def get_sub_score(sub):
+                    score = 0
+                    sub_title = (sub.get("Title", "") + " " + sub.get("DisplayTitle", "")).lower()
+                    codec = sub.get("Codec", "").upper()
 
-                # 优先级 2: 智能跟随音轨特征 (如：音轨是上译，字幕优先选上译)
-                if audio_features:
-                    feature_matched = []
-                    for s in candidates:
-                        sub_title = (s.get("Title", "") + " " + s.get("DisplayTitle", "")).lower()
-                        if any(f in sub_title for f in audio_features):
-                            feature_matched.append(s)
-                    if feature_matched: candidates = feature_matched
+                    # 优先级 1: 智能跟随音轨特征 (最高硬编码优先级，无视用户排序)
+                    if active_audio_features and any(f in sub_title for f in active_audio_features):
+                        score += 100000
 
-                # 优先级 3: 优先特效字幕 (PGSSUB, ASS, SSA)
-                effect_matched = [s for s in candidates if s.get("Codec", "").upper() in ["PGSSUB", "ASS", "SSA"]]
-                if effect_matched: candidates = effect_matched
+                    # 优先级 2: 根据用户拖拽的顺序计算权重
+                    priority_score = 0
+                    # 倒序遍历，越靠前的权重越大
+                    for idx, p_type in enumerate(reversed(sub_priority)):
+                        weight = (idx + 1) * 1000
+                        if p_type == "effect" and codec in ["PGSSUB", "ASS", "SSA"]:
+                            priority_score = max(priority_score, weight)
+                        elif p_type == "chs_eng" and ("简英" in sub_title or "中英" in sub_title):
+                            priority_score = max(priority_score, weight)
+                        elif p_type == "cht_eng" and "繁英" in sub_title:
+                            priority_score = max(priority_score, weight)
+                        elif p_type == "chs" and ("简" in sub_title or "chs" in sub_title) and "英" not in sub_title:
+                            priority_score = max(priority_score, weight)
+                        elif p_type == "cht" and ("繁" in sub_title or "cht" in sub_title) and "英" not in sub_title:
+                            priority_score = max(priority_score, weight)
+                    
+                    score += priority_score
 
-                # 优先级 4: 优先原本就是默认的
-                default_matched = [s for s in candidates if s.get("IsDefault")]
-                if default_matched:
-                    default_sub = default_matched[0]
-                else:
-                    default_sub = candidates[0] if candidates else sub_streams[0]
+                    # 优先级 3: 基础语言匹配
+                    if pref_code and sub.get("Language") == pref_code:
+                        score += 50
+
+                    # 优先级 4: 原本就是默认的
+                    if sub.get("IsDefault"):
+                        score += 10
+
+                    return score
+
+                # 按分数降序排列，取最高分作为默认字幕
+                sorted_subs = sorted(sub_streams, key=get_sub_score, reverse=True)
+                default_sub = sorted_subs[0]
 
                 for s in sub_streams:
                     is_target = (s == default_sub)
@@ -2645,8 +2667,8 @@ class SmartOrganizer:
                     if is_target: dt += " (默认)"
                     s["DisplayTitle"] = dt.replace("  ", " ")
 
-        # 执行智能篡改
-        _set_smart_default_streams(media_streams, pref_language_code)
+        # 执行智能篡改 (不再需要传 pref_language_code)
+        _set_smart_default_streams(media_streams)
 
         if not media_streams:
             return None

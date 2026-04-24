@@ -596,15 +596,14 @@
                           </n-text>
                       </template>
                   </n-form-item>
-                  <n-form-item label="默认语言 (音轨/字幕)" path="p115_default_language">
-                      <n-select v-model:value="configModel.p115_default_language" :options="[
-                          { label: '不修改 (保留文件原始默认)', value: '' },
-                          { label: '优先国语/简体', value: 'chi' },
-                          { label: '优先粤语/繁体', value: 'yue' }
-                      ]" />
+                  <n-form-item label="默认音轨/字幕配置">
+                      <n-button @click="defaultStreamModalRef?.open()" type="primary" ghost>
+                          <template #icon><n-icon :component="OptionsIcon" /></template>
+                          配置默认音轨与字幕
+                      </n-button>
                       <template #feedback>
                           <n-text depth="3" style="font-size:0.8em;">
-                              生成的媒体信息中，优先使用此语言。
+                              自定义默认音轨语言、特征词，及字幕的优先级排序（特效、双语等）。
                           </n-text>
                       </template>
                   </n-form-item>
@@ -1524,6 +1523,9 @@
     <!-- ★ 引入自定义季集号识别模态框 -->
     <EpisodeRegexConfigModal ref="episodeRegexModalRef" />
 
+    <!-- ★ 引入默认音轨与字幕配置模态框 -->
+    <DefaultStreamConfigModal ref="defaultStreamModalRef" />
+
     <!-- ★ 引入音乐库管理模态框 -->
     <MusicManagerModal 
       ref="musicModalRef" 
@@ -1953,7 +1955,8 @@ import {
   RefreshOutline as RefreshIcon,
   PaperPlaneOutline as PaperPlaneIcon,
   CloudDownloadOutline as CloudDownloadIcon,
-  LayersOutline as LayersIcon
+  LayersOutline as LayersIcon,
+  OptionsOutline as OptionsIcon
 } from '@vicons/ionicons5';
 import { useConfig } from '../../composables/useConfig.js';
 import RenameConfigModal from './RenameConfigModal.vue';
@@ -1964,6 +1967,7 @@ import WashingPriorityModal from './WashingPriorityModal.vue';
 import axios from 'axios';
 import MoviePilotConfigModal from './MoviePilotConfigModal.vue';
 import HDHiveConfigModal from './HDHiveConfigModal.vue';
+import DefaultStreamConfigModal from './DefaultStreamConfigModal.vue';
 
 const mpModalRef = ref(null);
 const washingPriorityModalRef = ref(null);
@@ -1971,6 +1975,7 @@ const hdhiveModalRef = ref(null);
 const tgMonitorModalRef = ref(null);
 const renameModalRef = ref(null);
 const episodeRegexModalRef = ref(null);
+const defaultStreamModalRef = ref(null);
 const musicModalRef = ref(null);
 const ruleManagerRef = ref(null);
 const promptModalVisible = ref(false);
