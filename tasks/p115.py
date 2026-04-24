@@ -32,7 +32,7 @@ def task_scan_and_organize_115(processor=None):
     """
     [任务链] 主动扫描 115 待整理目录 (V3 流水线并发版：边扫边理，火力全开)
     """
-    logger.info("=== 开始执行 115 待整理目录扫描 (流水线并发模式) ===")
+    logger.info("=== 开始执行 115 待整理目录扫描 (并发模式) ===")
 
     try:
         import task_manager
@@ -362,7 +362,7 @@ def task_scan_and_organize_115(processor=None):
                     logger.error(f"  ➜ 处理根目录项时发生异常: {e}")
                 
                 prog = 10 + int((completed_roots / total_root_items) * 90)
-                update_progress(prog, f"正在流水线整理... ({completed_roots}/{total_root_items})")
+                update_progress(prog, f"正在并发整理... ({completed_roots}/{total_root_items})")
 
         # ★ 任务结束前，触发一次全局待整理目录清理
         from handler.p115_service import P115DeleteBuffer
