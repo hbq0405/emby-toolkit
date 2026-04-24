@@ -2926,9 +2926,9 @@ class SmartOrganizer:
     def _rename_file_node(self, file_node, new_base_name, year=None, is_tv=False, original_title=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, silent_log=False):
         original_name = file_node.get('fn') or file_node.get('n') or file_node.get('file_name', '')
         
-        # ★ 修复 1：无后缀文件的提前返回，补齐为 7 个返回值
+        # ★ 修复 1：无后缀文件的提前返回，补齐为 8 个返回值
         if '.' not in original_name: 
-            return original_name, None, None, None, False, {}, False
+            return original_name, None, None, None, False, {}, False, None
 
         parts = original_name.rsplit('.', 1)
         name_body = parts[0]
@@ -2967,8 +2967,8 @@ class SmartOrganizer:
                     )
                     if not s_name: s_name = f"Season {season_num:02d}"
                 
-                # ★ 修复 2：字幕文件的提前返回，补齐为 7 个返回值 (追加 {}, False)
-                return new_name, season_num, episode_num, s_name, False, {}, False
+                # ★ 修复 2：字幕文件的提前返回，补齐为 8 个返回值
+                return new_name, season_num, episode_num, s_name, False, {}, False, None
 
         cfg = self.rename_config
         
@@ -3150,7 +3150,15 @@ class SmartOrganizer:
         # 兜底：如果轨道配空了，用原名
         if not core_name: core_name = name_body
 
-        new_name = f"{core_name}{lang_suffix}.{ext}"
+        # ★★★ 提取 Part/CD 上下集信息，符合 Emby 规范 ★★★
+        part_num = None
+        part_suffix = ""
+        part_match = re.search(r'(?i)[ \.\-\_\[\(]*(part|pt|cd)[ \.\-\_]*(\d{1,2})\b', original_name)
+        if part_match:
+            part_num = int(part_match.group(2))
+            part_suffix = f" - pt{part_num}"
+
+        new_name = f"{core_name}{part_suffix}{lang_suffix}.{ext}"
         
         # ★★★ 核心修复：在这里利用齐全的 video_info 生成季目录名称 ★★★
         s_name = None
@@ -3166,7 +3174,7 @@ class SmartOrganizer:
             )
             if not s_name: s_name = f"Season {season_num:02d}"
 
-        return new_name, season_num, episode_num, s_name, is_center_cached, video_info, bool(real_info)
+        return new_name, season_num, episode_num, s_name, is_center_cached, video_info, bool(real_info), part_num
 
     def _scan_files_recursively(self, cid, depth=0, max_depth=3, current_rel_path=""):
         all_files = []
@@ -3837,7 +3845,7 @@ class SmartOrganizer:
         # =================================================================
         # ★★★ 同批次字幕完美对齐视频命名 (解决 MP 单文件上传分离问题) ★★★
         # =================================================================
-        batch_video_names = {} # key: (season, episode) -> base_name
+        batch_video_names = {} # key: (season, episode, part) -> base_name
         if not keep_original and is_batch:
             # 1. 预扫描视频，生成标准命名
             for file_item in candidates:
@@ -3845,13 +3853,13 @@ class SmartOrganizer:
                 ext = fn.split('.')[-1].lower() if '.' in fn else ''
                 if ext in known_video_exts:
                     # 临时调用重命名获取名字
-                    v_name, v_s, v_e, _, _, _, _ = self._rename_file_node(
+                    v_name, v_s, v_e, _, _, _, _, v_part = self._rename_file_node(
                         file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), 
                         original_title=original_title, pre_fetched_mediainfo=pre_fetched_mediainfo, 
                         local_pre_fetched_mediainfo=local_pre_fetched_mediainfo,
                         silent_log=True  # ★ 开启静默，防止预扫描时重复打印日志
                     )
-                    key = (v_s, v_e) if self.media_type == 'tv' else 'movie'
+                    key = (v_s, v_e, v_part) if self.media_type == 'tv' else ('movie', v_part)
                     # 电影只保留第一个视频作为基准 (通常电影只有一个正片)
                     if key not in batch_video_names:
                         batch_video_names[key] = v_name.rsplit('.', 1)[0]
@@ -3865,10 +3873,19 @@ class SmartOrganizer:
                         s_num = file_item.get('_forced_season')
                         e_num = file_item.get('_forced_episode')
                         
-                        # ★ 电影无脑匹配逻辑：只要是电影，且批次里有视频，无脑重命名成视频的形状！
-                        if self.media_type == 'movie' and 'movie' in batch_video_names:
-                            file_item['_forced_base_name'] = batch_video_names['movie']
-                            logger.debug(f"  ➜ [字幕对齐] 电影无脑绑定: 字幕 '{fn}' -> 视频 '{batch_video_names['movie']}'")
+                        # 提取字幕的 Part 信息
+                        sub_part_num = None
+                        sub_part_match = re.search(r'(?i)[ \.\-\_\[\(]*(part|pt|cd)[ \.\-\_]*(\d{1,2})\b', fn)
+                        if sub_part_match:
+                            sub_part_num = int(sub_part_match.group(2))
+                        
+                        # ★ 电影无脑匹配逻辑
+                        if self.media_type == 'movie':
+                            m_key = ('movie', sub_part_num)
+                            if m_key in batch_video_names:
+                                file_item['_forced_base_name'] = batch_video_names[m_key]
+                            elif ('movie', None) in batch_video_names:
+                                file_item['_forced_base_name'] = batch_video_names[('movie', None)]
                             continue
 
                         # ★ 剧集匹配逻辑：使用强大的正则和纯数字兜底提取集号
@@ -3908,12 +3925,19 @@ class SmartOrganizer:
                             if s_num is None:
                                 s_num = getattr(self, 'forced_season', 1)
                         
-                        key = (s_num, e_num)
+                        key = (s_num, e_num, sub_part_num)
+                        fallback_key = (s_num, e_num, None)
+                        
                         if key in batch_video_names:
                             file_item['_forced_base_name'] = batch_video_names[key]
                             file_item['_forced_season'] = s_num
                             file_item['_forced_episode'] = e_num
                             logger.debug(f"  ➜ [字幕对齐] 剧集精准绑定: 字幕 '{fn}' -> 视频 '{batch_video_names[key]}'")
+                        elif fallback_key in batch_video_names:
+                            file_item['_forced_base_name'] = batch_video_names[fallback_key]
+                            file_item['_forced_season'] = s_num
+                            file_item['_forced_episode'] = e_num
+                            logger.debug(f"  ➜ [字幕对齐] 剧集降级绑定: 字幕 '{fn}' -> 视频 '{batch_video_names[fallback_key]}'")
                         else:
                             logger.warning(f"  ➜ [字幕对齐] 警告：字幕 '{fn}' 提取到 S{s_num}E{e_num}，但未找到对应的视频文件！")
 
@@ -4029,7 +4053,7 @@ class SmartOrganizer:
                             break
                     real_target_cid = current_parent
             else:
-                new_filename, season_num, episode_num, s_name, is_center_cached, video_info, has_real_info = self._rename_file_node(
+                new_filename, season_num, episode_num, s_name, is_center_cached, video_info, has_real_info, part_num = self._rename_file_node(
                     file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
                     pre_fetched_mediainfo=pre_fetched_mediainfo,
                     local_pre_fetched_mediainfo=local_pre_fetched_mediainfo 
