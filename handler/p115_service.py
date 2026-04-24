@@ -2562,54 +2562,91 @@ class SmartOrganizer:
                     "ExtendedVideoSubTypeDescription": "None"
                 })
 
-        # 归一化默认轨道：避免 MKV 多条字幕都带 default flag，导致显示一堆“默认”
+        # =================================================================
+        # ★★★ 终极智能默认轨道选择算法 (跟随音轨 + 特效优先) ★★★
+        # =================================================================
         config = get_config()
         pref_language_code = config.get(constants.CONFIG_OPTION_115_DEFAULT_LANGUAGE, "")
 
-        def _force_default_track(streams, stream_type, pref_code):
-            type_streams = [s for s in streams if s.get("Type") == stream_type]
-            if not type_streams: return
+        def _set_smart_default_streams(streams, pref_code):
+            audio_streams = [s for s in streams if s.get("Type") == "Audio"]
+            sub_streams = [s for s in streams if s.get("Type") == "Subtitle"]
 
-            best_track = None
+            default_audio = None
             
-            # 1. 强权模式：大道至简，直接精准匹配底层 Language 代码！
-            if pref_code:
-                for s in type_streams:
-                    if s.get("Language") == pref_code:
-                        best_track = s
-                        break
-            
-            # 2. 兜底模式 1：如果没有配置，或者没找到目标语言，尊重文件原有的默认轨
-            if not best_track:
-                for s in type_streams:
-                    if s.get("IsDefault"):
-                        best_track = s
-                        break
-            
-            # 3. 兜底模式 2：如果连原文件都没有默认轨，强行把第一条轨设为默认
-            if not best_track:
-                best_track = type_streams[0]
-
-            # 开始执行篡改
-            for s in type_streams:
-                is_target = (s == best_track)
-                s["IsDefault"] = is_target
+            # -----------------------------------------
+            # 1. 决出默认音轨 (真太子)
+            # -----------------------------------------
+            if audio_streams:
+                candidates = audio_streams
+                if pref_code:
+                    lang_matched = [s for s in candidates if s.get("Language") == pref_code]
+                    if lang_matched: candidates = lang_matched
                 
-                # 暴力清洗原有的 "(默认)" 字符串，防止出现 "(默认) (默认)" 的尴尬情况
-                import re
-                dt = s.get("DisplayTitle", "")
-                dt = re.sub(r'\(默认\s*', '(', dt)
-                dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
-                
-                # 为真太子打上思想钢印
-                if is_target:
-                    dt += " (默认)"
-                    
-                s["DisplayTitle"] = dt.replace("  ", " ")
+                # 在候选者中，优先选原本就是默认的
+                default_audio = next((s for s in candidates if s.get("IsDefault")), candidates[0])
 
-        # 执行音轨和字幕的强权篡改
-        _force_default_track(media_streams, "Audio", pref_language_code)
-        _force_default_track(media_streams, "Subtitle", pref_language_code)
+                for s in audio_streams:
+                    is_target = (s == default_audio)
+                    s["IsDefault"] = is_target
+                    import re
+                    dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
+                    dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
+                    if is_target: dt += " (默认)"
+                    s["DisplayTitle"] = dt.replace("  ", " ")
+
+            # -----------------------------------------
+            # 2. 决出默认字幕 (智能跟随 + 特效优先)
+            # -----------------------------------------
+            if sub_streams:
+                default_sub = None
+                audio_title = (default_audio.get("Title", "") + " " + default_audio.get("DisplayTitle", "")) if default_audio else ""
+                audio_title_lower = audio_title.lower()
+                
+                # 提取真太子音轨的特征词
+                audio_features = []
+                for kw in ["国配", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"]:
+                    if kw in audio_title_lower:
+                        audio_features.append(kw)
+
+                candidates = sub_streams
+                
+                # 优先级 1: 语言匹配 (必须满足偏好语言)
+                if pref_code:
+                    lang_matched = [s for s in candidates if s.get("Language") == pref_code]
+                    if lang_matched: candidates = lang_matched
+
+                # 优先级 2: 智能跟随音轨特征 (如：音轨是上译，字幕优先选上译)
+                if audio_features:
+                    feature_matched = []
+                    for s in candidates:
+                        sub_title = (s.get("Title", "") + " " + s.get("DisplayTitle", "")).lower()
+                        if any(f in sub_title for f in audio_features):
+                            feature_matched.append(s)
+                    if feature_matched: candidates = feature_matched
+
+                # 优先级 3: 优先特效字幕 (PGSSUB, ASS, SSA)
+                effect_matched = [s for s in candidates if s.get("Codec", "").upper() in ["PGSSUB", "ASS", "SSA"]]
+                if effect_matched: candidates = effect_matched
+
+                # 优先级 4: 优先原本就是默认的
+                default_matched = [s for s in candidates if s.get("IsDefault")]
+                if default_matched:
+                    default_sub = default_matched[0]
+                else:
+                    default_sub = candidates[0] if candidates else sub_streams[0]
+
+                for s in sub_streams:
+                    is_target = (s == default_sub)
+                    s["IsDefault"] = is_target
+                    import re
+                    dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
+                    dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
+                    if is_target: dt += " (默认)"
+                    s["DisplayTitle"] = dt.replace("  ", " ")
+
+        # 执行智能篡改
+        _set_smart_default_streams(media_streams, pref_language_code)
 
         if not media_streams:
             return None

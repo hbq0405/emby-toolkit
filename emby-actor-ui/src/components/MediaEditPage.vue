@@ -400,7 +400,8 @@
       size="huge"
     >
       <n-alert type="info" style="margin-bottom: 16px;">
-        修改语言标签后保存，系统将自动覆盖底层指纹文件并通知 Emby 重新加载。
+        修改语言标签后保存，系统将自动覆盖底层指纹文件并通知 Emby 重新加载。<br/>
+        <b style="color: #d03050;">注意：</b>字幕的标题 (Title) 必须包含 <b>“简体”</b> 或 <b>“繁体”</b> 字样，Emby 才能正确识别并显示为 Chinese Simplified/Traditional。
       </n-alert>
       
       <!-- ★★★ 硬字幕标记按钮 ★★★ -->
@@ -708,21 +709,32 @@ const handleLanguageChange = (stream, val, option) => {
     let newTitle = option.label;
     
     if (stream.Type === 'Subtitle') {
-      // ★★★ 核心修复 2：获取原始标题，判断是否包含 Chs&Eng 等字眼 ★★★
+      // ★★★ 核心修复：字幕流强制使用 chi，靠 Title 区分简繁 ★★★
+      if (['chi', 'yue'].includes(val)) {
+         // 即使下拉框选了“粤语(yue)”，底层语言也强制纠正为 chi(中文)
+         stream.Language = 'chi';
+      }
+
       const origTitle = (stream.Title || '').toLowerCase();
       
+      // 智能保留双语特征
       if (origTitle.includes('chs&eng') || origTitle.includes('简英')) {
-        newTitle = '简英双语';
+        newTitle = '简英双语 (简体)';
       } else if (origTitle.includes('cht&eng') || origTitle.includes('繁英')) {
-        newTitle = '繁英双语';
+        newTitle = '繁英双语 (繁体)';
       } 
-      // 基础转换逻辑
-      else if (newTitle === '国语' || newTitle === '普通话') {
-        newTitle = '简中';
-      } else if (newTitle === '粤语' || newTitle === '广东话') {
-        newTitle = '繁中';
+      // 基础转换逻辑：将国粤语选项转化为简繁体
+      else if (['国语', '普通话', '简中'].includes(option.label)) {
+        newTitle = '简体';
+      } else if (['粤语', '广东话', '繁中'].includes(option.label)) {
+        newTitle = '繁体';
       } else if (newTitle.endsWith('语')) {
         newTitle = newTitle.slice(0, -1) + '文';
+      }
+
+      // 兜底：如果选了中文，但标题里既没有简体也没有繁体，强制追加
+      if (['chi', 'yue'].includes(val) && !newTitle.includes('简体') && !newTitle.includes('繁体')) {
+         newTitle += ' (简体)'; 
       }
     }
     
