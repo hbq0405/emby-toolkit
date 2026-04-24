@@ -49,12 +49,12 @@ def task_scan_and_organize_115(processor=None):
     if not client: raise Exception("无法初始化 115 客户端")
 
     # 通知监控服务进入蓄水池模式
-    try:
-        from monitor_service import pause_queue_processing, resume_queue_processing
-        pause_queue_processing()
-    except Exception as e:
-        logger.warning(f"  ➜ 无法暂停监控队列: {e}")
-        resume_queue_processing = lambda: None
+    # try:
+    #     from monitor_service import pause_queue_processing, resume_queue_processing
+    #     pause_queue_processing()
+    # except Exception as e:
+    #     logger.warning(f"  ➜ 无法暂停监控队列: {e}")
+    #     resume_queue_processing = lambda: None
 
     config = get_config()
     cid_val = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
@@ -375,10 +375,11 @@ def task_scan_and_organize_115(processor=None):
         logger.error(f"  ➜ 115 扫描任务异常: {e}", exc_info=True)
         update_progress(100, f"扫描异常结束: {e}")
     finally:
-        try:
-            resume_queue_processing()
-        except:
-            pass
+        pass
+        # try:
+        #     resume_queue_processing()
+        # except:
+        #     pass
 
 def task_sync_115_directory_tree(processor=None):
     """
