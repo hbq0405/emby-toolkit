@@ -1,3 +1,4 @@
+<!-- src/components/MediaEditPage.vue -->
 <template>
   <n-layout content-style="padding: 24px;">
     <div class="media-edit-page">
