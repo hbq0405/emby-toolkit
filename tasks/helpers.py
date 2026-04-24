@@ -1761,8 +1761,8 @@ def translate_tmdb_metadata_recursively(
                     if name and not utils.contains_chinese(name):
                         pending_persons.add(name)
 
-            max_actors = config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)
-            max_ep_actors = config.get(constants.CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS, 0) # 读取新配置
+            max_actors = config.get(constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS, 30)  # 最大演员数配置，默认30
+            max_ep_actors = config.get(constants.CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS, 0) # 最大分集演员数配置，默认0（即分集不处理演员）
             
             try:
                 limit = int(max_actors)

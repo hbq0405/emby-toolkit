@@ -2112,8 +2112,9 @@ def task_restore_mediainfo(processor):
     for i, strm_path in enumerate(strm_files_to_restore):
         if processor.is_stop_requested(): break
         
-        # ★ 优化 1：降低进度推送频率，每 50 个文件推送一次，防止前端 WebSocket 堵塞卡死
-        if i % 10 == 0:
+        # ★ 优化 1：动态调整进度推送频率。总数少时每次推送，总数大时按比例推送，防止前端 WebSocket 堵塞卡死
+        update_interval = 1 if total <= 50 else (10 if total <= 500 else 50)
+        if i % update_interval == 0 or i == total - 1:
             task_manager.update_status_from_thread(int((i/total)*100), f"正在还原 ({i+1}/{total})...")
             time.sleep(0.1) # 强制让出 CPU 时间片，让前端喘口气
             
