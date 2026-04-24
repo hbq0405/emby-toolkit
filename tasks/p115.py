@@ -30,9 +30,9 @@ logger = logging.getLogger(__name__)
 
 def task_scan_and_organize_115(processor=None):
     """
-    [任务链] 主动扫描 115 待整理目录 (V2 极速重构版：先扫盘定性，再单次查询，最后批量整理)
+    [任务链] 主动扫描 115 待整理目录 (V3 流水线并发版：边扫边理，火力全开)
     """
-    logger.info("=== 开始执行 115 待整理目录扫描 (极速扫盘定性模式) ===")
+    logger.info("=== 开始执行 115 待整理目录扫描 (流水线并发模式) ===")
 
     try:
         import task_manager
@@ -43,7 +43,7 @@ def task_scan_and_organize_115(processor=None):
         if task_manager:
             task_manager.update_status_from_thread(prog, msg)
 
-    update_progress(10, "正在初始化 115 客户端与目录扫描...")
+    update_progress(5, "正在初始化 115 客户端与目录扫描...")
 
     client = P115Service.get_client()
     if not client: raise Exception("无法初始化 115 客户端")
@@ -100,320 +100,275 @@ def task_scan_and_organize_115(processor=None):
                     if mk_res.get('state'): unidentified_cid = mk_res.get('cid')
                 except: pass
 
-        logger.info(f"  ➜ [阶段一] 正在极速物理扫盘: {save_name} ...")
+        logger.info(f"  ➜ 正在拉取 [{save_name}] 根目录列表...")
         
-        max_workers = int(config.get(constants.CONFIG_OPTION_115_MAX_WORKERS, 3))
-        executor = ThreadPoolExecutor(max_workers=max_workers) 
-        
-        active_tasks = 0
-        task_cond = threading.Condition()
-
-        # ★ 核心数据结构：按“顶层目录名”或“独立文件名”进行物理分组
-        # 结构: { "顶层名称": {"files": [item1, item2], "is_tv": False, "has_season_dir": False} }
-        physical_groups = {}
-        unidentified_items = []
-        group_lock = threading.Lock()
-
-        def submit_task(func, *args):
-            nonlocal active_tasks
-            with task_cond:
-                active_tasks += 1
-            executor.submit(task_wrapper, func, *args)
-
-        def task_wrapper(func, *args):
-            nonlocal active_tasks
-            try:
-                func(*args)
-            except Exception as e:
-                logger.error(f"  ➜ 线程执行异常: {e}", exc_info=True)
-            finally:
-                with task_cond:
-                    active_tasks -= 1
-                    if active_tasks == 0:
-                        task_cond.notify_all()
-
         # =================================================================
-        # 阶段一：纯物理扫盘与特征收集 (绝对不请求 TMDb)
+        # 步骤一：主线程拉取根目录列表
         # =================================================================
-        def scan_directory(current_cid, top_level_name=None, depth=0):
-            if depth > 5: return
-                
-            offset = 0
-            limit = 1000 
+        root_items = []
+        offset = 0
+        limit = 1000
+        while True:
+            res = {}
+            for retry in range(3):
+                try:
+                    res = client.fs_files({'cid': save_cid, 'limit': limit, 'offset': offset, 'o': 'user_utime', 'asc': 0, 'record_open_time': 0, 'count_folders': 0})
+                    break 
+                except Exception as e:
+                    if '405' in str(e) or 'Method Not Allowed' in str(e): time.sleep(3)
+                    else: raise
+
+            data = res.get('data', [])
+            if not data: break 
             
-            while True: 
-                res = {}
-                for retry in range(3):
-                    try:
-                        res = client.fs_files({'cid': current_cid, 'limit': limit, 'offset': offset, 'o': 'user_utime', 'asc': 0, 'record_open_time': 0, 'count_folders': 0})
-                        break 
-                    except Exception as e:
-                        if '405' in str(e) or 'Method Not Allowed' in str(e): time.sleep(3)
-                        else: raise
+            for item in data:
+                name = item.get('fn') or item.get('n') or item.get('file_name')
+                if not name: continue
+                item_id = item.get('fid') or item.get('file_id')
+                
+                # 忽略未识别目录
+                if str(item_id) == str(unidentified_cid) or (not config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID) and name == '未识别'):
+                    continue
+                    
+                root_items.append(item)
 
-                data = res.get('data', [])
-                if not data: break 
+            if len(data) < limit: break
+            offset += limit
 
-                for item in data:
-                    name = item.get('fn') or item.get('n') or item.get('file_name')
-                    if not name: continue
-                    item_id = item.get('fid') or item.get('file_id')
-                    fc_val = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
-                    is_folder = (fc_val == '0')
+        total_root_items = len(root_items)
+        if total_root_items == 0:
+            logger.info("  ➜ 待整理目录为空，任务结束。")
+            update_progress(100, "待整理目录为空。")
+            return
 
-                    # 忽略未识别目录和蓝光原盘特殊目录
-                    if str(item_id) == str(unidentified_cid) or (not config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID) and name == '未识别'):
-                        continue
-                    if is_folder and name.upper() in ['BDMV', 'CERTIFICATE', 'ANY!', 'VIDEO_TS', 'AUDIO_TS', 'PLAYLIST', 'CLIPINF', 'STREAM', 'BACKUP']:
-                        continue
+        logger.info(f"  ➜ 根目录拉取完毕，共发现 {total_root_items} 个待处理项，启动流水线并发整理...")
 
-                    # 确定当前项所属的“顶层组名”
-                    current_top_name = top_level_name if top_level_name else name
+        # =================================================================
+        # 步骤二：定义单个根目录项的流水线处理函数 (扫盘 -> 打散 -> 整理)
+        # =================================================================
+        def process_root_item(root_item):
+            top_name = root_item.get('fn') or root_item.get('n') or root_item.get('file_name')
+            top_id = root_item.get('fid') or root_item.get('file_id')
+            fc_val = str(root_item.get('fc') if root_item.get('fc') is not None else root_item.get('type'))
+            is_folder = (fc_val == '0')
 
-                    # 剧集特征嗅探
-                    is_tv_hint = bool(re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第[一二三四五六七八九十\d]+季', name, re.IGNORECASE))
-                    is_season_dir = is_folder and bool(re.search(r'^(Season\s?\d+|S\d+|第[一二三四五六七八九十\d]+季)$', name, re.IGNORECASE))
+            local_processed = 0
+            local_unidentified = []
 
-                    if is_folder:
-                        # 只要发现是季目录，立刻给整个顶层组打上 TV 钢印
-                        if is_season_dir or is_tv_hint:
-                            with group_lock:
-                                if current_top_name not in physical_groups:
-                                    physical_groups[current_top_name] = {"files": [], "is_tv": False, "has_season_dir": False}
-                                physical_groups[current_top_name]["is_tv"] = True
-                                if is_season_dir:
-                                    physical_groups[current_top_name]["has_season_dir"] = True
-                        
-                        with group_lock:
-                            is_currently_tv = physical_groups.get(current_top_name, {}).get("is_tv", False)
-                        has_tmdb = bool(re.search(r'(?:tmdb|tmdbid)[=\-_]*(\d+)', current_top_name, re.IGNORECASE))
+            # 过滤蓝光原盘特殊目录
+            if is_folder and top_name.upper() in ['BDMV', 'CERTIFICATE', 'ANY!', 'VIDEO_TS', 'AUDIO_TS', 'PLAYLIST', 'CLIPINF', 'STREAM', 'BACKUP']:
+                return 0, []
 
-                        # ★★★ 核心提速优化 ★★★
-                        if depth > 0 and (is_currently_tv or has_tmdb):
-                            # 如果是剧集或已标记TMDB，绝不可能是大杂烩，直接把文件夹当做 item 塞进去，不再深入！
-                            # 这将砍掉阶段一 90% 的无用 API 递归请求，让任务秒进阶段二！
-                            with group_lock:
-                                physical_groups[current_top_name]["files"].append(item)
-                        else:
-                            # 只有根目录下的第一层，或者未定性的电影目录，才需要深入扫描以寻找正片
-                            submit_task(scan_directory, item_id, current_top_name, depth + 1)
-                        
-                        # 将目录加入垃圾回收器，整理完后自动清理空壳
-                        from handler.p115_service import P115DeleteBuffer
-                        P115DeleteBuffer.add(fids=[], base_cids=[item_id])
-                    else:
-                        ext = name.split('.')[-1].lower() if '.' in name else ''
-                        if ext not in allowed_exts:
-                            # 过滤蓝光原盘的特殊无用文件
-                            if ext not in ['clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo']:
-                                with group_lock:
-                                    unidentified_items.append(item)
+            groups_to_process = []
+
+            if not is_folder:
+                # 单个文件直接成组
+                ext = top_name.split('.')[-1].lower() if '.' in top_name else ''
+                if ext in allowed_exts:
+                    is_tv_hint = bool(re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第[一二三四五六七八九十\d]+季', top_name, re.IGNORECASE))
+                    groups_to_process.append({
+                        "top_name": top_name,
+                        "files": [root_item],
+                        "is_tv": is_tv_hint,
+                        "has_season_dir": False
+                    })
+                else:
+                    if ext not in ['clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo']:
+                        local_unidentified.append(root_item)
+            else:
+                # 是文件夹，进行同步扫盘
+                gathered_files = []
+                is_tv_group = False
+                has_season_dir = False
+                
+                def sync_scan(current_cid, depth=0):
+                    nonlocal is_tv_group, has_season_dir
+                    if depth > 5: return
+                    
+                    c_offset = 0
+                    while True:
+                        try:
+                            c_res = client.fs_files({'cid': current_cid, 'limit': 1000, 'offset': c_offset, 'record_open_time': 0, 'count_folders': 0})
+                        except Exception:
+                            time.sleep(1.5)
                             continue
                             
-                        with group_lock:
-                            if current_top_name not in physical_groups:
-                                physical_groups[current_top_name] = {"files": [], "is_tv": False, "has_season_dir": False}
-                            physical_groups[current_top_name]["files"].append(item)
-                            # 如果文件名包含 S01E01，也给整个组打上 TV 钢印
-                            if is_tv_hint:
-                                physical_groups[current_top_name]["is_tv"] = True
-
-                if len(data) < limit: break
-                offset += limit
-
-        # 启动初始扫描
-        submit_task(scan_directory, save_cid, None, 0)
-
-        with task_cond:
-            while active_tasks > 0:
-                task_cond.wait()
-
-        # =================================================================
-        # ★★★ 混合大杂烩目录智能打散机制 ★★★
-        # =================================================================
-        cleaned_groups = {}
-        for top_name, group_data in physical_groups.items():
-            files = group_data["files"]
-            is_tv = group_data["is_tv"]
-
-            # 只有明确带有 TMDb ID 的目录，才享有“不被打散”的特权
-            has_tmdb = bool(re.search(r'(?:tmdb|tmdbid)[=\-_]*(\d+)', top_name, re.IGNORECASE))
-
-            # 筛选出真正的“有效视频” (排除极小体积的预告片/花絮，阈值暂定 50MB)
-            valid_video_files = []
-            for f in files:
-                f_name = f.get('fn', '')
-                ext = f_name.split('.')[-1].lower() if '.' in f_name else ''
-                if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
-                    # 尝试获取文件大小
-                    raw_size = f.get('fs') or f.get('size')
-                    file_size = _parse_115_size(raw_size)
-                    if file_size > 50 * 1024 * 1024: # 大于 50MB 才算正片
-                        valid_video_files.append(f)
-
-            # ★ 判定条件：不是剧集，没TMDB，且包含超过 1 个有效视频 -> 绝对是大杂烩，打散！
-            if not is_tv and not has_tmdb and len(valid_video_files) > 1:
-                logger.info(f"  ➜ [智能打散] 检测到疑似混合大目录 '{top_name}' (包含 {len(valid_video_files)} 个独立正片)，执行打散处理...")
-                
-                assigned_fids = set()
-                # 1. 以有效视频文件为基准，创建独立的新组
-                for v_file in valid_video_files:
-                    v_name = v_file.get('fn') or v_file.get('n') or v_file.get('file_name', '')
-                    v_base = v_name.rsplit('.', 1)[0] if '.' in v_name else v_name
-                    new_group_name = v_name # 用视频文件名作为新的顶层组名
-                    cleaned_groups[new_group_name] = {"files": [v_file], "is_tv": False, "has_season_dir": False}
-                    assigned_fids.add(v_file.get('fid') or v_file.get('file_id'))
-
-                    # 2. 寻找属于这个视频的字幕/NFO/小花絮 (前缀匹配)
-                    for other_file in files:
-                        o_fid = other_file.get('fid') or other_file.get('file_id')
-                        if o_fid in assigned_fids: continue
+                        c_data = c_res.get('data', [])
+                        if not c_data: break
                         
-                        o_name = other_file.get('fn') or other_file.get('n') or other_file.get('file_name', '')
-                        # 只要前缀一样，不管是字幕还是小体积花絮，都跟大哥走
-                        if o_name.startswith(v_base):
-                            cleaned_groups[new_group_name]["files"].append(other_file)
-                            assigned_fids.add(o_fid)
+                        for child in c_data:
+                            c_name = child.get('fn') or child.get('n') or child.get('file_name')
+                            c_id = child.get('fid') or child.get('file_id')
+                            c_fc = str(child.get('fc') if child.get('fc') is not None else child.get('type'))
+                            c_is_folder = (c_fc == '0')
+                            
+                            c_is_tv_hint = bool(re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第[一二三四五六七八九十\d]+季', c_name, re.IGNORECASE))
+                            c_is_season_dir = c_is_folder and bool(re.search(r'^(Season\s?\d+|S\d+|第[一二三四五六七八九十\d]+季)$', c_name, re.IGNORECASE))
+                            
+                            if c_is_folder:
+                                if c_is_season_dir or c_is_tv_hint:
+                                    is_tv_group = True
+                                    if c_is_season_dir: has_season_dir = True
+                                
+                                has_tmdb = bool(re.search(r'(?:tmdb|tmdbid)[=\-_]*(\d+)', top_name, re.IGNORECASE))
+                                
+                                # ★ 核心提速：如果是剧集或已标记TMDB，绝不可能是大杂烩，直接把文件夹当做 item 塞进去，不再深入！
+                                if depth > 0 and (is_tv_group or has_tmdb):
+                                    gathered_files.append(child)
+                                else:
+                                    sync_scan(c_id, depth + 1)
+                                
+                                # 将目录加入垃圾回收器
+                                P115DeleteBuffer.add(fids=[], base_cids=[c_id])
+                            else:
+                                c_ext = c_name.split('.')[-1].lower() if '.' in c_name else ''
+                                if c_ext in allowed_exts:
+                                    gathered_files.append(child)
+                                    if c_is_tv_hint: is_tv_group = True
+                                else:
+                                    if c_ext not in ['clpi', 'mpls', 'bdmv', 'jar', 'bup', 'ifo']:
+                                        local_unidentified.append(child)
+                                        
+                        if len(c_data) < 1000: break
+                        c_offset += 1000
 
-                # 3. 孤儿文件单独成组 (直接打入未识别)
-                for f in files:
-                    f_id = f.get('fid') or f.get('file_id')
-                    if f_id not in assigned_fids:
-                        o_name = f.get('fn') or f.get('n') or f.get('file_name', '')
-                        cleaned_groups[o_name] = {"files": [f], "is_tv": False, "has_season_dir": False}
-            else:
-                # 正常目录，保持原样
-                cleaned_groups[top_name] = group_data
-
-        # 用清洗后的分组替换原分组
-        physical_groups = cleaned_groups
-
-        # =================================================================
-        # 阶段二：单次查询与并发批量整理
-        # =================================================================
-        processed_count = 0
-        moved_to_unidentified = 0
-        
-        if physical_groups:
-            logger.info(f"  ➜ [阶段二] 物理扫盘完成，共分拣出 {len(physical_groups)} 个媒体组，开始定性查询与批量整理...")
-            active_tasks = 0 
-            
-            total_items_to_process = sum(len(g["files"]) for g in physical_groups.values())
-            global_processed_count = 0
-            progress_lock = threading.Lock()
-            counter_lock = threading.Lock()
-
-            def process_media_group(top_name, group_data):
-                nonlocal processed_count, global_processed_count
-                files = group_data["files"]
-                if not files: return # 空目录，跳过
-
-                # 1. 结合扫盘特征，进行唯一一次 TMDb 查询
-                forced_type = 'tv' if group_data["is_tv"] else None
+                # 执行同步扫盘
+                sync_scan(top_id, 0)
                 
-                # 提取季号 (用于分季隔离)
+                # ★ 智能打散逻辑
+                has_tmdb = bool(re.search(r'(?:tmdb|tmdbid)[=\-_]*(\d+)', top_name, re.IGNORECASE))
+                valid_video_files = []
+                for f in gathered_files:
+                    f_name = f.get('fn', '')
+                    ext = f_name.split('.')[-1].lower() if '.' in f_name else ''
+                    if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                        file_size = _parse_115_size(f.get('fs') or f.get('size'))
+                        if file_size > 50 * 1024 * 1024:
+                            valid_video_files.append(f)
+                
+                if not is_tv_group and not has_tmdb and len(valid_video_files) > 1:
+                    logger.info(f"  ➜ [智能打散] 检测到疑似混合大目录 '{top_name}'，执行打散处理...")
+                    assigned_fids = set()
+                    for v_file in valid_video_files:
+                        v_name = v_file.get('fn') or v_file.get('n') or v_file.get('file_name', '')
+                        v_base = v_name.rsplit('.', 1)[0] if '.' in v_name else v_name
+                        new_group = {"top_name": v_name, "files": [v_file], "is_tv": False, "has_season_dir": False}
+                        assigned_fids.add(v_file.get('fid') or v_file.get('file_id'))
+                        
+                        for other_file in gathered_files:
+                            o_fid = other_file.get('fid') or other_file.get('file_id')
+                            if o_fid in assigned_fids: continue
+                            o_name = other_file.get('fn') or other_file.get('n') or other_file.get('file_name', '')
+                            if o_name.startswith(v_base):
+                                new_group["files"].append(other_file)
+                                assigned_fids.add(o_fid)
+                        groups_to_process.append(new_group)
+                    
+                    for f in gathered_files:
+                        f_id = f.get('fid') or f.get('file_id')
+                        if f_id not in assigned_fids:
+                            o_name = f.get('fn') or f.get('n') or f.get('file_name', '')
+                            groups_to_process.append({"top_name": o_name, "files": [f], "is_tv": False, "has_season_dir": False})
+                else:
+                    groups_to_process.append({
+                        "top_name": top_name,
+                        "files": gathered_files,
+                        "is_tv": is_tv_group,
+                        "has_season_dir": has_season_dir
+                    })
+
+            # 遍历处理该根目录下的所有组
+            for group in groups_to_process:
+                g_top_name = group["top_name"]
+                g_files = group["files"]
+                if not g_files: continue
+                
+                forced_type = 'tv' if group["is_tv"] else None
                 season_num = None
                 if forced_type == 'tv':
-                    m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', top_name)
-                    m2 = re.search(r'Season\s*(\d{1,4})\b', top_name, re.IGNORECASE)
-                    m3 = re.search(r'第(\d{1,4})季', top_name)
+                    m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', g_top_name)
+                    m2 = re.search(r'Season\s*(\d{1,4})\b', g_top_name, re.IGNORECASE)
+                    m3 = re.search(r'第(\d{1,4})季', g_top_name)
                     if m1: season_num = int(m1.group(1))
                     elif m2: season_num = int(m2.group(1))
                     elif m3: season_num = int(m3.group(1))
 
-                # ★ 核心：整个组只查 1 次 TMDb
                 tmdb_id, media_type, title = _identify_media_enhanced(
-                    top_name, 
-                    main_dir_name=top_name,
-                    has_season_subdirs=group_data["has_season_dir"],
-                    forced_media_type=forced_type, 
-                    ai_translator=ai_translator, 
-                    use_ai=use_ai,
-                    is_folder=False # 传 False 是因为我们是用顶层名称去查，不是查目录本身
+                    g_top_name, main_dir_name=g_top_name, has_season_subdirs=group["has_season_dir"],
+                    forced_media_type=forced_type, ai_translator=ai_translator, use_ai=use_ai, is_folder=False
                 )
-
+                
                 if not tmdb_id:
-                    logger.warning(f"  ➜ 无法识别媒体组: {top_name}，打入未识别。")
-                    with group_lock:
-                        unidentified_items.extend(files)
-                    return
-
-                # 2. 实例化 Organizer 并批量执行
+                    logger.warning(f"  ➜ 无法识别媒体组: {g_top_name}，打入未识别。")
+                    local_unidentified.extend(g_files)
+                    continue
+                    
                 try:
                     organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
-                    if season_num is not None:
-                        organizer.forced_season = season_num
-                    
+                    if season_num is not None: organizer.forced_season = season_num
                     target_cid = organizer.get_target_cid(season_num=season_num)
                     
-                    def item_progress_callback():
-                        nonlocal global_processed_count
-                        with progress_lock:
-                            global_processed_count += 1
-                            prog = 20 + int((global_processed_count / total_items_to_process) * 75)
-                            update_progress(prog, f"正在极速整理... ({global_processed_count}/{total_items_to_process})")
-
-                    # 批量移动 (★ 传入 skip_gc=True)
-                    if organizer.execute(files, target_cid, progress_callback=item_progress_callback, skip_gc=True):
-                        with counter_lock:
-                            processed_count += len(files)
+                    # 执行整理 (跳过单次 GC)
+                    if organizer.execute(g_files, target_cid, skip_gc=True):
+                        local_processed += len(g_files)
                 except Exception as e:
-                    logger.error(f"  ➜ 批量整理出错 (组: {top_name}): {e}")
+                    logger.error(f"  ➜ 整理出错 (组: {g_top_name}): {e}")
 
-            # 并发提交每个组的处理任务
-            for top_name, group_data in physical_groups.items():
-                submit_task(process_media_group, top_name, group_data)
-
-            with task_cond:
-                while active_tasks > 0:
-                    task_cond.wait()
-
-        # =================================================================
-        # 阶段三：批量移入未识别目录
-        # =================================================================
-        if unidentified_items and unidentified_cid:
-            logger.info(f"  ➜ [阶段三] 正在批量移入未识别目录 ({len(unidentified_items)} 个文件)...")
-            u_fids = [i.get('fid') or i.get('file_id') for i in unidentified_items]
-            
-            # ★★★ 提前导入通知函数 ★★★
-            from handler.telegram import send_unrecognized_notification
-            
-            chunk_size = 500
-            for i in range(0, len(u_fids), chunk_size):
-                chunk_fids = u_fids[i:i+chunk_size]
-                chunk_items = unidentified_items[i:i+chunk_size]
+            # 移入未识别
+            if local_unidentified and unidentified_cid:
+                u_fids = [i.get('fid') or i.get('file_id') for i in local_unidentified]
                 try:
-                    client.fs_move(chunk_fids, unidentified_cid)
-                    moved_to_unidentified += len(chunk_fids)
+                    client.fs_move(u_fids, unidentified_cid)
                     
+                    from handler.telegram import send_unrecognized_notification
                     from handler.p115_service import P115RecordManager
-                    for item in chunk_items:
+                    
+                    for item in local_unidentified:
                         name = item.get('fn') or item.get('n') or item.get('file_name', '')
                         item_id = item.get('fid') or item.get('file_id')
                         ext = name.split('.')[-1].lower() if '.' in name else ''
                         
-                        # ★★★ 核心修复：只有真正的视频文件识别失败，才发送通知并写入数据库供前端纠错 ★★★
                         if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
-                            
-                            # 1. 触发 Telegram 识别失败通知
                             send_unrecognized_notification(name, reason="正则、MP辅助与AI均无法匹配到有效的 TMDb 数据")
-                            
-                            # 2. 写入数据库，供前端手动纠错页面展示
                             pc = item.get('pc') or item.get('pick_code') 
                             P115RecordManager.add_or_update_record(
                                 item_id, name, 'unrecognized', 
-                                target_cid=unidentified_cid, category_name="未识别", 
-                                pick_code=pc 
+                                target_cid=unidentified_cid, category_name="未识别", pick_code=pc 
                             )
                 except Exception as e:
-                    logger.error(f"  ➜ 批量移入未识别目录失败: {e}")
+                    logger.error(f"  ➜ 移入未识别失败: {e}")
+
+            return local_processed, len(local_unidentified)
+
+        # =================================================================
+        # 步骤三：启动线程池并发处理
+        # =================================================================
+        max_workers = int(config.get(constants.CONFIG_OPTION_115_MAX_WORKERS, 3))
+        total_processed = 0
+        total_unidentified = 0
+        completed_roots = 0
+
+        import concurrent.futures
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(process_root_item, item): item for item in root_items}
+            
+            for future in concurrent.futures.as_completed(futures):
+                completed_roots += 1
+                try:
+                    p_count, u_count = future.result()
+                    total_processed += p_count
+                    total_unidentified += u_count
+                except Exception as e:
+                    logger.error(f"  ➜ 处理根目录项时发生异常: {e}")
+                
+                prog = 10 + int((completed_roots / total_root_items) * 90)
+                update_progress(prog, f"正在流水线整理... ({completed_roots}/{total_root_items})")
 
         # ★ 任务结束前，触发一次全局待整理目录清理
         from handler.p115_service import P115DeleteBuffer
         P115DeleteBuffer.add(check_save_path=True)
         
-        executor.shutdown()
-        final_msg = f"扫描结束！成功归类 {processed_count} 个，移入未识别 {moved_to_unidentified} 个。"
+        final_msg = f"扫描结束！成功归类 {total_processed} 个，移入未识别 {total_unidentified} 个。"
         logger.info(f"=== {final_msg} ===")
         update_progress(100, final_msg)
 
