@@ -4455,6 +4455,8 @@ class SmartOrganizer:
                             logger.info(f"  ➜ [重命名] {old_name} -> {new_name}")
                         else:
                             logger.warning(f"  ➜ [重命名失败] {old_name} -> {new_name}, 原因: {ren_res.get('error_msg', ren_res)}")
+                            # ★ 核心修复：如果 115 API 重命名失败，强制退回原名，确保后续生成的 STRM 挂载路径 100% 准确！
+                            item['_new_filename'] = old_name
                 
                 # -----------------------------------------------------------
                 # ★ 5. 生成 STRM 和记录日志

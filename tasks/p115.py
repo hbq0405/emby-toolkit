@@ -306,10 +306,9 @@ def task_scan_and_organize_115(processor=None):
                 try:
                     organizer = SmartOrganizer(client, tmdb_id, media_type, title, ai_translator, use_ai)
                     if season_num is not None: organizer.forced_season = season_num
-                    target_cid = organizer.get_target_cid(season_num=season_num)
                     
-                    # 执行整理 (跳过单次 GC)
-                    if organizer.execute(g_files, target_cid, skip_gc=True):
+                    # 执行整理 (直接传 None，让 execute 内部统一计算最终的 target_cid)
+                    if organizer.execute(g_files, None, skip_gc=True):
                         local_processed += len(g_files)
                 except Exception as e:
                     logger.error(f"  ➜ 整理出错 (组: {g_top_name}): {e}")
