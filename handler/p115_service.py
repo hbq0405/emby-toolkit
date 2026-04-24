@@ -2028,47 +2028,61 @@ class SmartOrganizer:
 
         norm_lang = helpers.normalize_lang_code(raw_lang)
         title_lower = raw_title.lower()
+        lang_lower = raw_lang.lower()
+
+        # ★ 核心修复：将 title 和 lang 结合起来判断，防止 title 为空但 lang 包含有效信息
+        combined_text = f"{title_lower} {lang_lower}"
+        # 统一分隔符为空格，方便无缝匹配
+        clean_text = re.sub(r'[\.\-_+/|]+', ' ', combined_text)
 
         # 先处理复合字幕标题
         if stream_type == "Subtitle":
-            text = re.sub(r'[\.\-_+/|]+', ' ', title_lower)
-
-            has_chs = any(x in text for x in ["chs", "sc", "gb", "zh-cn", "zh-hans", "简中", "简体", "简英"])
-            has_cht = any(x in text for x in ["cht", "tc", "big5", "zh-tw", "zh-hant", "繁中", "繁体", "繁英"])
-            has_eng = any(x in text for x in ["eng", "english", "英文", "英语", "英字"])
+            # 注意：匹配词里的连字符也要换成空格，与 clean_text 保持一致
+            has_chs = any(x in clean_text for x in ["chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英"])
+            has_cht = any(x in clean_text for x in ["cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁英"])
+            has_eng = any(x in clean_text for x in ["eng", "english", "英文", "英语", "英字"])
 
             if has_chs and has_eng and not has_cht:
                 return "chi", "简英双语", "简英双语"
             if has_cht and has_eng and not has_chs:
                 return "yue", "繁英双语", "繁英双语"
 
-            # ★ 字幕流只看字幕关键词，不看音轨关键词
-            is_yue = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
-            is_chi = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
+            # ★ 核心修复：强特征词具有最高优先级，无视“国语/粤语”等音轨词的干扰
+            if has_cht and not has_chs:
+                norm_lang = "yue"
+            elif has_chs and not has_cht:
+                norm_lang = "chi"
+            elif has_cht and has_chs:
+                # 如果同时包含简繁（如“简繁双语”），默认归为简中
+                norm_lang = "chi"
+            else:
+                # 兜底：走 AUDIO_SUBTITLE_KEYWORD_MAP
+                is_yue = any(k.lower() in combined_text for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
+                is_chi = any(k.lower() in combined_text for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
+                
+                # 特判：如果包含“台配”，字幕大概率是繁体，强制纠正
+                if "台配" in combined_text or "台灣" in combined_text or "台湾" in combined_text:
+                    norm_lang = "yue"
+                elif is_yue:
+                    norm_lang = "yue"
+                elif is_chi:
+                    norm_lang = "chi"
         else:
             # 音轨流只看音轨关键词
-            is_yue = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", []))
-            is_chi = any(k.lower() in title_lower for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", []))
+            is_yue = any(k.lower() in combined_text for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", []))
+            is_chi = any(k.lower() in combined_text for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", []))
 
-        if is_yue and not is_chi:
-            norm_lang = "yue"
-        elif is_chi and not is_yue:
-            norm_lang = "chi"
-        elif stream_type == "Subtitle":
-            # 字幕流里若同时出现，繁中优先于简中，可按你的偏好调整
-            if is_yue:
+            if is_yue and not is_chi:
                 norm_lang = "yue"
-            elif is_chi:
+            elif is_chi and not is_yue:
                 norm_lang = "chi"
-        else:
-            for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
-                if stream_type == "Subtitle" and not key.startswith("sub_"):
-                    continue
-                if stream_type != "Subtitle" and key.startswith("sub_"):
-                    continue
-                if any(k.lower() in title_lower for k in keywords):
-                    norm_lang = key.replace('sub_', '')
-                    break
+            else:
+                for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
+                    if key.startswith("sub_"):
+                        continue
+                    if any(k.lower() in combined_text for k in keywords):
+                        norm_lang = key.replace('sub_', '')
+                        break
 
         base_label = helpers.get_lang_display_label(norm_lang) if norm_lang else ""
         display_lang = _format_label(base_label, stream_type)
