@@ -2764,18 +2764,6 @@ class SmartOrganizer:
         except Exception as e:
             logger.warning(f"  ➜ 解析真实媒体信息失败: {e}")
 
-        # ★★★ 纠错日志：遍历真理字典中的每一个键进行对比 ★★★
-        if guessed_info is not None and info and not silent_log:
-            corrected_items = []
-            for k in info.keys():
-                old_v = guessed_info.get(k, '')
-                new_v = info.get(k, '')
-                if old_v != new_v:
-                    corrected_items.append(f"{k}: '{old_v or '空'}' -> '{new_v or '空'}'")
-            
-            if corrected_items:
-                logger.info(f"  ➜ [智能重命名] 成功利用 {data_source} 补全/纠错文件参数: {', '.join(corrected_items)}")
-
         return info, is_center
 
     def _build_name_from_format(self, format_array, is_tv=False, season_num=None, episode_num=None, original_title=None, video_info=None, safe_title=None):
