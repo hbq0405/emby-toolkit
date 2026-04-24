@@ -2022,11 +2022,29 @@ class SmartOrganizer:
         raw_lang = str(raw_lang or "").strip()
         raw_title = str(raw_title or "").strip()
 
-        norm_lang = helpers.normalize_lang_code(raw_lang)
         title_lower = raw_title.lower()
         lang_lower = raw_lang.lower()
+        title_clean = re.sub(r'[\.\-_+/|]+', ' ', title_lower)
 
-        combined_text = f"{title_lower} {lang_lower}"
+        # ==========================================
+        # ★ 贯彻“以 Title 为准”：如果 Title 中包含明确的语言关键字，则屏蔽底层 Lang 的干扰
+        # ==========================================
+        title_has_lang = False
+        if any(x in title_clean for x in ["chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英", "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁英", "eng", "english", "英文", "英语", "英字", "台配", "台灣", "台湾"]):
+            title_has_lang = True
+        else:
+            for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
+                if any(k.lower() in title_clean for k in keywords):
+                    title_has_lang = True
+                    break
+
+        if title_has_lang:
+            lang_lower = "" # Title 已经有语言信息，完全忽略 raw_lang，防止冲突
+            norm_lang = helpers.normalize_lang_code(raw_title) # 尝试从 title 提取底层代码
+        else:
+            norm_lang = helpers.normalize_lang_code(raw_lang)
+
+        combined_text = f"{title_lower} {lang_lower}".strip()
         clean_text = re.sub(r'[\.\-_+/|]+', ' ', combined_text)
 
         display_lang = ""
@@ -2068,6 +2086,12 @@ class SmartOrganizer:
                 elif is_chi:
                     norm_lang = "chi"
                     display_lang = "简体"
+                else:
+                    # ★ 补充：如果 Title 是纯外语（如 English, Japanese），也应该能推导出 norm_lang
+                    for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
+                        if any(k.lower() in combined_text for k in keywords):
+                            norm_lang = key.replace('sub_', '')
+                            break
 
         else:
             # ==========================================
