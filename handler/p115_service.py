@@ -2068,6 +2068,7 @@ class SmartOrganizer:
                 elif is_chi:
                     norm_lang = "chi"
                     display_lang = "简体"
+
         else:
             # ==========================================
             # 音轨流：保留 yue，专门用于标识粤语发音
@@ -2106,6 +2107,58 @@ class SmartOrganizer:
                     display_lang = base_label
 
         friendly_title = raw_title
+
+        # ★ Audio Title 净化：语言头中文化 + 清理 DD5.1 / DD2.0 / 640Kbps 这类纯技术标题
+        if stream_type == "Audio":
+            # 1. 先把英文语言名替换成中文
+            audio_replace_map = {
+                "Mandarin Chinese": "国语",
+                "Mandarin": "国语",
+                "Chinese": "国语",
+                "Cantonese": "粤语",
+                "English": "英语",
+                "Japanese": "日语",
+                "Korean": "韩语",
+            }
+
+            for old, new in audio_replace_map.items():
+                friendly_title = re.sub(rf'\b{re.escape(old)}\b', new, friendly_title, flags=re.IGNORECASE)
+
+            # 2. 判断 Title 是否只是纯技术参数
+            title_compact = re.sub(r'[\s\.\-_]+', '', friendly_title.lower())
+
+            is_pure_audio_tech_title = bool(re.fullmatch(
+                r'(dd|ddp|ac3|eac3|dts|dtshdma|truehd|aac|flac)?'
+                r'(\d{1,2}(\.\d)?)?'
+                r'(\d+)?'
+                r'(kbps|mbps|k)?',
+                title_compact
+            ))
+
+            # 更宽松处理：DD5.1 640Kbps / DD2.0 192Kbps / AC3 stereo
+            if re.fullmatch(
+                r'(?i)\s*(dd|ddp|ac3|eac3|dts|dts[-\s]?hd(\s?ma)?|truehd|aac|flac)?'
+                r'[\s\.\-]*(\d{1,2}(\.\d)?)?'
+                r'[\s\.\-]*(stereo|mono|kbps|mbps|k|bps|\d+\s?kbps)?\s*',
+                raw_title or ""
+            ):
+                is_pure_audio_tech_title = True
+
+            # 3. 纯技术标题直接覆盖成语言名
+            if is_pure_audio_tech_title and display_lang and display_lang != "未知":
+                friendly_title = display_lang
+            else:
+                # 4. 非纯技术标题，去掉重复编码/声道，只保留有意义的特色词
+                friendly_title = re.sub(
+                    r'\b(AC3|EAC3|DTS|DTS[- ]?HD|DTS[- ]?HD MA|TRUEHD|ATMOS|AAC|FLAC|DDP|DD|5\.1|7\.1|2\.0|stereo|mono|\d+\s?kbps|\d+\s?mbps)\b',
+                    '',
+                    friendly_title,
+                    flags=re.IGNORECASE
+                )
+                friendly_title = re.sub(r'\s+', ' ', friendly_title).strip(" -_/()（）")
+
+                if not friendly_title and display_lang and display_lang != "未知":
+                    friendly_title = display_lang
         
         # ==========================================
         # ★ 智能标题处理：保留有用信息，替换不规范词，追加缺失属性
