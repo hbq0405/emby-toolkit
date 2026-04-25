@@ -540,11 +540,11 @@ class P115MediaAnalyzerMixin:
                 "Director's Commentary": "导评",
                 "Audio Commentary": "导评",
                 "Commentary": "导评",
+                "DYSY": "东影上译"
             }
 
             for old, new in audio_replace_map.items():
                 friendly_title = re.sub(rf'\b{re.escape(old)}\b', new, friendly_title, flags=re.IGNORECASE)
-            friendly_title = _clean_subtitle_title_prefix(friendly_title)
 
             # 2. 判断 Title 是否只是纯技术参数
             title_compact = re.sub(r'[\s\.\-_]+', '', friendly_title.lower())
@@ -616,11 +616,12 @@ class P115MediaAnalyzerMixin:
                     "Director's Commentary": "导评",
                     "Audio Commentary": "导评",
                     "Commentary": "导评",
-                    "commentary": "导评"
+                    "commentary": "导评",
+                    "DYSY": "东影上译"
                 }
                 for old, new in replace_map.items():
                     friendly_title = friendly_title.replace(old, new)
-
+                friendly_title = _clean_subtitle_title_prefix(friendly_title)
                 # 修复“双语双语”的叠加 Bug
                 friendly_title = friendly_title.replace("简英双语", "简英").replace("简英", "简英双语")
                 friendly_title = friendly_title.replace("繁英双语", "繁英").replace("繁英", "繁英双语")
