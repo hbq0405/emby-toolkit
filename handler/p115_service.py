@@ -2114,7 +2114,15 @@ class SmartOrganizer:
 
         # 格式化兜底的 display_lang
         if not display_lang:
-            base_label = helpers.get_lang_display_label(norm_lang) if norm_lang else ""
+            base_label = ""
+            if norm_lang:
+                for item in self.language_map:
+                    if item.get('value') == norm_lang or norm_lang in item.get('aliases', []):
+                        base_label = item.get('label')
+                        break
+                if not base_label:
+                    base_label = norm_lang.upper()
+                    
             if not base_label or base_label == "未知":
                 display_lang = base_label
             else:
