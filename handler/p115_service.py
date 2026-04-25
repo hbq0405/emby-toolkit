@@ -4068,10 +4068,6 @@ class SmartOrganizer:
                                     val = row['mediainfo_json']
                                     local_pre_fetched_mediainfo[row['sha1']] = val if isinstance(val, (list, dict)) else json.loads(val)
                             
-                            # 批量更新命中计数
-                            if hit_sha1s:
-                                cursor.execute("UPDATE p115_mediainfo_cache SET hit_count = hit_count + 1 WHERE sha1 = ANY(%s)", (hit_sha1s,))
-                                conn.commit()
             except Exception: pass
             
             missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
