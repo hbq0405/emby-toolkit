@@ -348,34 +348,6 @@ def normalize_lang_code(lang_str: str) -> str:
     # 兜底：如果都没匹配上，返回原字符串
     return lang_str
 
-def get_lang_display_label(lang_code: str) -> str:
-    """
-    根据标准化的语言代码，反查其对应的中文显示标签。
-    """
-    if not lang_code:
-        return "未知"
-        
-    lang_code = lang_code.lower().strip()
-    
-    from database import settings_db
-    import utils
-    lang_mapping = settings_db.get_setting('language_mapping')
-    if not lang_mapping:
-        lang_mapping = utils.DEFAULT_LANGUAGE_MAPPING
-        
-    for item in lang_mapping:
-        val = (item.get('value') or '').lower()
-        aliases = item.get('aliases', [])
-        if isinstance(aliases, str):
-            aliases = [a.strip().lower() for a in aliases.split(',')]
-        else:
-            aliases = [str(a).lower() for a in aliases]
-            
-        if lang_code == val or lang_code in aliases:
-            return item.get('label', '未知')
-            
-    return lang_code.upper()
-
 def _get_detected_languages_from_streams(
     media_streams: List[dict],
     stream_type: str

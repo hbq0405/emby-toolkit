@@ -2143,6 +2143,10 @@ class SmartOrganizer:
                     display_lang = base_label
 
         friendly_title = raw_title
+        # 非中文 Title 用格式化后的 display_lang 覆盖，例如 Japanese -> 日文
+        if display_lang and display_lang != "未知":
+            if not friendly_title or not utils.contains_chinese(friendly_title):
+                friendly_title = display_lang
 
         # ★ Audio Title 净化：语言头中文化 + 清理 DD5.1 / DD2.0 / 640Kbps 这类纯技术标题
         if stream_type == "Audio":
