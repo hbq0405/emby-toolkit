@@ -2016,9 +2016,13 @@ class SmartOrganizer:
 
     def _get_friendly_display_info(self, raw_lang, raw_title, stream_type):
         """
-        返回: (底层ISO代码, UI主标题, UI副标题)
-        Title 才是真理！强制纠错底层语言标签，并智能转换“语/文”。
+        返回：(底层 ISO 代码，UI 主标题，UI 副标题)
+        Title 才是真理！强制纠错底层语言标签，并智能转换"语/文"。
         """
+        # ★ 核心修复：防御性检查，防止 language_map 未初始化导致报错
+        if not hasattr(self, 'language_map') or not self.language_map:
+            self.language_map = settings_db.get_setting('language_mapping') or utils.DEFAULT_LANGUAGE_MAPPING
+        
         raw_lang = str(raw_lang or "").strip()
         raw_title = str(raw_title or "").strip()
 
