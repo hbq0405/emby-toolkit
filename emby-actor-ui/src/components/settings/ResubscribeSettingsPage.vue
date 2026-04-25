@@ -539,6 +539,7 @@ const languageOptions = ref([
     { label: '韩语 (kor)', value: 'kor' }, 
 ]);
 const subtitleLanguageOptions = ref([
+    { label: '中文 (zh)', value: 'zh' }, 
     { label: '简体 (chi)', value: 'chi' }, 
     { label: '繁体 (yue)', value: 'yue' }, 
     { label: '英文 (eng)', value: 'eng' }, 

@@ -666,31 +666,48 @@ def _item_needs_resubscribe(asset_details: dict, rule: dict, media_metadata: Opt
     except Exception as e:
         logger.warning(f"  ➜ [音轨检查] 处理时发生未知错误: {e}")
 
-    # --- 6. 字幕检查 (V3 - 集成通用豁免) ---
+    # --- 6. 字幕检查 (V3 - 集成通用豁免 + 简繁极简匹配) ---
     try:
         if rule.get("resubscribe_subtitle_enabled"):
             required_langs = rule.get("resubscribe_subtitle_missing_languages", [])
             if required_langs:
                 existing_subtitle_codes = set(asset_details.get('subtitle_languages_raw', []))
+                subtitle_display = asset_details.get('subtitle_display', '') # 直接拿格式化好的展示文本
                 
                 for lang_code in required_langs:
-                    # ★★★ 核心修改：在循环内部调用新的豁免函数 ★★★
                     if _is_exempted_from_language_check(media_metadata, lang_code):
                         continue
                     
-                    # ★★★ 新功能逻辑开始 ★★★
-                    # 检查规则是否开启了“音轨豁免”功能
+                    # 音轨豁免逻辑
                     if rule.get("resubscribe_subtitle_skip_if_audio_exists", False):
-                        # 获取已存在的音轨语言代码
                         existing_audio_codes = asset_details.get('audio_languages_raw', [])
-                        # 如果要求的字幕语言 (如 'chi') 已经存在于音轨中
-                        if lang_code in existing_audio_codes:
-                            continue # 则跳过对这条字幕的检查，相当于豁免
-                    # ★★★ 新功能逻辑结束 ★★★
+                        # 泛中文音轨豁免
+                        if lang_code == 'zh' and ('chi' in existing_audio_codes or 'yue' in existing_audio_codes):
+                            continue
+                        elif lang_code in existing_audio_codes:
+                            continue 
                     
-                    # 如果未被豁免，且字幕确实不存在
-                    if lang_code not in existing_subtitle_codes:
+                    is_found = False
+                    
+                    # ★★★ 极简匹配逻辑：直接查 subtitle_display 字符串 ★★★
+                    if lang_code == 'zh':
+                        if '简体' in subtitle_display or '繁体' in subtitle_display:
+                            is_found = True
+                    elif lang_code == 'chi':
+                        if '简体' in subtitle_display or 'chi' in existing_subtitle_codes:
+                            is_found = True
+                    elif lang_code == 'yue':
+                        if '繁体' in subtitle_display or 'yue' in existing_subtitle_codes:
+                            is_found = True
+                    else:
+                        if lang_code in existing_subtitle_codes:
+                            is_found = True
+                    
+                    if not is_found:
                         display_name = SUB_DISPLAY_MAP.get(lang_code, lang_code)
+                        if lang_code == 'zh': display_name = "中文"
+                        elif lang_code == 'chi': display_name = "简体"
+                        elif lang_code == 'yue': display_name = "繁体"
                         reasons.append(f"缺{display_name}字幕")
     except Exception as e:
         logger.warning(f"  ➜ [字幕检查] 处理时发生未知错误: {e}")
@@ -973,7 +990,15 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
     elif rule.get("resubscribe_subtitle_enabled"):
         subtitle_langs = rule.get("resubscribe_subtitle_missing_languages", [])
         if isinstance(subtitle_langs, list) and subtitle_langs:
-            subtitle_keywords = [k for lang in subtitle_langs for k in AUDIO_SUBTITLE_KEYWORD_MAP.get(f"sub_{lang}", [])]
+            subtitle_keywords = []
+            for lang in subtitle_langs:
+                if lang == 'zh':
+                    # ★ 泛中文：把简繁体的关键字都加进去，只要命中任意一个就下载
+                    subtitle_keywords.extend(AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
+                    subtitle_keywords.extend(AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
+                else:
+                    subtitle_keywords.extend(AUDIO_SUBTITLE_KEYWORD_MAP.get(f"sub_{lang}", []))
+            
             if subtitle_keywords:
                 final_include_lookaheads.append(f"(?=.*({'|'.join(sorted(list(set(subtitle_keywords)), key=len, reverse=True))}))")
 
