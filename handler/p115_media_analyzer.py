@@ -331,13 +331,48 @@ class P115MediaAnalyzerMixin:
 
         display_lang = ""
 
+        def _has_lang_marker(text, markers):
+            """
+            安全判断语言标记：
+            - 中文词：允许 substring
+            - 英文/短码：必须是独立 token，避免 Deutsch 命中 sc、French 命中 fr 这类误伤
+            """
+            t = re.sub(r'[\.\-_+/|]+', ' ', str(text or '').lower())
+            t = re.sub(r'\s+', ' ', t).strip()
+
+            for marker in markers:
+                m = re.sub(r'[\.\-_+/|]+', ' ', str(marker or '').lower())
+                m = re.sub(r'\s+', ' ', m).strip()
+                if not m:
+                    continue
+
+                # 中文标记，例如 简体 / 繁体 / 英文
+                if utils.contains_chinese(m):
+                    if m in t:
+                        return True
+                    continue
+
+                # 英文/短码必须独立成词
+                if re.search(rf'(?<![a-z0-9]){re.escape(m)}(?![a-z0-9])', t):
+                    return True
+
+            return False
+
         # ==========================================
         # ★ 核心重构：回归正道，字幕统统用 chi，靠 Title 区分简繁
         # ==========================================
         if stream_type == "Subtitle":
-            has_chs = any(x in clean_text for x in ["chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英"])
-            has_cht = any(x in clean_text for x in ["cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁英"])
-            has_eng = any(x in clean_text for x in ["eng", "english", "英文", "英语", "英字"])
+            has_chs = _has_lang_marker(clean_text, [
+                "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英"
+            ])
+
+            has_cht = _has_lang_marker(clean_text, [
+                "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁英"
+            ])
+
+            has_eng = _has_lang_marker(clean_text, [
+                "eng", "english", "en", "英文", "英语", "英字"
+            ])
 
             if has_chs and has_eng and not has_cht:
                 norm_lang = "chi"
@@ -356,8 +391,8 @@ class P115MediaAnalyzerMixin:
                 display_lang = "简体"
             else:
                 # 兜底：走 AUDIO_SUBTITLE_KEYWORD_MAP
-                is_yue = any(k.lower() in combined_text for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
-                is_chi = any(k.lower() in combined_text for k in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
+                is_yue = _has_lang_marker(combined_text, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
+                is_chi = _has_lang_marker(combined_text, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
                 
                 if "台配" in combined_text or "台灣" in combined_text or "台湾" in combined_text:
                     norm_lang = "chi"
@@ -371,7 +406,7 @@ class P115MediaAnalyzerMixin:
                 else:
                     # ★ 补充：如果 Title 是纯外语（如 English, Japanese），也应该能推导出 norm_lang
                     for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
-                        if any(k.lower() in combined_text for k in keywords):
+                        if _has_lang_marker(combined_text, keywords):
                             norm_lang = key.replace('sub_', '')
                             break
 
@@ -390,7 +425,7 @@ class P115MediaAnalyzerMixin:
                 for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
                     if key.startswith("sub_"):
                         continue
-                    if any(k.lower() in combined_text for k in keywords):
+                    if _has_lang_marker(combined_text, keywords):
                         norm_lang = key.replace('sub_', '')
                         break
 

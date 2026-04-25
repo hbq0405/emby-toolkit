@@ -347,7 +347,7 @@ DEFAULT_LANGUAGE_MAPPING = [
     {"label": "日语", "value": "ja", "aliases": ["jpn", "ja", "japanese", "日语", "日文"]},
     {"label": "韩语", "value": "ko", "aliases": ["kor", "ko", "korean", "韩语", "韩文"]},
     {"label": "法语", "value": "fr", "aliases": ["fre", "fra", "fr", "french", "法语", "法文"]},
-    {"label": "德语", "value": "de", "aliases": ["ger", "deu", "de", "german", "德语", "德文"]},
+    {"label": "德语", "value": "de", "aliases": ["ger", "deu", "de", "german", "Deutsch", "德语", "德文"]},
     {"label": "西班牙语", "value": "es", "aliases": ["spa", "es", "spanish", "西班牙语", "西班牙文"]},
     {"label": "意大利语", "value": "it", "aliases": ["ita", "it", "italian", "意大利语", "意大利文"]},
     {"label": "俄语", "value": "ru", "aliases": ["rus", "ru", "russian", "俄语", "俄文"]},
