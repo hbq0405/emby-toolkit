@@ -338,6 +338,72 @@ DEFAULT_COUNTRY_MAPPING = [
     {"label": "波兰", "value": "PL", "aliases": ["Poland"]},
 ]
 
+# --- 音视频流/字幕流特色标签映射 ---
+# 用于识别 DYSY、TX、Latin America、Brazil、SDH 这类“不是语言”的标题信息
+DEFAULT_STREAM_FEATURE_MAPPING = [
+    {
+        "label": "东影上译",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"(?<![A-Za-z0-9])DYSY(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])CH-DYSY(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])GP-DYSY(?![A-Za-z0-9])",
+        ],
+    },
+    {
+        "label": "特效",
+        "types": ["Subtitle"],
+        "patterns": [
+            r"(?<![A-Za-z0-9])TX(?![A-Za-z0-9])",
+            r"特效",
+        ],
+    },
+    {
+        "label": "拉美",
+        "types": ["Subtitle", "Audio"],
+        "patterns": [
+            r"\bLatin\s*America\b",
+            r"\bLATAM\b",
+            r"拉美",
+        ],
+    },
+    {
+        "label": "巴西",
+        "types": ["Subtitle", "Audio"],
+        "patterns": [
+            r"\bBrazil\b",
+            r"\bBrasil\b",
+            r"巴西",
+        ],
+    },
+    {
+        "label": "听障",
+        "types": ["Subtitle"],
+        "patterns": [
+            r"(?<![A-Za-z0-9])SDH(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])CC(?![A-Za-z0-9])",
+            r"hearing impaired",
+            r"hard of hearing",
+            r"听障",
+        ],
+    },
+    {
+        "label": "导评",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"Director'?s Commentary",
+            r"Audio Commentary",
+            r"Commentary",
+            r"导评",
+        ],
+    },
+    {
+    "label": "人人影视",
+    "types": ["Subtitle"],
+    "patterns": [r"(?<![A-Za-z0-9])YYeTs(?![A-Za-z0-9])"],
+    },
+]
+
 # --- 语言预设表 ---
 DEFAULT_LANGUAGE_MAPPING = [
     {"label": "国语", "value": "zh", "aliases": ["chi", "zho", "zh", "chs", "zh-cn", "zh-sg", "zh-hans", "cmn", "mandarin", "guo", "guoyu", "国语", "普通话", "中文", "简体", "简中"]},
