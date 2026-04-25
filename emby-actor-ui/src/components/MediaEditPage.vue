@@ -63,7 +63,13 @@
                       编辑图像
                     </n-button>
                     <!-- ▼▼▼ 编辑媒体信息按钮 ▼▼▼ -->
-                    <n-button block type="info" secondary @click="openMediaInfoEditor">
+                    <n-button 
+                      v-if="itemDetails.item_type !== 'Series'" 
+                      block 
+                      type="info" 
+                      secondary 
+                      @click="openMediaInfoEditor"
+                    >
                       <template #icon>
                         <n-icon :component="DocumentTextIcon" />
                       </template>

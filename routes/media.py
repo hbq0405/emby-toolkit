@@ -32,25 +32,33 @@ def api_search_emby_library():
         return jsonify({"error": "搜索词不能为空"}), 400
 
     try:
-        # ★★★ 核心修复：直接搜索本地数据库，并展开 asset_details_json 显示所有版本 ★★★
         from database import connection
         with connection.get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 使用 LATERAL 展开 JSON 数组，让每个版本成为独立的一行
+            # ★★★ 核心修复：从 emby_item_ids_json 提取 ID，并用 LEFT JOIN 关联资产信息 ★★★
+            # 使用 WITH ORDINALITY 按数组索引对齐 ID 和 资产，完美兼容电影多版本和剧集容器
             sql = """
                 SELECT 
                     m.tmdb_id, 
                     m.item_type, 
                     m.title, 
                     m.release_year,
-                    a.asset->>'emby_item_id' as emby_id,
+                    eid.emby_id,
                     a.asset->>'resolution_display' as resolution,
                     a.asset->>'quality_display' as quality
                 FROM media_metadata m
-                JOIN LATERAL jsonb_array_elements(
-                    CASE WHEN jsonb_typeof(m.asset_details_json) = 'array' THEN m.asset_details_json ELSE '[]'::jsonb END
-                ) AS a(asset) ON true
+                -- 1. 展开 emby_item_ids_json 获取真实的 Emby ID 和 索引
+                JOIN LATERAL jsonb_array_elements_text(
+                    CASE WHEN jsonb_typeof(m.emby_item_ids_json) = 'array' THEN m.emby_item_ids_json ELSE '[]'::jsonb END
+                ) WITH ORDINALITY AS eid(emby_id, idx) ON true
+                -- 2. 左连接 asset_details_json 获取对应的分辨率信息 (按索引匹配)
+                LEFT JOIN LATERAL (
+                    SELECT asset FROM jsonb_array_elements(
+                        CASE WHEN jsonb_typeof(m.asset_details_json) = 'array' THEN m.asset_details_json ELSE '[]'::jsonb END
+                    ) WITH ORDINALITY AS arr(asset, asset_idx)
+                    WHERE arr.asset_idx = eid.idx
+                ) AS a ON true
                 WHERE m.title ILIKE %s OR m.original_title ILIKE %s
                 LIMIT 50
             """
@@ -62,7 +70,7 @@ def api_search_emby_library():
         for row in rows:
             if not row['emby_id']: continue
             
-            # 拼接版本信息到名字里，例如：阿凡达 [4k BluRay]
+            # 拼接版本信息到名字里，例如：阿凡达 [4k BluRay] (剧集因为没有 resolution，所以不会拼接)
             version_tag = f" [{row['resolution']} {row['quality']}]" if row['resolution'] else ""
             
             formatted_results.append({
