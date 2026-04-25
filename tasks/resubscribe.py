@@ -792,7 +792,7 @@ def _check_season_consistency(episodes: List[dict], rule: dict) -> tuple[bool, s
 
 def _is_exempted_from_language_check(media_metadata: Optional[dict], language_code_to_check: str) -> bool:
     """
-    【V3 - 通用语言豁免版】
+    【V4 - 泛中文豁免修复版】
     判断一个媒体是否应该免除对特定语言（音轨/字幕）的检查。
     主要依据媒体的原始语言元数据。
     """
@@ -806,17 +806,23 @@ def _is_exempted_from_language_check(media_metadata: Optional[dict], language_co
         'en': 'eng',
         'ja': 'jpn',
         'ko': 'kor',
-        # ...可以根据需要添加更多映射...
     }
+
+    # ★★★ 核心修复：兼容泛中文 'zh' ★★★
+    target_langs = [language_code_to_check]
+    if language_code_to_check == 'zh':
+        # 如果要检查的是泛中文，只要原产语言是 chi 或 yue，都算命中豁免
+        target_langs = ['chi', 'yue', 'zh']
 
     # 2. 优先使用 original_language 进行判断 (最可靠)
     if original_lang := media_metadata.get('original_language'):
-        mapped_lang = LANG_CODE_MAP.get(original_lang.lower())
-        if mapped_lang and mapped_lang == language_code_to_check:
+        mapped_lang = LANG_CODE_MAP.get(original_lang.lower(), original_lang.lower())
+        if mapped_lang in target_langs:
             return True
 
     # 3. 其次，使用原始标题中的 CJK 字符作为中文/日文/韩文的辅助判断
-    if language_code_to_check in ['chi', 'jpn', 'kor']:
+    # ★ 加上 'zh'
+    if language_code_to_check in ['chi', 'jpn', 'kor', 'zh']:
         if original_title := media_metadata.get('original_title'):
             # 使用正则表达式查找中日韩字符
             if len(re.findall(r'[\u4e00-\u9fff]', original_title)) >= 2:
