@@ -387,6 +387,8 @@ DEFAULT_LANGUAGE_MAPPING = [
     {"label": "泰米尔语", "value": "ta", "aliases": ["tam", "TAM", "ta", "tamil", "泰米尔语", "泰米尔文"]},
     {"label": "泰卢固语", "value": "te", "aliases": ["tel", "TEL", "te", "telugu", "泰卢固语", "泰卢固文"]},
     {"label": "拉丁语", "value": "la", "aliases": ["lat", "la", "latin", "拉丁语", "拉丁文"]},
+    {"label": "卡纳达语", "value": "kn", "aliases": ["kan", "KAN", "kn", "kannada", "卡纳达语", "卡纳达文", "康纳达语"]},
+    {"label": "马拉雅拉姆语", "value": "ml", "aliases": ["mal", "MAL", "ml", "malayalam", "马拉雅拉姆语", "马拉雅拉姆文"]},
     {"label": "无语言", "value": "xx", "aliases": ["und", "undefined", "unknown", "none", "无语言", "未知"]},
 ]
 
