@@ -2166,6 +2166,8 @@ class SmartOrganizer:
                 "Director's Commentary": "导评",
                 "Audio Commentary": "导评",
                 "Commentary": "导评",
+                "Latin America": "（拉美）",
+                "SDH": "（听障）"
             }
 
             for old, new in audio_replace_map.items():
