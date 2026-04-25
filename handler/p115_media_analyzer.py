@@ -443,6 +443,34 @@ class P115MediaAnalyzerMixin:
             ).strip()
 
             return text
+        
+        def _clean_subtitle_title_suffix(title: str) -> str:
+            """
+            清理字幕标题尾部的格式词：
+            原盘英文SUP -> 原盘英文
+            原盘繁体PGS -> 原盘繁体
+            简体中英特效PGSSUB -> 简体中英特效
+            R3简体字幕 (SUP) -> R3简体字幕
+            """
+            if not title:
+                return ""
+
+            text = str(title).strip()
+
+            # 连续清理，防止尾巴有多个格式词
+            while True:
+                new_text = re.sub(
+                    r'(?i)\s*(?:[/\\|+._ -]|\(|（|\[|【)?\s*'
+                    r'(PGSSUB|PGS|SUP|SUBRIP|SRT|ASS|SSA|VTT|SUB)'
+                    r'\s*(?:\)|）|\]|】)?\s*$',
+                    '',
+                    text
+                ).strip(" -_/\\|+()（）[]【】")
+                if new_text == text:
+                    break
+                text = new_text
+
+            return text
 
         def _lookup_base_label(norm_lang):
             if not norm_lang:
@@ -658,7 +686,7 @@ class P115MediaAnalyzerMixin:
                     friendly_title = friendly_title.replace(old, new)
 
                 friendly_title = _clean_subtitle_title_prefix(friendly_title)
-
+                friendly_title = _clean_subtitle_title_suffix(friendly_title)
                 # 修复“双语双语”及旧版简英繁英
                 friendly_title = friendly_title.replace("简英双语", "中英双语（简体）").replace("简英", "中英双语（简体）")
                 friendly_title = friendly_title.replace("繁英双语", "中英双语（繁体）").replace("繁英", "中英双语（繁体）")
