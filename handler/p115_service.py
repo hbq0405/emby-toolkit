@@ -2688,6 +2688,10 @@ class SmartOrganizer:
                 for s in audio_streams:
                     is_target = (s == default_audio)
                     s["IsDefault"] = is_target
+                    
+                    # ★★★ 核心修复：剥夺落选者的强制特权，防止造反 ★★★
+                    if not is_target:
+                        s["IsForced"] = False
 
                     import re
                     dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
@@ -2792,6 +2796,11 @@ class SmartOrganizer:
                 for s in sub_streams:
                     is_target = (s == default_sub)
                     s["IsDefault"] = is_target
+                    
+                    # ★★★ 核心修复：剥夺落选者的强制特权，防止造反 ★★★
+                    if not is_target:
+                        s["IsForced"] = False
+                        
                     import re
                     dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
                     dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
