@@ -2018,7 +2018,7 @@ class SmartOrganizer:
         except Exception:
             return default
 
-    def _get_friendly_display_info(self, raw_lang, raw_title, stream_type):
+    def _get_friendly_display_info(self, raw_lang, raw_title, stream_type, raw_display_title="", is_hearing_impaired=False):
         """
         返回：(底层 ISO 代码，UI 主标题，UI 副标题)
         Title 才是真理！强制纠错底层语言标签，并智能转换"语/文"。
@@ -2029,6 +2029,7 @@ class SmartOrganizer:
         
         raw_lang = str(raw_lang or "").strip()
         raw_title = str(raw_title or "").strip()
+        raw_display_title = str(raw_display_title or "").strip()
 
         title_lower = raw_title.lower()
         lang_lower = raw_lang.lower()
@@ -2147,10 +2148,48 @@ class SmartOrganizer:
                     display_lang = base_label
 
         friendly_title = raw_title
-        # 非中文 Title 用格式化后的 display_lang 覆盖，例如 Japanese -> 日文
-        if display_lang and display_lang != "未知":
-            if not friendly_title or not utils.contains_chinese(friendly_title):
+        # ==========================================
+        # ★ 字幕标题修饰词：地区 / 听障 / 导评
+        # 注意：这些不是语言，不能放 DEFAULT_LANGUAGE_MAPPING
+        # ==========================================
+        if stream_type == "Subtitle" and display_lang and display_lang != "未知":
+            feature_text = f"{raw_title} {raw_display_title}".lower()
+
+            subtitle_features = []
+
+            # 拉美西语、巴西葡语这类地区修饰
+            if re.search(r'\b(latin\s*america|latam)\b', feature_text, flags=re.IGNORECASE):
+                subtitle_features.append("拉美")
+
+            if re.search(r'\b(brazil|brasil)\b', feature_text, flags=re.IGNORECASE):
+                subtitle_features.append("巴西")
+
+            # SDH / 听障字幕
+            if (
+                is_hearing_impaired is True
+                or re.search(r'\b(sdh|cc)\b', feature_text, flags=re.IGNORECASE)
+                or "hearing impaired" in feature_text
+                or "hard of hearing" in feature_text
+                or "听障" in feature_text
+            ):
+                subtitle_features.append("听障")
+
+            # 导评字幕
+            if re.search(r'\b(commentary|director.?s commentary|audio commentary)\b', feature_text, flags=re.IGNORECASE):
+                subtitle_features.append("导评")
+
+            if subtitle_features:
+                # 例如：西班牙文（拉美·听障）
+                friendly_title = f"{display_lang}（{'·'.join(dict.fromkeys(subtitle_features))}）"
+            elif not friendly_title or not utils.contains_chinese(friendly_title):
+                # 普通 English / Japanese / Latin America 这种非中文标题，才覆盖成标准语言名
                 friendly_title = display_lang
+
+        else:
+            # 非字幕流维持原逻辑
+            if display_lang and display_lang != "未知":
+                if not friendly_title or not utils.contains_chinese(friendly_title):
+                    friendly_title = display_lang
 
         # ★ Audio Title 净化：语言头中文化 + 清理 DD5.1 / DD2.0 / 640Kbps 这类纯技术标题
         if stream_type == "Audio":
@@ -2166,8 +2205,6 @@ class SmartOrganizer:
                 "Director's Commentary": "导评",
                 "Audio Commentary": "导评",
                 "Commentary": "导评",
-                "Latin America": "（拉美）",
-                "SDH": "（听障）"
             }
 
             for old, new in audio_replace_map.items():
@@ -2235,6 +2272,11 @@ class SmartOrganizer:
                 replace_map = {
                     "简中": "简体", "简体中文": "简体", "中文(简体)": "简体", "中文（简体）": "简体",
                     "繁中": "繁体", "繁体中文": "繁体", "中文(繁体)": "繁体", "中文（繁體）": "繁体",
+                    "Latin America": "拉美",
+                    "Brazil": "巴西",
+                    "Brasil": "巴西",
+                    "SDH": "听障",
+                    "CC": "听障",
                     "Director's Commentary": "导评",
                     "Audio Commentary": "导评",
                     "Commentary": "导评",
@@ -2631,9 +2673,11 @@ class SmartOrganizer:
             elif codec_type == "subtitle":
                 raw_lang = tags.get("language")
                 raw_title = tags.get("title")
+                raw_display_title = tags.get("DisplayTitle"),
+                is_hearing_impaired = tags.get("IsHearingImpaired", False)
                 
                 # ★ 调用新的智能解析方法
-                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Subtitle")
+                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Subtitle", raw_display_title, is_hearing_impaired)
 
                 sub_codec = self._subtitle_codec_label(codec)
                 is_text_sub = codec in {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
