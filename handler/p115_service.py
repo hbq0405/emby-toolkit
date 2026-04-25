@@ -655,16 +655,20 @@ class P115Service:
                         time.sleep(1.5 - elapsed)
                     
                     try:
-                        # ★ 核心修复：使用独立线程池强制设置 15 秒超时，防止第三方库底层 Socket 死锁！
+                        # ★ 核心修复：抛弃 with 语法，防止 wait=True 导致主线程死锁！
                         from concurrent.futures import ThreadPoolExecutor, TimeoutError
-                        with ThreadPoolExecutor(max_workers=1) as executor:
-                            future = executor.submit(self._cookie.download_url, pick_code, user_agent)
-                            try:
-                                res = future.result(timeout=15)
-                            except TimeoutError:
-                                logger.error(f"  🛑 [超时拦截] 获取直链网络卡死超过 15 秒，已强制切断！")
-                                P115Service._last_downurl_time = time.time()
-                                return None
+                        executor = ThreadPoolExecutor(max_workers=1)
+                        future = executor.submit(self._cookie.download_url, pick_code, user_agent)
+                        try:
+                            res = future.result(timeout=15)
+                            executor.shutdown(wait=False) # 正常结束，清理线程池
+                        except TimeoutError:
+                            logger.error(f"  🛑 [超时拦截] 获取直链网络卡死超过 15 秒，已强制切断！")
+                            P115Service._last_downurl_time = time.time()
+                            executor.shutdown(wait=False) # ★ 关键：不等卡死的线程，直接跑路！
+                            # ★ 终极自愈：重置 Cookie 客户端，丢弃底层卡死的 Socket 连接池
+                            P115Service.reset_cookie_client()
+                            return None
 
                         P115Service._last_downurl_time = time.time()
                         
@@ -2019,7 +2023,7 @@ class SmartOrganizer:
         返回：(底层 ISO 代码，UI 主标题，UI 副标题)
         Title 才是真理！强制纠错底层语言标签，并智能转换"语/文"。
         """
-        # ★ 核心修复：防御性检查，防止 language_map 未初始化导致报错
+        # 防御性检查，防止 language_map 未初始化导致报错
         if not hasattr(self, 'language_map') or not self.language_map:
             self.language_map = settings_db.get_setting('language_mapping') or utils.DEFAULT_LANGUAGE_MAPPING
         
