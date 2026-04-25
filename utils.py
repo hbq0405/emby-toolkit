@@ -378,7 +378,14 @@ DEFAULT_LANGUAGE_MAPPING = [
     {"label": "土耳其语", "value": "tr", "aliases": ["tur", "TUR", "tr", "turkish", "土耳其语", "土耳其文"]},
     {"label": "乌克兰语", "value": "uk", "aliases": ["ukr", "UKR", "uk", "ukrainian", "乌克兰语", "乌克兰文"]},
     {"label": "越南语", "value": "vi", "aliases": ["vie", "VIE", "vi", "vietnamese", "越南语", "越南文"]},
-
+    {"label": "保加利亚语", "value": "bg", "aliases": ["bul", "BUL", "bg", "bulgarian", "保加利亚语", "保加利亚文"]},
+    {"label": "爱沙尼亚语", "value": "et", "aliases": ["est", "EST", "et", "estonian", "爱沙尼亚语", "爱沙尼亚文"]},
+    {"label": "立陶宛语", "value": "lt", "aliases": ["lit", "LIT", "lt", "lithuanian", "立陶宛语", "立陶宛文"]},
+    {"label": "拉脱维亚语", "value": "lv", "aliases": ["lav", "LAV", "lv", "latvian", "拉脱维亚语", "拉脱维亚文"]},
+    {"label": "斯洛伐克语", "value": "sk", "aliases": ["slo", "SLO", "slk", "sk", "slovak", "斯洛伐克语", "斯洛伐克文"]},
+    {"label": "斯洛文尼亚语", "value": "sl", "aliases": ["slv", "SLV", "sl", "slovenian", "斯洛文尼亚语", "斯洛文尼亚文"]},
+    {"label": "泰米尔语", "value": "ta", "aliases": ["tam", "TAM", "ta", "tamil", "泰米尔语", "泰米尔文"]},
+    {"label": "泰卢固语", "value": "te", "aliases": ["tel", "TEL", "te", "telugu", "泰卢固语", "泰卢固文"]},
     {"label": "拉丁语", "value": "la", "aliases": ["lat", "la", "latin", "拉丁语", "拉丁文"]},
     {"label": "无语言", "value": "xx", "aliases": ["und", "undefined", "unknown", "none", "无语言", "未知"]},
 ]
