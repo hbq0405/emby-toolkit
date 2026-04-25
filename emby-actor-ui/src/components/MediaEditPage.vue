@@ -452,7 +452,7 @@
             <td>
               <n-select 
                 v-model:value="stream.Language" 
-                :options="languageOptions" 
+                :options="stream.Type === 'Audio' ? audioLanguageOptions : subtitleLanguageOptions" 
                 placeholder="选择语言"
                 filterable
                 clearable
@@ -635,17 +635,28 @@ const isSavingMediaInfo = ref(false);
 const mediaInfoData = shallowRef(null); 
 const mediaStreams = ref([]);    
 const mediaInfoContext = ref({}); 
-const languageOptions = ref([]);
+
+// ★★★ 拆分音轨和字幕的下拉选项 ★★★
+const audioLanguageOptions = ref([]);
+const subtitleLanguageOptions = ref([]);
 
 // 1. 获取语言映射表
 const fetchLanguageMapping = async () => {
   try {
     const res = await axios.get('/api/custom_collections/config/language_mapping');
-    languageOptions.value = res.data.map(item => {
+    const rawData = res.data;
+
+    // 音轨选项：保持原样 (国语、粤语、英语等)
+    audioLanguageOptions.value = rawData.map(item => {
+      const value = (item.aliases && item.aliases.length > 0) ? item.aliases[0] : item.value;
+      return { label: item.label, value };
+    });
+
+    // 字幕选项：将国语/粤语转换为简体/繁体
+    subtitleLanguageOptions.value = rawData.map(item => {
       const label = item.label;
       const value = (item.aliases && item.aliases.length > 0) ? item.aliases[0] : item.value;
       
-      // 对于字幕类型，将"国语/粤语"改为"简体/繁体"显示
       if (label === '国语' || label === '普通话') {
         return { label: '简体', value };
       } else if (label === '粤语' || label === '广东话') {
@@ -660,7 +671,8 @@ const fetchLanguageMapping = async () => {
 
 // 2. 打开编辑器并获取数据
 const openMediaInfoEditor = async () => {
-  if (languageOptions.value.length === 0) {
+  // 检查其中一个数组是否为空即可
+  if (audioLanguageOptions.value.length === 0) {
     await fetchLanguageMapping();
   }
   
