@@ -357,6 +357,33 @@ class P115MediaAnalyzerMixin:
                     return True
 
             return False
+        def _clean_subtitle_title_prefix(title: str) -> str:
+            """
+            清理字幕标题开头的语言码/格式码：
+            Chs/SUP R3简体字幕 -> R3简体字幕
+            Cht/SUP 繁体特效 -> 繁体特效
+            Eng/SUP 英文字幕 -> 英文字幕
+            Chs&Eng/SUP 简英双语特效 -> 简英双语特效
+            """
+            if not title:
+                return ""
+
+            text = str(title).strip()
+
+            prefix_token = (
+                r'chs|cht|chi|zho|zh(?:[-_ ]?(?:cn|tw|hk|hans|hant))?|'
+                r'sc|tc|cn|tw|hk|yue|'
+                r'eng|en|jpn|jp|kor|kr|'
+                r'sup|pgs|subrip|srt|ass|ssa|vtt|sub'
+            )
+
+            text = re.sub(
+                rf'(?i)^\s*(?:{prefix_token})(?:\s*[/\\|+&._ -]+\s*(?:{prefix_token}))*\s*[/\\|+&._ -]*\s*',
+                '',
+                text
+            ).strip()
+
+            return text
 
         # ==========================================
         # ★ 核心重构：回归正道，字幕统统用 chi，靠 Title 区分简繁
@@ -517,6 +544,7 @@ class P115MediaAnalyzerMixin:
 
             for old, new in audio_replace_map.items():
                 friendly_title = re.sub(rf'\b{re.escape(old)}\b', new, friendly_title, flags=re.IGNORECASE)
+            friendly_title = _clean_subtitle_title_prefix(friendly_title)
 
             # 2. 判断 Title 是否只是纯技术参数
             title_compact = re.sub(r'[\s\.\-_]+', '', friendly_title.lower())
