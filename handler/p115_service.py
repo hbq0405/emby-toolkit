@@ -2143,6 +2143,9 @@ class SmartOrganizer:
                 "English": "英语",
                 "Japanese": "日语",
                 "Korean": "韩语",
+                "Director's Commentary": "导评",
+                "Audio Commentary": "导评",
+                "Commentary": "导评",
             }
 
             for old, new in audio_replace_map.items():
@@ -2209,7 +2212,11 @@ class SmartOrganizer:
                 # 替换不规范的简繁称呼，确保能触发 Emby 的 Simplified/Traditional 机制
                 replace_map = {
                     "简中": "简体", "简体中文": "简体", "中文(简体)": "简体", "中文（简体）": "简体",
-                    "繁中": "繁体", "繁体中文": "繁体", "中文(繁体)": "繁体", "中文（繁體）": "繁体"
+                    "繁中": "繁体", "繁体中文": "繁体", "中文(繁体)": "繁体", "中文（繁體）": "繁体",
+                    "Director's Commentary": "导评",
+                    "Audio Commentary": "导评",
+                    "Commentary": "导评",
+                    "commentary": "导评"
                 }
                 for old, new in replace_map.items():
                     friendly_title = friendly_title.replace(old, new)
