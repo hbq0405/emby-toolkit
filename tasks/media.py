@@ -181,63 +181,130 @@ def _wait_for_items_recovery(processor, item_ids: list, max_retries=6, interval=
 def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, failure_reason: Optional[str] = None):
     """
     重新处理单个项目的后台任务。
-    新增 failure_reason 参数：用于判断是否需要触发神医插件。
+    逻辑重构：
+    1. 如果是手动强制重扫（非缺失媒体信息），则清空所有媒体信息缓存（物理文件+数据库）。
+    2. 统一调用本地提取器 (task_restore_mediainfo) 补齐/重新提取媒体信息。
+    3. 执行标准的全量元数据刮削流程。
     """
     logger.trace(f"  ➜ 后台任务开始执行 ({item_name_for_ui})")
     
     try:
         task_manager.update_status_from_thread(0, f"正在处理: {item_name_for_ui}")
         
-        # ★★★ 新增逻辑：判断是否需要执行神医修复流程 ★★★
-        # 默认需要修复(True)，除非明确提供了原因且原因不是"缺失媒体信息"
-        need_media_info_healing = True
+        # 判断是否是因为“缺失媒体信息”触发的
+        is_missing_info = failure_reason and "缺失媒体信息" in failure_reason
         
-        if failure_reason:
-            if "缺失媒体信息" not in failure_reason:
-                need_media_info_healing = False
-                logger.info(f"  ➜ 失败原因('{failure_reason}')与媒体信息无关，跳过神医提取步骤。")
-            else:
-                logger.info(f"  ➜ 检测到媒体信息缺失，准备触发神医提取流程。")
-
-        if need_media_info_healing:
-            try:
-                item_basic = emby.get_emby_item_details(
-                    item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
-                    fields="Type,ProviderIds"
-                )
+        # =================================================================
+        # 分支 1：手动强制重处理 -> 丢弃所有缓存，强制后续走 ffprobe 在线提取
+        # =================================================================
+        if not is_missing_info:
+            logger.info(f"  ➜ 检测到强制重新处理请求，准备清除旧的媒体信息缓存...")
+            task_manager.update_status_from_thread(5, "正在清除旧的媒体信息缓存...")
+            
+            paths_to_clean = []
+            sha1s_to_clean = set()
+            
+            # 1. 获取 Emby 详情，收集所有相关路径 (包含多版本和分集)
+            item_basic = emby.get_emby_item_details(
+                item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
+                fields="Type,Path,MediaSources"
+            )
+            
+            if item_basic:
+                item_type = item_basic.get('Type')
                 
-                if item_basic:
-                    item_type = item_basic.get('Type')
-                    tmdb_id = item_basic.get('ProviderIds', {}).get('Tmdb')
-                    
-                    ids_to_heal = []
-                    
-                    # A. 确定需要治疗的目标 ID 列表
-                    if item_type == 'Movie':
-                        ids_to_heal.append(item_id)
-                    elif item_type == 'Series' and tmdb_id:
-                        logger.info(f"  ➜ 正在检查剧集 '{item_name_for_ui}' 下的异常分集...")
-                        bad_episode_ids = media_db.get_bad_episode_emby_ids(str(tmdb_id))
-                        if bad_episode_ids:
-                            logger.info(f"  ➜ 发现 {len(bad_episode_ids)} 个分集缺失媒体信息。")
-                            ids_to_heal.extend(bad_episode_ids)
-                        else:
-                            logger.trace(f"  ➜ 未发现明显的坏分集，将跳过触发步骤。")
+                def _collect_paths(item_data):
+                    collected = []
+                    if item_data.get("Path"): collected.append(item_data.get("Path"))
+                    for source in item_data.get("MediaSources", []):
+                        if source.get("Path"): collected.append(source.get("Path"))
+                    return collected
 
-                    # B. 执行治疗与等待
-                    if ids_to_heal:
-                        logger.info(f"  ➜ 检测到媒体信息缺失，直接调用本地万能提取器进行全库恢复...")
-                        task_manager.update_status_from_thread(10, "正在提取底层媒体信息...")
-                        
-                        # ★★★ 核心修复：不再触发神医，直接调用我们自己写的终极还原任务 ★★★
-                        task_restore_mediainfo(processor)
-                        
-            except Exception as e_heal:
-                logger.warning(f"  ➜ 流程出现小插曲 (不影响后续重扫): {e_heal}")
+                if item_type in ['Movie', 'Episode']:
+                    paths_to_clean.extend(_collect_paths(item_basic))
+                elif item_type == 'Series':
+                    episodes = emby.get_all_library_versions(
+                        base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+                        media_type_filter="Episode", parent_id=item_id,
+                        fields="Path,MediaSources"
+                    )
+                    if episodes:
+                        for ep in episodes:
+                            paths_to_clean.extend(_collect_paths(ep))
+                            
+            paths_to_clean = list(set(paths_to_clean))
+            
+            # 2. 执行清理
+            deleted_files = 0
+            for path in paths_to_clean:
+                if not path: continue
+                
+                # A. 删物理文件 (处理 HTTP 挂载路径转换)
+                local_path = path
+                if path.startswith('http'):
+                    pc, _ = processor._extract_115_fingerprints(path)
+                    if pc:
+                        db_local_path = processor._get_local_path_by_pickcode(pc)
+                        if db_local_path:
+                            local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
+                            local_path = os.path.join(local_root, db_local_path.lstrip('/\\'))
+                
+                if local_path and not local_path.startswith('http'):
+                    json_path = os.path.splitext(local_path)[0] + "-mediainfo.json"
+                    if os.path.exists(json_path):
+                        try:
+                            os.remove(json_path)
+                            deleted_files += 1
+                            logger.debug(f"    - 已删除本地指纹文件: {json_path}")
+                        except Exception as e:
+                            logger.warning(f"    - 删除本地指纹文件失败 {json_path}: {e}")
+                            
+                # B. 收集 SHA1
+                pc, sha1 = processor._extract_115_fingerprints(path)
+                if not sha1 and pc:
+                    sha1 = processor._get_sha1_by_pickcode(pc)
+                if sha1:
+                    sha1s_to_clean.add(sha1)
+                    
+            # C. 删数据库记录
+            if sha1s_to_clean:
+                try:
+                    with connection.get_db_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "DELETE FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", 
+                            (list(sha1s_to_clean),)
+                        )
+                        deleted_db_records = cursor.rowcount
+                        conn.commit()
+                        logger.info(f"  ➜ 已从数据库清除 {deleted_db_records} 条媒体信息缓存。")
+                except Exception as e:
+                    logger.warning(f"  ➜ 清除数据库媒体信息缓存失败: {e}")
+                    
+            # D. 调用神医接口清除 Emby 内部缓存
+            try:
+                emby.clear_item_media_info(item_id, processor.emby_url, processor.emby_api_key)
+            except Exception:
+                pass
+                
+            logger.info(f"  ➜ 媒体信息清除完毕 (删除了 {deleted_files} 个物理文件)。")
+            
+        # =================================================================
+        # 分支 2：缺失媒体信息重扫 -> 保留缓存，仅做查漏补缺
+        # =================================================================
         else:
-            task_manager.update_status_from_thread(10, "跳过媒体信息提取，直接开始刮削...")
+            logger.info(f"  ➜ 失败原因为缺失媒体信息，保留现有缓存，准备查漏补缺。")
 
-        # 3. 执行标准处理流程 (验收成果)
+        # =================================================================
+        # 统一执行：调用本地提取器 (恢复/在线提取)
+        # =================================================================
+        logger.info(f"  ➜ 进行媒体信息恢复/在线提取...")
+        task_manager.update_status_from_thread(10, "正在提取底层媒体信息...")
+        task_restore_mediainfo(processor)
+
+        # =================================================================
+        # 统一执行：标准处理流程 (验收成果 & 刮削元数据)
+        # =================================================================
         task_manager.update_status_from_thread(50, f"正在重新刮削元数据: {item_name_for_ui}")
         
         processor.process_single_item(
