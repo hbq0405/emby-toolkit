@@ -25,8 +25,8 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "kor": ["Korean", "KOR", "韩语"],
 
     # 字幕：chi=简体, yue=繁体
-    "sub_chi": ["CHS", "SC", "GB", "简体", "簡體", "简中", "簡中", "Simplified"],
-    "sub_yue": ["CHT", "TC", "BIG5", "繁體", "繁体", "繁中", "Traditional", "tw", "hk", "ZH-HANT"],
+    "sub_chi": ["CHS", "SC", "GB", "ZHS", "简体", "簡體", "简中", "簡中", "Simplified"],
+    "sub_yue": ["CHT", "TC", "BIG5", "ZHT", "繁體", "繁体", "繁中", "Traditional", "tw", "hk", "ZH-HANT"],
     "sub_eng": ["ENG", "英字"],
     "sub_jpn": ["JPN", "日字", "日文"],
     "sub_kor": ["KOR", "韩字", "韩文"],
