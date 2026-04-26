@@ -1125,7 +1125,7 @@ class P115MediaAnalyzerMixin:
                 })
 
         # =================================================================
-        # ★★★ 终极智能默认轨道选择与重排算法 (独立配置 + 拖拽优先级 + 智能跟随) ★★★
+        # ★★★ 终极智能默认轨道选择算法 (独立配置 + 拖拽优先级 + 智能跟随) ★★★
         # =================================================================
         def _set_smart_default_streams(streams):
             # 1. 从独立数据库读取用户配置
@@ -1140,47 +1140,50 @@ class P115MediaAnalyzerMixin:
             audio_features_config = stream_config.get("audio_features", [])
             sub_priority = stream_config.get("sub_priority", [])
 
-            # ★ 分离各类流，准备重排
-            video_streams = [s for s in streams if s.get("Type") == "Video"]
             audio_streams = [s for s in streams if s.get("Type") == "Audio"]
             sub_streams = [s for s in streams if s.get("Type") == "Subtitle"]
-            other_streams = [s for s in streams if s.get("Type") not in ["Video", "Audio", "Subtitle"]]
 
             default_audio = None
-            sorted_audios = audio_streams
-            sorted_subs = sub_streams
             
             # -----------------------------------------
-            # 1. 决出默认音轨 (真太子) 并排序
+            # 1. 决出默认音轨 (真太子)
             # -----------------------------------------
             if audio_streams:
+                candidates = audio_streams
+
+                if audio_pref_code:
+                    lang_matched = [s for s in candidates if s.get("Language") == audio_pref_code]
+                    if lang_matched:
+                        candidates = lang_matched
+
+                # ★ 新增：根据用户拖拽的 audio_features 优先级打分
                 def get_audio_score(audio):
                     score = 0
                     title_lower = (audio.get("Title", "") + " " + audio.get("DisplayTitle", "")).lower()
                     
-                    # 语言偏好加分 (最高优先级兜底)
-                    if audio_pref_code and audio.get("Language") == audio_pref_code:
-                        score += 50000000 
-                        
-                    # 特征词加分 (越靠前的特征词分数越高)
+                    # 遍历特征词，越靠前的特征词加分越高
                     for idx, kw in enumerate(reversed(audio_features_config)):
-                        weight = (idx + 1) * 100000
+                        weight = (idx + 1) * 1000
                         if kw.lower() in title_lower:
                             score = max(score, weight)
                     
+                    # 原本默认的给 1 分兜底
                     if audio.get("IsDefault"):
                         score += 1
                         
                     return score
 
-                # ★ 按分数降序排列音轨
-                sorted_audios = sorted(audio_streams, key=get_audio_score, reverse=True)
+                # 按分数降序排列，取最高分作为默认音轨
+                sorted_audios = sorted(candidates, key=get_audio_score, reverse=True)
                 default_audio = sorted_audios[0]
 
-                for s in sorted_audios:
+                for s in audio_streams:
                     is_target = (s == default_audio)
                     s["IsDefault"] = is_target
-                    s["IsForced"] = False
+                    
+                    # ★★★ 核心修复：剥夺落选者的强制特权，防止造反 ★★★
+                    if not is_target:
+                        s["IsForced"] = False
 
                     import re
                     dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
@@ -1190,82 +1193,122 @@ class P115MediaAnalyzerMixin:
                     s["DisplayTitle"] = dt.replace("  ", " ")
 
             # -----------------------------------------
-            # 2. 决出默认字幕 (智能跟随最高优 + 用户自定义优先级打分) 并排序
+            # 2. 决出默认字幕 (智能跟随最高优 + 用户自定义优先级打分)
             # -----------------------------------------
             if sub_streams:
+                default_sub = None
                 audio_title = (default_audio.get("Title", "") + " " + default_audio.get("DisplayTitle", "")) if default_audio else ""
                 audio_title_lower = audio_title.lower()
                 
+                # 提取真太子音轨命中的特征词
                 active_audio_features = []
                 for kw in audio_features_config:
                     if kw.lower() in audio_title_lower:
                         active_audio_features.append(kw.lower())
 
+                # ★ 新增：动态提取音轨中的中文特征词（解决“中译公映”无法匹配的问题）
                 if default_audio:
+                    # 剔除常见无意义词汇，提取独特的中文描述
                     clean_audio_title = re.sub(r"(国语|粤语|英语|日语|韩语|默认|特效|双语|简英|繁英|简体|繁体|中英|声道|音轨)", "", audio_title)
                     chinese_chunks = re.findall(r'[\u4e00-\u9fa5]{2,}', clean_audio_title)
                     for chunk in chinese_chunks:
                         if chunk.lower() not in active_audio_features:
                             active_audio_features.append(chunk.lower())
 
+                # ★ 核心打分函数
                 def get_sub_score(sub):
                     score = 0
                     sub_title = (sub.get("Title", "") + " " + sub.get("DisplayTitle", "")).lower()
+                    codec = sub.get("Codec", "").upper()
 
-                    is_effect = "特效" in sub_title or "effect" in sub_title or "effects" in sub_title
-                    is_chs_eng = "简英" in sub_title or "中英" in sub_title or "chs/eng" in sub_title or "chs&eng" in sub_title or "chs.eng" in sub_title
-                    is_cht_eng = "繁英" in sub_title or "cht/eng" in sub_title or "cht&eng" in sub_title or "cht.eng" in sub_title
-                    is_chs = ("简体" in sub_title or "简中" in sub_title or "chs" in sub_title) and not is_chs_eng
-                    is_cht = ("繁体" in sub_title or "繁中" in sub_title or "cht" in sub_title) and not is_cht_eng
+                    # 统一特征判断
+                    is_effect = (
+                        "特效" in sub_title
+                        or "effect" in sub_title
+                        or "effects" in sub_title
+                    )
+
+                    is_chs_eng = (
+                        "简英" in sub_title
+                        or "中英" in sub_title
+                        or "chs/eng" in sub_title
+                        or "chs&eng" in sub_title
+                        or "chs.eng" in sub_title
+                    )
+
+                    is_cht_eng = (
+                        "繁英" in sub_title
+                        or "cht/eng" in sub_title
+                        or "cht&eng" in sub_title
+                        or "cht.eng" in sub_title
+                    )
+
+                    is_chs = (
+                        "简体" in sub_title
+                        or "简中" in sub_title
+                        or "chs" in sub_title
+                    ) and not is_chs_eng
+
+                    is_cht = (
+                        "繁体" in sub_title
+                        or "繁中" in sub_title
+                        or "cht" in sub_title
+                    ) and not is_cht_eng
 
                     # 优先级 1: 智能跟随音轨特征
                     if active_audio_features and any(f in sub_title for f in active_audio_features):
-                        score += 10000000
+                        score += 10000000  # 加大到一千万，确保绝对压制
 
-                    # 优先级 2: 用户拖拽顺序 (指数级叠加打分)
+                    # 优先级 2: 用户拖拽顺序 (★ 升级为指数级叠加打分)
                     priority_score = 0
                     for idx, p_type in enumerate(reversed(sub_priority)):
+                        # 使用 10 的指数级权重 (100, 1000, 10000, 100000...)
+                        # 确保排在前面的属性具有绝对统治力，同时允许属性叠加！
                         weight = 10 ** (idx + 2) 
-                        if p_type == "effect" and is_effect: priority_score += weight
-                        elif p_type == "chs_eng" and is_chs_eng: priority_score += weight
-                        elif p_type == "cht_eng" and is_cht_eng: priority_score += weight
-                        elif p_type == "chs" and is_chs: priority_score += weight
-                        elif p_type == "cht" and is_cht: priority_score += weight
+
+                        if p_type == "effect" and is_effect:
+                            priority_score += weight
+                        elif p_type == "chs_eng" and is_chs_eng:
+                            priority_score += weight
+                        elif p_type == "cht_eng" and is_cht_eng:
+                            priority_score += weight
+                        elif p_type == "chs" and is_chs:
+                            priority_score += weight
+                        elif p_type == "cht" and is_cht:
+                            priority_score += weight
 
                     score += priority_score
 
+                    # 字幕简繁偏好只能做小加分，不能推翻拖拽排序
                     if subtitle_pref:
-                        if subtitle_pref == "chs" and (is_chs or is_chs_eng): score += 50
-                        elif subtitle_pref == "cht" and (is_cht or is_cht_eng): score += 50
+                        if subtitle_pref == "chs" and (is_chs or is_chs_eng):
+                            score += 50
+                        elif subtitle_pref == "cht" and (is_cht or is_cht_eng):
+                            score += 50
 
+                    # 原本默认只做极小兜底，不能压过用户排序
                     if sub.get("IsDefault"):
                         score += 1
 
                     return score
 
-                # ★ 按分数降序排列字幕
+                # 按分数降序排列，取最高分作为默认字幕
                 sorted_subs = sorted(sub_streams, key=get_sub_score, reverse=True)
                 default_sub = sorted_subs[0]
 
-                for s in sorted_subs:
+                for s in sub_streams:
                     is_target = (s == default_sub)
                     s["IsDefault"] = is_target
-                    s["IsForced"] = False
+                    
+                    # ★★★ 核心修复：剥夺落选者的强制特权，防止造反 ★★★
+                    if not is_target:
+                        s["IsForced"] = False
                         
                     import re
                     dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
                     dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
                     if is_target: dt += " (默认)"
                     s["DisplayTitle"] = dt.replace("  ", " ")
-
-            # =================================================================
-            # ★★★ 物理重排：将排序后的流重新拼装回原数组，接管 Emby UI 显示顺序 ★★★
-            # =================================================================
-            streams.clear()
-            streams.extend(video_streams)
-            streams.extend(sorted_audios) # 最优质的音轨排在最前面
-            streams.extend(sorted_subs)   # 最优质的字幕排在最前面
-            streams.extend(other_streams)
 
         # 执行智能篡改 (不再需要传 pref_language_code)
         _set_smart_default_streams(media_streams)
