@@ -448,24 +448,40 @@ class P115MediaAnalyzerMixin:
             """
             清理字幕标题尾部的格式词：
             原盘英文SUP -> 原盘英文
-            原盘繁体PGS -> 原盘繁体
-            简体中英特效PGSSUB -> 简体中英特效
+            原盘繁体SUP -> 原盘繁体
+            简体中英特效SUP -> 简体中英特效
+            中英双语（简体）SUP -> 中英双语（简体）
             R3简体字幕 (SUP) -> R3简体字幕
+
+            注意：不能 strip 掉普通括号，否则 中英双语（简体） 会丢右括号。
             """
             if not title:
                 return ""
 
             text = str(title).strip()
 
-            # 连续清理，防止尾巴有多个格式词
+            fmt = r"PGSSUB|PGS|SUP|SUBRIP|SRT|ASS|SSA|VTT|SUB"
+
+            suffix_pattern = re.compile(
+                rf"""
+                (?ix)
+                \s*
+                (?:
+                    [/\|+._\-\s]*
+                    (?:
+                        \(\s*(?:{fmt})\s*\)
+                        | （\s*(?:{fmt})\s*）
+                        | \[\s*(?:{fmt})\s*\]
+                        | 【\s*(?:{fmt})\s*】
+                        | (?:{fmt})
+                    )
+                )+
+                \s*$
+                """
+            )
+
             while True:
-                new_text = re.sub(
-                    r'(?i)\s*(?:[/\\|+._ -]|\(|（|\[|【)?\s*'
-                    r'(PGSSUB|PGS|SUP|SUBRIP|SRT|ASS|SSA|VTT|SUB)'
-                    r'\s*(?:\)|）|\]|】)?\s*$',
-                    '',
-                    text
-                ).strip(" -_/\\|+()（）[]【】")
+                new_text = suffix_pattern.sub("", text).strip(" -_/\\|+._")
                 if new_text == text:
                     break
                 text = new_text
