@@ -549,7 +549,7 @@ class P115MediaAnalyzerMixin:
                 "eng", "english", "en", "英文", "英语", "英字", "简英", "繁英", "中英", "双语"
             ])
 
-            is_dual = _has_lang_marker(clean_text, ["双语", "中上英下"])
+            is_dual = _has_lang_marker(clean_text, ["双语"])
 
             if (has_chs and has_eng and not has_cht) or (is_dual and not has_cht):
                 norm_lang = "chi"
@@ -672,6 +672,7 @@ class P115MediaAnalyzerMixin:
                     "繁體中文": "繁体",
                     "中文(繁体)": "繁体",
                     "中文（繁體）": "繁体",
+                    "中上英下": "中英双语（简体）",
                     "Latin America": "拉美",
                     "Brazil": "巴西",
                     "Brasil": "巴西",
