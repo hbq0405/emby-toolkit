@@ -830,11 +830,11 @@ DEFAULT_TG_REGEX = {
 
 def clean_non_chinese_chars(text: Optional[str]) -> str:
     """
-    清理字符串，只保留中文字符。
+    清理字符串，只保留中文字符和中文括号。
     
     移除所有非中文字符，包括：
     - 英文字母、数字
-    - 标点符号（包括中文标点）
+    - 标点符号（除中文括号外）
     - 特殊符号、表情符号
     - 空白字符
     - 其他非汉字字符
@@ -844,12 +844,13 @@ def clean_non_chinese_chars(text: Optional[str]) -> str:
     - 扩展 A 区：\u3400-\u4dbf
     - 扩展 B-F 区：\u20000-\u2a6df, \u2a700-\u2b73f, \u2b740-\u2b81f, \u2b820-\u2ceaf, \u2ceb0-\u2ebef
     - 兼容汉字：\uf900-\ufaff
+    - 中文括号：（）
     
     Args:
         text: 输入字符串
         
     Returns:
-        只包含中文字符的字符串
+        只包含中文字符和中文括号的字符串
     """
     if not text:
         return ""
@@ -868,6 +869,9 @@ def clean_non_chinese_chars(text: Optional[str]) -> str:
             result.append(char)
         # 扩展 B-F 区（代理对）
         elif 0x20000 <= code_point <= 0x2ebef:
+            result.append(char)
+        # 中文括号
+        elif char in '（）':
             result.append(char)
     
     return ''.join(result)
