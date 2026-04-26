@@ -480,11 +480,11 @@ class P115MediaAnalyzerMixin:
         # =========================================================
         if stream_type == "Subtitle":
             has_chs = _has_lang_marker(clean_text, [
-                "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英", "中英", "中文", "中上英下", "英上中下", "简体英文"
+                "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "簡體", "简英", "中英", "中文", "中上英下", "英上中下", "简体英文"
             ])
 
             has_cht = _has_lang_marker(clean_text, [
-                "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁英",
+                "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁體", "繁英",
                 "繁上英下", "英上繁下", "繁体英文"
             ])
 
