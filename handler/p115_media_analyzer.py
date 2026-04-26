@@ -1257,23 +1257,25 @@ class P115MediaAnalyzerMixin:
 
                     # 优先级 1: 智能跟随音轨特征
                     if active_audio_features and any(f in sub_title for f in active_audio_features):
-                        score += 100000
+                        score += 10000000  # 加大到一千万，确保绝对压制
 
-                    # 优先级 2: 用户拖拽顺序
+                    # 优先级 2: 用户拖拽顺序 (★ 升级为指数级叠加打分)
                     priority_score = 0
                     for idx, p_type in enumerate(reversed(sub_priority)):
-                        weight = (idx + 1) * 1000
+                        # 使用 10 的指数级权重 (100, 1000, 10000, 100000...)
+                        # 确保排在前面的属性具有绝对统治力，同时允许属性叠加！
+                        weight = 10 ** (idx + 2) 
 
                         if p_type == "effect" and is_effect:
-                            priority_score = max(priority_score, weight)
+                            priority_score += weight
                         elif p_type == "chs_eng" and is_chs_eng:
-                            priority_score = max(priority_score, weight)
+                            priority_score += weight
                         elif p_type == "cht_eng" and is_cht_eng:
-                            priority_score = max(priority_score, weight)
+                            priority_score += weight
                         elif p_type == "chs" and is_chs:
-                            priority_score = max(priority_score, weight)
+                            priority_score += weight
                         elif p_type == "cht" and is_cht:
-                            priority_score = max(priority_score, weight)
+                            priority_score += weight
 
                     score += priority_score
 
