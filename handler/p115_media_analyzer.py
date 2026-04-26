@@ -464,7 +464,6 @@ class P115MediaAnalyzerMixin:
 
             suffix_pattern = re.compile(
                 rf"""
-                (?ix)
                 \s*
                 (?:
                     [/\|+._\-\s]*
@@ -477,7 +476,8 @@ class P115MediaAnalyzerMixin:
                     )
                 )+
                 \s*$
-                """
+                """,
+                flags=re.IGNORECASE | re.VERBOSE
             )
 
             while True:
