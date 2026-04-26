@@ -1491,7 +1491,7 @@ def handle_default_stream_config():
         defaults = {
             "audio_lang": "",
             "subtitle_lang": "",
-            "audio_features": ["国配", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"],
+            "audio_features": ["公映", "国配", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"],
             "sub_priority": ["effect", "chs_eng", "cht_eng", "chs", "cht"]
         }
         defaults.update(config)

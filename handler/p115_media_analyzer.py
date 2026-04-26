@@ -1156,8 +1156,26 @@ class P115MediaAnalyzerMixin:
                     if lang_matched:
                         candidates = lang_matched
 
-                # 在候选者中，优先选原本就是默认的；如果候选里没有默认，就选第一条
-                default_audio = next((s for s in candidates if s.get("IsDefault")), candidates[0])
+                # ★ 新增：根据用户拖拽的 audio_features 优先级打分
+                def get_audio_score(audio):
+                    score = 0
+                    title_lower = (audio.get("Title", "") + " " + audio.get("DisplayTitle", "")).lower()
+                    
+                    # 遍历特征词，越靠前的特征词加分越高
+                    for idx, kw in enumerate(reversed(audio_features_config)):
+                        weight = (idx + 1) * 1000
+                        if kw.lower() in title_lower:
+                            score = max(score, weight)
+                    
+                    # 原本默认的给 1 分兜底
+                    if audio.get("IsDefault"):
+                        score += 1
+                        
+                    return score
+
+                # 按分数降序排列，取最高分作为默认音轨
+                sorted_audios = sorted(candidates, key=get_audio_score, reverse=True)
+                default_audio = sorted_audios[0]
 
                 for s in audio_streams:
                     is_target = (s == default_audio)

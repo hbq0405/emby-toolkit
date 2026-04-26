@@ -10,10 +10,33 @@
         </n-form-item>
         
         <n-form-item label="音轨特征词">
-          <n-dynamic-tags v-model:value="config.audio_features" />
+          <div style="width: 100%;">
+            <n-input-group style="margin-bottom: 12px;">
+              <n-input v-model:value="newAudioFeature" placeholder="输入特征词，如：上译" @keyup.enter="addAudioFeature" />
+              <n-button type="primary" @click="addAudioFeature">添加</n-button>
+            </n-input-group>
+
+            <draggable 
+              v-model="config.audio_features" 
+              item-key="id" 
+              handle=".drag-handle" 
+              animation="200"
+            >
+              <template #item="{ element, index }">
+                <div class="priority-item">
+                  <n-icon class="drag-handle" size="20"><MenuIcon /></n-icon>
+                  <span class="item-name">{{ element.text }}</span>
+                  <n-button size="tiny" quaternary circle type="error" @click="removeAudioFeature(index)">
+                    <template #icon><n-icon><CloseIcon /></n-icon></template>
+                  </n-button>
+                </div>
+              </template>
+            </draggable>
+          </div>
           <template #feedback>
             <n-text depth="3" style="font-size: 12px;">
-              包含这些词的音轨将被优先选中，且<b>字幕会最高优先级跟随匹配</b>（如：音轨命中"上译"，则优先选择带"上译"的字幕）。
+              包含这些词的音轨将被优先选中，<b>上下拖动调整优先级（越靠上优先级越高）</b>。<br/>
+              且字幕会最高优先级跟随匹配（如：音轨命中"上译"，则优先选择带"上译"的字幕）。
             </n-text>
           </template>
         </n-form-item>
@@ -21,12 +44,12 @@
         <n-divider title-placement="left">默认字幕设置</n-divider>
 
         <n-form-item label="字幕偏好">
-        <n-select v-model:value="config.subtitle_lang" :options="subtitleLangOptions" />
-        <template #feedback>
+          <n-select v-model:value="config.subtitle_lang" :options="subtitleLangOptions" />
+          <template #feedback>
             <n-text depth="3" style="font-size: 12px;">
-            只控制简体/繁体方向；双语字幕仍由下方优先级决定。
+              只控制简体/繁体方向；双语字幕仍由下方优先级决定。
             </n-text>
-        </template>
+          </template>
         </n-form-item>
 
         <n-divider title-placement="left">默认字幕优先级</n-divider>
@@ -67,8 +90,8 @@
 
 <script setup>
 import { ref } from 'vue';
-import { NModal, NForm, NFormItem, NSelect, NDynamicTags, NDivider, NAlert, NSpin, NSpace, NButton, NIcon, NTag, NText, useMessage } from 'naive-ui';
-import { MenuOutline as MenuIcon } from '@vicons/ionicons5';
+import { NModal, NForm, NFormItem, NSelect, NInput, NInputGroup, NDivider, NAlert, NSpin, NSpace, NButton, NIcon, NTag, NText, useMessage } from 'naive-ui';
+import { MenuOutline as MenuIcon, CloseOutline as CloseIcon } from '@vicons/ionicons5';
 import draggable from 'vuedraggable';
 import axios from 'axios';
 
@@ -76,6 +99,8 @@ const message = useMessage();
 const showModal = ref(false);
 const loading = ref(false);
 const saving = ref(false);
+
+const newAudioFeature = ref('');
 
 const audioLangOptions = [
   { label: '不修改 (保留文件原始默认)', value: '' },
@@ -109,6 +134,22 @@ const config = ref({
 
 const getSubLabel = (id) => subTypeMap[id] || id;
 
+const addAudioFeature = () => {
+  const val = newAudioFeature.value.trim();
+  if (val) {
+    if (!config.value.audio_features.some(item => item.text === val)) {
+      config.value.audio_features.push({ id: Date.now().toString() + Math.random(), text: val });
+    } else {
+      message.warning('该特征词已存在');
+    }
+    newAudioFeature.value = '';
+  }
+};
+
+const removeAudioFeature = (index) => {
+  config.value.audio_features.splice(index, 1);
+};
+
 const loadConfig = async () => {
   loading.value = true;
   try {
@@ -117,9 +158,13 @@ const loadConfig = async () => {
       const data = res.data.data;
       config.value.audio_lang = data.audio_lang;
       config.value.subtitle_lang = data.subtitle_lang || '';
-      config.value.audio_features = data.audio_features;
+      
       // 将字符串数组转为 vuedraggable 需要的对象数组
-      config.value.sub_priority = data.sub_priority.map(id => ({ id }));
+      config.value.audio_features = (data.audio_features || []).map((text, index) => ({
+        id: `audio_${index}_${Date.now()}`,
+        text
+      }));
+      config.value.sub_priority = (data.sub_priority || []).map(id => ({ id }));
     }
   } catch (error) {
     message.error('加载配置失败');
@@ -134,8 +179,8 @@ const saveConfig = async () => {
     const payload = {
       audio_lang: config.value.audio_lang,
       subtitle_lang: config.value.subtitle_lang,
-      audio_features: config.value.audio_features,
       // 将对象数组还原为字符串数组
+      audio_features: config.value.audio_features.map(item => item.text),
       sub_priority: config.value.sub_priority.map(item => item.id)
     };
     const res = await axios.post('/api/p115/default_stream_config', payload);
