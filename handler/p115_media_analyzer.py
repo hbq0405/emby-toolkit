@@ -597,12 +597,15 @@ class P115MediaAnalyzerMixin:
         # 6. 字幕 Title 处理
         # =========================================================
         if stream_type == "Subtitle":
-            # 1. 强力清理技术参数
-            friendly_title = re.sub(r"(?i)\b(chs|cht|eng|tc|sc|sup|srt|ass|ssa|pgs|vtt|sub|idx)\b", "", raw_title)
+            friendly_title = raw_title
+
+            # 1. 预处理：去掉“画面内简中（iTunes）”这种多余前缀
             friendly_title = re.sub(r"画面内.*?（.*?）", "", friendly_title)
-            friendly_title = re.sub(r"[@/\\|]+", " ", friendly_title)
             
-            # 2. 替换常见词
+            # 2. 暴力净化：听从建议，直接使用 clean_non_chinese_chars 碾碎所有 SUP/ASS/Chs 等英文污染
+            friendly_title = utils.clean_non_chinese_chars(friendly_title)
+
+            # 3. 替换常见词
             replace_map = {
                 "简中": "简体",
                 "简体中文": "简体",
@@ -613,20 +616,10 @@ class P115MediaAnalyzerMixin:
                 "繁體中文": "繁体",
                 "中文(繁体)": "繁体",
                 "中文（繁體）": "繁体",
-                "Latin America": "拉美",
-                "Brazil": "巴西",
-                "Brasil": "巴西",
-                "Director's Commentary": "导评",
-                "Audio Commentary": "导评",
-                "Commentary": "导评",
-                "COMMENTARY": "导评",
             }
             for old, new in replace_map.items():
                 friendly_title = friendly_title.replace(old, new)
                 
-            # 3. 清理多余空格和标点
-            friendly_title = re.sub(r"\s+", " ", friendly_title).strip(" -_/()（）[]【】")
-            
             # 4. 修复双语标签
             friendly_title = friendly_title.replace("简英双语", "中英双语（简体）").replace("简英", "中英双语（简体）")
             friendly_title = friendly_title.replace("繁英双语", "中英双语（繁体）").replace("繁英", "中英双语（繁体）")
@@ -634,15 +627,15 @@ class P115MediaAnalyzerMixin:
             friendly_title = friendly_title.replace("中英双语（繁体）双语", "中英双语（繁体）")
             friendly_title = friendly_title.replace("中上英下", "中英双语（简体）").replace("英上中下", "中英双语（简体）")
             
-            # 5. 如果清理后为空，兜底
+            # 5. 兜底与组合
             if not friendly_title:
+                # 如果清理后变为空（例如原标题全是英文），靠特征词和 display_lang 兜底
                 if display_lang and display_lang != "未知" and stream_features:
                     friendly_title = self._format_stream_feature_title(display_lang, stream_features)
                 else:
                     friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
             else:
-                # 如果清理后还有内容（比如“国配简中特效 对应中译公映”），保留它！
-                # 确保语言信息不丢失
+                # 如果清理后还有内容（比如“国配简体特效对应中译公映”），完美保留！
                 if display_lang in ["简体", "繁体", "中英双语（简体）", "中英双语（繁体）"]:
                     check_kw = "简" if "简" in display_lang else ("繁" if "繁" in display_lang else "")
                     if check_kw and check_kw not in friendly_title:
@@ -654,62 +647,35 @@ class P115MediaAnalyzerMixin:
         elif stream_type == "Audio":
             friendly_title = raw_title
 
+            # 1. 暴力净化：碾碎所有 DTS-HD, Dolby, kbps 等非中文字符
+            friendly_title = utils.clean_non_chinese_chars(friendly_title)
+
+            # 2. 替换常见词
             audio_replace_map = {
-                "Mandarin Chinese": "国语",
-                "Mandarin": "国语",
-                "Chinese": "国语",
-                "Cantonese": "粤语",
-                "English": "英语",
-                "Japanese": "日语",
-                "Korean": "韩语",
-                "Director's Commentary": "导评",
-                "Audio Commentary": "导评",
-                "Commentary": "导评",
-                "COMMENTARY": "导评",
-                "Visual Description": "视障口述",
+                "国语配音": "国语",
+                "粤语配音": "粤语",
+                "视障口述": "视障口述",
             }
-
             for old, new in audio_replace_map.items():
-                friendly_title = re.sub(
-                    rf"\b{re.escape(old)}\b",
-                    new,
-                    friendly_title,
-                    flags=re.IGNORECASE
-                )
+                friendly_title = friendly_title.replace(old, new)
 
-            # 强力移除技术参数 (新增 Dolby Digital, Master Audio 等)
-            friendly_title = re.sub(
-                r"(?i)\b(AC3|EAC3|DTS[-_ ]?HD(\s*MA|\s*HRA|\s*Master\s*Audio)?|DTS|TRUEHD|ATMOS|AAC|FLAC|DDP|DD|OPUS|MP3|Dolby\s*Digital)\b", "", friendly_title
-            )
-            friendly_title = re.sub(r"(?i)\b(\d{1,2}\.\d|\d+\s*(kbps|mbps|k|hz|bit|fps))\b", "", friendly_title)
-            friendly_title = re.sub(r"(?i)\b(stereo|mono|surround|audio)\b", "", friendly_title)
-            friendly_title = re.sub(r"[@/\\|]+", " ", friendly_title)
-            friendly_title = re.sub(r"\b\d{3,}\b", "", friendly_title) # 移除 2838, 1509 这种孤立的码率数字
-
-            # 清理邮箱、域名、压制组方括号残留
-            friendly_title = re.sub(r"@[\w\.-]+", "", friendly_title)
-            friendly_title = re.sub(r"cnlang\.org", "", friendly_title, flags=re.IGNORECASE)
-            friendly_title = re.sub(r"\[[^\]]*\]", "", friendly_title)
-            
-            # 清理多余空格和标点
-            friendly_title = re.sub(r"\s+", " ", friendly_title).strip(" -_/()（）[]【】")
-
-            if display_lang and display_lang != "未知":
-                # 移除开头多余的 display_lang (例如 "国语 中译公映国语" -> "中译公映国语")
-                friendly_title = re.sub(rf"^{display_lang}\s+", "", friendly_title)
-                
-                if not friendly_title or (
-                    not utils.contains_chinese(friendly_title)
-                    and friendly_title.lower().replace(" ", "") in {
-                        "mandarin", "chinese", "cantonese", "english", "japanese", "korean"
-                    }
-                ):
-                    friendly_title = display_lang
+            # 3. 兜底与组合
+            if not friendly_title:
+                if display_lang and display_lang != "未知" and stream_features:
+                    friendly_title = self._format_stream_feature_title(display_lang, stream_features)
                 else:
-                    # 如果有特色词，比如 "台配"，组合成 "国语（台配）"
-                    # 如果 friendly_title 已经包含了 display_lang (比如 "中译公映国语")，就不加括号了
-                    if display_lang not in friendly_title:
-                        friendly_title = f"{display_lang}（{friendly_title}）"
+                    friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
+            else:
+                if display_lang and display_lang != "未知":
+                    # 移除开头多余的 display_lang (例如 "国语中译公映国语" -> "中译公映国语")
+                    friendly_title = re.sub(rf"^{display_lang}", "", friendly_title)
+                    
+                    if not friendly_title:
+                        friendly_title = display_lang
+                    else:
+                        # 如果有特色词，比如 "台配"，组合成 "国语（台配）"
+                        if display_lang not in friendly_title:
+                            friendly_title = f"{display_lang}（{friendly_title}）"
 
         # =========================================================
         # 8. 其他流兜底
