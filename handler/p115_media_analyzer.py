@@ -451,8 +451,8 @@ class P115MediaAnalyzerMixin:
         title_clean = _normalize_marker_text(raw_title)
 
         title_has_lang = _has_lang_marker(title_clean, [
-            "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英",
-            "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁英",
+            "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "簡體", "简英",
+            "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁體", "繁英",
             "eng", "english", "en", "英文", "英语", "英字",
             "台配", "台灣", "台湾"
         ])
@@ -464,7 +464,6 @@ class P115MediaAnalyzerMixin:
                     break
 
         if title_has_lang:
-            # Title 已经有语言信息，避免 raw_lang 干扰
             lang_lower_for_detect = ""
             norm_lang = helpers.normalize_lang_code(raw_title)
         else:
@@ -602,22 +601,19 @@ class P115MediaAnalyzerMixin:
             # 1. 预处理：去掉“画面内简中（iTunes）”这种多余前缀
             friendly_title = re.sub(r"画面内.*?（.*?）", "", friendly_title)
             
-            # 2. 暴力净化：听从建议，直接使用 clean_non_chinese_chars 碾碎所有 SUP/ASS/Chs 等英文污染
+            # 2. 暴力净化：碾碎所有 SUP/ASS/Chs 等英文污染
             friendly_title = utils.clean_non_chinese_chars(friendly_title)
 
-            # 3. 替换常见词
+            # 3. 统一简繁字形，并替换常见冗余词
+            friendly_title = friendly_title.replace("繁體", "繁体").replace("簡體", "简体")
+            
             replace_map = {
-                "简中": "简体",
+                "中文简体": "简体",
                 "简体中文": "简体",
-                "中文(简体)": "简体",
-                "中文（简体）": "简体",
-                "繁中": "繁体",
+                "简中": "简体",
+                "中文繁体": "繁体",
                 "繁体中文": "繁体",
-                "繁體中文": "繁体",
-                "中文(繁体)": "繁体",
-                "中文（繁體）": "繁体",
-                "简体英文": "中英双语（简体）",
-                "繁体英文": "中英双语（繁体）",
+                "繁中": "繁体",
             }
             for old, new in replace_map.items():
                 friendly_title = friendly_title.replace(old, new)
@@ -628,16 +624,15 @@ class P115MediaAnalyzerMixin:
             friendly_title = friendly_title.replace("中英双语（简体）双语", "中英双语（简体）")
             friendly_title = friendly_title.replace("中英双语（繁体）双语", "中英双语（繁体）")
             friendly_title = friendly_title.replace("中上英下", "中英双语（简体）").replace("英上中下", "中英双语（简体）")
+            friendly_title = friendly_title.replace("简体英文", "中英双语（简体）").replace("繁体英文", "中英双语（繁体）")
             
             # 5. 兜底与组合
             if not friendly_title:
-                # 如果清理后变为空（例如原标题全是英文），靠特征词和 display_lang 兜底
                 if display_lang and display_lang != "未知" and stream_features:
                     friendly_title = self._format_stream_feature_title(display_lang, stream_features)
                 else:
                     friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
             else:
-                # 如果清理后还有内容（比如“国配简体特效对应中译公映”），完美保留！
                 if display_lang in ["简体", "繁体", "中英双语（简体）", "中英双语（繁体）"]:
                     check_kw = "简" if "简" in display_lang else ("繁" if "繁" in display_lang else "")
                     if check_kw and check_kw not in friendly_title:
