@@ -616,6 +616,8 @@ class P115MediaAnalyzerMixin:
                 "繁體中文": "繁体",
                 "中文(繁体)": "繁体",
                 "中文（繁體）": "繁体",
+                "简体英文": "中英双语（简体）",
+                "繁体英文": "中英双语（繁体）",
             }
             for old, new in replace_map.items():
                 friendly_title = friendly_title.replace(old, new)
