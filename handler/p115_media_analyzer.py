@@ -481,20 +481,20 @@ class P115MediaAnalyzerMixin:
         # =========================================================
         if stream_type == "Subtitle":
             has_chs = _has_lang_marker(clean_text, [
-                "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英", "中英", "中文", "中上英下", "英上中下"
+                "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英", "中英", "中文", "中上英下", "英上中下", "简体英文"
             ])
 
             has_cht = _has_lang_marker(clean_text, [
                 "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁英",
-                "繁上英下", "英上繁下"
+                "繁上英下", "英上繁下", "繁体英文"
             ])
 
             has_eng = _has_lang_marker(clean_text, [
                 "eng", "english", "en", "英文", "英语", "英字", "简英", "繁英", "中英", "双语",
-                "中上英下", "英上中下", "繁上英下", "英上繁下"
+                "中上英下", "英上中下", "繁上英下", "英上繁下", "简体英文", "繁体英文"
             ])
 
-            is_dual = _has_lang_marker(clean_text, ["双语", "中上英下", "英上中下", "繁上英下", "英上繁下"])
+            is_dual = _has_lang_marker(clean_text, ["双语", "中上英下", "英上中下", "繁上英下", "英上繁下", "简体英文", "繁体英文"])
 
             if (has_chs and has_eng and not has_cht) or (is_dual and not has_cht):
                 norm_lang = "chi"
