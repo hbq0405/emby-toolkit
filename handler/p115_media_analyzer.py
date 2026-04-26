@@ -443,51 +443,6 @@ class P115MediaAnalyzerMixin:
             ).strip()
 
             return text
-        
-        def _clean_subtitle_title_suffix(title: str) -> str:
-            """
-            清理字幕标题尾部的格式词：
-            原盘英文SUP -> 原盘英文
-            原盘繁体SUP -> 原盘繁体
-            简体中英特效SUP -> 简体中英特效
-            中英双语（简体）SUP -> 中英双语（简体）
-            R3简体字幕 (SUP) -> R3简体字幕
-
-            注意：不能 strip 掉普通括号，否则 中英双语（简体） 会丢右括号。
-            """
-            if not title:
-                return ""
-
-            text = str(title).strip()
-
-            fmt = r"PGSSUB|PGS|SUP|SUBRIP|SRT|ASS|SSA|VTT|SUB"
-
-            suffix_pattern = re.compile(
-                rf"""
-                \s*
-                (?:
-                    [/\|+._\-\s]*
-                    (?:
-                        \(\s*(?:{fmt})\s*\)
-                        | （\s*(?:{fmt})\s*）
-                        | \[\s*(?:{fmt})\s*\]
-                        | 【\s*(?:{fmt})\s*】
-                        | (?:{fmt})
-                    )
-                )+
-                \s*$
-                """,
-                flags=re.IGNORECASE | re.VERBOSE
-            )
-
-            while True:
-                new_text = suffix_pattern.sub("", text).strip(" -_/\\|+._")
-                if new_text == text:
-                    break
-                text = new_text
-
-            return text
-
         def _lookup_base_label(norm_lang):
             if not norm_lang:
                 return ""
@@ -554,18 +509,20 @@ class P115MediaAnalyzerMixin:
         # =========================================================
         if stream_type == "Subtitle":
             has_chs = _has_lang_marker(clean_text, [
-                "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英", "中英", "中文", "中上英下"
+                "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "简英", "中英", "中文", "中上英下", "英上中下"
             ])
 
             has_cht = _has_lang_marker(clean_text, [
-                "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁英"
+                "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁英",
+                "繁上英下", "英上繁下"
             ])
 
             has_eng = _has_lang_marker(clean_text, [
-                "eng", "english", "en", "英文", "英语", "英字", "简英", "繁英", "中英", "双语"
+                "eng", "english", "en", "英文", "英语", "英字", "简英", "繁英", "中英", "双语",
+                "中上英下", "英上中下", "繁上英下", "英上繁下"
             ])
 
-            is_dual = _has_lang_marker(clean_text, ["双语"])
+            is_dual = _has_lang_marker(clean_text, ["双语", "中上英下", "英上中下", "繁上英下", "英上繁下"])
 
             if (has_chs and has_eng and not has_cht) or (is_dual and not has_cht):
                 norm_lang = "chi"
@@ -688,7 +645,6 @@ class P115MediaAnalyzerMixin:
                     "繁體中文": "繁体",
                     "中文(繁体)": "繁体",
                     "中文（繁體）": "繁体",
-                    "中上英下": "中英双语（简体）",
                     "Latin America": "拉美",
                     "Brazil": "巴西",
                     "Brasil": "巴西",
@@ -703,14 +659,18 @@ class P115MediaAnalyzerMixin:
                     friendly_title = friendly_title.replace(old, new)
 
                 friendly_title = _clean_subtitle_title_prefix(friendly_title)
-                friendly_title = _clean_subtitle_title_suffix(friendly_title)
+
+                # ★ 新增核心逻辑：无视大小写，清理标题屁股后面的 SUP/PGS/SRT/ASS 等格式后缀
+                friendly_title = re.sub(r'(?i)[\s\-_]*(sup|pgs|pgssub|srt|ass|ssa|vtt|sub)\s*$', '', friendly_title).strip()
+
                 # 修复“双语双语”及旧版简英繁英
                 friendly_title = friendly_title.replace("简英双语", "中英双语（简体）").replace("简英", "中英双语（简体）")
                 friendly_title = friendly_title.replace("繁英双语", "中英双语（繁体）").replace("繁英", "中英双语（繁体）")
                 friendly_title = friendly_title.replace("中英双语（简体）双语", "中英双语（简体）")
                 friendly_title = friendly_title.replace("中英双语（繁体）双语", "中英双语（繁体）")
+                friendly_title = friendly_title.replace("中上英下", "中英双语（简体）").replace("英上中下", "中英双语（简体）")
 
-                # 如果标题被清空，兜底为 display_lang
+                # 如果标题被清空（例如原标题就叫"SUP"），兜底为 display_lang
                 if not friendly_title:
                     friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
 
