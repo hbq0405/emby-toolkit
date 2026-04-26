@@ -1176,10 +1176,15 @@ def task_monitor_115_life_events(processor=None):
     added_count = 0
     deleted_count = 0
 
-    # 辅助函数：推导本地路径
+    # 动态 API 路径缓存池 (防止重复请求 115 接口)
+    dynamic_path_cache = {}
+
+    # 辅助函数：推导本地路径 (★ 终极修复版：加入 API 溯源与防误删保护)
     def resolve_local_dir(pid):
         pid = str(pid)
         if pid in cid_to_rel_path: return cid_to_rel_path[pid]
+        if pid in dynamic_path_cache: return dynamic_path_cache[pid]
+        
         try:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -1194,9 +1199,44 @@ def task_monitor_115_life_events(processor=None):
                         if curr in cid_to_rel_path:
                             parts.append(cid_to_rel_path[curr])
                             parts.reverse()
-                            return os.path.join(*parts)
+                            resolved_path = os.path.join(*parts)
+                            dynamic_path_cache[pid] = resolved_path
+                            return resolved_path
         except: pass
-        return None
+        
+        # ★ 终极兜底：缓存穿透时，主动向 115 请求该目录的真实路径
+        try:
+            dir_info = client.fs_files({'cid': pid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+            if not dir_info.get('state'):
+                # 如果 API 明确返回失败（比如目录不存在），那说明真不在了
+                if dir_info.get('code') in [20004, 70004]: 
+                    return None
+                # 其他 API 错误（如流控），抛出异常触发保护
+                raise Exception(f"API Error: {dir_info}")
+                
+            path_nodes = dir_info.get('path', [])
+            if path_nodes:
+                start_idx = -1
+                target_cid_found = None
+                for i, p_node in enumerate(path_nodes):
+                    node_cid = str(p_node.get('cid') or p_node.get('file_id'))
+                    if node_cid in target_cids:
+                        start_idx = i + 1
+                        target_cid_found = node_cid
+                        break
+                if start_idx != -1 and target_cid_found:
+                    sub_folders = [str(p.get('name') or p.get('file_name')).strip() for p in path_nodes[start_idx:]]
+                    base_cat_path = cid_to_rel_path.get(target_cid_found, '未识别')
+                    resolved_path = os.path.join(base_cat_path, *sub_folders) if sub_folders else base_cat_path
+                    dynamic_path_cache[pid] = resolved_path # 存入内存池
+                    logger.debug(f"  ➜ [API溯源] 成功动态推导路径: {resolved_path}")
+                    return resolved_path
+                else:
+                    # 确实不在监控目录内
+                    return None
+        except Exception as e:
+            logger.warning(f"  ➜ 动态查询目录路径失败 (pid: {pid})，为防止误删，跳过该事件: {e}")
+            return "API_ERROR_PROTECT"
 
     # 辅助函数：通知 Emby
     def _notify_emby(path):
@@ -1219,6 +1259,9 @@ def task_monitor_115_life_events(processor=None):
         new_rel_dir = None
         if b_type != 22: 
             new_rel_dir = resolve_local_dir(parent_id)
+            # ★ 触发保护机制，直接跳过，不删也不加
+            if new_rel_dir == "API_ERROR_PROTECT":
+                return 
 
         # ==========================================
         # 分支 1：删除或移出监控目录
