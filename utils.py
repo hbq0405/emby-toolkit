@@ -817,13 +817,57 @@ DEFAULT_TG_REGEX = {
         r'TMDB(?:\s*ID)?[:：\s]*(\d+)'
     ],
     "title_year": [
-        r'(?:电视剧|电影|名称)[:：\s]*([^\n]+?)\s*\((\d{4})\)',
+        r'(?:电视剧 | 电影 | 名称)[:：\s]*([^\n]+?)\s*\((\d{4})\)',
         r'^([^\n]+?)\s*\((\d{4})\)'
     ],
     "password_url": [
         r'(?:password|pwd)=([a-zA-Z0-9]{4})'
     ],
     "password_text": [
-        r'(?:password=|访问码|提取码|密码)[:：=\s]*([a-zA-Z0-9]{4})'
+        r'(?:password=|访问码 | 提取码 | 密码)[:：=\s]*([a-zA-Z0-9]{4})'
     ]
 }
+
+def clean_non_chinese_chars(text: Optional[str]) -> str:
+    """
+    清理字符串，只保留中文字符。
+    
+    移除所有非中文字符，包括：
+    - 英文字母、数字
+    - 标点符号（包括中文标点）
+    - 特殊符号、表情符号
+    - 空白字符
+    - 其他非汉字字符
+    
+    保留的字符范围：
+    - 基本汉字：\u4e00-\u9fff
+    - 扩展 A 区：\u3400-\u4dbf
+    - 扩展 B-F 区：\u20000-\u2a6df, \u2a700-\u2b73f, \u2b740-\u2b81f, \u2b820-\u2ceaf, \u2ceb0-\u2ebef
+    - 兼容汉字：\uf900-\ufaff
+    
+    Args:
+        text: 输入字符串
+        
+    Returns:
+        只包含中文字符的字符串
+    """
+    if not text:
+        return ""
+    
+    result = []
+    for char in str(text):
+        code_point = ord(char)
+        # 基本汉字
+        if 0x4e00 <= code_point <= 0x9fff:
+            result.append(char)
+        # 扩展 A 区
+        elif 0x3400 <= code_point <= 0x4dbf:
+            result.append(char)
+        # 兼容汉字
+        elif 0xf900 <= code_point <= 0xfaff:
+            result.append(char)
+        # 扩展 B-F 区（代理对）
+        elif 0x20000 <= code_point <= 0x2ebef:
+            result.append(char)
+    
+    return ''.join(result)

@@ -415,34 +415,6 @@ class P115MediaAnalyzerMixin:
                     return True
 
             return False
-
-        def _clean_subtitle_title_prefix(title):
-            """
-            清理字幕标题开头的语言码/格式码：
-            Chs/SUP R3简体字幕 -> R3简体字幕
-            Cht/SUP 繁体特效 -> 繁体特效
-            Eng/SUP 英文字幕 -> 英文字幕
-            Chs&Eng/SUP 简英双语特效 -> 简英双语特效
-            """
-            if not title:
-                return ""
-
-            text = str(title).strip()
-
-            prefix_token = (
-                r"chs|cht|chi|zho|zh(?:[-_ ]?(?:cn|tw|hk|hans|hant))?|"
-                r"sc|tc|cn|tw|hk|yue|"
-                r"eng|en|jpn|jp|kor|kr|"
-                r"sup|pgs|pgssub|subrip|srt|ass|ssa|vtt|sub"
-            )
-
-            text = re.sub(
-                rf"(?i)^\s*(?:{prefix_token})(?:\s*[/\\|+&._ -]+\s*(?:{prefix_token}))*\s*[/\\|+&._ -]*\s*",
-                "",
-                text
-            ).strip()
-
-            return text
         def _lookup_base_label(norm_lang):
             if not norm_lang:
                 return ""
@@ -658,10 +630,7 @@ class P115MediaAnalyzerMixin:
                 for old, new in replace_map.items():
                     friendly_title = friendly_title.replace(old, new)
 
-                friendly_title = _clean_subtitle_title_prefix(friendly_title)
-
-                # ★ 新增核心逻辑：无视大小写，清理标题屁股后面的 SUP/PGS/SRT/ASS 等格式后缀
-                friendly_title = re.sub(r'(?i)[\s\-_]*(sup|pgs|pgssub|srt|ass|ssa|vtt|sub)\s*$', '', friendly_title).strip()
+                friendly_title = utils.clean_non_chinese_chars(friendly_title)
 
                 # 修复“双语双语”及旧版简英繁英
                 friendly_title = friendly_title.replace("简英双语", "中英双语（简体）").replace("简英", "中英双语（简体）")
