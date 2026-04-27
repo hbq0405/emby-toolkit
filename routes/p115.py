@@ -1127,7 +1127,7 @@ def correct_organize_record():
         return jsonify({"success": False, "message": "缺少必要参数！"}), 400
         
     try:
-        from handler.p115_service import manual_correct_organize_record
+        from tasks.p115 import manual_correct_organize_record
         manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num)
         return jsonify({"success": True, "message": "重组完成！网盘与 STRM 已迁移。"})
     except Exception as e:

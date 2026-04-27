@@ -894,7 +894,7 @@ def emby_webhook():
 
                 if pickcodes and item_path:
                     logger.info(f"  ➜ 成功提取到 {len(pickcodes)} 个 115 提取码，交由后台执行联动删除。")
-                    from handler.p115_service import delete_115_files_by_webhook
+                    from tasks.p115 import delete_115_files_by_webhook
                     spawn(delete_115_files_by_webhook, item_path, pickcodes)
                 else:
                     logger.warning("  ➜ 深度删除通知中未找到有效的 ETK 直链或 PC 码，跳过网盘清理。")
