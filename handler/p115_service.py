@@ -4184,3 +4184,462 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
             if res_file: return res_file
 
     return None, None, None
+
+# ======================================================================
+# ★★★ Webhook 深度删除缓冲队列 (实现并发删除请求的批量合并) ★★★
+# ======================================================================
+class WebhookDeleteBuffer:
+    _lock = threading.Lock()
+    _pickcodes = set()
+    _timer = None
+
+    @classmethod
+    def add(cls, pickcodes):
+        if not pickcodes: return
+        with cls._lock:
+            cls._pickcodes.update(pickcodes)
+            
+            # 如果有新任务进来，重置定时器
+            if cls._timer is not None:
+                cls._timer.kill()
+            
+            from gevent import spawn_later
+            # 延迟 3 秒，足以收集一键去重/批量删除瞬间发来的所有 Webhook
+            cls._timer = spawn_later(3.0, cls._execute_all)
+
+    @classmethod
+    def _execute_all(cls):
+        with cls._lock:
+            pickcodes = list(cls._pickcodes)
+            cls._pickcodes.clear()
+            cls._timer = None
+
+        if not pickcodes: return
+        
+        from gevent import spawn
+        spawn(cls._process_batch, pickcodes)
+
+    @classmethod
+    def _process_batch(cls, pickcodes):
+        client = P115Service.get_client()
+        if not client: return
+
+        try:
+            # 1. 获取免死金牌名单 (绝对不能删的根目录)
+            config = get_config()
+            protected_cids = {'0'}
+            media_root = config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID)
+            if media_root: protected_cids.add(str(media_root))
+            save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
+            if save_path: protected_cids.add(str(save_path))
+
+            raw_rules = settings_db.get_setting('p115_sorting_rules')
+            if raw_rules:
+                rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
+                for rule in rules:
+                    if rule.get('cid'): protected_cids.add(str(rule['cid']))
+
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    # =================================================================
+                    # 第一步：通过 PC 码从本地缓存锁定初始文件 (FID) 和 父目录 (PID)
+                    # =================================================================
+                    cursor.execute("SELECT id, parent_id FROM p115_filesystem_cache WHERE pick_code = ANY(%s)", (list(pickcodes),))
+                    initial_files = cursor.fetchall()
+
+                    if not initial_files:
+                        logger.warning(f"  ➜ [深度删除] 本地缓存未找到对应 PC 码的文件，无法执行本地推导，任务终止。")
+                        return
+
+                    deleted_nodes = set()       # 记录所有被判死刑的节点 (文件 + 变空的目录)
+                    nodes_to_check = set()      # 待检查是否变空的父目录
+                    node_parent_map = {}        # 缓存节点关系 (id -> parent_id)，用于最后提炼顶级节点
+
+                    for row in initial_files:
+                        fid = str(row['id'])
+                        pid = str(row['parent_id'])
+                        deleted_nodes.add(fid)
+                        node_parent_map[fid] = pid
+                        if pid and pid not in protected_cids:
+                            nodes_to_check.add(pid)
+
+                    # =================================================================
+                    # 第二步：自下而上溯源，本地计算空目录 (季目录 -> 剧目录)
+                    # =================================================================
+                    while nodes_to_check:
+                        current_pid = nodes_to_check.pop()
+                        if current_pid in protected_cids:
+                            continue
+
+                        # 查当前目录下的所有子节点
+                        cursor.execute("SELECT id FROM p115_filesystem_cache WHERE parent_id = %s", (current_pid,))
+                        children = {str(r['id']) for r in cursor.fetchall()}
+
+                        # ★ 核心逻辑：如果该目录下的所有子节点都在死刑名单里，说明该目录将被掏空！
+                        if children and children.issubset(deleted_nodes):
+                            deleted_nodes.add(current_pid) # 目录本身加入死刑名单
+                            
+                            # 查当前目录的父目录，继续向上溯源 (比如季目录空了，继续查剧目录)
+                            cursor.execute("SELECT parent_id FROM p115_filesystem_cache WHERE id = %s", (current_pid,))
+                            parent_row = cursor.fetchone()
+                            if parent_row and parent_row['parent_id']:
+                                grand_pid = str(parent_row['parent_id'])
+                                node_parent_map[current_pid] = grand_pid
+                                if grand_pid not in protected_cids:
+                                    nodes_to_check.add(grand_pid)
+
+                    # =================================================================
+                    # 第三步：提炼最终需要发送给 115 API 的顶级节点
+                    # =================================================================
+                    final_api_ids = []
+                    for node in deleted_nodes:
+                        parent_id = node_parent_map.get(node)
+                        # 如果缓存 map 里没有，去库里查一下兜底
+                        if not parent_id:
+                            cursor.execute("SELECT parent_id FROM p115_filesystem_cache WHERE id = %s", (node,))
+                            p_row = cursor.fetchone()
+                            parent_id = str(p_row['parent_id']) if p_row else None
+
+                        # ★ 核心优化：如果一个节点的父节点也在死刑名单里，说明它会被连锅端，不需要单独发 API！
+                        if parent_id not in deleted_nodes:
+                            final_api_ids.append(node)
+
+                    # =================================================================
+                    # 第四步：执行唯一一次 115 API 删除调用
+                    # =================================================================
+                    if final_api_ids:
+                        logger.info(f"  ➜ [深度删除] 本地推导完毕！向 115 发送批量删除指令 (共 {len(final_api_ids)} 个顶级节点)...")
+                        resp = client.fs_delete(final_api_ids)
+                        
+                        if resp.get('state'):
+                            logger.info(f"  ➜ [深度删除] 115 网盘文件/空目录物理销毁成功！")
+                        else:
+                            logger.error(f"  ➜ [深度删除] 115 API 删除失败: {resp}")
+                            return # API 失败则不清理本地库，保持一致性
+
+                    # =================================================================
+                    # 第五步：清理本地数据库记录 (缓存表 + 整理记录表)
+                    # =================================================================
+                    if deleted_nodes:
+                        # 1. 清理目录树缓存
+                        cursor.execute("DELETE FROM p115_filesystem_cache WHERE id = ANY(%s)", (list(deleted_nodes),))
+                        deleted_cache_count = cursor.rowcount
+
+                        # 2. 清理整理记录
+                        cursor.execute("DELETE FROM p115_organize_records WHERE pick_code = ANY(%s)", (list(pickcodes),))
+                        deleted_record_count = cursor.rowcount
+
+                        conn.commit()
+                        logger.info(f"  ➜ [深度删除] 本地数据清理完毕: 缓存表移除 {deleted_cache_count} 条, 记录表移除 {deleted_record_count} 条。")
+
+        except Exception as e:
+            logger.error(f"  ➜ [深度删除] 执行异常: {e}", exc_info=True)
+
+def delete_115_files_by_webhook(item_path, pickcodes):
+    """
+    【V6 终极缓冲版】接收神医 Webhook 传来的提取码，加入缓冲队列。
+    """
+    if not pickcodes: return
+    WebhookDeleteBuffer.add(pickcodes)
+
+# ======================================================================
+# ★★★ 手动纠错缓冲队列 (实现批量重组与一次性刷新) ★★★
+# ======================================================================
+class ManualCorrectTaskQueue:
+    _lock = threading.Lock()
+    _tasks = {}  # 结构: {(tmdb_id, media_type, target_cid, season_num): [record_id1, record_id2, ...]}
+    _timer = None
+
+    @classmethod
+    def add(cls, record_id, tmdb_id, media_type, target_cid, season_num):
+        with cls._lock:
+            key = (tmdb_id, media_type, target_cid, season_num)
+            if key not in cls._tasks:
+                cls._tasks[key] = []
+            cls._tasks[key].append(record_id)
+
+            if cls._timer is not None:
+                cls._timer.kill()
+            from gevent import spawn_later
+            # 延迟 2 秒，收集前端并发发来的所有同批次请求
+            cls._timer = spawn_later(2.0, cls._execute_all)
+
+    @classmethod
+    def _execute_all(cls):
+        with cls._lock:
+            tasks = cls._tasks.copy()
+            cls._tasks.clear()
+            cls._timer = None
+
+        from gevent import spawn
+        for key, record_ids in tasks.items():
+            spawn(cls._process_batch, key, record_ids)
+
+    @classmethod
+    def _process_batch(cls, key, record_ids):
+        tmdb_id, media_type, target_cid, season_num = key
+        try:
+            _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_num)
+        except Exception as e:
+            logger.error(f"  ➜ 批量重组失败: {e}", exc_info=True)
+
+
+def manual_correct_organize_record(record_id, tmdb_id, media_type, target_cid, season_num=None):
+    """手动纠错入口：将任务加入缓冲队列，实现批量重组"""
+    ManualCorrectTaskQueue.add(record_id, tmdb_id, media_type, target_cid, season_num)
+    return True
+
+
+def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_num=None):
+    """真正的批量执行逻辑"""
+    client = P115Service.get_client()
+    if not client: return
+
+    # 1. 批量获取数据库记录
+    records = []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id, file_id, original_name FROM p115_organize_records WHERE id = ANY(%s)", (list(record_ids),))
+                records = cursor.fetchall()
+    except Exception as e:
+        logger.error(f"数据库查询失败: {e}")
+        return
+
+    if not records: return
+
+    # 2. 批量获取旧缓存
+    old_caches = {}
+    file_ids = [str(r['file_id']) for r in records]
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("SELECT id, parent_id, pick_code, sha1, local_path FROM p115_filesystem_cache WHERE id = ANY(%s)", (list(file_ids),))
+                for row in cursor.fetchall():
+                    old_caches[str(row['id'])] = row
+    except: pass
+
+    root_items = []
+    old_pids = set()
+    refresh_target_dirs = set()
+    config = get_config()
+    local_root = config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT)
+
+    for r in records:
+        file_id = str(r['file_id'])
+        original_name = r['original_name']
+        old_cache = old_caches.get(file_id)
+
+        old_pid = None
+        pick_code = None
+        sha1 = None
+        info_data = {}
+
+        # ★ 核心提速：优先使用本地缓存，彻底干掉 1.5 秒/次的 API 延迟！
+        if old_cache and old_cache.get('parent_id') and old_cache.get('pick_code'):
+            old_pid = old_cache['parent_id']
+            pick_code = old_cache['pick_code']
+            sha1 = old_cache.get('sha1')
+            info_data = {
+                'file_id': file_id, 
+                'file_name': original_name, 
+                'file_category': '1', 
+                'parent_id': old_pid, 
+                'pick_code': pick_code, 
+                'sha1': sha1
+            }
+        else:
+            # 只有当缓存丢失时，才迫不得已去请求 115 API
+            info_res = client.fs_get_info(file_id)
+            if not info_res or not info_res.get('state') or not info_res.get('data'):
+                logger.warning(f"无法在 115 中定位到该文件(ID:{file_id})，可能已被删除。")
+                continue
+            info_data = info_res['data']
+            old_pid = info_data.get('parent_id') or info_data.get('cid')
+            pick_code = info_data.get('pick_code')
+            sha1 = info_data.get('sha1')
+
+        if old_pid: old_pids.add(str(old_pid))
+
+        root_items.append({
+            'fid': file_id,
+            'file_id': file_id,
+            'fn': original_name,
+            'fc': str(info_data.get('file_category', '1')),
+            'pid': old_pid,
+            'pc': pick_code,
+            'pick_code': pick_code,
+            'sha1': sha1,
+            '_record_id': r['id'],
+            '_old_cache': old_cache,
+            '_info_data': info_data
+        })
+
+        # 收集需要刷新的本地旧目录
+        if local_root and old_cache and old_cache.get('local_path'):
+            old_file_rel_path = str(old_cache['local_path']).lstrip('\\/')
+            old_dir = os.path.abspath(os.path.dirname(os.path.join(local_root, old_file_rel_path)))
+            refresh_target_dirs.add(old_dir)
+
+    if not root_items: return
+
+    title = root_items[0]['fn']
+    api_key = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+    try:
+        import handler.tmdb as tmdb
+        if media_type == 'tv': details = tmdb.get_tv_details(tmdb_id, api_key)
+        else: details = tmdb.get_movie_details(tmdb_id, api_key)
+        if details: title = details.get('title') or details.get('name') or title
+    except: pass
+
+    logger.info(f"  ➜ [批量重组] 开始对 {len(root_items)} 个文件执行定向整理 -> ID:{tmdb_id}")
+
+    organizer = SmartOrganizer(client, tmdb_id, media_type, title, None, False)
+    organizer.is_manual_correct = True
+    if season_num is not None and str(season_num).strip():
+        organizer.forced_season = int(season_num)
+        logger.info(f"  ➜ [批量重组] 已强制指定季号: Season {organizer.forced_season}")
+
+    # ★ 核心：将列表直接传给 execute，底层会自动打包成一次 115 API 移动请求！
+    success = organizer.execute(root_items, target_cid)
+    if not success:
+        logger.error("执行批量重组失败。")
+        return
+
+    # ★ 查找并重组关联字幕 (批量)
+    sub_items = []
+    for old_pid in old_pids:
+        if str(old_pid) == '0': continue
+        try:
+            sub_res = client.fs_files({'cid': old_pid, 'limit': 1000, 'record_open_time': 0, 'count_folders': 0})
+            for item in sub_res.get('data', []):
+                if str(item.get('fc', '0')) == '1':
+                    sub_name = item.get('fn') or item.get('n') or item.get('file_name', '')
+                    ext = sub_name.split('.')[-1].lower() if '.' in sub_name else ''
+                    if ext in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup']:
+                        # 检查是否匹配任何一个视频的基础名
+                        for r_item in root_items:
+                            v_name = r_item['_info_data'].get('file_name') or r_item['fn']
+                            v_base = v_name.rsplit('.', 1)[0] if '.' in v_name else v_name
+                            if sub_name.startswith(v_base):
+                                sub_items.append(item)
+                                break
+        except Exception as e:
+            logger.warning(f"  ➜ 查找关联字幕失败: {e}")
+
+    if sub_items:
+        logger.info(f"  🔤 [批量重组] 发现 {len(sub_items)} 个关联字幕，跟随重组...")
+        organizer.execute(sub_items, target_cid)
+
+    # ★ 本地擦屁股：精准删除旧的本地 STRM 和空目录
+    if local_root:
+        import shutil
+        protected_dirs = {os.path.abspath(local_root)}
+        for rule in organizer.rules:
+            cat_path = rule.get('category_path') or rule.get('dir_name')
+            if cat_path:
+                protected_dirs.add(os.path.abspath(os.path.join(local_root, cat_path.lstrip('\\/'))))
+        protected_dirs.add(os.path.abspath(os.path.join(local_root, "未识别")))
+
+        old_strm_paths_for_emby = [] # ★ 新增：收集旧路径用于极速扫描
+
+        for r_item in root_items:
+            old_cache = r_item['_old_cache']
+            if not old_cache or not old_cache.get('local_path'): continue
+
+            old_file_rel_path = str(old_cache['local_path']).lstrip('\\/')
+            old_strm_rel_path = os.path.splitext(old_file_rel_path)[0] + ".strm"
+            old_strm_full_path = os.path.join(local_root, old_strm_rel_path)
+
+            old_strm_paths_for_emby.append(old_strm_full_path) # ★ 收集路径
+
+            if os.path.exists(old_strm_full_path):
+                os.remove(old_strm_full_path)
+                logger.debug(f"  ➜ 删除本地旧 STRM: {old_strm_full_path}")
+
+            old_mi_full_path = os.path.splitext(old_file_rel_path)[0] + "-mediainfo.json"
+            if os.path.exists(old_mi_full_path):
+                os.remove(old_mi_full_path)
+
+            old_dir_full_path = os.path.dirname(old_strm_full_path)
+            old_base_name = os.path.splitext(os.path.basename(old_file_rel_path))[0]
+            if os.path.exists(old_dir_full_path):
+                for f in os.listdir(old_dir_full_path):
+                    if f.startswith(old_base_name) and f.split('.')[-1].lower() in ['srt', 'ass', 'ssa', 'sub', 'vtt', 'sup', 'nfo', 'jpg', 'png', 'jpeg', 'bif']:
+                        sub_to_del = os.path.join(old_dir_full_path, f)
+                        try:
+                            os.remove(sub_to_del)
+                        except: pass
+
+        # 向上递归清理本地空目录
+        for old_dir in list(refresh_target_dirs):
+            curr_dir = old_dir
+            while curr_dir and curr_dir not in protected_dirs:
+                if os.path.exists(curr_dir):
+                    has_media = False
+                    for root, _, files in os.walk(curr_dir):
+                        for f in files:
+                            ext = f.split('.')[-1].lower()
+                            if ext in {'strm', 'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov'}:
+                                has_media = True
+                                break
+                        if has_media: break
+
+                    if not has_media:
+                        shutil.rmtree(curr_dir)
+                        logger.info(f"  ➜ 本地旧目录已无媒体文件，执行删除: {curr_dir}")
+                        curr_dir = os.path.dirname(curr_dir)
+                    else:
+                        break
+                else:
+                    break
+
+        # =================================================================
+        # ★ 核心优化：调用极速扫描接口，秒级清理 Emby 中的失效旧条目
+        # =================================================================
+        emby_url = config.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+        emby_api_key = config.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+        if emby_url and emby_api_key and old_strm_paths_for_emby:
+            from handler import emby
+            logger.info(f"  ➜ 正在通知 Emby 极速扫描旧路径以清理失效媒体项...")
+            try:
+                # 传入 update_type="Deleted"，复用我们刚写的极速向上寻根扫描逻辑
+                emby.notify_emby_file_changes(old_strm_paths_for_emby, emby_url, emby_api_key, update_type="Deleted")
+            except Exception as e:
+                logger.warning(f"  ➜ 通知 Emby 极速扫描旧路径失败: {e}")
+
+    # ★ 网盘擦屁股：直接移交全局垃圾回收器
+    old_cids_to_check = set()
+    for r_item in root_items:
+        info_data = r_item['_info_data']
+        if info_data.get('paths'):
+            for p in info_data['paths']:
+                cid_val = str(p.get('file_id') or p.get('cid', ''))
+                if cid_val and cid_val != '0':
+                    old_cids_to_check.add(cid_val)
+        elif r_item['pid'] and str(r_item['pid']) != '0':
+            old_cids_to_check.add(str(r_item['pid']))
+
+    if old_cids_to_check:
+        from handler.p115_service import P115DeleteBuffer
+        logger.info(f"  ➜ 已将网盘旧目录链条 ({len(old_cids_to_check)}个层级) 加入全局清理队列，稍后执行清理...")
+        P115DeleteBuffer.add(fids=[], base_cids=list(old_cids_to_check))
+
+    # ★ 更新记录状态
+    try:
+        category_name = "未识别"
+        for rule in organizer.rules:
+            if str(rule.get('cid')) == str(target_cid):
+                category_name = rule.get('dir_name', '未识别')
+                break
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    UPDATE p115_organize_records 
+                    SET status = 'success', tmdb_id = %s, media_type = %s, target_cid = %s, category_name = %s
+                    WHERE id = ANY(%s)
+                """, (tmdb_id, media_type, target_cid, category_name, list(record_ids)))
+                conn.commit()
+    except Exception as e: pass
+
+    logger.info(f"  ➜ [批量重组] {len(root_items)} 个文件处理完成！")
