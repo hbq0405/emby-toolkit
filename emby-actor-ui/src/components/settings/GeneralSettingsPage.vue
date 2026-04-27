@@ -576,16 +576,13 @@
                             <n-text depth="3" style="font-size:0.8em;">最短5分钟。过短可能触发风控。</n-text>
                         </template>
                     </n-form-item>
-                    <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-                        媒体信息中心化 与 同步生成媒体信息 互斥，开启任意一项会自动关闭另一项。
-                    </n-alert>
                     <n-form-item label="媒体信息中心化" path="p115_mediainfo_center">
                         <n-switch v-model:value="configModel.p115_mediainfo_center">
                             <template #checked>共享媒体信息</template>
                             <template #unchecked>本地媒体信息</template>
                         </n-switch>
                         <template #feedback>
-                            <n-text depth="3" style="font-size:0.8em;">在线从中心服务器获取媒体信息数据，需要神医Pro；与“同步生成媒体信息”二选一。</n-text>
+                            <n-text depth="3" style="font-size:0.8em;">在线从中心服务器获取媒体信息数据，需要神医Pro。</n-text>
                         </template>
                     </n-form-item>
                     <n-form-item label="同步生成媒体信息" path="p115_generate_mediainfo">
@@ -595,7 +592,7 @@
                       </n-switch>
                       <template #feedback>
                           <n-text depth="3" style="font-size:0.8em;">
-                              开启后生成 STRM 时，会同步生成 -mediainfo.json 文件，需清空神医'可选媒体信息 JSON 根目录'；与“媒体信息中心化”二选一。
+                              同步生成 -mediainfo.json 文件，勿配置神医'可选媒体信息 JSON 根目录'。
                           </n-text>
                       </template>
                   </n-form-item>
