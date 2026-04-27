@@ -37,7 +37,10 @@ def get_mp_config():
     # 提供默认值
     default_cfg = {
         'moviepilot_url': '', 'moviepilot_username': '', 'moviepilot_password': '',
-        'moviepilot_recognition': False, 'resubscribe_daily_cap': 10, 'resubscribe_delay_seconds': 2.0
+        'moviepilot_recognition': False,
+        'link_delete_transfer_history': False,
+        'link_delete_download_files': False,
+        'resubscribe_daily_cap': 10, 'resubscribe_delay_seconds': 2.0
     }
     default_cfg.update(cfg)
     return jsonify({"success": True, "data": default_cfg})
