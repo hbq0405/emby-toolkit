@@ -56,6 +56,23 @@ for item in utils.DEFAULT_LANGUAGE_MAPPING:
 AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语', 'kor': '韩语'}
 SUB_DISPLAY_MAP = {'chi': '简体', 'yue': '繁体', 'eng': '英文', 'jpn': '日文', 'kor': '韩文'}
 
+# ★ 自动将 utils.py 中的小语种注册到 UI 展示映射表中
+for item in utils.DEFAULT_LANGUAGE_MAPPING:
+    label = item["label"]
+    if label not in ["国语", "粤语", "英语", "日语", "韩语", "无语言"]:
+        aliases = item.get("aliases", [])
+        if aliases:
+            emby_code = aliases[0] # 取第一个 3 字母代码，如 fre, ara
+            
+            # 音轨直接显示 label (如: 法语)
+            AUDIO_DISPLAY_MAP[emby_code] = label
+            
+            # 字幕习惯上把 "语" 换成 "文" (如: 法语 -> 法文)
+            sub_label = label
+            if sub_label.endswith("语"):
+                sub_label = sub_label[:-1] + "文"
+            SUB_DISPLAY_MAP[emby_code] = sub_label
+
 RELEASE_GROUPS: Dict[str, List[str]] = {
     "0ff": ['FF(?:(?:A|WE)B|CD|E(?:DU|B)|TV)'],
     "1pt": [],
