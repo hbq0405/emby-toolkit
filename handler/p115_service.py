@@ -27,17 +27,31 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# 内存级缓存，防止同剧集/同系列疯狂重复请求 TMDb
-_TMDB_METADATA_CACHE = {}
-_TMDB_SEARCH_CACHE = {}
-_AI_PARSE_CACHE = {}
-_MP_PARSE_CACHE = {}
+from collections import OrderedDict
+
+class LimitedCache(OrderedDict):
+    """带容量限制的内存缓存，防止内存泄漏撑爆服务器"""
+    def __init__(self, maxsize=1000, *args, **kwds):
+        self.maxsize = maxsize
+        super().__init__(*args, **kwds)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(key, value)
+        if len(self) > self.maxsize:
+            # 超过容量时，弹出最早插入的元素 (FIFO)
+            self.popitem(last=False)
+
+# 内存级缓存，防止同剧集/同系列疯狂重复请求 TMDb (限制容量)
+_TMDB_METADATA_CACHE = LimitedCache(maxsize=1000)
+_TMDB_SEARCH_CACHE = LimitedCache(maxsize=1000)
+_AI_PARSE_CACHE = LimitedCache(maxsize=1000)
+_MP_PARSE_CACHE = LimitedCache(maxsize=1000)
 
 # 全局直链缓存池，供反向代理和Web路由共享 
-_DIRECT_URL_CACHE = {}
+_DIRECT_URL_CACHE = LimitedCache(maxsize=2000)
 
 # 全局目录缓存池
-_GLOBAL_DIR_CACHE = {}
+_GLOBAL_DIR_CACHE = LimitedCache(maxsize=5000)
 _GLOBAL_DIR_LOCK = threading.Lock()
 
 def get_115_tokens():
@@ -2749,17 +2763,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 from database.connection import get_db_connection
                 with get_db_connection() as conn:
                     with conn.cursor() as cursor:
-                        # ★ 核心优化：直接把 json 也查出来放进内存！
-                        cursor.execute("SELECT sha1, mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", (list(video_sha1s),))
+                        # ★ 内存优化：只查 sha1 确认存在，绝不把庞大的 json 批量塞进内存！
+                        cursor.execute("SELECT sha1 FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", (list(video_sha1s),))
                         rows = cursor.fetchall()
                         if rows:
-                            hit_sha1s = []
                             for row in rows:
                                 local_cached_sha1s.add(row['sha1'])
-                                hit_sha1s.append(row['sha1'])
-                                if row['mediainfo_json']:
-                                    val = row['mediainfo_json']
-                                    local_pre_fetched_mediainfo[row['sha1']] = val if isinstance(val, (list, dict)) else json.loads(val)
                             
             except Exception: pass
             
@@ -2780,10 +2789,9 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             
                             if hit_count > 0:
                                 pre_fetched_mediainfo = valid_hits
-                                # ★ 核心修复：批量查询中心服务器后，立即写入本地缓存！
+                                # 批量查询中心服务器后，立即写入本地缓存！
                                 for k_sha1, v_json in valid_hits.items():
                                     P115CacheManager.save_mediainfo_cache(k_sha1, v_json)
-                                    local_pre_fetched_mediainfo[k_sha1] = v_json
                                 
                                 if hit_count == req_count:
                                     logger.info(f"  ➜ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
