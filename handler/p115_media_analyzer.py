@@ -302,7 +302,6 @@ class P115MediaAnalyzerMixin:
 
         feature_map = (
             getattr(self, "stream_feature_map", None)
-            or settings_db.get_setting("stream_feature_mapping")
             or utils.DEFAULT_STREAM_FEATURE_MAPPING
         )
 

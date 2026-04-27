@@ -373,6 +373,8 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         "patterns": [
             r"\bBrazil\b",
             r"\bBrasil\b",
+            r"\bBrazilian\b",
+            r"\bBrasilian\b",
             r"巴西",
         ],
     },
