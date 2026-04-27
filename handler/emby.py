@@ -183,7 +183,7 @@ def wait_for_server_idle(base_url: str, api_key: str, max_wait_seconds: int = 30
         "Extract Intro Fingerprint",     # 神医-提取片头指纹 (不影响可以忽略)
         "Extract Video Thumbnail",       # 神医-提取视频缩略图 (不影响可以忽略)
         "Update Emby.ApiClient",         # <--- 忽略，因为这个任务通常very fast
-        # "Scan media library",          # <--- 如果你想一边扫库一边硬跑，可以把这个注释解开
+        "Merge Multi Versions",          # 合并多版本 (通常很快，且不占资源)
     ]
     
     start_time = time.time()
