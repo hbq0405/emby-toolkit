@@ -3830,6 +3830,13 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     f.write(strm_content)
                 logger.info(f"  ➜ [MP直出] STRM 已生成 -> {strm_filename}")
 
+                # ★★★ 主动推送给实时监控队列，防止底层文件系统事件丢失 ★★★
+                try:
+                    from monitor_service import enqueue_file_actively
+                    enqueue_file_actively(strm_filepath)
+                except Exception: 
+                    pass
+
                 # 生成 Mediainfo
                 if config.get(constants.CONFIG_OPTION_115_GENERATE_MEDIAINFO, False):
                     try:
