@@ -33,7 +33,7 @@
           <n-switch v-model:value="formModel.link_delete_download_files" />
           <template #feedback>
             <n-text depth="3" style="font-size:0.8em;">
-              Emby删除媒体项时，同步删除下载器的种子和源文件。
+              Emby删除媒体项时，同步删除下载器的种子和源文件（含辅种）。
             </n-text>
           </template>
         </n-form-item>

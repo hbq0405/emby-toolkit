@@ -550,7 +550,7 @@
                     <!-- 选项 3: 删除下载器任务 -->
                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0 8px 16px;">
                       <div style="display: flex; flex-direction: column;">
-                        <span style="font-size: 13px; font-weight: 500;">删除下载器种子及源文件</span>
+                        <span style="font-size: 13px; font-weight: 500;">删除下载器任务及源文件（含辅种）</span>
                       </div>
                       <n-switch 
                         v-model:value="watchlistConfig.auto_delete_download_tasks" 
@@ -688,8 +688,8 @@ const watchlistConfig = ref({
   auto_pause: 0,
   douban_count_correction: false,
   auto_resub_ended: false,
+  auto_delete_old_files: false,
   auto_delete_mp_history: false,
-  auto_delete_mp_history: false,     
   auto_delete_download_tasks: false,
   sync_mp_subscription: false,
   revival_check_days: 365,
@@ -1447,25 +1447,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('resize', checkMobile);
   if (observer) {
     observer.disconnect();
-  }
-});
-
-// 1. 开启“删除下载器任务” -> 必须开启“删除 MP 整理记录” (因为要靠它拿 Hash)
-watch(() => watchlistConfig.value.auto_delete_download_tasks, (newVal) => {
-  if (newVal) {
-    if (!watchlistConfig.value.auto_delete_mp_history) {
-      watchlistConfig.value.auto_delete_mp_history = true;
-      message.info('已自动开启“删除 MP 整理记录”，以便获取种子 Hash 进行精确删除。');
-    }
-  }
-});
-
-// 2. 关闭“删除 MP 整理记录” -> 必须关闭“删除下载器任务” (否则只能按名字删，不安全)
-watch(() => watchlistConfig.value.auto_delete_mp_history, (newVal) => {
-  if (!newVal) {
-    if (watchlistConfig.value.auto_delete_download_tasks) {
-      watchlistConfig.value.auto_delete_download_tasks = false;
-    }
   }
 });
 

@@ -1068,16 +1068,33 @@ class WatchlistProcessor:
                 except Exception as e:
                     logger.error(f"  ➜ [自动清理] 执行删除逻辑时出错: {e}")
             
-            # 4. 删除整理记录 (MoviePilot) - 
-            related_hashes = []
-            if watchlist_cfg.get('auto_delete_mp_history', False):
-                logger.info(f"  ➜ [自动清理] 正在删除 MoviePilot 整理记录...")
-                related_hashes = moviepilot.delete_transfer_history(tmdb_id, season_number, series_name, self.config)
+            # 4. 清理 MoviePilot 整理记录 / 下载器旧任务
+            #    改用 smart_cleanup_mp_media 统一入口，避免旧接口只按 hash 盲删，漏掉同数据辅种。
+            delete_mp_history = bool(watchlist_cfg.get('auto_delete_mp_history', False))
+            delete_download_tasks = bool(watchlist_cfg.get('auto_delete_download_tasks', False))
 
-                # 4-1. 清理下载器中的旧任务 -
-                if watchlist_cfg.get('auto_delete_download_tasks', False):
-                    logger.info(f"  ➜ [自动清理] 正在删除下载器旧任务...")
-                    moviepilot.delete_download_tasks(series_name, self.config, hashes=related_hashes)
+            if delete_mp_history or delete_download_tasks:
+                cleanup_parts = []
+                if delete_mp_history:
+                    cleanup_parts.append("MoviePilot 整理记录")
+                if delete_download_tasks:
+                    cleanup_parts.append("下载器旧任务及源文件（含辅种）")
+
+                logger.info(f"  ➜ [自动清理] 正在清理 {'、'.join(cleanup_parts)}...")
+
+                cleanup_ok = moviepilot.smart_cleanup_mp_media(
+                    tmdb_id=str(tmdb_id),
+                    item_type='Series',
+                    season=season_number,
+                    episode=None,
+                    title=series_name,
+                    config=self.config,
+                    delete_history=delete_mp_history,
+                    delete_files=delete_download_tasks
+                )
+
+                if not cleanup_ok:
+                    logger.warning(f"  ➜ [自动清理] MoviePilot 智能清理未完全成功，将继续执行取消订阅和洗版订阅流程。")
 
             # 5. 取消旧订阅
             moviepilot.cancel_subscription(tmdb_id, 'Series', self.config, season=season_number)
