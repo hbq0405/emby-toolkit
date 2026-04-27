@@ -411,8 +411,20 @@ def _get_detected_languages_from_streams(
         if title_string:
             for lang_key, keywords in AUDIO_SUBTITLE_KEYWORD_MAP.items():
                 normalized_lang_key = lang_key.replace('sub_', '')
-                if any(keyword.lower() in title_string for keyword in keywords):
-                    stream_langs.add(normalized_lang_key)
+                for keyword in keywords:
+                    kw_lower = keyword.lower()
+                    if not kw_lower: continue
+                    
+                    # 中文词汇直接包含匹配即可
+                    if utils.contains_chinese(kw_lower):
+                        if kw_lower in title_string:
+                            stream_langs.add(normalized_lang_key)
+                            break
+                    else:
+                        # ★ 核心修复：英文/短码必须独立成词，防止 "te" 匹配到 "stereo"
+                        if re.search(rf"(?<![a-z0-9]){re.escape(kw_lower)}(?![a-z0-9])", title_string):
+                            stream_langs.add(normalized_lang_key)
+                            break
 
         # 2. 再看 Language 字段
         lang_code = str(stream.get('Language', '')).lower().strip()
