@@ -904,7 +904,61 @@ def emby_webhook():
             logger.debug("  ➜ 联动删除未开启，跳过网盘清理。")
 
         # --------------------------------------------------------
-        # 任务 2: 清理本地数据库、日志与内存缓存 (网盘删完再删本地)
+        # ★★★ 任务 2: 联动清理 MoviePilot (支持精准单集与辅种) ★★★
+        # --------------------------------------------------------
+        mp_config = settings_db.get_setting('mp_config') or {}
+        del_history = mp_config.get('link_delete_transfer_history', False)
+        del_files = mp_config.get('link_delete_download_files', False)
+
+        if (del_history or del_files) and original_item_id:
+            try:
+                # 尝试从本地数据库反查 TMDb ID 和季集信息 (此时数据库还没被删，完美拿到！)
+                db_tmdb_id = None
+                db_season = None
+                db_episode = None
+                db_title = original_item_name
+                db_item_type = original_item_type
+
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        # 使用 LIKE 模糊匹配 JSON 数组中的 ID
+                        cursor.execute("SELECT tmdb_id, item_type, season_number, episode_number, title, parent_series_tmdb_id FROM media_metadata WHERE emby_item_ids_json::text LIKE %s", (f'%"{original_item_id}"%',))
+                        row = cursor.fetchone()
+                        if row:
+                            db_item_type = row['item_type']
+                            if db_item_type == 'Movie':
+                                db_tmdb_id = row['tmdb_id']
+                                db_title = row['title']
+                            elif db_item_type == 'Episode':
+                                db_tmdb_id = row['parent_series_tmdb_id']
+                                db_season = row['season_number']
+                                db_episode = row['episode_number']
+                                # 剧集需要用主剧名去搜 MP
+                                cursor.execute("SELECT title FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (db_tmdb_id,))
+                                p_row = cursor.fetchone()
+                                if p_row: db_title = p_row['title']
+                            elif db_item_type == 'Season':
+                                db_tmdb_id = row['parent_series_tmdb_id']
+                                db_season = row['season_number']
+                                cursor.execute("SELECT title FROM media_metadata WHERE tmdb_id = %s AND item_type = 'Series'", (db_tmdb_id,))
+                                p_row = cursor.fetchone()
+                                if p_row: db_title = p_row['title']
+                            elif db_item_type == 'Series':
+                                db_tmdb_id = row['tmdb_id']
+                                db_title = row['title']
+
+                if db_tmdb_id:
+                    logger.info(f"  ➜ [深度删除] 触发 MP 联动清理: {db_title} (TMDb:{db_tmdb_id}, S:{db_season}, E:{db_episode})")
+                    from handler.moviepilot import smart_cleanup_mp_media
+                    # 异步执行，防止阻塞 Webhook
+                    spawn(smart_cleanup_mp_media, str(db_tmdb_id), db_item_type, db_season, db_episode, db_title, None, del_history, del_files)
+                else:
+                    logger.warning(f"  ➜ [深度删除] 无法从本地数据库反查到 Emby ID {original_item_id} 的 TMDb 信息，跳过 MP 联动清理。")
+            except Exception as e:
+                logger.error(f"  ➜ [深度删除] MP 联动清理失败: {e}", exc_info=True)
+
+        # --------------------------------------------------------
+        # 任务 3: 清理本地数据库、日志与内存缓存 (网盘删完再删本地)
         # --------------------------------------------------------
         if original_item_id:
             try:

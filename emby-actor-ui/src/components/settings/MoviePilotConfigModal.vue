@@ -20,7 +20,7 @@
             </n-text>
           </template>
         </n-form-item>
-        <n-divider title-placement="left" style="margin: 10px 0 20px 0;">联动删除（待开发）</n-divider>
+        <n-divider title-placement="left" style="margin: 10px 0 20px 0;">联动删除</n-divider>
         <n-form-item label="删除整理记录">
           <n-switch v-model:value="formModel.link_delete_transfer_history" />
           <template #feedback>

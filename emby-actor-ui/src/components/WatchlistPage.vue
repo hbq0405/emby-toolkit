@@ -550,15 +550,11 @@
                     <!-- 选项 3: 删除下载器任务 -->
                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0 8px 16px;">
                       <div style="display: flex; flex-direction: column;">
-                        <span style="font-size: 13px; font-weight: 500;">删除下载器任务</span>
-                        <span style="font-size: 12px; color: var(--n-text-color-3); transform: scale(0.9); transform-origin: left;">
-                          * 依赖整理记录中的 Hash 进行精确删除
-                        </span>
+                        <span style="font-size: 13px; font-weight: 500;">删除下载器种子及源文件</span>
                       </div>
                       <n-switch 
                         v-model:value="watchlistConfig.auto_delete_download_tasks" 
                         size="small"
-                        :disabled="!watchlistConfig.auto_delete_mp_history" 
                       >
                         <template #checked>开启</template>
                         <template #unchecked>关闭</template>

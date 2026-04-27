@@ -297,34 +297,53 @@ def update_subscription_status(tmdb_id: int, season: Optional[int], status: str,
         logger.error(f"  ➜ 调用 MoviePilot 更新接口出错: {e}")
         return False
     
-def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[str, Any] = None) -> list:
+# ======================================================================
+# ★★★ 智能清理引擎 (支持精准单集、辅种清理、记录与文件分离) ★★★
+# ======================================================================
+
+def _parse_episodes_string(ep_str: str) -> set:
+    """解析 MP 整理记录中的 episodes 字段 (如 'E01', '01-05', '1,2,3') 为集合"""
+    if not ep_str: return set()
+    ep_str = str(ep_str).upper().replace('E', '').replace('P', '').strip()
+    result = set()
+    for part in ep_str.split(','):
+        part = part.strip()
+        if not part: continue
+        if '-' in part:
+            try:
+                start, end = map(int, part.split('-'))
+                result.update(range(start, end + 1))
+            except: pass
+        else:
+            try: result.add(int(part))
+            except: pass
+    return result
+
+def analyze_mp_records_for_deletion(tmdb_id: str, item_type: str, season: Optional[int], episode: Optional[int], title: str, config: Dict[str, Any]) -> tuple:
     """
-    【清理整理记录】
-    修改返回值：返回一个包含被删除记录 download_hash 的列表。
-    如果失败或无记录，返回空列表 []。
+    智能分析 MP 整理记录，计算出哪些记录该删，哪些种子该删，哪些种子该暂停。
+    返回: (records_to_delete, hashes_to_delete, hashes_to_pause)
     """
-    collected_hashes = []
+    records_to_delete = []
+    hashes_to_delete = set()
+    hashes_to_pause = set()
+    
     try:
         mp_config = settings_db.get_setting('mp_config') or {}
         moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
-        
         access_token = _get_access_token(config)
-        if not access_token:
-            return []
+        if not access_token: return [], [], []
 
         headers = {"Authorization": f"Bearer {access_token}"}
         search_url = f"{moviepilot_url}/api/v1/history/transfer"
         
         all_records = []
         page = 1
-        page_size = 500
         
-        logger.info(f"  ➜ [MP清理] 正在全量搜索《{title}》的整理记录...")
-        
+        # 1. 拉取该标题下的所有整理记录
         while True:
-            params = {"title": title, "page": page, "count": page_size}
             try:
-                res = requests.get(search_url, headers=headers, params=params, timeout=30)
+                res = requests.get(search_url, headers=headers, params={"title": title, "page": page, "count": 500}, timeout=30)
                 if res.status_code != 200: break
                 data = res.json()
                 if not data: break
@@ -338,107 +357,197 @@ def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[
                 
                 if not records_list: break
                 all_records.extend(records_list)
-                if len(records_list) < page_size: break
+                if len(records_list) < 500: break
                 page += 1
             except: break
 
-        if not all_records:
-            logger.info(f"  ➜ [MP清理] 未找到《{title}》的任何整理记录。")
-            return []
+        if not all_records: return [], [], []
 
-        ids_to_delete = []
         target_tmdb = int(tmdb_id)
-        target_season = int(season)
-        
-        for record in all_records:
-            if not isinstance(record, dict): continue
-            rec_tmdb = record.get('tmdbid')
-            if rec_tmdb != target_tmdb: continue
+        hash_usage = {} # 记录每个 hash 被哪些记录使用
+
+        # 2. 遍历记录，进行精准匹配
+        for rec in all_records:
+            if not isinstance(rec, dict): continue
+            if rec.get('tmdbid') != target_tmdb: continue
+
+            rec_hash = rec.get('download_hash')
+            if rec_hash:
+                if rec_hash not in hash_usage: hash_usage[rec_hash] = []
+                hash_usage[rec_hash].append(rec)
+
+            is_target = False
             
-            rec_seasons = str(record.get('seasons', '')).strip().upper()
-            import re
-            match = re.search(r'(\d+)', rec_seasons)
-            if match:
-                try:
-                    if int(match.group(1)) == target_season:
-                        ids_to_delete.append(record)
-                except: continue
+            if item_type == 'Movie':
+                is_target = True
+            else:
+                # 剧集匹配
+                rec_season_str = str(rec.get('seasons', '')).strip().upper()
+                import re
+                match = re.search(r'(\d+)', rec_season_str)
+                if not match: continue
+                rec_season = int(match.group(1))
+                
+                if season is not None and rec_season == int(season):
+                    if episode is None:
+                        # 删整季
+                        is_target = True
+                    else:
+                        # 删单集
+                        rec_eps = _parse_episodes_string(str(rec.get('episodes', '')))
+                        if not rec_eps:
+                            # 季包记录，不能删记录，但 hash 会被标记为 pause
+                            is_target = False
+                        elif int(episode) in rec_eps:
+                            # 如果记录只包含这一集，可以删记录
+                            if len(rec_eps) == 1: is_target = True
+                            else: is_target = False # 包含多集，不能删记录
 
-        if not ids_to_delete:
-            logger.info(f"  ➜ [MP清理] 搜索到 {len(all_records)} 条记录，但没有 《{title}》 - 第 {season} 季 的记录。")
-            return []
+            if is_target:
+                records_to_delete.append(rec)
 
-        logger.info(f"  ➜ [MP清理] 筛选出 {len(ids_to_delete)} 条《{title}》 - 第 {season} 季 的整理记录，开始执行删除...")
+        # 3. 依赖分析：决定 Hash 的生死
+        for h, recs in hash_usage.items():
+            can_delete = True
+            used_by_target = False
+            
+            for r in recs:
+                # 如果这个 hash 关联的某条记录不在“待删除列表”中，说明还有其他集在用它！
+                if r not in records_to_delete:
+                    can_delete = False
+                
+                # 检查这个 hash 是否真的被我们要删的目标用到了
+                if item_type == 'Movie' or episode is None:
+                    used_by_target = True
+                else:
+                    eps = _parse_episodes_string(str(r.get('episodes', '')))
+                    if not eps or int(episode) in eps:
+                        used_by_target = True
 
-        delete_url = f"{moviepilot_url}/api/v1/history/transfer"
-        del_params = {"deletesrc": "false", "deletedest": "false"}
-        
-        deleted_count = 0
-        for rec in ids_to_delete:
-            try:
-                rec_hash = rec.get('download_hash')
-                if rec_hash:
-                    collected_hashes.append(rec_hash)
+            if used_by_target:
+                if can_delete:
+                    hashes_to_delete.add(h)
+                else:
+                    hashes_to_pause.add(h)
 
-                del_res = requests.delete(delete_url, headers=headers, params=del_params, json=rec, timeout=15)
-                if del_res.status_code == 200:
-                    deleted_count += 1
-            except: pass
-
-        collected_hashes = list(set(collected_hashes))
-        logger.info(f"  ➜ [MP清理] 清理完成，共删除 {deleted_count} 条记录，提取到 {len(collected_hashes)} 个关联种子Hash。")
-        
-        return collected_hashes
-
+        return records_to_delete, list(hashes_to_delete), list(hashes_to_pause)
     except Exception as e:
-        logger.error(f"  ➜ [MP清理] 执行出错: {e}")
-        return []
+        logger.error(f"  ➜ [MP智能分析] 失败: {e}")
+        return [], [], []
 
-def delete_download_tasks(keyword: str, config: Dict[str, Any] = None, hashes: list = None) -> bool:
+def smart_cleanup_mp_media(tmdb_id: str, item_type: str, season: Optional[int], episode: Optional[int], title: str, config: Dict[str, Any], delete_history: bool = True, delete_files: bool = True) -> bool:
     """
-    清理下载任务 - 安全版
-    Strict Mode: 仅接受 hashes 列表进行精确删除。
-    如果不传 hashes 或为空，直接跳过，绝不使用 keyword 搜索兜底。
+    【全新入口】智能清理 MP 媒体 (支持独立控制记录和文件，支持辅种清理)
     """
-    if not hashes:
-        return False
-
     try:
         mp_config = settings_db.get_setting('mp_config') or {}
         moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
-        
         access_token = _get_access_token(config)
         if not access_token: return False
 
         headers = {"Authorization": f"Bearer {access_token}"}
-        deleted_count = 0
-
-        logger.info(f"  ➜ [下载器清理] 正在根据 Hash 精确删除 {len(hashes)} 个任务...")
         
-        for task_hash in hashes:
-            if not task_hash: continue
+        log_target = f"《{title}》"
+        if item_type != 'Movie':
+            log_target += f" S{season}" + (f"E{episode}" if episode else " (整季)")
             
-            del_url = f"{moviepilot_url}/api/v1/download/{task_hash}"
-            try:
-                del_res = requests.delete(del_url, headers=headers, timeout=10)
-                if del_res.status_code == 200:
-                    logger.info(f" ➜ [下载器清理] 已精确删除任务 Hash: {task_hash[:8]}...")
-                    deleted_count += 1
-            except Exception as e:
-                logger.debug(f" [下载器清理] 删除 Hash {task_hash[:8]} 失败: {e}")
+        logger.info(f"  ➜ [MP智能清理] 开始分析 {log_target} 的依赖关系...")
         
-        if deleted_count > 0:
-            logger.info(f"  ➜ [下载器清理] Hash 精确清理完成，共删除 {deleted_count} 个任务。")
-            import time
-            time.sleep(2)
-            return True
-        else:
-            logger.info(f"  ➜ [下载器清理] 提供的 Hash 均未在下载器中找到活跃任务，无需操作。")
-            return True
+        records_to_delete, hashes_to_delete, hashes_to_pause = analyze_mp_records_for_deletion(tmdb_id, item_type, season, episode, title, config)
+        
+        # 1. 删除整理记录
+        if delete_history and records_to_delete:
+            logger.info(f"  ➜ [MP智能清理] 准备删除 {len(records_to_delete)} 条整理记录...")
+            del_url = f"{moviepilot_url}/api/v1/history/transfer"
+            del_params = {"deletesrc": "false", "deletedest": "false"}
+            for rec in records_to_delete:
+                try: requests.delete(del_url, headers=headers, params=del_params, json=rec, timeout=10)
+                except: pass
+            logger.info(f"  ➜ [MP智能清理] 整理记录删除完成。")
 
+        # 2. 处理种子及源文件 (包含辅种一网打尽)
+        if delete_files and (hashes_to_delete or hashes_to_pause):
+            logger.info(f"  ➜ [MP智能清理] 准备处理种子: {len(hashes_to_delete)} 个待删除, {len(hashes_to_pause)} 个待暂停 (因包含其他存活集)...")
+            
+            # 获取所有下载任务，解决辅种问题
+            all_tasks = get_downloading_tasks(config)
+            
+            # 遍历所有任务，只要 hash 匹配，不管在哪个下载器，统统揪出来！
+            tasks_to_delete = []
+            tasks_to_pause = []
+            
+            if all_tasks:
+                for task in all_tasks:
+                    task_hash = task.get('hash')
+                    if not task_hash: continue
+                    
+                    if task_hash in hashes_to_delete: tasks_to_delete.append(task_hash)
+                    elif task_hash in hashes_to_pause: tasks_to_pause.append(task_hash)
+            else:
+                # 兜底盲狙
+                tasks_to_delete = hashes_to_delete
+                tasks_to_pause = hashes_to_pause
+
+            # 去重
+            tasks_to_delete = list(set(tasks_to_delete))
+            tasks_to_pause = list(set(tasks_to_pause))
+
+            # 执行删除
+            for h in tasks_to_delete:
+                try:
+                    requests.delete(f"{moviepilot_url}/api/v1/download/{h}", headers=headers, timeout=10)
+                    logger.info(f"    ├─ 已彻底删除种子及源文件 (Hash: {h[:8]}...)")
+                except: pass
+            
+            # 执行暂停
+            for h in tasks_to_pause:
+                try:
+                    requests.get(f"{moviepilot_url}/api/v1/download/stop/{h}", headers=headers, timeout=10)
+                    logger.info(f"    ├─ 已暂停种子，保留源文件 (Hash: {h[:8]}...)")
+                except: pass
+                
+            logger.info(f"  ➜ [MP智能清理] 种子及源文件处理完成。")
+
+        return True
     except Exception as e:
-        logger.error(f"  ➜ [下载器清理] 执行出错: {e}")
+        logger.error(f"  ➜ [MP智能清理] 发生异常: {e}", exc_info=True)
         return False
+
+# ======================================================================
+# ★★★ 兼容旧版接口 (防止其他模块报错) ★★★
+# ======================================================================
+def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[str, Any] = None) -> list:
+    """兼容旧版：只删记录，返回 hashes 供旧版 delete_download_tasks 使用"""
+    records_to_delete, hashes_to_delete, hashes_to_pause = analyze_mp_records_for_deletion(tmdb_id, 'Series', season, None, title, config)
+    
+    if records_to_delete:
+        mp_config = settings_db.get_setting('mp_config') or {}
+        moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
+        access_token = _get_access_token(config)
+        if access_token:
+            headers = {"Authorization": f"Bearer {access_token}"}
+            del_url = f"{moviepilot_url}/api/v1/history/transfer"
+            for rec in records_to_delete:
+                try: requests.delete(del_url, headers=headers, params={"deletesrc": "false", "deletedest": "false"}, json=rec, timeout=10)
+                except: pass
+                
+    return list(set(hashes_to_delete + hashes_to_pause))
+
+def delete_download_tasks(keyword: str, config: Dict[str, Any] = None, hashes: list = None) -> bool:
+    """兼容旧版：接收 hashes 盲删"""
+    if not hashes: return False
+    try:
+        mp_config = settings_db.get_setting('mp_config') or {}
+        moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token: return False
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        for h in hashes:
+            try: requests.delete(f"{moviepilot_url}/api/v1/download/{h}", headers=headers, timeout=10)
+            except: pass
+        return True
+    except: return False
     
 def get_downloading_tasks(config: Dict[str, Any] = None) -> list:
     """获取当前正在下载的任务列表"""
