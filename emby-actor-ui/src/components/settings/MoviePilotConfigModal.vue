@@ -25,7 +25,7 @@
           <n-switch v-model:value="formModel.link_delete_transfer_history" />
           <template #feedback>
             <n-text depth="3" style="font-size:0.8em;">
-              神医深度删除通知触发时，同步删除 MoviePilot 中匹配的整理记录。
+              Emby删除媒体项时，同步删除 MoviePilot 中匹配的整理记录。
             </n-text>
           </template>
         </n-form-item>
@@ -33,7 +33,7 @@
           <n-switch v-model:value="formModel.link_delete_download_files" />
           <template #feedback>
             <n-text depth="3" style="font-size:0.8em;">
-              神医深度删除通知触发时，根据整理记录关联的 Hash 清理 MP 下载任务，并请求删除下载源文件。
+              Emby删除媒体项时，同步删除下载器的种子和源文件。
             </n-text>
           </template>
         </n-form-item>

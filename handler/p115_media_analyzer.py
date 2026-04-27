@@ -1205,7 +1205,7 @@ class P115MediaAnalyzerMixin:
                 # ★ 新增：动态提取音轨中的中文特征词（解决“中译公映”无法匹配的问题）
                 if default_audio:
                     # 剔除常见无意义词汇，提取独特的中文描述
-                    clean_audio_title = re.sub(r"(国语|粤语|英语|日语|韩语|默认|特效|双语|简英|繁英|简体|繁体|中英|声道|音轨)", "", audio_title)
+                    clean_audio_title = re.sub(r"(默认|特效|双语|简英|繁英|简体|繁体|中英|声道|音轨)", "", audio_title)
                     chinese_chunks = re.findall(r'[\u4e00-\u9fa5]{2,}', clean_audio_title)
                     for chunk in chinese_chunks:
                         if chunk.lower() not in active_audio_features:
