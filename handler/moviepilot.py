@@ -319,6 +319,155 @@ def _parse_episodes_string(ep_str: str) -> set:
             except: pass
     return result
 
+def _normalize_hash(value: Any) -> str:
+    """统一下载任务 Hash，避免大小写导致辅种匹配失败。"""
+    return str(value or "").strip().lower()
+
+def _unique_keep_order(values: list) -> list:
+    """去重但保持原始顺序，方便日志和 API 调用。"""
+    result = []
+    seen = set()
+    for value in values or []:
+        norm = _normalize_hash(value)
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        result.append(str(value).strip())
+    return result
+
+def _extract_task_hash(task: dict) -> str:
+    """兼容不同 MoviePilot / 下载器返回字段。"""
+    if not isinstance(task, dict):
+        return ""
+    return str(
+        task.get("hash")
+        or task.get("id")
+        or task.get("info_hash")
+        or task.get("infoHash")
+        or task.get("download_hash")
+        or task.get("torrent_hash")
+        or ""
+    ).strip()
+
+def _extract_task_name(task: dict) -> str:
+    """取下载任务名称，用于按官方插件逻辑识别辅种。"""
+    if not isinstance(task, dict):
+        return ""
+    return str(
+        task.get("name")
+        or task.get("title")
+        or task.get("download_name")
+        or task.get("torrent_name")
+        or task.get("torrentName")
+        or ""
+    ).strip()
+
+def _extract_task_size(task: dict) -> Optional[int]:
+    """取下载任务体积；只有能解析成正整数时才用于辅种匹配，避免误伤。"""
+    if not isinstance(task, dict):
+        return None
+
+    value = (
+        task.get("size")
+        or task.get("total_size")
+        or task.get("totalSize")
+        or task.get("total_size_bytes")
+        or task.get("totalSizeBytes")
+        or task.get("length")
+    )
+
+    try:
+        size = int(float(value))
+        return size if size > 0 else None
+    except Exception:
+        return None
+
+def _expand_hashes_with_same_data(target_hashes: list, all_tasks: list, action_name: str = "删除") -> list:
+    """
+    参考官方自动删种插件的“处理辅种”逻辑：
+    先找到目标 Hash 对应的下载任务，再把下载队列中“名称相同 + 体积相同”的其他 Hash 一并纳入。
+    这样才能删掉同数据辅种，而不是只处理 MP 整理记录里的主 Hash。
+    """
+    target_hashes = _unique_keep_order(target_hashes)
+    if not target_hashes:
+        return []
+
+    # 没拿到下载队列时，只能回退为原 hash 盲处理。
+    if not all_tasks:
+        return target_hashes
+
+    target_norms = {_normalize_hash(h) for h in target_hashes if h}
+    task_items = []
+
+    for task in all_tasks:
+        if not isinstance(task, dict):
+            continue
+
+        task_hash = _extract_task_hash(task)
+        norm_hash = _normalize_hash(task_hash)
+        if not norm_hash:
+            continue
+
+        task_items.append({
+            "hash": task_hash,
+            "norm_hash": norm_hash,
+            "name": _extract_task_name(task),
+            "size": _extract_task_size(task),
+        })
+
+    # 主种签名：只有命中待处理 Hash 的任务，才拿它的 name + size 做辅种扩展。
+    target_signatures = {
+        (item["name"], item["size"])
+        for item in task_items
+        if item["norm_hash"] in target_norms and item["name"] and item["size"]
+    }
+
+    expanded = []
+    expanded_norms = set()
+
+    def _add(hash_value: str):
+        norm = _normalize_hash(hash_value)
+        if norm and norm not in expanded_norms:
+            expanded_norms.add(norm)
+            expanded.append(hash_value)
+
+    # 主 hash 永远保留，避免下载队列里暂时查不到时漏删。
+    for h in target_hashes:
+        _add(h)
+
+    if not target_signatures:
+        logger.debug("  ➜ [MP智能清理] 未能在下载队列中定位主种名称/大小，跳过辅种扩展。")
+        return expanded
+
+    for item in task_items:
+        if item["norm_hash"] in expanded_norms:
+            continue
+        if item["name"] and item["size"] and (item["name"], item["size"]) in target_signatures:
+            _add(item["hash"])
+            logger.info(
+                f"    ├─ 捕获同数据辅种，纳入{action_name}: "
+                f"{item['name']} (Hash: {item['hash'][:8]}...)"
+            )
+
+    return expanded
+
+def _extract_download_task_list(data: Any) -> list:
+    """兼容 /api/v1/download/ 不同版本可能返回 list 或分页 dict。"""
+    if isinstance(data, list):
+        return data
+
+    if isinstance(data, dict):
+        for key in ("data", "list", "items", "results"):
+            value = data.get(key)
+            if isinstance(value, list):
+                return value
+            if isinstance(value, dict):
+                nested = _extract_download_task_list(value)
+                if nested:
+                    return nested
+
+    return []
+
 def analyze_mp_records_for_deletion(tmdb_id: str, item_type: str, season: Optional[int], episode: Optional[int], title: str, config: Dict[str, Any]) -> tuple:
     """
     智能分析 MP 整理记录，计算出哪些记录该删，哪些种子该删，哪些种子该暂停。
@@ -469,28 +618,16 @@ def smart_cleanup_mp_media(tmdb_id: str, item_type: str, season: Optional[int], 
         if delete_files and (hashes_to_delete or hashes_to_pause):
             logger.info(f"  ➜ [MP智能清理] 准备处理种子: {len(hashes_to_delete)} 个待删除, {len(hashes_to_pause)} 个待暂停 (因包含其他存活集)...")
             
-            # 获取所有下载任务，解决辅种问题
+            # 获取所有下载任务，用“名称 + 大小”扩展同数据辅种。
+            # 注意：辅种 Hash 与主种不同，只按 hash 永远抓不到。
             all_tasks = get_downloading_tasks(config)
-            
-            # 遍历所有任务，只要 hash 匹配，不管在哪个下载器，统统揪出来！
-            tasks_to_delete = []
-            tasks_to_pause = []
-            
-            if all_tasks:
-                for task in all_tasks:
-                    task_hash = task.get('hash')
-                    if not task_hash: continue
-                    
-                    if task_hash in hashes_to_delete: tasks_to_delete.append(task_hash)
-                    elif task_hash in hashes_to_pause: tasks_to_pause.append(task_hash)
-            else:
-                # 兜底盲狙
-                tasks_to_delete = hashes_to_delete
-                tasks_to_pause = hashes_to_pause
 
-            # 去重
-            tasks_to_delete = list(set(tasks_to_delete))
-            tasks_to_pause = list(set(tasks_to_pause))
+            tasks_to_delete = _expand_hashes_with_same_data(hashes_to_delete, all_tasks, action_name="删除")
+            tasks_to_pause = _expand_hashes_with_same_data(hashes_to_pause, all_tasks, action_name="暂停")
+
+            # 删除优先于暂停，避免同一个 hash 被重复处理。
+            delete_norms = {_normalize_hash(h) for h in tasks_to_delete}
+            tasks_to_pause = [h for h in tasks_to_pause if _normalize_hash(h) not in delete_norms]
 
             # 执行删除
             for h in tasks_to_delete:
@@ -543,6 +680,8 @@ def delete_download_tasks(keyword: str, config: Dict[str, Any] = None, hashes: l
         if not access_token: return False
 
         headers = {"Authorization": f"Bearer {access_token}"}
+        all_tasks = get_downloading_tasks(config)
+        hashes = _expand_hashes_with_same_data(hashes, all_tasks, action_name="删除")
         for h in hashes:
             try: requests.delete(f"{moviepilot_url}/api/v1/download/{h}", headers=headers, timeout=10)
             except: pass
@@ -561,7 +700,7 @@ def get_downloading_tasks(config: Dict[str, Any] = None) -> list:
         headers = {"Authorization": f"Bearer {access_token}"}
         res = requests.get(f"{moviepilot_url}/api/v1/download/", headers=headers, timeout=15)
         if res.status_code == 200:
-            return res.json()
+            return _extract_download_task_list(res.json())
         return []
     except Exception as e:
         logger.error(f"  ➜ 获取 MP 下载队列失败: {e}")
