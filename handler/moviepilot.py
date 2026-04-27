@@ -3,7 +3,7 @@
 import requests
 import json
 import logging
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List, Tuple
 
 import handler.tmdb as tmdb
 import constants
@@ -319,12 +319,14 @@ def _parse_episodes_string(ep_str: str) -> set:
             except: pass
     return result
 
-def _normalize_hash(value: Any) -> str:
-    """统一下载任务 Hash，避免大小写导致辅种匹配失败。"""
+
+def _normalize_hash(value) -> str:
+    """统一 Hash 形态，避免大小写/空格导致匹配失败。"""
     return str(value or "").strip().lower()
 
+
 def _unique_keep_order(values: list) -> list:
-    """去重但保持原始顺序，方便日志和 API 调用。"""
+    """有序去重。"""
     result = []
     seen = set()
     for value in values or []:
@@ -335,93 +337,307 @@ def _unique_keep_order(values: list) -> list:
         result.append(str(value).strip())
     return result
 
-def _extract_task_hash(task: dict) -> str:
-    """兼容不同 MoviePilot / 下载器返回字段。"""
-    if not isinstance(task, dict):
+
+def _safe_int_value(value, default: int = 0) -> int:
+    try:
+        if value is None or value == "":
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
+
+def _basename_text(value) -> str:
+    value = str(value or "").strip()
+    if not value:
         return ""
-    return str(
-        task.get("hash")
-        or task.get("id")
-        or task.get("info_hash")
-        or task.get("infoHash")
-        or task.get("download_hash")
-        or task.get("torrent_hash")
-        or ""
-    ).strip()
+    value = value.replace('\\', '/')
+    return value.rsplit('/', 1)[-1].strip()
+
+
+def _normalize_name_for_match(value) -> str:
+    """用于辅种匹配的名称归一化；保留语义，去掉常见路径/空白差异。"""
+    name = _basename_text(value)
+    name = re.sub(r"\s+", " ", name).strip().lower()
+    return name
+
+
+def _extract_first_value(data: dict, keys: tuple):
+    if not isinstance(data, dict):
+        return None
+    for key in keys:
+        if key in data and data.get(key) not in (None, ""):
+            return data.get(key)
+    return None
+
+
+def _extract_task_hash(task: dict) -> str:
+    value = _extract_first_value(task, (
+        "hash", "hashString", "hash_string", "info_hash", "infoHash",
+        "download_hash", "downloadHash", "torrent_hash", "torrentHash", "id"
+    ))
+    return str(value or "").strip()
+
 
 def _extract_task_name(task: dict) -> str:
-    """取下载任务名称，用于按官方插件逻辑识别辅种。"""
-    if not isinstance(task, dict):
-        return ""
-    return str(
-        task.get("name")
-        or task.get("title")
-        or task.get("download_name")
-        or task.get("torrent_name")
-        or task.get("torrentName")
-        or ""
-    ).strip()
+    value = _extract_first_value(task, (
+        "name", "title", "torrent_name", "torrentName", "download_name", "downloadName",
+        "save_name", "saveName", "filename", "file_name", "fileName", "torrentname",
+        "path", "save_path", "savePath", "download_path", "downloadPath", "download_dir", "downloadDir"
+    ))
+    return _basename_text(value)
+
 
 def _extract_task_size(task: dict) -> Optional[int]:
-    """取下载任务体积；只有能解析成正整数时才用于辅种匹配，避免误伤。"""
-    if not isinstance(task, dict):
-        return None
+    value = _extract_first_value(task, (
+        "size", "total_size", "totalSize", "total_size_bytes", "totalSizeBytes",
+        "download_size", "downloadSize", "torrent_size", "torrentSize", "length",
+        "content_size", "contentSize", "total_size_done", "totalSizeDone"
+    ))
+    size = _safe_int_value(value, 0)
+    return size if size > 0 else None
 
-    value = (
-        task.get("size")
-        or task.get("total_size")
-        or task.get("totalSize")
-        or task.get("total_size_bytes")
-        or task.get("totalSizeBytes")
-        or task.get("length")
-    )
 
+def _extract_download_task_list(data: Any) -> list:
+    """兼容 /api/v1/download/ 不同版本返回 list / Response(data=list) / 分页 dict。"""
+    if isinstance(data, list):
+        return data
+    if not isinstance(data, dict):
+        return []
+
+    for key in ("data", "list", "items", "results", "records"):
+        value = data.get(key)
+        if isinstance(value, list):
+            return value
+        if isinstance(value, dict):
+            nested = _extract_download_task_list(value)
+            if nested:
+                return nested
+    return []
+
+
+def _request_json(method: str, url: str, headers: dict = None, **kwargs):
     try:
-        size = int(float(value))
-        return size if size > 0 else None
-    except Exception:
-        return None
+        response = requests.request(method, url, headers=headers, **kwargs)
+        if response.status_code not in (200, 201, 204):
+            return None, response
+        if response.status_code == 204 or not response.text:
+            return {}, response
+        try:
+            return response.json(), response
+        except Exception:
+            return {}, response
+    except Exception as e:
+        logger.debug(f"  ➜ [MP智能清理] 请求失败: {url} -> {e}")
+        return None, None
+
+
+def _get_mp_downloader_configs(moviepilot_url: str, headers: dict) -> list:
+    """通过 MP 系统设置读取下载器配置，用于直连下载器列出所有种子。"""
+    data, _ = _request_json("GET", f"{moviepilot_url}/api/v1/system/setting/Downloaders", headers=headers, timeout=15)
+    if not data:
+        return []
+
+    value = None
+    if isinstance(data, dict):
+        if isinstance(data.get("data"), dict):
+            value = data.get("data", {}).get("value")
+        elif isinstance(data.get("data"), list):
+            value = data.get("data")
+        elif isinstance(data.get("value"), list):
+            value = data.get("value")
+
+    return value if isinstance(value, list) else []
+
+
+def _conf_get(conf: dict, *keys, default=None):
+    if not isinstance(conf, dict):
+        return default
+    cfg = conf.get("config") if isinstance(conf.get("config"), dict) else conf
+    for key in keys:
+        if key in cfg and cfg.get(key) not in (None, ""):
+            return cfg.get(key)
+        if key in conf and conf.get(key) not in (None, ""):
+            return conf.get(key)
+    return default
+
+
+def _build_base_url(conf: dict) -> str:
+    host = str(_conf_get(conf, "host", "url", "server", "address", "domain", default="") or "").strip().rstrip('/')
+    port = _conf_get(conf, "port", default=None)
+    ssl = bool(_conf_get(conf, "ssl", "https", default=False))
+
+    if not host:
+        return ""
+    if not re.match(r"^https?://", host, re.I):
+        host = ("https://" if ssl else "http://") + host
+
+    if port:
+        try:
+            from urllib.parse import urlparse, urlunparse
+            p = urlparse(host)
+            if p.hostname and not p.port:
+                netloc = f"{p.hostname}:{port}"
+                if p.username:
+                    auth = p.username
+                    if p.password:
+                        auth += f":{p.password}"
+                    netloc = f"{auth}@{netloc}"
+                host = urlunparse((p.scheme, netloc, p.path, p.params, p.query, p.fragment)).rstrip('/')
+        except Exception:
+            pass
+    return host.rstrip('/')
+
+
+def _list_qb_torrents(conf: dict) -> list:
+    base_url = _build_base_url(conf)
+    if not base_url:
+        return []
+    username = str(_conf_get(conf, "username", "user", default="") or "")
+    password = str(_conf_get(conf, "password", "passwd", "pass", default="") or "")
+    downloader_name = str(conf.get("name") or "")
+
+    session = requests.Session()
+    try:
+        if username or password:
+            login = session.post(
+                f"{base_url}/api/v2/auth/login",
+                data={"username": username, "password": password},
+                timeout=10
+            )
+            if login.status_code != 200 or "Ok" not in (login.text or ""):
+                logger.warning(f"  ➜ [MP智能清理] qB 登录失败，跳过下载器: {downloader_name or base_url}")
+                return []
+
+        res = session.get(f"{base_url}/api/v2/torrents/info", timeout=20)
+        if res.status_code != 200:
+            logger.warning(f"  ➜ [MP智能清理] qB 获取种子失败: {downloader_name or base_url} -> {res.status_code}")
+            return []
+        torrents = res.json() or []
+        result = []
+        for t in torrents:
+            if not isinstance(t, dict):
+                continue
+            result.append({
+                "hash": t.get("hash"),
+                "name": t.get("name"),
+                "size": t.get("size") or t.get("total_size"),
+                "save_path": t.get("save_path"),
+                "tracker": t.get("tracker"),
+                "downloader": downloader_name,
+                "_source": "qbittorrent"
+            })
+        return result
+    except Exception as e:
+        logger.warning(f"  ➜ [MP智能清理] qB 获取种子异常: {downloader_name or base_url} -> {e}")
+        return []
+
+
+def _transmission_rpc(conf: dict, payload: dict, session_id: str = None):
+    base_url = _build_base_url(conf)
+    if not base_url:
+        return None, None
+    url = base_url.rstrip('/')
+    if not url.endswith('/transmission/rpc'):
+        url = f"{url}/transmission/rpc"
+
+    username = str(_conf_get(conf, "username", "user", default="") or "")
+    password = str(_conf_get(conf, "password", "passwd", "pass", default="") or "")
+    headers = {"X-Transmission-Session-Id": session_id} if session_id else {}
+    auth = (username, password) if (username or password) else None
+
+    res = requests.post(url, json=payload, headers=headers, auth=auth, timeout=20)
+    if res.status_code == 409:
+        session_id = res.headers.get("X-Transmission-Session-Id")
+        headers = {"X-Transmission-Session-Id": session_id} if session_id else {}
+        res = requests.post(url, json=payload, headers=headers, auth=auth, timeout=20)
+    return res, session_id
+
+
+def _list_tr_torrents(conf: dict) -> list:
+    downloader_name = str(conf.get("name") or "")
+    try:
+        payload = {
+            "method": "torrent-get",
+            "arguments": {"fields": ["id", "hashString", "name", "totalSize", "downloadDir"]}
+        }
+        res, _ = _transmission_rpc(conf, payload)
+        if not res or res.status_code != 200:
+            logger.warning(f"  ➜ [MP智能清理] TR 获取种子失败: {downloader_name} -> {getattr(res, 'status_code', '无响应')}")
+            return []
+        data = res.json() or {}
+        torrents = (data.get("arguments") or {}).get("torrents") or []
+        result = []
+        for t in torrents:
+            if not isinstance(t, dict):
+                continue
+            result.append({
+                "hash": t.get("hashString"),
+                "name": t.get("name"),
+                "size": t.get("totalSize"),
+                "download_dir": t.get("downloadDir"),
+                "downloader": downloader_name,
+                "_source": "transmission"
+            })
+        return result
+    except Exception as e:
+        logger.warning(f"  ➜ [MP智能清理] TR 获取种子异常: {downloader_name} -> {e}")
+        return []
+
+
+def get_all_torrents_from_downloaders(config: Dict[str, Any] = None, moviepilot_url: str = "", headers: dict = None) -> list:
+    """
+    直连 MP 配置里的下载器，获取所有种子。
+    这是修复辅种的关键：/api/v1/download/ 只返回“下载中”，官方插件则是直接扫下载器全部任务。
+    """
+    if not moviepilot_url or not headers:
+        return []
+    configs = _get_mp_downloader_configs(moviepilot_url, headers)
+    if not configs:
+        return []
+
+    result = []
+    for conf in configs:
+        if not isinstance(conf, dict) or conf.get("enabled") is False:
+            continue
+        dtype = str(conf.get("type") or "").lower()
+        if dtype == "qbittorrent":
+            result.extend(_list_qb_torrents(conf))
+        elif dtype == "transmission":
+            result.extend(_list_tr_torrents(conf))
+    if result:
+        logger.info(f"  ➜ [MP智能清理] 已从下载器获取全部种子 {len(result)} 个，用于辅种匹配。")
+    return result
+
+
+def _signatures_from_tasks_by_hash(target_hashes: list, tasks: list) -> set:
+    target_norms = {_normalize_hash(h) for h in target_hashes or [] if h}
+    signatures = set()
+    for task in tasks or []:
+        if not isinstance(task, dict):
+            continue
+        if _normalize_hash(_extract_task_hash(task)) not in target_norms:
+            continue
+        name = _normalize_name_for_match(_extract_task_name(task))
+        size = _extract_task_size(task)
+        if name and size:
+            signatures.add((name, size))
+    return signatures
+
 
 def _expand_hashes_with_same_data(target_hashes: list, all_tasks: list, action_name: str = "删除") -> list:
     """
-    参考官方自动删种插件的“处理辅种”逻辑：
-    先找到目标 Hash 对应的下载任务，再把下载队列中“名称相同 + 体积相同”的其他 Hash 一并纳入。
-    这样才能删掉同数据辅种，而不是只处理 MP 整理记录里的主 Hash。
+    参考官方自动删种插件“处理辅种”：同名称 + 同大小 = 同数据辅种。
+    注意：目标 Hash 与辅种 Hash 本来就不同，只按 Hash 匹配必然删不到辅种。
     """
     target_hashes = _unique_keep_order(target_hashes)
     if not target_hashes:
         return []
-
-    # 没拿到下载队列时，只能回退为原 hash 盲处理。
     if not all_tasks:
+        logger.warning("  ➜ [MP智能清理] 未获取到下载器全部种子，只能处理已知 Hash，辅种可能漏删。")
         return target_hashes
 
-    target_norms = {_normalize_hash(h) for h in target_hashes if h}
-    task_items = []
-
-    for task in all_tasks:
-        if not isinstance(task, dict):
-            continue
-
-        task_hash = _extract_task_hash(task)
-        norm_hash = _normalize_hash(task_hash)
-        if not norm_hash:
-            continue
-
-        task_items.append({
-            "hash": task_hash,
-            "norm_hash": norm_hash,
-            "name": _extract_task_name(task),
-            "size": _extract_task_size(task),
-        })
-
-    # 主种签名：只有命中待处理 Hash 的任务，才拿它的 name + size 做辅种扩展。
-    target_signatures = {
-        (item["name"], item["size"])
-        for item in task_items
-        if item["norm_hash"] in target_norms and item["name"] and item["size"]
-    }
-
+    signatures = _signatures_from_tasks_by_hash(target_hashes, all_tasks)
     expanded = []
     expanded_norms = set()
 
@@ -429,44 +645,111 @@ def _expand_hashes_with_same_data(target_hashes: list, all_tasks: list, action_n
         norm = _normalize_hash(hash_value)
         if norm and norm not in expanded_norms:
             expanded_norms.add(norm)
-            expanded.append(hash_value)
+            expanded.append(str(hash_value).strip())
 
-    # 主 hash 永远保留，避免下载队列里暂时查不到时漏删。
     for h in target_hashes:
         _add(h)
 
-    if not target_signatures:
-        logger.debug("  ➜ [MP智能清理] 未能在下载队列中定位主种名称/大小，跳过辅种扩展。")
+    if not signatures:
+        logger.warning("  ➜ [MP智能清理] 已知 Hash 未在下载器全量列表中定位到名称/大小，无法按同数据扩展辅种。")
         return expanded
 
-    for item in task_items:
-        if item["norm_hash"] in expanded_norms:
+    for task in all_tasks or []:
+        if not isinstance(task, dict):
             continue
-        if item["name"] and item["size"] and (item["name"], item["size"]) in target_signatures:
-            _add(item["hash"])
+        task_hash = _extract_task_hash(task)
+        norm = _normalize_hash(task_hash)
+        if not norm or norm in expanded_norms:
+            continue
+        name = _normalize_name_for_match(_extract_task_name(task))
+        size = _extract_task_size(task)
+        if name and size and (name, size) in signatures:
+            _add(task_hash)
             logger.info(
                 f"    ├─ 捕获同数据辅种，纳入{action_name}: "
-                f"{item['name']} (Hash: {item['hash'][:8]}...)"
+                f"{_extract_task_name(task)} (Hash: {str(task_hash)[:8]}...)"
             )
 
     return expanded
 
-def _extract_download_task_list(data: Any) -> list:
-    """兼容 /api/v1/download/ 不同版本可能返回 list 或分页 dict。"""
-    if isinstance(data, list):
-        return data
 
-    if isinstance(data, dict):
-        for key in ("data", "list", "items", "results"):
-            value = data.get(key)
-            if isinstance(value, list):
-                return value
-            if isinstance(value, dict):
-                nested = _extract_download_task_list(value)
-                if nested:
-                    return nested
+def analyze_mp_download_history_for_deletion(tmdb_id: str, item_type: str, season: Optional[int], episode: Optional[int], config: Dict[str, Any]) -> tuple:
+    """
+    从 MP 下载历史补充 Hash。
+    辅种如果也是通过 MP 加入下载器，通常没有整理记录，但会有下载历史；只看 transfer 会漏掉。
+    返回: (hashes_to_delete, hashes_to_pause)
+    """
+    hashes_to_delete = set()
+    hashes_to_pause = set()
 
-    return []
+    try:
+        mp_config = settings_db.get_setting('mp_config') or {}
+        moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token or not moviepilot_url:
+            return [], []
+        headers = {"Authorization": f"Bearer {access_token}"}
+
+        page = 1
+        target_tmdb = int(tmdb_id)
+        while True:
+            data, _ = _request_json(
+                "GET",
+                f"{moviepilot_url}/api/v1/history/download",
+                headers=headers,
+                params={"page": page, "count": 500},
+                timeout=30
+            )
+            if not data:
+                break
+            records = _extract_download_task_list(data)
+            if not records:
+                break
+
+            for rec in records:
+                if not isinstance(rec, dict):
+                    continue
+                if _safe_int_value(rec.get("tmdbid"), -1) != target_tmdb:
+                    continue
+                h = rec.get("download_hash") or rec.get("hash")
+                if not h:
+                    continue
+
+                if item_type == "Movie":
+                    hashes_to_delete.add(h)
+                    continue
+
+                rec_season_str = str(rec.get('seasons', '')).strip().upper()
+                m = re.search(r'(\d+)', rec_season_str)
+                if not m:
+                    continue
+                rec_season = int(m.group(1))
+                if season is None or rec_season != int(season):
+                    continue
+
+                if episode is None:
+                    hashes_to_delete.add(h)
+                else:
+                    rec_eps = _parse_episodes_string(str(rec.get('episodes', '')))
+                    if not rec_eps or int(episode) in rec_eps:
+                        if rec_eps and len(rec_eps) == 1:
+                            hashes_to_delete.add(h)
+                        else:
+                            hashes_to_pause.add(h)
+
+            if len(records) < 500:
+                break
+            page += 1
+
+        if hashes_to_delete or hashes_to_pause:
+            logger.info(
+                f"  ➜ [MP智能清理] 下载历史补充 Hash: "
+                f"{len(hashes_to_delete)} 个待删除, {len(hashes_to_pause)} 个待暂停。"
+            )
+        return list(hashes_to_delete), list(hashes_to_pause)
+    except Exception as e:
+        logger.warning(f"  ➜ [MP智能清理] 分析下载历史失败: {e}")
+        return [], []
 
 def analyze_mp_records_for_deletion(tmdb_id: str, item_type: str, season: Optional[int], episode: Optional[int], title: str, config: Dict[str, Any]) -> tuple:
     """
@@ -603,6 +886,14 @@ def smart_cleanup_mp_media(tmdb_id: str, item_type: str, season: Optional[int], 
         logger.info(f"  ➜ [MP智能清理] 开始分析 {log_target} 的依赖关系...")
         
         records_to_delete, hashes_to_delete, hashes_to_pause = analyze_mp_records_for_deletion(tmdb_id, item_type, season, episode, title, config)
+
+        # 下载历史中可能存在“辅种”：它们没有整理记录，但有 download_hash。
+        # 只看 transfer_history 会漏掉这些 Hash。
+        hist_hashes_to_delete, hist_hashes_to_pause = analyze_mp_download_history_for_deletion(
+            tmdb_id, item_type, season, episode, config
+        )
+        hashes_to_delete = _unique_keep_order(list(hashes_to_delete or []) + list(hist_hashes_to_delete or []))
+        hashes_to_pause = _unique_keep_order(list(hashes_to_pause or []) + list(hist_hashes_to_pause or []))
         
         # 1. 删除整理记录
         if delete_history and records_to_delete:
@@ -618,10 +909,11 @@ def smart_cleanup_mp_media(tmdb_id: str, item_type: str, season: Optional[int], 
         if delete_files and (hashes_to_delete or hashes_to_pause):
             logger.info(f"  ➜ [MP智能清理] 准备处理种子: {len(hashes_to_delete)} 个待删除, {len(hashes_to_pause)} 个待暂停 (因包含其他存活集)...")
             
-            # 获取所有下载任务，用“名称 + 大小”扩展同数据辅种。
-            # 注意：辅种 Hash 与主种不同，只按 hash 永远抓不到。
+            # 获取所有下载任务 + 直连下载器全量种子，用“同名称 + 同大小”扩展辅种。
+            # MP 的 /api/v1/download/ 只返回“下载中”，完成做种的辅种通常不在里面，必须直连下载器扫全量。
             all_tasks = get_downloading_tasks(config)
-
+            all_tasks.extend(get_all_torrents_from_downloaders(config, moviepilot_url, headers))
+            
             tasks_to_delete = _expand_hashes_with_same_data(hashes_to_delete, all_tasks, action_name="删除")
             tasks_to_pause = _expand_hashes_with_same_data(hashes_to_pause, all_tasks, action_name="暂停")
 
@@ -632,16 +924,38 @@ def smart_cleanup_mp_media(tmdb_id: str, item_type: str, season: Optional[int], 
             # 执行删除
             for h in tasks_to_delete:
                 try:
-                    requests.delete(f"{moviepilot_url}/api/v1/download/{h}", headers=headers, timeout=10)
-                    logger.info(f"    ├─ 已彻底删除种子及源文件 (Hash: {h[:8]}...)")
-                except: pass
+                    res = requests.delete(f"{moviepilot_url}/api/v1/download/{h}", headers=headers, timeout=20)
+                    ok = res.status_code in [200, 204]
+                    try:
+                        body = res.json()
+                        if isinstance(body, dict) and body.get("success") is False:
+                            ok = False
+                    except Exception:
+                        pass
+                    if ok:
+                        logger.info(f"    ├─ 已彻底删除种子及源文件 (Hash: {h[:8]}...)")
+                    else:
+                        logger.warning(f"    ├─ 删除种子失败 (Hash: {h[:8]}...): {res.status_code} - {res.text[:200]}")
+                except Exception as e:
+                    logger.warning(f"    ├─ 删除种子异常 (Hash: {h[:8]}...): {e}")
             
             # 执行暂停
             for h in tasks_to_pause:
                 try:
-                    requests.get(f"{moviepilot_url}/api/v1/download/stop/{h}", headers=headers, timeout=10)
-                    logger.info(f"    ├─ 已暂停种子，保留源文件 (Hash: {h[:8]}...)")
-                except: pass
+                    res = requests.get(f"{moviepilot_url}/api/v1/download/stop/{h}", headers=headers, timeout=20)
+                    ok = res.status_code in [200, 204]
+                    try:
+                        body = res.json()
+                        if isinstance(body, dict) and body.get("success") is False:
+                            ok = False
+                    except Exception:
+                        pass
+                    if ok:
+                        logger.info(f"    ├─ 已暂停种子，保留源文件 (Hash: {h[:8]}...)")
+                    else:
+                        logger.warning(f"    ├─ 暂停种子失败 (Hash: {h[:8]}...): {res.status_code} - {res.text[:200]}")
+                except Exception as e:
+                    logger.warning(f"    ├─ 暂停种子异常 (Hash: {h[:8]}...): {e}")
                 
             logger.info(f"  ➜ [MP智能清理] 种子及源文件处理完成。")
 
@@ -681,15 +995,16 @@ def delete_download_tasks(keyword: str, config: Dict[str, Any] = None, hashes: l
 
         headers = {"Authorization": f"Bearer {access_token}"}
         all_tasks = get_downloading_tasks(config)
+        all_tasks.extend(get_all_torrents_from_downloaders(config, moviepilot_url, headers))
         hashes = _expand_hashes_with_same_data(hashes, all_tasks, action_name="删除")
         for h in hashes:
-            try: requests.delete(f"{moviepilot_url}/api/v1/download/{h}", headers=headers, timeout=10)
+            try: requests.delete(f"{moviepilot_url}/api/v1/download/{h}", headers=headers, timeout=20)
             except: pass
         return True
     except: return False
     
 def get_downloading_tasks(config: Dict[str, Any] = None) -> list:
-    """获取当前正在下载的任务列表"""
+    """获取 MP 正在下载列表。注意：这个接口只返回“下载中”，不包含全部做种任务。"""
     try:
         mp_config = settings_db.get_setting('mp_config') or {}
         moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
@@ -700,7 +1015,10 @@ def get_downloading_tasks(config: Dict[str, Any] = None) -> list:
         headers = {"Authorization": f"Bearer {access_token}"}
         res = requests.get(f"{moviepilot_url}/api/v1/download/", headers=headers, timeout=15)
         if res.status_code == 200:
-            return _extract_download_task_list(res.json())
+            tasks = _extract_download_task_list(res.json())
+            if tasks:
+                logger.info(f"  ➜ [MP智能清理] MP 下载中任务 {len(tasks)} 个。")
+            return tasks
         return []
     except Exception as e:
         logger.error(f"  ➜ 获取 MP 下载队列失败: {e}")
