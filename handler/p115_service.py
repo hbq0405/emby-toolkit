@@ -2426,10 +2426,10 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         known_video_exts = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
         first_video = next((c for c in candidates if (c.get('fn') or c.get('n') or c.get('file_name') or '').split('.')[-1].lower() in known_video_exts), None)
 
-        # 准备预取字典，供后续重命名主循环复用，避免重复查库/ffprobe
-        pre_fetched_mediainfo = {}
-        local_pre_fetched_mediainfo = {}
-
+        # 媒体信息缓存以 p115_mediainfo_cache 数据库为唯一真理。
+        # 这里保留变量仅兼容旧函数签名，不再使用内存预取字典。
+        pre_fetched_mediainfo = None
+        local_pre_fetched_mediainfo = None
         if first_video and not getattr(self, 'is_manual_correct', False) and not getattr(self, 'is_from_memory', False):
             v_sha1 = first_video.get('sha1') or first_video.get('sha')
             v_fid = first_video.get('fid') or first_video.get('file_id')
@@ -2443,16 +2443,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 except: pass
 
             if v_sha1 or v_fid:
-                # ★★★ 核心修复：提前解析前，先主动查一次本地缓存，防止 ffprobe 击穿！
-                if v_sha1:
-                    cached_text = P115CacheManager.get_mediainfo_cache_text(v_sha1)
-                    if cached_text:
-                        try:
-                            local_pre_fetched_mediainfo[v_sha1] = json.loads(cached_text)
-                            logger.debug(f"  ➜ [提前解析] 命中本地媒体信息缓存: {v_sha1[:8]}")
-                        except: pass
-
-                # 提前解析媒体信息 (内部会自动走本地缓存 -> 中心 -> ffprobe)
+                # 提前解析媒体信息。内部会直读本地 DB；DB 没有时才 ffprobe。
                 self._fetch_and_parse_mediainfo(
                     v_sha1,
                     guessed_info={},
@@ -2726,21 +2717,17 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         # ★ 新增：用于记录本批次已经生成的目标文件名，防止同名冲突
         seen_new_filenames = set()
 
-        # 批量预查询中心服务器与本地数据库
-        pre_fetched_mediainfo = {}
-        local_pre_fetched_mediainfo = {} # ★ 新增：本地预获取字典
-        
-        # ★ 核心修复：移除开关限制，强制批量预取真实媒体信息
-        video_sha1s = []
+        # 媒体信息缓存以 p115_mediainfo_cache 数据库为唯一真理。
+        # 不再批量查询中心服务器，也不再维护本轮内存媒体信息字典。
+        pre_fetched_mediainfo = None
+        local_pre_fetched_mediainfo = None
+
+        # 仅补齐候选视频缺失的 SHA1，供后续 _fetch_and_parse_mediainfo 直读 DB / ffprobe 使用。
         for file_item in candidates:
             file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
             ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
             if ext in known_video_exts:
                 sha1 = file_item.get('sha1') or file_item.get('sha')
-                
-                # =========================================================
-                # ★ 核心修复：在收集阶段，如果发现缺失 SHA1，提前主动请求补齐！
-                # =========================================================
                 if not sha1:
                     fid = file_item.get('fid') or file_item.get('file_id')
                     if fid:
@@ -2749,61 +2736,9 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             if info_res.get('state') and info_res.get('data'):
                                 sha1 = info_res['data'].get('sha1')
                                 if sha1:
-                                    file_item['sha1'] = sha1 # 存回字典，供后续主循环直接使用
+                                    file_item['sha1'] = sha1
                         except Exception:
                             pass
-                            
-                if sha1: 
-                    video_sha1s.append(sha1)
-        
-        if video_sha1s:
-            # 先查本地缓存，剔除已有的，只查缺失的
-            local_cached_sha1s = set()
-            try:
-                from database.connection import get_db_connection
-                with get_db_connection() as conn:
-                    with conn.cursor() as cursor:
-                        # ★ 内存优化：只查 sha1 确认存在，绝不把庞大的 json 批量塞进内存！
-                        cursor.execute("SELECT sha1 FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", (list(video_sha1s),))
-                        rows = cursor.fetchall()
-                        if rows:
-                            for row in rows:
-                                local_cached_sha1s.add(row['sha1'])
-                            
-            except Exception: pass
-            
-            missing_sha1s = list(set(video_sha1s) - local_cached_sha1s)
-            if missing_sha1s:
-                req_count = len(missing_sha1s)
-                logger.info(f"  ➜ [批量查询] 准备向中心服务器查询 {req_count} 个文件的媒体信息...")
-                try:
-                    import extensions
-                    processor = extensions.media_processor_instance
-                    if processor and getattr(processor, 'p115_center', None):
-                        resp = processor.p115_center.download_emby_mediainfo_data(missing_sha1s)
-                        
-                        if isinstance(resp, dict):
-                            # ★ 核心优化：过滤掉可能返回的空值/None，只统计真正有数据的命中项
-                            valid_hits = {k: v for k, v in resp.items() if v}
-                            hit_count = len(valid_hits)
-                            
-                            if hit_count > 0:
-                                pre_fetched_mediainfo = valid_hits
-                                # 批量查询中心服务器后，立即写入本地缓存！
-                                for k_sha1, v_json in valid_hits.items():
-                                    P115CacheManager.save_mediainfo_cache(k_sha1, v_json)
-                                
-                                if hit_count == req_count:
-                                    logger.info(f"  ➜ [批量查询] 完美命中！成功获取全部 {hit_count} 个文件的媒体信息。")
-                                else:
-                                    logger.info(f"  ➜ [批量查询] 部分命中：成功获取 {hit_count}/{req_count} 个文件的媒体信息。")
-                            else:
-                                logger.info(f"  ➜ [批量查询] 中心服务器暂无这 {req_count} 个文件的媒体信息。")
-                        else:
-                            logger.warning(f"  ➜ [批量查询] 中心服务器返回数据格式异常。")
-                            
-                except Exception as e:
-                    logger.warning(f"  ➜ [批量查询] 中心服务器查询失败: {e}")
 
         # 确保 allowed_exts 有兜底，防止用户清空列表导致报错
         if not allowed_exts:

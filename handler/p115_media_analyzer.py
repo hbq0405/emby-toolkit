@@ -1344,40 +1344,36 @@ class P115MediaAnalyzerMixin:
 
     def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, file_node=None, silent_log=False):
         """
-        通过 SHA1 获取真实的媒体信息，并转换为乐高重命名参数
+        通过 SHA1 获取真实的媒体信息，并转换为乐高重命名参数。
+
+        唯一数据源策略：
+        1. 优先直读本地 p115_mediainfo_cache 数据库；
+        2. 本地没有时，才用 ffprobe 解析 115 直链；
+        3. 解析成功后写回 p115_mediainfo_cache。
+
+        pre_fetched_mediainfo / local_pre_fetched_mediainfo 参数仅为兼容旧调用保留，
+        不再参与事实判断，避免内存缓存与数据库状态不一致。
         """
-        if not sha1: return {}, False
-        
+        if not sha1:
+            return {}, False
+
+        sha1 = str(sha1).strip().upper()
         raw_json = None
         is_center = False
-        data_source = "本地缓存"
+        data_source = ""
 
-        # 1. ★ 核心优化：直接从内存字典读取本地缓存，彻底消除数据库 I/O 瓶颈！
-        if local_pre_fetched_mediainfo and sha1 in local_pre_fetched_mediainfo:
-            raw_json = local_pre_fetched_mediainfo[sha1]
+        # 1. 本地 DB 是唯一真理：每次按 SHA1 直读 p115_mediainfo_cache。
+        try:
+            cached_text = _get_p115_cache_manager().get_mediainfo_cache_text(sha1)
+            if cached_text:
+                raw_json = json.loads(cached_text) if isinstance(cached_text, str) else cached_text
+                data_source = "本地缓存(DB)"
+                if not silent_log:
+                    logger.debug(f"  ➜ [媒体信息] 命中本地 DB 缓存: {sha1[:8]}")
+        except Exception as e:
+            logger.warning(f"  ➜ 读取 p115_mediainfo_cache 失败: {sha1[:8]} -> {e}")
 
-        # 2. 本地没有，优先查批量预获取的字典 (瞬间读取，无网络延迟)
-        if not raw_json and pre_fetched_mediainfo and sha1 in pre_fetched_mediainfo:
-            raw_json = pre_fetched_mediainfo[sha1]
-            is_center = True
-            data_source = "中心服务器(批量)"
-
-        # 3. 尝试查 P115Center 中心服务器 (单次查询)
-        if not raw_json and pre_fetched_mediainfo is None:
-            try:
-                import extensions
-                processor = extensions.media_processor_instance
-                if processor and getattr(processor, 'p115_center', None):
-                    resp = processor.p115_center.download_emby_mediainfo_data([sha1])
-                    if resp and sha1 in resp:
-                        raw_json = resp[sha1]
-                        is_center = True
-                        data_source = "中心服务器(单次)"
-                        _get_p115_cache_manager().save_mediainfo_cache(sha1, raw_json)
-            except Exception:
-                pass
-
-        # 4. 本地和中心服务器都没有，最终用 ffprobe 解析 115 直链，并写入本地缓存
+        # 2. 本地 DB 没有，最后才 ffprobe。彻底移除中心服务器路径，保留 ETK 格式化结果。
         if not raw_json and file_node:
             raw_json = self._probe_mediainfo_with_ffprobe(
                 file_node,
@@ -1386,21 +1382,13 @@ class P115MediaAnalyzerMixin:
             )
 
             if raw_json:
-                is_center = False
                 data_source = "ffprobe解析"
-
-                # 写入 p115_mediainfo_cache，后续同 SHA1 直接走本地缓存
                 _get_p115_cache_manager().save_mediainfo_cache(sha1, raw_json)
-
-                # 同步塞回本轮预取字典，避免同一批里重复 probe
-                if local_pre_fetched_mediainfo is not None:
-                    local_pre_fetched_mediainfo[str(sha1).upper()] = raw_json
-                    local_pre_fetched_mediainfo[str(sha1)] = raw_json
 
         if not raw_json:
             return {}, False
 
-        # 5. 开始解析 Emby 的真实数据
+        # 3. 开始解析 Emby 的真实数据
         info = {}
         try:
             if isinstance(raw_json, list) and len(raw_json) > 0:
