@@ -548,10 +548,8 @@
                     </div>
 
                     <!-- 选项 3: 删除下载器任务 -->
-                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0 8px 16px;">
-                      <div style="display: flex; flex-direction: column;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
                         <span style="font-size: 13px; font-weight: 500;">删除下载器任务及源文件（含辅种）</span>
-                      </div>
                       <n-switch 
                         v-model:value="watchlistConfig.auto_delete_download_tasks" 
                         size="small"

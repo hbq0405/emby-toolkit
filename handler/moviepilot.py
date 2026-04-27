@@ -965,44 +965,51 @@ def smart_cleanup_mp_media(tmdb_id: str, item_type: str, season: Optional[int], 
         logger.error(f"  ➜ [MP智能清理] 发生异常: {e}", exc_info=True)
         return False
 
-# ======================================================================
-# ★★★ 兼容旧版接口 (防止其他模块报错) ★★★
-# ======================================================================
-def delete_transfer_history(tmdb_id: str, season: int, title: str, config: Dict[str, Any] = None) -> list:
-    """兼容旧版：只删记录，返回 hashes 供旧版 delete_download_tasks 使用"""
-    records_to_delete, hashes_to_delete, hashes_to_pause = analyze_mp_records_for_deletion(tmdb_id, 'Series', season, None, title, config)
-    
-    if records_to_delete:
-        mp_config = settings_db.get_setting('mp_config') or {}
-        moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
-        access_token = _get_access_token(config)
-        if access_token:
-            headers = {"Authorization": f"Bearer {access_token}"}
-            del_url = f"{moviepilot_url}/api/v1/history/transfer"
-            for rec in records_to_delete:
-                try: requests.delete(del_url, headers=headers, params={"deletesrc": "false", "deletedest": "false"}, json=rec, timeout=10)
-                except: pass
-                
-    return list(set(hashes_to_delete + hashes_to_pause))
-
 def delete_download_tasks(keyword: str, config: Dict[str, Any] = None, hashes: list = None) -> bool:
-    """兼容旧版：接收 hashes 盲删"""
-    if not hashes: return False
+    """
+    清理下载任务 - 安全版
+    Strict Mode: 仅接受 hashes 列表进行精确删除。
+    如果不传 hashes 或为空，直接跳过，绝不使用 keyword 搜索兜底。
+    """
+    if not hashes:
+        return False
+
     try:
         mp_config = settings_db.get_setting('mp_config') or {}
         moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
+        
         access_token = _get_access_token(config)
         if not access_token: return False
 
         headers = {"Authorization": f"Bearer {access_token}"}
-        all_tasks = get_downloading_tasks(config)
-        all_tasks.extend(get_all_torrents_from_downloaders(config, moviepilot_url, headers))
-        hashes = _expand_hashes_with_same_data(hashes, all_tasks, action_name="删除")
-        for h in hashes:
-            try: requests.delete(f"{moviepilot_url}/api/v1/download/{h}", headers=headers, timeout=20)
-            except: pass
-        return True
-    except: return False
+        deleted_count = 0
+
+        logger.info(f"  ➜ [下载器清理] 正在根据 Hash 精确删除 {len(hashes)} 个任务...")
+        
+        for task_hash in hashes:
+            if not task_hash: continue
+            
+            del_url = f"{moviepilot_url}/api/v1/download/{task_hash}"
+            try:
+                del_res = requests.delete(del_url, headers=headers, timeout=10)
+                if del_res.status_code == 200:
+                    logger.info(f" ➜ [下载器清理] 已精确删除任务 Hash: {task_hash[:8]}...")
+                    deleted_count += 1
+            except Exception as e:
+                logger.debug(f" [下载器清理] 删除 Hash {task_hash[:8]} 失败: {e}")
+        
+        if deleted_count > 0:
+            logger.info(f"  ➜ [下载器清理] Hash 精确清理完成，共删除 {deleted_count} 个任务。")
+            import time
+            time.sleep(2)
+            return True
+        else:
+            logger.info(f"  ➜ [下载器清理] 提供的 Hash 均未在下载器中找到活跃任务，无需操作。")
+            return True
+
+    except Exception as e:
+        logger.error(f"  ➜ [下载器清理] 执行出错: {e}")
+        return False
     
 def get_downloading_tasks(config: Dict[str, Any] = None) -> list:
     """获取 MP 正在下载列表。注意：这个接口只返回“下载中”，不包含全部做种任务。"""
