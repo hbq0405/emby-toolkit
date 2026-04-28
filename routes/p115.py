@@ -1494,8 +1494,22 @@ def handle_default_stream_config():
             "audio_features": ["公映", "国配", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"],
             "sub_priority": ["effect", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor", "chs", "cht"]
         }
-        defaults.update(config)
-        return jsonify({"success": True, "data": defaults})
+        
+        # ▼▼▼ 智能合并逻辑 ▼▼▼
+        for key, default_val in defaults.items():
+            if key not in config:
+                # 如果数据库里完全没有这个 key，直接用默认值
+                config[key] = default_val
+            elif isinstance(default_val, list):
+                # 如果是列表（如 sub_priority），保留用户旧排序，把新增的选项追加到末尾
+                saved_list = config[key]
+                for item in default_val:
+                    if item not in saved_list:
+                        saved_list.append(item)
+                config[key] = saved_list
+        # ▲▲▲ 智能合并结束 ▲▲▲
+
+        return jsonify({"success": True, "data": config})
     
     if request.method == 'POST':
         new_config = request.json
