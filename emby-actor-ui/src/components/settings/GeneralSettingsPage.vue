@@ -597,13 +597,17 @@
                       </template>
                   </n-form-item>
                   <n-form-item label="默认音轨/字幕配置">
-                      <n-button @click="defaultStreamModalRef?.open()" type="primary" ghost>
+                      <n-button
+                          @click="openDefaultStreamConfig"
+                          :type="configModel.p115_generate_mediainfo ? 'primary' : 'warning'"
+                          ghost
+                      >
                           <template #icon><n-icon :component="OptionsIcon" /></template>
                           配置默认音轨与字幕
                       </n-button>
                       <template #feedback>
                           <n-text depth="3" style="font-size:0.8em;">
-                              自定义默认音轨语言、特征词，及字幕的优先级排序（特效、双语等）。
+                              自定义默认音轨语言、特征词，及字幕的优先级排序；仅在“同步生成媒体信息”开启时生效。
                           </n-text>
                       </template>
                   </n-form-item>
@@ -2148,6 +2152,14 @@ const formRules = { trigger: ['input', 'blur'] };
 const { configModel, loadingConfig, savingConfig, configError, handleSaveConfig } = useConfig();
 const message = useMessage();
 const dialog = useDialog();
+
+const openDefaultStreamConfig = () => {
+  if (!configModel.value?.p115_generate_mediainfo) {
+    message.warning('默认音轨/字幕配置需要先启用“同步生成媒体信息”。');
+    return;
+  }
+  defaultStreamModalRef.value?.open();
+};
 
 const enforceMediainfoExclusive = (preferred = 'center', notify = true) => {
   if (!configModel.value) return;
