@@ -463,7 +463,8 @@ def init_db():
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS p115_mediainfo_cache (
                         sha1 TEXT PRIMARY KEY,
-                        mediainfo_json JSONB NOT NULL,
+                        mediainfo_json JSONB,
+                        raw_ffprobe_json JSONB,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         hit_count INTEGER DEFAULT 0
                     )
@@ -513,6 +514,9 @@ def init_db():
                             "sha1": "TEXT",
                             "pick_code": "TEXT",
                             "size": "BIGINT DEFAULT 0"
+                        },
+                        'p115_mediainfo_cache': {
+                            "raw_ffprobe_json": "JSONB"
                         },
                         'p115_organize_records': {
                             "is_center_cached": "BOOLEAN DEFAULT FALSE",

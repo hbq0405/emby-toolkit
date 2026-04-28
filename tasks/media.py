@@ -266,20 +266,32 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
                 if sha1:
                     sha1s_to_clean.add(sha1)
                     
-            # C. 删数据库记录
+            # C. 清理与重新格式化媒体信息
             if sha1s_to_clean:
                 try:
                     with connection.get_db_connection() as conn:
                         cursor = conn.cursor()
+                        # 1. 只清空 mediainfo_json，保留 raw_ffprobe_json
                         cursor.execute(
-                            "DELETE FROM p115_mediainfo_cache WHERE sha1 = ANY(%s)", 
+                            "UPDATE p115_mediainfo_cache SET mediainfo_json = NULL WHERE sha1 = ANY(%s)", 
                             (list(sha1s_to_clean),)
                         )
-                        deleted_db_records = cursor.rowcount
                         conn.commit()
-                        logger.info(f"  ➜ 已从数据库清除 {deleted_db_records} 条媒体信息缓存。")
+                        
+                    # 2. 尝试用 raw_ffprobe_json 重新格式化
+                    from handler.p115_service import P115CacheManager
+                    for sha1 in sha1s_to_clean:
+                        raw_ffprobe = P115CacheManager.get_raw_ffprobe_cache(sha1)
+                        if raw_ffprobe:
+                            logger.info(f"  ➜ 发现原始 ffprobe 数据，正在重新格式化: {sha1[:8]}")
+                            # 构造一个假的 file_node 供解析器使用
+                            dummy_node = {"fn": "unknown.mkv"} 
+                            new_emby_json = processor._build_emby_mediainfo_from_ffprobe(raw_ffprobe, dummy_node, sha1)
+                            if new_emby_json:
+                                P115CacheManager.save_mediainfo_cache(sha1, new_emby_json)
+                                logger.info(f"  ➜ 重新格式化成功，已写回缓存。")
                 except Exception as e:
-                    logger.warning(f"  ➜ 清除数据库媒体信息缓存失败: {e}")
+                    logger.warning(f"  ➜ 处理数据库媒体信息缓存失败: {e}")
                     
             # D. 调用神医接口清除 Emby 内部缓存
             try:

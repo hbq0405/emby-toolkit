@@ -255,7 +255,7 @@ class P115MediaAnalyzerMixin:
             if not silent_log:
                 logger.info(f"  ➜ [ffprobe] 成功生成媒体信息 -> {original_name}")
 
-            return emby_json
+            return emby_json, probe_data
 
         except subprocess.TimeoutExpired:
             if not silent_log:
@@ -1375,15 +1375,13 @@ class P115MediaAnalyzerMixin:
 
         # 2. 本地 DB 没有，最后才 ffprobe。彻底移除中心服务器路径，保留 ETK 格式化结果。
         if not raw_json and file_node:
-            raw_json = self._probe_mediainfo_with_ffprobe(
-                file_node,
-                sha1=sha1,
-                silent_log=silent_log
-            )
+            raw_json, raw_ffprobe = self._probe_mediainfo_with_ffprobe(
+                file_node, sha1=sha1, silent_log=silent_log
+            ) or (None, None)
 
             if raw_json:
                 data_source = "ffprobe解析"
-                _get_p115_cache_manager().save_mediainfo_cache(sha1, raw_json)
+                _get_p115_cache_manager().save_mediainfo_cache(sha1, raw_json, raw_ffprobe)
 
         if not raw_json:
             return {}, False

@@ -985,7 +985,7 @@ class P115CacheManager:
             logger.error(f"  ➜ 清理 115 文件缓存失败: {e}")
 
     @staticmethod
-    def save_mediainfo_cache(sha1, mediainfo_json):
+    def save_mediainfo_cache(sha1, mediainfo_json, raw_ffprobe_json=None):
         """写入本地 p115_mediainfo_cache，结构保持 Emby MediaSourceInfo 标准格式"""
         if not sha1 or not mediainfo_json:
             return False
@@ -998,15 +998,17 @@ class P115CacheManager:
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
                     cursor.execute("""
-                        INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json, created_at, hit_count)
-                        VALUES (%s, %s, NOW(), 0)
+                        INSERT INTO p115_mediainfo_cache (sha1, mediainfo_json, raw_ffprobe_json, created_at, hit_count)
+                        VALUES (%s, %s, %s, NOW(), 0)
                         ON CONFLICT (sha1)
                         DO UPDATE SET
                             mediainfo_json = EXCLUDED.mediainfo_json,
+                            raw_ffprobe_json = COALESCE(EXCLUDED.raw_ffprobe_json, p115_mediainfo_cache.raw_ffprobe_json),
                             created_at = NOW()
                     """, (
                         sha1,
-                        Json(mediainfo_json, dumps=lambda obj: json.dumps(obj, ensure_ascii=False))
+                        Json(mediainfo_json, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)) if mediainfo_json else None,
+                        Json(raw_ffprobe_json, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)) if raw_ffprobe_json else None
                     ))
                     conn.commit()
 
@@ -1036,6 +1038,17 @@ class P115CacheManager:
         except Exception as e:
             logger.error(f"  ➜ 读取 p115_mediainfo_cache 失败: {e}")
             return None
+        
+    @staticmethod
+    def get_raw_ffprobe_cache(sha1):
+        if not sha1: return None
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute("SELECT raw_ffprobe_json FROM p115_mediainfo_cache WHERE sha1 = %s", (str(sha1).upper(),))
+                    row = cursor.fetchone()
+                    return row['raw_ffprobe_json'] if row else None
+        except Exception: return None
 
 # ======================================================================
 # ★★★ 115 整理记录 DB 管理器 ★★★
