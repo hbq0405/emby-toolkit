@@ -470,6 +470,13 @@ def init_db():
                     )
                 """)
 
+                # ▼▼▼ 临时代码，强行解除存量数据库的 NOT NULL 约束 ▼▼▼
+                try:
+                    cursor.execute("ALTER TABLE p115_mediainfo_cache ALTER COLUMN mediainfo_json DROP NOT NULL;")
+                except Exception:
+                    pass
+                # ▲▲▲ 临时结束 ▲▲▲
+
                 logger.trace("  ➜ 正在创建 'p115_organize_records' 表 (115整理记录)...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS p115_organize_records (
