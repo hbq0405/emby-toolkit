@@ -118,7 +118,7 @@
           <n-input-number 
             v-model:value="editForm.season_num" 
             placeholder="留空自动提取 (如 1, 2, 3)" 
-            :min="1" 
+            :min="0" 
             clearable 
             style="width: 100%;" 
             :disabled="editForm.ids.length > 1 && editForm.batch_mode === 'reclassify'"
