@@ -587,8 +587,8 @@
                     </n-form-item>
                     <n-form-item label="媒体信息格式化" path="p115_generate_mediainfo">
                       <n-switch v-model:value="configModel.p115_generate_mediainfo">
-                          <template #checked>生成自定义-mediainfo.json</template>
-                          <template #unchecked>保留原版-mediainfo.json</template>
+                          <template #checked>生成自定义媒体信息</template>
+                          <template #unchecked>保留原版媒体信息</template>
                       </n-switch>
                       <template #feedback>
                           <n-text depth="3" style="font-size:0.8em;">
