@@ -42,7 +42,7 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
             'resubscribe_effect_include', 'resubscribe_codec_include'
         },
         'user_templates': {'emby_policy_json', 'emby_configuration_json'},
-        'p115_mediainfo_cache': {'mediainfo_json'},
+        'p115_mediainfo_cache': {'mediainfo_json', 'raw_ffprobe_json'},
         'washing_priority_groups': {'target_cids', 'priorities'}
     }
 
