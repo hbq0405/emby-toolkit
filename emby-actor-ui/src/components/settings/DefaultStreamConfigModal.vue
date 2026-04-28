@@ -146,10 +146,14 @@ const subtitleLangOptions = [
 
 const subTypeMap = {
   'effect': '特效字幕',
+  'chs': '简体中文',
+  'cht': '繁体中文',
   'chs_eng': '简英双语',
   'cht_eng': '繁英双语',
-  'chs': '简体中文',
-  'cht': '繁体中文'
+  'chs_jpn': '简日双语',
+  'cht_jpn': '繁日双语',
+  'chs_kor': '简韩双语',
+  'cht_kor': '繁韩双语'
 };
 
 const config = ref({

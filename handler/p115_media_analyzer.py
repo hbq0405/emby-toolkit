@@ -450,9 +450,11 @@ class P115MediaAnalyzerMixin:
         title_clean = _normalize_marker_text(raw_title)
 
         title_has_lang = _has_lang_marker(title_clean, [
-            "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "簡體", "简英",
-            "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁體", "繁英",
+            "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "簡體", "简英", "简日", "简韩",
+            "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁體", "繁英", "繁日", "繁韩",
             "eng", "english", "en", "英文", "英语", "英字",
+            "jpn", "japanese", "ja", "jp", "日文", "日语", "日字",
+            "kor", "korean", "ko", "kr", "韩文", "韩语", "韩字",
             "台配", "台灣", "台湾"
         ])
 
@@ -479,27 +481,52 @@ class P115MediaAnalyzerMixin:
         # =========================================================
         if stream_type == "Subtitle":
             has_chs = _has_lang_marker(clean_text, [
-                "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "簡體", "简英", "中英", "中文", "中上英下", "英上中下", "简体英文"
+                "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "簡體", "简英", "简日", "简韩", "中英", "中日", "中韩", "中文", 
+                "中上英下", "英上中下", "中上日下", "日上中下", "中上韩下", "韩上中下", "简体英文", "简体日文", "简体韩文"
             ])
 
             has_cht = _has_lang_marker(clean_text, [
-                "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁體", "繁英",
-                "繁上英下", "英上繁下", "繁体英文"
+                "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁體", "繁英", "繁日", "繁韩",
+                "繁上英下", "英上繁下", "繁上日下", "日上繁下", "繁上韩下", "韩上繁下", "繁体英文", "繁体日文", "繁体韩文"
             ])
 
             has_eng = _has_lang_marker(clean_text, [
                 "eng", "english", "en", "英文", "英语", "英字", "简英", "繁英", "中英", "双语",
                 "中上英下", "英上中下", "繁上英下", "英上繁下", "简体英文", "繁体英文"
             ])
+            
+            has_jpn = _has_lang_marker(clean_text, [
+                "jpn", "japanese", "ja", "jp", "日文", "日语", "日字", "简日", "繁日", "中日",
+                "中上日下", "日上中下", "繁上日下", "日上繁下", "简体日文", "繁体日文"
+            ])
 
-            is_dual = _has_lang_marker(clean_text, ["双语", "中上英下", "英上中下", "繁上英下", "英上繁下", "简体英文", "繁体英文"])
+            has_kor = _has_lang_marker(clean_text, [
+                "kor", "korean", "ko", "kr", "韩文", "韩语", "韩字", "简韩", "繁韩", "中韩",
+                "中上韩下", "韩上中下", "繁上韩下", "韩上繁下", "简体韩文", "繁体韩文"
+            ])
 
-            if (has_chs and has_eng and not has_cht) or (is_dual and not has_cht):
+            is_dual_eng = _has_lang_marker(clean_text, ["双语", "中上英下", "英上中下", "繁上英下", "英上繁下", "简体英文", "繁体英文"])
+            is_dual_jpn = _has_lang_marker(clean_text, ["中上日下", "日上中下", "繁上日下", "日上繁下", "简体日文", "繁体日文"])
+            is_dual_kor = _has_lang_marker(clean_text, ["中上韩下", "韩上中下", "繁上韩下", "韩上繁下", "简体韩文", "繁体韩文"])
+
+            if (has_chs and has_eng and not has_cht) or (is_dual_eng and not has_cht):
                 norm_lang = "chi"
                 display_lang = "中英双语（简体）"
-            elif (has_cht and has_eng) or (is_dual and has_cht):
+            elif (has_cht and has_eng) or (is_dual_eng and has_cht):
                 norm_lang = "chi"
                 display_lang = "中英双语（繁体）"
+            elif (has_chs and has_jpn and not has_cht) or (is_dual_jpn and not has_cht):
+                norm_lang = "chi"
+                display_lang = "中日双语（简体）"
+            elif (has_cht and has_jpn) or (is_dual_jpn and has_cht):
+                norm_lang = "chi"
+                display_lang = "中日双语（繁体）"
+            elif (has_chs and has_kor and not has_cht) or (is_dual_kor and not has_cht):
+                norm_lang = "chi"
+                display_lang = "中韩双语（简体）"
+            elif (has_cht and has_kor) or (is_dual_kor and has_cht):
+                norm_lang = "chi"
+                display_lang = "中韩双语（繁体）"
             elif has_cht:
                 norm_lang = "chi"
                 display_lang = "繁体"
@@ -509,28 +536,26 @@ class P115MediaAnalyzerMixin:
             elif has_eng:
                 norm_lang = "eng"
                 display_lang = "英文"
+            elif has_jpn:
+                norm_lang = "jpn"
+                display_lang = "日文"
+            elif has_kor:
+                norm_lang = "kor"
+                display_lang = "韩文"
             else:
-                is_yue = _has_lang_marker(
-                    combined_text,
-                    helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", [])
-                )
-                is_chi = _has_lang_marker(
-                    combined_text,
-                    helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", [])
-                )
+                is_yue = _has_lang_marker(combined_text, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
+                is_chi = _has_lang_marker(combined_text, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
 
                 if _has_lang_marker(combined_text, ["台配", "台灣", "台湾"]):
                     norm_lang = "chi"
                     display_lang = "繁体"
                 elif is_yue:
-                    # 字幕里的粤语标签通常意味着繁体中文字幕
                     norm_lang = "chi"
                     display_lang = "繁体"
                 elif is_chi:
                     norm_lang = "chi"
                     display_lang = "简体"
                 else:
-                    # 外语字幕，例如 Deutsch / Japanese / Korean
                     for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
                         if _has_lang_marker(combined_text, keywords):
                             norm_lang = key.replace("sub_", "")
@@ -625,6 +650,20 @@ class P115MediaAnalyzerMixin:
             friendly_title = friendly_title.replace("中上英下", "中英双语（简体）").replace("英上中下", "中英双语（简体）")
             friendly_title = friendly_title.replace("简体英文", "中英双语（简体）").replace("繁体英文", "中英双语（繁体）")
             
+            friendly_title = friendly_title.replace("简日双语", "中日双语（简体）").replace("简日", "中日双语（简体）")
+            friendly_title = friendly_title.replace("繁日双语", "中日双语（繁体）").replace("繁日", "中日双语（繁体）")
+            friendly_title = friendly_title.replace("中日双语（简体）双语", "中日双语（简体）")
+            friendly_title = friendly_title.replace("中日双语（繁体）双语", "中日双语（繁体）")
+            friendly_title = friendly_title.replace("中上日下", "中日双语（简体）").replace("日上中下", "中日双语（简体）")
+            friendly_title = friendly_title.replace("简体日文", "中日双语（简体）").replace("繁体日文", "中日双语（繁体）")
+
+            friendly_title = friendly_title.replace("简韩双语", "中韩双语（简体）").replace("简韩", "中韩双语（简体）")
+            friendly_title = friendly_title.replace("繁韩双语", "中韩双语（繁体）").replace("繁韩", "中韩双语（繁体）")
+            friendly_title = friendly_title.replace("中韩双语（简体）双语", "中韩双语（简体）")
+            friendly_title = friendly_title.replace("中韩双语（繁体）双语", "中韩双语（繁体）")
+            friendly_title = friendly_title.replace("中上韩下", "中韩双语（简体）").replace("韩上中下", "中韩双语（简体）")
+            friendly_title = friendly_title.replace("简体韩文", "中韩双语（简体）").replace("繁体韩文", "中韩双语（繁体）")
+            
             # 5. 兜底与组合
             if not friendly_title:
                 if display_lang and display_lang != "未知" and stream_features:
@@ -632,7 +671,7 @@ class P115MediaAnalyzerMixin:
                 else:
                     friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
             else:
-                if display_lang in ["简体", "繁体", "中英双语（简体）", "中英双语（繁体）"]:
+                if display_lang in ["简体", "繁体", "中英双语（简体）", "中英双语（繁体）", "中日双语（简体）", "中日双语（繁体）", "中韩双语（简体）", "中韩双语（繁体）"]:
                     check_kw = "简" if "简" in display_lang else ("繁" if "繁" in display_lang else "")
                     if check_kw and check_kw not in friendly_title:
                         friendly_title = f"{friendly_title} ({display_lang})"
@@ -687,11 +726,13 @@ class P115MediaAnalyzerMixin:
         redundant_exact_matches = {
             "yue", "cn", "cht", "tc", "chi", "zho", "zh", "chs", "sc",
             "粵語", "國語", "粤语", "国语", "简中", "繁中", "简体", "繁体",
-            "中文", "英语", "英文", "english", "korean", "韩语", "韩文",
+            "中文", "英语", "英文", "english", "korean", "韩语", "韩文", "japanese", "日语", "日文",
             "中文(简体)", "中文（简体）", "简体中文",
             "中文(繁体)", "中文（繁體）", "繁体中文", "繁體中文",
             "simplified", "traditional", "simplified(简体)", "traditional(繁体)",
-            "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）"
+            "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）",
+            "简日双语", "繁日双语", "中日双语（简体）", "中日双语（繁体）",
+            "简韩双语", "繁韩双语", "中韩双语（简体）", "中韩双语（繁体）"
         }
 
         if (
@@ -1218,71 +1259,48 @@ class P115MediaAnalyzerMixin:
                     codec = sub.get("Codec", "").upper()
 
                     # 统一特征判断
-                    is_effect = (
-                        "特效" in sub_title
-                        or "effect" in sub_title
-                        or "effects" in sub_title
-                    )
+                    is_effect = ("特效" in sub_title or "effect" in sub_title or "effects" in sub_title)
 
-                    is_chs_eng = (
-                        "简英" in sub_title
-                        or "中英" in sub_title
-                        or "chs/eng" in sub_title
-                        or "chs&eng" in sub_title
-                        or "chs.eng" in sub_title
-                    )
+                    is_chs_eng = ("简英" in sub_title or "中英" in sub_title or "chs/eng" in sub_title or "chs&eng" in sub_title or "chs.eng" in sub_title)
+                    is_cht_eng = ("繁英" in sub_title or "cht/eng" in sub_title or "cht&eng" in sub_title or "cht.eng" in sub_title)
+                    
+                    is_chs_jpn = ("简日" in sub_title or "中日" in sub_title or "chs/jpn" in sub_title or "chs&jpn" in sub_title or "chs.jpn" in sub_title)
+                    is_cht_jpn = ("繁日" in sub_title or "cht/jpn" in sub_title or "cht&jpn" in sub_title or "cht.jpn" in sub_title)
+                    
+                    is_chs_kor = ("简韩" in sub_title or "中韩" in sub_title or "chs/kor" in sub_title or "chs&kor" in sub_title or "chs.kor" in sub_title)
+                    is_cht_kor = ("繁韩" in sub_title or "cht/kor" in sub_title or "cht&kor" in sub_title or "cht.kor" in sub_title)
 
-                    is_cht_eng = (
-                        "繁英" in sub_title
-                        or "cht/eng" in sub_title
-                        or "cht&eng" in sub_title
-                        or "cht.eng" in sub_title
-                    )
-
-                    is_chs = (
-                        "简体" in sub_title
-                        or "简中" in sub_title
-                        or "chs" in sub_title
-                    ) and not is_chs_eng
-
-                    is_cht = (
-                        "繁体" in sub_title
-                        or "繁中" in sub_title
-                        or "cht" in sub_title
-                    ) and not is_cht_eng
+                    is_chs = ("简体" in sub_title or "简中" in sub_title or "chs" in sub_title) and not (is_chs_eng or is_chs_jpn or is_chs_kor)
+                    is_cht = ("繁体" in sub_title or "繁中" in sub_title or "cht" in sub_title) and not (is_cht_eng or is_cht_jpn or is_cht_kor)
 
                     # 优先级 1: 智能跟随音轨特征
                     if active_audio_features and any(f in sub_title for f in active_audio_features):
                         score += 10000000  # 加大到一千万，确保绝对压制
 
-                    # 优先级 2: 用户拖拽顺序 (★ 升级为指数级叠加打分)
+                    # 优先级 2: 用户拖拽顺序 (指数级叠加打分)
                     priority_score = 0
                     for idx, p_type in enumerate(reversed(sub_priority)):
-                        # 使用 10 的指数级权重 (100, 1000, 10000, 100000...)
-                        # 确保排在前面的属性具有绝对统治力，同时允许属性叠加！
                         weight = 10 ** (idx + 2) 
 
-                        if p_type == "effect" and is_effect:
-                            priority_score += weight
-                        elif p_type == "chs_eng" and is_chs_eng:
-                            priority_score += weight
-                        elif p_type == "cht_eng" and is_cht_eng:
-                            priority_score += weight
-                        elif p_type == "chs" and is_chs:
-                            priority_score += weight
-                        elif p_type == "cht" and is_cht:
-                            priority_score += weight
+                        if p_type == "effect" and is_effect: priority_score += weight
+                        elif p_type == "chs_eng" and is_chs_eng: priority_score += weight
+                        elif p_type == "cht_eng" and is_cht_eng: priority_score += weight
+                        elif p_type == "chs_jpn" and is_chs_jpn: priority_score += weight
+                        elif p_type == "cht_jpn" and is_cht_jpn: priority_score += weight
+                        elif p_type == "chs_kor" and is_chs_kor: priority_score += weight
+                        elif p_type == "cht_kor" and is_cht_kor: priority_score += weight
+                        elif p_type == "chs" and is_chs: priority_score += weight
+                        elif p_type == "cht" and is_cht: priority_score += weight
 
                     score += priority_score
 
                     # 字幕简繁偏好只能做小加分，不能推翻拖拽排序
                     if subtitle_pref:
-                        if subtitle_pref == "chs" and (is_chs or is_chs_eng):
+                        if subtitle_pref == "chs" and (is_chs or is_chs_eng or is_chs_jpn or is_chs_kor):
                             score += 50
-                        elif subtitle_pref == "cht" and (is_cht or is_cht_eng):
+                        elif subtitle_pref == "cht" and (is_cht or is_cht_eng or is_cht_jpn or is_cht_kor):
                             score += 50
 
-                    # 原本默认只做极小兜底，不能压过用户排序
                     if sub.get("IsDefault"):
                         score += 1
 
