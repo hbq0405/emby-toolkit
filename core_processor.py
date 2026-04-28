@@ -3747,8 +3747,8 @@ class MediaProcessor:
         if self.ai_translator and self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False):
             texts_to_translate = set()
             for actor in current_cast_list:
-                name = actor.get("name", "").strip()
-                role = actor.get("character", "").strip()
+                name = str(actor.get("name") or "").strip()
+                role = str(actor.get("character") or "").strip()
                 
                 # 只有不包含中文的才需要翻译（精准过滤，省Token）
                 if name and not utils.contains_chinese(name):
@@ -3793,8 +3793,8 @@ class MediaProcessor:
                 # 3. 回填翻译结果到 current_cast_list
                 if translation_cache:
                     for actor in current_cast_list:
-                        name = actor.get("name", "").strip()
-                        role = actor.get("character", "").strip()
+                        name = str(actor.get("name") or "").strip()
+                        role = str(actor.get("character") or "").strip()
                         if name in translation_cache:
                             actor["name"] = translation_cache[name]
                         if role in translation_cache:
