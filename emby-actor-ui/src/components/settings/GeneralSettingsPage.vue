@@ -607,7 +607,7 @@
                       </n-button>
                       <template #feedback>
                           <n-text depth="3" style="font-size:0.8em;">
-                              自定义默认音轨语言、特征词，及字幕的优先级排序；仅在“同步生成媒体信息”开启时生效。
+                              自定义默认音轨语言、特征词，及字幕的优先级排序；仅在“媒体信息格式化”开启时生效。
                           </n-text>
                       </template>
                   </n-form-item>
