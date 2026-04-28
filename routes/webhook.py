@@ -136,6 +136,54 @@ def _flush_mp_batch(key):
     except Exception as e:
         logger.error(f"  ➜ [MP合并整理] 失败: {e}", exc_info=True)
 
+def _process_mp_passthrough_immediate(file_info):
+    """MP直出模式：跳过缓冲，直接处理单文件"""
+    client = P115Service.get_client()
+    if not client:
+        logger.warning("  ➜ [MP直出] 115 客户端未初始化，任务取消。")
+        return
+
+    tmdb_id = file_info.get('tmdb_id')
+    media_type = file_info.get('media_type')
+    title = file_info.get('title') or ''
+    file_name = file_info.get('name')
+
+    logger.info(f"  ➜ [MP直出] 开始处理单文件: {file_name} -> ID:{tmdb_id}")
+
+    try:
+        organizer = SmartOrganizer(client, tmdb_id, media_type, title)
+        season_num = file_info.get('season_num')
+        if season_num is not None and str(season_num).isdigit():
+            organizer.forced_season = int(season_num)
+
+        file_nodes = [{
+            'fid': file_info.get('file_id'),
+            'file_id': file_info.get('file_id'),
+            'fn': file_name,
+            'file_name': file_name,
+            'fc': '1',
+            'type': '1',
+            'pid': file_info.get('parent_id'),
+            'parent_id': file_info.get('parent_id'),
+            'pc': file_info.get('pickcode'),
+            'pick_code': file_info.get('pickcode'),
+            '115_path': file_info.get('115_path'),
+            '_forced_season': season_num,
+            '_forced_episode': file_info.get('episode_num'),
+            '_skip_gc': True,   
+            '_from_mp': True    
+        }]
+
+        ok = organizer.execute_mp_passthrough(file_nodes)
+        if not ok:
+            logger.warning("  ➜ [MP直出] 直出处理未完全成功。")
+
+        from handler.p115_service import P115DeleteBuffer
+        P115DeleteBuffer.add(check_save_path=True)
+
+    except Exception as e:
+        logger.error(f"  ➜ [MP直出] 失败: {e}", exc_info=True)
+
 def _enqueue_mp_file(file_info):
     """将 MP 上传的文件加入缓冲池 (视频叫醒字幕机制)"""
     with MP_BATCH_LOCK:
@@ -1029,10 +1077,18 @@ def emby_webhook():
                 }
                 
                 log_prefix = "MP字幕上传" if mp_event_type == "transfer.subtitle.complete" else "MP视频上传"
-                logger.info(f"  ➜ [{log_prefix}] 收到文件: {file_name}，进入合并缓冲池...")
                 
-                _enqueue_mp_file(file_info)
-                return jsonify({"status": "processing_single_file"}), 200
+                config = get_config()
+                mp_classify_enabled = bool(config.get(constants.CONFIG_OPTION_115_MP_CLASSIFY, False))
+                
+                if mp_classify_enabled:
+                    logger.info(f"  ➜ [{log_prefix}] 收到文件: {file_name}，MP直出模式已开启，跳过缓冲直接处理...")
+                    spawn(_process_mp_passthrough_immediate, file_info)
+                    return jsonify({"status": "processing_single_file_passthrough"}), 200
+                else:
+                    logger.info(f"  ➜ [{log_prefix}] 收到文件: {file_name}，进入合并缓冲池...")
+                    _enqueue_mp_file(file_info)
+                    return jsonify({"status": "processing_single_file"}), 200
             else:
                 logger.debug(f"  ➜ [MP上传] 忽略非文件类型的通知: {file_name}")
                 return jsonify({"status": "ignored_not_file"}), 200
