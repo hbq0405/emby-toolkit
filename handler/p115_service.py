@@ -3793,15 +3793,15 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             mediainfo_text = P115CacheManager.get_mediainfo_cache_text(sha1)
 
                         if not mediainfo_text:
-                            mediainfo_obj = self._probe_mediainfo_with_ffprobe(file_item, sha1=sha1, silent_log=False)
-                            if mediainfo_obj:
+                            emby_obj, raw_ffprobe = self._probe_mediainfo_with_ffprobe(file_item, sha1=sha1, silent_log=False) or (None, None)
+                            if emby_obj:
                                 probe_sha1 = sha1 or file_item.get('sha1') or file_item.get('sha')
                                 if probe_sha1:
                                     probe_sha1 = str(probe_sha1).upper()
-                                    P115CacheManager.save_mediainfo_cache(probe_sha1, mediainfo_obj)
+                                    P115CacheManager.save_mediainfo_cache(probe_sha1, emby_obj, raw_ffprobe)
                                     sha1 = probe_sha1
                                     file_item['sha1'] = probe_sha1
-                                mediainfo_text = json.dumps(mediainfo_obj, ensure_ascii=False, indent=2)
+                                mediainfo_text = json.dumps(emby_obj, ensure_ascii=False, indent=2)
 
                         if mediainfo_text:
                             mediainfo_filename = os.path.splitext(original_name)[0] + "-mediainfo.json"
