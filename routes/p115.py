@@ -1488,32 +1488,29 @@ def get_local_directories():
 def handle_default_stream_config():
     """管理默认音轨与字幕配置"""
     if request.method == 'GET':
-        config = settings_db.get_setting('p115_default_stream_config') or {}
+        saved_config = settings_db.get_setting('p115_default_stream_config') or {}
+        if not isinstance(saved_config, dict):
+            saved_config = {}
+
         defaults = {
             "audio_lang": "",
             "subtitle_lang": "",
+            "audio_priority_order": ["param", "feature"],
             "audio_features": ["公映", "国配", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"],
             "audio_param_priority": ["atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra", "ddp", "dts", "flac", "ac3", "aac", "7_1", "5_1", "2_0"],
-            "sub_priority": ["effect", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor", "chs", "cht"]
+            "sub_priority": ["effect", "chs", "cht", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor"]
         }
-        
-        # ▼▼▼ 智能合并逻辑 ▼▼▼
-        for key, default_val in defaults.items():
-            if key not in config:
-                # 如果数据库里完全没有这个 key，直接用默认值
-                config[key] = default_val
-            elif isinstance(default_val, list):
-                # 如果是列表（如 sub_priority），保留用户旧排序，把新增的选项追加到末尾
-                saved_list = config[key]
-                for item in default_val:
-                    if item not in saved_list:
-                        saved_list.append(item)
-                config[key] = saved_list
-        # ▲▲▲ 智能合并结束 ▲▲▲
+
+        # 只补齐缺失字段，不再向用户已经保存的列表里追加默认项。
+        # 这样前端删除的特色词 / 物理参数 / 字幕类型不会在下次打开时“死灰复燃”。
+        config = defaults.copy()
+        config.update(saved_config)
 
         return jsonify({"success": True, "data": config})
     
     if request.method == 'POST':
-        new_config = request.json
+        new_config = request.json or {}
+        if not isinstance(new_config, dict):
+            new_config = {}
         settings_db.save_setting('p115_default_stream_config', new_config)
         return jsonify({"success": True, "message": "默认音轨与字幕配置已保存"})

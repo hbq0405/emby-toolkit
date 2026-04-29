@@ -13,7 +13,7 @@
           <div class="panel-header compact-header">
             <div>
               <div class="panel-title">默认音轨设置</div>
-              <div class="panel-desc">先按语言筛选，再按“特色词”与“物理参数”选择默认音轨。</div>
+              <div class="panel-desc">先按语言筛选，再按“大类优先级”比较特色词与物理参数。</div>
             </div>
           </div>
 
@@ -26,6 +26,34 @@
                 </n-text>
               </template>
             </n-form-item>
+
+            <div class="macro-section">
+              <div class="mini-section-head macro-head">
+                <div>
+                  <div class="mini-title">音轨大类优先级</div>
+                  <div class="mini-desc">拖动决定“特色词”和“物理参数”谁先比较。</div>
+                </div>
+              </div>
+
+              <draggable
+                v-model="config.audio_priority_order"
+                item-key="id"
+                handle=".drag-handle"
+                animation="200"
+                class="group-priority-list"
+              >
+                <template #item="{ element, index }">
+                  <div class="group-priority-item">
+                    <n-icon class="drag-handle" size="18"><MenuIcon /></n-icon>
+                    <div class="group-main">
+                      <span class="group-title">{{ getAudioPriorityGroupLabel(element.id) }}</span>
+                      <span class="group-desc">{{ getAudioPriorityGroupDesc(element.id) }}</span>
+                    </div>
+                    <n-tag size="tiny" :type="index === 0 ? 'success' : 'default'">第 {{ index + 1 }} 层</n-tag>
+                  </div>
+                </template>
+              </draggable>
+            </div>
 
             <div class="audio-priority-grid">
               <div class="mini-section">
@@ -75,7 +103,7 @@
                 </div>
 
                 <n-alert type="info" :show-icon="false" class="tiny-alert">
-                  上下拖动，越靠上越优先；会与特色词叠加打分。
+                  上下拖动，越靠上越优先；不需要的参数可删除，恢复默认可一键找回。
                 </n-alert>
 
                 <draggable
@@ -93,6 +121,9 @@
                         <span class="param-desc">{{ getAudioParamDesc(element.id) }}</span>
                       </div>
                       <n-tag size="tiny" :type="index === 0 ? 'success' : 'default'">{{ index + 1 }}</n-tag>
+                      <n-button size="tiny" quaternary circle type="error" @click="removeAudioParam(index)">
+                        <template #icon><n-icon><CloseIcon /></n-icon></template>
+                      </n-button>
                     </div>
                   </template>
                 </draggable>
@@ -149,10 +180,13 @@
     </n-spin>
 
     <template #footer>
-      <n-space justify="end">
-        <n-button @click="showModal = false">取消</n-button>
-        <n-button type="primary" @click="saveConfig" :loading="saving">保存配置</n-button>
-      </n-space>
+      <div class="footer-actions">
+        <n-button tertiary @click="restoreDefaults">一键恢复默认</n-button>
+        <n-space justify="end">
+          <n-button @click="showModal = false">取消</n-button>
+          <n-button type="primary" @click="saveConfig" :loading="saving">保存配置</n-button>
+        </n-space>
+      </div>
     </template>
   </n-modal>
 </template>
@@ -198,6 +232,13 @@ const subTypeMap = {
   cht_kor: '繁韩双语'
 };
 
+const defaultAudioPriorityOrder = ['param', 'feature'];
+const audioPriorityGroupMap = {
+  param: { label: '物理参数优先', desc: 'Atmos / DTS-HD MA / 7.1 / 2.0' },
+  feature: { label: '特色词优先', desc: '公映 / 国配 / 上译 / 导评' }
+};
+
+const defaultAudioFeatures = ['公映', '国配', '上译', '京译', '长译', '八一', '台配', '粤语', '评论', '导评'];
 const defaultAudioParamPriority = [
   'atmos',
   'dts_x',
@@ -213,6 +254,7 @@ const defaultAudioParamPriority = [
   '5_1',
   '2_0'
 ];
+const defaultSubPriority = ['effect', 'chs', 'cht', 'chs_eng', 'cht_eng', 'chs_jpn', 'cht_jpn', 'chs_kor', 'cht_kor'];
 
 const audioParamMap = {
   atmos: { label: '杜比全景声 Atmos', desc: 'TrueHD / DDP Atmos' },
@@ -234,6 +276,7 @@ const audioParamMap = {
 const config = ref({
   audio_lang: '',
   subtitle_lang: '',
+  audio_priority_order: [],
   audio_features: [],
   audio_param_priority: [],
   sub_priority: []
@@ -242,31 +285,46 @@ const config = ref({
 const getSubLabel = (id) => subTypeMap[id] || id;
 const getAudioParamLabel = (id) => audioParamMap[id]?.label || id;
 const getAudioParamDesc = (id) => audioParamMap[id]?.desc || '';
+const getAudioPriorityGroupLabel = (id) => audioPriorityGroupMap[id]?.label || id;
+const getAudioPriorityGroupDesc = (id) => audioPriorityGroupMap[id]?.desc || '';
 
-const makeAudioParamItems = (ids) => {
+const uniqueIds = (ids) => {
   const seen = new Set();
   const cleanIds = [];
-
   (ids || []).forEach((id) => {
     if (id && !seen.has(id)) {
       seen.add(id);
       cleanIds.push(id);
     }
   });
+  return cleanIds;
+};
 
-  defaultAudioParamPriority.forEach((id) => {
-    if (!seen.has(id)) {
-      seen.add(id);
-      cleanIds.push(id);
-    }
+const makeIdItems = (ids) => uniqueIds(ids).map(id => ({ id }));
+
+const makeAudioPriorityGroupItems = (ids) => {
+  const cleanIds = uniqueIds(ids).filter(id => ['param', 'feature'].includes(id));
+  defaultAudioPriorityOrder.forEach((id) => {
+    if (!cleanIds.includes(id)) cleanIds.push(id);
   });
-
   return cleanIds.map(id => ({ id }));
 };
 
 const resetAudioParams = () => {
-  config.value.audio_param_priority = makeAudioParamItems(defaultAudioParamPriority);
+  config.value.audio_param_priority = makeIdItems(defaultAudioParamPriority);
   message.success('已恢复物理参数默认排序');
+};
+
+const restoreDefaults = () => {
+  config.value = {
+    audio_lang: '',
+    subtitle_lang: '',
+    audio_priority_order: makeAudioPriorityGroupItems(defaultAudioPriorityOrder),
+    audio_features: defaultAudioFeatures.map((text, index) => ({ id: `default_audio_${index}_${Date.now()}`, text })),
+    audio_param_priority: makeIdItems(defaultAudioParamPriority),
+    sub_priority: makeIdItems(defaultSubPriority)
+  };
+  message.success('已恢复默认配置，保存后生效');
 };
 
 const addAudioFeature = () => {
@@ -285,21 +343,26 @@ const removeAudioFeature = (index) => {
   config.value.audio_features.splice(index, 1);
 };
 
+const removeAudioParam = (index) => {
+  config.value.audio_param_priority.splice(index, 1);
+};
+
 const loadConfig = async () => {
   loading.value = true;
   try {
     const res = await axios.get('/api/p115/default_stream_config');
     if (res.data.success) {
-      const data = res.data.data;
+      const data = res.data.data || {};
       config.value.audio_lang = data.audio_lang || '';
       config.value.subtitle_lang = data.subtitle_lang || '';
 
-      config.value.audio_features = (data.audio_features || []).map((text, index) => ({
+      config.value.audio_priority_order = makeAudioPriorityGroupItems(data.audio_priority_order || defaultAudioPriorityOrder);
+      config.value.audio_features = (Array.isArray(data.audio_features) ? data.audio_features : defaultAudioFeatures).map((text, index) => ({
         id: `audio_${index}_${Date.now()}`,
         text
       }));
-      config.value.audio_param_priority = makeAudioParamItems(data.audio_param_priority || defaultAudioParamPriority);
-      config.value.sub_priority = (data.sub_priority || []).map(id => ({ id }));
+      config.value.audio_param_priority = makeIdItems(Array.isArray(data.audio_param_priority) ? data.audio_param_priority : defaultAudioParamPriority);
+      config.value.sub_priority = makeIdItems(Array.isArray(data.sub_priority) ? data.sub_priority : defaultSubPriority);
     }
   } catch (error) {
     message.error('加载配置失败');
@@ -314,6 +377,7 @@ const saveConfig = async () => {
     const payload = {
       audio_lang: config.value.audio_lang,
       subtitle_lang: config.value.subtitle_lang,
+      audio_priority_order: config.value.audio_priority_order.map(item => item.id),
       audio_features: config.value.audio_features.map(item => item.text),
       audio_param_priority: config.value.audio_param_priority.map(item => item.id),
       sub_priority: config.value.sub_priority.map(item => item.id)
@@ -406,6 +470,7 @@ defineExpose({ open });
   align-items: start;
 }
 
+.macro-section,
 .mini-section {
   min-width: 0;
   padding: 12px;
@@ -414,12 +479,21 @@ defineExpose({ open });
   background: var(--n-action-color);
 }
 
+.macro-section {
+  margin-bottom: 12px;
+  padding-bottom: 10px;
+}
+
 .mini-section-head {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 8px;
   margin-bottom: 10px;
+}
+
+.macro-head {
+  margin-bottom: 8px;
 }
 
 .mini-title {
@@ -433,6 +507,49 @@ defineExpose({ open });
   font-size: 11px;
   line-height: 1.35;
   color: var(--n-text-color-3);
+}
+
+.group-priority-list {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.group-priority-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  min-height: 42px;
+  padding: 8px 10px;
+  border: 1px solid var(--n-divider-color);
+  border-radius: 8px;
+  background: var(--n-card-color);
+}
+
+.group-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.group-title {
+  font-size: 13px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.group-desc {
+  color: var(--n-text-color-3);
+  font-size: 11px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .feature-input {
@@ -452,7 +569,7 @@ defineExpose({ open });
 }
 
 .compact-list {
-  max-height: 430px;
+  max-height: 390px;
   overflow: auto;
   padding-right: 2px;
 }
@@ -477,7 +594,8 @@ defineExpose({ open });
   padding: 7px 9px;
 }
 
-.priority-item:hover {
+.priority-item:hover,
+.group-priority-item:hover {
   border-color: var(--n-primary-color);
 }
 
@@ -486,6 +604,10 @@ defineExpose({ open });
   cursor: grab;
   margin-right: 8px;
   color: #999;
+}
+
+.group-priority-item .drag-handle {
+  margin-right: 0;
 }
 
 .drag-handle:active {
@@ -530,6 +652,13 @@ defineExpose({ open });
   flex: 0 0 auto;
 }
 
+.footer-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 @media (max-width: 980px) {
   .config-grid {
     grid-template-columns: 1fr;
@@ -537,7 +666,8 @@ defineExpose({ open });
 }
 
 @media (max-width: 760px) {
-  .audio-priority-grid {
+  .audio-priority-grid,
+  .group-priority-list {
     grid-template-columns: 1fr;
   }
 }

@@ -1169,12 +1169,24 @@ class P115MediaAnalyzerMixin:
             stream_config = settings_db.get_setting('p115_default_stream_config') or {
                 "audio_lang": "",
                 "subtitle_lang": "",
+                "audio_priority_order": ["param", "feature"],
                 "audio_features": ["公映", "上译", "京译", "长译", "八一", "国配", "台配", "国语", "粤语", "评论", "导评"],
                 "audio_param_priority": ["atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra", "ddp", "dts", "flac", "ac3", "aac", "7_1", "5_1", "2_0"],
-                "sub_priority": ["effect", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor", "chs", "cht"]
+                "sub_priority": ["effect", "chs", "cht", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor"]
             }
             audio_pref_code = stream_config.get("audio_lang", "")
             subtitle_pref = stream_config.get("subtitle_lang", "")
+            raw_audio_priority_order = stream_config.get("audio_priority_order", ["param", "feature"])
+            audio_priority_order = []
+            if isinstance(raw_audio_priority_order, list):
+                for priority_id in raw_audio_priority_order:
+                    priority_id = str(priority_id or "").strip().lower()
+                    if priority_id in ["param", "feature"] and priority_id not in audio_priority_order:
+                        audio_priority_order.append(priority_id)
+            for priority_id in ["param", "feature"]:
+                if priority_id not in audio_priority_order:
+                    audio_priority_order.append(priority_id)
+
             audio_features_config = stream_config.get("audio_features", [])
             audio_param_priority = stream_config.get("audio_param_priority", [
                 "atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra",
@@ -1258,38 +1270,54 @@ class P115MediaAnalyzerMixin:
                     # 兜底：允许以后新增自定义物理参数 id / 文本，能被 Title 或 DisplayTitle 命中。
                     return bool(param_id and param_id in text)
 
-                # 根据用户拖拽的音轨特色词 + 物理参数优先级打分。
-                # 特色词用于区分“公映/国配/上译/导评”等版本，权重高于物理参数；
-                # 物理参数用于同类音轨内优先选择 Atmos / DTS-HD MA / 7.1 等更优轨道。
+                # 根据用户拖拽的“大类优先级”决定：物理参数优先，还是特色词优先。
+                # 每个大类内部仍按各自列表的拖拽顺序排序。
                 def get_audio_score(audio):
-                    score = 0
                     title_lower = _audio_match_text(audio)
 
-                    feature_score = 0
+                    total_params = len(audio_param_priority)
+                    matched_param_rank = 0
+                    matched_param_count = 0
+
+                    # 只取“用户排序中最靠前的命中项”作为主排序，避免 AC3+5.1 这种多标签叠加反杀 AAC / 2.0。
+                    for idx, param_id in enumerate(audio_param_priority):
+                        if _audio_matches_param(audio, param_id):
+                            matched_param_rank = total_params - idx
+                            break
+
+                    # 同时统计命中数量，只作为极弱的同级 tie-breaker。
+                    for param_id in audio_param_priority:
+                        if _audio_matches_param(audio, param_id):
+                            matched_param_count += 1
+
                     total_features = len(audio_features_config)
+                    matched_feature_rank = 0
                     for idx, kw in enumerate(audio_features_config):
                         kw_text = str(kw or "").strip().lower()
                         if not kw_text:
                             continue
                         if kw_text in title_lower:
-                            feature_score = max(feature_score, (total_features - idx) * 1000000)
-                    score += feature_score
+                            matched_feature_rank = max(matched_feature_rank, total_features - idx)
 
-                    param_score = 0
-                    total_params = len(audio_param_priority)
-                    for idx, param_id in enumerate(audio_param_priority):
-                        if _audio_matches_param(audio, param_id):
-                            # 可叠加：例如 DTS-HD MA + 7.1 会比单纯 DTS-HD MA 更靠前。
-                            param_score += (total_params - idx) * 10000
-                    score += param_score
+                    category_scores = {
+                        "param": matched_param_rank,
+                        "feature": matched_feature_rank,
+                    }
+                    ordered_category_scores = tuple(category_scores.get(priority_id, 0) for priority_id in audio_priority_order)
 
-                    # 原本默认的只给 1 分兜底，不能推翻用户语言/特色词/物理参数配置。
-                    if audio.get("IsDefault"):
-                        score += 1
+                    bitrate = self._safe_int(audio.get("BitRate"), 0)
+                    index_penalty = -self._safe_int(audio.get("Index"), 9999)
 
-                    return score
+                    # tuple 按顺序比较：用户选择的大类优先级 > 参数命中数 > 原始默认 > 码率 > 原始顺序。
+                    return (
+                        *ordered_category_scores,
+                        matched_param_count,
+                        1 if audio.get("IsDefault") else 0,
+                        bitrate,
+                        index_penalty,
+                    )
 
-                # 按分数降序排列，取最高分作为默认音轨
+                # 按排序键降序排列，取最高者作为默认音轨
                 sorted_audios = sorted(candidates, key=get_audio_score, reverse=True)
                 default_audio = sorted_audios[0]
 
