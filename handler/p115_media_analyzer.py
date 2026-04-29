@@ -1253,54 +1253,138 @@ class P115MediaAnalyzerMixin:
                             active_audio_features.append(chunk.lower())
 
                 # ★ 核心打分函数
+                # 关键原则：subtitle_lang 是“语言大方向”，effect 只是“字幕特征”。
+                # 也就是说：用户选 chs 时，简体特效 > 繁体特效；不能让 effect 绕过简繁偏好。
+                def _norm_sub_text(text):
+                    text = str(text or "").lower()
+                    text = text.replace("（", "(").replace("）", ")")
+                    text = re.sub(r"[\._\-+/|\\\[\]【】]+", " ", text)
+                    text = re.sub(r"\s+", " ", text).strip()
+                    return text
+
+                def _has_token(text, *tokens):
+                    text = _norm_sub_text(text)
+                    for token in tokens:
+                        token = _norm_sub_text(token)
+                        if not token:
+                            continue
+                        # 中文词直接包含判断；英文短码必须边界匹配，避免误伤其它单词。
+                        if re.search(r"[\u4e00-\u9fff]", token):
+                            if token in text:
+                                return True
+                        elif re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", text):
+                            return True
+                    return False
+
+                def _detect_sub_flags(sub):
+                    sub_title = _norm_sub_text(" ".join([
+                        sub.get("Title", ""),
+                        sub.get("DisplayTitle", ""),
+                        sub.get("DisplayLanguage", ""),
+                        sub.get("Language", ""),
+                    ]))
+
+                    is_effect = _has_token(sub_title, "特效", "effect", "effects", "tx")
+
+                    has_cht = _has_token(
+                        sub_title,
+                        "繁体", "繁體", "繁中", "cht", "tc", "big5", "zh tw", "zh hk", "zh hant"
+                    )
+                    has_chs = _has_token(
+                        sub_title,
+                        "简体", "簡體", "简中", "chs", "sc", "gb", "zh cn", "zh hans"
+                    )
+
+                    # 纯 chi/zho/zh 没有简繁标记时，按用户偏好兜底；没有偏好则默认简体。
+                    if not has_chs and not has_cht and _has_token(sub_title, "chi", "zho", "zh", "中文"):
+                        if subtitle_pref == "cht":
+                            has_cht = True
+                        else:
+                            has_chs = True
+
+                    has_eng = _has_token(sub_title, "eng", "en", "英文", "英语", "中英", "双语")
+                    has_jpn = _has_token(sub_title, "jpn", "jp", "ja", "日文", "日语", "中日")
+                    has_kor = _has_token(sub_title, "kor", "kr", "ko", "韩文", "韩语", "中韩")
+
+                    # “中英双语（繁体）”同时含“中英”和“繁体”，必须判成 cht_eng，不能被“中英”偷渡成 chs_eng。
+                    is_cht_eng = has_cht and has_eng
+                    is_chs_eng = has_chs and has_eng and not has_cht
+                    is_cht_jpn = has_cht and has_jpn
+                    is_chs_jpn = has_chs and has_jpn and not has_cht
+                    is_cht_kor = has_cht and has_kor
+                    is_chs_kor = has_chs and has_kor and not has_cht
+
+                    is_cht = has_cht and not (is_cht_eng or is_cht_jpn or is_cht_kor)
+                    is_chs = has_chs and not (is_chs_eng or is_chs_jpn or is_chs_kor)
+
+                    script = "cht" if has_cht else ("chs" if has_chs else "")
+
+                    return {
+                        "text": sub_title,
+                        "script": script,
+                        "is_effect": is_effect,
+                        "is_chs": is_chs,
+                        "is_cht": is_cht,
+                        "is_chs_eng": is_chs_eng,
+                        "is_cht_eng": is_cht_eng,
+                        "is_chs_jpn": is_chs_jpn,
+                        "is_cht_jpn": is_cht_jpn,
+                        "is_chs_kor": is_chs_kor,
+                        "is_cht_kor": is_cht_kor,
+                    }
+
                 def get_sub_score(sub):
                     score = 0
-                    sub_title = (sub.get("Title", "") + " " + sub.get("DisplayTitle", "")).lower()
-                    codec = sub.get("Codec", "").upper()
+                    flags = _detect_sub_flags(sub)
+                    sub_title = flags["text"]
 
-                    # 统一特征判断
-                    is_effect = ("特效" in sub_title or "effect" in sub_title or "effects" in sub_title)
+                    # 优先级 0: 用户选择的默认字幕语言是硬偏好。
+                    # effect / 双语 / 原始默认只能在同一语言池里竞争，不能让繁体越级打败简体。
+                    if subtitle_pref == "chs":
+                        if flags["script"] == "chs":
+                            score += 10 ** 12
+                        elif flags["script"] == "cht":
+                            score -= 10 ** 9
+                    elif subtitle_pref == "cht":
+                        if flags["script"] == "cht":
+                            score += 10 ** 12
+                        elif flags["script"] == "chs":
+                            score -= 10 ** 9
 
-                    is_chs_eng = ("简英" in sub_title or "中英" in sub_title or "chs/eng" in sub_title or "chs&eng" in sub_title or "chs.eng" in sub_title)
-                    is_cht_eng = ("繁英" in sub_title or "cht/eng" in sub_title or "cht&eng" in sub_title or "cht.eng" in sub_title)
-                    
-                    is_chs_jpn = ("简日" in sub_title or "中日" in sub_title or "chs/jpn" in sub_title or "chs&jpn" in sub_title or "chs.jpn" in sub_title)
-                    is_cht_jpn = ("繁日" in sub_title or "cht/jpn" in sub_title or "cht&jpn" in sub_title or "cht.jpn" in sub_title)
-                    
-                    is_chs_kor = ("简韩" in sub_title or "中韩" in sub_title or "chs/kor" in sub_title or "chs&kor" in sub_title or "chs.kor" in sub_title)
-                    is_cht_kor = ("繁韩" in sub_title or "cht/kor" in sub_title or "cht&kor" in sub_title or "cht.kor" in sub_title)
-
-                    is_chs = ("简体" in sub_title or "简中" in sub_title or "chs" in sub_title) and not (is_chs_eng or is_chs_jpn or is_chs_kor)
-                    is_cht = ("繁体" in sub_title or "繁中" in sub_title or "cht" in sub_title) and not (is_cht_eng or is_cht_jpn or is_cht_kor)
-
-                    # 优先级 1: 智能跟随音轨特征
+                    # 优先级 1: 智能跟随音轨特征。
+                    # 仍然低于 subtitle_lang，避免“繁体特效/公映字幕”越过用户指定的简体。
                     if active_audio_features and any(f in sub_title for f in active_audio_features):
-                        score += 10000000  # 加大到一千万，确保绝对压制
+                        score += 10 ** 10
 
-                    # 优先级 2: 用户拖拽顺序 (指数级叠加打分)
+                    # 优先级 2: 用户拖拽顺序。
+                    # 顺序越靠前，权重越高；effect 是特征加分，不是语言替代品。
                     priority_score = 0
-                    for idx, p_type in enumerate(reversed(sub_priority)):
-                        weight = 10 ** (idx + 2) 
+                    priority_weight_base = max(len(sub_priority), 1)
+                    for idx, p_type in enumerate(sub_priority):
+                        weight = (priority_weight_base - idx) * 100000
 
-                        if p_type == "effect" and is_effect: priority_score += weight
-                        elif p_type == "chs_eng" and is_chs_eng: priority_score += weight
-                        elif p_type == "cht_eng" and is_cht_eng: priority_score += weight
-                        elif p_type == "chs_jpn" and is_chs_jpn: priority_score += weight
-                        elif p_type == "cht_jpn" and is_cht_jpn: priority_score += weight
-                        elif p_type == "chs_kor" and is_chs_kor: priority_score += weight
-                        elif p_type == "cht_kor" and is_cht_kor: priority_score += weight
-                        elif p_type == "chs" and is_chs: priority_score += weight
-                        elif p_type == "cht" and is_cht: priority_score += weight
+                        if p_type == "effect" and flags["is_effect"]:
+                            priority_score += weight
+                        elif p_type == "chs_eng" and flags["is_chs_eng"]:
+                            priority_score += weight
+                        elif p_type == "cht_eng" and flags["is_cht_eng"]:
+                            priority_score += weight
+                        elif p_type == "chs_jpn" and flags["is_chs_jpn"]:
+                            priority_score += weight
+                        elif p_type == "cht_jpn" and flags["is_cht_jpn"]:
+                            priority_score += weight
+                        elif p_type == "chs_kor" and flags["is_chs_kor"]:
+                            priority_score += weight
+                        elif p_type == "cht_kor" and flags["is_cht_kor"]:
+                            priority_score += weight
+                        elif p_type == "chs" and flags["is_chs"]:
+                            priority_score += weight
+                        elif p_type == "cht" and flags["is_cht"]:
+                            priority_score += weight
 
                     score += priority_score
 
-                    # 字幕简繁偏好只能做小加分，不能推翻拖拽排序
-                    if subtitle_pref:
-                        if subtitle_pref == "chs" and (is_chs or is_chs_eng or is_chs_jpn or is_chs_kor):
-                            score += 50
-                        elif subtitle_pref == "cht" and (is_cht or is_cht_eng or is_cht_jpn or is_cht_kor):
-                            score += 50
-
+                    # 原本默认只做极低优先级兜底，不能推翻用户规则。
                     if sub.get("IsDefault"):
                         score += 1
 
