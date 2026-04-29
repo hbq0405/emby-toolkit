@@ -398,14 +398,6 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         ],
     },
     {
-        "label": "国配",
-        "types": ["Audio", "Subtitle"],
-        "patterns": [
-            r"国配",
-            r"大陆配音"
-        ],
-    },
-    {
         "label": "台配",
         "types": ["Audio", "Subtitle"],
         "patterns": [
