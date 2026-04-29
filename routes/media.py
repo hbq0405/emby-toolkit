@@ -980,3 +980,51 @@ def api_save_media_info_for_edit(item_id):
     except Exception as e:
         logger.error(f"保存媒体信息失败: {e}", exc_info=True)
         return jsonify({"error": f"保存失败: {str(e)}"}), 500
+    
+@media_api_bp.route('/media_info/series/<series_id>/episodes', methods=['GET'])
+@processor_ready_required
+def api_get_series_episodes_for_edit(series_id):
+    """获取指定剧集下所有在库的分集，用于前端选择编辑"""
+    try:
+        from database.connection import get_db_connection
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                # 1. 先通过 Emby ID 找到该剧集的 TMDb ID
+                cursor.execute("""
+                    SELECT tmdb_id FROM media_metadata
+                    WHERE emby_item_ids_json @> %s::jsonb AND item_type = 'Series'
+                    LIMIT 1
+                """, (json.dumps([str(series_id)]),))
+                series_row = cursor.fetchone()
+
+                if not series_row:
+                    return jsonify({"error": "未在数据库中找到该剧集信息"}), 404
+
+                series_tmdb_id = series_row['tmdb_id']
+
+                # 2. 通过剧集的 TMDb ID 查找所有在库的集 (Episode)
+                cursor.execute("""
+                    SELECT title, season_number, episode_number, emby_item_ids_json
+                    FROM media_metadata
+                    WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' AND in_library = TRUE
+                    ORDER BY season_number ASC, episode_number ASC
+                """, (series_tmdb_id,))
+                episodes = cursor.fetchall()
+
+        result = []
+        for ep in episodes:
+            emby_ids = ep.get('emby_item_ids_json') or []
+            if emby_ids:
+                # 取第一个 Emby ID 作为编辑目标
+                result.append({
+                    "emby_id": emby_ids[0],
+                    "season_number": ep.get('season_number'),
+                    "episode_number": ep.get('episode_number'),
+                    "title": ep.get('title')
+                })
+
+        return jsonify(result)
+
+    except Exception as e:
+        logger.error(f"获取剧集分集列表失败: {e}", exc_info=True)
+        return jsonify({"error": "服务器内部错误"}), 500

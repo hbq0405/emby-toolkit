@@ -64,11 +64,10 @@
                     </n-button>
                     <!-- ▼▼▼ 编辑媒体信息按钮 ▼▼▼ -->
                     <n-button 
-                      v-if="itemDetails.item_type !== 'Series'" 
                       block 
                       type="info" 
                       secondary 
-                      @click="openMediaInfoEditor"
+                      @click="handleMediaInfoButtonClick"
                     >
                       <template #icon>
                         <n-icon :component="DocumentTextIcon" />
@@ -221,6 +220,42 @@
         </n-alert>
       </div>
     </div>
+
+    <!-- ★★★ 剧集分集选择模态框 ★★★ -->
+    <n-modal
+      v-model:show="showEpisodeSelector"
+      preset="card"
+      style="width: 700px; max-width: 95vw;"
+      title="选择要编辑的集"
+      :bordered="false"
+      size="huge"
+    >
+      <n-spin :show="isFetchingEpisodes">
+        <n-table :bordered="true" :single-line="false" size="small" v-if="episodesList.length > 0">
+          <thead>
+            <tr>
+              <th style="width: 80px;">季</th>
+              <th style="width: 80px;">集</th>
+              <th>标题</th>
+              <th style="width: 100px; text-align: center;">操作</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="ep in episodesList" :key="ep.emby_id">
+              <td>第 {{ ep.season_number }} 季</td>
+              <td>第 {{ ep.episode_number }} 集</td>
+              <td>{{ ep.title || '未知标题' }}</td>
+              <td style="text-align: center;">
+                <n-button size="small" type="primary" @click="openMediaInfoEditor(ep.emby_id)">
+                  编辑指纹
+                </n-button>
+              </td>
+            </tr>
+          </tbody>
+        </n-table>
+        <n-empty v-else description="未找到在库的分集，请确认该剧集已入库" style="padding: 40px 0;" />
+      </n-spin>
+    </n-modal>
 
     <!-- 搜索演员模态框 -->
     <n-modal
@@ -635,11 +670,38 @@ const isSavingMediaInfo = ref(false);
 const mediaInfoData = shallowRef(null); 
 const mediaStreams = ref([]);    
 const mediaInfoContext = ref({}); 
+const currentEditMediaId = ref(null); // ★ 新增：记录当前正在编辑的具体媒体ID (电影ID或具体的集ID)
+
+// ★ 新增：剧集分集选择相关状态
+const showEpisodeSelector = ref(false);
+const isFetchingEpisodes = ref(false);
+const episodesList = ref([]); 
 
 // ★★★ 拆分音轨和字幕的下拉选项 ★★★
 const audioLanguageOptions = ref([]);
 const subtitleLanguageOptions = ref([]);
 
+
+// ★ 新增：点击编辑按钮的分流逻辑
+const handleMediaInfoButtonClick = async () => {
+  if (itemDetails.value.item_type === 'Series') {
+    // 如果是剧集，先拉取分集列表并打开选择框
+    showEpisodeSelector.value = true;
+    isFetchingEpisodes.value = true;
+    try {
+      const res = await axios.get(`/api/media_info/series/${itemId.value}/episodes`);
+      episodesList.value = res.data;
+    } catch (e) {
+      message.error(e.response?.data?.error || "获取剧集分集列表失败");
+      showEpisodeSelector.value = false;
+    } finally {
+      isFetchingEpisodes.value = false;
+    }
+  } else {
+    // 如果是电影，直接打开编辑器
+    openMediaInfoEditor(itemId.value);
+  }
+};
 // 1. 获取语言映射表
 const fetchLanguageMapping = async () => {
   try {
@@ -669,8 +731,10 @@ const fetchLanguageMapping = async () => {
   }
 };
 
-// 2. 打开编辑器并获取数据
-const openMediaInfoEditor = async () => {
+// 2. 打开编辑器并获取数据 (修改为接收 targetId 参数)
+const openMediaInfoEditor = async (targetId) => {
+  currentEditMediaId.value = targetId; // 记录当前正在编辑的 ID
+  
   // 检查其中一个数组是否为空即可
   if (audioLanguageOptions.value.length === 0) {
     await fetchLanguageMapping();
@@ -678,7 +742,7 @@ const openMediaInfoEditor = async () => {
   
   const loadingMsg = message.loading("正在读取底层媒体指纹...", { duration: 0 });
   try {
-    const res = await axios.get(`/api/media_info/edit/${itemId.value}`);
+    const res = await axios.get(`/api/media_info/edit/${targetId}`);
     mediaInfoContext.value = {
       sha1: res.data.sha1,
       media_path: res.data.media_path,
@@ -708,7 +772,7 @@ const openMediaInfoEditor = async () => {
   }
 };
 
-// 3. 保存修改
+// 3. 保存修改 (修改为使用 currentEditMediaId)
 const saveMediaInfo = async () => {
   isSavingMediaInfo.value = true;
   const loadingMsg = message.loading("正在覆盖指纹并通知 Emby 重新加载...", { duration: 0 });
@@ -719,7 +783,8 @@ const saveMediaInfo = async () => {
       mediainfo: mediaInfoData.value 
     };
     
-    const res = await axios.post(`/api/media_info/edit/${itemId.value}`, payload);
+    // 使用 currentEditMediaId 而不是全局的 itemId
+    const res = await axios.post(`/api/media_info/edit/${currentEditMediaId.value}`, payload);
     message.success(res.data.message || "媒体信息已更新！");
     showMediaInfoEditor.value = false;
   } catch (e) {
