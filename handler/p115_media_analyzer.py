@@ -1301,7 +1301,6 @@ class P115MediaAnalyzerMixin:
                     if not is_target:
                         s["IsForced"] = False
 
-                    import re
                     dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
                     dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
                     if is_target:
@@ -1481,7 +1480,6 @@ class P115MediaAnalyzerMixin:
                     if not is_target:
                         s["IsForced"] = False
                         
-                    import re
                     dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
                     dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
                     if is_target: dt += " (默认)"
