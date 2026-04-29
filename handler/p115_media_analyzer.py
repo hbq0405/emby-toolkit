@@ -333,6 +333,11 @@ class P115MediaAnalyzerMixin:
     def _format_stream_feature_title(self, base_title, features):
         """
         把基础语言名和特色标签合成最终标题。
+
+        规则：
+        - 原盘：介质属性，固定作为最前缀
+        - 特效：字幕形态，贴到语言名后面
+        - 其他标签：继续放括号里，例如 听障 / 拉美 / 导评
         """
         base_title = str(base_title or "").strip()
         features = list(dict.fromkeys([f for f in features if f]))
@@ -340,16 +345,26 @@ class P115MediaAnalyzerMixin:
         if not base_title:
             base_title = "未知"
 
-        # “特效”更适合贴在字幕类型后面，而不是放括号里
-        if "特效" in features and base_title in ["简体", "繁体", "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）", "英文", "英语"]:
-            if base_title == "中英双语（简体）":
-                base_title = "中英双语特效（简体）"
-            elif base_title == "中英双语（繁体）":
-                base_title = "中英双语特效（繁体）"
+        # 1. 原盘是介质属性，永远放最前面，不参与括号标签
+        is_pgs_source = "原盘" in features
+        features = [f for f in features if f != "原盘"]
+
+        # 2. 特效是字幕形态，贴到语言标题里，不参与括号标签
+        if "特效" in features:
+            # 中英双语（简体） -> 中英双语特效（简体）
+            # 中日双语（繁体） -> 中日双语特效（繁体）
+            if re.search(r"（(?:简体|繁体)）$", base_title):
+                base_title = re.sub(r"（(简体|繁体)）$", r"特效（\1）", base_title)
             else:
                 base_title = f"{base_title}特效"
+
             features = [f for f in features if f != "特效"]
 
+        # 3. 原盘前缀最终拼接
+        if is_pgs_source:
+            base_title = f"原盘{base_title}"
+
+        # 4. 剩余特色标签继续用括号承载
         if features:
             return f"{base_title}（{'·'.join(features)}）"
 
