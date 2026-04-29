@@ -351,6 +351,22 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         ],
     },
     {
+        "label": "央视",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"(?<![A-Za-z0-9])CCTV(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])GP-CCTV(?![A-Za-z0-9])",
+        ],
+    },
+    {
+        "label": "六区",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"(?<![A-Za-z0-9])LQ(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])GP-LQ(?![A-Za-z0-9])",
+        ],
+    },
+    {
         "label": "特效",
         "types": ["Subtitle"],
         "patterns": [
