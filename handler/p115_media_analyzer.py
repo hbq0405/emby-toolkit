@@ -1170,11 +1170,16 @@ class P115MediaAnalyzerMixin:
                 "audio_lang": "",
                 "subtitle_lang": "",
                 "audio_features": ["公映", "上译", "京译", "长译", "八一", "国配", "台配", "国语", "粤语", "评论", "导评"],
+                "audio_param_priority": ["atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra", "ddp", "dts", "flac", "ac3", "aac", "7_1", "5_1", "2_0"],
                 "sub_priority": ["effect", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor", "chs", "cht"]
             }
             audio_pref_code = stream_config.get("audio_lang", "")
             subtitle_pref = stream_config.get("subtitle_lang", "")
             audio_features_config = stream_config.get("audio_features", [])
+            audio_param_priority = stream_config.get("audio_param_priority", [
+                "atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra",
+                "ddp", "dts", "flac", "ac3", "aac", "7_1", "5_1", "2_0"
+            ])
             sub_priority = stream_config.get("sub_priority", [])
 
             audio_streams = [s for s in streams if s.get("Type") == "Audio"]
@@ -1193,21 +1198,95 @@ class P115MediaAnalyzerMixin:
                     if lang_matched:
                         candidates = lang_matched
 
-                # ★ 新增：根据用户拖拽的 audio_features 优先级打分
+                def _audio_match_text(audio):
+                    return " ".join([
+                        str(audio.get("Title", "")),
+                        str(audio.get("DisplayTitle", "")),
+                        str(audio.get("Codec", "")),
+                        str(audio.get("Profile", "")),
+                        str(audio.get("ChannelLayout", "")),
+                        str(audio.get("DisplayLanguage", "")),
+                    ]).lower()
+
+                def _audio_matches_param(audio, param_id):
+                    text = _audio_match_text(audio)
+                    codec = str(audio.get("Codec", "")).lower()
+                    profile = str(audio.get("Profile", "")).lower()
+                    layout = str(audio.get("ChannelLayout", "")).lower()
+                    channels = self._safe_int(audio.get("Channels"), 0)
+                    param_id = str(param_id or "").lower()
+
+                    is_dts_x = bool(re.search(r'dts[\s\-:]?x', text))
+                    is_dts_hd_ma = (
+                        "dts-hd ma" in text or "dts hd ma" in text
+                        or (codec == "dts" and ("ma" in profile or "master" in profile or "xll" in profile))
+                    )
+                    is_dts_hd_hra = (
+                        "dts-hd hra" in text or "dts hd hra" in text
+                        or (codec == "dts" and ("hra" in profile or "high resolution" in profile))
+                    )
+
+                    if param_id == "atmos":
+                        return "atmos" in text or "全景声" in text
+                    if param_id == "dts_x":
+                        return is_dts_x
+                    if param_id == "truehd":
+                        return codec == "truehd" or "truehd" in text or "true hd" in text
+                    if param_id == "dts_hd_ma":
+                        return is_dts_hd_ma
+                    if param_id == "dts_hd_hra":
+                        return is_dts_hd_hra
+                    if param_id == "ddp":
+                        return codec == "eac3" or "ddp" in text or "e-ac-3" in text or "eac3" in text or "dolby digital+" in text
+                    if param_id == "dts":
+                        return (codec == "dts" or "dts" in text) and not (is_dts_x or is_dts_hd_ma or is_dts_hd_hra)
+                    if param_id == "flac":
+                        return codec == "flac" or "flac" in text
+                    if param_id == "ac3":
+                        return codec == "ac3" or " ac3" in f" {text}" or "dolby digital" in text
+                    if param_id == "aac":
+                        return codec == "aac" or "aac" in text
+                    if param_id == "7_1":
+                        return channels == 8 or "7.1" in text or "7 1" in layout
+                    if param_id == "5_1":
+                        return channels == 6 or "5.1" in text or "5 1" in layout
+                    if param_id == "2_0":
+                        return channels == 2 or "2.0" in text or "2 0" in layout or "stereo" in text
+                    if param_id == "stereo":
+                        return channels == 2 or "stereo" in text
+
+                    # 兜底：允许以后新增自定义物理参数 id / 文本，能被 Title 或 DisplayTitle 命中。
+                    return bool(param_id and param_id in text)
+
+                # 根据用户拖拽的音轨特色词 + 物理参数优先级打分。
+                # 特色词用于区分“公映/国配/上译/导评”等版本，权重高于物理参数；
+                # 物理参数用于同类音轨内优先选择 Atmos / DTS-HD MA / 7.1 等更优轨道。
                 def get_audio_score(audio):
                     score = 0
-                    title_lower = (audio.get("Title", "") + " " + audio.get("DisplayTitle", "")).lower()
-                    
-                    # 遍历特征词，越靠前的特征词加分越高
-                    for idx, kw in enumerate(reversed(audio_features_config)):
-                        weight = (idx + 1) * 1000
-                        if kw.lower() in title_lower:
-                            score = max(score, weight)
-                    
-                    # 原本默认的给 1 分兜底
+                    title_lower = _audio_match_text(audio)
+
+                    feature_score = 0
+                    total_features = len(audio_features_config)
+                    for idx, kw in enumerate(audio_features_config):
+                        kw_text = str(kw or "").strip().lower()
+                        if not kw_text:
+                            continue
+                        if kw_text in title_lower:
+                            feature_score = max(feature_score, (total_features - idx) * 1000000)
+                    score += feature_score
+
+                    param_score = 0
+                    total_params = len(audio_param_priority)
+                    for idx, param_id in enumerate(audio_param_priority):
+                        if _audio_matches_param(audio, param_id):
+                            # 可叠加：例如 DTS-HD MA + 7.1 会比单纯 DTS-HD MA 更靠前。
+                            param_score += (total_params - idx) * 10000
+                    score += param_score
+
+                    # 原本默认的只给 1 分兜底，不能推翻用户语言/特色词/物理参数配置。
                     if audio.get("IsDefault"):
                         score += 1
-                        
+
                     return score
 
                 # 按分数降序排列，取最高分作为默认音轨
