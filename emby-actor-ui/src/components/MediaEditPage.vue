@@ -233,7 +233,7 @@
       <n-spin :show="isFetchingEpisodes">
         <div v-if="episodesList.length > 0" class="episode-selector-board">
           <div class="episode-selector-summary">
-            共 {{ episodesList.length }} 集，按季列队。鼠标悬停看标题，点击集号直接开改。
+            共 {{ episodesList.length }} 集，按季列队。鼠标悬停看标题，点击集号开改；编辑框关闭后方阵还在。
           </div>
 
           <section
@@ -251,7 +251,7 @@
                 v-for="ep in season.episodes"
                 :key="ep.emby_id"
                 type="button"
-                class="episode-chip"
+                :class="['episode-chip', { 'episode-chip-active': String(currentEditMediaId || '') === String(ep.emby_id || '') }]"
                 :title="getEpisodeTooltip(ep)"
                 @click="handleEpisodeChipClick(ep)"
               >
@@ -730,7 +730,7 @@ const getEpisodeTooltip = (ep) => {
 };
 
 const handleEpisodeChipClick = (ep) => {
-  showEpisodeSelector.value = false;
+  // 不再关闭分集选择框：媒体信息编辑框会盖在上层，关掉后还能继续点下一集。
   openMediaInfoEditor(ep.emby_id);
 };
 
@@ -1401,6 +1401,13 @@ const handleSaveChanges = async () => {
 
 .episode-chip:active {
   transform: translateY(0);
+}
+
+.episode-chip-active {
+  border-color: var(--n-primary-color);
+  background-color: var(--n-primary-color);
+  color: #fff;
+  box-shadow: 0 0 0 2px rgba(24, 160, 88, 0.16);
 }
 
 .episode-selector-board::-webkit-scrollbar {
