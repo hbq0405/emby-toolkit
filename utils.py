@@ -377,7 +377,14 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         "patterns": [
             r"京译",
             r"中影配音",
-            r"八一",  # 八一厂也可以单独列，这里为了简洁可以和京译放一起，或者你单独拆开
+            r"北京电影"
+        ],
+    },
+    {
+        "label": "八一",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"八一",  
         ],
     },
     {
@@ -388,15 +395,6 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
             r"(?<![A-Za-z0-9])GP-CCTV(?![A-Za-z0-9])",
             r"央视",
             r"CCTV6"
-        ],
-    },
-    {
-        "label": "六区",
-        "types": ["Audio", "Subtitle"],
-        "patterns": [
-            r"(?<![A-Za-z0-9])LQ(?![A-Za-z0-9])",
-            r"(?<![A-Za-z0-9])GP-LQ(?![A-Za-z0-9])",
-            r"六区",
         ],
     },
     {
