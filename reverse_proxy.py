@@ -554,8 +554,10 @@ def _build_fake_view_items_for_user(user_id):
             "IsFolder": True,
             "ParentId": "2",
             "Type": "CollectionFolder",
-            "PresentationUniqueKey": f"etk-virtual-{db_id}",
-            "DisplayPreferencesId": f"custom-{db_id}",
+            # Emby 4.10 Web 更依赖稳定的 DisplayPreferencesId/PresentationUniqueKey。
+            # 对真实合集外壳模式，直接用 ViewId，尽量贴近原生 CollectionFolder。
+            "PresentationUniqueKey": str(mimicked_id),
+            "DisplayPreferencesId": str(mimicked_id),
             "ForcedSortName": coll['name'],
             "UserData": {
                 "PlaybackPositionTicks": 0,
@@ -576,7 +578,8 @@ def _build_fake_view_items_for_user(user_id):
             "LockedFields": [],
             "LockData": False,
             "MediaType": "Unknown",
-            "LocationType": "Virtual",
+            # 不要标 Virtual，4.10 Web 可能会把 LocationType=Virtual 当作占位/非库项目过滤。
+            "LocationType": "FileSystem",
         })
 
     _magic_log("FAKE-BUILD-DONE", user_id=user_id, fake_count=len(fake_views_items), fake_items=_magic_item_summary(fake_views_items))
@@ -971,54 +974,12 @@ def handle_get_views():
         _magic_log("VIEWS-NATIVE", user_id=user_id, native_count=len(user_visible_native_libs), native_items=_magic_item_summary(user_visible_native_libs))
 
         # 2. 生成虚拟库
-        collections = custom_collection_db.get_all_active_custom_collections()
-        _magic_log("VIEWS-COLLECTIONS", user_id=user_id, collection_count=len(collections or []))
-        fake_views_items = []
-        
-        for coll in collections:
-            # 物理检查：库在Emby里有实体吗？
-            real_emby_collection_id = coll.get('emby_collection_id')
-            if not real_emby_collection_id:
-                _magic_log("VIEWS-SKIP-NO-REAL-EMBY-COLLECTION", collection_id=coll.get('id'), name=coll.get('name'))
-                continue
+        # ★ Emby 4.10 关键修复：这里必须走统一构造器，不能再走旧的 to_mimicked_id(db_id)。
+        # 旧逻辑会返回 990000xxx / -900xxx 这种纯虚拟 ID，4.10 Web 很可能直接过滤。
+        # 统一构造器默认会用真实 emby_collection_id 作为“外壳 ViewId”，并由后续 ParentId 路由映射回 ETK 虚拟库。
+        fake_views_items = _build_fake_view_items_for_user(user_id)
+        _magic_log("VIEWS-FAKE-BUILT-BY-UNIFIED-BUILDER", user_id=user_id, fake_items=_magic_item_summary(fake_views_items))
 
-            # 权限检查：如果设置了 allowed_user_ids，则检查
-            allowed_users = coll.get('allowed_user_ids')
-            if allowed_users and isinstance(allowed_users, list):
-                if user_id not in allowed_users:
-                    _magic_log("VIEWS-SKIP-NO-USER-PERMISSION", collection_id=coll.get('id'), name=coll.get('name'), user_id=user_id, allowed_users=allowed_users)
-                    continue
-            
-            # 生成虚拟库对象
-            db_id = coll['id']
-            mimicked_id = to_mimicked_id(db_id)
-            # 使用时间戳强制刷新封面
-            image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
-            definition = coll.get('definition_json') or {}
-            
-            item_type_from_db = definition.get('item_type', 'Movie')
-            collection_type = "mixed"
-            if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
-                 authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-                 collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
-
-            fake_view = {
-                "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
-                "Guid": str(uuid.uuid4()), "Etag": f"{db_id}{int(time.time())}",
-                "DateCreated": "2025-01-01T00:00:00.0000000Z", "CanDelete": False, "CanDownload": False,
-                "SortName": coll['name'], "ExternalUrls": [], "ProviderIds": {}, "IsFolder": True,
-                "ParentId": "2", "Type": "CollectionFolder", "PresentationUniqueKey": str(uuid.uuid4()),
-                "DisplayPreferencesId": f"custom-{db_id}", "ForcedSortName": coll['name'],
-                "Taglines": [], "RemoteTrailers": [],
-                "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
-                "ChildCount": coll.get('in_library_count', 1),
-                "PrimaryImageAspectRatio": 1.7777777777777777, 
-                "CollectionType": collection_type, "ImageTags": image_tags, "BackdropImageTags": [], 
-                "LockedFields": [], "LockData": False
-            }
-            _magic_log("VIEWS-FAKE-ADD", collection_id=db_id, name=coll.get('name'), mimicked_id=mimicked_id, real_emby_collection_id=real_emby_collection_id, collection_type=collection_type)
-            fake_views_items.append(fake_view)
-        
         # 3. 合并与排序
         native_views_items = []
         should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
@@ -1043,7 +1004,7 @@ def handle_get_views():
 
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
         _magic_log_json_response("VIEWS-FINAL", final_response)
-        return Response(json.dumps(final_response), mimetype='application/json')
+        return Response(json.dumps(final_response), mimetype='application/json', headers={'Cache-Control': 'no-store, no-cache, must-revalidate', 'Pragma': 'no-cache'})
         
     except Exception as e:
         logger.error(f"[PROXY] 获取视图数据时出错: {e}", exc_info=True)
