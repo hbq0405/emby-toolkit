@@ -351,6 +351,139 @@ def _split_csv(value):
     return [x.strip() for x in str(value).split(',') if x.strip()]
 
 
+def _get_collection_by_real_emby_collection_id(item_id):
+    """
+    Emby 4.10 Web 可能会过滤不存在于真实库中的伪造 View Id。
+    因此虚拟库入口可以使用真实合集 Id 作为“外壳 Id”，点击/浏览时再映射回 ETK 虚拟库。
+    """
+    raw = str(item_id or '').strip()
+    if not raw:
+        return None
+
+    try:
+        collections = custom_collection_db.get_all_active_custom_collections() or []
+        for coll in collections:
+            if str(coll.get('emby_collection_id') or '').strip() == raw:
+                return coll
+    except Exception as e:
+        logger.warning(f"  ➜ 查找虚拟库真实合集别名失败: {raw} -> {e}")
+    return None
+
+
+def is_virtual_collection_alias_id(item_id):
+    return _get_collection_by_real_emby_collection_id(item_id) is not None
+
+
+def _resolve_virtual_collection_to_mimicked_id(item_id):
+    """把正数虚拟 Id、旧负数虚拟 Id、真实合集别名 Id 统一转为内部虚拟 Id。"""
+    raw = str(item_id or '').strip()
+    if is_mimicked_id(raw):
+        return raw
+
+    coll = _get_collection_by_real_emby_collection_id(raw)
+    if coll:
+        return to_mimicked_id(coll['id'])
+
+    return raw
+
+
+def _get_virtual_view_id_for_collection(coll):
+    """
+    默认使用真实 Emby 合集 Id 作为 View Id，提高 Emby 4.10 Web 接受度；
+    如果用户显式切回 virtual，则仍使用 990000xxx。
+    """
+    mode = str(config_manager.APP_CONFIG.get('proxy_virtual_library_id_mode', 'real_alias') or 'real_alias').lower()
+    real_id = str(coll.get('emby_collection_id') or '').strip()
+    if mode in ('real', 'real_alias', 'alias') and real_id:
+        return real_id
+    return to_mimicked_id(coll['id'])
+
+
+def _extract_user_id_from_request_path_or_args(path=None, args=None):
+    path = path or request.path or ''
+    args = args or request.args
+    m = re.search(r'/(?:emby/)?Users/([^/]+)', path, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    for key in ('UserId', 'userId', 'userid'):
+        value = args.get(key) if args is not None else None
+        if value:
+            return value
+    return None
+
+
+def _merge_existing_collection_items_for_global_inject(existing_items, fake_items):
+    """全局注入时保留原接口返回的原生库，不套用“只显示选中原生库”的旧配置。"""
+    existing_items = existing_items or []
+    fake_items = fake_items or []
+
+    native_order = config_manager.APP_CONFIG.get('proxy_native_view_order', 'before')
+    if native_order == 'after':
+        merged = list(fake_items) + list(existing_items)
+    else:
+        merged = list(existing_items) + list(fake_items)
+
+    seen = set()
+    deduped = []
+    for item in merged:
+        if not isinstance(item, dict):
+            continue
+        item_id = str(item.get('Id') or '')
+        if not item_id or item_id in seen:
+            continue
+        seen.add(item_id)
+        deduped.append(item)
+    return deduped
+
+
+def _try_global_inject_collection_folders(data, user_id=None, path=None, stage='GLOBAL-INJECT'):
+    """
+    终极兜底：不再赌 Emby 4.10 具体走哪个 URL。
+    只要任意 JSON 响应里出现 CollectionFolder 列表，就把 ETK 虚拟库注进去。
+    """
+    if not isinstance(data, dict):
+        return data, False
+
+    items = data.get('Items')
+    if not isinstance(items, list) or not items:
+        return data, False
+
+    collection_count = sum(1 for x in items if isinstance(x, dict) and x.get('Type') == 'CollectionFolder')
+    if collection_count <= 0:
+        return data, False
+
+    # 避免误伤普通合集内容页：媒体库列表通常 CollectionFolder 占多数。
+    if collection_count < max(1, len(items) // 2):
+        _magic_log(f'{stage}-SKIP', reason='CollectionFolder ratio too low', path=path or request.path, collection_count=collection_count, total=len(items))
+        return data, False
+
+    user_id = user_id or _extract_user_id_from_request_path_or_args(path or request.path, request.args)
+    if not user_id:
+        _magic_log(f'{stage}-SKIP', reason='no user_id', path=path or request.path, collection_count=collection_count, total=len(items))
+        return data, False
+
+    fake_items = _build_fake_view_items_for_user(user_id)
+    if not fake_items:
+        _magic_log(f'{stage}-SKIP', reason='no fake items', user_id=user_id, path=path or request.path)
+        return data, False
+
+    before_ids = [str(x.get('Id')) for x in items if isinstance(x, dict)]
+    merged = _merge_existing_collection_items_for_global_inject(items, fake_items)
+    after_ids = [str(x.get('Id')) for x in merged if isinstance(x, dict)]
+    added = len(set(after_ids) - set(before_ids))
+
+    if added <= 0:
+        _magic_log(f'{stage}-NOOP', user_id=user_id, path=path or request.path, existing_count=len(items), fake_count=len(fake_items))
+        return data, False
+
+    data['Items'] = merged
+    data['TotalRecordCount'] = len(merged)
+
+    _magic_log_json_response(f'{stage}-DONE', data)
+    _magic_log(f'{stage}-SUMMARY', user_id=user_id, path=path or request.path, before=len(items), fake_count=len(fake_items), added=added, final=len(merged))
+    return data, True
+
+
 def _build_fake_view_items_for_user(user_id):
     """
     生成当前用户可见的虚拟媒体库 CollectionFolder 列表。
@@ -377,7 +510,7 @@ def _build_fake_view_items_for_user(user_id):
             continue
 
         db_id = coll['id']
-        mimicked_id = to_mimicked_id(db_id)
+        mimicked_id = _get_virtual_view_id_for_collection(coll)
         image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
         definition = coll.get('definition_json') or {}
         if isinstance(definition, str):
@@ -560,7 +693,7 @@ def handle_get_collection_folder_items_410(user_id, path, params):
 
         _magic_log_json_response("410-NATIVE-COLLECTION-FOLDERS", data, status_code=resp.status_code)
         fake_items = _build_fake_view_items_for_user(user_id)
-        final_items = _merge_native_and_fake_views(native_items, fake_items)
+        final_items = _merge_existing_collection_items_for_global_inject(native_items, fake_items)
 
         if not isinstance(data, dict):
             data = {"Items": final_items, "TotalRecordCount": len(final_items)}
@@ -588,11 +721,12 @@ def handle_get_mimicked_items_by_ids(user_id, ids_value):
     items = []
 
     for item_id in ids:
-        if not is_mimicked_id(item_id):
+        if not (is_mimicked_id(item_id) or is_virtual_collection_alias_id(item_id)):
             continue
 
         try:
-            real_db_id = from_mimicked_id(item_id)
+            resolved_id = _resolve_virtual_collection_to_mimicked_id(item_id)
+            real_db_id = from_mimicked_id(resolved_id)
             coll = custom_collection_db.get_custom_collection_by_id(real_db_id)
             if not coll:
                 continue
@@ -796,7 +930,7 @@ def handle_get_section_items_410(user_id, section_id, path, params):
 
         native_items = data.get('Items', []) if isinstance(data, dict) else []
         fake_items = _build_fake_view_items_for_user(user_id)
-        final_items = _merge_native_and_fake_views(native_items, fake_items)
+        final_items = _merge_existing_collection_items_for_global_inject(native_items, fake_items)
 
         data['Items'] = final_items
         data['TotalRecordCount'] = len(final_items)
@@ -1704,7 +1838,7 @@ def proxy_all(path):
             _magic_log("ROUTE-CANDIDATE-USER-ITEMS", user_id=user_id_for_items, path=path, normalized_path=normalized_path, args=_magic_args_dict())
 
             ids_param = request.args.get('Ids') or request.args.get('ids')
-            if ids_param and any(is_mimicked_id(x) for x in _split_csv(ids_param)):
+            if ids_param and any((is_mimicked_id(x) or is_virtual_collection_alias_id(x)) for x in _split_csv(ids_param)):
                 _magic_log("ROUTE-HIT-MIMICKED-IDS", ids=ids_param)
                 return handle_get_mimicked_items_by_ids(user_id_for_items, ids_param)
 
@@ -1737,12 +1871,12 @@ def proxy_all(path):
         details_match = re.search(r'/Items/(-?\d+)(?:$|\?)', full_path)
         if details_match and '/Images/' not in full_path and '/PlaybackInfo' not in full_path:
             mimicked_id = details_match.group(1)
-            if is_mimicked_id(mimicked_id):
+            if is_mimicked_id(mimicked_id) or is_virtual_collection_alias_id(mimicked_id):
                 _magic_log("ROUTE-HIT-MIMICKED-DETAILS", item_id=mimicked_id, path=path, normalized_path=normalized_path)
                 # 尝试从路径或参数获取 user_id
                 user_id_match = re.search(r'/Users/([^/]+)/', full_path)
                 user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
-                return handle_get_mimicked_library_details(user_id, mimicked_id)
+                return handle_get_mimicked_library_details(user_id, _resolve_virtual_collection_to_mimicked_id(mimicked_id))
 
         # --- 拦截 E: 虚拟库图片 ---
         if normalized_path.startswith('Items/') and '/Images/' in normalized_path:
@@ -1755,18 +1889,19 @@ def proxy_all(path):
         # 修复 iOS 传参大小写问题 (有时传 ParentId，有时传 parentId)
         parent_id = request.args.get("ParentId") or request.args.get("parentId")
         
-        if parent_id and is_mimicked_id(parent_id):
-            _magic_log("ROUTE-CANDIDATE-MIMICKED-PARENT", parent_id=parent_id, path=path, normalized_path=normalized_path, args=_magic_args_dict())
+        if parent_id and (is_mimicked_id(parent_id) or is_virtual_collection_alias_id(parent_id)):
+            resolved_parent_id = _resolve_virtual_collection_to_mimicked_id(parent_id)
+            _magic_log("ROUTE-CANDIDATE-MIMICKED-PARENT", parent_id=parent_id, resolved_parent_id=resolved_parent_id, path=path, normalized_path=normalized_path, args=_magic_args_dict())
             # 1. 处理核心的内容列表请求 (严格匹配结尾，防止误伤 Filters)
             user_id_match = re.search(r'Users/([^/]+)/Items$', normalized_path, re.IGNORECASE)
             if user_id_match:
                 user_id = user_id_match.group(1)
-                _magic_log("ROUTE-HIT-MIMICKED-LIBRARY-ITEMS", user_id=user_id, parent_id=parent_id)
-                return handle_get_mimicked_library_items(user_id, parent_id, request.args)
+                _magic_log("ROUTE-HIT-MIMICKED-LIBRARY-ITEMS", user_id=user_id, parent_id=parent_id, resolved_parent_id=resolved_parent_id)
+                return handle_get_mimicked_library_items(user_id, resolved_parent_id, request.args)
 
             # 2. 处理所有其他带有虚拟 ParentId 的请求 (如 /Filters, /Genres 等)
-            _magic_log("ROUTE-HIT-MIMICKED-METADATA-ENDPOINT", parent_id=parent_id, path=path)
-            return handle_mimicked_library_metadata_endpoint(path, parent_id, request.args)
+            _magic_log("ROUTE-HIT-MIMICKED-METADATA-ENDPOINT", parent_id=parent_id, resolved_parent_id=resolved_parent_id, path=path)
+            return handle_mimicked_library_metadata_endpoint(path, resolved_parent_id, request.args)
 
         # 兜底逻辑
         base_url, api_key = _get_real_emby_url_and_key()
@@ -1803,6 +1938,11 @@ def proxy_all(path):
                     try:
                         data = json.loads(body.decode('utf-8', errors='replace')) if body else None
                         _magic_log_json_response("FALLBACK-JSON", data, status_code=resp.status_code)
+                        user_id_for_inject = _extract_user_id_from_request_path_or_args(full_path, request.args)
+                        injected_data, injected = _try_global_inject_collection_folders(data, user_id=user_id_for_inject, path=full_path, stage='FALLBACK-GLOBAL-INJECT')
+                        if injected:
+                            body = json.dumps(injected_data, ensure_ascii=False).encode('utf-8')
+                            response_headers = [(n, v) for n, v in response_headers if n.lower() != 'content-length']
                     except Exception:
                         preview = body[:800].decode('utf-8', errors='replace') if body else ''
                         _magic_log("FALLBACK-BODY-PREVIEW", preview=preview)
