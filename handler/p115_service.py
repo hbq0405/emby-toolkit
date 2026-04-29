@@ -2170,7 +2170,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 explicit_season_re = (
                     r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)|'
                     r'Season\s*\d{1,4}|第\d{1,4}季|'
-                    r'Specials?|SP|OVA|OAD|特别篇|特別篇|番外(?:篇)?|外传|外傳)'
+                    r'(?:^|[ \.\-\_\[\(])(?:Specials?|SP|OVA|OAD|特别篇|特別篇|番外(?:篇)?|外传|外傳)(?=$|[ \.\-\_\]\)])'
                 )
 
                 if re.search(explicit_season_re, original_name, re.IGNORECASE):
