@@ -940,7 +940,6 @@ def _normalize_episode_regex_rules(raw_rules):
         try:
             season_group = int(item.get('season_group') or 1)
             episode_group = int(item.get('episode_group') or 1)
-            # default_season 允许 0。不能用 `or 1`，否则 0 会被 Python 当 False 干成第 1 季。
             raw_default_season = item.get('default_season')
             default_season = 1 if raw_default_season in (None, '') else int(raw_default_season)
         except Exception:
