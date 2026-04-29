@@ -339,15 +339,45 @@ DEFAULT_COUNTRY_MAPPING = [
 ]
 
 # --- 音视频流/字幕流特色标签映射 ---
-# 用于识别 DYSY、TX、Latin America、Brazil、SDH 这类“不是语言”的标题信息
+# 用于识别并标准化 DYSY、CCTV、上译、公映 等特色标签
 DEFAULT_STREAM_FEATURE_MAPPING = [
     {
-        "label": "东影上译",
+        "label": "上译",  # 统一标准化为“上译”
         "types": ["Audio", "Subtitle"],
         "patterns": [
+            r"(?<![A-Za-z0-9])SY(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])DYSY(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])CH-DYSY(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])GP-DYSY(?![A-Za-z0-9])",
+            r"上译",
+            r"东影上译",
+            r"泰盛上译"
+        ],
+    },
+    {
+        "label": "公映",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"公映",
+            r"院线配音",
+            r"影院版"
+        ],
+    },
+    {
+        "label": "长译",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"长译",
+            r"长春电影"
+        ],
+    },
+    {
+        "label": "京译",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"京译",
+            r"中影配音",
+            r"八一",  # 八一厂也可以单独列，这里为了简洁可以和京译放一起，或者你单独拆开
         ],
     },
     {
@@ -356,6 +386,8 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         "patterns": [
             r"(?<![A-Za-z0-9])CCTV(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])GP-CCTV(?![A-Za-z0-9])",
+            r"央视",
+            r"CCTV6"
         ],
     },
     {
@@ -364,6 +396,23 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         "patterns": [
             r"(?<![A-Za-z0-9])LQ(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])GP-LQ(?![A-Za-z0-9])",
+            r"六区",
+        ],
+    },
+    {
+        "label": "国配",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"国配",
+            r"大陆配音"
+        ],
+    },
+    {
+        "label": "台配",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"台配",
+            r"台湾配音"
         ],
     },
     {
@@ -414,11 +463,6 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
             r"Commentary",
             r"导评",
         ],
-    },
-    {
-    "label": "人人影视",
-    "types": ["Subtitle"],
-    "patterns": [r"(?<![A-Za-z0-9])YYeTs(?![A-Za-z0-9])"],
     },
 ]
 

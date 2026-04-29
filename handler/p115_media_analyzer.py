@@ -668,12 +668,14 @@ class P115MediaAnalyzerMixin:
             friendly_title = friendly_title.replace("简体韩文", "中韩双语（简体）").replace("繁体韩文", "中韩双语（繁体）")
             
             # 5. 兜底与组合
-            if not friendly_title:
-                if display_lang and display_lang != "未知" and stream_features:
-                    friendly_title = self._format_stream_feature_title(display_lang, stream_features)
-                else:
-                    friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
+            if stream_features:
+                # ★★★ 核心修改：只要提取到了标准化的特色标签，直接用它！抛弃所有残留的中文杂质
+                friendly_title = self._format_stream_feature_title(display_lang, stream_features)
+            elif not friendly_title:
+                # 没有特色标签，且标题被清空了，只显示语言
+                friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
             else:
+                # 没有特色标签，但有未知的中文残留，组合起来
                 if display_lang in ["简体", "繁体", "中英双语（简体）", "中英双语（繁体）", "中日双语（简体）", "中日双语（繁体）", "中韩双语（简体）", "中韩双语（繁体）"]:
                     check_kw = "简" if "简" in display_lang else ("繁" if "繁" in display_lang else "")
                     if check_kw and check_kw not in friendly_title:
@@ -700,21 +702,22 @@ class P115MediaAnalyzerMixin:
             for old, new in audio_replace_map.items():
                 friendly_title = friendly_title.replace(old, new)
 
-            # 4. 兜底与组合
-            if not friendly_title:
-                if display_lang and display_lang != "未知" and stream_features:
-                    friendly_title = self._format_stream_feature_title(display_lang, stream_features)
-                else:
-                    friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
+            # 3. 兜底与组合
+            if stream_features:
+                # ★★★ 核心修改：只要提取到了标准化的特色标签，直接用它！抛弃所有残留的中文杂质
+                friendly_title = self._format_stream_feature_title(display_lang, stream_features)
+            elif not friendly_title:
+                # 没有特色标签，且标题被清空了，只显示语言
+                friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
             else:
+                # 没有特色标签，但有未知的中文残留，组合起来
                 if display_lang and display_lang != "未知":
-                    # 移除开头多余的 display_lang (例如 "国语中译公映国语" -> "中译公映国语")
+                    # 移除开头多余的 display_lang
                     friendly_title = re.sub(rf"^{display_lang}", "", friendly_title)
                     
                     if not friendly_title:
                         friendly_title = display_lang
                     else:
-                        # 如果有特色词，比如 "台配"，组合成 "国语（台配）"
                         if display_lang not in friendly_title:
                             friendly_title = f"{display_lang}（{friendly_title}）"
 
