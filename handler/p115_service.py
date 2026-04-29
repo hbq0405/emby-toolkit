@@ -1767,6 +1767,52 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 return rule.get('cid')
         return None
 
+    @staticmethod
+    def _is_special_season_name(text: str) -> bool:
+        """
+        判断目录名是否代表 TMDb 第 0 季 / Specials。
+        注意：必须 fullmatch，避免 SPY x Family 里的 SP 被误判。
+        """
+        if not text:
+            return False
+
+        name = os.path.basename(str(text).replace("\\", "/")).strip()
+
+        return bool(re.fullmatch(
+            r'(?:'
+            r'specials?|sp|ova|oad|extra(?:s)?|'
+            r'特别篇|特別篇|番外(?:篇)?|外传|外傳|'
+            r'第\s*0+\s*季|season\s*0+|s0+'
+            r')',
+            name,
+            re.IGNORECASE
+        ))
+
+    @classmethod
+    def _extract_season_from_path_or_text(cls, text: str):
+        """
+        从路径或文本里提取季号。
+        Specials / SP / OVA / 第0季 统一返回 0。
+        Season 00 / S00 / 第0季 也返回 0。
+        """
+        if not text:
+            return None
+
+        normalized = str(text).replace("\\", "/")
+
+        for part in [p.strip() for p in normalized.split("/") if p.strip()]:
+            if cls._is_special_season_name(part):
+                return 0
+
+        m = re.search(
+            r'(?:^|[/\s\.\-_\[\(])(?:Season\s*|S|第)\s*(\d{1,4})(?:季)?(?=$|[/\s\.\-_\]\)])',
+            normalized,
+            re.IGNORECASE
+        )
+        if m:
+            return int(m.group(1))
+
+        return None
 
     def _build_name_from_format(self, format_array, is_tv=False, season_num=None, episode_num=None, original_title=None, video_info=None, safe_title=None):
         """解析乐高轨道生成名称 (支持目录和文件，自动过滤特殊字符)"""
@@ -1791,11 +1837,16 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 s_val = season_num if season_num is not None else 1
                 e_val = episode_num if episode_num is not None else 1
                 val = f"S{s_val:02d}E{e_val:02d}" 
-            elif block == 'season_name_en' and is_tv: val = f"Season {season_num:02d}" if season_num else None
-            elif block == 'season_name_en_no0' and is_tv: val = f"Season {season_num}" if season_num else None
-            elif block == 'season_name_zh' and is_tv: val = f"第{season_num}季" if season_num else None
-            elif block == 'season_name_s' and is_tv: val = f"S{season_num:02d}" if season_num else None
-            elif block == 'season_name_s_no0' and is_tv: val = f"S{season_num}" if season_num else None
+            elif block == 'season_name_en' and is_tv:
+                val = f"Season {season_num:02d}" if season_num is not None else None
+            elif block == 'season_name_en_no0' and is_tv:
+                val = f"Season {season_num}" if season_num is not None else None
+            elif block == 'season_name_zh' and is_tv:
+                val = f"第{season_num}季" if season_num is not None else None
+            elif block == 'season_name_s' and is_tv:
+                val = f"S{season_num:02d}" if season_num is not None else None
+            elif block == 'season_name_s_no0' and is_tv:
+                val = f"S{season_num}" if season_num is not None else None
             elif video_info and block in video_info: val = video_info.get(block)
             elif block.startswith('sep_'):
                 is_sep = True
@@ -1905,7 +1956,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             else:
                 # episode_only
                 episode_group = int(rule.get('episode_group') or 1)
-                default_season = int(rule.get('default_season') or 1)
+                raw_default_season = rule.get('default_season')
+                default_season = 1 if raw_default_season in (None, '') else int(raw_default_season)
 
                 episode_num = self._safe_group_to_int(match, episode_group)
                 if episode_num is not None:
@@ -2009,7 +2061,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             if custom_rule_name and not silent_log:
                 logger.info(
                     f"  ➜ [自定义季集号识别] 命中规则 '{custom_rule_name}' -> "
-                    f"S{int(season_num or 1):02d}E{int(episode_num or 0):02d} | {original_name}"
+                    f"S{int(season_num if season_num is not None else 1):02d}E{int(episode_num if episode_num is not None else 0):02d} | {original_name}"
                 )
 
             # 1. 自定义没补全，再走原有硬编码识别
@@ -2028,7 +2080,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     e = match.group(2)
                     ep_only = match.group(3)
                     e_only = match.group(4)
-                    zh_ep = match.group(5)
+                    zh_ep = match.group(5) or match.group(6)
 
                     if season_num is None:
                         season_num = int(s) if s else None
@@ -2040,11 +2092,11 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             )
                         )
 
-            # 2. 从相对路径提取季号
+            # 2. 从相对路径提取季号，支持 Specials / SP / OVA / 第0季
             if season_num is None and rel_path:
-                m_rel = re.search(r'(?:Season\s*|S|第)(\d{1,4})(?:季)?(?:/|$)', rel_path, re.IGNORECASE)
-                if m_rel:
-                    season_num = int(m_rel.group(1))
+                season_from_path = self._extract_season_from_path_or_text(rel_path)
+                if season_from_path is not None:
+                    season_num = season_from_path
 
             # 3. ★ 纯数字 / 动漫数字兜底提取集号
             if episode_num is None:
@@ -2115,9 +2167,15 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             else:
                 # 仅当文件名和相对路径中都没有明确的季号特征时，才使用外层推导的 forced_season 作为兜底
                 has_explicit_season = False
-                if re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)|Season\s*\d{1,4}|第\d{1,4}季', original_name, re.IGNORECASE):
+                explicit_season_re = (
+                    r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)|'
+                    r'Season\s*\d{1,4}|第\d{1,4}季|'
+                    r'Specials?|SP|OVA|OAD|特别篇|特別篇|番外(?:篇)?|外传|外傳)'
+                )
+
+                if re.search(explicit_season_re, original_name, re.IGNORECASE):
                     has_explicit_season = True
-                elif file_node.get('rel_path') and re.search(r'(?:Season\s*|S|第)\d{1,4}(?:季)?(?:/|$)', file_node.get('rel_path'), re.IGNORECASE):
+                elif file_node.get('rel_path') and self._extract_season_from_path_or_text(file_node.get('rel_path')) is not None:
                     has_explicit_season = True
                     
                 if not has_explicit_season:
@@ -2501,7 +2559,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 c_name = c.get('fn') or c.get('n') or c.get('file_name', '')
                 rel_path = c.get('rel_path', '')
                 
-                if re.search(r'(?:Season\s?\d+|S\d+|第[一二三四五六七八九十\d]+季)', rel_path, re.IGNORECASE):
+                if self._extract_season_from_path_or_text(rel_path) is not None:
                     is_actually_tv = True
                     break
                 if re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)\d{1,4}[ \.\-]*(?:e|E|p|P)\d{1,4}\b|(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*\d{1,4}\b|(?:^|[ \.\-\_\[\(])e\d{1,4}\b|第\d{1,4}[集话話回]', c_name, re.IGNORECASE):
@@ -2547,14 +2605,19 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         # ★★★ 5. 提取季号并统一计算最终 Target CID ★★★
         # =================================================================
         if self.media_type == 'tv' and getattr(self, 'forced_season', None) is None:
-            m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', parse_name, re.IGNORECASE)
-            m2 = re.search(r'Season\s*(\d{1,4})\b', parse_name, re.IGNORECASE)
-            m3 = re.search(r'第(\d{1,4})季', parse_name)
-            extracted_season = None
-            
-            if m1: extracted_season = int(m1.group(1))
-            elif m2: extracted_season = int(m2.group(1))
-            elif m3: extracted_season = int(m3.group(1))
+            extracted_season = self._extract_season_from_path_or_text(parse_name)
+
+            if extracted_season is None:
+                m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', parse_name, re.IGNORECASE)
+                m2 = re.search(r'Season\s*(\d{1,4})\b', parse_name, re.IGNORECASE)
+                m3 = re.search(r'第(\d{1,4})季', parse_name)
+
+                if m1:
+                    extracted_season = int(m1.group(1))
+                elif m2:
+                    extracted_season = int(m2.group(1))
+                elif m3:
+                    extracted_season = int(m3.group(1))
             else:
                 if re.search(r'(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b|第(\d{1,4})[集话話回]', parse_name, re.IGNORECASE):
                     extracted_season = 1

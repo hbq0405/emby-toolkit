@@ -150,27 +150,113 @@ class MediaProcessor:
         logger.trace("核心处理器初始化完成。")
 
     # -- [追更补洞专用] 从文件路径提取季集信息 (SxxEyy) --
+    @staticmethod
+    def _is_special_season_name(text: str) -> bool:
+        if not text:
+            return False
+
+        name = os.path.basename(str(text).replace("\\", "/")).strip()
+
+        return bool(re.fullmatch(
+            r'(?:'
+            r'specials?|sp|ova|oad|extra(?:s)?|'
+            r'特别篇|特別篇|番外(?:篇)?|外传|外傳|'
+            r'第\s*0+\s*季|season\s*0+|s0+'
+            r')',
+            name,
+            re.IGNORECASE
+        ))
+
+    @classmethod
+    def _extract_season_from_path_or_text(cls, text: str):
+        if not text:
+            return None
+
+        normalized = str(text).replace("\\", "/")
+
+        for part in [p.strip() for p in normalized.split("/") if p.strip()]:
+            if cls._is_special_season_name(part):
+                return 0
+
+        m = re.search(
+            r'(?:^|[/\s\.\-_\[\(])(?:Season\s*|S|第)\s*(\d{1,4})(?:季)?(?=$|[/\s\.\-_\]\)])',
+            normalized,
+            re.IGNORECASE
+        )
+        if m:
+            return int(m.group(1))
+
+        return None
+
+    @staticmethod
+    def _extract_episode_from_name(name: str):
+        if not name:
+            return None
+
+        stem = os.path.splitext(os.path.basename(name))[0]
+
+        m = re.search(r'[sS]\d{1,4}[eEpP](\d{1,4})', stem)
+        if m:
+            return int(m.group(1))
+
+        m = re.search(
+            r'(?:^|[ \.\-\_\[\(])(?:ep|episode)[ \.\-]*?(\d{1,4})\b'
+            r'|(?:^|[ \.\-\_\[\(])e(\d{1,4})\b'
+            r'|第\s*(\d{1,4})\s*[集话話回]'
+            r'|(?:^|[ \.\-\_\[\(])(\d{1,4})[集话話回]',
+            stem,
+            re.IGNORECASE
+        )
+        if m:
+            ep = next((g for g in m.groups() if g), None)
+            if ep:
+                return int(ep)
+
+        if stem.isdigit():
+            return int(stem)
+
+        clean_name = re.sub(
+            r'(19|20)\d{2}|1080[pP]?|2160[pP]?|720[pP]?|480[pP]?|4[kK]|264|265|10bit|8bit|5\.1|7\.1|2\.0',
+            '',
+            stem
+        )
+
+        anime_match = re.search(r'(?:\s-\s+)(\d{1,4})(?:\s|$)|\[(\d{1,4})\]|【(\d{1,4})】', clean_name)
+        if anime_match:
+            ep_str = anime_match.group(1) or anime_match.group(2) or anime_match.group(3)
+            return int(ep_str)
+
+        end_match = re.search(r'(?:^|[ \.\-\_\[\(])(\d{1,4})(?:[\]\)]|\s*)$', clean_name)
+        if end_match:
+            return int(end_match.group(1))
+
+        return None
+
     def _extract_season_episode_from_path(self, file_path: str) -> Tuple[Optional[int], Optional[int]]:
         """
-        从文件路径中提取 SxxEyy。
-        优先文件名，其次父目录名。
+        支持：
+        - S00E01.mkv
+        - Specials/01.mkv
+        - Season 00/01.mkv
+        - 第0季/第01集.mkv
         """
-        candidates = [
-            os.path.basename(file_path),
-            os.path.basename(os.path.dirname(file_path)),
-        ]
+        filename = os.path.basename(file_path)
+        parent_name = os.path.basename(os.path.dirname(file_path))
 
-        for text in candidates:
-            if not text:
-                continue
-            m = re.search(r'[sS](\d{1,2})[eE](\d{1,3})', text)
-            if m:
-                try:
-                    return int(m.group(1)), int(m.group(2))
-                except Exception:
-                    pass
+        # 1. 文件名里有 SxxEyy，最高优先级
+        m = re.search(r'[sS](\d{1,4})[eEpP](\d{1,4})', filename)
+        if m:
+            return int(m.group(1)), int(m.group(2))
 
-        return None, None
+        # 2. 文件名或父目录提供季号
+        season_num = self._extract_season_from_path_or_text(filename)
+        if season_num is None:
+            season_num = self._extract_season_from_path_or_text(parent_name)
+
+        # 3. 文件名提供集号
+        episode_num = self._extract_episode_from_name(filename)
+
+        return season_num, episode_num
     
     # -- [追更补洞专用] 从文件路径提取电影版本文件列表 --
     def _collect_movie_version_files_from_dir(self, media_path: str) -> List[str]:
@@ -370,6 +456,8 @@ class MediaProcessor:
             folder_name = os.path.basename(folder_path)
             grandparent_path = os.path.dirname(folder_path)
             grandparent_name = os.path.basename(grandparent_path)
+            detected_season, detected_episode = self._extract_season_episode_from_path(file_path)
+            is_series_by_path = detected_season is not None and detected_episode is not None
             
             # =========================================================
             # 步骤 1: 识别信息
@@ -393,7 +481,7 @@ class MediaProcessor:
             if not tmdb_id:
                 # 优化：先尝试从目录名提取搜索信息
                 def is_season_folder(name: str) -> bool:
-                    return bool(re.match(r'^(Season|S)\s*\d+|Specials', name, re.IGNORECASE))
+                    return self._extract_season_from_path_or_text(name) is not None
                 def extract_title_year(text: str):
                     year_regex = r'\b(19|20)\d{2}\b'
                     season_episode_regex = r'[sS](\d{1,2})[eE](\d{1,2})'
@@ -428,7 +516,7 @@ class MediaProcessor:
             # 步骤 2: 获取 TMDb 数据 (如果只有标题则搜索)
             # =========================================================
             if not tmdb_id and search_query:
-                is_series_guess = bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
+                is_series_guess = is_series_by_path or bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
                 search_type = 'tv' if is_series_guess else 'movie'
                 results = tmdb.search_media(search_query, self.tmdb_api_key, item_type=search_type, year=search_year)
                 if results:
@@ -442,7 +530,7 @@ class MediaProcessor:
                 return None
 
             # 确定类型
-            is_series = bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
+            is_series = is_series_by_path or bool(re.search(r'S\d+E\d+', filename, re.IGNORECASE))
             item_type = "Series" if is_series else "Movie"
 
             # =========================================================
@@ -4455,7 +4543,7 @@ class MediaProcessor:
             import re
             series_root_dir = episode_dir
             # 如果当前目录名是 Season XX 或 Specials，说明在季文件夹内，根目录需要往上一级
-            if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(episode_dir), re.IGNORECASE):
+            if self._extract_season_from_path_or_text(os.path.basename(episode_dir)) is not None:
                 series_root_dir = os.path.dirname(episode_dir)
 
             # 1. 获取基础信息确定语言 (略...)
@@ -4795,7 +4883,7 @@ class MediaProcessor:
         episode_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
         import re
         series_root_dir = episode_dir
-        if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(episode_dir), re.IGNORECASE):
+        if self._extract_season_from_path_or_text(os.path.basename(episode_dir)) is not None:
             series_root_dir = os.path.dirname(episode_dir)
 
         # --- 智能比稳写入函数 ---
