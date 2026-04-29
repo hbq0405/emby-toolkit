@@ -46,6 +46,152 @@ def is_mimicked_id(item_id):
 MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
 MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
 
+# ============================================================================
+# 魔法日志：专门追踪 Emby 4.10 虚拟库入口、响应、注入结果
+# 关闭方式：APP_CONFIG['proxy_magic_log'] = False
+# ============================================================================
+PROXY_MAGIC_PREFIX = "[PROXY-MAGIC]"
+
+def _proxy_magic_enabled():
+    return bool(config_manager.APP_CONFIG.get('proxy_magic_log', True))
+
+def _redact_magic_value(key, value):
+    key_l = str(key or "").lower()
+    if any(x in key_l for x in ("token", "api_key", "apikey", "authorization", "x-emby-token")):
+        return "***"
+    if value is None:
+        return value
+    value = str(value)
+    if len(value) > 180:
+        return value[:180] + "...<cut>"
+    return value
+
+def _magic_args_dict(args=None):
+    args = args or request.args
+    try:
+        return {k: _redact_magic_value(k, v) for k, v in args.items()}
+    except Exception:
+        return {}
+
+def _magic_header_dict():
+    watch_keys = (
+        "X-Emby-Client", "X-Emby-Client-Version", "X-Emby-Device-Name",
+        "X-Emby-Device-Id", "User-Agent", "Accept"
+    )
+    result = {}
+    try:
+        for k in watch_keys:
+            v = request.headers.get(k)
+            if v:
+                result[k] = _redact_magic_value(k, v)
+    except Exception:
+        pass
+    return result
+
+def _magic_should_trace(path=None, args=None):
+    path = (path or request.path or "").lower()
+    args = args or request.args
+    if any(x in path for x in (
+        "/views", "/items", "/configuration", "/homescreen", "/home",
+        "/users/", "/displaypreferences", "/scheduledtasks", "/system/info"
+    )):
+        return True
+
+    joined_args = " ".join([str(k) + "=" + str(v) for k, v in (args or {}).items()]).lower()
+    return any(x in joined_args for x in (
+        "collectionfolder", "parentid", "includeitemtypes", "home", "orderedviews", "latestitemsexcludes"
+    ))
+
+def _magic_item_summary(items, limit=12):
+    if not isinstance(items, list):
+        return {"kind": type(items).__name__}
+
+    summary = []
+    for item in items[:limit]:
+        if not isinstance(item, dict):
+            summary.append(str(type(item).__name__))
+            continue
+        summary.append({
+            "Id": str(item.get("Id", ""))[:80],
+            "Name": item.get("Name"),
+            "Type": item.get("Type"),
+            "CollectionType": item.get("CollectionType"),
+            "ParentId": item.get("ParentId"),
+            "LocationType": item.get("LocationType"),
+        })
+
+    type_counts = {}
+    for item in items:
+        if isinstance(item, dict):
+            t = item.get("Type") or "?"
+            type_counts[t] = type_counts.get(t, 0) + 1
+
+    return {
+        "count": len(items),
+        "type_counts": type_counts,
+        "first_items": summary,
+    }
+
+def _magic_log(stage, **kwargs):
+    if not _proxy_magic_enabled():
+        return
+
+    try:
+        safe = {}
+        for k, v in kwargs.items():
+            if k in ("args", "query"):
+                safe[k] = {kk: _redact_magic_value(kk, vv) for kk, vv in dict(v).items()}
+            elif k == "headers":
+                safe[k] = {kk: _redact_magic_value(kk, vv) for kk, vv in dict(v).items()}
+            elif isinstance(v, (dict, list)):
+                safe[k] = v
+            else:
+                safe[k] = _redact_magic_value(k, v)
+
+        logger.warning("%s %s %s", PROXY_MAGIC_PREFIX, stage, json.dumps(safe, ensure_ascii=False, default=str))
+    except Exception as e:
+        logger.warning("%s %s <log failed: %s>", PROXY_MAGIC_PREFIX, stage, e)
+
+def _magic_log_request(stage="REQ", path=None):
+    if not _proxy_magic_enabled():
+        return
+    if not _magic_should_trace(path or request.path, request.args):
+        return
+
+    _magic_log(
+        stage,
+        method=request.method,
+        path=path or request.path,
+        full_path=request.full_path,
+        args=_magic_args_dict(),
+        headers=_magic_header_dict(),
+        remote_addr=request.headers.get("X-Forwarded-For") or request.remote_addr,
+    )
+
+def _magic_log_json_response(stage, data, status_code=None):
+    if not _proxy_magic_enabled():
+        return
+    try:
+        payload = {
+            "status": status_code,
+            "data_type": type(data).__name__,
+        }
+        if isinstance(data, dict):
+            payload.update({
+                "keys": list(data.keys())[:30],
+                "TotalRecordCount": data.get("TotalRecordCount"),
+                "Items": _magic_item_summary(data.get("Items")) if "Items" in data else None,
+                "OrderedViews_len": len(data.get("OrderedViews")) if isinstance(data.get("OrderedViews"), list) else None,
+                "HomeSections_len": len(data.get("HomeSections")) if isinstance(data.get("HomeSections"), list) else None,
+                "HomeScreenSections_len": len(data.get("HomeScreenSections")) if isinstance(data.get("HomeScreenSections"), list) else None,
+            })
+        elif isinstance(data, list):
+            payload["Items"] = _magic_item_summary(data)
+        _magic_log(stage, **payload)
+    except Exception as e:
+        _magic_log(stage, error=f"json response log failed: {e}")
+
+
 def _get_real_emby_url_and_key():
     base_url = config_manager.APP_CONFIG.get("emby_server_url", "").rstrip('/')
     api_key = config_manager.APP_CONFIG.get("emby_api_key", "")
@@ -190,18 +336,22 @@ def _build_fake_view_items_for_user(user_id):
     """
     real_server_id = extensions.EMBY_SERVER_ID
     if not real_server_id:
+        _magic_log("FAKE-BUILD-NO-SERVER-ID", user_id=user_id)
         return []
 
     fake_views_items = []
     collections = custom_collection_db.get_all_active_custom_collections()
+    _magic_log("FAKE-BUILD-START", user_id=user_id, server_id=real_server_id, collection_count=len(collections or []))
 
     for coll in collections:
         real_emby_collection_id = coll.get('emby_collection_id')
         if not real_emby_collection_id:
+            _magic_log("FAKE-SKIP-NO-REAL-EMBY-COLLECTION", collection_id=coll.get('id'), name=coll.get('name'))
             continue
 
         allowed_users = coll.get('allowed_user_ids')
         if allowed_users and isinstance(allowed_users, list) and user_id not in allowed_users:
+            _magic_log("FAKE-SKIP-NO-USER-PERMISSION", collection_id=coll.get('id'), name=coll.get('name'), user_id=user_id, allowed_users=allowed_users)
             continue
 
         db_id = coll['id']
@@ -224,6 +374,8 @@ def _build_fake_view_items_for_user(user_id):
                 else 'Movie'
             )
             collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+
+        _magic_log("FAKE-ADD", collection_id=db_id, name=coll.get('name'), mimicked_id=mimicked_id, real_emby_collection_id=real_emby_collection_id, collection_type=collection_type)
 
         fake_views_items.append({
             "Name": coll['name'],
@@ -272,6 +424,7 @@ def _build_fake_view_items_for_user(user_id):
             "LocationType": "Virtual",
         })
 
+    _magic_log("FAKE-BUILD-DONE", user_id=user_id, fake_count=len(fake_views_items), fake_items=_magic_item_summary(fake_views_items))
     return fake_views_items
 
 
@@ -281,6 +434,17 @@ def _merge_native_and_fake_views(native_views_items, fake_views_items):
     """
     native_views_items = native_views_items or []
     fake_views_items = fake_views_items or []
+
+    _magic_log(
+        "MERGE-START",
+        native_count=len(native_views_items),
+        fake_count=len(fake_views_items),
+        native_items=_magic_item_summary(native_views_items),
+        fake_items=_magic_item_summary(fake_views_items),
+        proxy_merge_native_libraries=config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True),
+        proxy_native_view_selection=config_manager.APP_CONFIG.get('proxy_native_view_selection', ''),
+        proxy_native_view_order=config_manager.APP_CONFIG.get('proxy_native_view_order', 'before'),
+    )
 
     selected_native_items = []
     should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
@@ -317,6 +481,7 @@ def _merge_native_and_fake_views(native_views_items, fake_views_items):
         seen_ids.add(item_id)
         deduped.append(item)
 
+    _magic_log("MERGE-DONE", final_count=len(deduped), final_items=_magic_item_summary(deduped))
     return deduped
 
 
@@ -325,18 +490,22 @@ def _is_collection_folder_list_query(params):
     parent_id = str(_get_arg(params, 'ParentId', 'parentId', default='') or '')
 
     if 'collectionfolder' not in include_types:
+        _magic_log("COLLECTION-FOLDER-CHECK-NO", reason="IncludeItemTypes missing CollectionFolder", include_types=include_types, parent_id=parent_id)
         return False
 
     # 根层媒体库列表才注入；普通库内浏览不要误伤。
     if parent_id and parent_id.lower() not in {'2', 'root'}:
+        _magic_log("COLLECTION-FOLDER-CHECK-NO", reason="ParentId is not root", include_types=include_types, parent_id=parent_id)
         return False
 
+    _magic_log("COLLECTION-FOLDER-CHECK-YES", include_types=include_types, parent_id=parent_id)
     return True
 
 
 def _forward_emby_json(path, params=None, timeout=20):
     base_url, api_key = _get_real_emby_url_and_key()
     target_url = f"{base_url}/{path.lstrip('/')}"
+    _magic_log("FORWARD-JSON-REQ", target_url=target_url, path=path, args=_magic_args_dict(params or request.args))
     headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
     headers['Host'] = urlparse(base_url).netloc
     forward_params = (params or request.args).copy()
@@ -351,10 +520,13 @@ def _forward_emby_json(path, params=None, timeout=20):
         timeout=timeout,
     )
     resp.raise_for_status()
-    return resp, resp.json()
+    data = resp.json()
+    _magic_log_json_response("FORWARD-JSON-RESP", data, status_code=resp.status_code)
+    return resp, data
 
 
 def handle_get_collection_folder_items_410(user_id, path, params):
+    _magic_log("ROUTE-MATCH-410-COLLECTION-FOLDERS", user_id=user_id, path=path, args=_magic_args_dict(params))
     """
     Emby 4.10 首页/媒体库页兼容：
     新版客户端可能不再依赖 /Users/{id}/Views，而是请求 /Users/{id}/Items + IncludeItemTypes=CollectionFolder。
@@ -364,6 +536,7 @@ def handle_get_collection_folder_items_410(user_id, path, params):
         resp, data = _forward_emby_json(path, params=params, timeout=20)
         native_items = data.get('Items', []) if isinstance(data, dict) else []
 
+        _magic_log_json_response("410-NATIVE-COLLECTION-FOLDERS", data, status_code=resp.status_code)
         fake_items = _build_fake_view_items_for_user(user_id)
         final_items = _merge_native_and_fake_views(native_items, fake_items)
 
@@ -373,6 +546,7 @@ def handle_get_collection_folder_items_410(user_id, path, params):
             data['Items'] = final_items
             data['TotalRecordCount'] = len(final_items)
 
+        _magic_log_json_response("410-INJECTED-COLLECTION-FOLDERS", data, status_code=resp.status_code)
         logger.debug(f"  ➜ [Emby4.10] 已向 CollectionFolder 列表注入 {len(fake_items)} 个虚拟库。")
         return Response(json.dumps(data), status=resp.status_code, mimetype='application/json')
 
@@ -384,6 +558,7 @@ def handle_get_collection_folder_items_410(user_id, path, params):
 
 
 def handle_get_mimicked_items_by_ids(user_id, ids_value):
+    _magic_log("ROUTE-MATCH-MIMICKED-IDS", user_id=user_id, ids=ids_value)
     """
     兼容 Emby 4.10 可能出现的 /Users/{id}/Items?Ids=-900001 详情请求。
     """
@@ -443,7 +618,9 @@ def handle_get_mimicked_items_by_ids(user_id, ids_value):
         except Exception as e:
             logger.warning(f"  ➜ 构造虚拟库详情失败: {item_id} -> {e}")
 
-    return Response(json.dumps({"Items": items, "TotalRecordCount": len(items)}), mimetype='application/json')
+    data = {"Items": items, "TotalRecordCount": len(items)}
+    _magic_log_json_response("MIMICKED-IDS-RESP", data)
+    return Response(json.dumps(data), mimetype='application/json')
 
 
 def _remove_ids_from_list(value, ids_to_remove):
@@ -453,6 +630,15 @@ def _remove_ids_from_list(value, ids_to_remove):
 
 
 def _patch_user_configuration_for_virtual_views(config_data, fake_view_ids):
+    _magic_log(
+        "PATCH-CONFIG-START",
+        fake_view_ids=fake_view_ids,
+        config_type=type(config_data).__name__,
+        keys=list(config_data.keys())[:50] if isinstance(config_data, dict) else None,
+        OrderedViews=config_data.get('OrderedViews') if isinstance(config_data, dict) else None,
+        LatestItemsExcludes=config_data.get('LatestItemsExcludes') if isinstance(config_data, dict) else None,
+        MyMediaExcludes=config_data.get('MyMediaExcludes') if isinstance(config_data, dict) else None,
+    )
     """
     Emby 4.10 首页配置兼容。
     新版首页可能根据 OrderedViews / HomeSections 决定展示媒体库，确保虚拟库不被排除。
@@ -487,14 +673,23 @@ def _patch_user_configuration_for_virtual_views(config_data, fake_view_ids):
                 if exclude_key in section:
                     section[exclude_key] = _remove_ids_from_list(section.get(exclude_key), fake_view_id_set)
 
+    _magic_log(
+        "PATCH-CONFIG-DONE",
+        fake_view_ids=fake_view_ids,
+        OrderedViews=config_data.get('OrderedViews') if isinstance(config_data, dict) else None,
+        LatestItemsExcludes=config_data.get('LatestItemsExcludes') if isinstance(config_data, dict) else None,
+        MyMediaExcludes=config_data.get('MyMediaExcludes') if isinstance(config_data, dict) else None,
+    )
     return config_data
 
 
 def handle_get_user_configuration_410(user_id, path, params):
+    _magic_log("ROUTE-MATCH-410-USER-CONFIG", user_id=user_id, path=path, args=_magic_args_dict(params))
     try:
         resp, data = _forward_emby_json(path, params=params, timeout=20)
         fake_ids = [item.get('Id') for item in _build_fake_view_items_for_user(user_id) if item.get('Id')]
         patched = _patch_user_configuration_for_virtual_views(data, fake_ids)
+        _magic_log_json_response("410-USER-CONFIG-PATCHED", patched, status_code=resp.status_code)
         return Response(json.dumps(patched), status=resp.status_code, mimetype='application/json')
     except Exception as e:
         logger.warning(f"  ➜ [Emby4.10] 用户配置虚拟库兼容处理失败，回退透传: {e}")
@@ -518,10 +713,13 @@ def handle_get_views():
         return "Proxy is not ready", 503
 
     try:
-        user_id_match = re.search(r'/emby/Users/([^/]+)/Views', request.path)
+        _magic_log("ROUTE-MATCH-VIEWS", request_path=request.path, full_path=request.full_path, args=_magic_args_dict())
+        user_id_match = re.search(r'/(?:emby/)?Users/([^/]+)/Views', request.path, re.IGNORECASE)
         if not user_id_match:
+            _magic_log("VIEWS-NO-USER-ID", request_path=request.path)
             return "Could not determine user from request path", 400
         user_id = user_id_match.group(1)
+        _magic_log("VIEWS-USER", user_id=user_id)
 
         # 1. 获取原生库
         user_visible_native_libs = emby.get_emby_libraries(
@@ -530,21 +728,25 @@ def handle_get_views():
             user_id
         )
         if user_visible_native_libs is None: user_visible_native_libs = []
+        _magic_log("VIEWS-NATIVE", user_id=user_id, native_count=len(user_visible_native_libs), native_items=_magic_item_summary(user_visible_native_libs))
 
         # 2. 生成虚拟库
         collections = custom_collection_db.get_all_active_custom_collections()
+        _magic_log("VIEWS-COLLECTIONS", user_id=user_id, collection_count=len(collections or []))
         fake_views_items = []
         
         for coll in collections:
             # 物理检查：库在Emby里有实体吗？
             real_emby_collection_id = coll.get('emby_collection_id')
             if not real_emby_collection_id:
+                _magic_log("VIEWS-SKIP-NO-REAL-EMBY-COLLECTION", collection_id=coll.get('id'), name=coll.get('name'))
                 continue
 
             # 权限检查：如果设置了 allowed_user_ids，则检查
             allowed_users = coll.get('allowed_user_ids')
             if allowed_users and isinstance(allowed_users, list):
                 if user_id not in allowed_users:
+                    _magic_log("VIEWS-SKIP-NO-USER-PERMISSION", collection_id=coll.get('id'), name=coll.get('name'), user_id=user_id, allowed_users=allowed_users)
                     continue
             
             # 生成虚拟库对象
@@ -574,6 +776,7 @@ def handle_get_views():
                 "CollectionType": collection_type, "ImageTags": image_tags, "BackdropImageTags": [], 
                 "LockedFields": [], "LockData": False
             }
+            _magic_log("VIEWS-FAKE-ADD", collection_id=db_id, name=coll.get('name'), mimicked_id=mimicked_id, real_emby_collection_id=real_emby_collection_id, collection_type=collection_type)
             fake_views_items.append(fake_view)
         
         # 3. 合并与排序
@@ -599,6 +802,7 @@ def handle_get_views():
             final_items.extend(fake_views_items)
 
         final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
+        _magic_log_json_response("VIEWS-FINAL", final_response)
         return Response(json.dumps(final_response), mimetype='application/json')
         
     except Exception as e:
@@ -1193,8 +1397,9 @@ def proxy_all(path):
     # --- 3. HTTP 代理逻辑 ---
     try:
         full_path = f'/{path}'
-        # ===== 调试日志：打印所有请求路径 =====
-        # logger.info(f"[PROXY] 请求路径: {full_path}")
+        normalized_path = path[5:] if path.lower().startswith('emby/') else path
+        # ===== 魔法日志：只打印 Emby 4.10 虚拟库相关请求 =====
+        _magic_log_request("REQ", path=full_path)
         
         # ====================================================================
         # ★★★ 拦截 H: 视频流请求 (stream, original, Download 等) ★★★
@@ -1375,30 +1580,36 @@ def proxy_all(path):
                     return resp
 
         # --- 拦截 B: 视图列表 (Views) ---
-        if path.endswith('/Views') and path.startswith('emby/Users/'):
+        if normalized_path.endswith('/Views') and normalized_path.startswith('Users/'):
+            _magic_log("ROUTE-HIT-VIEWS", path=path, normalized_path=normalized_path)
             return handle_get_views()
 
         # --- 拦截 C: 最新项目 (Latest) ---
-        if path.endswith('/Items/Latest'):
-            user_id_match = re.search(r'/emby/Users/([^/]+)/', full_path)
+        if normalized_path.endswith('/Items/Latest'):
+            user_id_match = re.search(r'/?Users/([^/]+)/', normalized_path, re.IGNORECASE)
             if user_id_match:
+                _magic_log("ROUTE-HIT-LATEST", user_id=user_id_match.group(1), path=path, normalized_path=normalized_path)
                 return handle_get_latest_items(user_id_match.group(1), request.args)
 
         # --- 拦截 C2: Emby 4.10 新媒体库入口 (/Users/{id}/Items?IncludeItemTypes=CollectionFolder) ---
-        user_items_match = re.search(r'emby/Users/([^/]+)/Items$', path)
+        user_items_match = re.search(r'Users/([^/]+)/Items$', normalized_path, re.IGNORECASE)
         if user_items_match and request.method == 'GET':
             user_id_for_items = user_items_match.group(1)
+            _magic_log("ROUTE-CANDIDATE-USER-ITEMS", user_id=user_id_for_items, path=path, normalized_path=normalized_path, args=_magic_args_dict())
 
             ids_param = request.args.get('Ids') or request.args.get('ids')
             if ids_param and any(is_mimicked_id(x) for x in _split_csv(ids_param)):
+                _magic_log("ROUTE-HIT-MIMICKED-IDS", ids=ids_param)
                 return handle_get_mimicked_items_by_ids(user_id_for_items, ids_param)
 
             if _is_collection_folder_list_query(request.args):
+                _magic_log("ROUTE-HIT-410-COLLECTION-FOLDERS", user_id=user_id_for_items)
                 return handle_get_collection_folder_items_410(user_id_for_items, path, request.args)
 
         # --- 拦截 C3: Emby 4.10 用户首页配置，确保虚拟库不被 HomeSections/OrderedViews 排除 ---
-        user_config_match = re.search(r'emby/Users/([^/]+)/Configuration$', path)
+        user_config_match = re.search(r'Users/([^/]+)/Configuration$', normalized_path, re.IGNORECASE)
         if user_config_match and request.method == 'GET':
+            _magic_log("ROUTE-HIT-410-USER-CONFIG", user_id=user_config_match.group(1), path=path, normalized_path=normalized_path)
             return handle_get_user_configuration_410(user_config_match.group(1), path, request.args)
 
         # --- 拦截 D: 虚拟库详情 (增强版拦截) ---
@@ -1412,9 +1623,10 @@ def proxy_all(path):
             return handle_get_mimicked_library_details(user_id, mimicked_id)
 
         # --- 拦截 E: 虚拟库图片 ---
-        if path.startswith('emby/Items/') and '/Images/' in path:
-            item_id = path.split('/')[2]
+        if normalized_path.startswith('Items/') and '/Images/' in normalized_path:
+            item_id = normalized_path.split('/')[1]
             if is_mimicked_id(item_id):
+                _magic_log("ROUTE-HIT-MIMICKED-IMAGE", item_id=item_id, path=path, normalized_path=normalized_path)
                 return handle_get_mimicked_library_image(path)
         
         # --- 拦截 F: 虚拟库内容浏览 (Items) ---
@@ -1422,25 +1634,29 @@ def proxy_all(path):
         parent_id = request.args.get("ParentId") or request.args.get("parentId")
         
         if parent_id and is_mimicked_id(parent_id):
+            _magic_log("ROUTE-CANDIDATE-MIMICKED-PARENT", parent_id=parent_id, path=path, normalized_path=normalized_path, args=_magic_args_dict())
             # 1. 处理核心的内容列表请求 (严格匹配结尾，防止误伤 Filters)
-            user_id_match = re.search(r'emby/Users/([^/]+)/Items$', path)
+            user_id_match = re.search(r'Users/([^/]+)/Items$', normalized_path, re.IGNORECASE)
             if user_id_match:
                 user_id = user_id_match.group(1)
+                _magic_log("ROUTE-HIT-MIMICKED-LIBRARY-ITEMS", user_id=user_id, parent_id=parent_id)
                 return handle_get_mimicked_library_items(user_id, parent_id, request.args)
 
             # 2. 处理所有其他带有虚拟 ParentId 的请求 (如 /Filters, /Genres 等)
+            _magic_log("ROUTE-HIT-MIMICKED-METADATA-ENDPOINT", parent_id=parent_id, path=path)
             return handle_mimicked_library_metadata_endpoint(path, parent_id, request.args)
 
         # 兜底逻辑
         base_url, api_key = _get_real_emby_url_and_key()
         target_url = f"{base_url}/{path.lstrip('/')}"
-        
+
         forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
         forward_headers['Host'] = urlparse(base_url).netloc
-        
+
         forward_params = request.args.copy()
         forward_params['api_key'] = api_key
-        
+
+        _magic_log("FALLBACK-FORWARD", target_url=target_url, path=path, normalized_path=normalized_path, args=_magic_args_dict(forward_params))
         resp = requests.request(
             method=request.method,
             url=target_url,
@@ -1450,12 +1666,30 @@ def proxy_all(path):
             stream=True,
             timeout=(10.0, 1800.0)
         )
-        
+
         excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
         response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
-        
+
+        # 对疑似 4.10 媒体库/首页相关 JSON 响应做一次“窥探”，看客户端到底在请求什么。
+        # 只对相关路径生效，避免视频流/图片流被读入内存。
+        if _proxy_magic_enabled() and _magic_should_trace(full_path, request.args):
+            content_type = (resp.headers.get('Content-Type') or '').lower()
+            _magic_log("FALLBACK-RESP", status=resp.status_code, content_type=content_type, path=path, normalized_path=normalized_path)
+            if 'json' in content_type:
+                try:
+                    body = resp.content
+                    try:
+                        data = json.loads(body.decode('utf-8', errors='replace')) if body else None
+                        _magic_log_json_response("FALLBACK-JSON", data, status_code=resp.status_code)
+                    except Exception:
+                        preview = body[:800].decode('utf-8', errors='replace') if body else ''
+                        _magic_log("FALLBACK-BODY-PREVIEW", preview=preview)
+                    return Response(body, resp.status_code, response_headers)
+                except Exception as log_e:
+                    _magic_log("FALLBACK-RESP-LOG-FAILED", error=str(log_e))
+
         return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
-        
+
     except Exception as e:
         logger.error(f"[PROXY] HTTP 代理时发生未知错误: {e}", exc_info=True)
         return "Internal Server Error", 500
