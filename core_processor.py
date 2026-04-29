@@ -534,7 +534,7 @@ class MediaProcessor:
             item_type = "Series" if is_series else "Movie"
 
             # =========================================================
-            # ★★★ 新增：MP直出模式下的洗版 (Replace) 逻辑 ★★★
+            # ★★★ MP直出模式下的洗版 (Replace) 逻辑 ★★★
             # =========================================================
             mp_classify_enabled = self.config.get(constants.CONFIG_OPTION_115_MP_CLASSIFY, False)
             if mp_classify_enabled:
@@ -543,7 +543,7 @@ class MediaProcessor:
                     try:
                         from database import maintenance_db
                         
-                        # 1. 调用 media_db 批量查询接口获取在库状态 (避免无意义的 DB 查询)
+                        # 1. 调用 media_db 批量查询接口获取在库状态
                         status_map = media_db.get_in_library_status_with_type_bulk([tmdb_id])
                         is_in_lib = status_map.get(f"{tmdb_id}_{item_type}", False)
                         
@@ -551,23 +551,24 @@ class MediaProcessor:
                             with get_central_db_connection() as conn:
                                 with conn.cursor() as cursor:
                                     old_records = []
-                                    # 2. 查询旧版文件的路径和 Emby ID
+                                    # 2. 查询旧版文件的路径、Emby ID 和 PickCode
                                     if item_type == "Movie":
                                         cursor.execute("""
-                                            SELECT emby_item_ids_json, asset_details_json, title 
+                                            SELECT emby_item_ids_json, asset_details_json, title, file_pickcode_json 
                                             FROM media_metadata 
                                             WHERE tmdb_id = %s AND item_type = 'Movie' AND in_library = TRUE
                                         """, (str(tmdb_id),))
                                         old_records = cursor.fetchall()
                                     elif item_type == "Series" and detected_season is not None and detected_episode is not None:
-                                        # 剧集在库，进一步精确查找对应的分集是否在库
                                         cursor.execute("""
-                                            SELECT emby_item_ids_json, asset_details_json, title 
+                                            SELECT emby_item_ids_json, asset_details_json, title, file_pickcode_json 
                                             FROM media_metadata 
                                             WHERE parent_series_tmdb_id = %s AND item_type = 'Episode' 
                                               AND season_number = %s AND episode_number = %s AND in_library = TRUE
                                         """, (str(tmdb_id), detected_season, detected_episode))
                                         old_records = cursor.fetchall()
+
+                                    old_pickcodes = set()
 
                                     for old_row in old_records:
                                         raw_assets = old_row['asset_details_json']
@@ -576,25 +577,28 @@ class MediaProcessor:
                                         raw_ids = old_row['emby_item_ids_json']
                                         emby_ids = json.loads(raw_ids) if isinstance(raw_ids, str) else (raw_ids or [])
                                         
+                                        raw_pcs = old_row.get('file_pickcode_json')
+                                        pcs = json.loads(raw_pcs) if isinstance(raw_pcs, str) else (raw_pcs or [])
+                                        for pc in pcs:
+                                            if pc: old_pickcodes.add(pc)
+                                        
                                         old_title = old_row['title'] or "未知名称"
 
                                         # 3. 物理删除旧版主文件及附属文件
                                         for asset in assets:
                                             old_path = asset.get('path')
-                                            # 确保不误删当前刚入库的新文件
                                             if old_path and old_path != file_path and os.path.exists(old_path):
                                                 logger.info(f"  ➜ [洗版替换] 发现旧版文件，准备物理删除: {old_path}")
                                                 
-                                                # 删除主文件 (STRM/MKV等)
+                                                # 删除主文件
                                                 try: os.remove(old_path)
                                                 except Exception as e: logger.warning(f"    - 删除旧主文件失败: {e}")
                                                 
-                                                # 删除同级目录下的附属文件 (同名 nfo, json, jpg, 字幕等)
+                                                # 删除附属文件 (严谨匹配，防误杀)
                                                 base_dir = os.path.dirname(old_path)
                                                 stem = os.path.splitext(os.path.basename(old_path))[0]
                                                 if os.path.exists(base_dir):
                                                     for f in os.listdir(base_dir):
-                                                        # 匹配同名文件，且排除当前新文件
                                                         if (f.startswith(stem + '.') or f.startswith(stem + '-')) and f != os.path.basename(file_path):
                                                             ext = os.path.splitext(f)[1].lower()
                                                             if ext in ['.nfo', '.json', '.jpg', '.png', '.srt', '.ass', '.ssa', '.sub']:
@@ -603,14 +607,26 @@ class MediaProcessor:
                                                                     logger.debug(f"    - 已删除附属文件: {f}")
                                                                 except: pass
 
-                                        # 4. 调用 maintenance_db 清理数据库记录和缓存
+                                        # 4. 调用 maintenance_db 清理 Emby 相关的数据库记录和缓存
                                         for e_id in emby_ids:
-                                            logger.info(f"  ➜ [洗版替换] 清理旧版数据库记录 (EmbyID: {e_id})")
+                                            logger.info(f"  ➜ [洗版替换] 清理旧版媒体库记录 (EmbyID: {e_id})")
                                             maintenance_db.cleanup_deleted_media_item(
                                                 item_id=str(e_id), 
                                                 item_name=old_title, 
                                                 item_type='Movie' if item_type == 'Movie' else 'Episode'
                                             )
+
+                                    # 5. 清理 115 整理记录和文件缓存 (精准打击，不碰目录)
+                                    if old_pickcodes:
+                                        try:
+                                            cursor.execute("DELETE FROM p115_organize_records WHERE pick_code = ANY(%s)", (list(old_pickcodes),))
+                                            cursor.execute("DELETE FROM p115_filesystem_cache WHERE pick_code = ANY(%s)", (list(old_pickcodes),))
+                                            logger.info(f"  ➜ [洗版替换] 已清理旧版 115 整理记录和文件缓存 (数量: {len(old_pickcodes)})")
+                                        except Exception as e:
+                                            logger.warning(f"  ➜ [洗版替换] 清理 115 缓存记录失败: {e}")
+                                            
+                                # 提交事务
+                                conn.commit()
                     except Exception as e:
                         logger.error(f"  ➜ [洗版替换] 执行旧版清理逻辑时发生错误: {e}", exc_info=True)
 
