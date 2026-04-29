@@ -16,7 +16,7 @@
       <n-alert type="info" :show-icon="true">
         <b>推荐两种模式：</b><br />
         1. <code>季 + 集</code>：正则中分别捕获季号和集号。<br />
-        2. <code>仅集号</code>：只需要保留一个“集号捕获组”，切换后会自动固定为第 1 组，季号使用默认季（通常填 1）。
+        2. <code>仅集号</code>：只需要保留一个“集号捕获组”，切换后会自动固定为第 1 组，季号使用默认季；特别篇可填 <b>0</b>。
       </n-alert>
 
       <n-space justify="space-between" align="center">
@@ -142,7 +142,7 @@
 
             <n-gi span="1 s:2">
               <n-alert type="default" :show-icon="false">
-                当前为“仅集号”模式：前端会自动将 <b>集号捕获组固定为 1</b>，避免误填成 2 之类的值。
+                当前为“仅集号”模式：前端会自动将 <b>集号捕获组固定为 1</b>；默认季号填 <b>0</b> 就是特别篇 / Specials。
               </n-alert>
             </n-gi>
           </template>
@@ -152,7 +152,7 @@
               说明：正则里只需要把数字部分放进捕获组即可。比如
               <code>S(\d+)E(\d+)</code>、
               <code>第(\d+)季.*?第(\d+)话</code>、
-              <code>#(\d{1,3})</code>。
+              <code>#(\d{1,3})</code>。仅集号规则如果用于特别篇，默认季号填 <code>0</code>。
             </n-text>
           </n-gi>
         </n-grid>
@@ -252,6 +252,11 @@ const toPositiveInt = (value, fallback) => {
   return Number.isFinite(num) && num > 0 ? Math.trunc(num) : fallback;
 };
 
+const toNonNegativeInt = (value, fallback) => {
+  const num = Number(value);
+  return Number.isFinite(num) && num >= 0 ? Math.trunc(num) : fallback;
+};
+
 const parseCapturedNumber = (value) => {
   const normalized = String(value ?? '').trim().replace(/^0+(?=\d)/, '');
   if (!normalized) return null;
@@ -267,7 +272,7 @@ const normalizeRule = (rule = {}) => {
     mode: rule.mode === 'episode_only' ? 'episode_only' : 'season_episode',
     season_group: toPositiveInt(rule.season_group, 1),
     episode_group: toPositiveInt(rule.episode_group, 2),
-    default_season: toPositiveInt(rule.default_season, 1)
+    default_season: toNonNegativeInt(rule.default_season, 1)
   };
 
   if (normalized.mode === 'episode_only') {
@@ -283,7 +288,7 @@ const handleRuleModeChange = (rule) => {
 
   if (rule.mode === 'episode_only') {
     rule.episode_group = 1;
-    rule.default_season = toPositiveInt(rule.default_season, 1);
+    rule.default_season = toNonNegativeInt(rule.default_season, 1);
   } else {
     rule.season_group = toPositiveInt(rule.season_group, 1);
     rule.episode_group = toPositiveInt(rule.episode_group, 2);
@@ -315,7 +320,7 @@ const preview = computed(() => {
           };
         }
 
-        const season = toPositiveInt(rule.default_season, 1);
+        const season = toNonNegativeInt(rule.default_season, 1);
         return {
           type: 'success',
           text: `命中规则 ${i + 1}${rule.name ? `（${rule.name}）` : ''}：识别为 S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
