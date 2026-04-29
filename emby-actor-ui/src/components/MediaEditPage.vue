@@ -247,7 +247,7 @@
               <td>{{ ep.title || '未知标题' }}</td>
               <td style="text-align: center;">
                 <n-button size="small" type="primary" @click="openMediaInfoEditor(ep.emby_id)">
-                  编辑指纹
+                  编辑媒体信息
                 </n-button>
               </td>
             </tr>
