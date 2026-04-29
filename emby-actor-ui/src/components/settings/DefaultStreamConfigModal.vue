@@ -238,7 +238,7 @@ const audioPriorityGroupMap = {
   feature: { label: '特色词优先', desc: '公映 / 国配 / 上译 / 导评' }
 };
 
-const defaultAudioFeatures = ['公映', '上译', '京译', '长译', '八一', '国配', '台配', '国语', '粤语', '评论', '导评'];
+const defaultAudioFeatures = ['公映', '上译', '京译', '央视', '长译', '八一', '国配', '台配', '国语', '粤语', '评论', '导评'];
 const defaultAudioParamPriority = [
   'atmos',
   'dts_x',

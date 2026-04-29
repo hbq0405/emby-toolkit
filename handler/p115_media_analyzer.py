@@ -628,7 +628,10 @@ class P115MediaAnalyzerMixin:
             # 2. 暴力净化：碾碎所有 SUP/ASS/Chs 等英文污染
             friendly_title = utils.clean_non_chinese_chars(friendly_title)
 
-            # 3. 统一简繁字形，并替换常见冗余词
+            # 3. 抹除无意义的压制组/字幕组名称 ★★★
+            friendly_title = utils.clean_stream_garbage_words(friendly_title)
+
+            # 4. 统一简繁字形，并替换常见冗余词
             friendly_title = friendly_title.replace("繁體", "繁体").replace("簡體", "简体")
             
             replace_map = {
@@ -685,7 +688,10 @@ class P115MediaAnalyzerMixin:
             # 1. 暴力净化：碾碎所有 DTS-HD, Dolby, kbps 等非中文字符
             friendly_title = utils.clean_non_chinese_chars(friendly_title)
 
-            # 2. 替换常见词
+            # 2. 抹除无意义的压制组/音轨组名称
+            friendly_title = utils.clean_stream_garbage_words(friendly_title)
+
+            # 3. 替换常见词
             audio_replace_map = {
                 "国语配音": "国语",
                 "粤语配音": "粤语",
@@ -694,7 +700,7 @@ class P115MediaAnalyzerMixin:
             for old, new in audio_replace_map.items():
                 friendly_title = friendly_title.replace(old, new)
 
-            # 3. 兜底与组合
+            # 4. 兜底与组合
             if not friendly_title:
                 if display_lang and display_lang != "未知" and stream_features:
                     friendly_title = self._format_stream_feature_title(display_lang, stream_features)

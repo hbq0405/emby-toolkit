@@ -422,6 +422,23 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
     },
 ]
 
+# --- 音轨/字幕无意义压制组/字幕组过滤名单 ---
+# 只要出现在这里的词，都会从音轨和字幕的标题中被无情抹除
+STREAM_TITLE_GARBAGE_FILTER = [
+    "麦哈", "说一不二", "人人字幕组", "人人影视", "远鉴字幕组", "衣柜字幕组", 
+    "霸王龙压制组", "字幕组", "压制组", "手抄", "调轴", "精校", "原创"
+]
+
+def clean_stream_garbage_words(text: str) -> str:
+    """
+    清理音轨/字幕标题中的无意义压制组、字幕组等干扰词汇。
+    """
+    if not text:
+        return ""
+    for garbage in STREAM_TITLE_GARBAGE_FILTER:
+        text = text.replace(garbage, "")
+    return text.strip()
+
 # --- 语言预设表 ---
 DEFAULT_LANGUAGE_MAPPING = [
     {"label": "国语", "value": "zh", "aliases": ["chi", "zho", "zh", "chs", "zh-cn", "zh-sg", "zh-hans", "cmn", "mandarin", "guo", "guoyu", "国语", "普通话", "中文", "简体", "简中"]},
