@@ -333,11 +333,6 @@ class P115MediaAnalyzerMixin:
     def _format_stream_feature_title(self, base_title, features):
         """
         把基础语言名和特色标签合成最终标题。
-
-        规则：
-        - 原盘：介质属性，固定作为最前缀
-        - 特效：字幕形态，贴到语言名后面
-        - 其他标签：继续放括号里，例如 听障 / 拉美 / 导评
         """
         base_title = str(base_title or "").strip()
         features = list(dict.fromkeys([f for f in features if f]))
@@ -345,26 +340,16 @@ class P115MediaAnalyzerMixin:
         if not base_title:
             base_title = "未知"
 
-        # 1. 原盘是介质属性，永远放最前面，不参与括号标签
-        is_pgs_source = "原盘" in features
-        features = [f for f in features if f != "原盘"]
-
-        # 2. 特效是字幕形态，贴到语言标题里，不参与括号标签
-        if "特效" in features:
-            # 中英双语（简体） -> 中英双语特效（简体）
-            # 中日双语（繁体） -> 中日双语特效（繁体）
-            if re.search(r"（(?:简体|繁体)）$", base_title):
-                base_title = re.sub(r"（(简体|繁体)）$", r"特效（\1）", base_title)
+        # “特效”更适合贴在字幕类型后面，而不是放括号里
+        if "特效" in features and base_title in ["简体", "繁体", "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）", "英文", "英语"]:
+            if base_title == "中英双语（简体）":
+                base_title = "中英双语特效（简体）"
+            elif base_title == "中英双语（繁体）":
+                base_title = "中英双语特效（繁体）"
             else:
                 base_title = f"{base_title}特效"
-
             features = [f for f in features if f != "特效"]
 
-        # 3. 原盘前缀最终拼接
-        if is_pgs_source:
-            base_title = f"原盘{base_title}"
-
-        # 4. 剩余特色标签继续用括号承载
         if features:
             return f"{base_title}（{'·'.join(features)}）"
 
@@ -376,8 +361,7 @@ class P115MediaAnalyzerMixin:
         raw_title,
         stream_type,
         raw_display_title="",
-        is_hearing_impaired=False,
-        codec=""
+        is_hearing_impaired=False
     ):
         """
         返回：(底层 ISO 代码，UI 主标题/DisplayLanguage，UI 副标题/Title)
@@ -627,11 +611,6 @@ class P115MediaAnalyzerMixin:
         if stream_type == "Subtitle" and is_hearing_impaired is True:
             if "SDH" not in stream_features:
                 stream_features.append("听障")
-
-        # 如果物理编码是 PGS，强制打上“原盘”标签 ★★★
-        if stream_type == "Subtitle" and str(codec).lower() in ["hdmv_pgs_subtitle", "pgssub"]:
-            if "原盘" not in stream_features:
-                stream_features.append("原盘")
 
         stream_features = list(dict.fromkeys([f for f in stream_features if f]))
 
@@ -1096,7 +1075,7 @@ class P115MediaAnalyzerMixin:
                 raw_title = tags.get("title")
                 
                 # ★ 调用新的智能解析方法
-                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Audio", codec=codec)
+                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Audio")
 
                 channels = self._safe_int(s.get("channels"))
                 channel_layout = self._channel_layout_label(channels, s.get("channel_layout"))
@@ -1153,7 +1132,7 @@ class P115MediaAnalyzerMixin:
                 is_hearing_impaired = tags.get("IsHearingImpaired", False)
                 
                 # ★ 调用新的智能解析方法
-                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Subtitle", raw_display_title, is_hearing_impaired, codec=codec)
+                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Subtitle", raw_display_title, is_hearing_impaired)
 
                 sub_codec = self._subtitle_codec_label(codec)
                 is_text_sub = codec in {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
