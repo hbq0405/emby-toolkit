@@ -133,7 +133,7 @@
               <n-form-item label="默认季号">
                 <n-input-number
                   v-model:value="rule.default_season"
-                  :min="1"
+                  :min="0"
                   :step="1"
                   style="width: 100%;"
                 />
