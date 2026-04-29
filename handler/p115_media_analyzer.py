@@ -361,7 +361,8 @@ class P115MediaAnalyzerMixin:
         raw_title,
         stream_type,
         raw_display_title="",
-        is_hearing_impaired=False
+        is_hearing_impaired=False,
+        codec=""
     ):
         """
         返回：(底层 ISO 代码，UI 主标题/DisplayLanguage，UI 副标题/Title)
@@ -612,6 +613,11 @@ class P115MediaAnalyzerMixin:
             if "SDH" not in stream_features:
                 stream_features.append("听障")
 
+        # 如果物理编码是 PGS，强制打上“原盘”标签 ★★★
+        if stream_type == "Subtitle" and str(codec).lower() in ["hdmv_pgs_subtitle", "pgssub"]:
+            if "原盘" not in stream_features:
+                stream_features.append("原盘")
+
         stream_features = list(dict.fromkeys([f for f in stream_features if f]))
 
         friendly_title = raw_title
@@ -641,6 +647,7 @@ class P115MediaAnalyzerMixin:
                 "中文繁体": "繁体",
                 "繁体中文": "繁体",
                 "繁中": "繁体",
+                "原盘": "",
             }
             for old, new in replace_map.items():
                 friendly_title = friendly_title.replace(old, new)
@@ -1074,7 +1081,7 @@ class P115MediaAnalyzerMixin:
                 raw_title = tags.get("title")
                 
                 # ★ 调用新的智能解析方法
-                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Audio")
+                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Audio", codec=codec)
 
                 channels = self._safe_int(s.get("channels"))
                 channel_layout = self._channel_layout_label(channels, s.get("channel_layout"))
@@ -1131,7 +1138,7 @@ class P115MediaAnalyzerMixin:
                 is_hearing_impaired = tags.get("IsHearingImpaired", False)
                 
                 # ★ 调用新的智能解析方法
-                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Subtitle", raw_display_title, is_hearing_impaired)
+                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Subtitle", raw_display_title, is_hearing_impaired, codec=codec)
 
                 sub_codec = self._subtitle_codec_label(codec)
                 is_text_sub = codec in {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}

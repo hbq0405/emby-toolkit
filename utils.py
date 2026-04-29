@@ -414,6 +414,15 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         ],
     },
     {
+        "label": "原盘",
+        "types": ["Subtitle"],
+        "patterns": [
+            r"原盘",
+            r"(?<![A-Za-z0-9])PGS(?![A-Za-z0-9])",
+            r"PGSSUB"
+        ],
+    },
+    {
         "label": "拉美",
         "types": ["Subtitle", "Audio"],
         "patterns": [
