@@ -38,13 +38,35 @@ def parse_missing_item_id(item_id):
     # 从 -800000_12345 中提取出 12345
     return item_id.replace(MISSING_ID_PREFIX, "")
 MIMICKED_ID_BASE = 900000
-def to_mimicked_id(db_id): return str(-(MIMICKED_ID_BASE + db_id))
-def from_mimicked_id(mimicked_id): return -(int(mimicked_id)) - MIMICKED_ID_BASE
+# Emby 4.10 Web 会把负数 Id 的 CollectionFolder 当异常项过滤掉。
+# 新版虚拟库改用正数高位段，同时保留旧负数 Id 的兼容解析。
+MIMICKED_POSITIVE_ID_BASE = 990000000
+def to_mimicked_id(db_id):
+    return str(MIMICKED_POSITIVE_ID_BASE + int(db_id))
+def to_legacy_mimicked_id(db_id):
+    return str(-(MIMICKED_ID_BASE + int(db_id)))
+def from_mimicked_id(mimicked_id):
+    raw = str(mimicked_id or '').strip()
+    value = int(raw)
+    if value >= MIMICKED_POSITIVE_ID_BASE:
+        return value - MIMICKED_POSITIVE_ID_BASE
+    if raw.startswith('-') and abs(value) >= MIMICKED_ID_BASE:
+        return abs(value) - MIMICKED_ID_BASE
+    raise ValueError(f"Not a mimicked id: {mimicked_id}")
 def is_mimicked_id(item_id):
-    try: return isinstance(item_id, str) and item_id.startswith('-')
-    except: return False
-MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-(\d+))')
-MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-(\d+))$')
+    try:
+        raw = str(item_id or '').strip()
+        if not raw:
+            return False
+        # 新方案：正数高位段 990000xxx
+        if raw.isdigit() and int(raw) >= MIMICKED_POSITIVE_ID_BASE:
+            return True
+        # 旧方案：-900xxx，保留兼容旧客户端/旧缓存。避免误伤 -800000_ 占位海报 ID。
+        return raw.startswith('-900')
+    except Exception:
+        return False
+MIMICKED_ITEMS_RE = re.compile(r'/emby/Users/([^/]+)/Items/(-?\d+)')
+MIMICKED_ITEM_DETAILS_RE = re.compile(r'emby/Users/([^/]+)/Items/(-?\d+)$')
 
 # ============================================================================
 # 魔法日志：专门追踪 Emby 4.10 虚拟库入口、响应、注入结果
@@ -1614,13 +1636,15 @@ def proxy_all(path):
 
         # --- 拦截 D: 虚拟库详情 (增强版拦截) ---
         # 修复 iOS 有时不带 /Users/xxx，直接请求 /emby/Items/-900001 的老六行为
-        details_match = re.search(r'/Items/(-(\d+))(?:$|\?)', full_path)
+        details_match = re.search(r'/Items/(-?\d+)(?:$|\?)', full_path)
         if details_match and '/Images/' not in full_path and '/PlaybackInfo' not in full_path:
             mimicked_id = details_match.group(1)
-            # 尝试从路径或参数获取 user_id
-            user_id_match = re.search(r'/Users/([^/]+)/', full_path)
-            user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
-            return handle_get_mimicked_library_details(user_id, mimicked_id)
+            if is_mimicked_id(mimicked_id):
+                _magic_log("ROUTE-HIT-MIMICKED-DETAILS", item_id=mimicked_id, path=path, normalized_path=normalized_path)
+                # 尝试从路径或参数获取 user_id
+                user_id_match = re.search(r'/Users/([^/]+)/', full_path)
+                user_id = user_id_match.group(1) if user_id_match else request.args.get('UserId')
+                return handle_get_mimicked_library_details(user_id, mimicked_id)
 
         # --- 拦截 E: 虚拟库图片 ---
         if normalized_path.startswith('Items/') and '/Images/' in normalized_path:
