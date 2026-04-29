@@ -1779,48 +1779,86 @@ class WatchlistProcessor:
                     else:
                         from handler.p115_service import P115Service, SmartOrganizer, ManualCorrectTaskQueue
                         from database.connection import get_db_connection
-                        
-                        client = P115Service.get_client()
-                        if client:
-                            # 1. 提前计算出新的目标目录 CID
-                            organizer = SmartOrganizer(client, tmdb_id, 'tv', item_name)
-                            new_target_cid = organizer.get_target_cid(ignore_memory=True)
-                            
-                            if new_target_cid:
-                                records_to_process = []
-                                skipped_count = 0
-                                
-                                with get_db_connection() as conn:
-                                    with conn.cursor() as cursor:
-                                        # ★ 核心优化 1：直接查出 season_number 和 target_cid
-                                        cursor.execute("SELECT id, season_number, target_cid FROM p115_organize_records WHERE tmdb_id = %s", (str(tmdb_id),))
-                                        all_records = cursor.fetchall()
-                                
-                                for row in all_records:
-                                    s_num = row['season_number']
-                                    current_cid = row['target_cid']
-                                    
-                                    # ★ 核心优化 2：如果当前目录已经等于目标目录，静默跳过！(防原地摩擦)
-                                    if str(current_cid) == str(new_target_cid):
-                                        skipped_count += 1
-                                        continue
 
-                                    # ★ 核心优化 3：直接使用数据库里的季号，告别正则！
-                                    if s_num and s_num in target_seasons_for_move:
-                                        records_to_process.append((row['id'], s_num))
-                                    elif not s_num and len(target_seasons_for_move) == 1:
-                                        # 兜底：如果实在没有季号(如花絮)，但目标季只有一个，兜底带上
-                                        records_to_process.append((row['id'], list(target_seasons_for_move)[0]))
+                        # ★ MP 直出是“原路径映射”，不应该被追剧状态流转重新分拣。
+                        #   先查整理记录：只要目标季对应记录的分类是 MP直出，就直接从重组候选里剔除。
+                        with get_db_connection() as conn:
+                            with conn.cursor() as cursor:
+                                cursor.execute("""
+                                    SELECT id, season_number, target_cid, category_name
+                                    FROM p115_organize_records
+                                    WHERE tmdb_id = %s
+                                """, (str(tmdb_id),))
+                                all_records = cursor.fetchall()
 
-                                if records_to_process:
-                                    logger.info(f"  ➜ [智能追剧] 重新匹配出新目录 CID: {new_target_cid}，精准锁定 {len(records_to_process)} 个需要移动的文件加入重组队列 (目标季: {list(target_seasons_for_move)})。")
-                                    for rid, s_num in records_to_process:
-                                        ManualCorrectTaskQueue.add(rid, tmdb_id, 'tv', new_target_cid, s_num)
-                                else:
-                                    if skipped_count > 0:
-                                        logger.info(f"  ➜ [智能追剧] 目标季的文件已在正确目录 (CID: {new_target_cid})，无需移动，跳过重组。")
+                        candidate_rows = []
+                        mp_direct_skipped_count = 0
+
+                        for row in all_records:
+                            s_num = row['season_number']
+                            category_name = str(row.get('category_name') or '').strip()
+
+                            # 先判断这条记录是不是本轮状态流转需要考虑的目标季
+                            is_target_season = False
+                            if s_num and s_num in target_seasons_for_move:
+                                is_target_season = True
+                            elif not s_num and len(target_seasons_for_move) == 1:
+                                # 兜底：如果实在没有季号(如花絮)，但目标季只有一个，兜底带上
+                                is_target_season = True
+
+                            if not is_target_season:
+                                continue
+
+                            # ★ 核心修复：MP直出一律不参与追剧自动重组
+                            if category_name == "MP直出":
+                                mp_direct_skipped_count += 1
+                                continue
+
+                            candidate_rows.append(row)
+
+                        if not candidate_rows:
+                            if mp_direct_skipped_count > 0:
+                                logger.info(
+                                    f"  ➜ [智能追剧] 检测到 {mp_direct_skipped_count} 条目标季记录来自 MP直出，"
+                                    f"按原路径映射策略跳过自动重组。"
+                                )
+                            else:
+                                logger.debug("  ➜ [智能追剧] 未找到需要移动的文件。")
+                        else:
+                            client = P115Service.get_client()
+                            if client:
+                                # 1. 提前计算出新的目标目录 CID
+                                organizer = SmartOrganizer(client, tmdb_id, 'tv', item_name)
+                                new_target_cid = organizer.get_target_cid(ignore_memory=True)
+
+                                if new_target_cid:
+                                    records_to_process = []
+                                    skipped_count = 0
+
+                                    for row in candidate_rows:
+                                        s_num = row['season_number']
+                                        current_cid = row['target_cid']
+
+                                        # ★ 核心优化：如果当前目录已经等于目标目录，静默跳过！(防原地摩擦)
+                                        if str(current_cid) == str(new_target_cid):
+                                            skipped_count += 1
+                                            continue
+
+                                        # ★ 直接使用数据库里的季号，告别正则！
+                                        if s_num and s_num in target_seasons_for_move:
+                                            records_to_process.append((row['id'], s_num))
+                                        elif not s_num and len(target_seasons_for_move) == 1:
+                                            records_to_process.append((row['id'], list(target_seasons_for_move)[0]))
+
+                                    if records_to_process:
+                                        logger.info(f"  ➜ [智能追剧] 重新匹配出新目录 CID: {new_target_cid}，精准锁定 {len(records_to_process)} 个需要移动的文件加入重组队列 (目标季: {list(target_seasons_for_move)})。")
+                                        for rid, s_num in records_to_process:
+                                            ManualCorrectTaskQueue.add(rid, tmdb_id, 'tv', new_target_cid, s_num)
                                     else:
-                                        logger.debug("  ➜ [智能追剧] 未找到需要移动的文件。")
+                                        if skipped_count > 0:
+                                            logger.info(f"  ➜ [智能追剧] 目标季的文件已在正确目录 (CID: {new_target_cid})，无需移动，跳过重组。")
+                                        else:
+                                            logger.debug("  ➜ [智能追剧] 未找到需要移动的文件。")
             except Exception as e:
                 logger.error(f"  ➜ 触发 115 自动分类迁移失败: {e}", exc_info=True)
 
