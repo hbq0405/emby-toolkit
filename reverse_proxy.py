@@ -726,6 +726,90 @@ def handle_get_user_configuration_410(user_id, path, params):
         response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
         return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
 
+
+def _is_collection_folder_response(data):
+    """
+    判断一个 Emby JSON 响应是否是“媒体库 / CollectionFolder 列表”。
+    Emby 4.10 的首页 My Media 区块不一定再走 /Views，而是走 /Users/{id}/Sections/{sectionId}/Items。
+    """
+    if not isinstance(data, dict):
+        return False
+
+    items = data.get('Items')
+    if not isinstance(items, list) or not items:
+        return False
+
+    collection_count = sum(
+        1 for item in items
+        if isinstance(item, dict) and item.get('Type') == 'CollectionFolder'
+    )
+
+    # My Media / 媒体库区块一般全是 CollectionFolder。
+    # 留一点宽容度，避免个别特殊项导致误判失败。
+    return collection_count > 0 and collection_count >= max(1, len(items) // 2)
+
+
+def handle_get_home_sections_410(user_id, path, params):
+    """
+    Emby 4.10 首页分区入口。
+    先不强改结构，只记录响应。真正的虚拟库注入放在 /Sections/{sectionId}/Items。
+    """
+    _magic_log("ROUTE-MATCH-410-HOME-SECTIONS", user_id=user_id, path=path, args=_magic_args_dict(params))
+    try:
+        resp, data = _forward_emby_json(path, params=params, timeout=20)
+        _magic_log_json_response("410-HOME-SECTIONS", data, status_code=resp.status_code)
+        return Response(json.dumps(data), status=resp.status_code, mimetype='application/json')
+    except Exception as e:
+        logger.warning(f"  ➜ [Emby4.10] HomeSections 日志处理失败，回退透传: {e}")
+        base_url, api_key = _get_real_emby_url_and_key()
+        target_url = f"{base_url}/{path.lstrip('/')}"
+        forward_headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
+        forward_headers['Host'] = urlparse(base_url).netloc
+        forward_params = params.copy()
+        forward_params['api_key'] = api_key
+        resp = requests.request(method=request.method, url=target_url, headers=forward_headers, params=forward_params, data=request.get_data(), stream=True, timeout=(10.0, 1800.0))
+        excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+        response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
+        return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
+
+
+def handle_get_section_items_410(user_id, section_id, path, params):
+    """
+    Emby 4.10 首页区块内容入口。
+    关键修复：My Media 区块返回的是 CollectionFolder 列表，4.10 Web 实际展示这里，
+    不是直接展示 /Users/{id}/Views。只要发现响应是 CollectionFolder 列表，就注入虚拟库。
+    """
+    _magic_log("ROUTE-MATCH-410-SECTION-ITEMS", user_id=user_id, section_id=section_id, path=path, args=_magic_args_dict(params))
+    try:
+        resp, data = _forward_emby_json(path, params=params, timeout=20)
+        _magic_log_json_response("410-SECTION-ITEMS-NATIVE", data, status_code=resp.status_code)
+
+        if not _is_collection_folder_response(data):
+            _magic_log("410-SECTION-ITEMS-NO-INJECT", reason="response is not CollectionFolder list", section_id=section_id)
+            return Response(json.dumps(data), status=resp.status_code, mimetype='application/json')
+
+        # 分页保护：非首页第一页不注入，避免在滚动分页里重复追加。
+        start_index = int(params.get('StartIndex') or params.get('startIndex') or 0)
+        if start_index > 0:
+            _magic_log("410-SECTION-ITEMS-NO-INJECT", reason="StartIndex > 0", section_id=section_id, start_index=start_index)
+            return Response(json.dumps(data), status=resp.status_code, mimetype='application/json')
+
+        native_items = data.get('Items', []) if isinstance(data, dict) else []
+        fake_items = _build_fake_view_items_for_user(user_id)
+        final_items = _merge_native_and_fake_views(native_items, fake_items)
+
+        data['Items'] = final_items
+        data['TotalRecordCount'] = len(final_items)
+
+        _magic_log_json_response("410-SECTION-ITEMS-INJECTED", data, status_code=resp.status_code)
+        logger.debug(f"  ➜ [Emby4.10] 已向 Home Section({section_id}) CollectionFolder 列表注入 {len(fake_items)} 个虚拟库。")
+        return Response(json.dumps(data), status=resp.status_code, mimetype='application/json')
+
+    except Exception as e:
+        logger.error(f"  ➜ [Emby4.10] 处理 Home Section Items 失败: {e}", exc_info=True)
+        # 出错时不能让首页炸，回退到空虚拟注入响应。
+        return Response(json.dumps({"Items": [], "TotalRecordCount": 0}), mimetype='application/json')
+
 def handle_get_views():
     """
     获取用户的主页视图列表。
@@ -1633,6 +1717,20 @@ def proxy_all(path):
         if user_config_match and request.method == 'GET':
             _magic_log("ROUTE-HIT-410-USER-CONFIG", user_id=user_config_match.group(1), path=path, normalized_path=normalized_path)
             return handle_get_user_configuration_410(user_config_match.group(1), path, request.args)
+
+        # --- 拦截 C4: Emby 4.10 首页分区列表 (/Users/{id}/HomeSections) ---
+        home_sections_match = re.search(r'Users/([^/]+)/HomeSections$', normalized_path, re.IGNORECASE)
+        if home_sections_match and request.method == 'GET':
+            _magic_log("ROUTE-HIT-410-HOME-SECTIONS", user_id=home_sections_match.group(1), path=path, normalized_path=normalized_path)
+            return handle_get_home_sections_410(home_sections_match.group(1), path, request.args)
+
+        # --- 拦截 C5: Emby 4.10 首页分区内容 (/Users/{id}/Sections/{sectionId}/Items) ---
+        section_items_match = re.search(r'Users/([^/]+)/Sections/([^/]+)/Items$', normalized_path, re.IGNORECASE)
+        if section_items_match and request.method == 'GET':
+            user_id_for_section = section_items_match.group(1)
+            section_id = section_items_match.group(2)
+            _magic_log("ROUTE-HIT-410-SECTION-ITEMS", user_id=user_id_for_section, section_id=section_id, path=path, normalized_path=normalized_path)
+            return handle_get_section_items_410(user_id_for_section, section_id, path, request.args)
 
         # --- 拦截 D: 虚拟库详情 (增强版拦截) ---
         # 修复 iOS 有时不带 /Users/xxx，直接请求 /emby/Items/-900001 的老六行为
