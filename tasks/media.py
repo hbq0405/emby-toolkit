@@ -2313,18 +2313,48 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
         time.sleep(0.005)
             
     # =================================================================
-    # ★★★ 终极收尾：统一通知 Emby 对STRM根目录扫描 ★★★
+    # ★★★ 终极收尾：匹配受影响的媒体库并触发精准扫描 ★★★
     # =================================================================
     if successfully_restored_paths:
-        logger.info(f"  ➜ 成功生成了 {len(successfully_restored_paths)} 个文件，正在通知 Emby 扫描 STRM 根目录...")
-        task_manager.update_status_from_thread(99, "正在通知 Emby 扫描新生成的媒体信息...")
+        logger.info(f"  ➜ 成功生成了 {len(successfully_restored_paths)} 个文件，正在匹配受影响的媒体库...")
+        task_manager.update_status_from_thread(99, "正在通知 Emby 扫描受影响的媒体库...")
         try:
-            # 既然 STRM 都在同一个根目录下，直接对这个根目录触发一次递归扫描即可！
-            # 既避免了全库扫描打扰其他媒体库，又只发 1 次 API 请求，完美！
-            emby.notify_emby_file_changes(local_root, processor.emby_url, processor.emby_api_key)
-            logger.info(f"  ➜ 已成功触发 Emby 对目录 '{local_root}' 的递归扫描！")
+            # 1. 获取所有媒体库及其物理路径
+            all_libs = emby.get_all_libraries_with_paths(processor.emby_url, processor.emby_api_key)
+            
+            # 2. 找出受影响的媒体库 ID
+            affected_lib_ids = set()
+            for file_path in successfully_restored_paths:
+                # 规范化路径以便比较
+                norm_file_path = os.path.normpath(file_path).lower()
+                for lib in all_libs:
+                    for lib_path in lib['paths']:
+                        norm_lib_path = os.path.normpath(lib_path).lower()
+                        # 如果文件路径以媒体库路径开头，说明属于该库
+                        if norm_file_path.startswith(norm_lib_path):
+                            affected_lib_ids.add(lib['info']['Id'])
+                            break # 找到归属库即可跳出内层循环
+            
+            # 3. 对受影响的媒体库触发刷新
+            if affected_lib_ids:
+                logger.info(f"  ➜ 匹配到 {len(affected_lib_ids)} 个受影响的媒体库，正在触发扫描...")
+                for lib_id in affected_lib_ids:
+                    refresh_url = f"{processor.emby_url.rstrip('/')}/Items/{lib_id}/Refresh"
+                    params = {
+                        "api_key": processor.emby_api_key,
+                        "Recursive": "true",
+                        "MetadataRefreshMode": "Default",
+                        "ImageRefreshMode": "Default",
+                        "ReplaceAllImages": "false",
+                        "ReplaceAllMetadata": "false"
+                    }
+                    emby.emby_client.post(refresh_url, params=params)
+                logger.info("  ➜ 已成功触发受影响媒体库的扫描任务！")
+            else:
+                logger.warning("  ➜ 未能将生成的文件匹配到任何 Emby 媒体库，跳过扫描。")
+                
         except Exception as e:
-            logger.error(f"  ➜ 触发 Emby 目录扫描失败: {e}")
+            logger.error(f"  ➜ 触发 Emby 媒体库扫描失败: {e}")
 
     msg = f"任务完成！成功生成: {restored_count} 个，失败: {failed_count} 个。"
     if force_full_update:
