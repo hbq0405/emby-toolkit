@@ -355,7 +355,12 @@ class P115MediaAnalyzerMixin:
             features = [f for f in features if f != "特效"]
 
         if features:
-            return f"{base_title}（{'·'.join(features)}）"
+            features_str = '·'.join(features)
+            # ★ 核心修改：如果 base_title 已经带有全角括号结尾（如“中文（简体）”），则将特色词融合进括号内
+            if base_title.endswith('）') and '（' in base_title:
+                return f"{base_title[:-1]}·{features_str}）"
+            else:
+                return f"{base_title}（{features_str}）"
 
         return base_title
 
