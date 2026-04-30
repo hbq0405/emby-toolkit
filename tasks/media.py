@@ -2313,19 +2313,18 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
         time.sleep(0.005)
             
     # =================================================================
-    # ★★★ 终极收尾：统一通知 Emby 进行全库扫描 ★★★
+    # ★★★ 终极收尾：统一通知 Emby 对STRM根目录扫描 ★★★
     # =================================================================
     if successfully_restored_paths:
-        logger.info(f"  ➜ 成功生成了 {len(successfully_restored_paths)} 个文件，正在通知 Emby 执行全库扫描...")
+        logger.info(f"  ➜ 成功生成了 {len(successfully_restored_paths)} 个文件，正在通知 Emby 扫描 STRM 根目录...")
         task_manager.update_status_from_thread(99, "正在通知 Emby 扫描新生成的媒体信息...")
         try:
-            # 放弃逐个目录扫描，直接发送 1 个请求触发 Emby 的全局“扫描所有媒体库”任务
-            # 这是处理大批量物理文件变更最高效的方式
-            refresh_url = f"{processor.emby_url.rstrip('/')}/Library/Refresh"
-            emby.emby_client.post(refresh_url, params={"api_key": processor.emby_api_key})
-            logger.info("  ➜ 已成功触发 Emby 全库扫描任务！")
+            # 既然 STRM 都在同一个根目录下，直接对这个根目录触发一次递归扫描即可！
+            # 既避免了全库扫描打扰其他媒体库，又只发 1 次 API 请求，完美！
+            emby._force_refresh_directory_tree(local_root, processor.emby_url, processor.emby_api_key)
+            logger.info(f"  ➜ 已成功触发 Emby 对目录 '{local_root}' 的递归扫描！")
         except Exception as e:
-            logger.error(f"  ➜ 触发 Emby 全库扫描失败: {e}")
+            logger.error(f"  ➜ 触发 Emby 目录扫描失败: {e}")
 
     msg = f"任务完成！成功生成: {restored_count} 个，失败: {failed_count} 个。"
     if force_full_update:
