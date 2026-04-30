@@ -2116,7 +2116,7 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
     force_full_update=False: 仅遍历本地查找缺失 -mediainfo.json 的 .strm 文件并补齐。
     force_full_update=True: 全量模式。查库获取所有在库项，逐个清除 Emby 缓存、清空数据库缓存，并重新生成。
     """
-    mode_str = "全量重新生成" if force_full_update else "增量查漏补缺"
+    mode_str = "全量强制刷新" if force_full_update else "增量查漏补缺"
     logger.info(f"--- 开始执行媒体信息还原任务 ({mode_str}) ---")
     task_manager.update_status_from_thread(0, f"正在准备数据 ({mode_str})...")
     time.sleep(1)  # 增加短暂停顿，确保前端能渲染出初始状态
@@ -2184,7 +2184,9 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
     restored_count = 0
     failed_count = 0
     cleared_emby_count = 0
-    generated_json_paths = []  # 本轮成功生成/写入的 -mediainfo.json，用于任务结束后通知 Emby 局部扫描
+    
+    # ★★★ 新增：用于收集成功生成的路径，最后统一通知 Emby 扫描 ★★★
+    successfully_restored_paths = []
 
     def _probe_and_cache_mediainfo_online(pc, sha1, filename):
         if not client or not pc or not sha1:
@@ -2300,7 +2302,7 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
                 with open(json_path, 'w', encoding='utf-8') as f:
                     json.dump(mediainfo, f, ensure_ascii=False)
                 restored_count += 1
-                generated_json_paths.append(json_path)
+                successfully_restored_paths.append(strm_path) # ★★★ 收集成功生成的路径 ★★★
             except Exception as e:
                 logger.error(f"  ➜ 写入 JSON 失败 {json_path}: {e}")
                 failed_count += 1
@@ -2310,22 +2312,22 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
         # ★ 优化 2：每个文件处理完微小休眠，进行 I/O 节流
         time.sleep(0.005)
             
-    notified_count = 0
-    if generated_json_paths:
+    # =================================================================
+    # ★★★ 终极收尾：统一通知 Emby 进行全库扫描 ★★★
+    # =================================================================
+    if successfully_restored_paths:
+        logger.info(f"  ➜ 成功生成了 {len(successfully_restored_paths)} 个文件，正在通知 Emby 执行全库扫描...")
+        task_manager.update_status_from_thread(99, "正在通知 Emby 扫描新生成的媒体信息...")
         try:
-            pending_notify_count = len(generated_json_paths)
-            task_manager.update_status_from_thread(99, f"正在通知 Emby 扫描 {pending_notify_count} 个新媒体信息文件...")
-            if emby.notify_emby_file_changes(generated_json_paths, processor.emby_url, processor.emby_api_key, update_type="Created"):
-                notified_count = pending_notify_count
-                logger.info(f"  ➜ 已通知 Emby 扫描加载 {notified_count} 个新生成的媒体信息 JSON。")
-            else:
-                logger.warning(f"  ➜ 通知 Emby 扫描媒体信息 JSON 失败，请稍后等待 Emby 自动扫描。")
+            # 放弃逐个目录扫描，直接发送 1 个请求触发 Emby 的全局“扫描所有媒体库”任务
+            # 这是处理大批量物理文件变更最高效的方式
+            refresh_url = f"{processor.emby_url.rstrip('/')}/Library/Refresh"
+            emby.emby_client.post(refresh_url, params={"api_key": processor.emby_api_key})
+            logger.info("  ➜ 已成功触发 Emby 全库扫描任务！")
         except Exception as e:
-            logger.warning(f"  ➜ 通知 Emby 扫描媒体信息 JSON 时发生异常: {e}", exc_info=True)
+            logger.error(f"  ➜ 触发 Emby 全库扫描失败: {e}")
 
     msg = f"任务完成！成功生成: {restored_count} 个，失败: {failed_count} 个。"
-    if notified_count:
-        msg += f" 已通知 Emby 扫描: {notified_count} 个。"
     if force_full_update:
         msg += f" (共清除 Emby 缓存 {cleared_emby_count} 次)"
     logger.info(f"  ➜ {msg}")
