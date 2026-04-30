@@ -305,7 +305,8 @@ const message = useMessage();
 const DUAL_MODE_TASKS = [
   'role-translation',    
   'populate-metadata',
-  'enrich-aliases'
+  'enrich-aliases',
+  'restore_mediainfo'
 ];
 
 // 默认的 TG 菜单任务（用于初始化）

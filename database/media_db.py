@@ -1466,3 +1466,45 @@ def get_notification_media_info_by_tmdb_id(tmdb_id: str) -> dict:
     except Exception as e:
         logger.error(f"DB: 获取转存通知图片信息(TMDB ID)失败: {e}")
     return {}
+
+# --- 获取所有在库媒体项的物理路径及 Emby ID ---
+def get_all_in_library_physical_paths() -> List[Dict[str, Any]]:
+    """
+    【全量刷新专用】获取所有在库的 Movie 和 Episode 的物理路径及对应的 Emby ID。
+    """
+    sql = """
+        SELECT 
+            m.emby_item_ids_json,
+            a.asset->>'path' AS path
+        FROM media_metadata m
+        JOIN LATERAL jsonb_array_elements(
+            CASE WHEN jsonb_typeof(m.asset_details_json) = 'array' THEN m.asset_details_json ELSE '[]'::jsonb END
+        ) WITH ORDINALITY AS a(asset, idx) ON true
+        WHERE m.in_library = TRUE 
+          AND m.item_type IN ('Movie', 'Episode')
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql)
+            return [dict(row) for row in cursor.fetchall()]
+    except Exception as e:
+        logger.error(f"DB: 获取在库物理路径失败: {e}")
+        return []
+
+# --- 清除指定 SHA1 的格式化媒体信息缓存 ---
+def clear_mediainfo_json_by_sha1(sha1: str) -> bool:
+    """
+    【全量刷新专用】将指定 SHA1 的 mediainfo_json 置空，但保留 raw_ffprobe_json。
+    """
+    if not sha1: return False
+    sql = "UPDATE p115_mediainfo_cache SET mediainfo_json = NULL WHERE sha1 = %s"
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(sql, (sha1,))
+            conn.commit()
+            return True
+    except Exception as e:
+        logger.error(f"DB: 清除媒体信息缓存失败: {e}")
+        return False
