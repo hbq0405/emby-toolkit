@@ -400,9 +400,20 @@ def _handle_full_processing_flow(processor: 'MediaProcessor', item_id: str, forc
         def _async_trigger_watchlist():
             try:
                 watching_ids = watchlist_db.get_watching_tmdb_ids()
-                if str(tmdb_id) not in watching_ids:
-                    logger.debug(f"  ➜ [智能追剧] 剧集 《{item_name_for_log}》 当前不在追剧列表中，跳过刷新。")
+                
+                # ★★★ 核心破局点：打破“不见兔子不撒鹰”的死锁 ★★★
+                is_watching = str(tmdb_id) in watching_ids
+                has_new_episodes = bool(new_episode_ids) # 明确有新集物理文件入库
+                
+                # 如果既不在追剧列表中，又没有新集入库，才真正跳过
+                if not is_watching and not has_new_episodes:
+                    logger.debug(f"  ➜ [智能追剧] 剧集 《{item_name_for_log}》 当前不在追剧列表中，且无新集触发，跳过刷新。")
                     return
+                
+                # 如果不在追剧列表中，但是有新集入库 -> 新季复活，强制唤醒！
+                if not is_watching and has_new_episodes:
+                    logger.info(f"  ➜ [智能追剧]  《{item_name_for_log}》 检测到有新集入库，重新开始追剧！")
+
                 # =======================================================
 
                 logger.info(f"  ➜ [智能追剧] 触发单项刷新...")
