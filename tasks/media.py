@@ -2321,7 +2321,7 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
         try:
             # 既然 STRM 都在同一个根目录下，直接对这个根目录触发一次递归扫描即可！
             # 既避免了全库扫描打扰其他媒体库，又只发 1 次 API 请求，完美！
-            emby._force_refresh_directory_tree(local_root, processor.emby_url, processor.emby_api_key)
+            emby.notify_emby_file_changes(local_root, processor.emby_url, processor.emby_api_key)
             logger.info(f"  ➜ 已成功触发 Emby 对目录 '{local_root}' 的递归扫描！")
         except Exception as e:
             logger.error(f"  ➜ 触发 Emby 目录扫描失败: {e}")
