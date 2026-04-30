@@ -341,26 +341,17 @@ class P115MediaAnalyzerMixin:
             base_title = "未知"
 
         # “特效”更适合贴在字幕类型后面，而不是放括号里
-        if "特效" in features and base_title in ["简体", "繁体", "中文（简体）", "中文（繁体）", "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）", "英文", "英语"]:
+        if "特效" in features and base_title in ["简体", "繁体", "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）", "英文", "英语"]:
             if base_title == "中英双语（简体）":
                 base_title = "中英双语特效（简体）"
             elif base_title == "中英双语（繁体）":
                 base_title = "中英双语特效（繁体）"
-            elif base_title == "中文（简体）" or base_title == "简体":
-                base_title = "中文特效（简体）"
-            elif base_title == "中文（繁体）" or base_title == "繁体":
-                base_title = "中文特效（繁体）"
             else:
                 base_title = f"{base_title}特效"
             features = [f for f in features if f != "特效"]
 
         if features:
-            features_str = '·'.join(features)
-            # ★ 核心修改：如果 base_title 已经带有全角括号结尾（如“中文（简体）”），则将特色词融合进括号内
-            if base_title.endswith('）') and '（' in base_title:
-                return f"{base_title[:-1]}·{features_str}）"
-            else:
-                return f"{base_title}（{features_str}）"
+            return f"{base_title}（{'·'.join(features)}）"
 
         return base_title
 
@@ -444,9 +435,9 @@ class P115MediaAnalyzerMixin:
 
             if stream_type == "Subtitle":
                 if base_label in ["国语", "普通话", "中文"]:
-                    return "中文（简体）"
+                    return "简体"
                 if base_label in ["粤语", "广东话"]:
-                    return "中文（繁体）"
+                    return "繁体"
                 if base_label.endswith("语") and base_label != "无语言":
                     return base_label[:-1] + "文"
 
@@ -538,10 +529,10 @@ class P115MediaAnalyzerMixin:
                 display_lang = "中韩双语（繁体）"
             elif has_cht:
                 norm_lang = "chi"
-                display_lang = "中文（繁体）"
+                display_lang = "繁体"
             elif has_chs:
                 norm_lang = "chi"
-                display_lang = "中文（简体）"
+                display_lang = "简体"
             elif has_eng:
                 norm_lang = "eng"
                 display_lang = "英文"
@@ -557,13 +548,13 @@ class P115MediaAnalyzerMixin:
 
                 if _has_lang_marker(combined_text, ["台配", "台灣", "台湾"]):
                     norm_lang = "chi"
-                    display_lang = "中文（繁体）"
+                    display_lang = "繁体"
                 elif is_yue:
                     norm_lang = "chi"
-                    display_lang = "中文（繁体）"
+                    display_lang = "繁体"
                 elif is_chi:
                     norm_lang = "chi"
-                    display_lang = "中文（简体）"
+                    display_lang = "简体"
                 else:
                     for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
                         if _has_lang_marker(combined_text, keywords):
@@ -644,12 +635,12 @@ class P115MediaAnalyzerMixin:
             friendly_title = friendly_title.replace("繁體", "繁体").replace("簡體", "简体")
             
             replace_map = {
-                "中文简体": "中文（简体）",
-                "简体中文": "中文（简体）",
-                "简中": "中文（简体）",
-                "中文繁体": "中文（繁体）",
-                "繁体中文": "中文（繁体）",
-                "繁中": "中文（繁体）",
+                "中文简体": "简体",
+                "简体中文": "简体",
+                "简中": "简体",
+                "中文繁体": "繁体",
+                "繁体中文": "繁体",
+                "繁中": "繁体",
                 "原盘": "",
             }
             for old, new in replace_map.items():
@@ -677,10 +668,6 @@ class P115MediaAnalyzerMixin:
             friendly_title = friendly_title.replace("中上韩下", "中韩双语（简体）").replace("韩上中下", "中韩双语（简体）")
             friendly_title = friendly_title.replace("简体韩文", "中韩双语（简体）").replace("繁体韩文", "中韩双语（繁体）")
             
-            # 替换独立的简体/繁体为中文（简体）/中文（繁体）
-            friendly_title = re.sub(r'(?<![（(])简体(?![)）])', '中文（简体）', friendly_title)
-            friendly_title = re.sub(r'(?<![（(])繁体(?![)）])', '中文（繁体）', friendly_title)
-
             # 5. 兜底与组合
             if stream_features:
                 # ★★★ 核心修改：只要提取到了标准化的特色标签，直接用它！抛弃所有残留的中文杂质
@@ -690,7 +677,7 @@ class P115MediaAnalyzerMixin:
                 friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
             else:
                 # 没有特色标签，但有未知的中文残留，组合起来
-                if display_lang in ["中文（简体）", "中文（繁体）", "简体", "繁体", "中英双语（简体）", "中英双语（繁体）", "中日双语（简体）", "中日双语（繁体）", "中韩双语（简体）", "中韩双语（繁体）"]:
+                if display_lang in ["简体", "繁体", "中英双语（简体）", "中英双语（繁体）", "中日双语（简体）", "中日双语（繁体）", "中韩双语（简体）", "中韩双语（繁体）"]:
                     check_kw = "简" if "简" in display_lang else ("繁" if "繁" in display_lang else "")
                     if check_kw and check_kw not in friendly_title:
                         friendly_title = f"{friendly_title} ({display_lang})"
