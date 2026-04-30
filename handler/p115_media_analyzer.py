@@ -1471,14 +1471,18 @@ class P115MediaAnalyzerMixin:
                     # effect / 双语 / 原始默认只能在同一语言池里竞争，不能让繁体越级打败简体。
                     if subtitle_pref == "chs":
                         if flags["script"] == "chs":
-                            score += 10 ** 12
+                            score += 10 ** 12  # 简体：绝对第一
                         elif flags["script"] == "cht":
-                            score -= 10 ** 9
+                            score += 10 ** 11  # 繁体：绝对第二（没有简体时，碾压外语）
                     elif subtitle_pref == "cht":
                         if flags["script"] == "cht":
-                            score += 10 ** 12
+                            score += 10 ** 12  # 繁体：绝对第一
                         elif flags["script"] == "chs":
-                            score -= 10 ** 9
+                            score += 10 ** 11  # 简体：绝对第二
+                    else:
+                        # 如果用户没选偏好，但它是中文，也给个基础高分，防止被外语抢走
+                        if flags["script"] in ["chs", "cht"]:
+                            score += 10 ** 11
 
                     # 优先级 1: 智能跟随音轨特征。
                     # 仍然低于 subtitle_lang，避免“繁体特效/公映字幕”越过用户指定的简体。
