@@ -1119,7 +1119,7 @@
                 <n-gi>
                   <n-card :bordered="false" class="dashboard-card">
                     <template #header><span class="card-title">网络代理</span></template>
-                    <template #header-extra><a href="https://api-flowercloud.com/aff.php?aff=8652" target="_blank" style="font-size: 0.85em; color: var(--n-primary-color); text-decoration: underline;">推荐机场</a></template>
+                    <template #header-extra><a href="https://1s.bigmeok.me/user#/register?code=mHj5vS08" target="_blank" style="font-size: 0.85em; color: var(--n-primary-color); text-decoration: underline;">推荐机场</a></template>
                     <n-form-item-grid-item label="启用网络代理" path="network_proxy_enabled">
                       <n-switch v-model:value="configModel.network_proxy_enabled" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">为 TMDb 等外部API请求启用 HTTP/HTTPS 代理。</n-text></template>
