@@ -845,20 +845,14 @@ class MediaProcessor:
                     logger.warning(f"  ➜ [拦截] 拦截到恶意广告片名: '{current_title}'，准备寻找干净的别名或进行翻译...")
                     current_title = "" 
 
-                # 2. 寻找更优的中文别名 (如果原名为空、无中文，或者包含英文字母导致不纯)
-                has_english = bool(re.search(r'[a-zA-Z]', current_title)) if current_title else False
-                
-                if not current_title or not utils.contains_chinese(current_title) or has_english:
-                    best_alias = None
-                    pure_chinese_alias = None
-                    mixed_chinese_alias = None
-                    
+                # 2. 如果标题为空（被拦截）或不包含中文，则寻找别名
+                if not current_title or not utils.contains_chinese(current_title):
+                    chinese_alias = None
                     alt_titles_data = details.get("alternative_titles", {})
                     alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
                     
                     priority_map = {"CN": 1, "SG": 2, "TW": 3, "HK": 4}
-                    best_pure_priority = 99
-                    best_mixed_priority = 99
+                    best_priority = 99
                     
                     for alt in alt_list:
                         # ★ 核心：对别名也必须进行隐身符清洗！
@@ -868,44 +862,29 @@ class MediaProcessor:
                             iso_country = alt.get("iso_3166_1", "").upper()
                             current_priority = priority_map.get(iso_country, 5)
                             
-                            # 判断是否为纯中文（不含英文字母）
-                            is_pure = not bool(re.search(r'[a-zA-Z]', alt_title))
-                            
-                            if is_pure:
-                                if current_priority < best_pure_priority:
-                                    pure_chinese_alias = alt_title
-                                    best_pure_priority = current_priority
-                            else:
-                                if current_priority < best_mixed_priority:
-                                    mixed_chinese_alias = alt_title
-                                    best_mixed_priority = current_priority
+                            if current_priority < best_priority:
+                                chinese_alias = alt_title
+                                best_priority = current_priority
+                                
+                            if best_priority == 1:
+                                break
                     
-                    # 决策：优先使用纯中文别名
-                    if pure_chinese_alias:
-                        best_alias = pure_chinese_alias
-                        if has_english and utils.contains_chinese(current_title):
-                            logger.info(f"  ➜ 发现更优的纯中文别名: '{best_alias}' (原名: '{current_title}')")
-                        else:
-                            logger.info(f"  ➜ 发现纯中文别名: '{best_alias}'")
-                    # 如果原名完全没有中文，才退而求其次使用混合中文别名
-                    elif not utils.contains_chinese(current_title) and mixed_chinese_alias:
-                        best_alias = mixed_chinese_alias
-                        logger.info(f"  ➜ 发现 TMDb 官方中文别名: '{best_alias}'")
-                    
-                    if best_alias:
+                    if chinese_alias:
+                        logger.info(f"  ➜ 发现干净的 TMDb 官方中文别名: '{chinese_alias}'")
                         if item_type == "Movie":
-                            details["title"] = best_alias
+                            details["title"] = chinese_alias
                         else:
-                            details["name"] = best_alias
+                            details["name"] = chinese_alias
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
-                                aggregated_tmdb_data["series_details"]["name"] = best_alias
-                    elif not current_title or not utils.contains_chinese(current_title):
+                                aggregated_tmdb_data["series_details"]["name"] = chinese_alias
+                    else:
                         # ★ 核心：如果没有干净的中文别名，回退到原名，原名也要清洗！
                         raw_original = details.get("original_title") if item_type == "Movie" else details.get("original_name")
                         original_title = utils.clean_invisible_chars(raw_original)
                         
                         logger.info(f"  ➜ 未找到干净的中文别名，回退到原名: '{original_title}'，等待 AI 翻译。")
-                        if item_type == "Movie": details["title"] = original_title
+                        if item_type == "Movie":
+                            details["title"] = original_title
                         else:
                             details["name"] = original_title
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
@@ -3192,65 +3171,33 @@ class MediaProcessor:
                     logger.warning(f"  ➜ [拦截] 检测到恶意广告片名: '{current_title}'，准备寻找替代片名...")
                     current_title = ""
                 
-                # 2. 寻找更优的中文别名 (如果原名为空、无中文，或者包含英文字母导致不纯)
-                has_english = bool(re.search(r'[a-zA-Z]', current_title)) if current_title else False
-                
-                if not current_title or not utils.contains_chinese(current_title) or has_english:
-                    best_alias = None
-                    pure_chinese_alias = None
-                    mixed_chinese_alias = None
-                    
+                if not current_title or not utils.contains_chinese(current_title):
+                    chinese_alias = None
                     alt_titles_data = fresh_data.get("alternative_titles", {})
                     alt_list = alt_titles_data.get("titles") or alt_titles_data.get("results") or []
-                    
                     priority_map = {"CN": 1, "SG": 2, "TW": 3, "HK": 4}
-                    best_pure_priority = 99
-                    best_mixed_priority = 99
-                    
+                    best_priority = 99
                     for alt in alt_list:
-                        # ★ 核心：对别名也必须进行隐身符清洗！
                         alt_title = utils.clean_invisible_chars(alt.get("title", ""))
-                        
+                        # 别名也必须经过广告过滤
                         if utils.contains_chinese(alt_title) and not utils.is_spam_title(alt_title):
                             iso_country = alt.get("iso_3166_1", "").upper()
                             current_priority = priority_map.get(iso_country, 5)
-                            
-                            # 判断是否为纯中文（不含英文字母）
-                            is_pure = not bool(re.search(r'[a-zA-Z]', alt_title))
-                            
-                            if is_pure:
-                                if current_priority < best_pure_priority:
-                                    pure_chinese_alias = alt_title
-                                    best_pure_priority = current_priority
-                            else:
-                                if current_priority < best_mixed_priority:
-                                    mixed_chinese_alias = alt_title
-                                    best_mixed_priority = current_priority
+                            if current_priority < best_priority:
+                                chinese_alias = alt_title
+                                best_priority = current_priority
+                            if best_priority == 1: break
                     
-                    # 决策：优先使用纯中文别名
-                    if pure_chinese_alias:
-                        best_alias = pure_chinese_alias
-                        if has_english and utils.contains_chinese(current_title):
-                            logger.info(f"  ➜ 发现更优的纯中文别名: '{best_alias}' (原名: '{current_title}')")
+                    if chinese_alias:
+                        logger.info(f"  ➜ 发现干净的 TMDb 官方中文别名: '{chinese_alias}'")
+                        if item_type == "Movie": fresh_data["title"] = chinese_alias
                         else:
-                            logger.info(f"  ➜ 发现纯中文别名: '{best_alias}'")
-                    # 如果原名完全没有中文，才退而求其次使用混合中文别名
-                    elif not utils.contains_chinese(current_title) and mixed_chinese_alias:
-                        best_alias = mixed_chinese_alias
-                        logger.info(f"  ➜ 发现 TMDb 官方中文别名: '{best_alias}'")
-                    
-                    if best_alias:
-                        if item_type == "Movie":
-                            fresh_data["title"] = best_alias
-                        else:
-                            fresh_data["name"] = best_alias
+                            fresh_data["name"] = chinese_alias
                             if aggregated_tmdb_data and "series_details" in aggregated_tmdb_data:
-                                aggregated_tmdb_data["series_details"]["name"] = best_alias
-                    elif not current_title or not utils.contains_chinese(current_title):
-                        # ★ 核心：如果没有干净的中文别名，回退到原名，原名也要清洗！
-                        raw_original = fresh_data.get("original_title") if item_type == "Movie" else fresh_data.get("original_name")
-                        original_title = utils.clean_invisible_chars(raw_original)
-                        
+                                aggregated_tmdb_data["series_details"]["name"] = chinese_alias
+                    else:
+                        # 回退到原名，交给 AI 翻译
+                        original_title = fresh_data.get("original_title") if item_type == "Movie" else fresh_data.get("original_name")
                         logger.info(f"  ➜ 未找到干净的中文别名，回退到原名: '{original_title}'，等待 AI 翻译。")
                         if item_type == "Movie": fresh_data["title"] = original_title
                         else:
