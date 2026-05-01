@@ -346,12 +346,18 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         "types": ["Audio", "Subtitle"],
         "patterns": [
             r"(?<![A-Za-z0-9])SY(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])CYSY(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])DYSY(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])CH-DYSY(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])GP-DYSY(?![A-Za-z0-9])",
             r"上译",
             r"东影上译",
-            r"泰盛上译"
+            r"泰盛上译",
+            r"上海电影译制",
+            r"上海电影配音",
+            r"上海译制",
+            r"上海配音",
+            r"公映上译"
         ],
     },
     {
@@ -468,7 +474,8 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
 # 只要出现在这里的词，都会从音轨和字幕的标题中被无情抹除
 STREAM_TITLE_GARBAGE_FILTER = [
     "麦哈", "说一不二", "人人字幕组", "人人影视", "远鉴字幕组", "衣柜字幕组", 
-    "霸王龙压制组", "字幕组", "压制组", "手抄", "调轴", "精校", "原创"
+    "霸王龙压制组", "字幕组", "压制组", "手抄", "调轴", "精校", "原创", "校对", 
+    "后期", "翻译", "制作", "发布", "团队", "组", "字幕", "配音", "合金弹头"
 ]
 
 def clean_stream_garbage_words(text: str) -> str:
