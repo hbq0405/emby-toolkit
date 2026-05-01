@@ -426,6 +426,29 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         ],
     },
     {
+    "label": "台湾",
+    "types": ["Subtitle"],
+    "patterns": [
+        "(?<![A-Za-z0-9])TW(?![A-Za-z0-9])",
+        "台灣",
+        "臺灣",
+        "台湾",
+        "台配",
+        "台灣配音",
+        "臺灣配音",
+        "台湾配音"
+    ]
+    },
+    {
+    "label": "香港",
+    "types": ["Subtitle"],
+    "patterns": [
+        "(?<![A-Za-z0-9])HK(?![A-Za-z0-9])",
+        "港配",
+        "香港配音"
+    ]
+    },
+    {
         "label": "特效",
         "types": ["Subtitle"],
         "patterns": [
