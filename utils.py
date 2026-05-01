@@ -348,6 +348,7 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
             r"(?<![A-Za-z0-9])SY(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])CYSY(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])DYSY(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])GYSY(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])CH-DYSY(?![A-Za-z0-9])",
             r"(?<![A-Za-z0-9])GP-DYSY(?![A-Za-z0-9])",
             r"上译",
@@ -365,10 +366,6 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         "types": ["Audio", "Subtitle"],
         "patterns": [
             r"(?<![A-Za-z0-9])GY(?![A-Za-z0-9])",
-            r"(?<![A-Za-z0-9])GYCY(?![A-Za-z0-9])",
-            r"(?<![A-Za-z0-9])GYDY(?![A-Za-z0-9])",
-            r"(?<![A-Za-z0-9])GYSY(?![A-Za-z0-9])",
-            r"(?<![A-Za-z0-9])GYGY(?![A-Za-z0-9])",
             r"公映",
             r"院线配音",
             r"影院版"
