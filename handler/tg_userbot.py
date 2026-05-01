@@ -52,7 +52,8 @@ class TGUserBotManager:
             'monitor_types': cfg.get('monitor_types', ['movie', 'tv']),
             'transfer_modes': cfg.get('transfer_modes', ['subscribe']),
             'transfer_keywords': cfg.get('transfer_keywords', []),
-            'block_keywords': cfg.get('block_keywords', [])
+            'block_keywords': cfg.get('block_keywords', []),
+            'custom_regex': cfg.get('custom_regex', {})
         }
 
     def start(self):
@@ -298,11 +299,23 @@ class TGUserBotManager:
         custom_regex = cfg.get('custom_regex', {})
         all_urls = []
 
-        # 1. 提取 Markdown/HTML 隐藏的超链接
+        # 1. 提取 Markdown/HTML 隐藏链接 + Telegram 裸 URL 实体
         if event.message.entities:
+            raw_text = event.raw_text or ""
             for entity in event.message.entities:
+                # MessageEntityTextUrl：文字上挂的隐藏链接
                 if hasattr(entity, 'url') and entity.url:
                     all_urls.append(entity.url)
+                    continue
+
+                # MessageEntityUrl：正文裸 URL，Telethon 只给 offset/length，不给 .url
+                if hasattr(entity, 'offset') and hasattr(entity, 'length'):
+                    try:
+                        url_text = raw_text[entity.offset:entity.offset + entity.length]
+                        if url_text.startswith(("http://", "https://")):
+                            all_urls.append(url_text)
+                    except Exception:
+                        pass
 
         # 2. 提取底部内联键盘 (Inline Keyboard) 的按钮链接
         if event.message.reply_markup and hasattr(event.message.reply_markup, 'rows'):
@@ -318,9 +331,20 @@ class TGUserBotManager:
         link_match = re.search(r'(https?://(?:115cdn|115)\.com/s/[a-zA-Z0-9]+(?:[?&]password=[a-zA-Z0-9]+)?)', text, re.IGNORECASE)
         if link_match:
             all_urls.insert(0, link_match.group(1))
+        # ★ 影巢明文链接兜底：兼容 115 / magnet / ed2k / bt
+        for m in re.finditer(
+            r'(https?://(?:www\.)?hdhive\.com/resource/(?:115|magnet|ed2k|bt)/[a-fA-F0-9]{32}(?:[/?#][^\s]*)?)',
+            text,
+            re.IGNORECASE
+        ):
+            all_urls.insert(0, m.group(1))
 
         for url in all_urls:
-            if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/115/' in url:
+            if (
+                '115.com/s/' in url
+                or '115cdn.com/s/' in url
+                or 'hdhive.com/resource/' in url
+            ):
                 target_link = url
                 pwd_in_url = _apply_regex(url, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_url'], chat_username, chat_id)
                 if pwd_in_url:
@@ -709,7 +733,11 @@ def _process_tg_queue():
                 if target_link and 'hdhive.com' in target_link:
                     logger.debug(f"  ➜ [频道监听] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址 (将扣除积分)...")
                     try:
-                        slug_match = re.search(r'hdhive\.com/resource/115/([a-fA-F0-9]{32})', target_link)
+                        slug_match = re.search(
+                            r'hdhive\.com/resource/(?:115|magnet|ed2k|bt)/([a-fA-F0-9]{32})',
+                            target_link,
+                            re.IGNORECASE
+                        )
                         if not slug_match:
                             logger.error(f"  ➜ [频道监听] 无法从影巢链接中提取 Slug 标识: {target_link}")
                             continue
@@ -726,9 +754,9 @@ def _process_tg_queue():
                         hd_client = HDHiveClient(hdhive_api_key)
                         resource_data = hd_client.unlock_resource(slug)
                         
-                        if resource_data and resource_data.get('url'):
-                            real_url = resource_data.get('url', '')
-                            full_url = resource_data.get('full_url', '')
+                        if resource_data and (resource_data.get('url') or resource_data.get('full_url')):
+                            real_url = resource_data.get('url') or ''
+                            full_url = resource_data.get('full_url') or ''
                             combined_url = (real_url + " " + full_url).strip()
                             
                             # 判断是否为磁力/ED2K
