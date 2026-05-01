@@ -716,7 +716,8 @@ def _process_tg_queue():
                 if target_link and 'hdhive.com' in target_link:
                     logger.debug(f"  ➜ [频道监听] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址 (将扣除积分)...")
                     try:
-                        slug_match = re.search(r'hdhive\.com/resource/115/([a-fA-F0-9]{32})', target_link)
+                        # ★ 修复1：放宽 slug 提取正则，兼容 /resource/ed2k/ 和 /resource/magnet/ 等路径
+                        slug_match = re.search(r'hdhive\.com/resource/[a-zA-Z0-9]+/([a-fA-F0-9]{32})', target_link)
                         if not slug_match:
                             logger.error(f"  ➜ [频道监听] 无法从影巢链接中提取 Slug 标识: {target_link}")
                             continue
@@ -733,21 +734,20 @@ def _process_tg_queue():
                         hd_client = HDHiveClient(hdhive_api_key)
                         resource_data = hd_client.unlock_resource(slug)
                         
-                        # 放宽判断条件，只要 url 或 full_url 有值就行
                         if resource_data and (resource_data.get('url') or resource_data.get('full_url')):
-                            real_url = resource_data.get('url', '')
-                            full_url = resource_data.get('full_url', '')
-                            combined_url = (real_url + " " + full_url).strip()
+                            # ★ 修复2：兼容 API 返回数组或带换行符的字符串
+                            def _to_str(val):
+                                return "\n".join(val) if isinstance(val, list) else str(val or "")
+                                
+                            combined_url = _to_str(resource_data.get('url')) + "\n" + _to_str(resource_data.get('full_url'))
                             
-                            # 更暴力的磁力判断，不再依赖复杂的正则
-                            is_magnet_or_ed2k = 'magnet:?' in combined_url.lower() or 'ed2k://' in combined_url.lower()
+                            # ★ 修复3：提取所有的磁力/ED2K链接 (支持多集批量下载)
+                            magnet_ed2k_links = re.findall(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', combined_url, re.IGNORECASE)
                             
-                            if is_magnet_or_ed2k:
-                                # 尝试提取纯净的磁力链接，提取不到就用原始的
-                                magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', combined_url, re.IGNORECASE)
-                                magnet_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else combined_url
+                            if magnet_ed2k_links:
+                                magnet_url = magnet_ed2k_links # 赋值为一个列表
                                 target_link = None # 清除 target_link，让它走下面的离线下载分支
-                                logger.debug(f"  ➜ [频道监听] 影巢 API 解析为磁力/ED2K链接，转入离线下载流程...")
+                                logger.debug(f"  ➜ [频道监听] 影巢 API 解析出 {len(magnet_ed2k_links)} 个磁力/ED2K链接，转入离线下载流程...")
                             else:
                                 target_link = combined_url # 替换为真实链接，走下面的 115 转存分支
                                 if resource_data.get('access_code'):
@@ -809,7 +809,14 @@ def _process_tg_queue():
                             existing_fids = {str(item.get('fid') or item.get('file_id')) for item in res_before.get('data', [])}
                     except Exception: pass
 
-                    payload = {"url[0]": magnet_url, "wp_path_id": target_cid}
+                    # ★ 修复4：支持批量提交离线任务
+                    payload = {"wp_path_id": target_cid}
+                    if isinstance(magnet_url, list):
+                        for i, u in enumerate(magnet_url):
+                            payload[f"url[{i}]"] = u
+                    else:
+                        payload["url[0]"] = magnet_url
+
                     res = client.offline_add_urls(payload)
                     
                     if res and res.get('state'):

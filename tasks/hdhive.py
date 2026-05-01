@@ -42,15 +42,16 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
     # ==========================================
     # ★ 分支 1：处理磁力链 / ED2K (提交离线下载)
     # ==========================================
-    combined_url = (share_url + " " + full_url).strip()
-    magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', combined_url, re.IGNORECASE)
-    is_magnet_or_ed2k = magnet_ed2k_match or combined_url.lower().startswith('magnet:?') or combined_url.lower().startswith('ed2k://')
-
-    if is_magnet_or_ed2k:
-        target_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else (share_url or full_url)
-        logger.info(f"  ➜ 检测到磁力/ED2K链接，准备提交离线下载: {target_url[:60]}...")
+    def _to_str(val):
+        return "\n".join(val) if isinstance(val, list) else str(val or "")
         
-        # 1. 提交前：获取目标目录前 50 个文件的快照 (115默认按时间倒序，50个足够覆盖新文件)
+    combined_url = _to_str(share_url) + "\n" + _to_str(full_url)
+    magnet_ed2k_links = re.findall(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', combined_url, re.IGNORECASE)
+
+    if magnet_ed2k_links:
+        logger.info(f"  ➜ 检测到 {len(magnet_ed2k_links)} 个磁力/ED2K链接，准备批量提交离线下载...")
+        
+        # 1. 提交前：获取目标目录前 50 个文件的快照
         existing_fids = set()
         try:
             res_before = client.fs_files({'cid': save_cid, 'limit': 50})
@@ -59,12 +60,15 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
         except Exception as e:
             logger.debug(f"  ➜ 获取目录快照失败: {e}")
 
-        # 2. 提交离线任务
-        payload = {"url[0]": target_url, "wp_path_id": save_cid}
+        # 2. 批量构造 payload
+        payload = {"wp_path_id": save_cid}
+        for i, u in enumerate(magnet_ed2k_links):
+            payload[f"url[{i}]"] = u
+            
         res = client.offline_add_urls(payload)
         
         if res and res.get('state'):
-            logger.info("=== 🎉 影巢磁力/ED2K 离线下载任务提交成功！ ===")
+            logger.info(f"=== 🎉 影巢磁力/ED2K 离线下载任务提交成功！(共 {len(magnet_ed2k_links)} 个任务) ===")
             
             # 3. 等待 5 秒钟让 115 服务器反应一下
             logger.info("  ➜ 等待 5 秒后检查是否已秒传...")
@@ -76,7 +80,6 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
                 res_after = client.fs_files({'cid': save_cid, 'limit': 50})
                 if res_after and res_after.get('data'):
                     current_fids = {str(item.get('fid') or item.get('file_id')) for item in res_after.get('data', [])}
-                    # 差集计算：现在的 ID 减去 之前的 ID
                     new_fids = current_fids - existing_fids
                     if new_fids:
                         has_new_file = True
@@ -88,7 +91,6 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
             if has_new_file:
                 try:
                     import threading
-                    # 延迟 1 秒异步触发，防止阻塞当前线程
                     threading.Timer(1.0, task_manager.trigger_115_organize_task).start()
                     logger.info("  ➜ 已成功唤醒 115 智能整理任务！")
                 except Exception as e:
