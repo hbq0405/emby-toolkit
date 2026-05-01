@@ -180,63 +180,64 @@ def _wait_for_items_recovery(processor, item_ids: list, max_retries=6, interval=
 # --- 重新处理单个项目 ---
 def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, failure_reason: Optional[str] = None):
     """
-    重新处理单个项目的后台任务。
+    重新处理单个项目的后台任务 (定点极速优化版)。
     逻辑重构：
-    1. 如果是手动强制重扫（非缺失媒体信息），则清空所有媒体信息缓存（物理文件+数据库）。
-    2. 统一调用本地提取器 (task_restore_mediainfo) 补齐/重新提取媒体信息。
-    3. 执行标准的全量元数据刮削流程。
+    1. 提前收集该项目的所有物理路径。
+    2. 如果是手动强制重扫，定点清空这些路径的媒体信息缓存。
+    3. 仅针对这些路径进行定点媒体信息恢复/提取，彻底杜绝全局扫描。
+    4. 执行标准的全量元数据刮削流程。
     """
     logger.trace(f"  ➜ 后台任务开始执行 ({item_name_for_ui})")
     
     try:
         task_manager.update_status_from_thread(0, f"正在处理: {item_name_for_ui}")
         
-        # 判断是否是因为“缺失媒体信息”触发的
         is_missing_info = failure_reason and "缺失媒体信息" in failure_reason
         
         # =================================================================
-        # 分支 1：手动强制重处理 -> 丢弃所有缓存，强制后续走 ffprobe 在线提取
+        # 步骤 1：定点收集该项目的所有物理路径 (包含多版本和分集)
+        # =================================================================
+        target_paths = []
+        item_basic = emby.get_emby_item_details(
+            item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
+            fields="Type,Path,MediaSources"
+        )
+        
+        if item_basic:
+            item_type = item_basic.get('Type')
+            
+            def _collect_paths(item_data):
+                collected = []
+                if item_data.get("Path"): collected.append(item_data.get("Path"))
+                for source in item_data.get("MediaSources", []):
+                    if source.get("Path"): collected.append(source.get("Path"))
+                return collected
+
+            if item_type in ['Movie', 'Episode']:
+                target_paths.extend(_collect_paths(item_basic))
+            elif item_type == 'Series':
+                episodes = emby.get_all_library_versions(
+                    base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
+                    media_type_filter="Episode", parent_id=item_id,
+                    fields="Path,MediaSources"
+                )
+                if episodes:
+                    for ep in episodes:
+                        target_paths.extend(_collect_paths(ep))
+                        
+        target_paths = list(set(target_paths))
+
+        # =================================================================
+        # 步骤 2：手动强制重处理 -> 定点丢弃缓存
         # =================================================================
         if not is_missing_info:
             logger.info(f"  ➜ 检测到强制重新处理请求，准备清除旧的媒体信息缓存...")
             task_manager.update_status_from_thread(5, "正在清除旧的媒体信息缓存...")
             
-            paths_to_clean = []
             sha1s_to_clean = set()
-            
-            # 1. 获取 Emby 详情，收集所有相关路径 (包含多版本和分集)
-            item_basic = emby.get_emby_item_details(
-                item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
-                fields="Type,Path,MediaSources"
-            )
-            
-            if item_basic:
-                item_type = item_basic.get('Type')
-                
-                def _collect_paths(item_data):
-                    collected = []
-                    if item_data.get("Path"): collected.append(item_data.get("Path"))
-                    for source in item_data.get("MediaSources", []):
-                        if source.get("Path"): collected.append(source.get("Path"))
-                    return collected
-
-                if item_type in ['Movie', 'Episode']:
-                    paths_to_clean.extend(_collect_paths(item_basic))
-                elif item_type == 'Series':
-                    episodes = emby.get_all_library_versions(
-                        base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-                        media_type_filter="Episode", parent_id=item_id,
-                        fields="Path,MediaSources"
-                    )
-                    if episodes:
-                        for ep in episodes:
-                            paths_to_clean.extend(_collect_paths(ep))
-                            
-            paths_to_clean = list(set(paths_to_clean))
-            
-            # 2. 执行清理
             deleted_files = 0
-            for path in paths_to_clean:
+            
+            for path in target_paths:
                 if not path: continue
                 
                 # A. 删物理文件 (处理 HTTP 挂载路径转换)
@@ -271,27 +272,22 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
                 try:
                     with connection.get_db_connection() as conn:
                         cursor = conn.cursor()
-                        # 1. 只清空 mediainfo_json，保留 raw_ffprobe_json
                         cursor.execute(
                             "UPDATE p115_mediainfo_cache SET mediainfo_json = NULL WHERE sha1 = ANY(%s)", 
                             (list(sha1s_to_clean),)
                         )
                         conn.commit()
                         
-                    # 2. 尝试用 raw_ffprobe_json 重新格式化
                     from handler.p115_service import P115CacheManager, SmartOrganizer
                     for sha1 in sha1s_to_clean:
                         raw_ffprobe = P115CacheManager.get_raw_ffprobe_cache(sha1)
                         if raw_ffprobe:
                             logger.info(f"  ➜ 发现原始 ffprobe 数据，正在重新格式化: {sha1[:8]}")
                             dummy_node = {"fn": "unknown.mkv"} 
-                            # ▼▼▼ 修改这里：正确调用解析器的方法 ▼▼▼
                             analyzer = SmartOrganizer.__new__(SmartOrganizer)
                             new_emby_json = analyzer._build_emby_mediainfo_from_ffprobe(raw_ffprobe, dummy_node, sha1)
                             if new_emby_json:
-                                # 重新保存时，把 raw_ffprobe 也带上，防止丢失
                                 P115CacheManager.save_mediainfo_cache(sha1, new_emby_json, raw_ffprobe)
-                                logger.info(f"  ➜ 重新格式化成功，已写回缓存。")
                 except Exception as e:
                     logger.warning(f"  ➜ 处理数据库媒体信息缓存失败: {e}")
                     
@@ -302,22 +298,97 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
                 pass
                 
             logger.info(f"  ➜ 媒体信息清除完毕 (删除了 {deleted_files} 个物理文件)。")
-            
-        # =================================================================
-        # 分支 2：缺失媒体信息重扫 -> 保留缓存，仅做查漏补缺
-        # =================================================================
         else:
             logger.info(f"  ➜ 失败原因为缺失媒体信息，保留现有缓存，准备查漏补缺。")
 
         # =================================================================
-        # 统一执行：调用本地提取器 (恢复/在线提取)
+        # 步骤 3：定点提取媒体信息 (彻底替代全局 task_restore_mediainfo)
         # =================================================================
-        logger.info(f"  ➜ 进行媒体信息恢复/在线提取...")
+        logger.info(f"  ➜ 进行定点媒体信息恢复/在线提取...")
         task_manager.update_status_from_thread(10, "正在提取底层媒体信息...")
-        task_restore_mediainfo(processor)
+        
+        from handler.p115_service import P115Service, P115CacheManager, SmartOrganizer
+        client = P115Service.get_client()
+        local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
+        
+        restored_count = 0
+        
+        for path in target_paths:
+            if not path: continue
+            
+            local_path = path
+            strm_content_path = path
+            
+            # 路径转换与 STRM 读取
+            if path.startswith('http'):
+                pc, _ = processor._extract_115_fingerprints(path)
+                if pc:
+                    db_local_path = processor._get_local_path_by_pickcode(pc)
+                    if db_local_path:
+                        local_path = os.path.join(local_root, db_local_path.lstrip('/\\'))
+            else:
+                if path.lower().endswith('.strm'):
+                    try:
+                        with open(path, 'r', encoding='utf-8') as f:
+                            strm_content_path = f.read().strip().replace('\\', '/')
+                    except: pass
+                    
+            # 纯本地文件(非115映射)无法生成 JSON，直接跳过
+            if not local_path or local_path.startswith('http'):
+                continue
+                
+            json_path = os.path.splitext(local_path)[0] + "-mediainfo.json"
+            if os.path.exists(json_path):
+                continue # 已存在，跳过
+                
+            # 提取指纹
+            pc, sha1 = processor._extract_115_fingerprints(strm_content_path)
+            if not sha1 and pc:
+                sha1 = processor._get_sha1_by_pickcode(pc)
+                
+            if not pc or not sha1:
+                continue # 非 115 资产，跳过
+                
+            # 尝试获取或生成
+            mediainfo = media_db.get_mediainfo_by_sha1(sha1)
+            
+            if not mediainfo:
+                raw_ffprobe = P115CacheManager.get_raw_ffprobe_cache(sha1)
+                if raw_ffprobe:
+                    try:
+                        analyzer = SmartOrganizer.__new__(SmartOrganizer)
+                        dummy_node = {"fn": os.path.basename(local_path)}
+                        mediainfo = analyzer._build_emby_mediainfo_from_ffprobe(raw_ffprobe, dummy_node, sha1)
+                        if mediainfo:
+                            P115CacheManager.save_mediainfo_cache(sha1, mediainfo, raw_ffprobe)
+                    except: pass
+                    
+            if not mediainfo and client:
+                try:
+                    probe_helper = SmartOrganizer.__new__(SmartOrganizer)
+                    probe_helper.client = client
+                    file_node = {"pick_code": pc, "pc": pc, "file_name": os.path.basename(local_path), "fn": os.path.basename(local_path)}
+                    emby_json, raw_ffprobe = probe_helper._probe_mediainfo_with_ffprobe(file_node=file_node, sha1=sha1, silent_log=True) or (None, None)
+                    if emby_json:
+                        P115CacheManager.save_mediainfo_cache(sha1, emby_json, raw_ffprobe)
+                        mediainfo = emby_json
+                except: pass
+                
+            # 写入文件
+            if mediainfo:
+                try:
+                    with open(json_path, 'w', encoding='utf-8') as f:
+                        json.dump(mediainfo, f, ensure_ascii=False)
+                    restored_count += 1
+                    logger.debug(f"    - 成功生成定点媒体信息: {os.path.basename(json_path)}")
+                except Exception as e:
+                    logger.warning(f"    - 写入 JSON 失败 {json_path}: {e}")
+
+        if restored_count > 0:
+            logger.info(f"  ➜ 成功恢复了 {restored_count} 个媒体信息文件。")
 
         # =================================================================
-        # 统一执行：标准处理流程 (验收成果 & 刮削元数据)
+        # 步骤 4：标准处理流程 (验收成果 & 刮削元数据)
         # =================================================================
         task_manager.update_status_from_thread(50, f"正在重新刮削元数据: {item_name_for_ui}")
         
