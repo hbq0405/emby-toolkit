@@ -364,6 +364,7 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         "label": "公映",
         "types": ["Audio", "Subtitle"],
         "patterns": [
+            r"(?<![A-Za-z0-9])GY(?![A-Za-z0-9])",
             r"公映",
             r"院线配音",
             r"影院版"
@@ -373,6 +374,8 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         "label": "长译",
         "types": ["Audio", "Subtitle"],
         "patterns": [
+            r"(?<![A-Za-z0-9])CY(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])GYCY(?![A-Za-z0-9])",
             r"长译",
             r"长春电影"
         ],
@@ -381,6 +384,8 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         "label": "京译",
         "types": ["Audio", "Subtitle"],
         "patterns": [
+            r"(?<![A-Za-z0-9])JY(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])GYJY(?![A-Za-z0-9])",
             r"京译",
             r"中影配音",
             r"北京电影"
