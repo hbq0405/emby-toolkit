@@ -50,12 +50,52 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
         target_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else (share_url or full_url)
         logger.info(f"  ➜ 检测到磁力/ED2K链接，准备提交离线下载: {target_url[:60]}...")
         
+        # 1. 提交前：获取目标目录前 50 个文件的快照 (115默认按时间倒序，50个足够覆盖新文件)
+        existing_fids = set()
+        try:
+            res_before = client.fs_files({'cid': save_cid, 'limit': 50})
+            if res_before and res_before.get('data'):
+                existing_fids = {str(item.get('fid') or item.get('file_id')) for item in res_before.get('data', [])}
+        except Exception as e:
+            logger.debug(f"  ➜ 获取目录快照失败: {e}")
+
+        # 2. 提交离线任务
         payload = {"url[0]": target_url, "wp_path_id": save_cid}
         res = client.offline_add_urls(payload)
         
         if res and res.get('state'):
-            logger.info("=== 🎉 影巢磁力/ED2K 离线下载任务提交成功！(将由系统定时任务自动整理) ===")
-            # 离线下载需要时间，无法立刻整理，直接返回 True 交给系统的定时扫描任务兜底
+            logger.info("=== 🎉 影巢磁力/ED2K 离线下载任务提交成功！ ===")
+            
+            # 3. 等待 5 秒钟让 115 服务器反应一下
+            logger.info("  ➜ 等待 5 秒后检查是否已秒传...")
+            time.sleep(5)
+            
+            # 4. 提交后：再次获取目录比对
+            has_new_file = False
+            try:
+                res_after = client.fs_files({'cid': save_cid, 'limit': 50})
+                if res_after and res_after.get('data'):
+                    current_fids = {str(item.get('fid') or item.get('file_id')) for item in res_after.get('data', [])}
+                    # 差集计算：现在的 ID 减去 之前的 ID
+                    new_fids = current_fids - existing_fids
+                    if new_fids:
+                        has_new_file = True
+                        logger.info(f"  ➜ 发现 {len(new_fids)} 个新文件/目录，离线秒传成功！")
+            except Exception as e:
+                logger.debug(f"  ➜ 检查新文件失败: {e}")
+
+            # 5. 踢一脚整理任务
+            if has_new_file:
+                try:
+                    import threading
+                    # 延迟 1 秒异步触发，防止阻塞当前线程
+                    threading.Timer(1.0, task_manager.trigger_115_organize_task).start()
+                    logger.info("  ➜ 已成功唤醒 115 智能整理任务！")
+                except Exception as e:
+                    logger.error(f"  ➜ 唤醒整理任务失败: {e}")
+            else:
+                logger.info("  ➜ 暂未发现新文件，可能仍在缓慢下载中，将由系统定时任务兜底处理。")
+
             return True
         else:
             err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
