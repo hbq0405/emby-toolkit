@@ -52,7 +52,8 @@ class TGUserBotManager:
             'monitor_types': cfg.get('monitor_types', ['movie', 'tv']),
             'transfer_modes': cfg.get('transfer_modes', ['subscribe']),
             'transfer_keywords': cfg.get('transfer_keywords', []),
-            'block_keywords': cfg.get('block_keywords', [])
+            'block_keywords': cfg.get('block_keywords', []),
+            'custom_regex': cfg.get('custom_regex', {})
         }
 
     def start(self):
@@ -298,11 +299,23 @@ class TGUserBotManager:
         custom_regex = cfg.get('custom_regex', {})
         all_urls = []
 
-        # 1. 提取 Markdown/HTML 隐藏的超链接
+        # 1. 提取 Markdown/HTML 隐藏链接 + Telegram 裸 URL 实体
         if event.message.entities:
+            raw_text = event.raw_text or ""
             for entity in event.message.entities:
+                # MessageEntityTextUrl：文字上挂的隐藏链接
                 if hasattr(entity, 'url') and entity.url:
                     all_urls.append(entity.url)
+                    continue
+
+                # MessageEntityUrl：正文裸 URL，Telethon 只给 offset/length，不给 .url
+                if hasattr(entity, 'offset') and hasattr(entity, 'length'):
+                    try:
+                        url_text = raw_text[entity.offset:entity.offset + entity.length]
+                        if url_text.startswith(("http://", "https://")):
+                            all_urls.append(url_text)
+                    except Exception:
+                        pass
 
         # 2. 提取底部内联键盘 (Inline Keyboard) 的按钮链接
         if event.message.reply_markup and hasattr(event.message.reply_markup, 'rows'):
@@ -318,9 +331,20 @@ class TGUserBotManager:
         link_match = re.search(r'(https?://(?:115cdn|115)\.com/s/[a-zA-Z0-9]+(?:[?&]password=[a-zA-Z0-9]+)?)', text, re.IGNORECASE)
         if link_match:
             all_urls.insert(0, link_match.group(1))
+        # ★ 影巢明文链接兜底：兼容 115 / magnet / ed2k / bt
+        for m in re.finditer(
+            r'(https?://(?:www\.)?hdhive\.com/resource/(?:115|magnet|ed2k|bt)/[a-fA-F0-9]{32}(?:[/?#][^\s]*)?)',
+            text,
+            re.IGNORECASE
+        ):
+            all_urls.insert(0, m.group(1))
 
         for url in all_urls:
-            if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/115/' in url:
+            if (
+                '115.com/s/' in url
+                or '115cdn.com/s/' in url
+                or 'hdhive.com/resource/' in url
+            ):
                 target_link = url
                 pwd_in_url = _apply_regex(url, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_url'], chat_username, chat_id)
                 if pwd_in_url:
@@ -460,20 +484,13 @@ class TGUserBotManager:
         is_ed2k = text.lower().startswith('ed2k://')
         magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
 
-        # 提取磁力/ED2K (增强版：支持从内联按钮和隐藏链接中提取)
-        magnet_url = None
-        for url in all_urls:
-            if 'magnet:?' in url.lower() or 'ed2k://' in url.lower():
-                magnet_url = url
-                break
-                
-        if not magnet_url:
-            is_magnet = text.lower().startswith('magnet:?')
-            is_ed2k = text.lower().startswith('ed2k://')
-            magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
-            magnet_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else None
-            if not magnet_url and (is_magnet or is_ed2k):
-                magnet_url = text.strip()
+        # 提取磁力/ED2K
+        is_magnet = text.lower().startswith('magnet:?')
+        is_ed2k = text.lower().startswith('ed2k://')
+        magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE)
+        magnet_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else None
+        if not magnet_url and (is_magnet or is_ed2k):
+            magnet_url = text.strip()
 
         # =================================================================
         # ★ 核心分流逻辑 (统一合并到复杂校验流水线)
@@ -716,8 +733,11 @@ def _process_tg_queue():
                 if target_link and 'hdhive.com' in target_link:
                     logger.debug(f"  ➜ [频道监听] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址 (将扣除积分)...")
                     try:
-                        # ★ 修复1：放宽 slug 提取正则，兼容 /resource/ed2k/ 和 /resource/magnet/ 等路径
-                        slug_match = re.search(r'hdhive\.com/resource/[a-zA-Z0-9]+/([a-fA-F0-9]{32})', target_link)
+                        slug_match = re.search(
+                            r'hdhive\.com/resource/(?:115|magnet|ed2k|bt)/([a-fA-F0-9]{32})',
+                            target_link,
+                            re.IGNORECASE
+                        )
                         if not slug_match:
                             logger.error(f"  ➜ [频道监听] 无法从影巢链接中提取 Slug 标识: {target_link}")
                             continue
@@ -735,19 +755,18 @@ def _process_tg_queue():
                         resource_data = hd_client.unlock_resource(slug)
                         
                         if resource_data and (resource_data.get('url') or resource_data.get('full_url')):
-                            # ★ 修复2：兼容 API 返回数组或带换行符的字符串
-                            def _to_str(val):
-                                return "\n".join(val) if isinstance(val, list) else str(val or "")
-                                
-                            combined_url = _to_str(resource_data.get('url')) + "\n" + _to_str(resource_data.get('full_url'))
+                            real_url = resource_data.get('url') or ''
+                            full_url = resource_data.get('full_url') or ''
+                            combined_url = (real_url + " " + full_url).strip()
                             
-                            # ★ 修复3：提取所有的磁力/ED2K链接 (支持多集批量下载)
-                            magnet_ed2k_links = re.findall(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', combined_url, re.IGNORECASE)
+                            # 判断是否为磁力/ED2K
+                            magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', combined_url, re.IGNORECASE)
+                            is_magnet_or_ed2k = magnet_ed2k_match or combined_url.lower().startswith('magnet:?') or combined_url.lower().startswith('ed2k://')
                             
-                            if magnet_ed2k_links:
-                                magnet_url = magnet_ed2k_links # 赋值为一个列表
+                            if is_magnet_or_ed2k:
+                                magnet_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else (real_url or full_url)
                                 target_link = None # 清除 target_link，让它走下面的离线下载分支
-                                logger.debug(f"  ➜ [频道监听] 影巢 API 解析出 {len(magnet_ed2k_links)} 个磁力/ED2K链接，转入离线下载流程...")
+                                logger.debug(f"  ➜ [频道监听] 影巢 API 解析为磁力/ED2K链接，转入离线下载流程...")
                             else:
                                 target_link = combined_url # 替换为真实链接，走下面的 115 转存分支
                                 if resource_data.get('access_code'):
@@ -809,14 +828,7 @@ def _process_tg_queue():
                             existing_fids = {str(item.get('fid') or item.get('file_id')) for item in res_before.get('data', [])}
                     except Exception: pass
 
-                    # ★ 修复4：支持批量提交离线任务
-                    payload = {"wp_path_id": target_cid}
-                    if isinstance(magnet_url, list):
-                        for i, u in enumerate(magnet_url):
-                            payload[f"url[{i}]"] = u
-                    else:
-                        payload["url[0]"] = magnet_url
-
+                    payload = {"url[0]": magnet_url, "wp_path_id": target_cid}
                     res = client.offline_add_urls(payload)
                     
                     if res and res.get('state'):
