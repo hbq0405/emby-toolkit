@@ -122,7 +122,8 @@ class HDHiveClient:
             if not data.get("success"):
                 return []
                 
-            resources = [r for r in data.get("data", []) if r.get("pan_type") == "115" or r.get("pan_type") is None]
+            allowed_types = ["115", "magnet", "ed2k", "bt"]
+            resources = [r for r in data.get("data", []) if str(r.get("pan_type")).lower() in allowed_types or r.get("pan_type") is None]
             if media_type == 'movie' or target_season is None:
                 return resources
                 

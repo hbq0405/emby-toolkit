@@ -27,38 +27,62 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
         
     share_url = unlock_data.get("url") or ""
     full_url = unlock_data.get("full_url") or ""
-    access_code = unlock_data.get("access_code")
     
-    # ★★★ 提取码兜底逻辑 ★★★
-    # 如果 API 没有直接返回 access_code，尝试从 URL 参数中正则提取 (如 ?password=n832 或 ?pwd=n832)
-    if not access_code:
-        pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', full_url + "&" + share_url, re.IGNORECASE)
-        if pwd_match:
-            access_code = pwd_match.group(1)
-            
-    # 确保 access_code 不是 None，防止后续报错
-    access_code = access_code or ""
-    
-    # 提取分享码 (同时从 share_url 和 full_url 中找，增加容错率)
-    match = re.search(r'(?:115\.com|115cdn\.com|anxia\.com)/s/([a-zA-Z0-9]+)', share_url + " " + full_url)
-    if not match:
-        logger.error(f"  ➜ 无法从链接中提取 115 分享码: {share_url} | {full_url}")
-        return False
-        
-    share_code = match.group(1)
-    logger.info(f"  ➜ 成功获取 115 分享码: {share_code}, 提取码: {access_code}")
-
     client = P115Service.get_client()
     if not client:
-        logger.error("  ➜ 115 客户端未初始化，无法转存。")
+        logger.error("  ➜ 115 客户端未初始化，无法处理任务。")
         return False
 
     config = get_config()
     save_cid = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID) 
     if not save_cid or str(save_cid) == '0':
-        logger.error("  ➜ 未配置 115 待整理目录，无法转存。")
+        logger.error("  ➜ 未配置 115 待整理目录，无法处理任务。")
         return False
 
+    # ==========================================
+    # ★ 分支 1：处理磁力链 / ED2K (提交离线下载)
+    # ==========================================
+    combined_url = (share_url + " " + full_url).strip()
+    magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', combined_url, re.IGNORECASE)
+    is_magnet_or_ed2k = magnet_ed2k_match or combined_url.lower().startswith('magnet:?') or combined_url.lower().startswith('ed2k://')
+
+    if is_magnet_or_ed2k:
+        target_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else (share_url or full_url)
+        logger.info(f"  ➜ 检测到磁力/ED2K链接，准备提交离线下载: {target_url[:60]}...")
+        
+        payload = {"url[0]": target_url, "wp_path_id": save_cid}
+        res = client.offline_add_urls(payload)
+        
+        if res and res.get('state'):
+            logger.info("=== 🎉 影巢磁力/ED2K 离线下载任务提交成功！(将由系统定时任务自动整理) ===")
+            # 离线下载需要时间，无法立刻整理，直接返回 True 交给系统的定时扫描任务兜底
+            return True
+        else:
+            err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
+            logger.error(f"  ➜ 离线下载提交失败: {err}")
+            return False
+
+    # ==========================================
+    # ★ 分支 2：处理 115 官方分享链接 (秒传转存)
+    # ==========================================
+    access_code = unlock_data.get("access_code")
+    
+    # ★★★ 提取码兜底逻辑 ★★★
+    if not access_code:
+        pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', full_url + "&" + share_url, re.IGNORECASE)
+        if pwd_match:
+            access_code = pwd_match.group(1)
+            
+    access_code = access_code or ""
+    
+    # 提取分享码
+    match = re.search(r'(?:115\.com|115cdn\.com|anxia\.com)/s/([a-zA-Z0-9]+)', combined_url)
+    if not match:
+        logger.error(f"  ➜ 无法从链接中提取 115 分享码，且不是磁力链接: {share_url} | {full_url}")
+        return False
+        
+    share_code = match.group(1)
+    logger.info(f"  ➜ 成功获取 115 分享码: {share_code}, 提取码: {access_code}")
     logger.info(f"  ➜ 正在转存到 115 待整理目录 (CID: {save_cid})...")
     try:
         import_res = client.share_import(share_code, access_code, save_cid)
