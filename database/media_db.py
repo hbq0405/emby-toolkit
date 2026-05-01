@@ -1492,6 +1492,62 @@ def get_all_in_library_physical_paths() -> List[Dict[str, Any]]:
         logger.error(f"DB: 获取在库物理路径失败: {e}")
         return []
 
+# --- 新增：根据 Emby ID 获取物理路径和指纹 ---
+def get_physical_paths_and_sha1s_by_emby_id(emby_id: str) -> List[Dict[str, str]]:
+    """
+    【定点优化】根据 Emby ID 获取关联的所有物理路径、SHA1 和 PickCode。
+    如果是剧集(Series)，会自动向下穿透获取所有分集(Episode)的资产。
+    利用数据库中对齐的 JSON 数组，避免张冠李戴。
+    """
+    if not emby_id:
+        return []
+        
+    sql = """
+        WITH target_item AS (
+            SELECT tmdb_id, item_type
+            FROM media_metadata
+            WHERE emby_item_ids_json @> %s::jsonb
+            LIMIT 1
+        )
+        SELECT m.emby_item_ids_json, m.file_sha1_json, m.file_pickcode_json, m.asset_details_json
+        FROM media_metadata m
+        JOIN target_item t ON 
+            (m.tmdb_id = t.tmdb_id AND m.item_type = t.item_type) 
+            OR 
+            (m.parent_series_tmdb_id = t.tmdb_id AND t.item_type = 'Series' AND m.item_type = 'Episode')
+    """
+    assets_list = []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cursor:
+                cursor.execute(sql, (json.dumps([emby_id]),))
+                rows = cursor.fetchall()
+                
+                for row in rows:
+                    sha1s = row['file_sha1_json'] or []
+                    pcs = row['file_pickcode_json'] or []
+                    assets = row['asset_details_json'] or []
+                    
+                    # 遍历资产数组，按索引对齐提取
+                    for idx, asset in enumerate(assets):
+                        if not isinstance(asset, dict): continue
+                        path = asset.get('path')
+                        if not path: continue
+                        
+                        sha1 = sha1s[idx] if idx < len(sha1s) else None
+                        pc = pcs[idx] if idx < len(pcs) else None
+                        
+                        assets_list.append({
+                            'path': path,
+                            'sha1': sha1,
+                            'pc': pc
+                        })
+                        
+        return assets_list
+    except Exception as e:
+        logger.error(f"DB: 根据 Emby ID 获取物理路径和 SHA1 失败: {e}")
+        return []
+
 # --- 清除指定 SHA1 的格式化媒体信息缓存 ---
 def clear_mediainfo_json_by_sha1(sha1: str) -> bool:
     """

@@ -180,10 +180,10 @@ def _wait_for_items_recovery(processor, item_ids: list, max_retries=6, interval=
 # --- 重新处理单个项目 ---
 def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, failure_reason: Optional[str] = None):
     """
-    重新处理单个项目的后台任务 (定点极速优化版)。
+    重新处理单个项目的后台任务 (纯本地数据库定点极速版)。
     逻辑重构：
-    1. 提前收集该项目的所有物理路径。
-    2. 如果是手动强制重扫，定点清空这些路径的媒体信息缓存。
+    1. 直接查本地数据库获取该项目的所有物理路径和 SHA1 (0 API 消耗)。
+    2. 如果是手动强制重扫，定点清空数据库媒体信息缓存，并调用神医接口清除 Emby 缓存(自动删本地JSON)。
     3. 仅针对这些路径进行定点媒体信息恢复/提取，彻底杜绝全局扫描。
     4. 执行标准的全量元数据刮削流程。
     """
@@ -195,38 +195,13 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
         is_missing_info = failure_reason and "缺失媒体信息" in failure_reason
         
         # =================================================================
-        # 步骤 1：定点收集该项目的所有物理路径 (包含多版本和分集)
+        # 步骤 1：定点收集该项目的所有物理路径和 SHA1 (纯本地数据库查询)
         # =================================================================
-        target_paths = []
-        item_basic = emby.get_emby_item_details(
-            item_id, processor.emby_url, processor.emby_api_key, processor.emby_user_id,
-            fields="Type,Path,MediaSources"
-        )
+        target_assets = media_db.get_physical_paths_and_sha1s_by_emby_id(item_id)
         
-        if item_basic:
-            item_type = item_basic.get('Type')
-            
-            def _collect_paths(item_data):
-                collected = []
-                if item_data.get("Path"): collected.append(item_data.get("Path"))
-                for source in item_data.get("MediaSources", []):
-                    if source.get("Path"): collected.append(source.get("Path"))
-                return collected
-
-            if item_type in ['Movie', 'Episode']:
-                target_paths.extend(_collect_paths(item_basic))
-            elif item_type == 'Series':
-                episodes = emby.get_all_library_versions(
-                    base_url=processor.emby_url, api_key=processor.emby_api_key, user_id=processor.emby_user_id,
-                    media_type_filter="Episode", parent_id=item_id,
-                    fields="Path,MediaSources"
-                )
-                if episodes:
-                    for ep in episodes:
-                        target_paths.extend(_collect_paths(ep))
-                        
-        target_paths = list(set(target_paths))
-
+        if not target_assets:
+            logger.warning(f"  ➜ 数据库中未找到项目 {item_id} 的物理资产记录。")
+        
         # =================================================================
         # 步骤 2：手动强制重处理 -> 定点丢弃缓存
         # =================================================================
@@ -234,52 +209,15 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
             logger.info(f"  ➜ 检测到强制重新处理请求，准备清除旧的媒体信息缓存...")
             task_manager.update_status_from_thread(5, "正在清除旧的媒体信息缓存...")
             
-            sha1s_to_clean = set()
-            deleted_files = 0
+            sha1s_to_clean = {asset['sha1'] for asset in target_assets if asset.get('sha1')}
             
-            for path in target_paths:
-                if not path: continue
-                
-                # A. 删物理文件 (处理 HTTP 挂载路径转换)
-                local_path = path
-                if path.startswith('http'):
-                    pc, _ = processor._extract_115_fingerprints(path)
-                    if pc:
-                        db_local_path = processor._get_local_path_by_pickcode(pc)
-                        if db_local_path:
-                            local_root = processor.config.get(constants.CONFIG_OPTION_LOCAL_STRM_ROOT, "")
-                            local_path = os.path.join(local_root, db_local_path.lstrip('/\\'))
-                
-                if local_path and not local_path.startswith('http'):
-                    json_path = os.path.splitext(local_path)[0] + "-mediainfo.json"
-                    if os.path.exists(json_path):
-                        try:
-                            os.remove(json_path)
-                            deleted_files += 1
-                            logger.debug(f"    - 已删除本地指纹文件: {json_path}")
-                        except Exception as e:
-                            logger.warning(f"    - 删除本地指纹文件失败 {json_path}: {e}")
-                            
-                # B. 收集 SHA1
-                pc, sha1 = processor._extract_115_fingerprints(path)
-                if not sha1 and pc:
-                    sha1 = processor._get_sha1_by_pickcode(pc)
-                if sha1:
-                    sha1s_to_clean.add(sha1)
-                    
-            # C. 清理与重新格式化媒体信息
+            # A. 清理与重新格式化数据库媒体信息
             if sha1s_to_clean:
                 try:
-                    with connection.get_db_connection() as conn:
-                        cursor = conn.cursor()
-                        cursor.execute(
-                            "UPDATE p115_mediainfo_cache SET mediainfo_json = NULL WHERE sha1 = ANY(%s)", 
-                            (list(sha1s_to_clean),)
-                        )
-                        conn.commit()
-                        
                     from handler.p115_service import P115CacheManager, SmartOrganizer
                     for sha1 in sha1s_to_clean:
+                        media_db.clear_mediainfo_json_by_sha1(sha1)
+                        
                         raw_ffprobe = P115CacheManager.get_raw_ffprobe_cache(sha1)
                         if raw_ffprobe:
                             logger.info(f"  ➜ 发现原始 ffprobe 数据，正在重新格式化: {sha1[:8]}")
@@ -291,13 +229,12 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
                 except Exception as e:
                     logger.warning(f"  ➜ 处理数据库媒体信息缓存失败: {e}")
                     
-            # D. 调用神医接口清除 Emby 内部缓存
+            # B. 调用神医接口清除 Emby 内部缓存 (神医插件会自动删除本地的 -mediainfo.json 文件)
             try:
                 emby.clear_item_media_info(item_id, processor.emby_url, processor.emby_api_key)
-            except Exception:
-                pass
-                
-            logger.info(f"  ➜ 媒体信息清除完毕 (删除了 {deleted_files} 个物理文件)。")
+                logger.info(f"  ➜ 已通知 Emby 清除内部媒体信息缓存 (并自动删除本地 JSON)。")
+            except Exception as e:
+                logger.warning(f"  ➜ 通知 Emby 清除缓存失败: {e}")
         else:
             logger.info(f"  ➜ 失败原因为缺失媒体信息，保留现有缓存，准备查漏补缺。")
 
@@ -313,7 +250,11 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
         
         restored_count = 0
         
-        for path in target_paths:
+        for asset in target_assets:
+            path = asset.get('path')
+            sha1 = asset.get('sha1')
+            pc = asset.get('pc')
+            
             if not path: continue
             
             local_path = path
@@ -321,7 +262,8 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
             
             # 路径转换与 STRM 读取
             if path.startswith('http'):
-                pc, _ = processor._extract_115_fingerprints(path)
+                if not pc:
+                    pc, _ = processor._extract_115_fingerprints(path)
                 if pc:
                     db_local_path = processor._get_local_path_by_pickcode(pc)
                     if db_local_path:
@@ -342,9 +284,12 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
                 continue # 已存在，跳过
                 
             # 提取指纹
-            pc, sha1 = processor._extract_115_fingerprints(strm_content_path)
-            if not sha1 and pc:
-                sha1 = processor._get_sha1_by_pickcode(pc)
+            if not pc or not sha1:
+                extracted_pc, extracted_sha1 = processor._extract_115_fingerprints(strm_content_path)
+                pc = pc or extracted_pc
+                sha1 = sha1 or extracted_sha1
+                if not sha1 and pc:
+                    sha1 = processor._get_sha1_by_pickcode(pc)
                 
             if not pc or not sha1:
                 continue # 非 115 资产，跳过
@@ -385,7 +330,7 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
                     logger.warning(f"    - 写入 JSON 失败 {json_path}: {e}")
 
         if restored_count > 0:
-            logger.info(f"  ➜ 成功恢复了 {restored_count} 个媒体信息文件。")
+            logger.info(f"  ➜ 成功定点恢复了 {restored_count} 个媒体信息文件。")
 
         # =================================================================
         # 步骤 4：标准处理流程 (验收成果 & 刮削元数据)
