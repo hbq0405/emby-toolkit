@@ -52,8 +52,7 @@ class TGUserBotManager:
             'monitor_types': cfg.get('monitor_types', ['movie', 'tv']),
             'transfer_modes': cfg.get('transfer_modes', ['subscribe']),
             'transfer_keywords': cfg.get('transfer_keywords', []),
-            'block_keywords': cfg.get('block_keywords', []),
-            'custom_regex': cfg.get('custom_regex', {})
+            'block_keywords': cfg.get('block_keywords', [])
         }
 
     def start(self):
@@ -299,23 +298,11 @@ class TGUserBotManager:
         custom_regex = cfg.get('custom_regex', {})
         all_urls = []
 
-        # 1. 提取 Markdown/HTML 隐藏链接 + Telegram 裸 URL 实体
+        # 1. 提取 Markdown/HTML 隐藏的超链接
         if event.message.entities:
-            raw_text = event.raw_text or ""
             for entity in event.message.entities:
-                # MessageEntityTextUrl：文字上挂的隐藏链接
                 if hasattr(entity, 'url') and entity.url:
                     all_urls.append(entity.url)
-                    continue
-
-                # MessageEntityUrl：正文裸 URL，Telethon 只给 offset/length，不给 .url
-                if hasattr(entity, 'offset') and hasattr(entity, 'length'):
-                    try:
-                        url_text = raw_text[entity.offset:entity.offset + entity.length]
-                        if url_text.startswith(("http://", "https://")):
-                            all_urls.append(url_text)
-                    except Exception:
-                        pass
 
         # 2. 提取底部内联键盘 (Inline Keyboard) 的按钮链接
         if event.message.reply_markup and hasattr(event.message.reply_markup, 'rows'):
@@ -331,20 +318,9 @@ class TGUserBotManager:
         link_match = re.search(r'(https?://(?:115cdn|115)\.com/s/[a-zA-Z0-9]+(?:[?&]password=[a-zA-Z0-9]+)?)', text, re.IGNORECASE)
         if link_match:
             all_urls.insert(0, link_match.group(1))
-        # ★ 影巢明文链接兜底：兼容 115 / magnet / ed2k / bt
-        for m in re.finditer(
-            r'(https?://(?:www\.)?hdhive\.com/resource/(?:115|magnet|ed2k|bt)/[a-fA-F0-9]{32}(?:[/?#][^\s]*)?)',
-            text,
-            re.IGNORECASE
-        ):
-            all_urls.insert(0, m.group(1))
 
         for url in all_urls:
-            if (
-                '115.com/s/' in url
-                or '115cdn.com/s/' in url
-                or 'hdhive.com/resource/' in url
-            ):
+            if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/115/' in url:
                 target_link = url
                 pwd_in_url = _apply_regex(url, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_url'], chat_username, chat_id)
                 if pwd_in_url:
@@ -727,67 +703,58 @@ def _process_tg_queue():
                 target_link = task.get('target_link')
                 magnet_url = task.get('magnet_url')
 
-                # ==========================================
-                # ★ 新增：预处理 HDHive 链接，将其转化为真实的 115 或 磁力链接
-                # ==========================================
-                if target_link and 'hdhive.com' in target_link:
-                    logger.debug(f"  ➜ [频道监听] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址 (将扣除积分)...")
-                    try:
-                        slug_match = re.search(
-                            r'hdhive\.com/resource/(?:115|magnet|ed2k|bt)/([a-fA-F0-9]{32})',
-                            target_link,
-                            re.IGNORECASE
-                        )
-                        if not slug_match:
-                            logger.error(f"  ➜ [频道监听] 无法从影巢链接中提取 Slug 标识: {target_link}")
-                            continue
-                            
-                        slug = slug_match.group(1)
-                        from database import settings_db
-                        hdhive_api_key = settings_db.get_setting('hdhive_api_key')
-                        
-                        if not hdhive_api_key:
-                            logger.error("  ➜ [频道监听] 解析失败：未配置影巢 API Key！")
-                            continue
-                            
-                        from handler.hdhive_client import HDHiveClient
-                        hd_client = HDHiveClient(hdhive_api_key)
-                        resource_data = hd_client.unlock_resource(slug)
-                        
-                        if resource_data and (resource_data.get('url') or resource_data.get('full_url')):
-                            real_url = resource_data.get('url') or ''
-                            full_url = resource_data.get('full_url') or ''
-                            combined_url = (real_url + " " + full_url).strip()
-                            
-                            # 判断是否为磁力/ED2K
-                            magnet_ed2k_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', combined_url, re.IGNORECASE)
-                            is_magnet_or_ed2k = magnet_ed2k_match or combined_url.lower().startswith('magnet:?') or combined_url.lower().startswith('ed2k://')
-                            
-                            if is_magnet_or_ed2k:
-                                magnet_url = magnet_ed2k_match.group(1) if magnet_ed2k_match else (real_url or full_url)
-                                target_link = None # 清除 target_link，让它走下面的离线下载分支
-                                logger.debug(f"  ➜ [频道监听] 影巢 API 解析为磁力/ED2K链接，转入离线下载流程...")
-                            else:
-                                target_link = combined_url # 替换为真实链接，走下面的 115 转存分支
-                                if resource_data.get('access_code'):
-                                    receive_code = resource_data.get('access_code')
-                                if not receive_code:
-                                    pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', combined_url, re.IGNORECASE)
-                                    if pwd_match:
-                                        receive_code = pwd_match.group(1)
-                        else:
-                            logger.error("  ➜ [频道监听] 影巢 API 未返回真实的链接，可能是积分不足或资源已失效。")
-                            continue
-                            
-                    except Exception as e:
-                        logger.error(f"  ➜ [频道监听] 请求影巢 API 异常: {e}")
-                        continue
-
                 # --- 分支 A: 处理 115 分享链接 ---
                 if target_link:
                     share_code = None
-                    match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', target_link)
-                    if match: share_code = match.group(1)
+                    if 'hdhive.com' in target_link:
+                        logger.debug(f"  ➜ [频道监听] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址 (将扣除积分)...")
+                        try:
+                            slug_match = re.search(r'hdhive\.com/resource/115/([a-fA-F0-9]{32})', target_link)
+                            if not slug_match:
+                                logger.error(f"  ➜ [频道监听] 无法从影巢链接中提取 Slug 标识: {target_link}")
+                                continue
+                                
+                            slug = slug_match.group(1)
+                            from database import settings_db
+                            hdhive_api_key = settings_db.get_setting('hdhive_api_key')
+                            
+                            if not hdhive_api_key:
+                                logger.error("  ➜ [频道监听] 解析失败：未配置影巢 API Key！")
+                                continue
+                                
+                            from handler.hdhive_client import HDHiveClient
+                            hd_client = HDHiveClient(hdhive_api_key)
+                            resource_data = hd_client.unlock_resource(slug)
+                            
+                            if resource_data and resource_data.get('url'):
+                                real_url = resource_data.get('url')
+                                full_url = resource_data.get('full_url', '')
+                                
+                                match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', real_url)
+                                if match:
+                                    share_code = match.group(1)
+                                    
+                                    if resource_data.get('access_code'):
+                                        receive_code = resource_data.get('access_code')
+                                    if not receive_code:
+                                        pwd_match = re.search(r'(?:pwd|password|code)=([a-zA-Z0-9]+)', full_url + "&" + real_url, re.IGNORECASE)
+                                        if pwd_match:
+                                            receive_code = pwd_match.group(1)
+                                            
+                                    logger.debug(f"  ➜ [频道监听] 影巢 API 解析成功！真实 Share Code: {share_code}, 密码: {receive_code or '无'}")
+                                else:
+                                    logger.error(f"  ➜ [频道监听] 影巢 API 返回的 URL 中未找到 115 提取码: {real_url}")
+                                    continue
+                            else:
+                                logger.error("  ➜ [频道监听] 影巢 API 未返回真实的 115 链接，可能是积分不足或资源已失效。")
+                                continue
+                                
+                        except Exception as e:
+                            logger.error(f"  ➜ [频道监听] 请求影巢 API 异常: {e}")
+                            continue
+                    else:
+                        match = re.search(r'115(?:cdn)?\.com/s/([a-zA-Z0-9]+)', target_link)
+                        if match: share_code = match.group(1)
 
                     if not share_code:
                         logger.error("  ➜ [频道监听] 无法获取有效的 115 Share Code，任务终止。")
@@ -819,20 +786,11 @@ def _process_tg_queue():
                 # --- 分支 B: 处理磁力/ED2K 离线下载 ---
                 elif magnet_url:
                     logger.debug(f"  ➜ [频道监听] 命中订阅资源 (TMDB: {tmdb_id})！准备提交离线下载...")
-                    
-                    # 1. 提交前快照
-                    existing_fids = set()
-                    try:
-                        res_before = client.fs_files({'cid': target_cid, 'limit': 50})
-                        if res_before and res_before.get('data'):
-                            existing_fids = {str(item.get('fid') or item.get('file_id')) for item in res_before.get('data', [])}
-                    except Exception: pass
-
                     payload = {"url[0]": magnet_url, "wp_path_id": target_cid}
-                    res = client.offline_add_urls(payload)
                     
+                    res = client.offline_add_urls(payload)
                     if res and res.get('state'):
-                        logger.info(f"  ➜ [频道监听] 离线下载任务提交成功！")
+                        logger.info(f"  ➜ [频道监听] 离线下载任务提交成功！正在触发整理...")
                         
                         notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
                         if 'transfer_success' in notify_types:
@@ -843,30 +801,30 @@ def _process_tg_queue():
                             except Exception as e:
                                 logger.error(f"  ➜ [频道监听] 发送离线通知失败: {e}")
 
-                        # 2. 等待 5 秒后比对快照
-                        import time
-                        time.sleep(5)
-                        has_new_file = False
-                        try:
-                            res_after = client.fs_files({'cid': target_cid, 'limit': 50})
-                            if res_after and res_after.get('data'):
-                                current_fids = {str(item.get('fid') or item.get('file_id')) for item in res_after.get('data', [])}
-                                if current_fids - existing_fids:
-                                    has_new_file = True
-                        except Exception: pass
-
                         try:
                             import task_manager
                             import threading
-                            if has_new_file:
-                                logger.info("  ➜ [频道监听] 发现离线秒传新文件，立即唤醒整理任务！")
-                                threading.Timer(1.0, task_manager.trigger_115_organize_task).start()
-                            else:
-                                logger.info("  ➜ [频道监听] 暂未发现新文件，将由系统定时任务兜底处理。")
+                            threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
                         except: pass
                     else:
                         err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
                         logger.error(f"  ➜ [频道监听] 离线提交失败: {err}")
+
+            elif task_type == "offline_download":
+                target_url = task['url']
+                payload = {"url[0]": target_url, "wp_path_id": target_cid}
+                
+                res = client.offline_add_urls(payload)
+                if res and res.get('state'):
+                    logger.info(f"  ➜ [TG订阅] 离线下载任务提交成功！")
+                    try:
+                        import task_manager
+                        import threading
+                        threading.Timer(10.0, task_manager.trigger_115_organize_task).start()
+                    except: pass
+                else:
+                    err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'
+                    logger.error(f"  ➜ [频道监听] 离线提交失败: {err}")
 
         except Exception as e:
             logger.error(f"  ➜ [频道监听] 队列处理异常: {e}")
