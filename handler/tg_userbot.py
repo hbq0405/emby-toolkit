@@ -424,24 +424,31 @@ class TGUserBotManager:
         # 8. 精准判定媒体类型
         item_type = 'movie' 
         
-        if re.search(r'(?:📺|🖥️)?\s*(?:电视剧|剧集|动漫|番剧)[:：]', text):
-            item_type = 'tv'
-        elif re.search(r'(?:🎬|🎥|🎞️)?\s*电影[:：]', text):
+        # 1. 最高优先级：明确带有 [电影] / 【电影】 等标识，或者 电影:
+        if re.search(r'(?:\[|【)电影(?:\]|】)|(?:🎬|🎥|🎞️)?\s*电影[:：]', text, re.IGNORECASE):
             item_type = 'movie'
+        # 2. 明确带有 [剧集] / [动漫] 等标识，或者 剧集:
+        elif re.search(r'(?:\[|【)(?:电视剧|剧集|动漫|番剧)(?:\]|】)|(?:📺|🖥️)?\s*(?:电视剧|剧集|动漫|番剧)[:：]', text, re.IGNORECASE):
+            item_type = 'tv'
+        # 3. 提取到了季号或集号，必然是剧集
         elif season_number is not None or episode_number is not None:
             item_type = 'tv'
+        # 4. 标签和正文前缀判定
         else:
             tags = " ".join(re.findall(r'#\w+', text))
-            if re.search(r'#(?:电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|剧集|动画)', tags, re.IGNORECASE):
-                item_type = 'tv'
-            elif re.search(r'#(?:电影|Movie)', tags, re.IGNORECASE):
+            # 先判断是否明确有电影标签 (优先级高于动画)
+            if re.search(r'#(?:电影|Movie)', tags, re.IGNORECASE):
                 item_type = 'movie'
+            # 再判断是否有剧集/动漫标签
+            elif re.search(r'#(?:电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|剧集|动画)', tags, re.IGNORECASE):
+                item_type = 'tv'
             else:
                 header_text = "\n".join(text.split('\n')[:8])
-                if re.search(r'(电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|剧集)', header_text, re.IGNORECASE):
-                    item_type = 'tv'
-                elif re.search(r'(电影|Movie)', header_text, re.IGNORECASE):
+                # 同样，正文前8行先找电影关键字
+                if re.search(r'(电影|Movie)', header_text, re.IGNORECASE):
                     item_type = 'movie'
+                elif re.search(r'(电视剧|日剧|韩剧|美剧|英剧|台剧|港剧|泰剧|短剧|动漫|番剧|剧集)', header_text, re.IGNORECASE):
+                    item_type = 'tv'
 
         allowed_types = cfg.get('monitor_types', ['movie', 'tv'])
         
