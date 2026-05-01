@@ -9,7 +9,12 @@
             <div>
               <div style="font-weight: bold; font-size: 15px; margin-bottom: 4px;">{{ res.title || '未命名资源' }}</div>
               <n-space size="small" style="font-size: 12px;">
-                <n-tag size="small" type="info" :bordered="false">{{ res.share_size || '未知大小' }}</n-tag>
+                <!-- ★ 新增：显示资源类型 (115/磁力/ED2K) -->
+                <n-tag size="small" :type="getPanTypeColor(res.pan_type)" :bordered="false">
+                  {{ formatPanType(res.pan_type) }}
+                </n-tag>
+                
+                <n-tag size="small" type="default" :bordered="true" v-if="res.share_size">{{ res.share_size }}</n-tag>
                 <n-tag size="small" type="success" :bordered="false" v-if="res.video_resolution?.length">{{ res.video_resolution.join(', ') }}</n-tag>
                 <n-tag size="small" type="warning" :bordered="false" v-if="res.source?.length">{{ res.source.join(', ') }}</n-tag>
                 <span style="color: #888;" v-if="res.remark">{{ res.remark }}</span>
@@ -21,8 +26,9 @@
                 <span v-else-if="res.unlock_points === 0 || res.unlock_points === null">免费</span>
                 <span v-else>需 {{ res.unlock_points }} 积分</span>
               </div>
+              <!-- ★ 修改：根据资源类型动态显示按钮文案 -->
               <n-button type="primary" color="#f0a020" size="small" @click="download(res)" :loading="downloadingSlug === res.slug">
-                一键转存
+                {{ isOffline(res.pan_type) ? '离线下载' : '一键转存' }}
               </n-button>
             </div>
           </div>
@@ -66,6 +72,29 @@ const mediaTitle = computed(() => {
   }
   return title;
 });
+
+// ★ 新增：格式化网盘类型
+const formatPanType = (type) => {
+  if (!type) return '115网盘';
+  const t = type.toLowerCase();
+  if (t === '115') return '115网盘';
+  if (t === 'magnet') return '磁力链接';
+  if (t === 'ed2k') return '电驴 ED2K';
+  if (t === 'bt') return 'BT 种子';
+  return type.toUpperCase();
+};
+
+// ★ 新增：判断是否为离线下载类型
+const isOffline = (type) => {
+  if (!type) return false;
+  return ['magnet', 'ed2k', 'bt'].includes(type.toLowerCase());
+};
+
+// ★ 新增：根据类型返回不同的 Tag 颜色
+const getPanTypeColor = (type) => {
+  if (!type || type.toLowerCase() === '115') return 'primary'; // 115 显示蓝色
+  return 'info'; // 磁力/ED2K 显示浅蓝色
+};
 
 const fetchResources = async () => {
   if (!props.media) return;
