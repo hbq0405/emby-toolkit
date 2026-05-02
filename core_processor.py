@@ -4566,6 +4566,90 @@ class MediaProcessor:
             logger.error(f"  ➜ 获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
             return None
     
+    # --- 从 115 直链截取分集缩略图 ---
+    def _extract_episode_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str) -> bool:
+        """
+        调用 FFmpeg 从 115 直链截取高质量分集缩略图
+        """
+        import subprocess
+        import shutil
+        
+        if not shutil.which("ffmpeg"):
+            logger.warning("  ➜ [FFmpeg截图] 容器内未安装 ffmpeg，无法截取分集图。")
+            return False
+
+        try:
+            # 1. 获取 115 提取码和 SHA1
+            pc, sha1 = self._extract_115_fingerprints(video_path)
+            if not pc:
+                return False
+
+            # 2. 获取 115 播放直链
+            from handler.p115_service import P115Service
+            client = P115Service.get_client()
+            if not client:
+                return False
+            direct_url = client.download_url(pc, user_agent="Mozilla/5.0")
+            if not direct_url:
+                return False
+
+            # 3. 智能计算截图时间点 (默认 10 分钟，如果有数据库时长则取 30% 处)
+            timestamp_sec = 600 
+            if sha1:
+                try:
+                    with get_central_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s", (sha1,))
+                            row = cursor.fetchone()
+                            if row and row['mediainfo_json']:
+                                mi = row['mediainfo_json']
+                                if isinstance(mi, list) and len(mi) > 0:
+                                    mi = mi[0]
+                                ticks = mi.get("MediaSourceInfo", {}).get("RunTimeTicks", 0)
+                                if ticks > 0:
+                                    duration_sec = ticks / 10000000
+                                    # 取视频 30% 的位置，完美避开 OP 和前情提要
+                                    timestamp_sec = int(duration_sec * 0.3)
+                except Exception:
+                    pass
+
+            logger.info(f"  ➜ [FFmpeg截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
+
+            # 4. 组装 FFmpeg 命令
+            # -ss 放在 -i 前面实现极速跳转
+            # -vf "thumbnail=24"：提取 24 帧并由算法选出最清晰、最具代表性的一帧（防模糊、防空镜头）
+            # -q:v 2：输出高质量 JPEG
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-loglevel", "error",
+                "-user_agent", "Mozilla/5.0",
+                "-rw_timeout", "15000000",
+                "-ss", str(timestamp_sec),
+                "-i", str(direct_url),
+                "-vf", "thumbnail=24",
+                "-frames:v", "1",
+                "-q:v", "2",
+                "-y",
+                thumb_save_path
+            ]
+
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+            
+            if proc.returncode == 0 and os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) > 0:
+                return True
+            else:
+                err_msg = (proc.stderr.decode('utf-8', errors='ignore') or "").strip()
+                logger.debug(f"  ➜ [FFmpeg截图] 截图失败: {err_msg}")
+                return False
+
+        except subprocess.TimeoutExpired:
+            logger.warning(f"  ➜ [FFmpeg截图] 截图超时: {os.path.basename(video_path)}")
+            return False
+        except Exception as e:
+            logger.warning(f"  ➜ [FFmpeg截图] 发生异常: {e}")
+            return False
+
     # --- 从 TMDb 直接下载图片 (用于实时监控/预处理/追剧刷新) ---
     def download_images_from_tmdb(self, tmdb_id: str, item_type: str, aggregated_tmdb_data: Optional[Dict[str, Any]] = None, item_details: Optional[Dict[str, Any]] = None, force_overwrite_episodes: Optional[List[str]] = None) -> bool:
         if not tmdb_id: return False
@@ -4644,6 +4728,8 @@ class MediaProcessor:
                 downloads.append((images_node["logos"][0]["file_path"], os.path.join(series_root_dir, "clearlogo.png"), False))
 
             # --- D. 剧集季海报 & 分集图 ---
+            ffmpeg_thumb_tasks = [] # ★ 新增：存储需要 FFmpeg 截图的任务
+
             if item_type == "Series":
                 # 季海报 -> 根目录
                 seasons_source = aggregated_tmdb_data.get("seasons_details", []) if aggregated_tmdb_data else tmdb_data.get("seasons", [])
@@ -4652,6 +4738,7 @@ class MediaProcessor:
                     s_poster = season.get("poster_path")
                     if s_num is not None and s_poster:
                         downloads.append((s_poster, os.path.join(series_root_dir, f"season{s_num:02d}-poster.jpg"), False))
+                
                 # 分集图 -> 深度遍历寻找视频文件
                 if aggregated_tmdb_data and "episodes_details" in aggregated_tmdb_data:
                     episodes = aggregated_tmdb_data["episodes_details"]
@@ -4661,7 +4748,6 @@ class MediaProcessor:
                         import re
                         valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
                         
-                        # ★★★ 核心修复：使用 os.walk 深度遍历，钻进 Season 文件夹找视频 ★★★
                         for root, dirs, files in os.walk(series_root_dir):
                             for filename in files:
                                 if os.path.splitext(filename)[1].lower() not in valid_exts: continue
@@ -4671,15 +4757,23 @@ class MediaProcessor:
                                     for ep in ep_list:
                                         if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
                                             e_still = ep.get("still_path")
+                                            thumb_name = os.path.splitext(filename)[0] + "-thumb.jpg"
+                                            thumb_save_path = os.path.join(root, thumb_name)
+                                            
+                                            ep_key = f"S{target_s}E{target_e}"
+                                            force_overwrite = force_overwrite_episodes and ep_key in force_overwrite_episodes
+                                            
                                             if e_still:
-                                                thumb_name = os.path.splitext(filename)[0] + "-thumb.jpg"
-                                                # 检查是否需要强制覆盖
-                                                ep_key = f"S{target_s}E{target_e}"
-                                                force_overwrite = force_overwrite_episodes and ep_key in force_overwrite_episodes
-                                                downloads.append((e_still, os.path.join(root, thumb_name), force_overwrite))
+                                                # TMDb 有图，正常下载
+                                                downloads.append((e_still, thumb_save_path, force_overwrite))
+                                            else:
+                                                # ★ TMDb 没图，加入 FFmpeg 截图队列
+                                                if force_overwrite or not os.path.exists(thumb_save_path):
+                                                    video_full_path = os.path.join(root, filename)
+                                                    ffmpeg_thumb_tasks.append((video_full_path, thumb_save_path))
                                             break
 
-            # 5. 执行下载
+            # 5. 执行下载 (原有逻辑)
             base_image_url = "https://image.tmdb.org/t/p/original"
             import requests
             import concurrent.futures
@@ -4688,7 +4782,6 @@ class MediaProcessor:
             def _download_single_image(tmdb_path, save_path, force_overwrite=False): 
                 if not tmdb_path: return 0
                 full_url = f"{base_image_url}{tmdb_path}"
-                # ★ 如果没有开启强制覆盖，且文件已存在，则跳过
                 if not force_overwrite and os.path.exists(save_path) and os.path.getsize(save_path) > 0: return 0
                 try:
                     resp = requests.get(full_url, timeout=15, proxies=proxies)
@@ -4701,12 +4794,23 @@ class MediaProcessor:
 
             success_count = 0
             with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
-                # ★★★ 核心修复：这里必须用 3 个变量解包！ ★★★
                 futures = [executor.submit(_download_single_image, path, save_path, force_overwrite) for path, save_path, force_overwrite in downloads]
                 for future in concurrent.futures.as_completed(futures):
                     success_count += future.result()
 
             logger.info(f"  ➜ {log_prefix} 共下载 {success_count} 张图片。")
+
+            # =========================================================
+            # ★ 6. 执行 FFmpeg 截图任务 (串行执行，防止 115 封控或 CPU 爆炸)
+            # =========================================================
+            if ffmpeg_thumb_tasks:
+                logger.info(f"  ➜ {log_prefix} 发现 {len(ffmpeg_thumb_tasks)} 个分集缺失 TMDb 图片，准备调用 FFmpeg 智能截图...")
+                ffmpeg_success_count = 0
+                for video_path, thumb_path in ffmpeg_thumb_tasks:
+                    if self._extract_episode_thumb_via_ffmpeg(video_path, thumb_path):
+                        ffmpeg_success_count += 1
+                logger.info(f"  ➜ {log_prefix} FFmpeg 截图完成，成功生成 {ffmpeg_success_count} 张分集图。")
+
             return True
 
         except Exception as e:
