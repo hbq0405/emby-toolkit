@@ -1606,11 +1606,6 @@ class MediaProcessor:
             runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
             return max(runtimes) if runtimes else tmdb_runtime
 
-        def get_representative_runtime(emby_items, tmdb_runtime):
-            if not emby_items: return tmdb_runtime
-            runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
-            return max(runtimes) if runtimes else tmdb_runtime
-            
         # 从真理之源 p115_mediainfo_cache 提取绝对准确的物理时长
         def get_physical_runtime_from_db(sha1_list):
             if not sha1_list: return None
