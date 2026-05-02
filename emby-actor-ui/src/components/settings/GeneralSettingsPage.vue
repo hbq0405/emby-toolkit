@@ -79,7 +79,7 @@
                       <n-switch v-model:value="configModel.extract_episode_thumb" />
                       <template #feedback>
                         <n-text depth="3" style="font-size:0.8em;">
-                          开启后，当 TMDb 缺失分集图片时，将自动调用 FFmpeg 从视频流中截取高清画面作为分集图。
+                          智能从视频流中截取无黑边高清画面作为分集图。
                         </n-text>
                       </template>
                     </n-form-item-grid-item>
