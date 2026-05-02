@@ -1605,6 +1605,42 @@ class MediaProcessor:
             if not emby_items: return tmdb_runtime
             runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
             return max(runtimes) if runtimes else tmdb_runtime
+
+        def get_representative_runtime(emby_items, tmdb_runtime):
+            if not emby_items: return tmdb_runtime
+            runtimes = [round(item['RunTimeTicks'] / 600000000) for item in emby_items if item.get('RunTimeTicks')]
+            return max(runtimes) if runtimes else tmdb_runtime
+            
+        # 从真理之源 p115_mediainfo_cache 提取绝对准确的物理时长
+        def get_physical_runtime_from_db(sha1_list):
+            if not sha1_list: return None
+            valid_sha1s = [s for s in sha1_list if s]
+            if not valid_sha1s: return None
+            
+            try:
+                format_strings = ','.join(['%s'] * len(valid_sha1s))
+                cursor.execute(f"SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 IN ({format_strings})", tuple(valid_sha1s))
+                rows = cursor.fetchall()
+                
+                runtimes = []
+                for r in rows:
+                    mi = r.get('mediainfo_json')
+                    if not mi: continue
+                    
+                    # 兼容列表和字典两种格式
+                    if isinstance(mi, list) and len(mi) > 0:
+                        mi = mi[0]
+                        
+                    # 1秒 = 10,000,000 Ticks，1分钟 = 600,000,000 Ticks
+                    ticks = mi.get("MediaSourceInfo", {}).get("RunTimeTicks", 0)
+                    if ticks > 0:
+                        runtimes.append(round(ticks / 600000000))
+                        
+                if runtimes:
+                    return max(runtimes) # 如果有多版本，取最长的版本作为代表时长
+            except Exception as e:
+                logger.warning(f"  ➜ 从 p115_mediainfo_cache 提取物理时长失败: {e}")
+            return None
         
         def _extract_common_json_fields(details: Dict[str, Any], m_type: str):
             # 1. Genres (类型)
@@ -1699,7 +1735,6 @@ class MediaProcessor:
                 movie_record['item_type'] = 'Movie'
                 movie_id = movie_record.get('id')
                 movie_record['tmdb_id'] = str(movie_id) if movie_id else ""
-                movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
                 movie_record['rating'] = movie_record.get('vote_average')
                 
                 # ★ 资产信息处理 (支持多版本)
@@ -1829,6 +1864,16 @@ class MediaProcessor:
                     movie_record['file_sha1_json'] = json.dumps(list(dict.fromkeys(all_sha1s)))
                     movie_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
                     movie_record['in_library'] = True
+
+                # 应用物理时长 (真理之源)
+                if is_pending:
+                    movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
+                else:
+                    physical_rt = get_physical_runtime_from_db(all_sha1s)
+                    if physical_rt and physical_rt > 0:
+                        movie_record['runtime_minutes'] = physical_rt
+                    else:
+                        movie_record['runtime_minutes'] = get_representative_runtime([item_details_from_emby], movie_record.get('runtime'))
 
                 movie_record['actors_json'] = json.dumps([{"tmdb_id": int(p.get("id")), "character": p.get("character"), "order": p.get("order")} for p in final_processed_cast if p.get("id")], ensure_ascii=False)
                 movie_record['subscription_status'] = 'NONE'
@@ -2193,6 +2238,11 @@ class MediaProcessor:
                         episode_record['file_sha1_json'] = json.dumps(list(dict.fromkeys(all_sha1s)))
                         episode_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
                         episode_record['in_library'] = True
+                        # 应用物理时长 (真理之源) 
+                        physical_rt = get_physical_runtime_from_db(all_sha1s)
+                        if physical_rt and physical_rt > 0:
+                            episode_record['runtime_minutes'] = physical_rt
+                            
                     else:
                         episode_record['in_library'] = False
                         episode_record['emby_item_ids_json'] = '[]'
@@ -2322,6 +2372,11 @@ class MediaProcessor:
                     episode_record['file_sha1_json'] = json.dumps(list(dict.fromkeys(all_sha1s)))
                     episode_record['file_pickcode_json'] = json.dumps(list(dict.fromkeys(all_pcs)))
                     episode_record['in_library'] = True
+
+                    # 应用物理时长 (真理之源)
+                    physical_rt = get_physical_runtime_from_db(all_sha1s)
+                    if physical_rt and physical_rt > 0:
+                        episode_record['runtime_minutes'] = physical_rt
 
                     records_to_upsert.append(episode_record)
 
