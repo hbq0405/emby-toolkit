@@ -4619,7 +4619,7 @@ class MediaProcessor:
     # --- 从 115 直链截取分集缩略图 ---
     def _extract_episode_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str, ep_data: dict = None) -> bool:
         """
-        调用 FFmpeg 从 115 直链截取高质量分集缩略图 (智能去黑边 + 强制 16:9)
+        调用 FFmpeg 从 115 直链截取高质量分集缩略图 (激进去黑边 + 强制 16:9)
         """
         import subprocess
         import shutil
@@ -4633,7 +4633,6 @@ class MediaProcessor:
             # 1. 获取 115 提取码和 SHA1
             pc, sha1 = self._extract_115_fingerprints(video_path)
             
-            # 如果 STRM 模式下没拿到 sha1，通过 pickcode 反查
             if not sha1 and pc:
                 sha1 = self._get_sha1_by_pickcode(pc)
                 
@@ -4653,7 +4652,6 @@ class MediaProcessor:
             timestamp_sec = 600 
             duration_sec = 0
             
-            # 优先从真理之源获取物理时长
             if sha1:
                 try:
                     with get_central_db_connection() as conn:
@@ -4670,20 +4668,18 @@ class MediaProcessor:
                 except Exception:
                     pass
             
-            # 如果物理时长获取失败，尝试从 TMDb 理论数据兜底
             if duration_sec == 0 and ep_data:
                 runtime_min = ep_data.get("runtime")
                 if runtime_min and isinstance(runtime_min, (int, float)) and runtime_min > 0:
                     duration_sec = runtime_min * 60
                     
-            # 取视频 30% 的位置，完美避开 OP 和前情提要
             if duration_sec > 0:
                 timestamp_sec = int(duration_sec * 0.3)
 
             logger.info(f"  ➜ [FFmpeg截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
 
             # =========================================================
-            # ★ 阶段一：从网络流截取原始最佳帧 (包含可能的黑边)
+            # ★ 阶段一：从网络流截取原始最佳帧 (包含噪点黑边)
             # =========================================================
             raw_thumb_path = thumb_save_path + ".raw.jpg"
             cmd1 = [
@@ -4704,39 +4700,38 @@ class MediaProcessor:
             proc1 = subprocess.run(cmd1, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
             
             if proc1.returncode != 0 or not os.path.exists(raw_thumb_path) or os.path.getsize(raw_thumb_path) == 0:
-                err_msg = (proc1.stderr.decode('utf-8', errors='ignore') or "").strip()
-                logger.debug(f"  ➜ [FFmpeg截图] 阶段一(截取原图)失败: {err_msg}")
                 if os.path.exists(raw_thumb_path):
                     os.remove(raw_thumb_path)
                 return False
 
             # =========================================================
-            # ★ 阶段二：智能检测硬编码黑边
+            # ★ 阶段二：激进检测硬编码黑边
             # =========================================================
+            # limit=50：大幅提高黑边噪点容忍度，无视暗部色块
+            # round=2：确保裁剪尺寸是偶数，防止后续缩放报错
             cmd2 = [
                 "ffmpeg",
                 "-hide_banner",
                 "-i", raw_thumb_path,
-                "-vf", "cropdetect=24:16:0",
+                "-vf", "cropdetect=limit=50:round=2",
                 "-f", "null",
                 "-"
             ]
             proc2 = subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='ignore')
             
             crop_param = ""
-            # 解析 FFmpeg 输出的 crop 参数，例如 crop=1920:800:0:140
             matches = re.findall(r'crop=\d+:\d+:\d+:\d+', proc2.stderr)
             if matches:
-                crop_param = matches[-1] # 取最后一次检测结果最准确
+                crop_param = matches[-1]
+                logger.info(f"  ➜ [FFmpeg截图] 成功探测到黑边，裁剪参数: {crop_param}")
 
             # =========================================================
             # ★ 阶段三：切除黑边 -> 强制 16:9 缩放 -> 中心裁剪
             # =========================================================
             vf_filters = []
             if crop_param:
-                vf_filters.append(crop_param) # 先切掉黑边
+                vf_filters.append(crop_param)
             
-            # 再进行 16:9 等比拉伸和中心裁剪
             vf_filters.append("scale=1920:1080:force_original_aspect_ratio=increase")
             vf_filters.append("crop=1920:1080")
             
@@ -4755,14 +4750,12 @@ class MediaProcessor:
             
             proc3 = subprocess.run(cmd3, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             
-            # 清理临时原图
             if os.path.exists(raw_thumb_path):
                 os.remove(raw_thumb_path)
 
             if proc3.returncode == 0 and os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) > 0:
                 return True
             else:
-                logger.debug(f"  ➜ [FFmpeg截图] 阶段三(去黑边与格式化)失败。")
                 return False
 
         except subprocess.TimeoutExpired:
