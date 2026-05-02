@@ -4619,11 +4619,12 @@ class MediaProcessor:
     # --- 从 115 直链截取分集缩略图 ---
     def _extract_episode_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str, ep_data: dict = None) -> bool:
         """
-        调用 FFmpeg 从 115 直链截取高质量分集缩略图 (激进去黑边 + 强制 16:9)
+        调用 FFmpeg 从 115 直链截取高质量分集缩略图 (视频流直读 + 智能去黑边 + 强制 16:9)
         """
         import subprocess
         import shutil
         import re
+        from collections import Counter
         
         if not shutil.which("ffmpeg"):
             logger.warning("  ➜ [FFmpeg截图] 容器内未安装 ffmpeg，无法截取分集图。")
@@ -4679,56 +4680,39 @@ class MediaProcessor:
             logger.info(f"  ➜ [FFmpeg截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
 
             # =========================================================
-            # ★ 阶段一：从网络流截取原始最佳帧 (包含噪点黑边)
+            # ★ 阶段一：直接从视频流读取 10 帧，精准探测黑边
             # =========================================================
-            raw_thumb_path = thumb_save_path + ".raw.jpg"
-            cmd1 = [
+            # skip=0: 强制不跳过任何帧
+            # limit=40: 激进探测，无视 WEB-DL 的暗部压缩噪点
+            cmd_detect = [
                 "ffmpeg",
                 "-hide_banner",
-                "-loglevel", "error",
                 "-user_agent", "Mozilla/5.0",
                 "-rw_timeout", "15000000",
                 "-ss", str(timestamp_sec),
                 "-i", str(direct_url),
-                "-vf", "thumbnail=24",
-                "-frames:v", "1",
-                "-q:v", "2",
-                "-y",
-                raw_thumb_path
-            ]
-
-            proc1 = subprocess.run(cmd1, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
-            
-            if proc1.returncode != 0 or not os.path.exists(raw_thumb_path) or os.path.getsize(raw_thumb_path) == 0:
-                if os.path.exists(raw_thumb_path):
-                    os.remove(raw_thumb_path)
-                return False
-
-            # =========================================================
-            # ★ 阶段二：激进检测硬编码黑边
-            # =========================================================
-            # limit=50：大幅提高黑边噪点容忍度，无视暗部色块
-            # round=2：确保裁剪尺寸是偶数，防止后续缩放报错
-            cmd2 = [
-                "ffmpeg",
-                "-hide_banner",
-                "-i", raw_thumb_path,
-                "-vf", "cropdetect=limit=50:round=2",
+                "-frames:v", "10",
+                "-vf", "cropdetect=limit=40:round=2:skip=0",
                 "-f", "null",
                 "-"
             ]
-            proc2 = subprocess.run(cmd2, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='ignore')
+
+            proc_detect = subprocess.run(cmd_detect, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='ignore', timeout=60)
             
             crop_param = ""
-            matches = re.findall(r'crop=\d+:\d+:\d+:\d+', proc2.stderr)
+            # 解析所有的 crop 参数
+            matches = re.findall(r'crop=\d+:\d+:\d+:\d+', proc_detect.stderr)
             if matches:
-                crop_param = matches[-1]
-                logger.info(f"  ➜ [FFmpeg截图] 成功探测到黑边，裁剪参数: {crop_param}")
+                # 取出现次数最多的裁剪参数，防止某几帧画面闪烁导致误判
+                crop_param = Counter(matches).most_common(1)[0][0]
+                logger.info(f"  ➜ [FFmpeg截图] 成功探测到黑边，应用裁剪参数: {crop_param}")
+            else:
+                logger.debug("  ➜ [FFmpeg截图] 未探测到黑边，将使用原画面比例。")
 
             # =========================================================
-            # ★ 阶段三：切除黑边 -> 强制 16:9 缩放 -> 中心裁剪
+            # ★ 阶段二：提取最佳帧 -> 切除黑边 -> 强制 16:9 缩放 -> 中心裁剪
             # =========================================================
-            vf_filters = []
+            vf_filters = ["thumbnail=24"]
             if crop_param:
                 vf_filters.append(crop_param)
             
@@ -4737,25 +4721,28 @@ class MediaProcessor:
             
             vf_string = ",".join(vf_filters)
 
-            cmd3 = [
+            cmd_extract = [
                 "ffmpeg",
                 "-hide_banner",
                 "-loglevel", "error",
-                "-i", raw_thumb_path,
+                "-user_agent", "Mozilla/5.0",
+                "-rw_timeout", "15000000",
+                "-ss", str(timestamp_sec),
+                "-i", str(direct_url),
                 "-vf", vf_string,
+                "-frames:v", "1",
                 "-q:v", "2",
                 "-y",
                 thumb_save_path
             ]
             
-            proc3 = subprocess.run(cmd3, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            
-            if os.path.exists(raw_thumb_path):
-                os.remove(raw_thumb_path)
+            proc_extract = subprocess.run(cmd_extract, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
 
-            if proc3.returncode == 0 and os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) > 0:
+            if proc_extract.returncode == 0 and os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) > 0:
                 return True
             else:
+                err_msg = (proc_extract.stderr.decode('utf-8', errors='ignore') or "").strip()
+                logger.debug(f"  ➜ [FFmpeg截图] 提取画面失败: {err_msg}")
                 return False
 
         except subprocess.TimeoutExpired:
