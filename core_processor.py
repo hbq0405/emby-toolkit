@@ -4617,7 +4617,7 @@ class MediaProcessor:
             return None
     
     # --- 从 115 直链截取分集缩略图 ---
-    def _extract_episode_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str) -> bool:
+    def _extract_episode_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str, ep_data: dict = None) -> bool:
         """
         调用 FFmpeg 从 115 直链截取高质量分集缩略图
         """
@@ -4631,6 +4631,11 @@ class MediaProcessor:
         try:
             # 1. 获取 115 提取码和 SHA1
             pc, sha1 = self._extract_115_fingerprints(video_path)
+            
+            # ★ 核心修复：如果 STRM 模式下没拿到 sha1，通过 pickcode 反查
+            if not sha1 and pc:
+                sha1 = self._get_sha1_by_pickcode(pc)
+                
             if not pc:
                 return False
 
@@ -4643,8 +4648,11 @@ class MediaProcessor:
             if not direct_url:
                 return False
 
-            # 3. 智能计算截图时间点 (默认 10 分钟，如果有数据库时长则取 30% 处)
+            # 3. 智能计算截图时间点
             timestamp_sec = 600 
+            duration_sec = 0
+            
+            # 优先从真理之源获取物理时长
             if sha1:
                 try:
                     with get_central_db_connection() as conn:
@@ -4658,17 +4666,22 @@ class MediaProcessor:
                                 ticks = mi.get("MediaSourceInfo", {}).get("RunTimeTicks", 0)
                                 if ticks > 0:
                                     duration_sec = ticks / 10000000
-                                    # 取视频 30% 的位置，完美避开 OP 和前情提要
-                                    timestamp_sec = int(duration_sec * 0.3)
                 except Exception:
                     pass
+            
+            # 如果物理时长获取失败，尝试从 TMDb 理论数据兜底
+            if duration_sec == 0 and ep_data:
+                runtime_min = ep_data.get("runtime")
+                if runtime_min and isinstance(runtime_min, (int, float)) and runtime_min > 0:
+                    duration_sec = runtime_min * 60
+                    
+            # 取视频 30% 的位置，完美避开 OP 和前情提要
+            if duration_sec > 0:
+                timestamp_sec = int(duration_sec * 0.3)
 
             logger.info(f"  ➜ [FFmpeg截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
 
             # 4. 组装 FFmpeg 命令
-            # -ss 放在 -i 前面实现极速跳转
-            # -vf "thumbnail=24"：提取 24 帧并由算法选出最清晰、最具代表性的一帧（防模糊、防空镜头）
-            # -q:v 2：输出高质量 JPEG
             cmd = [
                 "ffmpeg",
                 "-hide_banner",
@@ -4820,7 +4833,7 @@ class MediaProcessor:
                                                 # ★ TMDb 没图，加入 FFmpeg 截图队列
                                                 if force_overwrite or not os.path.exists(thumb_save_path):
                                                     video_full_path = os.path.join(root, filename)
-                                                    ffmpeg_thumb_tasks.append((video_full_path, thumb_save_path))
+                                                    ffmpeg_thumb_tasks.append((video_full_path, thumb_save_path, ep))
                                             break
 
             # 5. 执行下载 (原有逻辑)
@@ -4856,8 +4869,9 @@ class MediaProcessor:
             if ffmpeg_thumb_tasks:
                 logger.info(f"  ➜ {log_prefix} 发现 {len(ffmpeg_thumb_tasks)} 个分集缺失 TMDb 图片，准备调用 FFmpeg 智能截图...")
                 ffmpeg_success_count = 0
-                for video_path, thumb_path in ffmpeg_thumb_tasks:
-                    if self._extract_episode_thumb_via_ffmpeg(video_path, thumb_path):
+                # ★ 接收解包出来的 ep_data
+                for video_path, thumb_path, ep_data in ffmpeg_thumb_tasks:
+                    if self._extract_episode_thumb_via_ffmpeg(video_path, thumb_path, ep_data):
                         ffmpeg_success_count += 1
                 logger.info(f"  ➜ {log_prefix} FFmpeg 截图完成，成功生成 {ffmpeg_success_count} 张分集图。")
 
