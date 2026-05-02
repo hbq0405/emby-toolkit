@@ -75,6 +75,14 @@
                       <n-input-number v-model:value="configModel.max_episode_actors_to_process" :min="0" :step="1" placeholder="例如: 5"/>
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">每集最多处理的演员数量，0代表不单独处理分集演员。</n-text></template>
                     </n-form-item-grid-item>
+                    <n-form-item-grid-item label="智能截取分集图片" path="extract_episode_thumb">
+                      <n-switch v-model:value="configModel.extract_episode_thumb" />
+                      <template #feedback>
+                        <n-text depth="3" style="font-size:0.8em;">
+                          开启后，当 TMDb 缺失分集图片时，将自动调用 FFmpeg 从视频流中截取高清画面作为分集图。
+                        </n-text>
+                      </template>
+                    </n-form-item-grid-item>
                     <n-form-item-grid-item label="为角色名添加前缀" path="actor_role_add_prefix">
                       <n-switch v-model:value="configModel.actor_role_add_prefix" />
                       <template #feedback><n-text depth="3" style="font-size:0.8em;">角色名前加上“饰 ”或“配 ”。</n-text></template>

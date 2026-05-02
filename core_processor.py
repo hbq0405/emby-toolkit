@@ -4830,7 +4830,9 @@ class MediaProcessor:
                 downloads.append((images_node["logos"][0]["file_path"], os.path.join(series_root_dir, "clearlogo.png"), False))
 
             # --- D. 剧集季海报 & 分集图 ---
-            ffmpeg_thumb_tasks = [] # ★ 新增：存储需要 FFmpeg 截图的任务
+            ffmpeg_thumb_tasks = [] # 存储需要 FFmpeg 截图的任务
+            #  读取智能截图开关 (默认关闭，需用户主动开启)
+            enable_ffmpeg_thumb = self.config.get(constants.CONFIG_OPTION_EXTRACT_EPISODE_THUMB, False)
 
             if item_type == "Series":
                 # 季海报 -> 根目录
@@ -4869,8 +4871,8 @@ class MediaProcessor:
                                                 # TMDb 有图，正常下载
                                                 downloads.append((e_still, thumb_save_path, force_overwrite))
                                             else:
-                                                # ★ TMDb 没图，加入 FFmpeg 截图队列
-                                                if force_overwrite or not os.path.exists(thumb_save_path):
+                                                # ★ TMDb 没图，且开启了智能截图开关，才加入 FFmpeg 截图队列
+                                                if enable_ffmpeg_thumb and (force_overwrite or not os.path.exists(thumb_save_path)):
                                                     video_full_path = os.path.join(root, filename)
                                                     ffmpeg_thumb_tasks.append((video_full_path, thumb_save_path, ep))
                                             break
