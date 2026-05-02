@@ -4627,7 +4627,7 @@ class MediaProcessor:
         from collections import Counter
         
         if not shutil.which("ffmpeg"):
-            logger.warning("  ➜ [FFmpeg截图] 容器内未安装 ffmpeg，无法截取分集图。")
+            logger.warning("  ➜ [智能截图] 容器内未安装 ffmpeg，无法截取分集图。")
             return False
 
         try:
@@ -4677,7 +4677,7 @@ class MediaProcessor:
             if duration_sec > 0:
                 timestamp_sec = int(duration_sec * 0.3)
 
-            logger.info(f"  ➜ [FFmpeg截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
+            logger.info(f"  ➜ [智能截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
 
             # =========================================================
             # ★ 阶段一：直接从视频流读取 10 帧，精准探测黑边
@@ -4705,9 +4705,9 @@ class MediaProcessor:
             if matches:
                 # 取出现次数最多的裁剪参数，防止某几帧画面闪烁导致误判
                 crop_param = Counter(matches).most_common(1)[0][0]
-                logger.info(f"  ➜ [FFmpeg截图] 成功探测到黑边，应用裁剪参数: {crop_param}")
+                logger.info(f"  ➜ [智能截图] 探测到黑边，将进行裁剪: {crop_param}")
             else:
-                logger.debug("  ➜ [FFmpeg截图] 未探测到黑边，将使用原画面比例。")
+                logger.debug("  ➜ [智能截图] 未探测到黑边，将使用原画面比例。")
 
             # =========================================================
             # ★ 阶段二：提取最佳帧 -> 切除黑边 -> 强制 16:9 缩放 -> 中心裁剪
@@ -4742,14 +4742,14 @@ class MediaProcessor:
                 return True
             else:
                 err_msg = (proc_extract.stderr.decode('utf-8', errors='ignore') or "").strip()
-                logger.debug(f"  ➜ [FFmpeg截图] 提取画面失败: {err_msg}")
+                logger.debug(f"  ➜ [智能截图] 提取画面失败: {err_msg}")
                 return False
 
         except subprocess.TimeoutExpired:
-            logger.warning(f"  ➜ [FFmpeg截图] 截图超时: {os.path.basename(video_path)}")
+            logger.warning(f"  ➜ [智能截图] 截图超时: {os.path.basename(video_path)}")
             return False
         except Exception as e:
-            logger.warning(f"  ➜ [FFmpeg截图] 发生异常: {e}")
+            logger.warning(f"  ➜ [智能截图] 发生异常: {e}")
             return False
 
     # --- 从 TMDb 直接下载图片 (用于实时监控/预处理/追剧刷新) ---
