@@ -4682,6 +4682,7 @@ class MediaProcessor:
             logger.info(f"  ➜ [FFmpeg截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
 
             # 4. 组装 FFmpeg 命令
+            # -vf 增加 scale 和 crop，强制输出 1920x1080 (16:9) 的中心裁剪画面
             cmd = [
                 "ffmpeg",
                 "-hide_banner",
@@ -4690,7 +4691,7 @@ class MediaProcessor:
                 "-rw_timeout", "15000000",
                 "-ss", str(timestamp_sec),
                 "-i", str(direct_url),
-                "-vf", "thumbnail=24",
+                "-vf", "thumbnail=24,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080",
                 "-frames:v", "1",
                 "-q:v", "2",
                 "-y",
