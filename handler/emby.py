@@ -1258,6 +1258,50 @@ def get_all_native_collections_from_emby(base_url: str, api_key: str, user_id: s
         logger.error(f"  ➜ 获取原生合集列表时发生严重网络错误: {e}", exc_info=True)
         return []
 
+# --- 更新合集简介并锁定字段 ---
+def update_collection_overview(collection_id: str, overview: str, base_url: str, api_key: str, user_id: str) -> bool:
+    """
+    强制更新 Emby 合集的简介，并锁定该字段防止被 Emby 自动刮削覆盖。
+    """
+    if not collection_id or not overview:
+        return False
+        
+    try:
+        # 1. 先获取合集当前的所有信息
+        item_details = get_emby_item_details(collection_id, base_url, api_key, user_id)
+        if not item_details:
+            return False
+            
+        # 如果已经一样了，就不浪费性能
+        if item_details.get("Overview") == overview:
+            return True
+            
+        # 2. 修改简介
+        item_details["Overview"] = overview
+        
+        # 3. 锁定 Overview 字段
+        locked_fields = item_details.get("LockedFields", [])
+        if "Overview" not in locked_fields:
+            locked_fields.append("Overview")
+        item_details["LockedFields"] = locked_fields
+        
+        # 4. POST 提交回 Emby
+        url = f"{base_url}/emby/Items/{collection_id}?api_key={api_key}"
+        headers = {"Content-Type": "application/json"}
+        import requests
+        resp = requests.post(url, json=item_details, headers=headers, timeout=10)
+        
+        if resp.status_code in [200, 204]:
+            logger.debug(f"  ➜ [Emby API] 成功更新并锁定合集 (ID: {collection_id}) 的简介。")
+            return True
+        else:
+            logger.warning(f"  ➜ [Emby API] 更新合集简介失败，状态码: {resp.status_code}")
+            return False
+            
+    except Exception as e:
+        logger.error(f"  ➜ [Emby API] 更新合集简介时发生错误: {e}")
+        return False
+
 # ★★★ 查询包含指定媒体项的合集 ★★★
 def get_collections_containing_item(item_id: str, base_url: str, api_key: str, user_id: str) -> List[Dict[str, Any]]:
     """

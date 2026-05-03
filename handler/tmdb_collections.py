@@ -411,6 +411,16 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
             'all_tmdb_ids': all_tmdb_ids # 更新列表
         })
 
+        # 顺手把缓存的简介注入 Emby 
+        if local_collection.get('emby_collection_id') and local_collection.get('overview'):
+            emby.update_collection_overview(
+                local_collection['emby_collection_id'],
+                local_collection['overview'],
+                config.get('emby_server_url'),
+                config.get('emby_api_key'),
+                config.get('emby_user_id')
+            )
+
     elif movie_emby_id:
         # --- 分支 B: 本地没有，需要去 Emby 查 ---
         try:
