@@ -3094,14 +3094,41 @@ class MediaProcessor:
     def _enrich_collection_info(self, collection_info: Dict[str, Any]) -> Dict[str, Any]:
         """
         辅助函数：获取并翻译电影合集信息 (名称、简介)。
+        增加数据库缓存机制，避免重复调用 AI 翻译。
         """
         if not collection_info or not isinstance(collection_info, dict) or not collection_info.get("id"):
             return collection_info
 
-        col_id = collection_info.get("id")
+        col_id = str(collection_info.get("id"))
         col_name = collection_info.get("name", "")
         col_overview = ""
 
+        # =========================================================
+        # 步骤 1: 尝试从数据库加载缓存
+        # =========================================================
+        try:
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                # 根据 tmdb_collection_id 查询已有的名称和简介
+                cursor.execute(
+                    "SELECT name, overview FROM collections_info WHERE tmdb_collection_id = %s LIMIT 1", 
+                    (col_id,)
+                )
+                row = cursor.fetchone()
+                
+                # 如果命中缓存，且简介包含中文，直接返回
+                if row and row.get('overview') and utils.contains_chinese(row['overview']):
+                    logger.info(f"  ➜ [合集缓存] 命中数据库记录: {row.get('name') or col_name}")
+                    collection_info["name"] = row.get('name') or col_name
+                    collection_info["overview"] = row['overview']
+                    return collection_info
+        except Exception as e:
+            logger.warning(f"  ➜ [合集缓存] 查询数据库失败: {e}")
+
+        # =========================================================
+        # 步骤 2: 缓存未命中，从 TMDb 获取原始数据
+        # =========================================================
+        logger.info(f"  ➜ [合集翻译] 缓存未命中，正在从 TMDb 获取详情并呼叫 AI (ID: {col_id})...")
         try:
             import requests
             base_url = self.config.get(constants.CONFIG_OPTION_TMDB_API_BASE_URL, 'https://api.themoviedb.org/3')
@@ -3125,27 +3152,48 @@ class MediaProcessor:
         except Exception as e:
             logger.warning(f"  ➜ 获取合集详细信息失败: {e}")
 
-        # AI 翻译逻辑
+        # =========================================================
+        # 步骤 3: 执行 AI 翻译
+        # =========================================================
         if self.ai_translator:
             # 翻译标题
             if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False) and col_name and not utils.contains_chinese(col_name):
                 trans_col_name = self.ai_translator.translate_title(col_name, media_type="Movie")
                 if trans_col_name and utils.contains_chinese(trans_col_name):
-                    if trans_col_name.endswith("合集"): trans_col_name = trans_col_name[:-2] + "（系列）"
-                    collection_info["name"] = trans_col_name
+                    # 规范化命名：将“合集”替换为“（系列）”
+                    if trans_col_name.endswith("合集"): 
+                        trans_col_name = trans_col_name[:-2] + "（系列）"
                     col_name = trans_col_name 
-            else: 
-                collection_info["name"] = col_name
 
             # 翻译简介
             if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False) and col_overview and not utils.contains_chinese(col_overview):
                 trans_col_overview = self.ai_translator.translate_overview(col_overview, title=col_name)
-                if trans_col_overview: collection_info["overview"] = trans_col_overview
-            elif col_overview: 
-                collection_info["overview"] = col_overview
-        else:
-            collection_info["name"] = col_name
-            if col_overview: collection_info["overview"] = col_overview
+                if trans_col_overview: 
+                    col_overview = trans_col_overview
+
+        collection_info["name"] = col_name
+        collection_info["overview"] = col_overview
+
+        # =========================================================
+        # 步骤 4: 将结果写回数据库缓存
+        # =========================================================
+        try:
+            with get_central_db_connection() as conn:
+                cursor = conn.cursor()
+                # 更新已有的合集记录（通常由 Emby 扫描任务创建）
+                # 如果表里还没有这条记录，我们不强制插入（因为缺少 emby_collection_id 主键），
+                # 但只要 Emby 侧创建了合集，这里就能更新成功。
+                cursor.execute(
+                    """
+                    UPDATE collections_info 
+                    SET name = %s, overview = %s, last_checked_at = NOW() 
+                    WHERE tmdb_collection_id = %s
+                    """,
+                    (col_name, col_overview, col_id)
+                )
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"  ➜ [合集缓存] 写入数据库失败: {e}")
 
         return collection_info
 

@@ -148,7 +148,8 @@ def init_db():
                         last_checked_at TIMESTAMP WITH TIME ZONE,
                         poster_path TEXT,
                         item_type TEXT DEFAULT 'Movie' NOT NULL,
-                        all_tmdb_ids_json JSONB
+                        all_tmdb_ids_json JSONB,
+                        overview TEXT
                     );
                 """)
 
@@ -548,7 +549,8 @@ def init_db():
                         },
                         'collections_info': {
                             "poster_path": "TEXT",
-                            "all_tmdb_ids_json": "JSONB" 
+                            "all_tmdb_ids_json": "JSONB",
+                            "overview": "TEXT" 
                         },
                         'user_templates': {
                             "source_emby_user_id": "TEXT",
