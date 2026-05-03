@@ -585,37 +585,39 @@ def init_db():
                     logger.error(f"  ➜ [数据库升级] 检查或添加新字段时出错: {e_alter}", exc_info=True)
 
                 # ======================================================================
-                # ★★★ 存量数据清洗：为旧的 115 整理记录提取并写入季号 ★★★
+                # ★★★ 更改合集主键 ★★★
                 # ======================================================================
-                try:
-                    cursor.execute("SELECT id, original_name, renamed_name FROM p115_organize_records WHERE media_type = 'tv' AND season_number IS NULL")
-                    records_to_upgrade = cursor.fetchall()
-                    
-                    if records_to_upgrade:
-                        logger.info(f"  ➜ [数据清洗] 发现 {len(records_to_upgrade)} 条旧的 115 整理记录缺少季号，正在执行正则提取与升级...")
-                        import re
-                        update_data = []
-                        for row in records_to_upgrade:
-                            name_to_check = row['renamed_name'] or row['original_name'] or ""
-                            s_num = None
-                            
-                            m1 = re.search(r'(?:^|[ \.\-\_\[\(])(?:s|S)(\d{1,4})(?:[ \.\-]*(?:e|E|p|P)\d{1,4}\b)?', name_to_check)
-                            m2 = re.search(r'Season\s*(\d{1,4})\b', name_to_check, re.IGNORECASE)
-                            m3 = re.search(r'第(\d{1,4})季', name_to_check)
+                # 检查当前主键是不是 tmdb_collection_id
+                cursor.execute("""
+                    SELECT a.attname
+                    FROM pg_index i
+                    JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+                    WHERE i.indrelid = 'collections_info'::regclass AND i.indisprimary;
+                """)
+                current_pk = cursor.fetchone()
 
-                            if m1: s_num = int(m1.group(1))
-                            elif m2: s_num = int(m2.group(1))
-                            elif m3: s_num = int(m3.group(1))
-                            
-                            if s_num is not None:
-                                update_data.append((s_num, row['id']))
+                if not current_pk or current_pk['attname'] != 'tmdb_collection_id':
+                    logger.info("  ➜ [数据库升级] 正在更改 collections_info 表的主键为 tmdb_collection_id...")
+                    try:
+                        # 1. 先清理数据：删除那些没有 TMDb ID 的脏数据（因为它们没法当主键）
+                        cursor.execute("DELETE FROM collections_info WHERE tmdb_collection_id IS NULL OR tmdb_collection_id = '';")
+
+                        # 2. 强制把该列设为不可为空（这是主键的先决条件）
+                        cursor.execute("ALTER TABLE collections_info ALTER COLUMN tmdb_collection_id SET NOT NULL;")
+
+                        # 3. 删掉旧的主键约束 (使用 IF EXISTS 防止报错)
+                        cursor.execute("ALTER TABLE collections_info DROP CONSTRAINT IF EXISTS collections_info_pkey;")
+
+                        # 4. 添加新的主键
+                        cursor.execute("ALTER TABLE collections_info ADD PRIMARY KEY (tmdb_collection_id);")
+
+                        # 5. 为原来的 Emby ID 添加唯一约束（允许为 NULL，但有值时必须唯一）
+                        cursor.execute("ALTER TABLE collections_info DROP CONSTRAINT IF EXISTS collections_info_emby_collection_id_key;")
+                        cursor.execute("ALTER TABLE collections_info ADD CONSTRAINT collections_info_emby_id_unique UNIQUE (emby_collection_id);")
                         
-                        if update_data:
-                            from psycopg2.extras import execute_batch
-                            execute_batch(cursor, "UPDATE p115_organize_records SET season_number = %s WHERE id = %s", update_data)
-                            logger.info(f"  ➜ [数据清洗] 成功为 {len(update_data)} 条记录补充了季号！")
-                except Exception as e_clean:
-                    logger.error(f"  ➜ [数据清洗] 提取季号时出错: {e_clean}")
+                        logger.info("  ➜ [数据库升级] collections_info 表主键迁移完成。")
+                    except Exception as e:
+                        logger.error(f"  ➜ [数据库升级] 迁移 collections_info 主键时出错: {e}")
                 
                 # ======================================================================
                 # ★★★ 统一创建验证所有索引 ★★★
