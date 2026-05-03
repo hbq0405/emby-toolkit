@@ -611,7 +611,10 @@ def init_db():
                         # 4. 添加新的主键
                         cursor.execute("ALTER TABLE collections_info ADD PRIMARY KEY (tmdb_collection_id);")
 
-                        # 5. 为原来的 Emby ID 添加唯一约束（允许为 NULL，但有值时必须唯一）
+                        # 5.允许 Emby ID 为空 (核心修复) ★★★
+                        cursor.execute("ALTER TABLE collections_info ALTER COLUMN emby_collection_id DROP NOT NULL;")
+
+                        # 6. 为原来的 Emby ID 添加唯一约束（允许为 NULL，但有值时必须唯一）
                         cursor.execute("ALTER TABLE collections_info DROP CONSTRAINT IF EXISTS collections_info_emby_collection_id_key;")
                         cursor.execute("ALTER TABLE collections_info ADD CONSTRAINT collections_info_emby_id_unique UNIQUE (emby_collection_id);")
                         
