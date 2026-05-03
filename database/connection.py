@@ -142,14 +142,14 @@ def init_db():
                 logger.trace("  ➜ 正在创建 'collections_info' 表 ...")
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS collections_info (
-                        emby_collection_id TEXT PRIMARY KEY,
+                        tmdb_collection_id TEXT PRIMARY KEY,  -- 主键改为 TMDb ID
+                        emby_collection_id TEXT UNIQUE,       -- Emby ID 改为唯一约束，允许为空
                         name TEXT,
-                        tmdb_collection_id TEXT,
+                        overview TEXT,
                         last_checked_at TIMESTAMP WITH TIME ZONE,
                         poster_path TEXT,
                         item_type TEXT DEFAULT 'Movie' NOT NULL,
-                        all_tmdb_ids_json JSONB,
-                        overview TEXT
+                        all_tmdb_ids_json JSONB
                     );
                 """)
 

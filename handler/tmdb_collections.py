@@ -114,11 +114,12 @@ def sync_and_subscribe_native_collections(progress_callback=None):
 
         # C. 写入合集关系表
         tmdb_collection_db.upsert_native_collection({
-            'emby_collection_id': emby_collection_id,
+            'emby_collection_id': emby_collection_id, # 此时有了真正的 Emby ID
             'name': collection.get('name'),
             'tmdb_collection_id': collection.get('tmdb_collection_id'),
             'poster_path': tmdb_details.get('poster_path'),
-            'all_tmdb_ids': all_tmdb_ids
+            'all_tmdb_ids': all_tmdb_ids,
+            'overview': tmdb_details.get('overview') # 也可以顺便更新简介
         })
 
     logger.info("--- 原生合集扫描完成 ---")

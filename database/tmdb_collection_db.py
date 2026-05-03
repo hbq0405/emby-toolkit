@@ -10,40 +10,40 @@ from .connection import get_db_connection
 logger = logging.getLogger(__name__)
 
 def upsert_native_collection(data: Dict[str, Any]):
-    """
-    插入或更新原生合集信息。
-    """
     try:
         with get_db_connection() as conn:
             cursor = conn.cursor()
             
-            # 准备数据
-            emby_id = data.get('emby_collection_id')
-            name = data.get('name')
-            tmdb_coll_id = data.get('tmdb_collection_id')
-            poster = data.get('poster_path')
-            ids_json = json.dumps(data.get('all_tmdb_ids', []))
-            
-            # 在 SQL 中直接使用 NOW()
             sql = """
                 INSERT INTO collections_info (
-                    emby_collection_id, name, tmdb_collection_id, 
+                    tmdb_collection_id, emby_collection_id, name, overview,
                     poster_path, all_tmdb_ids_json, last_checked_at
                 )
-                VALUES (%s, %s, %s, %s, %s, NOW())
-                ON CONFLICT (emby_collection_id) DO UPDATE SET
+                VALUES (%(tmdb_id)s, %(emby_id)s, %(name)s, %(overview)s, %(poster)s, %(ids_json)s, NOW())
+                ON CONFLICT (tmdb_collection_id) DO UPDATE SET
+                    -- 如果新数据里有 emby_id，则更新它；否则保留原有的 emby_id
+                    emby_collection_id = COALESCE(EXCLUDED.emby_collection_id, collections_info.emby_collection_id),
                     name = EXCLUDED.name,
-                    tmdb_collection_id = EXCLUDED.tmdb_collection_id,
+                    overview = COALESCE(EXCLUDED.overview, collections_info.overview),
                     poster_path = EXCLUDED.poster_path,
                     all_tmdb_ids_json = EXCLUDED.all_tmdb_ids_json,
                     last_checked_at = NOW();
             """
             
-            cursor.execute(sql, (emby_id, name, tmdb_coll_id, poster, ids_json))
+            params = {
+                'tmdb_id': str(data.get('tmdb_collection_id')),
+                'emby_id': data.get('emby_collection_id'),
+                'name': data.get('name'),
+                'overview': data.get('overview'),
+                'poster': data.get('poster_path'),
+                'ids_json': json.dumps(data.get('all_tmdb_ids', []))
+            }
+            
+            cursor.execute(sql, params)
             conn.commit()
             return True
     except Exception as e:
-        logger.error(f"Upsert 原生合集失败: {e}", exc_info=True)
+        logger.error(f"Upsert 原生合集失败: {e}")
         return False
 
 def get_all_native_collections() -> List[Dict[str, Any]]:

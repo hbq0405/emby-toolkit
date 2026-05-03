@@ -3178,22 +3178,18 @@ class MediaProcessor:
         # 步骤 4: 将结果写回数据库缓存
         # =========================================================
         try:
-            with get_central_db_connection() as conn:
-                cursor = conn.cursor()
-                # 更新已有的合集记录（通常由 Emby 扫描任务创建）
-                # 如果表里还没有这条记录，我们不强制插入（因为缺少 emby_collection_id 主键），
-                # 但只要 Emby 侧创建了合集，这里就能更新成功。
-                cursor.execute(
-                    """
-                    UPDATE collections_info 
-                    SET name = %s, overview = %s, last_checked_at = NOW() 
-                    WHERE tmdb_collection_id = %s
-                    """,
-                    (col_name, col_overview, col_id)
-                )
-                conn.commit()
+            from database import tmdb_collection_db
+            tmdb_collection_db.upsert_native_collection({
+                'tmdb_collection_id': col_id,
+                'name': col_name,
+                'overview': col_overview,
+                'poster_path': collection_info.get("poster_path"),
+                # 此时可能没有 emby_collection_id，传 None 即可
+                'emby_collection_id': None 
+            })
+            logger.debug(f"  ➜ [合集缓存] 已成功为合集 ID:{col_id} 缓存元数据。")
         except Exception as e:
-            logger.warning(f"  ➜ [合集缓存] 写入数据库失败: {e}")
+            logger.warning(f"  ➜ [合集缓存] 写入失败: {e}")
 
         return collection_info
 
