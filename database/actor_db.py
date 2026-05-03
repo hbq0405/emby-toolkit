@@ -8,7 +8,6 @@ from datetime import datetime
 from .connection import get_db_connection
 from . import request_db
 from utils import contains_chinese
-from handler.emby import get_emby_item_details
 import handler.moviepilot as moviepilot
 from config_manager import APP_CONFIG
 import extensions 
