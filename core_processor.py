@@ -4660,7 +4660,7 @@ class MediaProcessor:
             logger.error(f"  ➜ 获取编辑数据失败 for ItemID {item_id}: {e}", exc_info=True)
             return None
     
-    # --- 从 115 直链截取分集缩略图 ---
+    # --- 从 115 直链截取缩略图 ---
     def _extract_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str, ep_data: dict = None) -> bool:
         """
         调用 FFmpeg 从 115 直链截取高质量分集缩略图 (视频流直读 + 智能去黑边 + 强制 16:9)
