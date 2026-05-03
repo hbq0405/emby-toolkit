@@ -131,7 +131,7 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_MIN_SCORE_FOR_REVIEW: ("General", 'float', constants.DEFAULT_MIN_SCORE_FOR_REVIEW),
     constants.CONFIG_OPTION_MAX_ACTORS_TO_PROCESS: ("General", 'int', constants.DEFAULT_MAX_ACTORS_TO_PROCESS),
     constants.CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS: ("General", 'int', constants.DEFAULT_MAX_EPISODE_ACTORS_TO_PROCESS),
-    constants.CONFIG_OPTION_EXTRACT_EPISODE_THUMB: ("General", 'boolean', False),
+    constants.CONFIG_OPTION_EXTRACT_THUMB: ("General", 'boolean', False),
     constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS: ("General", 'boolean', True),
     constants.CONFIG_OPTION_KEYWORD_TO_TAGS: ("General", 'boolean', False),
     constants.CONFIG_OPTION_STUDIO_TO_CHINESE: ("General", 'boolean', False),

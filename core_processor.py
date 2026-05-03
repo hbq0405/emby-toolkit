@@ -4661,7 +4661,7 @@ class MediaProcessor:
             return None
     
     # --- 从 115 直链截取分集缩略图 ---
-    def _extract_episode_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str, ep_data: dict = None) -> bool:
+    def _extract_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str, ep_data: dict = None) -> bool:
         """
         调用 FFmpeg 从 115 直链截取高质量分集缩略图 (视频流直读 + 智能去黑边 + 强制 16:9)
         """
@@ -4857,6 +4857,7 @@ class MediaProcessor:
             # =========================================================
             downloads = [] # 存储 (url, 绝对保存路径, 是否强制覆盖)
             images_node = tmdb_data.get("images", {})
+            enable_ffmpeg_thumb = self.config.get(constants.CONFIG_OPTION_EXTRACT_THUMB, False)
 
             # --- A. 海报 (Poster) -> 根目录 ---
             if images_node.get("posters"):
@@ -4865,9 +4866,21 @@ class MediaProcessor:
             # --- B. 背景 (Backdrop) -> 根目录 ---
             backdrops_list = images_node.get("backdrops", [])
             selected_backdrop = backdrops_list[0]["file_path"] if backdrops_list else tmdb_data.get("backdrop_path")
+            
+            landscape_path = os.path.join(series_root_dir, "landscape.jpg")
+            fanart_path = os.path.join(series_root_dir, "fanart.jpg")
+            
             if selected_backdrop:
-                downloads.append((selected_backdrop, os.path.join(series_root_dir, "fanart.jpg"), False))
-                downloads.append((selected_backdrop, os.path.join(series_root_dir, "landscape.jpg"), False))
+                downloads.append((selected_backdrop, fanart_path, False))
+                downloads.append((selected_backdrop, landscape_path, False))
+            else:
+                # ★ 核心拓展：TMDb 没背景图，且是电影，触发 FFmpeg 智能截图！
+                if item_type == "Movie" and enable_ffmpeg_thumb:
+                    if not os.path.exists(landscape_path) and not os.path.exists(fanart_path):
+                        if media_path and os.path.isfile(media_path):
+                            # 传入电影的理论时长作为兜底
+                            movie_ep_data = {"runtime": tmdb_data.get("runtime")}
+                            ffmpeg_thumb_tasks.append((media_path, landscape_path, movie_ep_data))
 
             # --- C. Logo -> 根目录 ---
             if images_node.get("logos"):
@@ -4875,7 +4888,6 @@ class MediaProcessor:
 
             # --- D. 剧集季海报 & 分集图 ---
             ffmpeg_thumb_tasks = [] # 存储需要 FFmpeg 截图的任务
-            enable_ffmpeg_thumb = self.config.get(constants.CONFIG_OPTION_EXTRACT_EPISODE_THUMB, False)
 
             if item_type == "Series":
                 # 季海报 -> 根目录
@@ -4952,13 +4964,23 @@ class MediaProcessor:
             # ★ 6. 执行 FFmpeg 截图任务 (串行执行，防止 115 封控或 CPU 爆炸)
             # =========================================================
             if ffmpeg_thumb_tasks:
-                logger.info(f"  ➜ {log_prefix} 发现 {len(ffmpeg_thumb_tasks)} 个分集缺失 TMDb 图片，准备调用 FFmpeg 智能截图...")
+                logger.info(f"  ➜ {log_prefix} 发现 {len(ffmpeg_thumb_tasks)} 个媒体缺失 TMDb 图片，准备调用 FFmpeg 智能截图...")
                 ffmpeg_success_count = 0
-                # ★ 接收解包出来的 ep_data
                 for video_path, thumb_path, ep_data in ffmpeg_thumb_tasks:
-                    if self._extract_episode_thumb_via_ffmpeg(video_path, thumb_path, ep_data):
+                    if self._extract_thumb_via_ffmpeg(video_path, thumb_path, ep_data):
                         ffmpeg_success_count += 1
-                logger.info(f"  ➜ {log_prefix} FFmpeg 截图完成，成功生成 {ffmpeg_success_count} 张分集图。")
+                        
+                        # ★ 拓展逻辑：如果是电影截取了 landscape.jpg，顺手复制一份 fanart.jpg 给 Emby 备用
+                        if item_type == "Movie" and thumb_path.endswith("landscape.jpg"):
+                            fanart_save_path = os.path.join(os.path.dirname(thumb_path), "fanart.jpg")
+                            if not os.path.exists(fanart_save_path):
+                                try:
+                                    import shutil
+                                    shutil.copy2(thumb_path, fanart_save_path)
+                                except Exception:
+                                    pass
+                                    
+                logger.info(f"  ➜ {log_prefix} FFmpeg 截图完成，成功生成 {ffmpeg_success_count} 张高清缩略图。")
 
             return True
 
