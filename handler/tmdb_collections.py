@@ -401,17 +401,15 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
         # --- 分支 A: 本地已有该合集 ---
         logger.info(f"  ➜  TMDb 合集 '{tmdb_coll_name}' 已在数据库中，跳过 Emby 反查，仅更新 TMDb 列表。")
         
-        # 虽然跳过了 Emby 查找，但我们还是更新一下数据库里的 all_tmdb_ids
-        # 万一 TMDb 刚刚给这个合集加了新续集呢？
         tmdb_collection_db.upsert_native_collection({
-            'emby_collection_id': local_collection['emby_collection_id'], # 沿用旧的 Emby ID
-            'name': tmdb_coll_name, # 更新名字
+            'emby_collection_id': local_collection['emby_collection_id'], 
+            'name': tmdb_coll_name, 
             'tmdb_collection_id': tmdb_coll_id,
             'poster_path': coll_details.get('poster_path'),
-            'all_tmdb_ids': all_tmdb_ids # 更新列表
+            'all_tmdb_ids': all_tmdb_ids 
         })
-
-        # 顺手把缓存的简介注入 Emby 
+        
+        # ★★★ 新增：顺手把缓存的简介注入 Emby ★★★
         if local_collection.get('emby_collection_id') and local_collection.get('overview'):
             emby.update_collection_overview(
                 local_collection['emby_collection_id'],
@@ -424,7 +422,6 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     elif movie_emby_id:
         # --- 分支 B: 本地没有，需要去 Emby 查 ---
         try:
-            # 查 Emby：这部电影属于哪个 BoxSet？
             parent_collections = emby.get_collections_containing_item(
                 item_id=movie_emby_id,
                 base_url=config.get('emby_server_url'),
@@ -436,15 +433,32 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
             for p_coll in parent_collections:
                 p_provider_ids = p_coll.get("ProviderIds", {})
                 if str(p_provider_ids.get("Tmdb", "")) == tmdb_coll_id:
-                    logger.info(f"  ➜ Emby 已生成 TMDb 合集 '{p_coll.get('Name')}' (ID: {p_coll.get('Id')})，正在写入数据库...")
+                    emby_coll_id = p_coll.get('Id')
+                    logger.info(f"  ➜ Emby 已生成 TMDb 合集 '{p_coll.get('Name')}' (ID: {emby_coll_id})，正在写入数据库...")
+                    
+                    # 为了拿到翻译好的 overview，需要从我们前面获取的 parts 里组装，或者直接去查刚刚占坑的数据库
+                    temp_local = tmdb_collection_db.get_native_collection_by_tmdb_id(tmdb_coll_id)
+                    final_overview = temp_local.get('overview') if temp_local else ""
                     
                     tmdb_collection_db.upsert_native_collection({
-                        'emby_collection_id': p_coll.get('Id'),
+                        'emby_collection_id': emby_coll_id,
                         'name': p_coll.get('Name'),
                         'tmdb_collection_id': tmdb_coll_id,
                         'poster_path': coll_details.get('poster_path'),
-                        'all_tmdb_ids': all_tmdb_ids
+                        'all_tmdb_ids': all_tmdb_ids,
+                        'overview': final_overview # 补充更新 overview
                     })
+                    
+                    # ★★★ 新增：把刚才 AI 翻译的简介直接注入刚生成的合集中 ★★★
+                    if final_overview:
+                        emby.update_collection_overview(
+                            emby_coll_id,
+                            final_overview,
+                            config.get('emby_server_url'),
+                            config.get('emby_api_key'),
+                            config.get('emby_user_id')
+                        )
+                        
                     found_in_emby = True
                     break
             
