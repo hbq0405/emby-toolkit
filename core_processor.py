@@ -4830,7 +4830,6 @@ class MediaProcessor:
 
             # --- D. 剧集季海报 & 分集图 ---
             ffmpeg_thumb_tasks = [] # 存储需要 FFmpeg 截图的任务
-            #  读取智能截图开关 (默认关闭，需用户主动开启)
             enable_ffmpeg_thumb = self.config.get(constants.CONFIG_OPTION_EXTRACT_EPISODE_THUMB, False)
 
             if item_type == "Series":
@@ -4842,39 +4841,40 @@ class MediaProcessor:
                     if s_num is not None and s_poster:
                         downloads.append((s_poster, os.path.join(series_root_dir, f"season{s_num:02d}-poster.jpg"), False))
                 
-                # 分集图 -> 深度遍历寻找视频文件
-                if aggregated_tmdb_data and "episodes_details" in aggregated_tmdb_data:
-                    episodes = aggregated_tmdb_data["episodes_details"]
-                    ep_list = episodes.values() if isinstance(episodes, dict) else (episodes if isinstance(episodes, list) else [])
+                # ★ 核心修复：以本地文件为基准进行遍历，不再受限于 TMDb 是否有该集数据
+                if item_details and item_details.get("Path") and os.path.isdir(series_root_dir):
+                    import re
+                    valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
                     
-                    if item_details and item_details.get("Path") and os.path.isdir(series_root_dir):
-                        import re
-                        valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
-                        
-                        for root, dirs, files in os.walk(series_root_dir):
-                            for filename in files:
-                                if os.path.splitext(filename)[1].lower() not in valid_exts: continue
-                                match = re.search(r'[sS](\d{1,4})[eE](\d{1,4})', filename)
-                                if match:
-                                    target_s, target_e = int(match.group(1)), int(match.group(2))
-                                    for ep in ep_list:
-                                        if ep.get("season_number") == target_s and ep.get("episode_number") == target_e:
-                                            e_still = ep.get("still_path")
-                                            thumb_name = os.path.splitext(filename)[0] + "-thumb.jpg"
-                                            thumb_save_path = os.path.join(root, thumb_name)
-                                            
-                                            ep_key = f"S{target_s}E{target_e}"
-                                            force_overwrite = force_overwrite_episodes and ep_key in force_overwrite_episodes
-                                            
-                                            if e_still:
-                                                # TMDb 有图，正常下载
-                                                downloads.append((e_still, thumb_save_path, force_overwrite))
-                                            else:
-                                                # ★ TMDb 没图，且开启了智能截图开关，才加入 FFmpeg 截图队列
-                                                if enable_ffmpeg_thumb and (force_overwrite or not os.path.exists(thumb_save_path)):
-                                                    video_full_path = os.path.join(root, filename)
-                                                    ffmpeg_thumb_tasks.append((video_full_path, thumb_save_path, ep))
-                                            break
+                    # 提前提取 TMDb 的分集数据字典（如果有的话）
+                    ep_list = []
+                    if aggregated_tmdb_data and "episodes_details" in aggregated_tmdb_data:
+                        episodes = aggregated_tmdb_data["episodes_details"]
+                        ep_list = episodes.values() if isinstance(episodes, dict) else (episodes if isinstance(episodes, list) else [])
+                    
+                    for root, dirs, files in os.walk(series_root_dir):
+                        for filename in files:
+                            if os.path.splitext(filename)[1].lower() not in valid_exts: continue
+                            match = re.search(r'[sS](\d{1,4})[eE](\d{1,4})', filename)
+                            if match:
+                                target_s, target_e = int(match.group(1)), int(match.group(2))
+                                
+                                # 尝试在 TMDb 数据中寻找对应集
+                                matched_ep = next((ep for ep in ep_list if ep.get("season_number") == target_s and ep.get("episode_number") == target_e), None)
+                                
+                                thumb_name = os.path.splitext(filename)[0] + "-thumb.jpg"
+                                thumb_save_path = os.path.join(root, thumb_name)
+                                ep_key = f"S{target_s}E{target_e}"
+                                force_overwrite = force_overwrite_episodes and ep_key in force_overwrite_episodes
+                                
+                                # 判断逻辑：如果有 TMDb 数据且有图，则下载
+                                if matched_ep and matched_ep.get("still_path"):
+                                    downloads.append((matched_ep.get("still_path"), thumb_save_path, force_overwrite))
+                                else:
+                                    # ★ 兜底逻辑：TMDb 没图，或者 TMDb 压根没有这集，统统触发 FFmpeg 截图！
+                                    if enable_ffmpeg_thumb and (force_overwrite or not os.path.exists(thumb_save_path)):
+                                        video_full_path = os.path.join(root, filename)
+                                        ffmpeg_thumb_tasks.append((video_full_path, thumb_save_path, matched_ep))
 
             # 5. 执行下载 (原有逻辑)
             base_image_url = "https://image.tmdb.org/t/p/original"
