@@ -3093,7 +3093,11 @@ class MediaProcessor:
     # --- 辅助函数：丰富合集信息（名称、简介） ---
     def _enrich_collection_info(self, collection_info: Dict[str, Any]) -> Dict[str, Any]:
         """
-        修正版：不仅缓存简介，还同时抓取并缓存合集内所有电影的 TMDb ID。
+        【V3 - 架构优化版】
+        1. 优先查本地数据库缓存。
+        2. 缓存未命中时，调用 tmdb 处理器获取详情（自带重试和代理）。
+        3. 提取合集内所有电影 ID 并执行 AI 翻译。
+        4. 结果回写数据库，实现“占坑”缓存。
         """
         if not collection_info or not isinstance(collection_info, dict) or not collection_info.get("id"):
             return collection_info
@@ -3101,9 +3105,11 @@ class MediaProcessor:
         col_id = str(collection_info.get("id"))
         col_name = collection_info.get("name", "")
         col_overview = ""
-        all_tmdb_ids = []  # ★ 新增：用于存储合集内所有电影 ID
+        all_tmdb_ids = []
 
-        # 1. 尝试从数据库加载缓存
+        # =========================================================
+        # 步骤 1: 尝试从数据库加载缓存 (秒级返回)
+        # =========================================================
         try:
             with get_central_db_connection() as conn:
                 cursor = conn.cursor()
@@ -3113,59 +3119,55 @@ class MediaProcessor:
                 )
                 row = cursor.fetchone()
                 
-                # 如果命中缓存且数据完整（有简介且 ID 列表不为空），直接返回
+                # 如果命中缓存且数据完整，直接返回
                 if row and row.get('overview') and row.get('all_tmdb_ids_json'):
-                    logger.info(f"  ➜ [合集缓存] 命中完整记录: {row.get('name') or col_name}")
+                    logger.info(f"  ➜ [合集缓存] 命中数据库记录: {row.get('name') or col_name}")
                     collection_info["name"] = row.get('name') or col_name
                     collection_info["overview"] = row['overview']
-                    # 这里不需要把 ID 列表塞回 collection_info，因为 Emby NFO 不需要这个
                     return collection_info
         except Exception as e:
             logger.warning(f"  ➜ [合集缓存] 查询数据库失败: {e}")
 
-        # 2. 缓存未命中，从 TMDb 获取详情
-        logger.info(f"  ➜ [合集详情] 正在从 TMDb 获取合集完整信息 (ID: {col_id})...")
+        # =========================================================
+        # 步骤 2: 调用 tmdb 处理器获取详情 (代替原始 requests)
+        # =========================================================
+        logger.info(f"  ➜ [合集详情] 正在通过 TMDb 处理器获取合集信息 (ID: {col_id})...")
         try:
-            import requests
-            base_url = self.config.get(constants.CONFIG_OPTION_TMDB_API_BASE_URL, 'https://api.themoviedb.org/3')
-            proxies = config_manager.get_proxies_for_requests()
+            # 直接调用 handler/tmdb.py 中的函数，它会自动处理 API Key 和语言
+            data = tmdb.get_collection_details(int(col_id), self.tmdb_api_key)
             
-            # 我们需要请求合集详情接口来获取 parts (电影列表)
-            url = f"{base_url}/collection/{col_id}?api_key={self.tmdb_api_key}&language=zh-CN"
-            resp = requests.get(url, timeout=10, proxies=proxies)
-            
-            if resp.status_code == 200:
-                data = resp.json()
+            if data:
                 col_overview = data.get("overview", "")
-                if not col_name: col_name = data.get("name", "")
+                col_name = data.get("name") or col_name
                 
-                # ★ 核心：提取合集内所有电影的 ID
+                # 提取合集内所有电影的 ID
                 parts = data.get("parts", [])
                 all_tmdb_ids = [str(p.get("id")) for p in parts if p.get("id")]
-            
-            # 如果中文简介为空，尝试拿英文的
-            if not col_overview:
-                url_en = f"{base_url}/collection/{col_id}?api_key={self.tmdb_api_key}&language=en-US"
-                resp_en = requests.get(url_en, timeout=10, proxies=proxies)
-                if resp_en.status_code == 200:
-                    data_en = resp_en.json()
-                    col_overview = data_en.get("overview", "")
-                    # 如果刚才没拿到 parts，这里再拿一次
-                    if not all_tmdb_ids:
-                        parts = data_en.get("parts", [])
-                        all_tmdb_ids = [str(p.get("id")) for p in parts if p.get("id")]
-
+                
+                # 兜底：如果中文简介为空，尝试手动补一个英文请求 (因为 handler 默认是中文)
+                if not col_overview:
+                    logger.debug(f"  ➜ [合集详情] 中文简介缺失，尝试获取英文版源文本...")
+                    # 这里稍微 hack 一下，利用 _tmdb_request 的灵活性
+                    en_data = tmdb._tmdb_request(f"/collection/{col_id}", self.tmdb_api_key, {"language": "en-US"})
+                    if en_data:
+                        col_overview = en_data.get("overview", "")
+                        if not all_tmdb_ids:
+                            all_tmdb_ids = [str(p.get("id")) for p in en_data.get("parts", []) if p.get("id")]
         except Exception as e:
-            logger.warning(f"  ➜ 获取合集详细信息失败: {e}")
+            logger.warning(f"  ➜ [合集详情] 获取失败: {e}")
 
-        # 3. 执行 AI 翻译 (逻辑保持不变)
+        # =========================================================
+        # 步骤 3: 执行 AI 翻译
+        # =========================================================
         if self.ai_translator:
+            # 翻译标题
             if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False) and col_name and not utils.contains_chinese(col_name):
                 trans_col_name = self.ai_translator.translate_title(col_name, media_type="Movie")
                 if trans_col_name and utils.contains_chinese(trans_col_name):
                     if trans_col_name.endswith("合集"): trans_col_name = trans_col_name[:-2] + "（系列）"
                     col_name = trans_col_name 
 
+            # 翻译简介
             if self.config.get(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False) and col_overview and not utils.contains_chinese(col_overview):
                 trans_col_overview = self.ai_translator.translate_overview(col_overview, title=col_name)
                 if trans_col_overview: col_overview = trans_col_overview
@@ -3173,15 +3175,17 @@ class MediaProcessor:
         collection_info["name"] = col_name
         collection_info["overview"] = col_overview
 
-        # 4. 占坑式写入数据库 (包含 ID 列表)
+        # =========================================================
+        # 步骤 4: 占坑式写入数据库 (包含 ID 列表)
+        # =========================================================
         try:
             from database import tmdb_collection_db
             tmdb_collection_db.upsert_native_collection({
                 'tmdb_collection_id': col_id,
                 'name': col_name,
                 'overview': col_overview,
-                'poster_path': collection_info.get("poster_path") or data.get("poster_path"),
-                'all_tmdb_ids': all_tmdb_ids, # ★ 写入提取到的 ID 列表
+                'poster_path': collection_info.get("poster_path") or (data.get("poster_path") if data else None),
+                'all_tmdb_ids': all_tmdb_ids,
                 'emby_collection_id': None 
             })
             logger.debug(f"  ➜ [合集缓存] 已成功缓存元数据及 {len(all_tmdb_ids)} 部关联电影 ID。")
