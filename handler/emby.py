@@ -420,7 +420,7 @@ def update_person_details(person_id: str, new_data: Dict[str, Any], emby_server_
 
     api_url = f"{emby_server_url.rstrip('/')}/Users/{user_id}/Items/{person_id}"
     params = {"api_key": emby_api_key}
-    wait_for_server_idle(emby_server_url, emby_api_key)
+    # wait_for_server_idle(emby_server_url, emby_api_key)
     try:
         logger.trace(f"准备获取 Person 详情 (ID: {person_id}, UserID: {user_id}) at {api_url}")
         response_get = emby_client.get(api_url, params=params)
@@ -837,7 +837,7 @@ def refresh_emby_item_metadata(item_emby_id: str,
         logger.error("刷新Emby元数据参数不足：缺少ItemID、服务器URL、API Key或UserID。")
         return False
         
-    wait_for_server_idle(emby_server_url, emby_api_key)
+    # wait_for_server_idle(emby_server_url, emby_api_key)
     log_identifier = f"'{item_name_for_log}'" if item_name_for_log else f"ItemID: {item_emby_id}"
     
     # 仅获取详情用于判断是否为剧集，以便决定是否递归刷新 (刷出分集字幕必须递归)
@@ -1747,7 +1747,7 @@ def get_library_root_for_item(item_id: str, base_url: str, api_key: str, user_id
 def update_emby_item_details(item_id: str, new_data: Dict[str, Any], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     if not all([item_id, new_data, emby_server_url, emby_api_key, user_id]):
         return False
-    wait_for_server_idle(emby_server_url, emby_api_key)
+    # wait_for_server_idle(emby_server_url, emby_api_key)
     try:
         # 1. 获取当前完整详情
         current_item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id)
@@ -1837,7 +1837,7 @@ def delete_item_sy(item_id: str, emby_server_url: str, emby_api_key: str, user_i
     逻辑：优先尝试神医专用接口 /DeleteVersion，如果失败（如未安装插件或报错），
     则自动降级调用官方接口 /Delete 进行重试。
     """
-    wait_for_server_idle(emby_server_url, emby_api_key)
+    # wait_for_server_idle(emby_server_url, emby_api_key)
     logger.warning(f"  ➜ 检测到删除请求，优先尝试使用 [神医Pro接口] 执行...")
 
     # 1. 登录获取临时令牌
@@ -2529,7 +2529,7 @@ def get_all_folder_mappings(base_url: str, api_key: str) -> dict:
 def add_tags_to_item(item_id: str, tags_to_add: List[str], emby_server_url: str, emby_api_key: str, user_id: str) -> bool:
     if not tags_to_add:
         return True
-    wait_for_server_idle(emby_server_url, emby_api_key)    
+    # wait_for_server_idle(emby_server_url, emby_api_key)    
     try:
         # 1. 显式请求 Tags 和 TagItems
         item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="Tags,TagItems,LockedFields")
@@ -2584,7 +2584,7 @@ def remove_tags_from_item(item_id: str, tags_to_remove: List[str], emby_server_u
     """
     if not tags_to_remove:
         return True
-    wait_for_server_idle(emby_server_url, emby_api_key)    
+    # wait_for_server_idle(emby_server_url, emby_api_key)    
     try:
         # 1. 获取当前标签
         item_details = get_emby_item_details(item_id, emby_server_url, emby_api_key, user_id, fields="Tags,TagItems")
