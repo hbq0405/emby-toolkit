@@ -4856,8 +4856,10 @@ class MediaProcessor:
             # 4. 图片选择与命名逻辑 (存入绝对路径)
             # =========================================================
             downloads = [] # 存储 (url, 绝对保存路径, 是否强制覆盖)
+            ffmpeg_thumb_tasks = []  # 存储需要 FFmpeg 截图的任务 (视频路径, 绝对保存路径, 相关剧集数据)
+            enable_ffmpeg_thumb = self.config.get(constants.CONFIG_OPTION_EXTRACT_EPISODE_THUMB, False)
+            
             images_node = tmdb_data.get("images", {})
-            enable_ffmpeg_thumb = self.config.get(constants.CONFIG_OPTION_EXTRACT_THUMB, False)
 
             # --- A. 海报 (Poster) -> 根目录 ---
             if images_node.get("posters"):
@@ -4887,8 +4889,6 @@ class MediaProcessor:
                 downloads.append((images_node["logos"][0]["file_path"], os.path.join(series_root_dir, "clearlogo.png"), False))
 
             # --- D. 剧集季海报 & 分集图 ---
-            ffmpeg_thumb_tasks = [] # 存储需要 FFmpeg 截图的任务
-
             if item_type == "Series":
                 # 季海报 -> 根目录
                 seasons_source = aggregated_tmdb_data.get("seasons_details", []) if aggregated_tmdb_data else tmdb_data.get("seasons", [])
