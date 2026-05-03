@@ -641,6 +641,7 @@ class P115MediaAnalyzerMixin:
                 "中文繁体": "繁体",
                 "繁体中文": "繁体",
                 "繁中": "繁体",
+                "雙語": "双语",
                 "原盘": "",
             }
             for old, new in replace_map.items():

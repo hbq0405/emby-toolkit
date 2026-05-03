@@ -358,7 +358,8 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
             r"上海电影配音",
             r"上海译制",
             r"上海配音",
-            r"公映上译"
+            r"公映上译",
+            r"上譯"
         ],
     },
     {
