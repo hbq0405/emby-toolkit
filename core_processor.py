@@ -4857,7 +4857,7 @@ class MediaProcessor:
             # =========================================================
             downloads = [] # 存储 (url, 绝对保存路径, 是否强制覆盖)
             ffmpeg_thumb_tasks = []  # 存储需要 FFmpeg 截图的任务 (视频路径, 绝对保存路径, 相关剧集数据)
-            enable_ffmpeg_thumb = self.config.get(constants.CONFIG_OPTION_EXTRACT_EPISODE_THUMB, False)
+            enable_ffmpeg_thumb = self.config.get(constants.CONFIG_OPTION_EXTRACT_THUMB, False)
             
             images_node = tmdb_data.get("images", {})
 
