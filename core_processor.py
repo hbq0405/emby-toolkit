@@ -2737,6 +2737,193 @@ class MediaProcessor:
 
         return local_cast
     
+    # --- 通过 API 更新 Emby 中人物(演员/导演)名字 ---
+    def _update_emby_person_names(
+        self,
+        final_cast: List[Dict[str, Any]],
+        formatted_metadata: Dict[str, Any],
+        item_details_from_emby: Dict[str, Any],
+        item_name_for_log: str
+    ):
+        """
+        根据最终处理好的翻译结果，通过 API 更新 Emby 中人物（演员/客串/导演/主创）的名字。
+        结合了白名单机制与精准的 Diff 比对，拒绝无脑更新。
+        """
+        persons_to_update: Dict[str, str] = {}   # tmdb_id(str) -> new_name(str)
+
+        # ------------------------------------------------------------------
+        # 阶段 0：建立白名单
+        # ------------------------------------------------------------------
+        # A. 演员白名单：只有 final_cast 里的演员，才算“最终保留”
+        allowed_actor_tmdb_ids = {
+            str(a.get("id") or a.get("tmdb_id")).strip()
+            for a in (final_cast or [])
+            if a.get("id") or a.get("tmdb_id")
+        }
+
+        # B. 当前 Emby 条目里已存在的人物（允许直接写回，不必再全局找）
+        current_emby_people_tmdb_ids = {
+            str(p.get("ProviderIds", {}).get("Tmdb") or "").strip()
+            for p in (item_details_from_emby.get("People", []) or [])
+            if p.get("ProviderIds", {}).get("Tmdb")
+        }
+
+        def _is_valid_chinese_name(name: Any) -> bool:
+            return bool(name) and utils.contains_chinese(str(name))
+
+        def _add_person(tmdb_id_raw: Any, new_name: Any):
+            tmdb_id = str(tmdb_id_raw or "").strip()
+            if not tmdb_id or not _is_valid_chinese_name(new_name):
+                return
+            persons_to_update[tmdb_id] = str(new_name).strip()
+
+        def _collect_people_from_one_node(data_dict: Dict[str, Any]):
+            if not isinstance(data_dict, dict):
+                return
+
+            credits_data = data_dict.get("credits") or data_dict.get("aggregate_credits") or data_dict.get("casts") or {}
+
+            # 1) 导演 / 主创：不受演员截断限制
+            for crew_member in credits_data.get("crew", []):
+                if crew_member.get("job") in ["Director", "Series Director"]:
+                    _add_person(crew_member.get("id") or crew_member.get("tmdb_id"), crew_member.get("name"))
+
+            for creator in data_dict.get("created_by", []):
+                _add_person(creator.get("id") or creator.get("tmdb_id"), creator.get("name"))
+
+            # 2) 演员 / 客串：必须命中白名单或当前 Emby 条目已存在
+            all_actors = credits_data.get("cast", []) + credits_data.get("guest_stars", [])
+            for actor in all_actors:
+                tmdb_id = str(actor.get("id") or actor.get("tmdb_id") or "").strip()
+                new_name = actor.get("name")
+
+                if not tmdb_id or not _is_valid_chinese_name(new_name):
+                    continue
+
+                if tmdb_id in allowed_actor_tmdb_ids or tmdb_id in current_emby_people_tmdb_ids:
+                    persons_to_update[tmdb_id] = str(new_name).strip()
+
+        # ------------------------------------------------------------------
+        # 阶段 1：收集所有需要更新的人物名
+        # ------------------------------------------------------------------
+        # 1.1 final_cast 本身（最终演员白名单）
+        for actor in final_cast or []:
+            _add_person(actor.get("id") or actor.get("tmdb_id"), actor.get("name"))
+
+        # 1.2 递归扫描 formatted_metadata (包含客串和分集导演)
+        if formatted_metadata:
+            _collect_people_from_one_node(formatted_metadata)
+
+            for season in formatted_metadata.get("seasons_details", []) or []:
+                _collect_people_from_one_node(season)
+
+            episodes = formatted_metadata.get("episodes_details", {})
+            ep_list = episodes.values() if isinstance(episodes, dict) else (episodes if isinstance(episodes, list) else [])
+            for ep in ep_list:
+                _collect_people_from_one_node(ep)
+
+        if not persons_to_update:
+            logger.info("  ➜ 无需通过 API 更新人物名字 (没有命中白名单的人物)。")
+            return
+
+        # ------------------------------------------------------------------
+        # 阶段 2：TMDb ID -> Emby Person ID
+        # ------------------------------------------------------------------
+        emby_id_to_new_name: Dict[str, str] = {}
+        resolved_tmdb_ids = set()
+
+        # 2.1 当前条目自带 People：优先直接命中
+        for person in item_details_from_emby.get("People", []) or []:
+            e_id = str(person.get("Id") or "").strip()
+            t_id = str(person.get("ProviderIds", {}).get("Tmdb") or "").strip()
+            if e_id and t_id and t_id in persons_to_update:
+                emby_id_to_new_name[e_id] = persons_to_update[t_id]
+                resolved_tmdb_ids.add(t_id)
+
+        # 2.2 final_cast 里如果已带 emby_person_id，也直接命中
+        for actor in final_cast or []:
+            tmdb_id = str(actor.get("id") or actor.get("tmdb_id") or "").strip()
+            emby_id = str(actor.get("emby_person_id") or "").strip()
+            if tmdb_id and emby_id and tmdb_id in persons_to_update and tmdb_id not in resolved_tmdb_ids:
+                emby_id_to_new_name[emby_id] = persons_to_update[tmdb_id]
+                resolved_tmdb_ids.add(tmdb_id)
+
+        # 2.3 剩余未解析的人物，再按 TMDb ID 去 Emby 全局查
+        unresolved_tmdb_ids = [t_id for t_id in persons_to_update.keys() if t_id not in resolved_tmdb_ids]
+
+        if unresolved_tmdb_ids:
+            for t_id in unresolved_tmdb_ids:
+                try:
+                    api_url = f"{self.emby_url.rstrip('/')}/Items"
+                    params = {
+                        "api_key": self.emby_api_key,
+                        "IncludeItemTypes": "Person",
+                        "Recursive": "true",
+                        "AnyProviderIdEquals": f"tmdb.{t_id}",
+                        "Fields": "ProviderIds",
+                        "Limit": 5
+                    }
+                    resp = emby.emby_client.get(api_url, params=params)
+                    if resp.status_code == 200:
+                        items = resp.json().get("Items", [])
+                        if items:
+                            for p in items:
+                                if str(p.get("ProviderIds", {}).get("Tmdb") or "").strip() == t_id:
+                                    e_id = str(p.get("Id") or "").strip()
+                                    if e_id:
+                                        emby_id_to_new_name[e_id] = persons_to_update[t_id]
+                                    break
+                except Exception:
+                    pass
+
+        if not emby_id_to_new_name:
+            return
+
+        # ------------------------------------------------------------------
+        # 阶段 3：批量获取 Emby 当前名字并比对更新 (恢复老版本的神级逻辑)
+        # ------------------------------------------------------------------
+        logger.info(f"  ➜ 准备为 {len(emby_id_to_new_name)} 位人物检查并更新名字...")
+        
+        person_ids = list(emby_id_to_new_name.keys())
+        
+        # ★ 核心：一次性批量获取这些人物在 Emby 中的当前名字
+        current_person_details = emby.get_emby_items_by_id(
+            base_url=self.emby_url,
+            api_key=self.emby_api_key,
+            user_id=self.emby_user_id,
+            item_ids=person_ids,
+            fields="Name"
+        )
+        
+        current_names_map = {str(p["Id"]): p.get("Name") for p in current_person_details} if current_person_details else {}
+
+        success_count = 0
+        skip_count = 0
+
+        for emby_person_id, new_name in emby_id_to_new_name.items():
+            current_name = current_names_map.get(emby_person_id)
+            
+            # ★ 只有当新名字和当前名字不同时，才执行更新
+            if current_name != new_name:
+                try:
+                    ok = emby.update_person_details(
+                        person_id=emby_person_id,
+                        new_data={"Name": new_name},
+                        emby_server_url=self.emby_url,
+                        emby_api_key=self.emby_api_key,
+                        user_id=self.emby_user_id
+                    )
+                    if ok:
+                        success_count += 1
+                        import time
+                        time.sleep(0.2) 
+                except Exception as e:
+                    logger.warning(f"    - 更新人物异常 ID {emby_person_id}: {e}")
+            else:
+                skip_count += 1
+
+        logger.info(f"  ➜ 人物名 API 更新完成：成功更新 {success_count} 位，跳过 {skip_count} 位(名字已是最新)。")
+    
     # --- 全量处理的入口 ---
     def process_full_library(self, update_status_callback: Optional[callable] = None, force_full_update: bool = False):
         """
@@ -3152,7 +3339,8 @@ class MediaProcessor:
                     all_emby_people = item_details_from_emby.get("People", [])
                     current_emby_cast_raw = [p for p in all_emby_people if p.get("Type") == "Actor"]
                     emby_config = {"url": self.emby_url, "api_key": self.emby_api_key, "user_id": self.emby_user_id}
-                    enriched_emby_cast = current_emby_cast_raw 
+                    enriched_emby_cast = self.actor_db_manager.enrich_actors_with_provider_ids(cursor, current_emby_cast_raw, emby_config)
+
                     final_processed_cast = self._process_cast_list(
                         tmdb_cast_people=authoritative_cast_source,
                         emby_cast_people=enriched_emby_cast,
@@ -3260,6 +3448,7 @@ class MediaProcessor:
                 )
 
                 # 6. 更新 Emby 人物名(演员/导演)以及扫描目录
+                self._update_emby_person_names(final_cast=final_processed_cast, formatted_metadata=formatted_metadata, item_details_from_emby=item_details_from_emby, item_name_for_log=item_name_for_log)
                 media_path = item_details_from_emby.get("Path")
                 if media_path:
                     logger.info(f"  ➜ 正在通知 Emby 扫描本地目录以读取最新 NFO...")
