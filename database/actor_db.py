@@ -143,14 +143,7 @@ class ActorDBManager:
         emby_config: Dict[str, Any]
     ) -> List[Dict[str, Any]]:
         """
-        接收一个来自 Emby 的原始演员列表，按需补充 ProviderIds。
-
-        优化策略：
-        1. 已有 Tmdb ProviderId 的，直接跳过
-        2. 中文名演员，默认不打 Emby API
-        - 这类演员通常已经完成中文化，后续对号入座主要靠名字即可
-        - 重点把 API 预算留给英文/拼音名演员
-        3. 只对“缺少 Tmdb 且演员名非中文”的演员调用 Emby API
+        【优化版】批量补充演员 ProviderIds，解决 N+1 请求导致的入库缓慢问题。
         """
         if not raw_emby_actors:
             return []
@@ -168,31 +161,42 @@ class ActorDBManager:
 
             provider_ids = actor_copy.get("ProviderIds") or {}
             tmdb_provider_id = provider_ids.get("Tmdb")
+            
+            # 1. 如果已经有 TMDb ID，跳过
             if tmdb_provider_id:
                 continue
 
+            # 2. 如果是中文名，通常不需要查外部ID（靠名字匹配即可），跳过以节省开销
             actor_name = str(actor_copy.get("Name") or "").strip()
-
-            # 只对非中文名演员补查外部ID，减少 Emby API 压力
             if actor_name and contains_chinese(actor_name):
                 continue
 
             ids_to_fetch_from_api.append(person_id)
 
         if ids_to_fetch_from_api:
-            logger.info(f"  ➜ [演员数据管家] 将通过 Emby API 为 {len(ids_to_fetch_from_api)} 位非中文名演员获取外部ID...")
-            for person_id in ids_to_fetch_from_api:
-                person_details = get_emby_item_details(
-                    item_id=person_id,
-                    emby_server_url=emby_config['url'],
-                    emby_api_key=emby_config['api_key'],
-                    user_id=emby_config['user_id'],
-                    fields="ProviderIds"
-                )
-                if person_details and person_details.get("ProviderIds"):
-                    enriched_actors_map[person_id]["ProviderIds"] = person_details.get("ProviderIds")
+            # ★★★ 核心优化：使用批量获取接口，将 N 次请求合并为 1 次 ★★★
+            from handler.emby import get_emby_items_by_id
+            
+            logger.info(f"  ➜ [演员数据管家] 正在批量获取 {len(ids_to_fetch_from_api)} 位演员的外部ID...")
+            
+            # get_emby_items_by_id 内部会自动处理分页（每100个一组）
+            batch_details = get_emby_items_by_id(
+                base_url=emby_config['url'],
+                api_key=emby_config['api_key'],
+                user_id=emby_config['user_id'],
+                item_ids=ids_to_fetch_from_api,
+                fields="ProviderIds"
+            )
+
+            # 将查到的 ProviderIds 写回 map
+            for item in batch_details:
+                eid = item.get("Id")
+                if eid in enriched_actors_map:
+                    enriched_actors_map[eid]["ProviderIds"] = item.get("ProviderIds")
+                    
+            logger.debug(f"  ➜ [演员数据管家] 批量补充完成。")
         else:
-            logger.info("  ➜ [演员数据管家] 无需通过 Emby API 补充演员外部ID。")
+            logger.debug("  ➜ [演员数据管家] 无需通过 Emby API 补充演员外部ID。")
 
         return list(enriched_actors_map.values())
     
