@@ -450,6 +450,31 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         ],
     },
     {
+        "label": "HDR",
+        "types": ["Subtitle"],
+        "patterns": [
+            r"(?<![A-Za-z0-9])HDR(?![A-Za-z0-9])",
+            r"HDR",
+        ],
+    },
+    {
+        "label": "SDR",
+        "types": ["Subtitle"],
+        "patterns": [
+            r"(?<![A-Za-z0-9])SDR(?![A-Za-z0-9])",
+            r"SDR",
+        ],
+    },
+    {
+        "label": "DoVi",
+        "types": ["Subtitle"],
+        "patterns": [
+            r"(?<![A-Za-z0-9])DoVi(?![A-Za-z0-9])",
+            r"(?<![A-Za-z0-9])DV(?![A-Za-z0-9])",
+            r"DoVi",
+        ],
+    },
+    {
         "label": "拉美",
         "types": ["Subtitle", "Audio"],
         "patterns": [
