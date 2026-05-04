@@ -330,6 +330,72 @@ class P115MediaAnalyzerMixin:
         return list(dict.fromkeys(features))
 
 
+    def _normalize_subtitle_display_title(self, title):
+        """
+        统一字幕标题的脚本后缀格式：
+        - 简体 / 繁体 -> 中文简体 / 中文繁体
+        - 中英双语（简体） -> 中英双语简体
+        - 括号只留给上译 / 香港 / 台配等特色词。
+        """
+        title = str(title or "").strip()
+
+        if not title:
+            return title
+
+        title = title.replace("繁體", "繁体").replace("簡體", "简体")
+
+        # 先处理完整双语结构，避免后续把“中英双语简体”误改成“中英双语中文简体”。
+        dual_map = {
+            "中英双语（简体）": "中英双语简体",
+            "中英双语(简体)": "中英双语简体",
+            "中英双语（繁体）": "中英双语繁体",
+            "中英双语(繁体)": "中英双语繁体",
+            "中日双语（简体）": "中日双语简体",
+            "中日双语(简体)": "中日双语简体",
+            "中日双语（繁体）": "中日双语繁体",
+            "中日双语(繁体)": "中日双语繁体",
+            "中韩双语（简体）": "中韩双语简体",
+            "中韩双语(简体)": "中韩双语简体",
+            "中韩双语（繁体）": "中韩双语繁体",
+            "中韩双语(繁体)": "中韩双语繁体",
+        }
+        for old, new in dual_map.items():
+            title = title.replace(old, new)
+
+        exact_map = {
+            "简体": "中文简体",
+            "简中": "中文简体",
+            "中文简体": "中文简体",
+            "简体中文": "中文简体",
+            "繁体": "中文繁体",
+            "繁中": "中文繁体",
+            "中文繁体": "中文繁体",
+            "繁体中文": "中文繁体",
+        }
+
+        return exact_map.get(title, title)
+
+    def _append_subtitle_plain_suffix(self, base_title, suffix):
+        """
+        把“特效 / 简体 / 繁体”这类结构性信息作为纯后缀拼接，
+        不进入括号；括号只保留特色词。
+        """
+        base_title = self._normalize_subtitle_display_title(base_title)
+        suffix = str(suffix or "").strip()
+
+        if not suffix:
+            return base_title
+
+        # 双语字幕保留旧阅读顺序：中英双语特效简体，而不是中英双语简体特效。
+        dual_match = re.match(r"^(中[英日韩]双语)(简体|繁体)$", base_title)
+        if suffix == "特效" and dual_match:
+            return f"{dual_match.group(1)}特效{dual_match.group(2)}"
+
+        if suffix not in base_title:
+            return f"{base_title}{suffix}"
+
+        return base_title
+
     def _format_stream_feature_title(self, base_title, features):
         """
         把基础语言名和特色标签合成最终标题。
@@ -340,14 +406,11 @@ class P115MediaAnalyzerMixin:
         if not base_title:
             base_title = "未知"
 
-        # “特效”更适合贴在字幕类型后面，而不是放括号里
-        if "特效" in features and base_title in ["简体", "繁体", "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）", "英文", "英语"]:
-            if base_title == "中英双语（简体）":
-                base_title = "中英双语特效（简体）"
-            elif base_title == "中英双语（繁体）":
-                base_title = "中英双语特效（繁体）"
-            else:
-                base_title = f"{base_title}特效"
+        base_title = self._normalize_subtitle_display_title(base_title)
+
+        # “特效”属于结构性后缀，不进入括号；括号只留给上译 / 香港 / 台配等特色词。
+        if "特效" in features:
+            base_title = self._append_subtitle_plain_suffix(base_title, "特效")
             features = [f for f in features if f != "特效"]
 
         if features:
@@ -435,9 +498,9 @@ class P115MediaAnalyzerMixin:
 
             if stream_type == "Subtitle":
                 if base_label in ["国语", "普通话", "中文"]:
-                    return "简体"
+                    return "中文简体"
                 if base_label in ["粤语", "广东话"]:
-                    return "繁体"
+                    return "中文繁体"
                 if base_label.endswith("语") and base_label != "无语言":
                     return base_label[:-1] + "文"
 
@@ -511,28 +574,28 @@ class P115MediaAnalyzerMixin:
 
             if (has_chs and has_eng and not has_cht) or (is_dual_eng and not has_cht):
                 norm_lang = "chi"
-                display_lang = "中英双语（简体）"
+                display_lang = "中英双语简体"
             elif (has_cht and has_eng) or (is_dual_eng and has_cht):
                 norm_lang = "chi"
-                display_lang = "中英双语（繁体）"
+                display_lang = "中英双语繁体"
             elif (has_chs and has_jpn and not has_cht) or (is_dual_jpn and not has_cht):
                 norm_lang = "chi"
-                display_lang = "中日双语（简体）"
+                display_lang = "中日双语简体"
             elif (has_cht and has_jpn) or (is_dual_jpn and has_cht):
                 norm_lang = "chi"
-                display_lang = "中日双语（繁体）"
+                display_lang = "中日双语繁体"
             elif (has_chs and has_kor and not has_cht) or (is_dual_kor and not has_cht):
                 norm_lang = "chi"
-                display_lang = "中韩双语（简体）"
+                display_lang = "中韩双语简体"
             elif (has_cht and has_kor) or (is_dual_kor and has_cht):
                 norm_lang = "chi"
-                display_lang = "中韩双语（繁体）"
+                display_lang = "中韩双语繁体"
             elif has_cht:
                 norm_lang = "chi"
-                display_lang = "繁体"
+                display_lang = "中文繁体"
             elif has_chs:
                 norm_lang = "chi"
-                display_lang = "简体"
+                display_lang = "中文简体"
             elif has_eng:
                 norm_lang = "eng"
                 display_lang = "英文"
@@ -548,13 +611,13 @@ class P115MediaAnalyzerMixin:
 
                 if _has_lang_marker(combined_text, ["台配", "台灣", "台湾"]):
                     norm_lang = "chi"
-                    display_lang = "繁体"
+                    display_lang = "中文繁体"
                 elif is_yue:
                     norm_lang = "chi"
-                    display_lang = "繁体"
+                    display_lang = "中文繁体"
                 elif is_chi:
                     norm_lang = "chi"
-                    display_lang = "简体"
+                    display_lang = "中文简体"
                 else:
                     for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
                         if _has_lang_marker(combined_text, keywords):
@@ -635,39 +698,42 @@ class P115MediaAnalyzerMixin:
             friendly_title = friendly_title.replace("繁體", "繁体").replace("簡體", "简体")
             
             replace_map = {
-                "中文简体": "简体",
-                "简体中文": "简体",
-                "简中": "简体",
-                "中文繁体": "繁体",
-                "繁体中文": "繁体",
-                "繁中": "繁体",
+                "简体中文": "中文简体",
+                "简中": "中文简体",
+                "繁体中文": "中文繁体",
+                "繁中": "中文繁体",
                 "雙語": "双语",
                 "原盘": "",
             }
             for old, new in replace_map.items():
                 friendly_title = friendly_title.replace(old, new)
                 
-            # 4. 修复双语标签
-            friendly_title = friendly_title.replace("简英双语", "中英双语（简体）").replace("简英", "中英双语（简体）")
-            friendly_title = friendly_title.replace("繁英双语", "中英双语（繁体）").replace("繁英", "中英双语（繁体）")
-            friendly_title = friendly_title.replace("中英双语（简体）双语", "中英双语（简体）")
-            friendly_title = friendly_title.replace("中英双语（繁体）双语", "中英双语（繁体）")
-            friendly_title = friendly_title.replace("中上英下", "中英双语（简体）").replace("英上中下", "中英双语（简体）")
-            friendly_title = friendly_title.replace("简体英文", "中英双语（简体）").replace("繁体英文", "中英双语（繁体）")
+            # 4. 修复双语标签：脚本信息作为纯后缀，不再放到括号里
+            friendly_title = friendly_title.replace("简英双语", "中英双语简体").replace("简英", "中英双语简体")
+            friendly_title = friendly_title.replace("繁英双语", "中英双语繁体").replace("繁英", "中英双语繁体")
+            friendly_title = friendly_title.replace("中英双语简体双语", "中英双语简体")
+            friendly_title = friendly_title.replace("中英双语繁体双语", "中英双语繁体")
+            friendly_title = friendly_title.replace("中上英下", "中英双语简体").replace("英上中下", "中英双语简体")
+            friendly_title = friendly_title.replace("简体英文", "中英双语简体").replace("中文简体英文", "中英双语简体")
+            friendly_title = friendly_title.replace("繁体英文", "中英双语繁体").replace("中文繁体英文", "中英双语繁体")
             
-            friendly_title = friendly_title.replace("简日双语", "中日双语（简体）").replace("简日", "中日双语（简体）")
-            friendly_title = friendly_title.replace("繁日双语", "中日双语（繁体）").replace("繁日", "中日双语（繁体）")
-            friendly_title = friendly_title.replace("中日双语（简体）双语", "中日双语（简体）")
-            friendly_title = friendly_title.replace("中日双语（繁体）双语", "中日双语（繁体）")
-            friendly_title = friendly_title.replace("中上日下", "中日双语（简体）").replace("日上中下", "中日双语（简体）")
-            friendly_title = friendly_title.replace("简体日文", "中日双语（简体）").replace("繁体日文", "中日双语（繁体）")
+            friendly_title = friendly_title.replace("简日双语", "中日双语简体").replace("简日", "中日双语简体")
+            friendly_title = friendly_title.replace("繁日双语", "中日双语繁体").replace("繁日", "中日双语繁体")
+            friendly_title = friendly_title.replace("中日双语简体双语", "中日双语简体")
+            friendly_title = friendly_title.replace("中日双语繁体双语", "中日双语繁体")
+            friendly_title = friendly_title.replace("中上日下", "中日双语简体").replace("日上中下", "中日双语简体")
+            friendly_title = friendly_title.replace("简体日文", "中日双语简体").replace("中文简体日文", "中日双语简体")
+            friendly_title = friendly_title.replace("繁体日文", "中日双语繁体").replace("中文繁体日文", "中日双语繁体")
 
-            friendly_title = friendly_title.replace("简韩双语", "中韩双语（简体）").replace("简韩", "中韩双语（简体）")
-            friendly_title = friendly_title.replace("繁韩双语", "中韩双语（繁体）").replace("繁韩", "中韩双语（繁体）")
-            friendly_title = friendly_title.replace("中韩双语（简体）双语", "中韩双语（简体）")
-            friendly_title = friendly_title.replace("中韩双语（繁体）双语", "中韩双语（繁体）")
-            friendly_title = friendly_title.replace("中上韩下", "中韩双语（简体）").replace("韩上中下", "中韩双语（简体）")
-            friendly_title = friendly_title.replace("简体韩文", "中韩双语（简体）").replace("繁体韩文", "中韩双语（繁体）")
+            friendly_title = friendly_title.replace("简韩双语", "中韩双语简体").replace("简韩", "中韩双语简体")
+            friendly_title = friendly_title.replace("繁韩双语", "中韩双语繁体").replace("繁韩", "中韩双语繁体")
+            friendly_title = friendly_title.replace("中韩双语简体双语", "中韩双语简体")
+            friendly_title = friendly_title.replace("中韩双语繁体双语", "中韩双语繁体")
+            friendly_title = friendly_title.replace("中上韩下", "中韩双语简体").replace("韩上中下", "中韩双语简体")
+            friendly_title = friendly_title.replace("简体韩文", "中韩双语简体").replace("中文简体韩文", "中韩双语简体")
+            friendly_title = friendly_title.replace("繁体韩文", "中韩双语繁体").replace("中文繁体韩文", "中韩双语繁体")
+
+            friendly_title = self._normalize_subtitle_display_title(friendly_title)
             
             # 5. 兜底与组合
             if stream_features:
@@ -678,10 +744,12 @@ class P115MediaAnalyzerMixin:
                 friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
             else:
                 # 没有特色标签，但有未知的中文残留，组合起来
-                if display_lang in ["简体", "繁体", "中英双语（简体）", "中英双语（繁体）", "中日双语（简体）", "中日双语（繁体）", "中韩双语（简体）", "中韩双语（繁体）"]:
+                display_lang = self._normalize_subtitle_display_title(display_lang)
+                if display_lang in ["中文简体", "中文繁体", "中英双语简体", "中英双语繁体", "中日双语简体", "中日双语繁体", "中韩双语简体", "中韩双语繁体"]:
                     check_kw = "简" if "简" in display_lang else ("繁" if "繁" in display_lang else "")
                     if check_kw and check_kw not in friendly_title:
-                        friendly_title = f"{friendly_title} ({display_lang})"
+                        # 语言/脚本不再进括号；未知中文残留按特色词处理。
+                        friendly_title = f"{display_lang}（{friendly_title}）" if friendly_title else display_lang
 
         # =========================================================
         # 7. 音轨 Title 处理
@@ -734,16 +802,20 @@ class P115MediaAnalyzerMixin:
         # =========================================================
         # 9. 冗余标题兜底
         # =========================================================
+        if stream_type == "Subtitle":
+            display_lang = self._normalize_subtitle_display_title(display_lang)
+            friendly_title = self._normalize_subtitle_display_title(friendly_title)
+
         redundant_exact_matches = {
             "yue", "cn", "cht", "tc", "chi", "zho", "zh", "chs", "sc",
-            "粵語", "國語", "粤语", "国语", "简中", "繁中", "简体", "繁体",
+            "粵語", "國語", "粤语", "国语", "简中", "繁中", "简体", "繁体", "中文简体", "中文繁体",
             "中文", "英语", "英文", "english", "korean", "韩语", "韩文", "japanese", "日语", "日文",
             "中文(简体)", "中文（简体）", "简体中文",
             "中文(繁体)", "中文（繁體）", "繁体中文", "繁體中文",
             "simplified", "traditional", "simplified(简体)", "traditional(繁体)",
-            "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）",
-            "简日双语", "繁日双语", "中日双语（简体）", "中日双语（繁体）",
-            "简韩双语", "繁韩双语", "中韩双语（简体）", "中韩双语（繁体）"
+            "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）", "中英双语简体", "中英双语繁体",
+            "简日双语", "繁日双语", "中日双语（简体）", "中日双语（繁体）", "中日双语简体", "中日双语繁体",
+            "简韩双语", "繁韩双语", "中韩双语（简体）", "中韩双语（繁体）", "中韩双语简体", "中韩双语繁体"
         }
 
         if (
