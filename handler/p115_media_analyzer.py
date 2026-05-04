@@ -598,6 +598,72 @@ class P115MediaAnalyzerMixin:
         # 返回：ISO 代码，Emby DisplayLanguage，Emby Title
         return norm_lang, emby_display_language, final_emby_stream_title
 
+    def _channel_layout_label(self, channels, channel_layout=None):
+        channel_layout = (channel_layout or "").lower()
+
+        if channels == 8:
+            return "7.1"
+        if channels == 7:
+            return "6.1"
+        if channels == 6:
+            return "5.1"
+        if channels == 2:
+            return "stereo"
+        if channels == 1:
+            return "mono"
+
+        if channel_layout:
+            return channel_layout.replace("(side)", "")
+
+        return str(channels) if channels else ""
+
+    def _audio_codec_profile_label(self, codec, profile="", title=""):
+        codec = (codec or "").lower()
+        profile_mix = f"{profile or ''} {title or ''}".lower()
+
+        if codec == "truehd":
+            return "TRUEHD Atmos" if "atmos" in profile_mix else "TRUEHD"
+
+        if codec == "eac3":
+            return "DDP Atmos" if "atmos" in profile_mix else "DDP"
+
+        if codec == "dts":
+            if "ma" in profile_mix or "master" in profile_mix or "xll" in profile_mix:
+                return "DTS-HD MA"
+            if "hra" in profile_mix or "high resolution" in profile_mix:
+                return "DTS-HD HRA"
+            return "DTS"
+
+        if codec == "ac3":
+            return "AC3"
+        if codec == "aac":
+            return "AAC"
+        if codec == "flac":
+            return "FLAC"
+        if codec == "opus":
+            return "OPUS"
+        if codec == "mp3":
+            return "MP3"
+
+        return codec.upper() if codec else ""
+
+    def _subtitle_codec_label(self, codec):
+        codec = (codec or "").lower()
+
+        mapping = {
+            "hdmv_pgs_subtitle": "PGSSUB",
+            "pgssub": "PGSSUB",
+            "subrip": "SUBRIP",
+            "srt": "SUBRIP",
+            "ass": "ASS",
+            "ssa": "SSA",
+            "webvtt": "VTT",
+            "mov_text": "MOV_TEXT",
+            "dvd_subtitle": "DVDSUB",
+        }
+
+        return mapping.get(codec, codec.upper() if codec else "")
+    
     def _build_emby_mediainfo_from_ffprobe(self, probe_data, file_node, sha1=None):
         """
         将 ffprobe 原始 JSON 转成 Emby MediaSourceInfo 兼容格式。
