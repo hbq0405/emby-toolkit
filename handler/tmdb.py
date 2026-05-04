@@ -532,10 +532,10 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
         return None
 
 # --- 获取合集的详细信息 ---
-def get_collection_details(collection_id: int, api_key: str) -> Optional[Dict[str, Any]]:
+def get_collection_details(collection_id: int, api_key: str, skip_fallback: bool = False) -> Optional[Dict[str, Any]]:
     """
-    【V2 - 智能补全版】获取指定 TMDb 合集的详细信息，包含其所有影片部分。
-    ★ 新增：如果中文简介缺失，自动请求英文版进行补全，为 AI 翻译提供源文本。
+    【V3 - 极致性能版】获取指定 TMDb 合集的详细信息。
+    增加 skip_fallback 参数，允许调用方在不需要简介时跳过英文兜底请求。
     """
     if not collection_id or not api_key:
         return None
@@ -549,10 +549,13 @@ def get_collection_details(collection_id: int, api_key: str) -> Optional[Dict[st
     if not data_zh:
         return None
 
-    # ★★★ 核心修复：检查简介是否缺失，如果缺失则请求英文兜底 ★★★
+    # ★ 核心优化：如果调用方明确表示不需要兜底，直接返回
+    if skip_fallback:
+        return data_zh
+
+    # 检查简介是否缺失，如果缺失则请求英文兜底
     overview = data_zh.get("overview", "")
     if not overview or len(overview) < 2:
-        # 只有当默认语言是中文系时，才去拿英文兜底
         if DEFAULT_LANGUAGE.startswith("zh"):
             logger.debug(f"    ➜ 合集 (ID: {collection_id}) 缺失中文简介，正在请求英文版补全...")
             try:
@@ -560,13 +563,11 @@ def get_collection_details(collection_id: int, api_key: str) -> Optional[Dict[st
                 data_en = _tmdb_request(endpoint, api_key, params_en)
                 
                 if data_en:
-                    # 1. 补全简介
                     en_overview = data_en.get("overview")
                     if en_overview:
                         data_zh["overview"] = en_overview
                         logger.debug(f"    ➜ 成功补全合集英文简介源文本。")
                     
-                    # 2. 顺手补全标题 (如果中文标题完全为空的话)
                     if not data_zh.get("name") and data_en.get("name"):
                         data_zh["name"] = data_en.get("name")
                         

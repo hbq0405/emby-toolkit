@@ -366,7 +366,7 @@ def check_and_subscribe_collection_from_movie(movie_tmdb_id: str, movie_name: st
     # 2. 获取合集详情 (为了拿到 parts 列表用于缺失订阅)
     # ======================================================================
     # 这一步是必须的，因为预占位时只存了 ID 列表，没有存每部电影的上映日期和海报，无法构造订阅请求
-    coll_details = tmdb.get_collection_details(tmdb_coll_id, tmdb_api_key)
+    coll_details = tmdb.get_collection_details(tmdb_coll_id, tmdb_api_key, skip_fallback=True)
     if not coll_details or 'parts' not in coll_details:
         logger.error(f"  ➜ 无法获取 TMDb 合集 [{tmdb_coll_name}] 的详细列表。")
         return
