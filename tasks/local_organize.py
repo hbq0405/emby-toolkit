@@ -17,7 +17,7 @@ from database.connection import get_db_connection
 
 logger = logging.getLogger(__name__)
 
-VIDEO_EXTENSIONS = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg'}
+VIDEO_EXTENSIONS = {'mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'strm', 'mpg'}
 
 _MONITOR_OBSERVER = None
 _MONITOR_HANDLER = None
