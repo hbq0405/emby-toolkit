@@ -527,6 +527,7 @@ const baseMenuOptions = computed(() => {
           { label: '媒体整理', defaultLabel: '媒体整理', key: 'ResubscribePage', icon: renderIcon(ResubscribeIcon) },
           { label: '自动标签', defaultLabel: '自动标签', key: 'AutoTaggingPage', icon: renderIcon(TagIcon) },
           { label: '整理记录', defaultLabel: '整理记录', key: 'OrganizeRecords', icon: renderIcon(RecordsIcon) },  
+          { label: '本地整理', defaultLabel: '本地整理', key: 'LocalOrganize', icon: renderIcon(RecordsIcon) },  
           { label: '手动处理', defaultLabel: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }, 
         ] 
       },
