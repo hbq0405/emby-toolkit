@@ -3,7 +3,7 @@
 # ==============================================================================
 # ✨ 应用基础信息 (Application Basics)
 # ==============================================================================
-APP_VERSION = "9.5.1"  # 更新版本号
+APP_VERSION = "9.5.2"  # 更新版本号
 GITHUB_REPO_OWNER = "hbq0405"  # 您的 GitHub 用户名
 GITHUB_REPO_NAME = "emby-toolkit" # 您的 GitHub 仓库名
 DEBUG_MODE = True     # 开发模式开关，部署时应设为 False
@@ -122,7 +122,7 @@ CONFIG_OPTION_MAX_ACTORS_TO_PROCESS = "max_actors_to_process"   # 每个媒体�
 DEFAULT_MAX_ACTORS_TO_PROCESS = 50                              # 默认的演员数量上限
 CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS = "max_episode_actors_to_process" # 每集演员处理数量上限，0代表不单独处理分集演员
 DEFAULT_MAX_EPISODE_ACTORS_TO_PROCESS = 0                       # 默认0，代表不单独处理分集演员，直接继承剧集主演员表
-CONFIG_OPTION_EXTRACT_THUMB = "extract_thumb"   # 是否截取图片
+CONFIG_OPTION_EXTRACT_THUMB = "extract_thumb"                   # 是否截取图片
 CONFIG_OPTION_MIN_SCORE_FOR_REVIEW = "min_score_for_review"     # 低于此评分的项目将进入手动处理列表
 DEFAULT_MIN_SCORE_FOR_REVIEW = 6.0                              # 默认的最低分
 CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS = "remove_actors_without_avatars" # 是否移除无头像的演员
