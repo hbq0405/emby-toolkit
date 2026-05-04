@@ -1647,6 +1647,7 @@ def translate_tmdb_metadata_recursively(
     pending_items = {}
     pending_persons = set()
     pending_roles = set()
+    collections_to_upsert = []
     translated_count = 0
 
     # ★ 统计计数器
@@ -1831,6 +1832,59 @@ def translate_tmdb_metadata_recursively(
                     cleaned_char = utils.clean_character_name_static(character)
                     if cleaned_char and not utils.contains_chinese(cleaned_char):
                         pending_roles.add(cleaned_char)
+
+        # E. 检查电影所属合集 (Collection)
+        if specific_item_type == 'Movie' and data_dict.get('belongs_to_collection'):
+            coll_info = data_dict['belongs_to_collection']
+            coll_id = str(coll_info.get('id'))
+            if coll_id:
+                from database import tmdb_collection_db
+                from handler.tmdb import get_collection_details
+                
+                # 1. 查本地数据库是否已有该合集
+                cached_coll = tmdb_collection_db.get_native_collection_by_tmdb_id(coll_id)
+                if cached_coll and cached_coll.get('overview'):
+                    # 已有缓存，直接回填
+                    coll_info['name'] = cached_coll.get('name') or coll_info.get('name')
+                    coll_info['overview'] = cached_coll.get('overview')
+                else:
+                    # 2. 无缓存，去 TMDb 拉取完整合集信息 (为了拿到 overview 和 parts)
+                    if tmdb_api_key:
+                        full_coll = get_collection_details(int(coll_id), tmdb_api_key)
+                        if full_coll:
+                            coll_info['overview'] = full_coll.get('overview', '')
+                            # 顺便把 parts 里的电影 ID 提取出来，准备后续占坑
+                            coll_info['all_tmdb_ids'] = [str(p.get('id')) for p in full_coll.get('parts', []) if p.get('id')]
+                            
+                            collections_to_upsert.append(coll_info) # 标记需要入库
+                            
+                            # 3. 加入待翻译队列
+                            needs_coll_title = False
+                            needs_coll_overview = False
+                            
+                            if translate_title_enabled:
+                                c_name = coll_info.get('name')
+                                if c_name and not utils.contains_chinese(c_name):
+                                    needs_coll_title = True
+                                    stats['title_pending_count'] += 1
+                                    stats['title_needs_translation'] += 1
+                                    
+                            if translate_overview_enabled:
+                                c_overview = coll_info.get('overview')
+                                if c_overview and not utils.contains_chinese(c_overview):
+                                    needs_coll_overview = True
+                                    stats['overview_pending_count'] += 1
+                                    stats['overview_needs_translation'] += 1
+                                    
+                            if needs_coll_title or needs_coll_overview:
+                                pending_items[f"coll_{coll_id}"] = {
+                                    "type": "Collection",
+                                    "title_key": "name",
+                                    "title": coll_info.get('name') if needs_coll_title else None,
+                                    "overview": coll_info.get('overview') if needs_coll_overview else None,
+                                    "tagline": None,
+                                    "ref": coll_info
+                                }
 
     # --- 遍历收集 ---
     if item_type == 'Movie':
@@ -2140,6 +2194,28 @@ def translate_tmdb_metadata_recursively(
         f"人名 {stats['person_ai_calls']} | "
         f"角色 {stats['role_ai_calls']}"
     )
+    
+    # --- 5. 合集占坑入库 ---
+    if collections_to_upsert:
+        from database import tmdb_collection_db
+        for coll in collections_to_upsert:
+            try:
+                c_name = coll.get('name', '')
+                if c_name.endswith("合集"):
+                    c_name = c_name[:-2] + "（系列）"
+                    coll['name'] = c_name
+                    
+                tmdb_collection_db.upsert_native_collection({
+                    'tmdb_collection_id': str(coll.get('id')),
+                    'name': c_name,
+                    'overview': coll.get('overview', ''),
+                    'poster_path': coll.get('poster_path'),
+                    'all_tmdb_ids': coll.get('all_tmdb_ids', []),
+                    'emby_collection_id': None 
+                })
+                logger.debug(f"  ➜ [大一统翻译] 已将合集 '{c_name}' 的翻译结果及关联 ID 预占位写入数据库。")
+            except Exception as e:
+                logger.warning(f"  ➜ [大一统翻译] 合集预占位写入失败: {e}")
 
 def evaluate_season_airing_status(tmdb_id: str, season_number: int, api_key: str) -> bool:
     """
