@@ -204,3 +204,23 @@ def trigger_115_organize_task():
     except Exception as e:
         logger.error(f"  ➜ [TG交互] 触发 115 整理任务时发生错误: {e}", exc_info=True)
         return False
+
+def trigger_local_organize_task():
+    """
+    【公共接口】触发本地文件整理任务。
+    """
+    try:
+        from tasks.local_organize import task_local_organize
+        
+        result = submit_task(
+            task_local_organize,
+            "本地文件整理",
+            processor_type='media'
+        )
+        
+        if result:
+            logger.info("  ➜ 本地文件整理任务已成功提交到后台队列。")
+        return result
+    except Exception as e:
+        logger.error(f"触发本地整理任务失败: {e}")
+        return False
