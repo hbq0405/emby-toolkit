@@ -792,13 +792,18 @@ class MediaProcessor:
                     # =========================================================
                     
                     if item_type == "Series":
-                        payload, patched = self._patch_ongoing_series_cache_from_tmdb(
-                            tmdb_id=str(tmdb_id),
-                            payload=payload,
-                            file_path=file_path
-                        )
-                        if patched:
-                            logger.info("  ➜ [实时监控] 追更剧元数据补充完成，将使用最新分集演员表重新写入 NFO。")
+                        # ★ 性能优化：如果配置了不获取分集演员(0)，则直接跳过 TMDb 补抓逻辑
+                        max_ep_actors = int(self.config.get(constants.CONFIG_OPTION_MAX_EPISODE_ACTORS_TO_PROCESS, 0))
+                        if max_ep_actors > 0:
+                            payload, patched = self._patch_ongoing_series_cache_from_tmdb(
+                                tmdb_id=str(tmdb_id),
+                                payload=payload,
+                                file_path=file_path
+                            )
+                            if patched:
+                                logger.info("  ➜ [实时监控] 追更剧元数据补充完成，将使用最新分集演员表重新写入 NFO。")
+                        else:
+                            logger.debug("  ➜ [实时监控] 分集演员数配置为 0，跳过分集演员表补抓，直接继承剧集演员表。")
 
                     # 3. 写入 NFO 文件 (传入 db_actors 确保演员表不丢失)
                     self.sync_item_metadata(
