@@ -333,27 +333,40 @@ class P115MediaAnalyzerMixin:
     def _format_stream_feature_title(self, base_title, features):
         """
         把基础语言名和特色标签合成最终标题。
+        base_title: 已经包含简繁、双语等信息 (e.g., "中文简体", "中英双语简体")
+        features: 提取到的特色标签 (e.g., ["特效", "上译", "香港"])
         """
         base_title = str(base_title or "").strip()
-        features = list(dict.fromkeys([f for f in features if f]))
+        all_features = list(dict.fromkeys([f for f in features if f]))
 
         if not base_title:
             base_title = "未知"
 
-        # “特效”更适合贴在字幕类型后面，而不是放括号里
-        if "特效" in features and base_title in ["简体", "繁体", "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）", "英文", "英语"]:
-            if base_title == "中英双语（简体）":
-                base_title = "中英双语特效（简体）"
-            elif base_title == "中英双语（繁体）":
-                base_title = "中英双语特效（繁体）"
+        # 定义哪些特色标签应该作为后缀（直接连接在主标题后面）
+        # 其他特色标签将放入括号中
+        features_as_suffixes = ["特效", "听障"] 
+
+        suffix_parts = []
+        parenthetical_parts = []
+
+        for f in all_features:
+            if f in features_as_suffixes:
+                suffix_parts.append(f)
             else:
-                base_title = f"{base_title}特效"
-            features = [f for f in features if f != "特效"]
+                parenthetical_parts.append(f)
 
-        if features:
-            return f"{base_title}（{'·'.join(features)}）"
+        final_title_parts = [base_title]
 
-        return base_title
+        # 添加后缀特色标签，避免重复
+        for sf in suffix_parts:
+            if sf not in base_title: 
+                final_title_parts.append(sf)
+
+        # 添加括号中的特色标签
+        if parenthetical_parts:
+            final_title_parts.append(f"（{'·'.join(parenthetical_parts)}）")
+
+        return "".join(final_title_parts).strip()
 
     def _get_friendly_display_info(
         self,
@@ -364,13 +377,12 @@ class P115MediaAnalyzerMixin:
         is_hearing_impaired=False
     ):
         """
-        返回：(底层 ISO 代码，UI 主标题/DisplayLanguage，UI 副标题/Title)
+        返回：(底层 ISO 代码，Emby DisplayLanguage，Emby Title)
 
         设计原则：
-        1. Language 负责底层语言码。
-        2. Title 优先用于识别简繁、双语、特效、压制组、地区、SDH 等信息。
-        3. DEFAULT_LANGUAGE_MAPPING 只管语言。
-        4. DEFAULT_STREAM_FEATURE_MAPPING 只管 DYSY / TX / SDH / 拉美 / 巴西 / 导评 这类非语言特征。
+        1. norm_lang (ISO 代码): 优先从 raw_lang 获取，确保底层语言代码的准确性。
+        2. emby_display_language (Emby 主语言标签): 显示更通用的语言名称 (如 "中文", "英文", "国语", "粤语")。
+        3. emby_stream_title (Emby 副标题): 包含详细的语言变体、双语状态和特色词 (如 "中英双语简体特效（上译）")。
         """
 
         # 防御性检查，防止 language_map 未初始化
@@ -382,12 +394,9 @@ class P115MediaAnalyzerMixin:
         raw_display_title = str(raw_display_title or "").strip()
         stream_type = str(stream_type or "").strip()
 
-        title_lower = raw_title.lower()
-        lang_lower = raw_lang.lower()
-
         def _normalize_marker_text(text):
             text = str(text or "").lower()
-            text = re.sub(r"[\.\-_+/|\\\[\]\(\)【】（）]+", " ", text)
+            text = re.sub(r"[\.\s\-\_+/|\\\[\]\(\)【】（）]+", " ", text) # Keep spaces for word boundary detection
             text = re.sub(r"\s+", " ", text).strip()
             return text
 
@@ -414,11 +423,12 @@ class P115MediaAnalyzerMixin:
                     return True
 
             return False
-        def _lookup_base_label(norm_lang):
-            if not norm_lang:
+        
+        def _lookup_base_label(norm_lang_code):
+            if not norm_lang_code:
                 return ""
 
-            norm_lang_lower = str(norm_lang).lower()
+            norm_lang_lower = str(norm_lang_code).lower()
 
             for item in self.language_map:
                 value = str(item.get("value", "")).lower()
@@ -427,179 +437,135 @@ class P115MediaAnalyzerMixin:
                 if norm_lang_lower == value or norm_lang_lower in aliases:
                     return item.get("label") or ""
 
-            return str(norm_lang).upper()
+            return str(norm_lang_code).upper()
 
         def _display_label_from_base_label(base_label, stream_type):
             if not base_label or base_label == "未知":
                 return base_label
 
             if stream_type == "Subtitle":
-                if base_label in ["国语", "普通话", "中文"]:
-                    return "简体"
-                if base_label in ["粤语", "广东话"]:
-                    return "繁体"
+                # 字幕的主语言标签，中文统一显示为“中文”
+                if base_label in ["国语", "普通话", "中文", "粤语", "广东话"]:
+                    return "中文" 
                 if base_label.endswith("语") and base_label != "无语言":
-                    return base_label[:-1] + "文"
+                    return base_label[:-1] + "文" # e.g., "法语" -> "法文"
 
-            return base_label
+            return base_label # 音轨直接用原始标签，如“国语”
 
-        # =========================================================
-        # 1. 判断 Title 是否包含明确语言信息
-        #    注意：这里必须用 _has_lang_marker，不能裸 in，否则 Deutsch 会命中 sc。
-        # =========================================================
-        title_clean = _normalize_marker_text(raw_title)
+        # 1. 确定底层 ISO 语言代码 (norm_lang)
+        norm_lang = helpers.normalize_lang_code(raw_lang)
+        
+        # 结合所有相关文本用于特征/变体检测
+        clean_text_for_detection = _normalize_marker_text(f"{raw_title} {raw_display_title} {raw_lang}")
 
-        title_has_lang = _has_lang_marker(title_clean, [
-            "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "簡體", "简英", "简日", "简韩",
-            "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "繁中", "繁体", "繁體", "繁英", "繁日", "繁韩",
-            "eng", "english", "en", "英文", "英语", "英字",
-            "jpn", "japanese", "ja", "jp", "日文", "日语", "日字",
-            "kor", "korean", "ko", "kr", "韩文", "韩语", "韩字",
-            "台配", "台灣", "台湾"
-        ])
-
-        if not title_has_lang:
-            for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
-                if _has_lang_marker(title_clean, keywords):
-                    title_has_lang = True
-                    break
-
-        if title_has_lang:
-            lang_lower_for_detect = ""
-            norm_lang = helpers.normalize_lang_code(raw_title)
-        else:
-            lang_lower_for_detect = lang_lower
-            norm_lang = helpers.normalize_lang_code(raw_lang)
-
-        combined_text = f"{title_lower} {lang_lower_for_detect}".strip()
-        clean_text = _normalize_marker_text(combined_text)
-
-        display_lang = ""
+        # Emby 的 DisplayLanguage 字段 (主语言标签)
+        emby_display_language = "" 
+        
+        # Emby 的 Title 字段 (副标题，包含详细信息)
+        emby_stream_title_base = "" # 副标题的基础部分，不含特色标签
 
         # =========================================================
-        # 2. 字幕流：字幕底层中文统一 chi，靠 Title 区分简繁/双语
+        # 2. 字幕流解析逻辑
         # =========================================================
         if stream_type == "Subtitle":
-            has_chs = _has_lang_marker(clean_text, [
-                "chs", "sc", "gb", "zh cn", "zh hans", "simplified", "简中", "简体", "簡體", "简英", "简日", "简韩", "中英", "中日", "中韩", "中文", 
-                "中上英下", "英上中下", "中上日下", "日上中下", "中上韩下", "韩上中下", "简体英文", "简体日文", "简体韩文"
-            ])
-
-            has_cht = _has_lang_marker(clean_text, [
-                "cht", "tc", "big5", "zh tw", "zh hk", "zh hant", "traditional", "繁中", "繁体", "繁體", "繁英", "繁日", "繁韩",
-                "繁上英下", "英上繁下", "繁上日下", "日上繁下", "繁上韩下", "韩上繁下", "繁体英文", "繁体日文", "繁体韩文"
-            ])
-
-            has_eng = _has_lang_marker(clean_text, [
-                "eng", "english", "en", "英文", "英语", "英字", "简英", "繁英", "中英", "双语",
-                "中上英下", "英上中下", "繁上英下", "英上繁下", "简体英文", "繁体英文"
-            ])
-            
-            has_jpn = _has_lang_marker(clean_text, [
-                "jpn", "japanese", "ja", "jp", "日文", "日语", "日字", "简日", "繁日", "中日",
-                "中上日下", "日上中下", "繁上日下", "日上繁下", "简体日文", "繁体日文"
-            ])
-
-            has_kor = _has_lang_marker(clean_text, [
-                "kor", "korean", "ko", "kr", "韩文", "韩语", "韩字", "简韩", "繁韩", "中韩",
-                "中上韩下", "韩上中下", "繁上韩下", "韩上繁下", "简体韩文", "繁体韩文"
-            ])
-
-            is_dual_eng = _has_lang_marker(clean_text, ["双语", "中上英下", "英上中下", "繁上英下", "英上繁下", "简体英文", "繁体英文"])
-            is_dual_jpn = _has_lang_marker(clean_text, ["中上日下", "日上中下", "繁上日下", "日上繁下", "简体日文", "繁体日文"])
-            is_dual_kor = _has_lang_marker(clean_text, ["中上韩下", "韩上中下", "繁上韩下", "韩上繁下", "简体韩文", "繁体韩文"])
-
-            if (has_chs and has_eng and not has_cht) or (is_dual_eng and not has_cht):
-                norm_lang = "chi"
-                display_lang = "中英双语（简体）"
-            elif (has_cht and has_eng) or (is_dual_eng and has_cht):
-                norm_lang = "chi"
-                display_lang = "中英双语（繁体）"
-            elif (has_chs and has_jpn and not has_cht) or (is_dual_jpn and not has_cht):
-                norm_lang = "chi"
-                display_lang = "中日双语（简体）"
-            elif (has_cht and has_jpn) or (is_dual_jpn and has_cht):
-                norm_lang = "chi"
-                display_lang = "中日双语（繁体）"
-            elif (has_chs and has_kor and not has_cht) or (is_dual_kor and not has_cht):
-                norm_lang = "chi"
-                display_lang = "中韩双语（简体）"
-            elif (has_cht and has_kor) or (is_dual_kor and has_cht):
-                norm_lang = "chi"
-                display_lang = "中韩双语（繁体）"
-            elif has_cht:
-                norm_lang = "chi"
-                display_lang = "繁体"
-            elif has_chs:
-                norm_lang = "chi"
-                display_lang = "简体"
-            elif has_eng:
-                norm_lang = "eng"
-                display_lang = "英文"
-            elif has_jpn:
-                norm_lang = "jpn"
-                display_lang = "日文"
-            elif has_kor:
-                norm_lang = "kor"
-                display_lang = "韩文"
+            # 如果原始语言是中文，底层代码统一为 'chi'
+            if norm_lang in ['chi', 'yue']: 
+                norm_lang = 'chi' 
+                emby_display_language = "中文" 
+            elif norm_lang == 'eng':
+                emby_display_language = "英文" 
+            elif norm_lang == 'jpn':
+                emby_display_language = "日文" 
+            elif norm_lang == 'kor':
+                emby_display_language = "韩文" 
             else:
-                is_yue = _has_lang_marker(combined_text, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
-                is_chi = _has_lang_marker(combined_text, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
+                emby_display_language = _display_label_from_base_label(_lookup_base_label(norm_lang), stream_type) or "未知"
 
-                if _has_lang_marker(combined_text, ["台配", "台灣", "台湾"]):
-                    norm_lang = "chi"
-                    display_lang = "繁体"
-                elif is_yue:
-                    norm_lang = "chi"
-                    display_lang = "繁体"
-                elif is_chi:
-                    norm_lang = "chi"
-                    display_lang = "简体"
+            # 检测简繁、双语等具体特征
+            has_chs = _has_lang_marker(clean_text_for_detection, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_chi", []))
+            has_cht = _has_lang_marker(clean_text_for_detection, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_yue", []))
+            has_eng = _has_lang_marker(clean_text_for_detection, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_eng", []))
+            has_jpn = _has_lang_marker(clean_text_for_detection, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_jpn", []))
+            has_kor = _has_lang_marker(clean_text_for_detection, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("sub_kor", []))
+
+            is_dual_eng = _has_lang_marker(clean_text_for_detection, ["双语", "中上英下", "英上中下", "繁上英下", "英上繁下", "简体英文", "繁体英文"])
+            is_dual_jpn = _has_lang_marker(clean_text_for_detection, ["中上日下", "日上中下", "繁上日下", "日上繁下", "简体日文", "繁体日文"])
+            is_dual_kor = _has_lang_marker(clean_text_for_detection, ["中上韩下", "韩上中下", "繁上韩下", "韩上繁下", "简体韩文", "繁体韩文"])
+
+            # 确定 Emby 副标题的基础部分 (emby_stream_title_base)
+            if (has_chs and has_eng and not has_cht) or (is_dual_eng and not has_cht):
+                emby_stream_title_base = "中英双语简体" 
+            elif (has_cht and has_eng) or (is_dual_eng and has_cht):
+                emby_stream_title_base = "中英双语繁体" 
+            elif (has_chs and has_jpn and not has_cht) or (is_dual_jpn and not has_cht):
+                emby_stream_title_base = "中日双语简体" 
+            elif (has_cht and has_jpn) or (is_dual_jpn and has_cht):
+                emby_stream_title_base = "中日双语繁体" 
+            elif (has_chs and has_kor and not has_cht) or (is_dual_kor and not has_cht):
+                emby_stream_title_base = "中韩双语简体" 
+            elif (has_cht and has_kor) or (is_dual_kor and has_cht):
+                emby_stream_title_base = "中韩双语繁体" 
+            elif has_cht:
+                emby_stream_title_base = "中文繁体" 
+            elif has_chs:
+                emby_stream_title_base = "中文简体" 
+            elif has_eng:
+                emby_stream_title_base = "英文"
+            elif has_jpn:
+                emby_stream_title_base = "日文"
+            elif has_kor:
+                emby_stream_title_base = "韩文"
+            else:
+                # 如果没有检测到特定变体，尝试从原始标题中提取中文部分作为副标题基础
+                cleaned_raw_title = utils.clean_non_chinese_chars(raw_title)
+                if cleaned_raw_title:
+                    emby_stream_title_base = cleaned_raw_title
                 else:
-                    for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
-                        if _has_lang_marker(combined_text, keywords):
-                            norm_lang = key.replace("sub_", "")
-                            break
+                    # 如果原始标题也没有中文，则使用主语言标签作为副标题基础
+                    emby_stream_title_base = emby_display_language
 
         # =========================================================
-        # 3. 音轨流：国语/粤语要保留发音差异
+        # 3. 音轨流解析逻辑
         # =========================================================
-        else:
-            is_yue = _has_lang_marker(
-                combined_text,
-                helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", [])
-            )
-            is_chi = _has_lang_marker(
-                combined_text,
-                helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", [])
-            )
+        else: # Audio stream type
+            # 检测国语/粤语等特征
+            is_yue = _has_lang_marker(clean_text_for_detection, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("yue", []))
+            is_chi = _has_lang_marker(clean_text_for_detection, helpers.AUDIO_SUBTITLE_KEYWORD_MAP.get("chi", []))
 
             if is_yue and not is_chi:
                 norm_lang = "yue"
+                emby_display_language = "粤语"
             elif is_chi and not is_yue:
                 norm_lang = "chi"
+                emby_display_language = "国语"
             else:
-                for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
-                    if key.startswith("sub_"):
-                        continue
-
-                    if _has_lang_marker(combined_text, keywords):
-                        norm_lang = key.replace("sub_", "")
-                        break
-
-        # =========================================================
-        # 4. 生成 display_lang
-        # =========================================================
-        if not display_lang:
-            base_label = _lookup_base_label(norm_lang)
-            display_lang = _display_label_from_base_label(base_label, stream_type)
-
-        if not display_lang:
-            display_lang = "未知"
+                # 如果 norm_lang 未定义，尝试从关键词中推断
+                if not norm_lang or norm_lang == "und":
+                    for key, keywords in helpers.AUDIO_SUBTITLE_KEYWORD_MAP.items():
+                        if key.startswith("sub_"): continue
+                        if _has_lang_marker(clean_text_for_detection, keywords):
+                            norm_lang = key.replace("sub_", "")
+                            break
+                emby_display_language = _lookup_base_label(norm_lang) or "未知"
+            
+            # 音轨的副标题，通常是清理后的原始标题或主语言标签
+            emby_stream_title_base = utils.clean_stream_garbage_words(raw_title) or emby_display_language
 
         # =========================================================
-        # 5. 提取非语言特征：DYSY / TX / SDH / 拉美 / 巴西 / 导评
+        # 4. 最终调整和特色标签提取
         # =========================================================
+        # 确保 emby_display_language 不为空
+        if not emby_display_language:
+            emby_display_language = _lookup_base_label(norm_lang) or "未知"
+            if stream_type == "Subtitle":
+                # 字幕的主语言标签可能需要从通用标签转换（如“国语”->“中文”）
+                emby_display_language = _display_label_from_base_label(emby_display_language, stream_type)
+
+        # 确保 emby_stream_title_base 不为空
+        if not emby_stream_title_base:
+            emby_stream_title_base = emby_display_language # 副标题基础部分回退到主语言标签
+
+        # 提取非语言特色标签
         stream_features = self._extract_stream_features(
             stream_type,
             raw_title,
@@ -607,222 +573,30 @@ class P115MediaAnalyzerMixin:
             raw_lang
         )
 
-        # IsHearingImpaired 也强制视为 SDH
+        # 如果是听障字幕，强制添加“听障”标签
         if stream_type == "Subtitle" and is_hearing_impaired is True:
-            if "SDH" not in stream_features:
+            if "听障" not in stream_features:
                 stream_features.append("听障")
 
         stream_features = list(dict.fromkeys([f for f in stream_features if f]))
 
-        friendly_title = raw_title
+        # 使用 _format_stream_feature_title 构建最终的 Emby Title 字段
+        final_emby_stream_title = self._format_stream_feature_title(emby_stream_title_base, stream_features)
 
-        # =========================================================
-        # 6. 字幕 Title 处理
-        # =========================================================
-        if stream_type == "Subtitle":
-            friendly_title = raw_title
-
-            # 1. 预处理：去掉“画面内简中（iTunes）”这种多余前缀
-            friendly_title = re.sub(r"画面内.*?（.*?）", "", friendly_title)
-            
-            # 2. 暴力净化：碾碎所有 SUP/ASS/Chs 等英文污染
-            friendly_title = utils.clean_non_chinese_chars(friendly_title)
-
-            # 3. 抹除无意义的压制组/字幕组名称 ★★★
-            friendly_title = utils.clean_stream_garbage_words(friendly_title)
-
-            # 4. 统一简繁字形，并替换常见冗余词
-            friendly_title = friendly_title.replace("繁體", "繁体").replace("簡體", "简体")
-            
-            replace_map = {
-                "中文简体": "简体",
-                "简体中文": "简体",
-                "简中": "简体",
-                "中文繁体": "繁体",
-                "繁体中文": "繁体",
-                "繁中": "繁体",
-                "雙語": "双语",
-                "原盘": "",
-            }
-            for old, new in replace_map.items():
-                friendly_title = friendly_title.replace(old, new)
-                
-            # 4. 修复双语标签
-            friendly_title = friendly_title.replace("简英双语", "中英双语（简体）").replace("简英", "中英双语（简体）")
-            friendly_title = friendly_title.replace("繁英双语", "中英双语（繁体）").replace("繁英", "中英双语（繁体）")
-            friendly_title = friendly_title.replace("中英双语（简体）双语", "中英双语（简体）")
-            friendly_title = friendly_title.replace("中英双语（繁体）双语", "中英双语（繁体）")
-            friendly_title = friendly_title.replace("中上英下", "中英双语（简体）").replace("英上中下", "中英双语（简体）")
-            friendly_title = friendly_title.replace("简体英文", "中英双语（简体）").replace("繁体英文", "中英双语（繁体）")
-            
-            friendly_title = friendly_title.replace("简日双语", "中日双语（简体）").replace("简日", "中日双语（简体）")
-            friendly_title = friendly_title.replace("繁日双语", "中日双语（繁体）").replace("繁日", "中日双语（繁体）")
-            friendly_title = friendly_title.replace("中日双语（简体）双语", "中日双语（简体）")
-            friendly_title = friendly_title.replace("中日双语（繁体）双语", "中日双语（繁体）")
-            friendly_title = friendly_title.replace("中上日下", "中日双语（简体）").replace("日上中下", "中日双语（简体）")
-            friendly_title = friendly_title.replace("简体日文", "中日双语（简体）").replace("繁体日文", "中日双语（繁体）")
-
-            friendly_title = friendly_title.replace("简韩双语", "中韩双语（简体）").replace("简韩", "中韩双语（简体）")
-            friendly_title = friendly_title.replace("繁韩双语", "中韩双语（繁体）").replace("繁韩", "中韩双语（繁体）")
-            friendly_title = friendly_title.replace("中韩双语（简体）双语", "中韩双语（简体）")
-            friendly_title = friendly_title.replace("中韩双语（繁体）双语", "中韩双语（繁体）")
-            friendly_title = friendly_title.replace("中上韩下", "中韩双语（简体）").replace("韩上中下", "中韩双语（简体）")
-            friendly_title = friendly_title.replace("简体韩文", "中韩双语（简体）").replace("繁体韩文", "中韩双语（繁体）")
-            
-            # 5. 兜底与组合
-            if stream_features:
-                # ★★★ 核心修改：只要提取到了标准化的特色标签，直接用它！抛弃所有残留的中文杂质
-                friendly_title = self._format_stream_feature_title(display_lang, stream_features)
-            elif not friendly_title:
-                # 没有特色标签，且标题被清空了，只显示语言
-                friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
-            else:
-                # 没有特色标签，但有未知的中文残留，组合起来
-                if display_lang in ["简体", "繁体", "中英双语（简体）", "中英双语（繁体）", "中日双语（简体）", "中日双语（繁体）", "中韩双语（简体）", "中韩双语（繁体）"]:
-                    check_kw = "简" if "简" in display_lang else ("繁" if "繁" in display_lang else "")
-                    if check_kw and check_kw not in friendly_title:
-                        friendly_title = f"{friendly_title} ({display_lang})"
-
-        # =========================================================
-        # 7. 音轨 Title 处理
-        # =========================================================
-        elif stream_type == "Audio":
-            friendly_title = raw_title
-
-            # 1. 暴力净化：碾碎所有 DTS-HD, Dolby, kbps 等非中文字符
-            friendly_title = utils.clean_non_chinese_chars(friendly_title)
-
-            # 2. 抹除无意义的压制组/音轨组名称
-            friendly_title = utils.clean_stream_garbage_words(friendly_title)
-
-            # 3. 替换常见词
-            audio_replace_map = {
-                "国语配音": "国语",
-                "粤语配音": "粤语",
-                "视障口述": "视障口述",
-            }
-            for old, new in audio_replace_map.items():
-                friendly_title = friendly_title.replace(old, new)
-
-            # 3. 兜底与组合
-            if stream_features:
-                # ★★★ 核心修改：只要提取到了标准化的特色标签，直接用它！抛弃所有残留的中文杂质
-                friendly_title = self._format_stream_feature_title(display_lang, stream_features)
-            elif not friendly_title:
-                # 没有特色标签，且标题被清空了，只显示语言
-                friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
-            else:
-                # 没有特色标签，但有未知的中文残留，组合起来
-                if display_lang and display_lang != "未知":
-                    # 移除开头多余的 display_lang
-                    friendly_title = re.sub(rf"^{display_lang}", "", friendly_title)
-                    
-                    if not friendly_title:
-                        friendly_title = display_lang
-                    else:
-                        if display_lang not in friendly_title:
-                            friendly_title = f"{display_lang}（{friendly_title}）"
-
-        # =========================================================
-        # 8. 其他流兜底
-        # =========================================================
-        else:
-            if display_lang and display_lang != "未知":
-                if not friendly_title or not utils.contains_chinese(friendly_title):
-                    friendly_title = display_lang
-
-        # =========================================================
-        # 9. 冗余标题兜底
-        # =========================================================
-        redundant_exact_matches = {
-            "yue", "cn", "cht", "tc", "chi", "zho", "zh", "chs", "sc",
-            "粵語", "國語", "粤语", "国语", "简中", "繁中", "简体", "繁体",
-            "中文", "英语", "英文", "english", "korean", "韩语", "韩文", "japanese", "日语", "日文",
-            "中文(简体)", "中文（简体）", "简体中文",
-            "中文(繁体)", "中文（繁體）", "繁体中文", "繁體中文",
-            "simplified", "traditional", "simplified(简体)", "traditional(繁体)",
-            "简英双语", "繁英双语", "中英双语（简体）", "中英双语（繁体）",
-            "简日双语", "繁日双语", "中日双语（简体）", "中日双语（繁体）",
-            "简韩双语", "繁韩双语", "中韩双语（简体）", "中韩双语（繁体）"
-        }
-
+        # 冗余副标题清理：如果副标题与主语言标签相同或过于通用，则清空副标题
         if (
-            not friendly_title
-            or friendly_title.lower().replace(" ", "") in redundant_exact_matches
-            or friendly_title.lower() == raw_lang.lower()
+            not final_emby_stream_title
+            or final_emby_stream_title == "未知"
+            or final_emby_stream_title.lower().replace(" ", "") == emby_display_language.lower().replace(" ", "")
         ):
-            friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
+            final_emby_stream_title = "" # 清空副标题，让 Emby 只显示主语言标签
 
+        # 确保 norm_lang 不为空
         if not norm_lang:
             norm_lang = raw_lang
 
-        return norm_lang, display_lang, friendly_title
-
-    def _channel_layout_label(self, channels, channel_layout=None):
-        channel_layout = (channel_layout or "").lower()
-
-        if channels == 8:
-            return "7.1"
-        if channels == 7:
-            return "6.1"
-        if channels == 6:
-            return "5.1"
-        if channels == 2:
-            return "stereo"
-        if channels == 1:
-            return "mono"
-
-        if channel_layout:
-            return channel_layout.replace("(side)", "")
-
-        return str(channels) if channels else ""
-
-    def _audio_codec_profile_label(self, codec, profile="", title=""):
-        codec = (codec or "").lower()
-        profile_mix = f"{profile or ''} {title or ''}".lower()
-
-        if codec == "truehd":
-            return "TRUEHD Atmos" if "atmos" in profile_mix else "TRUEHD"
-
-        if codec == "eac3":
-            return "DDP Atmos" if "atmos" in profile_mix else "DDP"
-
-        if codec == "dts":
-            if "ma" in profile_mix or "master" in profile_mix or "xll" in profile_mix:
-                return "DTS-HD MA"
-            if "hra" in profile_mix or "high resolution" in profile_mix:
-                return "DTS-HD HRA"
-            return "DTS"
-
-        if codec == "ac3":
-            return "AC3"
-        if codec == "aac":
-            return "AAC"
-        if codec == "flac":
-            return "FLAC"
-        if codec == "opus":
-            return "OPUS"
-        if codec == "mp3":
-            return "MP3"
-
-        return codec.upper() if codec else ""
-
-    def _subtitle_codec_label(self, codec):
-        codec = (codec or "").lower()
-
-        mapping = {
-            "hdmv_pgs_subtitle": "PGSSUB",
-            "pgssub": "PGSSUB",
-            "subrip": "SUBRIP",
-            "srt": "SUBRIP",
-            "ass": "ASS",
-            "ssa": "SSA",
-            "webvtt": "VTT",
-            "mov_text": "MOV_TEXT",
-            "dvd_subtitle": "DVDSUB",
-        }
-
-        return mapping.get(codec, codec.upper() if codec else "")
+        # 返回：ISO 代码，Emby DisplayLanguage，Emby Title
+        return norm_lang, emby_display_language, final_emby_stream_title
 
     def _build_emby_mediainfo_from_ffprobe(self, probe_data, file_node, sha1=None):
         """
@@ -1065,35 +839,35 @@ class P115MediaAnalyzerMixin:
                     "AverageFrameRate": fps,
                     "ExtendedVideoType": extended_video_type or "None",
                     "IsHearingImpaired": False,
-                    "ExtendedVideoSubType": extended_video_sub_type,
+                    "ExtendedVideoSubType": "None",
                     "IsTextSubtitleStream": False,
                     "SupportsExternalStream": False,
-                    "ExtendedVideoSubTypeDescription": extended_video_desc
+                    "ExtendedVideoSubTypeDescription": "None"
                 })
 
             elif codec_type == "audio":
                 raw_lang = tags.get("language")
                 raw_title = tags.get("title")
                 
-                # ★ 调用新的智能解析方法
-                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Audio")
+                # ★ 调用新的智能解析方法，返回 Emby DisplayLanguage 和 Emby Title
+                lang, emby_display_language, emby_stream_title = self._get_friendly_display_info(raw_lang, raw_title, "Audio")
 
                 channels = self._safe_int(s.get("channels"))
                 channel_layout = self._channel_layout_label(channels, s.get("channel_layout"))
                 sample_rate = self._safe_int(s.get("sample_rate"))
 
                 profile = s.get("profile") or ""
-                codec_display = self._audio_codec_profile_label(codec, profile, title)
+                # 使用 emby_stream_title 进行编码配置文件的判断
+                codec_display = self._audio_codec_profile_label(codec, profile, emby_stream_title) 
 
                 display_title_parts = []
-                if display_lang and display_lang != "未知":
-                    display_title_parts.append(display_lang)
+                if emby_display_language and emby_display_language != "未知": 
+                    display_title_parts.append(emby_display_language)
                 if codec_display:
                     display_title_parts.append(codec_display)
                 if channel_layout:
                     display_title_parts.append(channel_layout)
-                if is_default:
-                    display_title_parts.append("(默认)")
+                # (默认) 将由 _set_smart_default_streams 方法添加
 
                 display_title = " ".join(display_title_parts)
 
@@ -1101,22 +875,22 @@ class P115MediaAnalyzerMixin:
                     "Type": "Audio",
                     "Codec": codec,
                     "Index": index,
-                    "Title": title, # ★ 净化后的副标题
+                    "Title": emby_stream_title, # ★ Emby 的 Title 字段 (副标题)
                     "BitRate": self._safe_int(s.get("bit_rate")),
                     "BitDepth": self._safe_int(s.get("bits_per_raw_sample") or s.get("bits_per_sample")),
                     "Channels": channels,
                     "IsForced": is_forced,
-                    "Language": lang, # ★ 伪装后的底层 ISO 代码
+                    "Language": lang, # ★ 底层 ISO 代码
                     "Protocol": "File",
                     "TimeBase": s.get("time_base") or "1/1000",
                     "IsDefault": is_default,
                     "IsExternal": False,
                     "SampleRate": sample_rate,
-                    "DisplayTitle": display_title, # ★ 完美的 UI 标题 (如: 国语 AAC stereo (默认))
+                    "DisplayTitle": display_title, # ★ Emby 的 DisplayLanguage 字段 (主标题，包含编码/声道)
                     "IsInterlaced": False,
                     "ChannelLayout": channel_layout,
                     "AttachmentSize": 0,
-                    "DisplayLanguage": display_lang, # ★ 完美的 UI 语言 (如: 国语)
+                    "DisplayLanguage": emby_display_language, # ★ Emby 的 DisplayLanguage 字段 (纯语言标签)
                     "ExtendedVideoType": "None",
                     "IsHearingImpaired": False,
                     "ExtendedVideoSubType": "None",
@@ -1132,19 +906,16 @@ class P115MediaAnalyzerMixin:
                 raw_display_title = tags.get("DisplayTitle")
                 is_hearing_impaired = tags.get("IsHearingImpaired", False)
                 
-                # ★ 调用新的智能解析方法
-                lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Subtitle", raw_display_title, is_hearing_impaired)
+                # ★ 调用新的智能解析方法，返回 Emby DisplayLanguage 和 Emby Title
+                lang, emby_display_language, emby_stream_title = self._get_friendly_display_info(raw_lang, raw_title, "Subtitle", raw_display_title, is_hearing_impaired)
 
                 sub_codec = self._subtitle_codec_label(codec)
                 is_text_sub = codec in {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
 
                 display_title_parts = []
-                if display_lang and display_lang != "未知":
-                    display_title_parts.append(display_lang)
-                if is_default:
-                    display_title_parts.append(f"(默认 {sub_codec})")
-                else:
-                    display_title_parts.append(f"({sub_codec})")
+                if emby_display_language and emby_display_language != "未知": 
+                    display_title_parts.append(emby_display_language)
+                display_title_parts.append(f"({sub_codec})") # 主标题中始终显示编码格式
 
                 display_title = " ".join(display_title_parts)
 
@@ -1152,17 +923,17 @@ class P115MediaAnalyzerMixin:
                     "Type": "Subtitle",
                     "Codec": sub_codec,
                     "Index": index,
-                    "Title": title, # ★ 净化后的副标题
+                    "Title": emby_stream_title, # ★ Emby 的 Title 字段 (副标题)
                     "IsForced": is_forced,
-                    "Language": lang, # ★ 伪装后的底层 ISO 代码
+                    "Language": lang, # ★ 底层 ISO 代码
                     "Protocol": "File",
                     "TimeBase": s.get("time_base") or "1/1000",
                     "IsDefault": is_default,
                     "IsExternal": False,
-                    "DisplayTitle": display_title, # ★ 完美的 UI 标题 (如: 简中 (默认 SRT))
+                    "DisplayTitle": display_title, # ★ Emby 的 DisplayLanguage 字段 (主标题，包含编码)
                     "IsInterlaced": False,
                     "AttachmentSize": 0,
-                    "DisplayLanguage": display_lang, # ★ 完美的 UI 语言 (如: 简中)
+                    "DisplayLanguage": emby_display_language, # ★ Emby 的 DisplayLanguage 字段 (纯语言标签)
                     "ExtendedVideoType": "None",
                     "IsHearingImpaired": False,
                     "ExtendedVideoSubType": "None",
@@ -1340,6 +1111,7 @@ class P115MediaAnalyzerMixin:
                     if not is_target:
                         s["IsForced"] = False
 
+                    # 仅修改 DisplayTitle，Title 保持不变
                     dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
                     dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
                     if is_target:
@@ -1386,7 +1158,7 @@ class P115MediaAnalyzerMixin:
                         if not token:
                             continue
                         # 中文词直接包含判断；英文短码必须边界匹配，避免误伤其它单词。
-                        if re.search(r"[\u4e00-\u9fff]", token):
+                        if re.search(r"[\u4e00-\u9fa5]", token):
                             if token in text:
                                 return True
                         elif re.search(rf"(?<![a-z0-9]){re.escape(token)}(?![a-z0-9])", text):
@@ -1523,6 +1295,7 @@ class P115MediaAnalyzerMixin:
                     if not is_target:
                         s["IsForced"] = False
                         
+                    # 仅修改 DisplayTitle，Title 保持不变
                     dt = re.sub(r'\(默认\s*', '(', s.get("DisplayTitle", ""))
                     dt = dt.replace('(默认)', '').replace('默认', '').replace('()', '').strip()
                     if is_target: dt += " (默认)"
