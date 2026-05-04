@@ -534,7 +534,8 @@ def find_person_by_external_id(external_id: str, api_key: str, source: str = "im
 # --- 获取合集的详细信息 ---
 def get_collection_details(collection_id: int, api_key: str) -> Optional[Dict[str, Any]]:
     """
-    【新】获取指定 TMDb 合集的详细信息，包含其所有影片部分。
+    【V2 - 智能补全版】获取指定 TMDb 合集的详细信息，包含其所有影片部分。
+    ★ 新增：如果中文简介缺失，自动请求英文版进行补全，为 AI 翻译提供源文本。
     """
     if not collection_id or not api_key:
         return None
@@ -542,8 +543,37 @@ def get_collection_details(collection_id: int, api_key: str) -> Optional[Dict[st
     endpoint = f"/collection/{collection_id}"
     params = {"language": DEFAULT_LANGUAGE}
     
-    logger.debug(f"TMDb: 获取合集详情 (ID: {collection_id})")
-    return _tmdb_request(endpoint, api_key, params)
+    logger.debug(f"  ➜ TMDb API: 获取合集详情 (ID: {collection_id})...")
+    data_zh = _tmdb_request(endpoint, api_key, params)
+    
+    if not data_zh:
+        return None
+
+    # ★★★ 核心修复：检查简介是否缺失，如果缺失则请求英文兜底 ★★★
+    overview = data_zh.get("overview", "")
+    if not overview or len(overview) < 2:
+        # 只有当默认语言是中文系时，才去拿英文兜底
+        if DEFAULT_LANGUAGE.startswith("zh"):
+            logger.debug(f"    ➜ 合集 (ID: {collection_id}) 缺失中文简介，正在请求英文版补全...")
+            try:
+                params_en = {"language": "en-US"}
+                data_en = _tmdb_request(endpoint, api_key, params_en)
+                
+                if data_en:
+                    # 1. 补全简介
+                    en_overview = data_en.get("overview")
+                    if en_overview:
+                        data_zh["overview"] = en_overview
+                        logger.debug(f"    ➜ 成功补全合集英文简介源文本。")
+                    
+                    # 2. 顺手补全标题 (如果中文标题完全为空的话)
+                    if not data_zh.get("name") and data_en.get("name"):
+                        data_zh["name"] = data_en.get("name")
+                        
+            except Exception as e:
+                logger.warning(f"    ➜ 补全合集英文简介失败: {e}")
+
+    return data_zh
 
 # --- 搜索媒体 ---
 def search_media(query: str, api_key: str, item_type: str = 'movie', year: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
