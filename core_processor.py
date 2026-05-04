@@ -749,19 +749,23 @@ class MediaProcessor:
                             logger.info(f"  ➜ [实时监控] 已从数据库恢复 {len(seasons_data)} 个季和 {len(episodes_data)} 个分集的数据。")
                     
                     # =========================================================
-                    # ★★★ 电影合集补全逻辑 (防止洗版丢失合集 NFO) ★★★
+                    # ★★★ 电影合集补全逻辑 (纯本地数据库极速版) ★★★
                     # =========================================================
                     if item_type == "Movie" and self.config.get(constants.CONFIG_OPTION_GENERATE_COLLECTION_NFO, False):
-                        logger.info(f"  ➜ [实时监控] 电影合集 NFO 开关已开启，正在从 TMDb 获取合集信息以补全缓存...")
                         try:
-                            movie_details = tmdb.get_movie_details(int(tmdb_id), self.tmdb_api_key)
-                            if movie_details and movie_details.get("belongs_to_collection"):
-                                enriched_collection = self._enrich_collection_info(movie_details.get("belongs_to_collection"))
-                                payload["belongs_to_collection"] = enriched_collection
-                                logger.info(f"  ➜ [实时监控] 成功补全合集信息: {enriched_collection.get('name')}")
+                            from database import tmdb_collection_db
+                            # 直接从本地 collections_info 表反查该电影所属的合集
+                            cached_collection = tmdb_collection_db.get_collection_by_movie_tmdb_id(str(tmdb_id))
+                            if cached_collection:
+                                payload["belongs_to_collection"] = {
+                                    "id": int(cached_collection["tmdb_collection_id"]),
+                                    "name": cached_collection["name"],
+                                    "poster_path": cached_collection.get("poster_path"),
+                                    "backdrop_path": None # NFO 中通常只需要 name
+                                }
+                                logger.debug(f"  ➜ [实时监控] 命中本地合集缓存，成功补全合集信息: {cached_collection.get('name')}")
                         except Exception as e:
-                            logger.warning(f"  ➜ [实时监控] 补全合集信息失败: {e}")
-                    # =========================================================
+                            logger.warning(f"  ➜ [实时监控] 从本地数据库补全合集信息失败: {e}")
 
                     # 2. 构造上下文对象
                     fake_item_details = {

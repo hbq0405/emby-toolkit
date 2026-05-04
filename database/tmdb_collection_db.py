@@ -164,3 +164,22 @@ def touch_native_collection_by_child_id(tmdb_id: str) -> bool:
     except Exception as e:
         logger.error(f"更新合集时间戳 (Child TMDb ID: {tmdb_id}) 失败: {e}")
         return False
+    
+def get_collection_by_movie_tmdb_id(movie_tmdb_id: str) -> Optional[Dict[str, Any]]:
+    """
+    【极速反查】根据电影的 TMDb ID，反查它所属的合集信息。
+    利用 JSONB 的 @> 包含操作符，查询速度极快。
+    """
+    try:
+        with get_db_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT * FROM collections_info
+                WHERE all_tmdb_ids_json @> %s::jsonb
+                LIMIT 1
+            """, (json.dumps([str(movie_tmdb_id)]),))
+            row = cursor.fetchone()
+            return dict(row) if row else None
+    except Exception as e:
+        logger.error(f"反查电影所属合集失败: {e}")
+        return None
