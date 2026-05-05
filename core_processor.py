@@ -4569,7 +4569,7 @@ class MediaProcessor:
         import re
         
         if not shutil.which("ffmpeg"):
-            logger.warning("  ➜ [极速截图] 容器内未安装 ffmpeg，无法截取分集图。")
+            logger.warning("  ➜ [视频截图] 容器内未安装 ffmpeg，无法截取分集图。")
             return False
 
         try:
@@ -4614,7 +4614,7 @@ class MediaProcessor:
             if duration_sec > 0:
                 timestamp_sec = int(duration_sec * 0.3)
 
-            logger.info(f"  ➜ [极速截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
+            logger.info(f"  ➜ [视频截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
 
             # =========================================================
             # ★ 核心逻辑：定义基础滤镜与两种色彩映射方案
@@ -4649,28 +4649,28 @@ class MediaProcessor:
             # 尝试 2：硬件加速失败，智能降级到 CPU
             # ---------------------------------------------------------
             err_msg = (proc_hw.stderr.decode('utf-8', errors='ignore') or "").strip()
-            logger.debug(f"  ➜ [极速截图] GPU 硬件加速不可用，准备降级到 CPU。原因: {err_msg[:100]}")
+            logger.debug(f"  ➜ [视频截图] GPU 硬件加速不可用，准备降级到 CPU。原因: {err_msg[:100]}")
 
             # 杜比视界保护：如果降级到 CPU，且是杜比视界，直接放弃，防止绿毛怪
             if re.search(r'(?i)(dovi|dv|profile\s*5)', video_path):
-                logger.warning(f"  ➜ [极速截图] 检测到杜比视界视频，由于 GPU 加速不可用，跳过 CPU 截图以避免产生偏色(绿毛怪)。")
+                logger.warning(f"  ➜ [视频截图] 检测到杜比视界视频，由于 GPU 加速不可用，跳过 CPU 截图以避免产生偏色(绿毛怪)。")
                 return False
 
-            logger.info("  ➜ [极速截图] 正在使用 CPU (zscale) 重新截取...")
+            logger.info("  ➜ [视频截图] 正在使用 CPU (zscale) 重新截取...")
             proc_sw = run_ffmpeg(f"{base_vf},{sw_tonemap}")
 
             if proc_sw.returncode == 0 and os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) > 0:
                 return True
             else:
                 err_msg_sw = (proc_sw.stderr.decode('utf-8', errors='ignore') or "").strip()
-                logger.debug(f"  ➜ [极速截图] CPU 截图也失败了: {err_msg_sw}")
+                logger.debug(f"  ➜ [视频截图] CPU 截图也失败了: {err_msg_sw}")
                 return False
 
         except subprocess.TimeoutExpired:
-            logger.warning(f"  ➜ [极速截图] 截图超时: {os.path.basename(video_path)}")
+            logger.warning(f"  ➜ [视频截图] 截图超时: {os.path.basename(video_path)}")
             return False
         except Exception as e:
-            logger.warning(f"  ➜ [极速截图] 发生异常: {e}")
+            logger.warning(f"  ➜ [视频截图] 发生异常: {e}")
             return False
 
     # --- 从 TMDb 直接下载图片 (用于实时监控/预处理/追剧刷新) ---
