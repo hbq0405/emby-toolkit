@@ -1212,16 +1212,52 @@ class P115DeleteBuffer:
 
         # 2. 获取免死金牌名单
         protected_cids = {'0'}
+
         media_root = config.get(constants.CONFIG_OPTION_115_MEDIA_ROOT_CID)
-        if media_root: protected_cids.add(str(media_root))
+        if media_root:
+            protected_cids.add(str(media_root))
+
         save_path = config.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID)
-        if save_path: protected_cids.add(str(save_path))
-        
+        if save_path:
+            protected_cids.add(str(save_path))
+
+        # 保护“未识别”目录：优先通过待整理目录 + 未识别目录名查 CID
+        unidentified_name = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_NAME, "未识别")
+        if save_path and unidentified_name:
+            unidentified_cid = P115CacheManager.get_cid(str(save_path), unidentified_name)
+            if unidentified_cid:
+                protected_cids.add(str(unidentified_cid))
+
         raw_rules = settings_db.get_setting('p115_sorting_rules')
         if raw_rules:
             rules = json.loads(raw_rules) if isinstance(raw_rules, str) else raw_rules
             for rule in rules:
-                if rule.get('cid'): protected_cids.add(str(rule['cid']))
+                if rule.get('cid'):
+                    protected_cids.add(str(rule['cid']))
+
+
+        def _protect_ancestors(cid):
+            """把指定目录的所有父级目录加入免死名单，防止 ETK 这种管理根目录被 GC 删掉。"""
+            current = str(cid or '')
+
+            for _ in range(20):
+                if not current or current == '0':
+                    break
+
+                node = P115CacheManager.get_node_info(current)
+                if not node:
+                    break
+
+                parent_id = str(node.get('parent_id') or '')
+                if not parent_id or parent_id == '0':
+                    break
+
+                protected_cids.add(parent_id)
+                current = parent_id
+
+
+        for safe_cid in list(protected_cids):
+            _protect_ancestors(safe_cid)
 
         # 3. 检查空目录
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
@@ -4630,13 +4666,19 @@ def _batch_manual_correct(record_ids, tmdb_id, media_type, target_cid, season_nu
     old_cids_to_check = set()
     for r_item in root_items:
         info_data = r_item['_info_data']
-        if info_data.get('paths'):
-            for p in info_data['paths']:
-                cid_val = str(p.get('file_id') or p.get('cid', ''))
+        # 只清理本次资源所在的最底层父目录，绝不把 ETK / 待整理 这种上级目录塞进 GC
+        pid = str(r_item.get('pid') or r_item.get('parent_id') or '')
+
+        if pid and pid != '0':
+            old_cids_to_check.add(pid)
+        else:
+            paths = info_data.get('paths') or []
+            if paths:
+                # paths 通常是从根到当前目录的链条，只取最后一级
+                leaf = paths[-1]
+                cid_val = str(leaf.get('file_id') or leaf.get('cid') or '')
                 if cid_val and cid_val != '0':
                     old_cids_to_check.add(cid_val)
-        elif r_item['pid'] and str(r_item['pid']) != '0':
-            old_cids_to_check.add(str(r_item['pid']))
 
     if old_cids_to_check:
         from handler.p115_service import P115DeleteBuffer
