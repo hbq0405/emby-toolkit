@@ -4651,11 +4651,6 @@ class MediaProcessor:
             err_msg = (proc_hw.stderr.decode('utf-8', errors='ignore') or "").strip()
             logger.debug(f"  ➜ [视频截图] GPU 硬件加速不可用，准备降级到 CPU。原因: {err_msg[:100]}")
 
-            # 杜比视界保护：如果降级到 CPU，且是杜比视界，直接放弃，防止绿毛怪
-            if re.search(r'(?i)(dovi|dv|profile\s*5)', video_path):
-                logger.warning(f"  ➜ [视频截图] 检测到杜比视界视频，由于 GPU 加速不可用，跳过 CPU 截图以避免产生偏色(绿毛怪)。")
-                return False
-
             logger.info("  ➜ [视频截图] 正在使用 CPU (zscale) 重新截取...")
             proc_sw = run_ffmpeg(f"{base_vf},{sw_tonemap}")
 
