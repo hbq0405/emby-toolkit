@@ -4562,24 +4562,21 @@ class MediaProcessor:
     # --- 从 115 直链截取缩略图 ---
     def _extract_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str, ep_data: dict = None) -> bool:
         """
-        调用 FFmpeg 从 115 直链截取高质量分集缩略图 (视频流直读 + 智能去黑边 + 强制 16:9)
+        调用 FFmpeg 从 115 直链截取高质量分集缩略图 (极速版 + 智能硬件降级)
         """
         import subprocess
         import shutil
         import re
-        from collections import Counter
         
         if not shutil.which("ffmpeg"):
-            logger.warning("  ➜ [智能截图] 容器内未安装 ffmpeg，无法截取分集图。")
+            logger.warning("  ➜ [极速截图] 容器内未安装 ffmpeg，无法截取分集图。")
             return False
 
         try:
             # 1. 获取 115 提取码和 SHA1
             pc, sha1 = self._extract_115_fingerprints(video_path)
-            
             if not sha1 and pc:
                 sha1 = self._get_sha1_by_pickcode(pc)
-                
             if not pc:
                 return False
 
@@ -4604,13 +4601,10 @@ class MediaProcessor:
                             row = cursor.fetchone()
                             if row and row['mediainfo_json']:
                                 mi = row['mediainfo_json']
-                                if isinstance(mi, list) and len(mi) > 0:
-                                    mi = mi[0]
+                                if isinstance(mi, list) and len(mi) > 0: mi = mi[0]
                                 ticks = mi.get("MediaSourceInfo", {}).get("RunTimeTicks", 0)
-                                if ticks > 0:
-                                    duration_sec = ticks / 10000000
-                except Exception:
-                    pass
+                                if ticks > 0: duration_sec = ticks / 10000000
+                except Exception: pass
             
             if duration_sec == 0 and ep_data:
                 runtime_min = ep_data.get("runtime")
@@ -4620,84 +4614,63 @@ class MediaProcessor:
             if duration_sec > 0:
                 timestamp_sec = int(duration_sec * 0.3)
 
-            logger.info(f"  ➜ [智能截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
+            logger.info(f"  ➜ [极速截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
 
             # =========================================================
-            # ★ 阶段一：直接从视频流读取 10 帧，精准探测黑边
+            # ★ 核心逻辑：定义基础滤镜与两种色彩映射方案
             # =========================================================
-            # skip=0: 强制不跳过任何帧
-            # limit=40: 激进探测，无视 WEB-DL 的暗部压缩噪点
-            cmd_detect = [
-                "ffmpeg",
-                "-hide_banner",
-                "-user_agent", "Mozilla/5.0",
-                "-rw_timeout", "15000000",
-                "-ss", str(timestamp_sec),
-                "-i", str(direct_url),
-                "-frames:v", "10",
-                "-vf", "cropdetect=limit=40:round=2:skip=0",
-                "-f", "null",
-                "-"
-            ]
+            # 基础滤镜：提取帧 -> 强制16:9缩放 -> 中心裁剪 (抛弃耗时的黑边探测)
+            base_vf = "thumbnail=24,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080"
+            
+            # 方案 A：GPU 硬件加速 (通杀 HDR10 和 杜比视界 P5)
+            hw_tonemap = "libplacebo=format=yuv420p:colorspace=bt709:color_primaries=bt709:color_trc=bt709:tonemapping=hable"
+            
+            # 方案 B：CPU 软件映射 (支持 HDR10，不支持杜比视界)
+            sw_tonemap = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
 
-            proc_detect = subprocess.run(cmd_detect, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors='ignore', timeout=60)
-            
-            crop_param = ""
-            # 解析所有的 crop 参数
-            matches = re.findall(r'crop=\d+:\d+:\d+:\d+', proc_detect.stderr)
-            if matches:
-                # 取出现次数最多的裁剪参数，防止某几帧画面闪烁导致误判
-                crop_param = Counter(matches).most_common(1)[0][0]
-                logger.info(f"  ➜ [智能截图] 探测到黑边，将进行裁剪: {crop_param}")
-            else:
-                logger.debug("  ➜ [智能截图] 未探测到黑边，将使用原画面比例。")
+            def run_ffmpeg(vf_string):
+                cmd = [
+                    "ffmpeg", "-hide_banner", "-loglevel", "error",
+                    "-user_agent", "Mozilla/5.0", "-rw_timeout", "15000000",
+                    "-ss", str(timestamp_sec), "-i", str(direct_url),
+                    "-vf", vf_string, "-frames:v", "1", "-q:v", "2", "-y", thumb_save_path
+                ]
+                return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
 
-            # =========================================================
-            # ★ 阶段二：提取最佳帧 -> 切除黑边 -> 强制 16:9 缩放 -> HDR/杜比视界转SDR
-            # =========================================================
-            vf_filters = ["thumbnail=24"]
-            if crop_param:
-                vf_filters.append(crop_param)
+            # ---------------------------------------------------------
+            # 尝试 1：优先使用 GPU 硬件加速
+            # ---------------------------------------------------------
+            proc_hw = run_ffmpeg(f"{base_vf},{hw_tonemap}")
             
-            vf_filters.append("scale=1920:1080:force_original_aspect_ratio=increase")
-            vf_filters.append("crop=1920:1080")
-            
-            # ★ 终极方案：使用 libplacebo 滤镜，通杀 SDR / HDR10 / 杜比视界 P5
-            # 它会自动识别 IPTPQc2 并正确映射回 BT.709，彻底消灭绿毛怪！
-            tonemap_filter = "libplacebo=format=yuv420p:colorspace=bt709:color_primaries=bt709:color_trc=bt709:tonemapping=hable"
-            vf_filters.append(tonemap_filter)
-            
-            vf_string = ",".join(vf_filters)
+            if proc_hw.returncode == 0 and os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) > 0:
+                return True
 
-            cmd_extract = [
-                "ffmpeg",
-                "-hide_banner",
-                "-loglevel", "error",
-                "-user_agent", "Mozilla/5.0",
-                "-rw_timeout", "15000000",
-                "-ss", str(timestamp_sec),
-                "-i", str(direct_url),
-                "-vf", vf_string,
-                "-frames:v", "1",
-                "-q:v", "2",
-                "-y",
-                thumb_save_path
-            ]
-            
-            proc_extract = subprocess.run(cmd_extract, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
+            # ---------------------------------------------------------
+            # 尝试 2：硬件加速失败，智能降级到 CPU
+            # ---------------------------------------------------------
+            err_msg = (proc_hw.stderr.decode('utf-8', errors='ignore') or "").strip()
+            logger.debug(f"  ➜ [极速截图] GPU 硬件加速不可用，准备降级到 CPU。原因: {err_msg[:100]}")
 
-            if proc_extract.returncode == 0 and os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) > 0:
+            # 杜比视界保护：如果降级到 CPU，且是杜比视界，直接放弃，防止绿毛怪
+            if re.search(r'(?i)(dovi|dv|profile\s*5)', video_path):
+                logger.warning(f"  ➜ [极速截图] 检测到杜比视界视频，由于 GPU 加速不可用，跳过 CPU 截图以避免产生偏色(绿毛怪)。")
+                return False
+
+            logger.info("  ➜ [极速截图] 正在使用 CPU (zscale) 重新截取...")
+            proc_sw = run_ffmpeg(f"{base_vf},{sw_tonemap}")
+
+            if proc_sw.returncode == 0 and os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) > 0:
                 return True
             else:
-                err_msg = (proc_extract.stderr.decode('utf-8', errors='ignore') or "").strip()
-                logger.debug(f"  ➜ [智能截图] 提取画面失败: {err_msg}")
+                err_msg_sw = (proc_sw.stderr.decode('utf-8', errors='ignore') or "").strip()
+                logger.debug(f"  ➜ [极速截图] CPU 截图也失败了: {err_msg_sw}")
                 return False
 
         except subprocess.TimeoutExpired:
-            logger.warning(f"  ➜ [智能截图] 截图超时: {os.path.basename(video_path)}")
+            logger.warning(f"  ➜ [极速截图] 截图超时: {os.path.basename(video_path)}")
             return False
         except Exception as e:
-            logger.warning(f"  ➜ [智能截图] 发生异常: {e}")
+            logger.warning(f"  ➜ [极速截图] 发生异常: {e}")
             return False
 
     # --- 从 TMDb 直接下载图片 (用于实时监控/预处理/追剧刷新) ---
