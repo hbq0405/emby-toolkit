@@ -710,7 +710,9 @@ class P115MediaAnalyzerMixin:
                 
             # 4. 修复双语标签：脚本信息作为纯后缀，不再放到括号里
             friendly_title = friendly_title.replace("简英双语", "中英双语简体").replace("简英", "中英双语简体")
+            friendly_title = friendly_title.replace("简西双语", "中英双语简体").replace("简西", "中英双语简体")
             friendly_title = friendly_title.replace("繁英双语", "中英双语繁体").replace("繁英", "中英双语繁体")
+            friendly_title = friendly_title.replace("繁西双语", "中英双语繁体").replace("繁西", "中英双语繁体")
             friendly_title = friendly_title.replace("中英双语简体双语", "中英双语简体")
             friendly_title = friendly_title.replace("中英双语繁体双语", "中英双语繁体")
             friendly_title = friendly_title.replace("中上英下", "中英双语简体").replace("英上中下", "中英双语简体")
