@@ -442,6 +442,14 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
     ]
     },
     {
+        "label": "国语",
+        "types": ["Subtitle"],
+        "patterns": [
+            r"国语",
+            r"国配",
+        ],
+    },
+    {
         "label": "特效",
         "types": ["Subtitle"],
         "patterns": [
