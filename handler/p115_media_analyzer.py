@@ -358,6 +358,10 @@ class P115MediaAnalyzerMixin:
             "中韩双语(简体)": "中韩双语简体",
             "中韩双语（繁体）": "中韩双语繁体",
             "中韩双语(繁体)": "中韩双语繁体",
+            "中西双语（简体）": "中西双语简体",
+            "中西双语(简体)": "中西双语简体",
+            "中西双语（繁体）": "中西双语繁体",
+            "中西双语(繁体)": "中西双语繁体",
         }
         for old, new in dual_map.items():
             title = title.replace(old, new)
@@ -387,7 +391,7 @@ class P115MediaAnalyzerMixin:
             return base_title
 
         # 双语字幕保留旧阅读顺序：中英双语特效简体，而不是中英双语简体特效。
-        dual_match = re.match(r"^(中[英日韩]双语)(简体|繁体)$", base_title)
+        dual_match = re.match(r"^(中[英日韩西]双语)(简体|繁体)$", base_title)
         if suffix == "特效" and dual_match:
             return f"{dual_match.group(1)}特效{dual_match.group(2)}"
 
@@ -568,11 +572,24 @@ class P115MediaAnalyzerMixin:
                 "中上韩下", "韩上中下", "繁上韩下", "韩上繁下", "简体韩文", "繁体韩文"
             ])
 
+            has_spa = _has_lang_marker(clean_text, [
+                "spa", "spanish", "es", "西文", "西语", "西字",
+                "简西", "繁西", "简西双语", "繁西双语",
+                "中西"
+            ])
+
             is_dual_eng = _has_lang_marker(clean_text, ["双语", "中上英下", "英上中下", "繁上英下", "英上繁下", "简体英文", "繁体英文"])
             is_dual_jpn = _has_lang_marker(clean_text, ["中上日下", "日上中下", "繁上日下", "日上繁下", "简体日文", "繁体日文"])
             is_dual_kor = _has_lang_marker(clean_text, ["中上韩下", "韩上中下", "繁上韩下", "韩上繁下", "简体韩文", "繁体韩文"])
+            is_dual_spa = _has_lang_marker(clean_text, ["简西", "繁西", "简西双语", "繁西双语", "中西", "中西双语", "简体西文", "繁体西文"])   
 
-            if (has_chs and has_eng and not has_cht) or (is_dual_eng and not has_cht):
+            if (has_chs and has_spa and not has_cht) or (is_dual_spa and not has_cht):
+                norm_lang = "chi"
+                display_lang = "中西双语简体"
+            elif (has_cht and has_spa) or (is_dual_spa and has_cht):
+                norm_lang = "chi"
+                display_lang = "中西双语繁体"
+            elif (has_chs and has_eng and not has_cht) or (is_dual_eng and not has_cht):
                 norm_lang = "chi"
                 display_lang = "中英双语简体"
             elif (has_cht and has_eng) or (is_dual_eng and has_cht):
@@ -709,10 +726,14 @@ class P115MediaAnalyzerMixin:
                 friendly_title = friendly_title.replace(old, new)
                 
             # 4. 修复双语标签：脚本信息作为纯后缀，不再放到括号里
+            friendly_title = friendly_title.replace("简西双语", "中西双语简体").replace("简西", "中西双语简体")
+            friendly_title = friendly_title.replace("繁西双语", "中西双语繁体").replace("繁西", "中西双语繁体")
+            friendly_title = friendly_title.replace("中西双语简体双语", "中西双语简体")
+            friendly_title = friendly_title.replace("中西双语繁体双语", "中西双语繁体")
+            friendly_title = friendly_title.replace("简体西文", "中西双语简体").replace("中文简体西文", "中西双语简体")
+            friendly_title = friendly_title.replace("繁体西文", "中西双语繁体").replace("中文繁体西文", "中西双语繁体")
             friendly_title = friendly_title.replace("简英双语", "中英双语简体").replace("简英", "中英双语简体")
-            friendly_title = friendly_title.replace("简西双语", "中英双语简体").replace("简西", "中英双语简体")
             friendly_title = friendly_title.replace("繁英双语", "中英双语繁体").replace("繁英", "中英双语繁体")
-            friendly_title = friendly_title.replace("繁西双语", "中英双语繁体").replace("繁西", "中英双语繁体")
             friendly_title = friendly_title.replace("中英双语简体双语", "中英双语简体")
             friendly_title = friendly_title.replace("中英双语繁体双语", "中英双语繁体")
             friendly_title = friendly_title.replace("中上英下", "中英双语简体").replace("英上中下", "中英双语简体")
@@ -734,9 +755,20 @@ class P115MediaAnalyzerMixin:
             friendly_title = friendly_title.replace("中上韩下", "中韩双语简体").replace("韩上中下", "中韩双语简体")
             friendly_title = friendly_title.replace("简体韩文", "中韩双语简体").replace("中文简体韩文", "中韩双语简体")
             friendly_title = friendly_title.replace("繁体韩文", "中韩双语繁体").replace("中文繁体韩文", "中韩双语繁体")
-
             friendly_title = self._normalize_subtitle_display_title(friendly_title)
             
+            standard_subtitle_labels = {
+                "中文简体", "中文繁体",
+                "中英双语简体", "中英双语繁体",
+                "中日双语简体", "中日双语繁体",
+                "中韩双语简体", "中韩双语繁体",
+                "中西双语简体", "中西双语繁体",
+            }
+
+            # Title 明确解析出了标准字幕标签时，以 Title 为准，反向修正 DisplayLanguage
+            if friendly_title in standard_subtitle_labels:
+                display_lang = friendly_title
+
             # 5. 兜底与组合
             if stream_features:
                 # ★★★ 核心修改：只要提取到了标准化的特色标签，直接用它！抛弃所有残留的中文杂质
