@@ -473,6 +473,13 @@ class P115MediaAnalyzerMixin:
             return f"{base_title}（{'·'.join(features)}）"
 
         return base_title
+    
+    def _is_standard_subtitle_label(self, title):
+                title = str(title or "").strip()
+                return bool(
+                    title in {"中文简体", "中文繁体"}
+                    or re.match(r"^中.+?双语(?:特效)?(简体|繁体)$", title)
+                )
 
     def _get_friendly_display_info(
         self,
@@ -790,13 +797,6 @@ class P115MediaAnalyzerMixin:
                 friendly_title = friendly_title.replace("繁体韩文", "中韩双语繁体").replace("中文繁体韩文", "中韩双语繁体")
             friendly_title = self._normalize_subtitle_display_title(friendly_title)
             
-            def _is_standard_subtitle_label(self, title):
-                title = str(title or "").strip()
-                return bool(
-                    title in {"中文简体", "中文繁体"}
-                    or re.match(r"^中.+?双语(?:特效)?(简体|繁体)$", title)
-                )
-
             # Title 明确解析出了标准字幕标签时，以 Title 为准，反向修正 DisplayLanguage
             if self._is_standard_subtitle_label(friendly_title):
                 display_lang = friendly_title
