@@ -450,6 +450,14 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         ],
     },
     {
+        "label": "原声",
+        "types": ["Subtitle"],
+        "patterns": [
+            r"原声",
+            r"原音",
+        ],
+    },
+    {
         "label": "特效",
         "types": ["Subtitle"],
         "patterns": [
