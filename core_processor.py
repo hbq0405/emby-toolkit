@@ -4653,7 +4653,7 @@ class MediaProcessor:
                 logger.debug("  ➜ [智能截图] 未探测到黑边，将使用原画面比例。")
 
             # =========================================================
-            # ★ 阶段二：提取最佳帧 -> 切除黑边 -> 强制 16:9 缩放 -> 中心裁剪
+            # ★ 阶段二：提取最佳帧 -> 切除黑边 -> 强制 16:9 缩放 -> 中心裁剪 -> HDR转SDR
             # =========================================================
             vf_filters = ["thumbnail=24"]
             if crop_param:
@@ -4661,6 +4661,11 @@ class MediaProcessor:
             
             vf_filters.append("scale=1920:1080:force_original_aspect_ratio=increase")
             vf_filters.append("crop=1920:1080")
+            
+            # ★ 新增：加入 HDR 到 SDR 的色调映射 (Tonemapping) 滤镜
+            # 这段滤镜会自动将 BT.2020/PQ 转换为 BT.709，如果是普通 SDR 视频则基本无影响
+            tonemap_filter = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
+            vf_filters.append(tonemap_filter)
             
             vf_string = ",".join(vf_filters)
 
