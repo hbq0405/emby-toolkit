@@ -2844,7 +2844,7 @@ def clear_item_media_info(item_id: str, base_url: str, api_key: str) -> bool:
         # 这个接口是 POST 请求，不需要 body
         response = emby_client.post(api_url, params=params)
         response.raise_for_status()
-        logger.info(f"  ➜ [神医] 成功清除项目 (ID:{item_id}) 的错误媒体信息缓存。")
+        logger.info(f"  ➜ [神医] 成功清除项目 (ID:{item_id}) 媒体信息缓存。")
         return True
     except requests.exceptions.HTTPError as e:
         if e.response is not None and e.response.status_code == 404:
