@@ -475,11 +475,11 @@ class P115MediaAnalyzerMixin:
         return base_title
     
     def _is_standard_subtitle_label(self, title):
-                title = str(title or "").strip()
-                return bool(
-                    title in {"中文简体", "中文繁体"}
-                    or re.match(r"^中.+?双语(?:特效)?(简体|繁体)$", title)
-                )
+        title = str(title or "").strip()
+        return bool(
+            title in {"中文简体", "中文繁体"}
+            or re.match(r"^中.+?双语(?:特效)?(简体|繁体)$", title)
+        )
 
     def _get_friendly_display_info(
         self,
