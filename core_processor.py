@@ -4562,7 +4562,7 @@ class MediaProcessor:
             return None
     
     # --- 从 115 直链截取分集缩略图 ---
-    def _extract_episode_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str, ep_data: dict = None) -> bool:
+    def _extract_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str, ep_data: dict = None) -> bool:
         """
         调用 FFmpeg 从 115 直链截取高质量分集缩略图
         """
