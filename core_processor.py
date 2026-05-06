@@ -4746,20 +4746,18 @@ class MediaProcessor:
                 logger.debug(f"  ➜ [视频截图] 视频色彩信息: {video_debug_info}")
 
             # =========================================================
-            # 5. FFmpeg 滤镜定义
+            # 5. FFmpeg 滤镜定义 (已优化：移除 thumbnail=5)
             # =========================================================
 
-            # SDR / 最终兜底：不做色调映射，只缩放裁剪，保证成功率最高
+            # SDR / 最终兜底
             plain_vf = (
-                "thumbnail=5,"
                 "scale=1920:1080:force_original_aspect_ratio=increase,"
                 "crop=1920:1080,"
                 "format=yuv420p"
             )
 
-            # HDR GPU：libplacebo。需要容器能访问 GPU/Vulkan，否则会自动失败并降级。
+            # HDR GPU：libplacebo
             hw_hdr_vf = (
-                "thumbnail=5,"
                 "libplacebo="
                 "format=yuv420p:"
                 "colorspace=bt709:"
@@ -4771,10 +4769,8 @@ class MediaProcessor:
                 "format=yuv420p"
             )
 
-            # HDR CPU：显式声明输入 BT.2020 + PQ，避免 zscale 报 no path between colorspaces。
-            # 只在确认 HDR 时使用，SDR 不走这条。
+            # HDR CPU：zscale
             sw_hdr_vf = (
-                "thumbnail=5,"
                 "zscale="
                 "pin=bt2020:"
                 "tin=smpte2084:"
@@ -4804,6 +4800,14 @@ class MediaProcessor:
                     "-loglevel", "error",
                     "-user_agent", "Mozilla/5.0",
                     "-rw_timeout", "15000000",
+                    
+                    # --- 提速核心参数 ---
+                    "-hwaccel", "auto",             # 开启硬件解码
+                    "-fflags", "+fastseek",         # 允许快速 seek
+                    "-noaccurate_seek",             # 模糊 seek，直接抓取最近的关键帧，极大地提升速度
+                    "-analyzeduration", "5000000",  # 减少格式探测时间 (5秒)
+                    "-probesize", "5000000",        # 减少探测数据量 (5MB)
+                    # --------------------
 
                     # 快速 seek。115 直链场景下放在 -i 前速度更好。
                     "-ss", str(timestamp_sec),
@@ -4817,6 +4821,7 @@ class MediaProcessor:
                     "-vf", vf_string,
                     "-frames:v", "1",
                     "-q:v", "2",
+                    "-threads", "2",                # 限制单任务线程数，为后续的并发做准备
                     "-y",
                     thumb_save_path
                 ]
@@ -5039,25 +5044,39 @@ class MediaProcessor:
             logger.info(f"  ➜ {log_prefix} 共下载 {success_count} 张图片。")
 
             # =========================================================
-            # ★ 6. 执行 FFmpeg 截图任务 (串行执行，防止 115 封控或 CPU 爆炸)
+            # ★ 6. 执行 FFmpeg 截图任务 (并发执行，极大提升整季处理速度)
             # =========================================================
             if ffmpeg_thumb_tasks:
                 logger.info(f"  ➜ {log_prefix} 发现 {len(ffmpeg_thumb_tasks)} 个媒体缺失 TMDb 图片，准备调用 FFmpeg 智能截图...")
                 ffmpeg_success_count = 0
-                for video_path, thumb_path, ep_data in ffmpeg_thumb_tasks:
-                    if self._extract_thumb_via_ffmpeg(video_path, thumb_path, ep_data):
-                        ffmpeg_success_count += 1
-                        
-                        # ★ 拓展逻辑：如果是电影截取了 landscape.jpg，顺手复制一份 fanart.jpg 给 Emby 备用
-                        if item_type == "Movie" and thumb_path.endswith("landscape.jpg"):
-                            fanart_save_path = os.path.join(os.path.dirname(thumb_path), "fanart.jpg")
-                            if not os.path.exists(fanart_save_path):
-                                try:
-                                    import shutil
-                                    shutil.copy2(thumb_path, fanart_save_path)
-                                except Exception:
-                                    pass
-                                    
+                
+                # 定义单任务包装器
+                def _do_ffmpeg_task(task):
+                    v_path, t_path, e_data = task
+                    success = self._extract_thumb_via_ffmpeg(v_path, t_path, e_data)
+                    return success, v_path, t_path
+
+                # 使用线程池并发执行，最大并发数设为 4 (避免触发 115 风控或 CPU 满载)
+                import concurrent.futures
+                max_workers = min(4, len(ffmpeg_thumb_tasks))
+                
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+                    futures = [executor.submit(_do_ffmpeg_task, task) for task in ffmpeg_thumb_tasks]
+                    for future in concurrent.futures.as_completed(futures):
+                        success, video_path, thumb_path = future.result()
+                        if success:
+                            ffmpeg_success_count += 1
+                            
+                            # ★ 拓展逻辑：如果是电影截取了 landscape.jpg，顺手复制一份 fanart.jpg 给 Emby 备用
+                            if item_type == "Movie" and thumb_path.endswith("landscape.jpg"):
+                                fanart_save_path = os.path.join(os.path.dirname(thumb_path), "fanart.jpg")
+                                if not os.path.exists(fanart_save_path):
+                                    try:
+                                        import shutil
+                                        shutil.copy2(thumb_path, fanart_save_path)
+                                    except Exception:
+                                        pass
+                                        
                 logger.info(f"  ➜ {log_prefix} FFmpeg 截图完成，成功生成 {ffmpeg_success_count} 张高清缩略图。")
 
             return True
