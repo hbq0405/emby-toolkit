@@ -4936,7 +4936,7 @@ class MediaProcessor:
                 if try_ffmpeg("Dolby Vision P5 GPU/libplacebo", dovi_p5_gpu_vf):
                     return True
 
-                logger.info("  ➜ [视频截图] DV P5 GPU/libplacebo 不可用或失败，使用普通截图兜底。")
+                logger.info("  ➜ [视频截图] DV P5 硬件加速不可用或失败，使用普通截图兜底。")
 
                 if try_ffmpeg("Dolby Vision P5 普通截图兜底", plain_vf):
                     return True
@@ -4947,7 +4947,7 @@ class MediaProcessor:
             if try_ffmpeg("普通截图", plain_vf):
                 # 只有 HDR 才需要判断是否灰蒙蒙；SDR 直接成功。
                 if is_hdr and _is_thumb_washed_out(thumb_save_path):
-                    logger.info("  ➜ [视频截图] 普通 HDR 截图疑似灰蒙蒙，准备使用 CPU/zscale 重新截取。")
+                    logger.info("  ➜ [视频截图] 截图质量不佳，使用色调映射重新截取。")
 
                     if try_ffmpeg("CPU HDR tone-map / zscale", cpu_hdr_vf):
                         return True
