@@ -4751,7 +4751,7 @@ class MediaProcessor:
 
             # SDR / 最终兜底：不做色调映射，只缩放裁剪，保证成功率最高
             plain_vf = (
-                "thumbnail=24,"
+                "select=eq(n\\,0),"
                 "scale=1920:1080:force_original_aspect_ratio=increase,"
                 "crop=1920:1080,"
                 "format=yuv420p"
@@ -4759,22 +4759,24 @@ class MediaProcessor:
 
             # HDR GPU：libplacebo。需要容器能访问 GPU/Vulkan，否则会自动失败并降级。
             hw_hdr_vf = (
-                "thumbnail=24,"
+                "select=eq(n\\,0),"
+                "scale=1920:1080:force_original_aspect_ratio=increase,"
+                "crop=1920:1080,"
                 "libplacebo="
                 "format=yuv420p:"
                 "colorspace=bt709:"
                 "color_primaries=bt709:"
                 "color_trc=bt709:"
                 "tonemapping=hable,"
-                "scale=1920:1080:force_original_aspect_ratio=increase,"
-                "crop=1920:1080,"
                 "format=yuv420p"
             )
 
             # HDR CPU：显式声明输入 BT.2020 + PQ，避免 zscale 报 no path between colorspaces。
             # 只在确认 HDR 时使用，SDR 不走这条。
             sw_hdr_vf = (
-                "thumbnail=24,"
+                "select=eq(n\\,0),"
+                "scale=1920:1080:force_original_aspect_ratio=increase,"
+                "crop=1920:1080,"
                 "zscale="
                 "pin=bt2020:"
                 "tin=smpte2084:"
@@ -4789,9 +4791,7 @@ class MediaProcessor:
                 "t=bt709:"
                 "m=bt709:"
                 "r=tv,"
-                "format=yuv420p,"
-                "scale=1920:1080:force_original_aspect_ratio=increase,"
-                "crop=1920:1080"
+                "format=yuv420p"
             )
 
             def run_ffmpeg(vf_string: str):
