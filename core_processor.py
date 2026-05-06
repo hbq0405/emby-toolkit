@@ -4830,18 +4830,20 @@ class MediaProcessor:
             # =========================================================
             # 5. 滤镜定义
             # =========================================================
-
+            thumb_w = 640
+            thumb_h = 360
             # 最快普通截图：SDR / HDR 默认都先用它。
             plain_vf = ",".join([
-                "scale=1280:720:force_original_aspect_ratio=increase",
-                "crop=1280:720",
+                f"scale={thumb_w}:{thumb_h}:force_original_aspect_ratio=increase",
+                f"crop={thumb_w}:{thumb_h}",
+                "format=yuv420p",
             ])
 
             # Dolby Vision P5 专用：优先用 libplacebo。
             # 没有 GPU/Vulkan 或 ffmpeg 没编 libplacebo 时会失败，然后走普通截图兜底。
             dovi_p5_gpu_vf = ",".join([
-                "scale=1920:1080:force_original_aspect_ratio=increase",
-                "crop=1920:1080",
+                f"scale={thumb_w}:{thumb_h}:force_original_aspect_ratio=increase",
+                f"crop={thumb_w}:{thumb_h}",
                 "libplacebo=format=yuv420p:colorspace=bt709:color_primaries=bt709:color_trc=bt709:tonemapping=hable",
                 "format=yuv420p",
             ])
@@ -4865,11 +4867,8 @@ class MediaProcessor:
                 zscale_min = "bt709"
 
             cpu_hdr_vf = ",".join([
-                # 先压到 1080p 再做 tone-map，截图场景速度更划算。
-                "scale=1920:1080:force_original_aspect_ratio=increase",
-                "crop=1920:1080",
-
-                # 显式声明输入色彩，降低 zscale no path between colorspaces 的概率。
+                f"scale={thumb_w}:{thumb_h}:force_original_aspect_ratio=increase",
+                f"crop={thumb_w}:{thumb_h}",
                 f"zscale=pin={zscale_pin}:tin={zscale_tin}:min={zscale_min}:rin=tv:t=linear:npl=100",
                 "format=gbrpf32le",
                 "tonemap=tonemap=hable:desat=0",
