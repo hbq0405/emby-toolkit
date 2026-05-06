@@ -2,6 +2,8 @@
 import os
 import json
 import time
+import shutil
+import subprocess
 import re
 import copy
 import random
@@ -4565,11 +4567,6 @@ class MediaProcessor:
         调用 FFmpeg 从 115 直链截取高质量分集缩略图。
         【极致提速版】：单次网络请求 + 单帧解码 + CPU 极速 HDR 色调映射
         """
-        import subprocess
-        import shutil
-        import os
-        import re
-        
         if not shutil.which("ffmpeg"):
             logger.warning("  ➜ [视频截图] 容器内未安装 ffmpeg，无法截取分集图。")
             return False
@@ -4716,7 +4713,6 @@ class MediaProcessor:
             media_path = item_details.get("Path")
             episode_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
             
-            import re
             series_root_dir = episode_dir
             # 如果当前目录名是 Season XX 或 Specials，说明在季文件夹内，根目录需要往上一级
             if self._extract_season_from_path_or_text(os.path.basename(episode_dir)) is not None:
@@ -4802,7 +4798,6 @@ class MediaProcessor:
                 
                 # ★ 核心修复：以本地文件为基准进行遍历，不再受限于 TMDb 是否有该集数据
                 if item_details and item_details.get("Path") and os.path.isdir(series_root_dir):
-                    import re
                     valid_exts = {'.mp4', '.mkv', '.avi', '.ts', '.iso', '.rmvb', '.strm'}
                     
                     # 提前提取 TMDb 的分集数据字典（如果有的话）
@@ -4891,7 +4886,6 @@ class MediaProcessor:
                                 fanart_save_path = os.path.join(os.path.dirname(thumb_path), "fanart.jpg")
                                 if not os.path.exists(fanart_save_path):
                                     try:
-                                        import shutil
                                         shutil.copy2(thumb_path, fanart_save_path)
                                     except Exception:
                                         pass
@@ -4930,7 +4924,6 @@ class MediaProcessor:
             target_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
             
             # 智能判断：如果是剧集，且当前在 Season 文件夹内，需要退回上一级根目录
-            import re
             if re.match(r'^(Season|S)\s*\d+|Specials', os.path.basename(target_dir), re.IGNORECASE):
                 target_dir = os.path.dirname(target_dir)
 
@@ -5116,7 +5109,6 @@ class MediaProcessor:
             return
 
         episode_dir = os.path.dirname(media_path) if os.path.isfile(media_path) else media_path
-        import re
         series_root_dir = episode_dir
         if self._extract_season_from_path_or_text(os.path.basename(episode_dir)) is not None:
             series_root_dir = os.path.dirname(episode_dir)
@@ -5129,7 +5121,6 @@ class MediaProcessor:
                     with open(file_path, 'r', encoding='utf-8') as f:
                         old_content = f.read()
                     
-                    import re
                     def _get_tag_text(xml_str, tag):
                         match = re.search(f'<{tag}[^>]*>(.*?)</{tag}>', xml_str, re.IGNORECASE | re.DOTALL)
                         return match.group(1).strip() if match else ""
