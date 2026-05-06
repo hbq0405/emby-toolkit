@@ -4562,110 +4562,316 @@ class MediaProcessor:
     # --- 从 115 直链截取缩略图 ---
     def _extract_thumb_via_ffmpeg(self, video_path: str, thumb_save_path: str, ep_data: dict = None) -> bool:
         """
-        调用 FFmpeg 从 115 直链截取高质量分集缩略图 (极速版 + 智能硬件降级)
+        调用 FFmpeg 从 115 直链截取高质量分集缩略图。
+
+        改进点：
+        1. 先判断 HDR/SDR，只有 HDR 才走 tone mapping。
+        2. HDR 顺序：GPU libplacebo -> CPU zscale -> 普通截图兜底。
+        3. SDR 直接普通截图，避免 zscale 因色彩路径不完整报错。
+        4. 每次执行后校验输出文件大小，防止 0 字节假成功。
         """
         import subprocess
         import shutil
+        import json
         import re
-        
+
         if not shutil.which("ffmpeg"):
             logger.warning("  ➜ [视频截图] 容器内未安装 ffmpeg，无法截取分集图。")
             return False
 
+        def _remove_broken_output():
+            try:
+                if os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) == 0:
+                    os.remove(thumb_save_path)
+            except Exception:
+                pass
+
+        def _output_ok():
+            return (
+                os.path.exists(thumb_save_path)
+                and os.path.getsize(thumb_save_path) > 0
+            )
+
         try:
+            # 0. 确保目标目录存在
+            thumb_dir = os.path.dirname(thumb_save_path)
+            if thumb_dir:
+                os.makedirs(thumb_dir, exist_ok=True)
+
             # 1. 获取 115 提取码和 SHA1
             pc, sha1 = self._extract_115_fingerprints(video_path)
+
             if not sha1 and pc:
                 sha1 = self._get_sha1_by_pickcode(pc)
+
             if not pc:
+                logger.debug(f"  ➜ [视频截图] 无法提取 115 PickCode，跳过: {video_path}")
                 return False
 
             # 2. 获取 115 播放直链
             from handler.p115_service import P115Service
+
             client = P115Service.get_client()
             if not client:
-                return False
-            direct_url = client.download_url(pc, user_agent="Mozilla/5.0")
-            if not direct_url:
+                logger.debug("  ➜ [视频截图] 无法获取 115 客户端，跳过。")
                 return False
 
-            # 3. 智能计算截图时间点
-            timestamp_sec = 600 
+            direct_url = None
+
+            try:
+                direct_url = client.download_url(pc, user_agent="Mozilla/5.0")
+            except Exception as e:
+                logger.debug(f"  ➜ [视频截图] Cookie 直链获取失败，准备尝试 OpenAPI: {e}")
+
+            if not direct_url and hasattr(client, "openapi_downurl"):
+                try:
+                    direct_url = client.openapi_downurl(pc, user_agent="Mozilla/5.0")
+                except Exception as e:
+                    logger.debug(f"  ➜ [视频截图] OpenAPI 直链获取失败: {e}")
+
+            if not direct_url:
+                logger.debug(f"  ➜ [视频截图] 无法获取 115 直链，跳过: {video_path}")
+                return False
+
+            # 3. 从本地媒体信息缓存读取时长和 HDR 信息
             duration_sec = 0
-            
+            is_hdr = False
+            video_debug_info = {}
+
             if sha1:
                 try:
                     with get_central_db_connection() as conn:
                         with conn.cursor() as cursor:
-                            cursor.execute("SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s", (sha1,))
+                            cursor.execute(
+                                "SELECT mediainfo_json FROM p115_mediainfo_cache WHERE sha1 = %s",
+                                (str(sha1).upper(),)
+                            )
                             row = cursor.fetchone()
-                            if row and row['mediainfo_json']:
-                                mi = row['mediainfo_json']
-                                if isinstance(mi, list) and len(mi) > 0: mi = mi[0]
-                                ticks = mi.get("MediaSourceInfo", {}).get("RunTimeTicks", 0)
-                                if ticks > 0: duration_sec = ticks / 10000000
-                except Exception: pass
-            
+
+                            if row and row.get("mediainfo_json"):
+                                mi = row["mediainfo_json"]
+
+                                if isinstance(mi, str):
+                                    mi = json.loads(mi)
+
+                                if isinstance(mi, list) and mi:
+                                    mi = mi[0]
+
+                                if isinstance(mi, dict):
+                                    media_source = mi.get("MediaSourceInfo") or mi
+                                    ticks = media_source.get("RunTimeTicks") or 0
+
+                                    if ticks:
+                                        try:
+                                            duration_sec = float(ticks) / 10000000
+                                        except Exception:
+                                            duration_sec = 0
+
+                                    streams = media_source.get("MediaStreams") or []
+                                    video_stream = next(
+                                        (s for s in streams if s.get("Type") == "Video"),
+                                        None
+                                    )
+
+                                    if video_stream:
+                                        video_range = str(video_stream.get("VideoRange") or "")
+                                        color_transfer = str(video_stream.get("ColorTransfer") or "")
+                                        color_primaries = str(video_stream.get("ColorPrimaries") or "")
+                                        extended_video_type = str(video_stream.get("ExtendedVideoType") or "")
+                                        extended_video_sub_type = str(video_stream.get("ExtendedVideoSubType") or "")
+                                        display_title = str(video_stream.get("DisplayTitle") or "")
+
+                                        video_debug_info = {
+                                            "VideoRange": video_range,
+                                            "ColorTransfer": color_transfer,
+                                            "ColorPrimaries": color_primaries,
+                                            "ExtendedVideoType": extended_video_type,
+                                            "ExtendedVideoSubType": extended_video_sub_type,
+                                            "DisplayTitle": display_title,
+                                        }
+
+                                        probe_text = " ".join([
+                                            video_range,
+                                            color_transfer,
+                                            color_primaries,
+                                            extended_video_type,
+                                            extended_video_sub_type,
+                                            display_title,
+                                        ]).lower()
+
+                                        is_hdr = (
+                                            "hdr" in probe_text
+                                            or "dolby" in probe_text
+                                            or "dovi" in probe_text
+                                            or color_transfer.lower() == "smpte2084"
+                                            or color_primaries.lower() == "bt2020"
+                                        )
+
+                except Exception as e:
+                    logger.debug(f"  ➜ [视频截图] 读取媒体信息缓存失败，将使用文件名兜底判断 HDR: {e}")
+
+            # 3.1 如果数据库没识别出 HDR，用文件名兜底判断；不要把 2160p 直接当 HDR
+            if not is_hdr:
+                name_for_guess = os.path.basename(str(video_path)).upper()
+                is_hdr = bool(re.search(
+                    r"(^|[\.\s\-_])(HDR10\+|HDR10|HDR|DV|DOVI|DOLBY[.\s_-]*VISION)([\.\s\-_]|$)",
+                    name_for_guess,
+                    flags=re.IGNORECASE
+                ))
+
+            # 4. 智能计算截图时间点
+            timestamp_sec = 600
+
             if duration_sec == 0 and ep_data:
                 runtime_min = ep_data.get("runtime")
-                if runtime_min and isinstance(runtime_min, (int, float)) and runtime_min > 0:
+                if isinstance(runtime_min, (int, float)) and runtime_min > 0:
                     duration_sec = runtime_min * 60
-                    
+
             if duration_sec > 0:
-                timestamp_sec = int(duration_sec * 0.3)
+                # 取 30% 处，但避免太靠近片头/片尾
+                if duration_sec <= 120:
+                    timestamp_sec = max(1, int(duration_sec * 0.5))
+                else:
+                    timestamp_sec = int(duration_sec * 0.3)
+                    timestamp_sec = max(60, timestamp_sec)
+                    timestamp_sec = min(timestamp_sec, int(duration_sec - 10))
 
-            logger.info(f"  ➜ [视频截图] 正在截取视频画面 (时间点: {timestamp_sec}s) -> {os.path.basename(thumb_save_path)}")
+            logger.info(
+                f"  ➜ [视频截图] 正在截取视频画面 "
+                f"(时间点: {timestamp_sec}s, HDR: {'是' if is_hdr else '否'}) "
+                f"-> {os.path.basename(thumb_save_path)}"
+            )
+
+            if video_debug_info:
+                logger.debug(f"  ➜ [视频截图] 视频色彩信息: {video_debug_info}")
 
             # =========================================================
-            # ★ 核心逻辑：定义基础滤镜与两种色彩映射方案
+            # 5. FFmpeg 滤镜定义
             # =========================================================
-            # 基础滤镜：提取帧 -> 强制16:9缩放 -> 中心裁剪 (抛弃耗时的黑边探测)
-            base_vf = "thumbnail=24,scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080"
-            
-            # 方案 A：GPU 硬件加速 (通杀 HDR10 和 杜比视界 P5)
-            hw_tonemap = "libplacebo=format=yuv420p:colorspace=bt709:color_primaries=bt709:color_trc=bt709:tonemapping=hable"
-            
-            # 方案 B：CPU 软件映射 (支持 HDR10，不支持杜比视界)
-            sw_tonemap = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=yuv420p"
 
-            def run_ffmpeg(vf_string):
+            # SDR / 最终兜底：不做色调映射，只缩放裁剪，保证成功率最高
+            plain_vf = (
+                "thumbnail=24,"
+                "scale=1920:1080:force_original_aspect_ratio=increase,"
+                "crop=1920:1080,"
+                "format=yuv420p"
+            )
+
+            # HDR GPU：libplacebo。需要容器能访问 GPU/Vulkan，否则会自动失败并降级。
+            hw_hdr_vf = (
+                "thumbnail=24,"
+                "libplacebo="
+                "format=yuv420p:"
+                "colorspace=bt709:"
+                "color_primaries=bt709:"
+                "color_trc=bt709:"
+                "tonemapping=hable,"
+                "scale=1920:1080:force_original_aspect_ratio=increase,"
+                "crop=1920:1080,"
+                "format=yuv420p"
+            )
+
+            # HDR CPU：显式声明输入 BT.2020 + PQ，避免 zscale 报 no path between colorspaces。
+            # 只在确认 HDR 时使用，SDR 不走这条。
+            sw_hdr_vf = (
+                "thumbnail=24,"
+                "zscale="
+                "pin=bt2020:"
+                "tin=smpte2084:"
+                "min=bt2020nc:"
+                "rin=tv:"
+                "t=linear:"
+                "npl=100,"
+                "format=gbrpf32le,"
+                "tonemap=tonemap=hable:desat=0,"
+                "zscale="
+                "p=bt709:"
+                "t=bt709:"
+                "m=bt709:"
+                "r=tv,"
+                "format=yuv420p,"
+                "scale=1920:1080:force_original_aspect_ratio=increase,"
+                "crop=1920:1080"
+            )
+
+            def run_ffmpeg(vf_string: str):
+                _remove_broken_output()
+
                 cmd = [
-                    "ffmpeg", "-hide_banner", "-loglevel", "error",
-                    "-user_agent", "Mozilla/5.0", "-rw_timeout", "15000000",
-                    "-ss", str(timestamp_sec), "-i", str(direct_url),
-                    "-vf", vf_string, "-frames:v", "1", "-q:v", "2", "-y", thumb_save_path
+                    "ffmpeg",
+                    "-hide_banner",
+                    "-nostdin",
+                    "-loglevel", "error",
+                    "-user_agent", "Mozilla/5.0",
+                    "-rw_timeout", "15000000",
+
+                    # 快速 seek。115 直链场景下放在 -i 前速度更好。
+                    "-ss", str(timestamp_sec),
+                    "-i", str(direct_url),
+
+                    # 不处理音频/字幕/数据流
+                    "-an",
+                    "-sn",
+                    "-dn",
+
+                    "-vf", vf_string,
+                    "-frames:v", "1",
+                    "-q:v", "2",
+                    "-y",
+                    thumb_save_path
                 ]
-                return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=60)
 
-            # ---------------------------------------------------------
-            # 尝试 1：优先使用 GPU 硬件加速
-            # ---------------------------------------------------------
-            proc_hw = run_ffmpeg(f"{base_vf},{hw_tonemap}")
-            
-            if proc_hw.returncode == 0 and os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) > 0:
-                return True
+                return subprocess.run(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=60
+                )
 
-            # ---------------------------------------------------------
-            # 尝试 2：硬件加速失败，智能降级到 CPU
-            # ---------------------------------------------------------
-            err_msg = (proc_hw.stderr.decode('utf-8', errors='ignore') or "").strip()
-            logger.debug(f"  ➜ [视频截图] GPU 硬件加速不可用，准备降级到 CPU。原因: {err_msg[:100]}")
+            def try_ffmpeg(label: str, vf_string: str) -> bool:
+                logger.debug(f"  ➜ [视频截图] 尝试方案: {label}")
 
-            logger.info("  ➜ [视频截图] 正在使用 CPU (zscale) 重新截取...")
-            proc_sw = run_ffmpeg(f"{base_vf},{sw_tonemap}")
+                proc = run_ffmpeg(vf_string)
 
-            if proc_sw.returncode == 0 and os.path.exists(thumb_save_path) and os.path.getsize(thumb_save_path) > 0:
-                return True
-            else:
-                err_msg_sw = (proc_sw.stderr.decode('utf-8', errors='ignore') or "").strip()
-                logger.debug(f"  ➜ [视频截图] CPU 截图也失败了: {err_msg_sw}")
+                if proc.returncode == 0 and _output_ok():
+                    logger.info(f"  ➜ [视频截图] 截图成功 ({label}) -> {os.path.basename(thumb_save_path)}")
+                    return True
+
+                err_msg = (proc.stderr.decode("utf-8", errors="ignore") or "").strip()
+                logger.debug(f"  ➜ [视频截图] 方案失败 ({label}): {err_msg[:800]}")
+
+                _remove_broken_output()
                 return False
+
+            # =========================================================
+            # 6. 执行策略
+            # =========================================================
+
+            if is_hdr:
+                # HDR：先尝试 GPU tone mapping
+                if try_ffmpeg("GPU HDR tone-map / libplacebo", hw_hdr_vf):
+                    return True
+
+                logger.info("  ➜ [视频截图] GPU 硬件加速不可用或失败，准备降级到 CPU (zscale)...")
+
+                # HDR：再尝试 CPU tone mapping
+                if try_ffmpeg("CPU HDR tone-map / zscale", sw_hdr_vf):
+                    return True
+
+                logger.info("  ➜ [视频截图] HDR 色调映射失败，使用普通截图兜底...")
+                return try_ffmpeg("普通截图兜底", plain_vf)
+
+            # SDR：不要走 zscale tone mapping，直接普通截图
+            return try_ffmpeg("普通 SDR 截图", plain_vf)
 
         except subprocess.TimeoutExpired:
             logger.warning(f"  ➜ [视频截图] 截图超时: {os.path.basename(video_path)}")
+            _remove_broken_output()
             return False
+
         except Exception as e:
-            logger.warning(f"  ➜ [视频截图] 发生异常: {e}")
+            logger.warning(f"  ➜ [视频截图] 发生异常: {e}", exc_info=True)
+            _remove_broken_output()
             return False
 
     # --- 从 TMDb 直接下载图片 (用于实时监控/预处理/追剧刷新) ---
