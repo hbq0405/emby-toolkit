@@ -4833,9 +4833,8 @@ class MediaProcessor:
 
             # 最快普通截图：SDR / HDR 默认都先用它。
             plain_vf = ",".join([
-                "scale=1920:1080:force_original_aspect_ratio=increase",
-                "crop=1920:1080",
-                "format=yuv420p",
+                "scale=1280:720:force_original_aspect_ratio=increase",
+                "crop=1280:720",
             ])
 
             # Dolby Vision P5 专用：优先用 libplacebo。

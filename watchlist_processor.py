@@ -764,12 +764,25 @@ class WatchlistProcessor:
         except Exception as e_img:
             logger.warning(f"  ➜ 追剧刷新时处理物理资产失败: {e_img}")
 
-        # 5. 通知 Emby 扫描目录读取 NFO 
+        # 5. 通知 Emby 扫描剧集目录读取 NFO
         if item_id and current_item_details:
             media_path = current_item_details.get("Path")
+
             if media_path:
-                logger.debug(f"  ➜ 正在通知 Emby 扫描剧集目录...")
-                emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
+                scan_target = media_path
+
+                # notify_emby_file_changes 是按“文件路径 -> 父目录”精准扫描的思路设计的。
+                # 如果直接传剧集目录，会向上扫到年份目录 2026。
+                if os.path.isdir(media_path):
+                    tvshow_nfo = os.path.join(media_path, "tvshow.nfo")
+                    if os.path.exists(tvshow_nfo):
+                        scan_target = tvshow_nfo
+                    else:
+                        # 兜底：给它一个目录内的虚拟文件路径，确保父目录仍然是剧集目录
+                        scan_target = os.path.join(media_path, ".refresh")
+
+                logger.debug(f"  ➜ 正在通知 Emby 扫描剧集目录: {os.path.dirname(scan_target)}")
+                emby.notify_emby_file_changes([scan_target], self.emby_url, self.emby_api_key)
 
         # 6. 同步季和集到数据库 
         emby_seasons_state = media_db.get_series_local_children_info(tmdb_id)
