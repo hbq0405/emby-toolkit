@@ -42,8 +42,7 @@ RUN apt-get update && \
         wget \
         curl \
         dumb-init \
-        ffmpeg \
-        mesa-vulkan-drivers && \
+        ffmpeg && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
