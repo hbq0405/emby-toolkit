@@ -575,34 +575,106 @@ def parse_full_asset_details(item_details: dict, id_to_parent_map: dict = None, 
 
     primary_source = None
     media_streams = []
-    
-    # ★★★ 提取 Emby 原生的流信息 (用于提取外挂字幕) ★★★
-    emby_media_sources = item_details.get("MediaSources", [])
-    emby_primary_source = emby_media_sources[0] if emby_media_sources and len(emby_media_sources) > 0 else None
-    emby_streams = (emby_primary_source.get("MediaStreams") if emby_primary_source else None) or item_details.get("MediaStreams", [])
 
-    # ★★★ 核心修复 2：兼容两种不同的 JSON 嵌套格式，并融合外挂字幕 ★★★
-    if raw_shenyi_data and isinstance(raw_shenyi_data, list) and len(raw_shenyi_data) > 0:
-        first_item = raw_shenyi_data[0]
-        if "MediaSourceInfo" in first_item:
-            primary_source = first_item.get("MediaSourceInfo", {})
-        else:
-            primary_source = first_item
-            
-        # 1. 先拿视频文件内嵌的流 (视频、音频、内嵌字幕)
+    # ★★★ 提取 Emby 原生的流信息，用于兜底和融合外挂字幕 ★★★
+    emby_media_sources = item_details.get("MediaSources", [])
+    if not isinstance(emby_media_sources, list):
+        emby_media_sources = []
+
+    emby_primary_source = emby_media_sources[0] if emby_media_sources else None
+    if not isinstance(emby_primary_source, dict):
+        emby_primary_source = None
+
+    emby_streams = (
+        (emby_primary_source.get("MediaStreams") if emby_primary_source else None)
+        or item_details.get("MediaStreams", [])
+    )
+    if not isinstance(emby_streams, list):
+        emby_streams = []
+
+
+    def _pick_media_source_from_json(data):
+        """
+        兼容各种 -mediainfo.json 结构：
+        1. [{"MediaSourceInfo": {...}}]
+        2. [{"MediaSourceInfo": [{...}]}]
+        3. [{"MediaStreams": [...]}]
+        4. {"MediaSourceInfo": {...}}
+        5. {"MediaSourceInfo": [{...}]}
+        6. {"MediaSources": [{...}]}
+        7. [{...}]
+        """
+        if not data:
+            return None
+
+        # 外层 list：取第一个有效元素
+        if isinstance(data, list):
+            for item in data:
+                picked = _pick_media_source_from_json(item)
+                if picked:
+                    return picked
+            return None
+
+        if not isinstance(data, dict):
+            return None
+
+        # Emby 标准包裹：MediaSourceInfo
+        if "MediaSourceInfo" in data:
+            return _pick_media_source_from_json(data.get("MediaSourceInfo"))
+
+        # Emby 原始结构：MediaSources
+        if "MediaSources" in data:
+            return _pick_media_source_from_json(data.get("MediaSources"))
+
+        # 已经是 MediaSource 本体
+        if isinstance(data.get("MediaStreams"), list):
+            return data
+
+        return None
+
+
+    primary_source = _pick_media_source_from_json(raw_shenyi_data)
+
+    if isinstance(primary_source, dict):
         media_streams = primary_source.get("MediaStreams", [])
-        
-        # 2. ★★★ 核心修补：从 Emby 数据中把“外挂字幕”揪出来，塞进我们的流列表里 ★★★
-        if emby_streams:
-            for stream in emby_streams:
-                # 只要是字幕，且被 Emby 标记为外挂 (IsExternal)，就加进来
-                if stream.get("Type") == "Subtitle" and stream.get("IsExternal"):
-                    media_streams.append(stream)
-                    
+        if not isinstance(media_streams, list):
+            media_streams = []
     else:
-        # 兜底：如果没有神医 JSON，完全使用 Emby 原始数据
+        # 兜底：如果没有神医 JSON，或者 JSON 结构异常，完全使用 Emby 原始数据
         primary_source = emby_primary_source
         media_streams = emby_streams
+
+    # ★★★ 融合外挂字幕：只从 Emby 原始数据里补外挂字幕，避免重复塞内嵌字幕 ★★★
+    if emby_streams:
+        existing_sub_keys = set()
+        for s in media_streams:
+            if not isinstance(s, dict):
+                continue
+            if s.get("Type") == "Subtitle":
+                existing_sub_keys.add((
+                    str(s.get("Index", "")),
+                    str(s.get("Codec", "")),
+                    str(s.get("DisplayTitle", "")),
+                    str(s.get("Title", "")),
+                    bool(s.get("IsExternal")),
+                ))
+
+        for stream in emby_streams:
+            if not isinstance(stream, dict):
+                continue
+
+            if stream.get("Type") == "Subtitle" and stream.get("IsExternal"):
+                sub_key = (
+                    str(stream.get("Index", "")),
+                    str(stream.get("Codec", "")),
+                    str(stream.get("DisplayTitle", "")),
+                    str(stream.get("Title", "")),
+                    bool(stream.get("IsExternal")),
+                )
+
+                if sub_key not in existing_sub_keys:
+                    media_streams.append(stream)
+                    existing_sub_keys.add(sub_key)
 
     container = (primary_source.get("Container") if primary_source else None) or item_details.get("Container")
     size_bytes = (primary_source.get("Size") if primary_source else None) or item_details.get("Size")
