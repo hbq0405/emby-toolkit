@@ -4800,16 +4800,8 @@ class MediaProcessor:
                     "-loglevel", "error",
                     "-user_agent", "Mozilla/5.0",
                     "-rw_timeout", "15000000",
-                    
-                    # --- 提速核心参数 ---
-                    "-hwaccel", "auto",             # 开启硬件解码
-                    "-fflags", "+fastseek",         # 允许快速 seek
-                    "-noaccurate_seek",             # 模糊 seek，直接抓取最近的关键帧，极大地提升速度
-                    "-analyzeduration", "5000000",  # 减少格式探测时间 (5秒)
-                    "-probesize", "5000000",        # 减少探测数据量 (5MB)
-                    # --------------------
 
-                    # 快速 seek。115 直链场景下放在 -i 前速度更好。
+                    # 恢复最纯粹的快速 Seek，去掉 -hwaccel 和 probesize
                     "-ss", str(timestamp_sec),
                     "-i", str(direct_url),
 
@@ -4821,7 +4813,6 @@ class MediaProcessor:
                     "-vf", vf_string,
                     "-frames:v", "1",
                     "-q:v", "2",
-                    "-threads", "2",                # 限制单任务线程数，为后续的并发做准备
                     "-y",
                     thumb_save_path
                 ]
