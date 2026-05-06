@@ -4876,7 +4876,7 @@ class MediaProcessor:
                 "format=yuv420p",
             ])
 
-            def run_ffmpeg(vf_string: str):
+            def run_ffmpeg(vf_string: str, fast_seek: bool = True):
                 _remove_broken_output()
 
                 cmd = [
@@ -4887,8 +4887,20 @@ class MediaProcessor:
                     "-user_agent", "Mozilla/5.0",
                     "-rw_timeout", "15000000",
 
-                    # 快速 seek，放在 -i 前，115 直链场景更快。
+                    # 降低探测成本，视频截图不需要完整分析所有流
+                    "-analyzeduration", "1000000",
+                    "-probesize", "1000000",
+
                     "-ss", str(timestamp_sec),
+                ]
+
+                if fast_seek:
+                    cmd.extend([
+                        "-noaccurate_seek",
+                        "-skip_frame", "nokey",
+                    ])
+
+                cmd.extend([
                     "-i", str(direct_url),
 
                     "-map", "0:v:0",
@@ -4898,16 +4910,16 @@ class MediaProcessor:
 
                     "-vf", vf_string,
                     "-frames:v", "1",
-                    "-q:v", "2",
+                    "-q:v", "5",
                     "-y",
                     thumb_save_path,
-                ]
+                ])
 
                 return subprocess.run(
                     cmd,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=60
+                    timeout=45
                 )
 
             def try_ffmpeg(label: str, vf_string: str) -> bool:
