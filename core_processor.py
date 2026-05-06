@@ -4922,10 +4922,10 @@ class MediaProcessor:
                     timeout=45
                 )
 
-            def try_ffmpeg(label: str, vf_string: str) -> bool:
+            def try_ffmpeg(label: str, vf_string: str, fast_seek: bool = True) -> bool:
                 logger.debug(f"  ➜ [视频截图] 尝试方案: {label}")
 
-                proc = run_ffmpeg(vf_string)
+                proc = run_ffmpeg(vf_string, fast_seek=fast_seek)
 
                 if proc.returncode == 0 and _output_ok():
                     logger.info(f"  ➜ [视频截图] 截图成功 ({label}) -> {os.path.basename(thumb_save_path)}")
@@ -4954,16 +4954,19 @@ class MediaProcessor:
                 return False
 
             # B. 非 P5：全部先普通截图，速度优先。
-            if try_ffmpeg("普通截图", plain_vf):
-                # 只有 HDR 才需要判断是否灰蒙蒙；SDR 直接成功。
+            if try_ffmpeg("普通截图 / 快速关键帧", plain_vf, fast_seek=True):
                 if is_hdr and _is_thumb_washed_out(thumb_save_path):
-                    logger.info("  ➜ [视频截图] 截图质量不佳，使用色调映射重新截取。")
+                    logger.info("  ➜ [视频截图] 普通 HDR 截图疑似灰蒙蒙，准备使用 CPU/zscale 重新截取。")
 
-                    if try_ffmpeg("CPU HDR tone-map / zscale", cpu_hdr_vf):
+                    if try_ffmpeg("CPU HDR tone-map / zscale", cpu_hdr_vf, fast_seek=True):
                         return True
 
                     logger.warning("  ➜ [视频截图] CPU HDR tone-map 失败，保留普通截图。")
 
+                return True
+
+            # 快速关键帧失败，再走普通准确 seek
+            if try_ffmpeg("普通截图 / 准确兜底", plain_vf, fast_seek=False):
                 return True
 
             # C. 普通截图失败时，如果是 HDR，最后尝试 CPU tone-map 救一次。
