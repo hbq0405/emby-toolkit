@@ -3,7 +3,6 @@ name: Docker Image CI & CD for Emby Toolkit
 on:
   push:
     branches:
-      - main
       - dev
     tags:
       - "v*"
@@ -46,10 +45,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Build and push by digest
         id: build
@@ -63,7 +64,7 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
           cache-from: |
-            type=gha,scope=emby-toolkit-main-${{ matrix.platform_id }}
+            type=gha,scope=emby-toolkit-dev-${{ matrix.platform_id }}
             type=gha,scope=emby-toolkit-${{ github.ref_name }}-${{ matrix.platform_id }}
           cache-to: type=gha,mode=max,scope=emby-toolkit-${{ github.ref_name }}-${{ matrix.platform_id }}
 
@@ -109,10 +110,12 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ${{ env.IMAGE_NAME }}
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=branch
-            type=raw,value=latest,enable={{is_default_branch}}
             type=ref,event=tag
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       - name: Create and push multi-arch manifest
         env:
