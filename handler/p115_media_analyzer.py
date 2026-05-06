@@ -329,7 +329,6 @@ class P115MediaAnalyzerMixin:
 
         return list(dict.fromkeys(features))
 
-
     def _normalize_subtitle_display_title(self, title):
         """
         统一字幕标题的脚本后缀格式：
