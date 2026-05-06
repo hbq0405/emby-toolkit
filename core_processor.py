@@ -4566,9 +4566,6 @@ class MediaProcessor:
         """
         调用 FFmpeg 从 115 直链截取高质量分集缩略图
         """
-        import subprocess
-        import shutil
-        
         if not shutil.which("ffmpeg"):
             logger.warning("  ➜ [FFmpeg截图] 容器内未安装 ffmpeg，无法截取分集图。")
             return False
