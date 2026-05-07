@@ -18,13 +18,45 @@
           </div>
 
           <n-form label-placement="top" size="small">
-            <n-form-item label="首选语言" class="compact-form-item">
-              <n-select v-model:value="config.audio_lang" :options="audioLangOptions" />
-              <template #feedback>
+            <n-form-item label="音轨语言优先级" class="compact-form-item">
+              <div class="full-width">
+                <n-input-group class="feature-input">
+                  <n-select
+                    v-model:value="selectedAudioLangToAdd"
+                    :options="availableAudioLangOptions"
+                    placeholder="选择语言后添加"
+                    clearable
+                  />
+                  <n-button type="primary" @click="addAudioLangPriority">添加</n-button>
+                </n-input-group>
+
+                <n-alert v-if="config.audio_lang_priority.length === 0" type="info" :show-icon="false" class="tiny-alert">
+                  未设置时保留文件原始默认音轨；添加后按从上到下顺序筛选，例如：国语 → 原语言 → 英语。
+                </n-alert>
+
+                <draggable
+                  v-model="config.audio_lang_priority"
+                  item-key="id"
+                  handle=".drag-handle"
+                  animation="200"
+                  class="priority-list compact-list lang-priority-list"
+                >
+                  <template #item="{ element, index }">
+                    <div class="priority-item compact-item">
+                      <n-icon class="drag-handle" size="18"><MenuIcon /></n-icon>
+                      <span class="item-name">{{ getAudioLangLabel(element.id) }}</span>
+                      <n-tag size="tiny" :type="index === 0 ? 'success' : 'default'">优先级 {{ index + 1 }}</n-tag>
+                      <n-button size="tiny" quaternary circle type="error" @click="removeAudioLangPriority(index)">
+                        <template #icon><n-icon><CloseIcon /></n-icon></template>
+                      </n-button>
+                    </div>
+                  </template>
+                </draggable>
+
                 <n-text depth="3" class="helper-text inline-helper">
-                  例如选“国语”后，只在国语音轨里比较公映、DTS-HD MA、7.1 等优先级。
+                  “原语言”来自 raw_ffprobe_json._etk.original_language；没有命中时自动尝试下一档。
                 </n-text>
-              </template>
+              </div>
             </n-form-item>
 
             <div class="macro-section">
@@ -142,13 +174,45 @@
           </div>
 
           <n-form label-placement="top" size="small">
-            <n-form-item label="字幕偏好" class="compact-form-item">
-              <n-select v-model:value="config.subtitle_lang" :options="subtitleLangOptions" />
-              <template #feedback>
+            <n-form-item label="字幕语言优先级" class="compact-form-item">
+              <div class="full-width">
+                <n-input-group class="feature-input">
+                  <n-select
+                    v-model:value="selectedSubtitleLangToAdd"
+                    :options="availableSubtitleLangOptions"
+                    placeholder="选择语言后添加"
+                    clearable
+                  />
+                  <n-button type="primary" @click="addSubtitleLangPriority">添加</n-button>
+                </n-input-group>
+
+                <n-alert v-if="config.subtitle_lang_priority.length === 0" type="info" :show-icon="false" class="tiny-alert">
+                  未设置时只按下方字幕类型排序；添加后按从上到下顺序筛选，例如：简体 → 原语言 → 英文。
+                </n-alert>
+
+                <draggable
+                  v-model="config.subtitle_lang_priority"
+                  item-key="id"
+                  handle=".drag-handle"
+                  animation="200"
+                  class="priority-list compact-list lang-priority-list"
+                >
+                  <template #item="{ element, index }">
+                    <div class="priority-item compact-item">
+                      <n-icon class="drag-handle" size="18"><MenuIcon /></n-icon>
+                      <span class="item-name">{{ getSubtitleLangLabel(element.id) }}</span>
+                      <n-tag size="tiny" :type="index === 0 ? 'success' : 'default'">优先级 {{ index + 1 }}</n-tag>
+                      <n-button size="tiny" quaternary circle type="error" @click="removeSubtitleLangPriority(index)">
+                        <template #icon><n-icon><CloseIcon /></n-icon></template>
+                      </n-button>
+                    </div>
+                  </template>
+                </draggable>
+
                 <n-text depth="3" class="helper-text inline-helper">
-                  简体/繁体偏好会压制另一方，避免繁体双语偷家。
+                  语言优先级高于特效/双语类型排序，避免繁体特效越过你指定的简体。
                 </n-text>
-              </template>
+              </div>
             </n-form-item>
 
             <n-form-item label="字幕优先级" class="compact-form-item">
@@ -192,7 +256,7 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { NModal, NForm, NFormItem, NSelect, NInput, NInputGroup, NAlert, NSpin, NSpace, NButton, NIcon, NTag, NText, useMessage } from 'naive-ui';
 import { MenuOutline as MenuIcon, CloseOutline as CloseIcon } from '@vicons/ionicons5';
 import draggable from 'vuedraggable';
@@ -204,20 +268,25 @@ const loading = ref(false);
 const saving = ref(false);
 
 const newAudioFeature = ref('');
+const selectedAudioLangToAdd = ref(null);
+const selectedSubtitleLangToAdd = ref(null);
 
 const audioLangOptions = [
-  { label: '不修改 (保留文件原始默认)', value: '' },
-  { label: '优先国语', value: 'chi' },
-  { label: '优先粤语', value: 'yue' },
-  { label: '优先英语', value: 'eng' },
-  { label: '优先日语', value: 'jpn' },
-  { label: '优先韩语', value: 'kor' }
+  { label: '国语', value: 'chi' },
+  { label: '粤语', value: 'yue' },
+  { label: '原语言', value: 'original' },
+  { label: '英语', value: 'eng' },
+  { label: '日语', value: 'jpn' },
+  { label: '韩语', value: 'kor' }
 ];
 
 const subtitleLangOptions = [
-  { label: '不修改 (只按下面优先级排序)', value: '' },
-  { label: '优先简体', value: 'chs' },
-  { label: '优先繁体', value: 'cht' }
+  { label: '中文简体', value: 'chs' },
+  { label: '中文繁体', value: 'cht' },
+  { label: '原语言', value: 'original' },
+  { label: '英文', value: 'eng' },
+  { label: '日文', value: 'jpn' },
+  { label: '韩文', value: 'kor' }
 ];
 
 const subTypeMap = {
@@ -238,7 +307,7 @@ const audioPriorityGroupMap = {
   feature: { label: '特色词优先', desc: '公映 / 国配 / 上译 / 导评' }
 };
 
-const defaultAudioFeatures = ['公映', '上译', '京译', '央视', '长译', '八一', '国配', '台配', '国语', '粤语', '评论', '导评'];
+const defaultAudioFeatures = ['公映', '上译', '京译', '央视', '长译', '八一', '国配', '台配', '国语', '粤语'];
 const defaultAudioParamPriority = [
   'atmos',
   'dts_x',
@@ -276,6 +345,8 @@ const audioParamMap = {
 const config = ref({
   audio_lang: '',
   subtitle_lang: '',
+  audio_lang_priority: [],
+  subtitle_lang_priority: [],
   audio_priority_order: [],
   audio_features: [],
   audio_param_priority: [],
@@ -287,6 +358,22 @@ const getAudioParamLabel = (id) => audioParamMap[id]?.label || id;
 const getAudioParamDesc = (id) => audioParamMap[id]?.desc || '';
 const getAudioPriorityGroupLabel = (id) => audioPriorityGroupMap[id]?.label || id;
 const getAudioPriorityGroupDesc = (id) => audioPriorityGroupMap[id]?.desc || '';
+const optionLabelMap = (options) => Object.fromEntries(options.map(opt => [opt.value, opt.label]));
+const audioLangLabelMap = optionLabelMap(audioLangOptions);
+const subtitleLangLabelMap = optionLabelMap(subtitleLangOptions);
+const getAudioLangLabel = (id) => audioLangLabelMap[id] || id;
+const getSubtitleLangLabel = (id) => subtitleLangLabelMap[id] || id;
+
+const availableAudioLangOptions = computed(() => {
+  const used = new Set(config.value.audio_lang_priority.map(item => item.id));
+  return audioLangOptions.filter(opt => !used.has(opt.value));
+});
+
+const availableSubtitleLangOptions = computed(() => {
+  const used = new Set(config.value.subtitle_lang_priority.map(item => item.id));
+  return subtitleLangOptions.filter(opt => !used.has(opt.value));
+});
+
 
 const uniqueIds = (ids) => {
   const seen = new Set();
@@ -301,6 +388,18 @@ const uniqueIds = (ids) => {
 };
 
 const makeIdItems = (ids) => uniqueIds(ids).map(id => ({ id }));
+const makeLangPriorityItems = (ids, allowedOptions) => {
+  const allowed = new Set(allowedOptions.map(opt => opt.value));
+  return uniqueIds(ids).filter(id => allowed.has(id)).map(id => ({ id }));
+};
+
+const legacyToPriorityList = (priorityList, legacyValue) => {
+  if (Array.isArray(priorityList) && priorityList.length > 0) {
+    return priorityList;
+  }
+  return legacyValue ? [legacyValue] : [];
+};
+
 
 const makeAudioPriorityGroupItems = (ids) => {
   const cleanIds = uniqueIds(ids).filter(id => ['param', 'feature'].includes(id));
@@ -315,10 +414,38 @@ const resetAudioParams = () => {
   message.success('已恢复物理参数默认排序');
 };
 
+const addAudioLangPriority = () => {
+  const val = selectedAudioLangToAdd.value;
+  if (!val) return;
+  if (!config.value.audio_lang_priority.some(item => item.id === val)) {
+    config.value.audio_lang_priority.push({ id: val });
+  }
+  selectedAudioLangToAdd.value = null;
+};
+
+const removeAudioLangPriority = (index) => {
+  config.value.audio_lang_priority.splice(index, 1);
+};
+
+const addSubtitleLangPriority = () => {
+  const val = selectedSubtitleLangToAdd.value;
+  if (!val) return;
+  if (!config.value.subtitle_lang_priority.some(item => item.id === val)) {
+    config.value.subtitle_lang_priority.push({ id: val });
+  }
+  selectedSubtitleLangToAdd.value = null;
+};
+
+const removeSubtitleLangPriority = (index) => {
+  config.value.subtitle_lang_priority.splice(index, 1);
+};
+
 const restoreDefaults = () => {
   config.value = {
     audio_lang: '',
     subtitle_lang: '',
+    audio_lang_priority: [],
+    subtitle_lang_priority: [],
     audio_priority_order: makeAudioPriorityGroupItems(defaultAudioPriorityOrder),
     audio_features: defaultAudioFeatures.map((text, index) => ({ id: `default_audio_${index}_${Date.now()}`, text })),
     audio_param_priority: makeIdItems(defaultAudioParamPriority),
@@ -355,6 +482,14 @@ const loadConfig = async () => {
       const data = res.data.data || {};
       config.value.audio_lang = data.audio_lang || '';
       config.value.subtitle_lang = data.subtitle_lang || '';
+      config.value.audio_lang_priority = makeLangPriorityItems(
+        legacyToPriorityList(data.audio_lang_priority, data.audio_lang),
+        audioLangOptions
+      );
+      config.value.subtitle_lang_priority = makeLangPriorityItems(
+        legacyToPriorityList(data.subtitle_lang_priority, data.subtitle_lang),
+        subtitleLangOptions
+      );
 
       config.value.audio_priority_order = makeAudioPriorityGroupItems(data.audio_priority_order || defaultAudioPriorityOrder);
       config.value.audio_features = (Array.isArray(data.audio_features) ? data.audio_features : defaultAudioFeatures).map((text, index) => ({
@@ -374,9 +509,14 @@ const loadConfig = async () => {
 const saveConfig = async () => {
   saving.value = true;
   try {
+    const audioLangPriority = config.value.audio_lang_priority.map(item => item.id);
+    const subtitleLangPriority = config.value.subtitle_lang_priority.map(item => item.id);
     const payload = {
-      audio_lang: config.value.audio_lang,
-      subtitle_lang: config.value.subtitle_lang,
+      // 保留旧字段用于兼容旧代码；新逻辑使用 *_priority。
+      audio_lang: audioLangPriority[0] || '',
+      subtitle_lang: subtitleLangPriority[0] || '',
+      audio_lang_priority: audioLangPriority,
+      subtitle_lang_priority: subtitleLangPriority,
       audio_priority_order: config.value.audio_priority_order.map(item => item.id),
       audio_features: config.value.audio_features.map(item => item.text),
       audio_param_priority: config.value.audio_param_priority.map(item => item.id),
@@ -572,6 +712,10 @@ defineExpose({ open });
   max-height: 390px;
   overflow: auto;
   padding-right: 2px;
+}
+
+.lang-priority-list {
+  max-height: 160px;
 }
 
 .subtitle-panel .compact-list {

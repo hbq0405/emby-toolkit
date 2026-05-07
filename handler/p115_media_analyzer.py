@@ -1063,6 +1063,13 @@ class P115MediaAnalyzerMixin:
         if not probe_data:
             return None
 
+        etk_probe_context = probe_data.get("_etk") if isinstance(probe_data, dict) and isinstance(probe_data.get("_etk"), dict) else {}
+        tmdb_original_language = (
+            etk_probe_context.get("original_language")
+            or etk_probe_context.get("original_lang")
+            or ""
+        )
+
         original_name = (
             file_node.get("fn")
             or file_node.get("n")
@@ -1411,14 +1418,101 @@ class P115MediaAnalyzerMixin:
             stream_config = settings_db.get_setting('p115_default_stream_config') or {
                 "audio_lang": "",
                 "subtitle_lang": "",
+                "audio_lang_priority": [],
+                "subtitle_lang_priority": [],
                 "audio_priority_order": ["param", "feature"],
                 # 导评 / 评论轨默认不参与默认音轨竞争，除非用户在音轨特色优先级里明确加入。
                 "audio_features": ["公映", "上译", "京译", "长译", "八一", "台配", "粤语"],
                 "audio_param_priority": ["atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra", "ddp", "dts", "flac", "ac3", "aac", "7_1", "5_1", "2_0"],
                 "sub_priority": ["effect", "chs", "cht", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor"]
             }
-            audio_pref_code = stream_config.get("audio_lang", "")
-            subtitle_pref = stream_config.get("subtitle_lang", "")
+            def _clean_priority_list(value, allowed_values, legacy_value=""):
+                if isinstance(value, str):
+                    value = [value] if value.strip() else []
+                elif not isinstance(value, list):
+                    value = []
+
+                result = []
+                for item in value:
+                    item = str(item or "").strip().lower()
+                    if item and item in allowed_values and item not in result:
+                        result.append(item)
+
+                legacy_value = str(legacy_value or "").strip().lower()
+                if not result and legacy_value and legacy_value in allowed_values:
+                    result.append(legacy_value)
+
+                return result
+
+            def _normalize_lang_pref(value):
+                value = str(value or "").strip().lower().replace("_", "-")
+                if not value:
+                    return ""
+
+                alias_map = {
+                    "en": "eng", "eng": "eng",
+                    "ja": "jpn", "jp": "jpn", "jpn": "jpn",
+                    "ko": "kor", "kr": "kor", "kor": "kor",
+                    "zh": "chi", "zho": "chi", "chi": "chi", "cn": "chi",
+                    "zh-cn": "chi", "zh-hans": "chi", "cmn": "chi",
+                    "zh-tw": "chi", "zh-hk": "chi", "zh-hant": "chi",
+                    "yue": "yue", "cantonese": "yue",
+                }
+                if value in alias_map:
+                    return alias_map[value]
+
+                try:
+                    normalized = helpers.normalize_lang_code(value)
+                    normalized = str(normalized or "").strip().lower()
+                    return alias_map.get(normalized, normalized)
+                except Exception:
+                    return alias_map.get(value, value)
+
+            original_lang_code = _normalize_lang_pref(tmdb_original_language)
+
+            audio_lang_priority = _clean_priority_list(
+                stream_config.get("audio_lang_priority"),
+                {"chi", "yue", "original", "eng", "jpn", "kor"},
+                stream_config.get("audio_lang", "")
+            )
+            subtitle_lang_priority = _clean_priority_list(
+                stream_config.get("subtitle_lang_priority"),
+                {"chs", "cht", "original", "eng", "jpn", "kor"},
+                stream_config.get("subtitle_lang", "")
+            )
+
+            def _resolve_audio_pref_code(pref_id):
+                pref_id = str(pref_id or "").strip().lower()
+                if pref_id == "original":
+                    return original_lang_code
+                if pref_id in ["chs", "cht", "chi"]:
+                    return "chi"
+                return _normalize_lang_pref(pref_id)
+
+            def _resolve_subtitle_pref_keys(pref_id):
+                pref_id = str(pref_id or "").strip().lower()
+                if pref_id == "original":
+                    lang = original_lang_code
+                    if lang == "chi":
+                        return ["chs", "cht"]
+                    if lang == "yue":
+                        return ["cht", "chs"]
+                    return [lang] if lang in ["eng", "jpn", "kor"] else []
+                if pref_id in ["chs", "cht", "eng", "jpn", "kor"]:
+                    return [pref_id]
+                if pref_id == "chi":
+                    return ["chs", "cht"]
+                if pref_id == "yue":
+                    return ["cht", "chs"]
+                return []
+
+            primary_chinese_subtitle_pref = ""
+            for _pref_id in subtitle_lang_priority:
+                _keys = _resolve_subtitle_pref_keys(_pref_id)
+                if "chs" in _keys or "cht" in _keys:
+                    primary_chinese_subtitle_pref = _keys[0]
+                    break
+
             raw_audio_priority_order = stream_config.get("audio_priority_order", ["param", "feature"])
             audio_priority_order = []
             if isinstance(raw_audio_priority_order, list):
@@ -1451,9 +1545,13 @@ class P115MediaAnalyzerMixin:
                 return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in commentary_feature_patterns)
 
             # 旧版本默认配置里曾内置“评论/导评”，这不算用户明确配置，避免历史默认值继续误伤。
-            legacy_default_audio_features = ["公映", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"]
+            legacy_default_audio_feature_sets = [
+                ["公映", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"],
+                ["公映", "上译", "京译", "长译", "央视", "八一", "台配", "粤语", "评论", "导评"],
+                ["公映", "上译", "京译", "央视", "长译", "八一", "国配", "台配", "国语", "粤语", "评论", "导评"],
+            ]
             normalized_audio_features_config = [str(kw or "").strip() for kw in audio_features_config]
-            is_legacy_default_commentary_priority = normalized_audio_features_config == legacy_default_audio_features
+            is_legacy_default_commentary_priority = normalized_audio_features_config in legacy_default_audio_feature_sets
 
             # 只有用户明确把“导评/评论/commentary”放进特色优先级，导评轨才有资格参与默认音轨竞争。
             commentary_priority_enabled = bool(stream_config.get("audio_commentary_priority_enabled")) or (
@@ -1503,10 +1601,15 @@ class P115MediaAnalyzerMixin:
                     if non_commentary_candidates:
                         candidates = non_commentary_candidates
 
-                if audio_pref_code:
-                    lang_matched = [s for s in candidates if s.get("Language") == audio_pref_code]
-                    if lang_matched:
-                        candidates = lang_matched
+                if audio_lang_priority:
+                    for pref_id in audio_lang_priority:
+                        pref_code = _resolve_audio_pref_code(pref_id)
+                        if not pref_code:
+                            continue
+                        lang_matched = [s for s in candidates if str(s.get("Language") or "").lower() == pref_code]
+                        if lang_matched:
+                            candidates = lang_matched
+                            break
 
                 def _audio_matches_param(audio, param_id):
                     text = _audio_match_text(audio)
@@ -1701,7 +1804,7 @@ class P115MediaAnalyzerMixin:
 
                     # 纯 chi/zho/zh 没有简繁标记时，按用户偏好兜底；没有偏好则默认简体。
                     if not has_chs and not has_cht and _has_token(sub_title, "chi", "zho", "zh", "中文"):
-                        if subtitle_pref == "cht":
+                        if primary_chinese_subtitle_pref == "cht":
                             has_cht = True
                         else:
                             has_chs = True
@@ -1722,10 +1825,21 @@ class P115MediaAnalyzerMixin:
                     is_chs = has_chs and not (is_chs_eng or is_chs_jpn or is_chs_kor)
 
                     script = "cht" if has_cht else ("chs" if has_chs else "")
+                    if script:
+                        lang_key = script
+                    elif has_eng:
+                        lang_key = "eng"
+                    elif has_jpn:
+                        lang_key = "jpn"
+                    elif has_kor:
+                        lang_key = "kor"
+                    else:
+                        lang_key = ""
 
                     return {
                         "text": sub_title,
                         "script": script,
+                        "lang_key": lang_key,
                         "is_effect": is_effect,
                         "is_chs": is_chs,
                         "is_cht": is_cht,
@@ -1742,25 +1856,24 @@ class P115MediaAnalyzerMixin:
                     flags = _detect_sub_flags(sub)
                     sub_title = flags["text"]
 
-                    # 优先级 0: 用户选择的默认字幕语言是硬偏好。
-                    # effect / 双语 / 原始默认只能在同一语言池里竞争，不能让繁体越级打败简体。
-                    if subtitle_pref == "chs":
-                        if flags["script"] == "chs":
-                            score += 10 ** 12  # 简体：绝对第一
-                        elif flags["script"] == "cht":
-                            score += 10 ** 11  # 繁体：绝对第二（没有简体时，碾压外语）
-                    elif subtitle_pref == "cht":
-                        if flags["script"] == "cht":
-                            score += 10 ** 12  # 繁体：绝对第一
-                        elif flags["script"] == "chs":
-                            score += 10 ** 11  # 简体：绝对第二
+                    # 优先级 0: 用户配置的字幕语言优先级是硬偏好。
+                    # 例如：简体 -> 原语言 -> 英文；每一档内部再比较特效/双语类型。
+                    if subtitle_lang_priority:
+                        total_lang_priority = len(subtitle_lang_priority)
+                        for idx, pref_id in enumerate(subtitle_lang_priority):
+                            pref_keys = _resolve_subtitle_pref_keys(pref_id)
+                            if not pref_keys:
+                                continue
+                            if flags.get("lang_key") in pref_keys or flags.get("script") in pref_keys:
+                                score += (total_lang_priority - idx) * (10 ** 12)
+                                break
                     else:
-                        # 如果用户没选偏好，但它是中文，也给个基础高分，防止被外语抢走
+                        # 未设置语言优先级时，保持旧行为：中文字幕整体高于外语字幕。
                         if flags["script"] in ["chs", "cht"]:
                             score += 10 ** 11
 
                     # 优先级 1: 智能跟随音轨特征。
-                    # 仍然低于 subtitle_lang，避免“繁体特效/公映字幕”越过用户指定的简体。
+                    # 仍然低于 字幕语言优先级，避免“繁体特效/公映字幕”越过用户指定的简体。
                     if active_audio_features and any(f in sub_title for f in active_audio_features):
                         score += 10 ** 10
 

@@ -1487,30 +1487,103 @@ def get_local_directories():
 @admin_required
 def handle_default_stream_config():
     """管理默认音轨与字幕配置"""
+
+    audio_lang_allowed = {'chi', 'yue', 'original', 'eng', 'jpn', 'kor'}
+    subtitle_lang_allowed = {'chs', 'cht', 'original', 'eng', 'jpn', 'kor'}
+
+    defaults = {
+        # 旧字段保留用于兼容旧版本前端 / 旧任务；新逻辑优先读取 *_priority。
+        "audio_lang": "",
+        "subtitle_lang": "",
+        "audio_lang_priority": [],
+        "subtitle_lang_priority": [],
+        "audio_priority_order": ["param", "feature"],
+        # 导评 / 评论默认不参与默认音轨竞争；用户需要时可手动加入特色词。
+        "audio_features": ["公映", "上译", "京译", "央视", "长译", "八一", "国配", "台配", "国语", "粤语"],
+        "audio_param_priority": ["atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra", "ddp", "dts", "flac", "ac3", "aac", "7_1", "5_1", "2_0"],
+        "sub_priority": ["effect", "chs", "cht", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor"]
+    }
+
+    def _clean_priority_list(value, allowed_values, legacy_value=""):
+        if isinstance(value, str):
+            value = [value] if value.strip() else []
+        elif not isinstance(value, list):
+            value = []
+
+        result = []
+        for item in value:
+            item = str(item or "").strip().lower()
+            if item and item in allowed_values and item not in result:
+                result.append(item)
+
+        legacy_value = str(legacy_value or "").strip().lower()
+        if not result and legacy_value and legacy_value in allowed_values:
+            result.append(legacy_value)
+
+        return result
+
+    def _normalize_stream_config(raw_config):
+        config = defaults.copy()
+        if isinstance(raw_config, dict):
+            config.update(raw_config)
+
+        config['audio_lang_priority'] = _clean_priority_list(
+            config.get('audio_lang_priority'),
+            audio_lang_allowed,
+            config.get('audio_lang')
+        )
+        config['subtitle_lang_priority'] = _clean_priority_list(
+            config.get('subtitle_lang_priority'),
+            subtitle_lang_allowed,
+            config.get('subtitle_lang')
+        )
+
+        # 旧字段同步为第一优先级，方便旧代码继续工作。
+        config['audio_lang'] = config['audio_lang_priority'][0] if config['audio_lang_priority'] else ''
+        config['subtitle_lang'] = config['subtitle_lang_priority'][0] if config['subtitle_lang_priority'] else ''
+
+        raw_group_order = config.get('audio_priority_order')
+        if not isinstance(raw_group_order, list):
+            raw_group_order = defaults['audio_priority_order']
+        group_order = []
+        for item in raw_group_order:
+            item = str(item or '').strip().lower()
+            if item in ['param', 'feature'] and item not in group_order:
+                group_order.append(item)
+        for item in defaults['audio_priority_order']:
+            if item not in group_order:
+                group_order.append(item)
+        config['audio_priority_order'] = group_order
+
+        for key in ['audio_features', 'audio_param_priority', 'sub_priority']:
+            if not isinstance(config.get(key), list):
+                config[key] = defaults[key]
+            else:
+                # 去重但保持用户拖拽顺序；允许用户删除默认项。
+                seen = set()
+                cleaned = []
+                for item in config[key]:
+                    item = str(item or '').strip()
+                    if item and item not in seen:
+                        seen.add(item)
+                        cleaned.append(item)
+                config[key] = cleaned
+
+        return config
+
     if request.method == 'GET':
         saved_config = settings_db.get_setting('p115_default_stream_config') or {}
         if not isinstance(saved_config, dict):
             saved_config = {}
 
-        defaults = {
-            "audio_lang": "",
-            "subtitle_lang": "",
-            "audio_priority_order": ["param", "feature"],
-            "audio_features": ["公映", "上译", "京译", "长译", "央视", "八一", "台配", "粤语", "评论", "导评"],
-            "audio_param_priority": ["atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra", "ddp", "dts", "flac", "ac3", "aac", "7_1", "5_1", "2_0"],
-            "sub_priority": ["effect", "chs", "cht", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor"]
-        }
-
-        # 只补齐缺失字段，不再向用户已经保存的列表里追加默认项。
-        # 这样前端删除的特色词 / 物理参数 / 字幕类型不会在下次打开时“死灰复燃”。
-        config = defaults.copy()
-        config.update(saved_config)
-
+        config = _normalize_stream_config(saved_config)
         return jsonify({"success": True, "data": config})
-    
+
     if request.method == 'POST':
         new_config = request.json or {}
         if not isinstance(new_config, dict):
             new_config = {}
-        settings_db.save_setting('p115_default_stream_config', new_config)
+
+        config = _normalize_stream_config(new_config)
+        settings_db.save_setting('p115_default_stream_config', config)
         return jsonify({"success": True, "message": "默认音轨与字幕配置已保存"})
