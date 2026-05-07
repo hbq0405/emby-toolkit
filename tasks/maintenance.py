@@ -139,6 +139,76 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
     logger.info(f"  ➜ 成功向表 '{db_table_name}' 合并 {inserted_count} 条新记录（总共尝试 {len(data)} 条）。")
     return inserted_count
 
+
+def _sanitize_shared_raw_ffprobe_json(raw_ffprobe_json):
+    """
+    共享导入 p115_mediainfo_cache 时只保留可复用的 ffprobe 原始结构。
+    老版本 raw_ffprobe_json 可能带有 format.filename 里的 115 临时直链，导入前必须剔除。
+    """
+    if not raw_ffprobe_json:
+        return None
+
+    if isinstance(raw_ffprobe_json, str):
+        try:
+            raw_ffprobe_json = json.loads(raw_ffprobe_json)
+        except Exception:
+            return None
+
+    if not isinstance(raw_ffprobe_json, dict):
+        return None
+
+    # 深拷贝，避免修改备份对象本身。
+    cleaned = json.loads(json.dumps(raw_ffprobe_json, ensure_ascii=False))
+
+    fmt = cleaned.get('format')
+    if isinstance(fmt, dict):
+        # 115cdn 直链是临时签名链接，既没共享价值，也不应该跨账号导入。
+        fmt.pop('filename', None)
+
+    return cleaned
+
+
+def _merge_p115_mediainfo_raw_cache(cursor, columns: List[str], data: List[tuple]) -> int:
+    """
+    共享模式下专门合并 p115_mediainfo_cache。
+    只导入 raw_ffprobe_json，不导入 mediainfo_json，避免把个人默认音轨/字幕偏好共享给别人。
+    冲突时只补齐缺失 raw；如果本地 raw 没有 _etk 而导入 raw 有 _etk，则用导入 raw 补强身份信息。
+    """
+    if not data:
+        return 0
+
+    allowed_columns = {'sha1', 'raw_ffprobe_json'}
+    if set(columns) != allowed_columns:
+        raise ValueError("共享导入 p115_mediainfo_cache 只允许 sha1 与 raw_ffprobe_json 两列")
+
+    insert_query = sql.SQL("""
+        INSERT INTO p115_mediainfo_cache (sha1, raw_ffprobe_json, created_at, hit_count)
+        VALUES %s
+        ON CONFLICT (sha1) DO UPDATE SET
+            raw_ffprobe_json = CASE
+                WHEN p115_mediainfo_cache.raw_ffprobe_json IS NULL THEN EXCLUDED.raw_ffprobe_json
+                WHEN NOT (p115_mediainfo_cache.raw_ffprobe_json ? '_etk')
+                     AND (EXCLUDED.raw_ffprobe_json ? '_etk') THEN EXCLUDED.raw_ffprobe_json
+                ELSE p115_mediainfo_cache.raw_ffprobe_json
+            END
+    """)
+
+    # data 只有 sha1/raw 两列，这里补 created_at/hit_count 默认值。
+    values = [(row[columns.index('sha1')], row[columns.index('raw_ffprobe_json')], 0) for row in data]
+    execute_values(
+        cursor,
+        insert_query,
+        values,
+        template="(%s, %s, NOW(), %s)",
+        page_size=500
+    )
+    affected_count = cursor.rowcount
+    logger.info(
+        f"  ➜ 成功向表 'p115_mediainfo_cache' 合并/补齐 {affected_count} 条 raw_ffprobe_json "
+        f"（总共尝试 {len(data)} 条，mediainfo_json 已忽略）。"
+    )
+    return affected_count
+
 # ★★★ 辅助函数 4: 专门用于合并 person_metadata 的智能函数 ★★★
 def _merge_person_metadata_data(cursor, table_name: str, columns: List[str], data: List[tuple]) -> dict:
     """
@@ -330,20 +400,43 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                         cleaned_data = []
                         for row in table_data:
                             new_row = row.copy()
-                            if table_name.lower() == 'person_metadata':
+                            table_lower = table_name.lower()
+
+                            if table_lower == 'person_metadata':
                                 new_row.pop('map_id', None)
-                            elif table_name.lower() == 'media_metadata':
+
+                            elif table_lower == 'media_metadata':
                                 new_row.pop('emby_item_ids_json', None)
                                 new_row.pop('asset_details_json', None)
                                 new_row['in_library'] = False
+
+                            elif table_lower == 'p115_mediainfo_cache':
+                                # 共享导入只认 raw_ffprobe_json。
+                                # mediainfo_json 带有个人默认音轨/字幕偏好，不具备共享价值，必须丢弃。
+                                raw_ffprobe_json = _sanitize_shared_raw_ffprobe_json(new_row.get('raw_ffprobe_json'))
+                                sha1 = str(new_row.get('sha1') or '').strip().upper()
+
+                                if not sha1 or not raw_ffprobe_json:
+                                    continue
+
+                                new_row = {
+                                    'sha1': sha1,
+                                    'raw_ffprobe_json': raw_ffprobe_json
+                                }
+
                             cleaned_data.append(new_row)
                         
                         columns, prepared_data = _prepare_data_for_insert(table_name, cleaned_data)
-                        if not prepared_data: continue
+                        if not prepared_data:
+                            summary_lines.append(f"  - 表 '{cn_name}': 跳过 (没有可共享的数据)。")
+                            continue
                         
                         if table_name.lower() == 'person_metadata':
                             merge_stats = _merge_person_metadata_data(cursor, table_name, columns, prepared_data)
                             summary_lines.append(f"  - 表 '{cn_name}': 智能合并完成 (新增 {merge_stats['inserted']}, 更新 {merge_stats['updated']})。")
+                        elif table_name.lower() == 'p115_mediainfo_cache':
+                            inserted_count = _merge_p115_mediainfo_raw_cache(cursor, columns, prepared_data)
+                            summary_lines.append(f"  - 表 '{cn_name}': 成功合并/补齐 {inserted_count} / {len(prepared_data)} 条 raw_ffprobe_json，已忽略 mediainfo_json。")
                         else:
                             inserted_count = _share_import_table_data(cursor, table_name, columns, prepared_data)
                             summary_lines.append(f"  - 表 '{cn_name}': 成功合并 {inserted_count} / {len(prepared_data)} 条新记录。")

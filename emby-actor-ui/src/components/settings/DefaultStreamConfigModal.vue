@@ -54,7 +54,7 @@
                 </draggable>
 
                 <n-text depth="3" class="helper-text inline-helper">
-                  “原语言”来自 raw_ffprobe_json._etk.original_language；没有命中时自动尝试下一档。
+                  没有命中时自动尝试下一档。
                 </n-text>
               </div>
             </n-form-item>
