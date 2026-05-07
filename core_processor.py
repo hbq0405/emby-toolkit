@@ -1632,15 +1632,30 @@ class MediaProcessor:
                     mi = r.get('mediainfo_json')
                     if not mi: continue
                     
-                    # 兼容列表和字典两种格式
-                    if isinstance(mi, list) and len(mi) > 0:
-                        mi = mi[0]
+                    # 1. 确保解析为 Python 对象
+                    if isinstance(mi, str):
+                        try: mi = json.loads(mi)
+                        except: continue
                         
-                    # 1秒 = 10,000,000 Ticks，1分钟 = 600,000,000 Ticks
-                    ticks = mi.get("MediaSourceInfo", {}).get("RunTimeTicks", 0)
-                    if ticks > 0:
-                        runtimes.append(round(ticks / 600000000))
+                    # 2. 暴力剥离所有外层列表 (应对 [[{...}]] 这种奇葩嵌套)
+                    while isinstance(mi, list):
+                        if len(mi) > 0: mi = mi[0]
+                        else: mi = {}
                         
+                    if not isinstance(mi, dict): continue
+                    
+                    # 3. 提取 MediaSourceInfo (它本身也可能是个列表)
+                    msi = mi.get("MediaSourceInfo") or mi.get("MediaSources") or mi
+                    while isinstance(msi, list):
+                        if len(msi) > 0: msi = msi[0]
+                        else: msi = {}
+                        
+                    # 4. 提取 Ticks
+                    if isinstance(msi, dict):
+                        ticks = msi.get("RunTimeTicks", 0)
+                        if ticks > 0:
+                            runtimes.append(round(ticks / 600000000))
+                            
                 if runtimes:
                     return max(runtimes) # 如果有多版本，取最长的版本作为代表时长
             except Exception as e:
@@ -4605,22 +4620,34 @@ class MediaProcessor:
                             row = cursor.fetchone()
                             if row and row['mediainfo_json']:
                                 mi = row['mediainfo_json']
-                                if isinstance(mi, str): mi = json.loads(mi)
-                                if isinstance(mi, list) and mi: mi = mi[0]
+                                if isinstance(mi, str): 
+                                    try: mi = json.loads(mi)
+                                    except: pass
                                 
-                                media_source = mi.get("MediaSourceInfo", {})
-                                ticks = media_source.get("RunTimeTicks", 0)
-                                if ticks > 0: duration_sec = ticks / 10000000
-                                
-                                streams = media_source.get("MediaStreams", [])
-                                v_stream = next((s for s in streams if s.get("Type") == "Video"), {})
-                                
-                                probe_text = str(v_stream).lower()
-                                
-                                # 精准识别 DV P5
-                                is_dovi_p5 = "doviprofile5" in probe_text or "profile 5" in probe_text or "p5" in probe_text
-                                # 识别普通 HDR
-                                is_hdr = "hdr" in probe_text or "smpte2084" in probe_text or "bt2020" in probe_text or "dolbyvision" in probe_text
+                                # 暴力剥离列表
+                                while isinstance(mi, list):
+                                    if len(mi) > 0: mi = mi[0]
+                                    else: mi = {}
+                                    
+                                if isinstance(mi, dict):
+                                    msi = mi.get("MediaSourceInfo") or mi.get("MediaSources") or mi
+                                    while isinstance(msi, list):
+                                        if len(msi) > 0: msi = msi[0]
+                                        else: msi = {}
+                                        
+                                    if isinstance(msi, dict):
+                                        ticks = msi.get("RunTimeTicks", 0)
+                                        if ticks > 0: duration_sec = ticks / 10000000
+                                        
+                                        streams = msi.get("MediaStreams", [])
+                                        v_stream = next((s for s in streams if isinstance(s, dict) and s.get("Type") == "Video"), {})
+                                        
+                                        probe_text = str(v_stream).lower()
+                                        
+                                        # 精准识别 DV P5
+                                        is_dovi_p5 = "doviprofile5" in probe_text or "profile 5" in probe_text or "p5" in probe_text
+                                        # 识别普通 HDR
+                                        is_hdr = "hdr" in probe_text or "smpte2084" in probe_text or "bt2020" in probe_text or "dolbyvision" in probe_text
                 except Exception:
                     pass
             
