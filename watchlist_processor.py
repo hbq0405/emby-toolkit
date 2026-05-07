@@ -84,6 +84,59 @@ class WatchlistProcessor:
             logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
             return None
 
+    def _prepare_watchlist_translation_payload(self, aggregated_data: Dict[str, Any]) -> Dict[str, int]:
+        """
+        追剧刷新专用的翻译前瘦身。
+        大一统翻译在普通入库时会处理演员、角色和标语，但追剧刷新没有演员表编辑权限，
+        也不需要刷新标语。这里在调用翻译前移除这些字段，避免每次追剧刷新浪费 token 和时间。
+        """
+        stats = {
+            "tagline_removed": 0,
+            "cast_removed": 0,
+            "guest_stars_removed": 0,
+            "actors_removed": 0,
+        }
+
+        def _pop_list(container: Dict[str, Any], key: str, stat_key: str):
+            if not isinstance(container, dict) or key not in container:
+                return
+            value = container.pop(key, None)
+            if isinstance(value, list):
+                stats[stat_key] += len(value)
+            elif value:
+                stats[stat_key] += 1
+
+        def _walk(obj):
+            if isinstance(obj, dict):
+                # 标语不参与追剧刷新翻译。后续也不写入追剧数据库字段，删除最干净。
+                if "tagline" in obj:
+                    if obj.get("tagline"):
+                        stats["tagline_removed"] += 1
+                    obj.pop("tagline", None)
+
+                # TMDb 常见人物容器：credits / aggregate_credits / casts。保留 crew，
+                # 因为后续还需要从导演/主创中提取导演；只移除演员和客串明星。
+                for container_key in ("credits", "aggregate_credits", "casts"):
+                    nested = obj.get(container_key)
+                    if isinstance(nested, dict):
+                        _pop_list(nested, "cast", "cast_removed")
+                        _pop_list(nested, "guest_stars", "guest_stars_removed")
+                        _pop_list(nested, "actors", "actors_removed")
+
+                # 有些分集详情会把 guest_stars 直接挂在自身根节点。
+                _pop_list(obj, "cast", "cast_removed")
+                _pop_list(obj, "guest_stars", "guest_stars_removed")
+                _pop_list(obj, "actors", "actors_removed")
+
+                for value in list(obj.values()):
+                    _walk(value)
+            elif isinstance(obj, list):
+                for item in obj:
+                    _walk(item)
+
+        _walk(aggregated_data)
+        return stats
+
     # ★★★ 核心修改 1: 重构统一的数据库更新函数 ★★★
     def _update_watchlist_entry(self, tmdb_id: str, item_name: str, updates: Dict[str, Any]):
         """【新架构】直接调用 DB 层更新，不再做字段映射。"""
@@ -470,16 +523,32 @@ class WatchlistProcessor:
             logger.error(f"  ➜ 无法聚合 '{item_name}' 的TMDb详情，元数据刷新中止。")
             return None
 
-        # 翻译简介、标题、标语 (大一统引擎)
+        # 追剧刷新只借用大一统翻译来处理简介和集标题。
+        # 演员/角色不属于追剧模块的编辑范围，标语也没有刷新必要，先剥离再翻译，避免浪费 token。
         if self.ai_translator:
+            prune_stats = self._prepare_watchlist_translation_payload(aggregated_data)
+            translation_config = dict(self.config)
+            translation_config[constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE] = False
+            translation_config['_watchlist_skip_tagline_translation'] = True
+
+            if any(prune_stats.values()):
+                logger.debug(
+                    "  ➜ [追剧翻译瘦身] 已移除演员/客串/标语字段："
+                    f"演员 {prune_stats['cast_removed']}，客串 {prune_stats['guest_stars_removed']}，"
+                    f"其他演员 {prune_stats['actors_removed']}，标语 {prune_stats['tagline_removed']}。"
+                )
+
             helpers.translate_tmdb_metadata_recursively(
                 item_type='Series',
                 tmdb_data=aggregated_data,
                 ai_translator=self.ai_translator,
                 item_name=item_name,
                 tmdb_api_key=self.tmdb_api_key,
-                config=self.config
+                config=translation_config
             )
+
+            # 兼容未升级 helpers.py 的场景：如果旧翻译函数从本地缓存或英文接口补回 tagline，二次清理。
+            self._prepare_watchlist_translation_payload(aggregated_data)
 
         # ======================================================================
         # ★★★ 统一构建 episodes_details 字典，防止结构混乱 ★★★

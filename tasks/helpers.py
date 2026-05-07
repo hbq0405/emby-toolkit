@@ -1816,6 +1816,7 @@ def translate_tmdb_metadata_recursively(
     translate_ep_overview_enabled = config.get(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False)
     translate_actor_enabled = config.get(constants.CONFIG_OPTION_AI_TRANSLATE_ACTOR_ROLE, False)
     remove_no_avatar = config.get(constants.CONFIG_OPTION_REMOVE_ACTORS_WITHOUT_AVATARS, True)
+    skip_tagline_translation = bool(config.get('_watchlist_skip_tagline_translation', False))
 
     # --- 1. 收集与缓存检查阶段 ---
     def _collect_single_item(data_dict: Dict, specific_item_type: str):
@@ -1872,7 +1873,8 @@ def translate_tmdb_metadata_recursively(
                     stats['title_needs_translation'] += 1
 
         # C. 检查标语 Tagline
-        if translate_title_enabled and specific_item_type in ['Movie', 'Series']:
+        # 追剧刷新会传入 _watchlist_skip_tagline_translation，避免只为标语额外拉取英文并消耗 AI token。
+        if (not skip_tagline_translation) and translate_title_enabled and specific_item_type in ['Movie', 'Series']:
             tagline = data_dict.get('tagline')
             if not tagline or not utils.contains_chinese(tagline):
                 # 先用本地缓存回填，避免重复翻译
