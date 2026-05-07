@@ -1073,15 +1073,199 @@ class P115CacheManager:
             return None
         
     @staticmethod
+    def _build_etk_context_from_media_metadata(cursor, sha1):
+        """
+        按 SHA1 从 media_metadata 反查可共享的媒体身份。
+
+        只返回跨账号稳定字段：
+        - tmdb_id: Movie 用自身 TMDb；剧集/季/集统一用父剧 TMDb
+        - type: movie / tv
+        - original_language: 优先子项，兜底父剧
+        - sha1
+        """
+        if not sha1:
+            return {}
+
+        sha1 = str(sha1).strip().upper()
+        if not sha1:
+            return {}
+
+        cursor.execute(
+            """
+            SELECT
+                m.tmdb_id,
+                m.item_type,
+                m.parent_series_tmdb_id,
+                COALESCE(NULLIF(m.original_language, ''), NULLIF(p.original_language, '')) AS original_language
+            FROM media_metadata m
+            LEFT JOIN media_metadata p
+              ON p.tmdb_id = m.parent_series_tmdb_id
+             AND p.item_type = 'Series'
+            WHERE m.file_sha1_json ? %s
+            ORDER BY
+                CASE m.item_type
+                    WHEN 'Movie' THEN 1
+                    WHEN 'Episode' THEN 2
+                    WHEN 'Season' THEN 3
+                    WHEN 'Series' THEN 4
+                    ELSE 9
+                END,
+                m.in_library DESC,
+                m.last_updated_at DESC NULLS LAST
+            LIMIT 1
+            """,
+            (sha1,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {}
+
+        item_type = str(row.get('item_type') or '').strip()
+        item_type_lower = item_type.lower()
+
+        if item_type_lower == 'movie':
+            tmdb_id = row.get('tmdb_id')
+            media_type = 'movie'
+        elif item_type_lower in ['series', 'season', 'episode']:
+            tmdb_id = row.get('parent_series_tmdb_id') or row.get('tmdb_id')
+            media_type = 'tv'
+        else:
+            return {}
+
+        ctx = {
+            'tmdb_id': str(tmdb_id).strip() if tmdb_id not in [None, ''] else None,
+            'type': media_type,
+            'original_language': str(row.get('original_language')).strip() if row.get('original_language') not in [None, ''] else None,
+            'sha1': sha1,
+        }
+        return {k: v for k, v in ctx.items() if v not in [None, '', [], {}]}
+
+    @staticmethod
+    def _raw_ffprobe_has_useful_etk(raw_ffprobe_json):
+        """判断 raw_ffprobe_json 顶层 _etk 是否已经具备核心身份字段。"""
+        if not isinstance(raw_ffprobe_json, dict):
+            return False
+
+        ctx = raw_ffprobe_json.get('_etk')
+        if not isinstance(ctx, dict):
+            return False
+
+        return bool(ctx.get('tmdb_id') and ctx.get('type'))
+
+    @staticmethod
     def get_raw_ffprobe_cache(sha1):
-        if not sha1: return None
+        """
+        从 p115_mediainfo_cache 读取 raw_ffprobe_json。
+
+        兼容旧缓存：
+        - 如果 raw_ffprobe_json 没有顶层 _etk，或 _etk 缺少核心字段；
+        - 就按 SHA1 从 media_metadata 本地反查 tmdb_id / type / original_language；
+        - 自动写回 p115_mediainfo_cache，避免重新拉 115 直链 ffprobe。
+        """
+        if not sha1:
+            return None
+
+        sha1 = str(sha1).strip().upper()
+        if not sha1:
+            return None
+
         try:
+            from psycopg2.extras import Json
+
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
-                    cursor.execute("SELECT raw_ffprobe_json FROM p115_mediainfo_cache WHERE sha1 = %s", (str(sha1).upper(),))
+                    cursor.execute(
+                        "SELECT raw_ffprobe_json FROM p115_mediainfo_cache WHERE sha1 = %s",
+                        (sha1,)
+                    )
                     row = cursor.fetchone()
-                    return row['raw_ffprobe_json'] if row else None
-        except Exception: return None
+                    if not row:
+                        return None
+
+                    raw_probe = row.get('raw_ffprobe_json')
+                    if not raw_probe:
+                        local_ctx = P115CacheManager._build_etk_context_from_media_metadata(cursor, sha1)
+                        if not local_ctx:
+                            return None
+
+                        raw_probe = {'_etk': local_ctx}
+                        cursor.execute(
+                            """
+                            UPDATE p115_mediainfo_cache
+                            SET raw_ffprobe_json = %s
+                            WHERE sha1 = %s
+                            """,
+                            (Json(raw_probe, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)), sha1)
+                        )
+                        conn.commit()
+                        logger.debug(
+                            f"  ➜ [raw_ffprobe缓存] raw 为空，已从 media_metadata 创建最小 _etk: "
+                            f"sha1={sha1[:12]}..., tmdb={local_ctx.get('tmdb_id')}, "
+                            f"type={local_ctx.get('type')}, lang={local_ctx.get('original_language')}"
+                        )
+                        return raw_probe
+
+                    try:
+                        if isinstance(raw_probe, str):
+                            raw_probe = json.loads(raw_probe)
+                    except Exception:
+                        return raw_probe
+
+                    if not isinstance(raw_probe, dict):
+                        return raw_probe
+
+                    # 顺手清理旧缓存里的 115cdn 过期直链 / PC 码等非共享字段。
+                    raw_probe = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_probe)
+
+                    ctx = raw_probe.get('_etk') if isinstance(raw_probe.get('_etk'), dict) else {}
+                    need_backfill = not P115CacheManager._raw_ffprobe_has_useful_etk(raw_probe)
+
+                    # 即使已有 _etk，也允许补齐缺失的 original_language / sha1。
+                    if not ctx.get('original_language') or not ctx.get('sha1'):
+                        need_backfill = True
+
+                    if need_backfill:
+                        local_ctx = P115CacheManager._build_etk_context_from_media_metadata(cursor, sha1)
+                        if local_ctx:
+                            clean_ctx = {k: v for k, v in ctx.items() if v not in [None, '', [], {}]}
+                            if P115CacheManager._raw_ffprobe_has_useful_etk(raw_probe):
+                                # 已有可用身份时，尊重旧 _etk，仅补齐缺失字段。
+                                merged_ctx = {}
+                                merged_ctx.update(local_ctx)
+                                merged_ctx.update(clean_ctx)
+                            else:
+                                # 旧 _etk 缺少 tmdb_id/type 时，以 media_metadata 本地事实为准。
+                                merged_ctx = {}
+                                merged_ctx.update(clean_ctx)
+                                merged_ctx.update(local_ctx)
+
+                            # sha1 必须以当前查询值为准。
+                            merged_ctx['sha1'] = sha1
+                            raw_probe['_etk'] = {k: v for k, v in merged_ctx.items() if v not in [None, '', [], {}]}
+                            raw_probe = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_probe)
+
+                            cursor.execute(
+                                """
+                                UPDATE p115_mediainfo_cache
+                                SET raw_ffprobe_json = %s
+                                WHERE sha1 = %s
+                                """,
+                                (Json(raw_probe, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)), sha1)
+                            )
+                            conn.commit()
+
+                            logger.debug(
+                                f"  ➜ [raw_ffprobe缓存] 已从 media_metadata 自动补齐 _etk: "
+                                f"sha1={sha1[:12]}..., tmdb={raw_probe.get('_etk', {}).get('tmdb_id')}, "
+                                f"type={raw_probe.get('_etk', {}).get('type')}, "
+                                f"lang={raw_probe.get('_etk', {}).get('original_language')}"
+                            )
+
+                    return raw_probe
+
+        except Exception as e:
+            logger.debug(f"  ➜ 读取 raw_ffprobe 缓存失败: {sha1[:12]}... -> {e}")
+            return None
 
 # ======================================================================
 # ★★★ 115 整理记录 DB 管理器 ★★★

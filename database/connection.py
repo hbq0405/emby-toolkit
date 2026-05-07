@@ -656,6 +656,10 @@ def init_db():
                     # 这是解决“灰块”和“权限拦截”性能的关键
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_asset_details_gin ON media_metadata USING GIN(asset_details_json);")
 
+                    # 7.5 【115 媒体信息共享缓存】按 SHA1 从 media_metadata 反查 TMDb / 原语言
+                    # 用于给旧 raw_ffprobe_json 自动补齐 _etk，不需要重新拉 115 直链 ffprobe。
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_file_sha1_json_gin ON media_metadata USING GIN(file_sha1_json);")
+
                     # 8. 【JSONB 数组筛选】加速 类型、标签、国家、制片厂、关键词的查询
                     # 使用 GIN 索引配合 jsonb_path_ops，查询速度比普通 GIN 更快
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_genres_gin ON media_metadata USING GIN(genres_json jsonb_path_ops);")
