@@ -16,62 +16,123 @@ import constants
 
 logger = logging.getLogger(__name__)
 
-def _get_aliases(label):
-    """从 utils.py 的统一映射表中动态提取关键词"""
-    for item in utils.DEFAULT_LANGUAGE_MAPPING:
-        if item["label"] == label:
-            return item.get("aliases", [])
+def _normalize_language_aliases(raw_aliases) -> List[str]:
+    """统一清洗语言别名，兼容列表、逗号字符串和异常数据。"""
+    if raw_aliases is None:
+        return []
+    if isinstance(raw_aliases, str):
+        raw_aliases = raw_aliases.split(',')
+    if not isinstance(raw_aliases, list):
+        raw_aliases = [raw_aliases]
+    return [str(alias).strip() for alias in raw_aliases if str(alias).strip()]
+
+
+def _get_language_mapping() -> List[Dict[str, Any]]:
+    """
+    统一读取语言映射表。
+    优先使用数据库里的 language_mapping 用户配置，异常或为空时兜底 utils.DEFAULT_LANGUAGE_MAPPING。
+    """
+    try:
+        lang_mapping = settings_db.get_setting('language_mapping')
+        if isinstance(lang_mapping, str):
+            try:
+                lang_mapping = json.loads(lang_mapping)
+            except Exception:
+                logger.warning("  ➜ [语言映射] language_mapping 字符串解析失败，已回退默认映射。")
+                lang_mapping = None
+
+        if isinstance(lang_mapping, list) and lang_mapping:
+            return lang_mapping
+    except Exception as e:
+        logger.warning(f"  ➜ [语言映射] 读取用户语言映射失败，已回退默认映射: {e}")
+
+    return utils.DEFAULT_LANGUAGE_MAPPING
+
+
+def _get_aliases(label: str, lang_mapping: Optional[List[Dict[str, Any]]] = None) -> List[str]:
+    """从统一语言映射表中按 label 提取别名。"""
+    lang_mapping = lang_mapping if lang_mapping is not None else _get_language_mapping()
+    for item in lang_mapping:
+        if not isinstance(item, dict):
+            continue
+        if item.get("label") == label:
+            return _normalize_language_aliases(item.get("aliases", []))
     return []
 
-# =====================================================================
-# ★ 动态底层语言识别库 (继承自 utils.py，实现一处维护，处处生效)
-# =====================================================================
-AUDIO_SUBTITLE_KEYWORD_MAP = {
-    # 音轨: chi=国语, yue=粤语 (继承基础词汇 + 补充音轨专属词汇)
-    "chi": _get_aliases("国语") + ["国配", "公映", "台配", "京译", "上译", "央译"],
-    "yue": _get_aliases("粤语") + ["粤配", "港配", "粤英双语"],
-    "eng": _get_aliases("英语"),
-    "jpn": _get_aliases("日语"),
-    "kor": _get_aliases("韩语"),
 
-    # 字幕: chi=简体, yue=繁体 (继承基础词汇 + 补充字幕专属词汇)
-    "sub_chi": _get_aliases("国语") + ["CHS", "SC", "GB", "ZHS", "ZH-CN", "简体", "简中", "Simplified"],
-    "sub_yue": _get_aliases("粤语") + ["CHT", "TC", "BIG5", "ZHT", "ZH-TW", "ZH-HK", "ZH-HANT", "繁体", "繁中", "Traditional"],
-    "sub_eng": _get_aliases("英语") + ["英字"],
-    "sub_jpn": _get_aliases("日语") + ["日字"],
-    "sub_kor": _get_aliases("韩语") + ["韩字"],
-}
+def _get_primary_lang_code(item: Dict[str, Any], aliases: List[str]) -> str:
+    """优先取 3 位语言代码作为内部识别 key；没有时退回 value。"""
+    for alias in aliases:
+        alias_lower = str(alias).lower().strip()
+        if len(alias_lower) == 3 and alias_lower.isalpha():
+            return alias_lower
 
-# ★ 自动将 utils.py 中其他的 20+ 种小语种(法语、德语、俄语等) 注册进底层识别库
-for item in utils.DEFAULT_LANGUAGE_MAPPING:
-    label = item["label"]
-    if label not in ["国语", "粤语", "英语", "日语", "韩语", "无语言"]:
-        aliases = item.get("aliases", [])
-        if aliases:
-            # 取 aliases 里的第一个作为 Emby 的 3 字母代码 (如 fre, ger, spa)
-            emby_code = aliases[0]
-            AUDIO_SUBTITLE_KEYWORD_MAP[emby_code] = aliases
-            AUDIO_SUBTITLE_KEYWORD_MAP[f"sub_{emby_code}"] = aliases
+    value = str(item.get('value') or '').lower().strip()
+    return value
 
-AUDIO_DISPLAY_MAP = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语', 'kor': '韩语'}
-SUB_DISPLAY_MAP = {'chi': '简体', 'yue': '繁体', 'eng': '英文', 'jpn': '日文', 'kor': '韩文'}
 
-# ★ 自动将 utils.py 中的小语种注册到 UI 展示映射表中
-for item in utils.DEFAULT_LANGUAGE_MAPPING:
-    label = item["label"]
-    if label not in ["国语", "粤语", "英语", "日语", "韩语", "无语言"]:
-        aliases = item.get("aliases", [])
-        if aliases:
-            emby_code = aliases[0] # 取第一个 3 字母代码，如 fre, ara
-            
-            # 音轨直接显示 label (如: 法语)
-            AUDIO_DISPLAY_MAP[emby_code] = label
-            
-            # 字幕习惯上把 "语" 换成 "文" (如: 法语 -> 法文)
-            sub_label = label
-            if sub_label.endswith("语"):
-                sub_label = sub_label[:-1] + "文"
-            SUB_DISPLAY_MAP[emby_code] = sub_label
+def _build_language_runtime_maps(
+    lang_mapping: Optional[List[Dict[str, Any]]] = None
+) -> Tuple[Dict[str, List[str]], Dict[str, str], Dict[str, str]]:
+    """
+    基于当前语言映射表构建运行时识别/展示映射。
+    所有 helpers 内部语言识别统一走这里，避免多处直接依赖 utils.DEFAULT_LANGUAGE_MAPPING。
+    """
+    lang_mapping = lang_mapping if lang_mapping is not None else _get_language_mapping()
+
+    keyword_map: Dict[str, List[str]] = {
+        # 音轨: chi=国语, yue=粤语 (继承基础词汇 + 补充音轨专属词汇)
+        "chi": _get_aliases("国语", lang_mapping) + ["国配", "公映", "台配", "京译", "上译", "央译"],
+        "yue": _get_aliases("粤语", lang_mapping) + ["粤配", "港配", "粤英双语"],
+        "eng": _get_aliases("英语", lang_mapping),
+        "jpn": _get_aliases("日语", lang_mapping),
+        "kor": _get_aliases("韩语", lang_mapping),
+
+        # 字幕: chi=简体, yue=繁体 (继承基础词汇 + 补充字幕专属词汇)
+        "sub_chi": _get_aliases("国语", lang_mapping) + ["CHS", "SC", "GB", "ZHS", "ZH-CN", "简体", "简中", "Simplified"],
+        "sub_yue": _get_aliases("粤语", lang_mapping) + ["CHT", "TC", "BIG5", "ZHT", "ZH-TW", "ZH-HK", "ZH-HANT", "繁体", "繁中", "Traditional"],
+        "sub_eng": _get_aliases("英语", lang_mapping) + ["英字"],
+        "sub_jpn": _get_aliases("日语", lang_mapping) + ["日字"],
+        "sub_kor": _get_aliases("韩语", lang_mapping) + ["韩字"],
+    }
+
+    audio_display_map: Dict[str, str] = {'chi': '国语', 'yue': '粤语', 'eng': '英语', 'jpn': '日语', 'kor': '韩语'}
+    sub_display_map: Dict[str, str] = {'chi': '简体', 'yue': '繁体', 'eng': '英文', 'jpn': '日文', 'kor': '韩文'}
+
+    for item in lang_mapping:
+        if not isinstance(item, dict):
+            continue
+
+        label = item.get("label")
+        if label in ["国语", "粤语", "英语", "日语", "韩语", "无语言"]:
+            continue
+
+        aliases = _normalize_language_aliases(item.get("aliases", []))
+        if not label or not aliases:
+            continue
+
+        emby_code = _get_primary_lang_code(item, aliases)
+        if not emby_code:
+            continue
+
+        # 自动将小语种注册进底层识别库。
+        keyword_map[emby_code] = aliases
+        keyword_map[f"sub_{emby_code}"] = aliases
+
+        # 音轨直接显示 label，例如“法语”。
+        audio_display_map[emby_code] = str(label)
+
+        # 字幕习惯上把“语”换成“文”，例如“法语” -> “法文”。
+        sub_label = str(label)
+        if sub_label.endswith("语"):
+            sub_label = sub_label[:-1] + "文"
+        sub_display_map[emby_code] = sub_label
+
+    return keyword_map, audio_display_map, sub_display_map
+
+
+# 兼容旧代码直接引用这些模块变量；helpers 内部运行时会重新读取用户配置。
+AUDIO_SUBTITLE_KEYWORD_MAP, AUDIO_DISPLAY_MAP, SUB_DISPLAY_MAP = _build_language_runtime_maps(utils.DEFAULT_LANGUAGE_MAPPING)
 
 RELEASE_GROUPS: Dict[str, List[str]] = {
     "0ff": ['FF(?:(?:A|WE)B|CD|E(?:DU|B)|TV)'],
@@ -340,10 +401,10 @@ def _get_resolution_tier(width: int, height: int) -> tuple[int, str]:
     
     return 0, "未知"
 
-def normalize_lang_code(lang_str: str) -> str:
+def normalize_lang_code(lang_str: str, lang_mapping: Optional[List[Dict[str, Any]]] = None) -> str:
     """
-    统一语言代码标准化 (动态映射版)：
-    读取用户配置的语言映射表，将各种奇葩的输入统一归一化为 3 位 ISO 代码。
+    统一语言代码标准化：
+    优先读取 language_mapping 用户配置，异常或为空时兜底 utils.DEFAULT_LANGUAGE_MAPPING。
     如果匹配不到，返回原字符串的小写。
     """
     if not lang_str:
@@ -351,44 +412,40 @@ def normalize_lang_code(lang_str: str) -> str:
 
     lang_str = str(lang_str).lower().strip()
 
-    # 1. 优先处理硬编码的常见中文别名
+    # 1. 优先处理硬编码的常见中文别名，保证历史 chi/yue 规则稳定。
     if lang_str in ['guo', 'guoyu', 'chs', 'zh-cn', 'zh-sg', 'zh-hans', 'cmn', 'mandarin', '国语', '普通话', '中文', '简体', '简中']:
         return 'chi'
     if lang_str in ['cht', 'zh-hk', 'zh-tw', 'hk', 'tw', 'cantonese', '粤语', '繁体', '繁中', '粤配', '粤英双语', '港配', '粤语配音', '广东话']:
         return 'yue'
 
-    # 2. 动态读取用户配置的语言映射表
-    from database import settings_db
-    import utils
-    lang_mapping = settings_db.get_setting('language_mapping')
-    if not lang_mapping:
-        lang_mapping = utils.DEFAULT_LANGUAGE_MAPPING
+    lang_mapping = lang_mapping if lang_mapping is not None else _get_language_mapping()
 
-    # 3. 遍历映射表进行匹配
+    # 2. 遍历映射表进行匹配。
     for item in lang_mapping:
-        val = (item.get('value') or '').lower() # 2位代码
-        aliases = item.get('aliases', [])       # 3位代码/别名
-        if isinstance(aliases, str):
-            aliases = [a.strip().lower() for a in aliases.split(',')]
-        else:
-            aliases = [str(a).lower() for a in aliases]
+        if not isinstance(item, dict):
+            continue
 
-        # 如果匹配到了 2位代码、3位别名，或者是中文标签本身
-        if lang_str == val or lang_str in aliases or lang_str == item.get('label', '').lower():
-            # 优先返回 3 位代码 (从别名里找长度为 3 的)
-            three_letter_aliases = [a for a in aliases if len(a) == 3]
+        val = str(item.get('value') or '').lower().strip()  # 2位代码
+        label = str(item.get('label') or '').lower().strip()
+        aliases = [alias.lower() for alias in _normalize_language_aliases(item.get('aliases', []))]
+
+        # 如果匹配到了 2位代码、3位别名，或者是中文标签本身。
+        if lang_str == val or lang_str in aliases or lang_str == label:
+            # 优先返回 3 位代码。
+            three_letter_aliases = [alias for alias in aliases if len(alias) == 3 and alias.isalpha()]
             if three_letter_aliases:
                 return three_letter_aliases[0]
-            # 如果没有 3 位代码，返回 2 位代码
             if val:
                 return val
 
-    # 兜底：如果都没匹配上，返回原字符串
+    # 兜底：如果都没匹配上，返回原字符串。
     return lang_str
 
 def _get_detected_languages_from_streams(
     media_streams: List[dict],
-    stream_type: str
+    stream_type: str,
+    lang_mapping: Optional[List[Dict[str, Any]]] = None,
+    keyword_map: Optional[Dict[str, List[str]]] = None
 ) -> set:
     """
     返回统一规则代码：
@@ -396,6 +453,9 @@ def _get_detected_languages_from_streams(
     字幕：chi(简体)/yue(繁体)/eng/jpn/kor
     """
     detected_langs = set()
+    lang_mapping = lang_mapping if lang_mapping is not None else _get_language_mapping()
+    if keyword_map is None:
+        keyword_map, _, _ = _build_language_runtime_maps(lang_mapping)
 
     for stream in media_streams:
         if stream.get('Type') != stream_type:
@@ -409,7 +469,7 @@ def _get_detected_languages_from_streams(
         title_string = f"{raw_title} {raw_display}".lower().strip()
 
         if title_string:
-            for lang_key, keywords in AUDIO_SUBTITLE_KEYWORD_MAP.items():
+            for lang_key, keywords in keyword_map.items():
                 normalized_lang_key = lang_key.replace('sub_', '')
                 for keyword in keywords:
                     kw_lower = keyword.lower()
@@ -429,7 +489,7 @@ def _get_detected_languages_from_streams(
         # 2. 再看 Language 字段
         lang_code = str(stream.get('Language', '')).lower().strip()
         if lang_code:
-            norm_lang = normalize_lang_code(lang_code)
+            norm_lang = normalize_lang_code(lang_code, lang_mapping=lang_mapping)
             if norm_lang:
                 stream_langs.add(norm_lang)
 
@@ -450,6 +510,8 @@ def analyze_media_asset(item_details: dict) -> dict:
         return {}
 
     media_streams = item_details.get('MediaStreams', [])
+    lang_mapping = _get_language_mapping()
+    keyword_map, audio_display_map, sub_display_map = _build_language_runtime_maps(lang_mapping)
     file_path = item_details.get('Path', '')
     file_name = os.path.basename(file_path) if file_path else ""
     file_name_lower = file_name.lower()
@@ -501,8 +563,8 @@ def analyze_media_asset(item_details: dict) -> dict:
                 break
 
     # 恢复语言标签提取 (保证洗版和筛选规则正常工作)
-    detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio')
-    audio_str = ', '.join(sorted([AUDIO_DISPLAY_MAP.get(lang, lang) for lang in detected_audio_langs]))
+    detected_audio_langs = _get_detected_languages_from_streams(media_streams, 'Audio', lang_mapping=lang_mapping, keyword_map=keyword_map)
+    audio_str = ', '.join(sorted([audio_display_map.get(lang, lang) for lang in detected_audio_langs]))
     
     # ★★★ 增强音频 (Audio) 的文件名兜底 ★★★
     # 如果 Emby 没分析出音轨语言，尝试从文件名提取常见音频格式作为展示
@@ -523,11 +585,11 @@ def analyze_media_asset(item_details: dict) -> dict:
             audio_str = '无' 
 
     # 提取字幕语言
-    detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle')
+    detected_sub_langs = _get_detected_languages_from_streams(media_streams, 'Subtitle', lang_mapping=lang_mapping, keyword_map=keyword_map)
     if 'chi' not in detected_sub_langs and 'yue' not in detected_sub_langs and any(
         s.get('IsExternal') for s in media_streams if s.get('Type') == 'Subtitle'):
         detected_sub_langs.add('chi')
-    subtitle_str = ', '.join(sorted([SUB_DISPLAY_MAP.get(lang, lang) for lang in detected_sub_langs])) or '无'
+    subtitle_str = ', '.join(sorted([sub_display_map.get(lang, lang) for lang in detected_sub_langs])) or '无'
 
     release_group_list = _extract_exclusion_keywords_from_filename(file_name)
 
