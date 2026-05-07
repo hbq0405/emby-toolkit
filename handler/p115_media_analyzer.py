@@ -398,35 +398,6 @@ class P115MediaAnalyzerMixin:
 
         features = []
 
-        # 地区/版本标记兜底：这些不是语言，不能把 spa/por 误判成 lat。
-        # 例如 Netflix 常见的 title="Latin American" + language="spa"，
-        # 应显示为“西班牙语（拉美）”，而不是“拉丁语”。
-        normalized_source = re.sub(r"[\.\-_+/|\\\[\]\(\)【】（）]+", " ", source_text.lower())
-        normalized_source = re.sub(r"\s+", " ", normalized_source).strip()
-
-        regional_feature_patterns = [
-            ("拉美", [
-                r"(?<![a-z0-9])latin\s+american(?![a-z0-9])",
-                r"(?<![a-z0-9])latin\s+america(?![a-z0-9])",
-                r"(?<![a-z0-9])latam(?![a-z0-9])",
-                r"(?<![a-z0-9])latinoamerica(?:n|no|na)?(?![a-z0-9])",
-                r"拉美",
-                r"拉丁美洲",
-            ]),
-            ("巴西", [
-                r"(?<![a-z0-9])brazilian(?![a-z0-9])",
-                r"(?<![a-z0-9])brazil(?![a-z0-9])",
-                r"(?<![a-z0-9])brasil(?:eiro|eira)?(?![a-z0-9])",
-                r"巴西",
-            ]),
-        ]
-
-        for label, patterns in regional_feature_patterns:
-            for pattern in patterns:
-                if re.search(pattern, normalized_source, flags=re.IGNORECASE):
-                    features.append(label)
-                    break
-
         for item in feature_map:
             allowed_types = item.get("types") or ["Audio", "Subtitle"]
             if stream_type not in allowed_types:
@@ -660,47 +631,53 @@ class P115MediaAnalyzerMixin:
 
             return False
 
-        def _title_is_only_region_or_stream_feature(text):
+        def _strip_non_language_feature_text(text, detected_features):
             """
-            判断 Title 是否只是地区/版本词，而不是语言名。
+            语言识别前先剥离“非语言特色词”。
 
-            常见例子：
-            - Latin American / Latin America / LATAM：表示拉美西语或拉美葡语，
-              不能把语言改成 lat(拉丁语)。
-            - Brazilian：表示巴西葡语，语言仍应跟随 raw_lang=por。
-            - Forced / SDH / Dubtitle：也是字幕特征，不应该覆盖 raw_lang。
+            典型例子：
+            - language=spa + title=Latin American
+              Latin American 是地区标签“拉美”，不能让 latin 抢走语言识别，
+              正确结果应为：西班牙语（拉美）。
+            - language=por + title=Brazilian
+              Brazilian 是地区标签“巴西”，语言仍应来自 por。
             """
-            t = _normalize_marker_text(text)
-            if not t:
-                return False
+            text = str(text or "")
+            if not text or not detected_features:
+                return text
 
-            region_or_feature_patterns = [
-                r"(?<![a-z0-9])latin\s+american(?![a-z0-9])",
-                r"(?<![a-z0-9])latin\s+america(?![a-z0-9])",
-                r"(?<![a-z0-9])latam(?![a-z0-9])",
-                r"(?<![a-z0-9])latinoamerica(?:n|no|na)?(?![a-z0-9])",
-                r"拉美",
-                r"拉丁美洲",
-                r"(?<![a-z0-9])brazilian(?![a-z0-9])",
-                r"(?<![a-z0-9])brazil(?![a-z0-9])",
-                r"(?<![a-z0-9])brasil(?:eiro|eira)?(?![a-z0-9])",
-                r"巴西",
-                r"(?<![a-z0-9])forced(?![a-z0-9])",
-                r"(?<![a-z0-9])sdh(?![a-z0-9])",
-                r"(?<![a-z0-9])cc(?![a-z0-9])",
-                r"(?<![a-z0-9])dubtitle(?![a-z0-9])",
-                r"(?<![a-z0-9])subtitle(?:s)?(?![a-z0-9])",
-                r"强制",
-                r"听障",
-            ]
+            # 不剥离“国语 / 原声”这类可能承载语言身份的标签；
+            # 只剥离纯版本/地区/字幕属性，避免污染语言识别。
+            non_language_feature_labels = {
+                "上译", "公映", "长译", "京译", "八一", "央视",
+                "台配", "台湾", "香港",
+                "特效", "HDR", "SDR", "DoVi",
+                "拉美", "巴西", "听障", "导评",
+            }
+            active_features = set(detected_features) & non_language_feature_labels
+            if not active_features:
+                return text
 
-            cleaned = t
-            for pattern in region_or_feature_patterns:
-                cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
+            feature_map = (
+                getattr(self, "stream_feature_map", None)
+                or utils.DEFAULT_STREAM_FEATURE_MAPPING
+            )
 
+            cleaned = text
+            for item in feature_map:
+                label = item.get("label")
+                if label not in active_features:
+                    continue
+                patterns = item.get("patterns") or item.get("aliases") or []
+                for pattern in patterns:
+                    try:
+                        cleaned = re.sub(pattern, " ", cleaned, flags=re.IGNORECASE)
+                    except re.error:
+                        logger.warning(f"  ➜ 无效的流标签匹配规则: {pattern}")
+
+            cleaned = re.sub(r"[|/]+", " ", cleaned)
             cleaned = re.sub(r"\s+", " ", cleaned).strip()
-            return not cleaned
-
+            return cleaned
         def _lookup_base_label(norm_lang):
             if not norm_lang:
                 return ""
@@ -734,8 +711,16 @@ class P115MediaAnalyzerMixin:
         # 1. 判断 Title 是否包含明确语言信息
         #    注意：这里必须用 _has_lang_marker，不能裸 in，否则 Deutsch 会命中 sc。
         # =========================================================
-        title_clean = _normalize_marker_text(raw_title)
-        title_only_region_or_feature = _title_is_only_region_or_stream_feature(raw_title)
+        # 先提取一次非语言特色标签，并把这些标签从语言识别文本里剥离。
+        # 例如 Latin American / Brazilian 应作为“拉美 / 巴西”特色标签，
+        # 不应把 raw_lang=spa/por 误判成 lat。
+        pre_stream_features = self._extract_stream_features(
+            stream_type,
+            raw_title,
+            raw_display_title
+        )
+        title_for_lang_detect = _strip_non_language_feature_text(raw_title, pre_stream_features)
+        title_clean = _normalize_marker_text(title_for_lang_detect)
 
         title_has_lang = _has_lang_marker(title_clean, [
             "chs", "sc", "gb", "zh cn", "zh hans", "简中", "简体", "簡體", "简英", "简日", "简韩",
@@ -752,23 +737,14 @@ class P115MediaAnalyzerMixin:
                     title_has_lang = True
                     break
 
-        # 如果 Title 只是 Latin American / LATAM / Brazilian / Forced / SDH 这类
-        # 地区或字幕特征，绝不能让它覆盖 ffprobe 的 raw language。
-        # 否则 language=spa + title=Latin American 会被误判成 lat(拉丁语)。
-        if title_only_region_or_feature and raw_lang:
-            title_has_lang = False
-
         if title_has_lang:
             lang_lower_for_detect = ""
-            norm_lang = helpers.normalize_lang_code(raw_title)
+            norm_lang = helpers.normalize_lang_code(title_for_lang_detect)
         else:
             lang_lower_for_detect = lang_lower
             norm_lang = helpers.normalize_lang_code(raw_lang)
 
-        # 语言检测文本也要去掉纯地区/特征 Title，避免后续 AUDIO_SUBTITLE_KEYWORD_MAP
-        # 再次把 Latin American 命中成 lat。
-        detect_title_lower = "" if (title_only_region_or_feature and raw_lang) else title_lower
-        combined_text = f"{detect_title_lower} {lang_lower_for_detect}".strip()
+        combined_text = f"{title_for_lang_detect.lower()} {lang_lower_for_detect}".strip()
         clean_text = _normalize_marker_text(combined_text)
 
         display_lang = ""
@@ -903,12 +879,14 @@ class P115MediaAnalyzerMixin:
         # =========================================================
         # 5. 提取非语言特征：DYSY / TX / SDH / 拉美 / 巴西 / 导评
         # =========================================================
-        stream_features = self._extract_stream_features(
-            stream_type,
-            raw_title,
-            raw_display_title,
-            raw_lang
-        )
+        stream_features = list(dict.fromkeys(
+            pre_stream_features + self._extract_stream_features(
+                stream_type,
+                raw_title,
+                raw_display_title,
+                raw_lang
+            )
+        ))
 
         # IsHearingImpaired 也强制视为 SDH
         if stream_type == "Subtitle" and is_hearing_impaired is True:
@@ -1449,7 +1427,7 @@ class P115MediaAnalyzerMixin:
                 raw_lang = tags.get("language")
                 raw_title = tags.get("title")
                 raw_display_title = tags.get("DisplayTitle")
-                is_hearing_impaired = bool(disposition.get("hearing_impaired")) or bool(tags.get("IsHearingImpaired", False))
+                is_hearing_impaired = tags.get("IsHearingImpaired", False)
                 
                 # ★ 调用新的智能解析方法
                 lang, display_lang, title = self._get_friendly_display_info(raw_lang, raw_title, "Subtitle", raw_display_title, is_hearing_impaired)
@@ -1483,7 +1461,7 @@ class P115MediaAnalyzerMixin:
                     "AttachmentSize": 0,
                     "DisplayLanguage": display_lang, # ★ 完美的 UI 语言 (如: 简中)
                     "ExtendedVideoType": "None",
-                    "IsHearingImpaired": bool(is_hearing_impaired),
+                    "IsHearingImpaired": False,
                     "ExtendedVideoSubType": "None",
                     "IsTextSubtitleStream": is_text_sub,
                     "SubtitleLocationType": "InternalStream",
