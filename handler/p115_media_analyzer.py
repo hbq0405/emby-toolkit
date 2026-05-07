@@ -1321,7 +1321,8 @@ class P115MediaAnalyzerMixin:
                 "audio_lang": "",
                 "subtitle_lang": "",
                 "audio_priority_order": ["param", "feature"],
-                "audio_features": ["公映", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"],
+                # 导评 / 评论轨默认不参与默认音轨竞争，除非用户在音轨特色优先级里明确加入。
+                "audio_features": ["公映", "上译", "京译", "长译", "八一", "台配", "粤语"],
                 "audio_param_priority": ["atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra", "ddp", "dts", "flac", "ac3", "aac", "7_1", "5_1", "2_0"],
                 "sub_priority": ["effect", "chs", "cht", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor"]
             }
@@ -1339,6 +1340,42 @@ class P115MediaAnalyzerMixin:
                     audio_priority_order.append(priority_id)
 
             audio_features_config = stream_config.get("audio_features", [])
+            if not isinstance(audio_features_config, list):
+                audio_features_config = []
+
+            commentary_feature_patterns = [
+                r"导评",
+                r"评论",
+                r"解说",
+                r"audio\s*commentary",
+                r"director\s*commentary",
+                r"commentary",
+                r"comment(?:s|ary)?",
+            ]
+
+            def _is_commentary_feature_text(text):
+                text = str(text or "").strip().lower()
+                if not text:
+                    return False
+                return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in commentary_feature_patterns)
+
+            # 旧版本默认配置里曾内置“评论/导评”，这不算用户明确配置，避免历史默认值继续误伤。
+            legacy_default_audio_features = ["公映", "上译", "京译", "长译", "八一", "台配", "粤语", "评论", "导评"]
+            normalized_audio_features_config = [str(kw or "").strip() for kw in audio_features_config]
+            is_legacy_default_commentary_priority = normalized_audio_features_config == legacy_default_audio_features
+
+            # 只有用户明确把“导评/评论/commentary”放进特色优先级，导评轨才有资格参与默认音轨竞争。
+            commentary_priority_enabled = bool(stream_config.get("audio_commentary_priority_enabled")) or (
+                not is_legacy_default_commentary_priority
+                and any(_is_commentary_feature_text(kw) for kw in audio_features_config)
+            )
+
+            if not commentary_priority_enabled:
+                audio_features_config = [
+                    kw for kw in audio_features_config
+                    if not _is_commentary_feature_text(kw)
+                ]
+
             audio_param_priority = stream_config.get("audio_param_priority", [
                 "atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra",
                 "ddp", "dts", "flac", "ac3", "aac", "7_1", "5_1", "2_0"
@@ -1354,13 +1391,6 @@ class P115MediaAnalyzerMixin:
             # 1. 决出默认音轨 (真太子)
             # -----------------------------------------
             if audio_streams:
-                candidates = audio_streams
-
-                if audio_pref_code:
-                    lang_matched = [s for s in candidates if s.get("Language") == audio_pref_code]
-                    if lang_matched:
-                        candidates = lang_matched
-
                 def _audio_match_text(audio):
                     return " ".join([
                         str(audio.get("Title", "")),
@@ -1370,6 +1400,22 @@ class P115MediaAnalyzerMixin:
                         str(audio.get("ChannelLayout", "")),
                         str(audio.get("DisplayLanguage", "")),
                     ]).lower()
+
+                def _is_commentary_audio(audio):
+                    return _is_commentary_feature_text(_audio_match_text(audio))
+
+                candidates = audio_streams
+
+                # 导评/评论轨默认直接踢出候选池，避免靠原始默认、码率、声道或特色词误当主音轨。
+                if not commentary_priority_enabled:
+                    non_commentary_candidates = [s for s in candidates if not _is_commentary_audio(s)]
+                    if non_commentary_candidates:
+                        candidates = non_commentary_candidates
+
+                if audio_pref_code:
+                    lang_matched = [s for s in candidates if s.get("Language") == audio_pref_code]
+                    if lang_matched:
+                        candidates = lang_matched
 
                 def _audio_matches_param(audio, param_id):
                     text = _audio_match_text(audio)
@@ -1497,17 +1543,27 @@ class P115MediaAnalyzerMixin:
                 # 提取真太子音轨命中的特征词
                 active_audio_features = []
                 for kw in audio_features_config:
-                    if kw.lower() in audio_title_lower:
-                        active_audio_features.append(kw.lower())
+                    kw_text = str(kw or "").strip().lower()
+                    if not kw_text:
+                        continue
+                    if not commentary_priority_enabled and _is_commentary_feature_text(kw_text):
+                        continue
+                    if kw_text in audio_title_lower:
+                        active_audio_features.append(kw_text)
 
                 # ★ 新增：动态提取音轨中的中文特征词（解决“中译公映”无法匹配的问题）
                 if default_audio:
                     # 剔除常见无意义词汇，提取独特的中文描述
                     clean_audio_title = re.sub(r"(默认|特效|双语|简英|繁英|简体|繁体|中英|声道|音轨)", "", audio_title)
+                    if not commentary_priority_enabled:
+                        clean_audio_title = re.sub(r"(导评|评论|解说)", "", clean_audio_title)
                     chinese_chunks = re.findall(r'[\u4e00-\u9fa5]{2,}', clean_audio_title)
                     for chunk in chinese_chunks:
-                        if chunk.lower() not in active_audio_features:
-                            active_audio_features.append(chunk.lower())
+                        chunk_text = chunk.lower()
+                        if not commentary_priority_enabled and _is_commentary_feature_text(chunk_text):
+                            continue
+                        if chunk_text not in active_audio_features:
+                            active_audio_features.append(chunk_text)
 
                 # ★ 核心打分函数
                 # 关键原则：subtitle_lang 是“语言大方向”，effect 只是“字幕特征”。
