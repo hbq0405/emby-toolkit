@@ -985,6 +985,38 @@ class P115CacheManager:
             logger.error(f"  ➜ 清理 115 文件缓存失败: {e}")
 
     @staticmethod
+    def _sanitize_raw_ffprobe_for_cache(raw_ffprobe_json):
+        """移除 raw_ffprobe_json 中不适合共享的临时/账号相关信息。"""
+        if not raw_ffprobe_json:
+            return raw_ffprobe_json
+
+        try:
+            if isinstance(raw_ffprobe_json, str):
+                raw_ffprobe_json = json.loads(raw_ffprobe_json)
+        except Exception:
+            return raw_ffprobe_json
+
+        if not isinstance(raw_ffprobe_json, dict):
+            return raw_ffprobe_json
+
+        fmt = raw_ffprobe_json.get("format")
+        if isinstance(fmt, dict):
+            fmt.pop("filename", None)
+
+        ctx = raw_ffprobe_json.get("_etk")
+        if isinstance(ctx, dict):
+            # 只保留跨账号、长期稳定的共享字段。
+            allowed = {"tmdb_id", "type", "original_language", "sha1"}
+            raw_ffprobe_json["_etk"] = {
+                k: v for k, v in ctx.items()
+                if k in allowed and v not in [None, "", [], {}]
+            }
+            if not raw_ffprobe_json["_etk"]:
+                raw_ffprobe_json.pop("_etk", None)
+
+        return raw_ffprobe_json
+
+    @staticmethod
     def save_mediainfo_cache(sha1, mediainfo_json, raw_ffprobe_json=None):
         """写入本地 p115_mediainfo_cache，结构保持 Emby MediaSourceInfo 标准格式"""
         if not sha1 or not mediainfo_json:
@@ -994,6 +1026,7 @@ class P115CacheManager:
             from psycopg2.extras import Json
 
             sha1 = str(sha1).upper()
+            raw_ffprobe_json = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_ffprobe_json)
 
             with get_db_connection() as conn:
                 with conn.cursor() as cursor:
@@ -2352,13 +2385,26 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             for sub_item in sub_items:
                 sub_name = sub_item.get('fn') or sub_item.get('n') or sub_item.get('file_name')
                 sub_id = sub_item.get('fid') or sub_item.get('file_id')
+                sub_fc_val = sub_item.get('fc') if sub_item.get('fc') is not None else sub_item.get('type')
                 
-                # 1. 优先看子项自己有没有带 ID
+                # 1. 优先看子项自己有没有带 ID / raw_ffprobe 共享身份
+                sub_sha1 = sub_item.get('sha1') or sub_item.get('sha')
+                if not sub_sha1 and sub_id and str(sub_fc_val) == '1':
+                    try:
+                        info_res = self.client.fs_get_info(sub_id)
+                        if info_res.get('state') and info_res.get('data'):
+                            sub_sha1 = info_res['data'].get('sha1')
+                            if sub_sha1:
+                                sub_item['sha1'] = sub_sha1
+                    except Exception:
+                        pass
+
                 tmdb_id, sub_type, sub_title = _identify_media_enhanced(
                     sub_name, 
                     ai_translator=self.ai_translator, 
                     use_ai=self.use_ai,
-                    is_folder=(str(sub_item.get('fc')) == '0') 
+                    is_folder=(str(sub_fc_val) == '0'),
+                    sha1=sub_sha1
                 )
                 
                 # 2. 模糊匹配 (仅当有官方合集列表时)
@@ -3997,7 +4043,61 @@ def _parse_115_size(size_val):
         pass
     return 0
 
-def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=False, forced_media_type=None, ai_translator=None, use_ai=False, is_folder=False):
+def _extract_raw_ffprobe_identity(raw_ffprobe_json):
+    """从 p115_mediainfo_cache.raw_ffprobe_json 顶层 _etk 提取可复用媒体身份。"""
+    if not raw_ffprobe_json:
+        return None
+
+    try:
+        if isinstance(raw_ffprobe_json, str):
+            raw_ffprobe_json = json.loads(raw_ffprobe_json)
+    except Exception:
+        return None
+
+    if not isinstance(raw_ffprobe_json, dict):
+        return None
+
+    ctx = raw_ffprobe_json.get("_etk")
+    if not isinstance(ctx, dict):
+        return None
+
+    tmdb_id = ctx.get("tmdb_id") or ctx.get("tmdbid") or ctx.get("tmdb")
+    media_type = ctx.get("type") or ctx.get("media_type") or ctx.get("item_type")
+    original_language = ctx.get("original_language")
+    sha1 = ctx.get("sha1")
+
+    if not tmdb_id or not media_type:
+        return None
+
+    media_type_text = str(media_type).strip().lower()
+    if media_type_text in ["movie", "movies", "film", "电影"]:
+        normalized_type = "movie"
+    elif media_type_text in ["tv", "series", "season", "episode", "电视剧", "剧集", "季", "集", "分集"]:
+        normalized_type = "tv"
+    else:
+        return None
+
+    identity = {
+        "tmdb_id": str(tmdb_id).strip(),
+        "media_type": normalized_type,
+        "original_language": str(original_language).strip() if original_language not in [None, ""] else None,
+        "sha1": str(sha1).strip().upper() if sha1 not in [None, ""] else None,
+    }
+    return {k: v for k, v in identity.items() if v not in [None, "", [], {}]}
+
+
+def _get_raw_ffprobe_identity_by_sha1(sha1):
+    """按 SHA1 从 p115_mediainfo_cache 读取 raw_ffprobe_json 的 ETK 身份信息。"""
+    if not sha1:
+        return None
+    try:
+        raw_probe = P115CacheManager.get_raw_ffprobe_cache(str(sha1).upper())
+        return _extract_raw_ffprobe_identity(raw_probe)
+    except Exception:
+        return None
+
+
+def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=False, forced_media_type=None, ai_translator=None, use_ai=False, is_folder=False, sha1=None, raw_ffprobe_json=None):
     """
     【绝对正确版】识别逻辑：
     1. 先定类型：综合主目录、子目录特征、文件名，判断是 Movie 还是 TV。
@@ -4036,6 +4136,34 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
         except Exception:
             pass
         return None
+
+    # =================================================================
+    # ★ 优先级 0：共享媒体信息缓存身份命中
+    # raw_ffprobe_json 顶层 _etk 来自 p115_mediainfo_cache，跨账号仍可复用。
+    # =================================================================
+    probe_identity = _extract_raw_ffprobe_identity(raw_ffprobe_json)
+    if not probe_identity and sha1:
+        probe_identity = _get_raw_ffprobe_identity_by_sha1(sha1)
+
+    if probe_identity:
+        tmdb_id = probe_identity.get("tmdb_id")
+        probe_type = probe_identity.get("media_type")
+
+        # forced_media_type 仍然拥有最终约束权，但不允许与缓存类型冲突时静默误判。
+        if forced_media_type and forced_media_type != probe_type:
+            logger.debug(
+                f"  ➜ [raw_ffprobe识别] 命中 TMDb:{tmdb_id} 类型:{probe_type}，"
+                f"但当前强制类型为 {forced_media_type}，跳过缓存身份。"
+            )
+        else:
+            media_type = probe_type
+            official_title = _fetch_title_by_id(tmdb_id, media_type)
+            logger.info(
+                f"  ➜ [raw_ffprobe识别] 命中共享媒体信息缓存: "
+                f"TMDb:{tmdb_id}, type:{media_type}"
+                f"{', lang:' + probe_identity.get('original_language') if probe_identity.get('original_language') else ''}"
+            )
+            return tmdb_id, media_type, official_title or filename
 
     # =================================================================
     # ★ 第二步：按优先级提取信息并定向查询

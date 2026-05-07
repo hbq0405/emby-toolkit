@@ -135,7 +135,7 @@ class P115MediaAnalyzerMixin:
 
         return info_dict
 
-    def _probe_mediainfo_with_ffprobe(self, file_node, sha1=None, silent_log=False):
+    def _probe_mediainfo_with_ffprobe(self, file_node, sha1=None, silent_log=False, metadata_context=None):
         """
         最终兜底：通过 115 直链调用容器内 ffprobe。
         返回 Emby MediaSourceInfo 标准兼容结构，可直接写入 p115_mediainfo_cache。
@@ -241,6 +241,13 @@ class P115MediaAnalyzerMixin:
                 return None
 
             probe_data = json.loads(proc.stdout or "{}")
+            probe_data = self._inject_etk_probe_context(
+                probe_data,
+                file_node=file_node,
+                metadata_context=metadata_context,
+                sha1=sha1
+            )
+
             emby_json = self._build_emby_mediainfo_from_ffprobe(
                 probe_data,
                 file_node,
@@ -290,6 +297,90 @@ class P115MediaAnalyzerMixin:
             return int(float(value))
         except Exception:
             return default
+
+    def _inject_etk_probe_context(self, probe_data, file_node=None, metadata_context=None, sha1=None):
+        """
+        给 raw ffprobe JSON 注入可共享的 ETK 识别上下文，并移除过期直链。
+
+        只保留稳定、跨账号仍有价值的信息：
+        - tmdb_id
+        - type: movie / tv
+        - original_language
+        - sha1
+        """
+        if not isinstance(probe_data, dict):
+            return probe_data
+
+        # ffprobe 的 format.filename 是 115cdn 临时签名直链，过期即废，且不适合分享缓存。
+        fmt = probe_data.get("format")
+        if isinstance(fmt, dict):
+            fmt.pop("filename", None)
+
+        metadata_context = metadata_context if isinstance(metadata_context, dict) else {}
+
+        def _read(source, *keys):
+            if not source:
+                return None
+
+            for key in keys:
+                if isinstance(source, dict):
+                    if key in source and source.get(key) not in [None, "", [], {}]:
+                        return source.get(key)
+
+                    provider_ids = source.get("ProviderIds") or source.get("provider_ids")
+                    if isinstance(provider_ids, dict) and key.lower() in ["tmdb", "tmdb_id", "tmdbid"]:
+                        val = provider_ids.get("Tmdb") or provider_ids.get("TMDb") or provider_ids.get("tmdb")
+                        if val not in [None, "", [], {}]:
+                            return val
+                else:
+                    val = getattr(source, key, None)
+                    if val not in [None, "", [], {}]:
+                        return val
+
+            return None
+
+        def _first(*keys):
+            # 可信度：调用方/TMDb上下文 > 当前 SmartOrganizer 属性 > file_node。
+            for source in (
+                metadata_context,
+                {
+                    "tmdb_id": getattr(self, "tmdb_id", None),
+                    "media_type": getattr(self, "media_type", None),
+                    "original_language": (getattr(self, "raw_metadata", {}) or {}).get("lang_code"),
+                },
+                file_node,
+            ):
+                val = _read(source, *keys)
+                if val not in [None, "", [], {}]:
+                    return val
+            return None
+
+        tmdb_id = _first("tmdb_id", "tmdbid", "tmdbId", "TMDbId", "tmdb")
+        media_type = _first("media_type", "item_type", "type", "Type")
+        original_language = _first("original_language", "original_lang", "originalLanguage", "OriginalLanguage")
+
+        type_text = str(media_type or "").strip().lower()
+        if type_text in ["movie", "movies", "film", "电影"]:
+            normalized_type = "movie"
+        elif type_text in ["tv", "series", "season", "episode", "电视剧", "剧集", "季", "集", "分集"]:
+            normalized_type = "tv"
+        else:
+            normalized_type = ""
+
+        etk_context = {
+            "tmdb_id": str(tmdb_id).strip() if tmdb_id not in [None, ""] else None,
+            "type": normalized_type or None,
+            "original_language": str(original_language).strip() if original_language not in [None, ""] else None,
+            "sha1": str(sha1).strip().upper() if sha1 else None,
+        }
+        etk_context = {k: v for k, v in etk_context.items() if v not in [None, "", [], {}]}
+
+        if etk_context:
+            old_context = probe_data.get("_etk") if isinstance(probe_data.get("_etk"), dict) else {}
+            old_context.update(etk_context)
+            probe_data["_etk"] = old_context
+
+        return probe_data
 
     def _extract_stream_features(self, stream_type, *texts):
         """
@@ -1794,7 +1885,7 @@ class P115MediaAnalyzerMixin:
         # 2. 本地 DB 没有，最后才 ffprobe。彻底移除中心服务器路径，保留 ETK 格式化结果。
         if not raw_json and file_node:
             raw_json, raw_ffprobe = self._probe_mediainfo_with_ffprobe(
-                file_node, sha1=sha1, silent_log=silent_log
+                file_node, sha1=sha1, silent_log=silent_log, metadata_context=guessed_info
             ) or (None, None)
 
             if raw_json:
