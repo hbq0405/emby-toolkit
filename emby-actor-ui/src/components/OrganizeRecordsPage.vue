@@ -1,8 +1,8 @@
 <!-- src/components/OrganizeRecordsPage.vue -->
 <template>
-  <n-layout content-style="padding: 24px;">
+  <n-layout class="records-page" :content-style="layoutContentStyle">
     <!-- 顶部统计仪表盘 (占满整行，大气！) -->
-    <n-grid :x-gap="16" :y-gap="16" cols="1 s:2 m:6" responsive="screen" style="margin-bottom: 24px;">
+    <n-grid class="stat-grid" :x-gap="isMobile ? 8 : 16" :y-gap="isMobile ? 8 : 16" cols="2 s:2 m:6" responsive="screen">
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="总处理记录"><template #prefix><n-icon :component="LayersIcon" color="#2080f0" /></template>{{ stats.total || 0 }}</n-statistic></n-card></n-gi>
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="识别成功"><template #prefix><n-icon :component="CheckmarkCircleIcon" color="#18a058" /></template>{{ stats.success || 0 }}</n-statistic></n-card></n-gi>
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="未识别 / 异常"><template #prefix><n-icon :component="HelpCircleIcon" color="#f0a020" /></template>{{ stats.unrecognized || 0 }}</n-statistic></n-card></n-gi>
@@ -17,7 +17,7 @@
         <n-text strong style="font-size: 16px;">历史整理记录</n-text>
       </template>
       <template #header-extra>
-        <n-space>
+        <n-space class="header-actions" :size="isMobile ? 6 : 8">
           <n-button type="warning" size="small" strong @click="handleEmptyUnrecognized" :loading="emptyingUnrecognized">
             <template #icon><n-icon :component="TrashIcon" /></template>
             清空未识别
@@ -30,16 +30,16 @@
       </template>
 
       <!-- 搜索与过滤工具栏 -->
-      <n-space style="margin-bottom: 20px;" align="center" justify="space-between">
-        <n-space>
-          <n-input v-model:value="searchQuery" placeholder="搜索原文件名、新文件名..." clearable @keyup.enter="handleFilter" @clear="handleFilter" style="width: 300px;">
+      <div class="records-toolbar">
+        <n-space class="toolbar-left">
+          <n-input class="toolbar-search" v-model:value="searchQuery" placeholder="搜索原文件名、新文件名..." clearable @keyup.enter="handleFilter" @clear="handleFilter">
             <template #prefix><n-icon :component="SearchIcon" /></template>
           </n-input>
-          <n-select v-model:value="statusFilter" :options="statusOptions" style="width: 140px;" @update:value="handleFilter" />
-          <n-select v-model:value="categoryFilter" :options="categoryOptions" placeholder="所有分类" clearable style="width: 160px;" @update:value="handleFilter" />
+          <n-select class="toolbar-status-select" v-model:value="statusFilter" :options="statusOptions" @update:value="handleFilter" />
+          <n-select class="toolbar-category-select" v-model:value="categoryFilter" :options="categoryOptions" placeholder="所有分类" clearable @update:value="handleFilter" />
         </n-space>
         
-        <n-space>
+        <n-space class="toolbar-right">
           <n-button type="primary" :disabled="!realSelectedIds.length" @click="openBatchEditModal">
             <template #icon><n-icon :component="SparklesIcon" /></template>
             批量重组 ({{ realSelectedIds.length }})
@@ -53,14 +53,17 @@
             刷新
           </n-button>
         </n-space>
-      </n-space>
+      </div>
 
       <!-- 数据表格 -->
       <n-data-table
+        class="records-table"
         :columns="columns"
         :data="processedTableData"
         :loading="loading"
-        :pagination="paginationReactive" 
+        :pagination="paginationReactive"
+        :scroll-x="isMobile ? undefined : 1100"
+        :single-line="false" 
         :bordered="false"
         v-model:checked-row-keys="checkedRowKeys"
         striped
@@ -71,7 +74,7 @@
     </n-card>
 
     <!-- 手动整理 / 纠错模态框 -->
-    <n-modal v-model:show="showEditModal" preset="card" style="width: 500px;" title="手动整理 / 纠错" :bordered="false">
+    <n-modal v-model:show="showEditModal" preset="card" :style="modalStyle" title="手动整理 / 纠错" :bordered="false">
       <template #header-extra>
         <n-tag :type="editForm.status === 'success' ? 'info' : 'warning'" size="small">
           {{ editForm.ids.length > 1 ? '批量重组' : (editForm.status === 'success' ? '纠正信息' : '手动识别') }}
@@ -82,7 +85,7 @@
         更改此项将触发 115 网盘和本地 STRM 的物理移动与重命名。
       </n-alert>
       
-      <n-form ref="formRef" :model="editForm" label-placement="left" label-width="100">
+      <n-form ref="formRef" :model="editForm" :label-placement="isMobile ? 'top' : 'left'" :label-width="isMobile ? undefined : 100">
         <n-form-item label="操作对象">
           <n-text depth="3" style="word-break: break-all;" :strong="editForm.ids.length > 1">
             {{ editForm.original_name }}
@@ -90,7 +93,7 @@
         </n-form-item>
 
         <n-form-item v-if="editForm.ids.length > 1" label="批量模式" path="batch_mode">
-          <n-radio-group v-model:value="editForm.batch_mode">
+          <n-radio-group class="mobile-radio-group" v-model:value="editForm.batch_mode">
             <n-radio-button value="reclassify">保持原ID重新分类</n-radio-button>
             <n-radio-button value="merge">合并为同一影视</n-radio-button>
           </n-radio-group>
@@ -137,7 +140,7 @@
       </n-form>
       
       <template #footer>
-        <n-space justify="end">
+        <n-space class="modal-footer-actions" :vertical="isMobile" justify="end">
           <n-button @click="showEditModal = false">取消</n-button>
           <n-button type="primary" :loading="submitting" @click="submitCorrection">
             <template #icon><n-icon :component="SparklesIcon" /></template>
@@ -150,7 +153,7 @@
 </template>
 
 <script setup>
-import { ref, onMounted, computed, h, reactive } from 'vue';
+import { ref, onMounted, onBeforeUnmount, computed, h, reactive } from 'vue';
 import axios from 'axios';
 import {
   NTag, NButton, NSpace, NText, NIcon, NTooltip, NEllipsis, NInputNumber, useMessage, useDialog, NAlert, NRadioGroup, NRadioButton
@@ -209,6 +212,19 @@ const editForm = ref({
   target_cid: null,
   batch_mode: 'merge'
 });
+
+// 响应式视口：移动端隐藏次要列，并把信息合并到“名称演变”列里
+const isMobile = ref(typeof window !== 'undefined' ? window.innerWidth <= 768 : false);
+const updateViewport = () => {
+  if (typeof window !== 'undefined') isMobile.value = window.innerWidth <= 768;
+};
+const layoutContentStyle = computed(() => ({
+  padding: isMobile.value ? '12px' : '24px'
+}));
+const modalStyle = computed(() => ({
+  width: isMobile.value ? '96vw' : '500px',
+  maxWidth: '96vw'
+}));
 
 const getSeriesName = (name) => {
   if (!name) return '未知剧集';
@@ -270,69 +286,98 @@ const processedTableData = computed(() => {
 const realSelectedIds = computed(() => checkedRowKeys.value.filter(key => !String(key).startsWith('group_')));
 const rowClassName = (row) => row.isChild ? 'is-child-row' : '';
 
-const columns = computed(() => [
-  { type: 'selection', fixed: 'left' },
-  {
-    title: '状态', key: 'status', width: 100, align: 'center',
-    render(row) {
-      if (row.isGroup) return h(NTag, { type: 'info', bordered: false, size: 'small', round: true }, { icon: () => h(NIcon, { component: FolderIcon }), default: () => '剧集包' });
-      
-      let type = 'warning';
-      let icon = HelpCircleIcon;
-      let text = '未识别';
-      
-      if (row.status === 'success') {
-        type = 'success'; icon = CheckmarkCircleIcon; text = '已整理';
-      } else if (row.status === 'unqualified') {
-        type = 'error'; icon = CloseCircleIcon; text = '不合格';
+const getStatusMeta = (row) => {
+  if (row.isGroup) return { type: 'info', icon: FolderIcon, text: '剧集包' };
+  if (row.status === 'success') return { type: 'success', icon: CheckmarkCircleIcon, text: '已整理' };
+  if (row.status === 'unqualified') return { type: 'error', icon: CloseCircleIcon, text: '不合格' };
+  return { type: 'warning', icon: HelpCircleIcon, text: '未识别' };
+};
+
+const renderStatusTag = (row, compact = false) => {
+  const meta = getStatusMeta(row);
+  return h(NTag, {
+    type: meta.type,
+    bordered: false,
+    size: compact ? 'tiny' : 'small',
+    round: true,
+    style: row.isChild && !compact ? 'transform: scale(0.85); opacity: 0.85;' : ''
+  }, {
+    icon: () => h(NIcon, { component: meta.icon }),
+    default: () => meta.text
+  });
+};
+
+const columns = computed(() => {
+  const allColumns = [
+    { type: 'selection', fixed: isMobile.value ? undefined : 'left' },
+    {
+      title: '状态', key: 'status', width: 100, align: 'center',
+      render(row) { return renderStatusTag(row); }
+    },
+    {
+      title: '名称演变 (原文件 ➔ 整理后)', key: 'name_evolution',
+      render(row) {
+        const childStyle = row.isChild ? 'padding-left: 20px; border-left: 2px solid rgba(144, 147, 153, 0.25); margin-left: 6px;' : '';
+        const nameMinWidth = isMobile.value ? '180px' : '300px';
+        const children = [];
+
+        if (isMobile.value) {
+          const metaNodes = [renderStatusTag(row, true)];
+          if (row.status === 'success') {
+            metaNodes.push(h(NTag, { size: 'tiny', type: 'info', bordered: false }, { default: () => row.media_type === 'tv' ? '剧集' : '电影' }));
+            if (row.tmdb_id) metaNodes.push(h(NTag, { size: 'tiny', bordered: false }, { default: () => `TMDb: ${row.tmdb_id}` }));
+            if (row.is_center_cached) metaNodes.push(h(NTag, { size: 'tiny', type: 'success', bordered: false }, { default: () => '中心缓存' }));
+          }
+          if (row.category_name) metaNodes.push(h(NTag, { size: 'tiny', type: 'primary', bordered: false }, { default: () => row.category_name }));
+          if (row.processed_at) metaNodes.push(h(NText, { depth: 3, style: 'font-size: 12px;' }, { default: () => new Date(row.processed_at).toLocaleString('zh-CN', { hour12: false }) }));
+          children.push(h(NSpace, { size: 4, wrap: true, class: 'mobile-row-meta' }, () => metaNodes));
+        }
+
+        children.push(
+          h(NText, { strong: row.isGroup, depth: row.isGroup ? 1 : 3, style: 'font-size: 13px; display: flex; align-items: center;' }, { default: () => [!row.isGroup ? h(NTag, { size: 'tiny', bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '原' }) : null, h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.original_name })] }),
+          h(NText, { strong: !row.isGroup, type: row.status === 'success' ? 'primary' : 'default', style: 'font-size: 13px; display: flex; align-items: center;' }, { default: () => [!row.isGroup ? h(NTag, { size: 'tiny', type: row.status === 'success' ? 'success' : (row.status === 'unqualified' ? 'error' : 'warning'), bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '新' }) : null, h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.renamed_name || '等待分配 TMDb ID 手动整理...' })] })
+        );
+        
+        if (row.status === 'unqualified' && row.fail_reason) {
+          children.push(h(NTag, { type: 'error', size: 'small', bordered: false, style: 'margin-top: 4px; width: fit-content;' }, { default: () => `退回原因: ${row.fail_reason}` }));
+        }
+        
+        return h('div', { style: `display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: ${nameMinWidth}; ${childStyle}` }, children);
       }
-      
-      return h(NTag, { type: type, bordered: false, size: 'small', round: true, style: row.isChild ? 'transform: scale(0.85); opacity: 0.85;' : '' }, { icon: () => h(NIcon, { component: icon }), default: () => text });
-    }
-  },
-  {
-    title: '名称演变 (原文件 ➔ 整理后)', key: 'name_evolution',
-    render(row) {
-      const childStyle = row.isChild ? 'padding-left: 20px; border-left: 2px solid rgba(144, 147, 153, 0.25); margin-left: 6px;' : '';
-      const children = [
-        h(NText, { strong: row.isGroup, depth: row.isGroup ? 1 : 3, style: 'font-size: 13px; display: flex; align-items: center;' }, { default: () => [!row.isGroup ? h(NTag, { size: 'tiny', bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '原' }) : null, h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.original_name })] }),
-        h(NText, { strong: !row.isGroup, type: row.status === 'success' ? 'primary' : 'default', style: 'font-size: 13px; display: flex; align-items: center;' }, { default: () => [!row.isGroup ? h(NTag, { size: 'tiny', type: row.status === 'success' ? 'success' : (row.status === 'unqualified' ? 'error' : 'warning'), bordered: false, style: 'margin-right: 8px; flex-shrink: 0;' }, { default: () => '新' }) : null, h(NEllipsis, { tooltip: true, style: 'max-width: 100%;' }, { default: () => row.renamed_name || '等待分配 TMDb ID 手动整理...' })] })
-      ];
-      
-      if (row.status === 'unqualified' && row.fail_reason) {
-        children.push(h(NTag, { type: 'error', size: 'small', bordered: false, style: 'margin-top: 4px; width: fit-content;' }, { default: () => `退回原因: ${row.fail_reason}` }));
+    },
+    {
+      title: '媒体信息', key: 'media_info', width: 200,
+      render(row) {
+        if (row.status !== 'success') return h(NText, { depth: 3 }, { default: () => '-' });
+        const tags = [
+          h(NTag, { size: 'small', type: 'info', bordered: false }, { default: () => row.media_type === 'tv' ? '剧集' : '电影' }),
+          h(NTag, { size: 'small', bordered: false, style: 'cursor: pointer;', onClick: () => window.open(`https://www.themoviedb.org/${row.media_type}/${row.tmdb_id}`, '_blank') }, { default: () => `TMDb: ${row.tmdb_id}` })
+        ];
+        if (row.is_center_cached) tags.push(h(NTooltip, null, { trigger: () => h(NTag, { size: 'small', type: 'success', bordered: false, round: true }, { icon: () => h(NIcon, { component: CloudDoneIcon }), default: () => '中心缓存' }), default: () => '该媒体的真实参数由 P115Center 中心服务器提供' }));
+        return h(NSpace, { size: 'small' }, () => tags);
       }
-      
-      return h('div', { style: `display: flex; flex-direction: column; gap: 8px; width: 100%; min-width: 300px; ${childStyle}` }, children);
+    },
+    {
+      title: '目标分类', key: 'category_name', width: 150,
+      render(row) { return row.category_name ? h(NTag, { type: 'primary', bordered: false, size: 'small' }, { default: () => row.category_name }) : h(NText, { depth: 3 }, { default: () => '未指定' }); }
+    },
+    { title: '处理时间', key: 'processed_at', width: 160, render(row) { return new Date(row.processed_at).toLocaleString('zh-CN', { hour12: false }); } },
+    {
+      title: '操作', key: 'actions', width: isMobile.value ? 72 : 120, align: 'center', fixed: isMobile.value ? undefined : 'right',
+      render(row) {
+        return h(NSpace, { justify: 'center', size: isMobile.value ? 4 : 8 }, () => [
+          h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'primary', ghost: true, circle: true, onClick: () => openEditModal(row) }, { icon: () => h(NIcon, { component: EditIcon }) }), default: () => row.isGroup ? '整季批量纠错' : (row.status === 'success' ? '修改整理分类/纠错' : '手动分配ID整理') }),
+          h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'error', ghost: true, circle: true, onClick: () => deleteRecord(row) }, { icon: () => h(NIcon, { component: TrashIcon }) }), default: () => row.isGroup ? '整季批量删除记录' : '删除此记录 (仅删除记录不删文件)' })
+        ]);
+      }
     }
-  },
-  {
-    title: '媒体信息', key: 'media_info', width: 200,
-    render(row) {
-      if (row.status !== 'success') return h(NText, { depth: 3 }, { default: () => '-' });
-      const tags = [
-        h(NTag, { size: 'small', type: 'info', bordered: false }, { default: () => row.media_type === 'tv' ? '剧集' : '电影' }),
-        h(NTag, { size: 'small', bordered: false, style: 'cursor: pointer;', onClick: () => window.open(`https://www.themoviedb.org/${row.media_type}/${row.tmdb_id}`, '_blank') }, { default: () => `TMDb: ${row.tmdb_id}` })
-      ];
-      if (row.is_center_cached) tags.push(h(NTooltip, null, { trigger: () => h(NTag, { size: 'small', type: 'success', bordered: false, round: true }, { icon: () => h(NIcon, { component: CloudDoneIcon }), default: () => '中心缓存' }), default: () => '该媒体的真实参数由 P115Center 中心服务器提供' }));
-      return h(NSpace, { size: 'small' }, () => tags);
-    }
-  },
-  {
-    title: '目标分类', key: 'category_name', width: 150,
-    render(row) { return row.category_name ? h(NTag, { type: 'primary', bordered: false, size: 'small' }, { default: () => row.category_name }) : h(NText, { depth: 3 }, { default: () => '未指定' }); }
-  },
-  { title: '处理时间', key: 'processed_at', width: 160, render(row) { return new Date(row.processed_at).toLocaleString('zh-CN', { hour12: false }); } },
-  {
-    title: '操作', key: 'actions', width: 120, align: 'center', fixed: 'right',
-    render(row) {
-      return h(NSpace, { justify: 'center' }, () => [
-        h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'primary', ghost: true, circle: true, onClick: () => openEditModal(row) }, { icon: () => h(NIcon, { component: EditIcon }) }), default: () => row.isGroup ? '整季批量纠错' : (row.status === 'success' ? '修改整理分类/纠错' : '手动分配ID整理') }),
-        h(NTooltip, null, { trigger: () => h(NButton, { size: 'small', type: 'error', ghost: true, circle: true, onClick: () => deleteRecord(row) }, { icon: () => h(NIcon, { component: TrashIcon }) }), default: () => row.isGroup ? '整季批量删除记录' : '删除此记录 (仅删除记录不删文件)' })
-      ]);
-    }
+  ];
+
+  if (isMobile.value) {
+    return allColumns.filter(col => col.type === 'selection' || ['name_evolution', 'actions'].includes(col.key));
   }
-]);
+  return allColumns;
+});
 
 const paginationReactive = reactive({
   page: 1, pageSize: 15, showSizePicker: true, pageSizes: [15, 30, 50, 100, { label: '全部显示', value: 99999 }],
@@ -514,14 +559,53 @@ const batchDelete = () => {
 };
 
 onMounted(() => {
+  updateViewport();
+  if (typeof window !== 'undefined') window.addEventListener('resize', updateViewport);
   fetchCategories();
   fetchRecords();
+});
+
+onBeforeUnmount(() => {
+  if (typeof window !== 'undefined') window.removeEventListener('resize', updateViewport);
 });
 </script>
 
 <style scoped>
+.stat-grid { margin-bottom: 24px; }
 .stat-card { transition: all 0.3s ease; border-radius: 8px; }
 .stat-card:hover { transform: translateY(-2px); box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); }
+.records-toolbar { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+.toolbar-left, .toolbar-right { flex-wrap: wrap; }
+.toolbar-search { width: 300px; }
+.toolbar-status-select { width: 140px; }
+.toolbar-category-select { width: 160px; }
+.records-table { width: 100%; }
+.mobile-row-meta { margin-bottom: 2px; }
 :deep(.is-child-row td) { background-color: rgba(0, 0, 0, 0.015) !important; }
 @media (prefers-color-scheme: dark) { :deep(.is-child-row td) { background-color: rgba(255, 255, 255, 0.02) !important; } }
+
+@media (max-width: 768px) {
+  .stat-grid { margin-bottom: 12px; }
+  :deep(.n-card-header) { flex-direction: column; align-items: stretch; gap: 10px; }
+  :deep(.n-card-header__main), :deep(.n-card-header__extra) { width: 100%; }
+  .header-actions { width: 100%; }
+  .header-actions :deep(.n-space-item) { flex: 1 1 0; min-width: 0; }
+  .header-actions :deep(.n-button) { width: 100%; padding: 0 8px; }
+
+  .records-toolbar { display: block; margin-bottom: 12px; }
+  .toolbar-left, .toolbar-right { width: 100%; }
+  .toolbar-right { margin-top: 10px; }
+  .toolbar-left :deep(.n-space-item), .toolbar-right :deep(.n-space-item) { width: 100%; }
+  .toolbar-search, .toolbar-status-select, .toolbar-category-select { width: 100% !important; }
+  .toolbar-right :deep(.n-button) { width: 100%; }
+
+  .records-table :deep(.n-data-table-th),
+  .records-table :deep(.n-data-table-td) { padding: 8px 6px; }
+  .records-table :deep(.n-data-table-th--selection),
+  .records-table :deep(.n-data-table-td--selection) { padding-left: 8px; padding-right: 4px; }
+
+  .mobile-radio-group { display: flex; width: 100%; }
+  .mobile-radio-group :deep(.n-radio-button) { flex: 1; text-align: center; }
+  .modal-footer-actions :deep(.n-space-item), .modal-footer-actions :deep(.n-button) { width: 100%; }
+}
 </style>
