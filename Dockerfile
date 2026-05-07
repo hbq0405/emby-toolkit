@@ -44,6 +44,11 @@ RUN apt-get update && \
         dumb-init \
         ffmpeg \
         mesa-vulkan-drivers && \
+    # ★★★ 新增：彻底清理 Nginx 默认配置，防止 host 模式下 80 端口冲突 ★★★
+    rm -f /etc/nginx/sites-enabled/default && \
+    rm -f /etc/nginx/sites-available/default && \
+    rm -f /etc/nginx/conf.d/default.conf && \
+    # ====================================================================
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
