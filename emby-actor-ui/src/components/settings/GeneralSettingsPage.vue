@@ -1,7 +1,7 @@
 <!-- src/components/settings/GeneralSettingsPage.vue -->
 <template>
-  <n-layout content-style="padding: 24px;">
-    <n-space vertical :size="24" style="margin-top: 15px;">
+  <n-layout class="settings-page" :content-style="pageContentStyle">
+    <n-space vertical :size="pageSpaceSize" :style="pageSpaceStyle">
       
       <!-- ★★★ 最终修正: v-if, v-else-if, v-else 现在是正确的同级兄弟关系 ★★★ -->
       <div v-if="configModel">
@@ -9,12 +9,12 @@
           ref="formRef"
           :rules="formRules"
           @submit.prevent="save"
-          label-placement="left"
-          label-width="200"
-          label-align="right"
+          :label-placement="formLabelPlacement"
+          :label-width="formLabelWidth"
+          :label-align="formLabelAlign"
           :model="configModel"
         >
-          <n-tabs type="line" animated size="large" pane-style="padding: 20px; box-sizing: border-box;">
+          <n-tabs class="settings-tabs" type="line" animated :size="isMobile ? 'medium' : 'large'" :pane-style="tabPaneStyle">
             <!-- ================== 标签页 1: 通用设置 ================== -->
             <n-tab-pane name="general" tab="通用设置">
               <n-grid cols="1 l:3" :x-gap="24" :y-gap="24" responsive="screen">
@@ -1009,7 +1009,7 @@
 
                       <!-- 2. 功能细分开关 -->
                       <n-form-item label="启用功能">
-                        <n-grid :cols="2" :y-gap="8">
+                        <n-grid :cols="isMobile ? 1 : 2" :y-gap="8">
                           <n-gi>
                             <n-checkbox v-model:checked="configModel.ai_translate_actor_role">
                               翻译演员与角色
@@ -1281,7 +1281,7 @@
 
 
           <!-- 页面底部的统一保存按钮 -->
-          <n-button type="primary" attr-type="submit" :loading="savingConfig" block size="large" style="margin-top: 24px;">
+          <n-button class="settings-save-button" type="primary" attr-type="submit" :loading="savingConfig" block size="large" style="margin-top: 24px;">
             保存所有设置
           </n-button>
         </n-form>
@@ -1298,7 +1298,7 @@
     </n-space>
     
     <!-- ★★★ Cookie 扫码获取弹窗 ★★★ -->
-    <n-modal v-model:show="showCookieModal" preset="card" title="扫码获取 Cookie" style="width: 400px;" :mask-closable="false">
+    <n-modal v-model:show="showCookieModal" preset="card" title="扫码获取 Cookie" :style="modalStyle(400)" :mask-closable="false">
       <n-space vertical>
         <n-alert type="info" :show-icon="true" style="margin-bottom: 10px;">
           请选择扫码的客户端类型。推荐使用 <b>支付宝小程序</b>，风控概率最低。
@@ -1367,7 +1367,7 @@
     </n-modal>
 
     <!-- ★★★ 115 扫码登录弹窗 ★★★ -->
-    <n-modal v-model:show="showQrcodeModal" preset="card" title="115 扫码登录" style="width: 350px;" :mask-closable="false">
+    <n-modal v-model:show="showQrcodeModal" preset="card" title="115 扫码登录" :style="modalStyle(350)" :mask-closable="false">
       <div style="text-align: center; padding: 20px 0;">
         <!-- 加载中状态 -->
         <n-spin v-if="qrcodeStatus === 'loading'" size="large">
@@ -1413,7 +1413,7 @@
       </template>
     </n-modal>
     <!-- ★★★ 移植：115 目录选择器 Modal ★★★ -->
-    <n-modal v-model:show="showFolderPopover" preset="card" title="选择 115 目录" style="width: 450px;" :bordered="false">
+    <n-modal v-model:show="showFolderPopover" preset="card" title="选择 115 目录" :style="modalStyle(450)" :bordered="false">
       <div class="folder-browser">
         <!-- 顶部导航 -->
         <div class="browser-header">
@@ -1498,7 +1498,7 @@
     </n-modal>
 
     <!-- ★★★ 本地物理目录选择器弹窗 ★★★ -->
-    <n-modal v-model:show="showLocalFolderModal" preset="card" title="选择本地路径" style="width: 600px; max-width: 95vw;">
+    <n-modal v-model:show="showLocalFolderModal" preset="card" title="选择本地路径" :style="modalStyle(600)">
       <n-spin :show="loadingLocalFolders">
         <n-space vertical>
           <!-- 顶部路径输入与刷新 -->
@@ -1556,13 +1556,13 @@
   </n-layout>
   
   <!-- 导出选项模态框 -->
-  <n-modal v-model:show="exportModalVisible" preset="dialog" title="选择要导出的数据表">
+  <n-modal v-model:show="exportModalVisible" preset="dialog" title="选择要导出的数据表" :style="modalStyle(520)">
     <n-space justify="end" style="margin-bottom: 10px;">
       <n-button text type="primary" @click="selectAllForExport">全选</n-button>
       <n-button text type="primary" @click="deselectAllForExport">全不选</n-button>
     </n-space>
     <n-checkbox-group v-model:value="tablesToExport" vertical>
-      <n-grid :y-gap="8" :cols="2">
+      <n-grid :y-gap="8" :cols="isMobile ? 1 : 2">
         <n-gi v-for="table in allDbTables" :key="table">
           <n-checkbox :value="table">
             {{ tableInfo[table]?.cn || table }}
@@ -1577,7 +1577,7 @@
     </template>
   </n-modal>
   <!-- 导入选项模态框 -->
-  <n-modal v-model:show="importModalVisible" preset="dialog" title="恢复数据库备份">
+  <n-modal v-model:show="importModalVisible" preset="dialog" title="恢复数据库备份" :style="modalStyle(520)">
     <n-space vertical>
       <div><p><strong>文件名:</strong> {{ fileToImport?.name }}</p></div>
       
@@ -1604,7 +1604,7 @@
         vertical 
         style="margin-top: 8px;"
       >
-        <n-grid :y-gap="8" :cols="2">
+        <n-grid :y-gap="8" :cols="isMobile ? 1 : 2">
           <n-gi v-for="table in tablesInBackupFile" :key="table">
             <!-- ★★★ 核心修改：根据模式禁用不可共享的表 ★★★ -->
             <n-checkbox :value="table" :disabled="isTableDisabledForImport(table)">
@@ -1622,7 +1622,7 @@
   </n-modal>
 
   <!-- 清空指定表模态框 -->
-  <n-modal v-model:show="clearTablesModalVisible" preset="dialog" title="清空指定数据表">
+  <n-modal v-model:show="clearTablesModalVisible" preset="dialog" title="清空指定数据表" :style="modalStyle(520)">
     <n-space justify="end" style="margin-bottom: 10px;">
       <n-button text type="primary" @click="selectAllForClear">全选</n-button>
       <n-button text type="primary" @click="deselectAllForClear">全不选</n-button>
@@ -1635,7 +1635,7 @@
         @update:value="handleClearSelectionChange" 
         vertical
       >
-      <n-grid :y-gap="8" :cols="2">
+      <n-grid :y-gap="8" :cols="isMobile ? 1 : 2">
         <n-gi v-for="table in allDbTables" :key="table">
           <n-checkbox :value="table">
             {{ tableInfo[table]?.cn || table }}
@@ -1650,7 +1650,7 @@
   </n-modal>
 
   <!-- ★★★ 自定义 STRM 正则模态框 ★★★ -->
-    <n-modal v-model:show="showCustomRegexModal" preset="card" title="配置自定义提取正则" style="width: 650px;">
+    <n-modal v-model:show="showCustomRegexModal" preset="card" title="配置自定义提取正则" :style="modalStyle(650)">
       <n-alert type="warning" :show-icon="true" style="margin-bottom: 16px;">
         <b>正则编写规则：</b><br/>
         必须使用小括号 <code>()</code> 将 115 的 PC 码包裹起来作为<b>第一个捕获组</b>。<br/>
@@ -1686,7 +1686,7 @@
     </n-modal>
 
   <!-- ★★★ 批量替换 STRM 模态框 ★★★ -->
-    <n-modal v-model:show="showReplaceStrmModal" preset="card" title="批量替换本地 STRM 链接" style="width: 650px;">
+    <n-modal v-model:show="showReplaceStrmModal" preset="card" title="批量替换本地 STRM 链接" :style="modalStyle(650)">
       
       <n-alert type="info" :show-icon="true" style="margin-bottom: 16px;">
         <b>ETK 标准格式示例 (不带文件名后缀)：</b><br/>
@@ -1750,6 +1750,7 @@
     v-model:show="resetMappingsModalVisible" 
     preset="dialog" 
     title="确认重置Emby数据"
+    :style="modalStyle(520)"
   >
     <n-alert title="高危操作警告" type="warning" style="margin-bottom: 15px;">
       <p style="margin: 0 0 8px 0;">此操作将 <strong>清空所有Emby相关数据</strong>。</p>
@@ -1762,7 +1763,7 @@
     </template>
   </n-modal>
   <!-- AI 提示词配置模态框 -->
-  <n-modal v-model:show="promptModalVisible" preset="dialog" title="配置 AI 提示词" style="width: 800px; max-width: 90%;">
+  <n-modal v-model:show="promptModalVisible" preset="dialog" title="配置 AI 提示词" :style="modalStyle(800)">
     <n-alert type="info" style="margin-bottom: 16px;">
       您可以自定义发送给 AI 的系统指令（System Prompt）。<br>
       <b>注意：</b> 请保留关键的 JSON 输出格式要求，否则会导致解析失败。支持使用 <code>{title}</code> 等占位符。
@@ -1855,13 +1856,13 @@
     </template>
   </n-modal>
   <!-- ★★★ Pro 激活模态框 ★★★ -->
-  <n-modal v-model:show="showProModal" preset="card" :title="isTransferMode ? '🔄 换绑 Pro 设备' : (configModel?.is_pro_active ? '💎 续期 Pro 高级版' : '💎 升级 Pro 高级版')" style="width: 500px;">
+  <n-modal v-model:show="showProModal" preset="card" :title="isTransferMode ? '🔄 换绑 Pro 设备' : (configModel?.is_pro_active ? '💎 续期 Pro 高级版' : '💎 升级 Pro 高级版')" :style="modalStyle(500)">
       <n-space vertical :size="20">
         
         <!-- 正常激活/续期模式显示的 UI -->
         <template v-if="!isTransferMode">
           <n-radio-group v-model:value="proTier" name="pro_tier_group" style="width: 100%;">
-            <n-grid :cols="3" :x-gap="12">
+            <n-grid :cols="isMobile ? 1 : 3" :x-gap="12" :y-gap="12">
               <n-gi>
                 <n-radio-button value="month" style="width: 100%; text-align: center; padding: 10px 0; height: auto;">
                   <div style="font-size: 16px; font-weight: bold;">月付</div>
@@ -1990,6 +1991,37 @@ const episodeRegexModalRef = ref(null);
 const defaultStreamModalRef = ref(null);
 const musicModalRef = ref(null);
 const ruleManagerRef = ref(null);
+
+const MOBILE_BREAKPOINT = 768;
+const isMobile = ref(false);
+
+const updateViewportState = () => {
+  if (typeof window === 'undefined') return;
+  isMobile.value = window.innerWidth <= MOBILE_BREAKPOINT;
+};
+
+const pageContentStyle = computed(() => ({
+  padding: isMobile.value ? '12px' : '24px'
+}));
+
+const pageSpaceStyle = computed(() => ({
+  marginTop: isMobile.value ? '8px' : '15px'
+}));
+
+const pageSpaceSize = computed(() => (isMobile.value ? 12 : 24));
+const formLabelPlacement = computed(() => (isMobile.value ? 'top' : 'left'));
+const formLabelWidth = computed(() => (isMobile.value ? 'auto' : 200));
+const formLabelAlign = computed(() => (isMobile.value ? 'left' : 'right'));
+
+const tabPaneStyle = computed(() => ({
+  padding: isMobile.value ? '12px 0 0' : '20px',
+  boxSizing: 'border-box'
+}));
+
+const modalStyle = (width) => ({
+  width: isMobile.value ? 'calc(100vw - 24px)' : `${width}px`,
+  maxWidth: 'calc(100vw - 24px)'
+});
 const promptModalVisible = ref(false);
 const loadingPrompts = ref(false);
 const savingPrompts = ref(false);
@@ -3305,6 +3337,10 @@ const handleCorrectSequences = async () => {
 };
 
 onMounted(async () => {
+  updateViewportState();
+  if (typeof window !== 'undefined') {
+    window.addEventListener('resize', updateViewportState, { passive: true });
+  }
   componentIsMounted.value = true;
   unwatchGlobal = watch(loadingConfig, (isLoading) => {
     if (!isLoading && componentIsMounted.value && configModel.value) {
@@ -3332,6 +3368,9 @@ onMounted(async () => {
   checkUserBotStatus();
 });
 onUnmounted(() => {
+  if (typeof window !== 'undefined') {
+    window.removeEventListener('resize', updateViewportState);
+  }
   componentIsMounted.value = false;
   if (unwatchGlobal) unwatchGlobal();
   if (unwatchEmbyConfig) unwatchEmbyConfig();
@@ -3449,4 +3488,131 @@ onUnmounted(() => {
 .rule-name { font-weight: bold; font-size: 13px; color: var(--n-text-color-1); }
 .rule-desc span { color: var(--n-text-color-3); }
 .rule-actions { display: flex; align-items: center; gap: 4px; }
+
+@media (max-width: 768px) {
+  .settings-page {
+    min-width: 0;
+  }
+
+  .settings-tabs :deep(.n-tabs-nav-scroll-content) {
+    min-width: max-content;
+  }
+
+  .settings-tabs :deep(.n-tabs-tab) {
+    padding-left: 10px;
+    padding-right: 10px;
+    white-space: nowrap;
+  }
+
+  :deep(.n-form-item-label) {
+    justify-content: flex-start !important;
+    text-align: left !important;
+    padding: 0 0 6px 0 !important;
+    min-height: auto !important;
+  }
+
+  :deep(.n-form-item-blank) {
+    min-width: 0;
+  }
+
+  :deep(.n-input),
+  :deep(.n-input-number),
+  :deep(.n-select),
+  :deep(.n-input-group),
+  :deep(.n-checkbox-group) {
+    max-width: 100%;
+  }
+
+  :deep(.n-input-number),
+  :deep(.n-select) {
+    width: 100% !important;
+  }
+
+  :deep(.n-input-group) {
+    display: flex;
+    align-items: stretch;
+  }
+
+  :deep(.n-input-group .n-button) {
+    flex-shrink: 0;
+  }
+
+  :deep(.n-card-header) {
+    padding: 14px 14px 8px !important;
+    flex-wrap: wrap;
+    row-gap: 10px;
+  }
+
+  :deep(.n-card-header__main),
+  :deep(.n-card-header__extra) {
+    min-width: 0;
+    width: 100%;
+  }
+
+  :deep(.n-card-header__extra .n-space) {
+    justify-content: flex-start !important;
+    flex-wrap: wrap;
+  }
+
+  :deep(.n-card__content),
+  :deep(.n-card__footer) {
+    padding: 14px !important;
+  }
+
+  .card-title {
+    font-size: 15px;
+  }
+
+  .description-text {
+    font-size: 12px;
+    line-height: 1.7;
+  }
+
+  .action-button {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .settings-save-button {
+    position: sticky;
+    bottom: 12px;
+    z-index: 20;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
+  }
+
+  .folder-browser {
+    height: min(70vh, 520px);
+  }
+
+  .browser-header,
+  .browser-footer {
+    padding: 10px 12px;
+  }
+
+  .browser-footer {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .browser-footer :deep(.n-space) {
+    justify-content: flex-end;
+  }
+
+  .folder-item {
+    padding: 10px 12px;
+  }
+
+  .rule-item {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .rule-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}
+
 </style>
