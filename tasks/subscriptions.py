@@ -862,7 +862,8 @@ def task_auto_subscribe(processor):
                 # ==========================================
                 if subscription_priority == 'hdhive':
                     logger.info(f"  ➜ [策略] 电影《{title}》启用影巢优先，正在检索并筛选资源...")
-                    hdhive_api_key = settings_db.get_setting('hdhive_api_key')
+                    hdhive_config = settings_db.get_setting("hdhive_config") or {}
+                    hdhive_api_key = hdhive_config.get("api_key")
                     
                     if hdhive_api_key:
                         hd_client = HDHiveClient(hdhive_api_key)

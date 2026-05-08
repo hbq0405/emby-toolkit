@@ -1261,7 +1261,8 @@ def _execute_resubscribe(processor, task_name: str, target):
         # 场景 B: 影巢资源
         # =======================================================
         elif sub_source == 'hdhive':
-            api_key = settings_db.get_setting('hdhive_api_key')
+            hdhive_config = settings_db.get_setting("hdhive_config") or {}
+            api_key = hdhive_config.get("api_key")
             if not api_key:
                 logger.error(f"  ➜ [影巢] 未配置 API Key，无法处理: {item_name}")
                 continue

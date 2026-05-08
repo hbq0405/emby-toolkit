@@ -26,8 +26,11 @@ class HDHiveClient:
         self.proxies = config_manager.get_proxies_for_requests()
         
         # 从数据库读取用户配置的频率限制，默认 3次 / 60秒
-        self.limit_count = int(settings_db.get_setting('hdhive_unlock_limit_count') or 3)
-        self.limit_window = int(settings_db.get_setting('hdhive_unlock_limit_window') or 60)
+        hdhive_config = settings_db.get_setting("hdhive_config") or {}
+        unlock_limit = hdhive_config.get("unlock_limit") or {}
+
+        self.limit_count = int(unlock_limit.get("count", 3))
+        self.limit_window = int(unlock_limit.get("window", 60))
 
     def _handle_error(self, e, context="请求"):
         """统一处理 HTTP 错误，说人话"""

@@ -217,7 +217,8 @@ def task_hdhive_auto_checkin(processor):
     logger.info("--- 开始执行影巢自动签到任务 ---")
     task_manager.update_status_from_thread(0, "正在读取影巢配置...")
 
-    api_key = settings_db.get_setting('hdhive_api_key')
+    hdhive_config = settings_db.get_setting("hdhive_config") or {}
+    api_key = hdhive_config.get("api_key")
     if not api_key:
         logger.info("  ➜ 未配置影巢 API Key，跳过自动签到。")
         task_manager.update_status_from_thread(100, "未配置 API Key，跳过")

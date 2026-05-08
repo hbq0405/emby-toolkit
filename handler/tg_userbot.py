@@ -716,7 +716,8 @@ def _process_tg_queue():
                                 
                             slug = slug_match.group(1)
                             from database import settings_db
-                            hdhive_api_key = settings_db.get_setting('hdhive_api_key')
+                            hdhive_config = settings_db.get_setting("hdhive_config") or {}
+                            hdhive_api_key = hdhive_config.get("api_key")
                             
                             if not hdhive_api_key:
                                 logger.error("  ➜ [频道监听] 解析失败：未配置影巢 API Key！")
