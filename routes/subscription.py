@@ -79,15 +79,22 @@ def _get_hdhive_config():
     if not isinstance(cfg, dict):
         cfg = {}
 
+    unlock_cfg = cfg.get("unlock_limit") or {}
+    filter_cfg = cfg.get("filter") or {}
+
     return {
-        "api_key": cfg.get("api_key", HDHIVE_DEFAULT_CONFIG["api_key"]),
+        "api_key": cfg.get("api_key") or "",
         "unlock_limit": {
-            **HDHIVE_DEFAULT_CONFIG["unlock_limit"],
-            **(cfg.get("unlock_limit") or {})
+            "count": int(unlock_cfg.get("count", 3)),
+            "window": int(unlock_cfg.get("window", 60))
         },
         "filter": {
-            **HDHIVE_DEFAULT_CONFIG["filter"],
-            **(cfg.get("filter") or {})
+            "free_only": bool(filter_cfg.get("free_only", False)),
+            "max_points": int(filter_cfg.get("max_points", 10)),
+            "max_size_gb": float(filter_cfg.get("max_size_gb", 120)),
+            "resolution": filter_cfg.get("resolution") or "All",
+            "zh_sub_only": bool(filter_cfg.get("zh_sub_only", True)),
+            "exclude_iso": bool(filter_cfg.get("exclude_iso", False))
         }
     }
 
@@ -103,6 +110,7 @@ def handle_hdhive_config():
 
         user_info = None
         quota_info = None
+
         if api_key:
             client = HDHiveClient(api_key)
             user_info = client.get_user_info()
@@ -111,55 +119,63 @@ def handle_hdhive_config():
         return jsonify({
             "success": True,
             "api_key": api_key,
-            "unlock_limit_count": int(unlock_cfg.get("count", 3)),
-            "unlock_limit_window": int(unlock_cfg.get("window", 60)),
+            "unlock_limit_count": unlock_cfg.get("count", 3),
+            "unlock_limit_window": unlock_cfg.get("window", 60),
 
-            "hdhive_free_only": bool(filter_cfg.get("free_only", False)),
-            "hdhive_max_points": int(filter_cfg.get("max_points", 10)),
-            "hdhive_max_size_gb": float(filter_cfg.get("max_size_gb", 120)),
-            "hdhive_resolution": filter_cfg.get("resolution") or "All",
-            "hdhive_zh_sub_only": bool(filter_cfg.get("zh_sub_only", True)),
-            "hdhive_exclude_iso": bool(filter_cfg.get("exclude_iso", False)),
+            "hdhive_free_only": filter_cfg.get("free_only", False),
+            "hdhive_max_points": filter_cfg.get("max_points", 10),
+            "hdhive_max_size_gb": filter_cfg.get("max_size_gb", 120),
+            "hdhive_resolution": filter_cfg.get("resolution", "All"),
+            "hdhive_zh_sub_only": filter_cfg.get("zh_sub_only", True),
+            "hdhive_exclude_iso": filter_cfg.get("exclude_iso", False),
 
             "user_info": user_info,
             "quota_info": quota_info
         })
 
-    data = request.json or {}
+    elif request.method == 'POST':
+        data = request.json or {}
 
-    cfg = {
-        "api_key": (data.get("api_key") or "").strip(),
-        "unlock_limit": {
-            "count": int(data.get("unlock_limit_count") or 3),
-            "window": int(data.get("unlock_limit_window") or 60)
-        },
-        "filter": {
-            "free_only": bool(data.get("hdhive_free_only", False)),
-            "max_points": int(data.get("hdhive_max_points") or 10),
-            "max_size_gb": float(data.get("hdhive_max_size_gb") or 120),
-            "resolution": data.get("hdhive_resolution") or "All",
-            "zh_sub_only": bool(data.get("hdhive_zh_sub_only", True)),
-            "exclude_iso": bool(data.get("hdhive_exclude_iso", False))
+        cfg = {
+            "api_key": (data.get("api_key") or "").strip(),
+            "unlock_limit": {
+                "count": int(data.get("unlock_limit_count") or 3),
+                "window": int(data.get("unlock_limit_window") or 60)
+            },
+            "filter": {
+                "free_only": bool(data.get("hdhive_free_only", False)),
+                "max_points": int(data.get("hdhive_max_points") or 10),
+                "max_size_gb": float(data.get("hdhive_max_size_gb") or 120),
+                "resolution": data.get("hdhive_resolution") or "All",
+                "zh_sub_only": bool(data.get("hdhive_zh_sub_only", True)),
+                "exclude_iso": bool(data.get("hdhive_exclude_iso", False))
+            }
         }
-    }
 
-    settings_db.save_setting("hdhive_config", cfg)
+        settings_db.save_setting("hdhive_config", cfg)
 
-    client = HDHiveClient(cfg["api_key"])
-    if client.ping():
-        user_info = client.get_user_info()
-        quota_info = client.get_quota()
+        user_info = None
+        quota_info = None
+
+        api_key = cfg.get("api_key") or ""
+        if api_key:
+            client = HDHiveClient(api_key)
+
+            if not client.ping():
+                return jsonify({
+                    "success": False,
+                    "message": "API Key 无效或网络异常，配置已保存，请检查后重试。"
+                })
+
+            user_info = client.get_user_info()
+            quota_info = client.get_quota()
+
         return jsonify({
             "success": True,
             "message": "影巢配置保存成功！",
             "user_info": user_info,
             "quota_info": quota_info
         })
-
-    return jsonify({
-        "success": False,
-        "message": "API Key 无效或网络异常，配置已保存，请检查后重试。"
-    })
 
 @subscription_bp.route('/hdhive/resources', methods=['GET'])
 @admin_required
