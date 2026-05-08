@@ -51,30 +51,24 @@ class LoggedRetry(Retry):
 # ★★★ 创建带重试功能的 Session (已修改为使用 LoggedRetry) ★★★
 def requests_retry_session(
     retries=3,
-    backoff_factor=0.5,
-    status_forcelist=(500, 502, 503, 504),
+    backoff_factor=2,
+    status_forcelist=(500, 502, 503, 504, 429),
     session=None,
 ):
-    """创建一个配置了重试策略的 requests.Session 对象"""
     session = session or requests.Session()
     retry = LoggedRetry(
-        total=3,
-        read=3,
-        connect=3,
-        backoff_factor=1,
-        status_forcelist=(500, 502, 503, 504),
+        total=retries,
+        read=retries,
+        connect=retries,
+        status=retries,
+        backoff_factor=backoff_factor,
+        status_forcelist=status_forcelist,
         allowed_methods=frozenset(["GET"]),
         respect_retry_after_header=True,
     )
-    
-    # ★★★ 核心修改：增加 pool_connections 和 pool_maxsize 参数 ★★★
-    # pool_connections: 要缓存的 urllib3 连接池个数 (对应不同的 host)
-    # pool_maxsize: 每个连接池中保存的最大连接数 (对应并发数)
-    # 我们设为 50，足以应付 3*5=15 的并发需求
     adapter = HTTPAdapter(max_retries=retry, pool_connections=50, pool_maxsize=50)
-    
-    session.mount('http://', adapter)
-    session.mount('https://', adapter)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
     return session
 
 # 创建一个全局的、可复用的、带重试功能的 session 实例
