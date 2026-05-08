@@ -920,7 +920,6 @@ class P115MediaAnalyzerMixin:
                 "简中": "中文简体",
                 "繁体中文": "中文繁体",
                 "繁中": "中文繁体",
-                "繁體": "中文繁体",
                 "雙語": "双语",
                 "原盘": "",
             }
@@ -967,7 +966,7 @@ class P115MediaAnalyzerMixin:
                         # 语言/脚本不再进括号；未知中文残留按特色词处理。
                         friendly_title = f"{display_lang}（{friendly_title}）" if friendly_title else display_lang
 
-            if re.match(r"^中.+?双语(简体|繁体)$", friendly_title):
+            if re.match(r"^中.+?双语(简体|繁体|繁體)$", friendly_title):
                 display_lang = friendly_title
 
         # =========================================================
