@@ -105,7 +105,7 @@ class ActorSubscriptionProcessor:
         # --- 步骤 3: ★★★ 使用线程池并发执行所有演员的扫描任务 ★★★ ---
         processed_count = 0
         # 使用较少的 workers (如5) 可以避免因并发过高而触发 TMDb 的 API 速率限制
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
             
             # 提交所有任务到线程池
             future_to_sub_id = {
