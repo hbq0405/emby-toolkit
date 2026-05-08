@@ -6,6 +6,7 @@ from urllib3.util.retry import Retry
 import json
 import time
 import concurrent.futures
+import re
 from utils import contains_chinese, normalize_name_for_matching
 from typing import Optional, List, Dict, Any, Callable
 import logging
@@ -13,7 +14,7 @@ import config_manager
 import constants
 import threading
 logger = logging.getLogger(__name__)
-
+logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
 # ★★★ 自定义的重试类，用于输出更友好的日志 ★★★
 class LoggedRetry(Retry):
     """
@@ -78,6 +79,13 @@ def get_tmdb_api_base_url() -> str:
 DEFAULT_LANGUAGE = "zh-CN"
 DEFAULT_REGION = "CN"
 
+def _sanitize_text(text: str) -> str:
+    """隐藏文本中的 api_key，防止日志泄露"""
+    if not text:
+        return str(text)
+    # 将 api_key= 后面的字母数字替换为 ***
+    return re.sub(r'api_key=[a-zA-Z0-9]+', 'api_key=***', str(text))
+
 # --- 通用的 TMDb 请求函数 ---
 def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] = None, use_default_language: bool = True) -> Optional[Dict[str, Any]]:
     """【V2.1 - 最终驱魔版】增加了 use_default_language 开关，用于控制是否添加默认语言参数。"""
@@ -109,13 +117,18 @@ def _tmdb_request(endpoint: str, api_key: str, params: Optional[Dict[str, Any]] 
             error_details = error_data.get("status_message", str(e))
         except json.JSONDecodeError:
             error_details = str(e)
-        logger.error(f"  ➜ 所有重试后 TMDb API HTTP 出现错误: {e.response.status_code} - {error_details}. URL: {full_url}", exc_info=False)
+            
+        safe_error_details = _sanitize_text(error_details)
+        logger.error(f"  ➜ 所有重试后 TMDb API HTTP 出现错误: {e.response.status_code} - {safe_error_details}. URL: {full_url}", exc_info=False)
         return None
     except requests.exceptions.RequestException as e:
-        logger.error(f"  ➜ 所有重试后 TMDb API 请求均出现错误: {e}. URL: {full_url}", exc_info=False)
+        safe_e = _sanitize_text(str(e))
+        logger.error(f"  ➜ 所有重试后 TMDb API 请求均出现错误: {safe_e}. URL: {full_url}", exc_info=False)
         return None
     except json.JSONDecodeError as e:
-        logger.error(f"  ➜ TMDb API JSON 解码错误: {e}. URL: {full_url}. Response: {response.text[:200] if response else 'N/A'}", exc_info=False)
+        safe_e = _sanitize_text(str(e))
+        safe_response = _sanitize_text(response.text[:200]) if response else 'N/A'
+        logger.error(f"  ➜ TMDb API JSON 解码错误: {safe_e}. URL: {full_url}. Response: {safe_response}", exc_info=False)
         return None
 
 # --- 获取电影的详细信息 ---
