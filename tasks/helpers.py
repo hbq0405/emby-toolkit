@@ -1243,7 +1243,7 @@ def process_subscription_items_and_update_db(
             for row in cursor.fetchall():
                 in_library_seasons_set.add((str(row['parent_series_tmdb_id']), row['season_number']))
     except Exception as e_db:
-        logger.error(f"  -> [通用订阅] 获取在库季列表失败: {e_db}")
+        logger.error(f"  ➜ [通用订阅] 获取在库季列表失败: {e_db}")
 
     # 2. 获取所有在库的 Key 集合 (Movie/Series)
     in_library_keys = set(tmdb_to_emby_item_map.keys())
@@ -1257,7 +1257,7 @@ def process_subscription_items_and_update_db(
             for row in cursor.fetchall():
                 subscribed_or_paused_keys.add(f"{row['tmdb_id']}_{row['item_type']}")
     except Exception as e_sub:
-        logger.error(f"  -> [通用订阅] 获取订阅状态失败: {e_sub}")
+        logger.error(f"  ➜ [通用订阅] 获取订阅状态失败: {e_sub}")
     
     missing_released_items = []
     missing_unreleased_items = []
@@ -1389,11 +1389,11 @@ def process_subscription_items_and_update_db(
                 missing_released_items.append(item_details_for_db)
 
         except Exception as e:
-            logger.error(f"  -> [通用订阅] 处理条目 {tmdb_id} ({media_type}) 时出错: {e}")
+            logger.error(f"  ➜ [通用订阅] 处理条目 {tmdb_id} ({media_type}) 时出错: {e}")
 
     # 4. 执行数据库操作 (批量写入)
     if parent_series_to_ensure_exist:
-        logger.info(f"  -> [通用订阅] 正在确保 {len(parent_series_to_ensure_exist)} 个父剧集元数据存在...")
+        logger.info(f"  ➜ [通用订阅] 正在确保 {len(parent_series_to_ensure_exist)} 个父剧集元数据存在...")
         request_db.set_media_status_none(
             tmdb_ids=list(parent_series_to_ensure_exist.keys()),
             item_type='Series',
@@ -1402,7 +1402,7 @@ def process_subscription_items_and_update_db(
 
     def group_and_update(items_list, status):
         if not items_list: return
-        logger.info(f"  -> [通用订阅] 将 {len(items_list)} 个缺失媒体设为 '{status}'...")
+        logger.info(f"  ➜ [通用订阅] 将 {len(items_list)} 个缺失媒体设为 '{status}'...")
         requests_by_type = {}
         for item in items_list:
             itype = item['item_type']
