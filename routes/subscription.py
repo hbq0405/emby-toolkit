@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 def get_subscription_status():
     mp_config = settings_db.get_setting('mp_config') or {}
     mp_url = mp_config.get('moviepilot_url')
-    
-    hdhive_key = settings_db.get_setting('hdhive_api_key')
+    hdhive_config = settings_db.get_setting("hdhive_config") or {}
+    hdhive_key = hdhive_config.get("api_key")
     return jsonify({
         "success": True,
         "mp_configured": bool(mp_url),
