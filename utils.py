@@ -438,7 +438,8 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
     "patterns": [
         "(?<![A-Za-z0-9])HK(?![A-Za-z0-9])",
         "港配",
-        "香港配音"
+        "香港配音",
+        "港",
     ]
     },
     {
