@@ -234,7 +234,12 @@
     </div>
       <div v-else class="center-container"><n-empty description="缓存为空，或当前筛选条件下无项目。" size="huge" /></div>
     </div>
-
+    <HDHiveResourceModal
+      v-model:show="showHDHiveModal"
+      :media="hdhiveMedia"
+      :season-number="hdhiveMedia?.season_number"
+      @download-success="handleHDHiveDownloadSuccess"
+    />
     <n-modal v-model:show="showSettingsModal" preset="card" style="width: 90%; max-width: 800px;" title="规则设定">
       <ResubscribeSettingsPage @saved="handleSettingsSaved" />
     </n-modal>
@@ -248,10 +253,11 @@ import { NLayout, NPageHeader, NDivider, NEmpty, NTag, NButton, NSpace, NIcon, u
 import { SyncOutline, ArrowUpOutline as ArrowUpIcon, ArrowDownOutline as ArrowDownIcon, AlertCircleOutline } from '@vicons/ionicons5';
 import { useConfig } from '../composables/useConfig.js';
 import ResubscribeSettingsPage from './settings/ResubscribeSettingsPage.vue';
-
+import HDHiveResourceModal from './HDHiveResourceModal.vue';
 const EmbyIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 48 48", width: "18", height: "18" }, [ h('path', { d: "M24,4.2c-11,0-19.8,8.9-19.8,19.8S13,43.8,24,43.8s19.8-8.9,19.8-19.8S35,4.2,24,4.2z M24,39.8c-8.7,0-15.8-7.1-15.8-15.8S15.3,8.2,24,8.2s15.8,7.1,15.8,15.8S32.7,39.8,24,39.8z", fill: "currentColor" }), h('polygon', { points: "22.2,16.4 22.2,22.2 16.4,22.2 16.4,25.8 22.2,25.8 22.2,31.6 25.8,31.6 25.8,25.8 31.6,31.6 31.6,22.2 25.8,22.2 25.8,16.4 ", fill: "currentColor" })]);
 const TMDbIcon = () => h('svg', { xmlns: "http://www.w3.org/2000/svg", viewBox: "0 0 512 512", width: "18", height: "18" }, [ h('path', { d: "M256 512A256 256 0 1 0 256 0a256 256 0 1 0 0 512zM133.2 176.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zM133.2 262.6a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8zm63.3-22.4a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm74.8 108.2c-27.5-3.3-50.2-26-53.5-53.5a8 8 0 0 1 16-.6c2.3 19.3 18.8 34 38.1 31.7a8 8 0 0 1 7.4 8c-2.3.3-4.5.4-6.8.4zm-74.8-108.2a22.4 22.4 0 1 1 44.8 0 22.4 22.4 0 1 1 -44.8 0zm149.7 22.4a22.4 22.4 0 1 1 0-44.8 22.4 22.4 0 1 1 0 44.8z", fill: "#01b4e4" })]);
-
+const showHDHiveModal = ref(false);
+const hdhiveMedia = ref(null);
 const { configModel } = useConfig();
 const message = useMessage();
 const dialog = useDialog();
@@ -565,26 +571,48 @@ const triggerRefreshStatus = async () => {
 };
 const triggerResubscribeAll = async () => { try { await axios.post('/api/resubscribe/resubscribe_all'); message.success('一键整理任务已提交，请稍后查看任务状态。'); } catch (err) { message.error(err.response?.data?.error || '提交一键整理任务失败。'); }};
 const resubscribeItem = async (item) => {
+  if (item.action === 'resubscribe' && item.resubscribe_source === 'hdhive') {
+    hdhiveMedia.value = {
+      ...item,
+      title: item.item_name,
+      name: item.item_name,
+      media_type: item.item_type === 'Movie' ? 'movie' : 'tv',
+      tmdb_id: item.tmdb_id,
+      parent_series_tmdb_id: item.item_type === 'Season' ? item.tmdb_id : undefined,
+      season_number: item.season_number
+    };
+    showHDHiveModal.value = true;
+    return;
+  }
+
   subscribing.value[item.item_id] = true;
   try {
-    const response = await axios.post('/api/resubscribe/batch_action', {
+    await axios.post('/api/resubscribe/batch_action', {
       item_ids: [item.item_id],
-      action: 'subscribe' 
+      action: 'subscribe'
     });
-    
+
     message.success("整理任务已提交");
 
     const itemInList = allItems.value.find(i => i.item_id === item.item_id);
     if (itemInList) {
-      // 暂时设为 'subscribed'，前端会显示为“处理中”
-      // 等后台任务跑完，如果是删除操作，刷新后该条目会自动消失
-      itemInList.status = 'subscribed'; 
+      itemInList.status = 'subscribed';
     }
   } catch (err) {
     message.error(err.response?.data?.error || '整理请求失败。');
   } finally {
     subscribing.value[item.item_id] = false;
   }
+};
+const handleHDHiveDownloadSuccess = () => {
+  if (!hdhiveMedia.value) return;
+
+  const itemInList = allItems.value.find(i => i.item_id === hdhiveMedia.value.item_id);
+  if (itemInList) {
+    itemInList.status = 'subscribed';
+  }
+
+  showHDHiveModal.value = false;
 };
 const getPosterUrl = (item) => {
   if (item.poster_path) {
@@ -620,10 +648,14 @@ const openInEmby = (item) => {
   window.open(finalUrl, '_blank');
 };
 const getActionInfo = (item) => {
-  // 如果后端返回的字段名不是 'action'，请在此处修改 (例如 item.rule_mode)
   if (item.action === 'delete') {
     return { text: '删除', type: 'error' };
   }
+
+  if (item.resubscribe_source === 'hdhive') {
+    return { text: '影巢', type: 'warning' };
+  }
+
   return { text: '洗版', type: 'primary' };
 };
 const handleSettingsSaved = async (payload = {}) => {

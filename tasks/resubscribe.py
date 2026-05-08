@@ -18,6 +18,8 @@ import handler.moviepilot as moviepilot
 import constants  
 from database import connection, resubscribe_db, settings_db, maintenance_db, request_db, queries_db, media_db
 from handler.p115_service import WebhookDeleteBuffer
+from handler.hdhive_client import HDHiveClient
+from tasks.hdhive import task_download_from_hdhive
 
 # 从 helpers 导入的辅助函数和常量
 from .helpers import (
@@ -1254,6 +1256,75 @@ def _execute_resubscribe(processor, task_name: str, target):
             else:
                 logger.error(f"  ➜ 提交订阅到 MoviePilot 失败: {item_name}")                
                 if i < total - 1: time.sleep(delay)
+
+        # =======================================================
+        # 场景 B: 影巢资源
+        # =======================================================
+        elif sub_source == 'hdhive':
+            api_key = settings_db.get_setting('hdhive_api_key')
+            if not api_key:
+                logger.error(f"  ➜ [影巢] 未配置 API Key，无法处理: {item_name}")
+                continue
+
+            media_type = 'movie' if item_type == 'Movie' else 'tv'
+            target_season = season_number if item_type == 'Season' else None
+
+            hdhive_client = HDHiveClient(api_key)
+            resources = hdhive_client.get_resources(
+                tmdb_id=tmdb_id,
+                media_type=media_type,
+                target_season=target_season
+            )
+
+            if not resources:
+                logger.warning(f"  ➜ [影巢] 未找到资源: {item_name}")
+                continue
+
+            def _resource_score(res):
+                pan_type = str(res.get('pan_type') or '115').lower()
+                points = res.get('unlock_points')
+                points = 0 if points is None else int(points or 0)
+
+                return (
+                    0 if res.get('already_owned') else 1,
+                    points,
+                    0 if pan_type == '115' else 1
+                )
+
+            selected = sorted(resources, key=_resource_score)[0]
+            slug = selected.get('slug')
+
+            if not slug:
+                logger.warning(f"  ➜ [影巢] 资源缺少 slug，跳过: {item_name}")
+                continue
+
+            logger.info(
+                f"  ➜ [影巢] 自动选择资源: {selected.get('title') or slug} "
+                f"(类型: {selected.get('pan_type') or '115'}, 积分: {selected.get('unlock_points')})"
+            )
+
+            ok = task_download_from_hdhive(
+                api_key=api_key,
+                slug=slug,
+                tmdb_id=tmdb_id,
+                media_type=media_type,
+                title=item_name
+            )
+
+            if ok:
+                settings_db.decrement_subscription_quota()
+                resubscribed_count += 1
+
+                actual_season = int(season_number) if season_number is not None else -1
+                key_tuple = (str(tmdb_id), item_type, actual_season)
+                resubscribe_db.batch_update_resubscribe_index_status([key_tuple], "subscribed")
+
+                logger.info(f"  ➜ [影巢] 已提交处理: {item_name}")
+            else:
+                logger.error(f"  ➜ [影巢] 处理失败: {item_name}")
+
+            if i < total - 1:
+                time.sleep(delay)
 
     # ======================================================================
     # 统一执行批量操作 (115 联动删除 & Emby 极速刷新)

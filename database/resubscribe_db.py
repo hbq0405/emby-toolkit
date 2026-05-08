@@ -171,6 +171,7 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                     idx.reason, 
                     idx.matched_rule_id,
                     COALESCE(rr.rule_type, 'resubscribe') as action,
+                    COALESCE(rr.resubscribe_source, 'moviepilot') as resubscribe_source,
                     
                     -- 智能获取名称
                     COALESCE(
@@ -243,6 +244,7 @@ def get_resubscribe_library_status(where_clause: str = "", params: tuple = ()) -
                     "reason": row['reason'],
                     "matched_rule_id": row['matched_rule_id'],
                     "action": row['action'],
+                    "resubscribe_source": row.get("resubscribe_source") or "moviepilot",
                     "item_name": row['item_name'],
                     "poster_path": row['poster_path'],
                     "emby_item_id": row['emby_item_id'],

@@ -389,6 +389,20 @@
                 
                 <!-- 模式 A: 洗版设置 -->
                 <div v-if="currentRule.rule_type === 'resubscribe'">
+                  <n-form-item label="洗版源">
+                    <n-radio-group v-model:value="currentRule.resubscribe_source" size="small">
+                      <n-radio-button value="moviepilot">MoviePilot</n-radio-button>
+                      <n-radio-button value="hdhive">影巢</n-radio-button>
+                    </n-radio-group>
+                    <template #feedback>
+                      <span v-if="currentRule.resubscribe_source === 'moviepilot'">
+                        使用 MoviePilot 订阅洗版，保持当前逻辑。
+                      </span>
+                      <span v-else>
+                        手动整理时弹出影巢资源搜索；一键整理时自动调用影巢下载/转存。
+                      </span>
+                    </template>
+                  </n-form-item>
                   <!-- 缺集洗版整季开关 -->
                   <n-form-item label="缺集处理策略 (仅剧集)">
                     <n-space vertical>
@@ -617,7 +631,9 @@ const openRuleModal = async (rule = null) => {
   if (rule) {
     currentRule.value = JSON.parse(JSON.stringify(rule));
     if (!currentRule.value.scope_rules) currentRule.value.scope_rules = [];
-    if (!currentRule.value.resubscribe_source) currentRule.value.resubscribe_source = 'moviepilot';
+    if (!currentRule.value.resubscribe_source) {
+          currentRule.value.resubscribe_source = 'moviepilot';
+        }
     if (!currentRule.value.delete_mode) currentRule.value.delete_mode = 'physical'; 
   } else {
     currentRule.value = {
