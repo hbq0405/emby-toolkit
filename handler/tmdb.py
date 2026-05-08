@@ -58,12 +58,13 @@ def requests_retry_session(
     """创建一个配置了重试策略的 requests.Session 对象"""
     session = session or requests.Session()
     retry = LoggedRetry(
-        total=retries,
-        read=retries,
-        connect=retries,
-        backoff_factor=backoff_factor,
-        status_forcelist=status_forcelist,
-        allowed_methods=frozenset(['HEAD', 'GET', 'PUT', 'DELETE', 'OPTIONS', 'TRACE', 'POST']),
+        total=3,
+        read=3,
+        connect=3,
+        backoff_factor=1,
+        status_forcelist=(500, 502, 503, 504),
+        allowed_methods=frozenset(["GET"]),
+        respect_retry_after_header=True,
     )
     
     # ★★★ 核心修改：增加 pool_connections 和 pool_maxsize 参数 ★★★
