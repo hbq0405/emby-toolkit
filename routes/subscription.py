@@ -4,7 +4,7 @@ from flask import Blueprint, jsonify, request
 from extensions import admin_required
 from database import settings_db
 from handler.hdhive_client import HDHiveClient
-from tasks.hdhive import task_download_from_hdhive
+from tasks.hdhive import task_download_from_hdhive, filter_hdhive_resources
 from handler.tg_userbot import TGUserBotManager
 import threading
 
@@ -57,6 +57,14 @@ def save_mp_config():
 # ==========================================
 # 影巢 (HDHive) 接口
 # ==========================================
+def _bool_value(value, default=False):
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("1", "true", "yes", "on")
+
+
 @subscription_bp.route('/hdhive/config', methods=['GET', 'POST'])
 @admin_required
 def handle_hdhive_config():
@@ -64,44 +72,61 @@ def handle_hdhive_config():
         api_key = settings_db.get_setting('hdhive_api_key') or ''
         unlock_limit_count = settings_db.get_setting('hdhive_unlock_limit_count') or 3
         unlock_limit_window = settings_db.get_setting('hdhive_unlock_limit_window') or 60
-        
+
         user_info = None
         quota_info = None
         if api_key:
             client = HDHiveClient(api_key)
             user_info = client.get_user_info()
             quota_info = client.get_quota()
-            
+
         return jsonify({
-            "success": True, 
+            "success": True,
             "api_key": api_key,
             "unlock_limit_count": int(unlock_limit_count),
             "unlock_limit_window": int(unlock_limit_window),
+
+            "hdhive_free_only": _bool_value(settings_db.get_setting('hdhive_free_only'), False),
+            "hdhive_max_points": int(settings_db.get_setting('hdhive_max_points') or 10),
+            "hdhive_max_size_gb": float(settings_db.get_setting('hdhive_max_size_gb') or 120),
+            "hdhive_resolution": settings_db.get_setting('hdhive_resolution') or 'All',
+            "hdhive_zh_sub_only": _bool_value(settings_db.get_setting('hdhive_zh_sub_only'), True),
+            "hdhive_exclude_iso": _bool_value(settings_db.get_setting('hdhive_exclude_iso'), False),
+
             "user_info": user_info,
             "quota_info": quota_info
         })
-        
+
     if request.method == 'POST':
-        api_key = request.json.get('api_key', '').strip()
-        unlock_limit_count = int(request.json.get('unlock_limit_count', 3))
-        unlock_limit_window = int(request.json.get('unlock_limit_window', 60))
-        
+        data = request.json or {}
+
+        api_key = data.get('api_key', '').strip()
+        unlock_limit_count = int(data.get('unlock_limit_count', 3))
+        unlock_limit_window = int(data.get('unlock_limit_window', 60))
+
         settings_db.save_setting('hdhive_api_key', api_key)
         settings_db.save_setting('hdhive_unlock_limit_count', unlock_limit_count)
         settings_db.save_setting('hdhive_unlock_limit_window', unlock_limit_window)
-        
+
+        settings_db.save_setting('hdhive_free_only', bool(data.get('hdhive_free_only', False)))
+        settings_db.save_setting('hdhive_max_points', int(data.get('hdhive_max_points', 10)))
+        settings_db.save_setting('hdhive_max_size_gb', float(data.get('hdhive_max_size_gb', 120)))
+        settings_db.save_setting('hdhive_resolution', data.get('hdhive_resolution') or 'All')
+        settings_db.save_setting('hdhive_zh_sub_only', bool(data.get('hdhive_zh_sub_only', True)))
+        settings_db.save_setting('hdhive_exclude_iso', bool(data.get('hdhive_exclude_iso', False)))
+
         client = HDHiveClient(api_key)
         if client.ping():
             user_info = client.get_user_info()
             quota_info = client.get_quota()
             return jsonify({
-                "success": True, 
-                "message": "API Key 及配置保存成功！",
+                "success": True,
+                "message": "API Key 及影巢配置保存成功！",
                 "user_info": user_info,
                 "quota_info": quota_info
             })
-        else:
-            return jsonify({"success": False, "message": "API Key 无效或网络异常！"})
+
+        return jsonify({"success": False, "message": "API Key 无效或网络异常！"})
 
 @subscription_bp.route('/hdhive/resources', methods=['GET'])
 @admin_required
@@ -109,14 +134,21 @@ def get_hdhive_resources():
     tmdb_id = request.args.get('tmdb_id')
     media_type = request.args.get('media_type')
     season = request.args.get('season')
-    
+
     api_key = settings_db.get_setting('hdhive_api_key')
     if not api_key:
         return jsonify({"success": False, "message": "请先配置影巢 API Key"}), 400
-        
+
     client = HDHiveClient(api_key)
     resources = client.get_resources(tmdb_id, media_type, target_season=season)
-    return jsonify({"success": True, "data": resources})
+    filtered_resources = filter_hdhive_resources(resources)
+
+    return jsonify({
+        "success": True,
+        "data": filtered_resources,
+        "total": len(resources),
+        "filtered": len(filtered_resources)
+    })
 
 @subscription_bp.route('/hdhive/download', methods=['POST'])
 @admin_required

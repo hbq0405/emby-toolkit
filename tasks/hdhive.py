@@ -261,3 +261,149 @@ def task_hdhive_auto_checkin(processor):
     except Exception as e:
         logger.error(f"  ➜ 影巢自动签到发生异常: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "签到异常")
+
+def get_hdhive_filter_config():
+    return {
+        "free_only": bool(settings_db.get_setting("hdhive_free_only") or False),
+        "max_points": int(settings_db.get_setting("hdhive_max_points") or 10),
+        "max_size_gb": float(settings_db.get_setting("hdhive_max_size_gb") or 120),
+        "resolution": settings_db.get_setting("hdhive_resolution") or "All",
+        "zh_sub_only": bool(settings_db.get_setting("hdhive_zh_sub_only") if settings_db.get_setting("hdhive_zh_sub_only") is not None else True),
+        "exclude_iso": bool(settings_db.get_setting("hdhive_exclude_iso") or False),
+    }
+
+
+def _resource_size_to_gb(resource: dict) -> float | None:
+    """从资源字典中提取大小信息，并转换为 GB 单位的浮点数。"""
+    raw = (
+        resource.get("share_size")
+        or resource.get("size")
+        or resource.get("file_size")
+        or resource.get("total_size")
+    )
+
+    if raw is None:
+        return None
+
+    if isinstance(raw, (int, float)):
+        # 大数字按 bytes，小数字按 GB
+        return float(raw) / 1024 / 1024 / 1024 if raw > 10000 else float(raw)
+
+    text = str(raw).strip().upper().replace(",", "")
+    m = re.search(r"([\d.]+)\s*(TB|GB|MB|KB|B)?", text)
+    if not m:
+        return None
+
+    value = float(m.group(1))
+    unit = m.group(2) or "GB"
+
+    if unit == "TB":
+        return value * 1024
+    if unit == "GB":
+        return value
+    if unit == "MB":
+        return value / 1024
+    if unit == "KB":
+        return value / 1024 / 1024
+    if unit == "B":
+        return value / 1024 / 1024 / 1024
+
+    return value
+
+
+def _resource_text(resource: dict) -> str:
+    """从资源字典中提取多个文本字段，并合并成一个字符串，供后续关键词匹配使用。"""
+    parts = [
+        resource.get("title"),
+        resource.get("remark"),
+        resource.get("description"),
+        resource.get("subtitle"),
+        resource.get("subtitles"),
+        resource.get("audio"),
+        resource.get("source"),
+        resource.get("video_resolution"),
+    ]
+
+    text_parts = []
+    for p in parts:
+        if isinstance(p, list):
+            text_parts.extend([str(x) for x in p])
+        elif p:
+            text_parts.append(str(p))
+
+    return " ".join(text_parts)
+
+
+def _resource_has_zh_sub(resource: dict) -> bool:
+    """检查资源是否包含中文相关的字幕信息。"""
+    text = _resource_text(resource).lower()
+
+    zh_keywords = [
+        "中字", "中文字幕", "简中", "繁中", "简体", "繁体", "简繁",
+        "双语", "中英", "国配中字", "内封中字",
+        "chs", "cht", "chi", "zh", "zh-cn", "zh-tw", "chinese"
+    ]
+
+    return any(k.lower() in text for k in zh_keywords)
+
+
+def _resource_resolution_match(resource: dict, expected: str) -> bool:
+    """检查资源的分辨率信息是否符合预期。"""
+    if not expected or expected == "All":
+        return True
+
+    values = resource.get("video_resolution") or []
+    if not isinstance(values, list):
+        values = [values]
+
+    text = " ".join(str(v) for v in values).lower()
+
+    if expected == "4K":
+        return "4k" in text or "2160" in text or "uhd" in text
+
+    if expected == "1080p":
+        return "1080" in text
+
+    return True
+
+
+def filter_hdhive_resources(resources: list[dict], config: dict | None = None) -> list[dict]:
+    """根据配置过滤影巢资源列表，返回符合条件的资源。"""
+    cfg = config or get_hdhive_filter_config()
+
+    filtered = []
+
+    for resource in resources or []:
+        points = resource.get("unlock_points")
+        points = 0 if points is None else int(points or 0)
+        already_owned = bool(resource.get("already_owned"))
+
+        if cfg.get("free_only"):
+            if not already_owned and points > 0:
+                continue
+        else:
+            max_points = int(cfg.get("max_points", 10))
+            if not already_owned and points > max_points:
+                continue
+
+        max_size_gb = float(cfg.get("max_size_gb", 120))
+        size_gb = _resource_size_to_gb(resource)
+        if size_gb is not None and size_gb > max_size_gb:
+            continue
+
+        if not _resource_resolution_match(resource, cfg.get("resolution", "All")):
+            continue
+
+        if cfg.get("zh_sub_only") and not _resource_has_zh_sub(resource):
+            continue
+
+        if cfg.get("exclude_iso"):
+            text = _resource_text(resource).upper()
+            if any(k in text for k in ["ISO", "BDISO", "BDMV", "原盘"]):
+                continue
+
+        resource['_effective_points'] = 0 if already_owned else points
+        resource['_size_gb'] = size_gb or 0
+        filtered.append(resource)
+
+    return filtered

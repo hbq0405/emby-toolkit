@@ -19,7 +19,7 @@ import constants
 from database import connection, resubscribe_db, settings_db, maintenance_db, request_db, queries_db, media_db
 from handler.p115_service import WebhookDeleteBuffer
 from handler.hdhive_client import HDHiveClient
-from tasks.hdhive import task_download_from_hdhive
+from tasks.hdhive import task_download_from_hdhive, filter_hdhive_resources
 
 # 从 helpers 导入的辅助函数和常量
 from .helpers import (
@@ -1279,6 +1279,19 @@ def _execute_resubscribe(processor, task_name: str, target):
             if not resources:
                 logger.warning(f"  ➜ [影巢] 未找到资源: {item_name}")
                 continue
+
+            before_count = len(resources)
+            resources = filter_hdhive_resources(resources)
+
+            if not resources:
+                logger.warning(
+                    f"  ➜ [影巢] 找到 {before_count} 个资源，但全部被影巢筛选规则排除: {item_name}"
+                )
+                continue
+
+            logger.info(
+                f"  ➜ [影巢] 资源筛选完成: {before_count} -> {len(resources)}，开始自动选择资源..."
+            )
 
             def _resource_score(res):
                 pan_type = str(res.get('pan_type') or '115').lower()

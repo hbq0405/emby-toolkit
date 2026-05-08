@@ -19,6 +19,69 @@
           </n-space>
         </n-form-item>
 
+        <n-divider title-placement="left">资源筛选规则</n-divider>
+
+        <div style="padding: 12px; background-color: rgba(240, 160, 32, 0.05); border-radius: 8px; border: 1px dashed var(--n-warning-color); margin-bottom: 16px;">
+          <n-text depth="3" style="display: block; margin-bottom: 12px; font-size: 12px;">
+            防止一键整理/影巢优先订阅误扣高额积分或下载超大资源。
+          </n-text>
+
+          <n-grid :x-gap="12" :y-gap="0" :cols="2">
+            <n-grid-item>
+              <n-form-item label="仅免费">
+                <n-switch v-model:value="hdhiveFreeOnly" size="small" />
+              </n-form-item>
+            </n-grid-item>
+
+            <n-grid-item>
+              <n-form-item label="分辨率偏好">
+                <n-select
+                  v-model:value="hdhiveResolution"
+                  size="small"
+                  :options="[
+                    { label: '不限制', value: 'All' },
+                    { label: '仅 4K', value: '4K' },
+                    { label: '仅 1080p', value: '1080p' }
+                  ]"
+                />
+              </n-form-item>
+            </n-grid-item>
+
+            <n-grid-item>
+              <n-form-item label="最大积分">
+                <n-input-number
+                  v-model:value="hdhiveMaxPoints"
+                  size="small"
+                  :min="0"
+                  :disabled="hdhiveFreeOnly"
+                >
+                  <template #suffix>分</template>
+                </n-input-number>
+              </n-form-item>
+            </n-grid-item>
+
+            <n-grid-item>
+              <n-form-item label="最大体积">
+                <n-input-number v-model:value="hdhiveMaxSizeGb" size="small" :min="1">
+                  <template #suffix>GB</template>
+                </n-input-number>
+              </n-form-item>
+            </n-grid-item>
+
+            <n-grid-item>
+              <n-form-item label="仅含中文字幕">
+                <n-switch v-model:value="hdhiveZhSubOnly" size="small" />
+              </n-form-item>
+            </n-grid-item>
+
+            <n-grid-item>
+              <n-form-item label="排除原盘">
+                <n-switch v-model:value="hdhiveExcludeIso" size="small" />
+              </n-form-item>
+            </n-grid-item>
+          </n-grid>
+        </div>
+
         <n-form-item>
           <n-button type="primary" color="#f0a020" @click="saveConfig" :loading="saving" block>
             保存并连接
@@ -65,7 +128,12 @@ const showModal = ref(false);
 const loading = ref(false);
 const saving = ref(false);
 const checkingIn = ref(false);
-
+const hdhiveFreeOnly = ref(false);
+const hdhiveMaxPoints = ref(10);
+const hdhiveMaxSizeGb = ref(120);
+const hdhiveResolution = ref('All');
+const hdhiveZhSubOnly = ref(true);
+const hdhiveExcludeIso = ref(false);
 const apiKey = ref('');
 const unlockLimitCount = ref(3);
 const unlockLimitWindow = ref(60);
@@ -83,6 +151,12 @@ const open = async () => {
       unlockLimitWindow.value = res.data.unlock_limit_window || 60;
       userInfo.value = res.data.user_info;
       quotaInfo.value = res.data.quota_info;
+      hdhiveFreeOnly.value = res.data.hdhive_free_only ?? false;
+      hdhiveMaxPoints.value = res.data.hdhive_max_points ?? 10;
+      hdhiveMaxSizeGb.value = res.data.hdhive_max_size_gb ?? 120;
+      hdhiveResolution.value = res.data.hdhive_resolution || 'All';
+      hdhiveZhSubOnly.value = res.data.hdhive_zh_sub_only ?? true;
+      hdhiveExcludeIso.value = res.data.hdhive_exclude_iso ?? false;
     }
   } catch (e) {
     message.error('获取配置失败');
@@ -98,7 +172,14 @@ const saveConfig = async () => {
     const res = await axios.post('/api/subscription/hdhive/config', { 
       api_key: apiKey.value,
       unlock_limit_count: unlockLimitCount.value,
-      unlock_limit_window: unlockLimitWindow.value
+      unlock_limit_window: unlockLimitWindow.value,
+
+      hdhive_free_only: hdhiveFreeOnly.value,
+      hdhive_max_points: hdhiveMaxPoints.value,
+      hdhive_max_size_gb: hdhiveMaxSizeGb.value,
+      hdhive_resolution: hdhiveResolution.value,
+      hdhive_zh_sub_only: hdhiveZhSubOnly.value,
+      hdhive_exclude_iso: hdhiveExcludeIso.value
     });
     if (res.data.success) {
       message.success(res.data.message);

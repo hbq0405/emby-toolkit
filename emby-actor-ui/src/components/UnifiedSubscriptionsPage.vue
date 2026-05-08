@@ -278,51 +278,6 @@
             <span style="color: var(--n-warning-color);">* 注：因影巢API限制，剧集固定走 MP 或 TG 频道，此选项仅对电影生效。</span>
           </template>
         </n-form-item>
-        <!-- 影巢专属过滤策略 (仅在选中影巢时显示) -->
-        <n-collapse-transition :show="strategyConfig.subscription_priority === 'hdhive'">
-          <div style="padding: 12px; background-color: rgba(240, 160, 32, 0.05); border-radius: 8px; border: 1px dashed var(--n-warning-color); margin-bottom: 24px;">
-            <n-text depth="3" style="display: block; margin-bottom: 12px; font-size: 12px;">
-              <n-icon :component="SettingsIcon" /> 影巢资源筛选规则 (防止误扣高额积分或下载超大合集)
-            </n-text>
-            
-            <n-grid :x-gap="12" :y-gap="0" :cols="2">
-              <n-grid-item>
-                <n-form-item label="仅免费">
-                  <n-switch v-model:value="strategyConfig.hdhive_free_only" size="small" />
-                </n-form-item>
-              </n-grid-item>
-              <n-grid-item>
-                <n-form-item label="分辨率偏好">
-                  <n-select v-model:value="strategyConfig.hdhive_resolution" size="small" :options="[{label:'不限制', value:'All'}, {label:'仅 4K', value:'4K'}, {label:'仅 1080p', value:'1080p'}]" />
-                </n-form-item>
-              </n-grid-item>
-              <n-grid-item>
-                <n-form-item label="最大积分">
-                  <n-input-number v-model:value="strategyConfig.hdhive_max_points" size="small" :min="0" :disabled="strategyConfig.hdhive_free_only">
-                    <template #suffix>分</template>
-                  </n-input-number>
-                </n-form-item>
-              </n-grid-item>
-              <n-grid-item>
-                <n-form-item label="最大体积">
-                  <n-input-number v-model:value="strategyConfig.hdhive_max_size_gb" size="small" :min="1">
-                    <template #suffix>GB</template>
-                  </n-input-number>
-                </n-form-item>
-              </n-grid-item>
-              <n-grid-item>
-                <n-form-item label="仅含中文字幕">
-                  <n-switch v-model:value="strategyConfig.hdhive_zh_sub_only" size="small" />
-                </n-form-item>
-              </n-grid-item>
-              <n-grid-item>
-                <n-form-item label="排除原盘 (ISO)">
-                  <n-switch v-model:value="strategyConfig.hdhive_exclude_iso" size="small" />
-                </n-form-item>
-              </n-grid-item>
-            </n-grid>
-          </div>
-        </n-collapse-transition>
         <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
           <li>新片，采用“搜索 N 天 -> 暂停 M 天”的循环机制，大幅降低 MoviePilot 搜索压力。</li>
           <li>老片，采用“搜索 N 天 -> 取消订阅 -> 复活”</li>
@@ -431,12 +386,6 @@ const strategyConfig = ref({
   timeout_revive_days: 0,
   download_timeout_hours: 0,
   subscription_priority: 'mp',
-  hdhive_free_only: false,
-  hdhive_max_points: 10,
-  hdhive_max_size_gb: 120,
-  hdhive_resolution: 'All',
-  hdhive_zh_sub_only: true,
-  hdhive_exclude_iso: false
 });
 
 // ★★★ 影巢搜索相关状态与方法 ★★★

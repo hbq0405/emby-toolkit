@@ -767,7 +767,16 @@ const getLibraryCountText = (rule) => {
 const getLibraryTagType = (rule) => {
   return (rule.scope_rules && rule.scope_rules.length > 0) ? 'default' : 'warning';
 };
-
+watch(
+  () => currentRule.value.resubscribe_source,
+  (source) => {
+    if (source === 'hdhive') {
+      currentRule.value.resubscribe_entire_season = false;
+      currentRule.value.custom_resubscribe_enabled = false;
+      currentRule.value.resubscribe_subtitle_effect_only = false;
+    }
+  }
+);
 onMounted(loadData);
 </script>
 
