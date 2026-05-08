@@ -984,7 +984,9 @@ class P115MediaAnalyzerMixin:
             # 3. 替换常见词
             audio_replace_map = {
                 "国语配音": "国语",
+                "（国语）": "国语",
                 "粤语配音": "粤语",
+                "（粤语）": "粤语",
                 "视障口述": "视障口述",
             }
             for old, new in audio_replace_map.items():
