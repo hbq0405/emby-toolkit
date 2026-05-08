@@ -951,20 +951,18 @@ class P115MediaAnalyzerMixin:
                 display_lang = friendly_title
 
             # 5. 兜底与组合
+            display_lang = self._normalize_subtitle_display_title(display_lang)
+
             if stream_features:
-                # ★★★ 核心修改：只要提取到了标准化的特色标签，直接用它！抛弃所有残留的中文杂质
+                # 只有标准化特色标签才允许进入括号；原始 Title 里剩下的中文碎片不再参与展示。
                 friendly_title = self._format_stream_feature_title(display_lang, stream_features)
-            elif not friendly_title:
-                # 没有特色标签，且标题被清空了，只显示语言
-                friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
+            elif self._is_standard_subtitle_label(friendly_title):
+                # Title 明确解析成标准字幕标签时保留，例如：中文简体 / 中英双语简体。
+                display_lang = friendly_title
             else:
-                # 没有特色标签，但有未知的中文残留，组合起来
-                display_lang = self._normalize_subtitle_display_title(display_lang)
-                if display_lang in ["中文简体", "中文繁体", "中英双语简体", "中英双语繁体", "中日双语简体", "中日双语繁体", "中韩双语简体", "中韩双语繁体"]:
-                    check_kw = "简" if "简" in display_lang else ("繁" if "繁" in display_lang else "")
-                    if check_kw and check_kw not in friendly_title:
-                        # 语言/脚本不再进括号；未知中文残留按特色词处理。
-                        friendly_title = f"{display_lang}（{friendly_title}）" if friendly_title else display_lang
+                # 没有标准化特色标签时，Title 只作为识别输入，不再作为展示兜底。
+                # 例如“中文字幕 / 官方中文 / 简体字幕”等未知中文残留，一律丢弃，避免污染 Emby 下拉显示。
+                friendly_title = display_lang if display_lang and display_lang != "未知" else ""
 
             if re.match(r"^中.+?双语(简体|繁体)$", friendly_title):
                 display_lang = friendly_title
@@ -1043,7 +1041,11 @@ class P115MediaAnalyzerMixin:
             or friendly_title.lower().replace(" ", "") in redundant_exact_matches
             or friendly_title.lower() == raw_lang.lower()
         ):
-            friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
+            if stream_type == "Subtitle":
+                # 字幕不再回退 raw_title，避免把未知中文残留重新带回 Title。
+                friendly_title = display_lang if display_lang and display_lang != "未知" else ""
+            else:
+                friendly_title = display_lang if display_lang and display_lang != "未知" else raw_title
 
         if not norm_lang:
             norm_lang = raw_lang
