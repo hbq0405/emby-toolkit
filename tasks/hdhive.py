@@ -263,14 +263,42 @@ def task_hdhive_auto_checkin(processor):
         logger.error(f"  ➜ 影巢自动签到发生异常: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, "签到异常")
 
+HDHIVE_FILTER_DEFAULTS = {
+    "free_only": False,
+    "max_points": 10,
+    "max_size_gb": 120,
+    "resolution": "All",
+    "zh_sub_only": True,
+    "exclude_iso": False,
+}
+
+
 def get_hdhive_filter_config():
+    """
+    读取影巢资源筛选配置。
+    统一来源：app_settings.hdhive_config.value_json.filter
+    """
+    cfg = settings_db.get_setting("hdhive_config") or {}
+
+    if not isinstance(cfg, dict):
+        cfg = {}
+
+    filter_cfg = cfg.get("filter") or {}
+    if not isinstance(filter_cfg, dict):
+        filter_cfg = {}
+
+    merged = {
+        **HDHIVE_FILTER_DEFAULTS,
+        **filter_cfg
+    }
+
     return {
-        "free_only": bool(settings_db.get_setting("hdhive_free_only") or False),
-        "max_points": int(settings_db.get_setting("hdhive_max_points") or 10),
-        "max_size_gb": float(settings_db.get_setting("hdhive_max_size_gb") or 120),
-        "resolution": settings_db.get_setting("hdhive_resolution") or "All",
-        "zh_sub_only": bool(settings_db.get_setting("hdhive_zh_sub_only") if settings_db.get_setting("hdhive_zh_sub_only") is not None else True),
-        "exclude_iso": bool(settings_db.get_setting("hdhive_exclude_iso") or False),
+        "free_only": bool(merged.get("free_only", False)),
+        "max_points": int(merged.get("max_points", 10)),
+        "max_size_gb": float(merged.get("max_size_gb", 120)),
+        "resolution": merged.get("resolution") or "All",
+        "zh_sub_only": bool(merged.get("zh_sub_only", True)),
+        "exclude_iso": bool(merged.get("exclude_iso", False)),
     }
 
 
