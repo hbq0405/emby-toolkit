@@ -257,7 +257,7 @@ class ActorSubscriptionProcessor:
                     
                     if works_to_process:
                         logger.info(f"  ➜ [阶段 2/3] 正在并发筛选 {len(works_to_process)} 部新作品 (检查题材、番位等)...")
-                        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+                        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
                             future_to_work = {
                                 executor.submit(self._process_single_work, work, sub): work 
                                 for work in works_to_process
@@ -416,7 +416,7 @@ class ActorSubscriptionProcessor:
             return enriched_works
 
         # 使用线程池并发获取电视剧作品的详细信息
-        with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
             future_to_work = {
                 executor.submit(self._fetch_tv_work_credits, work, api_key): work
                 for work in works_to_fetch_credits

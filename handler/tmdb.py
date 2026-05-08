@@ -21,14 +21,12 @@ class LoggedRetry(Retry):
     用于在每次重试时记录一条更清晰、更友好的日志消息。
     """
     def increment(self, method, url, response=None, error=None, _pool=None, _stacktrace=None):
-        # 首先，调用父类的 increment 方法。
-        # 如果不应该重试了（例如，达到最大次数），它会抛出异常，
-        # 这样我们的日志代码就不会执行。
-        new_retry = super().increment(method, url, response, error, _pool, _stacktrace)
+        # ★ 修复：在调用父类 increment 之前计算真实的原始总次数
+        # self.total 是剩余次数，len(self.history) 是已失败次数
+        original_total = (len(self.history) + self.total) if self.total is not None else 0
+        attempt_number = len(self.history) + 1
+        backoff_time = self.get_backoff_time()
 
-        # 如果代码能执行到这里，说明即将进行一次重试。
-        
-        # 确定失败原因
         if response:
             reason = f"不成功的状态码: {response.status}"
         elif error:
@@ -36,17 +34,12 @@ class LoggedRetry(Retry):
         else:
             reason = "未知错误"
 
-        # 获取下一次重试的等待时间
-        backoff_time = self.get_backoff_time()
-        # 计算当前是第几次重试
-        attempt_number = len(self.history) + 1
-        
-        # 记录一条警告级别的日志，这样既能引起注意又不会像错误一样吓人
         logger.warning(
-            f"  ➜ TMDb API 请求失败 ({reason})。将在 {backoff_time:.2f} 秒后重试... (第 {attempt_number}/{self.total} 次)"
+            f"  ➜ TMDb API 请求失败 ({reason})。将在 {backoff_time:.2f} 秒后重试... (第 {attempt_number}/{original_total} 次)"
         )
 
-        return new_retry
+        # 调用父类方法，它会返回一个新的 Retry 对象用于下一次请求
+        return super().increment(method, url, response, error, _pool, _stacktrace)
 
 # ★★★ 创建带重试功能的 Session (已修改为使用 LoggedRetry) ★★★
 def requests_retry_session(
