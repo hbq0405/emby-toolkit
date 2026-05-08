@@ -401,6 +401,20 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         ],
     },
     {
+        "label": "六区",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"六区",  
+        ],
+    },
+    {
+        "label": "华纳",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"华纳",  
+        ],
+    },
+    {
         "label": "央视",
         "types": ["Audio", "Subtitle"],
         "patterns": [
