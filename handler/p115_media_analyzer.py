@@ -380,7 +380,7 @@ class P115MediaAnalyzerMixin:
                 "-i", str(direct_url),
                 "-map", f"0:{stream_index}",
                 "-f", "srt",
-                "-frames:s", "5",    # ★ 只需5句台词即刻退出，瞬间完成
+                "-frames:s", "15",    # ★ 只需15句台词即刻退出，瞬间完成
                 "-"
             ])
             
