@@ -75,6 +75,20 @@ def task_manual_update(processor, item_id: str, manual_cast_list: list, item_nam
         item_name=item_name
     )
 
+# --- 辅助函数：判断 raw_ffprobe 数据中是否存在未标识语言的文本字幕 ---
+def _has_und_text_subtitle(raw_ffprobe):
+    """判断 raw_ffprobe 数据中是否存在未标识语言的文本字幕"""
+    if not raw_ffprobe or not isinstance(raw_ffprobe, dict):
+        return False
+    text_codecs = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
+    for s in raw_ffprobe.get("streams", []):
+        if s.get("codec_type") == "subtitle" and s.get("codec_name", "").lower() in text_codecs:
+            tags = s.get("tags") or {}
+            lang = tags.get("language")
+            if not lang or lang == "und":
+                return True
+    return False
+
 # --- 全能元数据同步器 ---
 def task_sync_all_metadata(processor, item_id: str, item_name: str):
     """
@@ -219,6 +233,10 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
                         media_db.clear_mediainfo_json_by_sha1(sha1)
                         
                         raw_ffprobe = P115CacheManager.get_raw_ffprobe_cache(sha1)
+                        # ★ 新增：前置探测，如果存在缺失语言的文本字幕，丢弃旧数据准备重新提取
+                        if raw_ffprobe and _has_und_text_subtitle(raw_ffprobe):
+                            logger.info(f"  ➜ 发现旧缓存含有未知文本字幕，丢弃旧数据以触发重新嗅探: {sha1[:8]}")
+                            raw_ffprobe = None
                         if raw_ffprobe:
                             logger.info(f"  ➜ 发现原始 ffprobe 数据，正在重新格式化: {sha1[:8]}")
                             dummy_node = {"fn": "unknown.mkv"} 
@@ -299,6 +317,9 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
             
             if not mediainfo:
                 raw_ffprobe = P115CacheManager.get_raw_ffprobe_cache(sha1)
+                # ★ 新增：前置探测
+                if raw_ffprobe and _has_und_text_subtitle(raw_ffprobe):
+                    raw_ffprobe = None
                 if raw_ffprobe:
                     try:
                         analyzer = SmartOrganizer.__new__(SmartOrganizer)
@@ -2297,6 +2318,10 @@ def task_restore_mediainfo(processor, force_full_update: bool = False):
         if not mediainfo and sha1 and pc:
             # 先看有没有 raw_ffprobe_json 可以用来极速重新格式化
             raw_ffprobe = P115CacheManager.get_raw_ffprobe_cache(sha1)
+            # ★ 新增：前置探测
+            if raw_ffprobe and _has_und_text_subtitle(raw_ffprobe):
+                logger.info(f"  ➜ 发现旧缓存含有未知文本字幕，丢弃旧数据准备重新嗅探: {sha1[:8]}")
+                raw_ffprobe = None
             if raw_ffprobe:
                 try:
                     analyzer = SmartOrganizer.__new__(SmartOrganizer)

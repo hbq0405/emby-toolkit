@@ -1083,6 +1083,11 @@ class P115MediaAnalyzerMixin:
             )
         ))
 
+        # 拦截实时嗅探注入的“智能识别”标识，使其作为特效标签参与渲染
+        if stream_type == "Subtitle" and "智能识别" in raw_title:
+            if "智能识别" not in stream_features:
+                stream_features.append("智能识别")
+
         # IsHearingImpaired 也强制视为 SDH
         if stream_type == "Subtitle" and is_hearing_impaired is True:
             if "听障" not in stream_features:
@@ -1114,7 +1119,8 @@ class P115MediaAnalyzerMixin:
                 .replace("簡體", "简体")
                 .replace("簡", "简")
                 .replace("雙語", "双语")
-            )
+                .replace("智能识别", "") 
+            ).strip()
 
             replace_map = {
                 "简体中文": "中文简体",
