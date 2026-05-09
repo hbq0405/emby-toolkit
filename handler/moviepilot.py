@@ -497,11 +497,10 @@ def _list_qb_torrents(conf: dict) -> list:
 
     username = str(_conf_get(conf, "username", "user", default="") or "")
     password = str(_conf_get(conf, "password", "passwd", "pass", default="") or "")
+    apikey = str(_conf_get(conf, "apikey", "api_key", "apiKey", "token", default="") or "").strip()
     downloader_name = str(conf.get("name") or "")
 
     session = requests.Session()
-
-    # qB 5.2.0+ 对 WebAPI 的 Origin / Referer / UA 校验更严格
     session.headers.update({
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -510,11 +509,14 @@ def _list_qb_torrents(conf: dict) -> list:
         ),
         "Referer": f"{base_url}/",
         "Origin": base_url,
-        "Accept": "application/json, text/plain, */*",
-        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        "Accept": "application/json, text/plain, */*"
     })
 
-    try:
+    # qB 5.2.0+ 优先使用 API Key
+    if apikey and apikey not in ("******", "********", "**********"):
+        session.headers["Authorization"] = f"Bearer {apikey}"
+        logger.info(f"  ➜ [MP智能清理] qB 使用 API Key 认证: {downloader_name or base_url}")
+    else:
         if username or password:
             login = session.post(
                 f"{base_url}/api/v2/auth/login",
@@ -524,6 +526,7 @@ def _list_qb_torrents(conf: dict) -> list:
 
             login_text = login.text or ""
 
+            # 只有明确 Fails 才判失败
             if "Fails" in login_text:
                 logger.warning(
                     f"  ➜ [MP智能清理] qB 登录失败 "
@@ -539,9 +542,8 @@ def _list_qb_torrents(conf: dict) -> list:
                     f"继续尝试获取种子列表验证: {downloader_name or base_url}"
                 )
 
-        # 真正的登录成功与否，以能不能拿到种子列表为准
+    try:
         res = session.get(f"{base_url}/api/v2/torrents/info", timeout=20)
-
         if res.status_code != 200:
             logger.warning(
                 f"  ➜ [MP智能清理] qB 获取种子失败: "
