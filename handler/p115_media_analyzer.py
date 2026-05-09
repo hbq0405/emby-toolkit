@@ -346,14 +346,13 @@ class P115MediaAnalyzerMixin:
 
     def _extract_and_detect_subtitle_stream(self, direct_url, stream_index):
         """
-        通过 ffmpeg 直链实时拉取字幕流内容并识别语言
+        通过 ffmpeg 直链实时拉取字幕流内容并识别语言 (多点游击采样优化版)
         """
         import subprocess
         
-        # 强制打印日志，让用户知道我们在干活
-        logger.info(f"  ➜ [实时字幕嗅探] 发现未知语言的文本字幕 (Stream {stream_index})，实时拉取识别中...")
+        logger.info(f"  ➜ [实时字幕嗅探] 发现未知语言的文本字幕 (Stream {stream_index})，启动嗅探...")
 
-        # 获取 Cookie 增强兼容性 (部分 115 节点必须要 Cookie 才能 Range 请求)
+        # 获取 Cookie 增强兼容性
         cookie_str = ""
         try:
             from database import settings_db
@@ -361,51 +360,54 @@ class P115MediaAnalyzerMixin:
             cookie_str = tokens.get('cookie') or ""
         except: pass
 
-        cmd = [
-            "ffmpeg",
-            "-hide_banner",
-            "-v", "error",
-            "-user_agent", "Mozilla/5.0"
-        ]
+        # 采样点策略：避开片头片尾，直击正片核心区 (5分钟, 15分钟, 30分钟)
+        sample_points = ["00:05:00", "00:15:00", "00:30:00"]
         
-        if cookie_str:
-            cmd.extend(["-headers", f"Cookie: {cookie_str}\r\n"])
+        for pt_idx, start_time in enumerate(sample_points):
+            cmd = [
+                "ffmpeg",
+                "-hide_banner",
+                "-v", "error",
+                "-user_agent", "Mozilla/5.0"
+            ]
             
-        cmd.extend([
-            "-ss", "00:02:00", # ★ 核心优化：直接跳转到2分钟处，跳过无对白的片头，触发 HTTP Range 秒下！
-            "-i", str(direct_url),
-            "-map", f"0:{stream_index}",
-            "-f", "srt",       # 强制输出 SRT 格式以供正则匹配
-            "-frames:s", "15", # 只要提取到 15 句台词立刻阻断
-            "-"
-        ])
-        
-        try:
-            # 延长到 8 秒，保障网络波动
-            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=8)
-            
-            # 如果成功，且 stdout 有内容
-            if proc.stdout:
-                lines = proc.stdout.splitlines()
-                # 过滤掉 SRT 的序号和时间轴
-                dialogue_text = " ".join([line for line in lines if not re.match(r'^\d+$|^\d{2}:\d{2}:\d{2}', line)])
+            if cookie_str:
+                cmd.extend(["-headers", f"Cookie: {cookie_str}\r\n"])
                 
-                lang_code = self._guess_language_from_text(dialogue_text)
-                if lang_code:
-                    logger.info(f"  ➜ [实时字幕嗅探] 成功！基于内容精准识别 Stream {stream_index} 为 '{lang_code}'")
-                    return lang_code
+            cmd.extend([
+                "-ss", start_time,   # 跳到采样点
+                "-t", "00:02:00",    # ★ 核心防死锁：最多只在时间轴上往后读2分钟，绝不死磕！
+                "-i", str(direct_url),
+                "-map", f"0:{stream_index}",
+                "-f", "srt",
+                "-frames:s", "5",    # ★ 只需5句台词即刻退出，瞬间完成
+                "-"
+            ])
+            
+            try:
+                # 单次探测超时极短 (4秒)，打一枪换一个地方
+                proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=4)
+                
+                if proc.stdout:
+                    lines = proc.stdout.splitlines()
+                    dialogue_text = " ".join([line for line in lines if not re.match(r'^\d+$|^\d{2}:\d{2}:\d{2}', line)])
+                    
+                    lang_code = self._guess_language_from_text(dialogue_text)
+                    if lang_code:
+                        logger.info(f"  ➜ [实时字幕嗅探] 成功！在 {start_time} 处精准识别 Stream {stream_index} 为 '{lang_code}'")
+                        return lang_code
+                    else:
+                        logger.debug(f"  ➜ [实时字幕嗅探] {start_time} 处提取到文本但特征不足，尝试下一采样点...")
                 else:
-                    logger.debug(f"  ➜ [实时字幕嗅探] 提取成功，但未能匹配到明显的语言特征: {dialogue_text[:50]}...")
-                    return None
-            else:
-                logger.debug(f"  ➜ [实时字幕嗅探] ffmpeg 提取失败或该格式不支持转换: {proc.stderr}")
-                return None
-        except subprocess.TimeoutExpired:
-            logger.debug(f"  ➜ [实时字幕嗅探] 提取流 {stream_index} 超时 (8s)，为不影响主流程已跳过。")
-            return None
-        except Exception as e:
-            logger.debug(f"  ➜ [实时字幕嗅探] 发生异常: {e}")
-            return None
+                    logger.debug(f"  ➜ [实时字幕嗅探] {start_time} 处为无对白场景或提取失败，尝试下一采样点...")
+                    
+            except subprocess.TimeoutExpired:
+                logger.debug(f"  ➜ [实时字幕嗅探] {start_time} 处拉取超时 (4s)，尝试下一采样点...")
+            except Exception as e:
+                logger.debug(f"  ➜ [实时字幕嗅探] 采样异常: {e}")
+                
+        logger.info(f"  ➜ [实时字幕嗅探] 已完成 {len(sample_points)} 个采样点探测，未提取到有效对白，放弃嗅探。")
+        return None
 
     def _ffprobe_rate_to_float(self, value):
         """解析 ffprobe 帧率：24000/1001 -> 23.976"""
