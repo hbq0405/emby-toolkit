@@ -465,6 +465,14 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         ],
     },
     {
+        "label": "官译",
+        "types": ["Subtitle"],
+        "patterns": [
+            r"官译",
+            r"官方",
+        ],
+    },
+    {
         "label": "原声",
         "types": ["Subtitle"],
         "patterns": [

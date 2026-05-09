@@ -763,6 +763,7 @@ class P115MediaAnalyzerMixin:
             return ""
 
         def _script_display_suffix(script):
+            """"""
             return "繁体" if script == "cht" else "简体"
 
         # =========================================================
