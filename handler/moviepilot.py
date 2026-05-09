@@ -522,25 +522,26 @@ def _list_qb_torrents(conf: dict) -> list:
                 timeout=10
             )
 
-            # 老版常见：200 + Ok.
-            # 新版不要强制等于 Ok.；只要不是明确 Fails，或者拿到了 SID Cookie，就认为登录成功
-            login_ok = False
+            login_text = login.text or ""
 
-            if login.status_code == 200 and "Fails" not in (login.text or ""):
-                login_ok = True
-
-            if not login_ok and "SID" in session.cookies:
-                login_ok = True
-
-            if not login_ok:
+            if "Fails" in login_text:
                 logger.warning(
                     f"  ➜ [MP智能清理] qB 登录失败 "
-                    f"(状态码: {login.status_code}, 响应: {(login.text or '')[:80]})，"
+                    f"(状态码: {login.status_code}, 响应: {login_text[:80]})，"
                     f"跳过下载器: {downloader_name or base_url}"
                 )
                 return []
 
+            if login.status_code not in (200, 204):
+                logger.warning(
+                    f"  ➜ [MP智能清理] qB 登录响应异常 "
+                    f"(状态码: {login.status_code}, 响应: {login_text[:80]})，"
+                    f"继续尝试获取种子列表验证: {downloader_name or base_url}"
+                )
+
+        # 真正的登录成功与否，以能不能拿到种子列表为准
         res = session.get(f"{base_url}/api/v2/torrents/info", timeout=20)
+
         if res.status_code != 200:
             logger.warning(
                 f"  ➜ [MP智能清理] qB 获取种子失败: "
