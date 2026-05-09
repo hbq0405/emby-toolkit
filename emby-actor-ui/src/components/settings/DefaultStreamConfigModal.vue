@@ -174,6 +174,20 @@
           </div>
 
           <n-form label-placement="top" size="small">
+            
+            <!-- ★ 新增：实时字幕流语言嗅探 开关 -->
+            <n-form-item label="未知文本字幕语言嗅探" class="compact-form-item">
+              <div class="full-width">
+                <n-space align="center" style="margin-bottom: 6px;">
+                  <n-switch v-model:value="config.realtime_sub_detect" />
+                  <span style="font-size: 13px; color: var(--n-text-color-2); font-weight: 500;">开启实时流文本内容识别</span>
+                </n-space>
+                <n-alert type="warning" :show-icon="false" class="tiny-alert" style="margin-top: 0;">
+                  开启后，当压制组未打语言标签时，自动拉取前30句台词瞬间判断简繁体等语种。能大幅解决“未知”字幕问题，每个未知流增加几百毫秒网络耗时。
+                </n-alert>
+              </div>
+            </n-form-item>
+
             <n-form-item label="字幕语言优先级" class="compact-form-item">
               <div class="full-width">
                 <n-input-group class="feature-input">
@@ -257,7 +271,7 @@
 
 <script setup>
 import { computed, ref } from 'vue';
-import { NModal, NForm, NFormItem, NSelect, NInput, NInputGroup, NAlert, NSpin, NSpace, NButton, NIcon, NTag, NText, useMessage } from 'naive-ui';
+import { NModal, NForm, NFormItem, NSelect, NInput, NInputGroup, NAlert, NSpin, NSpace, NButton, NIcon, NTag, NText, NSwitch, useMessage } from 'naive-ui';
 import { MenuOutline as MenuIcon, CloseOutline as CloseIcon } from '@vicons/ionicons5';
 import draggable from 'vuedraggable';
 import axios from 'axios';
@@ -350,7 +364,8 @@ const config = ref({
   audio_priority_order: [],
   audio_features: [],
   audio_param_priority: [],
-  sub_priority: []
+  sub_priority: [],
+  realtime_sub_detect: false // ★ 新增初始值
 });
 
 const getSubLabel = (id) => subTypeMap[id] || id;
@@ -373,7 +388,6 @@ const availableSubtitleLangOptions = computed(() => {
   const used = new Set(config.value.subtitle_lang_priority.map(item => item.id));
   return subtitleLangOptions.filter(opt => !used.has(opt.value));
 });
-
 
 const uniqueIds = (ids) => {
   const seen = new Set();
@@ -399,7 +413,6 @@ const legacyToPriorityList = (priorityList, legacyValue) => {
   }
   return legacyValue ? [legacyValue] : [];
 };
-
 
 const makeAudioPriorityGroupItems = (ids) => {
   const cleanIds = uniqueIds(ids).filter(id => ['param', 'feature'].includes(id));
@@ -449,7 +462,8 @@ const restoreDefaults = () => {
     audio_priority_order: makeAudioPriorityGroupItems(defaultAudioPriorityOrder),
     audio_features: defaultAudioFeatures.map((text, index) => ({ id: `default_audio_${index}_${Date.now()}`, text })),
     audio_param_priority: makeIdItems(defaultAudioParamPriority),
-    sub_priority: makeIdItems(defaultSubPriority)
+    sub_priority: makeIdItems(defaultSubPriority),
+    realtime_sub_detect: false // ★ 重置开关
   };
   message.success('已恢复默认配置，保存后生效');
 };
@@ -498,6 +512,9 @@ const loadConfig = async () => {
       }));
       config.value.audio_param_priority = makeIdItems(Array.isArray(data.audio_param_priority) ? data.audio_param_priority : defaultAudioParamPriority);
       config.value.sub_priority = makeIdItems(Array.isArray(data.sub_priority) ? data.sub_priority : defaultSubPriority);
+      
+      // ★ 加载嗅探开关值
+      config.value.realtime_sub_detect = !!data.realtime_sub_detect;
     }
   } catch (error) {
     message.error('加载配置失败');
@@ -512,7 +529,6 @@ const saveConfig = async () => {
     const audioLangPriority = config.value.audio_lang_priority.map(item => item.id);
     const subtitleLangPriority = config.value.subtitle_lang_priority.map(item => item.id);
     const payload = {
-      // 保留旧字段用于兼容旧代码；新逻辑使用 *_priority。
       audio_lang: audioLangPriority[0] || '',
       subtitle_lang: subtitleLangPriority[0] || '',
       audio_lang_priority: audioLangPriority,
@@ -520,7 +536,9 @@ const saveConfig = async () => {
       audio_priority_order: config.value.audio_priority_order.map(item => item.id),
       audio_features: config.value.audio_features.map(item => item.text),
       audio_param_priority: config.value.audio_param_priority.map(item => item.id),
-      sub_priority: config.value.sub_priority.map(item => item.id)
+      sub_priority: config.value.sub_priority.map(item => item.id),
+      // ★ 提交开关状态
+      realtime_sub_detect: config.value.realtime_sub_detect
     };
     const res = await axios.post('/api/p115/default_stream_config', payload);
     if (res.data.success) {

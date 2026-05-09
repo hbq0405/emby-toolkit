@@ -1492,16 +1492,16 @@ def handle_default_stream_config():
     subtitle_lang_allowed = {'chs', 'cht', 'original', 'eng', 'jpn', 'kor'}
 
     defaults = {
-        # 旧字段保留用于兼容旧版本前端 / 旧任务；新逻辑优先读取 *_priority。
         "audio_lang": "",
         "subtitle_lang": "",
         "audio_lang_priority": [],
         "subtitle_lang_priority": [],
         "audio_priority_order": ["param", "feature"],
-        # 导评 / 评论默认不参与默认音轨竞争；用户需要时可手动加入特色词。
         "audio_features": ["公映", "上译", "京译", "央视", "长译", "八一", "国配", "台配", "国语", "粤语"],
         "audio_param_priority": ["atmos", "dts_x", "truehd", "dts_hd_ma", "dts_hd_hra", "ddp", "dts", "flac", "ac3", "aac", "7_1", "5_1", "2_0"],
-        "sub_priority": ["effect", "chs", "cht", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor"]
+        "sub_priority": ["effect", "chs", "cht", "chs_eng", "cht_eng", "chs_jpn", "cht_jpn", "chs_kor", "cht_kor"],
+        # ★ 新增：实时字幕流嗅探开关
+        "realtime_sub_detect": False 
     }
 
     def _clean_priority_list(value, allowed_values, legacy_value=""):
@@ -1538,7 +1538,6 @@ def handle_default_stream_config():
             config.get('subtitle_lang')
         )
 
-        # 旧字段同步为第一优先级，方便旧代码继续工作。
         config['audio_lang'] = config['audio_lang_priority'][0] if config['audio_lang_priority'] else ''
         config['subtitle_lang'] = config['subtitle_lang_priority'][0] if config['subtitle_lang_priority'] else ''
 
@@ -1559,7 +1558,6 @@ def handle_default_stream_config():
             if not isinstance(config.get(key), list):
                 config[key] = defaults[key]
             else:
-                # 去重但保持用户拖拽顺序；允许用户删除默认项。
                 seen = set()
                 cleaned = []
                 for item in config[key]:
@@ -1568,6 +1566,9 @@ def handle_default_stream_config():
                         seen.add(item)
                         cleaned.append(item)
                 config[key] = cleaned
+
+        # ★ 新增：确保布尔值正确转换
+        config['realtime_sub_detect'] = bool(config.get('realtime_sub_detect', False))
 
         return config
 

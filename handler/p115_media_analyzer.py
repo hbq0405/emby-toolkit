@@ -248,6 +248,40 @@ class P115MediaAnalyzerMixin:
                 sha1=sha1
             )
 
+            # ========================================================
+            # ★ 新增：开启缺失语言时的实时字幕流嗅探
+            # ========================================================
+            stream_config = settings_db.get_setting('p115_default_stream_config') or {}
+            enable_sub_detect = stream_config.get('realtime_sub_detect', False)
+            
+            if enable_sub_detect and direct_url:
+                streams = probe_data.get("streams", [])
+                for s in streams:
+                    codec_type = (s.get("codec_type") or "").lower()
+                    codec_name = (s.get("codec_name") or "").lower()
+                    
+                    if codec_type == "subtitle":
+                        tags = s.get("tags") or {}
+                        raw_lang = tags.get("language")
+                        raw_title = tags.get("title")
+                        
+                        # 如果没有语言标签，也没有标题提示，且是文本字幕
+                        text_sub_codecs = {"subrip", "srt", "ass", "ssa", "webvtt", "mov_text", "text"}
+                        if (not raw_lang or raw_lang == "und") and not raw_title and codec_name in text_sub_codecs:
+                            stream_index = s.get("index")
+                            
+                            if not silent_log:
+                                logger.info(f"  ➜ [实时字幕嗅探] 发现未标识语言的文本字幕 (Stream {stream_index})，开始拉取内容...")
+                                
+                            detected_lang = self._extract_and_detect_subtitle_stream(direct_url, stream_index, silent_log)
+                            
+                            if detected_lang:
+                                # 强行回填给 ffprobe 数据
+                                if "tags" not in s:
+                                    s["tags"] = {}
+                                s["tags"]["language"] = detected_lang
+                                s["tags"]["title"] = "智能识别" # 打个标记
+
             emby_json = self._build_emby_mediainfo_from_ffprobe(
                 probe_data,
                 file_node,
@@ -273,6 +307,87 @@ class P115MediaAnalyzerMixin:
                 logger.warning(f"  ➜ [ffprobe] 解析异常: {original_name} -> {e}", exc_info=True)
             return None
     
+    def _guess_language_from_text(self, text):
+        """
+        基于 Unicode 字符块快速猜测字幕文本语言 (无需AI，速度极快)
+        """
+        if not text:
+            return None
+            
+        text = re.sub(r'<[^>]+>|{[^}]+}', '', text) # 去除 ASS/SRT 标签
+        text = re.sub(r'[0-9\s\p{P}]+', '', text)   # 去除数字、空格、标点符号
+        
+        if not text: return None
+
+        # 统计各类字符的数量
+        hanzi_count = len(re.findall(r'[\u4e00-\u9fa5]', text))
+        kana_count = len(re.findall(r'[\u3040-\u30ff]', text)) # 平假名+片假名
+        hangul_count = len(re.findall(r'[\uac00-\ud7a3]', text)) # 韩文
+        cyrillic_count = len(re.findall(r'[\u0400-\u04FF]', text)) # 俄文
+        latin_count = len(re.findall(r'[a-zA-Zà-ÿÀ-Ÿ]', text)) # 拉丁/英文
+        
+        total = len(text)
+        if total == 0: return None
+
+        # 判断逻辑 (阈值可调)
+        if kana_count > total * 0.05: # 日文中通常包含汉字，只要假名超过5%就认为是日文
+            return "jpn"
+        elif hangul_count > total * 0.1:
+            return "kor"
+        elif cyrillic_count > total * 0.4:
+            return "rus"
+        elif hanzi_count > total * 0.3:
+            # 进一步判断简繁体 (简单的繁体字特征库)
+            cht_chars = len(re.findall(r'[說國話還過個麼對沒與這會覺後當裡]', text))
+            return "cht" if cht_chars > 2 else "chi" # chi 默认代表简体
+        elif latin_count > total * 0.5:
+            return "eng"
+            
+        return None
+
+    def _extract_and_detect_subtitle_stream(self, direct_url, stream_index, silent_log=False):
+        """
+        通过 ffmpeg 直链实时拉取字幕流内容并识别语言
+        """
+        import subprocess
+        
+        # 只读取前 30 行字幕，避免下载过多数据
+        cmd = [
+            "ffmpeg",
+            "-hide_banner",
+            "-v", "error",
+            "-user_agent", "Mozilla/5.0",
+            "-i", str(direct_url),
+            "-map", f"0:{stream_index}",
+            "-c:s", "text",  # 尝试强制转为纯文本
+            "-f", "srt",     # 封装为 srt 格式输出
+            "-frames:s", "30", # ★ 核心：只抓取前30个字幕包，瞬间掐断！
+            "-"
+        ]
+        
+        try:
+            # 限制超时时间为 5 秒，防止死锁
+            proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=5)
+            if proc.returncode == 0 and proc.stdout:
+                # 提取字幕中的文本内容（跳过时间轴和序号）
+                lines = proc.stdout.splitlines()
+                dialogue_text = " ".join([line for line in lines if not re.match(r'^\d+$|^\d{2}:\d{2}:\d{2}', line)])
+                
+                lang_code = self._guess_language_from_text(dialogue_text)
+                if lang_code and not silent_log:
+                    logger.info(f"  ➜ [实时字幕嗅探] 成功通过内容识别出 Stream {stream_index} 语言为: {lang_code}")
+                return lang_code
+            else:
+                if not silent_log:
+                    logger.debug(f"  ➜ [实时字幕嗅探] 提取流 {stream_index} 失败或不支持该格式")
+                return None
+        except subprocess.TimeoutExpired:
+            if not silent_log:
+                logger.debug(f"  ➜ [实时字幕嗅探] 提取流 {stream_index} 超时 (5s)")
+            return None
+        except Exception as e:
+            return None
+
     def _ffprobe_rate_to_float(self, value):
         """解析 ffprobe 帧率：24000/1001 -> 23.976"""
         if not value or value == "0/0":
