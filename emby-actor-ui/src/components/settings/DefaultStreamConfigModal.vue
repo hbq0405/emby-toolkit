@@ -180,10 +180,10 @@
               <div class="full-width">
                 <n-space align="center" style="margin-bottom: 6px;">
                   <n-switch v-model:value="config.realtime_sub_detect" />
-                  <span style="font-size: 13px; color: var(--n-text-color-2); font-weight: 500;">开启实时流文本内容识别</span>
+                  <span style="font-size: 13px; color: var(--n-text-color-2); font-weight: 500;">开启实时字幕语言识别</span>
                 </n-space>
                 <n-alert type="warning" :show-icon="false" class="tiny-alert" style="margin-top: 0;">
-                  开启后，当压制组未打语言标签时，自动拉取前30句台词瞬间判断简繁体等语种。能大幅解决“未知”字幕问题，每个未知流增加几百毫秒网络耗时。
+                  缺失语言标签时，尝试解析字幕流识别语言。
                 </n-alert>
               </div>
             </n-form-item>
