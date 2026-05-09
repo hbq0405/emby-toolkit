@@ -531,6 +531,16 @@ class P115MediaAnalyzerMixin:
         if not source_text:
             return []
 
+        # ★ 新增：简繁转换，确保能匹配上特征词库
+        cht_to_chs = {
+            "粵": "粤", "語": "语", "國": "国", "雙": "双", 
+            "臺": "台", "灣": "湾", "聽": "听", "導": "导", 
+            "評": "评", "視": "视", "體": "体", "簡": "简",
+            "譯": "译", "長": "长", "蘋": "苹", "華": "华"
+        }
+        for k, v in cht_to_chs.items():
+            source_text = source_text.replace(k, v)
+
         feature_map = (
             getattr(self, "stream_feature_map", None)
             or utils.DEFAULT_STREAM_FEATURE_MAPPING
@@ -772,6 +782,17 @@ class P115MediaAnalyzerMixin:
 
         def _normalize_marker_text(text):
             text = str(text or "").lower()
+            
+            # ★ 新增：简繁转换，确保能匹配上语种库
+            cht_to_chs = {
+                "粵": "粤", "語": "语", "國": "国", "雙": "双", 
+                "臺": "台", "灣": "湾", "聽": "听", "導": "导", 
+                "評": "评", "視": "视", "體": "体", "簡": "简",
+                "譯": "译", "長": "长", "蘋": "苹", "華": "华"
+            }
+            for k, v in cht_to_chs.items():
+                text = text.replace(k, v)
+                
             text = re.sub(r"[\.\-_+/|\\\[\]\(\)【】（）]+", " ", text)
             text = re.sub(r"\s+", " ", text).strip()
             return text
@@ -1177,6 +1198,16 @@ class P115MediaAnalyzerMixin:
         # =========================================================
         elif stream_type == "Audio":
             friendly_title = raw_title
+            
+            # ★ 新增：简繁转换，防止出现 粤语(粵語) 的尴尬情况
+            cht_to_chs = {
+                "粵": "粤", "語": "语", "國": "国", "雙": "双", 
+                "臺": "台", "灣": "湾", "聽": "听", "導": "导", 
+                "評": "评", "視": "视", "體": "体", "簡": "简",
+                "譯": "译", "長": "长", "蘋": "苹", "華": "华"
+            }
+            for k, v in cht_to_chs.items():
+                friendly_title = friendly_title.replace(k, v)
 
             # 1. 暴力净化：碾碎所有 DTS-HD, Dolby, kbps 等非中文字符
             friendly_title = utils.clean_non_chinese_chars(friendly_title)
