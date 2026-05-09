@@ -499,6 +499,14 @@ def _list_qb_torrents(conf: dict) -> list:
     downloader_name = str(conf.get("name") or "")
 
     session = requests.Session()
+    # ★ 核心修复：增加通用浏览器特征与防御性 Headers (规避 qB 5.2.0+ 的 CSRF/Origin/Referer 拦截)
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+        "Referer": f"{base_url}/",
+        "Origin": base_url,
+        "Accept": "application/json, text/plain, */*"
+    })
+
     try:
         if username or password:
             login = session.post(
@@ -506,14 +514,28 @@ def _list_qb_torrents(conf: dict) -> list:
                 data={"username": username, "password": password},
                 timeout=10
             )
-            if login.status_code != 200 or "Ok" not in (login.text or ""):
-                logger.warning(f"  ➜ [MP智能清理] qB 登录失败，跳过下载器: {downloader_name or base_url}")
+            
+            # ★ 兼容 qB 新旧版本的登录校验：
+            # 旧版: 200 + 强校验 "Ok."
+            # 新版: 只要没明确返回 "Fails"，或者成功种下了 "SID" Cookie 就算成功
+            login_ok = False
+            if login.status_code == 200 and "Fails" not in (login.text or ""):
+                login_ok = True
+                
+            # 双重保险：强制看一眼 Cookie
+            if not login_ok and "SID" in session.cookies:
+                login_ok = True
+                
+            if not login_ok:
+                logger.warning(f"  ➜ [MP智能清理] qB 登录失败 (状态码: {login.status_code}, 响应: {login.text[:50]})，跳过下载器: {downloader_name or base_url}")
                 return []
 
+        # 获取种子列表
         res = session.get(f"{base_url}/api/v2/torrents/info", timeout=20)
         if res.status_code != 200:
-            logger.warning(f"  ➜ [MP智能清理] qB 获取种子失败: {downloader_name or base_url} -> {res.status_code}")
+            logger.warning(f"  ➜ [MP智能清理] qB 获取种子失败: {downloader_name or base_url} -> 状态码 {res.status_code}")
             return []
+            
         torrents = res.json() or []
         result = []
         for t in torrents:
