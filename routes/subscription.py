@@ -190,8 +190,12 @@ def get_hdhive_resources():
         return jsonify({"success": False, "message": "请先配置影巢 API Key"}), 400
 
     client = HDHiveClient(api_key)
-    resources = client.get_resources(tmdb_id, media_type, target_season=season)
-    filtered_resources = filter_hdhive_resources(resources)
+    resources = client.get_resources(tmdb_id, media_type)
+    filtered_resources = filter_hdhive_resources(
+        resources,
+        target_season=season,
+        media_type=media_type
+    )
 
     return jsonify({
         "success": True,

@@ -1282,7 +1282,11 @@ def _execute_resubscribe(processor, task_name: str, target):
                 continue
 
             before_count = len(resources)
-            resources = filter_hdhive_resources(resources)
+            resources = filter_hdhive_resources(
+                resources,
+                target_season=target_season,
+                media_type=media_type
+            )
 
             if not resources:
                 logger.warning(

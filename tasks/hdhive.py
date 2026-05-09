@@ -395,8 +395,211 @@ def _resource_resolution_match(resource: dict, expected: str) -> bool:
 
     return True
 
+def _zh_num_to_int(text: str) -> int | None:
+    """把 一/二/十一/二十三 这类中文数字转成 int。"""
+    if text is None:
+        return None
 
-def filter_hdhive_resources(resources: list[dict], config: dict | None = None) -> list[dict]:
+    text = str(text).strip()
+    if text.isdigit():
+        return int(text)
+
+    num_map = {
+        "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+        "五": 5, "六": 6, "七": 7, "八": 8, "九": 9
+    }
+
+    if text == "十":
+        return 10
+
+    if "十" in text:
+        left, _, right = text.partition("十")
+        tens = num_map.get(left, 1) if left else 1
+        ones = num_map.get(right, 0) if right else 0
+        return tens * 10 + ones
+
+    return num_map.get(text)
+
+
+def _int_to_zh_num(num: int) -> str:
+    """把 int 转成中文数字，支持常见季号。"""
+    num_map = {
+        0: "零", 1: "一", 2: "二", 3: "三", 4: "四",
+        5: "五", 6: "六", 7: "七", 8: "八", 9: "九"
+    }
+
+    if num <= 10:
+        return "十" if num == 10 else num_map.get(num, str(num))
+
+    if num < 20:
+        return "十" + num_map.get(num % 10, "")
+
+    if num < 100:
+        tens = num // 10
+        ones = num % 10
+        return num_map.get(tens, str(tens)) + "十" + (num_map.get(ones, "") if ones else "")
+
+    return str(num)
+
+
+def _season_between(start, end, target: int) -> bool:
+    try:
+        start = int(start)
+        end = int(end)
+        if start > end:
+            start, end = end, start
+        return start <= target <= end
+    except Exception:
+        return False
+
+
+def _resource_season_match_level(resource: dict, target_season) -> int:
+    """
+    判断资源是否覆盖目标季。
+
+    返回值：
+      30 = 明确命中目标季，例如 S03 / Season 3 / 第三季
+      20 = 范围覆盖目标季，例如 S01-S05 / 1-5季
+      15 = 全季/全集/合集/Complete Series
+       5 = 没写季号，弱保留
+      -1 = 明确写了其他季，且不覆盖目标季
+    """
+    if target_season is None:
+        return 0
+
+    try:
+        target = int(target_season)
+    except Exception:
+        return 0
+
+    text = _resource_text(resource)
+    if not text:
+        return 5
+
+    upper_text = text.upper()
+    zh_target = _int_to_zh_num(target)
+
+    # 1. 明确命中当前季：S03 / S3 / Season 3 / 第三季 / 第3季 / 3季
+    exact_patterns = [
+        rf"(?<![A-Z0-9])S0?{target}(?!\d)",
+        rf"\bSEASON\s*0?{target}\b",
+        rf"第\s*(?:{target}|{zh_target})\s*季",
+        rf"(?<!\d){target}\s*季",
+    ]
+
+    if any(re.search(p, upper_text, re.IGNORECASE) for p in exact_patterns):
+        return 30
+
+    # 2. S01-S05 / S1-5 / Season 1-5
+    range_patterns = [
+        r"(?<![A-Z0-9])S0?(\d{1,2})\s*(?:-|~|–|—|至|到)\s*S?0?(\d{1,2})(?!\d)",
+        r"\bSEASON\s*0?(\d{1,2})\s*(?:-|~|–|—|TO|至|到)\s*(?:SEASON\s*)?0?(\d{1,2})\b",
+    ]
+
+    for pattern in range_patterns:
+        for m in re.finditer(pattern, upper_text, re.IGNORECASE):
+            if _season_between(m.group(1), m.group(2), target):
+                return 20
+            return -1
+
+    # 3. 第1-5季 / 一至五季 / 1-5季
+    zh_range_pattern = r"(?:第)?\s*([一二两三四五六七八九十\d]{1,3})\s*(?:-|~|–|—|至|到)\s*([一二两三四五六七八九十\d]{1,3})\s*季"
+    for m in re.finditer(zh_range_pattern, text, re.IGNORECASE):
+        start = _zh_num_to_int(m.group(1))
+        end = _zh_num_to_int(m.group(2))
+        if start is not None and end is not None:
+            if _season_between(start, end, target):
+                return 20
+            return -1
+
+    # 4. 全5季 / 全五季
+    full_with_count_patterns = [
+        r"全\s*(\d{1,2})\s*季",
+        r"全\s*([一二两三四五六七八九十]{1,3})\s*季",
+    ]
+
+    for pattern in full_with_count_patterns:
+        for m in re.finditer(pattern, text, re.IGNORECASE):
+            total = _zh_num_to_int(m.group(1))
+            if total is not None:
+                if target <= total:
+                    return 20
+                return -1
+
+    # 5. 全季 / 全集 / 合集 / Complete Series / Pack
+    pack_patterns = [
+        r"全季", r"全集", r"合集", r"全套",
+        r"COMPLETE\s+SERIES",
+        r"COMPLETE\s+SEASON",
+        r"\bCOMPLETE\b",
+        r"\bPACK\b",
+    ]
+
+    if any(re.search(p, upper_text, re.IGNORECASE) for p in pack_patterns):
+        return 15
+
+    # 6. 明确有季号，但不是目标季，也不是覆盖范围：排除
+    explicit_other_season_patterns = [
+        r"(?<![A-Z0-9])S\d{1,2}(?!\d)",
+        r"\bSEASON\s*\d{1,2}\b",
+        r"第\s*[一二两三四五六七八九十\d]{1,3}\s*季",
+        r"(?<!\d)\d{1,2}\s*季",
+    ]
+
+    if any(re.search(p, upper_text, re.IGNORECASE) for p in explicit_other_season_patterns):
+        return -1
+
+    # 7. 没写季号：同一个 tv tmdb_id 下弱保留，不直接杀
+    return 5
+
+
+def _season_match_label(level: int) -> str:
+    if level >= 30:
+        return "明确命中目标季"
+    if level >= 20:
+        return "范围/全季覆盖目标季"
+    if level >= 15:
+        return "合集资源"
+    if level >= 5:
+        return "未标明季号，弱保留"
+    return "明确错季，已排除"
+
+
+def _rank_hdhive_resources_for_season(resources: list[dict], target_season) -> list[dict]:
+    """按目标季对影巢资源排序：命中当前季 > 范围/全季 > 合集 > 未标季。明确错季才排除。"""
+    ranked = []
+
+    for resource in resources or []:
+        level = _resource_season_match_level(resource, target_season)
+
+        resource["_season_match_level"] = level
+        resource["_season_match_label"] = _season_match_label(level)
+
+        if level < 0:
+            logger.debug(
+                f"  ➜ [影巢季过滤] 排除明确错季资源: "
+                f"{resource.get('title') or resource.get('remark') or resource.get('slug')}"
+            )
+            continue
+
+        ranked.append(resource)
+
+    ranked.sort(
+        key=lambda r: (
+            -int(r.get("_season_match_level", 0)),
+            int(r.get("_effective_points", 0)),
+            -float(r.get("_size_gb", 0) or 0),
+        )
+    )
+
+    return ranked
+
+def filter_hdhive_resources(
+        resources: list[dict],
+        config: dict | None = None,
+        target_season=None,
+        media_type: str | None = None
+    ) -> list[dict]:
     """根据配置过滤影巢资源列表，返回符合条件的资源。"""
     cfg = config or get_hdhive_filter_config()
 
@@ -434,5 +637,13 @@ def filter_hdhive_resources(resources: list[dict], config: dict | None = None) -
         resource['_effective_points'] = 0 if already_owned else points
         resource['_size_gb'] = size_gb or 0
         filtered.append(resource)
+
+    if media_type == "tv" and target_season is not None:
+        before_count = len(filtered)
+        filtered = _rank_hdhive_resources_for_season(filtered, target_season)
+        logger.info(
+            f"  ➜ [影巢季排序] 目标季 S{int(target_season):02d}: "
+            f"{before_count} 条候选资源 -> {len(filtered)} 条可用资源。"
+        )
 
     return filtered

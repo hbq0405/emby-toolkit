@@ -116,43 +116,54 @@ class HDHiveClient:
             return None
 
     def get_resources(self, tmdb_id, media_type, target_season=None):
-        """根据 TMDB ID 获取资源列表"""
+        """
+        根据 TMDB ID 获取资源列表。
+
+        注意：
+        影巢 OpenAPI 只有 movie/tv + tmdb_id 资源接口，没有季接口。
+        target_season 仅保留用于兼容旧调用，不在这里做过滤，避免误杀 S01-S05 / 全季 / 合集资源。
+        """
         try:
-            res = requests.get(f"{self.BASE_URL}/resources/{media_type}/{tmdb_id}", headers=self.headers, proxies=self.proxies, timeout=15)
+            res = requests.get(
+                f"{self.BASE_URL}/resources/{media_type}/{tmdb_id}",
+                headers=self.headers,
+                proxies=self.proxies,
+                timeout=15
+            )
             res.raise_for_status()
             data = res.json()
-            
+
             if not data.get("success"):
                 return []
-                
-            allowed_types = ["115", "magnet", "ed2k", "bt"]
-            resources = [r for r in data.get("data", []) if str(r.get("pan_type")).lower() in allowed_types or r.get("pan_type") is None]
-            if media_type == 'movie' or target_season is None:
-                return resources
-                
-            filtered_resources = []
-            target_s_str = f"S{int(target_season):02d}" 
-            target_s_num = str(int(target_season))      
-            zh_num_map = {1:"一", 2:"二", 3:"三", 4:"四", 5:"五", 6:"六", 7:"七", 8:"八", 9:"九", 10:"十"}
-            zh_season = f"第{zh_num_map.get(int(target_season), target_s_num)}季"
-            
-            for r in resources:
-                title = r.get("title", "").upper()
-                remark = r.get("remark", "").upper()
-                combined_text = f"{title} {remark}"
-                
-                is_match = False
-                if target_s_str in combined_text or f"S{target_s_num}" in combined_text or zh_season in combined_text:
-                    is_match = True
-                else:
-                    range_match = re.search(r'S(\d{1,2})\s*-\s*S?(\d{1,2})', combined_text)
-                    if range_match and int(range_match.group(1)) <= int(target_season) <= int(range_match.group(2)):
-                        is_match = True
-                            
-                if is_match:
-                    filtered_resources.append(r)
-            return filtered_resources
-            
+
+            allowed_types = {"115", "magnet", "ed2k", "bt"}
+            raw_resources = data.get("data", []) or []
+
+            resources = [
+                r for r in raw_resources
+                if r.get("pan_type") is None
+                or str(r.get("pan_type")).lower() in allowed_types
+            ]
+
+            if media_type == "tv" and target_season is not None:
+                try:
+                    season_text = f"S{int(target_season):02d}"
+                except Exception:
+                    season_text = str(target_season)
+
+                logger.info(
+                    f"  ➜ 影巢资源接口返回 {len(raw_resources)} 条，"
+                    f"保留可处理类型 {len(resources)} 条；"
+                    f"目标季 {season_text} 不在请求阶段过滤，仅用于本地排序。"
+                )
+            else:
+                logger.info(
+                    f"  ➜ 影巢资源接口返回 {len(raw_resources)} 条，"
+                    f"保留可处理类型 {len(resources)} 条。"
+                )
+
+            return resources
+
         except Exception as e:
             self._handle_error(e, "获取资源列表")
             return []
