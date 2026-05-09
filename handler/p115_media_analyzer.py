@@ -312,14 +312,14 @@ class P115MediaAnalyzerMixin:
     
     def _guess_language_from_text(self, text):
         """
-        基于 Unicode 字符块快速猜测字幕文本语言 (无需AI，速度极快)
+        基于 Unicode 字符块快速猜测字幕文本语言 (日常高频异体字扩展版)
         """
         if not text: return None
         
         # 去除 ASS/SRT 标签
         text = re.sub(r'<[^>]+>|{[^}]+}', '', text) 
         
-        # 统计有效字符数量 (避开了 Python 不支持的 \p{P} 正则报错)
+        # 统计有效字符数量
         hanzi_count = len(re.findall(r'[\u4e00-\u9fa5]', text))
         kana_count = len(re.findall(r'[\u3040-\u30ff]', text))    # 日文假名
         hangul_count = len(re.findall(r'[\uac00-\ud7a3]', text))  # 韩文
@@ -329,16 +329,20 @@ class P115MediaAnalyzerMixin:
         total = hanzi_count + kana_count + hangul_count + cyrillic_count + latin_count
         if total == 0: return None
 
-        if kana_count > total * 0.05: # 假名只要超过 5% 即认为是日文 (日文中通常含大量汉字)
+        if kana_count > total * 0.05: # 假名只要超过 5% 即认为是日文
             return "jpn"
         elif hangul_count > total * 0.1:
             return "kor"
         elif cyrillic_count > total * 0.4:
             return "rus"
         elif hanzi_count > total * 0.3:
-            # 简繁体粗略判别库
-            cht_chars = len(re.findall(r'[說國話還過個麼對沒與這會覺後當裡]', text))
-            return "cht" if cht_chars > 1 else "chi"
+            # ★ 扩展了 70 个在影视剧日常对话中最常出现的简繁差异字
+            cht_pattern = r'[這們麼兒幾嗎說聽覺寫讓為辦應該幫帶買賣開關來過還會當給變認識記國車門時機長視電錯誤裡裏頭髮個種樣點總沒無對歡謝後從與專業東兩嚴萬愛動學網熱題]'
+            cht_chars = len(re.findall(cht_pattern, text))
+            
+            # 因为只采样 8 句台词，样本极小，只要发现 1 个纯繁体特征字，即可定性为繁体！
+            return "cht" if cht_chars > 0 else "chi"
+            
         elif latin_count > total * 0.5:
             return "eng"
             
@@ -380,7 +384,7 @@ class P115MediaAnalyzerMixin:
                 "-i", str(direct_url),
                 "-map", f"0:{stream_index}",
                 "-f", "srt",
-                "-frames:s", "15",    # ★ 只需15句台词即刻退出，瞬间完成
+                "-frames:s", "8",    # ★ 只需8句台词即刻退出，瞬间完成
                 "-"
             ])
             
