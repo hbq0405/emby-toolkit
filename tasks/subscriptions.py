@@ -42,6 +42,90 @@ AUDIO_SUBTITLE_KEYWORD_MAP = {
     "sub_kor": ["KOR", "韩字", "韩文", "Korean"],   
     "sub_yue": ["CHT", "繁中", "繁体", "Cantonese"], 
 }
+
+def _try_download_from_hdhive_first(tmdb_id, media_type, title, item_label="媒体"):
+    """
+    统一的影巢优先处理：
+    - Movie 使用 media_type=movie
+    - Series/Season 使用父剧集 TMDb ID + media_type=tv
+    - 只负责检索、筛选、选择最优资源并转存，失败返回 False 交给 MP 兜底
+    """
+    logger.info(f"  ➜ [策略] {item_label}《{title}》启用影巢优先，正在检索并筛选资源...")
+
+    hdhive_config = settings_db.get_setting("hdhive_config") or {}
+    hdhive_api_key = hdhive_config.get("api_key")
+
+    if not hdhive_api_key:
+        logger.warning("  ➜ 未配置影巢 API Key，自动降级到 MoviePilot...")
+        return False
+
+    try:
+        hd_client = HDHiveClient(hdhive_api_key)
+        resources = hd_client.get_resources(tmdb_id, media_type)
+
+        if not resources:
+            logger.info(f"  ➜ 影巢未找到{item_label}《{title}》的资源，准备降级到 MoviePilot 兜底...")
+            return False
+
+        before_count = len(resources)
+        valid_resources = filter_hdhive_resources(resources)
+
+        if not valid_resources:
+            logger.info(
+                f"  ➜ 影巢返回 {before_count} 个资源，但全部被影巢配置筛选规则拦截，准备降级到 MoviePilot 兜底..."
+            )
+            return False
+
+        logger.info(
+            f"  ➜ 影巢资源筛选完成: {before_count} -> {len(valid_resources)}，正在选择最优资源..."
+        )
+
+        def _resource_score(r):
+            effective_points = int(r.get('_effective_points') or 0)
+            size_gb = float(r.get('_size_gb') or 0)
+            pan_type = str(r.get('pan_type') or '115').lower()
+
+            # 积分最低优先；同积分 115 优先；再选体积大的
+            return (
+                effective_points,
+                0 if pan_type == '115' else 1,
+                -size_gb
+            )
+
+        valid_resources.sort(key=_resource_score)
+        target_resource = valid_resources[0]
+        slug = target_resource.get('slug')
+
+        logger.info(
+            f"  ➜ 最终选定影巢资源: {target_resource.get('title') or slug} "
+            f"(类型: {target_resource.get('pan_type') or '115'}, "
+            f"积分: {target_resource.get('unlock_points')}, "
+            f"体积: {target_resource.get('share_size') or '未知'})"
+        )
+
+        if not slug:
+            logger.warning("  ➜ 影巢资源缺少 slug，准备降级到 MoviePilot 兜底...")
+            return False
+
+        success = task_download_from_hdhive(
+            hdhive_api_key,
+            slug,
+            tmdb_id,
+            media_type,
+            title
+        )
+
+        if success:
+            logger.info("  ➜ 影巢处理成功！已跳过 MoviePilot 订阅。")
+            return True
+
+        logger.warning("  ➜ 影巢处理失败，准备降级到 MoviePilot 兜底...")
+        return False
+
+    except Exception as e:
+        logger.error(f"  ➜ 影巢优先处理异常，准备降级到 MoviePilot: {e}", exc_info=True)
+        return False
+
 # ★★★ 内部辅助函数：处理整部剧集的精细化订阅 ★★★
 # ==============================================================================
 def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Dict, tmdb_api_key: str, source: Dict = None) -> bool:
@@ -856,109 +940,74 @@ def task_auto_subscribe(processor):
             tg_channel_tracking = watchlist_config.get('tg_channel_tracking', False)
             subscription_priority = strategy_config.get('subscription_priority', 'mp')
 
-            if item_type == 'Movie':
-                # ==========================================
-                # 电影逻辑：影巢优先 -> MP 兜底
-                # ==========================================
-                if subscription_priority == 'hdhive':
-                    logger.info(f"  ➜ [策略] 电影《{title}》启用影巢优先，正在检索并筛选资源...")
-                    hdhive_config = settings_db.get_setting("hdhive_config") or {}
-                    hdhive_api_key = hdhive_config.get("api_key")
-                    
-                    if hdhive_api_key:
-                        hd_client = HDHiveClient(hdhive_api_key)
-                        resources = hd_client.get_resources(tmdb_id, 'movie')
-                        
-                        if resources:
-                            before_count = len(resources)
-                            valid_resources = filter_hdhive_resources(resources)
+            # ==========================================
+            # 影巢优先：电影 / 剧集 / 季统一走影巢，失败再 MP 兜底
+            # - Movie: 使用电影 TMDb ID + movie
+            # - Series: 使用剧集 TMDb ID + tv
+            # - Season: 使用父剧集 TMDb ID + tv，不带季号
+            # ==========================================
+            if subscription_priority == 'hdhive' and item_type in ['Movie', 'Series', 'Season']:
+                hdhive_tmdb_id = tmdb_id
+                hdhive_media_type = 'movie'
+                hdhive_item_label = '电影'
 
-                            if valid_resources:
-                                logger.info(
-                                    f"  ➜ 影巢资源筛选完成: {before_count} -> {len(valid_resources)}，正在选择最优资源..."
-                                )
+                if item_type in ['Series', 'Season']:
+                    hdhive_tmdb_id = parent_tmdb_id or tmdb_id
+                    hdhive_media_type = 'tv'
+                    hdhive_item_label = '剧集'
 
-                                def _resource_score(r):
-                                    effective_points = int(r.get('_effective_points') or 0)
-                                    size_gb = float(r.get('_size_gb') or 0)
-                                    pan_type = str(r.get('pan_type') or '115').lower()
+                    if item_type == 'Season':
+                        logger.info(
+                            f"  ➜ [策略] 季《{title}》S{season_number} 走影巢时不带季号，"
+                            f"仅使用父剧集 TMDb ID {hdhive_tmdb_id} 检索。"
+                        )
 
-                                    # 积分最低优先；同积分 115 优先；再选体积大的
-                                    return (
-                                        effective_points,
-                                        0 if pan_type == '115' else 1,
-                                        -size_gb
-                                    )
+                if hdhive_tmdb_id:
+                    success = _try_download_from_hdhive_first(
+                        int(hdhive_tmdb_id),
+                        hdhive_media_type,
+                        title,
+                        item_label=hdhive_item_label
+                    )
+                    if success:
+                        action_type = "影巢"
 
-                                valid_resources.sort(key=_resource_score)
-                                target_resource = valid_resources[0]
-                                slug = target_resource.get('slug')
-
-                                logger.info(
-                                    f"  ➜ 最终选定影巢资源: {target_resource.get('title') or slug} "
-                                    f"(类型: {target_resource.get('pan_type') or '115'}, "
-                                    f"积分: {target_resource.get('unlock_points')}, "
-                                    f"体积: {target_resource.get('share_size') or '未知'})"
-                                )
-
-                                if slug:
-                                    success = task_download_from_hdhive(
-                                        hdhive_api_key,
-                                        slug,
-                                        tmdb_id,
-                                        'movie',
-                                        title
-                                    )
-
-                                    if success:
-                                        action_type = "影巢"
-                                        logger.info("  ➜ 影巢处理成功！已跳过 MoviePilot 订阅。")
-                                    else:
-                                        logger.warning("  ➜ 影巢处理失败，准备降级到 MoviePilot 兜底...")
-                                else:
-                                    logger.warning("  ➜ 影巢资源缺少 slug，准备降级到 MoviePilot 兜底...")
-                            else:
-                                logger.info(
-                                    f"  ➜ 影巢返回 {before_count} 个资源，但全部被影巢配置筛选规则拦截，准备降级到 MoviePilot 兜底..."
-                                )
-                        else:
-                            logger.info(f"  ➜ 影巢未找到电影《{title}》的资源，准备降级到 MoviePilot 兜底...")
-                    else:
-                        logger.warning(f"  ➜ 未配置影巢 API Key，自动降级到 MoviePilot...")
-
-                # 如果影巢没开、没找到资源、或者转存失败，统一交由 MP 兜底
-                if not success:
+            # 如果影巢没开、没找到资源、或者转存失败，统一交由 MP 兜底
+            if not success:
+                if item_type == 'Movie':
                     logger.info(f"  ➜ 正在向 MoviePilot 提交电影《{title}》的订阅...")
                     mp_payload = {"name": title, "tmdbid": int(tmdb_id), "type": "电影"}
                     success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
-            elif item_type == 'Series':
-                success = _subscribe_full_series_with_logic(int(tmdb_id), title, config, tmdb_api_key)
-            elif item_type == 'Season' and parent_tmdb_id and season_number is not None:
-                mp_payload = {"name": title, "tmdbid": int(parent_tmdb_id), "type": "电视剧", "season": int(season_number)}
-                
-                # 判定洗版/追更
-                is_pending, fake_eps = should_mark_as_pending(int(parent_tmdb_id), int(season_number), tmdb_api_key)
-                is_completed = False # ★★★ 新增标志位
-                
-                if not is_pending and check_series_completion(int(parent_tmdb_id), tmdb_api_key, season_number=int(season_number), series_name=title):
-                    mp_payload["best_version"] = 1
-                    is_completed = True # ★★★ 标记为已完结
-                
-                # ★★★ 拦截 TG 频道追更 ★★★
-                if tg_channel_tracking and not is_completed:
-                    logger.info(f"  ➜ [策略] TG频道追更已开启，跳过向 MoviePilot 提交未完结季 S{season_number} 的订阅。")
-                    success = True # 模拟成功
-                else:
-                    success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
-                    if success and is_pending:
-                        moviepilot.update_subscription_status(int(parent_tmdb_id), int(season_number), 'P', config, total_episodes=fake_eps)
+                elif item_type == 'Series':
+                    success = _subscribe_full_series_with_logic(int(tmdb_id), title, config, tmdb_api_key)
+                elif item_type == 'Season' and parent_tmdb_id and season_number is not None:
+                    mp_payload = {"name": title, "tmdbid": int(parent_tmdb_id), "type": "电视剧", "season": int(season_number)}
+                    
+                    # 判定洗版/追更
+                    is_pending, fake_eps = should_mark_as_pending(int(parent_tmdb_id), int(season_number), tmdb_api_key)
+                    is_completed = False # ★★★ 新增标志位
+                    
+                    if not is_pending and check_series_completion(int(parent_tmdb_id), tmdb_api_key, season_number=int(season_number), series_name=title):
+                        mp_payload["best_version"] = 1
+                        is_completed = True # ★★★ 标记为已完结
+                    
+                    # ★★★ 拦截 TG 频道追更 ★★★
+                    if tg_channel_tracking and not is_completed:
+                        logger.info(f"  ➜ [策略] TG频道追更已开启，跳过向 MoviePilot 提交未完结季 S{season_number} 的订阅。")
+                        success = True # 模拟成功
+                    else:
+                        success = moviepilot.subscribe_with_custom_payload(mp_payload, config)
+                        if success and is_pending:
+                            moviepilot.update_subscription_status(int(parent_tmdb_id), int(season_number), 'P', config, total_episodes=fake_eps)
 
             # 处理订阅结果
             if success:
                 logger.info(f"  ➜ 《{item['title']}》订阅成功！")
                 
                 # 将状态从 WANTED 更新为 SUBSCRIBED
-                if item_type != 'Series':
+                # Series 走 MP 整剧逻辑时仍由 _subscribe_full_series_with_logic 内部逐季处理；
+                # Series 走影巢时没有逐季订阅流程，需要直接更新当前 Series，避免下次任务重复处理。
+                if item_type != 'Series' or action_type == "影巢":
                     request_db.set_media_status_subscribed(
                         tmdb_ids=item['tmdb_id'], 
                         item_type=item_type,
