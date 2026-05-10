@@ -1381,7 +1381,7 @@ def add_items_to_collection(collection_id: str, item_ids: List[str], base_url: s
     if not item_ids: return True
     api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
     params = {'api_key': api_key, 'Ids': ",".join(item_ids)}
-    wait_for_server_idle(base_url, api_key)
+    # wait_for_server_idle(base_url, api_key)
     try:
         response = emby_client.post(api_url, params=params)
         response.raise_for_status()
@@ -1394,7 +1394,7 @@ def remove_items_from_collection(collection_id: str, item_ids: List[str], base_u
     if not item_ids: return True
     api_url = f"{base_url.rstrip('/')}/Collections/{collection_id}/Items"
     params = {'api_key': api_key, 'Ids': ",".join(item_ids)}
-    wait_for_server_idle(base_url, api_key)
+    # wait_for_server_idle(base_url, api_key)
     try:
         response = emby_client.delete(api_url, params=params)
         response.raise_for_status()
@@ -1433,7 +1433,7 @@ def delete_collection_by_name(collection_name: str, base_url: str, api_key: str,
     策略：先调用 empty_collection_in_emby 清空内容 (触发Emby自动清理)，
     如果合集依然存在 (例如原本就是空的)，则强制调用删除接口。
     """
-    wait_for_server_idle(base_url, api_key)
+    # wait_for_server_idle(base_url, api_key)
     try:
         # 1. 查找合集
         collection = get_collection_by_name(collection_name, base_url, api_key, user_id)
@@ -1478,7 +1478,7 @@ def create_or_update_collection_with_emby_ids(
     allow_empty: bool = False
 ) -> Optional[str]:
     logger.info(f"  ➜ 开始在Emby中处理名为 '{collection_name}' 的合集...")
-    wait_for_server_idle(base_url, api_key)
+    # wait_for_server_idle(base_url, api_key)
     try:
         # ==============================================================================
         # ★★★ 核心修复：将“特洛伊木马”逻辑提权到最顶层 ★★★
@@ -1927,7 +1927,7 @@ def delete_person_custom_api(base_url: str, api_key: str, person_id: str) -> boo
     通过模拟管理员登录获取临时 AccessToken 来删除演员。
     这个接口只在神医Pro版插件中存在。
     """
-    wait_for_server_idle(base_url, api_key)
+    # wait_for_server_idle(base_url, api_key)
     logger.trace(f"检测到删除演员请求，将尝试使用 [自动登录模式] 执行...")
 
     # 1. 登录获取临时令牌
@@ -2672,7 +2672,7 @@ def trigger_media_info_refresh(item_id: str, base_url: str, api_key: str, user_i
         "api_key": api_key,
         "UserId": user_id
     }
-    wait_for_server_idle(base_url, api_key)
+    # wait_for_server_idle(base_url, api_key)
     try:
         # 这是一个伪造的播放请求，不需要 body，或者传个空的
         response = emby_client.post(url, params=params, json={})
