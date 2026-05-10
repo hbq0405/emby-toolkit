@@ -415,6 +415,13 @@ DEFAULT_STREAM_FEATURE_MAPPING = [
         ],
     },
     {
+        "label": "中影",
+        "types": ["Audio", "Subtitle"],
+        "patterns": [
+            r"中影",  
+        ],
+    },
+    {
         "label": "央视",
         "types": ["Audio", "Subtitle"],
         "patterns": [
