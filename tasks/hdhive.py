@@ -341,43 +341,77 @@ def _resource_size_to_gb(resource: dict) -> float | None:
 
 
 def _resource_text(resource: dict) -> str:
-    """从资源字典中提取多个文本字段，并合并成一个字符串，供后续关键词匹配使用。"""
+    """从资源字典中提取多个文本字段，并合并成一个字符串，供后续关键词/季号匹配使用。"""
+    if not isinstance(resource, dict):
+        return ""
+
     parts = [
         resource.get("title"),
+        resource.get("name"),
         resource.get("remark"),
         resource.get("description"),
+        resource.get("summary"),
+        resource.get("filename"),
+        resource.get("file_name"),
+        resource.get("resource_name"),
+        resource.get("share_name"),
         resource.get("subtitle"),
         resource.get("subtitles"),
         resource.get("audio"),
         resource.get("source"),
         resource.get("video_resolution"),
+        resource.get("video_codec"),
+        resource.get("format"),
+        resource.get("tags"),
     ]
 
     text_parts = []
-    for p in parts:
-        if isinstance(p, list):
-            text_parts.extend([str(x) for x in p])
-        elif p:
-            text_parts.append(str(p))
+
+    def _append(value):
+        if value is None:
+            return
+        if isinstance(value, dict):
+            for v in value.values():
+                _append(v)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for v in value:
+                _append(v)
+            return
+        value = str(value).strip()
+        if value:
+            text_parts.append(value)
+
+    for part in parts:
+        _append(part)
 
     return " ".join(text_parts)
 
 
 def _resource_has_zh_sub(resource: dict) -> bool:
-    """检查资源是否包含中文相关的字幕信息。"""
+    """检查资源是否包含中文相关字幕信息。英文短码必须边界匹配，避免裸 zh 误伤。"""
     text = _resource_text(resource).lower()
 
-    zh_keywords = [
+    zh_words = [
         "中字", "中文字幕", "简中", "繁中", "简体", "繁体", "简繁",
-        "双语", "中英", "国配中字", "内封中字",
-        "chs", "cht", "chi", "zh", "zh-cn", "zh-tw", "chinese"
+        "双语", "中英", "中日", "中韩", "国配中字", "内封中字", "内嵌中字",
+        "官方中字", "中文字幕", "中文", "粤字", "中字特效",
     ]
+    if any(k in text for k in zh_words):
+        return True
 
-    return any(k.lower() in text for k in zh_keywords)
+    zh_tokens = [
+        "chs", "cht", "chi", "zho", "zh-cn", "zh-tw", "zh-hk",
+        "zh-hans", "zh-hant", "chinese", "mandarin", "cantonese",
+    ]
+    return any(
+        re.search(rf"(?<![a-z0-9]){re.escape(k)}(?![a-z0-9])", text)
+        for k in zh_tokens
+    )
 
 
 def _resource_resolution_match(resource: dict, expected: str) -> bool:
-    """检查资源的分辨率信息是否符合预期。"""
+    """检查资源分辨率；字段缺失时回退到 title/remark 等全文匹配。"""
     if not expected or expected == "All":
         return True
 
@@ -385,7 +419,11 @@ def _resource_resolution_match(resource: dict, expected: str) -> bool:
     if not isinstance(values, list):
         values = [values]
 
-    text = " ".join(str(v) for v in values).lower()
+    text = " ".join(str(v) for v in values if v).strip()
+    if not text:
+        text = _resource_text(resource)
+
+    text = text.lower()
 
     if expected == "4K":
         return "4k" in text or "2160" in text or "uhd" in text
@@ -393,7 +431,11 @@ def _resource_resolution_match(resource: dict, expected: str) -> bool:
     if expected == "1080p":
         return "1080" in text
 
+    if expected == "720p":
+        return "720" in text
+
     return True
+
 
 def _zh_num_to_int(text: str) -> int | None:
     """把 一/二/十一/二十三 这类中文数字转成 int。"""
@@ -458,9 +500,9 @@ def _resource_season_match_level(resource: dict, target_season) -> int:
     判断资源是否覆盖目标季。
 
     返回值：
-      30 = 明确命中目标季，例如 S03 / Season 3 / 第三季
-      20 = 范围覆盖目标季，例如 S01-S05 / 1-5季
-      15 = 全季/全集/合集/Complete Series
+      30 = 明确命中目标季，例如 S03 / Season 3 / 第三季 / 第3季
+      20 = 范围覆盖目标季，例如 S01-S05 / Season 1-5 / 第1-5季 / 全五季
+      15 = 全季/全集/合集/Complete Series 这类合集资源
        5 = 没写季号，弱保留
       -1 = 明确写了其他季，且不覆盖目标季
     """
@@ -480,27 +522,26 @@ def _resource_season_match_level(resource: dict, target_season) -> int:
     zh_target = _int_to_zh_num(target)
 
     # 1. 明确命中当前季：S03 / S3 / Season 3 / 第三季 / 第3季 / 3季
+    #    S05E01-S05E06 也会被 S05 命中。
     exact_patterns = [
         rf"(?<![A-Z0-9])S0?{target}(?!\d)",
-        rf"\bSEASON\s*0?{target}\b",
-        rf"第\s*(?:{target}|{zh_target})\s*季",
-        rf"(?<!\d){target}\s*季",
+        rf"\bSEASONS?\s*0?{target}\b",
+        rf"第\s*(?:0?{target}|{zh_target})\s*季",
+        rf"(?<!\d)0?{target}\s*季",
     ]
 
     if any(re.search(p, upper_text, re.IGNORECASE) for p in exact_patterns):
         return 30
 
-    # 2. S01-S05 / S1-5 / Season 1-5
+    # 2. S01-S05 / S1-5 / Season 1-5 / Seasons 1 to 5
     range_patterns = [
-        r"(?<![A-Z0-9])S0?(\d{1,2})\s*(?:-|~|–|—|至|到)\s*S?0?(\d{1,2})(?!\d)",
-        r"\bSEASON\s*0?(\d{1,2})\s*(?:-|~|–|—|TO|至|到)\s*(?:SEASON\s*)?0?(\d{1,2})\b",
+        r"(?<![A-Z0-9])S0?(\d{1,2})\s*(?:-|~|–|—|至|到|TO)\s*S?0?(\d{1,2})(?!\d)",
+        r"\bSEASONS?\s*0?(\d{1,2})\s*(?:-|~|–|—|TO|至|到)\s*(?:SEASONS?\s*)?0?(\d{1,2})\b",
     ]
 
     for pattern in range_patterns:
         for m in re.finditer(pattern, upper_text, re.IGNORECASE):
-            if _season_between(m.group(1), m.group(2), target):
-                return 20
-            return -1
+            return 20 if _season_between(m.group(1), m.group(2), target) else -1
 
     # 3. 第1-5季 / 一至五季 / 1-5季
     zh_range_pattern = r"(?:第)?\s*([一二两三四五六七八九十\d]{1,3})\s*(?:-|~|–|—|至|到)\s*([一二两三四五六七八九十\d]{1,3})\s*季"
@@ -508,9 +549,7 @@ def _resource_season_match_level(resource: dict, target_season) -> int:
         start = _zh_num_to_int(m.group(1))
         end = _zh_num_to_int(m.group(2))
         if start is not None and end is not None:
-            if _season_between(start, end, target):
-                return 20
-            return -1
+            return 20 if _season_between(start, end, target) else -1
 
     # 4. 全5季 / 全五季
     full_with_count_patterns = [
@@ -522,26 +561,39 @@ def _resource_season_match_level(resource: dict, target_season) -> int:
         for m in re.finditer(pattern, text, re.IGNORECASE):
             total = _zh_num_to_int(m.group(1))
             if total is not None:
-                if target <= total:
-                    return 20
-                return -1
+                return 20 if target <= total else -1
 
-    # 5. 全季 / 全集 / 合集 / Complete Series / Pack
+    # 5. Complete Season N / S04 Complete：这种不是合集，必须按具体季号判断。
+    complete_season_patterns = [
+        r"\bCOMPLETE\s+SEASONS?\s*0?(\d{1,2})\b",
+        r"\bSEASONS?\s*0?(\d{1,2})\s+COMPLETE\b",
+        r"(?<![A-Z0-9])S0?(\d{1,2})(?!\d).*?\bCOMPLETE\b",
+    ]
+
+    for pattern in complete_season_patterns:
+        for m in re.finditer(pattern, upper_text, re.IGNORECASE):
+            try:
+                return 30 if int(m.group(1)) == target else -1
+            except Exception:
+                continue
+
+    # 6. 全季 / 全集 / 合集 / Complete Series / Pack。
+    #    注意：不要用裸 COMPLETE，否则 S04 Complete 会误认为合集。
     pack_patterns = [
         r"全季", r"全集", r"合集", r"全套",
         r"COMPLETE\s+SERIES",
-        r"COMPLETE\s+SEASON",
-        r"\bCOMPLETE\b",
+        r"\bSERIES\s+PACK\b",
+        r"\bSEASONS?\s*PACK\b",
         r"\bPACK\b",
     ]
 
     if any(re.search(p, upper_text, re.IGNORECASE) for p in pack_patterns):
         return 15
 
-    # 6. 明确有季号，但不是目标季，也不是覆盖范围：排除
+    # 7. 明确有季号，但不是目标季，也不是覆盖范围：排除。
     explicit_other_season_patterns = [
         r"(?<![A-Z0-9])S\d{1,2}(?!\d)",
-        r"\bSEASON\s*\d{1,2}\b",
+        r"\bSEASONS?\s*\d{1,2}\b",
         r"第\s*[一二两三四五六七八九十\d]{1,3}\s*季",
         r"(?<!\d)\d{1,2}\s*季",
     ]
@@ -549,7 +601,7 @@ def _resource_season_match_level(resource: dict, target_season) -> int:
     if any(re.search(p, upper_text, re.IGNORECASE) for p in explicit_other_season_patterns):
         return -1
 
-    # 7. 没写季号：同一个 tv tmdb_id 下弱保留，不直接杀
+    # 8. 没写季号：同一个 tv tmdb_id 下弱保留，不直接杀，避免影巢备注缺失导致全军覆没。
     return 5
 
 
@@ -588,6 +640,7 @@ def _rank_hdhive_resources_for_season(resources: list[dict], target_season) -> l
         key=lambda r: (
             -int(r.get("_season_match_level", 0)),
             int(r.get("_effective_points", 0)),
+            0 if str(r.get("pan_type") or "115").lower() == "115" else 1,
             -float(r.get("_size_gb", 0) or 0),
         )
     )
@@ -641,8 +694,13 @@ def filter_hdhive_resources(
     if media_type == "tv" and target_season is not None:
         before_count = len(filtered)
         filtered = _rank_hdhive_resources_for_season(filtered, target_season)
+        try:
+            season_text = f"S{int(target_season):02d}"
+        except Exception:
+            season_text = str(target_season)
+
         logger.info(
-            f"  ➜ [影巢季排序] 目标季 S{int(target_season):02d}: "
+            f"  ➜ [影巢季排序] 目标季 {season_text}: "
             f"{before_count} 条候选资源 -> {len(filtered)} 条可用资源。"
         )
 
