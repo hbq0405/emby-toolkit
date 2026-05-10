@@ -617,27 +617,97 @@ def _season_match_label(level: int) -> str:
     return "明确错季，已排除"
 
 
+def _resource_completion_level(resource: dict) -> int:
+    """
+    判断影巢资源完整度。
+
+    返回值：
+      30 = 明确完整：全集 / 全结 / 完结 / 38集全 / 全38集 / Complete Series
+      10 = 明确分段：S01E01-E10 / E01-E10 / 第01-10集
+       0 = 未知
+
+    注意：完整度只参与排序，不覆盖季号排除。
+    如果资源明确写了其他季，仍然由 _resource_season_match_level 返回 -1 排除。
+    """
+    text = _resource_text(resource)
+    if not text:
+        return 0
+
+    upper_text = text.upper()
+
+    complete_patterns = [
+        r"全集",
+        r"全套",
+        r"全结",
+        r"全劇",
+        r"全剧",
+        r"完结",
+        r"完結",
+        r"已完结",
+        r"已完結",
+        r"\d{1,4}\s*集\s*(?:全|完|全结|完结|全劇|全剧|完結)",
+        r"全\s*\d{1,4}\s*集",
+        r"COMPLETE\s+SERIES",
+        r"\bSERIES\s+COMPLETE\b",
+    ]
+
+    if any(re.search(p, upper_text, re.IGNORECASE) for p in complete_patterns):
+        return 30
+
+    partial_patterns = [
+        r"S\d{1,2}\s*E\d{1,3}\s*(?:-|~|–|—|至|到|TO)\s*E?\d{1,3}",
+        r"E\d{1,3}\s*(?:-|~|–|—|至|到|TO)\s*E?\d{1,3}",
+        r"第\s*\d{1,3}\s*(?:-|~|–|—|至|到)\s*\d{1,3}\s*集",
+        r"\d{1,3}\s*(?:-|~|–|—|至|到)\s*\d{1,3}\s*集",
+    ]
+
+    if any(re.search(p, upper_text, re.IGNORECASE) for p in partial_patterns):
+        return 10
+
+    return 0
+
+
+def _completion_label(level: int) -> str:
+    if level >= 30:
+        return "完整资源"
+    if level >= 10:
+        return "分段资源"
+    return "完整度未知"
+
+
 def _rank_hdhive_resources_for_season(resources: list[dict], target_season) -> list[dict]:
-    """按目标季对影巢资源排序：命中当前季 > 范围/全季 > 合集 > 未标季。明确错季才排除。"""
+    """
+    按目标季对影巢资源排序。
+
+    核心原则：
+    - 明确错季仍然排除。
+    - 完整资源优先于分段资源，解决“未标季全结”被“S01E01-E10”压住的问题。
+    - 同完整度下，再按季号命中强度、积分、115、体积排序。
+    """
     ranked = []
 
     for resource in resources or []:
-        level = _resource_season_match_level(resource, target_season)
+        season_level = _resource_season_match_level(resource, target_season)
 
-        resource["_season_match_level"] = level
-        resource["_season_match_label"] = _season_match_label(level)
+        resource["_season_match_level"] = season_level
+        resource["_season_match_label"] = _season_match_label(season_level)
 
-        if level < 0:
+        if season_level < 0:
             logger.debug(
                 f"  ➜ [影巢季过滤] 排除明确错季资源: "
                 f"{resource.get('title') or resource.get('remark') or resource.get('slug')}"
             )
             continue
 
+        completion_level = _resource_completion_level(resource)
+        resource["_completion_level"] = completion_level
+        resource["_completion_label"] = _completion_label(completion_level)
+
         ranked.append(resource)
 
     ranked.sort(
         key=lambda r: (
+            -int(r.get("_completion_level", 0)),
             -int(r.get("_season_match_level", 0)),
             int(r.get("_effective_points", 0)),
             0 if str(r.get("pan_type") or "115").lower() == "115" else 1,
@@ -651,9 +721,18 @@ def filter_hdhive_resources(
         resources: list[dict],
         config: dict | None = None,
         target_season=None,
-        media_type: str | None = None
+        media_type: str | None = None,
+        require_complete: bool = False
     ) -> list[dict]:
-    """根据配置过滤影巢资源列表，返回符合条件的资源。"""
+    """
+    根据配置过滤影巢资源列表，返回符合条件的资源。
+
+    require_complete 仅用于剧集资源：
+    - True：只保留“全集 / 全结 / 完结 / 全N集 / N集全”这类完整包。
+      用于 TMDb 判定已完结的剧集/季，避免转存 S01E01-E10 这种残缺包。
+      第一季已完结时，调用方会忽略“明确 S01”的排序优先级，但这里仍会排除明确错季资源。
+    - False：不强制完整包。用于未完结剧集，逮到可用资源就转存，后续交给智能追剧补全。
+    """
     cfg = config or get_hdhive_filter_config()
 
     filtered = []
@@ -689,6 +768,13 @@ def filter_hdhive_resources(
 
         resource['_effective_points'] = 0 if already_owned else points
         resource['_size_gb'] = size_gb or 0
+
+        # 剧集资源统一标注完整度。即使没有目标季，也能用于“已完结只转存完结包”。
+        if media_type == "tv":
+            completion_level = _resource_completion_level(resource)
+            resource["_completion_level"] = completion_level
+            resource["_completion_label"] = _completion_label(completion_level)
+
         filtered.append(resource)
 
     if media_type == "tv" and target_season is not None:
@@ -702,6 +788,14 @@ def filter_hdhive_resources(
         logger.info(
             f"  ➜ [影巢季排序] 目标季 {season_text}: "
             f"{before_count} 条候选资源 -> {len(filtered)} 条可用资源。"
+        )
+
+    if media_type == "tv" and require_complete:
+        before_complete_count = len(filtered)
+        filtered = [r for r in filtered if int(r.get("_completion_level") or 0) >= 30]
+        logger.info(
+            f"  ➜ [影巢完结包过滤] 已完结剧集/季只保留完整包: "
+            f"{before_complete_count} 条候选资源 -> {len(filtered)} 条完整资源。"
         )
 
     return filtered
