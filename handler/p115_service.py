@@ -1785,10 +1785,15 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         logger.debug(f"  🛑 [规则拦截] '第 {season_num} 季' 真实状态为 'Completed'，跳过连载规则。")
                         return False
                     else:
-                        # 状态是 'NONE'、空值、或者其他未知状态，主动向 TMDb 查连载状态！
-                        from tasks.helpers import evaluate_season_airing_status
                         logger.info(f"  ➜ 数据库状态为 '{season_status or '空'}'，正在向 TMDb 实时查询 '第 {season_num} 季' 的连载状态...")
-                        is_airing = evaluate_season_airing_status(self.tmdb_id, season_num, self.api_key)
+
+                        is_airing = helpers.check_series_completion(
+                            self.tmdb_id,
+                            self.api_key,
+                            season_number=season_num,
+                            series_name=getattr(self, "title", "未知剧集"),
+                            mode="airing"
+                            )
                         
                         if is_airing:
                             logger.info(f"  ➜ [连载判定] 确认 '第 {season_num} 季' 正在连载，命中连载规则！")
