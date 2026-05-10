@@ -4666,7 +4666,7 @@ class MediaProcessor:
                     duration_sec = runtime_min * 60
 
             if duration_sec > 0:
-                timestamp_sec = max(60, int(duration_sec * 0.3))
+                timestamp_sec = max(60, int(duration_sec * 0.15))
                 timestamp_sec = min(timestamp_sec, int(duration_sec - 10))
 
             logger.info(f"  ➜ [视频截图] 截取画面 (时间点: {timestamp_sec}s, HDR: {'是' if is_hdr else '否'}, DV P5: {'是' if is_dovi_p5 else '否'}) -> {os.path.basename(thumb_save_path)}")
