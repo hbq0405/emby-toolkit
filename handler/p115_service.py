@@ -2967,22 +2967,18 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         base_title = original_title if cfg.get('main_title_lang', 'zh') == 'original' else title
         safe_title = re.sub(r'[\\/:*?"<>|]', '', base_title).strip()
 
-        if keep_original:
-            std_root_name = root_name
-            safe_title = root_name # 如果保留原名，safe_title 也退化为原名
-        else:
-            # ★ 保留原名只影响“文件名”，绝不影响主目录结构
-            # 主目录永远走 ETK 标准命名逻辑，避免 batch 模式退化成“批量文件”
-            main_format = cfg.get('main_dir_format', ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'])
-            std_root_name = self._build_name_from_format(
-                main_format,
-                is_tv=(self.media_type == 'tv'),
-                original_title=original_title
-            )
+        # ★ 保留原名只影响文件名，不影响主目录
+        # batch 模式 root_name 可能是“批量文件”，绝不能拿它当目标主目录
+        main_format = cfg.get('main_dir_format', ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'])
+        std_root_name = self._build_name_from_format(
+            main_format,
+            is_tv=(self.media_type == 'tv'),
+            original_title=original_title
+        )
 
-            # 兜底防空
-            if not std_root_name:
-                std_root_name = safe_title
+        # 兜底防空
+        if not std_root_name:
+            std_root_name = safe_title
 
         config = get_config()
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
