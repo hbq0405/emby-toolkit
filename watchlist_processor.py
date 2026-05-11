@@ -581,7 +581,7 @@ class WatchlistProcessor:
             if ep.get('still_path') and not ep.get('poster_path'):
                 ep['poster_path'] = ep['still_path']
                 
-        logger.debug(f"  ➜ [调试] 成功构建 unified_episodes_dict，共 {len(unified_episodes_dict)} 集。")
+        # logger.debug(f"  ➜ [调试] 成功构建 unified_episodes_dict，共 {len(unified_episodes_dict)} 集。")
         
         # 强制覆盖 aggregated_data 中的 episodes_details，供后续 NFO 和图片下载使用
         aggregated_data['episodes_details'] = unified_episodes_dict
