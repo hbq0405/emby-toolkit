@@ -3266,6 +3266,16 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             file_name = file_item.get('fn') or file_item.get('n') or file_item.get('file_name', '')
             ext = file_name.split('.')[-1].lower() if '.' in file_name else ''
             file_size = _parse_115_size(file_item.get('fs') or file_item.get('size'))
+
+            # 每个文件先初始化通用字段，防止 keep_original 分支漏赋值
+            new_filename = file_name
+            season_num = None
+            episode_num = None
+            s_name = None
+            is_center_cached = False
+            has_real_info = False
+            video_info = {}
+            part_num = None
             
             # 1. 扩展名绝对白名单校验 (最高优先级)
             if ext not in allowed_exts:
