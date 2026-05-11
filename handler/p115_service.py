@@ -1499,11 +1499,21 @@ class P115DeleteBuffer:
                 if not current or current == '0':
                     break
 
+                # 1. 优先查本地缓存
                 node = P115CacheManager.get_node_info(current)
-                if not node:
-                    break
+                parent_id = None
+                
+                if node and node.get('parent_id'):
+                    parent_id = str(node.get('parent_id'))
+                else:
+                    # 2. ★ 核心修复：缓存穿透时，直接查 115 API 溯源 (终极防线)
+                    try:
+                        info_res = client.fs_get_info(current)
+                        if info_res and info_res.get('state') and info_res.get('data'):
+                            parent_id = str(info_res['data'].get('parent_id') or info_res['data'].get('cid') or '')
+                    except Exception:
+                        pass
 
-                parent_id = str(node.get('parent_id') or '')
                 if not parent_id or parent_id == '0':
                     break
 
