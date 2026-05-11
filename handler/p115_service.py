@@ -29,6 +29,18 @@ logger = logging.getLogger(__name__)
 
 from collections import OrderedDict
 
+def get_115_ua(app_type):
+    """根据 APP 类型返回对应的真实 User-Agent，防止 115 风控"""
+    ua_map = {
+        'web': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'mac': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) 115Browser/25.0.3.2',
+        'linux': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) 115Browser/25.0.3.2',
+        'tv': 'Mozilla/5.0 (Linux; Android 7.1.2; 115disk Build/NHG47K; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/89.0.4389.114 Safari/537.36',
+        'alipaymini': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 AlipayDefined(nt:WIFI,ws:390|844|3.0) AliApp(AP/10.5.33.8143) AlipayClient/10.5.33.8143 Language/zh-Hans Region/CN',
+        'wechatmini': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 MicroMessenger/8.0.42(0x18002a2c) NetType/WIFI Language/zh_CN'
+    }
+    return ua_map.get(str(app_type).lower() if app_type else 'web', ua_map['web'])
+
 class LimitedCache(OrderedDict):
     """带容量限制的内存缓存，防止内存泄漏撑爆服务器"""
     def __init__(self, maxsize=1000, *args, **kwds):
@@ -59,17 +71,20 @@ def get_115_tokens():
     auth_data = settings_db.get_setting('p115_auth_tokens')
     if auth_data:
         cookie = auth_data.get('cookie')
-                
-        return auth_data.get('access_token'), auth_data.get('refresh_token'), cookie
-    return None, None, None
+        # ★ 新增：读取 app_type，老用户默认兼容为 web
+        app_type = auth_data.get('app_type', 'web')
+        return auth_data.get('access_token'), auth_data.get('refresh_token'), cookie, app_type
+    return None, None, None, 'web'
 
-def save_115_tokens(access_token, refresh_token, cookie=None):
+def save_115_tokens(access_token, refresh_token, cookie=None, app_type=None):
     """唯一真理：只写入独立数据库"""
     existing = settings_db.get_setting('p115_auth_tokens') or {}
     settings_db.save_setting('p115_auth_tokens', {
         'access_token': access_token if access_token is not None else existing.get('access_token'),
         'refresh_token': refresh_token if refresh_token is not None else existing.get('refresh_token'),
-        'cookie': cookie if cookie is not None else existing.get('cookie')
+        'cookie': cookie if cookie is not None else existing.get('cookie'),
+        # ★ 新增：保存 app_type
+        'app_type': app_type if app_type is not None else existing.get('app_type', 'web')
     })
 
 _refresh_lock = threading.Lock()
@@ -78,7 +93,7 @@ def refresh_115_token(failed_token=None):
     """使用 refresh_token 换取新的 access_token (纯数据库读写)"""
     with _refresh_lock:
         try:
-            current_access, current_refresh, _ = get_115_tokens()
+            current_access, current_refresh, _, _ = get_115_tokens()
             if not current_refresh:
                 return False
                 
@@ -370,14 +385,18 @@ class P115OpenAPIClient:
 # ======================================================================
 class P115CookieClient:
     """使用 Cookie 进行播放操作"""
-    def __init__(self, cookie_str):
+    # ★ 新增 app_type 参数
+    def __init__(self, cookie_str, app_type='web'):
         if not cookie_str:
             raise ValueError("Cookie 不能为空")
         self.cookie_str = cookie_str.strip()
+        self.app_type = app_type
+        self.user_agent = get_115_ua(app_type) # ★ 获取对应的真实 UA
         self.webapi = None
         if P115Client:
             try:
-                self.webapi = P115Client(self.cookie_str)
+                # ★ 尝试将 app 传给底层库 (如果 p115client 支持的话)
+                self.webapi = P115Client(self.cookie_str, app=self.app_type)
             except Exception as e:
                 logger.warning(f"  ➜ Cookie 客户端初始化失败: {e}")
                 raise
@@ -405,7 +424,7 @@ class P115CookieClient:
         
         # 兜底：使用 requests 手动发请求
         headers = {
-            "User-Agent": "Mozilla/5.0",
+            "User-Agent": self.user_agent, # ★ 核心：强制使用数据库中记录的 UA
             "Cookie": self.cookie_str
         }
         if 'headers' in kwargs:
@@ -475,7 +494,7 @@ class P115Service:
     @classmethod
     def get_openapi_client(cls):
         """获取管理客户端 (OpenAPI) - 启动时初始化"""
-        token, _, _ = get_115_tokens()
+        token, _, _, _ = get_115_tokens()
         if not token:
             return None
 
@@ -494,19 +513,20 @@ class P115Service:
     @classmethod
     def init_cookie_client(cls):
         """初始化 Cookie 客户端 (延迟到播放请求时)"""
-        _, _, cookie = get_115_tokens() # ★ 从数据库读
+        # ★ 接收 app_type
+        _, _, cookie, app_type = get_115_tokens() 
         cookie = (cookie or "").strip()
         
         if not cookie:
             return None
 
         with cls._lock:
-            # 双重检查：检查配置是否变化
             if cls._cookie_client is None or cookie != cls._cookie_cache:
                 try:
-                    cls._cookie_client = P115CookieClient(cookie)
+                    # ★ 将 app_type 传给 CookieClient
+                    cls._cookie_client = P115CookieClient(cookie, app_type)
                     cls._cookie_cache = cookie
-                    logger.info("  ➜ [115] Cookie 客户端已初始化")
+                    logger.info(f"  ➜ [115] Cookie 客户端已初始化 (App: {app_type})")
                 except Exception as e:
                     logger.error(f"  ➜ 115 Cookie 客户端初始化失败: {e}")
                     cls._cookie_client = None
@@ -782,13 +802,13 @@ class P115Service:
     @classmethod
     def get_cookies(cls):
         """获取 Cookie (用于直链下载等)"""
-        _, _, cookie = get_115_tokens()
+        _, _, cookie, _ = get_115_tokens()
         return cookie
     
     @classmethod
     def get_token(cls):
         """获取 Token (用于 API 调用)"""
-        token, _, _ = get_115_tokens()
+        token, _, _, _ = get_115_tokens()
         return token
 
 

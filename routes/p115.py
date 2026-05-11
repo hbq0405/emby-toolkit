@@ -234,8 +234,12 @@ def get_cookie_qrcode():
     """获取用于生成 Cookie 的二维码 (支持指定 APP 类型)"""
     app_type = request.args.get('app', 'alipaymini') # 默认支付宝小程序
     try:
-        url = f"https://qrcodeapi.115.com/api/1.0/web/1.0/token/?app={app_type}"
-        resp = requests.get(url, timeout=10).json()
+        from handler.p115_service import get_115_ua
+        headers = {"User-Agent": get_115_ua(app_type)} # ★ 注入 UA
+        
+        # ★ 修复：URL 路径动态化
+        url = f"https://qrcodeapi.115.com/api/1.0/{app_type}/1.0/token/?app={app_type}"
+        resp = requests.get(url, headers=headers, timeout=10).json()
         
         if resp.get('state') == 1:
             data = resp.get('data', {})
@@ -264,9 +268,12 @@ def check_cookie_qrcode_status():
         return jsonify({"success": False, "status": "expired", "message": "请先获取二维码"})
         
     try:
+        from handler.p115_service import get_115_ua
+        headers = {"User-Agent": get_115_ua(app_type)} # ★ 注入 UA
+        
         # 1. 轮询状态
         url = f"https://qrcodeapi.115.com/get/status/?uid={uid}&time={time_val}&sign={sign}"
-        resp = requests.get(url, timeout=10).json()
+        resp = requests.get(url, headers=headers, timeout=10).json()
         
         state = resp.get('state')
         if state == 0:
@@ -278,25 +285,23 @@ def check_cookie_qrcode_status():
                 return jsonify({"success": True, "status": "waiting", "message": "已扫码，请在手机端确认"})
             elif status == 2:
                 # 2. 手机端已确认，调用登录接口换取 Cookie
-                login_url = "https://passportapi.115.com/app/1.0/web/1.0/login/qrcode"
+                # ★ 修复：URL 路径动态化
+                login_url = f"https://passportapi.115.com/app/1.0/{app_type}/1.0/login/qrcode"
                 payload = {"account": uid, "app": app_type}
                 
-                # ★ 关键：必须捕获响应头里的 Set-Cookie
-                login_resp = requests.post(login_url, data=payload, timeout=10)
+                # ★ 注入 headers
+                login_resp = requests.post(login_url, data=payload, headers=headers, timeout=10)
                 login_data = login_resp.json()
                 
                 if login_data.get('state') == 1:
-                    # 提取 Cookie
                     cookies_dict = login_resp.cookies.get_dict()
                     cookie_str = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
                     
-                    # ★ 保存到独立数据库
+                    # ★ 保存到独立数据库，连同 app_type 一起保存！
                     from handler.p115_service import save_115_tokens
-                    save_115_tokens(None, None, cookie_str)
+                    save_115_tokens(None, None, cookie_str, app_type)
                     
-                    # 重置客户端缓存
                     P115Service.reset_cookie_client()
-                    
                     return jsonify({"success": True, "status": "success", "message": "Cookie 获取成功！"})
                 else:
                     return jsonify({"success": False, "status": "error", "message": login_data.get('message', '登录失败')})
@@ -310,9 +315,11 @@ def check_cookie_qrcode_status():
 def save_manual_cookie():
     """手动保存 Cookie 到独立数据库"""
     cookie_str = request.json.get('cookie', '').strip()
+    # ★ 允许前端传 app_type，如果不传默认 web
+    app_type = request.json.get('app_type', 'web').strip() 
     try:
         from handler.p115_service import save_115_tokens
-        save_115_tokens(None, None, cookie_str)
+        save_115_tokens(None, None, cookie_str, app_type)
         P115Service.reset_cookie_client()
         return jsonify({"success": True, "message": "Cookie 已保存"})
     except Exception as e:
@@ -409,7 +416,7 @@ def get_115_status():
     """检查 115 凭证状态 (分别检查 Token 和 Cookie)"""
     try:
         from handler.p115_service import P115Service, get_115_tokens
-        token, _, cookie = get_115_tokens() # ★ 从数据库读
+        token, _, cookie, _ = get_115_tokens() # ★ 从数据库读
         token = (token or "").strip() 
         cookie = (cookie or "").strip()
         
