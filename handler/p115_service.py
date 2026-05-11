@@ -2971,11 +2971,18 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             std_root_name = root_name
             safe_title = root_name # 如果保留原名，safe_title 也退化为原名
         else:
-            # ★ 使用新的乐高引擎生成主目录名 (可能包含 /)
+            # ★ 保留原名只影响“文件名”，绝不影响主目录结构
+            # 主目录永远走 ETK 标准命名逻辑，避免 batch 模式退化成“批量文件”
             main_format = cfg.get('main_dir_format', ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'])
-            std_root_name = self._build_name_from_format(main_format, is_tv=(self.media_type=='tv'), original_title=original_title)
+            std_root_name = self._build_name_from_format(
+                main_format,
+                is_tv=(self.media_type == 'tv'),
+                original_title=original_title
+            )
+
             # 兜底防空
-            if not std_root_name: std_root_name = safe_title
+            if not std_root_name:
+                std_root_name = safe_title
 
         config = get_config()
         configured_exts = config.get(constants.CONFIG_OPTION_115_EXTENSIONS, [])
@@ -3304,61 +3311,82 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 except Exception:
                     pass
 
+            # =================================================================
+            # ★ 保留原名模式：只保留文件名，不跳过内部解析
+            # =================================================================
             if keep_original:
+                # 调用统一命名解析器，只取内部结构化字段，不使用它生成的新文件名
+                parsed_filename, season_num, episode_num, s_name, is_center_cached, video_info, has_real_info, part_num = self._rename_file_node(
+                    file_item,
+                    safe_title,
+                    year=year,
+                    is_tv=(self.media_type == 'tv'),
+                    original_title=original_title,
+                    pre_fetched_mediainfo=pre_fetched_mediainfo,
+                    local_pre_fetched_mediainfo=local_pre_fetched_mediainfo,
+                    silent_log=True
+                )
+
+                # ★ 核心：只保留文件名
                 new_filename = file_name
-                season_num = None
-                s_name = None
-                is_center_cached = False
+
+                # ★ 目录仍走标准逻辑
                 real_target_cid = final_home_cid
-                has_real_info = False
-                
-                # 即使保留原名，也要提取真实参数供洗版使用
-                video_info = self._extract_video_info(file_name)
-                if ext in known_video_exts:
-                    if file_sha1:
-                        real_info, is_center_cached = self._fetch_and_parse_mediainfo(file_sha1, video_info, pre_fetched_mediainfo, local_pre_fetched_mediainfo, file_node=file_item, silent_log=True)
-                        if real_info:
-                            video_info.update(real_info)
-                            has_real_info = True
-                
-                # 1:1 复刻原始目录架构
-                rel_path = file_item.get('rel_path', '')
-                if rel_path:
-                    current_parent = final_home_cid
-                    for part in rel_path.split('/'):
-                        if not part: continue
-                        
-                        # ★ 优先查内存缓存
-                        cache_key = f"{current_parent}_{part}"
-                        part_cid = memory_dir_cache.get(cache_key)
-                        
-                        # ★ 失败记忆体拦截
-                        if part_cid == 'FAILED':
-                            break
-                            
-                        if not part_cid:
-                            part_cid = P115CacheManager.get_cid(current_parent, part)
-                            
-                        if not part_cid:
-                            mk_res = self.client.fs_mkdir(part, current_parent)
-                            if mk_res.get('state'):
-                                part_cid = mk_res.get('cid')
-                            else:
-                                try:
-                                    s_search = self.client.fs_files({'cid': current_parent, 'search_value': part, 'limit': 1150, 'record_open_time': 0, 'count_folders': 0})
-                                    for s_item in s_search.get('data', []):
-                                        if s_item.get('fn') == part and str(s_item.get('fc', s_item.get('type'))) == '0':
-                                            part_cid = s_item.get('fid') or s_item.get('file_id')
-                                            break
-                                except: pass
-                        if part_cid:
-                            P115CacheManager.save_cid(part_cid, current_parent, part)
-                            memory_dir_cache[cache_key] = part_cid # ★ 写入内存缓存
-                            current_parent = part_cid
+
+                # 剧集仍然进入标准季目录
+                if self.media_type == 'tv' and season_num is not None and s_name:
+                    cache_key = f"{final_home_cid}_{s_name}"
+
+                    with _GLOBAL_DIR_LOCK:
+                        s_cid = _GLOBAL_DIR_CACHE.get(cache_key)
+
+                    if s_cid == 'FAILED':
+                        real_target_cid = final_home_cid
+                    else:
+                        if not s_cid:
+                            s_cid = P115CacheManager.get_cid(final_home_cid, s_name)
+
+                        if s_cid:
+                            real_target_cid = s_cid
+                            with _GLOBAL_DIR_LOCK:
+                                _GLOBAL_DIR_CACHE[cache_key] = s_cid
                         else:
-                            memory_dir_cache[cache_key] = 'FAILED' # ★ 写入失败记忆体
-                            break
-                    real_target_cid = current_parent
+                            s_mk = self.client.fs_mkdir(s_name, final_home_cid)
+                            s_cid = s_mk.get('cid') if s_mk.get('state') else None
+
+                            if not s_cid:
+                                try:
+                                    s_search = self.client.fs_files({
+                                        'cid': final_home_cid,
+                                        'search_value': s_name,
+                                        'limit': 100,
+                                        'show_dir': 1,
+                                        'record_open_time': 0
+                                    })
+                                    for item in s_search.get('data', []):
+                                        item_name = item.get('fn') or item.get('n') or item.get('file_name')
+                                        item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
+                                        item_cid = item.get('fid') or item.get('file_id')
+
+                                        if item_fc == '0' and item_name == s_name and item_cid:
+                                            s_cid = item_cid
+                                            break
+                                except Exception:
+                                    pass
+
+                            if s_cid:
+                                P115CacheManager.save_cid(s_cid, final_home_cid, s_name)
+                                with _GLOBAL_DIR_LOCK:
+                                    _GLOBAL_DIR_CACHE[cache_key] = s_cid
+                                real_target_cid = s_cid
+
+                                season_rel_path = f"{base_rel_path}/{s_name}"
+                                P115CacheManager.update_local_path(s_cid, season_rel_path)
+                            else:
+                                with _GLOBAL_DIR_LOCK:
+                                    _GLOBAL_DIR_CACHE[cache_key] = 'FAILED'
+                                real_target_cid = final_home_cid
+
             else:
                 new_filename, season_num, episode_num, s_name, is_center_cached, video_info, has_real_info, part_num = self._rename_file_node(
                     file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
@@ -3850,13 +3878,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                     except Exception as e:
                                         relative_category_path = category_rule.get('dir_name', '未识别')
 
-                            if keep_original:
-                                rel_path = file_item.get('rel_path', '')
-                                if rel_path:
-                                    local_dir = os.path.join(local_root, relative_category_path, std_root_name, rel_path.replace('/', os.sep))
-                                else:
-                                    local_dir = os.path.join(local_root, relative_category_path, std_root_name)
-                            elif self.media_type == 'tv' and season_num is not None:
+                            # ★ 保留原名只影响文件名，本地目录仍走标准结构
+                            if self.media_type == 'tv' and season_num is not None and s_name:
                                 local_dir = os.path.join(local_root, relative_category_path, std_root_name, s_name)
                             else:
                                 local_dir = os.path.join(local_root, relative_category_path, std_root_name)
@@ -3866,11 +3889,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                             try:
                                 main_folder_path = os.path.join(relative_category_path, std_root_name)
                                 P115CacheManager.update_local_path(final_home_cid, main_folder_path)
-                                if keep_original:
-                                    rel_path = file_item.get('rel_path', '')
-                                    if rel_path:
-                                        P115CacheManager.update_local_path(batch_target_cid, os.path.join(main_folder_path, rel_path.replace('/', os.sep)))
-                                elif self.media_type == 'tv' and season_num is not None:
+                                # ★ 保留原名不再复刻原始子目录，只按标准季目录更新缓存
+                                if self.media_type == 'tv' and season_num is not None and s_name:
                                     P115CacheManager.update_local_path(batch_target_cid, os.path.join(main_folder_path, s_name))
                             except Exception: pass 
 
@@ -3882,11 +3902,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 strm_filepath = os.path.join(local_dir, strm_filename)
                                 if not etk_url.startswith('http'):
                                     mount_prefix = etk_url
-                                    if keep_original:
-                                        rel_path = file_item.get('rel_path', '')
-                                        if rel_path: mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, rel_path.replace('/', os.sep), new_filename)
-                                        else: mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, new_filename)
-                                    elif self.media_type == 'tv' and season_num is not None:
+                                    # ★ 保留原名只影响 new_filename，挂载路径仍走标准目录
+                                    if self.media_type == 'tv' and season_num is not None and s_name:
                                         mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, s_name, new_filename)
                                     else:
                                         mount_path = os.path.join(mount_prefix, relative_category_path, std_root_name, new_filename)
@@ -3926,11 +3943,8 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                     except Exception as e:
                                         logger.error(f"  ➜ 生成媒体信息文件失败: {e}")
 
-                                if keep_original:
-                                    rel_path = file_item.get('rel_path', '')
-                                    if rel_path: file_local_path = os.path.join(relative_category_path, std_root_name, rel_path.replace('/', os.sep), new_filename)
-                                    else: file_local_path = os.path.join(relative_category_path, std_root_name, new_filename)
-                                elif self.media_type == 'tv' and season_num is not None:
+                                # ★ 保留原名只影响文件名，缓存路径仍走标准目录
+                                if self.media_type == 'tv' and season_num is not None and s_name:
                                     file_local_path = os.path.join(relative_category_path, std_root_name, s_name, new_filename)
                                 else:
                                     file_local_path = os.path.join(relative_category_path, std_root_name, new_filename)

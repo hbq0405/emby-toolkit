@@ -9,14 +9,11 @@
           
           <!-- 标签页 1：目录命名 (乐高轨道) -->
           <n-tab-pane name="dir" tab="目录命名 (拖拽排序)">
-            <n-form-item label="保留原名" label-placement="left" style="margin-bottom: 12px; background: rgba(24, 160, 88, 0.05); padding: 8px 12px; border-radius: 6px;">
-              <n-switch v-model:value="config.keep_original_name" />
-              <template #feedback>
-                <span style="font-size: 12px; color: gray;">开启后仅做归类，原目录架构和文件名原封不动 (覆盖下方所有规则)</span>
-              </template>
-            </n-form-item>
+            <n-alert type="info" style="margin-bottom: 12px;">
+              目录命名始终生效。即使开启“保留原始文件名”，主目录和季目录也会继续按这里的规则生成。
+            </n-alert>
 
-            <div class="lego-container" v-if="!config.keep_original_name">
+            <div class="lego-container">
               <div class="lego-header"><span>📁 主目录轨道 (支持使用 / 创建多级目录)</span></div>
               <div class="block-pool">
                 <n-tag v-for="block in getAvailableBlocks('main_dir')" :key="block.id" :type="block.isSep ? 'warning' : 'info'" class="lego-block" @click="addBlock(block, 'main_dir')">
@@ -51,6 +48,18 @@
 
           <!-- 标签页 2：文件命名 (乐高轨道) -->
           <n-tab-pane name="file" tab="文件命名 (拖拽排序)">
+            <n-form-item
+              label="保留原始文件名"
+              label-placement="left"
+              style="margin-bottom: 12px; background: rgba(24, 160, 88, 0.05); padding: 8px 12px; border-radius: 6px;"
+            >
+              <n-switch v-model:value="config.keep_original_name" />
+              <template #feedback>
+                <span style="font-size: 12px; color: gray;">
+                  开启后仅保留最终文件名；主目录、季目录、STRM 路径和缓存路径仍按目录命名规则生成。
+                </span>
+              </template>
+            </n-form-item>
             <div class="lego-container" v-if="!config.keep_original_name">
               <div class="lego-header"><span>📄 文件名轨道</span></div>
               <div class="block-pool">
@@ -294,7 +303,6 @@ const mockOriginalTvFile = "Breaking.Bad.S01E01.2160p.WEB-DL.x265.mp4";
 
 // 统一的名称生成引擎
 const buildName = (mockData, formatArray, isTv) => {
-  if (config.value.keep_original_name) return ''; 
   if (!formatArray) return '';
   
   let evaluated = [];
@@ -357,11 +365,29 @@ const buildName = (mockData, formatArray, isTv) => {
   return finalParts.join('');
 };
 
-const previewMovieDir = computed(() => config.value.keep_original_name ? mockOriginalMovieDir : buildName(mockMovie, config.value.main_dir_format, false));
-const previewTvDir = computed(() => config.value.keep_original_name ? mockOriginalTvDir : buildName(mockTv, config.value.main_dir_format, true));
-const previewTvSeason = computed(() => config.value.keep_original_name ? "(保留原始子目录)" : buildName(mockTv, config.value.season_dir_format, true));
-const previewMovieFile = computed(() => config.value.keep_original_name ? mockOriginalMovieFile : buildName(mockMovie, config.value.file_format, false) + mockMovie.ext);
-const previewTvFile = computed(() => config.value.keep_original_name ? mockOriginalTvFile : buildName(mockTv, config.value.file_format, true) + mockTv.ext);
+const previewMovieDir = computed(() =>
+  buildName(mockMovie, config.value.main_dir_format, false) || '未配置主目录规则'
+);
+
+const previewTvDir = computed(() =>
+  buildName(mockTv, config.value.main_dir_format, true) || '未配置主目录规则'
+);
+
+const previewTvSeason = computed(() =>
+  buildName(mockTv, config.value.season_dir_format, true) || '未配置季目录规则'
+);
+
+const previewMovieFile = computed(() =>
+  config.value.keep_original_name
+    ? mockOriginalMovieFile
+    : (buildName(mockMovie, config.value.file_format, false) || mockMovie.orig) + mockMovie.ext
+);
+
+const previewTvFile = computed(() =>
+  config.value.keep_original_name
+    ? mockOriginalTvFile
+    : (buildName(mockTv, config.value.file_format, true) || mockTv.orig) + mockTv.ext
+);
 
 const previewMovieStrm = computed(() => {
   const baseUrl = 'http://127.0.0.1:5257/api/p115/play/abc123xyz';
@@ -393,6 +419,21 @@ const open = async () => {
 };
 
 const saveConfig = async () => {
+  if (!config.value.main_dir_format || config.value.main_dir_format.length === 0) {
+    message.warning('主目录命名规则不能为空');
+    return;
+  }
+
+  if (!config.value.season_dir_format || config.value.season_dir_format.length === 0) {
+    message.warning('季目录命名规则不能为空');
+    return;
+  }
+
+  if (!config.value.keep_original_name && (!config.value.file_format || config.value.file_format.length === 0)) {
+    message.warning('文件命名规则不能为空；如需跳过文件重命名，请开启“保留原始文件名”');
+    return;
+  }
+
   saving.value = true;
   try {
     const res = await axios.post('/api/p115/rename_config', config.value);
