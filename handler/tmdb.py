@@ -79,6 +79,30 @@ def get_tmdb_api_base_url() -> str:
 DEFAULT_LANGUAGE = "zh-CN"
 DEFAULT_REGION = "CN"
 
+def _config_bool(key: str, default: bool = False) -> bool:
+    """兼容 bool / str / int 的配置布尔值读取。"""
+    value = config_manager.APP_CONFIG.get(key, default)
+
+    if isinstance(value, bool):
+        return value
+
+    if isinstance(value, int):
+        return value != 0
+
+    if isinstance(value, str):
+        return value.strip().lower() in ("1", "true", "yes", "on", "enabled", "开启", "启用")
+
+    return bool(value)
+
+
+def _get_ai_translation_flags() -> Dict[str, bool]:
+    """集中读取 AI 翻译相关开关，避免到处散落 APP_CONFIG 读取逻辑。"""
+    return {
+        "title": _config_bool(constants.CONFIG_OPTION_AI_TRANSLATE_TITLE, False),
+        "overview": _config_bool(constants.CONFIG_OPTION_AI_TRANSLATE_OVERVIEW, False),
+        "episode_overview": _config_bool(constants.CONFIG_OPTION_AI_TRANSLATE_EPISODE_OVERVIEW, False),
+    }
+
 def _sanitize_text(text: str) -> str:
     """隐藏文本中的 api_key，防止日志泄露"""
     if not text:
@@ -172,66 +196,106 @@ def get_movie_details(movie_id: int, api_key: str, append_to_response: Optional[
     return details
 
 # --- 获取电视剧的详细信息 ---
-def get_tv_details(tv_id: int, api_key: str, append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings,alternative_titles", language: Optional[str] = None, include_image_language: Optional[str] = None) -> Optional[Dict[str, Any]]:
+def get_tv_details(
+    tv_id: int,
+    api_key: str,
+    append_to_response: Optional[str] = "credits,videos,images,keywords,external_ids,translations,content_ratings,alternative_titles",
+    language: Optional[str] = None,
+    include_image_language: Optional[str] = None,
+    allow_english_fallback: Optional[bool] = None
+) -> Optional[Dict[str, Any]]:
     """
-    【已升级】获取电视剧的详细信息。
-    增加 include_image_language 参数支持自定义图片语言筛选。
+    获取电视剧的详细信息。
+    allow_english_fallback:
+      - None: 自动按 AI 翻译标题/简介开关决定
+      - True: 允许请求英文版兜底
+      - False: 禁止额外英文兜底请求
     """
     endpoint = f"/tv/{tv_id}"
-    
-    # 默认的图片语言列表
     default_img_lang = "zh-CN,zh-TW,zh,en,null,ja,ko"
 
     params = {
         "language": language or DEFAULT_LANGUAGE,
         "append_to_response": append_to_response or "",
-        # 优先使用传入的参数，否则使用默认值
         "include_image_language": include_image_language if include_image_language is not None else default_img_lang
     }
+
     logger.trace(f"  ➜ TMDb: 获取电视剧详情 (ID: {tv_id})")
     details = _tmdb_request(endpoint, api_key, params)
-    
-    # ... (保留原本的英文标题补充逻辑) ...
-    if details and details.get("original_language") != "en" and DEFAULT_LANGUAGE.startswith("zh"):
-        if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
-            for trans in details["translations"]["translations"]:
-                if trans.get("iso_639_1") == "en" and trans.get("data", {}).get("name"):
-                    details["english_name"] = trans["data"]["name"]
-                    logger.trace(f"  从translations补充剧集英文名: {details['english_name']}")
-                    break
-        if not details.get("english_name"):
-            logger.trace(f"  ➜ 尝试获取剧集 {tv_id} 的英文名...")
-            en_params = {"language": "en-US"}
-            en_details = _tmdb_request(f"/tv/{tv_id}", api_key, en_params)
-            if en_details and en_details.get("name"):
-                details["english_name"] = en_details.get("name")
-                logger.trace(f"  ➜ 通过请求英文版补充剧集英文名: {details['english_name']}")
-    elif details and details.get("original_language") == "en":
+
+    if not details:
+        return None
+
+    flags = _get_ai_translation_flags()
+    if allow_english_fallback is None:
+        allow_english_fallback = flags["title"] or flags["overview"]
+
+    if details.get("original_language") == "en":
         details["english_name"] = details.get("original_name")
+        return details
+
+    if not DEFAULT_LANGUAGE.startswith("zh"):
+        return details
+
+    # 先从 translations 里拿英文名，不额外增加请求
+    if "translations" in (append_to_response or "") and details.get("translations", {}).get("translations"):
+        for trans in details["translations"]["translations"]:
+            if trans.get("iso_639_1") == "en" and trans.get("data", {}).get("name"):
+                details["english_name"] = trans["data"]["name"]
+                logger.trace(f"  从 translations 补充剧集英文名: {details['english_name']}")
+                break
+
+    # 没开 AI 标题/简介翻译，就不要为了兜底多请求英文版
+    if not allow_english_fallback:
+        return details
+
+    need_en_title = flags["title"] and not details.get("english_name")
+    need_en_overview = flags["overview"] and (not details.get("overview") or len(details.get("overview", "")) < 2)
+
+    if need_en_title or need_en_overview:
+        logger.trace(f"  ➜ 剧集 {tv_id} 缺失 AI 翻译源文本，尝试请求英文版兜底...")
+        en_details = _tmdb_request(f"/tv/{tv_id}", api_key, {"language": "en-US"})
+
+        if en_details:
+            if need_en_title and en_details.get("name"):
+                details["english_name"] = en_details.get("name")
+                logger.trace(f"  ➜ 通过英文版补充剧集英文名: {details['english_name']}")
+
+            if need_en_overview and en_details.get("overview"):
+                details["overview"] = en_details.get("overview")
+                logger.trace("  ➜ 通过英文版补充剧集简介源文本")
 
     return details
 
 # --- 获取电视剧某一季的详细信息 ---
-def get_season_details_tmdb(tv_id: int, season_number: int, api_key: str, append_to_response: Optional[str] = "credits", item_name: Optional[str] = None, language: Optional[str] = None, include_image_language: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """
-    【已升级】获取电视剧某一季的详细信息，并支持 item_name 用于日志。
-    ★ 修复：支持自定义 language 参数，用于获取英文兜底数据。
-    """
+def get_season_details_tmdb(
+    tv_id: int,
+    season_number: int,
+    api_key: str,
+    append_to_response: Optional[str] = "credits",
+    item_name: Optional[str] = None,
+    language: Optional[str] = None,
+    include_image_language: Optional[str] = None
+) -> Optional[Dict[str, Any]]:
     endpoint = f"/tv/{tv_id}/season/{season_number}"
+
     params = {
-        "language": language or DEFAULT_LANGUAGE,
-        "append_to_response": append_to_response
+        "language": language or DEFAULT_LANGUAGE
     }
+
+    if append_to_response:
+        params["append_to_response"] = append_to_response
+
     if include_image_language is not None:
         params["include_image_language"] = include_image_language
-    
+
     item_name_for_log = f"'{item_name}' " if item_name else ""
-    # 只有当不是默认语言时才打印详细日志，避免刷屏
+
     if language and language != DEFAULT_LANGUAGE:
         logger.debug(f"  ➜ TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情 (语言: {language})...")
     else:
         logger.debug(f"  ➜ TMDb API: 获取电视剧 {item_name_for_log}(ID: {tv_id}) 第 {season_number} 季的详情...")
-    
+
     return _tmdb_request(endpoint, api_key, params)
 
 # --- 获取电视剧某一季的集总数 ---
@@ -284,9 +348,18 @@ def aggregate_full_series_data_from_tmdb(
         return None
 
     logger.info(f"  ➜ 开始为剧集 ID {tv_id} 并发聚合 TMDB 数据 (并发数: {max_workers})...")
+
+    ai_flags = _get_ai_translation_flags()
+    allow_series_english_fallback = ai_flags["title"] or ai_flags["overview"]
+    allow_episode_english_fallback = ai_flags["title"] or ai_flags["episode_overview"]
     
     # --- 步骤 1: 获取顶层剧集详情 ---
-    series_details = get_tv_details(tv_id, api_key, append_to_response="credits,aggregate_credits,keywords,external_ids,content_ratings,alternative_titles")
+    series_details = get_tv_details(
+        tv_id,
+        api_key,
+        append_to_response="credits,aggregate_credits,keywords,external_ids,content_ratings,alternative_titles,translations",
+        allow_english_fallback=allow_series_english_fallback
+    )
     
     if not series_details:
         logger.error(f"  ➜ 聚合失败：无法获取顶层剧集 {tv_id} 的详情。")
@@ -334,70 +407,93 @@ def aggregate_full_series_data_from_tmdb(
             best_poster = data_zh["images"]["posters"][0]["file_path"]
             data_zh["poster_path"] = best_poster
         
-        # 2. 检查是否有空简介
-        # 只有当默认语言是中文时才检查
-        if DEFAULT_LANGUAGE.startswith("zh"):
+        # 2. 按 AI 翻译开关决定是否请求英文版兜底
+        # 兜底的目的只是给 AI 翻译提供源文本；没开对应翻译，就不浪费请求。
+        if DEFAULT_LANGUAGE.startswith("zh") and allow_episode_english_fallback:
             episodes = data_zh.get("episodes", [])
-            missing_overview_indices = []
-            
+
+            need_fallback_indices = []
+
             for i, ep in enumerate(episodes):
-                # 如果简介为空，或者简介太短（比如"暂无"），记录下来
-                if not ep.get("overview") or len(ep.get("overview")) < 2:
-                    missing_overview_indices.append(i)
-            
-            # 3. 如果有缺失，请求英文版补全
-            if missing_overview_indices:
-                logger.debug(f"    ➜ 第 {s_num} 季有 {len(missing_overview_indices)} 集缺失中文简介，正在请求英文版补全...")
+                overview_missing = not ep.get("overview") or len(ep.get("overview", "")) < 2
+
+                current_title = ep.get("name", "")
+                title_generic = bool(re.match(
+                    r'^(第\s*\d+\s*集|Episode\s*\d+)$',
+                    current_title,
+                    re.IGNORECASE
+                ))
+                title_missing_or_weak = not current_title or title_generic or not contains_chinese(current_title)
+
+                need_overview_fallback = ai_flags["episode_overview"] and overview_missing
+                need_title_fallback = ai_flags["title"] and title_missing_or_weak
+
+                if need_overview_fallback or need_title_fallback:
+                    need_fallback_indices.append(i)
+
+            if need_fallback_indices:
+                logger.debug(
+                    f"  ➜ 第 {s_num} 季有 {len(need_fallback_indices)} 集缺失 AI 翻译源文本，正在请求英文版兜底..."
+                )
+
                 try:
                     data_en = get_season_details_tmdb(tvid, s_num, api_key, language="en-US")
+
                     if data_en:
                         episodes_en = data_en.get("episodes", [])
-                        # 建立集号到英文数据的映射，防止顺序不一致
                         en_ep_map = {e.get("episode_number"): e for e in episodes_en}
-                        
-                        filled_count = 0
-                        for idx in missing_overview_indices:
+
+                        filled_overview_count = 0
+                        filled_title_count = 0
+
+                        for idx in need_fallback_indices:
                             target_ep = episodes[idx]
                             ep_num = target_ep.get("episode_number")
-                            
-                            if ep_num in en_ep_map:
-                                en_data_item = en_ep_map[ep_num]
-                                
-                                # A. 补全简介
-                                en_overview = en_data_item.get("overview")
-                                if en_overview:
-                                    target_ep["overview"] = en_overview
-                                    
-                                    # =================================================
-                                    # ★★★ 联动替换标题 (修复版) ★★★
-                                    # 坚决保护已有的、真实的中文标题！
-                                    # 仅当英文标题有效，且中文标题无效（为空或为占位符）时才替换。
-                                    # =================================================
-                                    en_title = en_data_item.get("name")
-                                    current_zh_title = target_ep.get("name", "")
-                                    
-                                    if en_title:
-                                        import re
-                                        # 检查英文标题是否只是无意义的占位符 (如 "Episode 1", "Episode 12")
-                                        is_en_generic = bool(re.match(r'^Episode\s*\d+$', en_title, re.IGNORECASE))
-                                        
-                                        # 检查中文标题是否是无意义的占位符 (如 "第 1 集", "第12集", "Episode 1")
-                                        is_zh_generic = bool(re.match(r'^(第\s*\d+\s*集|Episode\s*\d+)$', current_zh_title, re.IGNORECASE))
-                                        
-                                        # 替换条件：
-                                        # 1. 英文标题不是占位符 (说明英文标题有实际内容)
-                                        # 2. 并且 (中文标题为空 OR 中文标题是占位符 OR 中文标题完全不含中文)
-                                        if not is_en_generic:
-                                            if not current_zh_title or is_zh_generic or not contains_chinese(current_zh_title):
-                                                target_ep["name"] = en_title
-                                                # logger.debug(f"      ├─ 标题优化: '{current_zh_title}' -> '{en_title}'")
-                                    
-                                    filled_count += 1
-                        
-                        if filled_count > 0:
-                            logger.debug(f"    ➜ 第 {s_num} 季成功补全了 {filled_count} 条英文简介和标题源。")
+
+                            if ep_num not in en_ep_map:
+                                continue
+
+                            en_data_item = en_ep_map[ep_num]
+
+                            # A. 分集简介兜底：只在“翻译集简介”开启时执行
+                            if ai_flags["episode_overview"]:
+                                current_overview = target_ep.get("overview", "")
+                                if not current_overview or len(current_overview) < 2:
+                                    en_overview = en_data_item.get("overview")
+                                    if en_overview:
+                                        target_ep["overview"] = en_overview
+                                        filled_overview_count += 1
+
+                            # B. 分集标题兜底：只在“翻译标题”开启时执行
+                            if ai_flags["title"]:
+                                en_title = en_data_item.get("name")
+                                current_title = target_ep.get("name", "")
+
+                                if en_title:
+                                    is_en_generic = bool(re.match(
+                                        r'^Episode\s*\d+$',
+                                        en_title,
+                                        re.IGNORECASE
+                                    ))
+
+                                    is_current_generic = bool(re.match(
+                                        r'^(第\s*\d+\s*集|Episode\s*\d+)$',
+                                        current_title,
+                                        re.IGNORECASE
+                                    ))
+
+                                    if not is_en_generic:
+                                        if not current_title or is_current_generic or not contains_chinese(current_title):
+                                            target_ep["name"] = en_title
+                                            filled_title_count += 1
+
+                        if filled_overview_count or filled_title_count:
+                            logger.debug(
+                                f"  ➜ 第 {s_num} 季英文兜底完成：简介 {filled_overview_count} 条，标题 {filled_title_count} 条。"
+                            )
+
                 except Exception as e:
-                    logger.warning(f"    ➜ 补全英文简介失败: {e}")
+                    logger.warning(f"  ➜ 补全英文分集源文本失败: {e}")
 
         return data_zh
 
