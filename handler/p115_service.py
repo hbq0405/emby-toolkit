@@ -1458,12 +1458,30 @@ class P115DeleteBuffer:
         if save_path:
             protected_cids.add(str(save_path))
 
-        # 保护“未识别”目录：优先通过待整理目录 + 未识别目录名查 CID
+        # ★★★ 核心修复：保护“未识别”目录 (三重保险) ★★★
         unidentified_name = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_NAME, "未识别")
-        if save_path and unidentified_name:
+        
+        # 保险 1：优先读取用户明确配置的 CID
+        explicit_un_cid = config.get(constants.CONFIG_OPTION_115_UNRECOGNIZED_CID)
+        if explicit_un_cid and str(explicit_un_cid) != '0':
+            protected_cids.add(str(explicit_un_cid))
+            
+        # 保险 2 & 3：如果没配置，尝试通过待整理目录推导
+        if save_path and str(save_path) != '0' and unidentified_name:
+            # 保险 2：查本地缓存
             unidentified_cid = P115CacheManager.get_cid(str(save_path), unidentified_name)
             if unidentified_cid:
                 protected_cids.add(str(unidentified_cid))
+            else:
+                # 保险 3：缓存穿透时，直接查 115 API (绝对兜底)
+                try:
+                    search_res = client.fs_files({'cid': save_path, 'search_value': unidentified_name, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+                    for item in search_res.get('data', []):
+                        if item.get('fn') == unidentified_name and str(item.get('fc') if item.get('fc') is not None else item.get('type')) == '0':
+                            protected_cids.add(str(item.get('fid') or item.get('file_id')))
+                            break
+                except Exception:
+                    pass
 
         raw_rules = settings_db.get_setting('p115_sorting_rules')
         if raw_rules:
