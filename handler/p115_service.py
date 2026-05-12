@@ -29,6 +29,21 @@ logger = logging.getLogger(__name__)
 
 from collections import OrderedDict
 
+P115_APP_LABELS = {
+    "web": "网页版",
+    "mac": "macOS 客户端",
+    "linux": "Linux 客户端",
+    "tv": "安卓电视端",
+    "alipaymini": "支付宝小程序",
+    "wechatmini": "微信小程序",
+    "android": "Android 端",
+    "ios": "iOS 端",
+}
+
+def get_115_app_label(app_type):
+    app_type = str(app_type or "web").strip().lower()
+    return P115_APP_LABELS.get(app_type, app_type)
+
 def get_115_ua(app_type):
     """根据 APP 类型返回对应的真实 User-Agent，防止 115 风控"""
     ua_map = {

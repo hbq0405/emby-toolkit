@@ -415,14 +415,20 @@ class RateLimiter:
 def get_115_status():
     """检查 115 凭证状态 (分别检查 Token 和 Cookie)"""
     try:
-        from handler.p115_service import P115Service, get_115_tokens
-        token, _, cookie, _ = get_115_tokens() # ★ 从数据库读
+        from handler.p115_service import P115Service, get_115_tokens, get_115_ua, get_115_app_label
+
+        token, _, cookie, app_type = get_115_tokens()
+        app_type = str(app_type or "web").strip().lower()
+        cookie_app_label = get_115_app_label(app_type)
         token = (token or "").strip() 
         cookie = (cookie or "").strip()
         
         result = {
             "has_token": bool(token),
             "has_cookie": bool(cookie),
+            "cookie_valid": None,
+            "cookie_app_type": app_type if cookie else None,
+            "cookie_app_label": cookie_app_label if cookie else None,
             "valid": False,
             "msg": "",
             "user_info": None
@@ -443,15 +449,21 @@ def get_115_status():
                         if cookie:
                             try:
                                 headers = {
-                                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+                                    "User-Agent": get_115_ua(app_type),
                                     "Cookie": cookie
                                 }
-                                # 用极轻量的官方目录接口探测 Cookie 存活状态
-                                resp = requests.get("https://webapi.115.com/files?cid=0&limit=1", headers=headers, timeout=5).json()
-                                if resp.get('state'):
-                                    result["msg"] = "Token + Cookie 均有效"
+                                res = requests.get(
+                                    "https://webapi.115.com/files?cid=0&limit=1",
+                                    headers=headers,
+                                    timeout=5
+                                ).json()
+
+                                if res.get("state"):
+                                    result["cookie_valid"] = True
+                                    result["msg"] = f"Token + Cookie 均有效（{cookie_app_label}）"
                                 else:
-                                    result["msg"] = "Token 有效，但 Cookie 已失效！请重新扫码"
+                                    result["cookie_valid"] = False
+                                    result["msg"] = f"Token 有效，但 Cookie 已失效（{cookie_app_label}）"
                             except:
                                 result["msg"] = "Token 有效，Cookie 状态未知"
                                 

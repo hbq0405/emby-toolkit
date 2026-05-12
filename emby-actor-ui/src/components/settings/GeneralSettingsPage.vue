@@ -397,11 +397,14 @@
                     <n-form-item label="Cookie">
                       <n-space vertical :size="8" style="width: 100%;">
                         <n-space align="center" justify="space-between">
-                          <n-tag :type="p115Info?.has_cookie ? 'success' : 'default'" size="small">
+                          <n-tag
+                            :type="!p115Info?.has_cookie ? 'default' : (p115Info?.cookie_valid === false ? 'error' : 'success')"
+                            size="small"
+                          >
                             <template #icon>
                               <n-icon :component="p115Info?.has_cookie ? CheckIcon : CloseIcon" />
                             </template>
-                            {{ p115Info?.has_cookie ? '已配置' : '未配置' }}
+                            {{ p115Info?.has_cookie ? `Cookie 已配置：${p115Info?.cookie_app_label || '未知客户端'}` : 'Cookie 未配置' }}
                           </n-tag>
                           <n-button size="small" type="primary" @click="openCookieModal">
                             {{ p115Info?.has_cookie ? '重新获取' : '扫码获取' }}
@@ -2566,12 +2569,10 @@ const showCookieModal = ref(false);
 const tempCookieInput = ref('');
 const cookieAppType = ref('alipaymini');
 const cookieAppOptions = [
-  { label: '115生活(支付宝小程序)', value: 'alipaymini' },
+  { label: '支付宝小程序', value: 'alipaymini' },
   { label: '网页版', value: 'web' },
-  { label: '115生活(微信小程序)', value: 'wechatmini' },
-  { label: '115生活(Android端)', value: 'android' },
-  { label: '115生活(iOS端)', value: 'ios' },
-  { label: '115网盘(Android电视端)', value: 'tv' }
+  { label: '微信小程序', value: 'wechatmini' },
+  { label: '安卓电视端', value: 'tv' }
 ];
 
 const cookieQrcodeUrl = ref('');
@@ -2651,7 +2652,10 @@ const saveManualCookie = async () => {
     return;
   }
   try {
-    const res = await axios.post('/api/p115/cookie', { cookie: tempCookieInput.value.trim() });
+    const res = await axios.post('/api/p115/cookie', {
+      cookie: tempCookieInput.value,
+      app_type: cookieAppType.value
+    });
     if (res.data.success) {
       message.success('手动 Cookie 保存成功');
       showCookieModal.value = false;
