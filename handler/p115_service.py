@@ -970,6 +970,11 @@ class P115Service:
                     return [('Cookie', self._cookie), ('OpenAPI', self._openapi)]
                 return [('OpenAPI', self._openapi), ('Cookie', self._cookie)]
 
+            def _iter_management_clients(self, method_name):
+                for label, api in self._api_order():
+                    if api and hasattr(api, method_name):
+                        yield label.lower(), api
+
             def _call_api(self, method_name, *args, normalizer=None, force_openapi=False, force_cookie=False, **kwargs):
                 """按 115 API 优先级调用；失败自动切换另一个接口，并统一返回 dict。"""
                 last_resp = None
@@ -1139,11 +1144,7 @@ class P115Service:
                     try:
                         self._rate_limit()
 
-                        if api_name == "cookie":
-                            resp = api_client.fs_mkdir(folder_name, parent_cid)
-                        else:
-                            resp = api_client.fs_mkdir(folder_name, parent_cid)
-
+                        resp = api_client.fs_mkdir(folder_name, parent_cid)
                         last_resp = resp
 
                         # 创建成功
@@ -1170,7 +1171,7 @@ class P115Service:
 
                             return resp
 
-                        # 重点：已存在不是接口失败，直接回查，不要切备用接口
+                        # 已存在不是接口失败，直接回查，不要切备用接口
                         if self._is_exists_error(resp):
                             existed_cid = self._find_child_dir(parent_cid, folder_name)
                             if existed_cid:
@@ -1193,7 +1194,6 @@ class P115Service:
                                     "_from_exists_recovery": api_name
                                 }
 
-                            # 已存在但暂时搜不到，多半是 115 同步延迟，让业务层后续重试/保护
                             logger.warning(f"  ➜ [115] 目录已存在但暂未回查到 CID: parent={parent_cid}, name={folder_name}")
                             return resp
 
