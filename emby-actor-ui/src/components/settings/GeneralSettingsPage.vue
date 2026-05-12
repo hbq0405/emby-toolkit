@@ -339,44 +339,61 @@
                     </div>
 
                     <!-- 授权方式选择 -->
-                    <n-form-item label="OpenAPI" path="p115_auth_method">
-                      <div class="p115-auth-row">
-                        <div class="p115-auth-main">
-                          <n-radio-group v-model:value="configModel.p115_auth_method" name="auth_method_group">
-                            <n-space :size="18">
-                              <n-radio value="web">网页登录授权</n-radio>
-                              <n-radio value="qrcode">自定义 AppID</n-radio>
-                            </n-space>
-                          </n-radio-group>
-
-                          <n-input
-                            v-if="configModel.p115_auth_method === 'qrcode'"
-                            v-model:value="configModel.p115_app_id"
-                            size="small"
-                            placeholder="先保存自定义 AppID 再扫码"
-                            style="max-width: 260px; margin-top: 8px;"
-                          />
-
-                          <div class="p115-auth-desc">
-                            {{ p115Info?.has_token ? `已授权：${openApiAuthLabel}` : `未授权：${openApiAuthLabel}` }}
-                          </div>
-                        </div>
-
-                        <n-button
-                          class="p115-auth-button"
-                          size="small"
-                          :type="configModel.p115_auth_method === 'qrcode' ? 'primary' : 'warning'"
-                          @click="configModel.p115_auth_method === 'qrcode' ? handleOpenQrcodeModal() : startWebAuth()"
-                          :loading="isWebAuthing"
-                        >
-                          {{ p115Info?.has_token ? '重新登录' : '登录授权' }}
-                        </n-button>
-                      </div>
+                    <n-form-item label="授权方式" path="p115_auth_method">
+                      <n-radio-group v-model:value="configModel.p115_auth_method" name="auth_method_group">
+                        <n-space>
+                          <n-radio value="web">网页登录授权 (推荐)</n-radio>
+                          <n-radio value="qrcode">自定义 AppID 扫码</n-radio>
+                        </n-space>
+                      </n-radio-group>
                     </n-form-item>
 
+                    <!-- 方式一：网页登录授权 -->
+                    <n-form-item label="OpenAPI" v-if="configModel.p115_auth_method === 'web' || !configModel.p115_auth_method">
+                      <n-space vertical :size="8" style="width: 100%;">
+                        <n-space align="center" justify="space-between">
+                          <n-tag :type="p115Info?.has_token ? 'success' : 'default'" size="small">
+                            <template #icon>
+                              <n-icon :component="p115Info?.has_token ? CheckIcon : CloseIcon" />
+                            </template>
+                            {{ p115Info?.has_token ? `${openApiAuthLabel}` : `未授权：${openApiAuthLabel}` }}
+                          </n-tag>
+                          <n-button size="small" type="warning" @click="startWebAuth" :loading="isWebAuthing">
+                            {{ p115Info?.has_token ? '重新登录' : '登录授权' }}
+                          </n-button>
+                        </n-space>
+                      </n-space>
+                    </n-form-item>
+
+                    <!-- 方式二：自定义 AppID 扫码 -->
+                    <n-form-item label="OpenAPI" path="p115_app_id" v-if="configModel.p115_auth_method === 'qrcode'">
+                      <n-space vertical :size="8" style="width: 100%;">
+                        <n-space align="center" justify="space-between">
+                          <n-tag :type="p115Info?.has_token ? 'success' : 'default'" size="small">
+                            <template #icon>
+                              <n-icon :component="p115Info?.has_token ? CheckIcon : CloseIcon" />
+                            </template>
+                            {{ p115Info?.has_token ? `${openApiAuthLabel}` : `未授权：${openApiAuthLabel}` }}
+                          </n-tag>
+                          <n-button size="small" type="primary" @click="handleOpenQrcodeModal">
+                            {{ p115Info?.has_token ? '重新扫码' : '扫码授权' }}
+                          </n-button>
+                        </n-space>
+                        <n-input-group>
+                          <n-input v-model:value="configModel.p115_app_id" placeholder="先保存自定义AppID再扫码" />
+                        </n-input-group>
+                        <template #feedback>
+                          <n-text depth="3" style="font-size:0.8em;">
+                            请先填写 AppID 并点击底部保存设置，然后再扫码授权。
+                          </n-text>
+                        </template>
+                      </n-space>
+                    </n-form-item>
+
+                    <!--  Cookie  -->
                     <n-form-item label="Cookie">
-                      <div class="p115-auth-row">
-                        <div class="p115-auth-main">
+                      <n-space vertical :size="8" style="width: 100%;">
+                        <n-space align="center" justify="space-between">
                           <n-tag
                             :type="!p115Info?.has_cookie ? 'default' : (p115Info?.cookie_valid === false ? 'error' : 'success')"
                             size="small"
@@ -387,20 +404,11 @@
                             {{ p115Info?.has_cookie ? cookieAppLabel : '未配置' }}
                           </n-tag>
 
-                          <div class="p115-auth-desc">
-                            {{ p115Info?.has_cookie ? `已配置：${cookieAppLabel}` : '未配置：支付宝小程序 / 微信小程序' }}
-                          </div>
-                        </div>
-
-                        <n-button
-                          class="p115-auth-button"
-                          size="small"
-                          type="error"
-                          @click="openCookieModal"
-                        >
-                          {{ p115Info?.has_cookie ? '重新获取' : '扫码获取' }}
-                        </n-button>
-                      </div>
+                          <n-button size="small" type="primary" @click="openCookieModal">
+                            {{ p115Info?.has_cookie ? '重新获取' : '扫码获取' }}
+                          </n-button>
+                        </n-space>
+                      </n-space>
                     </n-form-item>
 
                     <n-form-item label="115接口" path="p115_api_priority">
@@ -3616,30 +3624,5 @@ onUnmounted(() => {
     justify-content: flex-end;
   }
 }
-.p115-auth-row {
-  width: 100%;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 84px;
-  column-gap: 12px;
-  align-items: start;
-}
 
-.p115-auth-main {
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-}
-
-.p115-auth-button {
-  width: 84px;
-  justify-self: end;
-}
-
-.p115-auth-desc {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.4;
-  color: var(--n-text-color-3);
-}
 </style>
