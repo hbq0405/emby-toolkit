@@ -31,13 +31,9 @@ from collections import OrderedDict
 
 P115_APP_LABELS = {
     "web": "网页版",
-    "mac": "macOS 客户端",
-    "linux": "Linux 客户端",
     "tv": "安卓电视端",
     "alipaymini": "支付宝小程序",
     "wechatmini": "微信小程序",
-    "android": "Android 端",
-    "ios": "iOS 端",
 }
 
 def get_115_app_label(app_type):

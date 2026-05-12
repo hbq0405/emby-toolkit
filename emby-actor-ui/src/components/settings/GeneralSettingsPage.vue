@@ -340,41 +340,43 @@
 
                     <!-- 授权方式选择 -->
                     <n-form-item label="OpenAPI" path="p115_auth_method">
-                      <n-space vertical :size="8" style="width: 100%;">
-                        <n-space align="center" justify="space-between">
+                      <div class="p115-auth-row">
+                        <div class="p115-auth-main">
                           <n-radio-group v-model:value="configModel.p115_auth_method" name="auth_method_group">
-                            <n-space>
+                            <n-space :size="18">
                               <n-radio value="web">网页登录授权</n-radio>
                               <n-radio value="qrcode">自定义 AppID</n-radio>
                             </n-space>
                           </n-radio-group>
 
-                          <n-button
+                          <n-input
+                            v-if="configModel.p115_auth_method === 'qrcode'"
+                            v-model:value="configModel.p115_app_id"
                             size="small"
-                            :type="configModel.p115_auth_method === 'qrcode' ? 'primary' : 'warning'"
-                            @click="configModel.p115_auth_method === 'qrcode' ? handleOpenQrcodeModal() : startWebAuth()"
-                            :loading="isWebAuthing"
-                          >
-                            {{ p115Info?.has_token ? '重新登录' : '登录授权' }}
-                          </n-button>
-                        </n-space>
+                            placeholder="先保存自定义 AppID 再扫码"
+                            style="max-width: 260px; margin-top: 8px;"
+                          />
 
-                        <n-input
-                          v-if="configModel.p115_auth_method === 'qrcode'"
-                          v-model:value="configModel.p115_app_id"
-                          placeholder="先保存自定义 AppID 再扫码"
-                        />
+                          <div class="p115-auth-desc">
+                            {{ p115Info?.has_token ? `已授权：${openApiAuthLabel}` : `未授权：${openApiAuthLabel}` }}
+                          </div>
+                        </div>
 
-                        <n-text depth="3" style="font-size:0.8em;">
-                          {{ p115Info?.has_token ? `已授权：${openApiAuthLabel}` : `未授权：${openApiAuthLabel}` }}
-                        </n-text>
-                      </n-space>
+                        <n-button
+                          class="p115-auth-button"
+                          size="small"
+                          :type="configModel.p115_auth_method === 'qrcode' ? 'primary' : 'warning'"
+                          @click="configModel.p115_auth_method === 'qrcode' ? handleOpenQrcodeModal() : startWebAuth()"
+                          :loading="isWebAuthing"
+                        >
+                          {{ p115Info?.has_token ? '重新登录' : '登录授权' }}
+                        </n-button>
+                      </div>
                     </n-form-item>
 
-                    <!--  Cookie  -->
                     <n-form-item label="Cookie">
-                      <n-space vertical :size="8" style="width: 100%;">
-                        <n-space align="center" justify="space-between">
+                      <div class="p115-auth-row">
+                        <div class="p115-auth-main">
                           <n-tag
                             :type="!p115Info?.has_cookie ? 'default' : (p115Info?.cookie_valid === false ? 'error' : 'success')"
                             size="small"
@@ -385,15 +387,20 @@
                             {{ p115Info?.has_cookie ? cookieAppLabel : '未配置' }}
                           </n-tag>
 
-                          <n-button size="small" type="primary" @click="openCookieModal">
-                            {{ p115Info?.has_cookie ? '重新获取' : '扫码获取' }}
-                          </n-button>
-                        </n-space>
+                          <div class="p115-auth-desc">
+                            {{ p115Info?.has_cookie ? `已配置：${cookieAppLabel}` : '未配置：支付宝小程序 / 微信小程序' }}
+                          </div>
+                        </div>
 
-                        <n-text depth="3" style="font-size:0.8em;">
-                          {{ p115Info?.has_cookie ? `已配置：${cookieAppLabel}` : '未配置：支付宝小程序 / 微信小程序' }}
-                        </n-text>
-                      </n-space>
+                        <n-button
+                          class="p115-auth-button"
+                          size="small"
+                          type="error"
+                          @click="openCookieModal"
+                        >
+                          {{ p115Info?.has_cookie ? '重新获取' : '扫码获取' }}
+                        </n-button>
+                      </div>
                     </n-form-item>
 
                     <n-form-item label="115接口" path="p115_api_priority">
@@ -3609,5 +3616,30 @@ onUnmounted(() => {
     justify-content: flex-end;
   }
 }
+.p115-auth-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 84px;
+  column-gap: 12px;
+  align-items: start;
+}
 
+.p115-auth-main {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.p115-auth-button {
+  width: 84px;
+  justify-self: end;
+}
+
+.p115-auth-desc {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--n-text-color-3);
+}
 </style>
