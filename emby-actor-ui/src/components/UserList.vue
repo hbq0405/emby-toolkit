@@ -396,14 +396,107 @@ const handleBulkChangeTemplateOk = () => {
 
 // --- 表格列定义 ---
 const createColumns = () => [
-  // ★★★ 新增：复选框列 ★★★
   { type: 'selection' },
   { title: '用户名', key: 'Name', sorter: true },
-  { title: '状态', key: 'IsDisabled', render: (row) => h(NSwitch, { value: !row.IsDisabled, onUpdateValue: (value) => handleStatusChange(row, value) }) },
-  { title: '所属模板', key: 'template_name', sorter: true, render: (row) => row.template_name || h(NTag, { size: 'small', type: 'warning' }, () => '无') },
-  { title: '到期时间', key: 'expiration_date', sorter: true, render: (row) => row.expiration_date ? dayjs(row.expiration_date).format('YYYY-MM-DD') : h(NTag, { size: 'small' }, () => '永久') },
-  { title: '最近活动', key: 'LastActivityDate', sorter: true, render: (row) => row.LastActivityDate ? dayjs(row.LastActivityDate).format('YYYY-MM-DD HH:mm') : '无记录' },
-  { title: '操作', key: 'actions', render: (row) => h(NSpace, null, () => [ h(NButton, { size: 'small', onClick: () => showExpirationModal(row) }, () => '续期'), h(NButton, { size: 'small', onClick: () => showChangeTemplateModal(row) }, () => '切换模板'), h(NPopconfirm, { onPositiveClick: () => handleDelete(row), negativeText: '取消', positiveText: '确定删除', positiveButtonProps: { type: 'error' } }, { trigger: () => h(NButton, { size: 'small', type: 'error', ghost: true }, () => '删除'), default: () => `确定要彻底删除用户 ${row.Name} 吗？此操作不可恢复！` }) ]) }
+
+  // 状态列保留展示，不再用 Switch 操作，避免重复入口
+  {
+    title: '状态',
+    key: 'IsDisabled',
+    sorter: true,
+    render: (row) =>
+      row.IsDisabled
+        ? h(NTag, { size: 'small', type: 'error' }, () => '已禁用')
+        : h(NTag, { size: 'small', type: 'success' }, () => '已启用')
+  },
+
+  {
+    title: '所属模板',
+    key: 'template_name',
+    sorter: true,
+    render: (row) =>
+      row.template_name || h(NTag, { size: 'small', type: 'warning' }, () => '无')
+  },
+
+  {
+    title: '到期时间',
+    key: 'expiration_date',
+    sorter: true,
+    render: (row) =>
+      row.expiration_date
+        ? dayjs(row.expiration_date).format('YYYY-MM-DD')
+        : h(NTag, { size: 'small' }, () => '永久')
+  },
+
+  {
+    title: '最近活动',
+    key: 'LastActivityDate',
+    sorter: true,
+    render: (row) =>
+      row.LastActivityDate
+        ? dayjs(row.LastActivityDate).format('YYYY-MM-DD HH:mm')
+        : '无记录'
+  },
+
+  {
+    title: '操作',
+    key: 'actions',
+    render: (row) =>
+      h(NSpace, null, () => [
+        h(NButton, {
+          size: 'small',
+          onClick: (e) => {
+            e.stopPropagation();
+            showExpirationModal(row);
+          }
+        }, () => '续期'),
+
+        h(NButton, {
+          size: 'small',
+          onClick: (e) => {
+            e.stopPropagation();
+            showChangeTemplateModal(row);
+          }
+        }, () => '切换模板'),
+
+        h(NPopconfirm, {
+          onPositiveClick: () => handleStatusChange(row, row.IsDisabled),
+          negativeText: '取消',
+          positiveText: row.IsDisabled ? '确认启用' : '确认禁用',
+          positiveButtonProps: {
+            type: row.IsDisabled ? 'primary' : 'warning'
+          }
+        }, {
+          trigger: () =>
+            h(NButton, {
+              size: 'small',
+              type: row.IsDisabled ? 'primary' : 'warning',
+              ghost: true,
+              onClick: (e) => e.stopPropagation()
+            }, () => row.IsDisabled ? '启用' : '禁用'),
+          default: () =>
+            row.IsDisabled
+              ? `确定要启用用户 ${row.Name} 吗？`
+              : `确定要禁用用户 ${row.Name} 吗？`
+        }),
+
+        h(NPopconfirm, {
+          onPositiveClick: () => handleDelete(row),
+          negativeText: '取消',
+          positiveText: '确定删除',
+          positiveButtonProps: { type: 'error' }
+        }, {
+          trigger: () =>
+            h(NButton, {
+              size: 'small',
+              type: 'error',
+              ghost: true,
+              onClick: (e) => e.stopPropagation()
+            }, () => '删除'),
+          default: () => `确定要彻底删除用户 ${row.Name} 吗？此操作不可恢复！`
+        })
+      ])
+  }
 ];
 
 const columns = createColumns();
