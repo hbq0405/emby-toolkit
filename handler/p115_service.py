@@ -603,15 +603,11 @@ def _p115_normalize_common_response(resp):
 
 def get_115_api_priority(default='openapi'):
     """
-    115 API 优先级：新键 p115_api_priority，兼容旧键 p115_playback_api_priority。
+    115 API 优先级。
     当前可选值：openapi / cookie。
     """
     cfg = config_manager.APP_CONFIG or {}
-    new_key = getattr(constants, 'CONFIG_OPTION_115_API_PRIORITY', 'p115_api_priority')
-    old_key = getattr(constants, 'CONFIG_OPTION_115_PLAYBACK_API_PRIORITY', 'p115_playback_api_priority')
-    val = cfg.get(new_key)
-    if val is None:
-        val = cfg.get(old_key, default)
+    val = cfg.get(constants.CONFIG_OPTION_115_API_PRIORITY, default)
     val = str(val or default).strip().lower()
     return 'cookie' if val == 'cookie' else 'openapi'
 
@@ -1138,6 +1134,32 @@ class P115Service:
                     logger.debug(f"  ➜ [115] mkdir 前读取目录缓存失败: parent={parent_cid}, name={folder_name}, err={e}")
 
                 last_resp = None
+
+                # 2.5 DB 缓存没命中时，先远程回查同级目录，避免对已存在目录执行 POST mkdir
+                # 尤其是 2026 / Season 01 / 分类目录这种高复用目录，缓存可能因为同步/旧数据缺失而穿透。
+                try:
+                    existed_cid = self._find_child_dir(parent_cid, folder_name)
+                    if existed_cid:
+                        P115CacheManager.save_cid(existed_cid, parent_cid, folder_name)
+                        with _GLOBAL_DIR_LOCK:
+                            _GLOBAL_DIR_CACHE[cache_key] = existed_cid
+
+                        logger.info(f"  ➜ [115] DB缓存未命中，但远程目录已存在，已回填缓存: {folder_name} -> {existed_cid}")
+
+                        return {
+                            "state": True,
+                            "cid": existed_cid,
+                            "data": {
+                                "file_id": existed_cid,
+                                "cid": existed_cid,
+                                "file_name": folder_name,
+                                "name": folder_name,
+                                "parent_id": parent_cid
+                            },
+                            "_from_remote_prefetch": True
+                        }
+                except Exception as e:
+                    logger.debug(f"  ➜ [115] mkdir 前远程预查目录失败，继续创建流程: parent={parent_cid}, name={folder_name}, err={e}")
 
                 # 3. 按优先级尝试接口
                 for api_name, api_client in self._iter_management_clients("fs_mkdir"):
