@@ -363,7 +363,7 @@
                           </n-button>
                         </n-space>
                         <n-text depth="3" style="font-size:0.8em;">
-                          用于网盘整理和视频播放。请点击“登录授权”获取授权。
+                          官方接口。
                         </n-text>
                       </n-space>
                     </n-form-item>
@@ -408,7 +408,7 @@
                           </n-button>
                         </n-space>
                         <n-text depth="3" style="font-size:0.8em;">
-                          用于TG、影巢转存和视频播放。
+                          传统接口。
                         </n-text>
                       </n-space>
                     </n-form-item>
