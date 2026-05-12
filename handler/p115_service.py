@@ -1022,8 +1022,205 @@ class P115Service:
             def fs_get_info(self, file_id):
                 return self._call_api('fs_get_info', file_id, normalizer=_p115_normalize_info_response)
 
+            def _is_exists_error(self, resp):
+                text = json.dumps(resp, ensure_ascii=False).lower() if resp is not None else ""
+                return any(k in text for k in [
+                    "已存在",
+                    "目录名称已存在",
+                    "该目录名称已存在",
+                    "already",
+                    "exist",
+                    "exists",
+                    "same_name",
+                    "文件名重复",
+                    "重复"
+                ])
+
+
+            def _find_child_dir(self, parent_cid, name):
+                """
+                在 parent_cid 下精准查找同名子目录。
+                用于 mkdir 返回“已存在”后的 CID 回收。
+                """
+                if not parent_cid or not name:
+                    return None
+
+                try:
+                    search_res = self.fs_files({
+                        "cid": parent_cid,
+                        "search_value": name,
+                        "limit": 100,
+                        "show_dir": 1,
+                        "record_open_time": 0,
+                        "count_folders": 0
+                    })
+
+                    for item in search_res.get("data", []):
+                        item_name = (
+                            item.get("fn")
+                            or item.get("n")
+                            or item.get("file_name")
+                            or item.get("name")
+                        )
+
+                        item_fc = str(
+                            item.get("fc")
+                            if item.get("fc") is not None
+                            else item.get("type")
+                        )
+
+                        # Cookie 目录项可能 cid 才是目录自身 ID
+                        item_cid = (
+                            item.get("fid")
+                            or item.get("file_id")
+                            or item.get("id")
+                            or item.get("cid")
+                        )
+
+                        if item_name == name and item_fc == "0" and item_cid:
+                            return str(item_cid)
+
+                except Exception as e:
+                    logger.debug(f"  ➜ [115] mkdir 已存在后回查目录失败: parent={parent_cid}, name={name}, err={e}")
+
+                return None
+
+
             def fs_mkdir(self, name, pid):
-                return self._call_api('fs_mkdir', name, pid, normalizer=_p115_normalize_mkdir_response)
+                """
+                创建目录：
+                1. 先查内存缓存
+                2. 再查 DB 缓存
+                3. API 创建
+                4. 如果 API 返回“已存在”，不切备用接口，直接回查同级目录并写缓存
+                """
+                parent_cid = str(pid)
+                folder_name = str(name).strip()
+
+                if not folder_name:
+                    return {"state": False, "message": "目录名称不能为空"}
+
+                cache_key = f"{parent_cid}_{folder_name}"
+
+                # 1. 全局内存缓存
+                try:
+                    with _GLOBAL_DIR_LOCK:
+                        cached_cid = _GLOBAL_DIR_CACHE.get(cache_key)
+                    if cached_cid and cached_cid != "FAILED":
+                        return {
+                            "state": True,
+                            "cid": str(cached_cid),
+                            "data": {"file_id": str(cached_cid), "cid": str(cached_cid)},
+                            "_from_cache": "memory"
+                        }
+                except Exception:
+                    pass
+
+                # 2. DB 缓存
+                try:
+                    cached_cid = P115CacheManager.get_cid(parent_cid, folder_name)
+                    if cached_cid:
+                        with _GLOBAL_DIR_LOCK:
+                            _GLOBAL_DIR_CACHE[cache_key] = str(cached_cid)
+
+                        return {
+                            "state": True,
+                            "cid": str(cached_cid),
+                            "data": {"file_id": str(cached_cid), "cid": str(cached_cid)},
+                            "_from_cache": "db"
+                        }
+                except Exception as e:
+                    logger.debug(f"  ➜ [115] mkdir 前读取目录缓存失败: parent={parent_cid}, name={folder_name}, err={e}")
+
+                last_resp = None
+
+                # 3. 按优先级尝试接口
+                for api_name, api_client in self._iter_management_clients("fs_mkdir"):
+                    try:
+                        self._rate_limit()
+
+                        if api_name == "cookie":
+                            resp = api_client.fs_mkdir(folder_name, parent_cid)
+                        else:
+                            resp = api_client.fs_mkdir(folder_name, parent_cid)
+
+                        last_resp = resp
+
+                        # 创建成功
+                        if resp and resp.get("state"):
+                            new_cid = (
+                                resp.get("cid")
+                                or resp.get("file_id")
+                                or resp.get("id")
+                                or resp.get("data", {}).get("file_id")
+                                or resp.get("data", {}).get("cid")
+                                or resp.get("data", {}).get("id")
+                            )
+
+                            if new_cid:
+                                new_cid = str(new_cid)
+                                P115CacheManager.save_cid(new_cid, parent_cid, folder_name)
+                                with _GLOBAL_DIR_LOCK:
+                                    _GLOBAL_DIR_CACHE[cache_key] = new_cid
+
+                                resp["cid"] = new_cid
+                                resp.setdefault("data", {})
+                                resp["data"]["file_id"] = new_cid
+                                resp["data"]["cid"] = new_cid
+
+                            return resp
+
+                        # 重点：已存在不是接口失败，直接回查，不要切备用接口
+                        if self._is_exists_error(resp):
+                            existed_cid = self._find_child_dir(parent_cid, folder_name)
+                            if existed_cid:
+                                P115CacheManager.save_cid(existed_cid, parent_cid, folder_name)
+                                with _GLOBAL_DIR_LOCK:
+                                    _GLOBAL_DIR_CACHE[cache_key] = existed_cid
+
+                                logger.info(f"  ➜ [115] 目录已存在，已回收 CID: {folder_name} -> {existed_cid}")
+
+                                return {
+                                    "state": True,
+                                    "cid": existed_cid,
+                                    "data": {
+                                        "file_id": existed_cid,
+                                        "cid": existed_cid,
+                                        "file_name": folder_name,
+                                        "name": folder_name,
+                                        "parent_id": parent_cid
+                                    },
+                                    "_from_exists_recovery": api_name
+                                }
+
+                            # 已存在但暂时搜不到，多半是 115 同步延迟，让业务层后续重试/保护
+                            logger.warning(f"  ➜ [115] 目录已存在但暂未回查到 CID: parent={parent_cid}, name={folder_name}")
+                            return resp
+
+                        logger.warning(
+                            f"  ➜ [115] {api_name} 接口 fs_mkdir 返回失败，准备尝试备用接口: "
+                            f"{resp.get('message') or resp.get('error') or resp.get('error_msg') or resp}"
+                        )
+
+                    except Exception as e:
+                        last_resp = {"state": False, "message": str(e)}
+                        if self._is_exists_error(last_resp):
+                            existed_cid = self._find_child_dir(parent_cid, folder_name)
+                            if existed_cid:
+                                P115CacheManager.save_cid(existed_cid, parent_cid, folder_name)
+                                with _GLOBAL_DIR_LOCK:
+                                    _GLOBAL_DIR_CACHE[cache_key] = existed_cid
+
+                                return {
+                                    "state": True,
+                                    "cid": existed_cid,
+                                    "data": {"file_id": existed_cid, "cid": existed_cid},
+                                    "_from_exists_recovery": "exception"
+                                }
+
+                        logger.warning(f"  ➜ [115] {api_name} 接口 fs_mkdir 异常，准备尝试备用接口: {e}")
+
+                return last_resp or {"state": False, "message": "创建目录失败"}
 
             def fs_move(self, fids, to_cid):
                 return self._call_api('fs_move', fids, to_cid, normalizer=_p115_normalize_common_response)
@@ -3453,7 +3650,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 for item in search_res.get('data', []):
                                     item_name = item.get('fn') or item.get('n') or item.get('file_name')
                                     item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
-                                    item_cid = item.get('fid') or item.get('file_id')
+                                    item_cid = (
+                                        item.get('fid')
+                                        or item.get('file_id')
+                                        or item.get('id')
+                                        or item.get('cid')
+                                    )
                                     
                                     if item_fc == '0' and item_name == part_name and item_cid:
                                         part_cid = item_cid
@@ -3748,7 +3950,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                     for item in s_search.get('data', []):
                                         item_name = item.get('fn') or item.get('n') or item.get('file_name')
                                         item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
-                                        item_cid = item.get('fid') or item.get('file_id')
+                                        item_cid = (
+                                            item.get('fid')
+                                            or item.get('file_id')
+                                            or item.get('id')
+                                            or item.get('cid')
+                                        )
 
                                         if item_fc == '0' and item_name == s_name and item_cid:
                                             s_cid = item_cid
@@ -3812,7 +4019,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                     for item in s_search.get('data', []):
                                         item_name = item.get('fn') or item.get('n') or item.get('file_name')
                                         item_fc = str(item.get('fc') if item.get('fc') is not None else item.get('type'))
-                                        item_cid = item.get('fid') or item.get('file_id')
+                                        item_cid = (
+                                            item.get('fid')
+                                            or item.get('file_id')
+                                            or item.get('id')
+                                            or item.get('cid')
+                                        )
                                         
                                         if item_fc == '0' and item_name == s_name and item_cid:
                                             s_cid = item_cid
