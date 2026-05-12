@@ -445,10 +445,13 @@ class MonitorService:
 
     def stop(self):
         if self.observer:
-            logger.info("  ➜ 正在停止实时监控服务...")
-            self.observer.stop()
-            self.observer.join()
-            logger.info("  ➜ 实时监控服务已停止。")
+            try:
+                self.observer.stop()
+                self.observer.join(timeout=5)
+            except RuntimeError:
+                pass
+            finally:
+                logger.info("  ➜ 实时监控服务已停止。")
 
 def pause_queue_processing():
     """暂停监控队列处理 (进入蓄水池模式)"""

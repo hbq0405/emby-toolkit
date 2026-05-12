@@ -91,6 +91,14 @@
               </n-tooltip>
               <n-tooltip>
                 <template #trigger>
+                  <n-button @click="isStrmLogVisible = true" circle>
+                    <template #icon><n-icon :component="RecordsIcon" /></template>
+                  </n-button>
+                </template>
+                Strm日志
+              </n-tooltip>
+              <n-tooltip>
+                <template #trigger>
                   <n-button @click="isHistoryLogVisible = true" circle>
                     <template #icon><n-icon :component="ArchiveOutline" /></template>
                   </n-button>
@@ -210,6 +218,11 @@
 
     <!-- 历史日志模态框 -->
     <LogViewer v-model:show="isHistoryLogVisible" />
+
+    <!-- Strm日志模态框 -->
+    <n-modal v-model:show="isStrmLogVisible" preset="card" style="width: 95%; max-width: 900px;" title="Strm日志" class="modal-card-lite">
+      <n-log ref="strmLogRef" :log="strmLogContent" trim class="log-panel" style="height: 60vh; font-size: 13px; line-height: 1.6;"/>
+    </n-modal>
 
     <!-- ★★★ 自定义菜单编辑器模态框 ★★★ -->
     <n-modal v-model:show="isMenuEditorVisible" preset="card" style="width: 95%; max-width: 650px;" title="自定义侧边栏菜单 (全局生效)">
@@ -388,8 +401,10 @@ const activeMenuKey = computed(() => route.name);
 const appVersion = ref(__APP_VERSION__);
 
 const isRealtimeLogVisible = ref(false);
+const isStrmLogVisible = ref(false);
 const isHistoryLogVisible = ref(false);
 const logRef = ref(null);
+const strmLogRef = ref(null);
 
 watch(() => route.path, () => {
   if (isMobile.value) {
@@ -409,11 +424,29 @@ const themeOptions = [
 const renderIcon = (iconComponent) => () => h(NIcon, null, { default: () => h(iconComponent) });
 
 const logContent = computed(() => props.taskStatus?.logs?.join('\n') || '等待任务日志...');
+const strmKeywords = [
+  '成功获取直链',
+  '成功通过 115 API 实时获取到 SHA1',
+  '成功生成媒体信息',
+  '媒体信息缓存'
+];
+const strmLogContent = computed(() => {
+  const logs = props.taskStatus?.logs || [];
+  const filteredLogs = logs.filter(line => strmKeywords.some(keyword => line.includes(keyword)));
+  return filteredLogs.length > 0 ? filteredLogs.join('\n') : '暂无Strm相关日志...';
+});
 
 watch([() => props.taskStatus?.logs, isRealtimeLogVisible], async ([, isVisible]) => {
   if (isVisible) {
     await nextTick();
     logRef.value?.scrollTo({ position: 'bottom', slient: true });
+  }
+}, { deep: true });
+
+watch([() => props.taskStatus?.logs, isStrmLogVisible], async ([, isVisible]) => {
+  if (isVisible) {
+    await nextTick();
+    strmLogRef.value?.scrollTo({ position: 'bottom', slient: true });
   }
 }, { deep: true });
 
