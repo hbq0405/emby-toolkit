@@ -413,15 +413,15 @@
                       </n-space>
                     </n-form-item>
 
-                    <n-form-item label="播放接口" path="p115_playback_api_priority">
-                      <n-radio-group v-model:value="configModel.p115_playback_api_priority" name="api_priority_group">
+                    <n-form-item label="115接口" path="p115_api_priority">
+                      <n-radio-group v-model:value="configModel.p115_api_priority" name="api_priority_group">
                         <n-space>
                           <n-radio value="openapi">优先 OpenAPI</n-radio>
                           <n-radio value="cookie">优先 Cookie</n-radio>
                         </n-space>
                       </n-radio-group>
                       <template #feedback>
-                        <n-text depth="3" style="font-size:0.8em;">获取直链时首次尝试的接口，失败会自动回退到另一个。</n-text>
+                        <n-text depth="3" style="font-size:0.8em;">优先尝试的接口，失败会自动回退到另一个。</n-text>
                       </template>
                     </n-form-item>
 

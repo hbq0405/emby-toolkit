@@ -11,7 +11,7 @@ import requests
 from flask import Blueprint, jsonify, request, redirect, Response, stream_with_context, current_app
 from extensions import admin_required
 from database import settings_db
-from handler.p115_service import P115Service, get_config
+from handler.p115_service import P115Service, get_config, get_115_api_priority
 import constants
 from functools import lru_cache, wraps
 
@@ -757,8 +757,7 @@ def play_115_video(pick_code, filename=None):
             
         max_retries = 4
         real_url = None
-        config = get_config()
-        api_priority = config.get(constants.CONFIG_OPTION_115_PLAYBACK_API_PRIORITY, 'openapi')
+        api_priority = get_115_api_priority('openapi')
         use_openapi = (api_priority != 'cookie')
         
         for i in range(max_retries):
