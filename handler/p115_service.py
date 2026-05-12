@@ -419,31 +419,75 @@ def _p115_is_severe_failure(resp_or_exc):
     ])
 
 
+def _p115_truthy_dir_flag(value):
+    """115 各套接口里目录标记比较散，这里统一判断。"""
+    if value is True:
+        return True
+    if value is None:
+        return False
+    text = str(value).strip().lower()
+    return text in {'1', 'true', 'yes', 'y', 'folder', 'dir', 'directory'}
+
+
 def _p115_normalize_item(item):
-    """把 Cookie(webapi) / OpenAPI 的文件字段统一成 ETK 内部习惯字段。"""
+    """把 Cookie(webapi/appapi) / OpenAPI 的文件字段统一成 ETK 内部习惯字段。
+
+    重点兼容 Cookie /files 的目录项：
+    - 文件通常是 fid = 文件ID，cid = 父目录ID；
+    - 目录经常是 cid = 目录自身ID，pid = 父目录ID，未必有 fid；
+    如果无脑把 cid 当 parent_id，就会导致前端目录 id 为空，浏览目录点不开。
+    """
     if not isinstance(item, dict):
         return item
     item = dict(item)
 
-    fid = item.get('fid') or item.get('file_id') or item.get('id')
-    name = item.get('fn') or item.get('n') or item.get('file_name') or item.get('name')
-    parent_id = item.get('pid') or item.get('parent_id') or item.get('cid')
+    # 原始字段先取出来，后面根据“是否目录”再决定 cid 到底是自身ID还是父ID。
+    raw_fid = item.get('fid') or item.get('file_id') or item.get('id')
+    raw_cid = item.get('cid')
+    raw_pid = item.get('pid') or item.get('parent_id') or item.get('parentId')
+
+    name = (
+        item.get('fn') or item.get('n') or item.get('file_name') or
+        item.get('name') or item.get('title')
+    )
     pick_code = item.get('pc') or item.get('pick_code') or item.get('pickcode')
     sha1 = item.get('sha1') or item.get('sha') or item.get('file_sha1')
     size = item.get('fs') or item.get('size') or item.get('file_size') or item.get('s')
 
-    # fc: ETK 里 0=目录, 1=文件。webapi 常见也是 fc；缺失时根据 pickcode/sha/size 兜底判断。
+    # fc: ETK 内部约定 0=目录，1=文件。
     fc = item.get('fc')
     if fc is None:
         fc = item.get('file_category')
     if fc is None:
         fc = item.get('type')
+
+    icon = item.get('ico') or item.get('icon') or item.get('class')
+    folder_flag = (
+        _p115_truthy_dir_flag(item.get('is_dir')) or
+        _p115_truthy_dir_flag(item.get('is_directory')) or
+        _p115_truthy_dir_flag(item.get('is_folder')) or
+        _p115_truthy_dir_flag(icon)
+    )
+
+    # Cookie /files 的面包屑、目录项常见只有 cid/name/pid，没有 fid/pc/sha/size。
+    cid_looks_like_folder_id = raw_cid is not None and raw_fid is None and not any([pick_code, sha1, size])
+
     if fc is None:
-        is_dir = item.get('is_dir') or item.get('is_directory') or item.get('is_folder')
-        if is_dir is True or str(is_dir) == '1':
+        if folder_flag or cid_looks_like_folder_id:
             fc = '0'
-        elif pick_code or sha1 or size:
+        elif pick_code or sha1 or size or raw_fid is not None:
             fc = '1'
+
+    is_folder = str(fc) == '0'
+
+    # 关键修复：目录项没有 fid 时，用 cid 作为目录自身 ID；文件项的 cid 仍然保留为父目录 ID。
+    fid = raw_fid
+    if fid is None and is_folder:
+        fid = raw_cid
+
+    parent_id = raw_pid
+    if parent_id is None and not is_folder:
+        parent_id = raw_cid
 
     if fid is not None:
         item.setdefault('fid', str(fid))
@@ -452,6 +496,7 @@ def _p115_normalize_item(item):
         item.setdefault('fn', name)
         item.setdefault('n', name)
         item.setdefault('file_name', name)
+        item.setdefault('name', name)
     if parent_id is not None:
         item.setdefault('pid', str(parent_id))
         item.setdefault('parent_id', str(parent_id))
@@ -469,7 +514,6 @@ def _p115_normalize_item(item):
         item.setdefault('file_category', str(fc))
 
     return item
-
 
 def _p115_normalize_list_response(resp):
     """统一目录列表/搜索列表响应，保证 resp['data'] 是 list。"""
@@ -494,6 +538,11 @@ def _p115_normalize_list_response(resp):
         data = []
     if isinstance(data, list):
         data = [_p115_normalize_item(i) for i in data]
+
+    # Cookie /files 的 path/paths/breadcrumb 字段也顺手归一化，方便前端显示当前目录名。
+    path_data = resp.get('path') or resp.get('paths') or resp.get('breadcrumb')
+    if isinstance(path_data, list):
+        resp['path'] = [_p115_normalize_item(i) for i in path_data]
 
     resp['state'] = _p115_success(resp)
     resp['data'] = data
@@ -584,6 +633,11 @@ class P115CookieClient:
             try:
                 # ★ 尝试将 app 传给底层库 (如果 p115client 支持的话)
                 self.webapi = P115Client(self.cookie_str, app=self.app_type)
+                # P115Client 的 app 主要用于重新登录设备类型，普通 webapi 请求仍要显式注入 UA。
+                try:
+                    self.webapi.headers["user-agent"] = self.user_agent
+                except Exception:
+                    pass
             except Exception as e:
                 logger.warning(f"  ➜ Cookie 客户端初始化失败: {e}")
                 raise
