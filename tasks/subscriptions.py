@@ -495,6 +495,7 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
 
                     if is_completed:
                         mp_payload["best_version"] = 1
+                        mp_payload["include"] = moviepilot.SERIES_COMPLETE_INCLUDE_REGEX
                         logger.info(f"  ➜ [手动交互] S{season_number} 已完结，启用洗版模式 (best_version=1)。")
                     else:
                         logger.info(f"  ➜ [手动交互] S{season_number} 尚未完结 (连载中)，使用普通追更模式。")
