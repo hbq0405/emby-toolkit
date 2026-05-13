@@ -11,7 +11,7 @@ import constants
 from database import settings_db
 
 logger = logging.getLogger(__name__)
-
+SERIES_COMPLETE_INCLUDE_REGEX = r"(全|共)\d+(集|期)|完结|合集|Complete"
 # ======================================================================
 # 核心基础函数 (Token管理与API请求)
 # ======================================================================
@@ -218,7 +218,11 @@ def subscribe_series_to_moviepilot(series_info: dict, season_number: Optional[in
     
     if best_version is not None:
         payload["best_version"] = best_version
-        logger.info(f"  ➜ 本次订阅为洗版订阅 (best_version={best_version})")
+        payload["include"] = SERIES_COMPLETE_INCLUDE_REGEX
+        logger.info(
+            f"  ➜ 本次订阅为剧集完结洗版订阅 "
+            f"(best_version={best_version}, include={SERIES_COMPLETE_INCLUDE_REGEX})"
+        )
 
     log_msg = f"  ➜ 正在向 MoviePilot 提交剧集订阅: '{title}'"
     if season_number is not None:
