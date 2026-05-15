@@ -497,9 +497,9 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                     if is_completed:
                         mp_payload["best_version"] = 1
                         mp_payload["best_version_full"] = 1 # ★★★ 新增字段，明确告诉 MP 这是全季洗版
-                        logger.info(f"  ➜ [手动交互] S{season_number} 已完结，启用全集洗版模式。")
+                        logger.info(f"  ➜ [手动订阅] 第{season_number}季 已完结，启用全集洗版模式。")
                     else:
-                        logger.info(f"  ➜ [手动交互] S{season_number} 尚未完结 (连载中)，使用普通追更模式。")
+                        logger.info(f"  ➜ [手动订阅] 第{season_number}季 尚未完结 (连载中)，使用普通追更模式。")
                     
                     # ★★★ 拦截 TG 频道追更 ★★★
                     if tg_channel_tracking and not is_completed:
