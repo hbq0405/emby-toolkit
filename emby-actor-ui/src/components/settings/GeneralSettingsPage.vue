@@ -30,7 +30,9 @@
                         
                         <!-- 动态描述和到期时间 -->
                         <div style="font-size: 13px; color: #888; margin-top: 6px;">
-                          {{ proStatusInfo.desc }}<br/>
+                          <!-- ⚠️ 这里改成了 v-html，这样才能渲染出超链接 -->
+                          <span v-html="proStatusInfo.desc"></span><br/>
+                          
                           <span v-if="configModel?.is_pro_active" style="color: #d48806; font-weight: bold; margin-top: 4px; display: inline-block;">
                             {{ configModel?.pro_expire_time?.startsWith('2099') ? '到期时间：永久有效' : '到期时间：' + configModel?.pro_expire_time?.split('T')[0] }}
                           </span>
@@ -2301,7 +2303,12 @@ const handleActivatePro = async () => {
 // ★★★ 智能判断 Pro 用户的尊贵等级 ★★★
 const proStatusInfo = computed(() => {
   if (!configModel.value?.is_pro_active) {
-    return { icon: '💎', text: '免费基础版', color: '#888', desc: '升级 Pro 版，解锁  302 直链 (虚拟库)。' };
+    return { 
+      icon: '💎', 
+      text: '免费基础版', 
+      color: '#888', 
+      desc: '升级 Pro 版，解锁 302 直链 (虚拟库)。<a href="https://t.me/+jd5Y1Loi4bs4MzA1" target="_blank" style="color: #1890ff; text-decoration: none;">进群免费领取体验码</a>' 
+    };
   }
   
   const key = configModel.value.pro_license_key || '';
