@@ -156,34 +156,37 @@ class P115OpenAPIClient:
             "Authorization": f"Bearer {self.access_token}",
             "User-Agent": "Emby-toolkit/1.0 (OpenAPI)"
         }
+        # ★ 核心修复：引入 Session 连接池，复用 TCP/TLS 连接，防止高并发端口耗尽
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=1)
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
 
     def _do_request(self, method, url, **kwargs):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                current_token = self.access_token # 记录当前请求使用的 token
+                current_token = self.access_token 
                 
-                # 支持自定义 headers 覆盖 (用于透传播放器 UA)
                 req_headers = self.headers.copy()
                 if 'headers' in kwargs:
                     req_headers.update(kwargs.pop('headers'))
                     
-                resp = requests.request(method, url, headers=req_headers, timeout=30, **kwargs).json()
+                # ★ 核心修复：使用 self.session 发送请求
+                resp = self.session.request(method, url, headers=req_headers, timeout=30, **kwargs).json()
                 
                 if not resp.get("state") and resp.get("code") in [40140123, 40140124, 40140125, 40140126]:
                     logger.warning("  ➜ [115] 检测到 Token 已过期，正在触发自动续期...")
-                    
-                    # ★ 传入 current_token 进行比对
                     if refresh_115_token(current_token):
                         logger.info("  ➜ [115] 续期完成，重新发送刚才失败的请求...")
-                        return requests.request(method, url, headers=self.headers, timeout=30, **kwargs).json()
+                        # ★ 这里也要改用 session
+                        return self.session.request(method, url, headers=self.headers, timeout=30, **kwargs).json()
                     else:
                         logger.error("  ➜ [115] 续期彻底失败，Token 已死亡，请前往 WebUI 重新扫码！")
                 
                 return resp
             except Exception as e:
                 err_str = str(e)
-                # ★ 核心修复：遇到 DNS解析失败、连接重置、超时等纯网络错误时，自动休眠重试
                 if "NameResolutionError" in err_str or "Connection" in err_str or "Timeout" in err_str:
                     if attempt < max_retries - 1:
                         time.sleep(2)
@@ -628,19 +631,23 @@ def get_115_api_priority(default='openapi'):
 # ======================================================================
 class P115CookieClient:
     """使用 Cookie 执行播放、目录列表、移动、重命名、删除等 webapi 操作"""
-    # ★ 新增 app_type 参数
     def __init__(self, cookie_str, app_type='web'):
         if not cookie_str:
             raise ValueError("Cookie 不能为空")
         self.cookie_str = cookie_str.strip()
         self.app_type = app_type
-        self.user_agent = get_115_ua(app_type) # ★ 获取对应的真实 UA
+        self.user_agent = get_115_ua(app_type) 
         self.webapi = None
+        
+        # ★ 核心修复：为兜底请求引入 Session
+        self.session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=20, pool_maxsize=20, max_retries=1)
+        self.session.mount('http://', adapter)
+        self.session.mount('https://', adapter)
+        
         if P115Client:
             try:
-                # ★ 尝试将 app 传给底层库 (如果 p115client 支持的话)
                 self.webapi = P115Client(self.cookie_str, app=self.app_type)
-                # P115Client 的 app 主要用于重新登录设备类型，普通 webapi 请求仍要显式注入 UA。
                 try:
                     self.webapi.headers["user-agent"] = self.user_agent
                 except Exception:
@@ -670,16 +677,16 @@ class P115CookieClient:
         if self.webapi and hasattr(self.webapi, 'request'):
             return self.webapi.request(url, method=method, **kwargs)
         
-        # 兜底：使用 requests 手动发请求
         headers = {
-            "User-Agent": self.user_agent, # ★ 核心：强制使用数据库中记录的 UA
+            "User-Agent": self.user_agent, 
             "Cookie": self.cookie_str
         }
         if 'headers' in kwargs:
             headers.update(kwargs['headers'])
             del kwargs['headers']
         kwargs.setdefault('timeout', 30)
-        return requests.request(method, url, headers=headers, **kwargs)
+        # ★ 核心修复：使用 self.session
+        return self.session.request(method, url, headers=headers, **kwargs)
 
     def _json_result(self, resp):
         if isinstance(resp, dict):
@@ -949,7 +956,7 @@ class P115Service:
                     raise Exception("未配置 115 Token (OpenAPI)，无法执行管理操作")
 
             def _rate_limit(self):
-                """底层统一 API 流控拦截器 """
+                """底层统一 API 流控拦截器 (修复高并发死锁)"""
                 try:
                     interval = float(get_config().get(constants.CONFIG_OPTION_115_INTERVAL, 1.5))
                     if interval < 1.5:
@@ -957,15 +964,24 @@ class P115Service:
                 except (ValueError, TypeError):
                     interval = 1.5
                 
+                sleep_time = 0
                 with P115Service._rate_limit_lock:
                     current_time = time.time()
                     elapsed = current_time - P115Service._last_request_time
+                    
                     if elapsed < interval:
                         import random
-                        # ★ 核心修复：加入 0.1~0.5 秒的随机抖动，打破固定频率的机器人特征
                         jitter = random.uniform(0.1, 0.5)
-                        time.sleep((interval - elapsed) + jitter)
-                    P115Service._last_request_time = time.time()
+                        # 计算当前线程需要休眠的时间
+                        sleep_time = (interval - elapsed) + jitter
+                        # ★ 核心修复：提前预支下一次的放行时间，让后续线程基于这个未来时间计算，而不是排队死等
+                        P115Service._last_request_time = current_time + sleep_time
+                    else:
+                        P115Service._last_request_time = current_time
+
+                # ★ 核心修复：把 sleep 移出锁的范围！让多线程可以同时并发 sleep
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
             def _api_order(self, force_openapi=False, force_cookie=False):
                 if force_openapi:
