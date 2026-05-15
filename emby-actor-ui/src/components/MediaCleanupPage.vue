@@ -61,8 +61,9 @@
           :columns="seriesColumns"
           :data="groupedTasks"
           :pagination="pagination"
-          :row-key="row => row.key"  
+          :row-key="row => row.key"
           v-model:checked-row-keys="selectedSeriesNames"
+          v-model:expanded-row-keys="expandedRowKeys"
         />
       </div>
       <div v-else class="center-container">
@@ -115,6 +116,7 @@ const showSettingsModal = ref(false);
 const selectedSeriesNames = ref([]); 
 const currentPage = ref(1);
 const currentPageSize = ref(20);
+const expandedRowKeys = ref([]);
 
 // --- 3. 计算属性 ---
 
@@ -298,6 +300,20 @@ const createVersionColumns = (bestVersionJson) => {
 
   return [
     {
+      title: '操作',
+      key: 'actions',
+      width: 60,
+      align: 'center',
+      render: (row) => {
+        return h(NButton, {
+          size: 'small',
+          type: 'error',
+          quaternary: true,
+          onClick: () => handleDeleteVersion(row)
+        }, { icon: () => h(NIcon, null, { default: () => h(DeleteIcon) }) });
+      }
+    },
+    {
       title: '状态',
       key: 'status',
       width: 60,
@@ -413,21 +429,6 @@ const createVersionColumns = (bestVersionJson) => {
       minWidth: 200,
       ellipsis: { tooltip: true },
       render: (row) => h(NText, { depth: 3, style: 'font-size: 12px; font-family: monospace;' }, { default: () => row.path })
-    },
-    // ★★★ 手动操作列 ★★★
-    {
-      title: '操作',
-      key: 'actions',
-      width: 60,
-      align: 'center',
-      render: (row) => {
-        return h(NButton, {
-          size: 'small',
-          type: 'error',
-          quaternary: true,
-          onClick: () => handleDeleteVersion(row)
-        }, { icon: () => h(NIcon, null, { default: () => h(DeleteIcon) }) });
-      }
     }
   ];
 };
@@ -482,9 +483,16 @@ const fetchData = async () => {
   isLoading.value = true;
   error.value = null;
   selectedSeriesNames.value = [];
+
+  const previousExpandedKeys = [...expandedRowKeys.value];
+
   try {
     const response = await axios.get('/api/cleanup/tasks');
     allTasks.value = response.data;
+
+    // 刷新后只保留仍然存在的展开分组，避免删光后残留无效 key
+    const validKeys = new Set(groupedTasks.value.map(group => group.key));
+    expandedRowKeys.value = previousExpandedKeys.filter(key => validKeys.has(key));
   } catch (err) {
     error.value = err.response?.data?.error || '获取重复项列表失败。';
   } finally {
