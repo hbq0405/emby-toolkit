@@ -338,7 +338,7 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
                     mp_payload["best_version"] = 1
                     mp_payload["best_version_full"] = 1 # ★★★ 新增字段，明确告诉 MP 这是全季洗版
                     is_completed = True # ★★★ 标记为已完结
-                    logger.info(f"  ➜ S{s_num} 已完结，启用洗版模式订阅。")
+                    logger.info(f"  ➜ S{s_num} 已完结，启用全集洗版模式订阅。")
                 else:
                     logger.info(f"  ➜ S{s_num} 未完结，使用追更模式订阅。")
             else:
@@ -497,7 +497,7 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
                     if is_completed:
                         mp_payload["best_version"] = 1
                         mp_payload["best_version_full"] = 1 # ★★★ 新增字段，明确告诉 MP 这是全季洗版
-                        logger.info(f"  ➜ [手动交互] S{season_number} 已完结，启用洗版模式 (best_version=1)。")
+                        logger.info(f"  ➜ [手动交互] S{season_number} 已完结，启用全集洗版模式。")
                     else:
                         logger.info(f"  ➜ [手动交互] S{season_number} 尚未完结 (连载中)，使用普通追更模式。")
                     
