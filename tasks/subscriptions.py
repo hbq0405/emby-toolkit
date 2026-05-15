@@ -336,6 +336,7 @@ def _subscribe_full_series_with_logic(tmdb_id: int, series_name: str, config: Di
             if not is_pending_logic:
                 if check_series_completion(tmdb_id, tmdb_api_key, season_number=s_num, series_name=final_series_name):
                     mp_payload["best_version"] = 1
+                    mp_payload["best_version_full"] = 1 # ★★★ 新增字段，明确告诉 MP 这是全季洗版
                     is_completed = True # ★★★ 标记为已完结
                     logger.info(f"  ➜ S{s_num} 已完结，启用洗版模式订阅。")
                 else:
@@ -495,7 +496,6 @@ def task_manual_subscribe_batch(processor, subscribe_requests: List[Dict]):
 
                     if is_completed:
                         mp_payload["best_version"] = 1
-                        mp_payload["include"] = moviepilot.SERIES_COMPLETE_INCLUDE_REGEX
                         logger.info(f"  ➜ [手动交互] S{season_number} 已完结，启用洗版模式 (best_version=1)。")
                     else:
                         logger.info(f"  ➜ [手动交互] S{season_number} 尚未完结 (连载中)，使用普通追更模式。")
@@ -1087,6 +1087,7 @@ def task_auto_subscribe(processor):
                     
                     if not is_pending and check_series_completion(int(parent_tmdb_id), tmdb_api_key, season_number=int(season_number), series_name=title):
                         mp_payload["best_version"] = 1
+                        mp_payload["best_version_full"] = 1
                         is_completed = True # ★★★ 标记为已完结
                     
                     # ★★★ 拦截 TG 频道追更 ★★★

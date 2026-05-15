@@ -859,7 +859,8 @@ def build_resubscribe_payload(item_details: dict, rule: Optional[dict]) -> Optio
         "name": base_series_name,
         "tmdbid": tmdb_id,
         "type": media_type_for_payload,
-        "best_version": 1
+        "best_version": 1,
+        "best_version_full": 1 # 明确告诉MP这是全集洗版
     }
 
     if item_type == "Season":

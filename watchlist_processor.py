@@ -1187,8 +1187,8 @@ class WatchlistProcessor:
                 "tmdbid": int(tmdb_id),
                 "type": "电视剧",
                 "season": season_number,
-                "best_version": 1,  # ★ 洗版模式
-                "include": moviepilot.SERIES_COMPLETE_INCLUDE_REGEX  # ★ 限定完结包/合集，避免单集洗版
+                "best_version": 1, # ★ 核心：洗版模式
+                "best_version_full": 1 # 全集洗版
             }
             
             if moviepilot.subscribe_with_custom_payload(payload, self.config):
