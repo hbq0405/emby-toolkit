@@ -211,6 +211,8 @@ class WatchlistProcessor:
                                         conn.commit()
                             except Exception as e:
                                 logger.warning(f"  ➜ 清理本地洗版标记失败: {e}")
+                        else:
+                            logger.info("  ➜ 无需清理任何超时洗版订阅。")
             # ==================================================================
             where_clause = ""
             if not tmdb_id: 
