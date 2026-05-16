@@ -2312,19 +2312,21 @@ const proStatusInfo = computed(() => {
   }
   
   const key = configModel.value.pro_license_key || '';
+  // 定义 Pro 用户的加群链接
+  const proLink = ' <a href="https://t.me/+jd5Y1Loi4bs4MzA1" target="_blank" style="color: #1890ff; text-decoration: none;">加群交流使用心得</a>';
   
   if (key.includes('-L-')) {
-    return { icon: '💎', text: 'Pro 终身高级版', color: '#d48806', desc: '尊贵的终身 Pro 用户，您已永久解锁全部功能！' };
+    return { icon: '💎', text: 'Pro 终身高级版', color: '#d48806', desc: '尊贵的终身 Pro 用户，您已永久解锁全部功能！' + proLink };
   } else if (key.includes('-Y-')) {
-    return { icon: '☀️', text: 'Pro 年费高级版', color: '#d48806', desc: '尊贵的年费 Pro 用户，您已解锁全部功能！' };
+    return { icon: '☀️', text: 'Pro 年费高级版', color: '#d48806', desc: '尊贵的年费 Pro 用户，您已解锁全部功能！' + proLink };
   } else if (key.includes('-Q-')) {
-    return { icon: '⭐', text: 'Pro 季费高级版', color: '#d48806', desc: '尊贵的季费 Pro 用户，您已解锁全部功能！' };
+    return { icon: '⭐', text: 'Pro 季费高级版', color: '#d48806', desc: '尊贵的季费 Pro 用户，您已解锁全部功能！' + proLink };
   } else if (key.includes('-M-')) {
-    return { icon: '🌙', text: 'Pro 月费高级版', color: '#d48806', desc: '尊贵的月费 Pro 用户，您已解锁全部功能！' };
+    return { icon: '🌙', text: 'Pro 月费高级版', color: '#d48806', desc: '尊贵的月费 Pro 用户，您已解锁全部功能！' + proLink };
   } else if (key.includes('-C-')) {
-    return { icon: '🎁', text: 'Pro 体验版', color: '#d48806', desc: '您正在使用 Pro 体验版，已解锁全部功能！' };
+    return { icon: '🎁', text: 'Pro 体验版', color: '#d48806', desc: '您正在使用 Pro 体验版，已解锁全部功能！' + proLink };
   } else {
-    return { icon: '💎', text: 'Pro 高级版', color: '#d48806', desc: '尊贵的 Pro 用户，您已解锁全部功能！' };
+    return { icon: '💎', text: 'Pro 高级版', color: '#d48806', desc: '尊贵的 Pro 用户，您已解锁全部功能！' + proLink };
   }
 });
 
