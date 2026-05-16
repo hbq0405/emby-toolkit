@@ -763,7 +763,11 @@ def filter_hdhive_resources(
 
         if cfg.get("exclude_iso"):
             text = _resource_text(resource).upper()
-            if any(k in text for k in ["ISO", "BDISO", "BDMV", "原盘"]):
+            # 1. 如果包含纯原盘格式，直接排除
+            if any(k in text for k in ["ISO", "BDISO", "BDMV"]):
+                continue
+            # 2. 如果包含"原盘"，但【不包含】"REMUX"，则排除 (防止误杀"蓝光原盘REMUX")
+            if "原盘" in text and "REMUX" not in text:
                 continue
 
         resource['_effective_points'] = 0 if already_owned else points
