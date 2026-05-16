@@ -1092,3 +1092,70 @@ def recognize_media(title: str, config: Dict[str, Any] = None) -> Optional[tuple
     except Exception as e:
         logger.warning(f"  ➜ 调用 MoviePilot 识别接口失败: {e}")
         return None
+
+def cleanup_stale_washing_subscriptions(config: Dict[str, Any], timeout_days: int) -> List[Dict]:
+    """
+    【新增】清理超时的僵尸洗版订阅
+    返回被清理的订阅信息列表: [{'tmdbid': 123, 'season': 1}, ...]
+    """
+    if timeout_days <= 0:
+        return []
+
+    cleaned_subs = []
+    try:
+        mp_config = settings_db.get_setting('mp_config') or {}
+        moviepilot_url = mp_config.get('moviepilot_url', '').rstrip('/')
+        access_token = _get_access_token(config)
+        if not access_token: 
+            return []
+
+        headers = {"Authorization": f"Bearer {access_token}"}
+        # 获取所有订阅
+        res = requests.get(f"{moviepilot_url}/api/v1/subscribe/", headers=headers, timeout=15)
+
+        if res.status_code != 200:
+            return []
+
+        subs = res.json()
+        from datetime import datetime
+        now = datetime.now()
+
+        for sub in subs:
+            # 只处理“全集洗版”的订阅
+            if sub.get('best_version_full') != 1:
+                continue
+
+            # 获取最后更新时间或创建时间
+            time_str = sub.get('last_update') or sub.get('date')
+            if not time_str:
+                continue
+
+            try:
+                # MP 的时间格式通常是 "YYYY-MM-DD HH:MM:SS"
+                sub_time = datetime.strptime(time_str[:19], '%Y-%m-%d %H:%M:%S')
+                days_diff = (now - sub_time).days
+
+                if days_diff >= timeout_days:
+                    name = sub.get('name')
+                    season = sub.get('season')
+                    tmdbid = sub.get('tmdbid')
+                    sub_id = sub.get('id')
+
+                    logger.info(f"  ➜ [洗版清理] 发现僵尸洗版订阅: 《{name}》S{season} (已挂机 {days_diff} 天，阈值 {timeout_days} 天)，准备取消...")
+
+                    # 调用删除接口
+                    del_url = f"{moviepilot_url}/api/v1/subscribe/{sub_id}"
+                    del_res = requests.delete(del_url, headers=headers, timeout=10)
+                    
+                    if del_res.status_code in [200, 204]:
+                        logger.info(f"  ➜ [洗版清理] 成功取消超时洗版订阅: 《{name}》S{season}")
+                        cleaned_subs.append({'tmdbid': tmdbid, 'season': season})
+                    else:
+                        logger.warning(f"  ➜ [洗版清理] 取消失败: {del_res.status_code}")
+            except Exception as e:
+                logger.debug(f"  ➜ 解析订阅时间失败: {time_str}, {e}")
+
+        return cleaned_subs
+    except Exception as e:
+        logger.error(f"  ➜ [洗版清理] 执行出错: {e}")
+        return []

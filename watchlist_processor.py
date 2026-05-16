@@ -183,6 +183,35 @@ class WatchlistProcessor:
         
         self.progress_callback(0, "准备检查待更新剧集...")
         try:
+            # ==================================================================
+            # ★★★ 新增：在全局扫描前，检查并清理超时的僵尸洗版订阅 ★★★
+            # ==================================================================
+            if not tmdb_id: # 只有全局定时扫描时才执行，单点刷新不执行
+                watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
+                if watchlist_cfg.get('auto_resub_ended', False):
+                    timeout_days = int(watchlist_cfg.get('auto_resub_ended_timeout_days', 14))
+                    if timeout_days > 0:
+                        self.progress_callback(2, "正在检查并清理超时的洗版订阅...")
+                        cleaned_subs = moviepilot.cleanup_stale_washing_subscriptions(self.config, timeout_days)
+                        
+                        if cleaned_subs:
+                            logger.info(f"  ➜ 本次共清理了 {len(cleaned_subs)} 个超时的僵尸洗版订阅。")
+                            # 顺手清理本地数据库的 active_washing 标记，彻底结束洗版状态
+                            try:
+                                with connection.get_db_connection() as conn:
+                                    with conn.cursor() as cursor:
+                                        for sub in cleaned_subs:
+                                            cursor.execute("""
+                                                UPDATE media_metadata 
+                                                SET active_washing = FALSE 
+                                                WHERE parent_series_tmdb_id = %s 
+                                                  AND season_number = %s 
+                                                  AND item_type = 'Episode'
+                                            """, (str(sub['tmdbid']), sub['season']))
+                                        conn.commit()
+                            except Exception as e:
+                                logger.warning(f"  ➜ 清理本地洗版标记失败: {e}")
+            # ==================================================================
             where_clause = ""
             if not tmdb_id: 
                 today_str = datetime.now().date().isoformat()
