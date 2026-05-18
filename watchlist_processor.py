@@ -304,7 +304,7 @@ class WatchlistProcessor:
             for i, series in enumerate(completed_series):
                 if self.is_stop_requested(): break
                 progress = 10 + int(((i + 1) / total) * 90)
-                series_name = series['item_name']
+                series_name = series.get('item_name') or "未知剧集"
                 tmdb_id = series['tmdb_id']
                 emby_ids = series.get('emby_item_ids_json', [])
                 item_id = emby_ids[0] if emby_ids else None
