@@ -2285,7 +2285,7 @@ class P115MediaAnalyzerMixin:
         不再参与事实判断，避免内存缓存与数据库状态不一致。
         """
         if not sha1:
-            return {}, False
+            return {}
 
         sha1 = str(sha1).strip().upper()
         raw_json = None
@@ -2314,7 +2314,7 @@ class P115MediaAnalyzerMixin:
                 _get_p115_cache_manager().save_mediainfo_cache(sha1, raw_json, raw_ffprobe)
 
         if not raw_json:
-            return {}, False
+            return {}
 
         # 3. 开始解析 Emby 的真实数据
         info = {}
@@ -2441,4 +2441,4 @@ class P115MediaAnalyzerMixin:
         except Exception as e:
             logger.warning(f"  ➜ 解析真实媒体信息失败: {e}")
 
-        return info, is_center
+        return info
