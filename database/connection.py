@@ -493,7 +493,6 @@ def init_db():
                         target_cid TEXT,               -- 目标分类CID
                         category_name TEXT,            -- 目标分类名称
                         processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        is_center_cached BOOLEAN DEFAULT FALSE,
                         season_number INTEGER
                     )
                 """)
@@ -527,7 +526,6 @@ def init_db():
                             "raw_ffprobe_json": "JSONB"
                         },
                         'p115_organize_records': {
-                            "is_center_cached": "BOOLEAN DEFAULT FALSE",
                             "pick_code": "TEXT UNIQUE",
                             "season_number": "INTEGER",
                             "fail_reason": "TEXT"
@@ -735,7 +733,10 @@ def init_db():
                         ],
                         'person_metadata': [
                             'emby_person_id'
-                        ]
+                        ],
+                        'p115_organize_records': [
+                            'is_center_cached'
+                        ],
                     }
 
                     for table_name, columns_to_drop in deprecated_columns_map.items():

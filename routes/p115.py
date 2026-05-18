@@ -1048,10 +1048,7 @@ def get_organize_records():
                     where_clauses.append("(original_name ILIKE %s OR renamed_name ILIKE %s)")
                     params.extend([f"%{search}%", f"%{search}%"])
                 
-                # 2. 处理命中缓存的筛选
-                if status == 'center_cached':
-                    where_clauses.append("is_center_cached = TRUE")
-                elif status != 'all':
+                if status != 'all':
                     where_clauses.append("status = %s")
                     params.append(status)
                     
@@ -1090,10 +1087,6 @@ def get_organize_records():
                 cursor.execute("SELECT COUNT(*) as this_week FROM p115_organize_records WHERE processed_at >= NOW() - INTERVAL '7 days'")
                 stat_week = cursor.fetchone()['this_week']
 
-                # 6. 统计命中中心缓存的数量
-                cursor.execute("SELECT COUNT(*) as center_cached FROM p115_organize_records WHERE is_center_cached = TRUE")
-                stat_center_cached = cursor.fetchone()['center_cached']
-
                 return jsonify({
                     "success": True,
                     "items": items,
@@ -1103,8 +1096,7 @@ def get_organize_records():
                         "success": stat_success,
                         "unrecognized": stat_unrecognized,
                         "unqualified": stat_unqualified,
-                        "thisWeek": stat_week,
-                        "center_cached": stat_center_cached
+                        "thisWeek": stat_week
                     }
                 })
     except Exception as e:

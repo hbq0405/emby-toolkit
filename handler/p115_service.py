@@ -1924,7 +1924,7 @@ class P115CacheManager:
 # ======================================================================
 class P115RecordManager:
     @staticmethod
-    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None, is_center_cached=False, pick_code=None, season_number=None, fail_reason=None):
+    def add_or_update_record(file_id, original_name, status, tmdb_id=None, media_type=None, target_cid=None, category_name=None, renamed_name=None, pick_code=None, season_number=None, fail_reason=None):
         """添加或更新整理记录（基于 file_id 和 pick_code 唯一约束，智能继承原名）"""
         if not file_id or not original_name: return
         try:
@@ -1941,8 +1941,8 @@ class P115RecordManager:
 
                     cursor.execute("""
                         INSERT INTO p115_organize_records 
-                        (file_id, pick_code, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at, is_center_cached, season_number, fail_reason)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s, %s)
+                        (file_id, pick_code, original_name, status, tmdb_id, media_type, target_cid, category_name, renamed_name, processed_at, season_number, fail_reason)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), %s, %s)
                         ON CONFLICT (file_id) 
                         DO UPDATE SET 
                             pick_code = EXCLUDED.pick_code,
@@ -1953,12 +1953,11 @@ class P115RecordManager:
                             category_name = EXCLUDED.category_name,
                             renamed_name = EXCLUDED.renamed_name,
                             processed_at = NOW(),
-                            is_center_cached = p115_organize_records.is_center_cached OR EXCLUDED.is_center_cached,
                             season_number = EXCLUDED.season_number,
                             fail_reason = EXCLUDED.fail_reason
                     """, (str(file_id), pick_code, str(original_name), str(status), str(tmdb_id) if tmdb_id else None, 
                           str(media_type) if media_type else None, str(target_cid) if target_cid else None, 
-                          str(category_name) if category_name else None, str(renamed_name) if renamed_name else None, bool(is_center_cached), season_number, fail_reason))
+                          str(category_name) if category_name else None, str(renamed_name) if renamed_name else None, season_number, fail_reason))
                     conn.commit()
         except Exception as e:
             logger.error(f"  ➜ 写入 115 整理记录失败: {e}")
@@ -2908,7 +2907,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         
         # ★ 修复 1：无后缀文件的提前返回，补齐为 8 个返回值
         if '.' not in original_name: 
-            return original_name, None, None, None, False, {}, False, None
+            return original_name, None, None, None, {}, False, None
 
         parts = original_name.rsplit('.', 1)
         name_body = parts[0]
@@ -2948,7 +2947,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     if not s_name: s_name = f"Season {season_num:02d}"
                 
                 # ★ 修复 2：字幕文件的提前返回，补齐为 8 个返回值
-                return new_name, season_num, episode_num, s_name, False, {}, False, None
+                return new_name, season_num, episode_num, s_name, {}, False, None
 
         cfg = self.rename_config
         
@@ -2959,13 +2958,12 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
         video_info = self._extract_video_info(search_name)
 
         # 基于 SHA1 获取真实参数
-        is_center_cached = False
         real_info = None
         
         if not is_sub:
             sha1 = file_node.get('sha1') or file_node.get('sha')
             if sha1:
-                real_info, is_center_cached = self._fetch_and_parse_mediainfo(
+                real_info = self._fetch_and_parse_mediainfo(
                     sha1,
                     video_info,
                     pre_fetched_mediainfo,
@@ -3160,7 +3158,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             )
             if not s_name: s_name = f"Season {season_num:02d}"
 
-        return new_name, season_num, episode_num, s_name, is_center_cached, video_info, bool(real_info), part_num
+        return new_name, season_num, episode_num, s_name, video_info, bool(real_info), part_num
 
     def _scan_files_recursively(self, cid, depth=0, max_depth=3, current_rel_path=""):
         all_files = []
@@ -3790,7 +3788,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 ext = fn.split('.')[-1].lower() if '.' in fn else ''
                 if ext in known_video_exts:
                     # 临时调用重命名获取名字
-                    v_name, v_s, v_e, _, _, _, _, v_part = self._rename_file_node(
+                    v_name, v_s, v_e, _, _, _, v_part = self._rename_file_node(
                         file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), 
                         original_title=original_title, pre_fetched_mediainfo=pre_fetched_mediainfo, 
                         local_pre_fetched_mediainfo=local_pre_fetched_mediainfo,
@@ -3912,7 +3910,6 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             season_num = None
             episode_num = None
             s_name = None
-            is_center_cached = False
             has_real_info = False
             video_info = {}
             part_num = None
@@ -3949,7 +3946,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             # =================================================================
             if keep_original:
                 # 调用统一命名解析器，只取内部结构化字段，不使用它生成的新文件名
-                parsed_filename, season_num, episode_num, s_name, is_center_cached, video_info, has_real_info, part_num = self._rename_file_node(
+                parsed_filename, season_num, episode_num, s_name, video_info, has_real_info, part_num = self._rename_file_node(
                     file_item,
                     safe_title,
                     year=year,
@@ -4026,7 +4023,7 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 real_target_cid = final_home_cid
 
             else:
-                new_filename, season_num, episode_num, s_name, is_center_cached, video_info, has_real_info, part_num = self._rename_file_node(
+                new_filename, season_num, episode_num, s_name, video_info, has_real_info, part_num = self._rename_file_node(
                     file_item, safe_title, year=year, is_tv=(self.media_type=='tv'), original_title=original_title,
                     pre_fetched_mediainfo=pre_fetched_mediainfo,
                     local_pre_fetched_mediainfo=local_pre_fetched_mediainfo 
@@ -4110,7 +4107,6 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
             file_item['_season_num'] = season_num
             file_item['_episode_num'] = episode_num
             file_item['_s_name'] = s_name
-            file_item['_is_center_cached'] = is_center_cached
             file_item['_video_info'] = video_info
             
             if real_target_cid not in move_groups:
@@ -4437,7 +4433,6 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                     new_filename = file_item['_new_filename']
                     season_num = file_item['_season_num']
                     s_name = file_item['_s_name']
-                    is_center_cached = file_item['_is_center_cached']
                     
                     moved_count += 1
                     
@@ -4465,7 +4460,6 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                 target_cid=target_cid,
                                 category_name=category_name,
                                 renamed_name=new_filename,
-                                is_center_cached=is_center_cached if not keep_original else False,
                                 pick_code=pick_code,
                                 season_number=season_num 
                             )

@@ -2,13 +2,12 @@
 <template>
   <n-layout class="records-page" :content-style="layoutContentStyle">
     <!-- 顶部统计仪表盘 (占满整行，大气！) -->
-    <n-grid class="stat-grid" :x-gap="isMobile ? 8 : 16" :y-gap="isMobile ? 8 : 16" cols="2 s:2 m:6" responsive="screen">
+    <n-grid class="stat-grid" :x-gap="isMobile ? 8 : 16" :y-gap="isMobile ? 8 : 16" cols="2 s:2 m:5" responsive="screen">
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="总处理记录"><template #prefix><n-icon :component="LayersIcon" color="#2080f0" /></template>{{ stats.total || 0 }}</n-statistic></n-card></n-gi>
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="识别成功"><template #prefix><n-icon :component="CheckmarkCircleIcon" color="#18a058" /></template>{{ stats.success || 0 }}</n-statistic></n-card></n-gi>
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="未识别 / 异常"><template #prefix><n-icon :component="HelpCircleIcon" color="#f0a020" /></template>{{ stats.unrecognized || 0 }}</n-statistic></n-card></n-gi>
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="质检不合格"><template #prefix><n-icon :component="CloseCircleIcon" color="#d03050" /></template>{{ stats.unqualified || 0 }}</n-statistic></n-card></n-gi>
       <n-gi><n-card class="stat-card" size="small"><n-statistic label="本周处理"><template #prefix><n-icon :component="TrendingUpIcon" color="#2080f0" /></template>{{ stats.thisWeek || 0 }}</n-statistic></n-card></n-gi>
-      <n-gi><n-card class="stat-card" size="small"><n-statistic label="命中中心缓存"><template #prefix><n-icon :component="CloudDoneIcon" color="#18a058" /></template>{{ stats.center_cached || 0 }}</n-statistic></n-card></n-gi>
     </n-grid>
 
     <n-card class="dashboard-card" :bordered="false" size="small">
@@ -326,7 +325,6 @@ const columns = computed(() => {
           if (row.status === 'success') {
             metaNodes.push(h(NTag, { size: 'tiny', type: 'info', bordered: false }, { default: () => row.media_type === 'tv' ? '剧集' : '电影' }));
             if (row.tmdb_id) metaNodes.push(h(NTag, { size: 'tiny', bordered: false }, { default: () => `TMDb: ${row.tmdb_id}` }));
-            if (row.is_center_cached) metaNodes.push(h(NTag, { size: 'tiny', type: 'success', bordered: false }, { default: () => '中心缓存' }));
           }
           if (row.category_name) metaNodes.push(h(NTag, { size: 'tiny', type: 'primary', bordered: false }, { default: () => row.category_name }));
           if (row.processed_at) metaNodes.push(h(NText, { depth: 3, style: 'font-size: 12px;' }, { default: () => new Date(row.processed_at).toLocaleString('zh-CN', { hour12: false }) }));
@@ -353,7 +351,6 @@ const columns = computed(() => {
           h(NTag, { size: 'small', type: 'info', bordered: false }, { default: () => row.media_type === 'tv' ? '剧集' : '电影' }),
           h(NTag, { size: 'small', bordered: false, style: 'cursor: pointer;', onClick: () => window.open(`https://www.themoviedb.org/${row.media_type}/${row.tmdb_id}`, '_blank') }, { default: () => `TMDb: ${row.tmdb_id}` })
         ];
-        if (row.is_center_cached) tags.push(h(NTooltip, null, { trigger: () => h(NTag, { size: 'small', type: 'success', bordered: false, round: true }, { icon: () => h(NIcon, { component: CloudDoneIcon }), default: () => '中心缓存' }), default: () => '该媒体的真实参数由 P115Center 中心服务器提供' }));
         return h(NSpace, { size: 'small' }, () => tags);
       }
     },
