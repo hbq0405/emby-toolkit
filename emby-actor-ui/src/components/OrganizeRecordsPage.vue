@@ -194,8 +194,7 @@ const statusOptions = [
   { label: '全部状态', value: 'all' },
   { label: '识别成功', value: 'success' },
   { label: '未识别/异常', value: 'unrecognized' },
-  { label: '质检不合格', value: 'unqualified' },
-  { label: '命中中心缓存', value: 'center_cached' }
+  { label: '质检不合格', value: 'unqualified' }
 ];
 const categoryOptions = ref([{ label: '所有分类', value: null }]);
 
