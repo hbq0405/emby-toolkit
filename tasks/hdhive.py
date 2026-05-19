@@ -219,9 +219,22 @@ def task_hdhive_auto_checkin(processor):
 
     hdhive_config = settings_db.get_setting("hdhive_config") or {}
     api_key = hdhive_config.get("api_key")
-    if not api_key:
-        logger.info("  ➜ 未配置影巢 API Key，跳过自动签到。")
-        task_manager.update_status_from_thread(100, "未配置 API Key，跳过")
+    relay_base_url = (
+        hdhive_config.get("relay_base_url")
+        or hdhive_config.get("auth_relay_url")
+        or hdhive_config.get("proxy_base_url")
+        or ""
+    )
+    relay_secret = (
+        hdhive_config.get("relay_secret")
+        or hdhive_config.get("auth_relay_secret")
+        or hdhive_config.get("proxy_secret")
+        or ""
+    )
+
+    if not api_key and not (relay_base_url and relay_secret):
+        logger.info("  ➜ 未配置影巢授权中转或 API Key，跳过自动签到。")
+        task_manager.update_status_from_thread(100, "未配置影巢授权中转或 API Key，跳过")
         return
 
     client = HDHiveClient(api_key)
