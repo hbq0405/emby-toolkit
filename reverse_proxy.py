@@ -1420,6 +1420,115 @@ def handle_get_latest_items(user_id, params):
         logger.error(f"  ➜ 处理最新媒体时发生未知错误: {e}", exc_info=True)
         return Response(json.dumps([]), mimetype='application/json')
 
+
+def _inject_virtual_library_tab_cleaner(html_text):
+    """
+    Emby Web 4.9.5 的 movies 顶部标签基本是前端硬编码生成的，
+    单靠服务端返回 Subviews 不能真正隐藏“推荐/预告片/收藏/文件夹”。
+    因此在 index.html 注入一个很小的前端清理脚本：
+    仅当 URL 是 /videos 且 parentId 为负数虚拟库时，隐藏无后端实现价值的标签。
+    """
+    if not isinstance(html_text, str) or 'virtual-library-tab-cleaner' in html_text:
+        return html_text
+
+    script = """
+<script id="virtual-library-tab-cleaner">
+(function () {
+  if (window.__virtualLibraryTabCleanerInstalled) return;
+  window.__virtualLibraryTabCleanerInstalled = true;
+
+  var HIDE_TEXTS = new Set([
+    '推荐', '预告片', '合集', '收藏', '文件夹',
+    'Recommendations', 'Recommendation', 'Suggested', 'Suggestions',
+    'Trailers', 'Collections', 'Favorites', 'Folders',
+    '予告編', 'コレクション', 'お気に入り', 'フォルダ'
+  ]);
+
+  function normText(el) {
+    return ((el && (el.innerText || el.textContent)) || '').replace(/\\s+/g, '').trim();
+  }
+
+  function isVirtualVideosPage() {
+    var s = String(location.hash || '') + ' ' + String(location.search || '') + ' ' + String(location.href || '');
+    return s.indexOf('/videos') !== -1 && /parentId=-\\d+/.test(s);
+  }
+
+  function restoreHiddenTabs() {
+    document.querySelectorAll('[data-virtual-library-tab-hidden="1"]').forEach(function (el) {
+      el.style.display = '';
+      el.removeAttribute('data-virtual-library-tab-hidden');
+    });
+  }
+
+  function hideUselessVirtualTabs() {
+    if (!isVirtualVideosPage()) {
+      restoreHiddenTabs();
+      return;
+    }
+
+    // Emby Web 不同版本/主题下 tab 可能是 button / a / role=tab，做宽松匹配。
+    var candidates = document.querySelectorAll('button, a, div[role="tab"], span[role="tab"]');
+    candidates.forEach(function (el) {
+      var t = normText(el);
+      if (!t) return;
+      if (HIDE_TEXTS.has(t)) {
+        el.style.display = 'none';
+        el.setAttribute('data-virtual-library-tab-hidden', '1');
+      }
+    });
+  }
+
+  var timer = null;
+  function scheduleClean() {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(hideUselessVirtualTabs, 80);
+  }
+
+  window.addEventListener('hashchange', scheduleClean);
+  window.addEventListener('popstate', scheduleClean);
+  document.addEventListener('viewshow', scheduleClean, true);
+  document.addEventListener('pageshow', scheduleClean, true);
+
+  new MutationObserver(scheduleClean).observe(document.documentElement, {
+    childList: true,
+    subtree: true
+  });
+
+  scheduleClean();
+})();
+</script>
+"""
+    if re.search(r'</body\s*>', html_text, flags=re.IGNORECASE):
+        return re.sub(r'</body\s*>', script + '\n</body>', html_text, count=1, flags=re.IGNORECASE)
+    return html_text + script
+
+
+def handle_emby_web_index_with_virtual_tab_cleaner(path):
+    """转发 Emby index.html，并注入虚拟库标签清理脚本。"""
+    try:
+        base_url, api_key = _get_real_emby_url_and_key()
+        target_url = f"{base_url}/{path.lstrip('/')}"
+        headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
+        headers['Host'] = urlparse(base_url).netloc
+        params = request.args.copy()
+        params['api_key'] = api_key
+
+        resp = requests.get(target_url, headers=headers, params=params, timeout=30)
+        content_type = resp.headers.get('Content-Type', 'text/html; charset=utf-8')
+        html = resp.text
+        html = _inject_virtual_library_tab_cleaner(html)
+
+        response = Response(html, status=resp.status_code, content_type=content_type)
+        # 防止浏览器一直缓存旧 index.html，导致脚本不生效。
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+        return response
+    except Exception as e:
+        logger.error(f"注入虚拟库标签清理脚本失败，回退普通代理: {e}", exc_info=True)
+        # 出错时让后面的兜底代理处理更安全
+        raise
+
 proxy_app = Flask(__name__)
 
 @proxy_app.route('/', defaults={'path': ''})
@@ -1481,6 +1590,11 @@ def proxy_all(path):
     # --- 3. HTTP 代理逻辑 ---
     try:
         full_path = f'/{path}'
+
+
+        # --- 拦截 W: Emby Web 首页，注入虚拟库无用标签隐藏脚本 ---
+        if request.method == 'GET' and path.lower().rstrip('/') in ['web/index.html', 'web']:
+            return handle_emby_web_index_with_virtual_tab_cleaner(path)
 
         # --- 拦截 X: 虚拟库 DisplayPreferences 兜底 ---
         display_prefs_match = re.search(
