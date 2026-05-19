@@ -203,11 +203,26 @@ def handle_get_views():
             image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
             definition = coll.get('definition_json') or {}
             
-            item_type_from_db = definition.get('item_type', 'Movie')
-            collection_type = "mixed"
-            if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
-                 authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-                 collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+            if isinstance(definition, str):
+                try:
+                    definition = json.loads(definition)
+                except Exception:
+                    definition = {}
+
+            item_type_from_db = definition.get('item_type', ['Movie'])
+
+            if isinstance(item_type_from_db, str):
+                item_type_from_db = [item_type_from_db]
+
+            if len(item_type_from_db) > 1:
+                collection_type = "mixed"
+            elif item_type_from_db[0] == "Series":
+                collection_type = "tvshows"
+            else:
+                # Emby 4.9.5 Web 端纯 movies 会进入 HomeVideosView.getTabs，
+                # 虚拟 CollectionFolder 字段不完整时会触发 includes undefined。
+                # 内容查询仍按 Movie 走，这里只是前端展示层伪装成 mixed。
+                collection_type = "mixed"
 
             fake_view = {
                 "Name": coll['name'], "ServerId": real_server_id, "Id": mimicked_id,
@@ -221,7 +236,7 @@ def handle_get_views():
                 "ChildCount": coll.get('in_library_count', 1),
                 "PrimaryImageAspectRatio": 1.7777777777777777, 
                 "CollectionType": collection_type, "ImageTags": image_tags, "BackdropImageTags": [], 
-                "LockedFields": [], "LockData": False
+                "LockedFields": [], "LockData": False, "Tags": []
             }
             fake_views_items.append(fake_view)
         
@@ -265,11 +280,26 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
         image_tags = {"Primary": real_emby_collection_id} if real_emby_collection_id else {}
         
         definition = coll.get('definition_json') or {}
-        item_type_from_db = definition.get('item_type', 'Movie')
-        collection_type = "mixed"
-        if not (isinstance(item_type_from_db, list) and len(item_type_from_db) > 1):
-             authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
-             collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
+        if isinstance(definition, str):
+            try:
+                definition = json.loads(definition)
+            except Exception:
+                definition = {}
+
+        item_type_from_db = definition.get('item_type', ['Movie'])
+
+        if isinstance(item_type_from_db, str):
+            item_type_from_db = [item_type_from_db]
+
+        if len(item_type_from_db) > 1:
+            collection_type = "mixed"
+        elif item_type_from_db[0] == "Series":
+            collection_type = "tvshows"
+        else:
+            # Emby 4.9.5 Web 端纯 movies 会进入 HomeVideosView.getTabs，
+            # 虚拟 CollectionFolder 字段不完整时会触发 includes undefined。
+            # 内容查询仍按 Movie 走，这里只是前端展示层伪装成 mixed。
+            collection_type = "mixed"
 
         fake_library_details = {
             "Name": coll['name'], 
