@@ -18,12 +18,14 @@ logger = logging.getLogger(__name__)
 def get_subscription_status():
     mp_config = settings_db.get_setting('mp_config') or {}
     mp_url = mp_config.get('moviepilot_url')
-    hdhive_config = settings_db.get_setting("hdhive_config") or {}
-    hdhive_key = hdhive_config.get("api_key")
+    try:
+        hdhive_configured = HDHiveClient().ping()
+    except Exception:
+        hdhive_configured = False
     return jsonify({
         "success": True,
         "mp_configured": bool(mp_url),
-        "hdhive_configured": bool(hdhive_key)
+        "hdhive_configured": bool(hdhive_configured)
     })
 
 # ==========================================
@@ -58,15 +60,11 @@ def save_mp_config():
 # 影巢 (HDHive) 接口
 # ==========================================
 HDHIVE_DEFAULT_CONFIG = {
-    # 兼容旧版个人 API Key。第三方应用模式下可以留空。
-    "api_key": "",
-
-    # 推荐：VPS 授权中转。
-    # relay_base_url 示例：https://hdhive.847977.xyz
-    # relay_secret 对应 VPS .env 里的 ETK_SHARED_SECRET。
+    # 面向用户：不再暴露 API Key / 中转地址 / 中转密钥。
+    # ETK 后端会自动向项目方统一 Relay 注册实例，并保存 relay_instance_id / relay_instance_secret。
     "relay_base_url": "",
-    "relay_secret": "",
-
+    "relay_instance_id": "",
+    "relay_instance_secret": "",
     "unlock_limit": {
         "count": 3,
         "window": 60
@@ -91,19 +89,9 @@ def _get_hdhive_config():
     filter_cfg = cfg.get("filter") or {}
 
     return {
-        "api_key": cfg.get("api_key") or "",
-        "relay_base_url": (
-            cfg.get("relay_base_url")
-            or cfg.get("auth_relay_url")
-            or cfg.get("proxy_base_url")
-            or ""
-        ),
-        "relay_secret": (
-            cfg.get("relay_secret")
-            or cfg.get("auth_relay_secret")
-            or cfg.get("proxy_secret")
-            or ""
-        ),
+        "relay_base_url": cfg.get("relay_base_url") or "",
+        "relay_instance_id": cfg.get("relay_instance_id") or "",
+        "relay_instance_secret": cfg.get("relay_instance_secret") or "",
         "unlock_limit": {
             "count": int(unlock_cfg.get("count", 3)),
             "window": int(unlock_cfg.get("window", 60))
@@ -119,11 +107,26 @@ def _get_hdhive_config():
     }
 
 
-def _is_hdhive_configured(cfg):
-    api_key = (cfg.get("api_key") or "").strip()
-    relay_base_url = (cfg.get("relay_base_url") or "").strip()
-    relay_secret = (cfg.get("relay_secret") or "").strip()
-    return bool(api_key or (relay_base_url and relay_secret))
+def _build_hdhive_config_from_request(data):
+    old_cfg = _get_hdhive_config()
+    return {
+        # 这些字段由后端自动注册维护，不由前端填写。
+        "relay_base_url": old_cfg.get("relay_base_url") or "",
+        "relay_instance_id": old_cfg.get("relay_instance_id") or "",
+        "relay_instance_secret": old_cfg.get("relay_instance_secret") or "",
+        "unlock_limit": {
+            "count": int(data.get("unlock_limit_count") or 3),
+            "window": int(data.get("unlock_limit_window") or 60)
+        },
+        "filter": {
+            "free_only": bool(data.get("hdhive_free_only", False)),
+            "max_points": int(data.get("hdhive_max_points") or 10),
+            "max_size_gb": float(data.get("hdhive_max_size_gb") or 120),
+            "resolution": data.get("hdhive_resolution") or "All",
+            "zh_sub_only": bool(data.get("hdhive_zh_sub_only", True)),
+            "exclude_iso": bool(data.get("hdhive_exclude_iso", False))
+        }
+    }
 
 
 @subscription_bp.route('/hdhive/config', methods=['GET', 'POST'])
@@ -131,34 +134,24 @@ def _is_hdhive_configured(cfg):
 def handle_hdhive_config():
     if request.method == 'GET':
         cfg = _get_hdhive_config()
-        api_key = cfg.get("api_key") or ""
-        relay_base_url = cfg.get("relay_base_url") or ""
-        relay_secret = cfg.get("relay_secret") or ""
         unlock_cfg = cfg.get("unlock_limit") or {}
         filter_cfg = cfg.get("filter") or {}
 
+        client = HDHiveClient()
+        authorize_url = client.authorize_url()
+        relay_status = client.get_relay_status()
+
         user_info = None
         quota_info = None
-        relay_status = None
-        authorize_url = ""
-
-        if _is_hdhive_configured(cfg):
-            client = HDHiveClient(api_key)
-            authorize_url = client.authorize_url()
-            relay_status = client.get_relay_status()
+        if relay_status and relay_status.get("has_access_token"):
             user_info = client.get_user_info()
             quota_info = client.get_quota()
 
         return jsonify({
             "success": True,
-            "api_key": api_key,
-
-            "relay_base_url": relay_base_url,
-            # 不把密钥明文回显给前端，前端只显示是否已配置。
-            "relay_secret_configured": bool(relay_secret),
-            "relay_secret": "",
             "authorize_url": authorize_url,
             "relay_status": relay_status,
+            "authorized": bool(relay_status and relay_status.get("has_access_token")),
 
             "unlock_limit_count": unlock_cfg.get("count", 3),
             "unlock_limit_window": unlock_cfg.get("window", 60),
@@ -174,73 +167,39 @@ def handle_hdhive_config():
             "quota_info": quota_info
         })
 
-    elif request.method == 'POST':
-        data = request.json or {}
-        old_cfg = _get_hdhive_config()
+    data = request.json or {}
+    cfg = _build_hdhive_config_from_request(data)
+    settings_db.save_setting("hdhive_config", cfg)
 
-        # relay_secret 为空时保留旧值，避免每次打开配置页都需要重填。
-        incoming_secret = (data.get("relay_secret") or "").strip()
-        relay_secret = incoming_secret or (old_cfg.get("relay_secret") or "")
+    client = HDHiveClient()
+    authorize_url = client.authorize_url()
+    relay_status = client.get_relay_status()
 
-        cfg = {
-            "api_key": (data.get("api_key") or "").strip(),
-            "relay_base_url": (data.get("relay_base_url") or "").strip().rstrip("/"),
-            "relay_secret": relay_secret,
-            "unlock_limit": {
-                "count": int(data.get("unlock_limit_count") or 3),
-                "window": int(data.get("unlock_limit_window") or 60)
-            },
-            "filter": {
-                "free_only": bool(data.get("hdhive_free_only", False)),
-                "max_points": int(data.get("hdhive_max_points") or 10),
-                "max_size_gb": float(data.get("hdhive_max_size_gb") or 120),
-                "resolution": data.get("hdhive_resolution") or "All",
-                "zh_sub_only": bool(data.get("hdhive_zh_sub_only", True)),
-                "exclude_iso": bool(data.get("hdhive_exclude_iso", False))
-            }
-        }
+    user_info = None
+    quota_info = None
+    if relay_status and relay_status.get("has_access_token"):
+        user_info = client.get_user_info()
+        quota_info = client.get_quota()
 
-        settings_db.save_setting("hdhive_config", cfg)
+    return jsonify({
+        "success": True,
+        "message": "影巢配置保存成功！" if user_info else "筛选配置已保存。若未授权，请点击“前往影巢授权”。",
+        "authorize_url": authorize_url,
+        "relay_status": relay_status,
+        "authorized": bool(relay_status and relay_status.get("has_access_token")),
+        "user_info": user_info,
+        "quota_info": quota_info
+    })
 
-        user_info = None
-        quota_info = None
-        relay_status = None
-        authorize_url = ""
 
-        if _is_hdhive_configured(cfg):
-            client = HDHiveClient(cfg.get("api_key"))
-            authorize_url = client.authorize_url()
-            relay_status = client.get_relay_status()
-
-            # ping 在 relay 模式下要求已完成授权；未授权时不视作配置保存失败。
-            ping_ok = client.ping()
-            if client.use_relay and not ping_ok:
-                return jsonify({
-                    "success": True,
-                    "message": "影巢中转配置已保存，但尚未完成用户授权。请点击“前往影巢授权”。",
-                    "authorize_url": authorize_url,
-                    "relay_status": relay_status,
-                    "user_info": None,
-                    "quota_info": None
-                })
-
-            if not client.use_relay and not ping_ok:
-                return jsonify({
-                    "success": False,
-                    "message": "API Key 无效或网络异常，配置已保存，请检查后重试。"
-                })
-
-            user_info = client.get_user_info()
-            quota_info = client.get_quota()
-
-        return jsonify({
-            "success": True,
-            "message": "影巢配置保存成功！",
-            "authorize_url": authorize_url,
-            "relay_status": relay_status,
-            "user_info": user_info,
-            "quota_info": quota_info
-        })
+@subscription_bp.route('/hdhive/authorize_url', methods=['GET'])
+@admin_required
+def get_hdhive_authorize_url():
+    client = HDHiveClient()
+    url = client.authorize_url()
+    if not url:
+        return jsonify({"success": False, "message": "生成影巢授权链接失败，请查看后端日志。"}), 500
+    return jsonify({"success": True, "authorize_url": url})
 
 
 @subscription_bp.route('/hdhive/resources', methods=['GET'])
@@ -250,11 +209,10 @@ def get_hdhive_resources():
     media_type = request.args.get('media_type')
     season = request.args.get('season')
 
-    hdhive_config = _get_hdhive_config()
-    if not _is_hdhive_configured(hdhive_config):
-        return jsonify({"success": False, "message": "请先配置影巢授权中转或 API Key"}), 400
+    client = HDHiveClient()
+    if not client.ping():
+        return jsonify({"success": False, "message": "请先完成影巢授权"}), 401
 
-    client = HDHiveClient(hdhive_config.get("api_key"))
     resources = client.get_resources(tmdb_id, media_type)
     filtered_resources = filter_hdhive_resources(
         resources,
@@ -279,16 +237,16 @@ def trigger_hdhive_download():
     media_type = data.get('media_type')
     title = data.get('title', '未知影视')
 
-    hdhive_config = _get_hdhive_config()
-    if not _is_hdhive_configured(hdhive_config):
-        return jsonify({"success": False, "message": "请先配置影巢授权中转或 API Key"}), 400
+    client = HDHiveClient()
+    if not client.ping():
+        return jsonify({"success": False, "message": "请先完成影巢授权"}), 401
 
-    api_key = hdhive_config.get("api_key")
+    # task_download_from_hdhive 的第一个参数保留兼容旧函数签名，新版 HDHiveClient 会忽略该参数。
     threading.Thread(
         target=task_download_from_hdhive,
-        args=(api_key, slug, tmdb_id, media_type, title)
+        args=(None, slug, tmdb_id, media_type, title)
     ).start()
-    return jsonify({"success": True, "message": f"已向 115 发送转存指令，后台正在处理！"})
+    return jsonify({"success": True, "message": "已向 115 发送转存指令，后台正在处理！"})
 
 
 @subscription_bp.route('/hdhive/checkin', methods=['POST'])
@@ -297,11 +255,10 @@ def trigger_hdhive_checkin():
     data = request.json or {}
     is_gambler = data.get('is_gambler', False)
 
-    hdhive_config = _get_hdhive_config()
-    if not _is_hdhive_configured(hdhive_config):
-        return jsonify({"success": False, "message": "请先配置影巢授权中转或 API Key"}), 400
+    client = HDHiveClient()
+    if not client.ping():
+        return jsonify({"success": False, "message": "请先完成影巢授权"}), 401
 
-    client = HDHiveClient(hdhive_config.get("api_key"))
     res = client.checkin(is_gambler)
 
     if res.get("success"):
@@ -309,10 +266,9 @@ def trigger_hdhive_checkin():
         real_message = res_data.get("message") or res.get("message", "签到请求成功")
         if res_data.get("checked_in") is False:
             return jsonify({"success": False, "message": real_message})
-        else:
-            return jsonify({"success": True, "message": real_message})
-    else:
-        return jsonify({"success": False, "message": res.get("message", "签到失败")})
+        return jsonify({"success": True, "message": real_message})
+
+    return jsonify({"success": False, "message": res.get("message", "签到失败")})
 
 # ==========================================
 # TG频道 (Telegram) 接口

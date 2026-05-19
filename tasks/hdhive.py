@@ -18,6 +18,7 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
     """
     logger.info(f"=== ➜ 开始从影巢获取资源: {title} (TMDB: {tmdb_id}) ===")
     
+    # api_key 参数保留兼容旧调用签名；新版影巢授权通过统一 Relay 完成。
     hdhive = HDHiveClient(api_key)
     unlock_data = hdhive.unlock_resource(slug)
     
@@ -217,27 +218,12 @@ def task_hdhive_auto_checkin(processor):
     logger.info("--- 开始执行影巢自动签到任务 ---")
     task_manager.update_status_from_thread(0, "正在读取影巢配置...")
 
-    hdhive_config = settings_db.get_setting("hdhive_config") or {}
-    api_key = hdhive_config.get("api_key")
-    relay_base_url = (
-        hdhive_config.get("relay_base_url")
-        or hdhive_config.get("auth_relay_url")
-        or hdhive_config.get("proxy_base_url")
-        or ""
-    )
-    relay_secret = (
-        hdhive_config.get("relay_secret")
-        or hdhive_config.get("auth_relay_secret")
-        or hdhive_config.get("proxy_secret")
-        or ""
-    )
-
-    if not api_key and not (relay_base_url and relay_secret):
-        logger.info("  ➜ 未配置影巢授权中转或 API Key，跳过自动签到。")
-        task_manager.update_status_from_thread(100, "未配置影巢授权中转或 API Key，跳过")
+    # 新版影巢使用统一 Relay OAuth 授权，不再依赖个人 API Key。
+    client = HDHiveClient()
+    if not client.ping():
+        logger.info("  ➜ 影巢尚未完成授权，跳过自动签到。")
+        task_manager.update_status_from_thread(100, "影巢未授权，跳过")
         return
-
-    client = HDHiveClient(api_key)
     task_manager.update_status_from_thread(50, "正在发送签到请求...")
 
     try:
