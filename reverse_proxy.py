@@ -1,4 +1,4 @@
-# reverse_proxy.py (最终完美版 V5 - 实时架构适配)
+# reverse_proxy.py (V6 - Emby 4.9.5 虚拟库 movies 视图修复版)
 
 import logging
 import requests
@@ -158,7 +158,13 @@ def _fetch_sorted_items_via_emby_proxy(user_id, item_ids, sort_by, sort_order, l
         logger.error(f"  ➜ Emby代理排序或内存回退时失败: {e}", exc_info=True)
         return {"Items": [], "TotalRecordCount": 0}
 
+
+
 def _normalize_definition(definition):
+    """
+    definition_json 可能是 dict，也可能是 JSON 字符串。
+    统一转成 dict，避免后面直接 .get 报错。
+    """
     if not definition:
         return {}
     if isinstance(definition, str):
@@ -166,107 +172,219 @@ def _normalize_definition(definition):
             return json.loads(definition)
         except Exception:
             return {}
-    return definition
+    if isinstance(definition, dict):
+        return definition
+    return {}
+
+
+def _get_item_types_from_definition(definition):
+    definition = _normalize_definition(definition)
+    item_types = definition.get('item_type', ['Movie'])
+    if isinstance(item_types, str):
+        item_types = [item_types]
+    if not isinstance(item_types, list) or not item_types:
+        item_types = ['Movie']
+    return [str(x) for x in item_types if x]
 
 
 def _infer_collection_type(definition):
     """
-    仅在拿不到真实库对象时兜底使用。
-    能拿到真实库对象时，优先沿用真实库的 CollectionType。
+    根据虚拟库定义推断 Emby 前端需要的 CollectionType。
+    注意：这个只决定前端展示视图，不改变后端查询 item_type。
+    """
+    item_types = _get_item_types_from_definition(definition)
+
+    if len(item_types) > 1:
+        return 'mixed'
+
+    if item_types and item_types[0] == 'Series':
+        return 'tvshows'
+
+    return 'movies'
+
+
+def _get_target_library_ids(definition):
+    """
+    从虚拟库规则里拿真实媒体库 ID，比如电影库 260948。
+    这里拿到的是媒体库 ID，不是自建合集 ID。
     """
     definition = _normalize_definition(definition)
-    item_type_from_db = definition.get('item_type', ['Movie'])
+    ids = definition.get('target_library_ids', [])
 
-    if isinstance(item_type_from_db, str):
-        item_type_from_db = [item_type_from_db]
+    if isinstance(ids, str):
+        ids = [x.strip() for x in ids.split(',') if x.strip()]
 
-    if len(item_type_from_db) > 1:
-        return "mixed"
+    if not isinstance(ids, list):
+        return []
 
-    if item_type_from_db and item_type_from_db[0] == "Series":
-        return "tvshows"
+    return [str(x) for x in ids if x]
 
-    return "movies"
 
-def _ensure_movie_view_safe_fields(dto, definition=None):
+def _default_subviews_for_type(collection_type):
     """
-    Emby 4.9.5 Web 端 movies 视图会进入 HomeVideosView.getTabs。
-    这里统一补齐可能被前端 .includes() / .map() 访问的字段，避免 undefined。
+    Emby 4.9.x Web 的 videos 页面会读取 Subviews，并对它执行 includes。
+    如果虚拟库缺这个字段，纯电影库会在 HomeVideosView.getTabs 里报错。
     """
-    if not isinstance(dto, dict):
-        dto = {}
+    if collection_type == 'movies':
+        return ['movies', 'tags', 'collections', 'genres', 'movies', 'folders']
+    if collection_type == 'tvshows':
+        return ['series', 'tags', 'genres', 'folders']
+    return ['movies', 'series', 'tags', 'genres', 'folders']
 
-    # 基础数组字段
-    for key in [
-        "Tags",
-        "Taglines",
-        "RemoteTrailers",
-        "BackdropImageTags",
-        "LockedFields",
-        "ExternalUrls"
-    ]:
-        if not isinstance(dto.get(key), list):
+
+def _get_user_id_from_request_path_or_headers(path=None):
+    """
+    尽量从路径、参数、X-Emby-Authorization 中提取 UserId。
+    某些客户端直接请求 /emby/Items/-900xxx，不带 /Users/{id}。
+    """
+    path = path or request.path or ''
+
+    user_id_match = re.search(r'/Users/([^/]+)/', path)
+    if user_id_match:
+        return user_id_match.group(1)
+
+    user_id = request.args.get('UserId') or request.args.get('userId')
+    if user_id:
+        return user_id
+
+    auth = request.headers.get('X-Emby-Authorization') or request.headers.get('Authorization') or ''
+    # 例：MediaBrowser ... UserId="xxx", ...
+    auth_match = re.search(r'UserId="?([^",]+)"?', auth)
+    if auth_match:
+        return auth_match.group(1)
+
+    return None
+
+
+def _get_user_visible_native_libraries(user_id):
+    if not user_id:
+        return []
+    try:
+        libs = emby.get_emby_libraries(
+            config_manager.APP_CONFIG.get('emby_server_url', ''),
+            config_manager.APP_CONFIG.get('emby_api_key', ''),
+            user_id
+        )
+        return libs or []
+    except Exception as e:
+        logger.warning(f'获取原生媒体库列表失败: {e}')
+        return []
+
+
+def _find_display_source_view(user_visible_native_libs, definition, collection_type):
+    """
+    找虚拟库应该继承的真实媒体库视图。
+
+    你的架构里：
+    - coll.emby_collection_id 是自建合集 ID，例如 652540，用于封面/实体合集。
+    - definition.target_library_ids 里的 ID 才是真实媒体库 ID，例如电影库 260948。
+
+    DisplayPreferencesId / Subviews 必须继承真实媒体库，不能使用自建合集 ID。
+    """
+    target_library_ids = _get_target_library_ids(definition)
+
+    for lib_id in target_library_ids:
+        for view in user_visible_native_libs:
+            if str(view.get('Id')) == str(lib_id):
+                return view
+
+    # 兜底：如果规则里没有 target_library_ids，就找同 CollectionType 的第一个真实库
+    for view in user_visible_native_libs:
+        if view.get('CollectionType') == collection_type:
+            return view
+
+    return None
+
+
+def _safe_array(value):
+    return value if isinstance(value, list) else []
+
+
+def _safe_dict(value):
+    return value if isinstance(value, dict) else {}
+
+
+def _build_virtual_collection_folder(coll, mimicked_id, user_visible_native_libs, timestamp_image_tag=True):
+    """
+    构造虚拟媒体库 CollectionFolder。
+
+    关键点：
+    1. emby_collection_id 保持作为自建合集 ID，用于封面。
+    2. DisplayPreferencesId 和 Subviews 从真实媒体库继承，避免 Emby 4.9.5 Web 的 getTabs 报错。
+    3. CollectionType 仍保持 movies/tvshows/mixed，这样标签页和真实库一致。
+    """
+    real_server_id = extensions.EMBY_SERVER_ID
+    db_id = coll['id']
+    real_emby_collection_id = coll.get('emby_collection_id')  # 自建合集 ID，例如 652540
+    definition = _normalize_definition(coll.get('definition_json') or {})
+
+    collection_type = _infer_collection_type(definition)
+    source_view = _find_display_source_view(user_visible_native_libs, definition, collection_type)
+    source_view = dict(source_view) if source_view else {}
+
+    source_display_preferences_id = source_view.get('DisplayPreferencesId')
+    source_subviews = source_view.get('Subviews')
+    if not isinstance(source_subviews, list):
+        source_subviews = _default_subviews_for_type(collection_type)
+
+    if real_emby_collection_id:
+        primary_tag = f'{real_emby_collection_id}?timestamp={int(time.time())}' if timestamp_image_tag else str(real_emby_collection_id)
+        image_tags = {'Primary': primary_tag}
+    else:
+        image_tags = {}
+
+    dto = dict(source_view)
+    dto.update({
+        'Name': coll['name'],
+        'ServerId': real_server_id,
+        'Id': mimicked_id,
+        'Guid': str(uuid.uuid5(uuid.NAMESPACE_DNS, f'custom-view-{db_id}')),
+        'Etag': f'{db_id}{int(time.time())}',
+        'DateCreated': dto.get('DateCreated', '2025-01-01T00:00:00.0000000Z'),
+        'DateModified': dto.get('DateModified', '0001-01-01T00:00:00.0000000Z'),
+        'CanDelete': False,
+        'CanDownload': False,
+        'SupportsSync': dto.get('SupportsSync', True),
+        'SortName': coll['name'],
+        'ForcedSortName': coll['name'],
+        'ExternalUrls': _safe_array(dto.get('ExternalUrls')),
+        'ProviderIds': _safe_dict(dto.get('ProviderIds')),
+        'IsFolder': True,
+        'ParentId': dto.get('ParentId', '2'),
+        'Type': 'CollectionFolder',
+        'PresentationUniqueKey': f'custom-view-{db_id}',
+
+        # 关键修复：这里必须是真实媒体库的 DisplayPreferencesId，不能是自建合集 ID。
+        'DisplayPreferencesId': source_display_preferences_id or f'custom-{db_id}',
+
+        'Taglines': _safe_array(dto.get('Taglines')),
+        'RemoteTrailers': _safe_array(dto.get('RemoteTrailers')),
+        'UserData': _safe_dict(dto.get('UserData')) or {
+            'PlaybackPositionTicks': 0,
+            'IsFavorite': False,
+            'Played': False
+        },
+        'ChildCount': coll.get('in_library_count', 1),
+        'PrimaryImageAspectRatio': 1.7777777777777777,
+        'CollectionType': collection_type,
+
+        # 封面仍然来自自建合集 ID，例如 652540。
+        'ImageTags': image_tags,
+
+        'BackdropImageTags': _safe_array(dto.get('BackdropImageTags')),
+        'LockedFields': _safe_array(dto.get('LockedFields')),
+        'LockData': bool(dto.get('LockData', False)),
+        'Tags': _safe_array(dto.get('Tags')),
+        'Subviews': source_subviews,
+    })
+
+    # 一些客户端可能直接读取这些字段，补空数组避免 undefined.includes / undefined.map。
+    for key in ['Genres', 'People', 'GenreItems', 'TagItems']:
+        if key in dto and not isinstance(dto.get(key), list):
             dto[key] = []
 
-    if not isinstance(dto.get("ProviderIds"), dict):
-        dto["ProviderIds"] = {}
-
-    if not isinstance(dto.get("UserData"), dict):
-        dto["UserData"] = {
-            "PlaybackPositionTicks": 0,
-            "IsFavorite": False,
-            "Played": False
-        }
-
-    # 关键：LibraryOptions 里很多字段在前端可能直接 .includes()
-    lib_opts = dto.get("LibraryOptions")
-    if not isinstance(lib_opts, dict):
-        lib_opts = {}
-
-    for key in [
-        "DisabledLocalMetadataReaders",
-        "LocalMetadataReaderOrder",
-        "DisabledSubtitleFetchers",
-        "SubtitleFetcherOrder",
-        "DisabledMediaSegmentProviders",
-        "MediaSegmentProviderOrder",
-        "PathInfos",
-        "IgnoreFileExtensions"
-    ]:
-        if not isinstance(lib_opts.get(key), list):
-            lib_opts[key] = []
-
-    type_options = lib_opts.get("TypeOptions")
-    if not isinstance(type_options, list) or not type_options:
-        type_options = [{
-            "Type": "Movie",
-            "MetadataFetchers": [],
-            "MetadataFetcherOrder": [],
-            "ImageFetchers": [],
-            "ImageFetcherOrder": [],
-            "ImageOptions": []
-        }]
-
-    for opt in type_options:
-        if isinstance(opt, dict):
-            for key in [
-                "MetadataFetchers",
-                "MetadataFetcherOrder",
-                "ImageFetchers",
-                "ImageFetcherOrder",
-                "ImageOptions"
-            ]:
-                if not isinstance(opt.get(key), list):
-                    opt[key] = []
-
-    lib_opts["TypeOptions"] = type_options
-    dto["LibraryOptions"] = lib_opts
-
-    # 兜底 CollectionType
-    if not dto.get("CollectionType"):
-        dto["CollectionType"] = _infer_collection_type(definition or {})
-
     return dto
+
 
 def handle_get_views():
     """
@@ -282,105 +400,37 @@ def handle_get_views():
             return "Could not determine user from request path", 400
         user_id = user_id_match.group(1)
 
-        # 1. 获取原生库
-        user_visible_native_libs = emby.get_emby_libraries(
-            config_manager.APP_CONFIG.get("emby_server_url", ""),
-            config_manager.APP_CONFIG.get("emby_api_key", ""),
-            user_id
-        )
-        if user_visible_native_libs is None: user_visible_native_libs = []
+        # 1. 获取原生库。这里拿到的是真实媒体库 Views，例如电影库 260948。
+        user_visible_native_libs = _get_user_visible_native_libraries(user_id)
 
-        # 2. 生成虚拟库
+        # 2. 生成虚拟库。
         collections = custom_collection_db.get_all_active_custom_collections()
         fake_views_items = []
         
         for coll in collections:
-            # 物理检查：库在Emby里有实体吗？
+            # 物理检查：自建合集在 Emby 里是否有实体。
+            # 注意：这个是自建合集 ID，例如 652540，不是真实电影库 ID。
             real_emby_collection_id = coll.get('emby_collection_id')
             if not real_emby_collection_id:
                 continue
 
-            # 权限检查：如果设置了 allowed_user_ids，则检查
+            # 权限检查。
             allowed_users = coll.get('allowed_user_ids')
             if allowed_users and isinstance(allowed_users, list):
                 if user_id not in allowed_users:
                     continue
             
-            # 生成虚拟库对象
             db_id = coll['id']
             mimicked_id = to_mimicked_id(db_id)
-            # 使用时间戳强制刷新封面
-            image_tags = {"Primary": f"{real_emby_collection_id}?timestamp={int(time.time())}"}
-            definition = _normalize_definition(coll.get('definition_json') or {})
-
-            # 关键：从真实库列表里找到被虚拟库绑定的真实 Emby 库
-            base_view = next(
-                (v for v in user_visible_native_libs if str(v.get("Id")) == str(real_emby_collection_id)),
-                None
+            fake_view = _build_virtual_collection_folder(
+                coll=coll,
+                mimicked_id=mimicked_id,
+                user_visible_native_libs=user_visible_native_libs,
+                timestamp_image_tag=True
             )
-
-            # 优先复制真实库对象，这样 CollectionType、Tabs、LibraryOptions 等字段都尽量保留
-            if base_view:
-                fake_view = dict(base_view)
-            else:
-                # 兜底：拿不到真实库时才自己构造一个基础对象
-                fake_view = {
-                    "ServerId": real_server_id,
-                    "DateCreated": "2025-01-01T00:00:00.0000000Z",
-                    "CanDelete": False,
-                    "CanDownload": False,
-                    "ExternalUrls": [],
-                    "ProviderIds": {},
-                    "IsFolder": True,
-                    "ParentId": "2",
-                    "Type": "CollectionFolder",
-                    "Taglines": [],
-                    "RemoteTrailers": [],
-                    "UserData": {
-                        "PlaybackPositionTicks": 0,
-                        "IsFavorite": False,
-                        "Played": False
-                    },
-                    "CollectionType": _infer_collection_type(definition),
-                    "BackdropImageTags": [],
-                    "LockedFields": [],
-                    "LockData": False,
-                    "Tags": []
-                }
-
-            # 覆盖成虚拟库自己的身份信息
-            fake_view.update({
-                "Name": coll['name'],
-                "ServerId": real_server_id,
-                "Id": mimicked_id,
-
-                # 用稳定 UUID，避免每次刷新都变
-                "Guid": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"custom-view-{db_id}")),
-                "Etag": f"{db_id}{int(time.time())}",
-
-                "SortName": coll['name'],
-                "ForcedSortName": coll['name'],
-                "IsFolder": True,
-                "Type": "CollectionFolder",
-                "PresentationUniqueKey": f"custom-view-{db_id}",
-
-                # 继续继承真实库的 DisplayPreferencesId，让前端读真实电影库的显示偏好
-                "DisplayPreferencesId": real_emby_collection_id if real_emby_collection_id else f"custom-{db_id}",
-
-                "ChildCount": coll.get('in_library_count', 1),
-                "PrimaryImageAspectRatio": 1.7777777777777777,
-                "ImageTags": image_tags,
-
-                # 防止前端 includes / map 之类操作读到 undefined
-                "BackdropImageTags": fake_view.get("BackdropImageTags", []),
-                "LockedFields": fake_view.get("LockedFields", []),
-                "LockData": fake_view.get("LockData", False),
-                "Tags": fake_view.get("Tags", []),
-            })
-            fake_view = _ensure_movie_view_safe_fields(fake_view, definition)
             fake_views_items.append(fake_view)
         
-        # 3. 合并与排序
+        # 3. 合并与排序。
         native_views_items = []
         should_merge_native = config_manager.APP_CONFIG.get('proxy_merge_native_libraries', True)
         if should_merge_native:
@@ -389,7 +439,7 @@ def handle_get_views():
             selected_native_view_ids = [x.strip() for x in raw_selection.split(',') if x.strip()] if isinstance(raw_selection, str) else raw_selection
             
             if selected_native_view_ids:
-                native_views_items = [view for view in all_native_views if view.get("Id") in selected_native_view_ids]
+                native_views_items = [view for view in all_native_views if view.get('Id') in selected_native_view_ids]
             else:
                 native_views_items = []
         
@@ -402,12 +452,13 @@ def handle_get_views():
             final_items.extend(native_views_items)
             final_items.extend(fake_views_items)
 
-        final_response = {"Items": final_items, "TotalRecordCount": len(final_items)}
+        final_response = {'Items': final_items, 'TotalRecordCount': len(final_items)}
         return Response(json.dumps(final_response), mimetype='application/json')
         
     except Exception as e:
         logger.error(f"[PROXY] 获取视图数据时出错: {e}", exc_info=True)
         return "Internal Proxy Error", 500
+
 
 def handle_get_mimicked_library_details(user_id, mimicked_id):
     try:
@@ -416,89 +467,17 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
         if not coll:
             return "Not Found", 404
 
-        real_server_id = extensions.EMBY_SERVER_ID
-        real_emby_collection_id = coll.get('emby_collection_id')
-        image_tags = {"Primary": real_emby_collection_id} if real_emby_collection_id else {}
-        definition = _normalize_definition(coll.get('definition_json') or {})
+        user_id = user_id or _get_user_id_from_request_path_or_headers(request.path)
+        user_visible_native_libs = _get_user_visible_native_libraries(user_id)
 
-        # 关键：先去 Emby 真实库详情接口拿完整字段
-        base_detail = {}
+        fake_library_details = _build_virtual_collection_folder(
+            coll=coll,
+            mimicked_id=mimicked_id,
+            user_visible_native_libs=user_visible_native_libs,
+            timestamp_image_tag=False
+        )
 
-        if real_emby_collection_id and user_id:
-            try:
-                base_url, api_key = _get_real_emby_url_and_key()
-                resp = requests.get(
-                    f"{base_url}/emby/Users/{user_id}/Items/{real_emby_collection_id}",
-                    params={
-                        "api_key": api_key,
-                        "Fields": "Settings,PrimaryImageAspectRatio,DateCreated,Genres,Tags,Studios,SortName"
-                    },
-                    timeout=10
-                )
-
-                if resp.status_code == 200:
-                    base_detail = resp.json()
-                else:
-                    logger.warning(
-                        f"获取真实库详情失败: status={resp.status_code}, real_id={real_emby_collection_id}"
-                    )
-            except Exception as e:
-                logger.warning(f"获取真实库详情异常，回退手动构造: {e}")
-
-        fake_library_details = dict(base_detail)
-
-        # 如果真实库详情没拿到，补一个兜底 CollectionType
-        collection_type = fake_library_details.get("CollectionType") or _infer_collection_type(definition)
-
-        fake_library_details.update({
-            "Name": coll['name'],
-            "ServerId": real_server_id,
-            "Id": mimicked_id,
-
-            # 稳定 UUID，别每次刷新都 uuid4
-            "Guid": str(uuid.uuid5(uuid.NAMESPACE_DNS, f"custom-view-{real_db_id}")),
-            "Etag": f"{real_db_id}{int(time.time())}",
-
-            "DateCreated": fake_library_details.get("DateCreated", "2025-01-01T00:00:00.0000000Z"),
-            "CanDelete": False,
-            "CanDownload": False,
-
-            "SortName": coll['name'],
-            "ForcedSortName": coll['name'],
-            "ExternalUrls": fake_library_details.get("ExternalUrls", []),
-            "ProviderIds": fake_library_details.get("ProviderIds", {}),
-            "IsFolder": True,
-            "ParentId": fake_library_details.get("ParentId", "2"),
-            "Type": "CollectionFolder",
-            "PresentationUniqueKey": f"custom-view-{real_db_id}",
-
-            # 继续继承真实库的显示偏好
-            "DisplayPreferencesId": real_emby_collection_id if real_emby_collection_id else f"custom-{real_db_id}",
-
-            "Taglines": fake_library_details.get("Taglines", []),
-            "RemoteTrailers": fake_library_details.get("RemoteTrailers", []),
-            "UserData": fake_library_details.get("UserData", {
-                "PlaybackPositionTicks": 0,
-                "IsFavorite": False,
-                "Played": False
-            }),
-
-            "ChildCount": coll.get('in_library_count', 1),
-            "PrimaryImageAspectRatio": 1.7777777777777777,
-
-            # 保留 movies / tvshows / mixed，不要强行改 mixed
-            "CollectionType": collection_type,
-
-            "ImageTags": image_tags,
-            "BackdropImageTags": fake_library_details.get("BackdropImageTags", []),
-            "LockedFields": fake_library_details.get("LockedFields", []),
-            "LockData": fake_library_details.get("LockData", False),
-            "Tags": fake_library_details.get("Tags", []),
-        })
-
-        fake_library_details = _ensure_movie_view_safe_fields(fake_library_details, definition)
         return Response(json.dumps(fake_library_details), mimetype='application/json')
-
     except Exception as e:
         logger.error(f"获取伪造库详情时出错: {e}", exc_info=True)
         return "Internal Server Error", 500
@@ -518,82 +497,87 @@ def handle_get_mimicked_library_image(path):
         return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
     except Exception as e:
         return "Internal Proxy Error", 500
-    
+
+
+
 def handle_mimicked_display_preferences(path, mimicked_id):
     """
-    处理虚拟库的显示偏好。
-    Emby Web 4.9.5 的 movies 页面会读取 DisplayPreferences。
-    如果 parentId 是 -900xxx，真实 Emby 不认识，会导致前端 getTabs 读到 undefined。
-    所以这里把虚拟库的 DisplayPreferences 映射到它绑定的真实电影库。
+    处理少数客户端直接请求 /DisplayPreferences/-900xxx 的情况。
+
+    正常情况下，虚拟库 JSON 里的 DisplayPreferencesId 已经被设置为真实媒体库的 GUID，
+    前端会直接请求真实 DisplayPreferencesId；这个拦截只是兜底。
     """
+    default_response = {
+        'Id': mimicked_id,
+        'SortBy': 'SortName',
+        'SortOrder': 'Ascending',
+        'ViewType': 'Poster',
+        'CustomPrefs': {}
+    }
+
     try:
         real_db_id = from_mimicked_id(mimicked_id)
         coll = custom_collection_db.get_custom_collection_by_id(real_db_id)
         if not coll:
-            return Response(json.dumps({
-                "Id": mimicked_id,
-                "SortBy": "SortName",
-                "SortOrder": "Ascending",
-                "ViewType": "Poster",
-                "CustomPrefs": {}
-            }), mimetype='application/json')
+            return Response(json.dumps(default_response), mimetype='application/json')
 
-        real_emby_collection_id = coll.get('emby_collection_id')
-        if not real_emby_collection_id:
-            return Response(json.dumps({
-                "Id": mimicked_id,
-                "SortBy": "SortName",
-                "SortOrder": "Ascending",
-                "ViewType": "Poster",
-                "CustomPrefs": {}
-            }), mimetype='application/json')
+        user_id = _get_user_id_from_request_path_or_headers(path)
+        definition = _normalize_definition(coll.get('definition_json') or {})
+        collection_type = _infer_collection_type(definition)
+        native_libs = _get_user_visible_native_libraries(user_id)
+        source_view = _find_display_source_view(native_libs, definition, collection_type)
+        source_display_preferences_id = source_view.get('DisplayPreferencesId') if source_view else None
+
+        if not source_display_preferences_id:
+            return Response(json.dumps(default_response), mimetype='application/json')
 
         base_url, api_key = _get_real_emby_url_and_key()
-
-        # 把 /emby/DisplayPreferences/-900001 改成 /emby/DisplayPreferences/260948
         target_path = re.sub(
-            r'(DisplayPreferences/)-?\d+',
-            rf'\g<1>{real_emby_collection_id}',
+            r'(DisplayPreferences/)[^/?]+',
+            rf'\g<1>{source_display_preferences_id}',
             path,
+            count=1,
             flags=re.IGNORECASE
         )
-
         target_url = f"{base_url}/{target_path.lstrip('/')}"
+
         headers = {k: v for k, v in request.headers if k.lower() not in ['host', 'accept-encoding']}
         headers['Host'] = urlparse(base_url).netloc
 
         params = request.args.copy()
         params['api_key'] = api_key
 
-        resp = requests.get(
-            target_url,
+        resp = requests.request(
+            method=request.method,
+            url=target_url,
             headers=headers,
             params=params,
-            timeout=15
+            data=request.get_data(),
+            timeout=15,
+            stream=True
         )
-        resp.raise_for_status()
 
-        data = resp.json()
+        excluded_resp_headers = ['content-encoding', 'content-length', 'transfer-encoding', 'connection']
+        response_headers = [(name, value) for name, value in resp.raw.headers.items() if name.lower() not in excluded_resp_headers]
 
-        # 返回给前端时，Id 可以改回虚拟库 ID，避免前端缓存混乱
-        if isinstance(data, dict):
-            data["Id"] = mimicked_id
+        # GET 时把 Id 改回虚拟 ID，减少前端缓存串库的概率。
+        content_type = resp.headers.get('Content-Type', '')
+        if request.method.upper() == 'GET' and 'application/json' in content_type.lower():
+            try:
+                data = resp.json()
+                if isinstance(data, dict):
+                    data['Id'] = mimicked_id
+                    if not isinstance(data.get('CustomPrefs'), dict):
+                        data['CustomPrefs'] = {}
+                    return Response(json.dumps(data), resp.status_code, mimetype='application/json')
+            except Exception:
+                pass
 
-            # 兜底，防止 CustomPrefs 缺失
-            if not isinstance(data.get("CustomPrefs"), dict):
-                data["CustomPrefs"] = {}
-
-        return Response(json.dumps(data), mimetype='application/json')
+        return Response(resp.iter_content(chunk_size=8192), resp.status_code, response_headers)
 
     except Exception as e:
         logger.error(f"处理虚拟库 DisplayPreferences 失败: {e}", exc_info=True)
-        return Response(json.dumps({
-            "Id": mimicked_id,
-            "SortBy": "SortName",
-            "SortOrder": "Ascending",
-            "ViewType": "Poster",
-            "CustomPrefs": {}
-        }), mimetype='application/json')
+        return Response(json.dumps(default_response), mimetype='application/json')
 
 UNSUPPORTED_METADATA_ENDPOINTS = [
         # '/Items/Prefixes', # Emby 不支持按前缀过滤虚拟库
@@ -1143,17 +1127,18 @@ def proxy_all(path):
     # --- 3. HTTP 代理逻辑 ---
     try:
         full_path = f'/{path}'
-        # ===== 调试日志：打印所有请求路径 =====
-        # logger.info(f"[PROXY] 请求路径: {full_path}")
-        # --- 拦截 X: 虚拟库 DisplayPreferences ---
+
+        # --- 拦截 X: 虚拟库 DisplayPreferences 兜底 ---
         display_prefs_match = re.search(
-            r'(?:^|/)DisplayPreferences/(-\d+)(?:$|/)',
+            r'(?:^|/)DisplayPreferences/(-\d+)(?:$|/|\?)',
             path,
             re.IGNORECASE
         )
-
         if display_prefs_match and is_mimicked_id(display_prefs_match.group(1)):
             return handle_mimicked_display_preferences(path, display_prefs_match.group(1))
+
+        # ===== 调试日志：打印所有请求路径 =====
+        # logger.info(f"[PROXY] 请求路径: {full_path}")
         
         # ====================================================================
         # ★★★ 拦截 H: 视频流请求 (stream, original, Download 等) ★★★
