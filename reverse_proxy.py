@@ -188,6 +188,86 @@ def _infer_collection_type(definition):
 
     return "movies"
 
+def _ensure_movie_view_safe_fields(dto, definition=None):
+    """
+    Emby 4.9.5 Web 端 movies 视图会进入 HomeVideosView.getTabs。
+    这里统一补齐可能被前端 .includes() / .map() 访问的字段，避免 undefined。
+    """
+    if not isinstance(dto, dict):
+        dto = {}
+
+    # 基础数组字段
+    for key in [
+        "Tags",
+        "Taglines",
+        "RemoteTrailers",
+        "BackdropImageTags",
+        "LockedFields",
+        "ExternalUrls"
+    ]:
+        if not isinstance(dto.get(key), list):
+            dto[key] = []
+
+    if not isinstance(dto.get("ProviderIds"), dict):
+        dto["ProviderIds"] = {}
+
+    if not isinstance(dto.get("UserData"), dict):
+        dto["UserData"] = {
+            "PlaybackPositionTicks": 0,
+            "IsFavorite": False,
+            "Played": False
+        }
+
+    # 关键：LibraryOptions 里很多字段在前端可能直接 .includes()
+    lib_opts = dto.get("LibraryOptions")
+    if not isinstance(lib_opts, dict):
+        lib_opts = {}
+
+    for key in [
+        "DisabledLocalMetadataReaders",
+        "LocalMetadataReaderOrder",
+        "DisabledSubtitleFetchers",
+        "SubtitleFetcherOrder",
+        "DisabledMediaSegmentProviders",
+        "MediaSegmentProviderOrder",
+        "PathInfos",
+        "IgnoreFileExtensions"
+    ]:
+        if not isinstance(lib_opts.get(key), list):
+            lib_opts[key] = []
+
+    type_options = lib_opts.get("TypeOptions")
+    if not isinstance(type_options, list) or not type_options:
+        type_options = [{
+            "Type": "Movie",
+            "MetadataFetchers": [],
+            "MetadataFetcherOrder": [],
+            "ImageFetchers": [],
+            "ImageFetcherOrder": [],
+            "ImageOptions": []
+        }]
+
+    for opt in type_options:
+        if isinstance(opt, dict):
+            for key in [
+                "MetadataFetchers",
+                "MetadataFetcherOrder",
+                "ImageFetchers",
+                "ImageFetcherOrder",
+                "ImageOptions"
+            ]:
+                if not isinstance(opt.get(key), list):
+                    opt[key] = []
+
+    lib_opts["TypeOptions"] = type_options
+    dto["LibraryOptions"] = lib_opts
+
+    # 兜底 CollectionType
+    if not dto.get("CollectionType"):
+        dto["CollectionType"] = _infer_collection_type(definition or {})
+
+    return dto
+
 def handle_get_views():
     """
     获取用户的主页视图列表。
@@ -297,7 +377,7 @@ def handle_get_views():
                 "LockData": fake_view.get("LockData", False),
                 "Tags": fake_view.get("Tags", []),
             })
-
+            fake_view = _ensure_movie_view_safe_fields(fake_view, definition)
             fake_views_items.append(fake_view)
         
         # 3. 合并与排序
@@ -349,7 +429,10 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
                 base_url, api_key = _get_real_emby_url_and_key()
                 resp = requests.get(
                     f"{base_url}/emby/Users/{user_id}/Items/{real_emby_collection_id}",
-                    params={"api_key": api_key},
+                    params={
+                        "api_key": api_key,
+                        "Fields": "Settings,PrimaryImageAspectRatio,DateCreated,Genres,Tags,Studios,SortName"
+                    },
                     timeout=10
                 )
 
@@ -413,6 +496,7 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
             "Tags": fake_library_details.get("Tags", []),
         })
 
+        fake_library_details = _ensure_movie_view_safe_fields(fake_library_details, definition)
         return Response(json.dumps(fake_library_details), mimetype='application/json')
 
     except Exception as e:
