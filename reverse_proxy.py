@@ -215,7 +215,7 @@ def handle_get_views():
                 "DateCreated": "2025-01-01T00:00:00.0000000Z", "CanDelete": False, "CanDownload": False,
                 "SortName": coll['name'], "ExternalUrls": [], "ProviderIds": {}, "IsFolder": True,
                 "ParentId": "2", "Type": "CollectionFolder", "PresentationUniqueKey": str(uuid.uuid4()),
-                "DisplayPreferencesId": f"custom-{db_id}", "ForcedSortName": coll['name'],
+                "DisplayPreferencesId": real_emby_collection_id if real_emby_collection_id else f"custom-{db_id}", "ForcedSortName": coll['name'],
                 "Taglines": [], "RemoteTrailers": [],
                 "UserData": {"PlaybackPositionTicks": 0, "IsFavorite": False, "Played": False},
                 "ChildCount": coll.get('in_library_count', 1),
@@ -271,7 +271,6 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
              authoritative_type = item_type_from_db[0] if isinstance(item_type_from_db, list) and item_type_from_db else item_type_from_db if isinstance(item_type_from_db, str) else 'Movie'
              collection_type = "tvshows" if authoritative_type == 'Series' else "movies"
 
-        # 【修复核心】补全 Emby 4.9.5.0 客户端所需的全部字段，防止前端 JS 报错
         fake_library_details = {
             "Name": coll['name'], 
             "ServerId": real_server_id, 
@@ -288,7 +287,8 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
             "ParentId": "2", 
             "Type": "CollectionFolder", 
             "PresentationUniqueKey": str(uuid.uuid4()),
-            "DisplayPreferencesId": f"custom-{real_db_id}", 
+            # 【关键修复】继承真实库的偏好设置ID，防止前端读取不到 Tabs 配置报错
+            "DisplayPreferencesId": real_emby_collection_id if real_emby_collection_id else f"custom-{real_db_id}", 
             "ForcedSortName": coll['name'],
             "Taglines": [], 
             "RemoteTrailers": [],
@@ -300,7 +300,7 @@ def handle_get_mimicked_library_details(user_id, mimicked_id):
             "BackdropImageTags": [], 
             "LockedFields": [], 
             "LockData": False,
-            "Tags": []  # 额外加上 Tags 防止某些 includes 检查报错
+            "Tags": []
         }
         return Response(json.dumps(fake_library_details), mimetype='application/json')
     except Exception as e:
@@ -336,14 +336,17 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
     """
     处理虚拟库的元数据请求。
     """
+    # 【关键修复】Emby 期望返回的是 {"Items": [], "TotalRecordCount": 0}，而不是单纯的 []
+    empty_response = json.dumps({"Items": [], "TotalRecordCount": 0})
+    
     if any(path.endswith(endpoint) for endpoint in UNSUPPORTED_METADATA_ENDPOINTS):
-        return Response(json.dumps([]), mimetype='application/json')
+        return Response(empty_response, mimetype='application/json')
 
     try:
         real_db_id = from_mimicked_id(mimicked_id)
         collection_info = custom_collection_db.get_custom_collection_by_id(real_db_id)
         if not collection_info or not collection_info.get('emby_collection_id'):
-            return Response(json.dumps([]), mimetype='application/json')
+            return Response(empty_response, mimetype='application/json')
 
         real_emby_collection_id = collection_info.get('emby_collection_id')
         base_url, api_key = _get_real_emby_url_and_key()
@@ -363,7 +366,7 @@ def handle_mimicked_library_metadata_endpoint(path, mimicked_id, params):
 
     except Exception as e:
         logger.error(f"处理虚拟库元数据请求 '{path}' 时出错: {e}", exc_info=True)
-        return Response(json.dumps([]), mimetype='application/json')
+        return Response(empty_response, mimetype='application/json')
     
 def handle_get_mimicked_library_items(user_id, mimicked_id, params):
     """
