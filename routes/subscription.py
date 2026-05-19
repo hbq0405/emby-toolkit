@@ -65,6 +65,8 @@ HDHIVE_DEFAULT_CONFIG = {
     "relay_base_url": "",
     "relay_instance_id": "",
     "relay_instance_secret": "",
+    # 自动签到方式：normal=普通签到，gambler=赌狗签到
+    "checkin_mode": "normal",
     "unlock_limit": {
         "count": 3,
         "window": 60
@@ -92,6 +94,7 @@ def _get_hdhive_config():
         "relay_base_url": cfg.get("relay_base_url") or "",
         "relay_instance_id": cfg.get("relay_instance_id") or "",
         "relay_instance_secret": cfg.get("relay_instance_secret") or "",
+        "checkin_mode": cfg.get("checkin_mode") if cfg.get("checkin_mode") in ["normal", "gambler"] else "normal",
         "unlock_limit": {
             "count": int(unlock_cfg.get("count", 3)),
             "window": int(unlock_cfg.get("window", 60))
@@ -114,6 +117,7 @@ def _build_hdhive_config_from_request(data):
         "relay_base_url": old_cfg.get("relay_base_url") or "",
         "relay_instance_id": old_cfg.get("relay_instance_id") or "",
         "relay_instance_secret": old_cfg.get("relay_instance_secret") or "",
+        "checkin_mode": data.get("hdhive_checkin_mode") if data.get("hdhive_checkin_mode") in ["normal", "gambler"] else "normal",
         "unlock_limit": {
             "count": int(data.get("unlock_limit_count") or 3),
             "window": int(data.get("unlock_limit_window") or 60)
@@ -153,6 +157,7 @@ def handle_hdhive_config():
             "relay_status": relay_status,
             "authorized": bool(relay_status and relay_status.get("has_access_token")),
 
+            "hdhive_checkin_mode": cfg.get("checkin_mode", "normal"),
             "unlock_limit_count": unlock_cfg.get("count", 3),
             "unlock_limit_window": unlock_cfg.get("window", 60),
 
@@ -187,6 +192,7 @@ def handle_hdhive_config():
         "authorize_url": authorize_url,
         "relay_status": relay_status,
         "authorized": bool(relay_status and relay_status.get("has_access_token")),
+        "hdhive_checkin_mode": cfg.get("checkin_mode", "normal"),
         "user_info": user_info,
         "quota_info": quota_info
     })
@@ -253,7 +259,14 @@ def trigger_hdhive_download():
 @admin_required
 def trigger_hdhive_checkin():
     data = request.json or {}
-    is_gambler = data.get('is_gambler', False)
+
+    # 手动签到接口：如果前端显式传了 is_gambler，就按前端按钮执行；
+    # 如果没传，则按配置里的自动签到方式执行。
+    if 'is_gambler' in data:
+        is_gambler = bool(data.get('is_gambler'))
+    else:
+        cfg = _get_hdhive_config()
+        is_gambler = cfg.get("checkin_mode", "normal") == "gambler"
 
     client = HDHiveClient()
     if not client.ping():

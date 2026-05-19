@@ -5,7 +5,7 @@
       <n-form label-placement="left" label-width="110">
         <div style="padding: 12px; background-color: rgba(24, 160, 88, 0.06); border-radius: 8px; border: 1px dashed var(--n-success-color); margin-bottom: 16px;">
           <n-text depth="3" style="display: block; font-size: 12px; line-height: 1.8;">
-            影巢已切换为第三方应用授权模式。点击授权后会跳转到影巢官方页面，授权完成后即可查询、解锁和签到。无需填写 API Key、中转地址或服务器密钥。
+            影巢已切换为第三方应用授权模式，点击授权后会跳转到影巢官方页面获取授权信息。
           </n-text>
         </div>
 
@@ -39,6 +39,17 @@
             </n-tag>
           </n-space>
         </div>
+
+        <n-form-item label="自动签到方式" feedback="后台定时签到任务会按这里选择的方式执行，默认普通签到。">
+          <n-select
+            v-model:value="hdhiveCheckinMode"
+            :options="[
+              { label: '普通签到', value: 'normal' },
+              { label: '赌狗签到', value: 'gambler' }
+            ]"
+            style="max-width: 220px;"
+          />
+        </n-form-item>
 
         <n-form-item label="解锁频率限制" feedback="本地二次保护。服务端返回 429 时仍以 Retry-After 为准。">
           <n-space align="center">
@@ -117,7 +128,7 @@
 
         <n-form-item>
           <n-button type="primary" color="#f0a020" @click="saveConfig" :loading="saving" block>
-            保存筛选配置
+            保存配置
           </n-button>
         </n-form-item>
 
@@ -149,6 +160,8 @@ const authorizing = ref(false);
 const relayStatus = ref(null);
 const authorizeUrl = ref('');
 
+const hdhiveCheckinMode = ref('normal');
+
 const hdhiveFreeOnly = ref(false);
 const hdhiveMaxPoints = ref(10);
 const hdhiveMaxSizeGb = ref(120);
@@ -175,6 +188,7 @@ const open = async () => {
       relayStatus.value = res.data.relay_status || null;
       authorizeUrl.value = res.data.authorize_url || '';
 
+      hdhiveCheckinMode.value = res.data.hdhive_checkin_mode || 'normal';
       unlockLimitCount.value = res.data.unlock_limit_count || 3;
       unlockLimitWindow.value = res.data.unlock_limit_window || 60;
       userInfo.value = res.data.user_info;
@@ -223,6 +237,7 @@ const saveConfig = async () => {
   saving.value = true;
   try {
     const res = await axios.post('/api/subscription/hdhive/config', {
+      hdhive_checkin_mode: hdhiveCheckinMode.value,
       unlock_limit_count: unlockLimitCount.value,
       unlock_limit_window: unlockLimitWindow.value,
 
@@ -237,6 +252,7 @@ const saveConfig = async () => {
       message.success(res.data.message || '保存成功');
       relayStatus.value = res.data.relay_status || relayStatus.value;
       authorizeUrl.value = res.data.authorize_url || authorizeUrl.value;
+      hdhiveCheckinMode.value = res.data.hdhive_checkin_mode || hdhiveCheckinMode.value;
       userInfo.value = res.data.user_info;
       quotaInfo.value = res.data.quota_info;
     } else {

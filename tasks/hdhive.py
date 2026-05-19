@@ -227,8 +227,13 @@ def task_hdhive_auto_checkin(processor):
     task_manager.update_status_from_thread(50, "正在发送签到请求...")
 
     try:
-        # 1. 发送签到请求
-        res = client.checkin(is_gambler=False)
+        # 1. 根据配置选择签到方式
+        hdhive_config = settings_db.get_setting("hdhive_config") or {}
+        checkin_mode = hdhive_config.get("checkin_mode") if isinstance(hdhive_config, dict) else "normal"
+        is_gambler = checkin_mode == "gambler"
+        logger.info(f"  ➜ 影巢自动签到方式: {'赌狗签到' if is_gambler else '普通签到'}")
+
+        res = client.checkin(is_gambler=is_gambler)
         
         # 2. 签到完顺便拉取一下最新的用户信息，为了在通知里展示最新积分
         user_info = client.get_user_info() or {}
