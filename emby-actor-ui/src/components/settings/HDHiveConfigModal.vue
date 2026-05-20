@@ -198,8 +198,8 @@ const scopeLabelMap = {
   meta: '元信息',
   query: '资源查询',
   unlock: '资源解锁',
-  vip: '用户信息与签到',
-  write: '签到/写入'
+  vip: '用户信息',
+  write: '签到'
 };
 
 const normalizeScopes = (value) => {
