@@ -21,7 +21,7 @@ class HDHiveClient:
     ETK 会自动注册一个本地实例 ID，并通过项目方统一的 HDHive Relay 完成 OAuth 授权和业务请求。
     """
 
-    DEFAULT_RELAY_BASE_URL = os.getenv("HDHIVE_RELAY_BASE_URL", "https://hdhive.847977.xyz").rstrip("/")
+    DEFAULT_RELAY_BASE_URL = os.getenv("HDHIVE_RELAY_BASE_URL", "https://hdhive.55565576.xyz").rstrip("/")
     REGISTER_TOKEN = os.getenv("HDHIVE_RELAY_REGISTER_TOKEN", "").strip()
 
     _unlock_timestamps = deque()
