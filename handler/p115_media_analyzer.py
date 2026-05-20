@@ -908,6 +908,35 @@ class P115MediaAnalyzerMixin:
             except Exception:
                 return False
 
+        def _detect_cn_script_from_lang_code(value):
+            """
+            根据 BCP-47 / ffprobe language 标签直接判断中文字幕脚本：
+            zh-hans-cn -> chs
+            zh-hant-tw -> cht
+            """
+            v = str(value or "").strip().lower().replace("_", "-")
+            if not v:
+                return ""
+
+            parts = [p for p in re.split(r"[-\s]+", v) if p]
+
+            # zh-hans-cn / zh-Hans-CN / cmn-Hans-CN
+            if "hans" in parts or "chs" in parts or "zhs" in parts:
+                return "chs"
+
+            # zh-hant-tw / zh-Hant-HK / cmn-Hant-TW
+            if "hant" in parts or "cht" in parts or "zht" in parts:
+                return "cht"
+
+            # 无 Hans/Hant 时，按地区兜底
+            if parts and parts[0] in {"zh", "zho", "chi", "cmn"}:
+                if parts[-1] in {"cn", "sg"}:
+                    return "chs"
+                if parts[-1] in {"tw", "hk", "mo"}:
+                    return "cht"
+
+            return ""
+
         def _subtitle_script_from_text_or_code(*texts):
             """
             先按用户要求看中文字符“繁 / 简 / 簡”，再兼容 chs/cht 等短码。
@@ -970,7 +999,10 @@ class P115MediaAnalyzerMixin:
         # 2. 字幕流：字幕底层中文统一 chi，靠 Title 区分简繁/双语
         # =========================================================
         if stream_type == "Subtitle":
-            script_marker = _subtitle_script_from_text_or_code(title_for_lang_detect, raw_display_title)
+            script_marker = (
+                _detect_cn_script_from_lang_code(raw_lang)
+                or _subtitle_script_from_text_or_code(title_for_lang_detect, raw_display_title)
+            )
             compact_dual_title = self._normalize_compact_cn_dual_title(raw_title)
 
             has_eng = _has_lang_marker(clean_text, [
