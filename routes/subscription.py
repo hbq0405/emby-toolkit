@@ -149,7 +149,7 @@ def handle_hdhive_config():
         quota_info = None
         if relay_status and relay_status.get("has_access_token"):
             user_info = client.get_user_info()
-            quota_info = client.get_quota()
+            quota_info = None
 
         return jsonify({
             "success": True,
@@ -184,7 +184,7 @@ def handle_hdhive_config():
     quota_info = None
     if relay_status and relay_status.get("has_access_token"):
         user_info = client.get_user_info()
-        quota_info = client.get_quota()
+        quota_info = None
 
     return jsonify({
         "success": True,
