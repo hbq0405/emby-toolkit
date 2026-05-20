@@ -1161,7 +1161,8 @@ class RecommendationEngine:
                                     'type': matched_type,
                                     'title': title, 
                                     'season': season_num,
-                                    'release_date': None 
+                                    'year': year,
+                                    'release_date': f"{year}-01-01" if year else None
                                 }
                             return None
                         except Exception:
