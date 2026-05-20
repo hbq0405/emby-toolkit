@@ -51,7 +51,7 @@
               <n-text>总计: <n-text strong>{{ usageToday.total_calls || 0 }}</n-text></n-text>
               <n-text>成功: <n-text type="success" strong>{{ usageToday.success_calls || 0 }}</n-text></n-text>
               <n-text>失败: <n-text :type="(usageToday.failed_calls || 0) > 0 ? 'error' : 'default'" strong>{{ usageToday.failed_calls || 0 }}</n-text></n-text>
-              <n-text>平均耗时: <n-text strong>{{ Math.round(usageToday.avg_latency || 0) }}</n-text> ms</n-text>
+              <n-text>平均耗时: <n-text strong>{{ Math.round(usageToday.avg_latency || 0) }}</n-text> 毫秒</n-text>
               
               <n-text depth="3" style="font-size: 12px; margin-left: 8px;">(应用级数据，非个人账号配额)</n-text>
             </n-space>
