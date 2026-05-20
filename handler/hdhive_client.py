@@ -208,6 +208,19 @@ class HDHiveClient:
             self._handle_error(e, "获取配额")
             return None
 
+    def get_usage_today(self):
+        try:
+            # 对应影巢开放平台的 /api/open/usage/today
+            res = self._request("GET", "/api/hdhive/usage/today", timeout=15)
+            data = self._safe_json(res)
+            if res.status_code == 200 and data.get("success"):
+                return data.get("data")
+            self._log_response_error(res, "获取今日用量")
+            return None
+        except Exception as e:
+            self._handle_error(e, "获取今日用量")
+            return None
+
     def get_user_info(self):
         try:
             res = self._request("GET", "/api/hdhive/me", timeout=15)

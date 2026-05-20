@@ -160,14 +160,12 @@ def handle_hdhive_config():
         relay_status = client.get_relay_status()
 
         user_info = None
-        quota_info = None
+        usage_today = None # 替换 quota_info
         if relay_status and relay_status.get("has_access_token"):
             user_info = client.get_user_info()
 
             if _has_hdhive_scope(relay_status, "meta"):
-                quota_info = client.get_quota()
-            else:
-                quota_info = None
+                usage_today = client.get_usage_today() # 调用新方法
 
         return jsonify({
             "success": True,
@@ -187,7 +185,7 @@ def handle_hdhive_config():
             "hdhive_exclude_iso": filter_cfg.get("exclude_iso", False),
 
             "user_info": user_info,
-            "quota_info": quota_info
+            "usage_today": usage_today # 返回给前端
         })
 
     data = request.json or {}
@@ -199,14 +197,12 @@ def handle_hdhive_config():
     relay_status = client.get_relay_status()
 
     user_info = None
-    quota_info = None
+    usage_today = None # 替换 quota_info
     if relay_status and relay_status.get("has_access_token"):
         user_info = client.get_user_info()
 
         if _has_hdhive_scope(relay_status, "meta"):
-            quota_info = client.get_quota()
-        else:
-            quota_info = None
+            usage_today = client.get_usage_today() # 调用新方法
 
     return jsonify({
         "success": True,
@@ -216,7 +212,7 @@ def handle_hdhive_config():
         "authorized": bool(relay_status and relay_status.get("has_access_token")),
         "hdhive_checkin_mode": cfg.get("checkin_mode", "normal"),
         "user_info": user_info,
-        "quota_info": quota_info
+        "usage_today": usage_today # 返回给前端
     })
 
 

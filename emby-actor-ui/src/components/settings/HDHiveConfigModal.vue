@@ -1,104 +1,94 @@
 <!-- src/components/settings/HDHiveConfigModal.vue -->
 <template>
-  <n-modal v-model:show="showModal" preset="card" title="配置 影巢 (HDHive)" style="width: 680px;">
+  <n-modal v-model:show="showModal" preset="card" title="配置 影巢 (HDHive)" style="width: 720px;">
     <n-spin :show="loading">
-      <n-form label-placement="left" label-width="110">
-        <div class="hdhive-tip">
-          <n-text depth="3" style="display: block; font-size: 12px; line-height: 1.8;">
-            影巢已切换为第三方应用授权模式，点击授权后会跳转到影巢官方页面获取授权信息。
-          </n-text>
-        </div>
+      
+      <!-- 顶部提示 -->
+      <n-alert type="info" :show-icon="true" style="margin-bottom: 16px;">
+        影巢已切换为第三方应用授权模式，点击授权后会跳转到影巢官方页面获取授权信息。
+      </n-alert>
 
-        <n-form-item label="授权状态">
-          <n-space align="center" wrap>
-            <n-tag :type="authorized ? 'success' : 'warning'" :bordered="false">
-              {{ authorized ? '已授权' : '未授权或授权已过期' }}
-            </n-tag>
-
-            <n-tag type="info" :bordered="false" v-if="authorized && scopeDisplayText">
-              权限：{{ scopeDisplayText }}
-            </n-tag>
-
-            <n-button
-              v-if="!authorized"
-              type="primary"
-              color="#f0a020"
-              @click="openAuthorize"
-              :loading="authorizing"
-            >
-              影巢授权
+      <!-- 模块1：账号与授权 -->
+      <n-card size="small" title="账号与授权" style="margin-bottom: 16px;" :bordered="true">
+        <template #header-extra>
+          <n-space>
+            <n-button v-if="!authorized" type="primary" color="#f0a020" size="small" @click="openAuthorize" :loading="authorizing">
+              前往授权
             </n-button>
-
-            <n-popconfirm
-              v-else
-              positive-text="确认清除"
-              negative-text="取消"
-              @positive-click="clearAuthorization"
-            >
+            <n-popconfirm v-else positive-text="确认清除" negative-text="取消" @positive-click="clearAuthorization">
               <template #trigger>
-                <n-button type="error" secondary :loading="clearingAuth">
-                  清除授权
-                </n-button>
+                <n-button type="error" ghost size="small" :loading="clearingAuth">清除授权</n-button>
               </template>
               清除授权后需要重新前往影巢授权，是否继续？
             </n-popconfirm>
-
-            <n-button secondary @click="open" :loading="loading">
-              刷新状态
-            </n-button>
+            <n-button size="small" @click="open" :loading="loading">刷新状态</n-button>
           </n-space>
-        </n-form-item>
+        </template>
 
-        <div v-if="userInfo" style="margin-bottom: 16px;">
-          <n-space align="center" :size="16" wrap>
-            <n-tag type="success" :bordered="false">
-              用户：{{ displayUsername }}
+        <n-descriptions label-placement="left" :column="2" bordered size="small">
+          <n-descriptions-item label="授权状态">
+            <n-tag :type="authorized ? 'success' : 'warning'" size="small" :bordered="false">
+              {{ authorized ? '已授权' : '未授权或已过期' }}
             </n-tag>
+          </n-descriptions-item>
+          
+          <n-descriptions-item label="当前用户">
+            <template v-if="userInfo">
+              {{ displayUsername }}
+              <n-tag type="info" size="small" :bordered="false" v-if="displayUserLevel" style="margin-left: 6px;">
+                {{ displayUserLevel }}
+              </n-tag>
+            </template>
+            <n-text depth="3" v-else>暂无</n-text>
+          </n-descriptions-item>
 
-            <n-tag type="info" :bordered="false" v-if="displayUserLevel">
-              等级：{{ displayUserLevel }}
-            </n-tag>
+          <n-descriptions-item label="授权范围" :span="2" v-if="authorized && scopeDisplayText">
+            <n-text depth="2">{{ scopeDisplayText }}</n-text>
+          </n-descriptions-item>
 
-            <n-tag type="info" :bordered="false" v-if="quotaInfo">
-              今日剩余请求：{{ formatQuotaRemaining(quotaInfo) }}
-            </n-tag>
-          </n-space>
-        </div>
+          <n-descriptions-item label="今日请求" :span="2" v-if="usageToday">
+            <n-space align="center" :size="6">
+              <n-text type="success" strong>{{ usageToday.total_calls || 0 }}</n-text> 次
+              <n-text depth="3" style="font-size: 12px;">(应用级数据，非个人账号配额)</n-text>
+            </n-space>
+          </n-descriptions-item>
+        </n-descriptions>
+      </n-card>
 
-        <n-form-item label="自动签到方式" feedback="后台定时签到任务会按这里选择的方式执行，默认普通签到。">
-          <n-select
-            v-model:value="hdhiveCheckinMode"
-            :options="[
-              { label: '普通签到', value: 'normal' },
-              { label: '赌狗签到', value: 'gambler' }
-            ]"
-            style="max-width: 220px;"
-          />
-        </n-form-item>
+      <n-form label-placement="left" label-width="110">
+        <!-- 模块2：基础配置 -->
+        <n-card size="small" title="基础配置" style="margin-bottom: 16px;" :bordered="true">
+          <n-form-item label="自动签到方式" feedback="后台定时签到任务会按这里选择的方式执行，默认普通签到。">
+            <n-select
+              v-model:value="hdhiveCheckinMode"
+              :options="[{ label: '普通签到', value: 'normal' }, { label: '赌狗签到', value: 'gambler' }]"
+              style="max-width: 220px;"
+            />
+          </n-form-item>
 
-        <n-form-item label="解锁频率限制" feedback="本地二次保护。服务端返回 429 时仍以 Retry-After 为准。">
-          <n-space align="center">
-            <n-input-number v-model:value="unlockLimitCount" :min="1" placeholder="次数" style="width: 120px;">
-              <template #suffix>次</template>
-            </n-input-number>
-            <span>/</span>
-            <n-input-number v-model:value="unlockLimitWindow" :min="1" placeholder="秒数" style="width: 120px;">
-              <template #suffix>秒</template>
-            </n-input-number>
-          </n-space>
-        </n-form-item>
+          <n-form-item label="解锁频率限制" feedback="本地二次保护。服务端返回 429 时仍以 Retry-After 为准。">
+            <n-space align="center">
+              <n-input-number v-model:value="unlockLimitCount" :min="1" placeholder="次数" style="width: 120px;">
+                <template #suffix>次</template>
+              </n-input-number>
+              <n-text depth="3">/</n-text>
+              <n-input-number v-model:value="unlockLimitWindow" :min="1" placeholder="秒数" style="width: 120px;">
+                <template #suffix>秒</template>
+              </n-input-number>
+            </n-space>
+          </n-form-item>
+        </n-card>
 
-        <n-divider title-placement="left">资源筛选规则</n-divider>
-
-        <div class="hdhive-filter-box">
-          <n-text depth="3" style="display: block; margin-bottom: 12px; font-size: 12px;">
-            防止一键整理/影巢优先订阅误扣高额积分或下载超大资源。
-          </n-text>
-
-          <n-grid :x-gap="12" :y-gap="0" :cols="2">
+        <!-- 模块3：资源筛选规则 -->
+        <n-card size="small" title="资源筛选规则" :bordered="true">
+          <template #header-extra>
+            <n-text depth="3" style="font-size: 12px;">防止误扣高额积分或下载超大资源</n-text>
+          </template>
+          
+          <n-grid :x-gap="24" :y-gap="8" :cols="2">
             <n-grid-item>
               <n-form-item label="仅免费">
-                <n-switch v-model:value="hdhiveFreeOnly" size="small" />
+                <n-switch v-model:value="hdhiveFreeOnly" />
               </n-form-item>
             </n-grid-item>
 
@@ -106,7 +96,6 @@
               <n-form-item label="分辨率偏好">
                 <n-select
                   v-model:value="hdhiveResolution"
-                  size="small"
                   :options="[
                     { label: '不限制', value: 'All' },
                     { label: '仅 4K', value: '4K' },
@@ -118,12 +107,7 @@
 
             <n-grid-item>
               <n-form-item label="最大积分">
-                <n-input-number
-                  v-model:value="hdhiveMaxPoints"
-                  size="small"
-                  :min="0"
-                  :disabled="hdhiveFreeOnly"
-                >
+                <n-input-number v-model:value="hdhiveMaxPoints" :min="0" :disabled="hdhiveFreeOnly">
                   <template #suffix>分</template>
                 </n-input-number>
               </n-form-item>
@@ -131,7 +115,7 @@
 
             <n-grid-item>
               <n-form-item label="最大体积">
-                <n-input-number v-model:value="hdhiveMaxSizeGb" size="small" :min="1">
+                <n-input-number v-model:value="hdhiveMaxSizeGb" :min="1">
                   <template #suffix>GB</template>
                 </n-input-number>
               </n-form-item>
@@ -139,33 +123,30 @@
 
             <n-grid-item>
               <n-form-item label="仅含中文字幕">
-                <n-switch v-model:value="hdhiveZhSubOnly" size="small" />
+                <n-switch v-model:value="hdhiveZhSubOnly" />
               </n-form-item>
             </n-grid-item>
 
             <n-grid-item>
               <n-form-item label="排除原盘">
-                <n-switch v-model:value="hdhiveExcludeIso" size="small" />
+                <n-switch v-model:value="hdhiveExcludeIso" />
               </n-form-item>
             </n-grid-item>
           </n-grid>
-        </div>
-
-        <n-form-item>
-          <n-button type="primary" color="#f0a020" @click="saveConfig" :loading="saving" block>
-            保存配置
-          </n-button>
-        </n-form-item>
-
-        <n-space align="center" v-if="authorized">
-          <n-button type="primary" secondary @click="doCheckin(false)" :loading="checkingIn">
-            每日签到
-          </n-button>
-          <n-button type="error" secondary @click="doCheckin(true)" :loading="checkingIn">
-            赌狗签到
-          </n-button>
-        </n-space>
+        </n-card>
       </n-form>
+
+      <!-- 底部操作区 -->
+      <n-space justify="end" style="margin-top: 24px;">
+        <template v-if="authorized">
+          <n-button secondary type="primary" @click="doCheckin(false)" :loading="checkingIn">每日签到</n-button>
+          <n-button secondary type="error" @click="doCheckin(true)" :loading="checkingIn">赌狗签到</n-button>
+        </template>
+        <n-button type="primary" color="#f0a020" @click="saveConfig" :loading="saving" style="margin-left: 12px;">
+          保存配置
+        </n-button>
+      </n-space>
+
     </n-spin>
   </n-modal>
 </template>
@@ -198,7 +179,7 @@ const hdhiveExcludeIso = ref(false);
 const unlockLimitCount = ref(3);
 const unlockLimitWindow = ref(60);
 const userInfo = ref(null);
-const quotaInfo = ref(null);
+const usageToday = ref(null); // 替换 quotaInfo
 
 let authPollTimer = null;
 
@@ -227,19 +208,6 @@ const displayUserLevel = computed(() => {
   };
   return map[level] || level || '';
 });
-
-const formatQuotaRemaining = (quota) => {
-  if (!quota) return '未知';
-
-  return (
-    quota.endpoint_remaining ??
-    quota.remaining ??
-    quota.daily_remaining ??
-    quota.quota_remaining ??
-    quota.left ??
-    '未知'
-  );
-};
 
 const scopeLabelMap = {
   meta: '接口状态与配额',
@@ -313,7 +281,7 @@ const open = async (showLoading = true) => {
       unlockLimitCount.value = res.data.unlock_limit_count || 3;
       unlockLimitWindow.value = res.data.unlock_limit_window || 60;
       userInfo.value = res.data.user_info || null;
-      quotaInfo.value = res.data.quota_info || null;
+      usageToday.value = res.data.usage_today || null; // 替换 quotaInfo
 
       hdhiveFreeOnly.value = res.data.hdhive_free_only ?? false;
       hdhiveMaxPoints.value = res.data.hdhive_max_points ?? 10;
@@ -366,7 +334,7 @@ const clearAuthorization = async () => {
       stopAuthPolling();
       relayStatus.value = null;
       userInfo.value = null;
-      quotaInfo.value = null;
+      usageToday.value = null; // 替换 quotaInfo
       await open(false);
     } else {
       message.error(res.data.message || '清除授权失败');
@@ -400,7 +368,7 @@ const saveConfig = async () => {
       authorizeUrl.value = res.data.authorize_url || authorizeUrl.value;
       hdhiveCheckinMode.value = res.data.hdhive_checkin_mode || hdhiveCheckinMode.value;
       userInfo.value = res.data.user_info || userInfo.value;
-      quotaInfo.value = res.data.quota_info || quotaInfo.value;
+      usageToday.value = res.data.usage_today || usageToday.value; // 替换 quotaInfo
     } else {
       message.error(res.data.message || '保存失败');
     }
@@ -436,19 +404,5 @@ defineExpose({ open });
 </script>
 
 <style scoped>
-.hdhive-tip {
-  padding: 12px;
-  background-color: rgba(24, 160, 88, 0.06);
-  border-radius: 8px;
-  border: 1px dashed var(--n-success-color);
-  margin-bottom: 16px;
-}
-
-.hdhive-filter-box {
-  padding: 12px;
-  background-color: rgba(240, 160, 32, 0.05);
-  border-radius: 8px;
-  border: 1px dashed var(--n-warning-color);
-  margin-bottom: 16px;
-}
+/* 移除了旧的自定义样式，全部采用 naive-ui 的 n-card 和 n-alert 组件来实现更统一的视觉效果 */
 </style>
