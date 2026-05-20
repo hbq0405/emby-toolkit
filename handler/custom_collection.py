@@ -1124,19 +1124,28 @@ class RecommendationEngine:
                             if match_result:
                                 tmdb_id, matched_type, season_num = match_result
                                 tmdb_id = str(tmdb_id)
-                                
+
                                 if matched_type not in allowed_types:
                                     return None
-                                
+
                                 if tmdb_id in watched_tmdb_ids:
                                     return None
-                                return {
+
+                                # 全局推荐里的剧集不让 LLM 推荐具体季号，统一按第 1 季处理
+                                if matched_type == 'Series' and season_num is None:
+                                    season_num = 1
+
+                                result = {
                                     'id': tmdb_id,
                                     'type': matched_type,
-                                    'title': title, 
-                                    'season': season_num,
+                                    'title': title,
                                     'release_date': None
                                 }
+
+                                if matched_type == 'Series':
+                                    result['season'] = season_num
+
+                                return result
                             return None
                         except Exception:
                             return None

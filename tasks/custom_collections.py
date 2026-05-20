@@ -213,6 +213,11 @@ def task_process_all_custom_collections(processor):
                 for item in raw_tmdb_items:
                     tmdb_id = str(item.get('id')) if item.get('id') else None
                     media_type = item.get('type')
+
+                    # 全局 AI 推荐的剧集默认按第一季处理
+                    if collection_type == 'ai_recommendation_global' and media_type == 'Series' and item.get('season') is None:
+                        item['season'] = 1
+                        logger.debug(f"  ➜ [全局推荐] 剧集《{item.get('title')}》未指定季，默认按第 1 季处理。")
                     
                     # ★★★ 新增：如果是 Series 且没有指定季，尝试拆解 ★★★
                     if media_type == 'Series' and 'season' not in item:
@@ -471,6 +476,12 @@ def process_single_custom_collection(processor, custom_collection_id: int):
             for item in raw_tmdb_items:
                 tmdb_id = str(item.get('id'))
                 media_type = item.get('type')
+
+                # 全局 AI 推荐的剧集默认按第一季处理
+                if collection_type == 'ai_recommendation_global' and media_type == 'Series' and item.get('season') is None:
+                    item['season'] = 1
+                    logger.debug(f"  ➜ [全局推荐] 剧集《{item.get('title')}》未指定季，默认按第 1 季处理。")
+
                 if media_type == 'Series' and 'season' not in item and collection_type == 'list':
                     try:
                         series_details = tmdb.get_tv_details(tmdb_id, processor.tmdb_api_key)
