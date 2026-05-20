@@ -89,7 +89,7 @@ def _build_language_runtime_maps(
         "kor": _get_aliases("韩语", lang_mapping),
 
         # 字幕: chi=简体, yue=繁体 (继承基础词汇 + 补充字幕专属词汇)
-        "sub_chi": _get_aliases("国语", lang_mapping) + ["CHS", "SC", "GB", "ZHS", "ZH-CN", "简体", "简中", "Simplified"],
+        "sub_chi": _get_aliases("国语", lang_mapping) + ["CHS", "SC", "GB", "ZHS", "ZH-CN", "ZH-HANS", "简体", "简中", "Simplified"],
         "sub_yue": _get_aliases("粤语", lang_mapping) + ["CHT", "TC", "BIG5", "ZHT", "ZH-TW", "ZH-HK", "ZH-HANT", "繁体", "繁中", "Traditional"],
         "sub_eng": _get_aliases("英语", lang_mapping) + ["英字"],
         "sub_jpn": _get_aliases("日语", lang_mapping) + ["日字"],
