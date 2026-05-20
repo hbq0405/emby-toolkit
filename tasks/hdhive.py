@@ -257,7 +257,7 @@ def task_hdhive_auto_checkin(processor):
         notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, [])
         if 'hdhive_checkin' in notify_types:
             try:
-                send_hdhive_checkin_notification(res, user_info)
+                send_hdhive_checkin_notification(res, is_gambler, user_info)
             except Exception as e:
                 logger.error(f"  ➜ 发送影巢签到通知失败: {e}")
         else:
