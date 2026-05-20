@@ -763,7 +763,13 @@ class AITranslator:
         
         return None
 
-    def get_recommendations(self, user_history: List[str], user_instruction: str = None, allowed_types: List[str] = None) -> List[Dict[str, Any]]:
+    def get_recommendations(
+        self,
+        user_history: List[str],
+        user_instruction: str = None,
+        allowed_types: List[str] = None,
+        limit: int = 20
+    ) -> List[Dict[str, Any]]:
         """
         【核心功能】猎手模式：基于用户历史推荐新片。
         """
@@ -796,6 +802,7 @@ class AITranslator:
 4. **禁止未来年份**：不要推荐年份超过当前年份（{datetime.now().year}）的作品，除非是即将上映的真实作品。
 5. **推荐相似作品**：如果用户看了一部剧，请推荐**风格相似的其他剧集**，而不是该剧的下一季。
 6. **确保真实存在**：所有推荐的标题必须是真实存在的影视作品。
+7. **推荐数量要求**：必须尽量返回 {limit} 部作品，不要只返回 1-2 部。
 {type_constraint_prompt}
 
 **JSON 返回格式：**
