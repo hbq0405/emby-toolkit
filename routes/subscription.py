@@ -160,7 +160,9 @@ def handle_hdhive_config():
         relay_status = client.get_relay_status()
 
         user_info = None
-        usage_today = None # 替换 quota_info
+        usage_today = None
+        vip_info = None 
+
         if relay_status and relay_status.get("has_access_token"):
             user_info = client.get_user_info()
 
@@ -204,7 +206,9 @@ def handle_hdhive_config():
     relay_status = client.get_relay_status()
 
     user_info = None
-    usage_today = None # 替换 quota_info
+    usage_today = None
+    vip_info = None 
+    
     if relay_status and relay_status.get("has_access_token"):
         user_info = client.get_user_info()
 
