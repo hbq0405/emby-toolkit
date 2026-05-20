@@ -320,7 +320,7 @@ class TGUserBotManager:
             all_urls.insert(0, link_match.group(1))
 
         for url in all_urls:
-            if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/115/' in url:
+            if '115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/' in url:
                 target_link = url
                 pwd_in_url = _apply_regex(url, custom_regex.get('password', []), DEFAULT_TG_REGEX['password_url'], chat_username, chat_id)
                 if pwd_in_url:
@@ -709,22 +709,22 @@ def _process_tg_queue():
                     if 'hdhive.com' in target_link:
                         logger.debug(f"  ➜ [频道监听] 检测到 HDHive 资源链接，准备通过官方 API 获取真实地址 (将扣除积分)...")
                         try:
-                            slug_match = re.search(r'hdhive\.com/resource/115/([a-fA-F0-9]{32})', target_link)
+                            slug_match = re.search(r'hdhive\.com/resource/(?:115|magnet|ed2k|bt)?/?([a-fA-F0-9-]{32,36})', target_link)
                             if not slug_match:
                                 logger.error(f"  ➜ [频道监听] 无法从影巢链接中提取 Slug 标识: {target_link}")
                                 continue
                                 
                             slug = slug_match.group(1)
-                            from database import settings_db
-                            hdhive_config = settings_db.get_setting("hdhive_config") or {}
-                            hdhive_api_key = hdhive_config.get("api_key")
-                            
-                            if not hdhive_api_key:
-                                logger.error("  ➜ [频道监听] 解析失败：未配置影巢 API Key！")
-                                continue
-                                
+
+                            # 新版 HDHive OpenAPI 已废弃个人 API Key 模式。
+                            # 频道监听这里不能再读取 hdhive_config.api_key，必须复用 ETK 统一的 OAuth Relay 授权。
                             from handler.hdhive_client import HDHiveClient
-                            hd_client = HDHiveClient(hdhive_api_key)
+                            hd_client = HDHiveClient()
+
+                            if not hd_client.ping():
+                                logger.error("  ➜ [频道监听] 解析影巢链接失败：尚未完成影巢授权，请先在影巢配置页完成授权。")
+                                continue
+
                             resource_data = hd_client.unlock_resource(slug)
                             
                             if resource_data and resource_data.get('url'):
