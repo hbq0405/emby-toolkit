@@ -168,7 +168,10 @@ def handle_hdhive_config():
                 usage_today = client.get_usage_today() 
 
             if _has_hdhive_scope(relay_status, "vip"):
-                vip_info = client.get_vip_entitlements()
+                user_level = user_info.get("level") if user_info else "normal"
+                # 包含影巢可能返回的各种 VIP 标识
+                if user_level in ["vip", "forever_vip", "lifetime_vip", "premium"]:
+                    vip_info = client.get_vip_entitlements()
 
         return jsonify({
             "success": True,
@@ -209,7 +212,10 @@ def handle_hdhive_config():
             usage_today = client.get_usage_today() 
 
         if _has_hdhive_scope(relay_status, "vip"):
-            vip_info = client.get_vip_entitlements()
+            user_level = user_info.get("level") if user_info else "normal"
+            # 包含影巢可能返回的各种 VIP 标识
+            if user_level in ["vip", "forever_vip", "lifetime_vip", "premium"]:
+                vip_info = client.get_vip_entitlements()
 
     return jsonify({
         "success": True,
