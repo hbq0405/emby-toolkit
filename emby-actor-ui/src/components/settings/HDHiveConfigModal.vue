@@ -14,8 +14,8 @@
             <n-tag :type="authorized ? 'success' : 'warning'" :bordered="false">
               {{ authorized ? '已授权' : '未授权或授权已过期' }}
             </n-tag>
-            <n-tag type="info" :bordered="false" v-if="relayStatus?.scope">
-              Scope: {{ relayStatus.scope }}
+            <n-tag type="info" :bordered="false" v-if="permissionText">
+              权限：{{ permissionText }}
             </n-tag>
             <n-button type="primary" color="#f0a020" @click="openAuthorize" :loading="authorizing">
               前往影巢授权
@@ -23,19 +23,32 @@
             <n-button secondary @click="open" :loading="loading">
               刷新状态
             </n-button>
+            <n-popconfirm
+              v-if="authorized"
+              positive-text="确认清除"
+              negative-text="取消"
+              @positive-click="clearAuthorization"
+            >
+              <template #trigger>
+                <n-button tertiary type="error" :loading="clearingAuthorization">
+                  清除授权
+                </n-button>
+              </template>
+              清除后当前影巢授权会失效，需要重新点击“前往影巢授权”。
+            </n-popconfirm>
           </n-space>
         </n-form-item>
 
         <div v-if="userInfo" style="margin-bottom: 16px;">
           <n-space align="center" :size="16" wrap>
             <n-tag type="success" :bordered="false">
-              用户: {{ userInfo.nickname || '未知用户' }}
+              用户：{{ userDisplayName }}
             </n-tag>
-            <n-tag type="warning" :bordered="false">
-              积分: {{ userInfo.user_meta?.points ?? '未知' }}
+            <n-tag type="info" :bordered="false" v-if="userLevelText">
+              等级：{{ userLevelText }}
             </n-tag>
             <n-tag type="info" :bordered="false" v-if="quotaInfo">
-              今日剩余请求: {{ quotaInfo.endpoint_remaining ?? '未知' }}
+              今日剩余请求：{{ quotaInfo.endpoint_remaining ?? '未知' }}
             </n-tag>
           </n-space>
         </div>
@@ -156,6 +169,7 @@ const loading = ref(false);
 const saving = ref(false);
 const checkingIn = ref(false);
 const authorizing = ref(false);
+const clearingAuthorization = ref(false);
 
 const relayStatus = ref(null);
 const authorizeUrl = ref('');
@@ -174,9 +188,83 @@ const unlockLimitWindow = ref(60);
 const userInfo = ref(null);
 const quotaInfo = ref(null);
 
+let authPollTimer = null;
+
 const authorized = computed(() => {
   return Boolean(relayStatus.value?.has_access_token || userInfo.value);
 });
+
+const scopeLabelMap = {
+  meta: '元信息',
+  query: '资源查询',
+  unlock: '资源解锁',
+  vip: '用户信息与签到',
+  write: '签到/写入'
+};
+
+const normalizeScopes = (value) => {
+  if (Array.isArray(value)) {
+    return value.filter(Boolean);
+  }
+  return String(value || '')
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+};
+
+const permissionText = computed(() => {
+  const scopes = relayStatus.value?.scopes?.length
+    ? relayStatus.value.scopes
+    : normalizeScopes(relayStatus.value?.scope);
+
+  const uniqueScopes = [...new Set(scopes)];
+  return uniqueScopes.map((item) => scopeLabelMap[item] || item).join('、');
+});
+
+const userDisplayName = computed(() => {
+  const info = userInfo.value || {};
+  return info.username || info.nickname || info.name || (info.id ? `用户 ${info.id}` : '未知用户');
+});
+
+const userLevelText = computed(() => {
+  const level = userInfo.value?.level;
+  const map = {
+    normal: '普通用户',
+    vip: 'VIP 用户',
+    premium: 'Premium 用户',
+    forever_vip: '长期 VIP',
+    forever: '长期 VIP',
+    blocked: '已封禁'
+  };
+  return map[level] || level || '';
+});
+
+const stopAuthPolling = () => {
+  if (authPollTimer) {
+    clearInterval(authPollTimer);
+    authPollTimer = null;
+  }
+};
+
+const startAuthPolling = () => {
+  stopAuthPolling();
+  let count = 0;
+
+  authPollTimer = setInterval(async () => {
+    count += 1;
+    await open();
+
+    if (authorized.value) {
+      stopAuthPolling();
+      message.success('影巢授权已完成');
+      return;
+    }
+
+    if (count >= 30) {
+      stopAuthPolling();
+    }
+  }, 2000);
+};
 
 const open = async () => {
   showModal.value = true;
@@ -191,8 +279,8 @@ const open = async () => {
       hdhiveCheckinMode.value = res.data.hdhive_checkin_mode || 'normal';
       unlockLimitCount.value = res.data.unlock_limit_count || 3;
       unlockLimitWindow.value = res.data.unlock_limit_window || 60;
-      userInfo.value = res.data.user_info;
-      quotaInfo.value = res.data.quota_info;
+      userInfo.value = res.data.user_info || null;
+      quotaInfo.value = res.data.quota_info || null;
 
       hdhiveFreeOnly.value = res.data.hdhive_free_only ?? false;
       hdhiveMaxPoints.value = res.data.hdhive_max_points ?? 10;
@@ -225,7 +313,8 @@ const openAuthorize = async () => {
     }
 
     window.open(url, '_blank', 'noopener,noreferrer');
-    message.info('授权完成后请返回本页点击“刷新状态”');
+    startAuthPolling();
+    message.info('授权完成后返回本页会自动刷新状态');
   } catch (e) {
     message.error('打开影巢授权失败');
   } finally {
@@ -253,8 +342,8 @@ const saveConfig = async () => {
       relayStatus.value = res.data.relay_status || relayStatus.value;
       authorizeUrl.value = res.data.authorize_url || authorizeUrl.value;
       hdhiveCheckinMode.value = res.data.hdhive_checkin_mode || hdhiveCheckinMode.value;
-      userInfo.value = res.data.user_info;
-      quotaInfo.value = res.data.quota_info;
+      userInfo.value = res.data.user_info || null;
+      quotaInfo.value = res.data.quota_info || null;
     } else {
       message.error(res.data.message || '保存失败');
     }
@@ -262,6 +351,27 @@ const saveConfig = async () => {
     message.error('保存失败');
   } finally {
     saving.value = false;
+  }
+};
+
+const clearAuthorization = async () => {
+  clearingAuthorization.value = true;
+  try {
+    const res = await axios.post('/api/subscription/hdhive/clear_authorization');
+    if (res.data.success) {
+      stopAuthPolling();
+      relayStatus.value = res.data.relay_status || null;
+      authorizeUrl.value = res.data.authorize_url || authorizeUrl.value;
+      userInfo.value = null;
+      quotaInfo.value = null;
+      message.success(res.data.message || '影巢授权已清除');
+    } else {
+      message.error(res.data.message || '清除授权失败');
+    }
+  } catch (e) {
+    message.error('清除授权失败');
+  } finally {
+    clearingAuthorization.value = false;
   }
 };
 

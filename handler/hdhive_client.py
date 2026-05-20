@@ -21,7 +21,7 @@ class HDHiveClient:
     ETK 会自动注册一个本地实例 ID，并通过项目方统一的 HDHive Relay 完成 OAuth 授权和业务请求。
     """
 
-    DEFAULT_RELAY_BASE_URL = os.getenv("HDHIVE_RELAY_BASE_URL", "https://hdhive.55565576.xyz").rstrip("/")
+    DEFAULT_RELAY_BASE_URL = os.getenv("HDHIVE_RELAY_BASE_URL", "https://hdhive.847977.xyz").rstrip("/")
     REGISTER_TOKEN = os.getenv("HDHIVE_RELAY_REGISTER_TOKEN", "").strip()
 
     _unlock_timestamps = deque()
@@ -178,6 +178,22 @@ class HDHiveClient:
         status = self.get_relay_status() or {}
         return bool(status.get("success") and status.get("has_access_token"))
 
+
+    def clear_authorization(self):
+        """清除当前本地实例在 relay 上保存的影巢用户授权，保留 instance_id / instance_secret。"""
+        try:
+            res = self._request("DELETE", "/api/hdhive/authorization", timeout=20)
+            data = self._safe_json(res)
+            if res.status_code == 200 and data.get("success"):
+                logger.info("  ➜ 影巢授权已清除")
+                return data
+
+            self._log_response_error(res, "清除授权")
+            return data
+        except Exception as e:
+            self._handle_error(e, "清除授权")
+            return {"success": False, "message": "清除授权失败，请查看日志"}
+
     # -------------------- 业务接口 --------------------
 
     def get_quota(self):
@@ -199,9 +215,7 @@ class HDHiveClient:
             if res.status_code == 200 and data.get("success"):
                 return data.get("data")
 
-            err = self._log_response_error(res, "获取用户信息")
-            if err.get("code") == "VIP_REQUIRED":
-                return {"nickname": "普通用户", "user_meta": {"points": "未知 (需 Premium)"}}
+            self._log_response_error(res, "获取用户信息")
             return None
         except Exception as e:
             self._handle_error(e, "获取用户信息")

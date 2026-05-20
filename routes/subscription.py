@@ -208,6 +208,31 @@ def get_hdhive_authorize_url():
     return jsonify({"success": True, "authorize_url": url})
 
 
+@subscription_bp.route('/hdhive/clear_authorization', methods=['POST'])
+@admin_required
+def clear_hdhive_authorization():
+    """清除当前 ETK 实例在影巢中转服务上的用户授权，保留本地筛选/签到配置。"""
+    client = HDHiveClient()
+    res = client.clear_authorization()
+
+    if not res.get("success"):
+        return jsonify({
+            "success": False,
+            "message": res.get("message") or "清除影巢授权失败"
+        }), 500
+
+    authorize_url = client.authorize_url()
+    relay_status = client.get_relay_status()
+
+    return jsonify({
+        "success": True,
+        "message": "影巢授权已清除，需要使用时请重新授权。",
+        "authorize_url": authorize_url,
+        "relay_status": relay_status,
+        "authorized": bool(relay_status and relay_status.get("has_access_token"))
+    })
+
+
 @subscription_bp.route('/hdhive/resources', methods=['GET'])
 @admin_required
 def get_hdhive_resources():
