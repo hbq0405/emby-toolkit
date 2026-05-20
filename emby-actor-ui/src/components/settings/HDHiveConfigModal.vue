@@ -3,7 +3,7 @@
   <n-modal v-model:show="showModal" preset="card" title="配置 影巢 (HDHive)" style="width: 680px;">
     <n-spin :show="loading">
       <n-form label-placement="left" label-width="110">
-        <div style="padding: 12px; background-color: rgba(24, 160, 88, 0.06); border-radius: 8px; border: 1px dashed var(--n-success-color); margin-bottom: 16px;">
+        <div class="hdhive-tip">
           <n-text depth="3" style="display: block; font-size: 12px; line-height: 1.8;">
             影巢已切换为第三方应用授权模式，点击授权后会跳转到影巢官方页面获取授权信息。
           </n-text>
@@ -14,39 +14,51 @@
             <n-tag :type="authorized ? 'success' : 'warning'" :bordered="false">
               {{ authorized ? '已授权' : '未授权或授权已过期' }}
             </n-tag>
-            <n-tag type="info" :bordered="false" v-if="permissionText">
-              权限：{{ permissionText }}
+
+            <n-tag type="info" :bordered="false" v-if="authorized && scopeDisplayText">
+              权限：{{ scopeDisplayText }}
             </n-tag>
-            <n-button type="primary" color="#f0a020" @click="openAuthorize" :loading="authorizing">
+
+            <n-button
+              v-if="!authorized"
+              type="primary"
+              color="#f0a020"
+              @click="openAuthorize"
+              :loading="authorizing"
+            >
               前往影巢授权
             </n-button>
-            <n-button secondary @click="open" :loading="loading">
-              刷新状态
-            </n-button>
+
             <n-popconfirm
-              v-if="authorized"
+              v-else
               positive-text="确认清除"
               negative-text="取消"
               @positive-click="clearAuthorization"
             >
               <template #trigger>
-                <n-button tertiary type="error" :loading="clearingAuthorization">
+                <n-button type="error" secondary :loading="clearingAuth">
                   清除授权
                 </n-button>
               </template>
-              清除后当前影巢授权会失效，需要重新点击“前往影巢授权”。
+              清除授权后需要重新前往影巢授权，是否继续？
             </n-popconfirm>
+
+            <n-button secondary @click="open" :loading="loading">
+              刷新状态
+            </n-button>
           </n-space>
         </n-form-item>
 
         <div v-if="userInfo" style="margin-bottom: 16px;">
           <n-space align="center" :size="16" wrap>
             <n-tag type="success" :bordered="false">
-              用户：{{ userDisplayName }}
+              用户：{{ displayUsername }}
             </n-tag>
-            <n-tag type="info" :bordered="false" v-if="userLevelText">
-              等级：{{ userLevelText }}
+
+            <n-tag type="info" :bordered="false" v-if="displayUserLevel">
+              等级：{{ displayUserLevel }}
             </n-tag>
+
             <n-tag type="info" :bordered="false" v-if="quotaInfo">
               今日剩余请求：{{ quotaInfo.endpoint_remaining ?? '未知' }}
             </n-tag>
@@ -78,7 +90,7 @@
 
         <n-divider title-placement="left">资源筛选规则</n-divider>
 
-        <div style="padding: 12px; background-color: rgba(240, 160, 32, 0.05); border-radius: 8px; border: 1px dashed var(--n-warning-color); margin-bottom: 16px;">
+        <div class="hdhive-filter-box">
           <n-text depth="3" style="display: block; margin-bottom: 12px; font-size: 12px;">
             防止一键整理/影巢优先订阅误扣高额积分或下载超大资源。
           </n-text>
@@ -159,7 +171,7 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue';
+import { computed, onBeforeUnmount, ref } from 'vue';
 import { useMessage } from 'naive-ui';
 import axios from 'axios';
 
@@ -169,7 +181,7 @@ const loading = ref(false);
 const saving = ref(false);
 const checkingIn = ref(false);
 const authorizing = ref(false);
-const clearingAuthorization = ref(false);
+const clearingAuth = ref(false);
 
 const relayStatus = ref(null);
 const authorizeUrl = ref('');
@@ -194,49 +206,53 @@ const authorized = computed(() => {
   return Boolean(relayStatus.value?.has_access_token || userInfo.value);
 });
 
-const scopeLabelMap = {
-  meta: '元信息',
-  query: '资源查询',
-  unlock: '资源解锁',
-  vip: '用户信息',
-  write: '签到'
-};
-
-const normalizeScopes = (value) => {
-  if (Array.isArray(value)) {
-    return value.filter(Boolean);
-  }
-  return String(value || '')
-    .split(/\s+/)
-    .map((item) => item.trim())
-    .filter(Boolean);
-};
-
-const permissionText = computed(() => {
-  const scopes = relayStatus.value?.scopes?.length
-    ? relayStatus.value.scopes
-    : normalizeScopes(relayStatus.value?.scope);
-
-  const uniqueScopes = [...new Set(scopes)];
-  return uniqueScopes.map((item) => scopeLabelMap[item] || item).join('、');
+const displayUsername = computed(() => {
+  if (!userInfo.value) return '未知用户';
+  return (
+    userInfo.value.username ||
+    userInfo.value.nickname ||
+    userInfo.value.name ||
+    (userInfo.value.id ? `用户 ${userInfo.value.id}` : '未知用户')
+  );
 });
 
-const userDisplayName = computed(() => {
-  const info = userInfo.value || {};
-  return info.username || info.nickname || info.name || (info.id ? `用户 ${info.id}` : '未知用户');
-});
-
-const userLevelText = computed(() => {
-  const level = userInfo.value?.level;
+const displayUserLevel = computed(() => {
+  const level = userInfo.value?.level || userInfo.value?.user_level || '';
   const map = {
     normal: '普通用户',
     vip: 'VIP 用户',
-    premium: 'Premium 用户',
     forever_vip: '长期 VIP',
-    forever: '长期 VIP',
-    blocked: '已封禁'
+    lifetime_vip: '长期 VIP',
+    premium: 'Premium',
   };
   return map[level] || level || '';
+});
+
+const scopeLabelMap = {
+  meta: '接口状态',
+  query: '资源查询',
+  unlock: '资源解锁',
+  vip: '用户信息',
+  write: '签到',
+};
+
+const normalizeScopes = (value) => {
+  if (Array.isArray(value)) return value.filter(Boolean);
+  return String(value || '')
+    .split(/\s+/)
+    .map(s => s.trim())
+    .filter(Boolean);
+};
+
+const scopeDisplayText = computed(() => {
+  const scopes = normalizeScopes(
+    relayStatus.value?.scopes || relayStatus.value?.scope || ''
+  );
+
+  return scopes
+    .filter(s => s !== 'meta')
+    .map(s => scopeLabelMap[s] || s)
+    .join('、');
 });
 
 const stopAuthPolling = () => {
@@ -248,16 +264,15 @@ const stopAuthPolling = () => {
 
 const startAuthPolling = () => {
   stopAuthPolling();
-  let count = 0;
 
+  let count = 0;
   authPollTimer = setInterval(async () => {
     count += 1;
-    await open();
+    await open(false);
 
     if (authorized.value) {
       stopAuthPolling();
       message.success('影巢授权已完成');
-      return;
     }
 
     if (count >= 30) {
@@ -266,9 +281,9 @@ const startAuthPolling = () => {
   }, 2000);
 };
 
-const open = async () => {
+const open = async (showLoading = true) => {
   showModal.value = true;
-  loading.value = true;
+  if (showLoading) loading.value = true;
 
   try {
     const res = await axios.get('/api/subscription/hdhive/config');
@@ -288,11 +303,13 @@ const open = async () => {
       hdhiveResolution.value = res.data.hdhive_resolution || 'All';
       hdhiveZhSubOnly.value = res.data.hdhive_zh_sub_only ?? true;
       hdhiveExcludeIso.value = res.data.hdhive_exclude_iso ?? false;
+    } else {
+      message.error(res.data.message || '获取影巢配置失败');
     }
   } catch (e) {
     message.error('获取影巢配置失败');
   } finally {
-    loading.value = false;
+    if (showLoading) loading.value = false;
   }
 };
 
@@ -313,12 +330,33 @@ const openAuthorize = async () => {
     }
 
     window.open(url, '_blank', 'noopener,noreferrer');
+    message.info('授权完成后会自动刷新状态，或手动点击“刷新状态”');
     startAuthPolling();
-    message.info('授权完成后返回本页会自动刷新状态');
   } catch (e) {
     message.error('打开影巢授权失败');
   } finally {
     authorizing.value = false;
+  }
+};
+
+const clearAuthorization = async () => {
+  clearingAuth.value = true;
+  try {
+    const res = await axios.post('/api/subscription/hdhive/clear_authorization');
+    if (res.data.success) {
+      message.success(res.data.message || '影巢授权已清除');
+      stopAuthPolling();
+      relayStatus.value = null;
+      userInfo.value = null;
+      quotaInfo.value = null;
+      await open(false);
+    } else {
+      message.error(res.data.message || '清除授权失败');
+    }
+  } catch (e) {
+    message.error('清除授权失败');
+  } finally {
+    clearingAuth.value = false;
   }
 };
 
@@ -335,15 +373,16 @@ const saveConfig = async () => {
       hdhive_max_size_gb: hdhiveMaxSizeGb.value,
       hdhive_resolution: hdhiveResolution.value,
       hdhive_zh_sub_only: hdhiveZhSubOnly.value,
-      hdhive_exclude_iso: hdhiveExcludeIso.value
+      hdhive_exclude_iso: hdhiveExcludeIso.value,
     });
+
     if (res.data.success) {
       message.success(res.data.message || '保存成功');
       relayStatus.value = res.data.relay_status || relayStatus.value;
       authorizeUrl.value = res.data.authorize_url || authorizeUrl.value;
       hdhiveCheckinMode.value = res.data.hdhive_checkin_mode || hdhiveCheckinMode.value;
-      userInfo.value = res.data.user_info || null;
-      quotaInfo.value = res.data.quota_info || null;
+      userInfo.value = res.data.user_info || userInfo.value;
+      quotaInfo.value = res.data.quota_info || quotaInfo.value;
     } else {
       message.error(res.data.message || '保存失败');
     }
@@ -354,36 +393,15 @@ const saveConfig = async () => {
   }
 };
 
-const clearAuthorization = async () => {
-  clearingAuthorization.value = true;
-  try {
-    const res = await axios.post('/api/subscription/hdhive/clear_authorization');
-    if (res.data.success) {
-      stopAuthPolling();
-      relayStatus.value = res.data.relay_status || null;
-      authorizeUrl.value = res.data.authorize_url || authorizeUrl.value;
-      userInfo.value = null;
-      quotaInfo.value = null;
-      message.success(res.data.message || '影巢授权已清除');
-    } else {
-      message.error(res.data.message || '清除授权失败');
-    }
-  } catch (e) {
-    message.error('清除授权失败');
-  } finally {
-    clearingAuthorization.value = false;
-  }
-};
-
 const doCheckin = async (isGambler) => {
   checkingIn.value = true;
   try {
     const res = await axios.post('/api/subscription/hdhive/checkin', { is_gambler: isGambler });
     if (res.data.success) {
       message.success(res.data.message, { duration: 5000 });
-      open();
+      await open(false);
     } else {
-      message.warning(res.data.message);
+      message.warning(res.data.message || '签到失败');
     }
   } catch (e) {
     message.error('签到请求失败');
@@ -392,5 +410,27 @@ const doCheckin = async (isGambler) => {
   }
 };
 
+onBeforeUnmount(() => {
+  stopAuthPolling();
+});
+
 defineExpose({ open });
 </script>
+
+<style scoped>
+.hdhive-tip {
+  padding: 12px;
+  background-color: rgba(24, 160, 88, 0.06);
+  border-radius: 8px;
+  border: 1px dashed var(--n-success-color);
+  margin-bottom: 16px;
+}
+
+.hdhive-filter-box {
+  padding: 12px;
+  background-color: rgba(240, 160, 32, 0.05);
+  border-radius: 8px;
+  border: 1px dashed var(--n-warning-color);
+  margin-bottom: 16px;
+}
+</style>
