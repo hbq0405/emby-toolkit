@@ -1082,18 +1082,23 @@ class RecommendationEngine:
         try:
             translator = AITranslator(config_manager.APP_CONFIG)
             request_limit = int(limit * discovery_ratio)
-            request_limit = max(request_limit, 2) 
 
             system_prompt = "你是资深选片人。基于以下大众喜欢的影片，推荐同类高分作品。不要推荐列表中已有的。"
             if ai_prompt:
                 system_prompt += f" 额外要求: {ai_prompt}"
 
-            llm_recommendations = translator.get_recommendations(
-                user_history=history_titles_for_llm,
-                user_instruction=system_prompt,
-                allowed_types=allowed_types,
-                limit=request_limit
-            )
+            if request_limit > 0:
+                request_limit = max(request_limit, 2)
+
+                llm_recommendations = translator.get_recommendations(
+                    user_history=history_titles_for_llm,
+                    user_instruction=system_prompt,
+                    allowed_types=allowed_types,
+                    limit=request_limit
+                )
+            else:
+                llm_recommendations = []
+                logger.info("  ➜ [智能推荐] 用户设置探索比例为 0%，跳过 LLM 推荐。")
                     
             if llm_recommendations:
                 logger.info(f"  ➜ [智能推荐] LLM 返回了 {len(llm_recommendations)} 部作品，正在匹配 TMDb ID...")

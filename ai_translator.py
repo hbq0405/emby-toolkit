@@ -806,15 +806,17 @@ class AITranslator:
 {type_constraint_prompt}
 
 **JSON 返回格式：**
-[
-  {{
-    "title": "漫长的季节", 
-    "original_title": "The Long Season",
-    "year": 2023,
-    "type": "Series", 
-    "reason": "..."
-  }}
-]
+{{
+  "recommendations": [
+    {{
+      "title": "漫长的季节",
+      "original_title": "The Long Season",
+      "year": 2023,
+      "type": "Series",
+      "reason": "..."
+    }}
+  ]
+}}
 """
         
         history_str = json.dumps(user_history, ensure_ascii=False)
@@ -871,10 +873,12 @@ class AITranslator:
             result = _safe_json_loads(response_text)
             
             if isinstance(result, dict):
-                for key in result:
-                    if isinstance(result[key], list):
-                        return result[key]
-                return [result]
+                recommendations = result.get("recommendations")
+                if isinstance(recommendations, list):
+                    return recommendations
+                logger.warning(f"  ➜ [智能推荐] LLM 返回 JSON 对象但未包含 recommendations 数组: {result}")
+                return []
+
             elif isinstance(result, list):
                 return result
             
