@@ -149,7 +149,7 @@ def handle_hdhive_config():
         quota_info = None
         if relay_status and relay_status.get("has_access_token"):
             user_info = client.get_user_info()
-            quota_info = None
+            quota_info = client.get_quota()
 
         return jsonify({
             "success": True,
@@ -184,7 +184,7 @@ def handle_hdhive_config():
     quota_info = None
     if relay_status and relay_status.get("has_access_token"):
         user_info = client.get_user_info()
-        quota_info = None
+        quota_info = client.get_quota()
 
     return jsonify({
         "success": True,
@@ -233,18 +233,39 @@ def clear_hdhive_authorization():
     })
 
 
+
+def _normalize_hdhive_media_type(media_type, item_type=None):
+    """影巢 OpenAPI 只接受 movie / tv。
+    前端/内部对象可能传 Movie、Series、Season、Episode、tvshow 等，统一归一化。
+    """
+    raw = str(media_type or item_type or "").strip().lower()
+    if raw in {"movie", "movies", "film", "films"}:
+        return "movie"
+    if raw in {"tv", "series", "season", "episode", "show", "shows", "tvshow", "tvshows", "电视剧", "剧集", "季", "集"}:
+        return "tv"
+    return "movie" if not raw else "tv"
+
 @subscription_bp.route('/hdhive/resources', methods=['GET'])
 @admin_required
 def get_hdhive_resources():
     tmdb_id = request.args.get('tmdb_id')
-    media_type = request.args.get('media_type')
+    raw_media_type = request.args.get('media_type')
     season = request.args.get('season')
+    media_type = _normalize_hdhive_media_type(raw_media_type)
+
+    if not tmdb_id:
+        return jsonify({"success": False, "message": "缺少 TMDB ID"}), 400
 
     client = HDHiveClient()
     if not client.ping():
         return jsonify({"success": False, "message": "请先完成影巢授权"}), 401
 
-    resources = client.get_resources(tmdb_id, media_type)
+    logger.debug(
+        "  ➜ 影巢资源查询: raw_media_type=%s, normalized_media_type=%s, tmdb_id=%s, season=%s",
+        raw_media_type, media_type, tmdb_id, season
+    )
+
+    resources = client.get_resources(tmdb_id, media_type, target_season=season)
     filtered_resources = filter_hdhive_resources(
         resources,
         target_season=season,
@@ -265,7 +286,8 @@ def trigger_hdhive_download():
     data = request.json or {}
     slug = data.get('slug')
     tmdb_id = data.get('tmdb_id')
-    media_type = data.get('media_type')
+    raw_media_type = data.get('media_type')
+    media_type = _normalize_hdhive_media_type(raw_media_type)
     title = data.get('title', '未知影视')
 
     client = HDHiveClient()

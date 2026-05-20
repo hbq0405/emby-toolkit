@@ -221,11 +221,30 @@ class HDHiveClient:
             self._handle_error(e, "获取用户信息")
             return None
 
+
+    def _normalize_media_type(self, media_type):
+        """影巢 OpenAPI 只接受 movie / tv。
+        ETK 内部可能传 Movie/Series/Season/tvshow 等，这里统一归一化。
+        """
+        raw = str(media_type or "").strip().lower()
+        if raw in {"movie", "movies", "film", "films"}:
+            return "movie"
+        if raw in {"tv", "series", "season", "episode", "show", "shows", "tvshow", "tvshows", "电视剧", "剧集", "季", "集"}:
+            return "tv"
+        # 默认按 tv 处理比直接把 Series/Season 传给影巢更安全；
+        # 但空值仍回退 movie，避免电影入口缺字段时误查剧集。
+        return "movie" if not raw else ("tv" if raw != "movie" else "movie")
+
     def get_resources(self, tmdb_id, media_type, target_season=None):
         try:
-            media_type = quote(str(media_type), safe="")
-            tmdb_id = quote(str(tmdb_id), safe="")
-            res = self._request("GET", f"/api/hdhive/resources/{media_type}/{tmdb_id}", timeout=30)
+            normalized_media_type = self._normalize_media_type(media_type)
+            media_type_for_url = quote(normalized_media_type, safe="")
+            tmdb_id_for_url = quote(str(tmdb_id), safe="")
+            logger.debug(
+                "  ➜ 影巢资源查询参数: raw_type=%s, normalized_type=%s, tmdb_id=%s, season=%s",
+                media_type, normalized_media_type, tmdb_id, target_season
+            )
+            res = self._request("GET", f"/api/hdhive/resources/{media_type_for_url}/{tmdb_id_for_url}", timeout=30)
             data = self._safe_json(res)
             if res.status_code != 200:
                 self._log_response_error(res, "获取资源列表")

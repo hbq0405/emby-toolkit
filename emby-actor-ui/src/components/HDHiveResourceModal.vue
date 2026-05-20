@@ -140,12 +140,34 @@ const getPanTypeColor = (type) => {
   return 'info';
 };
 
+const normalizeMediaType = (value) => {
+  const raw = String(value || '').trim().toLowerCase();
+
+  if (['movie', 'movies', 'film', 'films'].includes(raw)) return 'movie';
+  if (['tv', 'series', 'season', 'episode', 'show', 'shows', 'tvshow', 'tvshows'].includes(raw)) return 'tv';
+
+  return raw ? 'tv' : 'movie';
+};
+
 const getMediaType = () => {
-  return props.media?.media_type || (props.media?.item_type === 'Movie' ? 'movie' : 'tv');
+  return normalizeMediaType(props.media?.media_type || props.media?.item_type);
 };
 
 const getTmdbId = () => {
-  return props.media?.parent_series_tmdb_id || props.media?.tmdb_id || props.media?.id;
+  const mediaType = getMediaType();
+
+  // 剧集/季入口必须用剧集 TMDB ID 查询影巢，不能用 Season 自己的 tmdb_id。
+  if (mediaType === 'tv') {
+    return (
+      props.media?.parent_series_tmdb_id ||
+      props.media?.series_tmdb_id ||
+      props.media?.parent_tmdb_id ||
+      props.media?.tmdb_id ||
+      props.media?.id
+    );
+  }
+
+  return props.media?.tmdb_id || props.media?.id;
 };
 
 const fetchResources = async () => {
