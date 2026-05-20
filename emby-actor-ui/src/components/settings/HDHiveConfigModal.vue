@@ -46,10 +46,15 @@
             <n-text depth="2">{{ scopeDisplayText }}</n-text>
           </n-descriptions-item>
 
-          <n-descriptions-item label="今日请求" :span="2" v-if="usageToday">
-            <n-space align="center" :size="6">
-              <n-text type="success" strong>{{ usageToday.total_calls || 0 }}</n-text> 次
-              <n-text depth="3" style="font-size: 12px;">(应用级数据，非个人账号配额)</n-text>
+          <n-descriptions-item label="接口用量" :span="2" v-if="usageToday || usageTotal">
+            <n-space align="center" :size="16">
+              <n-text v-if="usageToday">
+                今日：<n-text type="success" strong>{{ usageToday.total_calls || 0 }}</n-text> 次
+              </n-text>
+              <n-text v-if="usageTotal">
+                历史：<n-text type="info" strong>{{ displayHistoricalCalls }}</n-text> 次
+              </n-text>
+              <n-text depth="3" style="font-size: 12px; margin-left: 4px;">(应用级数据，非个人账号配额)</n-text>
             </n-space>
           </n-descriptions-item>
         </n-descriptions>
@@ -179,7 +184,8 @@ const hdhiveExcludeIso = ref(false);
 const unlockLimitCount = ref(3);
 const unlockLimitWindow = ref(60);
 const userInfo = ref(null);
-const usageToday = ref(null); // 替换 quotaInfo
+const usageToday = ref(null); 
+const usageTotal = ref(null);
 
 let authPollTimer = null;
 
@@ -210,10 +216,10 @@ const displayUserLevel = computed(() => {
 });
 
 const scopeLabelMap = {
-  meta: '接口状态与配额',
-  query: '资源查询',
-  unlock: '资源解锁',
-  vip: '用户信息',
+  meta: '用量与配额',
+  query: '查询资源',
+  unlock: '解锁资源',
+  vip: 'VIP 信息',
   write: '签到/写入',
 };
 
@@ -239,6 +245,19 @@ const scopeDisplayText = computed(() => {
   return sorted
     .map(s => scopeLabelMap[s] || s)
     .join('、');
+});
+
+const displayHistoricalCalls = computed(() => {
+  if (!usageTotal.value) return 0;
+  // 如果直接返回了 total_calls 字段
+  if (typeof usageTotal.value.total_calls === 'number') {
+    return usageTotal.value.total_calls;
+  }
+  // 如果返回的是一个数组（每天的数据列表），则自动求和
+  if (Array.isArray(usageTotal.value)) {
+    return usageTotal.value.reduce((sum, item) => sum + (item.total_calls || 0), 0);
+  }
+  return 0;
 });
 
 const stopAuthPolling = () => {
@@ -281,7 +300,8 @@ const open = async (showLoading = true) => {
       unlockLimitCount.value = res.data.unlock_limit_count || 3;
       unlockLimitWindow.value = res.data.unlock_limit_window || 60;
       userInfo.value = res.data.user_info || null;
-      usageToday.value = res.data.usage_today || null; // 替换 quotaInfo
+      usageToday.value = res.data.usage_today || null; 
+      usageTotal.value = res.data.usage_total || null;
 
       hdhiveFreeOnly.value = res.data.hdhive_free_only ?? false;
       hdhiveMaxPoints.value = res.data.hdhive_max_points ?? 10;
@@ -334,7 +354,8 @@ const clearAuthorization = async () => {
       stopAuthPolling();
       relayStatus.value = null;
       userInfo.value = null;
-      usageToday.value = null; // 替换 quotaInfo
+      usageToday.value = null; 
+      usageTotal.value = null;
       await open(false);
     } else {
       message.error(res.data.message || '清除授权失败');
@@ -368,7 +389,8 @@ const saveConfig = async () => {
       authorizeUrl.value = res.data.authorize_url || authorizeUrl.value;
       hdhiveCheckinMode.value = res.data.hdhive_checkin_mode || hdhiveCheckinMode.value;
       userInfo.value = res.data.user_info || userInfo.value;
-      usageToday.value = res.data.usage_today || usageToday.value; // 替换 quotaInfo
+      usageToday.value = res.data.usage_today || usageToday.value; 
+      usageTotal.value = res.data.usage_total || usageTotal.value;
     } else {
       message.error(res.data.message || '保存失败');
     }

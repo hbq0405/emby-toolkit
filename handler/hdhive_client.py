@@ -207,6 +207,18 @@ class HDHiveClient:
         except Exception as e:
             self._handle_error(e, "获取配额")
             return None
+        
+    def get_usage(self):
+        try:
+            res = self._request("GET", "/api/hdhive/usage", timeout=15)
+            data = self._safe_json(res)
+            if res.status_code == 200 and data.get("success"):
+                return data.get("data")
+            self._log_response_error(res, "获取历史用量")
+            return None
+        except Exception as e:
+            self._handle_error(e, "获取历史用量")
+            return None
 
     def get_usage_today(self):
         try:
