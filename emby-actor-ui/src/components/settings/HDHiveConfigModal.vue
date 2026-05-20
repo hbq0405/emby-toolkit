@@ -45,17 +45,21 @@
           <n-descriptions-item label="VIP 权益" :span="2" v-if="vipInfo">
             <n-space align="center" :size="16">
               <n-tag type="warning" size="small" :bordered="false">
-                {{ vipInfo.is_forever_vip ? '长期 Premium' : 'Premium' }}
+                {{ vipInfo.is_forever_vip ? '永久 Premium' : 'Premium' }}
               </n-tag>
               
               <n-text>
                 每周免费解锁: 
                 <n-text type="success" strong v-if="vipInfo.weekly_free_quota_unlimited">无限</n-text>
-                <n-text type="success" strong v-else>{{ vipInfo.weekly_free_quota_remaining }} / {{ vipInfo.weekly_free_quota }}</n-text>
+                <!-- ★ 修改点：分母加上了 bonus_quota -->
+                <n-text type="success" strong v-else>
+                  {{ vipInfo.weekly_free_quota_remaining }} / {{ vipInfo.weekly_free_quota + (vipInfo.bonus_quota || 0) }}
+                </n-text>
               </n-text>
               
-              <n-text v-if="vipInfo.bonus_quota > 0">
-                奖励额度: <n-text type="info" strong>{{ vipInfo.bonus_quota }}</n-text>
+              <!-- ★ 修改点：优化了文案，加上括号作为补充说明 -->
+              <n-text v-if="vipInfo.bonus_quota > 0" depth="3" style="font-size: 12px;">
+                (含累积奖励: <n-text type="info" strong>{{ vipInfo.bonus_quota }}</n-text>)
               </n-text>
             </n-space>
           </n-descriptions-item>
@@ -225,8 +229,8 @@ const displayUserLevel = computed(() => {
   const map = {
     normal: '普通用户',
     vip: 'VIP 用户',
-    forever_vip: '长期 VIP',
-    lifetime_vip: '长期 VIP',
+    forever_vip: '永久 VIP',
+    lifetime_vip: '永久 VIP',
     premium: 'Premium',
   };
   return map[level] || level || '';
