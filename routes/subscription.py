@@ -81,6 +81,20 @@ HDHIVE_DEFAULT_CONFIG = {
     }
 }
 
+def _has_hdhive_scope(relay_status, scope_name):
+    if not relay_status:
+        return False
+
+    scopes = relay_status.get("scopes")
+
+    if isinstance(scopes, list):
+        return scope_name in scopes
+
+    scope_text = relay_status.get("scope") or ""
+    if isinstance(scope_text, str):
+        return scope_name in scope_text.split()
+
+    return False
 
 def _get_hdhive_config():
     cfg = settings_db.get_setting("hdhive_config") or {}
@@ -149,7 +163,11 @@ def handle_hdhive_config():
         quota_info = None
         if relay_status and relay_status.get("has_access_token"):
             user_info = client.get_user_info()
-            quota_info = client.get_quota()
+
+            if _has_hdhive_scope(relay_status, "meta"):
+                quota_info = client.get_quota()
+            else:
+                quota_info = None
 
         return jsonify({
             "success": True,
@@ -184,7 +202,11 @@ def handle_hdhive_config():
     quota_info = None
     if relay_status and relay_status.get("has_access_token"):
         user_info = client.get_user_info()
-        quota_info = client.get_quota()
+
+        if _has_hdhive_scope(relay_status, "meta"):
+            quota_info = client.get_quota()
+        else:
+            quota_info = None
 
     return jsonify({
         "success": True,

@@ -60,7 +60,7 @@
             </n-tag>
 
             <n-tag type="info" :bordered="false" v-if="quotaInfo">
-              今日剩余请求：{{ quotaInfo.endpoint_remaining ?? '未知' }}
+              今日剩余请求：{{ formatQuotaRemaining(quotaInfo) }}
             </n-tag>
           </n-space>
         </div>
@@ -228,12 +228,25 @@ const displayUserLevel = computed(() => {
   return map[level] || level || '';
 });
 
+const formatQuotaRemaining = (quota) => {
+  if (!quota) return '未知';
+
+  return (
+    quota.endpoint_remaining ??
+    quota.remaining ??
+    quota.daily_remaining ??
+    quota.quota_remaining ??
+    quota.left ??
+    '未知'
+  );
+};
+
 const scopeLabelMap = {
-  meta: '接口状态',
+  meta: '接口状态与配额',
   query: '资源查询',
   unlock: '资源解锁',
   vip: '用户信息',
-  write: '签到',
+  write: '签到/写入',
 };
 
 const normalizeScopes = (value) => {
@@ -249,8 +262,13 @@ const scopeDisplayText = computed(() => {
     relayStatus.value?.scopes || relayStatus.value?.scope || ''
   );
 
-  return scopes
-    .filter(s => s !== 'meta')
+  const order = ['meta', 'query', 'unlock', 'vip', 'write'];
+  const sorted = [
+    ...order.filter(s => scopes.includes(s)),
+    ...scopes.filter(s => !order.includes(s)),
+  ];
+
+  return sorted
     .map(s => scopeLabelMap[s] || s)
     .join('、');
 });
