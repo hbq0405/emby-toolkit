@@ -26,7 +26,7 @@
               @click="openAuthorize"
               :loading="authorizing"
             >
-              前往影巢授权
+              影巢授权
             </n-button>
 
             <n-popconfirm
