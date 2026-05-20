@@ -167,6 +167,9 @@ def handle_hdhive_config():
             if _has_hdhive_scope(relay_status, "meta"):
                 usage_today = client.get_usage_today() 
 
+            if _has_hdhive_scope(relay_status, "vip"):
+                vip_info = client.get_vip_entitlements()
+
         return jsonify({
             "success": True,
             "authorize_url": authorize_url,
@@ -185,7 +188,8 @@ def handle_hdhive_config():
             "hdhive_exclude_iso": filter_cfg.get("exclude_iso", False),
 
             "user_info": user_info,
-            "usage_today": usage_today
+            "usage_today": usage_today,
+            "vip_info": vip_info
         })
 
     data = request.json or {}
@@ -204,6 +208,9 @@ def handle_hdhive_config():
         if _has_hdhive_scope(relay_status, "meta"):
             usage_today = client.get_usage_today() 
 
+        if _has_hdhive_scope(relay_status, "vip"):
+            vip_info = client.get_vip_entitlements()
+
     return jsonify({
         "success": True,
         "message": "影巢配置保存成功！" if user_info else "筛选配置已保存。若未授权，请点击“前往影巢授权”。",
@@ -212,7 +219,8 @@ def handle_hdhive_config():
         "authorized": bool(relay_status and relay_status.get("has_access_token")),
         "hdhive_checkin_mode": cfg.get("checkin_mode", "normal"),
         "user_info": user_info,
-        "usage_today": usage_today
+        "usage_today": usage_today,
+        "vip_info": vip_info
     })
 
 

@@ -208,16 +208,21 @@ class HDHiveClient:
             self._handle_error(e, "获取配额")
             return None
         
-    def get_usage(self):
+    def get_vip_entitlements(self):
         try:
-            res = self._request("GET", "/api/hdhive/usage", timeout=15)
+            res = self._request("GET", "/api/hdhive/vip/entitlements", timeout=15)
             data = self._safe_json(res)
             if res.status_code == 200 and data.get("success"):
                 return data.get("data")
-            self._log_response_error(res, "获取历史用量")
+            
+            # ★ 静默处理：如果是普通用户，官方会返回 403 VIP_REQUIRED，这是正常现象，不打印错误日志
+            if res.status_code == 403 and data.get("code") == "VIP_REQUIRED":
+                return None
+                
+            self._log_response_error(res, "获取VIP权益")
             return None
         except Exception as e:
-            self._handle_error(e, "获取历史用量")
+            self._handle_error(e, "获取VIP权益")
             return None
 
     def get_usage_today(self):

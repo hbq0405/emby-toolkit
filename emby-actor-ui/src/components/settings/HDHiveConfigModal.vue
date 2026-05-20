@@ -42,6 +42,24 @@
             <n-text depth="3" v-else>暂无</n-text>
           </n-descriptions-item>
 
+          <n-descriptions-item label="VIP 权益" :span="2" v-if="vipInfo">
+            <n-space align="center" :size="16">
+              <n-tag type="warning" size="small" :bordered="false">
+                {{ vipInfo.is_forever_vip ? '长期 Premium' : 'Premium' }}
+              </n-tag>
+              
+              <n-text>
+                每周免费解锁: 
+                <n-text type="success" strong v-if="vipInfo.weekly_free_quota_unlimited">无限</n-text>
+                <n-text type="success" strong v-else>{{ vipInfo.weekly_free_quota_remaining }} / {{ vipInfo.weekly_free_quota }}</n-text>
+              </n-text>
+              
+              <n-text v-if="vipInfo.bonus_quota > 0">
+                奖励额度: <n-text type="info" strong>{{ vipInfo.bonus_quota }}</n-text>
+              </n-text>
+            </n-space>
+          </n-descriptions-item>
+
           <n-descriptions-item label="授权范围" :span="2" v-if="authorized && scopeDisplayText">
             <n-text depth="2">{{ scopeDisplayText }}</n-text>
           </n-descriptions-item>
@@ -183,7 +201,8 @@ const hdhiveExcludeIso = ref(false);
 const unlockLimitCount = ref(3);
 const unlockLimitWindow = ref(60);
 const userInfo = ref(null);
-const usageToday = ref(null); 
+const usageToday = ref(null);
+const vipInfo = ref(null); 
 
 let authPollTimer = null;
 
@@ -286,6 +305,7 @@ const open = async (showLoading = true) => {
       unlockLimitWindow.value = res.data.unlock_limit_window || 60;
       userInfo.value = res.data.user_info || null;
       usageToday.value = res.data.usage_today || null; 
+      vipInfo.value = res.data.vip_info || null;
 
       hdhiveFreeOnly.value = res.data.hdhive_free_only ?? false;
       hdhiveMaxPoints.value = res.data.hdhive_max_points ?? 10;
@@ -338,7 +358,8 @@ const clearAuthorization = async () => {
       stopAuthPolling();
       relayStatus.value = null;
       userInfo.value = null;
-      usageToday.value = null; 
+      usageToday.value = null;
+      vipInfo.value = null; 
       await open(false);
     } else {
       message.error(res.data.message || '清除授权失败');
@@ -372,7 +393,8 @@ const saveConfig = async () => {
       authorizeUrl.value = res.data.authorize_url || authorizeUrl.value;
       hdhiveCheckinMode.value = res.data.hdhive_checkin_mode || hdhiveCheckinMode.value;
       userInfo.value = res.data.user_info || userInfo.value;
-      usageToday.value = res.data.usage_today || usageToday.value; 
+      usageToday.value = res.data.usage_today || usageToday.value;
+      vipInfo.value = res.data.vip_info || vipInfo.value; 
     } else {
       message.error(res.data.message || '保存失败');
     }
