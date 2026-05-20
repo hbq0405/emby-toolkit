@@ -84,6 +84,26 @@ class WatchlistProcessor:
             logger.error(f"读取本地JSON文件失败: {file_path}, 错误: {e}")
             return None
 
+    def _get_safe_series_name(self, series_data: Dict[str, Any]) -> str:
+        """安全获取剧集名称，避免 item_name 为 None 导致日志/进度回调报错。"""
+        if not isinstance(series_data, dict):
+            return "未知剧集"
+
+        for key in ("item_name", "title", "name", "original_title", "original_name"):
+            value = series_data.get(key)
+            if value is None:
+                continue
+
+            value = str(value).strip()
+            if value and value.lower() not in ("none", "null"):
+                return value
+
+        tmdb_id = series_data.get("tmdb_id") or series_data.get("id")
+        if tmdb_id:
+            return f"TMDb {tmdb_id}"
+
+        return "未知剧集"
+
     def _prepare_watchlist_translation_payload(self, aggregated_data: Dict[str, Any]) -> Dict[str, int]:
         """
         追剧刷新专用的翻译前瘦身。
@@ -231,12 +251,16 @@ class WatchlistProcessor:
                 lock = threading.Lock()
 
                 def worker_process_series(series: dict):
-                    if self.is_stop_requested(): return "任务已停止"
+                    if self.is_stop_requested():
+                        return "任务已停止"
+
+                    series_name = self._get_safe_series_name(series)
+
                     try:
                         self._process_one_series(series)
                         return "处理成功"
                     except Exception as e:
-                        logger.error(f"处理剧集 {series.get('item_name')} 时发生错误: {e}", exc_info=False)
+                        logger.error(f"处理剧集 {series_name} 时发生错误: {e}", exc_info=False)
                         return f"处理失败: {e}"
 
                 with concurrent.futures.ThreadPoolExecutor(max_workers=5) as executor:
@@ -248,17 +272,22 @@ class WatchlistProcessor:
                             break
 
                         series_info = future_to_series[future]
+                        series_name = self._get_safe_series_name(series_info)
+
                         try:
                             result = future.result()
-                            logger.trace(f"'{series_info['item_name']}' - {result}")
+                            logger.trace(f"'{series_name}' - {result}")
                         except Exception as exc:
-                            logger.error(f"任务 '{series_info['item_name']}' 执行时产生未捕获的异常: {exc}")
+                            logger.error(f"任务 '{series_name}' 执行时产生未捕获的异常: {exc}")
 
                         with lock:
                             processed_count += 1
                         
                         progress = 5 + int((processed_count / total) * 95)
-                        self.progress_callback(progress, f"剧集处理: {processed_count}/{total} - {series_info['item_name'][:15]}...")
+                        self.progress_callback(
+                            progress,
+                            f"剧集处理: {processed_count}/{total} - {series_name[:15]}..."
+                        )
                 
                 if not self.is_stop_requested():
                     self.progress_callback(100, "追剧检查完成。")
@@ -1308,10 +1337,17 @@ class WatchlistProcessor:
     
     # ★★★ 核心处理逻辑：单个剧集的所有操作在此完成 ★★★
     def _process_one_series(self, series_data: Dict[str, Any]):
-        tmdb_id = series_data['tmdb_id']
+        tmdb_id = series_data.get('tmdb_id')
+        if not tmdb_id:
+            logger.warning(f"  ➜ 追剧记录缺少 tmdb_id，跳过。数据: {series_data}")
+            return
+
         emby_ids = series_data.get('emby_item_ids_json', [])
         item_id = emby_ids[0] if emby_ids else None
-        item_name = series_data['item_name']
+
+        item_name = self._get_safe_series_name(series_data)
+        series_data['item_name'] = item_name
+
         old_status = series_data.get('watching_status') 
         is_force_ended = bool(series_data.get('force_ended', False))
         
