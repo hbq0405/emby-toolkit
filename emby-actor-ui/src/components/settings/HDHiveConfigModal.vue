@@ -46,15 +46,14 @@
             <n-text depth="2">{{ scopeDisplayText }}</n-text>
           </n-descriptions-item>
 
-          <n-descriptions-item label="接口用量" :span="2" v-if="usageToday || usageTotal">
+          <n-descriptions-item label="今日用量" :span="2" v-if="usageToday">
             <n-space align="center" :size="16">
-              <n-text v-if="usageToday">
-                今日：<n-text type="success" strong>{{ usageToday.total_calls || 0 }}</n-text> 次
-              </n-text>
-              <n-text v-if="usageTotal">
-                历史：<n-text type="info" strong>{{ displayHistoricalCalls }}</n-text> 次
-              </n-text>
-              <n-text depth="3" style="font-size: 12px; margin-left: 4px;">(应用级数据，非个人账号配额)</n-text>
+              <n-text>总计: <n-text strong>{{ usageToday.total_calls || 0 }}</n-text></n-text>
+              <n-text>成功: <n-text type="success" strong>{{ usageToday.success_calls || 0 }}</n-text></n-text>
+              <n-text>失败: <n-text :type="(usageToday.failed_calls || 0) > 0 ? 'error' : 'default'" strong>{{ usageToday.failed_calls || 0 }}</n-text></n-text>
+              <n-text>平均耗时: <n-text strong>{{ Math.round(usageToday.avg_latency || 0) }}</n-text> ms</n-text>
+              
+              <n-text depth="3" style="font-size: 12px; margin-left: 8px;">(应用级数据，非个人账号配额)</n-text>
             </n-space>
           </n-descriptions-item>
         </n-descriptions>
@@ -185,7 +184,6 @@ const unlockLimitCount = ref(3);
 const unlockLimitWindow = ref(60);
 const userInfo = ref(null);
 const usageToday = ref(null); 
-const usageTotal = ref(null);
 
 let authPollTimer = null;
 
@@ -247,19 +245,6 @@ const scopeDisplayText = computed(() => {
     .join('、');
 });
 
-const displayHistoricalCalls = computed(() => {
-  if (!usageTotal.value) return 0;
-  // 如果直接返回了 total_calls 字段
-  if (typeof usageTotal.value.total_calls === 'number') {
-    return usageTotal.value.total_calls;
-  }
-  // 如果返回的是一个数组（每天的数据列表），则自动求和
-  if (Array.isArray(usageTotal.value)) {
-    return usageTotal.value.reduce((sum, item) => sum + (item.total_calls || 0), 0);
-  }
-  return 0;
-});
-
 const stopAuthPolling = () => {
   if (authPollTimer) {
     clearInterval(authPollTimer);
@@ -301,7 +286,6 @@ const open = async (showLoading = true) => {
       unlockLimitWindow.value = res.data.unlock_limit_window || 60;
       userInfo.value = res.data.user_info || null;
       usageToday.value = res.data.usage_today || null; 
-      usageTotal.value = res.data.usage_total || null;
 
       hdhiveFreeOnly.value = res.data.hdhive_free_only ?? false;
       hdhiveMaxPoints.value = res.data.hdhive_max_points ?? 10;
@@ -355,7 +339,6 @@ const clearAuthorization = async () => {
       relayStatus.value = null;
       userInfo.value = null;
       usageToday.value = null; 
-      usageTotal.value = null;
       await open(false);
     } else {
       message.error(res.data.message || '清除授权失败');
@@ -390,7 +373,6 @@ const saveConfig = async () => {
       hdhiveCheckinMode.value = res.data.hdhive_checkin_mode || hdhiveCheckinMode.value;
       userInfo.value = res.data.user_info || userInfo.value;
       usageToday.value = res.data.usage_today || usageToday.value; 
-      usageTotal.value = res.data.usage_total || usageTotal.value;
     } else {
       message.error(res.data.message || '保存失败');
     }

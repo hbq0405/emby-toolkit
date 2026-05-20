@@ -166,7 +166,6 @@ def handle_hdhive_config():
 
             if _has_hdhive_scope(relay_status, "meta"):
                 usage_today = client.get_usage_today() 
-                usage_total = client.get_usage()
 
         return jsonify({
             "success": True,
@@ -186,8 +185,7 @@ def handle_hdhive_config():
             "hdhive_exclude_iso": filter_cfg.get("exclude_iso", False),
 
             "user_info": user_info,
-            "usage_today": usage_today,
-            "usage_total": usage_total 
+            "usage_today": usage_today
         })
 
     data = request.json or {}
@@ -205,7 +203,6 @@ def handle_hdhive_config():
 
         if _has_hdhive_scope(relay_status, "meta"):
             usage_today = client.get_usage_today() 
-            usage_total = client.get_usage()
 
     return jsonify({
         "success": True,
@@ -215,8 +212,7 @@ def handle_hdhive_config():
         "authorized": bool(relay_status and relay_status.get("has_access_token")),
         "hdhive_checkin_mode": cfg.get("checkin_mode", "normal"),
         "user_info": user_info,
-        "usage_today": usage_today,
-        "usage_total": usage_total
+        "usage_today": usage_today
     })
 
 
