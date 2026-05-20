@@ -1023,29 +1023,6 @@ class RecommendationEngine:
         )
         return results
 
-    def _get_library_tmdb_ids(self, allowed_types=None) -> set:
-        """获取已入库的 TMDb ID 集合，供推荐时排除。"""
-        try:
-            with connection.get_db_connection() as conn:
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT tmdb_id, item_type
-                    FROM media_metadata
-                    WHERE in_library = TRUE
-                """)
-                rows = cursor.fetchall()
-
-            ids = set()
-            for row in rows:
-                item_type = row.get('item_type') if hasattr(row, 'get') else row['item_type']
-                tmdb_id = row.get('tmdb_id') if hasattr(row, 'get') else row['tmdb_id']
-                if tmdb_id and (not allowed_types or item_type in allowed_types):
-                    ids.add(str(tmdb_id))
-            return ids
-        except Exception as e:
-            logger.warning(f"  ➜ [智能推荐] 获取已入库 TMDb ID 失败: {e}")
-            return set()
-    
     def generate(self, definition: Dict) -> List[Dict[str, str]]:
         """
         推荐生成器。
@@ -1151,18 +1128,14 @@ class RecommendationEngine:
                                 if matched_type not in allowed_types:
                                     return None
                                 
-                                library_tmdb_ids = self._get_library_tmdb_ids(allowed_types)
-                                blocked_tmdb_ids = watched_tmdb_ids | library_tmdb_ids
-
-                                if tmdb_id in blocked_tmdb_ids:
+                                if tmdb_id in watched_tmdb_ids:
                                     return None
                                 return {
                                     'id': tmdb_id,
                                     'type': matched_type,
                                     'title': title, 
                                     'season': season_num,
-                                    'year': year,
-                                    'release_date': f"{year}-01-01" if year else None
+                                    'release_date': None
                                 }
                             return None
                         except Exception:
