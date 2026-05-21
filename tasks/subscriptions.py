@@ -63,15 +63,12 @@ def _try_download_from_hdhive_first(tmdb_id, media_type, title, item_label="媒�
         f"  ➜ [策略] {item_label}《{title}》{season_suffix} 启用影巢优先，正在检索并筛选资源..."
     )
 
-    hdhive_config = settings_db.get_setting("hdhive_config") or {}
-    hdhive_api_key = hdhive_config.get("api_key")
-
-    if not hdhive_api_key:
-        logger.warning("  ➜ 未配置影巢 API Key，自动降级到 MoviePilot...")
-        return False
-
     try:
-        hd_client = HDHiveClient(hdhive_api_key)
+        hd_client = HDHiveClient()
+        if not hd_client.ping():
+            logger.warning("  ➜ 影巢尚未完成授权或授权已失效，自动降级到 MoviePilot...")
+            return False
+
         resources = hd_client.get_resources(tmdb_id, media_type, target_season=target_season)
 
         if not resources:
@@ -171,7 +168,7 @@ def _try_download_from_hdhive_first(tmdb_id, media_type, title, item_label="媒�
             return False
 
         success = task_download_from_hdhive(
-            hdhive_api_key,
+            None,
             slug,
             tmdb_id,
             media_type,
