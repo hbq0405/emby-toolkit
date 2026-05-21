@@ -122,9 +122,21 @@ def _get_tmdb_rating_params(label: str, item_type: str) -> dict:
         
     return params
 
-def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_type: str) -> dict:
+def _parse_bool(value, default: bool = False) -> bool:
+    """兼容前端 JSON / 查询参数中的布尔值。"""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return str(value).strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_type: str, hide_in_library: bool = False) -> dict:
     """
-    辅助函数：过滤TMDb结果，并附加数据库中的全局信息。
+    辅助函数：过滤 TMDb 结果，并附加数据库中的全局信息。
+    hide_in_library=True 时，在附加 in_library 后剔除已入库条目。
     """
     if not tmdb_data or not tmdb_data.get("results"):
         return {"results": [], "total_pages": 0}
@@ -157,7 +169,11 @@ def _filter_and_enrich_results(tmdb_data: dict, current_user_id: str, db_item_ty
         item["subscription_status"] = subscription_statuses.get(tmdb_id_str, None)
         item["media_type"] = media_type_for_frontend
     
+    if hide_in_library:
+        final_filtered_results = [item for item in final_filtered_results if not item.get("in_library")]
+
     tmdb_data["results"] = final_filtered_results
+    tmdb_data["total_results"] = len(final_filtered_results)
     return tmdb_data
 
 @discover_bp.route('/movie', methods=['POST'])
@@ -167,7 +183,7 @@ def discover_movies():
     根据前端传来的筛选条件，从 TMDb 发现电影。
     策略调整：成人模式下附加 NC-17 筛选，不再强制剔除非 adult=True 内容，以保证加载速度和列表密度。
     """
-    data = request.json
+    data = request.json or {}
     api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
     
     # 记录开始时间，用于超时控制
@@ -178,6 +194,7 @@ def discover_movies():
         if 'emby_user_id' not in session:
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
         current_user_id = session['emby_user_id']
+        hide_in_library = _parse_bool(data.get('hide_in_library'))
 
         # 2. 关键词标签 -> 纯关键词 IDs
         labels = data.get('with_keywords', [])
@@ -245,7 +262,7 @@ def discover_movies():
         
         # 因为加了 NC-17 强过滤，TMDb 返回的数据密度会很高，
         # 所以不需要像之前那样扫 20 页，扫 3 页通常就绰绰有余了
-        max_pages_to_scan = 3 if is_adult_search else 1 
+        max_pages_to_scan = 3 if (is_adult_search or hide_in_library) else 1 
         
         frontend_page = data.get('page', 1)
         start_tmdb_page = (frontend_page - 1) * max_pages_to_scan + 1
@@ -272,7 +289,8 @@ def discover_movies():
             
             final_results.extend(filtered_batch)
             
-            if len(final_results) >= target_count:
+            raw_target_count = target_count * max_pages_to_scan if hide_in_library else target_count
+            if len(final_results) >= raw_target_count:
                 break
             
             if current_tmdb_page >= total_pages_from_tmdb:
@@ -280,7 +298,8 @@ def discover_movies():
             
             current_tmdb_page += 1
             
-        final_results = final_results[:target_count]
+        raw_target_count = target_count * max_pages_to_scan if hide_in_library else target_count
+        final_results = final_results[:raw_target_count]
         
         if max_pages_to_scan > 1:
             adjusted_total_pages = total_pages_from_tmdb // max_pages_to_scan
@@ -296,7 +315,10 @@ def discover_movies():
             "total_results": len(final_results) 
         }
         
-        processed_data = _filter_and_enrich_results(result_wrapper, current_user_id, 'Movie')
+        processed_data = _filter_and_enrich_results(result_wrapper, current_user_id, 'Movie', hide_in_library=hide_in_library)
+        if hide_in_library:
+            processed_data["results"] = processed_data.get("results", [])[:target_count]
+            processed_data["total_results"] = len(processed_data["results"])
         
         return jsonify(processed_data)
 
@@ -311,7 +333,7 @@ def discover_tv_shows():
     根据前端传来的筛选条件，从 TMDb 发现电视剧。
     策略调整：成人模式下附加 TV-MA 筛选，保证列表密度和加载速度。
     """
-    data = request.json
+    data = request.json or {}
     api_key = tmdb.config_manager.APP_CONFIG.get(tmdb.constants.CONFIG_OPTION_TMDB_API_KEY)
     
     # 记录开始时间，用于超时控制
@@ -321,6 +343,7 @@ def discover_tv_shows():
         if 'emby_user_id' not in session:
             return jsonify({"status": "error", "message": "此功能仅对 Emby 用户开放"}), 403
         current_user_id = session['emby_user_id']
+        hide_in_library = _parse_bool(data.get('hide_in_library'))
 
         # 1. 关键词
         labels = data.get('with_keywords', [])
@@ -385,7 +408,7 @@ def discover_tv_shows():
         target_count = 20
         
         # 同样，因为加了 TV-MA 强过滤，命中率很高，扫 3 页足够
-        max_pages_to_scan = 3 if is_adult_search else 1 
+        max_pages_to_scan = 3 if (is_adult_search or hide_in_library) else 1 
         
         frontend_page = data.get('page', 1)
         start_tmdb_page = (frontend_page - 1) * max_pages_to_scan + 1
@@ -409,7 +432,8 @@ def discover_tv_shows():
             
             final_results.extend(filtered_batch)
             
-            if len(final_results) >= target_count:
+            raw_target_count = target_count * max_pages_to_scan if hide_in_library else target_count
+            if len(final_results) >= raw_target_count:
                 break
             
             if current_tmdb_page >= total_pages_from_tmdb:
@@ -417,7 +441,8 @@ def discover_tv_shows():
             
             current_tmdb_page += 1
 
-        final_results = final_results[:target_count]
+        raw_target_count = target_count * max_pages_to_scan if hide_in_library else target_count
+        final_results = final_results[:raw_target_count]
         
         if max_pages_to_scan > 1:
             adjusted_total_pages = total_pages_from_tmdb // max_pages_to_scan
@@ -433,7 +458,10 @@ def discover_tv_shows():
             "total_results": len(final_results) 
         }
         
-        processed_data = _filter_and_enrich_results(result_wrapper, current_user_id, 'Series')
+        processed_data = _filter_and_enrich_results(result_wrapper, current_user_id, 'Series', hide_in_library=hide_in_library)
+        if hide_in_library:
+            processed_data["results"] = processed_data.get("results", [])[:target_count]
+            processed_data["total_results"] = len(processed_data["results"])
         return jsonify(processed_data)
 
     except Exception as e:
@@ -465,10 +493,11 @@ def search_media_handler():
     """
     根据前端传来的搜索词，从 TMDb 搜索影视。
     """
-    data = request.json
+    data = request.json or {}
     query = data.get('query')
     media_type = data.get('media_type', 'movie')
     page = data.get('page', 1)
+    hide_in_library = _parse_bool(data.get('hide_in_library'))
 
     if not query:
         return jsonify({"status": "error", "message": "搜索词不能为空"}), 400
@@ -483,7 +512,7 @@ def search_media_handler():
         # ★★★ 核心修改 4: 第三次调用辅助函数 ★★★
         tmdb_data = tmdb.search_media_for_discover(query=query, api_key=api_key, item_type=media_type, page=page)
         db_item_type = 'Movie' if media_type == 'movie' else 'Series'
-        processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, db_item_type)
+        processed_data = _filter_and_enrich_results(tmdb_data, current_user_id, db_item_type, hide_in_library=hide_in_library)
         return jsonify(processed_data)
 
     except Exception as e:
