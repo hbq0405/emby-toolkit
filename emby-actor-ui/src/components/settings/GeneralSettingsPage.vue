@@ -1926,7 +1926,7 @@
         <n-space justify="end">
           <n-button @click="showProModal = false">取消</n-button>
           <n-button type="warning" @click="handleActivatePro" :loading="isActivating" :disabled="!licenseKey">
-            {{ isTransferMode ? '确认换绑' : '验证并激活' }}
+            {{ proActionButtonText }}
           </n-button>
         </n-space>
       </template>
@@ -2243,6 +2243,11 @@ const proPrice = computed(() => {
   if (proTier.value === 'year') return '68.00';
   if (proTier.value === 'lifetime') return '188.00';
   return '0.00';
+});
+
+const proActionButtonText = computed(() => {
+  if (isTransferMode.value) return '换绑';
+  return configModel.value?.is_pro_active ? '续期' : '激活';
 });
 
 const handleActivatePro = async () => {
