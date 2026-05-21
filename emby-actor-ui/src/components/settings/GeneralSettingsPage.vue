@@ -1890,7 +1890,7 @@
               请使用微信扫码支付 <b style="color: #d03050; font-size: 18px;">￥{{ proPrice }}</b>
             </div>
             <div style="margin-top: 8px; font-size: 13px; color: #666;">
-              支付成功后，请截图发送给 TG: <a href="https://t.me/hbq0405" target="_blank" style="color: var(--n-primary-color); font-weight: bold;">@https://t.me/hbq0405</a> 索取激活码。
+              支付成功后，请截图有交易单号的支付详情页发送给 TG机器人: <a href="https://t.me/metkd_bot" target="_blank" style="color: var(--n-primary-color); font-weight: bold;">@ETK大管家</a> 领取激活码。
             </div>
           </div>
         </template>
