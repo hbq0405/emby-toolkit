@@ -192,8 +192,8 @@
                           style="margin-top: 24px;"
                         >
                           <!-- ★ 修改：根据类型显示不同图标和文字 -->
-                          <template #icon><n-icon :component="currentRecommendation.media_type === 'tv' ? ListIcon : HeartOutline" /></template>
-                          {{ currentRecommendation.media_type === 'tv' ? '选择季' : '想看这个' }}
+                          <template #icon><n-icon :component="isMpConfigured && currentRecommendation.media_type === 'tv' ? ListIcon : HeartOutline" /></template>
+                          {{ isMpConfigured && currentRecommendation.media_type === 'tv' ? '选择季' : '想看这个' }}
                         </n-button>
                     </div>
                 </div>
@@ -265,17 +265,17 @@
                     </n-icon>
                   </div>
 
-                  <!-- ★ 常规订阅/想看按钮 (仅配置了MP时可见) -->
+                  <!-- ★ 常规订阅/想看按钮：即使未配置 MP，也允许标记 WANTED -->
                   <div 
-                    v-if="isMpConfigured && (media.media_type === 'tv' || (!media.in_library && ((isPrivilegedUser && media.subscription_status === 'REQUESTED') || (!media.subscription_status || media.subscription_status === 'NONE'))))"
+                    v-if="canShowSubscribeAction(media)"
                     class="action-btn"
                     @click.stop="handleSubscribe(media)"
-                    :title="media.media_type === 'tv' ? '选择季' : (isPrivilegedUser ? '订阅' : '想看')"
+                    :title="!isMpConfigured ? '标记想看' : (media.media_type === 'tv' ? '选择季' : (isPrivilegedUser ? '订阅' : '想看'))"
                   >
                     <n-spin :show="subscribingId === media.id" size="small">
                       <n-icon size="18" color="#fff" class="shadow-icon">
-                        <ListIcon v-if="media.media_type === 'tv'" />
-                        <LightningIcon v-else-if="isPrivilegedUser && media.subscription_status === 'REQUESTED'" color="#f0a020" />
+                        <ListIcon v-if="isMpConfigured && media.media_type === 'tv'" />
+                        <LightningIcon v-else-if="isMpConfigured && isPrivilegedUser && media.subscription_status === 'REQUESTED'" color="#f0a020" />
                         <HeartOutline v-else />
                       </n-icon>
                     </n-spin>
@@ -426,6 +426,36 @@ const totalPages = ref(0);
 const isLoadingMore = ref(false);
 const searchQuery = ref('');
 const isSearchMode = computed(() => searchQuery.value.trim() !== '');
+const canShowSubscribeAction = (media) => {
+  if (!media) return false;
+
+  const status = media.subscription_status || 'NONE';
+  const isTv = media.media_type === 'tv' || mediaType.value === 'tv';
+
+  // 已明确处于这些终态/队列态时，不再显示按钮。
+  if (['SUBSCRIBED', 'WANTED', 'PAUSED', 'PENDING_RELEASE', 'IGNORED'].includes(status)) {
+    return false;
+  }
+
+  // MoviePilot 已配置时，剧集仍走原来的选季流程；未配置时只允许未入库项目直接标记 WANTED。
+  if (isTv) {
+    return isMpConfigured.value || (!media.in_library && (status === 'NONE' || (isPrivilegedUser.value && status === 'REQUESTED')));
+  }
+
+  return !media.in_library && ((isPrivilegedUser.value && status === 'REQUESTED') || status === 'NONE');
+};
+
+const normalizePortalStatus = (rawStatus, fallbackStatus = 'WANTED') => {
+  if (!rawStatus) return fallbackStatus;
+  if (rawStatus === 'approved') return isMpConfigured.value ? 'SUBSCRIBED' : 'WANTED';
+  if (rawStatus === 'pending') return 'REQUESTED';
+
+  const upperStatus = String(rawStatus).toUpperCase();
+  if (upperStatus === 'APPROVED') return isMpConfigured.value ? 'SUBSCRIBED' : 'WANTED';
+  if (upperStatus === 'PENDING') return 'REQUESTED';
+  return upperStatus;
+};
+
 const sentinel = ref(null);
 const isMobile = ref(false);
 const checkMobile = () => {
@@ -664,8 +694,13 @@ const openHDHiveResourceModal = async (media, seasonNumber = null) => {
   showHDHiveResourceModal.value = true;
 };
 
-// ★ 修改：直接提交 MP，不再弹窗
+// MoviePilot 已配置：电影直接提交、剧集弹出选季；未配置：直接标记 WANTED。
 const handleSubscribe = async (media) => {
+  if (!isMpConfigured.value) {
+    await submitWantedOnly(media);
+    return;
+  }
+
   if (media.media_type === 'tv' || mediaType.value === 'tv') {
     currentSeriesForSearch.value = media;
     showSeasonModal.value = true;
@@ -687,8 +722,35 @@ const handleSubscribe = async (media) => {
     return;
   }
 
-  // 如果是电影，直接提交到 MP
   await submitMovieToMP(media);
+};
+
+const submitWantedOnly = async (media) => {
+  if (subscribingId.value === media.id) return;
+  const originalStatus = media.subscription_status || 'NONE';
+  subscribingId.value = media.id;
+  updateMediaStatus(media.id, 'WANTED');
+
+  try {
+    const portalResponse = await axios.post('/api/portal/subscribe', {
+      tmdb_id: media.id,
+      item_type: (media.media_type === 'tv' || mediaType.value === 'tv') ? 'Series' : 'Movie',
+      item_name: media.title || media.name,
+    });
+    message.success(portalResponse.data.message || '已标记为想看');
+    updateMediaStatus(media.id, normalizePortalStatus(portalResponse.data.status, 'WANTED'));
+
+    if (currentRecommendation.value && currentRecommendation.value.id === media.id) {
+      const poolIndex = recommendationPool.value.findIndex(item => item.id === media.id);
+      if (poolIndex !== -1) recommendationPool.value.splice(poolIndex, 1);
+      pickRandomRecommendation();
+    }
+  } catch (error) {
+    updateMediaStatus(media.id, originalStatus);
+    message.error(error.response?.data?.message || '标记想看失败');
+  } finally {
+    subscribingId.value = null;
+  }
 };
 
 // 电影：提交到 MP 的实际逻辑 (从原 handleSubscribe 拆分出来)
@@ -706,12 +768,7 @@ const submitMovieToMP = async (media) => {
       item_name: media.title || media.name,
     });
     message.success(portalResponse.data.message);
-    let finalStatus = portalResponse.data.status;
-    if (!isPrivilegedUser.value) finalStatus = 'REQUESTED';
-    else if (!finalStatus || finalStatus === 'NONE') finalStatus = 'WANTED';
-    
-    if (isPrivilegedUser.value && finalStatus === 'approved') updateMediaStatus(media.id, 'SUBSCRIBED');
-    else updateMediaStatus(media.id, finalStatus);
+    updateMediaStatus(media.id, normalizePortalStatus(portalResponse.data.status, optimisticStatus));
 
     if (currentRecommendation.value && currentRecommendation.value.id === media.id) {
       const poolIndex = recommendationPool.value.findIndex(item => item.id === media.id);
@@ -739,7 +796,7 @@ const submitSeasonSubscription = async (season) => {
     });
     message.success(portalResponse.data.message);
     // 更新模态框内该季的状态
-    season.subscription_status = portalResponse.data.status === 'approved' ? 'SUBSCRIBED' : 'REQUESTED';
+    season.subscription_status = normalizePortalStatus(portalResponse.data.status, 'WANTED');
   } catch (error) {
     message.error(error.response?.data?.message || '订阅失败');
   } finally {
@@ -765,13 +822,15 @@ const submitAllSeasonsSubscription = async () => {
     });
     message.success("一键订阅已提交");
     
+    const finalStatus = normalizePortalStatus(portalResponse.data.status, 'WANTED');
+
     // 更新模态框内状态
     missingSeasons.forEach(s => {
-      s.subscription_status = portalResponse.data.status === 'approved' ? 'SUBSCRIBED' : 'REQUESTED';
+      s.subscription_status = finalStatus;
     });
     
     // 更新外部卡片状态
-    updateMediaStatus(currentSeriesForSearch.value.id, portalResponse.data.status === 'approved' ? 'SUBSCRIBED' : 'REQUESTED');
+    updateMediaStatus(currentSeriesForSearch.value.id, finalStatus);
     
     setTimeout(() => { showSeasonModal.value = false; }, 1000);
   } catch (error) {

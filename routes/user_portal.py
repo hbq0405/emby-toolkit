@@ -49,6 +49,8 @@ def request_subscription():
 
     config = config_manager.APP_CONFIG
     tmdb_api_key = config.get(constants.CONFIG_OPTION_TMDB_API_KEY)
+    mp_config = settings_db.get_setting('mp_config') or {}
+    mp_configured = bool(mp_config.get('moviepilot_url'))
     details = None
     
     db_tmdb_id = tmdb_id # 默认用于数据库操作的 ID
@@ -122,8 +124,13 @@ def request_subscription():
             media_info_list=[parent_media_info]
         )
 
-    if is_vip or is_emby_admin:
-        log_user_type = "管理员" if is_emby_admin else "VIP 用户"
+    if is_vip or is_emby_admin or not mp_configured:
+        if is_emby_admin:
+            log_user_type = "管理员"
+        elif is_vip:
+            log_user_type = "VIP 用户"
+        else:
+            log_user_type = "普通用户-无MP直标"
         
         # 发行日期检查
         is_released = True
@@ -153,8 +160,12 @@ def request_subscription():
                 source={"type": "user_request", "user_id": emby_user_id, "user_type": log_user_type},
                 media_info_list=[media_info]
             )
-            message = "订阅请求已提交，系统将自动处理！"
-            new_status_for_frontend = 'approved'
+            if mp_configured:
+                message = "订阅请求已提交，系统将自动处理！"
+                new_status_for_frontend = 'approved'
+            else:
+                message = "已标记为想看/待订阅。MoviePilot 未配置，已跳过自动订阅。"
+                new_status_for_frontend = 'WANTED'
 
     else:
         existing_status = request_db.get_global_request_status_by_tmdb_id(db_tmdb_id)
@@ -185,7 +196,8 @@ def request_subscription():
             logger.error(f"  ➜ 发送管理员审核通知时出错: {e}", exc_info=True)
 
     # 1. 【核心】后端直接触发“订阅直通车”
-    if new_status_for_frontend == 'approved':
+    # MoviePilot 未配置时只落库 WANTED，不触发 MP 订阅任务。
+    if new_status_for_frontend == 'approved' and mp_configured:
         logger.info(f"  ➜ [直通车] 为管理员/VIP '{emby_username}' 立即触发订阅任务: {media_info['title']}")
         
         # ★★★ 核心修复：强制传递父剧集名称给 MP ★★★
@@ -206,13 +218,13 @@ def request_subscription():
         )
 
     # 2. 推荐池处理
-    if new_status_for_frontend in ['approved', 'pending'] and item_type == 'Movie':
+    if new_status_for_frontend in ['approved', 'pending', 'WANTED'] and item_type == 'Movie':
         settings_db.remove_item_from_recommendation_pool(db_tmdb_id)
         threading.Thread(target=check_and_replenish_pool).start()
 
     try:
         user_chat_id = user_db.get_user_telegram_chat_id(emby_user_id)
-        if user_chat_id and not (is_vip or is_emby_admin):
+        if user_chat_id and not (is_vip or is_emby_admin) and new_status_for_frontend == 'pending':
             message_text = f"🔔 *您的订阅请求已提交*\n\n您想看的 *{media_info['title']}* 已进入待审队列，管理员处理后会通知您。"
             send_telegram_message(user_chat_id, message_text)
     except Exception as e:
