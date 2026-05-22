@@ -1042,7 +1042,7 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
             # 1. 查询影巢资源：失败不直接中断，继续查频道。
             try:
                 from handler.hdhive_client import HDHiveClient
-                from handler.hdhive import filter_hdhive_resources
+                from tasks.hdhive import filter_hdhive_resources
 
                 client = HDHiveClient()
                 if client.ping():
@@ -1230,7 +1230,7 @@ def _tg_start_hdhive_transfer(chat_id: str, selection_number: int):
         try:
             _tg_send_plain(chat_id, f"⏳ 已选择影巢资源：{_tg_resource_title(resource)}\n正在解锁并转存到 115，请稍后查看通知/日志。", disable_notification=True)
 
-            from handler.hdhive import task_download_from_hdhive
+            from tasks.hdhive import task_download_from_hdhive
 
             ok = task_download_from_hdhive(
                 api_key=None,
