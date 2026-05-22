@@ -603,7 +603,11 @@ _tg_polling_active = False
 _tg_resource_search_sessions = {}
 _tg_resource_search_lock = threading.Lock()
 _TG_RESOURCE_SEARCH_TTL = 15 * 60
-_TG_RESOURCE_SEARCH_LIMIT = 10
+# TMDb 候选仍保持 10 个；资源结果单页 10 个，但最多收集 50 个用于翻页。
+_TG_TMDB_SEARCH_LIMIT = 10
+_TG_RESOURCE_PAGE_SIZE = 10
+_TG_RESOURCE_COLLECT_LIMIT = 50
+_TG_RESOURCE_SEARCH_LIMIT = _TG_TMDB_SEARCH_LIMIT  # 兼容旧变量名
 
 
 def _tg_send_plain(chat_id: str, text: str, disable_notification: bool = False, reply_markup: dict = None):
@@ -695,13 +699,57 @@ def _tg_clear_session(chat_id: str):
 def _tg_build_number_keyboard(prefix: str, count: int) -> dict:
     keyboard = []
     row = []
-    for idx in range(1, min(count, _TG_RESOURCE_SEARCH_LIMIT) + 1):
+    for idx in range(1, min(count, _TG_TMDB_SEARCH_LIMIT) + 1):
         row.append({"text": f"{idx:02d}", "callback_data": f"{prefix}:{idx}"})
         if len(row) == 5:
             keyboard.append(row)
             row = []
     if row:
         keyboard.append(row)
+    keyboard.append([{"text": "取消", "callback_data": "tg_search_cancel"}])
+    return {"inline_keyboard": keyboard}
+
+
+def _tg_clamp_page(page: int, total_count: int) -> int:
+    try:
+        page = int(page)
+    except Exception:
+        page = 0
+    page_count = max(1, (max(0, int(total_count or 0)) + _TG_RESOURCE_PAGE_SIZE - 1) // _TG_RESOURCE_PAGE_SIZE)
+    return max(0, min(page, page_count - 1))
+
+
+def _tg_slice_resource_page(resources: list, page: int) -> list:
+    page = _tg_clamp_page(page, len(resources or []))
+    start = page * _TG_RESOURCE_PAGE_SIZE
+    end = start + _TG_RESOURCE_PAGE_SIZE
+    return list(resources or [])[start:end]
+
+
+def _tg_build_resource_page_keyboard(total_count: int, page: int) -> dict:
+    total_count = int(total_count or 0)
+    page = _tg_clamp_page(page, total_count)
+    page_count = max(1, (total_count + _TG_RESOURCE_PAGE_SIZE - 1) // _TG_RESOURCE_PAGE_SIZE)
+    start = page * _TG_RESOURCE_PAGE_SIZE
+    end = min(start + _TG_RESOURCE_PAGE_SIZE, total_count)
+
+    keyboard = []
+    row = []
+    for idx in range(start + 1, end + 1):
+        row.append({"text": f"{idx:02d}", "callback_data": f"tg_hdhive:{idx}"})
+        if len(row) == 5:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    nav_row = []
+    if page > 0:
+        nav_row.append({"text": "⬅️ 上一页", "callback_data": f"tg_res_page:{page - 1}"})
+    nav_row.append({"text": f"{page + 1}/{page_count}", "callback_data": "tg_res_page:noop"})
+    if page < page_count - 1:
+        nav_row.append({"text": "下一页 ➡️", "callback_data": f"tg_res_page:{page + 1}"})
+    keyboard.append(nav_row)
     keyboard.append([{"text": "取消", "callback_data": "tg_search_cancel"}])
     return {"inline_keyboard": keyboard}
 
@@ -897,11 +945,28 @@ def _tg_resource_line(index: int, resource: dict) -> str:
 
     return "\n".join(lines)
 
-def _tg_format_hdhive_resources(media: dict, resources: list, raw_count: int, filtered_count: int, used_filtered: bool, channel_count: int = 0, notes: list = None) -> str:
+def _tg_format_hdhive_resources(
+    media: dict,
+    resources: list,
+    raw_count: int,
+    filtered_count: int,
+    used_filtered: bool,
+    channel_count: int = 0,
+    notes: list = None,
+    page: int = 0,
+    total_count: int = None,
+) -> str:
     media_type = media.get("media_type") or "movie"
     title = media.get("title") or "未知标题"
     year = media.get("year") or "未知年份"
     tmdb_id = media.get("tmdb_id") or "-"
+
+    resources = resources or []
+    total_count = len(resources) if total_count is None else int(total_count or 0)
+    page = _tg_clamp_page(page, total_count)
+    page_count = max(1, (total_count + _TG_RESOURCE_PAGE_SIZE - 1) // _TG_RESOURCE_PAGE_SIZE)
+    show_start = page * _TG_RESOURCE_PAGE_SIZE + 1 if total_count else 0
+    show_end = min(page * _TG_RESOURCE_PAGE_SIZE + len(resources), total_count)
 
     hdhive_count = raw_count or 0
     channel_count = channel_count or 0
@@ -910,22 +975,31 @@ def _tg_format_hdhive_resources(media: dict, resources: list, raw_count: int, fi
         source_text += f" / 📡 频道 {channel_count} 条"
 
     if media_type == "tv":
-        count_text = f"🔎 {source_text}；剧集手动搜索不按季过滤，下面展示前 {len(resources)} 条。"
+        count_text = f"🔎 {source_text}；剧集手动搜索不按季过滤。"
     else:
-        count_text = f"🔎 {source_text}；下面展示前 {len(resources)} 条。"
+        count_text = f"🔎 {source_text}。"
+
+    if total_count > _TG_RESOURCE_PAGE_SIZE:
+        page_text = f"📄 共 {total_count} 条，当前第 {page + 1}/{page_count} 页，显示 {show_start}-{show_end}。"
+    else:
+        page_text = f"📄 共 {total_count} 条。"
 
     lines = [
         f"🔎 资源搜索 | {title} ({year})",
         "━━━━━━━━━━━━━━",
         f"🎭 类型：{_tg_media_type_label(media_type)}    🆔 TMDb：{tmdb_id}",
         count_text,
-        "↩️ 回复序号直接转存，或点击下方按钮。",
+        page_text,
+        "↩️ 回复当前页显示的编号直接转存，或点击下方按钮。",
+        "➡️ 输入 下一页 / 上一页 也可以翻页。",
         "🚫 输入 取消 结束本次搜索。",
         "",
     ]
-    for idx, item in enumerate(resources, 1):
-        lines.append(_tg_resource_line(idx, item))
-        if idx != len(resources):
+
+    base_index = page * _TG_RESOURCE_PAGE_SIZE
+    for offset, item in enumerate(resources, 1):
+        lines.append(_tg_resource_line(base_index + offset, item))
+        if offset != len(resources):
             lines.append("")
 
     if notes:
@@ -976,7 +1050,7 @@ def _tg_start_tmdb_search(chat_id: str, query: str):
                     continue
                 seen.add(key)
                 normalized_results.append(item)
-                if len(normalized_results) >= _TG_RESOURCE_SEARCH_LIMIT:
+                if len(normalized_results) >= _TG_TMDB_SEARCH_LIMIT:
                     break
 
             if not normalized_results:
@@ -1051,7 +1125,7 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
                     hdhive_raw_count = len(raw_resources)
 
                     if media_type == "tv":
-                        hdhive_resources = raw_resources[:_TG_RESOURCE_SEARCH_LIMIT]
+                        hdhive_resources = raw_resources[:_TG_RESOURCE_COLLECT_LIMIT]
                     else:
                         filtered_resources = filter_hdhive_resources(
                             raw_resources,
@@ -1061,7 +1135,7 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
                         )
                         hdhive_filtered_count = len(filtered_resources)
                         hdhive_used_filtered = bool(filtered_resources)
-                        hdhive_resources = (filtered_resources or raw_resources)[:_TG_RESOURCE_SEARCH_LIMIT]
+                        hdhive_resources = (filtered_resources or raw_resources)[:_TG_RESOURCE_COLLECT_LIMIT]
 
                     for item in hdhive_resources:
                         item["_tg_source"] = "hdhive"
@@ -1088,7 +1162,7 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
                     media_type=media_type,
                     tmdb_id=tmdb_id,
                     year=year,
-                    limit=_TG_RESOURCE_SEARCH_LIMIT,
+                    limit=_TG_RESOURCE_COLLECT_LIMIT,
                     extra_queries=extra_queries,
                     timeout=30,
                 ) or {}
@@ -1112,18 +1186,20 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
                 logger.error(f"  ➜ [TG资源搜索] 频道资源查询失败: {e}", exc_info=True)
                 notes.append(f"频道搜索失败：{e}")
 
-            # 3. 合并展示：影巢优先，频道补充。若影巢太多，频道仍留展示空间，避免看不到频道结果。
-            shown_resources = []
+            # 3. 合并展示：影巢优先，但第一页固定给频道结果留几个位置；后续全部靠翻页查看。
+            all_resources = []
             if channel_resources:
-                hdhive_quota = min(len(hdhive_resources), max(0, _TG_RESOURCE_SEARCH_LIMIT - min(len(channel_resources), 4)))
-                shown_resources.extend(hdhive_resources[:hdhive_quota])
-                shown_resources.extend(channel_resources[:_TG_RESOURCE_SEARCH_LIMIT - len(shown_resources)])
-                if len(shown_resources) < _TG_RESOURCE_SEARCH_LIMIT:
-                    shown_resources.extend(hdhive_resources[hdhive_quota:_TG_RESOURCE_SEARCH_LIMIT - len(shown_resources) + hdhive_quota])
+                first_page_channel_slots = min(len(channel_resources), 4)
+                first_page_hdhive_slots = max(0, _TG_RESOURCE_PAGE_SIZE - first_page_channel_slots)
+                hdhive_quota = min(len(hdhive_resources), first_page_hdhive_slots)
+                all_resources.extend(hdhive_resources[:hdhive_quota])
+                all_resources.extend(channel_resources)
+                all_resources.extend(hdhive_resources[hdhive_quota:])
             else:
-                shown_resources = hdhive_resources[:_TG_RESOURCE_SEARCH_LIMIT]
+                all_resources = list(hdhive_resources)
 
-            if not shown_resources:
+            all_resources = all_resources[:_TG_RESOURCE_COLLECT_LIMIT]
+            if not all_resources:
                 msg = f"❌ 没有找到可处理资源：{title} ({year})"
                 if notes:
                     msg += "\n" + "\n".join(f"- {n}" for n in notes)
@@ -1131,29 +1207,19 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
                 return
 
             _tg_set_session(chat_id, {
-                "stage": "hdhive_resources",  # 兼容旧的序号/按钮处理，实际可包含影巢+频道资源。
+                "stage": "hdhive_resources",  # 实际可包含影巢+频道资源。
                 "media": media,
-                "resources": shown_resources,
+                "all_resources": all_resources,
+                "resources": _tg_slice_resource_page(all_resources, 0),
+                "page": 0,
                 "raw_count": hdhive_raw_count,
                 "filtered_count": hdhive_filtered_count,
                 "used_filtered": hdhive_used_filtered,
                 "channel_count": len(channel_resources),
+                "notes": notes,
             })
 
-            reply_markup = _tg_build_number_keyboard("tg_hdhive", len(shown_resources))
-            _tg_send_plain(
-                chat_id,
-                _tg_format_hdhive_resources(
-                    media,
-                    shown_resources,
-                    hdhive_raw_count,
-                    hdhive_filtered_count,
-                    hdhive_used_filtered,
-                    channel_count=len(channel_resources),
-                    notes=notes,
-                ),
-                reply_markup=reply_markup,
-            )
+            _tg_show_resource_page(chat_id, 0)
 
         except Exception as e:
             logger.error(f"  ➜ [TG资源搜索] 资源查询失败: {e}", exc_info=True)
@@ -1161,15 +1227,51 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
 
     threading.Thread(target=run, name="TG_Resource_Search_All", daemon=True).start()
 
+def _tg_show_resource_page(chat_id: str, page: int):
+    """根据当前资源搜索会话发送指定页。每页 10 条，编号使用全局序号。"""
+    session = _tg_get_session(chat_id)
+    if not session or session.get("stage") != "hdhive_resources":
+        _tg_send_plain(chat_id, "❌ 当前没有可翻页的资源搜索结果，请重新输入片名搜索。")
+        return
+
+    all_resources = session.get("all_resources") or session.get("resources") or []
+    if not all_resources:
+        _tg_send_plain(chat_id, "❌ 当前资源列表为空，请重新输入片名搜索。")
+        return
+
+    page = _tg_clamp_page(page, len(all_resources))
+    page_resources = _tg_slice_resource_page(all_resources, page)
+    session["page"] = page
+    session["resources"] = page_resources
+    _tg_set_session(chat_id, session)
+
+    _tg_send_plain(
+        chat_id,
+        _tg_format_hdhive_resources(
+            session.get("media") or {},
+            page_resources,
+            session.get("raw_count") or 0,
+            session.get("filtered_count") or 0,
+            bool(session.get("used_filtered")),
+            channel_count=session.get("channel_count") or 0,
+            notes=session.get("notes") or [],
+            page=page,
+            total_count=len(all_resources),
+        ),
+        reply_markup=_tg_build_resource_page_keyboard(len(all_resources), page),
+    )
+
+
 def _tg_start_hdhive_transfer(chat_id: str, selection_number: int):
     session = _tg_get_session(chat_id)
     if not session or session.get("stage") != "hdhive_resources":
         _tg_send_plain(chat_id, "❌ 当前没有可选择的资源，请重新输入片名搜索。")
         return
 
-    resources = session.get("resources") or []
+    # 翻页后按钮和正文都使用“全局编号”，所以这里从 all_resources 里取。
+    resources = session.get("all_resources") or session.get("resources") or []
     if selection_number < 1 or selection_number > len(resources):
-        _tg_send_plain(chat_id, f"❌ 序号无效，请回复 1-{len(resources)}。")
+        _tg_send_plain(chat_id, f"❌ 序号无效，请回复 1-{len(resources)}，或点击翻页按钮查看更多。")
         return
 
     resource = resources[selection_number - 1]
@@ -1260,6 +1362,16 @@ def _tg_try_handle_resource_session_input(chat_id: str, text: str) -> bool:
             _tg_send_plain(chat_id, "✅ 已取消本次资源搜索。")
             return True
         return False
+
+    session = _tg_get_session(chat_id)
+    if session and session.get("stage") == "hdhive_resources":
+        lower = stripped.lower()
+        if lower in {"下一页", "下页", "next", "n", ">", "➡️"}:
+            _tg_show_resource_page(chat_id, int(session.get("page") or 0) + 1)
+            return True
+        if lower in {"上一页", "上页", "prev", "previous", "p", "<", "⬅️"}:
+            _tg_show_resource_page(chat_id, int(session.get("page") or 0) - 1)
+            return True
 
     number, season = _tg_parse_selection_text(stripped)
     if number is None:
@@ -1362,6 +1474,17 @@ def _handle_callback_query(callback_query: dict):
         except Exception as e:
             logger.error(f"  ➜ [TG资源搜索] 处理 TMDb 选择按钮失败: {e}", exc_info=True)
             _tg_send_plain(chat_id, "❌ 选择失败，请重新输入片名搜索。")
+        return
+
+    if data.startswith('tg_res_page:'):
+        page_value = data.split(':', 1)[1]
+        if page_value == 'noop':
+            return
+        try:
+            _tg_show_resource_page(chat_id, int(page_value))
+        except Exception as e:
+            logger.error(f"  ➜ [TG资源搜索] 处理资源翻页按钮失败: {e}", exc_info=True)
+            _tg_send_plain(chat_id, "❌ 翻页失败，请重新输入片名搜索。")
         return
 
     if data.startswith('tg_hdhive:'):
