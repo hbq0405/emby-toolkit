@@ -720,6 +720,41 @@ def search_media(query: str, api_key: str, item_type: str = 'movie', year: Optio
 
     return data.get("results") if data else None
 
+
+# --- 多类型搜索媒体（Telegram 交互搜索使用） ---
+def search_multi_media(query: str, api_key: str, page: int = 1) -> Optional[Dict[str, Any]]:
+    """
+    通过 TMDb /search/multi 搜索电影和电视剧，返回完整响应对象。
+    仅保留 movie / tv 两类结果，过滤 person 等不适合转存的结果。
+    """
+    if not query or not api_key:
+        return None
+
+    endpoint = "/search/multi"
+    params = {
+        "query": query,
+        "include_adult": "true",
+        "language": DEFAULT_LANGUAGE,
+        "page": page,
+    }
+
+    logger.debug(f"  ➜ TMDb: 正在多类型搜索: '{query}' at page {page}")
+    data = _tmdb_request(endpoint, api_key, params)
+
+    if data and not data.get("results") and params["language"].startswith("zh"):
+        logger.debug(f"  ➜ TMDb: 中文多类型搜索 '{query}' 未找到结果，尝试英文再次搜索...")
+        params["language"] = "en-US"
+        data = _tmdb_request(endpoint, api_key, params)
+
+    if data:
+        results = data.get("results") or []
+        data["results"] = [
+            item for item in results
+            if item.get("media_type") in {"movie", "tv"}
+        ]
+
+    return data
+
 # --- 搜索媒体 (为探索页面定制) ---
 def search_media_for_discover(query: str, api_key: str, item_type: str = 'movie', year: Optional[str] = None, page: int = 1) -> Optional[Dict[str, Any]]:
     """
