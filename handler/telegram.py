@@ -649,7 +649,9 @@ def _tg_normalize_digits(text: str) -> str:
 
 
 def _tg_parse_selection_text(text: str):
-    """解析“1”“第1个”“2 s3”“2 第3季”这类回复，返回 (序号, 季号)。"""
+    """解析“1”“第1个”“2 s3”“2 第3季”这类回复，返回 (序号, 季号)。
+    注意：TG 手动影巢搜索不再按季过滤，季号仅兼容旧输入。
+    """
     normalized = _tg_normalize_digits(text).strip()
     match = re.match(
         r"^(?:第\s*)?(\d{1,2})(?:\s*(?:个|项|号))?(?:\s*(?:s|S|第)?\s*(\d{1,2})\s*(?:季)?)?$",
@@ -694,7 +696,7 @@ def _tg_build_number_keyboard(prefix: str, count: int) -> dict:
     keyboard = []
     row = []
     for idx in range(1, min(count, _TG_RESOURCE_SEARCH_LIMIT) + 1):
-        row.append({"text": str(idx), "callback_data": f"{prefix}:{idx}"})
+        row.append({"text": f"{idx:02d}", "callback_data": f"{prefix}:{idx}"})
         if len(row) == 5:
             keyboard.append(row)
             row = []
@@ -729,10 +731,11 @@ def _tg_tmdb_result_line(index: int, item: dict) -> str:
 
 def _tg_format_tmdb_results(query: str, results: list) -> str:
     lines = [
-        f"🔎 TMDb 搜索：{query}",
-        "回复序号选择影片/剧集，或直接点击下方按钮。",
-        "剧集默认查询第 1 季；也可以回复类似：2 s3 选择第 2 个结果并查询第 3 季。",
-        "输入 取消 可结束本次搜索。",
+        f"🔎 TMDb 搜索 | {query}",
+        "━━━━━━━━━━━━━━",
+        "↩️ 回复序号选择影片/剧集，或点击下方按钮。",
+        "📺 剧集资源将全量返回，不按季过滤；需要哪一季请在资源备注里肉眼挑选。",
+        "🚫 输入 取消 可结束本次搜索。",
         "",
     ]
     for idx, item in enumerate(results, 1):
@@ -746,11 +749,30 @@ def _tg_truncate(text: str, limit: int = 90) -> str:
 
 
 def _tg_resource_title(resource: dict) -> str:
-    for key in ("title", "name", "remark", "resource_name", "share_name", "filename", "file_name", "summary", "slug"):
+    # remark 往往是质量说明，适合作为独立备注展示，不优先拿来当标题。
+    for key in ("title", "name", "resource_name", "share_name", "filename", "file_name", "slug", "remark", "summary"):
         value = resource.get(key)
         if value:
-            return _tg_truncate(value)
+            return _tg_truncate(value, 80)
     return "未知资源"
+
+
+def _tg_flatten_resource_value(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple, set)):
+        return " / ".join(_tg_flatten_resource_value(v) for v in value if v)
+    if isinstance(value, dict):
+        return " / ".join(_tg_flatten_resource_value(v) for v in value.values() if v)
+    return re.sub(r"\s+", " ", str(value)).strip()
+
+
+def _tg_resource_remark(resource: dict, limit: int = 160) -> str:
+    for key in ("remark", "description", "summary", "subtitle", "subtitles"):
+        value = _tg_flatten_resource_value(resource.get(key))
+        if value:
+            return _tg_truncate(value, limit=limit)
+    return ""
 
 
 def _tg_resource_size_gb(resource: dict):
@@ -785,25 +807,88 @@ def _tg_resource_resolution(resource: dict) -> str:
     values = resource.get("video_resolution") or resource.get("resolution") or ""
     if isinstance(values, list):
         values = "/".join(str(v) for v in values if v)
-    return str(values or "未知")
+    text = str(values or "未知").strip()
+    return text.upper() if text else "未知"
+
+
+def _tg_resource_pan_text(resource: dict) -> str:
+    pan_type = str(resource.get("pan_type") or "115").upper()
+    return f"🟡 {pan_type}"
+
+
+def _tg_resource_points_text(resource: dict) -> str:
+    points = resource.get("unlock_points")
+    already_owned = bool(resource.get("already_owned"))
+    if already_owned:
+        return "✅ 已拥有"
+    if points in (None, 0, "0", "", "free", "FREE"):
+        return "🆓 免费"
+    return f"💎 {points}积分"
+
+
+def _tg_resource_size_text(resource: dict) -> str:
+    size_gb = _tg_resource_size_gb(resource)
+    if size_gb is None:
+        return "💾 未知大小"
+    if size_gb >= 100:
+        return f"💾 {size_gb:.0f}GB"
+    return f"💾 {size_gb:.1f}GB"
+
+
+def _tg_resource_quality_text(resource: dict, limit: int = 96) -> str:
+    # 尽量提取一行“版本/质量/来源”摘要，和备注分开展示。
+    preferred = []
+    for key in ("quality", "source", "video_codec", "audio", "format", "category", "edition"):
+        value = _tg_flatten_resource_value(resource.get(key))
+        if value:
+            preferred.append(value)
+
+    if preferred:
+        return _tg_truncate(" / ".join(dict.fromkeys(preferred)), limit=limit)
+
+    # 字段不全时，用名称字段兜底，但避免把 slug 当质量说明。
+    for key in ("title", "name", "resource_name", "share_name", "filename", "file_name"):
+        value = _tg_flatten_resource_value(resource.get(key))
+        if value:
+            return _tg_truncate(value, limit=limit)
+    return ""
+
+
+def _tg_is_similar_text(a: str, b: str) -> bool:
+    a_norm = re.sub(r"\s+", "", str(a or "")).lower()
+    b_norm = re.sub(r"\s+", "", str(b or "")).lower()
+    if not a_norm or not b_norm:
+        return False
+    return a_norm == b_norm or a_norm in b_norm or b_norm in a_norm
 
 
 def _tg_resource_line(index: int, resource: dict) -> str:
     title = _tg_resource_title(resource)
-    pan_type = str(resource.get("pan_type") or "115").upper()
-    points = resource.get("unlock_points")
-    already_owned = bool(resource.get("already_owned"))
-    points_text = "已拥有/免费" if already_owned or points in (None, 0, "0") else f"{points}积分"
-    size_gb = _tg_resource_size_gb(resource)
-    size_text = f"{size_gb:.1f}GB" if size_gb is not None else "未知大小"
     res_text = _tg_resource_resolution(resource)
     extra = []
     if resource.get("_completion_label"):
         extra.append(str(resource.get("_completion_label")))
     if resource.get("_season_match_label"):
         extra.append(str(resource.get("_season_match_label")))
-    extra_text = f" / {' / '.join(extra)}" if extra else ""
-    return f"{index}. {title}\n   {pan_type} / {points_text} / {size_text} / {res_text}{extra_text}"
+    extra_text = f"  {' / '.join(extra)}" if extra else ""
+
+    lines = [
+        f"{index:02d}. {_tg_resource_pan_text(resource)}  {_tg_resource_points_text(resource)}  {_tg_resource_size_text(resource)}  🎞 {res_text}{extra_text}",
+    ]
+
+    quality = _tg_resource_quality_text(resource)
+    if quality:
+        lines.append(f"    📦 {quality}")
+
+    remark = _tg_resource_remark(resource)
+    if remark and not _tg_is_similar_text(remark, title) and not _tg_is_similar_text(remark, quality):
+        lines.append(f"    📝 {remark}")
+
+    # 保留一个可识别标题，避免某些资源只有 remark 时看不出是哪条。
+    if title and not _tg_is_similar_text(title, quality) and not _tg_is_similar_text(title, remark):
+        lines.append(f"    🎬 {title}")
+
+    return "\n".join(lines)
 
 
 def _tg_format_hdhive_resources(media: dict, resources: list, raw_count: int, filtered_count: int, used_filtered: bool) -> str:
@@ -811,19 +896,29 @@ def _tg_format_hdhive_resources(media: dict, resources: list, raw_count: int, fi
     title = media.get("title") or "未知标题"
     year = media.get("year") or "未知年份"
     tmdb_id = media.get("tmdb_id") or "-"
-    season = media.get("target_season")
-    season_text = f" / S{int(season):02d}" if media_type == "tv" and season else ""
+
+    if media_type == "tv":
+        count_text = f"🔎 接口返回 {raw_count} 条，手动搜索不按季过滤，下面全量展示前 {len(resources)} 条。"
+    else:
+        count_text = (
+            f"🔎 接口返回 {raw_count} 条，筛选后 {filtered_count} 条，展示前 {len(resources)} 条。"
+            if used_filtered
+            else f"🔎 接口返回 {raw_count} 条，当前筛选条件无命中，展示原始可处理资源前 {len(resources)} 条。"
+        )
 
     lines = [
-        f"🪺 影巢资源：{title} ({year}){season_text}",
-        f"类别：{_tg_media_type_label(media_type)} / TMDb {tmdb_id}",
-        f"接口返回 {raw_count} 条，筛选后 {filtered_count} 条。" if used_filtered else f"接口返回 {raw_count} 条，当前筛选条件无命中，下面展示原始可处理资源。",
-        "回复序号选择资源并开始转存，或点击下方按钮。",
-        "输入 取消 可结束本次搜索。",
+        f"🪺 影巢资源 | {title} ({year})",
+        "━━━━━━━━━━━━━━",
+        f"🎭 类型：{_tg_media_type_label(media_type)}    🆔 TMDb：{tmdb_id}",
+        count_text,
+        "↩️ 回复序号直接转存，或点击下方按钮。",
+        "🚫 输入 取消 结束本次搜索。",
         "",
     ]
     for idx, item in enumerate(resources, 1):
         lines.append(_tg_resource_line(idx, item))
+        if idx != len(resources):
+            lines.append("")
     return "\n".join(lines)
 
 
@@ -910,20 +1005,18 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
     title = _tg_tmdb_title(selected)
     year = _tg_tmdb_year(selected)
 
-    if media_type == "tv" and target_season is None:
-        target_season = 1
-
+    # TG 手动搜索不再按季过滤。target_season 仅兼容旧输入，不参与影巢查询/筛选。
     media = {
         "tmdb_id": tmdb_id,
         "media_type": media_type,
         "title": title,
         "year": year,
-        "target_season": target_season,
+        "target_season": None,
     }
 
     def run():
         try:
-            season_tip = f" S{int(target_season):02d}" if media_type == "tv" and target_season else ""
+            season_tip = "（剧集全量，不按季过滤）" if media_type == "tv" else ""
             _tg_send_plain(chat_id, f"⏳ 正在查询影巢资源：{title} ({year}){season_tip}", disable_notification=True)
 
             from handler.hdhive_client import HDHiveClient
@@ -934,20 +1027,26 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
                 _tg_send_plain(chat_id, "❌ 影巢尚未完成授权，无法查询资源。请先在 WebUI 完成影巢授权。")
                 return
 
-            raw_resources = client.get_resources(tmdb_id, media_type, target_season=target_season) or []
+            # TG 手动搜索剧集时必须全量返回：不要传 target_season，也不要走按季过滤。
+            query_season = None if media_type == "tv" else target_season
+            raw_resources = client.get_resources(tmdb_id, media_type, target_season=query_season) or []
             if not raw_resources:
                 _tg_send_plain(chat_id, f"❌ 影巢没有找到可处理资源：{title} ({year})")
                 return
 
-            filtered_resources = filter_hdhive_resources(
-                raw_resources,
-                target_season=target_season if media_type == "tv" else None,
-                media_type=media_type,
-                require_complete=False,
-            )
-
-            used_filtered = bool(filtered_resources)
-            shown_resources = (filtered_resources or raw_resources)[:_TG_RESOURCE_SEARCH_LIMIT]
+            if media_type == "tv":
+                filtered_resources = []
+                used_filtered = False
+                shown_resources = raw_resources[:_TG_RESOURCE_SEARCH_LIMIT]
+            else:
+                filtered_resources = filter_hdhive_resources(
+                    raw_resources,
+                    target_season=None,
+                    media_type=media_type,
+                    require_complete=False,
+                )
+                used_filtered = bool(filtered_resources)
+                shown_resources = (filtered_resources or raw_resources)[:_TG_RESOURCE_SEARCH_LIMIT]
 
             _tg_set_session(chat_id, {
                 "stage": "hdhive_resources",
