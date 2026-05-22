@@ -5,7 +5,7 @@ from extensions import admin_required
 from database import settings_db
 from handler.hdhive_client import HDHiveClient
 from tasks.hdhive import task_download_from_hdhive, filter_hdhive_resources
-from handler.tg_userbot import TGUserBotManager
+from handler.tg_userbot import TGUserBotManager, tg_task_queue
 import threading
 
 subscription_bp = Blueprint('subscription_bp', __name__, url_prefix='/api/subscription')
@@ -22,10 +22,18 @@ def get_subscription_status():
         hdhive_configured = HDHiveClient().ping()
     except Exception:
         hdhive_configured = False
+
+    tg_cfg = settings_db.get_setting('tg_userbot_config') or {}
+    tg_userbot_configured = bool(
+        tg_cfg.get('enabled') and tg_cfg.get('api_id') and tg_cfg.get('api_hash') and tg_cfg.get('channels')
+    )
+
     return jsonify({
         "success": True,
         "mp_configured": bool(mp_url),
-        "hdhive_configured": bool(hdhive_configured)
+        "hdhive_configured": bool(hdhive_configured),
+        "tg_userbot_configured": tg_userbot_configured,
+        "cloud_search_configured": bool(hdhive_configured or tg_userbot_configured)
     })
 
 # ==========================================
@@ -280,6 +288,241 @@ def _normalize_hdhive_media_type(media_type, item_type=None):
     if raw in {"tv", "series", "season", "episode", "show", "shows", "tvshow", "tvshows", "电视剧", "剧集", "季", "集"}:
         return "tv"
     return "movie" if not raw else "tv"
+
+
+def _safe_int(value, default=0, min_value=None, max_value=None):
+    try:
+        number = int(value)
+    except Exception:
+        number = default
+    if min_value is not None:
+        number = max(number, min_value)
+    if max_value is not None:
+        number = min(number, max_value)
+    return number
+
+
+def _cloud_resource_key(resource):
+    if not isinstance(resource, dict):
+        return ""
+    for key in ("slug", "target_link", "magnet_url", "message_link"):
+        value = resource.get(key)
+        if value:
+            return f"{key}:{value}"
+    if resource.get("source_username") and resource.get("message_id"):
+        return f"channel:{resource.get('source_username')}:{resource.get('message_id')}"
+    return ""
+
+
+def _normalize_hdhive_resource(resource):
+    item = dict(resource or {})
+    item["source_type"] = "hdhive"
+    item["source_name"] = "影巢"
+    item["_cloud_source"] = "hdhive"
+    if item.get("slug"):
+        item["unique_id"] = f"hdhive:{item.get('slug')}"
+    return item
+
+
+def _normalize_channel_resource(resource):
+    item = dict(resource or {})
+    item["source_type"] = "channel"
+    item["source_name"] = item.get("source_channel") or "TG频道"
+    item["_cloud_source"] = "channel"
+    item["already_owned"] = False
+    item["unlock_points"] = 0
+    if item.get("source_username") and item.get("message_id"):
+        item["unique_id"] = f"channel:{item.get('source_username')}:{item.get('message_id')}"
+    elif item.get("target_link"):
+        item["unique_id"] = f"channel:{item.get('target_link')}"
+    elif item.get("magnet_url"):
+        item["unique_id"] = f"channel:{item.get('magnet_url')[:80]}"
+    return item
+
+
+def _build_cloud_extra_queries(title, year=None, season=None):
+    title = str(title or "").strip()
+    year = str(year or "").strip()
+    season = str(season or "").strip()
+    queries = []
+    if title and year:
+        queries.append(f"{title} {year}")
+    if title and season:
+        try:
+            s = int(season)
+            queries.extend([f"{title} S{s:02d}", f"{title} 第{s}季"])
+        except Exception:
+            pass
+    return queries
+
+
+@subscription_bp.route('/cloud/resources', methods=['GET'])
+@admin_required
+def get_cloud_resources():
+    """云资源搜索：合并影巢 OpenAPI 与已配置 TG 频道历史消息搜索。"""
+    tmdb_id = request.args.get('tmdb_id')
+    raw_media_type = request.args.get('media_type')
+    season = request.args.get('season')
+    title = (request.args.get('title') or request.args.get('query') or '').strip()
+    year = (request.args.get('year') or '').strip()
+    media_type = _normalize_hdhive_media_type(raw_media_type)
+
+    collect_limit = _safe_int(request.args.get('limit'), default=50, min_value=1, max_value=100)
+    hdhive_limit = _safe_int(request.args.get('hdhive_limit'), default=collect_limit, min_value=1, max_value=100)
+    channel_limit = _safe_int(request.args.get('channel_limit'), default=collect_limit, min_value=1, max_value=100)
+
+    if not tmdb_id and not title:
+        return jsonify({"success": False, "message": "缺少 TMDB ID 或搜索标题"}), 400
+
+    warnings = []
+    hdhive_total = 0
+    hdhive_filtered = 0
+    channel_total = 0
+    resources = []
+    seen = set()
+
+    # 1. 影巢资源。云搜索属于手动搜索场景，剧集默认不按季过滤，避免用户误以为搜不到资源。
+    if tmdb_id:
+        try:
+            client = HDHiveClient()
+            if client.ping():
+                hdhive_target_season = None if media_type == 'tv' else season
+                raw_resources = client.get_resources(tmdb_id, media_type, target_season=hdhive_target_season)
+                hdhive_total = len(raw_resources or [])
+
+                if media_type == 'tv':
+                    shown_hdhive = list(raw_resources or [])
+                else:
+                    shown_hdhive = filter_hdhive_resources(
+                        raw_resources,
+                        target_season=season,
+                        media_type=media_type
+                    )
+                hdhive_filtered = len(shown_hdhive or [])
+
+                for item in (shown_hdhive or [])[:hdhive_limit]:
+                    normalized = _normalize_hdhive_resource(item)
+                    key = _cloud_resource_key(normalized)
+                    if key and key in seen:
+                        continue
+                    if key:
+                        seen.add(key)
+                    resources.append(normalized)
+            else:
+                warnings.append('影巢未授权或连接不可用，已跳过影巢搜索。')
+        except Exception as e:
+            logger.error(f"  ➜ 云资源搜索：影巢查询失败: {e}", exc_info=True)
+            warnings.append(f"影巢搜索失败：{e}")
+
+    # 2. TG 频道历史资源。只搜索已配置监听列表中的频道。
+    try:
+        manager = TGUserBotManager.get_instance()
+        if not hasattr(manager, 'search_channel_resources'):
+            warnings.append('当前 handler/tg_userbot.py 尚未包含频道历史搜索能力，请替换新版 tg_userbot.py。')
+        elif title:
+            tg_res = manager.search_channel_resources(
+                query=title,
+                media_type=media_type,
+                tmdb_id=tmdb_id,
+                year=year,
+                limit=channel_limit,
+                extra_queries=_build_cloud_extra_queries(title, year=year, season=season),
+                timeout=35,
+            )
+
+            if not tg_res.get('ok') and tg_res.get('error'):
+                warnings.append(tg_res.get('error'))
+
+            for err in tg_res.get('errors') or []:
+                warnings.append(f"频道搜索提示：{err}")
+
+            channel_items = tg_res.get('results') or []
+            channel_total = len(channel_items)
+            for item in channel_items:
+                normalized = _normalize_channel_resource(item)
+                key = _cloud_resource_key(normalized)
+                if key and key in seen:
+                    continue
+                if key:
+                    seen.add(key)
+                resources.append(normalized)
+        else:
+            warnings.append('未提供标题，已跳过频道历史搜索。')
+    except Exception as e:
+        logger.error(f"  ➜ 云资源搜索：频道查询失败: {e}", exc_info=True)
+        warnings.append(f"频道搜索失败：{e}")
+
+    return jsonify({
+        "success": True,
+        "data": resources[:collect_limit],
+        "total": len(resources),
+        "stats": {
+            "hdhive_total": hdhive_total,
+            "hdhive_filtered": hdhive_filtered,
+            "channel_total": channel_total,
+            "shown": min(len(resources), collect_limit),
+            "limit": collect_limit,
+            "warnings": warnings
+        }
+    })
+
+
+@subscription_bp.route('/cloud/download', methods=['POST'])
+@admin_required
+def trigger_cloud_download():
+    """云资源下载/转存：影巢资源走影巢解锁；频道资源复用频道监听队列。"""
+    data = request.json or {}
+    resource = data.get('resource') or {}
+    source_type = (data.get('source_type') or resource.get('source_type') or resource.get('_cloud_source') or '').strip().lower()
+
+    slug = data.get('slug') or resource.get('slug')
+    tmdb_id = data.get('tmdb_id') or resource.get('tmdb_id')
+    raw_media_type = data.get('media_type') or resource.get('media_type') or resource.get('item_type')
+    media_type = _normalize_hdhive_media_type(raw_media_type)
+    title = data.get('title') or resource.get('title') or resource.get('name') or '未知影视'
+
+    if source_type in {'hdhive', 'hive', '影巢'} or slug:
+        if not slug:
+            return jsonify({"success": False, "message": "缺少影巢资源 slug"}), 400
+
+        client = HDHiveClient()
+        if not client.ping():
+            return jsonify({"success": False, "message": "请先完成影巢授权"}), 401
+
+        threading.Thread(
+            target=task_download_from_hdhive,
+            args=(None, slug, tmdb_id, media_type, title)
+        ).start()
+        return jsonify({"success": True, "message": "已向 115 发送影巢资源转存指令，后台正在处理！"})
+
+    if source_type in {'channel', 'tg', 'telegram', '频道'} or resource.get('target_link') or resource.get('magnet_url'):
+        target_link = resource.get('target_link')
+        magnet_url = resource.get('magnet_url')
+        if not target_link and not magnet_url:
+            return jsonify({"success": False, "message": "频道资源缺少可转存链接"}), 400
+
+        tg_task_queue.put({
+            "type": "channel_resource_complex",
+            "tmdb_id": tmdb_id,
+            "title": title,
+            "year": data.get('year') or resource.get('year'),
+            "item_type": media_type,
+            "target_link": target_link,
+            "magnet_url": magnet_url,
+            "receive_code": resource.get('receive_code') or '',
+            "season_number": resource.get('season_number'),
+            "episode_number": resource.get('episode_number'),
+            "is_pack": bool(resource.get('is_pack')),
+            "is_completed_pack": bool(resource.get('is_completed_pack')),
+            # 手动云搜索选择的资源应直接转存，不再要求已订阅/追剧。
+            "is_brainless": True,
+            "is_keyword_matched": True,
+            "is_subscribe": False
+        })
+        return jsonify({"success": True, "message": "已推送频道资源转存任务，后台正在处理！"})
+
+    return jsonify({"success": False, "message": "未知资源来源，无法执行转存"}), 400
+
 
 @subscription_bp.route('/hdhive/resources', methods=['GET'])
 @admin_required

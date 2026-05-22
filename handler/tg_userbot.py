@@ -52,7 +52,8 @@ class TGUserBotManager:
             'monitor_types': cfg.get('monitor_types', ['movie', 'tv']),
             'transfer_modes': cfg.get('transfer_modes', ['subscribe']),
             'transfer_keywords': cfg.get('transfer_keywords', []),
-            'block_keywords': cfg.get('block_keywords', [])
+            'block_keywords': cfg.get('block_keywords', []),
+            'custom_regex': cfg.get('custom_regex', {})
         }
 
     def start(self):
