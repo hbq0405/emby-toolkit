@@ -260,12 +260,12 @@
                 </div>
 
                 <div class="actions-container">
-                  <!-- ★ 影巢专属秒传按钮 (仅管理员且配置了影巢时可见) -->
+                  <!-- ★ 云资源下载按钮：管理员始终可见，弹窗内自动合并影巢与频道资源 -->
                   <div 
-                    v-if="authStore.isAdmin && isHdhiveConfigured"
+                    v-if="authStore.isAdmin"
                     class="action-btn"
                     @click.stop="openHDHiveResourceModal(media)"
-                    title="影巢秒传/手动洗版"
+                    title="云资源搜索/一键转存"
                   >
                     <n-icon size="18" color="#f0a020" class="shadow-icon">
                       <CloudDownloadIcon />
@@ -344,7 +344,7 @@
       </n-spin>
     </n-modal>
 
-    <!-- 影巢资源列表模态框 -->
+    <!-- 云资源搜索模态框 -->
     <HDHiveResourceModal 
       v-model:show="showHDHiveResourceModal" 
       :media="currentHDHiveMedia" 
