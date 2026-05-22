@@ -492,6 +492,373 @@ class TGUserBotManager:
                 "is_subscribe": is_subscribe
             })
 
+
+    # ==========================================
+    # 频道历史搜索能力：供 Telegram 手动资源搜索复用
+    # ==========================================
+    @staticmethod
+    def _clean_channel_key(value):
+        value = str(value or '').strip()
+        if not value:
+            return ''
+        value = value.replace('https://t.me/', '').replace('http://t.me/', '')
+        value = value.split('/')[0]
+        value = value.lstrip('@').strip().lower()
+        return value
+
+    @staticmethod
+    def _normalize_text(text):
+        return re.sub(r'\s+', ' ', str(text or '')).strip()
+
+    def _apply_search_regex(self, text, custom_rules, default_rules, curr_username='', curr_id='', flags=re.IGNORECASE):
+        """频道历史搜索使用的正则执行器，兼容已有“频道隔离”规则。"""
+        applicable_rules = []
+        curr_username = str(curr_username or '').lower()
+        curr_id = str(curr_id or '')
+        curr_id_clean = curr_id.replace('-100', '') if curr_id.startswith('-100') else curr_id
+
+        for rule_obj in (custom_rules or []):
+            if isinstance(rule_obj, str):
+                pattern = rule_obj.strip()
+                target_channel = ''
+            else:
+                pattern = str(rule_obj.get('pattern', '')).strip()
+                target_channel = str(rule_obj.get('channel', '')).strip().lower()
+
+            if not pattern:
+                continue
+
+            if not target_channel:
+                applicable_rules.append(pattern)
+                continue
+
+            target_clean = target_channel.lstrip('@')
+            target_clean = target_clean.replace('-100', '') if target_clean.startswith('-100') else target_clean
+            if curr_username == target_clean or curr_id == target_channel or curr_id_clean == target_clean:
+                applicable_rules.append(pattern)
+
+        for rule in applicable_rules + (default_rules or []):
+            if not rule or not str(rule).strip():
+                continue
+            try:
+                match = re.search(rule, text, flags)
+                if match:
+                    return match
+            except Exception as e:
+                logger.error(f"  ➜ [频道搜索] 正则执行错误: {rule} -> {e}")
+        return None
+
+    def _extract_message_urls(self, message):
+        """提取正文、隐藏链接和按钮链接。"""
+        text = getattr(message, 'raw_text', None) or getattr(message, 'message', '') or ''
+        urls = []
+
+        # 正文里的裸链
+        for match in re.finditer(r'https?://[^\s\])}>"\']+', text, re.IGNORECASE):
+            urls.append(match.group(0).strip())
+
+        # Markdown/HTML 隐藏链接
+        entities = getattr(message, 'entities', None) or []
+        for entity in entities:
+            url = getattr(entity, 'url', None)
+            if url:
+                urls.append(url)
+
+        # Inline Keyboard 按钮链接
+        reply_markup = getattr(message, 'reply_markup', None)
+        if reply_markup and hasattr(reply_markup, 'rows'):
+            for row in reply_markup.rows:
+                for button in getattr(row, 'buttons', []) or []:
+                    url = getattr(button, 'url', None)
+                    if url:
+                        urls.append(url)
+
+        # 去重保序
+        seen = set()
+        deduped = []
+        for url in urls:
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            deduped.append(url)
+        return deduped
+
+    @staticmethod
+    def _guess_size_text(text):
+        match = re.search(r'(\d+(?:\.\d+)?)\s*(TB|GB|G|MB|M)\b', text, re.IGNORECASE)
+        if not match:
+            return ''
+        value, unit = match.group(1), match.group(2).upper()
+        if unit == 'G':
+            unit = 'GB'
+        elif unit == 'M':
+            unit = 'MB'
+        return f"{value}{unit}"
+
+    @staticmethod
+    def _guess_resolution(text):
+        upper = str(text or '').upper()
+        for token in ('8K', '4K', '2160P', '1080P', '720P'):
+            if token in upper:
+                return '4K' if token == '2160P' else token
+        return ''
+
+    @staticmethod
+    def _guess_quality_text(text):
+        lines = [re.sub(r'\s+', ' ', line).strip() for line in str(text or '').splitlines() if line.strip()]
+        quality_words = ('WEB-DL', 'WEBRIP', 'BLURAY', 'REMUX', 'HDR', 'DV', 'DDP', 'HEVC', 'H265', 'H.265', 'X265', 'X264', '内嵌', '外挂', '中字', '简中', '繁中')
+        for line in lines:
+            upper = line.upper()
+            if any(word.upper() in upper for word in quality_words):
+                return line[:120]
+        return lines[0][:120] if lines else ''
+
+    @staticmethod
+    def _guess_title_from_text(text):
+        for line in str(text or '').splitlines():
+            line = re.sub(r'[#*_`>\[\]【】]+', ' ', line).strip()
+            line = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', line).strip()
+            if line:
+                return line[:80]
+        return ''
+
+    def _extract_channel_resource_candidate(self, message, chat, query='', expected_tmdb_id=None, expected_media_type=None):
+        """把频道消息解析成可展示、可转存的资源候选。"""
+        text = getattr(message, 'raw_text', None) or getattr(message, 'message', '') or ''
+        if not text:
+            return None
+
+        cfg = self._get_config()
+        custom_regex = cfg.get('custom_regex', {}) or {}
+        urls = self._extract_message_urls(message)
+
+        target_link = None
+        receive_code = ''
+
+        for url in urls:
+            if ('115.com/s/' in url or '115cdn.com/s/' in url or 'hdhive.com/resource/' in url):
+                target_link = url
+                pwd_in_url = self._apply_search_regex(url, custom_regex.get('password', []), DEFAULT_TG_REGEX.get('password_url', []))
+                if pwd_in_url:
+                    receive_code = pwd_in_url.group(1)
+                break
+
+        if not receive_code:
+            pwd_match = self._apply_search_regex(text, custom_regex.get('password', []), DEFAULT_TG_REGEX.get('password_text', []))
+            if pwd_match:
+                receive_code = pwd_match.group(1)
+
+        magnet_match = re.search(r'(magnet:\?xt=urn:btih:[a-zA-Z0-9]+.*?|ed2k://\|file\|.*?\|/)', text, re.IGNORECASE | re.DOTALL)
+        magnet_url = magnet_match.group(1).strip() if magnet_match else None
+
+        if not target_link and not magnet_url:
+            return None
+
+        chat_username = getattr(chat, 'username', '') or ''
+        chat_id = str(getattr(chat, 'id', ''))
+        chat_title = getattr(chat, 'title', '') or chat_username or chat_id
+
+        tmdb_id = None
+        tmdb_match = self._apply_search_regex(text, custom_regex.get('tmdb', []), DEFAULT_TG_REGEX.get('tmdb', []), chat_username, chat_id)
+        if tmdb_match:
+            tmdb_id = tmdb_match.group(1)
+
+        # 如果频道正文明确写了别的 TMDb ID，则认为不是当前条目，避免误搜。
+        if expected_tmdb_id and tmdb_id and str(tmdb_id) != str(expected_tmdb_id):
+            return None
+
+        title = None
+        year = None
+        title_match = self._apply_search_regex(text, custom_regex.get('title_year', []), DEFAULT_TG_REGEX.get('title_year', []), chat_username, chat_id, flags=0)
+        if title_match:
+            title = title_match.group(1).strip()
+            title = re.sub(r'^\[.*?\]\s*', '', title).strip()
+            title = re.sub(r'^[^\w\u4e00-\u9fa5]+', '', title).strip()
+            year = title_match.group(2)
+
+        if not title:
+            title = query or self._guess_title_from_text(text)
+
+        season_number = None
+        episode_number = None
+        is_pack = False
+        is_completed_pack = False
+        if re.search(r'(完结|全\d+集|\d+集全)', text, re.IGNORECASE):
+            is_completed_pack = True
+            is_pack = True
+
+        range_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})\s*(?:-|~|至)\s*(?:E|EP)?\s*(\d{1,4})', text, re.IGNORECASE)
+        if range_match:
+            season_number = int(range_match.group(1))
+            episode_number = int(range_match.group(3))
+            is_pack = True
+        else:
+            se_match = re.search(r'S(\d{1,2})\s*E(?:P)?\s*(\d{1,4})', text, re.IGNORECASE)
+            if se_match:
+                season_number = int(se_match.group(1))
+                episode_number = int(se_match.group(2))
+            else:
+                s_match = re.search(r'(?:S|Season|第)\s*(\d{1,2})\s*(?:季)?', text, re.IGNORECASE)
+                e_match = re.search(r'(?:E|EP|Episode|第)\s*(\d{1,4})\s*(?:集|话)', text, re.IGNORECASE)
+                if s_match:
+                    season_number = int(s_match.group(1))
+                if e_match:
+                    episode_number = int(e_match.group(1))
+
+        if episode_number is not None and season_number is None:
+            season_number = 1
+
+        item_type = expected_media_type or ('tv' if season_number is not None or episode_number is not None else 'movie')
+        if re.search(r'(?:\[|【)(?:电视剧|剧集|动漫|番剧)(?:\]|】)|(?:电视剧|剧集|动漫|番剧)[:：]', text, re.IGNORECASE):
+            item_type = 'tv'
+        elif re.search(r'(?:\[|【)电影(?:\]|】)|电影[:：]', text, re.IGNORECASE):
+            item_type = 'movie'
+
+        msg_id = getattr(message, 'id', None)
+        date_obj = getattr(message, 'date', None)
+        date_text = date_obj.strftime('%Y-%m-%d %H:%M') if date_obj else ''
+        message_link = ''
+        if chat_username and msg_id:
+            message_link = f"https://t.me/{chat_username}/{msg_id}"
+
+        quality = self._guess_quality_text(text)
+        resolution = self._guess_resolution(text)
+        size_text = self._guess_size_text(text)
+        snippet = self._normalize_text(text)
+        if len(snippet) > 180:
+            snippet = snippet[:179] + '…'
+
+        return {
+            '_tg_source': 'channel',
+            'source': 'channel',
+            'title': title or query or '频道资源',
+            'name': title or query or '频道资源',
+            'remark': snippet,
+            'quality': quality,
+            'resolution': resolution or '未知',
+            'share_size': size_text,
+            'pan_type': '115' if target_link else '离线',
+            'unlock_points': 0,
+            'source_channel': chat_title,
+            'source_username': chat_username,
+            'message_id': msg_id,
+            'message_date': date_text,
+            'message_link': message_link,
+            'text': text,
+            'tmdb_id': tmdb_id or expected_tmdb_id,
+            'item_type': item_type,
+            'target_link': target_link,
+            'magnet_url': magnet_url,
+            'receive_code': receive_code,
+            'season_number': season_number,
+            'episode_number': episode_number,
+            'is_pack': is_pack,
+            'is_completed_pack': is_completed_pack,
+        }
+
+    async def _search_channel_resources_async(self, query, media_type=None, tmdb_id=None, year=None, limit=10, extra_queries=None):
+        """在已配置监听频道的历史消息里搜索资源。"""
+        cfg = self._get_config()
+        raw_channels = cfg.get('channels') or []
+        monitor_channels = [c for c in raw_channels if c and str(c).strip()]
+        if not monitor_channels:
+            return {'ok': False, 'error': '未配置频道监听列表', 'results': []}
+
+        if not self.client:
+            return {'ok': False, 'error': 'UserBot 客户端未启动', 'results': []}
+
+        if not self.client.is_connected():
+            await self.client.connect()
+
+        if not await self.client.is_user_authorized():
+            return {'ok': False, 'error': 'UserBot 尚未完成 Telegram 授权', 'results': []}
+
+        search_queries = []
+        for q in [query] + (extra_queries or []):
+            q = str(q or '').strip()
+            if q and q not in search_queries:
+                search_queries.append(q)
+        # TMDb ID 对部分资源频道很有用，但不要替代片名搜索。
+        if tmdb_id and str(tmdb_id) not in search_queries:
+            search_queries.append(str(tmdb_id))
+        if not search_queries:
+            return {'ok': False, 'error': '搜索关键词为空', 'results': []}
+
+        results = []
+        seen = set()
+        errors = []
+
+        for channel in monitor_channels:
+            channel_key = self._clean_channel_key(channel)
+            if not channel_key:
+                continue
+
+            entity = None
+            resolve_candidates = []
+            if re.fullmatch(r'-?\d+', channel_key):
+                resolve_candidates.extend([int(channel_key), int(channel_key.replace('-100', '') if channel_key.startswith('-100') else channel_key)])
+            else:
+                resolve_candidates.extend([channel_key, '@' + channel_key])
+
+            for candidate in resolve_candidates:
+                try:
+                    entity = await self.client.get_entity(candidate)
+                    break
+                except Exception:
+                    continue
+
+            if not entity:
+                errors.append(f"{channel}: 无法解析频道")
+                continue
+
+            for q in search_queries:
+                try:
+                    async for message in self.client.iter_messages(entity, search=q, limit=max(limit * 5, 30)):
+                        candidate = self._extract_channel_resource_candidate(
+                            message,
+                            entity,
+                            query=query,
+                            expected_tmdb_id=tmdb_id,
+                            expected_media_type=media_type,
+                        )
+                        if not candidate:
+                            continue
+
+                        dedup_key = candidate.get('target_link') or candidate.get('magnet_url') or f"{candidate.get('source_username')}:{candidate.get('message_id')}"
+                        if dedup_key in seen:
+                            continue
+                        seen.add(dedup_key)
+                        results.append(candidate)
+                        if len(results) >= limit:
+                            return {'ok': True, 'results': results, 'errors': errors}
+                except Exception as e:
+                    errors.append(f"{channel}: {e}")
+                    logger.warning(f"  ➜ [频道搜索] 搜索频道 {channel} 失败: {e}")
+
+        return {'ok': True, 'results': results[:limit], 'errors': errors}
+
+    def search_channel_resources(self, query, media_type=None, tmdb_id=None, year=None, limit=10, extra_queries=None, timeout=30):
+        """线程安全包装：供 handler.telegram 的同步线程调用。"""
+        if not self.is_running or not self.loop or not self.client:
+            return {'ok': False, 'error': '频道监听未启动。请先启用并完成 UserBot 授权。', 'results': []}
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(
+                self._search_channel_resources_async(
+                    query=query,
+                    media_type=media_type,
+                    tmdb_id=tmdb_id,
+                    year=year,
+                    limit=limit,
+                    extra_queries=extra_queries,
+                ),
+                self.loop,
+            )
+            return future.result(timeout=timeout)
+        except Exception as e:
+            logger.error(f"  ➜ [频道搜索] 执行频道历史搜索失败: {e}", exc_info=True)
+            return {'ok': False, 'error': str(e), 'results': []}
+
     # ==========================================
     # 以下是供前端 API 调用的登录交互方法 (保持不变)
     # ==========================================

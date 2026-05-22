@@ -812,11 +812,15 @@ def _tg_resource_resolution(resource: dict) -> str:
 
 
 def _tg_resource_pan_text(resource: dict) -> str:
+    if resource.get("_tg_source") == "channel" or resource.get("source") == "channel":
+        return "📡 频道"
     pan_type = str(resource.get("pan_type") or "115").upper()
     return f"🟡 {pan_type}"
 
 
 def _tg_resource_points_text(resource: dict) -> str:
+    if resource.get("_tg_source") == "channel" or resource.get("source") == "channel":
+        return "🆓 可转存"
     points = resource.get("unlock_points")
     already_owned = bool(resource.get("already_owned"))
     if already_owned:
@@ -824,7 +828,6 @@ def _tg_resource_points_text(resource: dict) -> str:
     if points in (None, 0, "0", "", "free", "FREE"):
         return "🆓 免费"
     return f"💎 {points}积分"
-
 
 def _tg_resource_size_text(resource: dict) -> str:
     size_gb = _tg_resource_size_gb(resource)
@@ -870,6 +873,10 @@ def _tg_resource_line(index: int, resource: dict) -> str:
         extra.append(str(resource.get("_completion_label")))
     if resource.get("_season_match_label"):
         extra.append(str(resource.get("_season_match_label")))
+    if resource.get("_tg_source") == "channel" or resource.get("source") == "channel":
+        source_channel = resource.get("source_channel") or "未知频道"
+        message_date = resource.get("message_date") or ""
+        extra.append(f"来自：{source_channel}{' · ' + message_date if message_date else ''}")
     extra_text = f"  {' / '.join(extra)}" if extra else ""
 
     lines = [
@@ -890,24 +897,25 @@ def _tg_resource_line(index: int, resource: dict) -> str:
 
     return "\n".join(lines)
 
-
-def _tg_format_hdhive_resources(media: dict, resources: list, raw_count: int, filtered_count: int, used_filtered: bool) -> str:
+def _tg_format_hdhive_resources(media: dict, resources: list, raw_count: int, filtered_count: int, used_filtered: bool, channel_count: int = 0, notes: list = None) -> str:
     media_type = media.get("media_type") or "movie"
     title = media.get("title") or "未知标题"
     year = media.get("year") or "未知年份"
     tmdb_id = media.get("tmdb_id") or "-"
 
+    hdhive_count = raw_count or 0
+    channel_count = channel_count or 0
+    source_text = f"🪺 影巢 {hdhive_count} 条"
+    if channel_count:
+        source_text += f" / 📡 频道 {channel_count} 条"
+
     if media_type == "tv":
-        count_text = f"🔎 接口返回 {raw_count} 条，手动搜索不按季过滤，下面全量展示前 {len(resources)} 条。"
+        count_text = f"🔎 {source_text}；剧集手动搜索不按季过滤，下面展示前 {len(resources)} 条。"
     else:
-        count_text = (
-            f"🔎 接口返回 {raw_count} 条，筛选后 {filtered_count} 条，展示前 {len(resources)} 条。"
-            if used_filtered
-            else f"🔎 接口返回 {raw_count} 条，当前筛选条件无命中，展示原始可处理资源前 {len(resources)} 条。"
-        )
+        count_text = f"🔎 {source_text}；下面展示前 {len(resources)} 条。"
 
     lines = [
-        f"🪺 影巢资源 | {title} ({year})",
+        f"🔎 资源搜索 | {title} ({year})",
         "━━━━━━━━━━━━━━",
         f"🎭 类型：{_tg_media_type_label(media_type)}    🆔 TMDb：{tmdb_id}",
         count_text,
@@ -919,8 +927,12 @@ def _tg_format_hdhive_resources(media: dict, resources: list, raw_count: int, fi
         lines.append(_tg_resource_line(idx, item))
         if idx != len(resources):
             lines.append("")
-    return "\n".join(lines)
 
+    if notes:
+        lines.append("")
+        lines.append("ℹ️ " + "；".join(str(n) for n in notes if n))
+
+    return "\n".join(lines)
 
 def _tg_start_tmdb_search(chat_id: str, query: str):
     query = str(query or "").strip()
@@ -1004,8 +1016,9 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
     tmdb_id = selected.get("id")
     title = _tg_tmdb_title(selected)
     year = _tg_tmdb_year(selected)
+    original_title = selected.get("original_title") or selected.get("original_name") or ""
 
-    # TG 手动搜索不再按季过滤。target_season 仅兼容旧输入，不参与影巢查询/筛选。
+    # TG 手动搜索不再按季过滤。target_season 仅兼容旧输入，不参与剧集筛选。
     media = {
         "tmdb_id": tmdb_id,
         "media_type": media_type,
@@ -1015,66 +1028,143 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
     }
 
     def run():
+        notes = []
+        hdhive_raw_count = 0
+        hdhive_filtered_count = 0
+        hdhive_used_filtered = False
+        hdhive_resources = []
+        channel_resources = []
+
         try:
             season_tip = "（剧集全量，不按季过滤）" if media_type == "tv" else ""
-            _tg_send_plain(chat_id, f"⏳ 正在查询影巢资源：{title} ({year}){season_tip}", disable_notification=True)
+            _tg_send_plain(chat_id, f"⏳ 正在查询资源：{title} ({year}){season_tip}\n来源：影巢 + 已配置监听频道", disable_notification=True)
 
-            from handler.hdhive_client import HDHiveClient
-            from tasks.hdhive import filter_hdhive_resources
+            # 1. 查询影巢资源：失败不直接中断，继续查频道。
+            try:
+                from handler.hdhive_client import HDHiveClient
+                from handler.hdhive import filter_hdhive_resources
 
-            client = HDHiveClient()
-            if not client.ping():
-                _tg_send_plain(chat_id, "❌ 影巢尚未完成授权，无法查询资源。请先在 WebUI 完成影巢授权。")
-                return
+                client = HDHiveClient()
+                if client.ping():
+                    query_season = None if media_type == "tv" else target_season
+                    raw_resources = client.get_resources(tmdb_id, media_type, target_season=query_season) or []
+                    hdhive_raw_count = len(raw_resources)
 
-            # TG 手动搜索剧集时必须全量返回：不要传 target_season，也不要走按季过滤。
-            query_season = None if media_type == "tv" else target_season
-            raw_resources = client.get_resources(tmdb_id, media_type, target_season=query_season) or []
-            if not raw_resources:
-                _tg_send_plain(chat_id, f"❌ 影巢没有找到可处理资源：{title} ({year})")
-                return
+                    if media_type == "tv":
+                        hdhive_resources = raw_resources[:_TG_RESOURCE_SEARCH_LIMIT]
+                    else:
+                        filtered_resources = filter_hdhive_resources(
+                            raw_resources,
+                            target_season=None,
+                            media_type=media_type,
+                            require_complete=False,
+                        )
+                        hdhive_filtered_count = len(filtered_resources)
+                        hdhive_used_filtered = bool(filtered_resources)
+                        hdhive_resources = (filtered_resources or raw_resources)[:_TG_RESOURCE_SEARCH_LIMIT]
 
-            if media_type == "tv":
-                filtered_resources = []
-                used_filtered = False
-                shown_resources = raw_resources[:_TG_RESOURCE_SEARCH_LIMIT]
-            else:
-                filtered_resources = filter_hdhive_resources(
-                    raw_resources,
-                    target_season=None,
+                    for item in hdhive_resources:
+                        item["_tg_source"] = "hdhive"
+                else:
+                    notes.append("影巢未授权，已跳过影巢查询")
+            except Exception as e:
+                logger.error(f"  ➜ [TG资源搜索] 影巢资源查询失败: {e}", exc_info=True)
+                notes.append(f"影巢查询失败：{e}")
+
+            # 2. 查询已配置监听频道历史。使用 UserBot 账号搜索频道历史消息；不影响原来的频道自动监听。
+            try:
+                from handler.tg_userbot import TGUserBotManager
+
+                extra_queries = []
+                if original_title and original_title != title:
+                    extra_queries.append(original_title)
+                # 部分频道标题带年份，单独用“片名 年份”有时更准；但仍保留片名搜索。
+                if year and year != "未知年份":
+                    extra_queries.append(f"{title} {year}")
+
+                ub = TGUserBotManager.get_instance()
+                search_result = ub.search_channel_resources(
+                    query=title,
                     media_type=media_type,
-                    require_complete=False,
-                )
-                used_filtered = bool(filtered_resources)
-                shown_resources = (filtered_resources or raw_resources)[:_TG_RESOURCE_SEARCH_LIMIT]
+                    tmdb_id=tmdb_id,
+                    year=year,
+                    limit=_TG_RESOURCE_SEARCH_LIMIT,
+                    extra_queries=extra_queries,
+                    timeout=30,
+                ) or {}
+
+                if search_result.get("ok"):
+                    channel_resources = search_result.get("results") or []
+                    for item in channel_resources:
+                        item["_tg_source"] = "channel"
+                        # 手动点击频道资源应该直接放行，不再要求它本来就在订阅/追剧列表。
+                        item["is_keyword_matched"] = True
+                        item["is_subscribe"] = False
+                        item.setdefault("title", title)
+                        item.setdefault("year", year)
+                        item.setdefault("tmdb_id", tmdb_id)
+                        item.setdefault("item_type", media_type)
+                else:
+                    err = search_result.get("error")
+                    if err:
+                        notes.append(f"频道搜索跳过：{err}")
+            except Exception as e:
+                logger.error(f"  ➜ [TG资源搜索] 频道资源查询失败: {e}", exc_info=True)
+                notes.append(f"频道搜索失败：{e}")
+
+            # 3. 合并展示：影巢优先，频道补充。若影巢太多，频道仍留展示空间，避免看不到频道结果。
+            shown_resources = []
+            if channel_resources:
+                hdhive_quota = min(len(hdhive_resources), max(0, _TG_RESOURCE_SEARCH_LIMIT - min(len(channel_resources), 4)))
+                shown_resources.extend(hdhive_resources[:hdhive_quota])
+                shown_resources.extend(channel_resources[:_TG_RESOURCE_SEARCH_LIMIT - len(shown_resources)])
+                if len(shown_resources) < _TG_RESOURCE_SEARCH_LIMIT:
+                    shown_resources.extend(hdhive_resources[hdhive_quota:_TG_RESOURCE_SEARCH_LIMIT - len(shown_resources) + hdhive_quota])
+            else:
+                shown_resources = hdhive_resources[:_TG_RESOURCE_SEARCH_LIMIT]
+
+            if not shown_resources:
+                msg = f"❌ 没有找到可处理资源：{title} ({year})"
+                if notes:
+                    msg += "\n" + "\n".join(f"- {n}" for n in notes)
+                _tg_send_plain(chat_id, msg)
+                return
 
             _tg_set_session(chat_id, {
-                "stage": "hdhive_resources",
+                "stage": "hdhive_resources",  # 兼容旧的序号/按钮处理，实际可包含影巢+频道资源。
                 "media": media,
                 "resources": shown_resources,
-                "raw_count": len(raw_resources),
-                "filtered_count": len(filtered_resources),
-                "used_filtered": used_filtered,
+                "raw_count": hdhive_raw_count,
+                "filtered_count": hdhive_filtered_count,
+                "used_filtered": hdhive_used_filtered,
+                "channel_count": len(channel_resources),
             })
 
             reply_markup = _tg_build_number_keyboard("tg_hdhive", len(shown_resources))
             _tg_send_plain(
                 chat_id,
-                _tg_format_hdhive_resources(media, shown_resources, len(raw_resources), len(filtered_resources), used_filtered),
+                _tg_format_hdhive_resources(
+                    media,
+                    shown_resources,
+                    hdhive_raw_count,
+                    hdhive_filtered_count,
+                    hdhive_used_filtered,
+                    channel_count=len(channel_resources),
+                    notes=notes,
+                ),
                 reply_markup=reply_markup,
             )
 
         except Exception as e:
-            logger.error(f"  ➜ [TG资源搜索] 影巢资源查询失败: {e}", exc_info=True)
-            _tg_send_plain(chat_id, f"❌ 影巢资源查询异常：{e}")
+            logger.error(f"  ➜ [TG资源搜索] 资源查询失败: {e}", exc_info=True)
+            _tg_send_plain(chat_id, f"❌ 资源查询异常：{e}")
 
-    threading.Thread(target=run, name="TG_Resource_Search_HDHive", daemon=True).start()
-
+    threading.Thread(target=run, name="TG_Resource_Search_All", daemon=True).start()
 
 def _tg_start_hdhive_transfer(chat_id: str, selection_number: int):
     session = _tg_get_session(chat_id)
     if not session or session.get("stage") != "hdhive_resources":
-        _tg_send_plain(chat_id, "❌ 当前没有可选择的影巢资源，请重新输入片名搜索。")
+        _tg_send_plain(chat_id, "❌ 当前没有可选择的资源，请重新输入片名搜索。")
         return
 
     resources = session.get("resources") or []
@@ -1084,25 +1174,63 @@ def _tg_start_hdhive_transfer(chat_id: str, selection_number: int):
 
     resource = resources[selection_number - 1]
     media = session.get("media") or {}
-    slug = resource.get("slug") or resource.get("resource_slug") or resource.get("id")
-    if not slug:
-        _tg_send_plain(chat_id, "❌ 当前资源缺少 slug，无法解锁转存。")
-        return
+    source = resource.get("_tg_source") or resource.get("source") or "hdhive"
 
-    title = media.get("title") or _tg_resource_title(resource)
-    year = media.get("year") or ""
+    title = media.get("title") or resource.get("title") or _tg_resource_title(resource)
+    year = media.get("year") or resource.get("year") or ""
     display_title = f"{title} ({year})" if year else title
-    media_type = media.get("media_type") or "movie"
-    tmdb_id = media.get("tmdb_id")
+    media_type = media.get("media_type") or resource.get("item_type") or "movie"
+    tmdb_id = media.get("tmdb_id") or resource.get("tmdb_id")
 
     # 开始转存后清理会话，避免用户重复点按钮造成重复转存。
     _tg_clear_session(chat_id)
 
+    if source == "channel":
+        try:
+            from handler.tg_userbot import tg_task_queue
+
+            task = {
+                "type": "channel_resource_complex",
+                "tmdb_id": tmdb_id,
+                "title": title,
+                "year": year,
+                "item_type": media_type,
+                "target_link": resource.get("target_link"),
+                "magnet_url": resource.get("magnet_url"),
+                "receive_code": resource.get("receive_code") or "",
+                "season_number": resource.get("season_number"),
+                "episode_number": resource.get("episode_number"),
+                "is_pack": bool(resource.get("is_pack")),
+                "is_completed_pack": bool(resource.get("is_completed_pack")),
+                "is_brainless": False,
+                # 手动选择频道搜索结果，直接放行转存。
+                "is_keyword_matched": True,
+                "is_subscribe": False,
+            }
+
+            if not task.get("target_link") and not task.get("magnet_url"):
+                _tg_send_plain(chat_id, "❌ 当前频道资源缺少 115/影巢/磁力链接，无法转存。")
+                return
+
+            tg_task_queue.put(task)
+            source_channel = resource.get("source_channel") or "频道"
+            _tg_send_plain(chat_id, f"✅ 已提交频道资源转存：{display_title}\n来源：{source_channel}\n请稍后查看转存通知/系统日志。")
+            return
+        except Exception as e:
+            logger.error(f"  ➜ [TG资源搜索] 频道资源提交失败: {e}", exc_info=True)
+            _tg_send_plain(chat_id, f"❌ 频道资源提交异常：{e}")
+            return
+
+    slug = resource.get("slug") or resource.get("resource_slug") or resource.get("id")
+    if not slug:
+        _tg_send_plain(chat_id, "❌ 当前影巢资源缺少 slug，无法解锁转存。")
+        return
+
     def run():
         try:
-            _tg_send_plain(chat_id, f"⏳ 已选择资源：{_tg_resource_title(resource)}\n正在解锁并转存到 115，请稍后查看通知/日志。", disable_notification=True)
+            _tg_send_plain(chat_id, f"⏳ 已选择影巢资源：{_tg_resource_title(resource)}\n正在解锁并转存到 115，请稍后查看通知/日志。", disable_notification=True)
 
-            from tasks.hdhive import task_download_from_hdhive
+            from handler.hdhive import task_download_from_hdhive
 
             ok = task_download_from_hdhive(
                 api_key=None,
@@ -1122,7 +1250,6 @@ def _tg_start_hdhive_transfer(chat_id: str, selection_number: int):
             _tg_send_plain(chat_id, f"❌ 影巢转存异常：{e}")
 
     threading.Thread(target=run, name="TG_Resource_Search_Transfer", daemon=True).start()
-
 
 def _tg_try_handle_resource_session_input(chat_id: str, text: str) -> bool:
     """处理资源搜索会话中的数字回复/取消。返回 True 表示已消费消息。"""
@@ -1241,7 +1368,7 @@ def _handle_callback_query(callback_query: dict):
         try:
             _tg_start_hdhive_transfer(chat_id, int(data.split(':', 1)[1]))
         except Exception as e:
-            logger.error(f"  ➜ [TG资源搜索] 处理影巢资源选择按钮失败: {e}", exc_info=True)
+            logger.error(f"  ➜ [TG资源搜索] 处理资源选择按钮失败: {e}", exc_info=True)
             _tg_send_plain(chat_id, "❌ 选择失败，请重新输入片名搜索。")
         return
 
