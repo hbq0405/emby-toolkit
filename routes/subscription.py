@@ -428,6 +428,8 @@ def get_cloud_resources():
                 limit=channel_limit,
                 extra_queries=_build_cloud_extra_queries(title, year=year, season=season),
                 timeout=35,
+                include_tmdb_query=False,
+                strict_title_match=True,
             )
 
             if not tg_res.get('ok') and tg_res.get('error'):

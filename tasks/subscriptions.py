@@ -232,6 +232,42 @@ def _channel_resource_text(resource: Dict) -> str:
     return '\n'.join(parts)
 
 
+def _normalize_title_for_channel_match(value: str) -> str:
+    text = str(value or '').lower()
+    text = re.sub(r'[\s\-_·.．・:：,，;；!！?？()\[\]【】{}<>《》"“”\'’‘`~～/\\|]+', '', text)
+    return text
+
+
+def _channel_resource_matches_title(resource: Dict, title: str) -> bool:
+    title = str(title or '').strip()
+    if not title:
+        return True
+
+    text = _channel_resource_text(resource)
+    normalized_title = _normalize_title_for_channel_match(title)
+    normalized_text = _normalize_title_for_channel_match(text)
+
+    if normalized_title and len(normalized_title) >= 3 and normalized_title in normalized_text:
+        return True
+
+    words = [
+        w.lower()
+        for w in re.findall(r'[A-Za-z0-9]+|[\u4e00-\u9fa5]{2,}', title)
+        if len(w.strip()) >= 2
+    ]
+    if not words:
+        return False
+
+    hit = 0
+    raw_text_lower = text.lower()
+    for word in words:
+        if _normalize_title_for_channel_match(word) in normalized_text or word in raw_text_lower:
+            hit += 1
+
+    required = len(words) if len(words) <= 2 else max(2, int(len(words) * 0.7))
+    return hit >= required
+
+
 def _extract_explicit_seasons(text: str) -> set[int]:
     """从频道消息中提取明确季号；自动订阅用，避免把 S02 当 S01 转存。"""
     text = str(text or '')
@@ -287,9 +323,11 @@ def _channel_resource_season_level(resource: Dict, target_season=None) -> int:
     return 1 if target == 1 else -1
 
 
-def _filter_channel_resources_for_auto(resources: List[Dict], media_type: str, target_season=None, require_complete: bool = False) -> List[Dict]:
+def _filter_channel_resources_for_auto(resources: List[Dict], media_type: str, target_season=None, require_complete: bool = False, title: str = '') -> List[Dict]:
     filtered = []
     for resource in resources or []:
+        if title and not _channel_resource_matches_title(resource, title):
+            continue
         if media_type == 'tv':
             season_level = _channel_resource_season_level(resource, target_season)
             if target_season is not None and season_level < 0:
@@ -429,6 +467,8 @@ def _try_download_from_channel_first(tmdb_id, media_type, title, item_label='媒
             limit=50,
             extra_queries=_build_channel_extra_queries(title, target_season=target_season),
             timeout=35,
+            include_tmdb_query=False,
+            strict_title_match=True,
         )
 
         if not search_result.get('ok'):
@@ -446,6 +486,7 @@ def _try_download_from_channel_first(tmdb_id, media_type, title, item_label='媒
             media_type=media_type,
             target_season=target_season,
             require_complete=require_complete,
+            title=title,
         )
 
         if not candidates:

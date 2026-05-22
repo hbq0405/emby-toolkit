@@ -623,7 +623,54 @@ class TGUserBotManager:
                 return line[:80]
         return ''
 
-    def _extract_channel_resource_candidate(self, message, chat, query='', expected_tmdb_id=None, expected_media_type=None):
+
+    @staticmethod
+    def _normalize_title_for_match(value):
+        text = str(value or '').lower()
+        text = re.sub(r'[\s\-_·.．・:：,，;；!！?？()\[\]【】{}<>《》"“”\'’‘`~～/\\|]+', '', text)
+        return text
+
+    @classmethod
+    def _channel_text_matches_query_title(cls, text, query):
+        """频道历史搜索的二次标题校验。
+
+        Telethon 的 search 如果使用 TMDb ID、年份等短词，可能会搜到同 ID/同年份但片名完全不同的消息。
+        手动云搜索和自动订阅都必须至少命中片名本身，避免“惊天魔盗团”混进“穿普拉达的女王”。
+        """
+        query = str(query or '').strip()
+        if not query:
+            return True
+
+        normalized_query = cls._normalize_title_for_match(query)
+        normalized_text = cls._normalize_title_for_match(text)
+
+        if not normalized_query:
+            return True
+
+        # 中文/无空格标题：要求完整片名出现在消息中。
+        if len(normalized_query) >= 3 and normalized_query in normalized_text:
+            return True
+
+        # 英文或带空格标题：至少主要单词大部分命中。
+        words = [
+            w.lower()
+            for w in re.findall(r'[A-Za-z0-9]+|[\u4e00-\u9fa5]{2,}', query)
+            if len(w.strip()) >= 2
+        ]
+        if not words:
+            return False
+
+        hit = 0
+        raw_text_lower = str(text or '').lower()
+        for word in words:
+            if cls._normalize_title_for_match(word) in normalized_text or word in raw_text_lower:
+                hit += 1
+
+        # 短标题要全命中，长标题允许少量漏词。
+        required = len(words) if len(words) <= 2 else max(2, int(len(words) * 0.7))
+        return hit >= required
+
+    def _extract_channel_resource_candidate(self, message, chat, query='', expected_tmdb_id=None, expected_media_type=None, strict_title_match=False):
         """把频道消息解析成可展示、可转存的资源候选。"""
         text = getattr(message, 'raw_text', None) or getattr(message, 'message', '') or ''
         if not text:
@@ -653,6 +700,14 @@ class TGUserBotManager:
         magnet_url = magnet_match.group(1).strip() if magnet_match else None
 
         if not target_link and not magnet_url:
+            return None
+
+        if strict_title_match and query and not self._channel_text_matches_query_title(text, query):
+            logger.debug(
+                "  ➜ [频道搜索] 丢弃疑似串台结果：搜索片名=%s，消息预览=%s",
+                query,
+                self._normalize_text(text)[:80]
+            )
             return None
 
         chat_username = getattr(chat, 'username', '') or ''
@@ -757,7 +812,7 @@ class TGUserBotManager:
             'is_completed_pack': is_completed_pack,
         }
 
-    async def _search_channel_resources_async(self, query, media_type=None, tmdb_id=None, year=None, limit=10, extra_queries=None):
+    async def _search_channel_resources_async(self, query, media_type=None, tmdb_id=None, year=None, limit=10, extra_queries=None, include_tmdb_query=False, strict_title_match=False):
         """在已配置监听频道的历史消息里搜索资源。"""
         cfg = self._get_config()
         raw_channels = cfg.get('channels') or []
@@ -779,8 +834,9 @@ class TGUserBotManager:
             q = str(q or '').strip()
             if q and q not in search_queries:
                 search_queries.append(q)
-        # TMDb ID 对部分资源频道很有用，但不要替代片名搜索。
-        if tmdb_id and str(tmdb_id) not in search_queries:
+        # TMDb ID 在部分频道里不可靠，且容易搜出“同 ID 标错片名”的串台结果。
+        # 默认只按片名/片名+年份搜索；确需按 ID 搜索时由调用方显式开启。
+        if include_tmdb_query and tmdb_id and str(tmdb_id) not in search_queries:
             search_queries.append(str(tmdb_id))
         if not search_queries:
             return {'ok': False, 'error': '搜索关键词为空', 'results': []}
@@ -821,6 +877,7 @@ class TGUserBotManager:
                             query=query,
                             expected_tmdb_id=tmdb_id,
                             expected_media_type=media_type,
+                            strict_title_match=strict_title_match,
                         )
                         if not candidate:
                             continue
@@ -838,7 +895,7 @@ class TGUserBotManager:
 
         return {'ok': True, 'results': results[:limit], 'errors': errors}
 
-    def search_channel_resources(self, query, media_type=None, tmdb_id=None, year=None, limit=10, extra_queries=None, timeout=30):
+    def search_channel_resources(self, query, media_type=None, tmdb_id=None, year=None, limit=10, extra_queries=None, timeout=30, include_tmdb_query=False, strict_title_match=True):
         """线程安全包装：供 handler.telegram 的同步线程调用。"""
         if not self.is_running or not self.loop or not self.client:
             return {'ok': False, 'error': '频道监听未启动。请先启用并完成 UserBot 授权。', 'results': []}
@@ -852,6 +909,8 @@ class TGUserBotManager:
                     year=year,
                     limit=limit,
                     extra_queries=extra_queries,
+                    include_tmdb_query=include_tmdb_query,
+                    strict_title_match=strict_title_match,
                 ),
                 self.loop,
             )
