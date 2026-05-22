@@ -268,6 +268,71 @@ def _channel_resource_matches_title(resource: Dict, title: str) -> bool:
     return hit >= required
 
 
+def _fallback_channel_rule_matches(target_channel, chat_username, chat_id):
+    target_channel = str(target_channel or '').strip().lower()
+    if not target_channel:
+        return True
+
+    chat_username = str(chat_username or '').strip().lower().lstrip('@')
+    chat_id = str(chat_id or '').strip()
+    target_clean = target_channel.lstrip('@')
+    target_id_clean = target_clean.replace('-100', '') if target_clean.startswith('-100') else target_clean
+    curr_id_clean = chat_id.replace('-100', '') if chat_id.startswith('-100') else chat_id
+
+    return (
+        chat_username == target_clean
+        or chat_id == target_channel
+        or curr_id_clean == target_id_clean
+    )
+
+
+def _channel_resource_block_rule(resource: Dict):
+    """统一订阅自动流程专用：复用 TG 频道监听的拦截规则做资源初检。
+
+    手动 TG 搜索和云下载模态框不调用本函数，因此不会被拦截规则影响；
+    自动订阅无人值守选择频道资源时必须调用，避免初筛阶段转入明显不想要的资源。
+    """
+    resource = resource or {}
+
+    if TGUserBotManager is not None:
+        try:
+            manager = TGUserBotManager.get_instance()
+            if hasattr(manager, 'is_resource_blocked_by_rules'):
+                return manager.is_resource_blocked_by_rules(resource)
+        except Exception as e:
+            logger.warning(f"  ➜ [频道搜索] 调用 UserBot 拦截规则检查失败，将使用本地兜底检查: {e}")
+
+    cfg = settings_db.get_setting('tg_userbot_config') or {}
+    rules = cfg.get('block_keywords') or []
+    if not rules:
+        return None
+
+    text = resource.get('text') or _channel_resource_text(resource)
+    chat_username = resource.get('source_username') or ''
+    chat_id = resource.get('source_chat_id') or resource.get('chat_id') or ''
+
+    for rule_obj in rules:
+        if isinstance(rule_obj, str):
+            pattern = rule_obj.strip()
+            target_channel = ''
+        else:
+            pattern = str((rule_obj or {}).get('pattern', '')).strip()
+            target_channel = str((rule_obj or {}).get('channel', '')).strip().lower()
+
+        if not pattern:
+            continue
+        if not _fallback_channel_rule_matches(target_channel, chat_username, chat_id):
+            continue
+
+        try:
+            if re.search(pattern, text or '', re.IGNORECASE):
+                return pattern
+        except Exception as e:
+            logger.error(f"  ➜ [频道搜索] 拦截规则正则解析错误 '{pattern}': {e}")
+
+    return None
+
+
 def _extract_explicit_seasons(text: str) -> set[int]:
     """从频道消息中提取明确季号；自动订阅用，避免把 S02 当 S01 转存。"""
     text = str(text or '')
@@ -326,6 +391,16 @@ def _channel_resource_season_level(resource: Dict, target_season=None) -> int:
 def _filter_channel_resources_for_auto(resources: List[Dict], media_type: str, target_season=None, require_complete: bool = False, title: str = '') -> List[Dict]:
     filtered = []
     for resource in resources or []:
+        block_rule = _channel_resource_block_rule(resource)
+        if block_rule:
+            logger.info(
+                "  ➜ [频道搜索] 自动流程初检拦截频道资源：命中规则 '%s'，标题=%s，频道=%s",
+                block_rule,
+                resource.get('title') or resource.get('name') or title or '未知',
+                resource.get('source_channel') or resource.get('source_username') or '未知'
+            )
+            continue
+
         if title and not _channel_resource_matches_title(resource, title):
             continue
         if media_type == 'tv':

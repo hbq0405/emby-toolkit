@@ -56,6 +56,71 @@ class TGUserBotManager:
             'custom_regex': cfg.get('custom_regex', {})
         }
 
+    @staticmethod
+    def _channel_rule_matches(target_channel, chat_username, chat_id):
+        """判断一条频道隔离规则是否适用于当前频道。"""
+        target_channel = str(target_channel or '').strip().lower()
+        if not target_channel:
+            return True
+
+        chat_username = str(chat_username or '').strip().lower().lstrip('@')
+        chat_id = str(chat_id or '').strip()
+        target_clean = target_channel.lstrip('@')
+        target_id_clean = target_clean.replace('-100', '') if target_clean.startswith('-100') else target_clean
+        curr_id_clean = chat_id.replace('-100', '') if chat_id.startswith('-100') else chat_id
+
+        return (
+            chat_username == target_clean
+            or chat_id == target_channel
+            or curr_id_clean == target_id_clean
+        )
+
+    def _match_block_rule(self, text, chat_username='', chat_id='', rules=None):
+        """复用频道监听配置里的拦截规则。
+
+        返回命中的规则 pattern；未命中返回 None。
+        该函数只做判断，不决定调用场景。实时监听、统一订阅自动搜索可以调用；
+        手动 TG 搜索和云下载模态框不调用，因此不受拦截规则影响。
+        """
+        if rules is None:
+            rules = (self._get_config().get('block_keywords') or [])
+
+        if not text or not rules:
+            return None
+
+        for rule_obj in rules:
+            if isinstance(rule_obj, str):
+                pattern = rule_obj.strip()
+                target_channel = ''
+            else:
+                pattern = str((rule_obj or {}).get('pattern', '')).strip()
+                target_channel = str((rule_obj or {}).get('channel', '')).strip().lower()
+
+            if not pattern:
+                continue
+
+            if not self._channel_rule_matches(target_channel, chat_username, chat_id):
+                continue
+
+            try:
+                if re.search(pattern, text, re.IGNORECASE):
+                    return pattern
+            except Exception as e:
+                logger.error(f"  ➜ [频道监听] 拦截规则正则解析错误 '{pattern}': {e}")
+
+        return None
+
+    def is_resource_blocked_by_rules(self, resource):
+        """供统一订阅自动流程调用：判断频道历史搜索候选是否命中拦截规则。
+
+        注意：手动 TG 搜索、云下载模态框不调用这个方法，所以仍然允许人工肉眼挑选。
+        """
+        resource = resource or {}
+        text = resource.get('text') or resource.get('remark') or resource.get('title') or ''
+        chat_username = resource.get('source_username') or ''
+        chat_id = resource.get('source_chat_id') or resource.get('chat_id') or ''
+        return self._match_block_rule(text, chat_username=chat_username, chat_id=chat_id)
+
     def start(self):
         """启动后台线程"""
         cfg = self._get_config()
@@ -194,32 +259,15 @@ class TGUserBotManager:
         # =================================================================
         # 自定义关键词拦截逻辑 (支持频道隔离)
         # =================================================================
-        block_keywords = cfg.get('block_keywords', [])
-        if block_keywords:
-            for rule_obj in block_keywords:
-                # 兼容旧版纯字符串
-                if isinstance(rule_obj, str):
-                    pattern = rule_obj
-                    target_channel = ""
-                else:
-                    pattern = rule_obj.get('pattern', '').strip()
-                    target_channel = rule_obj.get('channel', '').strip().lower()
-
-                if not pattern: continue
-
-                # 校验频道归属
-                if target_channel:
-                    target_clean = target_channel.replace('-100', '') if target_channel.startswith('-100') else target_channel
-                    curr_id_clean = chat_id.replace('-100', '') if chat_id.startswith('-100') else chat_id
-                    if not (chat_username.lower() == target_clean or chat_id == target_channel or curr_id_clean == target_clean):
-                        continue # 频道不匹配，跳过此条拦截规则
-
-                try:
-                    if re.search(pattern, text, re.IGNORECASE):
-                        logger.debug(f"  ➜ [频道监听] 消息触发拦截规则 '{pattern}'，已直接丢弃。")
-                        return
-                except Exception as e:
-                    logger.error(f"  ➜ [频道监听] 拦截规则正则解析错误 '{pattern}': {e}")
+        matched_block_rule = self._match_block_rule(
+            text,
+            chat_username=chat_username,
+            chat_id=chat_id,
+            rules=cfg.get('block_keywords', [])
+        )
+        if matched_block_rule:
+            logger.debug(f"  ➜ [频道监听] 消息触发拦截规则 '{matched_block_rule}'，已直接丢弃。")
+            return
 
         # =================================================================
         # ★ 关键词转存匹配逻辑
@@ -797,6 +845,7 @@ class TGUserBotManager:
             'unlock_points': 0,
             'source_channel': chat_title,
             'source_username': chat_username,
+            'source_chat_id': chat_id,
             'message_id': msg_id,
             'message_date': date_text,
             'message_link': message_link,

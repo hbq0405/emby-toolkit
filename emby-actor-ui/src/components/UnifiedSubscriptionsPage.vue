@@ -271,11 +271,11 @@
         <n-form-item label="订阅优先通道">
           <n-radio-group v-model:value="strategyConfig.subscription_priority">
             <n-radio-button value="mp">MoviePilot 优先</n-radio-button>
-            <n-radio-button value="hdhive">影巢 (HDHive) 优先</n-radio-button>
+            <n-radio-button value="hdhive">云下载优先</n-radio-button>
           </n-radio-group>
           <template #feedback>
-            <b>影巢优先：</b>优先去影巢检索，成功则直接 115 秒传整理，失败或无资源再交由 MP 兜底。<br/>
-            <span style="color: var(--n-warning-color);">* 注：因影巢API限制，剧集订阅不保证准确性。</span>
+            <b>云下载优先：</b>优先从云资源下载，成功则直接 115 秒传整理，失败或无资源再交由 MP 兜底。云资源过滤规则在影巢和频道中应用。<br/>
+            <span style="color: var(--n-warning-color);">* 注：因云资源模糊搜索限制，剧集订阅不保证绝对准确性。</span>
           </template>
         </n-form-item>
         <n-alert type="info" :show-icon="false" style="margin-bottom: 16px;">
