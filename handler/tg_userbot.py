@@ -678,28 +678,125 @@ class TGUserBotManager:
         text = re.sub(r'[\s\-_·.．・:：,，;；!！?？()\[\]【】{}<>《》"“”\'’‘`~～/\\|]+', '', text)
         return text
 
+    @staticmethod
+    def _extract_explicit_tmdb_id(text):
+        """从频道正文中提取明确标注的 TMDb ID。
+
+        支持常见格式：
+        - TMDB ID: 12345 / TMDb：12345 / TMDBID 12345
+        - {tmdb-12345}
+        - tmdb-12345
+        """
+        text = str(text or '')
+        patterns = [
+            r'\bTMDB\s*(?:ID|Id|id)?\s*[:：#-]?\s*(\d{2,10})\b',
+            r'\{\s*tmdb-(\d{2,10})\s*\}',
+            r'\btmdb-(\d{2,10})\b',
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                return match.group(1)
+        return None
+
+    @staticmethod
+    def _extract_year_candidates(text):
+        """提取频道消息中的可能年份。只取 1900-2099，避免把大小/集数当年份。"""
+        years = set()
+        for match in re.finditer(r'(?<!\d)((?:19|20)\d{2})(?!\d)', str(text or '')):
+            try:
+                years.add(int(match.group(1)))
+            except Exception:
+                pass
+        return years
+
+    @classmethod
+    def _channel_text_matches_year(cls, text, expected_year):
+        expected_year = str(expected_year or '').strip()
+        if not expected_year:
+            return True
+        try:
+            expected = int(expected_year[:4])
+        except Exception:
+            return True
+        years = cls._extract_year_candidates(text)
+        # 兜底逻辑要求“片名 + 年份”：没有年份也视为不匹配。
+        return expected in years
+
+    @staticmethod
+    def _channel_title_candidate_lines(text):
+        """提取更像标题的行，避免演员/简介/标签里的关键词造成串台。"""
+        candidates = []
+        text = str(text or '')
+        lines = [re.sub(r'\s+', ' ', line).strip() for line in text.splitlines() if line.strip()]
+
+        title_patterns = [
+            r'(?:^|[\[【📺🎬🎥🎞️ ]+)(?:电影|影片|剧集|电视剧|番剧|动漫|片名|标题|名称)\s*[:：]\s*(.+)$',
+            r'^[\[【]([^\]】]{2,80})[\]】]',
+        ]
+        for line in lines[:12]:
+            clean = line.strip()
+            for pattern in title_patterns:
+                match = re.search(pattern, clean, re.IGNORECASE)
+                if match:
+                    value = match.group(1).strip()
+                    value = re.split(r'\s+(?:TMDB|评分|类型|分类|大小|质量|主演|标签)\s*[:：]', value, 1, flags=re.IGNORECASE)[0].strip()
+                    if value:
+                        candidates.append(value)
+
+        # 兜底：前几行里不像元数据字段的行。
+        meta_prefix = re.compile(
+            r'^(?:⭐|🌟|🏷|📁|💾|🎬|👥|🎭|🌏|🗣|📺|🔥|📎|🔗|简介|分享|标签|分类|类型|评分|主演|大小|质量|版本|语言|地区|字幕|链接|公映|投稿|搜索|机场)\s*[:：]',
+            re.IGNORECASE
+        )
+        for line in lines[:6]:
+            clean = re.sub(r'[#*_`>]+', ' ', line).strip()
+            if not clean or meta_prefix.search(clean):
+                continue
+            if re.search(r'https?://|TMDB\s*ID|#\w+', clean, re.IGNORECASE):
+                continue
+            if len(clean) <= 100:
+                candidates.append(clean)
+
+        # 去重保序。
+        seen = set()
+        result = []
+        for item in candidates:
+            key = item.lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            result.append(item)
+        return result
+
     @classmethod
     def _channel_text_matches_query_title(cls, text, query):
-        """频道历史搜索的二次标题校验。
+        """频道历史搜索的标题校验。
 
-        Telethon 的 search 如果使用 TMDb ID、年份等短词，可能会搜到同 ID/同年份但片名完全不同的消息。
-        手动云搜索和自动订阅都必须至少命中片名本身，避免“惊天魔盗团”混进“穿普拉达的女王”。
+        这里只校验“标题候选行”，不再拿全文匹配，避免演员、简介、标签中出现搜索词导致串台。
+        TMDb ID 的优先判定在 _extract_channel_resource_candidate() 里处理；本函数只服务于
+        “没有 TMDb ID 时的片名兜底”。
         """
         query = str(query or '').strip()
         if not query:
             return True
 
         normalized_query = cls._normalize_title_for_match(query)
-        normalized_text = cls._normalize_title_for_match(text)
-
         if not normalized_query:
             return True
 
-        # 中文/无空格标题：要求完整片名出现在消息中。
-        if len(normalized_query) >= 3 and normalized_query in normalized_text:
-            return True
+        candidates = cls._channel_title_candidate_lines(text)
+        if not candidates:
+            return False
 
-        # 英文或带空格标题：至少主要单词大部分命中。
+        # 中文/无空格标题：要求完整片名出现在标题候选里，或标题候选完整出现在片名中。
+        if len(normalized_query) >= 3:
+            for cand in candidates:
+                normalized_cand = cls._normalize_title_for_match(cand)
+                if normalized_query in normalized_cand or normalized_cand in normalized_query:
+                    return True
+
+        # 英文/混合标题：主要词在标题候选里大部分命中。
         words = [
             w.lower()
             for w in re.findall(r'[A-Za-z0-9]+|[\u4e00-\u9fa5]{2,}', query)
@@ -708,17 +805,17 @@ class TGUserBotManager:
         if not words:
             return False
 
+        candidate_blob = ' '.join(candidates).lower()
+        normalized_blob = cls._normalize_title_for_match(candidate_blob)
         hit = 0
-        raw_text_lower = str(text or '').lower()
         for word in words:
-            if cls._normalize_title_for_match(word) in normalized_text or word in raw_text_lower:
+            if cls._normalize_title_for_match(word) in normalized_blob or word in candidate_blob:
                 hit += 1
 
-        # 短标题要全命中，长标题允许少量漏词。
         required = len(words) if len(words) <= 2 else max(2, int(len(words) * 0.7))
         return hit >= required
 
-    def _extract_channel_resource_candidate(self, message, chat, query='', expected_tmdb_id=None, expected_media_type=None, strict_title_match=False):
+    def _extract_channel_resource_candidate(self, message, chat, query='', expected_tmdb_id=None, expected_year=None, expected_media_type=None, strict_title_match=False):
         """把频道消息解析成可展示、可转存的资源候选。"""
         text = getattr(message, 'raw_text', None) or getattr(message, 'message', '') or ''
         if not text:
@@ -750,14 +847,6 @@ class TGUserBotManager:
         if not target_link and not magnet_url:
             return None
 
-        if strict_title_match and query and not self._channel_text_matches_query_title(text, query):
-            logger.debug(
-                "  ➜ [频道搜索] 丢弃疑似串台结果：搜索片名=%s，消息预览=%s",
-                query,
-                self._normalize_text(text)[:80]
-            )
-            return None
-
         chat_username = getattr(chat, 'username', '') or ''
         chat_id = str(getattr(chat, 'id', ''))
         chat_title = getattr(chat, 'title', '') or chat_username or chat_id
@@ -766,10 +855,32 @@ class TGUserBotManager:
         tmdb_match = self._apply_search_regex(text, custom_regex.get('tmdb', []), DEFAULT_TG_REGEX.get('tmdb', []), chat_username, chat_id)
         if tmdb_match:
             tmdb_id = tmdb_match.group(1)
+        if not tmdb_id:
+            tmdb_id = self._extract_explicit_tmdb_id(text)
 
-        # 如果频道正文明确写了别的 TMDb ID，则认为不是当前条目，避免误搜。
-        if expected_tmdb_id and tmdb_id and str(tmdb_id) != str(expected_tmdb_id):
-            return None
+        # 匹配优先级：
+        # 1. 频道正文明确写了 TMDb ID：只按 ID 判断。ID 相同直接通过；ID 不同直接丢弃。
+        # 2. 频道正文没有 TMDb ID：才使用“片名 + 年份”兜底，年份不一致或缺失都丢弃。
+        if expected_tmdb_id and tmdb_id:
+            if str(tmdb_id) != str(expected_tmdb_id):
+                logger.debug(
+                    "  ➜ [频道搜索] 丢弃 TMDb ID 不匹配结果：目标=%s，消息=%s，预览=%s",
+                    expected_tmdb_id, tmdb_id, self._normalize_text(text)[:80]
+                )
+                return None
+        elif strict_title_match and query:
+            if not self._channel_text_matches_query_title(text, query):
+                logger.debug(
+                    "  ➜ [频道搜索] 丢弃片名不匹配结果：搜索片名=%s，消息预览=%s",
+                    query, self._normalize_text(text)[:80]
+                )
+                return None
+            if expected_year and not self._channel_text_matches_year(text, expected_year):
+                logger.debug(
+                    "  ➜ [频道搜索] 丢弃年份不匹配结果：搜索片名=%s，目标年份=%s，消息预览=%s",
+                    query, expected_year, self._normalize_text(text)[:80]
+                )
+                return None
 
         title = None
         year = None
@@ -883,10 +994,8 @@ class TGUserBotManager:
             q = str(q or '').strip()
             if q and q not in search_queries:
                 search_queries.append(q)
-        # TMDb ID 在部分频道里不可靠，且容易搜出“同 ID 标错片名”的串台结果。
-        # 默认只按片名/片名+年份搜索；确需按 ID 搜索时由调用方显式开启。
-        if include_tmdb_query and tmdb_id and str(tmdb_id) not in search_queries:
-            search_queries.append(str(tmdb_id))
+        # 搜索阶段始终按片名/片名+年份/片名+季号搜索，避免漏掉未标 TMDb ID 的频道资源。
+        # TMDb ID 只用于返回结果的优先判定，不再作为搜索关键词。
         if not search_queries:
             return {'ok': False, 'error': '搜索关键词为空', 'results': []}
 
@@ -925,6 +1034,7 @@ class TGUserBotManager:
                             entity,
                             query=query,
                             expected_tmdb_id=tmdb_id,
+                            expected_year=year,
                             expected_media_type=media_type,
                             strict_title_match=strict_title_match,
                         )

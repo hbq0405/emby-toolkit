@@ -238,16 +238,61 @@ def _normalize_title_for_channel_match(value: str) -> str:
     return text
 
 
+def _extract_channel_resource_years(resource: Dict) -> set[int]:
+    text = _channel_resource_text(resource)
+    years = set()
+    for match in re.finditer(r'(?<!\d)((?:19|20)\d{2})(?!\d)', text):
+        try:
+            years.add(int(match.group(1)))
+        except Exception:
+            pass
+    return years
+
+
+def _channel_resource_matches_year(resource: Dict, year=None) -> bool:
+    year = str(year or '').strip()
+    if not year:
+        return True
+    try:
+        expected = int(year[:4])
+    except Exception:
+        return True
+    years = _extract_channel_resource_years(resource)
+    # 自动流程的无 TMDb ID 兜底必须“片名 + 年份”同时命中；无年份也不放行。
+    return expected in years
+
+
 def _channel_resource_matches_title(resource: Dict, title: str) -> bool:
     title = str(title or '').strip()
     if not title:
         return True
 
-    text = _channel_resource_text(resource)
-    normalized_title = _normalize_title_for_channel_match(title)
-    normalized_text = _normalize_title_for_channel_match(text)
+    # 优先使用 tg_userbot 已经抽取出的标题字段；不要用全文匹配，避免演员/简介/标签串台。
+    candidate_parts = []
+    for key in ('title', 'name'):
+        value = resource.get(key)
+        if value:
+            candidate_parts.append(str(value))
 
-    if normalized_title and len(normalized_title) >= 3 and normalized_title in normalized_text:
+    # 如果 title/name 缺失，再退一步从正文前几行找标题样式字段。
+    if not candidate_parts:
+        text = str(resource.get('text') or resource.get('remark') or '')
+        for line in text.splitlines()[:8]:
+            line = re.sub(r'\s+', ' ', line).strip()
+            if not line:
+                continue
+            match = re.search(r'(?:电影|影片|剧集|电视剧|番剧|动漫|片名|标题|名称)\s*[:：]\s*(.+)$', line, re.IGNORECASE)
+            if match:
+                candidate_parts.append(match.group(1).strip())
+                break
+
+    if not candidate_parts:
+        return False
+
+    normalized_title = _normalize_title_for_channel_match(title)
+    normalized_text = _normalize_title_for_channel_match(' '.join(candidate_parts))
+
+    if normalized_title and len(normalized_title) >= 3 and (normalized_title in normalized_text or normalized_text in normalized_title):
         return True
 
     words = [
@@ -258,14 +303,37 @@ def _channel_resource_matches_title(resource: Dict, title: str) -> bool:
     if not words:
         return False
 
+    raw_text_lower = ' '.join(candidate_parts).lower()
     hit = 0
-    raw_text_lower = text.lower()
     for word in words:
         if _normalize_title_for_channel_match(word) in normalized_text or word in raw_text_lower:
             hit += 1
 
     required = len(words) if len(words) <= 2 else max(2, int(len(words) * 0.7))
     return hit >= required
+
+
+def _channel_resource_matches_identity(resource: Dict, tmdb_id=None, title: str = '', year=None) -> bool:
+    """频道资源身份校验。统一订阅自动流程使用。
+
+    规则：
+    1. 资源正文/字段里有 TMDb ID：优先按 TMDb ID 判断，相等即通过，不等即丢弃。
+    2. 没有 TMDb ID：才走片名 + 年份兜底；年份不对或缺失则丢弃。
+    """
+    resource = resource or {}
+    expected_tmdb = str(tmdb_id or '').strip()
+    resource_tmdb = str(resource.get('tmdb_id') or '').strip()
+
+    if expected_tmdb and resource_tmdb:
+        return resource_tmdb == expected_tmdb
+
+    if title and not _channel_resource_matches_title(resource, title):
+        return False
+
+    if year and not _channel_resource_matches_year(resource, year):
+        return False
+
+    return bool(title)
 
 
 def _fallback_channel_rule_matches(target_channel, chat_username, chat_id):
@@ -388,7 +456,7 @@ def _channel_resource_season_level(resource: Dict, target_season=None) -> int:
     return 1 if target == 1 else -1
 
 
-def _filter_channel_resources_for_auto(resources: List[Dict], media_type: str, target_season=None, require_complete: bool = False, title: str = '') -> List[Dict]:
+def _filter_channel_resources_for_auto(resources: List[Dict], media_type: str, target_season=None, require_complete: bool = False, title: str = '', tmdb_id=None, year=None) -> List[Dict]:
     filtered = []
     for resource in resources or []:
         block_rule = _channel_resource_block_rule(resource)
@@ -401,7 +469,7 @@ def _filter_channel_resources_for_auto(resources: List[Dict], media_type: str, t
             )
             continue
 
-        if title and not _channel_resource_matches_title(resource, title):
+        if not _channel_resource_matches_identity(resource, tmdb_id=tmdb_id, title=title, year=year):
             continue
         if media_type == 'tv':
             season_level = _channel_resource_season_level(resource, target_season)
@@ -506,7 +574,7 @@ def _enqueue_channel_resource_download(resource: Dict, tmdb_id, media_type: str,
     return True
 
 
-def _try_download_from_channel_first(tmdb_id, media_type, title, item_label='媒体', target_season=None, require_complete=False):
+def _try_download_from_channel_first(tmdb_id, media_type, title, item_label='媒体', target_season=None, require_complete=False, year=None):
     """统一订阅自动流程的频道历史搜索兜底；剧集/季必须启用季过滤。"""
     if TGUserBotManager is None:
         logger.info('  ➜ [频道搜索] 当前环境未加载 TGUserBotManager，跳过频道搜索。')
@@ -540,7 +608,7 @@ def _try_download_from_channel_first(tmdb_id, media_type, title, item_label='媒
             media_type=media_type,
             tmdb_id=tmdb_id,
             limit=50,
-            extra_queries=_build_channel_extra_queries(title, target_season=target_season),
+            extra_queries=_build_channel_extra_queries(title, year=year, target_season=target_season),
             timeout=35,
             include_tmdb_query=False,
             strict_title_match=True,
@@ -562,6 +630,8 @@ def _try_download_from_channel_first(tmdb_id, media_type, title, item_label='媒
             target_season=target_season,
             require_complete=require_complete,
             title=title,
+            tmdb_id=tmdb_id,
+            year=year,
         )
 
         if not candidates:
@@ -592,7 +662,7 @@ def _try_download_from_channel_first(tmdb_id, media_type, title, item_label='媒
         return False
 
 
-def _try_download_from_cloud_first(tmdb_id, media_type, title, item_label='媒体', target_season=None, require_complete=False):
+def _try_download_from_cloud_first(tmdb_id, media_type, title, item_label='媒体', target_season=None, require_complete=False, year=None):
     """云资源优先：先影巢，失败后频道历史搜索；自动流程对剧集启用季过滤。"""
     if _try_download_from_hdhive_first(
         tmdb_id,
@@ -611,6 +681,7 @@ def _try_download_from_cloud_first(tmdb_id, media_type, title, item_label='媒�
         item_label=item_label,
         target_season=target_season,
         require_complete=require_complete,
+        year=year,
     ):
         return '频道'
 
@@ -1393,6 +1464,18 @@ def task_auto_subscribe(processor):
             item_type = item['item_type']
             title = item['title'] # 默认为 item 标题
             season_number = item.get('season_number')
+            item_year = ''
+            for _year_key in ('release_date', 'first_air_date', 'air_date', 'year'):
+                _year_value = item.get(_year_key)
+                if _year_value:
+                    _match = re.search(r'((?:19|20)\d{2})', str(_year_value))
+                    if _match:
+                        item_year = _match.group(1)
+                        break
+            if not item_year:
+                _match = re.search(r'\(((?:19|20)\d{2})\)', str(item.get('title') or ''))
+                if _match:
+                    item_year = _match.group(1)
             parent_tmdb_id = None
 
             # 如果是季/集，修正标题为剧集标题
@@ -1493,7 +1576,8 @@ def task_auto_subscribe(processor):
                         title,
                         item_label=hdhive_item_label,
                         target_season=hdhive_target_season,
-                        require_complete=hdhive_require_complete
+                        require_complete=hdhive_require_complete,
+                        year=item_year
                     )
                     if cloud_source:
                         success = True
