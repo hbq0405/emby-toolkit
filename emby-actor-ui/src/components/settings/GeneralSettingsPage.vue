@@ -551,7 +551,7 @@
                         </n-switch>
                     </n-form-item>
                     <n-form-item label="MP分类" path="p115_mp_classify">
-                        <n-switch v-model:value="configModel.p115_mp_classify">
+                        <n-switch v-model:value="configModel.p115_mp_classify" :disabled="organizeDependentDisabled">
                             <template #checked>由MP分类和重命名</template>
                             <template #unchecked>仅上传待整理</template>
                         </n-switch>
@@ -561,6 +561,7 @@
                             v-model:value="configModel.p115_min_video_size" 
                             :min="0" 
                             :step="10" 
+                            :disabled="organizeDependentDisabled"
                             style="width: 150px;"
                         >
                             <template #suffix>MB</template>
@@ -570,7 +571,7 @@
                         </template>
                     </n-form-item>
                     <n-form-item label="生活事件监控" path="p115_life_monitor_enabled">
-                        <n-switch v-model:value="configModel.p115_life_monitor_enabled">
+                        <n-switch v-model:value="configModel.p115_life_monitor_enabled" :disabled="organizeDependentDisabled">
                             <template #checked>开启监控</template>
                             <template #unchecked>关闭监控</template>
                         </n-switch>
@@ -579,13 +580,13 @@
                         </template>
                     </n-form-item>
                     <n-form-item label="事件检查间隔 (分钟)" path="p115_life_monitor_interval" v-if="configModel.p115_life_monitor_enabled">
-                        <n-input-number v-model:value="configModel.p115_life_monitor_interval" :min="5" :step="1" placeholder="5" style="width: 100%;" />
+                        <n-input-number v-model:value="configModel.p115_life_monitor_interval" :min="5" :step="1" :disabled="organizeDependentDisabled" placeholder="5" style="width: 100%;" />
                         <template #feedback>
                             <n-text depth="3" style="font-size:0.8em;">最短5分钟。过短可能触发风控。</n-text>
                         </template>
                     </n-form-item>
                     <n-form-item label="媒体信息中心化" path="p115_mediainfo_center">
-                        <n-switch v-model:value="configModel.p115_mediainfo_center">
+                        <n-switch v-model:value="configModel.p115_mediainfo_center" :disabled="organizeDependentDisabled">
                             <template #checked>共享媒体信息</template>
                             <template #unchecked>本地媒体信息</template>
                         </n-switch>
@@ -594,7 +595,7 @@
                         </template>
                     </n-form-item>
                     <n-form-item label="媒体信息格式化" path="p115_generate_mediainfo">
-                      <n-switch v-model:value="configModel.p115_generate_mediainfo">
+                      <n-switch v-model:value="configModel.p115_generate_mediainfo" :disabled="organizeDependentDisabled">
                           <template #checked>生成自定义媒体信息</template>
                           <template #unchecked>保留原版媒体信息</template>
                       </n-switch>
@@ -608,6 +609,7 @@
                       <n-button
                           @click="openDefaultStreamConfig"
                           :type="configModel.p115_generate_mediainfo ? 'primary' : 'warning'"
+                          :disabled="organizeDependentDisabled || !configModel.p115_generate_mediainfo"
                           ghost
                       >
                           <template #icon><n-icon :component="OptionsIcon" /></template>
@@ -620,7 +622,7 @@
                       </template>
                   </n-form-item>
                     <n-form-item label="同步下载字幕" path="p115_download_subs">
-                        <n-switch v-model:value="configModel.p115_download_subs">
+                        <n-switch v-model:value="configModel.p115_download_subs" :disabled="organizeDependentDisabled">
                             <template #checked>下载到本地</template>
                             <template #unchecked>跳过字幕</template>
                         </n-switch>
@@ -629,7 +631,7 @@
                         </template>
                     </n-form-item>
                     <n-form-item label="全量同步时清理本地" path="p115_local_cleanup">
-                        <n-switch v-model:value="configModel.p115_local_cleanup">
+                        <n-switch v-model:value="configModel.p115_local_cleanup" :disabled="organizeDependentDisabled">
                             <template #checked>清理失效文件</template>
                             <template #unchecked>保留本地文件</template>
                         </n-switch>
@@ -638,7 +640,7 @@
                         </template>
                     </n-form-item>
                     <n-form-item label="联动删除网盘文件" path="p115_enable_sync_delete">
-                        <n-switch v-model:value="configModel.p115_enable_sync_delete">
+                        <n-switch v-model:value="configModel.p115_enable_sync_delete" :disabled="organizeDependentDisabled">
                             <template #checked>删除网盘源文件</template>
                             <template #unchecked>仅移除本地缓存</template>
                         </n-switch>
@@ -2190,6 +2192,7 @@ const handleImportSelectionChange = (currentSelection) => {
 const formRef = ref(null);
 const formRules = { trigger: ['input', 'blur'] };
 const { configModel, loadingConfig, savingConfig, configError, handleSaveConfig } = useConfig();
+const organizeDependentDisabled = computed(() => !configModel.value?.p115_enable_organize);
 const message = useMessage();
 const dialog = useDialog();
 
