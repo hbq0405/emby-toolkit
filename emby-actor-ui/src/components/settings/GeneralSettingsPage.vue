@@ -571,7 +571,7 @@
                         </template>
                     </n-form-item>
                     <n-form-item label="生活事件监控" path="p115_life_monitor_enabled">
-                        <n-switch v-model:value="configModel.p115_life_monitor_enabled">
+                        <n-switch v-model:value="configModel.p115_life_monitor_enabled" :disabled="organizeDependentDisabled">
                             <template #checked>开启监控</template>
                             <template #unchecked>关闭监控</template>
                         </n-switch>
@@ -580,7 +580,7 @@
                         </template>
                     </n-form-item>
                     <n-form-item label="事件检查间隔 (分钟)" path="p115_life_monitor_interval" v-if="configModel.p115_life_monitor_enabled">
-                        <n-input-number v-model:value="configModel.p115_life_monitor_interval" :min="5" :step="1" placeholder="5" style="width: 100%;" />
+                        <n-input-number v-model:value="configModel.p115_life_monitor_interval" :min="5" :step="1" :disabled="organizeDependentDisabled" placeholder="5" style="width: 100%;" />
                         <template #feedback>
                             <n-text depth="3" style="font-size:0.8em;">最短5分钟。过短可能触发风控。</n-text>
                         </template>
