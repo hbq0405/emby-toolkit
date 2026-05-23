@@ -1041,7 +1041,16 @@ class TGUserBotManager:
                         if not candidate:
                             continue
 
-                        dedup_key = candidate.get('target_link') or candidate.get('magnet_url') or f"{candidate.get('source_username')}:{candidate.get('message_id')}"
+                        # 不再用 115 链接/磁力链接做全局去重。
+                        # 同一资源经常会被热更频道、完结频道、转发频道重复发布，链接可能完全相同。
+                        # 如果按 target_link 去重，排在后面的频道（例如完结频道）会被隐藏，导致“搜不彻底”。
+                        # 这里只去重同一频道同一条消息，避免同一消息被多个 search query 重复命中。
+                        msg_id = candidate.get('message_id')
+                        source_key = candidate.get('source_username') or candidate.get('source_chat_id') or candidate.get('source_channel') or ''
+                        if msg_id:
+                            dedup_key = f"{source_key}:{msg_id}"
+                        else:
+                            dedup_key = f"{source_key}:{candidate.get('target_link') or candidate.get('magnet_url') or candidate.get('title')}"
                         if dedup_key in seen:
                             continue
                         seen.add(dedup_key)
