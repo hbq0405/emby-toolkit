@@ -853,23 +853,60 @@ def task_full_sync_strm_and_subs(processor=None):
                 cleaned_dirs = 0
                 import shutil  # 引入 shutil 用于连锅端
                 
+                # ★ 提取所有有效 STRM 的基础路径 (不含扩展名)
+                valid_strm_bases = set()
+                for p in valid_local_files:
+                    if p.lower().endswith('.strm'):
+                        valid_strm_bases.add(os.path.splitext(p)[0])
+
+                # 目录级元数据白名单 (不依赖具体的 strm 名字，随目录共存亡)
+                folder_metadata_names = {
+                    'tvshow.nfo', 'season.nfo', 'movie.nfo', 
+                    'poster.jpg', 'folder.jpg', 'fanart.jpg', 'landscape.jpg', 
+                    'logo.png', 'clearlogo.png', 'banner.jpg', 'backdrop.jpg'
+                }
+                
                 for cid, rel_path in cid_to_rel_path.items():
                     target_local_dir = os.path.join(local_root, rel_path)
                     if not os.path.exists(target_local_dir): continue
                     
-                    # 1. 先清理失效的 STRM、字幕文件和 mediainfo
+                    # 1. ★ 智能清理：清理失效的 STRM 及其衍生的 nfo, jpg, mediainfo, 字幕等
                     for root_dir, dirs, files in os.walk(target_local_dir):
+                        # 找出当前目录下所有有效的 strm 基础路径
+                        current_dir_valid_bases = [
+                            b for b in valid_strm_bases 
+                            if os.path.dirname(b) == root_dir
+                        ]
+
                         for file in files:
-                            ext = file.split('.')[-1].lower()
-                            if ext in known_sub_exts or ext == 'strm' or file.endswith('-mediainfo.json'):
-                                file_path = os.path.abspath(os.path.join(root_dir, file))
-                                if file_path not in valid_local_files:
-                                    try:
-                                        os.remove(file_path)
-                                        cleaned_files += 1
-                                        logger.debug(f"  ➜ [清理] 删除失效文件: {file}")
-                                    except Exception as e:
-                                        logger.warning(f"  ➜ 删除文件失败 {file}: {e}")
+                            file_path = os.path.abspath(os.path.join(root_dir, file))
+                            
+                            # 规则 1: 如果文件在有效名单中 (有效的 strm, 刚下载的字幕, 刚生成的 mediainfo)，保留
+                            if file_path in valid_local_files:
+                                continue
+                                
+                            # 规则 2: 如果是目录级别的元数据文件，保留 (交由后面的空目录清理逻辑处理)
+                            if file.lower() in folder_metadata_names:
+                                continue
+                                
+                            # 规则 3: 检查该文件是否是当前目录下某个有效 strm 的衍生文件
+                            # 衍生文件通常在基础名之后跟着 . (如 .nfo, .zh.srt) 或 - (如 -thumb.jpg, -mediainfo.json)
+                            is_derivative = False
+                            for valid_base in current_dir_valid_bases:
+                                if file_path.startswith(valid_base + '.') or file_path.startswith(valid_base + '-'):
+                                    is_derivative = True
+                                    break
+                            
+                            if is_derivative:
+                                continue
+                                
+                            # 规则 4: 既不是有效文件，也不是目录元数据，也不是有效 strm 的衍生文件 -> 判定为失效/孤儿文件，删除！
+                            try:
+                                os.remove(file_path)
+                                cleaned_files += 1
+                                logger.debug(f"  ➜ [清理] 删除失效/孤儿文件: {file}")
+                            except Exception as e:
+                                logger.warning(f"  ➜ 删除文件失败 {file}: {e}")
                     
                     # 2. ★ 终极暴力清理：自下而上扫描，只要没有 STRM，无视任何残留文件直接连锅端！
                     for root_dir, dirs, files in os.walk(target_local_dir, topdown=False):
@@ -894,7 +931,7 @@ def task_full_sync_strm_and_subs(processor=None):
                                 except Exception as e:
                                     logger.warning(f"  ➜ 删除目录失败 {dir_path}: {e}")
                             
-                logger.info(f"  ➜ 清理完成: 删除了 {cleaned_files} 个失效文件, {cleaned_dirs} 个无STRM的空壳目录。")
+                logger.info(f"  ➜ 清理完成: 删除了 {cleaned_files} 个失效/孤儿文件, {cleaned_dirs} 个无STRM的空壳目录。")
 
         update_progress(100, "=== 全量生成STRM任务结束 ===")
 
