@@ -467,14 +467,19 @@ def api_unified_subscription_status():
                             logger.error(f"API /subscription/status: {error_msg}")
                             continue 
                     
-                    config = config_manager.APP_CONFIG
-                    if not moviepilot.cancel_subscription(id_for_mp, item_type, config, season_for_mp):
-                        error_msg = f"处理 TMDb ID {tmdb_id} 失败：MoviePilot 取消订阅失败。"
-                        errors.append(error_msg)
-                        logger.error(f"API /subscription/status: {error_msg}")
-                        continue
+                    # 检查是否配置了 MP
+                    mp_config = settings_db.get_setting('mp_config') or {}
+                    if mp_config.get('moviepilot_url'):
+                        config = config_manager.APP_CONFIG
+                        if not moviepilot.cancel_subscription(id_for_mp, item_type, config, season_for_mp):
+                            error_msg = f"处理 TMDb ID {tmdb_id} 失败：MoviePilot 取消订阅失败。"
+                            errors.append(error_msg)
+                            logger.error(f"API /subscription/status: {error_msg}")
+                            continue
+                        else:
+                            logger.info(f"  ➜ MoviePilot 订阅已取消 (ID: {id_for_mp})")
                     else:
-                        logger.info(f"  ➜ MoviePilot 订阅已取消 (ID: {id_for_mp})")
+                        logger.info(f"  ➜ 未配置 MoviePilot，跳过取消 MoviePilot 订阅 (ID: {id_for_mp})")
 
             # ==================================================================
             # 本地数据库状态更新
@@ -513,36 +518,40 @@ def api_unified_subscription_status():
                 )
                 # 尝试恢复 MP 订阅状态 (S -> R)
                 try:
-                    config = config_manager.APP_CONFIG
-                    mp_tmdb_id = tmdb_id
-                    mp_season = None
-                    
-                    media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
-                    details = media_details_map.get(tmdb_id, {})
-                    
-                    if item_type == 'Season':
-                        if details.get('parent_series_tmdb_id'):
-                            mp_tmdb_id = details['parent_series_tmdb_id']
-                            mp_season = details.get('season_number')
+                    mp_config = settings_db.get_setting('mp_config') or {}
+                    if mp_config.get('moviepilot_url'):
+                        config = config_manager.APP_CONFIG
+                        mp_tmdb_id = tmdb_id
+                        mp_season = None
+                        
+                        media_details_map = media_db.get_media_details_by_tmdb_ids([tmdb_id])
+                        details = media_details_map.get(tmdb_id, {})
+                        
+                        if item_type == 'Season':
+                            if details.get('parent_series_tmdb_id'):
+                                mp_tmdb_id = details['parent_series_tmdb_id']
+                                mp_season = details.get('season_number')
 
-                    if not moviepilot.update_subscription_status(int(mp_tmdb_id), mp_season, 'R', config):
-                        logger.warning(f"  ➜ [状态同步] 切换 MP 状态失败，尝试重新提交订阅...")
-                        payload = {
-                            "tmdbid": int(mp_tmdb_id),
-                            "type": "电影" if item_type == 'Movie' else "电视剧"
-                        }
-                        if mp_season is not None:
-                            payload['season'] = mp_season
-                            # ★★★ 核心修复：补充剧集名称 ★★★
-                            series_name = media_db.get_series_title_by_tmdb_id(str(mp_tmdb_id))
-                            if series_name:
-                                payload['name'] = series_name
-                        elif item_type == 'Movie':
-                            payload['name'] = details.get('title', '')
-                            
-                        moviepilot.subscribe_with_custom_payload(payload, config)
+                        if not moviepilot.update_subscription_status(int(mp_tmdb_id), mp_season, 'R', config):
+                            logger.warning(f"  ➜ [状态同步] 切换 MP 状态失败，尝试重新提交订阅...")
+                            payload = {
+                                "tmdbid": int(mp_tmdb_id),
+                                "type": "电影" if item_type == 'Movie' else "电视剧"
+                            }
+                            if mp_season is not None:
+                                payload['season'] = mp_season
+                                # ★★★ 核心修复：补充剧集名称 ★★★
+                                series_name = media_db.get_series_title_by_tmdb_id(str(mp_tmdb_id))
+                                if series_name:
+                                    payload['name'] = series_name
+                            elif item_type == 'Movie':
+                                payload['name'] = details.get('title', '')
+                                
+                            moviepilot.subscribe_with_custom_payload(payload, config)
+                        else:
+                            logger.info(f"  ➜ [状态同步] 已通知 MP 恢复搜索: {mp_tmdb_id}")
                     else:
-                        logger.info(f"  ➜ [状态同步] 已通知 MP 恢复搜索: {mp_tmdb_id}")
+                        logger.info(f"  ➜ 未配置 MoviePilot，跳过恢复 MoviePilot 订阅状态 (ID: {tmdb_id})")
 
                 except Exception as e_sync:
                     logger.error(f"  ➜ [状态同步] 恢复 MoviePilot 订阅状态时出错: {e_sync}")
