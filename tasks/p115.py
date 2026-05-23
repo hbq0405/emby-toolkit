@@ -848,10 +848,11 @@ def task_full_sync_strm_and_subs(processor=None):
             elif not valid_local_files and files_generated == 0:
                 logger.warning("  ➜ 警告：本次同步未获取到任何有效文件，为防止误删，已跳过本地清理阶段！")
             else:
-                update_progress(90, "  ➜ 正在比对并清理本地失效文件与空壳目录...")
+                update_progress(90, "  ➜ 正在比稳并清理本地失效文件与空壳目录...")
                 cleaned_files = 0
                 cleaned_dirs = 0
-                import shutil  # 引入 shutil 用于连锅端
+                import shutil
+                import re  # ★ 引入正则模块
                 
                 # ★ 提取所有有效 STRM 的基础路径 (不含扩展名)
                 valid_strm_bases = set()
@@ -859,11 +860,12 @@ def task_full_sync_strm_and_subs(processor=None):
                     if p.lower().endswith('.strm'):
                         valid_strm_bases.add(os.path.splitext(p)[0])
 
-                # 目录级元数据白名单 (不依赖具体的 strm 名字，随目录共存亡)
-                folder_metadata_names = {
-                    'tvshow.nfo', 'season.nfo', 'movie.nfo', 
+                # 目录级元数据白名单 (精确匹配)
+                exact_metadata_names = {
+                    'tvshow.nfo', 'season.nfo', 'movie.nfo', 'collection.nfo',
                     'poster.jpg', 'folder.jpg', 'fanart.jpg', 'landscape.jpg', 
-                    'logo.png', 'clearlogo.png', 'banner.jpg', 'backdrop.jpg'
+                    'logo.png', 'clearlogo.png', 'banner.jpg', 'backdrop.jpg',
+                    'theme.mp3'
                 }
                 
                 for cid, rel_path in cid_to_rel_path.items():
@@ -880,17 +882,24 @@ def task_full_sync_strm_and_subs(processor=None):
 
                         for file in files:
                             file_path = os.path.abspath(os.path.join(root_dir, file))
+                            file_lower = file.lower()
                             
                             # 规则 1: 如果文件在有效名单中 (有效的 strm, 刚下载的字幕, 刚生成的 mediainfo)，保留
                             if file_path in valid_local_files:
                                 continue
                                 
-                            # 规则 2: 如果是目录级别的元数据文件，保留 (交由后面的空目录清理逻辑处理)
-                            if file.lower() in folder_metadata_names:
+                            # 规则 2: 如果是目录级别的元数据文件 (精确匹配)，保留
+                            if file_lower in exact_metadata_names:
+                                continue
+                                
+                            # 规则 2.1: ★ 兼容 Emby/Jellyfin 的季级别海报/元数据 (例如 season01-poster.jpg, season-specials-fanart.jpg)
+                            if re.match(r'^season.*(?:poster|fanart|banner|landscape|logo|clearlogo|thumb)\.(?:jpg|png)$', file_lower):
+                                continue
+                            # 兼容 season01.nfo 等季级别 NFO
+                            if re.match(r'^season.*\.nfo$', file_lower):
                                 continue
                                 
                             # 规则 3: 检查该文件是否是当前目录下某个有效 strm 的衍生文件
-                            # 衍生文件通常在基础名之后跟着 . (如 .nfo, .zh.srt) 或 - (如 -thumb.jpg, -mediainfo.json)
                             is_derivative = False
                             for valid_base in current_dir_valid_bases:
                                 if file_path.startswith(valid_base + '.') or file_path.startswith(valid_base + '-'):
