@@ -75,9 +75,38 @@ def _fetch_center_credit() -> Dict[str, Any]:
     return {"ok": True, "snapshot": saved}
 
 
+def _looks_like_video_name(name: str) -> bool:
+    return os.path.splitext(str(name or ''))[1].lower() in VIDEO_EXTENSIONS
+
+
 def _is_folder(node: Dict[str, Any]) -> bool:
-    fc = str(node.get('fc') if node.get('fc') is not None else node.get('file_category') if node.get('file_category') is not None else '')
-    return fc == '0' or bool(node.get('is_dir') or node.get('is_folder'))
+    """
+    115 不同接口对目录字段返回不一致：
+    - 有些目录没有 fc/is_dir，只给 cid/name；
+    - 文件通常会有 sha1 / pick_code / size，并且文件名有视频扩展名。
+    之前只认 fc=0，导致剧集目录被误判成普通文件，直接返回 0 个分享项。
+    """
+    node = node or {}
+    fc = str(node.get('fc') if node.get('fc') is not None else node.get('file_category') if node.get('file_category') is not None else '').strip()
+    if fc == '0':
+        return True
+    if fc == '1':
+        return False
+    if bool(node.get('is_dir') or node.get('is_folder') or node.get('is_directory')):
+        return True
+
+    name = _node_name(node)
+    has_file_identity = bool(
+        node.get('sha1') or node.get('sha') or node.get('file_sha1') or
+        node.get('pc') or node.get('pick_code') or node.get('pickcode')
+    )
+    if has_file_identity or _looks_like_video_name(name):
+        return False
+
+    # 目录项常见只有 cid/name/pid，没有 sha1/pc/视频扩展名。
+    if node.get('cid') or node.get('file_id') or node.get('id') or node.get('fid'):
+        return True
+    return False
 
 
 def _node_name(node: Dict[str, Any]) -> str:
@@ -101,14 +130,126 @@ def _guess_episode_number(name: str):
     return None
 
 
-def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_depth: int = 3, current_path: str = '') -> List[Dict[str, Any]]:
-    """递归收集分享目录下的视频文件。测试阶段够用；正式自动分享后可改为基于 filesystem_cache 精准组包。"""
+def _collect_files_from_cache(root_fid: str, root_name: str = '', max_depth: int = 6) -> List[Dict[str, Any]]:
+    """从 p115_filesystem_cache 递归收集 root_fid 下的视频文件。
+    用作 115 远程目录接口字段不完整/审核中返回不全时的兜底。
+    """
+    if not root_fid:
+        return []
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    WITH RECURSIVE tree AS (
+                        SELECT id, parent_id, name, local_path, sha1, pick_code, size,
+                               0 AS depth, CAST('' AS text) AS rel_path
+                        FROM p115_filesystem_cache
+                        WHERE id = %s
+                        UNION ALL
+                        SELECT c.id, c.parent_id, c.name, c.local_path, c.sha1, c.pick_code, c.size,
+                               t.depth + 1 AS depth,
+                               CASE WHEN t.rel_path = '' THEN c.name ELSE t.rel_path || '/' || c.name END AS rel_path
+                        FROM p115_filesystem_cache c
+                        JOIN tree t ON c.parent_id = t.id
+                        WHERE t.depth < %s
+                    )
+                    SELECT * FROM tree
+                    ORDER BY depth, rel_path, name
+                    """,
+                    (str(root_fid), int(max_depth)),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 从 p115_filesystem_cache 收集分享文件失败: root={root_fid}, err={e}")
+        return []
+
+    files = []
+    for row in rows:
+        name = str(row.get('name') or '')
+        if not _looks_like_video_name(name):
+            continue
+        rel = row.get('rel_path') or name
+        files.append({
+            'fid': str(row.get('id') or ''),
+            'sha1': (str(row.get('sha1')).upper() if row.get('sha1') else None),
+            'size': row.get('size') or 0,
+            'file_name': name,
+            'relative_path': rel,
+            'episode_number': _guess_episode_number(name),
+            'raw_json': {'source': 'p115_filesystem_cache', 'root_fid': root_fid, 'row': row},
+        })
+    return files
+
+
+def _collect_files_from_media_payload(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """用 media_metadata 的 PC/SHA1 反查 p115_filesystem_cache，作为剧集/季分享兜底。"""
+    tmdb_id = str(data.get('tmdb_id') or '').strip()
+    item_type = str(data.get('item_type') or '').strip()
+    if not tmdb_id or not item_type:
+        return []
+
+    row = _get_media_row(tmdb_id, item_type)
+    if not row:
+        return []
+
+    ids = _collect_media_identifiers(row)
+    file_rows = _get_p115_file_rows(ids.get('pickcodes') or [], ids.get('sha1s') or [])
+    if not file_rows:
+        return []
+
+    episode_meta_by_sha1 = {}
+    episode_meta_by_pc = {}
+    for ep in ids.get('episode_rows') or []:
+        for sha in _norm_sha1_list(_json_array_values(ep.get('file_sha1_json'))):
+            episode_meta_by_sha1[sha] = ep
+        for pc in _norm_pc_list(_json_array_values(ep.get('file_pickcode_json'))):
+            episode_meta_by_pc[pc] = ep
+
+    files = []
+    seen = set()
+    for r in file_rows:
+        fid = str(r.get('id') or '')
+        if not fid or fid in seen:
+            continue
+        seen.add(fid)
+        name = str(r.get('name') or '')
+        if not _looks_like_video_name(name):
+            continue
+        sha1 = str(r.get('sha1') or '').upper()
+        pc = str(r.get('pick_code') or '')
+        ep = episode_meta_by_sha1.get(sha1) or episode_meta_by_pc.get(pc) or {}
+        ep_no = ep.get('episode_number') or _guess_episode_number(name)
+        season_no = ep.get('season_number') or data.get('season_number')
+        item_tmdb_id = ep.get('tmdb_id') or data.get('tmdb_id') or ''
+        item_type_for_file = 'Episode' if ep or ep_no else data.get('item_type')
+        files.append({
+            'fid': fid,
+            'sha1': sha1 or None,
+            'size': r.get('size') or 0,
+            'file_name': name,
+            'relative_path': r.get('local_path') or name,
+            'tmdb_id': str(item_tmdb_id),
+            'item_type': item_type_for_file,
+            'season_number': season_no,
+            'episode_number': ep_no,
+            'raw_json': {'source': 'media_metadata+p115_filesystem_cache', 'cache_row': r, 'episode_meta': ep},
+        })
+    return files
+
+
+def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_depth: int = 3, current_path: str = '', assume_dir=None) -> List[Dict[str, Any]]:
+    """递归收集分享目录下的视频文件。
+    目录识别优先使用前端/搜索阶段传来的 root_is_dir；远程返回不完整时自动兜底本地缓存。
+    """
     info_resp = client.fs_get_info(root_fid)
     root_info = (info_resp or {}).get('data') or {}
     if not root_name:
         root_name = _node_name(root_info) or str(root_fid)
 
-    if root_info and not _is_folder(root_info):
+    is_dir = bool(assume_dir) if assume_dir is not None else _is_folder(root_info)
+
+    if root_info and not is_dir:
         name = _node_name(root_info)
         ext = os.path.splitext(name)[1].lower()
         if ext not in VIDEO_EXTENSIONS:
@@ -153,6 +294,11 @@ def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_dept
             })
 
     walk(root_fid, '', max_depth)
+
+    # 远程接口没有拿到时，用本地 p115_filesystem_cache 兜底。
+    if not files and is_dir:
+        files = _collect_files_from_cache(root_fid, root_name=root_name, max_depth=max_depth + 3)
+
     return files
 
 
@@ -682,11 +828,18 @@ def api_manual_create_share():
     root_name = data.get('root_name') or _node_name(node) or root_fid
     root_is_dir = _is_folder(node) if node else bool(data.get('root_is_dir', True))
 
-    files = _collect_files_from_115(client, root_fid, root_name=root_name, max_depth=int(data.get('max_depth') or 3))
+    max_depth = int(data.get('max_depth') or 6)
+    files = _collect_files_from_115(client, root_fid, root_name=root_name, max_depth=max_depth, assume_dir=root_is_dir)
+    if not files:
+        files = _collect_files_from_media_payload(data)
+
     for item in files:
-        item['tmdb_id'] = str(data.get('tmdb_id') or '')
-        item['item_type'] = 'Episode' if data.get('share_type') == 'season_pack' and item.get('episode_number') else data.get('item_type')
-        item['season_number'] = data.get('season_number')
+        if not item.get('tmdb_id'):
+            item['tmdb_id'] = str(data.get('tmdb_id') or '')
+        if not item.get('item_type'):
+            item['item_type'] = 'Episode' if data.get('share_type') in ('season_pack', 'series_pack') and item.get('episode_number') else data.get('item_type')
+        if not item.get('season_number'):
+            item['season_number'] = data.get('season_number')
 
     record = shared_share_db.create_share_record({
         'share_code': share_code,
@@ -726,12 +879,47 @@ def api_check_share(record_id):
 
     snap = client.share_info(record.get('share_code'), record.get('receive_code'), cid=0, limit=1)
     parsed = _parse_share_status(snap)
-    row = shared_share_db.update_share_record(
-        record_id,
+
+    # 分享审核通过后，如果创建时没有收集到包内文件，借“检查”按钮自动补扫一次。
+    added_count = None
+    try:
+        current_items = shared_share_db.list_share_items(record_id)
+        if parsed['status'] == 'alive' and not current_items:
+            root_fid = str(record.get('root_fid') or '')
+            files = []
+            if root_fid:
+                files = _collect_files_from_115(
+                    client,
+                    root_fid,
+                    root_name=record.get('root_name') or '',
+                    max_depth=6,
+                    assume_dir=bool(record.get('root_is_dir', True)),
+                )
+            if not files:
+                files = _collect_files_from_media_payload(record)
+            for item in files:
+                if not item.get('tmdb_id'):
+                    item['tmdb_id'] = str(record.get('tmdb_id') or '')
+                if not item.get('item_type'):
+                    item['item_type'] = 'Episode' if record.get('share_type') in ('season_pack', 'series_pack') and item.get('episode_number') else record.get('item_type')
+                if not item.get('season_number'):
+                    item['season_number'] = record.get('season_number')
+            if files:
+                added_count = shared_share_db.replace_share_items(record_id, files)
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 检查分享时补扫包内文件失败: record={record_id}, err={e}", exc_info=True)
+
+    update_kwargs = dict(
         status=parsed['status'], review_status=parsed['review_status'], last_checked_at='NOW()',
         last_error=parsed['message'], raw_json={'last_snap': snap},
     )
-    return jsonify({"success": True, "message": parsed['message'], "data": row, "raw": snap})
+    if added_count is not None:
+        update_kwargs['item_count'] = added_count
+    row = shared_share_db.update_share_record(record_id, **update_kwargs)
+    msg = parsed['message']
+    if added_count is not None:
+        msg = f"{msg}，已补扫到 {added_count} 个视频文件"
+    return jsonify({"success": True, "message": msg, "data": row, "raw": snap})
 
 
 @shared_resource_bp.route('/shares/<int:record_id>/report-center', methods=['POST'])
