@@ -1555,7 +1555,7 @@ def task_auto_subscribe(processor):
             # - Series: 使用剧集 TMDb ID + tv
             # - Season: 使用父剧集 TMDb ID + tv；自动流程必须按目标季过滤，避免错季误转
             # ==========================================
-            if subscription_priority in ['hdhive', 'cloud'] and item_type in ['Movie', 'Series', 'Season']:
+            if (not success) and subscription_priority in ['hdhive', 'cloud'] and item_type in ['Movie', 'Series', 'Season']:
                 hdhive_tmdb_id = tmdb_id
                 hdhive_media_type = 'movie'
                 hdhive_item_label = '电影'
@@ -1653,7 +1653,7 @@ def task_auto_subscribe(processor):
                 # 将状态从 WANTED 更新为 SUBSCRIBED
                 # Series 走 MP 整剧逻辑时仍由 _subscribe_full_series_with_logic 内部逐季处理；
                 # Series 走云资源时没有逐季订阅流程，需要直接更新当前 Series，避免下次任务重复处理。
-                if item_type != 'Series' or action_type in ["影巢", "频道", "云资源"]:
+                if item_type != 'Series' or action_type in ["影巢", "频道", "云资源", "共享资源", "共享虚拟", "共享永久转存"]:
                     request_db.set_media_status_subscribed(
                         tmdb_ids=item['tmdb_id'], 
                         item_type=item_type,
