@@ -1,4 +1,4 @@
-# handler/hdhive.py
+# tasks/hdhive.py
 import re
 import time
 import logging
@@ -183,6 +183,16 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
             return True
 
         # 构造 root_item 触发 SmartOrganizer (补全 pc, sha1, fs 等生成 STRM 必需的关键信息)
+        shared_auto_context = {
+            'share_code': share_code,
+            'receive_code': access_code or '',
+            'tmdb_id': str(tmdb_id or ''),
+            'media_type': media_type,
+            'item_type': 'Movie' if str(media_type).lower() == 'movie' else 'Season',
+            'title': title,
+            'source_provider': 'hdhive',
+        }
+
         root_item = {
             'fid': target_item.get('fid') or target_item.get('file_id'),
             'fn': receive_title,
@@ -190,7 +200,8 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
             'pid': save_cid,
             'pc': target_item.get('pc') or target_item.get('pick_code'),
             'sha1': target_item.get('sha1') or target_item.get('sha'),
-            'fs': target_item.get('fs') or target_item.get('size')
+            'fs': target_item.get('fs') or target_item.get('size'),
+            '_shared_auto_source_context': shared_auto_context,
         }
         
         organizer = SmartOrganizer(
@@ -200,6 +211,8 @@ def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
             original_title=title,
             use_ai=False 
         )
+        # 影巢资源本身自带 115 分享链接：ffprobe 成功后自动上传 raw_ffprobe_json 并登记共享中心源。
+        organizer.shared_auto_source_context = shared_auto_context
         
         target_cid = organizer.get_target_cid()
         organizer.execute(root_item, target_cid)

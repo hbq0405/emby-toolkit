@@ -2304,6 +2304,199 @@ class P115MediaAnalyzerMixin:
             "MediaSourceInfo": media_source_info
         }]
 
+
+    def _shared_auto_pick(self, *sources, keys, default=None):
+        """从多个 dict/对象中按顺序提取第一个非空字段。"""
+        for source in sources:
+            if not source:
+                continue
+            for key in keys:
+                value = None
+                if isinstance(source, dict):
+                    value = source.get(key)
+                else:
+                    value = getattr(source, key, None)
+                if value not in [None, '', [], {}]:
+                    return value
+        return default
+
+    def _shared_auto_extract_se(self, file_name='', context=None, file_node=None):
+        """为自动共享登记尽量补齐季集号，避免频道资源登记成粗粒度 Season。"""
+        context = context if isinstance(context, dict) else {}
+        file_node = file_node if isinstance(file_node, dict) else {}
+
+        season = self._shared_auto_pick(context, file_node, keys=['season_number', '_shared_season_number', '_forced_season'])
+        episode = self._shared_auto_pick(context, file_node, keys=['episode_number', '_shared_episode_number', '_forced_episode'])
+
+        def _to_int(v):
+            try:
+                if v in [None, '']:
+                    return None
+                return int(float(v))
+            except Exception:
+                return None
+
+        season = _to_int(season)
+        episode = _to_int(episode)
+        text = str(file_name or '')
+
+        if season is None or episode is None:
+            m = re.search(r'(?i)\bS(\d{1,2})\s*[._ -]*E(?:P)?\s*(\d{1,3})\b', text)
+            if m:
+                if season is None:
+                    season = int(m.group(1))
+                if episode is None:
+                    episode = int(m.group(2))
+
+        if episode is None:
+            m = re.search(r'(?i)(?:^|[ ._\-\[(])(?:E|EP|Episode)\s*(\d{1,3})(?:$|[^0-9])', text)
+            if m:
+                episode = int(m.group(1))
+
+        if episode is None:
+            m = re.search(r'第\s*(\d{1,3})\s*[集话話回]', text)
+            if m:
+                episode = int(m.group(1))
+
+        if season is None and episode is not None:
+            season = 1
+
+        return season, episode
+
+    def _shared_auto_normalize_item_type(self, raw_type, season_number=None, episode_number=None):
+        t = str(raw_type or '').strip().lower()
+        if t in {'movie', 'movies', 'film', '电影'}:
+            return 'Movie'
+        if t in {'episode', '集', '分集'}:
+            return 'Episode'
+        if t in {'season', '季'}:
+            return 'Season'
+        if t in {'tv', 'series', '电视剧', '剧集'}:
+            if episode_number is not None:
+                return 'Episode'
+            return 'Season'
+        return 'Movie'
+
+    def _shared_auto_report_to_center(self, sha1, raw_ffprobe_json, file_node=None, metadata_context=None, emby_mediainfo=None):
+        """影巢/TG 等自带 115 分享链接的转存源，在 ffprobe 成功后自动登记到共享中心。\n\n        触发条件：\n        - 已启用共享资源；\n        - 当前整理器或 file_node 带有 shared_auto_source_context / share_code；\n        - 已拿到 raw_ffprobe_json 和 SHA1。\n        """
+        sha1 = str(sha1 or '').strip().upper()
+        if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1 or ''):
+            return False
+        if not isinstance(raw_ffprobe_json, dict):
+            return False
+
+        file_node = file_node if isinstance(file_node, dict) else {}
+        metadata_context = metadata_context if isinstance(metadata_context, dict) else {}
+
+        node_ctx = file_node.get('_shared_auto_source_context') if isinstance(file_node.get('_shared_auto_source_context'), dict) else {}
+        attr_ctx = getattr(self, 'shared_auto_source_context', None)
+        attr_ctx = attr_ctx if isinstance(attr_ctx, dict) else {}
+
+        ctx = {}
+        for part in (attr_ctx, node_ctx, metadata_context):
+            if isinstance(part, dict):
+                ctx.update({k: v for k, v in part.items() if v not in [None, '', [], {}]})
+
+        share_code = self._shared_auto_pick(ctx, file_node, keys=['share_code', '_share_code', 'shared_share_code'])
+        if not share_code:
+            return False
+
+        # 同一个 SmartOrganizer 内同一个 SHA1 只上报一次；中心端也会按设备+SHA1幂等兜底。
+        reported = getattr(self, '_shared_auto_reported_sha1s', None)
+        if reported is None:
+            reported = set()
+            setattr(self, '_shared_auto_reported_sha1s', reported)
+        if sha1 in reported:
+            return True
+
+        try:
+            from handler.shared_center_client import SharedCenterClient, shared_center_enabled
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源自动登记] 无法导入共享中心客户端: {e}")
+            return False
+
+        if not shared_center_enabled():
+            return False
+
+        center = SharedCenterClient()
+        if not center.ready:
+            logger.debug("  ➜ [共享资源自动登记] 已启用共享资源，但中心地址/token 未配置，跳过。")
+            return False
+
+        file_name = self._shared_auto_pick(
+            file_node, ctx,
+            keys=['fn', 'n', 'file_name', 'original_name', 'name', 'title'],
+            default=sha1
+        )
+        file_name = str(file_name or sha1)
+
+        season_number, episode_number = self._shared_auto_extract_se(file_name, ctx, file_node)
+
+        tmdb_id = self._shared_auto_pick(
+            ctx,
+            {'tmdb_id': getattr(self, 'tmdb_id', None)},
+            raw_ffprobe_json.get('_etk') if isinstance(raw_ffprobe_json.get('_etk'), dict) else {},
+            keys=['tmdb_id', 'tmdbid', 'tmdbId'],
+        )
+        if not tmdb_id:
+            logger.debug(f"  ➜ [共享资源自动登记] 缺少 TMDb ID，跳过登记: {file_name}")
+            return False
+
+        raw_item_type = self._shared_auto_pick(
+            ctx,
+            {'media_type': getattr(self, 'media_type', None)},
+            raw_ffprobe_json.get('_etk') if isinstance(raw_ffprobe_json.get('_etk'), dict) else {},
+            keys=['item_type', 'media_type', 'type'],
+            default='Movie'
+        )
+        item_type = self._shared_auto_normalize_item_type(raw_item_type, season_number, episode_number)
+
+        receive_code = self._shared_auto_pick(ctx, file_node, keys=['receive_code', '_receive_code', 'access_code'], default='')
+        title = self._shared_auto_pick(ctx, {'title': getattr(self, 'original_title', None)}, keys=['title', 'root_name', 'media_title'], default=file_name)
+        release_year = self._shared_auto_pick(ctx, keys=['release_year', 'year'], default=None)
+        quality = self._shared_auto_pick(ctx, keys=['quality'], default='')
+
+        size = self._shared_auto_pick(file_node, ctx, keys=['fs', 'size', 'file_size'], default=None)
+        try:
+            size = int(float(size)) if size not in [None, ''] else None
+        except Exception:
+            size = None
+        if not size:
+            try:
+                fmt = raw_ffprobe_json.get('format') or {}
+                size = int(float(fmt.get('size') or 0)) or None
+            except Exception:
+                size = None
+
+        try:
+            center.upload_raw_ffprobe(sha1=sha1, raw_ffprobe_json=raw_ffprobe_json, size=size)
+            source = center.register_source(
+                tmdb_id=str(tmdb_id),
+                item_type=item_type,
+                season_number=season_number,
+                episode_number=episode_number,
+                title=title,
+                release_year=release_year,
+                sha1=sha1,
+                size=size,
+                file_name=file_name,
+                quality=quality,
+                share_code=share_code,
+                receive_code=receive_code,
+                has_raw_ffprobe=True,
+            )
+            reported.add(sha1)
+            logger.info(
+                f"  ➜ [共享资源自动登记] 已上传媒体信息并登记中心源: "
+                f"{file_name} | TMDb:{tmdb_id} | {item_type}"
+                f"{'' if season_number is None else f' S{season_number:02d}'}"
+                f"{'' if episode_number is None else f'E{episode_number:02d}'} | source={source.get('source_id') or 'updated'}"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源自动登记] 上传/登记失败: {file_name} -> {e}")
+            return False
+
     def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, file_node=None, silent_log=False):
         """
         通过 SHA1 获取真实的媒体信息，并转换为乐高重命名参数。
@@ -2330,6 +2523,20 @@ class P115MediaAnalyzerMixin:
             if cached_text:
                 raw_json = json.loads(cached_text) if isinstance(cached_text, str) else cached_text
                 data_source = "本地缓存(DB)"
+                # 即使媒体信息已在本地缓存中，只要本次整理携带 share_code，仍尝试把 raw_ffprobe_json
+                # 登记到共享中心；中心端按设备+SHA1幂等处理，不会重复加分。
+                try:
+                    cached_raw_ffprobe = _get_p115_cache_manager().get_raw_ffprobe_cache(sha1)
+                    if cached_raw_ffprobe:
+                        self._shared_auto_report_to_center(
+                            sha1,
+                            cached_raw_ffprobe,
+                            file_node=file_node,
+                            metadata_context=guessed_info,
+                            emby_mediainfo=raw_json
+                        )
+                except Exception as e:
+                    logger.debug(f"  ➜ [共享资源自动登记] 缓存 raw 上报跳过: {sha1[:8]} -> {e}")
                 if not silent_log:
                     logger.debug(f"  ➜ [媒体信息] 命中本地 DB 缓存: {sha1[:8]}")
         except Exception as e:
@@ -2344,6 +2551,13 @@ class P115MediaAnalyzerMixin:
             if raw_json:
                 data_source = "ffprobe解析"
                 _get_p115_cache_manager().save_mediainfo_cache(sha1, raw_json, raw_ffprobe)
+                self._shared_auto_report_to_center(
+                    sha1,
+                    raw_ffprobe,
+                    file_node=file_node,
+                    metadata_context=guessed_info,
+                    emby_mediainfo=raw_json
+                )
 
         if not raw_json:
             return {}

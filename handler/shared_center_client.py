@@ -78,6 +78,44 @@ class SharedCenterClient:
         return self._post('/api/v1/rawffprobe/batch', {'sha1_list': sha1_list}, timeout=60)
 
 
+
+    def upload_raw_ffprobe(self, sha1: str, raw_ffprobe_json: Dict[str, Any], size=None) -> Dict[str, Any]:
+        """上传 raw_ffprobe_json 到共享中心，供其他设备复用媒体信息。"""
+        sha1 = str(sha1 or '').strip().upper()
+        if not sha1 or not raw_ffprobe_json:
+            return {'ok': False, 'message': '缺少 sha1 或 raw_ffprobe_json'}
+        payload = {
+            'sha1': sha1,
+            'size': size,
+            'raw_ffprobe_json': raw_ffprobe_json,
+        }
+        return self._post('/api/v1/rawffprobe/upload', payload, timeout=60)
+
+    def register_source(self, *, tmdb_id, item_type, sha1, file_name, share_code,
+                        receive_code='', season_number=None, episode_number=None,
+                        title='', release_year=None, size=None, quality='',
+                        has_raw_ffprobe=True) -> Dict[str, Any]:
+        """登记一个可被共享中心消费的 115 分享源。
+
+        中心端按“当前设备 + SHA1”幂等计分：首次登记 +1，重复登记只更新分享码/元数据。
+        """
+        payload = {
+            'tmdb_id': str(tmdb_id or ''),
+            'item_type': str(item_type or ''),
+            'season_number': season_number,
+            'episode_number': episode_number,
+            'title': title or None,
+            'release_year': release_year,
+            'sha1': str(sha1 or '').strip().upper(),
+            'size': size,
+            'file_name': file_name or '',
+            'quality': quality or '',
+            'share_code': str(share_code or '').strip(),
+            'receive_code': str(receive_code or '').strip() or None,
+            'has_raw_ffprobe': bool(has_raw_ffprobe),
+        }
+        return self._post('/api/v1/sources/register', payload, timeout=25)
+
     def cancel_sources(self, share_code: str = '', source_ids: List[str] = None, sha1_list: List[str] = None, reason: str = 'share_cancelled', delete_raw_ffprobe: bool = True) -> Dict[str, Any]:
         """从共享中心撤销当前设备登记的共享源，并同步删除对应媒体信息。
 
