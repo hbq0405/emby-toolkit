@@ -1153,6 +1153,122 @@ def download_emby_image(
         logger.error(f"  ➜ 保存图片到 '{save_path}' 时发生未知错误: {e}")
         return False
 
+
+# --- 获取所有工作室 / 播出平台条目 ---
+def get_all_studios_from_emby(
+    base_url: str,
+    api_key: str,
+    user_id: Optional[str] = None,
+    batch_size: int = 500
+) -> List[Dict[str, Any]]:
+    """
+    获取 Emby 当前已经生成的 Studio 条目列表。
+    这些条目是全局对象，但使用 user endpoint 可以更贴近前端用户实际可见结果。
+    """
+    if not base_url or not api_key:
+        logger.error("get_all_studios_from_emby: base_url 或 api_key 为空。")
+        return []
+
+    base_url = base_url.rstrip('/')
+    api_url = f"{base_url}/Users/{user_id}/Items" if user_id else f"{base_url}/Items"
+
+    headers = {
+        "X-Emby-Token": api_key,
+        "Accept": "application/json",
+    }
+
+    all_studios: List[Dict[str, Any]] = []
+    start_index = 0
+
+    while True:
+        params = {
+            "api_key": api_key,
+            "Recursive": "true",
+            "IncludeItemTypes": "Studio",
+            "Fields": "Id,Name,ImageTags,PrimaryImageAspectRatio",
+            "StartIndex": start_index,
+            "Limit": batch_size,
+        }
+
+        try:
+            response = emby_client.get(api_url, params=params, headers=headers)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("Items", []) or []
+
+            if not items:
+                break
+
+            all_studios.extend(items)
+
+            if len(items) < batch_size:
+                break
+
+            start_index += len(items)
+
+        except Exception as e:
+            logger.error(f"获取 Emby Studio 列表失败 (StartIndex={start_index}): {e}", exc_info=True)
+            break
+
+    logger.info(f"  ➜ 成功获取 Emby Studio 条目 {len(all_studios)} 个。")
+    return all_studios
+
+
+# --- 给任意 Emby Item 上传图片 ---
+def upload_item_image(
+    base_url: str,
+    api_key: str,
+    item_id: str,
+    image_data: bytes,
+    content_type: str = "image/png",
+    image_type: str = "Primary",
+    delete_existing: bool = False
+) -> bool:
+    """
+    给任意 Emby Item 上传图片。
+    可用于 Studio / Network / Collection / Movie / Series 等条目的 Primary 图。
+    """
+    if not all([base_url, api_key, item_id, image_data]):
+        logger.error("upload_item_image: 参数不足。")
+        return False
+
+    base_url = base_url.rstrip('/')
+    url = f"{base_url}/Items/{item_id}/Images/{image_type}"
+    params = {"api_key": api_key}
+
+    try:
+        b64_data = base64.b64encode(image_data)
+    except Exception as e:
+        logger.error(f"图片 Base64 编码失败: {e}")
+        return False
+
+    headers = {
+        "X-Emby-Token": api_key,
+        "Content-Type": content_type or "image/png",
+    }
+
+    if delete_existing:
+        try:
+            emby_client.delete(url, headers=headers, params=params, timeout=20)
+        except Exception:
+            pass
+
+    try:
+        response = emby_client.post(url, headers=headers, params=params, data=b64_data, timeout=60)
+        if response.status_code in (200, 204):
+            logger.debug(f"  ➜ 成功上传 Item {item_id} 的 {image_type} 图片。")
+            return True
+
+        logger.error(f"  ➜ 上传 Item 图片失败: HTTP {response.status_code} - {response.text[:300]}")
+        return False
+
+    except Exception as e:
+        error_msg = str(e)
+        if hasattr(e, 'response') and e.response is not None:
+            error_msg += f" | Response: {e.response.text[:300]}"
+        logger.error(f"上传 Item {item_id} 图片异常: {error_msg}", exc_info=True)
+        return False
+
 # --- 获取所有合集 ---
 def get_all_collections_from_emby_generic(base_url: str, api_key: str, user_id: str) -> Optional[List[Dict[str, Any]]]:
     if not all([base_url, api_key, user_id]):

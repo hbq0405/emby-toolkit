@@ -961,6 +961,57 @@ def search_companies_tmdb(api_key: str, query: str) -> Optional[List[Dict[str, A
     data = _tmdb_request(endpoint, api_key, params)
     return data.get("results") if data else None
 
+
+# --- 获取 TMDb 公司详情 ---
+def get_company_details_tmdb(company_id: int, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    根据 TMDb company_id 获取制作公司详情，用于读取 logo_path。
+    """
+    if not company_id or not api_key:
+        return None
+
+    try:
+        cid = int(company_id)
+    except Exception:
+        logger.warning(f"TMDb Company ID 非法: {company_id}")
+        return None
+
+    endpoint = f"/company/{cid}"
+    logger.debug(f"  ➜ TMDb: 获取公司详情 (ID: {cid})")
+    return _tmdb_request(endpoint, api_key, {"language": DEFAULT_LANGUAGE}, use_default_language=True)
+
+
+# --- 获取 TMDb 电视网详情 ---
+def get_network_details_tmdb(network_id: int, api_key: str) -> Optional[Dict[str, Any]]:
+    """
+    根据 TMDb network_id 获取电视网 / 播出平台详情，用于读取 logo_path。
+    """
+    if not network_id or not api_key:
+        return None
+
+    try:
+        nid = int(network_id)
+    except Exception:
+        logger.warning(f"TMDb Network ID 非法: {network_id}")
+        return None
+
+    endpoint = f"/network/{nid}"
+    logger.debug(f"  ➜ TMDb: 获取电视网详情 (ID: {nid})")
+    return _tmdb_request(endpoint, api_key, {"language": DEFAULT_LANGUAGE}, use_default_language=True)
+
+
+# --- 构造 TMDb 图片地址 ---
+def build_tmdb_image_url(file_path: str, size: str = "original") -> Optional[str]:
+    """
+    把 TMDb 返回的 /xxx.png 形式 logo_path 转成可下载 URL。
+    """
+    if not file_path:
+        return None
+    if str(file_path).startswith("http://") or str(file_path).startswith("https://"):
+        return str(file_path)
+    return f"https://image.tmdb.org/t/p/{size}{file_path}"
+
+
 # --- 探索 TMDb 热门电影 ---
 def get_popular_movies_tmdb(api_key: str, params: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """

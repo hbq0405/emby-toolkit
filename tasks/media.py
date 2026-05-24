@@ -8,7 +8,8 @@ import gc
 import os
 import re
 import logging
-from typing import List, Optional
+import requests
+from typing import List, Optional, Dict, Any, Tuple
 import concurrent.futures
 from collections import defaultdict
 from gevent import spawn_later
@@ -16,6 +17,7 @@ from gevent import spawn_later
 import task_manager
 import utils
 import constants
+import config_manager
 import handler.tmdb as tmdb
 import handler.emby as emby
 import handler.telegram as telegram
@@ -2684,3 +2686,262 @@ def task_restore_nfo_and_images(processor):
     except Exception as e:
         logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
+# --- 工作室 / 播出平台图标补全 ---
+def _normalize_studio_name_for_icon_task(name: Optional[str]) -> str:
+    """用于工作室名称匹配的轻量标准化。"""
+    if not name:
+        return ""
+    return re.sub(r"\s+", "", str(name).strip().lower())
+
+
+def _load_studio_mapping_for_icon_task() -> List[Dict[str, Any]]:
+    """
+    优先读取数据库 studio_mapping，失败时使用 utils.DEFAULT_STUDIO_MAPPING。
+    兼容 list / JSON 字符串 / 包装 dict 三种形态。
+    """
+    raw_mapping = None
+    try:
+        raw_mapping = settings_db.get_setting('studio_mapping')
+    except Exception as e:
+        logger.warning(f"  ➜ [工作室图标] 读取数据库 studio_mapping 失败，将使用默认映射: {e}")
+
+    if not raw_mapping:
+        raw_mapping = utils.DEFAULT_STUDIO_MAPPING
+
+    if isinstance(raw_mapping, str):
+        try:
+            raw_mapping = json.loads(raw_mapping)
+        except Exception as e:
+            logger.warning(f"  ➜ [工作室图标] studio_mapping JSON 解析失败，将使用默认映射: {e}")
+            raw_mapping = utils.DEFAULT_STUDIO_MAPPING
+
+    if isinstance(raw_mapping, dict):
+        raw_mapping = (
+            raw_mapping.get('items')
+            or raw_mapping.get('mapping')
+            or raw_mapping.get('studios')
+            or raw_mapping.get('data')
+            or list(raw_mapping.values())
+        )
+
+    if not isinstance(raw_mapping, list):
+        return []
+
+    return [entry for entry in raw_mapping if isinstance(entry, dict) and entry.get('label')]
+
+
+def _build_studio_mapping_lookup_for_icon_task(mapping: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """构建中文 label + 英文 alias 到映射项的查找表。"""
+    lookup: Dict[str, Dict[str, Any]] = {}
+    for entry in mapping:
+        label = entry.get('label')
+        if label:
+            lookup[_normalize_studio_name_for_icon_task(label)] = entry
+        for alias in entry.get('en', []) or []:
+            if alias:
+                lookup.setdefault(_normalize_studio_name_for_icon_task(alias), entry)
+    return lookup
+
+
+def _resolve_studio_logo_path_from_tmdb(entry: Dict[str, Any], api_key: str) -> Tuple[Optional[str], Optional[str]]:
+    """
+    根据映射项从 TMDb 获取 logo_path。
+    播放平台优先 network_ids，传统制作公司则自然落到 company_ids。
+    """
+    seen = set()
+
+    for nid in entry.get('network_ids', []) or []:
+        key = ('network', str(nid))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        data = tmdb.get_network_details_tmdb(nid, api_key)
+        if data and data.get('logo_path'):
+            return data.get('logo_path'), f"network:{nid}"
+
+    for cid in entry.get('company_ids', []) or []:
+        key = ('company', str(cid))
+        if key in seen:
+            continue
+        seen.add(key)
+
+        data = tmdb.get_company_details_tmdb(cid, api_key)
+        if data and data.get('logo_path'):
+            return data.get('logo_path'), f"company:{cid}"
+
+    return None, None
+
+
+def _download_tmdb_logo_for_icon_task(logo_path: str) -> Tuple[Optional[bytes], Optional[str]]:
+    """下载 TMDb logo，并在可用时把 SVG 转成 PNG。"""
+    image_url = tmdb.build_tmdb_image_url(logo_path, size="original")
+    if not image_url:
+        return None, None
+
+    try:
+        headers = {"User-Agent": "Mozilla/5.0"}
+        proxies = config_manager.get_proxies_for_requests()
+        response = requests.get(image_url, timeout=20, proxies=proxies, headers=headers)
+        response.raise_for_status()
+
+        image_bytes = response.content
+        content_type = (response.headers.get('Content-Type') or '').split(';')[0].strip().lower()
+
+        if not content_type:
+            lower_url = image_url.lower()
+            if lower_url.endswith('.jpg') or lower_url.endswith('.jpeg'):
+                content_type = 'image/jpeg'
+            elif lower_url.endswith('.webp'):
+                content_type = 'image/webp'
+            elif lower_url.endswith('.svg'):
+                content_type = 'image/svg+xml'
+            else:
+                content_type = 'image/png'
+
+        # Emby 对 SVG 支持不稳定；如果环境带 cairosvg，就转成 PNG 再传。
+        if content_type in ('image/svg+xml', 'image/svg') or image_url.lower().endswith('.svg'):
+            try:
+                import cairosvg  # type: ignore
+                image_bytes = cairosvg.svg2png(bytestring=image_bytes)
+                content_type = 'image/png'
+            except Exception as e:
+                logger.warning(f"  ➜ [工作室图标] SVG 转 PNG 失败，将尝试直接上传 SVG: {e}")
+                content_type = 'image/svg+xml'
+
+        return image_bytes, content_type
+
+    except Exception as e:
+        logger.warning(f"  ➜ [工作室图标] 下载 TMDb logo 失败: {image_url} - {e}")
+        return None, None
+
+
+def task_fill_studio_images(processor):
+    """
+    补全 Emby 工作室 / 播出平台图标。
+    流程：读取 studio_mapping -> 获取 Emby 已有 Studio 列表 -> 找出缺 Primary 图的条目 -> 通过 TMDb network/company logo_path 下载并上传。
+    """
+    task_name = "补全工作室图标"
+    logger.trace(f"--- 开始执行 '{task_name}' ---")
+
+    if not processor.tmdb_api_key:
+        logger.warning("  ➜ [工作室图标] 未配置 TMDb API Key，任务跳过。")
+        task_manager.update_status_from_thread(100, "未配置 TMDb API Key，已跳过。")
+        return
+
+    try:
+        task_manager.update_status_from_thread(5, "正在读取工作室映射.")
+
+        mapping = _load_studio_mapping_for_icon_task()
+        lookup = _build_studio_mapping_lookup_for_icon_task(mapping)
+
+        if not lookup:
+            logger.warning("  ➜ [工作室图标] 未找到有效 studio_mapping，任务结束。")
+            task_manager.update_status_from_thread(100, "未找到有效工作室映射。")
+            return
+
+        task_manager.update_status_from_thread(15, "正在获取 Emby 工作室列表.")
+        studios = emby.get_all_studios_from_emby(
+            base_url=processor.emby_url,
+            api_key=processor.emby_api_key,
+            user_id=processor.emby_user_id
+        )
+
+        if not studios:
+            logger.info("  ➜ [工作室图标] Emby 当前没有 Studio 条目，任务结束。")
+            task_manager.update_status_from_thread(100, "Emby 当前没有工作室条目。")
+            return
+
+        candidates = []
+        skipped_has_image = 0
+        skipped_unmapped = 0
+
+        for studio in studios:
+            name = (studio.get('Name') or '').strip()
+            if not name:
+                continue
+
+            image_tags = studio.get('ImageTags') or {}
+            has_primary = bool(image_tags.get('Primary') or studio.get('PrimaryImageTag'))
+            if has_primary:
+                skipped_has_image += 1
+                continue
+
+            entry = lookup.get(_normalize_studio_name_for_icon_task(name))
+            if not entry:
+                skipped_unmapped += 1
+                continue
+
+            candidates.append((studio, entry))
+
+        total = len(candidates)
+        logger.info(
+            f"  ➜ [工作室图标] Emby Studio 共 {len(studios)} 个；缺图且命中映射 {total} 个，"
+            f"已有图 {skipped_has_image} 个，未命中映射 {skipped_unmapped} 个。"
+        )
+
+        if total == 0:
+            task_manager.update_status_from_thread(100, "没有需要补图的工作室。")
+            return
+
+        success_count = 0
+        no_logo_count = 0
+        download_failed_count = 0
+        upload_failed_count = 0
+
+        for i, (studio, entry) in enumerate(candidates, start=1):
+            if processor.is_stop_requested():
+                logger.warning("  ➜ [工作室图标] 任务被中止。")
+                break
+
+            name = (studio.get('Name') or entry.get('label') or '').strip()
+            progress = 15 + int((i / total) * 80)
+            task_manager.update_status_from_thread(progress, f"正在补图 ({i}/{total}): {name}")
+
+            try:
+                logo_path, source_desc = _resolve_studio_logo_path_from_tmdb(entry, processor.tmdb_api_key)
+                if not logo_path:
+                    no_logo_count += 1
+                    logger.info(f"  ➜ [工作室图标] {name} 未在 TMDb 找到 logo_path，跳过。")
+                    continue
+
+                image_bytes, content_type = _download_tmdb_logo_for_icon_task(logo_path)
+                if not image_bytes:
+                    download_failed_count += 1
+                    continue
+
+                ok = emby.upload_item_image(
+                    base_url=processor.emby_url,
+                    api_key=processor.emby_api_key,
+                    item_id=str(studio.get('Id')),
+                    image_data=image_bytes,
+                    content_type=content_type or 'image/png',
+                    image_type='Primary',
+                    delete_existing=False
+                )
+
+                if ok:
+                    success_count += 1
+                    logger.info(f"  ➜ [工作室图标] 已为 [{name}] 上传图标，来源 {source_desc}。")
+                else:
+                    upload_failed_count += 1
+
+            except Exception as e_item:
+                upload_failed_count += 1
+                logger.error(f"  ➜ [工作室图标] 处理 [{name}] 失败: {e_item}", exc_info=True)
+
+            if i % 5 == 0:
+                time.sleep(0.2)
+
+        final_msg = (
+            f"工作室图标补全完成：成功 {success_count}/{total}，"
+            f"TMDb无logo {no_logo_count}，下载失败 {download_failed_count}，上传失败 {upload_failed_count}。"
+        )
+        logger.info(f"  ➜ {final_msg}")
+        task_manager.update_status_from_thread(100, final_msg)
+
+    except Exception as e:
+        logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
+        task_manager.update_status_from_thread(-1, f"任务失败: {e}")
+
