@@ -21,6 +21,7 @@ import UserCenterPage from '../components/UserCenterPage.vue'
 import SetupPage from '../components/Setup.vue';
 import EmbyStatsPage from '../components/EmbyStatsPage.vue';
 import OrganizeRecordsPage from '../components/OrganizeRecordsPage.vue';
+import SharedResourceManagerPage from '../components/SharedResourceManagerPage.vue';
 
 // --- 2. 定义路由规则 (带 meta.public 标签) ---
 const routes = [
@@ -142,17 +143,18 @@ const routes = [
     component: () => import('../components/ResubscribePage.vue'),
     meta: { requiresAuth: true },
   },
+
+  {
+    path: '/shared-resources',
+    name: 'SharedResourceManager',
+    component: SharedResourceManagerPage,
+    meta: { requiresAuth: true, requiresAdmin: true },
+  },
   {
     path: '/media-cleanup',
     name: 'MediaCleanupPage',
     component: () => import('../components/MediaCleanupPage.vue'),
     meta: { requiresAuth: true },
-  },
-  {
-    path: '/shared-resources',
-    name: 'SharedResourceManager',
-    component: () => import('../components/SharedResourceManagerPage.vue'),
-    meta: { requiresAuth: true, requiresAdmin: true },
   },
   {
     path: '/user-management',

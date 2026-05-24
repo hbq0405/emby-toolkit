@@ -332,7 +332,7 @@ import {
   PieChartOutline as EmbyStatsIcon,
   DocumentTextOutline as RecordsIcon,
   ListCircleOutline as MenuEditIcon,
-  CloudOutline as SharedResourceIcon
+  CloudCircleOutline as SharedResourceIcon
 } from '@vicons/ionicons5';
 import axios from 'axios';
 import logo from './assets/logo.png'
@@ -526,9 +526,9 @@ const baseMenuOptions = computed(() => {
           { label: '自建合集', defaultLabel: '自建合集', key: 'CustomCollectionsManager', icon: renderIcon(CustomCollectionsIcon) }, 
           { label: '媒体去重', defaultLabel: '媒体去重', key: 'MediaCleanupPage', icon: renderIcon(CleanupIcon) },
           { label: '媒体整理', defaultLabel: '媒体整理', key: 'ResubscribePage', icon: renderIcon(ResubscribeIcon) },
-          { label: '自动标签', defaultLabel: '自动标签', key: 'AutoTaggingPage', icon: renderIcon(TagIcon) },
-          { label: '整理记录', defaultLabel: '整理记录', key: 'OrganizeRecords', icon: renderIcon(RecordsIcon) },
           { label: '共享资源', defaultLabel: '共享资源', key: 'SharedResourceManager', icon: renderIcon(SharedResourceIcon) },
+          { label: '自动标签', defaultLabel: '自动标签', key: 'AutoTaggingPage', icon: renderIcon(TagIcon) },
+          { label: '整理记录', defaultLabel: '整理记录', key: 'OrganizeRecords', icon: renderIcon(RecordsIcon) },  
           { label: '手动处理', defaultLabel: '手动处理', key: 'ReviewList', icon: renderIcon(ReviewListIcon) }, 
         ] 
       },

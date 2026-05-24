@@ -823,6 +823,84 @@ class P115CookieClient:
         payload = {'share_code': share_code, 'receive_code': receive_code, 'cid': cid}
         r = self.request(url, method='POST', data=payload)
         return r.json() if hasattr(r, 'json') else r
+
+    def share_create(self, file_ids, share_duration=-1, receive_code=None):
+        """创建 115 分享。默认永久分享。file_ids 可传文件或目录 ID 列表。"""
+        ids = [str(i) for i in _p115_as_list(file_ids) if i is not None and str(i).strip()]
+        if not ids:
+            return {'state': False, 'error_msg': 'file_ids 不能为空'}
+
+        # 115 WebAPI 创建分享接口：第一步只创建分享，随后用 updateshare 显式改为永久。
+        url = "https://webapi.115.com/share/send"
+        payload = {
+            'file_ids': ','.join(ids),
+            'ignore_warn': '1',
+            'is_asc': '0',
+            'order': 'user_ptime',
+        }
+        r = self.request(url, method='POST', data=payload)
+        resp = self._json_result(r)
+        if not _p115_success(resp):
+            return _p115_normalize_common_response(resp)
+
+        data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
+        share_code = data.get('share_code') or resp.get('share_code')
+        if share_code:
+            upd = self.share_update_settings(share_code, share_duration=share_duration, receive_code=receive_code)
+            resp.setdefault('data', data)
+            resp['data']['share_duration'] = share_duration
+            if isinstance(upd, dict):
+                resp['data']['update_response'] = upd
+                # 自定义提取码成功后以自定义码为准，否则保留 115 返回码。
+                if receive_code:
+                    resp['data']['receive_code'] = receive_code
+        resp['state'] = _p115_success(resp)
+        return resp
+
+    def share_update_settings(self, share_code, share_duration=-1, receive_code=None, auto_fill_recvcode=0, receive_user_limit=''):
+        """更新分享设置。share_duration=-1 表示永久。"""
+        if not share_code:
+            return {'state': False, 'error_msg': 'share_code 不能为空'}
+        url = "https://webapi.115.com/share/updateshare"
+        payload = {
+            'share_code': str(share_code),
+            'auto_fill_recvcode': str(auto_fill_recvcode),
+            'receive_user_limit': str(receive_user_limit or ''),
+            'share_duration': str(share_duration),
+        }
+        if receive_code:
+            payload['receive_code'] = str(receive_code)
+            payload['is_custom_code'] = '1'
+        r = self.request(url, method='POST', data=payload)
+        return _p115_normalize_common_response(self._json_result(r))
+
+    def share_info(self, share_code, receive_code=None, cid=0, limit=100, offset=0):
+        """读取分享快照/审核状态。shareinfo.share_state=1 通常表示可访问。"""
+        if not share_code:
+            return {'state': False, 'error_msg': 'share_code 不能为空'}
+        url = "https://webapi.115.com/share/snap"
+        params = {
+            'share_code': str(share_code),
+            'receive_code': str(receive_code or ''),
+            'cid': str(cid or 0),
+            'limit': int(limit or 100),
+            'offset': int(offset or 0),
+        }
+        r = self.request(url, method='GET', params=params)
+        resp = self._json_result(r)
+        resp['state'] = _p115_success(resp)
+        return resp
+
+    def share_cancel(self, share_code):
+        """取消分享。不同账号/版本接口可能返回字段不同，只统一 state。"""
+        if not share_code:
+            return {'state': False, 'error_msg': 'share_code 不能为空'}
+        for url in ("https://webapi.115.com/share/cancel", "https://webapi.115.com/share/delete"):
+            r = self.request(url, method='POST', data={'share_code': str(share_code)})
+            resp = self._json_result(r)
+            if _p115_success(resp):
+                return _p115_normalize_common_response(resp)
+        return _p115_normalize_common_response(resp)
     
     def life_batch_delete(self, delete_data_list):
         url = "https://life.115.com/api/1.0/web/1.0/life/life_batch_delete"
@@ -1422,6 +1500,36 @@ class P115Service:
                 if not self._cookie:
                     raise Exception("未配置 115 Cookie，无法执行离线下载")
                 return self._cookie.offline_add_urls(payload)
+
+            def share_create(self, file_ids, share_duration=-1, receive_code=None):
+                self._rate_limit()
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法创建分享")
+                return self._cookie.share_create(file_ids, share_duration=share_duration, receive_code=receive_code)
+
+            def share_update_settings(self, share_code, share_duration=-1, receive_code=None, auto_fill_recvcode=0, receive_user_limit=''):
+                self._rate_limit()
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法更新分享设置")
+                return self._cookie.share_update_settings(
+                    share_code,
+                    share_duration=share_duration,
+                    receive_code=receive_code,
+                    auto_fill_recvcode=auto_fill_recvcode,
+                    receive_user_limit=receive_user_limit,
+                )
+
+            def share_info(self, share_code, receive_code=None, cid=0, limit=100, offset=0):
+                self._rate_limit()
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法检查分享状态")
+                return self._cookie.share_info(share_code, receive_code=receive_code, cid=cid, limit=limit, offset=offset)
+
+            def share_cancel(self, share_code):
+                self._rate_limit()
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法取消分享")
+                return self._cookie.share_cancel(share_code)
 
             def share_import(self, share_code, receive_code, cid):
                 self._rate_limit()

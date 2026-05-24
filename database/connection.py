@@ -478,24 +478,6 @@ def init_db():
                     pass
                 # ▲▲▲ 临时结束 ▲▲▲
 
-                logger.trace("  ➜ 正在创建 'p115_organize_records' 表 (115整理记录)...")
-                cursor.execute("""
-                    CREATE TABLE IF NOT EXISTS p115_organize_records (
-                        id SERIAL PRIMARY KEY,
-                        file_id TEXT UNIQUE NOT NULL,  -- 115 原始文件/文件夹ID (使用UNIQUE防止重复记录)
-                        pick_code TEXT UNIQUE,
-                        original_name TEXT NOT NULL,   -- 原始名称
-                        renamed_name TEXT,             -- 整理后的名称
-                        status TEXT NOT NULL,          -- 'success' 或 'unrecognized'
-                        fail_reason TEXT,              -- 识别失败原因
-                        tmdb_id TEXT,
-                        media_type TEXT,
-                        target_cid TEXT,               -- 目标分类CID
-                        category_name TEXT,            -- 目标分类名称
-                        processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
-                        season_number INTEGER
-                    )
-                """)
 
                 logger.trace("  ➜ 正在创建 'shared_virtual_items' 表 (共享资源虚拟入库管理)...")
                 cursor.execute("""
@@ -504,8 +486,6 @@ def init_db():
                         source_id TEXT,
                         source_key TEXT,
                         source_provider TEXT DEFAULT 'shared_center',
-
-                        -- 媒体身份
                         tmdb_id TEXT NOT NULL,
                         item_type TEXT NOT NULL,
                         parent_series_tmdb_id TEXT,
@@ -514,8 +494,6 @@ def init_db():
                         title TEXT,
                         release_year INTEGER,
                         poster_path TEXT,
-
-                        -- 文件指纹与本地投影
                         sha1 TEXT NOT NULL,
                         size BIGINT,
                         file_name TEXT NOT NULL,
@@ -523,27 +501,19 @@ def init_db():
                         strm_path TEXT,
                         mediainfo_path TEXT,
                         nfo_path TEXT,
-
-                        -- 共享源凭证
                         share_code TEXT,
                         receive_code TEXT,
                         contributor_id TEXT,
-
-                        -- 真实转存信息：虚拟阶段为空，播放临时转存后补齐
                         cache_parent_id TEXT,
                         cache_parent_name TEXT,
                         real_fid TEXT,
                         real_pick_code TEXT,
                         real_parent_id TEXT,
                         real_local_path TEXT,
-
-                        -- 转正目标：虚拟入库时由分类规则预计算，手动转正时使用
                         target_parent_id TEXT,
                         target_parent_name TEXT,
                         promoted_fid TEXT,
                         promoted_pick_code TEXT,
-
-                        -- 状态：virtual_ready/transferring/cached/watched/promoted/deleted/error
                         status TEXT NOT NULL DEFAULT 'virtual_ready',
                         play_count INTEGER NOT NULL DEFAULT 0,
                         last_played_at TIMESTAMP WITH TIME ZONE,
@@ -556,6 +526,63 @@ def init_db():
                         raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                         updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
+                logger.trace("  ➜ 正在创建 'shared_share_records' 表 (我的共享资源记录)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS shared_share_records (
+                        id SERIAL PRIMARY KEY,
+                        share_code TEXT UNIQUE,
+                        receive_code TEXT,
+                        share_url TEXT,
+                        share_type TEXT NOT NULL DEFAULT 'season_pack',
+                        root_fid TEXT NOT NULL,
+                        root_name TEXT,
+                        root_is_dir BOOLEAN NOT NULL DEFAULT TRUE,
+                        tmdb_id TEXT,
+                        item_type TEXT,
+                        parent_series_tmdb_id TEXT,
+                        season_number INTEGER,
+                        title TEXT,
+                        release_year INTEGER,
+                        status TEXT NOT NULL DEFAULT 'pending_review',
+                        review_status TEXT NOT NULL DEFAULT 'pending_review',
+                        center_status TEXT NOT NULL DEFAULT 'not_reported',
+                        center_source_id TEXT,
+                        item_count INTEGER NOT NULL DEFAULT 0,
+                        reported_count INTEGER NOT NULL DEFAULT 0,
+                        last_checked_at TIMESTAMP WITH TIME ZONE,
+                        reported_at TIMESTAMP WITH TIME ZONE,
+                        cancelled_at TIMESTAMP WITH TIME ZONE,
+                        last_error TEXT,
+                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
+                logger.trace("  ➜ 正在创建 'shared_share_items' 表 (我的共享资源文件明细)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS shared_share_items (
+                        id SERIAL PRIMARY KEY,
+                        share_record_id INTEGER NOT NULL REFERENCES shared_share_records(id) ON DELETE CASCADE,
+                        fid TEXT,
+                        sha1 TEXT,
+                        size BIGINT DEFAULT 0,
+                        file_name TEXT NOT NULL,
+                        relative_path TEXT,
+                        tmdb_id TEXT,
+                        item_type TEXT,
+                        season_number INTEGER,
+                        episode_number INTEGER,
+                        center_source_id TEXT,
+                        center_reported BOOLEAN NOT NULL DEFAULT FALSE,
+                        raw_ffprobe_uploaded BOOLEAN NOT NULL DEFAULT FALSE,
+                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        CONSTRAINT uniq_shared_share_item UNIQUE (share_record_id, fid)
                     )
                 """)
 
@@ -594,6 +621,37 @@ def init_db():
                         title TEXT,
                         raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
                         created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
+                logger.trace("  ➜ 正在创建 'shared_maintenance_state' 表 (共享资源维护任务状态)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS shared_maintenance_state (
+                        task_name TEXT PRIMARY KEY,
+                        last_run_at TIMESTAMP WITH TIME ZONE,
+                        last_success_at TIMESTAMP WITH TIME ZONE,
+                        last_error TEXT,
+                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
+                logger.trace("  ➜ 正在创建 'p115_organize_records' 表 (115整理记录)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS p115_organize_records (
+                        id SERIAL PRIMARY KEY,
+                        file_id TEXT UNIQUE NOT NULL,  -- 115 原始文件/文件夹ID (使用UNIQUE防止重复记录)
+                        pick_code TEXT UNIQUE,
+                        original_name TEXT NOT NULL,   -- 原始名称
+                        renamed_name TEXT,             -- 整理后的名称
+                        status TEXT NOT NULL,          -- 'success' 或 'unrecognized'
+                        fail_reason TEXT,              -- 识别失败原因
+                        tmdb_id TEXT,
+                        media_type TEXT,
+                        target_cid TEXT,               -- 目标分类CID
+                        category_name TEXT,            -- 目标分类名称
+                        processed_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        season_number INTEGER
                     )
                 """)
 
@@ -787,13 +845,17 @@ def init_db():
                     # 加速 "全局搜索某个文件"
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_name ON p115_filesystem_cache (name);")
 
-                    # 12.5 【共享资源虚拟入库】加速虚拟资源管理页、播放回填和临时清理
+                    # 12.5 【共享资源】加速虚拟入库、我的共享和贡献值页面
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_status_updated ON shared_virtual_items (status, updated_at DESC);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_media ON shared_virtual_items (tmdb_id, item_type, season_number, episode_number);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_sha1 ON shared_virtual_items (sha1);")
-                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_real_pick_code ON shared_virtual_items (real_pick_code) WHERE real_pick_code IS NOT NULL;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_expires_at ON shared_virtual_items (expires_at) WHERE status IN ('cached', 'watched');")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_status_updated ON shared_share_records (status, updated_at DESC);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_media ON shared_share_records (tmdb_id, item_type, season_number);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssi_record ON shared_share_items (share_record_id);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssi_sha1 ON shared_share_items (sha1) WHERE sha1 IS NOT NULL;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_shared_credit_ledger_created ON shared_credit_ledger_local (created_at DESC);")
+
 
                     # 13. 【海量数据优化】加速追剧列表的聚合查询
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_type_parent ON media_metadata (item_type, parent_series_tmdb_id);")
