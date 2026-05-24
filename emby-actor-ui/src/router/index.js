@@ -149,6 +149,12 @@ const routes = [
     meta: { requiresAuth: true },
   },
   {
+    path: '/shared-resources',
+    name: 'SharedResourceManager',
+    component: () => import('../components/SharedResourceManagerPage.vue'),
+    meta: { requiresAuth: true, requiresAdmin: true },
+  },
+  {
     path: '/user-management',
     name: 'UserManagement',
     component: UserManagementPage,

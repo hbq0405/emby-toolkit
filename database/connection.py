@@ -497,6 +497,106 @@ def init_db():
                     )
                 """)
 
+                logger.trace("  ➜ 正在创建 'shared_virtual_items' 表 (共享资源虚拟入库管理)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS shared_virtual_items (
+                        virtual_id TEXT PRIMARY KEY,
+                        source_id TEXT,
+                        source_key TEXT,
+                        source_provider TEXT DEFAULT 'shared_center',
+
+                        -- 媒体身份
+                        tmdb_id TEXT NOT NULL,
+                        item_type TEXT NOT NULL,
+                        parent_series_tmdb_id TEXT,
+                        season_number INTEGER,
+                        episode_number INTEGER,
+                        title TEXT,
+                        release_year INTEGER,
+                        poster_path TEXT,
+
+                        -- 文件指纹与本地投影
+                        sha1 TEXT NOT NULL,
+                        size BIGINT,
+                        file_name TEXT NOT NULL,
+                        quality TEXT,
+                        strm_path TEXT,
+                        mediainfo_path TEXT,
+                        nfo_path TEXT,
+
+                        -- 共享源凭证
+                        share_code TEXT,
+                        receive_code TEXT,
+                        contributor_id TEXT,
+
+                        -- 真实转存信息：虚拟阶段为空，播放临时转存后补齐
+                        cache_parent_id TEXT,
+                        cache_parent_name TEXT,
+                        real_fid TEXT,
+                        real_pick_code TEXT,
+                        real_parent_id TEXT,
+                        real_local_path TEXT,
+
+                        -- 转正目标：虚拟入库时由分类规则预计算，手动转正时使用
+                        target_parent_id TEXT,
+                        target_parent_name TEXT,
+                        promoted_fid TEXT,
+                        promoted_pick_code TEXT,
+
+                        -- 状态：virtual_ready/transferring/cached/watched/promoted/deleted/error
+                        status TEXT NOT NULL DEFAULT 'virtual_ready',
+                        play_count INTEGER NOT NULL DEFAULT 0,
+                        last_played_at TIMESTAMP WITH TIME ZONE,
+                        first_transferred_at TIMESTAMP WITH TIME ZONE,
+                        last_transferred_at TIMESTAMP WITH TIME ZONE,
+                        expires_at TIMESTAMP WITH TIME ZONE,
+                        promoted_at TIMESTAMP WITH TIME ZONE,
+                        deleted_at TIMESTAMP WITH TIME ZONE,
+                        last_error TEXT,
+                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
+                logger.trace("  ➜ 正在创建 'shared_credit_snapshot' 表 (共享资源贡献值快照)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS shared_credit_snapshot (
+                        id INTEGER PRIMARY KEY DEFAULT 1,
+                        device_id TEXT,
+                        credit INTEGER NOT NULL DEFAULT 0,
+                        contributed_sources INTEGER NOT NULL DEFAULT 0,
+                        consumed_sources INTEGER NOT NULL DEFAULT 0,
+                        transfer_success INTEGER NOT NULL DEFAULT 0,
+                        transfer_failed INTEGER NOT NULL DEFAULT 0,
+                        wanted_gaps INTEGER NOT NULL DEFAULT 0,
+                        shared_sources INTEGER NOT NULL DEFAULT 0,
+                        raw_ffprobe INTEGER NOT NULL DEFAULT 0,
+                        remote_devices INTEGER NOT NULL DEFAULT 0,
+                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                        CONSTRAINT shared_credit_snapshot_singleton CHECK (id = 1)
+                    )
+                """)
+
+                logger.trace("  ➜ 正在创建 'shared_credit_ledger_local' 表 (共享资源贡献值流水)...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS shared_credit_ledger_local (
+                        id SERIAL PRIMARY KEY,
+                        event_type TEXT NOT NULL,
+                        delta INTEGER NOT NULL DEFAULT 0,
+                        reason TEXT,
+                        ref_id TEXT,
+                        source_id TEXT,
+                        virtual_id TEXT,
+                        tmdb_id TEXT,
+                        item_type TEXT,
+                        title TEXT,
+                        raw_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+                    )
+                """)
+
                 # ======================================================================
                 # ★★★ 数据库平滑升级 (START) ★★★
                 # 此处代码用于新增在新版本中添加的列。
@@ -686,6 +786,14 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_parent_id ON p115_filesystem_cache (parent_id);")
                     # 加速 "全局搜索某个文件"
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_name ON p115_filesystem_cache (name);")
+
+                    # 12.5 【共享资源虚拟入库】加速虚拟资源管理页、播放回填和临时清理
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_status_updated ON shared_virtual_items (status, updated_at DESC);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_media ON shared_virtual_items (tmdb_id, item_type, season_number, episode_number);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_sha1 ON shared_virtual_items (sha1);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_real_pick_code ON shared_virtual_items (real_pick_code) WHERE real_pick_code IS NOT NULL;")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_expires_at ON shared_virtual_items (expires_at) WHERE status IN ('cached', 'watched');")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_shared_credit_ledger_created ON shared_credit_ledger_local (created_at DESC);")
 
                     # 13. 【海量数据优化】加速追剧列表的聚合查询
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_type_parent ON media_metadata (item_type, parent_series_tmdb_id);")

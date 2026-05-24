@@ -76,6 +76,7 @@ CONFIG_OPTION_115_SHARED_RESOURCE_MODE = "p115_shared_resource_mode" # 共享资
 CONFIG_OPTION_115_SHARED_CACHE_CID = "p115_shared_cache_cid" # 虚拟入库播放时临时转存目录CID
 CONFIG_OPTION_115_SHARED_CACHE_NAME = "p115_shared_cache_name" # 虚拟入库播放时临时转存目录名称
 CONFIG_OPTION_115_SHARED_CACHE_RETENTION_DAYS = "p115_shared_cache_retention_days" # 虚拟入库临时文件保留天数
+CONFIG_OPTION_115_SHARED_INSTALL_ID = "p115_shared_install_id" # 本机共享资源安装标识（隐藏配置）
 
 # ==============================================================================
 # ✨ 通知服务 (Notification Services)
