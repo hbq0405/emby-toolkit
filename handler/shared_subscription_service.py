@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Tuple
 import config_manager
 import constants
 from database.connection import get_db_connection
-from handler.p115_service import P115Service, P115CacheManager
+from handler.p115_service import P115Service, P115CacheManager, SmartOrganizer
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled, shared_resource_mode
 
@@ -118,18 +118,219 @@ def _get_local_strm_root() -> str:
     return str(_cfg('CONFIG_OPTION_LOCAL_STRM_ROOT', 'local_strm_root', '/mnt/media') or '/mnt/media')
 
 
-def _virtual_rel_dir(source: Dict[str, Any], context: Dict[str, Any]) -> str:
+def _sanitize_rel_path(path: str) -> str:
+    """清理相对路径，保留 / 分层；用于复用 115 正式整理的分类目录。"""
+    parts = []
+    for part in re.split(r'[\\/]+', str(path or '')):
+        part = _sanitize_filename(part)
+        if part and part not in ('.', '..'):
+            parts.append(part)
+    return '/'.join(parts)
+
+
+def _path_node_id(node: Dict[str, Any]) -> str:
+    return str(
+        (node or {}).get('cid')
+        or (node or {}).get('file_id')
+        or (node or {}).get('fid')
+        or (node or {}).get('id')
+        or ''
+    )
+
+
+def _path_node_name(node: Dict[str, Any]) -> str:
+    return str(
+        (node or {}).get('file_name')
+        or (node or {}).get('fn')
+        or (node or {}).get('name')
+        or (node or {}).get('n')
+        or ''
+    ).strip()
+
+
+def _strip_media_root_from_local_path(local_path: str) -> str:
+    """p115_filesystem_cache.local_path 有时包含媒体库根目录名，这里转成本地 STRM 根目录下的相对分类路径。"""
+    path = _sanitize_rel_path(local_path)
+    if not path:
+        return ''
+    media_root_name = str(_cfg('CONFIG_OPTION_115_MEDIA_ROOT_NAME', 'p115_media_root_name', '') or '').strip('/\\')
+    if media_root_name:
+        parts = [p for p in path.split('/') if p]
+        if media_root_name in parts:
+            idx = parts.index(media_root_name)
+            return '/'.join(parts[idx + 1:])
+    return path
+
+
+def _derive_category_path_from_115(client, target_cid: str) -> str:
+    """按正式整理逻辑，从 115 path 面包屑推导分类目录相对路径。"""
+    if not client or not target_cid:
+        return ''
+    try:
+        res = client.fs_files({'cid': str(target_cid), 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+        path_nodes = (res or {}).get('path') or (res or {}).get('paths') or (res or {}).get('breadcrumb') or []
+        if not isinstance(path_nodes, list):
+            return ''
+
+        media_root_cid = str(_cfg('CONFIG_OPTION_115_MEDIA_ROOT_CID', 'p115_media_root_cid', '0') or '0')
+        start_idx = 0
+        found_root = False
+        if media_root_cid == '0':
+            start_idx = 0 if str(target_cid) == '0' else 1
+            found_root = True
+        else:
+            for idx, node in enumerate(path_nodes):
+                if _path_node_id(node) == media_root_cid:
+                    start_idx = idx + 1
+                    found_root = True
+                    break
+
+        if found_root and start_idx < len(path_nodes):
+            rel = '/'.join(_path_node_name(n) for n in path_nodes[start_idx:] if _path_node_name(n))
+            return _sanitize_rel_path(rel)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享虚拟] 从 115 面包屑推导分类路径失败: cid={target_cid}, err={e}")
+    return ''
+
+
+def _resolve_category_rel_path(organizer: SmartOrganizer, target_cid: str, client=None) -> str:
+    """复用正式 115 整理规则，把目标 CID 转成本地 STRM 分类相对目录。"""
+    target_cid = str(target_cid or '')
+    matched_rule = None
+    for rule in getattr(organizer, 'rules', []) or []:
+        if str(rule.get('cid') or '') == target_cid:
+            matched_rule = rule
+            break
+
+    if matched_rule:
+        if matched_rule.get('category_path'):
+            return _sanitize_rel_path(matched_rule.get('category_path'))
+
+    # 优先复用本地 115 缓存里的 local_path。
+    try:
+        cached_path = P115CacheManager.get_local_path(target_cid)
+        cached_rel = _strip_media_root_from_local_path(cached_path)
+        if cached_rel:
+            return cached_rel
+    except Exception:
+        pass
+
+    # 再按正式整理逻辑从 115 path 面包屑推导，并回写到规则，避免下次重复查。
+    derived = _derive_category_path_from_115(client, target_cid)
+    if derived:
+        if matched_rule is not None:
+            try:
+                matched_rule['category_path'] = derived
+                settings_db.save_setting('p115_sorting_rules', organizer.rules)
+            except Exception:
+                pass
+        return derived
+
+    if matched_rule:
+        return _sanitize_rel_path(matched_rule.get('dir_name') or matched_rule.get('name') or '未识别')
+    return '未识别'
+
+
+def _build_standard_root_name(organizer: SmartOrganizer, media_type: str, fallback_title: str) -> str:
+    cfg = getattr(organizer, 'rename_config', {}) or {}
+    details = getattr(organizer, 'details', {}) or {}
+    title = details.get('title') or fallback_title or getattr(organizer, 'original_title', '')
+    original_title = details.get('original_title') or title
+    main_format = cfg.get('main_dir_format', ['title_zh', 'sep_space', 'year', 'sep_space', 'tmdb_bracket'])
+    try:
+        root_name = organizer._build_name_from_format(
+            main_format,
+            is_tv=(media_type == 'tv'),
+            original_title=original_title,
+        )
+    except Exception:
+        root_name = ''
+    if not root_name:
+        root_name = title
+    return _sanitize_rel_path(root_name) or _sanitize_filename(fallback_title or 'Unknown')
+
+
+def _build_standard_season_dir(organizer: SmartOrganizer, season_number) -> str:
+    try:
+        s_num = int(season_number)
+    except Exception:
+        s_num = 1
+    cfg = getattr(organizer, 'rename_config', {}) or {}
+    details = getattr(organizer, 'details', {}) or {}
+    original_title = details.get('original_title') or details.get('title') or getattr(organizer, 'original_title', '')
+    season_format = cfg.get('season_dir_format', ['season_name_en'])
+    try:
+        name = organizer._build_name_from_format(
+            season_format,
+            is_tv=True,
+            season_num=s_num,
+            original_title=original_title,
+        )
+    except Exception:
+        name = ''
+    return _sanitize_filename(name or f"Season {s_num:02d}")
+
+
+def _legacy_virtual_rel_dir(source: Dict[str, Any], context: Dict[str, Any]) -> str:
+    """兜底路径：不再生成到“共享虚拟”根目录，避免和正式媒体分类割裂。"""
     title = _sanitize_filename(context.get('title') or source.get('title') or '共享资源')
     item_type = str(source.get('item_type') or context.get('item_type') or '')
     season = source.get('season_number') or context.get('season_number')
     if item_type in ('Episode', 'Season', 'Series') or season is not None:
         try:
-            return f"共享虚拟/{title}/Season {int(season or 1):02d}"
+            return f"未识别/{title}/Season {int(season or 1):02d}"
         except Exception:
-            return f"共享虚拟/{title}/Season 01"
+            return f"未识别/{title}/Season 01"
     year = context.get('year') or source.get('release_year') or ''
     suffix = f" ({year})" if year else ''
-    return f"共享虚拟/{title}{suffix}"
+    return f"未识别/{title}{suffix}"
+
+
+def _virtual_rel_dir(source: Dict[str, Any], context: Dict[str, Any]) -> str:
+    """虚拟入库 STRM 目录。
+
+    这里不再固定写入“共享虚拟”，而是复用正式 115 入库的 SmartOrganizer：
+    - 根据 p115_sorting_rules / 历史整理记忆判断分类目录；
+    - 根据 p115_rename_config 生成主目录和季目录；
+    - 只生成本地 STRM，不移动 115 文件。
+    """
+    title = context.get('title') or source.get('title') or source.get('file_name') or '共享资源'
+    item_type = str(source.get('item_type') or context.get('item_type') or '')
+    season = source.get('season_number') or context.get('season_number')
+
+    media_type = 'movie'
+    if item_type in ('Episode', 'Season', 'Series') or str(context.get('item_type') or '') in ('Season', 'Series') or season is not None:
+        media_type = 'tv'
+
+    tmdb_id = context.get('parent_tmdb_id') if media_type == 'tv' else None
+    tmdb_id = tmdb_id or context.get('tmdb_id') or source.get('tmdb_id')
+
+    try:
+        tmdb_id_int = int(str(tmdb_id))
+    except Exception:
+        logger.warning(f"  ➜ [共享虚拟] 缺少可用 TMDb ID，无法复用正式分类规则，使用未识别目录: {tmdb_id}")
+        return _legacy_virtual_rel_dir(source, context)
+
+    try:
+        p115_client = P115Service.get_client()
+        organizer = SmartOrganizer(p115_client, tmdb_id_int, media_type, title, None, False)
+        if media_type == 'tv' and season is not None:
+            try:
+                organizer.forced_season = int(season)
+            except Exception:
+                pass
+
+        target_cid = organizer.get_target_cid(season_num=int(season) if media_type == 'tv' and season is not None else None)
+        category_rel = _resolve_category_rel_path(organizer, target_cid, p115_client) if target_cid else '未识别'
+        root_name = _build_standard_root_name(organizer, media_type, title)
+
+        if media_type == 'tv':
+            season_dir = _build_standard_season_dir(organizer, season or 1)
+            return os.path.join(category_rel, root_name, season_dir)
+        return os.path.join(category_rel, root_name)
+    except Exception as e:
+        logger.warning(f"  ➜ [共享虚拟] 复用正式分类规则失败，使用未识别目录: {e}", exc_info=True)
+        return _legacy_virtual_rel_dir(source, context)
 
 
 def _build_virtual_id(source: Dict[str, Any]) -> str:
@@ -146,6 +347,49 @@ def _write_text_file(path: str, text: str):
     try:
         from monitor_service import enqueue_file_actively
         enqueue_file_actively(path)
+    except Exception:
+        pass
+
+
+def _remove_empty_parents(path: str, stop_root: str):
+    try:
+        stop = Path(stop_root).resolve()
+        current = Path(path).resolve().parent
+        while current != stop and stop in current.parents:
+            try:
+                current.rmdir()
+            except OSError:
+                break
+            current = current.parent
+    except Exception:
+        pass
+
+
+def _cleanup_old_virtual_files(virtual_id: str, new_strm_path: str, new_mediainfo_path: str = ''):
+    """同一个 virtual_id 重新生成到分类目录时，清掉旧的“共享虚拟/...”残留文件。"""
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT strm_path, mediainfo_path FROM shared_virtual_items WHERE virtual_id=%s",
+                    (virtual_id,),
+                )
+                row = cur.fetchone()
+        if not row:
+            return
+        row = dict(row)
+        root = _get_local_strm_root()
+        for old_path, new_path in (
+            (row.get('strm_path'), new_strm_path),
+            (row.get('mediainfo_path'), new_mediainfo_path),
+        ):
+            if old_path and old_path != new_path and os.path.exists(old_path):
+                try:
+                    os.remove(old_path)
+                    logger.info(f"  ➜ [共享虚拟] 已清理旧投影文件: {old_path}")
+                    _remove_empty_parents(old_path, root)
+                except Exception as e:
+                    logger.debug(f"  ➜ [共享虚拟] 清理旧投影文件失败: {old_path}, err={e}")
     except Exception:
         pass
 
@@ -273,6 +517,7 @@ def _consume_virtual(client: SharedCenterClient, sources: List[Dict[str, Any]], 
         strm_path = os.path.join(root, rel_dir, f"{stem}.strm")
         mediainfo_path = os.path.join(root, rel_dir, f"{stem}-mediainfo.json")
         virtual_id = _build_virtual_id(source)
+        _cleanup_old_virtual_files(virtual_id, strm_path, mediainfo_path)
         _write_text_file(strm_path, f"etk-shared://{virtual_id}")
         has_mi = _save_raw_and_write_mediainfo(source, raw_map, mediainfo_path)
         _upsert_virtual_item(source, context, strm_path, mediainfo_path if has_mi else '')
