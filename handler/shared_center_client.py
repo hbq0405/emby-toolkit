@@ -78,16 +78,20 @@ class SharedCenterClient:
         return self._post('/api/v1/rawffprobe/batch', {'sha1_list': sha1_list}, timeout=60)
 
 
-    def cancel_sources(self, share_code: str = '', source_ids: List[str] = None, reason: str = 'share_cancelled') -> Dict[str, Any]:
-        """从共享中心撤销当前设备登记的共享源，并扣回对应贡献值。
+    def cancel_sources(self, share_code: str = '', source_ids: List[str] = None, sha1_list: List[str] = None, reason: str = 'share_cancelled', delete_raw_ffprobe: bool = True) -> Dict[str, Any]:
+        """从共享中心撤销当前设备登记的共享源，并同步删除对应媒体信息。
 
         中心端按当前 device_token 校验归属，只会删除本设备贡献的 source。
-        share_code 可一次撤销同一个 115 分享包下登记的所有源；source_ids 用于精确兜底。
+        share_code 可一次撤销同一个 115 分享包下登记的所有源；source_ids 用于精确兜底；
+        sha1_list 用于清理“源已删但 raw_ffprobe 仍残留”的历史媒体信息。
         """
         source_ids = [str(x).strip() for x in (source_ids or []) if str(x or '').strip()]
+        sha1_list = [str(x).strip().upper() for x in (sha1_list or []) if str(x or '').strip()]
         payload = {
             'share_code': str(share_code or '').strip() or None,
             'source_ids': source_ids,
+            'sha1_list': sha1_list,
+            'delete_raw_ffprobe': bool(delete_raw_ffprobe),
             'reason': reason or 'share_cancelled',
         }
         return self._post('/api/v1/sources/cancel', payload, timeout=25)

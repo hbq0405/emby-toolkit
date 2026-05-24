@@ -406,6 +406,7 @@ def _cancel_center_sources_for_share(record_id: int, record: Dict[str, Any]) -> 
 
     share_code = str((record or {}).get('share_code') or '').strip()
     source_ids = set()
+    sha1_list = set()
     if (record or {}).get('center_source_id'):
         source_ids.add(str(record.get('center_source_id')).strip())
     try:
@@ -413,16 +414,21 @@ def _cancel_center_sources_for_share(record_id: int, record: Dict[str, Any]) -> 
             sid = str(item.get('center_source_id') or '').strip()
             if sid:
                 source_ids.add(sid)
+            sha1 = str(item.get('sha1') or '').strip().upper()
+            if sha1:
+                sha1_list.add(sha1)
     except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 收集中心 source_id 失败: record={record_id}, err={e}")
+        logger.warning(f"  ➜ [共享资源] 收集中心 source_id/sha1 失败: record={record_id}, err={e}")
 
-    if not share_code and not source_ids:
-        return {'ok': True, 'skipped': True, 'message': '本地没有 share_code/source_id，无需撤销中心源'}
+    if not share_code and not source_ids and not sha1_list:
+        return {'ok': True, 'skipped': True, 'message': '本地没有 share_code/source_id/sha1，无需撤销中心源'}
 
     headers = {'X-Device-Token': cfg['device_token'], 'Content-Type': 'application/json'}
     payload = {
         'share_code': share_code or None,
         'source_ids': sorted(source_ids),
+        'sha1_list': sorted(sha1_list),
+        'delete_raw_ffprobe': True,
         'reason': 'share_cancelled',
         'local_record_id': record_id,
     }
@@ -2091,7 +2097,10 @@ def api_cancel_share(record_id):
     if center_result.get('skipped'):
         msg_parts.append(center_result.get('message') or '中心撤销已跳过')
     elif center_ok:
-        msg_parts.append(f"中心已撤销 {center_result.get('removed_count', 0)} 个共享源，当前贡献值 {center_result.get('credit')}")
+        raw_removed = int(center_result.get('removed_raw_ffprobe_count') or 0)
+        raw_file_removed = int(center_result.get('removed_raw_file_count') or 0)
+        msg = f"中心已撤销 {center_result.get('removed_count', 0)} 个共享源，删除媒体信息 {raw_removed} 条/文件 {raw_file_removed} 个，当前贡献值 {center_result.get('credit')}"
+        msg_parts.append(msg)
     else:
         msg_parts.append(f"中心撤销失败: {center_result.get('message')}")
     final_msg = '；'.join([p for p in msg_parts if p])
