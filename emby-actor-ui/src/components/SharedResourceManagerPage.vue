@@ -207,7 +207,7 @@ const manualShareForm = reactive({
 const virtualStatusOptions = [
   { label: '全部状态', value: 'all' }, { label: '虚拟待播', value: 'virtual_ready' },
   { label: '已临时转存', value: 'cached' }, { label: '已看过', value: 'watched' },
-  { label: '已转正', value: 'promoted' }, { label: '已删除', value: 'deleted' }, { label: '异常', value: 'error' },
+  { label: '转正整理中', value: 'promote_pending' }, { label: '已转正', value: 'promoted' }, { label: '已删除', value: 'deleted' }, { label: '异常', value: 'error' },
 ];
 const shareStatusOptions = [
   { label: '全部状态', value: 'all' }, { label: '审核中', value: 'pending_review' },
@@ -233,7 +233,7 @@ const shareTypeLabel = (value) => (shareTypeOptions.find(opt => opt.value === va
 const statusMap = {
   virtual_ready: { text: '虚拟待播', type: 'info' }, transferring: { text: '转存中', type: 'warning' },
   cached: { text: '已临时转存', type: 'success' }, watched: { text: '已看过', type: 'warning' },
-  promoted: { text: '已转正', type: 'success' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
+  promote_pending: { text: '转正整理中', type: 'warning' }, promoted: { text: '已转正', type: 'success' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
   pending_review: { text: '审核中', type: 'warning' }, alive: { text: '已通过', type: 'success' },
   reported: { text: '已登记', type: 'success' }, partial: { text: '部分登记', type: 'warning' },
   failed: { text: '失败', type: 'error' }, rejected: { text: '未通过', type: 'error' }, cancelled: { text: '已取消', type: 'default' },
@@ -302,7 +302,7 @@ const virtualColumns = [
   { title: '临时到期', key: 'expires_at', width: 170, render: row => fmtDate(row.expires_at) },
   { title: '更新时间', key: 'updated_at', width: 170, render: row => fmtDate(row.updated_at) },
   { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
-    h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: row.status === 'promoted' || row.status === 'deleted', onClick: () => confirmPromote(row) }, { icon: () => h(NIcon, null, { default: () => h(PromoteIcon) }), default: () => row.real_fid ? '转正' : '转存整理' }),
+    h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: row.status === 'promoted' || row.status === 'deleted' || row.status === 'promote_pending', onClick: () => confirmPromote(row) }, { icon: () => h(NIcon, null, { default: () => h(PromoteIcon) }), default: () => row.real_fid ? '转正' : '转存整理' }),
     h(NButton, { size: 'small', type: 'error', ghost: true, disabled: row.status === 'deleted' || row.status === 'promoted', onClick: () => confirmDelete(row) }, { icon: () => h(NIcon, null, { default: () => h(TrashIcon) }), default: () => '删除' }),
   ]}) },
 ];
@@ -587,14 +587,14 @@ const manualCreateShare = async () => {
 const checkShare = async (row) => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/check`)); message.success(res.data?.message || '检查完成'); await Promise.allSettled([loadShares(), loadSummary()]); } catch (e) { logApiError('检查分享失败', e); message.error(apiErrorMessage(e, '检查失败')); } };
 const reportShare = async (row) => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/report-center`)); message.success(res.data?.message || '已登记中心'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { logApiError('登记中心失败', e); message.error(apiErrorMessage(e, '登记中心失败')); } };
 const uploadRawShare = async (row) => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/upload-rawffprobe`, { force: false })); message.success(res.data?.message || '媒体信息已上传'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { logApiError('上传媒体信息失败', e); message.error(apiErrorMessage(e, '上传媒体信息失败')); } };
-const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: `确定取消《${row.title || row.root_name}》的 115 分享吗？`, positiveText: '取消分享', negativeText: '保留', onPositiveClick: async () => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/cancel`)); message.success(res.data?.message || '已取消分享'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { logApiError('取消分享失败', e); message.error(apiErrorMessage(e, '取消失败')); } } }); };
+const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: `确定取消《${row.title || row.root_name}》的 115 分享吗？`, positiveText: '取消分享', negativeText: '保留', onPositiveClick: async () => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/cancel`, {})); message.success(res.data?.message || '已取消分享'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { logApiError('取消分享失败', e); message.error(apiErrorMessage(e, '取消失败')); } } }); };
 const confirmDelete = (row) => { dialog.warning({ title: '删除虚拟资源', content: `确定删除《${row.title || row.file_name}》吗？如果已经播放转存，会同步删除 115 临时文件。`, positiveText: '删除', negativeText: '取消', onPositiveClick: async () => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/delete`, { delete_remote: true, delete_local: true })); message.success(res.data?.message || '已删除'); await loadAll(); } catch (e) { logApiError('删除虚拟资源失败', e); message.error(apiErrorMessage(e, '删除失败')); } } }); };
 const confirmPromote = (row) => {
   const unplayed = !row.real_fid;
   dialog.info({
     title: unplayed ? '转存到待整理并整理' : '转为永久转存',
     content: unplayed
-      ? `《${row.title || row.file_name}》还没有播放过，将直接从分享转存到 115 待整理目录，并触发 task_scan_and_organize_115 整理。`
+      ? `《${row.title || row.file_name}》还没有播放过，将直接从分享转存到 115 待整理目录，禁用虚拟 STRM，并触发 task_scan_and_organize_115 生成正式 STRM。`
       : `确定将《${row.title || row.file_name}》从临时转存目录移动到正式媒体库吗？`,
     positiveText: unplayed ? '转存整理' : '转正',
     negativeText: '取消',

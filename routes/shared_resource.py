@@ -27,6 +27,20 @@ _LAST_SCAN_KICK_AT = 0
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.ts', '.mov', '.m2ts', '.iso', '.wmv', '.flv'}
 
 
+def _request_json() -> Dict[str, Any]:
+    """安全读取 JSON 请求体。
+
+    Flask 3.x 下直接访问 request.json 时，如果前端 POST 没有带
+    application/json，会抛 415 Unsupported Media Type。共享资源按钮
+    有些请求本来就不需要 body，所以统一 silent 读取。
+    """
+    try:
+        data = request.get_json(silent=True)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
 def _get_shared_config() -> Dict[str, Any]:
     cfg = config_manager.APP_CONFIG or {}
     return {
@@ -1156,7 +1170,7 @@ def api_delete_virtual_item(virtual_id):
     if not item:
         return jsonify({"success": False, "message": "虚拟资源不存在"}), 404
 
-    data = request.json or {}
+    data = _request_json()
     delete_remote = data.get('delete_remote', True)
     delete_local = data.get('delete_local', True)
     messages = []
@@ -1337,16 +1351,22 @@ def _find_existing_file_in_target(target_cid: str, item: Dict[str, Any], client=
 
 
 def _mark_virtual_promoted_success(virtual_id: str, item: Dict[str, Any], target_cid: str, target_name: str, resp=None, existing=None):
-    promoted_fid = str((existing or {}).get('id') or item.get('real_fid') or '')
-    promoted_pc = (existing or {}).get('pick_code') or item.get('real_pick_code') or ''
+    promoted_fid = str((existing or {}).get('id') or (existing or {}).get('fid') or (existing or {}).get('file_id') or item.get('real_fid') or '')
+    promoted_pc = (existing or {}).get('pick_code') or (existing or {}).get('pc') or item.get('real_pick_code') or item.get('promoted_pick_code') or ''
     message = f"手动转正到 {target_name or 'CID'} {target_cid}"
     if existing:
         message += '；目标目录已有同名/同SHA1文件，已复用目标文件'
+    projection_result = _disable_virtual_projection_file(
+        item,
+        pick_code=promoted_pc,
+        file_name=(existing or {}).get('name') or (existing or {}).get('file_name') or item.get('file_name') or '',
+        reason='promoted',
+    )
     row = shared_virtual_db.mark_virtual_promoted(
         virtual_id,
         promoted_fid=promoted_fid,
         promoted_pick_code=promoted_pc,
-        message=message,
+        message=f"{message}；{projection_result.get('message') or ''}".rstrip('；'),
     )
     try:
         with get_db_connection() as conn:
@@ -1367,7 +1387,7 @@ def _mark_virtual_promoted_success(virtual_id: str, item: Dict[str, Any], target
         event_type='virtual_promoted', delta=0, reason='手动将虚拟资源转为永久转存',
         virtual_id=virtual_id, source_id=item.get('source_id') or '', tmdb_id=item.get('tmdb_id') or '',
         item_type=item.get('item_type') or '', title=item.get('title') or '',
-        raw_json={'target_cid': target_cid, 'move_response': resp, 'existing': existing},
+        raw_json={'target_cid': target_cid, 'move_response': resp, 'existing': existing, 'projection': projection_result},
     )
     return row
 
@@ -1400,6 +1420,59 @@ def _kick_p115_scan_and_organize(reason: str = '') -> Dict[str, Any]:
     t = threading.Thread(target=_runner, name='shared-virtual-promote-scan', daemon=True)
     t.start()
     return {'started': True, 'message': '已异步触发 115 待整理扫描'}
+
+
+def _disable_virtual_projection_file(item: Dict[str, Any], pick_code: str = '', file_name: str = '', reason: str = '') -> Dict[str, Any]:
+    """转正后不再让 Emby 继续消费 etk-shared:// 虚拟 STRM。
+
+    HTTP 302 模式下直接把原虚拟 STRM 覆盖成正式 /api/p115/play/<pc>；
+    挂载模式或暂时没有 pick_code 时，删除虚拟 STRM，等待 task_scan_and_organize_115
+    生成最终正式 STRM。
+    """
+    strm_path = str((item or {}).get('strm_path') or '').strip()
+    result = {'path': strm_path, 'action': 'none', 'reason': reason or ''}
+    if not strm_path:
+        result['message'] = '虚拟记录没有 strm_path'
+        return result
+
+    cfg = config_manager.APP_CONFIG or {}
+    etk_url = str(cfg.get(constants.CONFIG_OPTION_ETK_SERVER_URL, '') or '').rstrip('/')
+    pick_code = str(pick_code or '').strip()
+    file_name = os.path.basename(str(file_name or (item or {}).get('file_name') or '')).strip()
+
+    # 只有 HTTP 模式才能安全地立即改写为正式播放 URL；挂载模式必须等整理任务落盘到正式路径。
+    if pick_code and etk_url.startswith('http'):
+        play_url = f"{etk_url}/api/p115/play/{pick_code}"
+        try:
+            # 用户开启“URL 带文件名”时，带上当前文件名；PC 码仍是播放身份，后续正式整理会再覆盖。
+            try:
+                from database import settings_db
+                rename_config = settings_db.get_setting('p115_rename_config') or {}
+            except Exception:
+                rename_config = {}
+            if file_name and isinstance(rename_config, dict) and rename_config.get('strm_url_fmt') == 'with_name':
+                play_url = f"{play_url}/{file_name}"
+            os.makedirs(os.path.dirname(strm_path), exist_ok=True)
+            with open(strm_path, 'w', encoding='utf-8') as f:
+                f.write(play_url)
+            result.update({'action': 'rewritten', 'content': play_url, 'message': '虚拟 STRM 已覆盖为正式播放 URL'})
+            logger.info(f"  ➜ [共享资源] 转正后已覆盖虚拟 STRM 为正式URL: {strm_path}")
+            return result
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 覆盖虚拟 STRM 失败，将尝试删除: {strm_path}, err={e}")
+
+    removed = _remove_file_quietly(strm_path)
+    # 没有 STRM 时，mediainfo/nfo 也属于虚拟投影，顺手清理，避免 Emby 继续识别占位条目。
+    for key in ('mediainfo_path', 'nfo_path'):
+        path = str((item or {}).get(key) or '').strip()
+        if path:
+            _remove_file_quietly(path)
+    result.update({
+        'action': 'deleted' if removed else 'delete_skipped',
+        'message': '已删除虚拟 STRM，等待正式整理任务生成 STRM' if removed else '虚拟 STRM 不存在或删除失败，等待正式整理任务生成 STRM',
+    })
+    logger.info(f"  ➜ [共享资源] 转正后禁用虚拟 STRM: action={result['action']}, path={strm_path}")
+    return result
 
 
 def _as_virtual_node_from_existing(existing: Dict[str, Any], fallback_item: Dict[str, Any], parent_cid: str) -> Dict[str, Any]:
@@ -1462,32 +1535,30 @@ def _import_virtual_to_save_path(virtual_id: str, item: Dict[str, Any], save_cid
             time.sleep(1)
 
         if not node or not node.get('fid'):
-            # 文件已转存成功但没有定位到具体文件时，仍然交给待整理任务扫根目录，避免手动转正卡死。
+            # 文件已转存成功但没有定位到具体文件时，仍然交给待整理任务扫根目录。
+            # 同时禁用虚拟 STRM，避免继续走 etk-shared:// 播放链路。
+            projection = _disable_virtual_projection_file(item, reason='promote_pending_unlocated')
+            try:
+                pending_row = shared_virtual_db.mark_virtual_promote_pending(
+                    virtual_id,
+                    message='已转存到待整理目录但暂未定位到文件，等待整理任务生成正式 STRM',
+                    raw_json={'save_cid': save_cid, 'import_response': import_resp, 'projection': projection},
+                ) or item
+            except Exception:
+                pending_row = item
             kick = _kick_p115_scan_and_organize(f'unplayed-promote-unlocated:{virtual_id}')
             shared_virtual_db.add_credit_ledger(
                 event_type='virtual_promote_imported_unlocated', delta=0,
                 reason='未播放虚拟资源已转存到待整理目录，但未定位到具体文件，已触发整理任务',
                 virtual_id=virtual_id, source_id=item.get('source_id') or '', tmdb_id=item.get('tmdb_id') or '',
                 item_type=item.get('item_type') or '', title=item.get('title') or display_name,
-                raw_json={'save_cid': save_cid, 'import_response': import_resp, 'scan_kick': kick},
+                raw_json={'save_cid': save_cid, 'import_response': import_resp, 'scan_kick': kick, 'projection': projection},
             )
-            return {'row': item, 'node': {}, 'import_resp': import_resp, 'existing': None, 'kick': kick, 'located': False}
+            return {'row': pending_row, 'node': {}, 'import_resp': import_resp, 'existing': None, 'kick': kick, 'located': False}
 
     _upsert_p115_cache(node, item, save_cid)
-    try:
-        shared_virtual_db.mark_virtual_cached(
-            virtual_id,
-            real_fid=node.get('fid') or '',
-            real_pick_code=node.get('pick_code') or '',
-            real_parent_id=node.get('parent_id') or save_cid,
-            cache_parent_id=save_cid,
-            cache_parent_name=save_name,
-            expires_at=None,
-            message='手动转正：已转存到待整理目录，等待正式整理任务处理',
-            raw_json={'last_import_resp': import_resp, 'last_import_node': node, 'promote_to_save_path': True},
-        )
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 回写未播放转正缓存状态失败: {e}")
+    # 不再把待整理目录里的文件写成 real_pick_code。否则旧虚拟 STRM 会继续走虚拟播放链路。
+    # 转正成功后只记录 promoted_*，并禁用/覆盖原虚拟 STRM；正式库 STRM 交给整理任务生成。
 
     promoted_item = dict(item)
     promoted_item['real_fid'] = node.get('fid') or ''
@@ -1513,7 +1584,7 @@ def api_promote_virtual_item(virtual_id):
     if item.get('status') == 'promoted':
         return jsonify({"success": True, "message": "该资源已经是永久转存", "data": item})
 
-    data = request.json or {}
+    data = _request_json()
     client = P115Service.get_client()
     if not client:
         return jsonify({"success": False, "message": "未配置可用的 115 客户端，无法转正"}), 400
@@ -1532,9 +1603,9 @@ def api_promote_virtual_item(virtual_id):
             return jsonify({"success": False, "message": str(e)}), 500
 
         if result.get('located'):
-            msg = f"未播放资源已转存到待整理目录 [{save_name}]，并已触发 115 整理任务"
+            msg = f"未播放资源已转存到待整理目录 [{save_name}]，已禁用虚拟STRM，并已触发 115 整理任务生成正式STRM"
         else:
-            msg = f"115 已接收转存到待整理目录 [{save_name}]，但暂未定位到具体文件；已触发 115 整理任务继续扫描"
+            msg = f"115 已接收转存到待整理目录 [{save_name}]，已禁用虚拟STRM；暂未定位到具体文件，已触发 115 整理任务继续扫描并生成正式STRM"
         return jsonify({
             "success": True,
             "message": msg,
@@ -1608,7 +1679,7 @@ def api_list_share_items(record_id):
 @shared_resource_bp.route('/shares/manual-create', methods=['POST'])
 @admin_required
 def api_manual_create_share():
-    data = request.json or {}
+    data = _request_json()
     root_fid = str(data.get('root_fid') or '').strip()
     if not root_fid:
         return jsonify({"success": False, "message": "缺少要分享的 115 文件/目录 FID/CID"}), 400
@@ -1885,7 +1956,7 @@ def api_upload_share_raw_ffprobe(record_id):
     if not record:
         return jsonify({"success": False, "message": "分享记录不存在"}), 404
     cfg, headers = _center_headers()
-    force = bool((request.json or {}).get('force'))
+    force = bool(_request_json().get('force'))
     summary = _upload_share_raw_ffprobe_to_center(record_id, cfg, headers, force=force)
     shared_virtual_db.add_credit_ledger(
         'share_raw_uploaded', 0,
@@ -1913,7 +1984,7 @@ def api_cancel_share(record_id):
     if not client:
         return jsonify({"success": False, "message": "未配置可用的 115 Cookie 客户端"}), 400
 
-    data = request.json or {}
+    data = _request_json()
     share_code = str(record.get('share_code') or '').strip()
     if not share_code:
         return jsonify({"success": False, "message": "分享码为空，无法取消", "data": record}), 400

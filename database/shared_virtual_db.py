@@ -40,6 +40,7 @@ def get_local_summary() -> Dict[str, Any]:
                     COUNT(*) AS total,
                     COUNT(*) FILTER (WHERE status='virtual_ready') AS virtual_ready,
                     COUNT(*) FILTER (WHERE status IN ('cached','watched')) AS cached,
+                    COUNT(*) FILTER (WHERE status='promote_pending') AS promote_pending,
                     COUNT(*) FILTER (WHERE status='promoted') AS promoted,
                     COUNT(*) FILTER (WHERE status='deleted') AS deleted,
                     COALESCE(SUM(size) FILTER (WHERE status IN ('cached','watched')), 0) AS cached_size
@@ -130,7 +131,7 @@ def get_virtual_item_for_playback(emby_item_id: str = '', strm_path: str = '', m
         with conn.cursor() as cur:
             if virtual_id:
                 cur.execute(
-                    "SELECT * FROM shared_virtual_items WHERE virtual_id=%s AND status <> 'deleted' LIMIT 1",
+                    "SELECT * FROM shared_virtual_items WHERE virtual_id=%s AND status NOT IN ('deleted','promoted','promote_pending') LIMIT 1",
                     (virtual_id,),
                 )
                 row = _row_to_dict(cur.fetchone())
@@ -169,7 +170,7 @@ def get_virtual_item_for_playback(emby_item_id: str = '', strm_path: str = '', m
                 f"""
                 SELECT *
                 FROM shared_virtual_items
-                WHERE status <> 'deleted'
+                WHERE status NOT IN ('deleted','promoted','promote_pending')
                   AND ({' OR '.join(clauses)})
                 ORDER BY updated_at DESC
                 LIMIT 1
@@ -280,6 +281,30 @@ def mark_virtual_error(virtual_id: str, message: str):
                 RETURNING *
                 """,
                 (message, virtual_id),
+            )
+            row = _row_to_dict(cur.fetchone())
+            conn.commit()
+            return row
+
+
+def mark_virtual_promote_pending(virtual_id: str, message: str = '', raw_json: Dict[str, Any] = None):
+    """转正已提交但正式整理尚未完成。
+
+    典型场景：未播放虚拟资源直接转存到“待整理”目录后，等待
+    task_scan_and_organize_115 移动/重命名并生成正式 STRM。
+    """
+    raw_json = raw_json or {}
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE shared_virtual_items
+                SET status='promote_pending', last_error=%s, updated_at=NOW(),
+                    raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb
+                WHERE virtual_id=%s
+                RETURNING *
+                """,
+                (message, _as_jsonb(raw_json), virtual_id),
             )
             row = _row_to_dict(cur.fetchone())
             conn.commit()
