@@ -294,7 +294,7 @@ DEFAULT_STUDIO_MAPPING = [
     {"label": "皮克斯", "en": ["Pixar"], "company_ids": [3]},
     {"label": "梦工厂", "en": ["DreamWorks Animation", "DreamWorks"], "company_ids": [521]},
     {"label": "吉卜力", "en": ["Studio Ghibli"], "company_ids": [10342]},
-    {"label": "中国电影集团", "en": ["China Film Group"], "company_ids": [14714]},
+    {"label": "中国电影集团", "en": ["China Film Group"], "company_ids": [2270]},
     {"label": "登峰国际", "en": ["DF Pictures"], "company_ids": [65442]},
     {"label": "光线影业", "en": ["Beijing Enlight Pictures"], "company_ids": [17818]},
     {"label": "万达影业", "en": ["Wanda Pictures"], "company_ids": [78952]},
