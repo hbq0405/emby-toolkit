@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 HIGH_FREQ_CHAIN_JOB_ID = 'high_freq_task_chain_job'
 LOW_FREQ_CHAIN_JOB_ID = 'low_freq_task_chain_job'
 DAILY_THEME_JOB_ID = 'daily_theme_job'
+SHARED_RESOURCE_MAINTENANCE_JOB_ID = 'shared_resource_maintenance_job'
 
 
 def _fix_apscheduler_cron_dow(cron_expression: str) -> str:
@@ -241,6 +242,7 @@ class SchedulerManager:
         self.update_low_freq_task_chain_job()
         self.update_daily_theme_job()
         self.update_pro_status_check_job()
+        self.update_shared_resource_maintenance_job()
 
     def _update_single_task_chain_job(self, job_id: str, job_name: str, task_key: str, enabled_key: str, cron_key: str, sequence_key: str, runtime_key: str):
         """
@@ -377,6 +379,50 @@ class SchedulerManager:
             logger.trace(f"  ➜ 已成功设置'{task_description}'任务，执行计划: 每天 00:05。")
         except ValueError as e:
             logger.error(f"设置'{task_description}'任务失败：CRON表达式 '{cron_str}' 无效。错误: {e}")
+
+
+    def update_shared_resource_maintenance_job(self):
+        """硬编码共享资源自动维护任务。每 30 分钟执行一次：登记缺口、同步分享状态、自动登记中心、清理失效分享。"""
+        if not self.scheduler.running:
+            return
+
+        try:
+            self.scheduler.remove_job(SHARED_RESOURCE_MAINTENANCE_JOB_ID)
+        except JobLookupError:
+            pass
+
+        cfg = config_manager.APP_CONFIG or {}
+        enabled = cfg.get(getattr(constants, 'CONFIG_OPTION_115_SHARED_RESOURCE_ENABLED', 'p115_shared_resource_enabled'), False)
+        if isinstance(enabled, str):
+            enabled = enabled.strip().lower() in ('1', 'true', 'yes', 'on', '启用')
+        if not enabled:
+            logger.info("  ➜ 共享资源未启用，本次不设置共享资源自动维护定时任务。")
+            return
+
+        def scheduled_shared_resource_maintenance_wrapper():
+            logger.info("  ➜ 定时任务触发：共享资源自动维护。")
+            try:
+                from tasks.shared_resource_tasks import task_shared_resource_maintenance
+                task_manager.submit_task(
+                    task_function=task_shared_resource_maintenance,
+                    task_name="共享资源自动维护",
+                    processor_type='media'
+                )
+            except Exception as e:
+                logger.error(f"  ➜ 提交共享资源自动维护任务失败: {e}", exc_info=True)
+
+        cron_str = '*/30 * * * *'
+        try:
+            self.scheduler.add_job(
+                func=scheduled_shared_resource_maintenance_wrapper,
+                trigger=CronTrigger.from_crontab(cron_str, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                id=SHARED_RESOURCE_MAINTENANCE_JOB_ID,
+                name="共享资源自动维护",
+                replace_existing=True
+            )
+            logger.trace("  ➜ 已成功设置'共享资源自动维护'任务，执行计划: 每 30 分钟。")
+        except Exception as e:
+            logger.error(f"设置'共享资源自动维护'任务失败: {e}", exc_info=True)
 
     def update_pro_status_check_job(self):
         """每天凌晨 3 点查岗，验证 Pro 状态是否过期"""

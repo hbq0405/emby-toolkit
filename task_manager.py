@@ -204,3 +204,20 @@ def trigger_115_organize_task():
     except Exception as e:
         logger.error(f"  ➜ [TG交互] 触发 115 整理任务时发生错误: {e}", exc_info=True)
         return False
+def trigger_shared_resource_maintenance_task():
+    """【公共接口】触发共享资源自动维护任务。"""
+    try:
+        from tasks.shared_resource_tasks import task_shared_resource_maintenance
+        result = submit_task(
+            task_shared_resource_maintenance,
+            "共享资源自动维护(手动触发)",
+            processor_type='media'
+        )
+        if result:
+            logger.info("  ➜ [共享资源] 维护任务已成功提交到后台队列。")
+        else:
+            logger.warning("  ➜ [共享资源] 维护任务提交失败，可能有其他任务正在运行。")
+        return result
+    except Exception as e:
+        logger.error(f"  ➜ [共享资源] 触发维护任务时发生错误: {e}", exc_info=True)
+        return False
