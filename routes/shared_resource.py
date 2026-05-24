@@ -394,6 +394,51 @@ def _center_headers():
 
 
 
+
+
+def _cancel_center_sources_for_share(record_id: int, record: Dict[str, Any]) -> Dict[str, Any]:
+    """撤销共享中心登记的源，并触发中心贡献值重算。"""
+    cfg = _get_shared_config()
+    if not cfg.get('enabled'):
+        return {'ok': True, 'skipped': True, 'message': '共享中心未启用'}
+    if not cfg.get('device_token'):
+        return {'ok': False, 'skipped': True, 'message': '未配置共享中心 device_token'}
+
+    share_code = str((record or {}).get('share_code') or '').strip()
+    source_ids = set()
+    if (record or {}).get('center_source_id'):
+        source_ids.add(str(record.get('center_source_id')).strip())
+    try:
+        for item in shared_share_db.list_share_items(record_id) or []:
+            sid = str(item.get('center_source_id') or '').strip()
+            if sid:
+                source_ids.add(sid)
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 收集中心 source_id 失败: record={record_id}, err={e}")
+
+    if not share_code and not source_ids:
+        return {'ok': True, 'skipped': True, 'message': '本地没有 share_code/source_id，无需撤销中心源'}
+
+    headers = {'X-Device-Token': cfg['device_token'], 'Content-Type': 'application/json'}
+    payload = {
+        'share_code': share_code or None,
+        'source_ids': sorted(source_ids),
+        'reason': 'share_cancelled',
+        'local_record_id': record_id,
+    }
+    try:
+        resp = requests.post(f"{cfg['center_url']}/api/v1/sources/cancel", headers=headers, json=payload, timeout=25)
+        if not resp.ok:
+            return {'ok': False, 'status_code': resp.status_code, 'message': resp.text[:300], 'payload': payload}
+        data = resp.json() if resp.text else {}
+        data.setdefault('ok', True)
+        data['payload'] = payload
+        return data
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 撤销中心共享源失败: record={record_id}, err={e}", exc_info=True)
+        return {'ok': False, 'message': str(e), 'payload': payload}
+
+
 def _safe_json_obj(value):
     if value is None:
         return None
@@ -1989,7 +2034,7 @@ def api_cancel_share(record_id):
     if not share_code:
         return jsonify({"success": False, "message": "分享码为空，无法取消", "data": record}), 400
 
-    logger.info(f"  ➜ [共享资源] 准备取消115分享: record_id={record_id}, title={record.get('title')}, share_code={share_code}")
+    logger.info(f"  ➜ [共享资源] 准备取消/删除115分享: record_id={record_id}, title={record.get('title')}, share_code={share_code}")
 
     attempts = []
 
@@ -2004,26 +2049,31 @@ def api_cancel_share(record_id):
             logger.exception(f"  ➜ [共享资源] 取消分享尝试 {label} 异常")
             return {'state': False, 'error_msg': str(e)}
 
-    # 第一优先级：旧版已验证路径，底层是 /share/updateshare + action=cancel。
-    resp = _try_cancel('share_cancel', lambda: client.share_cancel(share_code))
-
-    # 兜底：如果当前客户端暴露 share_update，显式再走一次 action=cancel。
-    if not resp or not resp.get('state'):
+    # 115 分两层：cancel 只是把分享状态变成“已取消”；delete 才尽量从分享列表里移除。
+    cancel_resp = _try_cancel('share_cancel', lambda: client.share_cancel(share_code))
+    if not cancel_resp or not cancel_resp.get('state'):
         if hasattr(client, 'share_update'):
-            resp = _try_cancel('share_update_action_cancel', lambda: client.share_update(share_code, action='cancel'))
+            cancel_resp = _try_cancel('share_update_action_cancel', lambda: client.share_update(share_code, action='cancel'))
 
-    # 再兜底：部分账号 cancel 失败但 delete 可用。
-    if not resp or not resp.get('state'):
-        if hasattr(client, 'share_delete'):
-            resp = _try_cancel('share_delete', lambda: client.share_delete(share_code))
+    delete_resp = None
+    if hasattr(client, 'share_delete'):
+        delete_resp = _try_cancel('share_delete_after_cancel', lambda: client.share_delete(share_code))
+
+    resp = delete_resp if (delete_resp and delete_resp.get('state')) else cancel_resp
 
     if not resp or not resp.get('state'):
         text = _resp_text({'last': resp, 'attempts': attempts})
-        # 分享已经不存在/已取消时，本地可以安全标记取消。
+        # 分享已经不存在/已取消时，本地可以安全标记取消，并继续撤销中心源。
         if any(k in text for k in ['分享不存在', '不存在该分享', '已取消', '取消分享', 'share not found', 'not found', '没有该分享']):
-            row = shared_share_db.update_share_record(record_id, status='cancelled', review_status='cancelled', cancelled_at='NOW()', last_error='远端分享已不存在，已同步本地状态')
-            shared_virtual_db.add_credit_ledger('share_cancelled', 0, '同步已取消/不存在的115分享', ref_id=str(record_id), title=record.get('title') or '', raw_json={'attempts': attempts})
-            return jsonify({"success": True, "message": "远端分享已不存在，已同步本地取消状态", "data": row})
+            center_result = _cancel_center_sources_for_share(record_id, record)
+            row = shared_share_db.update_share_record(
+                record_id,
+                status='cancelled', review_status='cancelled', center_status='cancelled',
+                cancelled_at='NOW()',
+                last_error=f"远端分享已不存在，已同步本地状态；中心撤销: {center_result.get('message') or center_result}"
+            )
+            shared_virtual_db.add_credit_ledger('share_cancelled', 0, '同步已取消/不存在的115分享并撤销中心源', ref_id=str(record_id), title=record.get('title') or '', raw_json={'attempts': attempts, 'center': center_result})
+            return jsonify({"success": True, "message": "远端分享已不存在，已同步本地/中心取消状态", "data": row, "debug": attempts, "center": center_result})
         # 调试/抢救用：允许只标记本地，避免界面卡死；默认不开。
         if data.get('force_local'):
             row = shared_share_db.update_share_record(record_id, status='cancel_failed', review_status=record.get('review_status') or '', last_error=f"远端取消失败，仅本地标记: {text}")
@@ -2032,10 +2082,40 @@ def api_cancel_share(record_id):
         logger.warning(f"  ➜ [共享资源] 取消分享最终失败: record_id={record_id}, attempts={text}")
         return jsonify({"success": False, "message": f"取消分享失败: {text}", "data": row, "debug": attempts}), 500
 
-    row = shared_share_db.update_share_record(record_id, status='cancelled', review_status='cancelled', cancelled_at='NOW()', last_error='手动取消分享')
-    shared_virtual_db.add_credit_ledger('share_cancelled', 0, '手动取消115分享', ref_id=str(record_id), title=record.get('title') or '', raw_json={'response': resp, 'attempts': attempts})
-    logger.info(f"  ➜ [共享资源] 已取消115分享: record_id={record_id}, share_code={share_code}")
-    return jsonify({"success": True, "message": "已取消分享", "data": row, "debug": attempts})
+    center_result = _cancel_center_sources_for_share(record_id, record)
+    delete_ok = bool(delete_resp and delete_resp.get('state'))
+    center_ok = bool(center_result.get('ok'))
+
+    msg_parts = []
+    msg_parts.append('115分享已删除' if delete_ok else '115分享已取消，但分享列表删除接口未确认成功')
+    if center_result.get('skipped'):
+        msg_parts.append(center_result.get('message') or '中心撤销已跳过')
+    elif center_ok:
+        msg_parts.append(f"中心已撤销 {center_result.get('removed_count', 0)} 个共享源，当前贡献值 {center_result.get('credit')}")
+    else:
+        msg_parts.append(f"中心撤销失败: {center_result.get('message')}")
+    final_msg = '；'.join([p for p in msg_parts if p])
+
+    update_fields = dict(
+        status='cancelled',
+        review_status='cancelled',
+        cancelled_at='NOW()',
+        last_error=final_msg,
+    )
+    if center_ok or center_result.get('skipped'):
+        update_fields['center_status'] = 'cancelled'
+    row = shared_share_db.update_share_record(record_id, **update_fields)
+    shared_virtual_db.add_credit_ledger('share_cancelled', 0, '手动取消115分享并撤销中心源', ref_id=str(record_id), title=record.get('title') or '', raw_json={'response': resp, 'attempts': attempts, 'center': center_result})
+    logger.info(f"  ➜ [共享资源] 已取消/删除115分享: record_id={record_id}, share_code={share_code}, center={center_result}")
+
+    # 撤销中心源成功后，顺手刷新一次贡献值快照；失败不影响取消分享主流程。
+    if center_ok:
+        try:
+            _fetch_center_credit()
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 取消分享后刷新中心贡献值失败: {e}")
+
+    return jsonify({"success": True, "message": final_msg, "data": row, "debug": attempts, "center": center_result})
 
 
 @shared_resource_bp.route('/credit/refresh', methods=['POST'])

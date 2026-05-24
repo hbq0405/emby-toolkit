@@ -995,19 +995,22 @@ class P115CookieClient:
         return _p115_normalize_common_response(fallback or last_resp)
 
     def share_delete(self, share_code):
-        """删除当前账号自己的分享记录；失败时调用方可回退到 cancel。"""
+        """从“我的分享”列表删除当前账号自己的分享记录。
+
+        注意：这里不能回退到 /share/cancel。cancel 只会把分享变成“已取消”，仍可能继续
+        出现在 115 分享列表里；调用方需要据此区分“已取消”和“已从列表删除”。
+        """
         code = str(share_code or '').strip()
         if not code:
             return {"state": False, "error_msg": "缺少 share_code，无法删除分享"}
         last_resp = None
-        for url in ("https://webapi.115.com/share/delete", "https://webapi.115.com/share/cancel"):
-            try:
-                r = self.request(url, method='POST', data={'share_code': code})
-                last_resp = self._json_result(r)
-                if _p115_success(last_resp):
-                    return _p115_normalize_common_response(last_resp)
-            except Exception as e:
-                last_resp = {'state': False, 'error_msg': str(e)}
+        try:
+            r = self.request("https://webapi.115.com/share/delete", method='POST', data={'share_code': code})
+            last_resp = self._json_result(r)
+            if _p115_success(last_resp):
+                return _p115_normalize_common_response(last_resp)
+        except Exception as e:
+            last_resp = {'state': False, 'error_msg': str(e)}
         fallback = self.share_update(code, action="delete")
         if _p115_success(fallback):
             return _p115_normalize_common_response(fallback)

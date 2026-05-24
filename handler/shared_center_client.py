@@ -77,6 +77,21 @@ class SharedCenterClient:
             return {'items': []}
         return self._post('/api/v1/rawffprobe/batch', {'sha1_list': sha1_list}, timeout=60)
 
+
+    def cancel_sources(self, share_code: str = '', source_ids: List[str] = None, reason: str = 'share_cancelled') -> Dict[str, Any]:
+        """从共享中心撤销当前设备登记的共享源，并扣回对应贡献值。
+
+        中心端按当前 device_token 校验归属，只会删除本设备贡献的 source。
+        share_code 可一次撤销同一个 115 分享包下登记的所有源；source_ids 用于精确兜底。
+        """
+        source_ids = [str(x).strip() for x in (source_ids or []) if str(x or '').strip()]
+        payload = {
+            'share_code': str(share_code or '').strip() or None,
+            'source_ids': source_ids,
+            'reason': reason or 'share_cancelled',
+        }
+        return self._post('/api/v1/sources/cancel', payload, timeout=25)
+
     def report_transfer(self, source_id: str, result: str, expected_sha1: str = '', actual_sha1: str = '', expected_size=None, actual_size=None, message: str = ''):
         if not source_id:
             return None
