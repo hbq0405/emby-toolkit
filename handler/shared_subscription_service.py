@@ -365,6 +365,99 @@ def _remove_empty_parents(path: str, stop_root: str):
         pass
 
 
+def _media_root_cid() -> str:
+    return str(
+        _cfg('CONFIG_OPTION_115_MEDIA_ROOT_CID', 'p115_media_root_cid', '')
+        or _cfg('CONFIG_OPTION_115_SHARED_CACHE_CID', 'p115_shared_cache_cid', '')
+        or '0'
+    ).strip() or '0'
+
+
+def _safe_path_parts(rel_dir: str) -> List[str]:
+    parts = []
+    for part in str(rel_dir or '').replace('\\', '/').split('/'):
+        part = part.strip()
+        if not part or part in ('.', '..'):
+            continue
+        parts.append(_sanitize_filename(part))
+    return parts
+
+
+def ensure_virtual_target_by_rel_dir(rel_dir: str, client=None) -> Dict[str, str]:
+    """按本地 STRM 相对目录，在 115 正式媒体根目录下确保对应目录存在。
+
+    虚拟入库只生成本地 STRM，真实文件首次播放时临时转存到缓存目录。
+    手动“转正”时需要把真实文件移动到正式媒体库目录，因此创建虚拟项时就把
+    target_parent_id 解析/创建好；老数据缺失时 promote 接口也会调用本函数兜底。
+    """
+    parts = _safe_path_parts(rel_dir)
+    if not parts:
+        return {}
+
+    client = client or P115Service.get_client()
+    if not client:
+        raise RuntimeError('未配置可用的 115 客户端，无法解析正式媒体目录')
+
+    current_cid = _media_root_cid()
+    built_parts = []
+    for part in parts:
+        built_parts.append(part)
+        res = client.fs_mkdir(part, current_cid)
+        if not res or not res.get('state'):
+            # fs_mkdir 本身已经做“已存在”回收；这里再查一次 DB 缓存兜底。
+            cached = None
+            try:
+                cached = P115CacheManager.get_cid(current_cid, part)
+            except Exception:
+                cached = None
+            if not cached:
+                raise RuntimeError(f"创建/定位正式目录失败: {part} -> {res}")
+            next_cid = str(cached)
+        else:
+            data = res.get('data') if isinstance(res.get('data'), dict) else {}
+            next_cid = str(
+                res.get('cid')
+                or res.get('file_id')
+                or res.get('id')
+                or data.get('cid')
+                or data.get('file_id')
+                or data.get('id')
+                or ''
+            ).strip()
+            if not next_cid:
+                cached = P115CacheManager.get_cid(current_cid, part)
+                next_cid = str(cached or '').strip()
+        if not next_cid:
+            raise RuntimeError(f"无法取得正式目录 CID: {part}")
+        try:
+            P115CacheManager.save_cid(next_cid, current_cid, part)
+            P115CacheManager.update_local_path(next_cid, '/'.join(built_parts))
+        except Exception:
+            pass
+        current_cid = next_cid
+
+    return {
+        'target_parent_id': current_cid,
+        'target_parent_name': parts[-1],
+        'target_rel_dir': '/'.join(parts),
+    }
+
+
+def ensure_virtual_target_from_strm_path(strm_path: str, client=None) -> Dict[str, str]:
+    """通过已生成 STRM 路径反推正式 115 目标目录，给旧虚拟项转正兜底。"""
+    if not strm_path:
+        return {}
+    root = os.path.abspath(_get_local_strm_root())
+    parent_dir = os.path.abspath(os.path.dirname(strm_path))
+    try:
+        rel_dir = os.path.relpath(parent_dir, root)
+    except Exception:
+        return {}
+    if rel_dir.startswith('..') or os.path.isabs(rel_dir):
+        return {}
+    return ensure_virtual_target_by_rel_dir(rel_dir, client=client)
+
+
 def _cleanup_old_virtual_files(virtual_id: str, new_strm_path: str, new_mediainfo_path: str = ''):
     """同一个 virtual_id 重新生成到分类目录时，清掉旧的“共享虚拟/...”残留文件。"""
     try:
@@ -420,12 +513,14 @@ def _save_raw_and_write_mediainfo(source: Dict[str, Any], raw_map: Dict[str, Dic
         return False
 
 
-def _upsert_virtual_item(source: Dict[str, Any], context: Dict[str, Any], strm_path: str, mediainfo_path: str = ''):
+def _upsert_virtual_item(source: Dict[str, Any], context: Dict[str, Any], strm_path: str, mediainfo_path: str = '', target_info: Dict[str, str] = None):
+    target_info = target_info or {}
     virtual_id = _build_virtual_id(source)
     raw_json = {
         'center_source': source,
         'context': context,
         'virtual_protocol': f'etk-shared://{virtual_id}',
+        'target_info': target_info,
     }
     with get_db_connection() as conn:
         with conn.cursor() as cur:
@@ -436,14 +531,14 @@ def _upsert_virtual_item(source: Dict[str, Any], context: Dict[str, Any], strm_p
                     tmdb_id, item_type, parent_series_tmdb_id, season_number, episode_number,
                     title, release_year, sha1, size, file_name, quality,
                     strm_path, mediainfo_path, share_code, receive_code, contributor_id,
-                    cache_parent_id, cache_parent_name, status, raw_json, updated_at
+                    cache_parent_id, cache_parent_name, target_parent_id, target_parent_name, status, raw_json, updated_at
                 )
                 VALUES(
                     %s,%s,%s,'shared_center',
                     %s,%s,%s,%s,%s,
                     %s,%s,%s,%s,%s,%s,
                     %s,%s,%s,%s,%s,
-                    %s,%s,'virtual_ready',%s::jsonb,NOW()
+                    %s,%s,%s,%s,'virtual_ready',%s::jsonb,NOW()
                 )
                 ON CONFLICT(virtual_id) DO UPDATE SET
                     source_id=EXCLUDED.source_id,
@@ -464,6 +559,8 @@ def _upsert_virtual_item(source: Dict[str, Any], context: Dict[str, Any], strm_p
                     contributor_id=EXCLUDED.contributor_id,
                     cache_parent_id=EXCLUDED.cache_parent_id,
                     cache_parent_name=EXCLUDED.cache_parent_name,
+                    target_parent_id=COALESCE(NULLIF(EXCLUDED.target_parent_id,''), shared_virtual_items.target_parent_id),
+                    target_parent_name=COALESCE(NULLIF(EXCLUDED.target_parent_name,''), shared_virtual_items.target_parent_name),
                     raw_json=EXCLUDED.raw_json,
                     status=CASE WHEN shared_virtual_items.status='deleted' THEN 'virtual_ready' ELSE shared_virtual_items.status END,
                     updated_at=NOW()
@@ -490,6 +587,8 @@ def _upsert_virtual_item(source: Dict[str, Any], context: Dict[str, Any], strm_p
                     source.get('contributor_id') or source.get('provider_id') or '',
                     str(_cfg('CONFIG_OPTION_115_SHARED_CACHE_CID', 'p115_shared_cache_cid', '') or ''),
                     str(_cfg('CONFIG_OPTION_115_SHARED_CACHE_NAME', 'p115_shared_cache_name', '') or ''),
+                    str(target_info.get('target_parent_id') or ''),
+                    str(target_info.get('target_parent_name') or ''),
                     json.dumps(raw_json, ensure_ascii=False),
                 )
             )
@@ -513,6 +612,11 @@ def _consume_virtual(client: SharedCenterClient, sources: List[Dict[str, Any]], 
     for source in sources:
         file_name = source.get('file_name') or f"{source.get('sha1')}.mkv"
         rel_dir = _virtual_rel_dir(source, context)
+        target_info = {}
+        try:
+            target_info = ensure_virtual_target_by_rel_dir(rel_dir, client=P115Service.get_client())
+        except Exception as e:
+            logger.warning(f"  ➜ [共享虚拟] 解析正式转正目录失败，后续转正时会再次尝试: {e}")
         stem = os.path.splitext(_sanitize_filename(file_name))[0]
         strm_path = os.path.join(root, rel_dir, f"{stem}.strm")
         mediainfo_path = os.path.join(root, rel_dir, f"{stem}-mediainfo.json")
@@ -520,7 +624,7 @@ def _consume_virtual(client: SharedCenterClient, sources: List[Dict[str, Any]], 
         _cleanup_old_virtual_files(virtual_id, strm_path, mediainfo_path)
         _write_text_file(strm_path, f"etk-shared://{virtual_id}")
         has_mi = _save_raw_and_write_mediainfo(source, raw_map, mediainfo_path)
-        _upsert_virtual_item(source, context, strm_path, mediainfo_path if has_mi else '')
+        _upsert_virtual_item(source, context, strm_path, mediainfo_path if has_mi else '', target_info=target_info)
         created += 1
     return {'success': created > 0, 'mode': 'virtual', 'count': created, 'action_type': '共享虚拟'}
 

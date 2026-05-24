@@ -1182,6 +1182,41 @@ def api_delete_virtual_item(virtual_id):
     return jsonify({"success": True, "message": "已删除虚拟资源", "data": row})
 
 
+def _resolve_virtual_promote_target(item: Dict[str, Any], data: Dict[str, Any], client=None) -> Dict[str, Any]:
+    target_cid = data.get('target_cid') or item.get('target_parent_id')
+    target_name = item.get('target_parent_name') or ''
+    target_info = {}
+
+    if target_cid and str(target_cid) != '0':
+        return {'target_cid': str(target_cid), 'target_name': target_name, 'target_info': target_info}
+
+    # 旧虚拟项可能没有 target_parent_id；通过本地 STRM 分类目录反推并创建 115 正式目录。
+    try:
+        from handler.shared_subscription_service import ensure_virtual_target_from_strm_path
+        target_info = ensure_virtual_target_from_strm_path(item.get('strm_path') or '', client=client)
+        target_cid = target_info.get('target_parent_id')
+        target_name = target_info.get('target_parent_name') or target_name
+        if target_cid:
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE shared_virtual_items
+                            SET target_parent_id=%s, target_parent_name=%s, updated_at=NOW()
+                            WHERE virtual_id=%s
+                            """,
+                            (str(target_cid), target_name or '', item.get('virtual_id')),
+                        )
+                        conn.commit()
+            except Exception as e:
+                logger.debug(f"  ➜ [共享资源] 回填虚拟项正式目录失败: {e}")
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 自动解析正式媒体目录失败: {e}")
+
+    return {'target_cid': str(target_cid or ''), 'target_name': target_name, 'target_info': target_info}
+
+
 @shared_resource_bp.route('/virtual/<virtual_id>/promote', methods=['POST'])
 @admin_required
 def api_promote_virtual_item(virtual_id):
@@ -1194,21 +1229,37 @@ def api_promote_virtual_item(virtual_id):
         return jsonify({"success": False, "message": "该虚拟资源还没有播放转存记录，无法转正"}), 400
 
     data = request.json or {}
-    target_cid = data.get('target_cid') or item.get('target_parent_id')
-    if not target_cid or str(target_cid) == '0':
-        return jsonify({"success": False, "message": "缺少正式媒体目录 CID，无法移动转正"}), 400
-
     client = P115Service.get_client()
     if not client:
         return jsonify({"success": False, "message": "未配置可用的 115 客户端，无法转正"}), 400
+
+    target_res = _resolve_virtual_promote_target(item, data, client=client)
+    target_cid = target_res.get('target_cid')
+    if not target_cid or str(target_cid) == '0':
+        return jsonify({"success": False, "message": "缺少正式媒体目录 CID，无法移动转正；请确认虚拟 STRM 已生成在正式分类目录下"}), 400
 
     resp = client.fs_move([str(item['real_fid'])], str(target_cid))
     if not resp or not resp.get('state'):
         return jsonify({"success": False, "message": f"115 移动失败: {resp}"}), 500
 
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE p115_filesystem_cache
+                    SET parent_id=%s, updated_at=NOW()
+                    WHERE id=%s
+                    """,
+                    (str(target_cid), str(item.get('real_fid') or '')),
+                )
+                conn.commit()
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 转正后更新 p115_filesystem_cache 失败: {e}")
+
     row = shared_virtual_db.mark_virtual_promoted(
         virtual_id, promoted_fid=str(item.get('real_fid') or ''),
-        promoted_pick_code=item.get('real_pick_code') or '', message=f"手动转正到CID {target_cid}",
+        promoted_pick_code=item.get('real_pick_code') or '', message=f"手动转正到 {target_res.get('target_name') or 'CID'} {target_cid}",
     )
     shared_virtual_db.add_credit_ledger(
         event_type='virtual_promoted', delta=0, reason='手动将虚拟资源转为永久转存',
