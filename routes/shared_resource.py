@@ -1944,11 +1944,14 @@ def api_report_share_to_center(record_id):
         if not sha1:
             errors.append(f"{item.get('file_name')} 缺少 SHA1，跳过")
             continue
+        is_season_pack = str(record.get('share_type') or '').lower() in ('season_pack', 'season', 'tv_pack') or (record.get('root_is_dir') and str(record.get('item_type') or '').lower() in ('season', 'series', 'tv'))
+        center_item_type = 'Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie')
+        center_episode_number = None if is_season_pack else item.get('episode_number')
         payload = {
             'tmdb_id': str(item.get('tmdb_id') or record.get('tmdb_id') or ''),
-            'item_type': item.get('item_type') or record.get('item_type') or 'Movie',
+            'item_type': center_item_type,
             'season_number': item.get('season_number') or record.get('season_number'),
-            'episode_number': item.get('episode_number'),
+            'episode_number': center_episode_number,
             'title': record.get('title') or item.get('file_name'),
             'release_year': record.get('release_year'),
             'sha1': sha1,
@@ -2158,79 +2161,308 @@ def api_credit_ledger():
 # ======================================================================
 # 共享中心资源库 / 维护任务 API（v8.1）
 # ======================================================================
-def _raw_video_effect(stream: Dict[str, Any]) -> str:
-    text = json.dumps(stream.get('side_data_list') or [], ensure_ascii=False).upper()
-    color_transfer = str(stream.get('color_transfer') or '').lower()
-    color_primaries = str(stream.get('color_primaries') or '').lower()
-    if 'DOVI' in text or 'DOLBY VISION' in text:
-        m = re.search(r"dv_profile['\"]?\s*[:=]\s*['\"]?(\d+)", text, re.IGNORECASE)
-        profile = f"P{m.group(1)}" if m else ''
-        return f"Dolby Vision {profile}".strip()
-    if 'HDR10+' in text or 'SMPTE2094-40' in text:
+def _center_format_rate(value) -> str:
+    """把 ffprobe 的 24000/1001 这类帧率转成前端友好格式。"""
+    try:
+        if value in [None, '', '0/0']:
+            return ''
+        text = str(value)
+        if '/' in text:
+            a, b = text.split('/', 1)
+            b_val = float(b)
+            if b_val == 0:
+                return ''
+            rate = float(a) / b_val
+        else:
+            rate = float(text)
+        if rate <= 0:
+            return ''
+        return f"{rate:.3f}".rstrip('0').rstrip('.') + ' fps'
+    except Exception:
+        return str(value or '')
+
+
+def _center_codec_label(codec: str) -> str:
+    c = str(codec or '').lower()
+    return {
+        'hevc': 'HEVC', 'h265': 'HEVC', 'h264': 'AVC', 'avc': 'AVC',
+        'av1': 'AV1', 'mpeg2video': 'MPEG2', 'vc1': 'VC-1',
+        'eac3': 'DDP', 'ac3': 'AC3', 'truehd': 'TrueHD', 'dts': 'DTS',
+        'aac': 'AAC', 'flac': 'FLAC', 'opus': 'OPUS', 'subrip': 'SRT',
+        'ass': 'ASS', 'ssa': 'SSA', 'hdmv_pgs_subtitle': 'PGS', 'pgssub': 'PGS',
+        'webvtt': 'VTT', 'mov_text': 'MOV_TEXT',
+    }.get(c, c.upper() if c else '')
+
+
+def _center_resolution(width: int, height: int) -> str:
+    try:
+        width = int(width or 0)
+        height = int(height or 0)
+    except Exception:
+        width, height = 0, 0
+    if width >= 7600:
+        return '8K'
+    if width >= 3800:
+        return '4K'
+    if width >= 1900:
+        return '1080p'
+    if width >= 1200:
+        return '720p'
+    return f'{height}p' if height else ''
+
+
+def _center_video_effect(video: Dict[str, Any]) -> str:
+    if not video:
+        return ''
+    ev_type = str(video.get('ExtendedVideoType') or '')
+    ev_sub = str(video.get('ExtendedVideoSubType') or '')
+    ev_desc = str(video.get('ExtendedVideoSubTypeDescription') or '')
+    video_range = str(video.get('VideoRange') or '')
+    if ev_type.lower() == 'dolbyvision' or ev_sub.lower().startswith('dovi'):
+        profile = ''
+        # DoviProfile81 -> P8.1, DoviProfile8 -> P8
+        m = re.search(r'DoviProfile(\d+)', ev_sub, re.IGNORECASE)
+        if m:
+            raw = m.group(1)
+            profile = f"P{raw[0]}.{raw[1:]}" if len(raw) > 1 else f"P{raw}"
+        elif ev_desc:
+            m = re.search(r'Profile\s*([0-9.]+)', ev_desc, re.IGNORECASE)
+            if m:
+                profile = f"P{m.group(1)}"
+        base = f"Dolby Vision {profile}".strip()
+        # Profile 8.1 这类兼容 HDR10，展示更完整一些。
+        if 'HDR10' in video_range.upper() and 'HDR10' not in base:
+            base += ' / HDR10'
+        return base
+    vr = video_range.upper()
+    if 'HDR10+' in vr:
         return 'HDR10+'
-    if color_transfer == 'smpte2084':
+    if 'HDR10' in vr:
         return 'HDR10'
-    if color_primaries == 'bt2020':
+    if vr == 'HDR':
         return 'HDR'
     return ''
 
 
-def _raw_codec_label(codec: str) -> str:
-    c = str(codec or '').lower()
-    return {
-        'hevc': 'HEVC', 'h265': 'HEVC', 'h264': 'AVC', 'avc': 'AVC',
-        'av1': 'AV1', 'eac3': 'DDP', 'ac3': 'AC3', 'truehd': 'TrueHD',
-        'dts': 'DTS', 'aac': 'AAC', 'flac': 'FLAC', 'subrip': 'SRT',
-        'ass': 'ASS', 'ssa': 'SSA', 'hdmv_pgs_subtitle': 'PGS', 'pgssub': 'PGS',
-    }.get(c, c.upper() if c else '')
+def _center_track_display(stream: Dict[str, Any], stream_type: str) -> str:
+    """优先使用 _build_emby_mediainfo_from_ffprobe 已经净化过的 DisplayTitle。"""
+    if not stream:
+        return ''
+    display = str(stream.get('DisplayTitle') or '').strip()
+    if display:
+        return display
+    parts = []
+    lang = stream.get('DisplayLanguage') or stream.get('Language') or ''
+    title = stream.get('Title') or ''
+    codec = _center_codec_label(stream.get('Codec'))
+    if lang and lang != '未知':
+        parts.append(str(lang))
+    if codec:
+        parts.append(codec)
+    if stream_type == 'Audio':
+        channels = stream.get('Channels')
+        if channels:
+            parts.append(f"{channels}ch")
+    if title and title not in parts:
+        parts.append(str(title))
+    return ' '.join([x for x in parts if x])
+
+
+_CENTER_MEDIAINFO_FORMATTER = None
+
+
+def _get_center_mediainfo_formatter():
+    """懒加载 formatter，避免 routes 导入时和 p115_service / analyzer 互相循环。"""
+    global _CENTER_MEDIAINFO_FORMATTER
+    if _CENTER_MEDIAINFO_FORMATTER is not None:
+        return _CENTER_MEDIAINFO_FORMATTER
+    from handler.p115_media_analyzer import P115MediaAnalyzerMixin
+
+    class _Formatter(P115MediaAnalyzerMixin):
+        def __init__(self):
+            try:
+                from database import settings_db
+                import utils
+                self.language_map = settings_db.get_setting('language_mapping') or utils.DEFAULT_LANGUAGE_MAPPING
+                self.stream_feature_map = settings_db.get_setting('stream_feature_mapping') or getattr(utils, 'DEFAULT_STREAM_FEATURE_MAPPING', [])
+            except Exception:
+                self.language_map = []
+                self.stream_feature_map = []
+
+    _CENTER_MEDIAINFO_FORMATTER = _Formatter()
+    return _CENTER_MEDIAINFO_FORMATTER
+
+
+def _build_center_emby_info(raw: Dict[str, Any], source: Dict[str, Any]) -> Dict[str, Any]:
+    if not isinstance(raw, dict) or not raw:
+        return {}
+
+    # 如果中心以后直接返回 Emby MediaSourceInfo，也能兼容。
+    if raw.get('MediaSourceInfo'):
+        return raw.get('MediaSourceInfo') or {}
+    if raw.get('MediaStreams'):
+        return raw
+
+    file_node = {
+        'fn': source.get('file_name') or source.get('title') or source.get('sha1') or 'unknown.mkv',
+        'n': source.get('file_name') or source.get('title') or source.get('sha1') or 'unknown.mkv',
+        'fs': source.get('size') or (raw.get('format') or {}).get('size') or 0,
+        'size': source.get('size') or (raw.get('format') or {}).get('size') or 0,
+        'sha1': source.get('sha1') or '',
+    }
+    metadata_context = {
+        'tmdb_id': source.get('tmdb_id'),
+        'item_type': source.get('item_type'),
+        'type': source.get('item_type'),
+    }
+    try:
+        formatter = _get_center_mediainfo_formatter()
+        if not hasattr(formatter, '_build_emby_mediainfo_from_ffprobe'):
+            return {}
+        built = formatter._build_emby_mediainfo_from_ffprobe(
+            raw,
+            file_node,
+            sha1=source.get('sha1') or '',
+        )
+        if isinstance(built, list) and built:
+            return (built[0] or {}).get('MediaSourceInfo') or {}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] raw ffprobe 格式化失败，使用轻量兜底: {e}")
+    return {}
 
 
 def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -> Dict[str, Any]:
-    """给前端中心资源库展示用：从 raw_ffprobe_json 提取准确版本参数。"""
+    """中心资源库展示用：优先复用 _build_emby_mediainfo_from_ffprobe 得到标准化音轨/字幕标题。"""
     source = source or {}
     if not isinstance(raw, dict):
         raw = {}
-    streams = raw.get('streams') or []
-    fmt = raw.get('format') or {}
-    video = next((s for s in streams if str(s.get('codec_type')).lower() == 'video'), {})
-    audios = [s for s in streams if str(s.get('codec_type')).lower() == 'audio']
-    subs = [s for s in streams if str(s.get('codec_type')).lower() == 'subtitle']
-    width = int(video.get('width') or 0) if video else 0
-    height = int(video.get('height') or 0) if video else 0
-    resolution = '4K' if width >= 3800 else ('1080p' if width >= 1900 else (f'{height}p' if height else ''))
-    size = source.get('size') or fmt.get('size') or 0
+
+    media_info = _build_center_emby_info(raw, source)
+    streams = media_info.get('MediaStreams') or []
+    video = next((s for s in streams if str(s.get('Type') or '').lower() == 'video'), {})
+    audios = [s for s in streams if str(s.get('Type') or '').lower() == 'audio']
+    subs = [s for s in streams if str(s.get('Type') or '').lower() == 'subtitle']
+
+    size = source.get('size') or media_info.get('Size') or (raw.get('format') or {}).get('size') or 0
     try:
-        size = int(size or 0)
+        size = int(float(size or 0))
     except Exception:
         size = 0
 
-    def _track(s):
-        tags = s.get('tags') or {}
-        return {
-            'codec': _raw_codec_label(s.get('codec_name')),
-            'language': tags.get('language') or '',
-            'title': tags.get('title') or '',
-            'channels': s.get('channels'),
-            'layout': s.get('channel_layout') or '',
-        }
+    if video:
+        width = int(video.get('Width') or 0)
+        height = int(video.get('Height') or 0)
+        codec = _center_codec_label(video.get('Codec'))
+        bit_depth = video.get('BitDepth') or ''
+        fps = video.get('AverageFrameRate') or video.get('RealFrameRate') or ''
+        fps_text = _center_format_rate(fps)
+        effect = _center_video_effect(video)
+        bitrate = video.get('BitRate') or media_info.get('Bitrate') or ''
+        video_display = ' · '.join([x for x in [
+            _center_resolution(width, height),
+            effect,
+            codec,
+            f"{bit_depth}bit" if bit_depth else '',
+            fps_text,
+        ] if x])
+    else:
+        # 轻量兜底：raw 没法被 formatter 接管时仍尽量展示基础参数。
+        raw_streams = raw.get('streams') or []
+        raw_video = next((s for s in raw_streams if str(s.get('codec_type')).lower() == 'video'), {})
+        width = int(raw_video.get('width') or 0) if raw_video else 0
+        height = int(raw_video.get('height') or 0) if raw_video else 0
+        codec = _center_codec_label(raw_video.get('codec_name')) if raw_video else ''
+        bit_depth = raw_video.get('bits_per_raw_sample') or raw_video.get('bits_per_sample') or ''
+        fps_text = _center_format_rate(raw_video.get('avg_frame_rate') or raw_video.get('r_frame_rate') or '') if raw_video else ''
+        effect = ''
+        bitrate = (raw.get('format') or {}).get('bit_rate') or ''
+        video_display = ' · '.join([x for x in [_center_resolution(width, height), codec, f"{bit_depth}bit" if bit_depth else '', fps_text] if x])
+
+    audio_list = [_center_track_display(s, 'Audio') for s in audios]
+    subtitle_list = [_center_track_display(s, 'Subtitle') for s in subs]
+    audio_list = [x for x in audio_list if x]
+    subtitle_list = [x for x in subtitle_list if x]
 
     return {
-        'resolution': resolution,
+        'resolution': _center_resolution(width, height),
         'width': width,
         'height': height,
-        'codec': _raw_codec_label(video.get('codec_name')) if video else '',
-        'effect': _raw_video_effect(video) if video else '',
-        'bit_depth': video.get('bits_per_raw_sample') or video.get('bits_per_sample') or '',
-        'fps': video.get('avg_frame_rate') or video.get('r_frame_rate') or '',
-        'duration': fmt.get('duration') or '',
-        'bitrate': fmt.get('bit_rate') or '',
+        'video_codec': codec,
+        'codec': codec,  # 兼容旧前端字段
+        'effect': effect,
+        'bit_depth': bit_depth,
+        'fps': fps_text,
+        'bitrate': bitrate,
+        'container': media_info.get('Container') or '',
+        'video_display': video_display,
         'size': size,
         'size_gb': round(size / 1024 / 1024 / 1024, 2) if size else 0,
         'audio_count': len(audios),
         'subtitle_count': len(subs),
-        'audios': [_track(s) for s in audios[:12]],
-        'subtitles': [_track(s) for s in subs[:20]],
+        'audio_list': audio_list[:16],
+        'subtitle_list': subtitle_list[:24],
+        # 兼容旧字段，避免其他地方还在读 audios/subtitles。
+        'audios': [{'display': x} for x in audio_list[:16]],
+        'subtitles': [{'display': x} for x in subtitle_list[:24]],
+        'formatted_by': 'emby_mediainfo' if media_info else 'raw_fallback',
     }
+
+
+def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """中心资源库展示层去重：同一分享码下多个 SxxEyy 文件视作一个季分享包版本。"""
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    passthrough: List[Dict[str, Any]] = []
+    for item in items or []:
+        item_type = str(item.get('item_type') or '').lower()
+        share_code = str(item.get('share_code') or '').strip()
+        season = item.get('season_number')
+        # 只有同一分享码下的多个 episode 才折叠；电影和真正的单集源不动。
+        if item_type == 'episode' and share_code and season not in [None, '']:
+            key = '|'.join([
+                str(item.get('contributor_id') or ''),
+                share_code,
+                str(item.get('tmdb_id') or ''),
+                str(season),
+            ])
+            groups.setdefault(key, []).append(item)
+        else:
+            passthrough.append(item)
+
+    collapsed = []
+    for rows in groups.values():
+        if len(rows) <= 1:
+            passthrough.extend(rows)
+            continue
+        rows_sorted = sorted(rows, key=lambda r: int(r.get('size') or 0), reverse=True)
+        rep = dict(rows_sorted[0])
+        total_size = 0
+        episode_numbers = []
+        source_ids = []
+        for r in rows:
+            try:
+                total_size += int(r.get('size') or 0)
+            except Exception:
+                pass
+            source_ids.append(r.get('source_id'))
+            try:
+                if r.get('episode_number') is not None:
+                    episode_numbers.append(int(r.get('episode_number')))
+            except Exception:
+                pass
+        rep['item_type'] = 'Season'
+        rep['episode_number'] = None
+        rep['pack_item_count'] = len(rows)
+        rep['pack_episode_numbers'] = sorted(set(episode_numbers))
+        rep['pack_source_ids'] = [x for x in source_ids if x]
+        rep['share_type'] = 'season_pack'
+        if total_size > 0:
+            rep['size'] = total_size
+            if isinstance(rep.get('version_summary'), dict):
+                rep['version_summary']['size'] = total_size
+                rep['version_summary']['size_gb'] = round(total_size / 1024 / 1024 / 1024, 2)
+        collapsed.append(rep)
+
+    return passthrough + collapsed
 
 
 @shared_resource_bp.route('/center/sources', methods=['GET'])
@@ -2257,6 +2489,10 @@ def api_center_sources():
             raw = item.get('raw_ffprobe_json') or {}
             item['version_summary'] = _summarize_raw_ffprobe(raw, item)
             items.append(item)
+
+        # 展示层把同一个季包分享码下的多集文件折叠成一个“季分享包”版本，
+        # 避免《怪奇物语 S02》这种整季分享在中心资源库里被误看成一堆单集分享。
+        items = _collapse_center_season_pack_rows(items)
         return jsonify({'success': True, 'items': items, 'total': data.get('total', len(items))})
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 拉取中心资源库失败: {e}", exc_info=True)

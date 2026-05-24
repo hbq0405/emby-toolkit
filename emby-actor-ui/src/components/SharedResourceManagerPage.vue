@@ -105,7 +105,7 @@
               :data="centerSources"
               :pagination="centerPagination"
               :row-key="row => row.source_id"
-              :scroll-x="1500"
+              :scroll-x="1650"
               @update:page="p => { centerPagination.page = p; loadCenterSources(); }"
               @update:page-size="s => { centerPagination.pageSize = s; centerPagination.page = 1; loadCenterSources(); }"
             />
@@ -502,10 +502,21 @@ const toggleLedgerGroup = (key) => {
 };
 
 
-const centerTypeLabel = (value) => ({ Movie: '电影', Series: '剧集', Season: '季', Episode: '单集', movie: '电影', tv: '剧集', season: '季', episode: '单集' }[value] || value || '-');
+const centerTypeLabel = (value) => ({ Movie: '电影', Series: '剧集', Season: '季包', Episode: '单集', movie: '电影', tv: '剧集', season: '季包', episode: '单集' }[value] || value || '-');
+const centerTitleText = (row) => {
+  const title = row.title || row.media_title || '-';
+  const year = row.release_year ? ` (${row.release_year})` : '';
+  return `${title}${year}`;
+};
+const centerSeasonText = (row) => {
+  const s = row.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
+  const e = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
+  const pack = row.pack_item_count ? ` · ${row.pack_item_count}集包` : '';
+  return [centerTypeLabel(row.item_type), s ? `${s}${e}` : '', pack].filter(Boolean).join(' · ') || '-';
+};
 const versionSummaryText = (row) => {
   const v = row.version_summary || {};
-  const parts = [v.resolution, v.effect, v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean);
+  const parts = [v.resolution, v.effect, v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : '', v.fps].filter(Boolean);
   return parts.length ? parts.join(' · ') : (row.quality || '未知版本');
 };
 const formatCenterSize = (row) => {
@@ -514,30 +525,39 @@ const formatCenterSize = (row) => {
   const size = Number(row.size || 0);
   return size ? `${(size / 1024 / 1024 / 1024).toFixed(2)} GB` : '-';
 };
-const trackText = (t) => {
-  const parts = [t.language, t.codec, t.channels ? `${t.channels}ch` : '', t.title].filter(Boolean);
-  return parts.join(' ');
-};
-const centerDetailText = (row) => {
-  const v = row.version_summary || {};
-  const audios = (v.audios || []).map(trackText).filter(Boolean).slice(0, 8).join(' / ');
-  const subs = (v.subtitles || []).map(trackText).filter(Boolean).slice(0, 10).join(' / ');
-  return [
-    `视频：${versionSummaryText(row)}${v.fps ? ` · ${v.fps}` : ''}`,
-    `音轨：${audios || `${v.audio_count || 0} 条`}`,
-    `字幕：${subs || `${v.subtitle_count || 0} 条`}`,
-  ].join('\n');
+const listCell = (items, limit = 3) => {
+  const arr = (items || []).map(x => typeof x === 'string' ? x : (x.display || [x.language, x.codec, x.channels ? `${x.channels}ch` : '', x.title].filter(Boolean).join(' '))).filter(Boolean);
+  if (!arr.length) return '-';
+  const shown = arr.slice(0, limit);
+  const more = arr.length > limit ? ` +${arr.length - limit}` : '';
+  return h('div', { class: 'center-track-list', title: arr.join('\n') }, [
+    ...shown.map((x, idx) => h('div', { class: 'center-track-line', key: idx }, x)),
+    more ? h('div', { class: 'sub-title' }, more) : null
+  ]);
 };
 const importCenterSource = (row, mode) => {
   const modeText = mode === 'virtual' ? '虚拟入库' : '永久转存';
   dialog.info({
     title: modeText,
-    content: `确定将中心资源《${row.title || row.file_name}》${modeText}吗？`,
+    content: `确定将中心资源《${centerTitleText(row)}》${modeText}吗？`,
     positiveText: modeText,
     negativeText: '取消',
     onPositiveClick: async () => {
       try {
-        const res = await axios.post('/api/shared/resources/center/import', { source_ids: [row.source_id], mode });
+        const sourceIds = Array.isArray(row.pack_source_ids) && row.pack_source_ids.length ? row.pack_source_ids : [row.source_id];
+        const res = await axios.post('/api/shared/resources/center/import', {
+          source_ids: sourceIds,
+          mode,
+          context: {
+            title: row.title || '',
+            tmdb_id: row.tmdb_id || '',
+            item_type: row.item_type || '',
+            season_number: row.season_number ?? null,
+            episode_number: row.episode_number ?? null,
+            year: row.release_year || '',
+            share_type: row.share_type || '',
+          }
+        });
         message.success(res.data?.message || '已提交');
         await Promise.allSettled([loadVirtualItems(), loadSummary(), loadLedger()]);
       } catch (e) {
@@ -547,19 +567,24 @@ const importCenterSource = (row, mode) => {
   });
 };
 const centerColumns = [
-  { title: '媒体', key: 'title', minWidth: 260, render: row => h('div', null, [
-    h('div', { class: 'main-title' }, row.title || row.file_name || '-'),
-    h('div', { class: 'sub-title' }, `${centerTypeLabel(row.item_type)} · TMDb ${row.tmdb_id || '-'}${row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : ''}${row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : ''}`),
-    h('div', { class: 'sub-title' }, row.file_name || '')
+  { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => h('div', null, [
+    h('div', { class: 'main-title' }, centerTitleText(row)),
+    h('div', { class: 'sub-title' }, `TMDb ${row.tmdb_id || '-'}`)
   ]) },
-  { title: '版本参数', key: 'version', minWidth: 260, render: row => h('div', null, [
-    h('div', { class: 'main-title' }, versionSummaryText(row)),
-    h('div', { class: 'sub-title pre-line' }, centerDetailText(row))
-  ]) },
-  { title: '大小', key: 'size', width: 100, render: row => formatCenterSize(row) },
-  { title: '状态', key: 'status', width: 110, render: row => tag(row.status) },
-  { title: '来源', key: 'contributor_name', minWidth: 140, ellipsis: { tooltip: true }, render: row => row.contributor_name || row.contributor_id || '-' },
-  { title: '操作', key: 'actions', width: 210, fixed: 'right', render: row => h(NSpace, { size: 6 }, { default: () => [
+  { title: '类型', key: 'item_type', width: 115, render: row => centerSeasonText(row) },
+  { title: '分辨率', key: 'resolution', width: 90, render: row => row.version_summary?.resolution || '-' },
+  { title: '视频编码', key: 'video_codec', width: 110, render: row => {
+    const v = row.version_summary || {};
+    return [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ') || '-';
+  } },
+  { title: 'HDR / 杜比', key: 'effect', width: 150, ellipsis: { tooltip: true }, render: row => row.version_summary?.effect || '-' },
+  { title: '帧率', key: 'fps', width: 110, render: row => row.version_summary?.fps || '-' },
+  { title: '音轨', key: 'audios', minWidth: 260, render: row => listCell(row.version_summary?.audio_list || row.version_summary?.audios, 3) },
+  { title: '字幕', key: 'subtitles', minWidth: 280, render: row => listCell(row.version_summary?.subtitle_list || row.version_summary?.subtitles, 4) },
+  { title: '大小', key: 'size', width: 95, render: row => formatCenterSize(row) },
+  { title: '状态', key: 'status', width: 105, render: row => tag(row.status) },
+  { title: '来源', key: 'contributor_name', minWidth: 130, ellipsis: { tooltip: true }, render: row => row.contributor_name || row.contributor_id || '-' },
+  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => h(NSpace, { size: 6 }, { default: () => [
     h(NButton, { size: 'small', type: 'primary', secondary: true, onClick: () => importCenterSource(row, 'permanent') }, { default: () => '永久转存' }),
     h(NButton, { size: 'small', secondary: true, onClick: () => importCenterSource(row, 'virtual') }, { default: () => '虚拟入库' })
   ] }) },
@@ -726,5 +751,18 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .ledger-group-reason { color: var(--text-color-2); }
 .ledger-child-title { padding-left: 22px; }
 .ledger-child-event { color: var(--text-color-3); }
+
+
+.center-track-list {
+  line-height: 1.45;
+  font-size: 12px;
+  white-space: normal;
+}
+.center-track-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
 
 </style>

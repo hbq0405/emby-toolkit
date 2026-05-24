@@ -2321,12 +2321,24 @@ class P115MediaAnalyzerMixin:
         return default
 
     def _shared_auto_extract_se(self, file_name='', context=None, file_node=None):
-        """为自动共享登记尽量补齐季集号，避免频道资源登记成粗粒度 Season。"""
+        """为自动共享登记补齐季集号。
+
+        注意：频道/影巢的整季包、完结包虽然包内文件名会带 SxxEyy，
+        但共享源本身是“一个 115 分享包”。这种场景必须登记为 Season，
+        不能因为正在 ffprobe 某一集就误登记成 Episode。
+        """
         context = context if isinstance(context, dict) else {}
         file_node = file_node if isinstance(file_node, dict) else {}
 
+        is_pack = bool(
+            context.get('is_pack')
+            or context.get('is_completed_pack')
+            or str(context.get('share_type') or '').lower() in ('season_pack', 'tv_pack', 'series_pack')
+            or str(context.get('source_granularity') or '').lower() in ('season', 'season_pack', 'pack')
+        )
+
         season = self._shared_auto_pick(context, file_node, keys=['season_number', '_shared_season_number', '_forced_season'])
-        episode = self._shared_auto_pick(context, file_node, keys=['episode_number', '_shared_episode_number', '_forced_episode'])
+        episode = None if is_pack else self._shared_auto_pick(context, file_node, keys=['episode_number', '_shared_episode_number', '_forced_episode'])
 
         def _to_int(v):
             try:
@@ -2340,33 +2352,41 @@ class P115MediaAnalyzerMixin:
         episode = _to_int(episode)
         text = str(file_name or '')
 
-        if season is None or episode is None:
+        # S02E09：整季包只借 S02，不借 E09。
+        if season is None or (episode is None and not is_pack):
             m = re.search(r'(?i)\bS(\d{1,2})\s*[._ -]*E(?:P)?\s*(\d{1,3})\b', text)
             if m:
                 if season is None:
                     season = int(m.group(1))
-                if episode is None:
+                if episode is None and not is_pack:
                     episode = int(m.group(2))
 
-        if episode is None:
+        if not is_pack and episode is None:
             m = re.search(r'(?i)(?:^|[ ._\-\[(])(?:E|EP|Episode)\s*(\d{1,3})(?:$|[^0-9])', text)
             if m:
                 episode = int(m.group(1))
 
-        if episode is None:
+        if not is_pack and episode is None:
             m = re.search(r'第\s*(\d{1,3})\s*[集话話回]', text)
             if m:
                 episode = int(m.group(1))
+
+        if season is None:
+            m = re.search(r'(?i)(?:^|[ ._\-\[(])(?:S|Season)\s*(\d{1,2})(?:$|[^0-9])|第\s*(\d{1,2})\s*季', text)
+            if m:
+                season = int(m.group(1) or m.group(2))
 
         if season is None and episode is not None:
             season = 1
 
         return season, episode
 
-    def _shared_auto_normalize_item_type(self, raw_type, season_number=None, episode_number=None):
+    def _shared_auto_normalize_item_type(self, raw_type, season_number=None, episode_number=None, is_pack=False):
         t = str(raw_type or '').strip().lower()
         if t in {'movie', 'movies', 'film', '电影'}:
             return 'Movie'
+        if is_pack:
+            return 'Season'
         if t in {'episode', '集', '分集'}:
             return 'Episode'
         if t in {'season', '季'}:
@@ -2430,7 +2450,15 @@ class P115MediaAnalyzerMixin:
         )
         file_name = str(file_name or sha1)
 
+        is_pack = bool(
+            ctx.get('is_pack')
+            or ctx.get('is_completed_pack')
+            or str(ctx.get('share_type') or '').lower() in ('season_pack', 'tv_pack', 'series_pack')
+            or str(ctx.get('source_granularity') or '').lower() in ('season', 'season_pack', 'pack')
+        )
         season_number, episode_number = self._shared_auto_extract_se(file_name, ctx, file_node)
+        if is_pack:
+            episode_number = None
 
         tmdb_id = self._shared_auto_pick(
             ctx,
@@ -2449,7 +2477,7 @@ class P115MediaAnalyzerMixin:
             keys=['item_type', 'media_type', 'type'],
             default='Movie'
         )
-        item_type = self._shared_auto_normalize_item_type(raw_item_type, season_number, episode_number)
+        item_type = self._shared_auto_normalize_item_type(raw_item_type, season_number, episode_number, is_pack=is_pack)
 
         receive_code = self._shared_auto_pick(ctx, file_node, keys=['receive_code', '_receive_code', 'access_code'], default='')
         title = self._shared_auto_pick(ctx, {'title': getattr(self, 'original_title', None)}, keys=['title', 'root_name', 'media_title'], default=file_name)

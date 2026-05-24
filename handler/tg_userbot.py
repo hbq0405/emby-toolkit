@@ -1193,7 +1193,9 @@ def _process_tg_queue():
             media_type = 'tv' if str(task.get('item_type') or '').lower() in ('tv', 'series', 'season', 'episode') else 'movie'
             season_number = task.get('season_number')
             episode_number = task.get('episode_number')
-            item_type_for_center = 'Movie' if media_type == 'movie' else ('Episode' if episode_number is not None else 'Season')
+            is_pack_share = bool(task.get('is_pack') or task.get('is_completed_pack'))
+            # 频道整季包/完结包的 share_code 指向整个分享包；不能因为当前正在处理某一集文件就登记成 Episode。
+            item_type_for_center = 'Movie' if media_type == 'movie' else ('Season' if is_pack_share else ('Episode' if episode_number is not None else 'Season'))
 
             target_item = None
             for attempt in range(1, 4):
@@ -1222,7 +1224,11 @@ def _process_tg_queue():
                 'media_type': media_type,
                 'item_type': item_type_for_center,
                 'season_number': season_number,
-                'episode_number': episode_number,
+                'episode_number': None if is_pack_share else episode_number,
+                'is_pack': is_pack_share,
+                'is_completed_pack': bool(task.get('is_completed_pack')),
+                'share_type': 'season_pack' if is_pack_share and media_type == 'tv' else 'episode_file',
+                'source_granularity': 'season_pack' if is_pack_share and media_type == 'tv' else 'file',
                 'title': task.get('title') or receive_title,
                 'release_year': task.get('year'),
                 'source_provider': 'tg_channel_hdhive' if 'hdhive.com' in str(task.get('target_link') or '') else 'tg_channel',
@@ -1237,7 +1243,7 @@ def _process_tg_queue():
                 'sha1': target_item.get('sha1') or target_item.get('sha'),
                 'fs': target_item.get('fs') or target_item.get('size'),
                 '_forced_season': season_number,
-                '_forced_episode': episode_number,
+                '_forced_episode': None if is_pack_share else episode_number,
                 '_shared_auto_source_context': shared_auto_context,
             }
 

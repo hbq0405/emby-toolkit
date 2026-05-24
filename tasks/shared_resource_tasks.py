@@ -145,11 +145,12 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                             sha1 = str(item.get('sha1') or '').strip().upper()
                             if not sha1:
                                 continue
+                            is_season_pack = str(record.get('share_type') or '').lower() in ('season_pack', 'season', 'tv_pack') or (record.get('root_is_dir') and str(record.get('item_type') or '').lower() in ('season', 'series', 'tv'))
                             resp = client.register_source(
                                 tmdb_id=item.get('tmdb_id') or record.get('tmdb_id'),
-                                item_type=item.get('item_type') or record.get('item_type') or 'Movie',
+                                item_type='Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie'),
                                 season_number=item.get('season_number') or record.get('season_number'),
-                                episode_number=item.get('episode_number'),
+                                episode_number=None if is_season_pack else item.get('episode_number'),
                                 title=record.get('title') or item.get('file_name'),
                                 release_year=record.get('release_year'),
                                 sha1=sha1,
