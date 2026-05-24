@@ -282,11 +282,20 @@ const shareColumns = [
   { title: '分享码', key: 'share_code', width: 140, ellipsis: { tooltip: true } },
   { title: '提取码', key: 'receive_code', width: 90 },
   { title: '文件数', key: 'item_count', width: 90, render: row => `${row.reported_count || 0}/${row.item_count || 0}` },
+  { title: '媒体信息', key: 'raw_uploaded_count', width: 110, render: row => {
+    const missingSize = Number(row.size_missing_count || 0);
+    const text = `${row.raw_uploaded_count || 0}/${row.item_count || 0}`;
+    return h('div', [
+      h('div', text),
+      missingSize > 0 ? h('div', { class: 'sub-title warning-text' }, `缺大小 ${missingSize}`) : null
+    ]);
+  } },
   { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
   { title: '检查时间', key: 'last_checked_at', width: 170, render: row => fmtDate(row.last_checked_at) },
   { title: '错误', key: 'last_error', minWidth: 220, ellipsis: { tooltip: true } },
-  { title: '操作', key: 'actions', width: 280, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
+  { title: '操作', key: 'actions', width: 390, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
     h(NButton, { size: 'small', type: 'info', ghost: true, onClick: () => checkShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CheckIcon) }), default: () => '检查' }),
+    h(NButton, { size: 'small', type: 'success', ghost: true, disabled: Number(row.item_count || 0) <= 0, onClick: () => uploadRawShare(row) }, { icon: () => h(NIcon, null, { default: () => h(PromoteIcon) }), default: () => '传媒体信息' }),
     h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: !['alive','reported'].includes(row.status) && row.review_status !== 'alive', onClick: () => reportShare(row) }, { icon: () => h(NIcon, null, { default: () => h(ReportIcon) }), default: () => '登记中心' }),
     h(NButton, { size: 'small', type: 'error', ghost: true, disabled: row.status === 'cancelled', onClick: () => cancelShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CancelIcon) }), default: () => '取消' }),
   ]}) },
@@ -393,6 +402,7 @@ const manualCreateShare = async () => {
 
 const checkShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/check`); message.success(res.data?.message || '检查完成'); await Promise.allSettled([loadShares(), loadSummary()]); } catch (e) { message.error(e.response?.data?.message || '检查失败'); } };
 const reportShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/report-center`); message.success(res.data?.message || '已登记中心'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '登记中心失败'); } };
+const uploadRawShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/upload-rawffprobe`, { force: false }); message.success(res.data?.message || '媒体信息已上传'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '上传媒体信息失败'); } };
 const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: `确定取消《${row.title || row.root_name}》的 115 分享吗？`, positiveText: '取消分享', negativeText: '保留', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/shares/${row.id}/cancel`); message.success('已取消分享'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '取消失败'); } } }); };
 const confirmDelete = (row) => { dialog.warning({ title: '删除虚拟资源', content: `确定删除《${row.title || row.file_name}》吗？如果已经播放转存，会同步删除 115 临时文件。`, positiveText: '删除', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/delete`, { delete_remote: true, delete_local: true }); message.success('已删除'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '删除失败'); } } }); };
 const confirmPromote = (row) => { dialog.info({ title: '转为永久转存', content: `确定将《${row.title || row.file_name}》从临时转存目录移动到正式媒体库吗？`, positiveText: '转正', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/promote`); message.success('已转正'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '转正失败'); } } }); };
@@ -418,4 +428,5 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .selected-title { font-weight: 700; margin-bottom: 6px; }
 .selected-desc { font-size: 12px; opacity: .68; line-height: 1.7; }
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
+.warning-text { color: #d03050; font-size: 12px; }
 </style>

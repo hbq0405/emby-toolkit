@@ -92,18 +92,37 @@ def list_share_records(status='all', keyword='', page=1, page_size=30) -> Tuple[
     page_size = min(100, max(1, int(page_size or 30)))
     where, args = [], []
     if status and status != 'all':
-        where.append('(status=%s OR review_status=%s OR center_status=%s)')
+        where.append('(r.status=%s OR r.review_status=%s OR r.center_status=%s)')
         args.extend([status, status, status])
     if keyword:
-        where.append('(title ILIKE %s OR root_name ILIKE %s OR share_code ILIKE %s OR tmdb_id ILIKE %s)')
+        where.append('(r.title ILIKE %s OR r.root_name ILIKE %s OR r.share_code ILIKE %s OR r.tmdb_id ILIKE %s)')
         kw = f'%{keyword}%'
         args.extend([kw, kw, kw, kw])
     where_sql = 'WHERE ' + ' AND '.join(where) if where else ''
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) AS n FROM shared_share_records {where_sql}", args)
+            cur.execute(f"SELECT COUNT(*) AS n FROM shared_share_records r {where_sql}", args)
             total = int((_row_to_dict(cur.fetchone()) or {}).get('n') or 0)
-            cur.execute(f"SELECT * FROM shared_share_records {where_sql} ORDER BY updated_at DESC LIMIT %s OFFSET %s", args + [page_size, (page - 1) * page_size])
+            cur.execute(f"""
+                SELECT
+                    r.*,
+                    COALESCE(s.raw_uploaded_count, 0) AS raw_uploaded_count,
+                    COALESCE(s.center_reported_count, 0) AS center_reported_count,
+                    COALESCE(s.size_missing_count, 0) AS size_missing_count
+                FROM shared_share_records r
+                LEFT JOIN (
+                    SELECT
+                        share_record_id,
+                        COUNT(*) FILTER (WHERE raw_ffprobe_uploaded = TRUE) AS raw_uploaded_count,
+                        COUNT(*) FILTER (WHERE center_reported = TRUE) AS center_reported_count,
+                        COUNT(*) FILTER (WHERE COALESCE(size, 0) <= 0) AS size_missing_count
+                    FROM shared_share_items
+                    GROUP BY share_record_id
+                ) s ON s.share_record_id = r.id
+                {where_sql}
+                ORDER BY r.updated_at DESC
+                LIMIT %s OFFSET %s
+            """, args + [page_size, (page - 1) * page_size])
             rows = [_row_to_dict(r) for r in cur.fetchall()]
     return rows, total
 
@@ -159,4 +178,32 @@ def mark_item_reported(item_id: int, center_source_id: str):
                 SET center_reported=TRUE, center_source_id=%s, updated_at=NOW()
                 WHERE id=%s
             """, (center_source_id, item_id))
+            conn.commit()
+
+
+def mark_item_raw_uploaded(item_id: int, uploaded: bool = True):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE shared_share_items
+                SET raw_ffprobe_uploaded=%s, updated_at=NOW()
+                WHERE id=%s
+            """, (bool(uploaded), item_id))
+            conn.commit()
+
+
+def update_share_item_size(item_id: int, size: int):
+    try:
+        size = int(size or 0)
+    except Exception:
+        size = 0
+    if size <= 0:
+        return
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE shared_share_items
+                SET size=%s, updated_at=NOW()
+                WHERE id=%s AND COALESCE(size, 0) <= 0
+            """, (size, item_id))
             conn.commit()

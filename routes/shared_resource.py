@@ -326,6 +326,126 @@ def _center_headers():
 
 
 
+def _safe_json_obj(value):
+    if value is None:
+        return None
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            obj = json.loads(value)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            return None
+    return None
+
+
+def _load_local_raw_ffprobe(sha1: str):
+    """从本地 p115_mediainfo_cache 读取 raw_ffprobe_json。"""
+    sha1 = str(sha1 or '').strip().upper()
+    if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1):
+        return None
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT raw_ffprobe_json
+                    FROM p115_mediainfo_cache
+                    WHERE sha1=%s AND raw_ffprobe_json IS NOT NULL
+                    LIMIT 1
+                    """,
+                    (sha1,),
+                )
+                row = cur.fetchone()
+                if not row:
+                    return None
+                raw = dict(row).get('raw_ffprobe_json')
+                return _safe_json_obj(raw)
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 查询本地 raw_ffprobe_json 失败: sha1={sha1}, err={e}")
+        return None
+
+
+def _infer_size_from_raw(raw: Dict[str, Any]) -> int:
+    if not isinstance(raw, dict):
+        return 0
+    try:
+        fmt = raw.get('format') or {}
+        size = fmt.get('size')
+        if size is not None and str(size).strip():
+            return int(float(size))
+    except Exception:
+        pass
+    return 0
+
+
+def _upload_item_raw_ffprobe_to_center(item: Dict[str, Any], cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
+    """上传单个分享文件的 raw_ffprobe_json 到中心服务器。返回 ok/missing/error。"""
+    sha1 = str(item.get('sha1') or '').strip().upper()
+    if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1):
+        return {'ok': False, 'status': 'missing_sha1', 'message': '缺少 SHA1'}
+
+    if item.get('raw_ffprobe_uploaded') and not force:
+        return {'ok': True, 'status': 'already_uploaded', 'message': '已标记上传过'}
+
+    raw = _load_local_raw_ffprobe(sha1)
+    if not raw:
+        return {'ok': False, 'status': 'missing_raw', 'message': '本地 p115_mediainfo_cache 没有 raw_ffprobe_json'}
+
+    raw_size = _infer_size_from_raw(raw)
+    item_size = int(item.get('size') or 0)
+    final_size = item_size if item_size > 0 else raw_size
+
+    payload = {
+        'sha1': sha1,
+        'size': final_size or None,
+        'raw_ffprobe_json': raw,
+    }
+    try:
+        resp = requests.post(f"{cfg['center_url']}/api/v1/rawffprobe/upload", headers=headers, json=payload, timeout=45)
+        if not resp.ok:
+            return {'ok': False, 'status': 'http_error', 'message': f'HTTP {resp.status_code} {resp.text[:160]}'}
+        shared_share_db.mark_item_raw_uploaded(item['id'], True)
+        if final_size > 0 and item_size <= 0:
+            shared_share_db.update_share_item_size(item['id'], final_size)
+        return {'ok': True, 'status': 'uploaded', 'message': '已上传 raw_ffprobe_json', 'size': final_size}
+    except Exception as e:
+        return {'ok': False, 'status': 'error', 'message': str(e)}
+
+
+def _upload_share_raw_ffprobe_to_center(record_id: int, cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
+    items = shared_share_db.list_share_items(record_id)
+    uploaded = 0
+    skipped = 0
+    missing = 0
+    errors = []
+    size_fixed = 0
+    for item in items:
+        before_size = int(item.get('size') or 0)
+        result = _upload_item_raw_ffprobe_to_center(item, cfg, headers, force=force)
+        if result.get('ok'):
+            if result.get('status') == 'uploaded':
+                uploaded += 1
+                if before_size <= 0 and int(result.get('size') or 0) > 0:
+                    size_fixed += 1
+            else:
+                skipped += 1
+        else:
+            if result.get('status') in {'missing_raw', 'missing_sha1'}:
+                missing += 1
+            else:
+                errors.append(f"{item.get('file_name')}: {result.get('message')}")
+    return {
+        'total': len(items),
+        'uploaded': uploaded,
+        'skipped': skipped,
+        'missing': missing,
+        'size_fixed': size_fixed,
+        'errors': errors,
+    }
+
+
 def _json_array_values(value):
     """media_metadata 的 file_sha1_json / file_pickcode_json 可能是数组、字符串或对象，这里尽量提取稳定标识。"""
     if value is None:
@@ -936,6 +1056,11 @@ def api_report_share_to_center(record_id):
     if not items:
         return jsonify({"success": False, "message": "分享包内没有可登记的视频文件"}), 400
 
+    # 登记中心前先上传 raw_ffprobe_json；同时用 raw.format.size 回填本地 size=0 的条目。
+    raw_summary = _upload_share_raw_ffprobe_to_center(record_id, cfg, headers, force=False)
+    # 重新读取 items，确保 size/raw_ffprobe_uploaded 是最新状态。
+    items = shared_share_db.list_share_items(record_id)
+
     reported = 0
     errors = []
     first_source_id = None
@@ -957,7 +1082,7 @@ def api_report_share_to_center(record_id):
             'quality': '',
             'share_code': record.get('share_code'),
             'receive_code': record.get('receive_code') or '',
-            'has_raw_ffprobe': False,
+            'has_raw_ffprobe': bool(item.get('raw_ffprobe_uploaded')),
         }
         try:
             resp = requests.post(f"{cfg['center_url']}/api/v1/sources/register", headers=headers, json=payload, timeout=20)
@@ -982,8 +1107,46 @@ def api_report_share_to_center(record_id):
         reported_at='NOW()' if reported > 0 else None,
         last_error='；'.join(errors[:5]),
     )
-    shared_virtual_db.add_credit_ledger('share_reported_center', 0, f'登记中心 {reported}/{len(items)} 条', ref_id=str(record_id), title=record.get('title') or '', raw_json={'errors': errors})
-    return jsonify({"success": reported > 0, "message": f"已登记 {reported}/{len(items)} 条", "data": row, "errors": errors})
+    shared_virtual_db.add_credit_ledger(
+        'share_reported_center', 0,
+        f"登记中心 {reported}/{len(items)} 条；raw上传 {raw_summary.get('uploaded', 0)} 条，缺失 {raw_summary.get('missing', 0)} 条",
+        ref_id=str(record_id), title=record.get('title') or '',
+        raw_json={'errors': errors, 'raw_summary': raw_summary}
+    )
+    msg = (
+        f"已登记 {reported}/{len(items)} 条；"
+        f"raw上传 {raw_summary.get('uploaded', 0)} 条，"
+        f"已跳过 {raw_summary.get('skipped', 0)} 条，"
+        f"缺失 {raw_summary.get('missing', 0)} 条，"
+        f"补全大小 {raw_summary.get('size_fixed', 0)} 条"
+    )
+    if raw_summary.get('errors'):
+        errors.extend(raw_summary.get('errors')[:5])
+    return jsonify({"success": reported > 0, "message": msg, "data": row, "errors": errors, "raw_summary": raw_summary})
+
+
+@shared_resource_bp.route('/shares/<int:record_id>/upload-rawffprobe', methods=['POST'])
+@admin_required
+def api_upload_share_raw_ffprobe(record_id):
+    record = shared_share_db.get_share_record(record_id)
+    if not record:
+        return jsonify({"success": False, "message": "分享记录不存在"}), 404
+    cfg, headers = _center_headers()
+    force = bool((request.json or {}).get('force'))
+    summary = _upload_share_raw_ffprobe_to_center(record_id, cfg, headers, force=force)
+    shared_virtual_db.add_credit_ledger(
+        'share_raw_uploaded', 0,
+        f"上传媒体信息 {summary.get('uploaded', 0)}/{summary.get('total', 0)} 条",
+        ref_id=str(record_id), title=record.get('title') or '', raw_json=summary
+    )
+    ok_count = int(summary.get('uploaded') or 0) + int(summary.get('skipped') or 0)
+    msg = (
+        f"raw上传 {summary.get('uploaded', 0)} 条，"
+        f"已跳过 {summary.get('skipped', 0)} 条，"
+        f"缺失 {summary.get('missing', 0)} 条，"
+        f"补全大小 {summary.get('size_fixed', 0)} 条"
+    )
+    return jsonify({"success": ok_count > 0 or summary.get('total', 0) == 0, "message": msg, "data": summary})
 
 
 @shared_resource_bp.route('/shares/<int:record_id>/cancel', methods=['POST'])
