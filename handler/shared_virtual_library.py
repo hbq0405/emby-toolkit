@@ -21,6 +21,8 @@ logger = logging.getLogger(__name__)
 
 _LOCKS: Dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
+_LAST_PLAY_MARK: Dict[str, float] = {}
+_LAST_PLAY_GUARD = threading.Lock()
 
 VIDEO_EXTS = {'.mkv', '.mp4', '.ts', '.m2ts', '.avi', '.mov', '.wmv', '.flv', '.rmvb', '.webm', '.iso'}
 
@@ -290,6 +292,21 @@ def _lock_for(virtual_id: str) -> threading.Lock:
         return lock
 
 
+def _mark_played_debounced(virtual_id: str, interval_seconds: int = 60):
+    """播放器会对同一媒体发起多次 stream/original/range 请求。
+
+    这些请求不应该反复增加 play_count，也不应该让日志看起来像重复临时转存。
+    首次命中立即记一次，后续短时间内只复用已缓存 pickcode。
+    """
+    now = time.time()
+    with _LAST_PLAY_GUARD:
+        last = _LAST_PLAY_MARK.get(virtual_id, 0)
+        if last and now - last < interval_seconds:
+            return None
+        _LAST_PLAY_MARK[virtual_id] = now
+    return shared_virtual_db.mark_virtual_played(virtual_id)
+
+
 def ensure_playable_by_emby_item(
     emby_item_id: str = '',
     user_id: str = '',
@@ -323,7 +340,7 @@ def ensure_playable_by_emby_item(
         # 可能其他并发请求已经完成转存，重新读一次。
         item = shared_virtual_db.get_virtual_item(virtual_id) or item
         if item.get('real_pick_code'):
-            shared_virtual_db.mark_virtual_played(virtual_id)
+            _mark_played_debounced(virtual_id)
             return {
                 'matched': True,
                 'success': True,

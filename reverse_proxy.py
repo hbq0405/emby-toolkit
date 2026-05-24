@@ -1051,7 +1051,10 @@ def proxy_all(path):
                 if virtual_playback_info:
                     pick_code = virtual_playback_info.get('pick_code') or virtual_playback_info.get('real_pick_code')
                     display_name = virtual_playback_info.get('file_name') or virtual_playback_info.get('title') or display_name
-                    logger.info(f"  ➜ [共享虚拟播放] 已临时转存并取得 pickcode: {display_name}")
+                    if virtual_playback_info.get('cached'):
+                        logger.debug(f"  ➜ [共享虚拟播放] 使用已缓存 pickcode: {display_name}")
+                    else:
+                        logger.info(f"  ➜ [共享虚拟播放] 已临时转存并取得 pickcode: {display_name}")
 
             # 浏览器普通媒体保持原行为：交给 Emby 代理；只有虚拟入库才由 ETK 代理 115 直链。
             if is_browser and not virtual_playback_info:
