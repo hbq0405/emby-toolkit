@@ -62,6 +62,22 @@ def _fetch_center_credit() -> Dict[str, Any]:
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 拉取中心统计失败，仅保存 credit: {e}")
 
+    center_ledger_items = []
+    try:
+        ledger_resp = requests.get(
+            f"{cfg['center_url']}/api/v1/credit/ledger",
+            headers=headers,
+            params={"limit": 300},
+            timeout=12,
+        )
+        if ledger_resp.ok:
+            center_ledger_items = (ledger_resp.json() or {}).get("items") or []
+        else:
+            logger.warning(f"  ➜ [共享资源] 拉取中心贡献值流水失败: HTTP {ledger_resp.status_code} {ledger_resp.text[:200]}")
+    except Exception as e:
+        # 兼容未升级中心服务器：只同步快照，不影响页面打开。
+        logger.warning(f"  ➜ [共享资源] 拉取中心贡献值流水失败，仅保存 credit: {e}")
+
     snapshot = {
         "device_id": me.get("id"),
         "credit": int(me.get("credit") or 0),
@@ -72,7 +88,8 @@ def _fetch_center_credit() -> Dict[str, Any]:
         "raw_json": {"me": me, "stats": stats},
     }
     saved = shared_virtual_db.upsert_credit_snapshot(snapshot)
-    return {"ok": True, "snapshot": saved}
+    synced_ledger = shared_virtual_db.sync_center_credit_ledger(center_ledger_items, device_snapshot=me)
+    return {"ok": True, "snapshot": saved, "synced_ledger": synced_ledger}
 
 
 def _looks_like_video_name(name: str) -> bool:
@@ -1183,6 +1200,14 @@ def api_refresh_credit():
 @shared_resource_bp.route('/credit/ledger', methods=['GET'])
 @admin_required
 def api_credit_ledger():
-    limit = int(request.args.get('limit', 50) or 50)
-    rows = shared_virtual_db.list_credit_ledger(limit=limit)
-    return jsonify({"success": True, "items": rows})
+    limit = int(request.args.get('limit', 120) or 120)
+    sync_center = str(request.args.get('sync_center', '1')).lower() not in ('0', 'false', 'no')
+    actual_only = str(request.args.get('actual_only', '1')).lower() not in ('0', 'false', 'no')
+    sync_result = None
+    if sync_center:
+        try:
+            sync_result = _fetch_center_credit()
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 同步中心贡献值流水失败，返回本地缓存: {e}")
+    rows = shared_virtual_db.list_credit_ledger(limit=limit, actual_only=actual_only)
+    return jsonify({"success": True, "items": rows, "sync": sync_result})

@@ -319,21 +319,45 @@ const mediaSearchColumns = [
   }, { default: () => row.resolvable ? '选择' : '不可用' }) },
 ];
 
+const ledgerEventLabel = (eventType) => {
+  const map = {
+    center_initial_credit: '基础贡献值',
+    center_source_registered: '中心登记共享源',
+    center_shared_source_served: '共享被转存',
+    center_shared_source_consumed: '转存共享资源',
+    share_created: '创建分享',
+    share_reported_center: '登记中心',
+    share_raw_uploaded: '上传媒体信息',
+    share_cancelled: '取消分享',
+    virtual_deleted: '删除虚拟资源',
+    virtual_promoted: '虚拟资源转正',
+  };
+  return map[eventType] || eventType || '-';
+};
+
+const formatDelta = (value) => {
+  const n = Number(value || 0);
+  return n > 0 ? `+${n}` : String(n);
+};
+
 const ledgerColumns = [
   { title: '时间', key: 'created_at', width: 180, render: row => fmtDate(row.created_at) },
-  { title: '事件', key: 'event_type', width: 180 },
-  { title: '变化', key: 'delta', width: 90, render: row => h(NTag, { type: Number(row.delta) >= 0 ? 'success' : 'error', size: 'small' }, { default: () => String(row.delta || 0) }) },
+  { title: '事件', key: 'event_type', width: 170, render: row => ledgerEventLabel(row.event_type) },
+  { title: '变化', key: 'delta', width: 90, render: row => {
+    const n = Number(row.delta || 0);
+    return h(NTag, { type: n > 0 ? 'success' : (n < 0 ? 'error' : 'default'), size: 'small' }, { default: () => formatDelta(n) });
+  } },
   { title: '标题', key: 'title', minWidth: 220, ellipsis: { tooltip: true } },
-  { title: '原因', key: 'reason', minWidth: 280, ellipsis: { tooltip: true } },
+  { title: '原因', key: 'reason', minWidth: 360, ellipsis: { tooltip: true } },
 ];
 
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { local: {}, shares: {}, credit: {} }; };
 const loadVirtualItems = async () => { loading.value = true; try { const res = await axios.get('/api/shared/resources/virtual', { params: { ...virtualFilters, page: virtualPagination.page, page_size: virtualPagination.pageSize } }); virtualItems.value = res.data?.items || []; virtualPagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载虚拟资源失败'); } finally { loading.value = false; } };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的分享失败'); } finally { sharesLoading.value = false; } };
-const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 100 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献值流水失败'); } finally { ledgerLoading.value = false; } };
+const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献值流水失败'); } finally { ledgerLoading.value = false; } };
 const loadAll = async () => { await Promise.allSettled([loadSummary(), loadVirtualItems(), loadShares(), loadLedger()]); };
 const handleTabChange = (name) => { if (name === 'virtual') loadVirtualItems(); if (name === 'shares') loadShares(); if (name === 'ledger') loadLedger(); };
-const refreshCredit = async () => { refreshingCredit.value = true; try { await axios.post('/api/shared/resources/credit/refresh'); message.success('贡献值已同步'); await loadSummary(); } catch (e) { message.error(e.response?.data?.message || '刷新贡献值失败'); } finally { refreshingCredit.value = false; } };
+const refreshCredit = async () => { refreshingCredit.value = true; try { await axios.post('/api/shared/resources/credit/refresh'); message.success('贡献值已同步'); await Promise.allSettled([loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '刷新贡献值失败'); } finally { refreshingCredit.value = false; } };
 
 const resetManualShareForm = () => {
   Object.assign(manualShareForm, {

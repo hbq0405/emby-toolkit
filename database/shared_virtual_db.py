@@ -183,8 +183,103 @@ def add_credit_ledger(event_type, delta=0, reason='', ref_id='', source_id='', v
             return row
 
 
-def list_credit_ledger(limit=50):
+
+
+def _center_credit_event_label(reason: str) -> str:
+    reason = str(reason or '')
+    mapping = {
+        'initial_credit': '设备注册基础贡献值',
+        'source_registered': '成功分享视频，中心首次登记',
+        'shared_source_served': '共享资源被其他设备成功转存',
+        'shared_source_consumed': '从共享中心成功转存资源',
+    }
+    return mapping.get(reason, reason or '中心贡献值变化')
+
+
+def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict[str, Any] = None) -> int:
+    """同步中心服务器真实贡献值流水到本地展示表。
+
+    本地 shared_credit_ledger_local 原本记录的是操作审计，delta 经常是 0；
+    中心 credit_ledger 才是真正的积分变化来源。这里用 center_* 事件覆盖同步，
+    避免每次刷新重复插入。
+    """
+    items = list(items or [])
+    device_snapshot = device_snapshot or {}
+    device_id = device_snapshot.get('device_id') or device_snapshot.get('id') or ''
+
+    # 中心的基础 20 分是 devices.credit 默认值，不在 credit_ledger 里。
+    # 为了让前端能解释“总分 = 基础分 + 贡献分”，本地展示时补一条虚拟流水。
+    if device_id:
+        items.append({
+            'id': f'base:{device_id}',
+            'device_id': device_id,
+            'delta': 20,
+            'reason': 'initial_credit',
+            'ref_id': device_id,
+            'source_id': '',
+            'tmdb_id': '',
+            'item_type': '',
+            'title': '基础贡献值',
+            'file_name': '',
+            'created_at': device_snapshot.get('created_at') or device_snapshot.get('updated_at'),
+        })
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT * FROM shared_credit_ledger_local ORDER BY created_at DESC LIMIT %s", (min(200, int(limit or 50)),))
+            # 只清理中心同步记录，保留本地操作审计记录。
+            cur.execute("DELETE FROM shared_credit_ledger_local WHERE event_type LIKE 'center_%'")
+            count = 0
+            for item in items:
+                reason_code = str(item.get('reason') or '')
+                delta = int(item.get('delta') or 0)
+                ref_id = str(item.get('ref_id') or item.get('source_id') or item.get('id') or '')
+                title = item.get('title') or item.get('file_name') or ''
+                file_name = item.get('file_name') or ''
+                tmdb_id = item.get('tmdb_id') or ''
+                item_type = item.get('item_type') or ''
+                display = title or file_name or ref_id
+                label = _center_credit_event_label(reason_code)
+                sign = '+' if delta > 0 else ''
+                reason_text = f"{label}：{display}，贡献值 {sign}{delta}"
+                if reason_code == 'initial_credit':
+                    reason_text = f"{label}，贡献值 +20"
+                created_at = item.get('created_at')
+
+                if created_at:
+                    cur.execute("""
+                        INSERT INTO shared_credit_ledger_local(
+                            event_type, delta, reason, ref_id, source_id, virtual_id,
+                            tmdb_id, item_type, title, raw_json, created_at
+                        ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
+                    """, (
+                        f"center_{reason_code or 'credit'}", delta, reason_text, ref_id,
+                        item.get('source_id') or ref_id, '', tmdb_id, item_type, title or display,
+                        _as_jsonb({'origin': 'center', 'center_item': item}), created_at,
+                    ))
+                else:
+                    cur.execute("""
+                        INSERT INTO shared_credit_ledger_local(
+                            event_type, delta, reason, ref_id, source_id, virtual_id,
+                            tmdb_id, item_type, title, raw_json
+                        ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                    """, (
+                        f"center_{reason_code or 'credit'}", delta, reason_text, ref_id,
+                        item.get('source_id') or ref_id, '', tmdb_id, item_type, title or display,
+                        _as_jsonb({'origin': 'center', 'center_item': item}),
+                    ))
+                count += 1
+        conn.commit()
+    return count
+
+
+def list_credit_ledger(limit=50, actual_only: bool = False):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            where_sql = ""
+            if actual_only:
+                where_sql = "WHERE delta <> 0 OR event_type LIKE 'center_%'"
+            cur.execute(
+                f"SELECT * FROM shared_credit_ledger_local {where_sql} ORDER BY created_at DESC LIMIT %s",
+                (min(500, int(limit or 50)),)
+            )
             return [_row_to_dict(r) for r in cur.fetchall()]
