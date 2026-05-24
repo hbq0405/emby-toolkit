@@ -77,6 +77,15 @@ def _build_center_queries(item: Dict[str, Any], title: str, tmdb_id, item_type: 
         queries.append(_build_gap_item(tmdb_id=sid, item_type='Season', title=title, season_number=season_number, year=year))
     elif item_type == 'Series':
         queries.append(_build_gap_item(tmdb_id=tmdb_id, item_type='Series', title=title, year=year))
+    elif item_type == 'Episode':
+        sid = parent_tmdb_id or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id')
+        s_num = season_number if season_number not in (None, '') else item.get('season_number')
+        e_num = item.get('episode_number')
+        # 中心 Episode 查询以“父剧 TMDb + SxxEyy”为主；部分旧数据可能按单集 TMDb 登记，保留兜底。
+        if sid:
+            queries.append(_build_gap_item(tmdb_id=sid, item_type='Episode', title=title, season_number=s_num, episode_number=e_num, year=year))
+        if tmdb_id and str(tmdb_id) != str(sid or ''):
+            queries.append(_build_gap_item(tmdb_id=tmdb_id, item_type='Episode', title=title, season_number=s_num, episode_number=e_num, year=year))
     return [q for q in queries if q.get('tmdb_id')]
 
 

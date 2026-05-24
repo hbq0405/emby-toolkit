@@ -348,6 +348,219 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
     return created
 
 
+
+def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
+    """删除已过期的虚拟入库临时转存文件，但保留虚拟 STRM/记录，后续播放可再次临时转存。"""
+    p115 = P115Service.get_client()
+    if not p115:
+        logger.warning("  ➜ [共享资源维护] 115 客户端未初始化，跳过过期临时转存清理。")
+        return 0
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT virtual_id, title, file_name, real_fid, real_pick_code, real_parent_id, expires_at
+                FROM shared_virtual_items
+                WHERE status IN ('cached','watched')
+                  AND COALESCE(real_fid, '') <> ''
+                  AND expires_at IS NOT NULL
+                  AND expires_at < NOW()
+                ORDER BY expires_at ASC
+                LIMIT %s
+                """,
+                (int(max_rows),),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+    cleaned = 0
+    for row in rows:
+        virtual_id = str(row.get('virtual_id') or '').strip()
+        real_fid = str(row.get('real_fid') or '').strip()
+        title = row.get('title') or row.get('file_name') or virtual_id
+        if not virtual_id or not real_fid:
+            continue
+
+        resp = None
+        delete_ok = False
+        try:
+            resp = p115.fs_delete([real_fid])
+            text = json.dumps(resp, ensure_ascii=False) if isinstance(resp, dict) else str(resp)
+            delete_ok = bool(isinstance(resp, dict) and resp.get('state')) or any(k in text for k in ['不存在', '已删除', 'not found', 'delete success'])
+        except Exception as e:
+            text = str(e)
+            delete_ok = any(k in text for k in ['不存在', 'not found'])
+            logger.debug(f"  ➜ [共享资源维护] 删除过期临时转存异常: {virtual_id}/{real_fid} -> {e}")
+
+        # 无论远端是否已经被手动删除，只要确认过期，就清空本地 real_*，防止继续使用过期 pickcode。
+        if delete_ok or resp is not None:
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE shared_virtual_items
+                            SET status='virtual_ready',
+                                real_fid='', real_pick_code='', real_parent_id='', expires_at=NULL,
+                                last_error=%s,
+                                raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
+                                updated_at=NOW()
+                            WHERE virtual_id=%s
+                            """,
+                            (
+                                '临时转存已过期，维护任务已清理；下次播放将重新转存',
+                                json.dumps({'expired_cache_cleaned_at': time.strftime('%Y-%m-%d %H:%M:%S'), 'real_fid': real_fid, 'delete_response': resp}, ensure_ascii=False),
+                                virtual_id,
+                            ),
+                        )
+                        cur.execute("DELETE FROM p115_filesystem_cache WHERE id=%s", (real_fid,))
+                    conn.commit()
+                shared_virtual_db.add_credit_ledger(
+                    'virtual_cache_expired_cleaned', 0,
+                    f'清理过期虚拟临时转存：{title}',
+                    ref_id=virtual_id,
+                    virtual_id=virtual_id,
+                    title=title,
+                    raw_json={'real_fid': real_fid, 'delete_response': resp},
+                )
+                cleaned += 1
+            except Exception as e:
+                logger.warning(f"  ➜ [共享资源维护] 清空虚拟临时转存状态失败: {virtual_id} -> {e}")
+        time.sleep(0.15)
+
+    if cleaned:
+        logger.info(f"  ➜ [共享资源维护] 已清理 {cleaned} 个过期虚拟临时转存文件。")
+    return cleaned
+
+
+def _watching_missing_episodes(limit: int = 120) -> List[Dict[str, Any]]:
+    """查询正在追更/暂停追更季下尚未入库的分集。"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH watch_seasons AS (
+                    SELECT
+                        tmdb_id AS season_tmdb_id,
+                        parent_series_tmdb_id,
+                        season_number,
+                        title AS season_title,
+                        release_year,
+                        watching_status,
+                        last_updated_at
+                    FROM media_metadata
+                    WHERE item_type='Season'
+                      AND watching_status IN ('Watching','Paused')
+                      AND parent_series_tmdb_id IS NOT NULL
+                      AND season_number IS NOT NULL
+                )
+                SELECT
+                    e.tmdb_id,
+                    e.item_type,
+                    e.parent_series_tmdb_id,
+                    e.season_number,
+                    e.episode_number,
+                    e.title,
+                    e.release_year,
+                    e.release_date,
+                    ws.season_tmdb_id,
+                    ws.season_title,
+                    ws.watching_status
+                FROM media_metadata e
+                JOIN watch_seasons ws
+                  ON e.item_type='Episode'
+                 AND e.parent_series_tmdb_id = ws.parent_series_tmdb_id
+                 AND e.season_number = ws.season_number
+                WHERE COALESCE(e.in_library, FALSE) = FALSE
+                  AND e.episode_number IS NOT NULL
+                  AND COALESCE(e.subscription_status, 'NONE') NOT IN ('IGNORED')
+                  AND (e.release_date IS NULL OR e.release_date <= CURRENT_DATE)
+                ORDER BY ws.last_updated_at DESC NULLS LAST,
+                         e.parent_series_tmdb_id, e.season_number, e.episode_number
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def _has_local_virtual_projection_for_episode(row: Dict[str, Any]) -> bool:
+    """避免维护任务反复为同一缺失分集创建虚拟 STRM。"""
+    parent = str(row.get('parent_series_tmdb_id') or '')
+    season = _safe_int(row.get('season_number'), -1)
+    episode = _safe_int(row.get('episode_number'), -1)
+    if not parent or season < 0 or episode < 0:
+        return False
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM shared_virtual_items
+                    WHERE status NOT IN ('deleted','promoted')
+                      AND (parent_series_tmdb_id=%s OR tmdb_id=%s)
+                      AND COALESCE(season_number, -1)=COALESCE(%s, -1)
+                      AND COALESCE(episode_number, -1)=COALESCE(%s, -1)
+                    LIMIT 1
+                    """,
+                    (parent, parent, season, episode),
+                )
+                return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
+def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, int]:
+    """把 Watching / Paused 季的缺失分集纳入共享中心消费链路。"""
+    if not _enabled():
+        return {'missing': 0, 'consumed': 0, 'gaps': 0, 'skipped': 0}
+
+    try:
+        from handler.shared_center_client import shared_resource_mode
+        from handler.shared_subscription_service import try_consume_shared_resource
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源维护] 无法加载共享消费入口，跳过剧集追更: {e}")
+        return {'missing': 0, 'consumed': 0, 'gaps': 0, 'skipped': 0}
+
+    rows = _watching_missing_episodes(limit=max_items)
+    consumed = gaps = skipped = 0
+    mode = shared_resource_mode()
+
+    for row in rows:
+        try:
+            if mode == 'virtual' and _has_local_virtual_projection_for_episode(row):
+                skipped += 1
+                continue
+
+            parent_tmdb = row.get('parent_series_tmdb_id')
+            title = row.get('title') or row.get('season_title') or f"S{_safe_int(row.get('season_number'), 1):02d}E{_safe_int(row.get('episode_number'), 0):02d}"
+            result = try_consume_shared_resource(
+                row,
+                title=title,
+                tmdb_id=row.get('tmdb_id') or parent_tmdb,
+                item_type='Episode',
+                parent_tmdb_id=parent_tmdb,
+                season_number=row.get('season_number'),
+                year=row.get('release_year') or '',
+            )
+            if result.get('success'):
+                consumed += 1
+                logger.info(
+                    "  ➜ [共享资源维护] 追更缺集命中中心资源并已%s：%s S%02dE%02d",
+                    '虚拟入库' if result.get('mode') == 'virtual' else '永久转存',
+                    row.get('season_title') or parent_tmdb,
+                    _safe_int(row.get('season_number'), 0),
+                    _safe_int(row.get('episode_number'), 0),
+                )
+            elif result.get('reported_gap'):
+                gaps += 1
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 剧集追更共享消费失败: {row} -> {e}", exc_info=True)
+        time.sleep(0.2)
+
+    return {'missing': len(rows), 'consumed': consumed, 'gaps': gaps, 'skipped': skipped}
+
 def task_shared_resource_maintenance(processor=None):
     """共享资源维护总任务。可由前端手动触发，也由调度器硬编码定时执行。"""
     task_manager.update_status_from_thread(0, '正在初始化共享资源维护任务...')
@@ -363,13 +576,20 @@ def task_shared_resource_maintenance(processor=None):
     task_manager.update_status_from_thread(10, '正在自动登记本地缺口...')
     total['reported_gaps'] = _report_local_wanted_gaps(client)
 
-    task_manager.update_status_from_thread(35, '正在为中心缺口自动创建本机分享...')
+    task_manager.update_status_from_thread(25, '正在清理过期虚拟临时转存...')
+    total['expired_virtual_cache_cleaned'] = _cleanup_expired_virtual_cache()
+
+    task_manager.update_status_from_thread(40, '正在为中心缺口自动创建本机分享...')
     total['auto_created_shares'] = _auto_share_center_open_gaps(client)
 
-    task_manager.update_status_from_thread(65, '正在同步分享审核状态并自动登记中心...')
+    task_manager.update_status_from_thread(58, '正在从中心资源库处理追更缺集...')
+    follow_result = _auto_follow_watching_series_from_center()
+    total.update({f'follow_{k}': v for k, v in follow_result.items()})
+
+    task_manager.update_status_from_thread(72, '正在同步分享审核状态并自动登记中心...')
     total.update(_auto_check_and_report_local_shares(client))
 
-    task_manager.update_status_from_thread(90, '正在同步贡献值快照...')
+    task_manager.update_status_from_thread(92, '正在同步贡献值快照...')
     try:
         # 复用路由层已有的中心贡献值同步逻辑。
         from routes.shared_resource import _fetch_center_credit
@@ -380,7 +600,10 @@ def task_shared_resource_maintenance(processor=None):
 
     msg = (
         f"共享资源维护完成：登记缺口 {total.get('reported_gaps', 0)}，"
+        f"清理临时转存 {total.get('expired_virtual_cache_cleaned', 0)}，"
         f"自动创建分享 {total.get('auto_created_shares', 0)}，"
+        f"追更命中 {total.get('follow_consumed', 0)}/{total.get('follow_missing', 0)}，"
+        f"登记追更缺口 {total.get('follow_gaps', 0)}，"
         f"检查分享 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，"
         f"清理失效 {total.get('cancelled', 0)}。"
     )
