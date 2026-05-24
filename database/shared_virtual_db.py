@@ -104,6 +104,188 @@ def get_virtual_item(virtual_id: str):
             return _row_to_dict(cur.fetchone())
 
 
+def _extract_virtual_id_from_text(value: str) -> str:
+    text = str(value or '').strip()
+    if not text:
+        return ''
+    # 支持虚拟 STRM 内容：etk-shared://<virtual_id> 或 etk-shared://play/<virtual_id>
+    m = re.search(r'etk-shared://(?:play/)?([A-Za-z0-9_:\-]+)', text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    # 支持 URL 参数：?virtual_id=xxx
+    m = re.search(r'(?:virtual_id|vid)=([A-Za-z0-9_:\-]+)', text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return ''
+
+
+def get_virtual_item_for_playback(emby_item_id: str = '', strm_path: str = '', media_source_id: str = ''):
+    """反代播放入口使用：用 Emby ItemId / STRM 路径 / 虚拟协议定位虚拟入库记录。"""
+    emby_item_id = str(emby_item_id or '').strip()
+    strm_path = str(strm_path or '').strip()
+    media_source_id = str(media_source_id or '').strip()
+
+    virtual_id = _extract_virtual_id_from_text(strm_path)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if virtual_id:
+                cur.execute(
+                    "SELECT * FROM shared_virtual_items WHERE virtual_id=%s AND status <> 'deleted' LIMIT 1",
+                    (virtual_id,),
+                )
+                row = _row_to_dict(cur.fetchone())
+                if row:
+                    return row
+
+            clauses = []
+            args = []
+            if strm_path:
+                clauses.extend([
+                    "strm_path = %s",
+                    "raw_json->>'strm_path' = %s",
+                    "raw_json->>'source_path' = %s",
+                    "raw_json->>'emby_path' = %s",
+                ])
+                args.extend([strm_path, strm_path, strm_path, strm_path])
+                base = strm_path.split('/')[-1].split('\\')[-1]
+                if base:
+                    clauses.append("file_name = %s")
+                    args.append(base.replace('.strm', ''))
+            if emby_item_id:
+                clauses.extend([
+                    "raw_json->>'emby_item_id' = %s",
+                    "raw_json->>'emby_id' = %s",
+                    "raw_json->>'item_id' = %s",
+                ])
+                args.extend([emby_item_id, emby_item_id, emby_item_id])
+            if media_source_id:
+                clauses.append("raw_json->>'media_source_id' = %s")
+                args.append(media_source_id)
+
+            if not clauses:
+                return None
+
+            cur.execute(
+                f"""
+                SELECT *
+                FROM shared_virtual_items
+                WHERE status <> 'deleted'
+                  AND ({' OR '.join(clauses)})
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """,
+                args,
+            )
+            return _row_to_dict(cur.fetchone())
+
+
+def mark_virtual_transferring(virtual_id: str, message: str = ''):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE shared_virtual_items
+                SET status='transferring', updated_at=NOW(), last_error=%s
+                WHERE virtual_id=%s AND status <> 'deleted'
+                RETURNING *
+                """,
+                (message, virtual_id),
+            )
+            row = _row_to_dict(cur.fetchone())
+            conn.commit()
+            return row
+
+
+def mark_virtual_cached(
+    virtual_id: str,
+    real_fid: str = '',
+    real_pick_code: str = '',
+    real_parent_id: str = '',
+    cache_parent_id: str = '',
+    cache_parent_name: str = '',
+    expires_at=None,
+    message: str = '',
+    raw_json: Dict[str, Any] = None,
+):
+    raw_json = raw_json or {}
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if expires_at:
+                cur.execute(
+                    """
+                    UPDATE shared_virtual_items
+                    SET status='cached', updated_at=NOW(),
+                        first_transferred_at=COALESCE(first_transferred_at, NOW()),
+                        last_transferred_at=NOW(), expires_at=%s,
+                        real_fid=%s, real_pick_code=%s, real_parent_id=%s,
+                        cache_parent_id=COALESCE(NULLIF(%s,''), cache_parent_id),
+                        cache_parent_name=COALESCE(NULLIF(%s,''), cache_parent_name),
+                        last_error=%s,
+                        raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb
+                    WHERE virtual_id=%s
+                    RETURNING *
+                    """,
+                    (expires_at, real_fid, real_pick_code, real_parent_id, cache_parent_id, cache_parent_name, message, _as_jsonb(raw_json), virtual_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE shared_virtual_items
+                    SET status='cached', updated_at=NOW(),
+                        first_transferred_at=COALESCE(first_transferred_at, NOW()),
+                        last_transferred_at=NOW(),
+                        real_fid=%s, real_pick_code=%s, real_parent_id=%s,
+                        cache_parent_id=COALESCE(NULLIF(%s,''), cache_parent_id),
+                        cache_parent_name=COALESCE(NULLIF(%s,''), cache_parent_name),
+                        last_error=%s,
+                        raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb
+                    WHERE virtual_id=%s
+                    RETURNING *
+                    """,
+                    (real_fid, real_pick_code, real_parent_id, cache_parent_id, cache_parent_name, message, _as_jsonb(raw_json), virtual_id),
+                )
+            row = _row_to_dict(cur.fetchone())
+            conn.commit()
+            return row
+
+
+def mark_virtual_played(virtual_id: str):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE shared_virtual_items
+                SET play_count=COALESCE(play_count,0)+1,
+                    last_played_at=NOW(),
+                    status=CASE WHEN status='cached' THEN 'watched' ELSE status END,
+                    updated_at=NOW()
+                WHERE virtual_id=%s
+                RETURNING *
+                """,
+                (virtual_id,),
+            )
+            row = _row_to_dict(cur.fetchone())
+            conn.commit()
+            return row
+
+
+def mark_virtual_error(virtual_id: str, message: str):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE shared_virtual_items
+                SET status='error', last_error=%s, updated_at=NOW()
+                WHERE virtual_id=%s
+                RETURNING *
+                """,
+                (message, virtual_id),
+            )
+            row = _row_to_dict(cur.fetchone())
+            conn.commit()
+            return row
+
+
 def mark_virtual_deleted(virtual_id: str, message=''):
     with get_db_connection() as conn:
         with conn.cursor() as cur:

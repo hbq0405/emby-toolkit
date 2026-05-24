@@ -1,0 +1,92 @@
+# handler/shared_center_client.py
+# ETK 共享资源中心客户端：缺口登记、共享源查询、raw_ffprobe 批量拉取、转存结果上报。
+import logging
+from typing import Any, Dict, List, Optional
+
+import requests
+
+import config_manager
+import constants
+
+logger = logging.getLogger(__name__)
+
+
+def _cfg_const(name: str, fallback: str, default=None):
+    key = getattr(constants, name, fallback)
+    return (config_manager.APP_CONFIG or {}).get(key, default)
+
+
+def shared_center_enabled() -> bool:
+    value = _cfg_const('CONFIG_OPTION_115_SHARED_RESOURCE_ENABLED', 'p115_shared_resource_enabled', False)
+    if isinstance(value, str):
+        value = value.strip().lower() in ('1', 'true', 'yes', 'on', '启用')
+    return bool(value)
+
+
+def shared_resource_mode() -> str:
+    mode = str(_cfg_const('CONFIG_OPTION_115_SHARED_RESOURCE_MODE', 'p115_shared_resource_mode', 'permanent') or 'permanent').strip().lower()
+    return 'virtual' if mode == 'virtual' else 'permanent'
+
+
+class SharedCenterClient:
+    def __init__(self):
+        self.base_url = str(_cfg_const('CONFIG_OPTION_115_SHARED_CENTER_URL', 'p115_shared_center_url', 'https://shared.55565576.xyz') or '').rstrip('/')
+        self.device_token = str(_cfg_const('CONFIG_OPTION_115_SHARED_DEVICE_TOKEN', 'p115_shared_device_token', '') or '').strip()
+
+    @property
+    def ready(self) -> bool:
+        return bool(self.base_url and self.device_token)
+
+    def _headers(self) -> Dict[str, str]:
+        return {
+            'X-Device-Token': self.device_token,
+            'Content-Type': 'application/json',
+        }
+
+    def _post(self, path: str, payload: Dict[str, Any], timeout: int = 20) -> Dict[str, Any]:
+        if not self.ready:
+            raise RuntimeError('共享中心地址或 device_token 未配置')
+        url = f"{self.base_url}{path}"
+        resp = requests.post(url, headers=self._headers(), json=payload, timeout=timeout)
+        if not resp.ok:
+            raise RuntimeError(f"共享中心请求失败: {resp.status_code} {resp.text[:200]}")
+        return resp.json() if resp.text else {}
+
+    def _get(self, path: str, timeout: int = 15) -> Dict[str, Any]:
+        if not self.ready:
+            raise RuntimeError('共享中心地址或 device_token 未配置')
+        url = f"{self.base_url}{path}"
+        resp = requests.get(url, headers=self._headers(), timeout=timeout)
+        if not resp.ok:
+            raise RuntimeError(f"共享中心请求失败: {resp.status_code} {resp.text[:200]}")
+        return resp.json() if resp.text else {}
+
+    def report_gaps(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        if not items:
+            return {'count': 0, 'items': []}
+        return self._post('/api/v1/gaps/batch', {'items': items}, timeout=20)
+
+    def search_sources(self, items: List[Dict[str, Any]], limit_per_item: int = 20) -> Dict[str, Any]:
+        if not items:
+            return {'results': []}
+        return self._post('/api/v1/sources/search', {'items': items, 'limit_per_item': limit_per_item}, timeout=25)
+
+    def fetch_raw_ffprobe_batch(self, sha1_list: List[str]) -> Dict[str, Any]:
+        sha1_list = [str(x or '').strip().upper() for x in sha1_list if x]
+        if not sha1_list:
+            return {'items': []}
+        return self._post('/api/v1/rawffprobe/batch', {'sha1_list': sha1_list}, timeout=60)
+
+    def report_transfer(self, source_id: str, result: str, expected_sha1: str = '', actual_sha1: str = '', expected_size=None, actual_size=None, message: str = ''):
+        if not source_id:
+            return None
+        payload = {
+            'source_id': source_id,
+            'result': result,
+            'expected_sha1': expected_sha1 or None,
+            'actual_sha1': actual_sha1 or None,
+            'expected_size': expected_size,
+            'actual_size': actual_size,
+            'message': message or None,
+        }
+        return self._post('/api/v1/transfers/report', payload, timeout=20)

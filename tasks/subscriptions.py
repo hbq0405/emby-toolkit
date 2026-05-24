@@ -24,6 +24,13 @@ except Exception:
     TGUserBotManager = None
     tg_task_queue = None
 
+try:
+    from handler.shared_subscription_service import try_consume_shared_resource, report_shared_gap
+except Exception:
+    try_consume_shared_resource = None
+    report_shared_gap = None
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -1516,6 +1523,33 @@ def task_auto_subscribe(processor):
             subscription_priority = strategy_config.get('subscription_priority', 'mp')
 
             # ==========================================
+            # 共享资源优先：启用共享资源后，先查中心共享池；命中后按配置执行永久转存/虚拟入库。
+            # 未命中才登记缺口，并继续走影巢 / TG / MP 原有兜底链路。
+            # ==========================================
+            if try_consume_shared_resource and item_type in ['Movie', 'Series', 'Season']:
+                try:
+                    shared_result = try_consume_shared_resource(
+                        item=item,
+                        title=title,
+                        tmdb_id=tmdb_id,
+                        item_type=item_type,
+                        parent_tmdb_id=parent_tmdb_id,
+                        season_number=season_number,
+                        year=item_year,
+                    )
+                    if shared_result.get('success'):
+                        success = True
+                        action_type = shared_result.get('action_type') or '共享资源'
+                        logger.info(
+                            f"  ➜ [共享资源] 《{title}》命中中心共享池，"
+                            f"处理方式: {shared_result.get('mode')}, 数量: {shared_result.get('count', 0)}"
+                        )
+                    elif shared_result.get('enabled') and shared_result.get('reported_gap'):
+                        logger.info(f"  ➜ [共享资源] 《{title}》中心未命中，已登记缺口，继续原有订阅链路。")
+                except Exception as e:
+                    logger.error(f"  ➜ [共享资源] 处理《{title}》时异常，自动降级原有订阅链路: {e}", exc_info=True)
+
+            # ==========================================
             # 云资源优先：电影 / 剧集 / 季统一先查影巢，失败再查已监听 TG 频道，最后 MP 兜底
             # - Movie: 使用电影 TMDb ID + movie
             # - Series: 使用剧集 TMDb ID + tv
@@ -1710,7 +1744,14 @@ def task_auto_subscribe(processor):
                 source = telegram.escape_markdown(detail.get('source', '未知来源'))
                 item = telegram.escape_markdown(detail['item'])
                 
-                action_tag = "影巢转存" if detail.get('action') == '影巢' else "MP订阅"
+                if detail.get('action') in ['共享资源', '共享虚拟', '共享永久转存']:
+                    action_tag = detail.get('action')
+                elif detail.get('action') == '影巢':
+                    action_tag = "影巢转存"
+                elif detail.get('action') == '频道':
+                    action_tag = "频道转存"
+                else:
+                    action_tag = "MP订阅"
                 
                 item_lines.append(f"├─ `[{action_tag}]` `[{source}]` {item}")
                 
