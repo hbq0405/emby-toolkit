@@ -3,6 +3,7 @@
 import logging
 import os
 import re
+import json
 from typing import Dict, Any, List
 
 import requests
@@ -12,6 +13,7 @@ import config_manager
 import constants
 from extensions import admin_required
 from database import shared_virtual_db, shared_share_db
+from database.connection import get_db_connection
 from handler.p115_service import P115Service
 
 shared_resource_bp = Blueprint('shared_resource_bp', __name__, url_prefix='/api/shared/resources')
@@ -175,6 +177,370 @@ def _center_headers():
     if not cfg['device_token']:
         raise RuntimeError('未配置共享中心 device_token')
     return cfg, {'X-Device-Token': cfg['device_token'], 'Content-Type': 'application/json'}
+
+
+
+def _json_array_values(value):
+    """media_metadata 的 file_sha1_json / file_pickcode_json 可能是数组、字符串或对象，这里尽量提取稳定标识。"""
+    if value is None:
+        return []
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+            return _json_array_values(parsed)
+        except Exception:
+            return [value] if value.strip() else []
+    if isinstance(value, (list, tuple, set)):
+        out = []
+        for item in value:
+            out.extend(_json_array_values(item))
+        return [str(x).strip() for x in out if str(x or '').strip()]
+    if isinstance(value, dict):
+        out = []
+        for key in ('pick_code', 'pickcode', 'pc', 'sha1', 'sha', 'file_sha1'):
+            if value.get(key):
+                out.append(value.get(key))
+        if not out:
+            # 兼容 {"xxxpc": true} / {"sha1": "name"} 这类历史结构，保守抽 key。
+            for k, v in value.items():
+                if isinstance(v, (str, int)) and str(v).strip():
+                    out.append(v)
+                elif isinstance(k, str) and k.strip():
+                    out.append(k)
+        return [str(x).strip() for x in out if str(x or '').strip()]
+    return [str(value).strip()] if str(value or '').strip() else []
+
+
+def _norm_sha1_list(values):
+    out = []
+    for v in values or []:
+        text = str(v or '').strip().upper()
+        if re.fullmatch(r'[A-Fa-f0-9]{40}', text):
+            out.append(text)
+    return list(dict.fromkeys(out))
+
+
+def _norm_pc_list(values):
+    out = []
+    for v in values or []:
+        text = str(v or '').strip()
+        if text and not re.fullmatch(r'[A-Fa-f0-9]{40}', text):
+            out.append(text)
+    return list(dict.fromkeys(out))
+
+
+def _parse_release_year(row: Dict[str, Any]):
+    if row.get('release_year'):
+        return row.get('release_year')
+    for key in ('release_date', 'last_air_date', 'date_added'):
+        val = row.get(key)
+        if val:
+            m = re.search(r'((?:19|20)\d{2})', str(val))
+            if m:
+                try:
+                    return int(m.group(1))
+                except Exception:
+                    pass
+    return None
+
+
+def _get_media_row(tmdb_id: str, item_type: str):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                       season_number, episode_number, release_year, release_date, last_air_date,
+                       file_sha1_json, file_pickcode_json, in_library, subscription_status
+                FROM media_metadata
+                WHERE tmdb_id=%s AND item_type=%s
+                LIMIT 1
+            """, (str(tmdb_id), str(item_type)))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def _get_series_title(series_tmdb_id: str):
+    if not series_tmdb_id:
+        return ''
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT title FROM media_metadata
+                WHERE tmdb_id=%s AND item_type='Series'
+                LIMIT 1
+            """, (str(series_tmdb_id),))
+            row = cur.fetchone()
+            return (dict(row).get('title') if row else '') or ''
+
+
+def _collect_media_identifiers(row: Dict[str, Any]) -> Dict[str, List[str]]:
+    """根据媒体层级收集 PC/SHA1。Season/Series 会向下找 Episode。"""
+    if not row:
+        return {'pickcodes': [], 'sha1s': [], 'episode_rows': []}
+
+    rows = [row]
+    item_type = row.get('item_type')
+    series_id = row.get('parent_series_tmdb_id') or row.get('tmdb_id')
+    season_number = row.get('season_number')
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if item_type == 'Season':
+                # 优先按父剧集 + 季号找本季所有分集；兼容 tmdb_id 季ID场景。
+                if series_id and season_number is not None:
+                    cur.execute("""
+                        SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                               season_number, episode_number, release_year, release_date, last_air_date,
+                               file_sha1_json, file_pickcode_json, in_library, subscription_status
+                        FROM media_metadata
+                        WHERE item_type='Episode'
+                          AND parent_series_tmdb_id=%s
+                          AND season_number=%s
+                        ORDER BY episode_number NULLS LAST, tmdb_id
+                    """, (str(series_id), int(season_number)))
+                    episode_rows = [dict(r) for r in cur.fetchall()]
+                    if episode_rows:
+                        rows = episode_rows
+            elif item_type == 'Series':
+                cur.execute("""
+                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                           season_number, episode_number, release_year, release_date, last_air_date,
+                           file_sha1_json, file_pickcode_json, in_library, subscription_status
+                    FROM media_metadata
+                    WHERE item_type='Episode' AND parent_series_tmdb_id=%s
+                    ORDER BY season_number NULLS LAST, episode_number NULLS LAST, tmdb_id
+                """, (str(series_id),))
+                episode_rows = [dict(r) for r in cur.fetchall()]
+                if episode_rows:
+                    rows = episode_rows
+
+    pickcodes, sha1s = [], []
+    for r in rows:
+        pickcodes.extend(_json_array_values(r.get('file_pickcode_json')))
+        sha1s.extend(_json_array_values(r.get('file_sha1_json')))
+
+    return {
+        'pickcodes': _norm_pc_list(pickcodes),
+        'sha1s': _norm_sha1_list(sha1s),
+        'episode_rows': rows if rows != [row] else [],
+    }
+
+
+def _get_p115_file_rows(pickcodes: List[str], sha1s: List[str]) -> List[Dict[str, Any]]:
+    if not pickcodes and not sha1s:
+        return []
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, parent_id, name, local_path, sha1, pick_code, size
+                FROM p115_filesystem_cache
+                WHERE (%s::text[] <> '{}'::text[] AND pick_code = ANY(%s))
+                   OR (%s::text[] <> '{}'::text[] AND UPPER(sha1) = ANY(%s))
+                ORDER BY parent_id, name
+            """, (pickcodes, pickcodes, sha1s, sha1s))
+            rows = [dict(r) for r in cur.fetchall()]
+    # 去重，避免 PC/SHA1 同时命中同一文件。
+    seen, out = set(), []
+    for r in rows:
+        key = str(r.get('id') or '')
+        if key and key not in seen:
+            seen.add(key)
+            out.append(r)
+    return out
+
+
+def _get_p115_node(node_id: str):
+    if not node_id:
+        return None
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT id, parent_id, name, local_path, sha1, pick_code, size
+                FROM p115_filesystem_cache
+                WHERE id=%s
+                LIMIT 1
+            """, (str(node_id),))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def _ancestor_chain(parent_id: str, max_depth: int = 20) -> List[str]:
+    chain = []
+    curr = str(parent_id or '')
+    for _ in range(max_depth):
+        if not curr or curr in chain:
+            break
+        chain.append(curr)
+        if curr == '0':
+            break
+        node = _get_p115_node(curr)
+        if not node:
+            break
+        curr = str(node.get('parent_id') or '')
+    return chain
+
+
+def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
+    ids = _collect_media_identifiers(media_row)
+    file_rows = _get_p115_file_rows(ids['pickcodes'], ids['sha1s'])
+    item_type = media_row.get('item_type')
+    share_type = 'movie_folder'
+    share_item_type = item_type
+    messages = []
+
+    if item_type == 'Movie':
+        share_type = 'movie_folder'
+        share_item_type = 'Movie'
+    elif item_type == 'Season':
+        share_type = 'season_pack'
+        share_item_type = 'Season'
+    elif item_type == 'Series':
+        share_type = 'series_pack'
+        share_item_type = 'Series'
+    elif item_type == 'Episode':
+        # 手动分享不鼓励单集；如果只搜到某集，自动提升为“该集所在季目录”。
+        share_type = 'season_pack'
+        share_item_type = 'Season'
+
+    if not file_rows:
+        return {
+            'resolvable': False,
+            'root_fid': '',
+            'root_name': '',
+            'root_is_dir': True,
+            'file_count': 0,
+            'matched_pickcodes': len(ids['pickcodes']),
+            'matched_sha1s': len(ids['sha1s']),
+            'share_type': share_type,
+            'share_item_type': share_item_type,
+            'message': 'media_metadata 中有记录，但没有通过 PC/SHA1 在 p115_filesystem_cache 反查到文件',
+        }
+
+    parent_ids = [str(r.get('parent_id') or '') for r in file_rows if r.get('parent_id')]
+    root_id, root_is_dir = '', True
+
+    if item_type == 'Movie' and len(file_rows) == 1:
+        # 单文件电影直接分享文件，避免误把上级“电影分类目录”分享出去。
+        root_id = str(file_rows[0].get('id') or '')
+        root_is_dir = False
+        share_type = 'movie_file'
+        root_name = file_rows[0].get('name') or root_id
+    elif parent_ids:
+        chains = [_ancestor_chain(pid) for pid in parent_ids]
+        common = []
+        if chains:
+            for node_id in chains[0]:
+                if all(node_id in ch for ch in chains[1:]):
+                    common.append(node_id)
+        root_id = common[0] if common else parent_ids[0]
+        root_node = _get_p115_node(root_id) or {}
+        root_name = root_node.get('name') or root_id
+        if len(set(parent_ids)) > 1:
+            messages.append(f'文件分布在 {len(set(parent_ids))} 个目录，已自动选择共同上级目录：{root_name}')
+    else:
+        root_id = str(file_rows[0].get('id') or '')
+        root_is_dir = False
+        root_name = file_rows[0].get('name') or root_id
+
+    if not root_id:
+        return {
+            'resolvable': False,
+            'root_fid': '',
+            'root_name': '',
+            'root_is_dir': True,
+            'file_count': len(file_rows),
+            'matched_pickcodes': len(ids['pickcodes']),
+            'matched_sha1s': len(ids['sha1s']),
+            'share_type': share_type,
+            'share_item_type': share_item_type,
+            'message': '已找到文件，但无法定位可分享的 115 FID/CID',
+        }
+
+    return {
+        'resolvable': True,
+        'root_fid': root_id,
+        'root_name': root_name,
+        'root_is_dir': root_is_dir,
+        'file_count': len(file_rows),
+        'matched_pickcodes': len(ids['pickcodes']),
+        'matched_sha1s': len(ids['sha1s']),
+        'share_type': share_type,
+        'share_item_type': share_item_type,
+        'message': '；'.join(messages) if messages else '已通过 PC/SHA1 定位到可分享目录/文件',
+    }
+
+
+def _build_media_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
+    row = dict(row)
+    year = _parse_release_year(row)
+    parent_series_id = row.get('parent_series_tmdb_id')
+    if row.get('item_type') in {'Season', 'Episode'} and not parent_series_id:
+        parent_series_id = str(row.get('tmdb_id') or '').split('_')[0] if '_' in str(row.get('tmdb_id') or '') else ''
+    series_title = _get_series_title(parent_series_id) if parent_series_id else ''
+    title = row.get('title') or row.get('original_title') or row.get('tmdb_id')
+    display_title = title
+    if row.get('item_type') == 'Season':
+        display_title = f"{series_title or title} S{int(row.get('season_number') or 0):02d}" if row.get('season_number') else (series_title or title)
+    elif row.get('item_type') == 'Episode':
+        s = row.get('season_number')
+        e = row.get('episode_number')
+        display_title = f"{series_title or title} S{int(s or 0):02d}E{int(e or 0):02d}" if s and e else f"{series_title or title} · {title}"
+
+    resolved = _resolve_share_root(row)
+    share_tmdb_id = row.get('tmdb_id')
+    if resolved.get('share_item_type') in {'Season', 'Episode'}:
+        share_tmdb_id = parent_series_id or row.get('parent_series_tmdb_id') or row.get('tmdb_id')
+
+    return {
+        **row,
+        'display_title': display_title,
+        'series_title': series_title,
+        'release_year': year,
+        'parent_series_tmdb_id': parent_series_id,
+        'share_tmdb_id': str(share_tmdb_id or ''),
+        'share_item_type': resolved.get('share_item_type') or row.get('item_type'),
+        **resolved,
+    }
+
+
+@shared_resource_bp.route('/media/search', methods=['GET'])
+@admin_required
+def api_search_shareable_media():
+    keyword = str(request.args.get('keyword') or '').strip()
+    if len(keyword) < 1:
+        return jsonify({"success": True, "items": []})
+    limit = max(1, min(int(request.args.get('limit', 20) or 20), 50))
+    kw = f'%{keyword}%'
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                       season_number, episode_number, release_year, release_date, last_air_date,
+                       file_sha1_json, file_pickcode_json, in_library, subscription_status
+                FROM media_metadata
+                WHERE item_type IN ('Movie','Series','Season','Episode')
+                  AND (
+                    title ILIKE %s OR original_title ILIKE %s OR tmdb_id ILIKE %s
+                  )
+                ORDER BY
+                  CASE item_type WHEN 'Movie' THEN 0 WHEN 'Season' THEN 1 WHEN 'Series' THEN 2 ELSE 3 END,
+                  in_library DESC,
+                  COALESCE(release_year, 0) DESC,
+                  title NULLS LAST
+                LIMIT %s
+            """, (kw, kw, kw, limit))
+            rows = [dict(r) for r in cur.fetchall()]
+
+    items = []
+    for row in rows:
+        try:
+            items.append(_build_media_candidate(row))
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 构建可分享候选失败: {row.get('title') or row.get('tmdb_id')} -> {e}")
+            row['resolvable'] = False
+            row['message'] = str(e)
+            items.append(row)
+    return jsonify({"success": True, "items": items})
 
 
 @shared_resource_bp.route('/summary', methods=['GET'])

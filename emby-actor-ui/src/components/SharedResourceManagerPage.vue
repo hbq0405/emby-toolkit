@@ -66,7 +66,7 @@
               </n-input>
               <n-select v-model:value="shareFilters.status" :options="shareStatusOptions" style="width: 170px" />
               <n-button type="primary" :loading="sharesLoading" @click="loadShares">查询</n-button>
-              <n-button type="primary" @click="showManualShareModal = true">
+              <n-button type="primary" @click="openManualShareModal">
                 <template #icon><n-icon :component="ShareIcon" /></template>
                 手动分享
               </n-button>
@@ -97,37 +97,51 @@
       </n-card>
     </n-space>
 
-    <n-modal v-model:show="showManualShareModal" preset="card" title="手动创建共享资源" style="width: 720px; max-width: 95vw;" class="modal-card-lite">
-      <n-form :model="manualShareForm" label-placement="left" label-width="110">
-        <n-form-item label="115目录/FID">
-          <n-input v-model:value="manualShareForm.root_fid" placeholder="电影目录、季目录或单文件的 115 FID/CID" />
-        </n-form-item>
-        <n-form-item label="标题">
-          <n-input v-model:value="manualShareForm.title" placeholder="例如：书卷一梦 / 某电影名" />
-        </n-form-item>
-        <n-form-item label="TMDb ID">
-          <n-input v-model:value="manualShareForm.tmdb_id" placeholder="电影 TMDb ID 或剧集 TMDb ID" />
-        </n-form-item>
-        <n-form-item label="分享粒度">
-          <n-select v-model:value="manualShareForm.share_type" :options="shareTypeOptions" />
-        </n-form-item>
-        <n-form-item label="媒体类型">
-          <n-select v-model:value="manualShareForm.item_type" :options="manualItemTypeOptions" />
-        </n-form-item>
-        <n-form-item label="季号">
-          <n-input-number v-model:value="manualShareForm.season_number" :min="1" clearable placeholder="按季分享时填写" />
-        </n-form-item>
-        <n-form-item label="年份">
-          <n-input-number v-model:value="manualShareForm.release_year" :min="1900" :max="2100" clearable />
-        </n-form-item>
+    <n-modal v-model:show="showManualShareModal" preset="card" title="手动创建共享资源" style="width: 920px; max-width: 96vw;" class="modal-card-lite">
+      <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
+        直接输入片名搜索本地 media_metadata，系统会用已记录的 PC/SHA1 反查 p115_filesystem_cache，自动定位可分享的 115 目录或文件。剧集会优先按季目录分享，不创建单集分享。
+      </n-alert>
+
+      <n-space class="toolbar" :vertical="isMobile" :size="12">
+        <n-input v-model:value="mediaSearchKeyword" placeholder="输入片名 / TMDb ID 搜索本地媒体库" clearable @keyup.enter="searchShareableMedia">
+          <template #prefix><n-icon :component="SearchIcon" /></template>
+        </n-input>
+        <n-button type="primary" :loading="mediaSearchLoading" @click="searchShareableMedia">搜索</n-button>
+      </n-space>
+
+      <n-data-table
+        size="small"
+        :loading="mediaSearchLoading"
+        :columns="mediaSearchColumns"
+        :data="mediaCandidates"
+        :pagination="{ pageSize: 8 }"
+        :row-key="row => `${row.tmdb_id}-${row.item_type}-${row.season_number || ''}-${row.episode_number || ''}`"
+        :scroll-x="980"
+        style="margin-bottom: 14px;"
+      />
+
+      <div v-if="selectedMedia" class="selected-share-box">
+        <div class="selected-title">已选择：{{ selectedMedia.display_title || selectedMedia.title }}</div>
+        <div class="selected-desc">
+          TMDb {{ manualShareForm.tmdb_id || '-' }} · {{ manualShareForm.item_type }} · {{ manualShareForm.share_type }} ·
+          115 {{ manualShareForm.root_is_dir ? '目录' : '文件' }}：{{ manualShareForm.root_name || manualShareForm.root_fid }}
+        </div>
+        <div class="selected-desc" v-if="selectedMedia.message">{{ selectedMedia.message }}</div>
+      </div>
+
+      <n-form :model="manualShareForm" label-placement="left" label-width="90" style="margin-top: 12px;">
         <n-form-item label="提取码">
           <n-input v-model:value="manualShareForm.receive_code" placeholder="留空则使用 115 自动生成；分享有效期固定永久" />
         </n-form-item>
       </n-form>
+
       <template #footer>
-        <n-space justify="end">
-          <n-button @click="showManualShareModal = false">取消</n-button>
-          <n-button type="primary" :loading="manualCreating" @click="manualCreateShare">创建永久分享</n-button>
+        <n-space justify="space-between" align="center">
+          <n-text depth="3">找不到候选时，先确认该媒体已入库且 media_metadata 中已有 PC/SHA1。</n-text>
+          <n-space>
+            <n-button @click="showManualShareModal = false">取消</n-button>
+            <n-button type="primary" :disabled="!manualShareForm.root_fid" :loading="manualCreating" @click="manualCreateShare">创建永久分享</n-button>
+          </n-space>
         </n-space>
       </template>
     </n-modal>
@@ -166,6 +180,10 @@ const ledgerLoading = ref(false);
 const refreshingCredit = ref(false);
 const manualCreating = ref(false);
 const showManualShareModal = ref(false);
+const mediaSearchKeyword = ref('');
+const mediaSearchLoading = ref(false);
+const mediaCandidates = ref([]);
+const selectedMedia = ref(null);
 
 const summary = ref({ local: {}, shares: {}, credit: {} });
 const virtualItems = ref([]);
@@ -178,8 +196,8 @@ const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSi
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 
 const manualShareForm = reactive({
-  root_fid: '', title: '', tmdb_id: '', share_type: 'season_pack', item_type: 'Season',
-  season_number: 1, release_year: null, receive_code: ''
+  root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
+  share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: ''
 });
 
 const virtualStatusOptions = [
@@ -201,10 +219,12 @@ const manualItemTypeOptions = [
   { label: '电影', value: 'Movie' }, { label: '季', value: 'Season' }, { label: '剧集', value: 'Series' },
 ];
 const shareTypeOptions = [
-  { label: '电影目录/单文件', value: 'movie_folder' },
+  { label: '电影目录', value: 'movie_folder' },
+  { label: '电影单文件', value: 'movie_file' },
   { label: '季目录', value: 'season_pack' },
   { label: '整剧目录', value: 'series_pack' },
 ];
+const shareTypeLabel = (value) => (shareTypeOptions.find(opt => opt.value === value)?.label || value || '-');
 
 const statusMap = {
   virtual_ready: { text: '虚拟待播', type: 'info' }, transferring: { text: '转存中', type: 'warning' },
@@ -272,6 +292,24 @@ const shareColumns = [
   ]}) },
 ];
 
+const mediaSearchColumns = [
+  { title: '媒体', key: 'display_title', minWidth: 260, render: row => h('div', [
+    h('div', { class: 'main-title' }, row.display_title || row.title || row.tmdb_id),
+    h('div', { class: 'sub-title' }, `${row.item_type || '-'} · TMDb ${row.share_tmdb_id || row.tmdb_id || '-'}${row.release_year ? ` · ${row.release_year}` : ''}`)
+  ]) },
+  { title: '入库', key: 'in_library', width: 80, render: row => h(NTag, { size: 'small', type: row.in_library ? 'success' : 'default' }, { default: () => row.in_library ? '已入库' : '未入库' }) },
+  { title: '可分享根目录/文件', key: 'root_name', minWidth: 260, render: row => h('div', [
+    h('div', { class: 'main-title' }, row.root_name || '-'),
+    h('div', { class: 'sub-title' }, row.root_fid ? `FID/CID: ${row.root_fid}` : (row.message || '未定位'))
+  ]) },
+  { title: '文件', key: 'file_count', width: 100, render: row => `${row.file_count || 0} 个` },
+  { title: '分享粒度', key: 'share_type', width: 120, render: row => shareTypeLabel(row.share_type) },
+  { title: '说明', key: 'message', minWidth: 220, ellipsis: { tooltip: true } },
+  { title: '操作', key: 'actions', width: 100, fixed: 'right', render: row => h(NButton, {
+    size: 'small', type: 'primary', ghost: true, disabled: !row.resolvable || !row.root_fid, onClick: () => chooseMediaCandidate(row)
+  }, { default: () => row.resolvable ? '选择' : '不可用' }) },
+];
+
 const ledgerColumns = [
   { title: '时间', key: 'created_at', width: 180, render: row => fmtDate(row.created_at) },
   { title: '事件', key: 'event_type', width: 180 },
@@ -288,8 +326,58 @@ const loadAll = async () => { await Promise.allSettled([loadSummary(), loadVirtu
 const handleTabChange = (name) => { if (name === 'virtual') loadVirtualItems(); if (name === 'shares') loadShares(); if (name === 'ledger') loadLedger(); };
 const refreshCredit = async () => { refreshingCredit.value = true; try { await axios.post('/api/shared/resources/credit/refresh'); message.success('贡献值已同步'); await loadSummary(); } catch (e) { message.error(e.response?.data?.message || '刷新贡献值失败'); } finally { refreshingCredit.value = false; } };
 
+const resetManualShareForm = () => {
+  Object.assign(manualShareForm, {
+    root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
+    share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: manualShareForm.receive_code || ''
+  });
+  selectedMedia.value = null;
+};
+
+const openManualShareModal = () => {
+  resetManualShareForm();
+  mediaCandidates.value = [];
+  mediaSearchKeyword.value = '';
+  showManualShareModal.value = true;
+};
+
+const searchShareableMedia = async () => {
+  const keyword = (mediaSearchKeyword.value || '').trim();
+  if (!keyword) return message.warning('请输入片名或 TMDb ID');
+  mediaSearchLoading.value = true;
+  try {
+    const res = await axios.get('/api/shared/resources/media/search', { params: { keyword, limit: 30 } });
+    mediaCandidates.value = res.data?.items || [];
+    if (!mediaCandidates.value.length) message.info('没有搜索到本地媒体记录');
+  } catch (e) {
+    message.error(e.response?.data?.message || '搜索可分享媒体失败');
+  } finally {
+    mediaSearchLoading.value = false;
+  }
+};
+
+const chooseMediaCandidate = (row) => {
+  if (!row?.resolvable || !row.root_fid) {
+    return message.warning(row?.message || '该媒体暂时无法自动定位 115 目录/FID');
+  }
+  selectedMedia.value = row;
+  Object.assign(manualShareForm, {
+    root_fid: row.root_fid || '',
+    root_name: row.root_name || '',
+    root_is_dir: row.root_is_dir !== false,
+    title: row.display_title || row.title || row.root_name || '',
+    tmdb_id: row.share_tmdb_id || row.tmdb_id || '',
+    parent_series_tmdb_id: row.parent_series_tmdb_id || '',
+    share_type: row.share_type || 'season_pack',
+    item_type: row.share_item_type || row.item_type || 'Season',
+    season_number: row.season_number || null,
+    release_year: row.release_year || null,
+  });
+  message.success('已自动填充分享信息');
+};
+
 const manualCreateShare = async () => {
-  if (!manualShareForm.root_fid) return message.warning('请填写 115 FID/CID');
+  if (!manualShareForm.root_fid) return message.warning('请先搜索并选择一个可分享媒体');
   manualCreating.value = true;
   try {
     const payload = { ...manualShareForm };
@@ -326,5 +414,8 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .toolbar { margin-bottom: 14px; }
 .main-title { font-weight: 600; }
 .sub-title { font-size: 12px; opacity: .6; margin-top: 3px; }
+.selected-share-box { border: 1px solid rgba(128,128,128,.22); border-radius: 12px; padding: 12px 14px; background: rgba(128,128,128,.06); }
+.selected-title { font-weight: 700; margin-bottom: 6px; }
+.selected-desc { font-size: 12px; opacity: .68; line-height: 1.7; }
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
 </style>
