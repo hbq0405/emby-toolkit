@@ -9,6 +9,10 @@
               <n-text depth="3">集中管理共享资源：虚拟入库、本机分享、中心资源转存/入库和贡献值流水。</n-text>
             </div>
             <n-space>
+              <n-button :type="hasCenterDevice ? 'default' : 'warning'" ghost :loading="registeringDevice" @click="registerCenterDevice">
+                <template #icon><n-icon :component="SyncIcon" /></template>
+                {{ hasCenterDevice ? '重置设备' : '注册设备' }}
+              </n-button>
               <n-button :loading="refreshingCredit" @click="refreshCredit">
                 <template #icon><n-icon :component="RefreshIcon" /></template>
                 刷新贡献值
@@ -20,6 +24,10 @@
             </n-space>
           </div>
         </template>
+
+        <n-alert v-if="!hasCenterDevice" class="center-register-alert" type="warning" :bordered="false" style="margin-bottom: 12px;">
+          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并自动写入 p115_shared_device_token；之后才能同步贡献值、登记分享、转存或入库中心资源。
+        </n-alert>
 
         <n-grid :cols="isMobile ? 2 : 6" :x-gap="12" :y-gap="12">
           <n-gi v-for="card in statCards" :key="card.key">
@@ -212,6 +220,7 @@ const ledgerLoading = ref(false);
 const centerLoading = ref(false);
 const maintenanceSubmitting = ref(false);
 const refreshingCredit = ref(false);
+const registeringDevice = ref(false);
 const manualCreating = ref(false);
 const showManualShareModal = ref(false);
 const mediaSearchKeyword = ref('');
@@ -292,6 +301,8 @@ const fmtBytes = (value) => {
 };
 const fmtDate = (value) => { if (!value) return '-'; try { return new Date(value).toLocaleString(); } catch { return String(value); } };
 const tag = (value) => { const meta = statusMap[value] || { text: value || '未知', type: 'default' }; return h(NTag, { type: meta.type, size: 'small', round: true }, { default: () => meta.text }); };
+
+const hasCenterDevice = computed(() => Boolean((summary.value.credit || {}).device_id));
 
 const statCards = computed(() => {
   const local = summary.value.local || {};
@@ -655,6 +666,34 @@ const triggerSharedMaintenance = async () => {
 const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献值流水失败'); } finally { ledgerLoading.value = false; } };
 const loadAll = async () => { await Promise.allSettled([loadSummary(), loadVirtualItems(), loadShares(), loadLedger()]); };
 const handleTabChange = (name) => { if (name === 'virtual') loadVirtualItems(); if (name === 'shares') loadShares(); if (name === 'center') loadCenterSources(); if (name === 'ledger') loadLedger(); };
+
+const registerCenterDevice = async () => {
+  const doRegister = async () => {
+    registeringDevice.value = true;
+    try {
+      const res = await axios.post('/api/shared/resources/center/device/register', {});
+      message.success(res.data?.message || '中心设备已注册');
+      await Promise.allSettled([loadSummary(), loadLedger(), loadCenterSources()]);
+    } catch (e) {
+      message.error(e.response?.data?.message || '注册中心设备失败');
+    } finally {
+      registeringDevice.value = false;
+    }
+  };
+
+  if (hasCenterDevice.value) {
+    dialog.warning({
+      title: '重置中心设备令牌',
+      content: '这会重新向共享中心申请 device_token，并覆盖本地 p115_shared_device_token。通常只在 token 失效或迁移中心后使用。确定继续吗？',
+      positiveText: '重置',
+      negativeText: '取消',
+      onPositiveClick: doRegister,
+    });
+    return;
+  }
+  await doRegister();
+};
+
 const refreshCredit = async () => { refreshingCredit.value = true; try { await axios.post('/api/shared/resources/credit/refresh'); message.success('贡献值已同步'); await Promise.allSettled([loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '刷新贡献值失败'); } finally { refreshingCredit.value = false; } };
 
 const resetManualShareForm = () => {

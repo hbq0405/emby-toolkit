@@ -6,6 +6,8 @@ import re
 import json
 import time
 import threading
+import uuid
+import socket
 from typing import Dict, Any, List
 
 import requests
@@ -2129,6 +2131,85 @@ def api_cancel_share(record_id):
             logger.warning(f"  ➜ [共享资源] 取消分享后刷新中心贡献值失败: {e}")
 
     return jsonify({"success": True, "message": final_msg, "data": row, "debug": attempts, "center": center_result})
+
+
+
+
+def _ensure_shared_install_id() -> str:
+    key = getattr(constants, 'CONFIG_OPTION_115_SHARED_INSTALL_ID', 'p115_shared_install_id')
+    install_id = str((config_manager.APP_CONFIG or {}).get(key) or '').strip()
+    if not install_id:
+        install_id = f"etk-{uuid.uuid4().hex}"
+        config_manager.save_config({key: install_id})
+    return install_id
+
+
+@shared_resource_bp.route('/center/device/register', methods=['POST'])
+@admin_required
+def api_register_center_device():
+    """首次连接共享中心：注册设备并写入 p115_shared_device_token。"""
+    data = _request_json()
+    cfg = _get_shared_config()
+    center_url_key = getattr(constants, 'CONFIG_OPTION_115_SHARED_CENTER_URL', 'p115_shared_center_url')
+    token_key = getattr(constants, 'CONFIG_OPTION_115_SHARED_DEVICE_TOKEN', 'p115_shared_device_token')
+    enabled_key = getattr(constants, 'CONFIG_OPTION_115_SHARED_RESOURCE_ENABLED', 'p115_shared_resource_enabled')
+    install_key = getattr(constants, 'CONFIG_OPTION_115_SHARED_INSTALL_ID', 'p115_shared_install_id')
+
+    center_url = str(data.get('center_url') or cfg.get('center_url') or '').strip().rstrip('/')
+    if not center_url:
+        return jsonify({'success': False, 'message': '共享中心地址未配置'}), 400
+
+    install_id = str((config_manager.APP_CONFIG or {}).get(install_key) or '').strip()
+    if not install_id:
+        install_id = f"etk-{uuid.uuid4().hex}"
+
+    default_name = ''
+    try:
+        default_name = socket.gethostname() or ''
+    except Exception:
+        default_name = ''
+    if not default_name:
+        default_name = f"ETK-{install_id[-6:]}"
+    device_name = str(data.get('name') or default_name).strip()[:80]
+
+    try:
+        from handler.shared_center_client import SharedCenterClient
+        client = SharedCenterClient()
+        client.base_url = center_url
+        result = client.register_device(
+            name=device_name,
+            install_id=install_id,
+            admin_token=str(data.get('admin_token') or '').strip(),
+        )
+        device_token = str(result.get('device_token') or '').strip()
+        device_id = str(result.get('device_id') or '').strip()
+        if not device_token:
+            return jsonify({'success': False, 'message': '中心服务器未返回 device_token', 'data': result}), 502
+
+        config_manager.save_config({
+            center_url_key: center_url,
+            token_key: device_token,
+            install_key: install_id,
+            enabled_key: True,
+        })
+        logger.info(f"  ➜ [共享资源] 中心设备注册成功: device_id={device_id or '-'}, center={center_url}")
+
+        credit_result = None
+        try:
+            credit_result = _fetch_center_credit()
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 注册后刷新贡献值失败: {e}")
+
+        return jsonify({
+            'success': True,
+            'message': '中心设备已注册，p115_shared_device_token 已自动写入',
+            'device_id': device_id,
+            'device_token_masked': device_token[:8] + '...' + device_token[-6:] if len(device_token) > 16 else '******',
+            'data': {'device_id': device_id, 'credit': credit_result},
+        })
+    except Exception as e:
+        logger.error(f"  ➜ [共享资源] 注册中心设备失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'注册中心设备失败: {e}'}), 500
 
 
 @shared_resource_bp.route('/credit/refresh', methods=['POST'])

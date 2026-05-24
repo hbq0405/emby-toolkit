@@ -61,6 +61,35 @@ class SharedCenterClient:
             raise RuntimeError(f"共享中心请求失败: {resp.status_code} {resp.text[:200]}")
         return resp.json() if resp.text else {}
 
+
+    def register_device(self, name: str = '', install_id: str = '', admin_token: str = '') -> Dict[str, Any]:
+        """向共享中心注册本机设备，返回 device_id / device_token。
+
+        首选公开自助注册接口 /api/v1/devices/register。
+        如果中心尚未升级且传入 admin_token，则回退到旧的管理员注册接口。
+        注意：该方法不依赖现有 device_token，专门用于首次生成 p115_shared_device_token。
+        """
+        if not self.base_url:
+            raise RuntimeError('共享中心地址未配置')
+        payload = {
+            'name': str(name or '').strip() or 'ETK Device',
+            'install_id': str(install_id or '').strip(),
+        }
+        url = f"{self.base_url}/api/v1/devices/register"
+        resp = requests.post(url, json=payload, timeout=20)
+        if resp.status_code == 404 and admin_token:
+            # 兼容未升级的私有中心：使用管理员接口注册，但这种方式无法按 install_id 幂等。
+            admin_url = f"{self.base_url}/api/v1/admin/devices/register"
+            resp = requests.post(
+                admin_url,
+                headers={'X-Admin-Token': str(admin_token)},
+                json={'name': payload['name']},
+                timeout=20,
+            )
+        if not resp.ok:
+            raise RuntimeError(f"共享中心设备注册失败: {resp.status_code} {resp.text[:300]}")
+        return resp.json() if resp.text else {}
+
     def report_gaps(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
         if not items:
             return {'count': 0, 'items': []}
