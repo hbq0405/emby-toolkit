@@ -275,11 +275,26 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
 def list_credit_ledger(limit=50, actual_only: bool = False):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            where_sql = ""
+            safe_limit = min(500, int(limit or 50))
             if actual_only:
-                where_sql = "WHERE delta <> 0 OR event_type LIKE 'center_%'"
-            cur.execute(
-                f"SELECT * FROM shared_credit_ledger_local {where_sql} ORDER BY created_at DESC LIMIT %s",
-                (min(500, int(limit or 50)),)
-            )
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM shared_credit_ledger_local
+                    WHERE delta <> 0 OR event_type LIKE %s
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    ("center_%", safe_limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM shared_credit_ledger_local
+                    ORDER BY created_at DESC
+                    LIMIT %s
+                    """,
+                    (safe_limit,),
+                )
             return [_row_to_dict(r) for r in cur.fetchall()]
