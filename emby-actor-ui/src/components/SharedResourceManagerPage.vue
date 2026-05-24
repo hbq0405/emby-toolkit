@@ -251,6 +251,34 @@ const fmtBytes = (value) => {
 const fmtDate = (value) => { if (!value) return '-'; try { return new Date(value).toLocaleString(); } catch { return String(value); } };
 const tag = (value) => { const meta = statusMap[value] || { text: value || '未知', type: 'default' }; return h(NTag, { type: meta.type, size: 'small', round: true }, { default: () => meta.text }); };
 
+const apiErrorMessage = (e, fallback = '操作失败') => {
+  const status = e?.response?.status;
+  const data = e?.response?.data;
+  let msg = '';
+  if (typeof data === 'string') {
+    msg = data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 260);
+  } else if (data && typeof data === 'object') {
+    msg = data.message || data.error_msg || data.error || data.msg || '';
+    if (!msg && data.debug) {
+      try { msg = JSON.stringify(data.debug).slice(0, 260); } catch { msg = String(data.debug).slice(0, 260); }
+    }
+  }
+  if (!msg && e?.message) msg = e.message;
+  return status ? `HTTP ${status}: ${msg || fallback}` : (msg || fallback);
+};
+const logApiError = (label, e) => {
+  // 保留完整响应，避免后端返回 HTML/重定向/404 时界面只显示“失败”。
+  console.error(`[共享资源] ${label}`, { status: e?.response?.status, data: e?.response?.data, message: e?.message, error: e });
+};
+const ensureApiSuccess = (res) => {
+  if (res?.data && res.data.success === false) {
+    const err = new Error(res.data.message || 'API 返回失败');
+    err.response = { status: res.status || 200, data: res.data };
+    throw err;
+  }
+  return res;
+};
+
 const statCards = computed(() => {
   const local = summary.value.local || {};
   const shares = summary.value.shares || {};
@@ -274,7 +302,7 @@ const virtualColumns = [
   { title: '临时到期', key: 'expires_at', width: 170, render: row => fmtDate(row.expires_at) },
   { title: '更新时间', key: 'updated_at', width: 170, render: row => fmtDate(row.updated_at) },
   { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
-    h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: !row.real_fid || row.status === 'promoted' || row.status === 'deleted', onClick: () => confirmPromote(row) }, { icon: () => h(NIcon, null, { default: () => h(PromoteIcon) }), default: () => '转正' }),
+    h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: row.status === 'promoted' || row.status === 'deleted', onClick: () => confirmPromote(row) }, { icon: () => h(NIcon, null, { default: () => h(PromoteIcon) }), default: () => row.real_fid ? '转正' : '转存整理' }),
     h(NButton, { size: 'small', type: 'error', ghost: true, disabled: row.status === 'deleted' || row.status === 'promoted', onClick: () => confirmDelete(row) }, { icon: () => h(NIcon, null, { default: () => h(TrashIcon) }), default: () => '删除' }),
   ]}) },
 ];
@@ -556,12 +584,32 @@ const manualCreateShare = async () => {
   } finally { manualCreating.value = false; }
 };
 
-const checkShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/check`); message.success(res.data?.message || '检查完成'); await Promise.allSettled([loadShares(), loadSummary()]); } catch (e) { message.error(e.response?.data?.message || '检查失败'); } };
-const reportShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/report-center`); message.success(res.data?.message || '已登记中心'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '登记中心失败'); } };
-const uploadRawShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/upload-rawffprobe`, { force: false }); message.success(res.data?.message || '媒体信息已上传'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '上传媒体信息失败'); } };
-const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: `确定取消《${row.title || row.root_name}》的 115 分享吗？`, positiveText: '取消分享', negativeText: '保留', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/shares/${row.id}/cancel`); message.success('已取消分享'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '取消失败'); } } }); };
-const confirmDelete = (row) => { dialog.warning({ title: '删除虚拟资源', content: `确定删除《${row.title || row.file_name}》吗？如果已经播放转存，会同步删除 115 临时文件。`, positiveText: '删除', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/delete`, { delete_remote: true, delete_local: true }); message.success('已删除'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '删除失败'); } } }); };
-const confirmPromote = (row) => { dialog.info({ title: '转为永久转存', content: `确定将《${row.title || row.file_name}》从临时转存目录移动到正式媒体库吗？`, positiveText: '转正', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/promote`); message.success('已转正'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '转正失败'); } } }); };
+const checkShare = async (row) => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/check`)); message.success(res.data?.message || '检查完成'); await Promise.allSettled([loadShares(), loadSummary()]); } catch (e) { logApiError('检查分享失败', e); message.error(apiErrorMessage(e, '检查失败')); } };
+const reportShare = async (row) => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/report-center`)); message.success(res.data?.message || '已登记中心'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { logApiError('登记中心失败', e); message.error(apiErrorMessage(e, '登记中心失败')); } };
+const uploadRawShare = async (row) => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/upload-rawffprobe`, { force: false })); message.success(res.data?.message || '媒体信息已上传'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { logApiError('上传媒体信息失败', e); message.error(apiErrorMessage(e, '上传媒体信息失败')); } };
+const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: `确定取消《${row.title || row.root_name}》的 115 分享吗？`, positiveText: '取消分享', negativeText: '保留', onPositiveClick: async () => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/cancel`)); message.success(res.data?.message || '已取消分享'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { logApiError('取消分享失败', e); message.error(apiErrorMessage(e, '取消失败')); } } }); };
+const confirmDelete = (row) => { dialog.warning({ title: '删除虚拟资源', content: `确定删除《${row.title || row.file_name}》吗？如果已经播放转存，会同步删除 115 临时文件。`, positiveText: '删除', negativeText: '取消', onPositiveClick: async () => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/delete`, { delete_remote: true, delete_local: true })); message.success(res.data?.message || '已删除'); await loadAll(); } catch (e) { logApiError('删除虚拟资源失败', e); message.error(apiErrorMessage(e, '删除失败')); } } }); };
+const confirmPromote = (row) => {
+  const unplayed = !row.real_fid;
+  dialog.info({
+    title: unplayed ? '转存到待整理并整理' : '转为永久转存',
+    content: unplayed
+      ? `《${row.title || row.file_name}》还没有播放过，将直接从分享转存到 115 待整理目录，并触发 task_scan_and_organize_115 整理。`
+      : `确定将《${row.title || row.file_name}》从临时转存目录移动到正式媒体库吗？`,
+    positiveText: unplayed ? '转存整理' : '转正',
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const res = ensureApiSuccess(await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/promote`, { direct_import_if_unplayed: true }));
+        message.success(res.data?.message || (unplayed ? '已提交转存整理' : '已转正'));
+        await loadAll();
+      } catch (e) {
+        logApiError('虚拟资源转正失败', e);
+        message.error(apiErrorMessage(e, '转正失败'));
+      }
+    }
+  });
+};
 
 onMounted(() => { checkMobile(); window.addEventListener('resize', checkMobile); loadAll(); });
 onUnmounted(() => window.removeEventListener('resize', checkMobile));

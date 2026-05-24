@@ -1506,6 +1506,7 @@ def _import_virtual_to_save_path(virtual_id: str, item: Dict[str, Any], save_cid
 @shared_resource_bp.route('/virtual/<virtual_id>/promote', methods=['POST'])
 @admin_required
 def api_promote_virtual_item(virtual_id):
+    logger.info(f"  ➜ [共享资源] 收到虚拟资源转正请求: virtual_id={virtual_id}")
     item = shared_virtual_db.get_virtual_item(virtual_id)
     if not item:
         return jsonify({"success": False, "message": "虚拟资源不存在"}), 404
@@ -1904,6 +1905,7 @@ def api_upload_share_raw_ffprobe(record_id):
 @shared_resource_bp.route('/shares/<int:record_id>/cancel', methods=['POST'])
 @admin_required
 def api_cancel_share(record_id):
+    logger.info(f"  ➜ [共享资源] 收到取消分享请求: record_id={record_id}")
     record = shared_share_db.get_share_record(record_id)
     if not record:
         return jsonify({"success": False, "message": "分享记录不存在"}), 404
