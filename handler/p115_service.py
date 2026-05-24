@@ -972,12 +972,46 @@ class P115CookieClient:
         return _p115_normalize_common_response(self._json_result(r))
 
     def share_cancel(self, share_code):
-        """取消当前账号自己的分享。"""
-        return self.share_update(share_code, action="cancel")
+        """取消当前账号自己的分享。
+
+        /share/updateshare?action=cancel 在部分账号/端上会假失败；优先使用旧版稳定接口，
+        再回退到 updateshare，兼容不同 115 账号接口版本。
+        """
+        code = str(share_code or '').strip()
+        if not code:
+            return {"state": False, "error_msg": "缺少 share_code，无法取消分享"}
+        last_resp = None
+        for url in ("https://webapi.115.com/share/cancel", "https://webapi.115.com/share/delete"):
+            try:
+                r = self.request(url, method='POST', data={'share_code': code})
+                last_resp = self._json_result(r)
+                if _p115_success(last_resp):
+                    return _p115_normalize_common_response(last_resp)
+            except Exception as e:
+                last_resp = {'state': False, 'error_msg': str(e)}
+        fallback = self.share_update(code, action="cancel")
+        if _p115_success(fallback):
+            return _p115_normalize_common_response(fallback)
+        return _p115_normalize_common_response(fallback or last_resp)
 
     def share_delete(self, share_code):
         """删除当前账号自己的分享记录；失败时调用方可回退到 cancel。"""
-        return self.share_update(share_code, action="delete")
+        code = str(share_code or '').strip()
+        if not code:
+            return {"state": False, "error_msg": "缺少 share_code，无法删除分享"}
+        last_resp = None
+        for url in ("https://webapi.115.com/share/delete", "https://webapi.115.com/share/cancel"):
+            try:
+                r = self.request(url, method='POST', data={'share_code': code})
+                last_resp = self._json_result(r)
+                if _p115_success(last_resp):
+                    return _p115_normalize_common_response(last_resp)
+            except Exception as e:
+                last_resp = {'state': False, 'error_msg': str(e)}
+        fallback = self.share_update(code, action="delete")
+        if _p115_success(fallback):
+            return _p115_normalize_common_response(fallback)
+        return _p115_normalize_common_response(fallback or last_resp)
 
     def life_batch_delete(self, delete_data_list):
         url = "https://life.115.com/api/1.0/web/1.0/life/life_batch_delete"

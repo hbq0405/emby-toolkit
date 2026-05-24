@@ -4,6 +4,8 @@ import logging
 import os
 import re
 import json
+import time
+import threading
 from typing import Dict, Any, List
 
 import requests
@@ -18,6 +20,9 @@ from handler.p115_service import P115Service
 
 shared_resource_bp = Blueprint('shared_resource_bp', __name__, url_prefix='/api/shared/resources')
 logger = logging.getLogger(__name__)
+
+_SCAN_KICK_LOCK = threading.Lock()
+_LAST_SCAN_KICK_AT = 0
 
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.ts', '.mov', '.m2ts', '.iso', '.wmv', '.flv'}
 
@@ -1366,6 +1371,138 @@ def _mark_virtual_promoted_success(virtual_id: str, item: Dict[str, Any], target
     )
     return row
 
+
+def _get_save_path_target() -> Dict[str, str]:
+    """取得 115 待整理目录。未播放虚拟资源手动转正时，先落到这里交给正式整理任务处理。"""
+    cfg = config_manager.APP_CONFIG or {}
+    save_cid = str(cfg.get(constants.CONFIG_OPTION_115_SAVE_PATH_CID) or '').strip()
+    save_name = str(cfg.get(constants.CONFIG_OPTION_115_SAVE_PATH_NAME, '待整理') or '待整理').strip() or '待整理'
+    return {'target_cid': save_cid, 'target_name': save_name}
+
+
+def _kick_p115_scan_and_organize(reason: str = '') -> Dict[str, Any]:
+    """轻量异步踢一脚 task_scan_and_organize_115。带短冷却，避免连续点击开多个整理线程。"""
+    global _LAST_SCAN_KICK_AT
+    now = time.time()
+    with _SCAN_KICK_LOCK:
+        if now - _LAST_SCAN_KICK_AT < 8:
+            return {'started': False, 'message': '115 待整理扫描刚刚触发过，本次不重复启动'}
+        _LAST_SCAN_KICK_AT = now
+
+    def _runner():
+        try:
+            from tasks.p115 import task_scan_and_organize_115
+            logger.info(f"  ➜ [共享资源] 异步触发 115 待整理扫描: {reason or 'manual-promote'}")
+            task_scan_and_organize_115()
+        except Exception as e:
+            logger.error(f"  ➜ [共享资源] 异步触发 115 待整理扫描失败: {e}", exc_info=True)
+
+    t = threading.Thread(target=_runner, name='shared-virtual-promote-scan', daemon=True)
+    t.start()
+    return {'started': True, 'message': '已异步触发 115 待整理扫描'}
+
+
+def _as_virtual_node_from_existing(existing: Dict[str, Any], fallback_item: Dict[str, Any], parent_cid: str) -> Dict[str, Any]:
+    existing = existing or {}
+    return {
+        'fid': str(existing.get('fid') or existing.get('id') or existing.get('file_id') or ''),
+        'parent_id': str(existing.get('parent_id') or parent_cid or ''),
+        'name': existing.get('name') or existing.get('file_name') or fallback_item.get('file_name') or '',
+        'pick_code': existing.get('pick_code') or existing.get('pc') or '',
+        'sha1': str(existing.get('sha1') or fallback_item.get('sha1') or '').upper(),
+        'size': existing.get('size') or fallback_item.get('size') or 0,
+    }
+
+
+def _import_virtual_to_save_path(virtual_id: str, item: Dict[str, Any], save_cid: str, save_name: str, client) -> Dict[str, Any]:
+    """未播放的虚拟资源转正：直接转存到 115 待整理目录，并尽量定位真实文件。"""
+    from handler.shared_virtual_library import (
+        _find_file_recursive,
+        _find_file_by_fs_search,
+        _upsert_p115_cache,
+        _resp_ok,
+    )
+
+    share_code = str(item.get('share_code') or '').strip()
+    receive_code = str(item.get('receive_code') or '').strip()
+    if not share_code:
+        raise RuntimeError('虚拟入库记录缺少 share_code，无法转存到待整理目录')
+    if not save_cid or str(save_cid) == '0':
+        raise RuntimeError('未配置 115 待整理目录 CID（p115_save_path_cid），无法直接转存')
+
+    display_name = item.get('file_name') or item.get('title') or virtual_id
+    import_resp = None
+    existing = _find_existing_file_in_target(save_cid, item, client=client)
+    if existing:
+        node = _as_virtual_node_from_existing(existing, item, save_cid)
+        logger.info(f"  ➜ [共享资源] 未播放转正：待整理目录已存在目标文件，直接复用: virtual_id={virtual_id}, fid={node.get('fid')}")
+    else:
+        shared_virtual_db.mark_virtual_transferring(virtual_id, f'手动转正触发转存到待整理目录：{save_name}')
+        logger.info(f"  ➜ [共享资源] 未播放转正：开始转存到待整理目录: virtual_id={virtual_id}, share={share_code}, cid={save_cid}")
+        try:
+            import_resp = client.share_import(share_code, receive_code, save_cid)
+        except Exception as e:
+            raise RuntimeError(f'调用 115 share_import 失败: {e}')
+        if not _resp_ok(import_resp):
+            raise RuntimeError(f"115 share_import 返回失败: {_resp_text(import_resp)[:500]}")
+
+        node = None
+        # 115 转存后列表有时有短暂延迟，这里多试几次；即使导入的是文件夹，也按 SHA1/文件名下钻定位目标视频。
+        for idx in range(6):
+            node = _find_file_recursive(
+                client,
+                save_cid,
+                sha1=item.get('sha1') or '',
+                file_name=item.get('file_name') or display_name,
+                size=_safe_int(item.get('size'), 0),
+                max_depth=6,
+            ) or _find_file_by_fs_search(client, save_cid, item)
+            if node and node.get('fid'):
+                break
+            time.sleep(1)
+
+        if not node or not node.get('fid'):
+            # 文件已转存成功但没有定位到具体文件时，仍然交给待整理任务扫根目录，避免手动转正卡死。
+            kick = _kick_p115_scan_and_organize(f'unplayed-promote-unlocated:{virtual_id}')
+            shared_virtual_db.add_credit_ledger(
+                event_type='virtual_promote_imported_unlocated', delta=0,
+                reason='未播放虚拟资源已转存到待整理目录，但未定位到具体文件，已触发整理任务',
+                virtual_id=virtual_id, source_id=item.get('source_id') or '', tmdb_id=item.get('tmdb_id') or '',
+                item_type=item.get('item_type') or '', title=item.get('title') or display_name,
+                raw_json={'save_cid': save_cid, 'import_response': import_resp, 'scan_kick': kick},
+            )
+            return {'row': item, 'node': {}, 'import_resp': import_resp, 'existing': None, 'kick': kick, 'located': False}
+
+    _upsert_p115_cache(node, item, save_cid)
+    try:
+        shared_virtual_db.mark_virtual_cached(
+            virtual_id,
+            real_fid=node.get('fid') or '',
+            real_pick_code=node.get('pick_code') or '',
+            real_parent_id=node.get('parent_id') or save_cid,
+            cache_parent_id=save_cid,
+            cache_parent_name=save_name,
+            expires_at=None,
+            message='手动转正：已转存到待整理目录，等待正式整理任务处理',
+            raw_json={'last_import_resp': import_resp, 'last_import_node': node, 'promote_to_save_path': True},
+        )
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 回写未播放转正缓存状态失败: {e}")
+
+    promoted_item = dict(item)
+    promoted_item['real_fid'] = node.get('fid') or ''
+    promoted_item['real_pick_code'] = node.get('pick_code') or ''
+    row = _mark_virtual_promoted_success(
+        virtual_id,
+        promoted_item,
+        save_cid,
+        save_name,
+        resp={'state': True, '_import_to_save_path': True, 'import_response': import_resp},
+        existing=_as_virtual_node_from_existing(existing, item, save_cid) if existing else None,
+    )
+    kick = _kick_p115_scan_and_organize(f'unplayed-promote:{virtual_id}')
+    return {'row': row, 'node': node, 'import_resp': import_resp, 'existing': existing, 'kick': kick, 'located': True}
+
 @shared_resource_bp.route('/virtual/<virtual_id>/promote', methods=['POST'])
 @admin_required
 def api_promote_virtual_item(virtual_id):
@@ -1374,13 +1511,36 @@ def api_promote_virtual_item(virtual_id):
         return jsonify({"success": False, "message": "虚拟资源不存在"}), 404
     if item.get('status') == 'promoted':
         return jsonify({"success": True, "message": "该资源已经是永久转存", "data": item})
-    if not item.get('real_fid'):
-        return jsonify({"success": False, "message": "该虚拟资源还没有播放转存记录，无法转正"}), 400
 
     data = request.json or {}
     client = P115Service.get_client()
     if not client:
         return jsonify({"success": False, "message": "未配置可用的 115 客户端，无法转正"}), 400
+
+    # 未播放过的虚拟资源没有 real_fid：直接转存到“待整理”目录，然后踢正式整理任务处理。
+    if not item.get('real_fid'):
+        save_target = _get_save_path_target()
+        save_cid = str(save_target.get('target_cid') or '').strip()
+        save_name = save_target.get('target_name') or '待整理'
+        if not save_cid or save_cid == '0':
+            return jsonify({"success": False, "message": "该虚拟资源还没有播放转存记录，且未配置 115 待整理目录 CID，无法直接转存；请检查 p115_save_path_cid"}), 400
+        try:
+            result = _import_virtual_to_save_path(virtual_id, item, save_cid, save_name, client)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 未播放转正失败: virtual_id={virtual_id}, err={e}", exc_info=True)
+            return jsonify({"success": False, "message": str(e)}), 500
+
+        if result.get('located'):
+            msg = f"未播放资源已转存到待整理目录 [{save_name}]，并已触发 115 整理任务"
+        else:
+            msg = f"115 已接收转存到待整理目录 [{save_name}]，但暂未定位到具体文件；已触发 115 整理任务继续扫描"
+        return jsonify({
+            "success": True,
+            "message": msg,
+            "data": result.get('row') or item,
+            "scan_kick": result.get('kick'),
+            "located": bool(result.get('located')),
+        })
 
     target_res = _resolve_virtual_promote_target(item, data, client=client)
     target_cid = str(target_res.get('target_cid') or '').strip()
