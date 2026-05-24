@@ -208,7 +208,33 @@ def _collect_files_from_media_payload(data: Dict[str, Any]) -> List[Dict[str, An
 
     row = _get_media_row(tmdb_id, item_type)
     if not row:
-        return []
+        # 中心登记和前端候选对 Season/Episode 会统一用“父剧 TMDb ID + S/E”作为定位键，
+        # 但 media_metadata 里的 Season/Episode 行自身 tmdb_id 可能是 TMDb 的季/集 ID。
+        # 因此这里不能只按 (tmdb_id, item_type) 查不到就放弃，要用父剧+季号合成一条虚拟行，
+        # 再由 _collect_media_identifiers 下钻 Episode 的 PC/SHA1。
+        if item_type == 'Season':
+            parent_series_id = data.get('parent_series_tmdb_id') or data.get('series_tmdb_id') or tmdb_id
+            row = {
+                'tmdb_id': str(parent_series_id or tmdb_id),
+                'item_type': 'Season',
+                'parent_series_tmdb_id': str(parent_series_id or tmdb_id),
+                'season_number': data.get('season_number'),
+                'title': data.get('title') or data.get('root_name') or '',
+            }
+        elif item_type == 'Episode':
+            parent_series_id = data.get('parent_series_tmdb_id') or data.get('series_tmdb_id') or tmdb_id
+            row = {
+                'tmdb_id': str(data.get('episode_tmdb_id') or tmdb_id),
+                'item_type': 'Episode',
+                'parent_series_tmdb_id': str(parent_series_id or ''),
+                'season_number': data.get('season_number'),
+                'episode_number': data.get('episode_number'),
+                'file_sha1_json': data.get('file_sha1_json'),
+                'file_pickcode_json': data.get('file_pickcode_json'),
+                'title': data.get('title') or data.get('root_name') or '',
+            }
+        else:
+            return []
 
     ids = _collect_media_identifiers(row)
     file_rows = _get_p115_file_rows(ids.get('pickcodes') or [], ids.get('sha1s') or [])
@@ -270,6 +296,11 @@ def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_dept
         name = _node_name(root_info)
         ext = os.path.splitext(name)[1].lower()
         if ext not in VIDEO_EXTENSIONS:
+            # 115 fs_get_info 有时会把目录返回成普通节点；不要直接放弃，
+            # 先尝试用本地 p115_filesystem_cache 递归兜底。
+            cached_files = _collect_files_from_cache(root_fid, root_name=root_name, max_depth=max_depth + 3)
+            if cached_files:
+                return cached_files
             return []
         return [{
             'fid': _node_id(root_info) or str(root_fid),
@@ -313,7 +344,8 @@ def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_dept
     walk(root_fid, '', max_depth)
 
     # 远程接口没有拿到时，用本地 p115_filesystem_cache 兜底。
-    if not files and is_dir:
+    # 不再只在 is_dir=True 时兜底，因为部分 115 接口会把目录详情误返回成文件节点。
+    if not files:
         files = _collect_files_from_cache(root_fid, root_name=root_name, max_depth=max_depth + 3)
 
     return files
@@ -520,6 +552,25 @@ def _safe_int(value, default=0):
         return int(float(value))
     except Exception:
         return default
+
+
+def _boolish(value, default=False):
+    """兼容前端传来的 bool / 0/1 / true/false / yes/no。
+
+    这里不能直接 bool("false")，否则字符串 false 会被误判为 True。
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in ('1', 'true', 'yes', 'y', 'on', 'dir', 'folder', 'directory'):
+        return True
+    if text in ('0', 'false', 'no', 'n', 'off', 'file'):
+        return False
+    return default
 
 def _parse_release_year(row: Dict[str, Any]):
     if row.get('release_year'):
@@ -1227,7 +1278,13 @@ def api_manual_create_share():
     info_resp = client.fs_get_info(root_fid)
     node = (info_resp or {}).get('data') or {}
     root_name = data.get('root_name') or _node_name(node) or root_fid
-    root_is_dir = _is_folder(node) if node else bool(data.get('root_is_dir', True))
+    # 前端搜索阶段已经根据 PC/SHA1 和 p115_filesystem_cache 判断过 root_is_dir，
+    # 这里应优先信任前端传入值；fs_get_info 对目录偶尔返回字段不完整，会误判成文件，
+    # 导致季包创建成功但 item_count=0，后续登记中心报“分享包内没有可登记的视频文件”。
+    if 'root_is_dir' in data:
+        root_is_dir = _boolish(data.get('root_is_dir'), default=True)
+    else:
+        root_is_dir = _is_folder(node) if node else True
 
     max_depth = int(data.get('max_depth') or 6)
     files = _collect_files_from_115(client, root_fid, root_name=root_name, max_depth=max_depth, assume_dir=root_is_dir)
@@ -1296,7 +1353,7 @@ def api_check_share(record_id):
                     root_fid,
                     root_name=record.get('root_name') or '',
                     max_depth=6,
-                    assume_dir=bool(record.get('root_is_dir', True)),
+                    assume_dir=_boolish(record.get('root_is_dir'), default=True),
                 )
             if not files:
                 files = _collect_files_from_media_payload(record)
@@ -1344,7 +1401,44 @@ def api_report_share_to_center(record_id):
     cfg, headers = _center_headers()
     items = shared_share_db.list_share_items(record_id)
     if not items:
-        return jsonify({"success": False, "message": "分享包内没有可登记的视频文件"}), 400
+        # 兼容旧记录：上一版可能因为 115 目录误判导致创建时 item_count=0。
+        # 登记中心前再做一次自动补扫，避免用户必须先点“检查”。
+        try:
+            client = P115Service.get_client()
+            files = []
+            if client and record.get('root_fid'):
+                files = _collect_files_from_115(
+                    client,
+                    str(record.get('root_fid')),
+                    root_name=record.get('root_name') or '',
+                    max_depth=8,
+                    assume_dir=_boolish(record.get('root_is_dir'), default=True),
+                )
+            if not files:
+                files = _collect_files_from_media_payload(record)
+            raw_payload = {}
+            try:
+                raw_payload = (record.get('raw_json') or {}).get('manual_payload') or {}
+            except Exception:
+                raw_payload = {}
+            for item in files:
+                if not item.get('tmdb_id'):
+                    item['tmdb_id'] = str(record.get('tmdb_id') or '')
+                if not item.get('item_type'):
+                    item['item_type'] = 'Episode' if record.get('share_type') in ('season_pack', 'series_pack', 'episode_file') and (item.get('episode_number') or raw_payload.get('episode_number')) else record.get('item_type')
+                if not item.get('season_number'):
+                    item['season_number'] = record.get('season_number')
+                if not item.get('episode_number') and raw_payload.get('episode_number'):
+                    item['episode_number'] = raw_payload.get('episode_number')
+            if files:
+                shared_share_db.replace_share_items(record_id, files)
+                shared_share_db.update_share_record(record_id, item_count=len(files))
+                items = shared_share_db.list_share_items(record_id)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 登记中心前自动补扫包内文件失败: record={record_id}, err={e}", exc_info=True)
+
+    if not items:
+        return jsonify({"success": False, "message": "分享包内没有可登记的视频文件；已尝试从115目录和本地缓存补扫但仍未命中，请确认 root_fid 是季目录且 p115_filesystem_cache 已同步该目录"}), 400
 
     # 登记中心前先上传 raw_ffprobe_json；同时用 raw.format.size 回填本地 size=0 的条目。
     raw_summary = _upload_share_raw_ffprobe_to_center(record_id, cfg, headers, force=False)
