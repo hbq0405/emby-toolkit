@@ -157,6 +157,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                 size=_safe_int(item.get('size'), 0),
                                 file_name=item.get('file_name') or '',
                                 quality='',
+                                source_provider='auto_gap_share' if ((record.get('raw_json') or {}).get('auto_gap')) else 'user_share',
                                 share_code=record.get('share_code'),
                                 receive_code=record.get('receive_code') or '',
                                 has_raw_ffprobe=bool(item.get('raw_ffprobe_uploaded')),

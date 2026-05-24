@@ -118,7 +118,7 @@ class SharedCenterClient:
     def register_source(self, *, tmdb_id, item_type, sha1, file_name, share_code,
                         receive_code='', season_number=None, episode_number=None,
                         title='', release_year=None, size=None, quality='',
-                        has_raw_ffprobe=True) -> Dict[str, Any]:
+                        has_raw_ffprobe=True, source_provider='user_share') -> Dict[str, Any]:
         """登记一个可被共享中心消费的 115 分享源。
 
         中心端按“当前设备 + SHA1”幂等计分：首次登记 +1，重复登记只更新分享码/元数据。
@@ -134,6 +134,7 @@ class SharedCenterClient:
             'size': size,
             'file_name': file_name or '',
             'quality': quality or '',
+            'source_provider': str(source_provider or 'user_share').strip(),
             'share_code': str(share_code or '').strip(),
             'receive_code': str(receive_code or '').strip() or None,
             'has_raw_ffprobe': bool(has_raw_ffprobe),

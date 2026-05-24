@@ -273,7 +273,8 @@ const statusMap = {
   virtual_ready: { text: '虚拟待播', type: 'info' }, transferring: { text: '转存中', type: 'warning' },
   cached: { text: '已临时转存', type: 'success' }, watched: { text: '已看过', type: 'warning' },
   promoted: { text: '已转正', type: 'success' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
-  pending_review: { text: '审核中', type: 'warning' }, alive: { text: '已通过', type: 'success' },
+  pending_review: { text: '审核中', type: 'warning' }, alive: { text: '可用', type: 'success' },
+  pending: { text: '待验证', type: 'warning' }, dead: { text: '失效', type: 'error' }, expired: { text: '已过期', type: 'default' },
   reported: { text: '已登记', type: 'success' }, partial: { text: '部分登记', type: 'warning' },
   failed: { text: '失败', type: 'error' }, rejected: { text: '未通过', type: 'error' }, cancelled: { text: '已取消', type: 'default' },
   not_reported: { text: '未登记', type: 'default' },
@@ -514,6 +515,20 @@ const centerSeasonText = (row) => {
   const pack = row.pack_item_count ? ` · ${row.pack_item_count}集包` : '';
   return [centerTypeLabel(row.item_type), s ? `${s}${e}` : '', pack].filter(Boolean).join(' · ') || '-';
 };
+const centerStatusTag = (row) => {
+  const text = row.status_label || statusMap[row.status]?.text || row.status || '未知';
+  const type = row.status_type || statusMap[row.status]?.type || 'default';
+  return h(NTag, { type, size: 'small', round: true }, { default: () => text });
+};
+const centerSourceCell = (row) => {
+  const main = row.source_label || row.source_provider_label || row.source_scope_label || '-';
+  const sub = row.is_mine ? (row.contributor_name || '本机') : (row.contributor_name || row.contributor_id || '其他设备');
+  return h('div', null, [
+    h('div', { class: 'main-title' }, main),
+    h('div', { class: 'sub-title' }, sub)
+  ]);
+};
+
 const versionSummaryText = (row) => {
   const v = row.version_summary || {};
   const parts = [v.resolution, v.effect, v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : '', v.fps].filter(Boolean);
@@ -582,8 +597,8 @@ const centerColumns = [
   { title: '音轨', key: 'audios', minWidth: 260, render: row => listCell(row.version_summary?.audio_list || row.version_summary?.audios, 3) },
   { title: '字幕', key: 'subtitles', minWidth: 280, render: row => listCell(row.version_summary?.subtitle_list || row.version_summary?.subtitles, 4) },
   { title: '大小', key: 'size', width: 95, render: row => formatCenterSize(row) },
-  { title: '状态', key: 'status', width: 105, render: row => tag(row.status) },
-  { title: '来源', key: 'contributor_name', minWidth: 130, ellipsis: { tooltip: true }, render: row => row.contributor_name || row.contributor_id || '-' },
+  { title: '可用性', key: 'status', width: 105, render: row => centerStatusTag(row) },
+  { title: '来源类型', key: 'source_label', minWidth: 180, render: row => centerSourceCell(row) },
   { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => h(NSpace, { size: 6 }, { default: () => [
     h(NButton, { size: 'small', type: 'primary', secondary: true, onClick: () => importCenterSource(row, 'permanent') }, { default: () => '永久转存' }),
     h(NButton, { size: 'small', secondary: true, onClick: () => importCenterSource(row, 'virtual') }, { default: () => '虚拟入库' })

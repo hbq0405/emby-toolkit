@@ -495,13 +495,17 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
                 tmdb_id = item.get('tmdb_id') or ''
                 item_type = item.get('item_type') or ''
                 source_related_reasons = {'source_registered', 'shared_source_served', 'shared_source_consumed'}
-                display = _center_credit_display_title(item) or title or file_name
-                # 中心源已经被删除时，JOIN 不回标题，旧逻辑会把 src_xxx 当标题展示。
-                # 这种流水留在中心用于历史统计时，本地展示直接跳过，避免贡献值明细污染。
-                if reason_code in source_related_reasons and not display:
+                source_id = str(item.get('source_id') or '').strip()
+                has_source_title = bool(str(title or '').strip() or str(file_name or '').strip())
+                display = _center_credit_display_title(item) if has_source_title else ''
+                # 中心源已经被删除时，JOIN 不回标题；旧逻辑会把 src_xxx 当标题展示。
+                # 这类源相关流水在本地展示直接丢弃，刷新贡献值后会被清掉。
+                if reason_code in source_related_reasons and (not source_id or not has_source_title):
+                    continue
+                if reason_code in source_related_reasons and re.match(r'^src_[A-Za-z0-9]+$', str(display or ref_id)):
                     continue
                 if not display:
-                    display = ref_id
+                    display = title or file_name or ref_id
                 label = _center_credit_event_label(reason_code)
                 sign = '+' if delta > 0 else ''
                 reason_text = f"{label}：{display}，贡献值 {sign}{delta}"

@@ -1958,6 +1958,7 @@ def api_report_share_to_center(record_id):
             'size': int(item.get('size') or 0),
             'file_name': item.get('file_name') or '',
             'quality': '',
+            'source_provider': 'user_share',
             'share_code': record.get('share_code'),
             'receive_code': record.get('receive_code') or '',
             'has_raw_ffprobe': bool(item.get('raw_ffprobe_uploaded')),
@@ -2465,6 +2466,74 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
     return passthrough + collapsed
 
 
+_CENTER_STATUS_LABELS = {
+    'alive': ('可用', 'success'),
+    'pending': ('待验证', 'warning'),
+    'dead': ('失效', 'error'),
+    'rejected': ('已拒绝', 'error'),
+    'expired': ('已过期', 'default'),
+    'cancelled': ('已撤销', 'default'),
+}
+
+_CENTER_SOURCE_PROVIDER_LABELS = {
+    'user_share': '用户主动分享',
+    'manual_share': '用户主动分享',
+    'auto_gap_share': '本机缺口自动分享',
+    'hdhive': '影巢外来分享',
+    'tg_channel': 'TG频道外来分享',
+    'tg_channel_hdhive': 'TG频道影巢外来分享',
+}
+
+
+
+def _load_local_share_code_set(items: List[Dict[str, Any]]) -> set:
+    codes = sorted({str(x.get('share_code') or '').strip() for x in (items or []) if str(x.get('share_code') or '').strip()})
+    if not codes:
+        return set()
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT share_code FROM shared_share_records WHERE share_code = ANY(%s)", (codes,))
+                return {str(r.get('share_code') or '').strip() for r in cur.fetchall()}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询本地分享来源失败: {e}")
+        return set()
+
+
+def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
+    """给中心资源库行补充面向前端的可读来源/状态。"""
+    item = item or {}
+    status = str(item.get('status') or '').strip()
+    status_text, status_type = _CENTER_STATUS_LABELS.get(status, (status or '未知', 'default'))
+    provider = str(item.get('source_provider') or '').strip() or 'user_share'
+    provider_label = _CENTER_SOURCE_PROVIDER_LABELS.get(provider, provider or '未知来源')
+    is_mine = bool(item.get('is_mine'))
+
+    local_share_exists = bool(item.get('_local_share_record_exists'))
+    if is_mine:
+        if provider in ('hdhive', 'tg_channel', 'tg_channel_hdhive'):
+            scope_label = '本机外来转存'
+        elif provider == 'auto_gap_share':
+            scope_label = '本机自动补缺'
+        elif provider in ('user_share', 'manual_share') and not local_share_exists:
+            # v8.4 之前自动登记的影巢/TG 外来分享没有 source_provider，
+            # 但本地“我的分享”没有对应 share_code，可以按历史外来分享兜底展示。
+            provider_label = '历史外来分享'
+            scope_label = '本机外来转存'
+        else:
+            scope_label = '本机用户分享'
+    else:
+        scope_label = '其他设备共享'
+
+    item['status_label'] = status_text
+    item['status_type'] = status_type
+    item['source_provider'] = provider
+    item['source_provider_label'] = provider_label
+    item['source_scope_label'] = scope_label
+    item['source_label'] = f"{scope_label} · {provider_label}" if provider_label not in scope_label else scope_label
+    return item
+
+
 @shared_resource_bp.route('/center/sources', methods=['GET'])
 @admin_required
 def api_center_sources():
@@ -2484,15 +2553,18 @@ def api_center_sources():
             offset=int(request.args.get('offset', 0) or 0),
             include_raw=True,
         )
+        raw_items = list(data.get('items') or [])
+        local_share_codes = _load_local_share_code_set(raw_items)
         items = []
-        for item in data.get('items') or []:
+        for item in raw_items:
+            item['_local_share_record_exists'] = str(item.get('share_code') or '').strip() in local_share_codes
             raw = item.get('raw_ffprobe_json') or {}
             item['version_summary'] = _summarize_raw_ffprobe(raw, item)
-            items.append(item)
+            items.append(_decorate_center_source_row(item))
 
         # 展示层把同一个季包分享码下的多集文件折叠成一个“季分享包”版本，
         # 避免《怪奇物语 S02》这种整季分享在中心资源库里被误看成一堆单集分享。
-        items = _collapse_center_season_pack_rows(items)
+        items = [_decorate_center_source_row(x) for x in _collapse_center_season_pack_rows(items)]
         return jsonify({'success': True, 'items': items, 'total': data.get('total', len(items))})
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 拉取中心资源库失败: {e}", exc_info=True)

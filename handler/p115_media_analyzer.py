@@ -2483,6 +2483,7 @@ class P115MediaAnalyzerMixin:
         title = self._shared_auto_pick(ctx, {'title': getattr(self, 'original_title', None)}, keys=['title', 'root_name', 'media_title'], default=file_name)
         release_year = self._shared_auto_pick(ctx, keys=['release_year', 'year'], default=None)
         quality = self._shared_auto_pick(ctx, keys=['quality'], default='')
+        source_provider = self._shared_auto_pick(ctx, keys=['source_provider', 'source_origin'], default='user_share')
 
         size = self._shared_auto_pick(file_node, ctx, keys=['fs', 'size', 'file_size'], default=None)
         try:
@@ -2512,6 +2513,7 @@ class P115MediaAnalyzerMixin:
                 share_code=share_code,
                 receive_code=receive_code,
                 has_raw_ffprobe=True,
+                source_provider=source_provider,
             )
             reported.add(sha1)
             logger.info(
