@@ -2,6 +2,7 @@
 # 共享资源虚拟入库管理：本地虚拟项、贡献值快照与流水
 import json
 import logging
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
@@ -196,6 +197,55 @@ def _center_credit_event_label(reason: str) -> str:
     return mapping.get(reason, reason or '中心贡献值变化')
 
 
+def _safe_int(value, default=0) -> int:
+    try:
+        if value is None or value == '':
+            return default
+        return int(value)
+    except Exception:
+        return default
+
+
+def _extract_episode_code(item: Dict[str, Any]) -> str:
+    """从中心流水附带的季/集字段或文件名里提取 SxxExx。
+
+    中心 credit_ledger 关联 shared_sources 时会返回 season_number / episode_number，
+    但旧数据或部分登记逻辑可能没有写 episode_number；此时再从 file_name/title
+    里兜底识别 S01E02 这类命名，保证贡献值明细里剧集不再全挤成同一个剧名。
+    """
+    season = _safe_int(item.get('season_number'))
+    episode = _safe_int(item.get('episode_number'))
+    if season > 0 and episode > 0:
+        return f"S{season:02d}E{episode:02d}"
+    if season > 0:
+        return f"S{season:02d}"
+
+    text = ' '.join([
+        str(item.get('title') or ''),
+        str(item.get('file_name') or ''),
+    ])
+    match = re.search(r'(?i)\bS(\d{1,2})\s*[._ -]*E(\d{1,3})\b', text)
+    if match:
+        return f"S{int(match.group(1)):02d}E{int(match.group(2)):02d}"
+
+    # 兜底识别中文/简单格式，例如 第1季第2集。
+    match = re.search(r'第\s*(\d{1,2})\s*季.*?第\s*(\d{1,3})\s*[集话話]', text)
+    if match:
+        return f"S{int(match.group(1)):02d}E{int(match.group(2)):02d}"
+
+    return ''
+
+
+def _center_credit_display_title(item: Dict[str, Any]) -> str:
+    base_title = str(item.get('title') or item.get('file_name') or item.get('ref_id') or '').strip()
+    code = _extract_episode_code(item)
+    if not code:
+        return base_title
+    if re.search(re.escape(code), base_title, re.IGNORECASE):
+        return base_title
+    return f"{base_title} {code}" if base_title else code
+
+
 def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict[str, Any] = None) -> int:
     """同步中心服务器真实贡献值流水到本地展示表。
 
@@ -237,7 +287,7 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
                 file_name = item.get('file_name') or ''
                 tmdb_id = item.get('tmdb_id') or ''
                 item_type = item.get('item_type') or ''
-                display = title or file_name or ref_id
+                display = _center_credit_display_title(item) or title or file_name or ref_id
                 label = _center_credit_event_label(reason_code)
                 sign = '+' if delta > 0 else ''
                 reason_text = f"{label}：{display}，贡献值 {sign}{delta}"
@@ -253,7 +303,7 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
                         ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb,%s)
                     """, (
                         f"center_{reason_code or 'credit'}", delta, reason_text, ref_id,
-                        item.get('source_id') or ref_id, '', tmdb_id, item_type, title or display,
+                        item.get('source_id') or ref_id, '', tmdb_id, item_type, display,
                         _as_jsonb({'origin': 'center', 'center_item': item}), created_at,
                     ))
                 else:
@@ -264,7 +314,7 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
                         ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
                     """, (
                         f"center_{reason_code or 'credit'}", delta, reason_text, ref_id,
-                        item.get('source_id') or ref_id, '', tmdb_id, item_type, title or display,
+                        item.get('source_id') or ref_id, '', tmdb_id, item_type, display,
                         _as_jsonb({'origin': 'center', 'center_item': item}),
                     ))
                 count += 1
