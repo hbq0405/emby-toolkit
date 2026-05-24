@@ -512,6 +512,15 @@ def _norm_pc_list(values):
     return list(dict.fromkeys(out))
 
 
+
+def _safe_int(value, default=0):
+    try:
+        if value in (None, ''):
+            return default
+        return int(float(value))
+    except Exception:
+        return default
+
 def _parse_release_year(row: Dict[str, Any]):
     if row.get('release_year'):
         return row.get('release_year')
@@ -533,7 +542,8 @@ def _get_media_row(tmdb_id: str, item_type: str):
             cur.execute("""
                 SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
                        season_number, episode_number, release_year, release_date, last_air_date,
-                       file_sha1_json, file_pickcode_json, in_library, subscription_status
+                       file_sha1_json, file_pickcode_json, in_library, subscription_status,
+                       total_episodes, watchlist_tmdb_status
                 FROM media_metadata
                 WHERE tmdb_id=%s AND item_type=%s
                 LIMIT 1
@@ -663,27 +673,185 @@ def _ancestor_chain(parent_id: str, max_depth: int = 20) -> List[str]:
     return chain
 
 
+
+def _episode_label_from_row(row: Dict[str, Any], series_title: str = '') -> str:
+    s = row.get('season_number')
+    e = row.get('episode_number')
+    base = series_title or row.get('title') or row.get('original_title') or row.get('tmdb_id') or ''
+    try:
+        if s is not None and e is not None:
+            return f"{base} S{int(s):02d}E{int(e):02d}"
+    except Exception:
+        pass
+    return str(base or row.get('file_name') or 'Episode')
+
+
+def _get_episode_rows_for_media(row: Dict[str, Any], only_with_files: bool = False, season_number=None) -> List[Dict[str, Any]]:
+    """按 Series/Season/Episode 层级返回分集行。only_with_files=True 时只返回已有 PC/SHA1 的分集。"""
+    row = row or {}
+    item_type = row.get('item_type')
+    if item_type == 'Episode':
+        rows = [dict(row)]
+    else:
+        parent_series_id = row.get('parent_series_tmdb_id') or row.get('tmdb_id')
+        target_season = season_number if season_number not in (None, '') else row.get('season_number')
+        if item_type == 'Season' and not parent_series_id:
+            parent_series_id = str(row.get('tmdb_id') or '').split('_')[0] if '_' in str(row.get('tmdb_id') or '') else ''
+        if not parent_series_id:
+            return []
+        where = "item_type='Episode' AND parent_series_tmdb_id=%s"
+        args = [str(parent_series_id)]
+        if target_season not in (None, ''):
+            where += " AND season_number=%s"
+            try:
+                args.append(int(target_season))
+            except Exception:
+                args.append(target_season)
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(f"""
+                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                           season_number, episode_number, release_year, release_date, last_air_date,
+                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
+                           total_episodes, watchlist_tmdb_status
+                    FROM media_metadata
+                    WHERE {where}
+                    ORDER BY season_number NULLS LAST, episode_number NULLS LAST, tmdb_id
+                """, args)
+                rows = [dict(r) for r in cur.fetchall()]
+    if not only_with_files:
+        return rows
+    out = []
+    for r in rows:
+        if _norm_pc_list(_json_array_values(r.get('file_pickcode_json'))) or _norm_sha1_list(_json_array_values(r.get('file_sha1_json'))):
+            out.append(r)
+    return out
+
+
+def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
+    """判断某季是否适合按季包分享。
+
+    安全策略：只有“本地已有集数 >= 期望集数”且期望集数明确时，才允许 season_pack。
+    否则视为未完结/信息不明，只允许按单集分享。
+    """
+    row = row or {}
+    parent_series_id = row.get('parent_series_tmdb_id') or row.get('tmdb_id')
+    if row.get('item_type') == 'Episode':
+        parent_series_id = row.get('parent_series_tmdb_id')
+    season_number = row.get('season_number')
+    try:
+        season_number = int(season_number) if season_number not in (None, '') else None
+    except Exception:
+        season_number = None
+
+    expected = 0
+    season_title = ''
+    parent_status = ''
+    if parent_series_id and season_number is not None:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT total_episodes, title, watchlist_tmdb_status
+                    FROM media_metadata
+                    WHERE item_type='Season'
+                      AND parent_series_tmdb_id=%s
+                      AND season_number=%s
+                    ORDER BY tmdb_id
+                    LIMIT 1
+                """, (str(parent_series_id), season_number))
+                season_row = cur.fetchone()
+                if season_row:
+                    season_row = dict(season_row)
+                    expected = _safe_int(season_row.get('total_episodes'), 0)
+                    season_title = season_row.get('title') or ''
+                cur.execute("""
+                    SELECT watchlist_tmdb_status, total_episodes
+                    FROM media_metadata
+                    WHERE item_type='Series' AND tmdb_id=%s
+                    LIMIT 1
+                """, (str(parent_series_id),))
+                series_row = cur.fetchone()
+                if series_row:
+                    series_row = dict(series_row)
+                    parent_status = series_row.get('watchlist_tmdb_status') or ''
+    if not expected:
+        expected = _safe_int(row.get('total_episodes'), 0)
+
+    episode_rows = _get_episode_rows_for_media({**row, 'parent_series_tmdb_id': parent_series_id, 'season_number': season_number, 'item_type': 'Season'}, only_with_files=False)
+    local_rows = []
+    for ep in episode_rows:
+        if ep.get('in_library') and (
+            _norm_pc_list(_json_array_values(ep.get('file_pickcode_json'))) or
+            _norm_sha1_list(_json_array_values(ep.get('file_sha1_json')))
+        ):
+            local_rows.append(ep)
+
+    known_count = len(episode_rows)
+    local_count = len(local_rows)
+    complete = bool(expected and local_count >= expected)
+    reason = ''
+    if complete:
+        reason = f'本季已齐 {local_count}/{expected} 集，允许按季包分享'
+    elif expected:
+        reason = f'本季尚未齐集 {local_count}/{expected}，禁止季包，改按单集分享'
+    elif parent_status and parent_status.lower() in ('ended', 'canceled', 'cancelled') and known_count and local_count >= known_count:
+        # 没有明确 total_episodes 时仍不自动开放季包，只给出原因，避免 TMDb 集数变动导致快照不完整。
+        reason = f'本季期望集数不明确；虽然本地已有 {local_count}/{known_count} 集，仍按单集分享更安全'
+    else:
+        reason = f'本季完结状态/总集数不明确，本地已有 {local_count} 集，禁止季包，改按单集分享'
+
+    return {
+        'complete': complete,
+        'expected': expected,
+        'known_count': known_count,
+        'local_count': local_count,
+        'reason': reason,
+        'season_title': season_title,
+        'parent_status': parent_status,
+    }
+
+
+def _share_policy_for_media(row: Dict[str, Any]) -> Dict[str, Any]:
+    item_type = str((row or {}).get('item_type') or '')
+    if item_type == 'Movie':
+        return {'allowed': True, 'share_type': 'movie_folder', 'share_item_type': 'Movie', 'message': '电影允许分享'}
+    if item_type == 'Episode':
+        return {'allowed': True, 'share_type': 'episode_file', 'share_item_type': 'Episode', 'message': '未完结剧集按单集分享'}
+    if item_type == 'Season':
+        info = _season_completion_info(row)
+        if info.get('complete'):
+            return {'allowed': True, 'share_type': 'season_pack', 'share_item_type': 'Season', 'message': info.get('reason'), 'completion': info}
+        return {'allowed': False, 'share_type': 'episode_file', 'share_item_type': 'Episode', 'message': info.get('reason'), 'completion': info}
+    if item_type == 'Series':
+        return {'allowed': False, 'share_type': 'season_pack', 'share_item_type': 'Season', 'message': '不直接分享整剧：已完结季按季包，未完结季按单集分享'}
+    return {'allowed': False, 'share_type': '', 'share_item_type': item_type, 'message': '未知媒体类型，无法分享'}
+
+
 def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
     ids = _collect_media_identifiers(media_row)
     file_rows = _get_p115_file_rows(ids['pickcodes'], ids['sha1s'])
     item_type = media_row.get('item_type')
-    share_type = 'movie_folder'
-    share_item_type = item_type
+    policy = _share_policy_for_media(media_row)
+    share_type = policy.get('share_type') or 'movie_folder'
+    share_item_type = policy.get('share_item_type') or item_type
     messages = []
+    if policy.get('message'):
+        messages.append(policy.get('message'))
 
-    if item_type == 'Movie':
-        share_type = 'movie_folder'
-        share_item_type = 'Movie'
-    elif item_type == 'Season':
-        share_type = 'season_pack'
-        share_item_type = 'Season'
-    elif item_type == 'Series':
-        share_type = 'series_pack'
-        share_item_type = 'Series'
-    elif item_type == 'Episode':
-        # 手动分享不鼓励单集；如果只搜到某集，自动提升为“该集所在季目录”。
-        share_type = 'season_pack'
-        share_item_type = 'Season'
+    if not policy.get('allowed'):
+        return {
+            'resolvable': False,
+            'root_fid': '',
+            'root_name': '',
+            'root_is_dir': True,
+            'file_count': 0,
+            'matched_pickcodes': len(ids['pickcodes']),
+            'matched_sha1s': len(ids['sha1s']),
+            'share_type': share_type,
+            'share_item_type': share_item_type,
+            'message': '；'.join(messages),
+            'completion': policy.get('completion'),
+        }
 
     if not file_rows:
         return {
@@ -697,6 +865,7 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
             'share_type': share_type,
             'share_item_type': share_item_type,
             'message': 'media_metadata 中有记录，但没有通过 PC/SHA1 在 p115_filesystem_cache 反查到文件',
+            'completion': policy.get('completion'),
         }
 
     parent_ids = [str(r.get('parent_id') or '') for r in file_rows if r.get('parent_id')]
@@ -708,6 +877,17 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
         root_is_dir = False
         share_type = 'movie_file'
         root_name = file_rows[0].get('name') or root_id
+    elif item_type == 'Episode':
+        # 未完结剧集只允许单集分享。若同一集存在多个版本，默认选 size 最大的那个视频文件。
+        candidates = sorted(file_rows, key=lambda r: _safe_int(r.get('size'), 0), reverse=True)
+        picked = candidates[0]
+        root_id = str(picked.get('id') or '')
+        root_is_dir = False
+        root_name = picked.get('name') or root_id
+        share_type = 'episode_file'
+        share_item_type = 'Episode'
+        if len(candidates) > 1:
+            messages.append(f'该集存在 {len(candidates)} 个版本，已默认选择体积最大的文件')
     elif parent_ids:
         chains = [_ancestor_chain(pid) for pid in parent_ids]
         common = []
@@ -737,6 +917,7 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
             'share_type': share_type,
             'share_item_type': share_item_type,
             'message': '已找到文件，但无法定位可分享的 115 FID/CID',
+            'completion': policy.get('completion'),
         }
 
     return {
@@ -744,12 +925,13 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
         'root_fid': root_id,
         'root_name': root_name,
         'root_is_dir': root_is_dir,
-        'file_count': len(file_rows),
+        'file_count': 1 if item_type == 'Episode' else len(file_rows),
         'matched_pickcodes': len(ids['pickcodes']),
         'matched_sha1s': len(ids['sha1s']),
         'share_type': share_type,
         'share_item_type': share_item_type,
         'message': '；'.join(messages) if messages else '已通过 PC/SHA1 定位到可分享目录/文件',
+        'completion': policy.get('completion'),
     }
 
 
@@ -765,11 +947,10 @@ def _build_media_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
     if row.get('item_type') == 'Season':
         display_title = f"{series_title or title} S{int(row.get('season_number') or 0):02d}" if row.get('season_number') else (series_title or title)
     elif row.get('item_type') == 'Episode':
-        s = row.get('season_number')
-        e = row.get('episode_number')
-        display_title = f"{series_title or title} S{int(s or 0):02d}E{int(e or 0):02d}" if s and e else f"{series_title or title} · {title}"
+        display_title = _episode_label_from_row(row, series_title)
 
     resolved = _resolve_share_root(row)
+    # 中心端对剧集类资源统一用父剧 TMDb ID + season/episode 定位，避免 Season/Episode TMDb ID 不稳定。
     share_tmdb_id = row.get('tmdb_id')
     if resolved.get('share_item_type') in {'Season', 'Episode'}:
         share_tmdb_id = parent_series_id or row.get('parent_series_tmdb_id') or row.get('tmdb_id')
@@ -786,6 +967,64 @@ def _build_media_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _expand_share_candidates(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """搜索结果展开策略：
+    - Movie：一个候选；
+    - Series：不直接分享整剧，展开为各季/单集；
+    - Season 完整：季包候选；
+    - Season 未完整：展开已有文件的 Episode 候选；
+    - Episode：单集候选。
+    """
+    row = dict(row or {})
+    item_type = row.get('item_type')
+    if item_type == 'Movie':
+        return [_build_media_candidate(row)]
+    if item_type == 'Episode':
+        return [_build_media_candidate(row)]
+    if item_type == 'Season':
+        policy = _share_policy_for_media(row)
+        if policy.get('allowed'):
+            return [_build_media_candidate(row)]
+        episodes = _get_episode_rows_for_media(row, only_with_files=True)
+        if episodes:
+            return [_build_media_candidate(ep) for ep in episodes]
+        disabled = _build_media_candidate(row)
+        disabled['resolvable'] = False
+        disabled['message'] = policy.get('message') or disabled.get('message')
+        return [disabled]
+    if item_type == 'Series':
+        out = []
+        series_id = str(row.get('tmdb_id') or '')
+        # 优先展开 Season 行；没有 Season 行时直接展开已有文件的 Episode。
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                           season_number, episode_number, release_year, release_date, last_air_date,
+                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
+                           total_episodes, watchlist_tmdb_status
+                    FROM media_metadata
+                    WHERE item_type='Season' AND parent_series_tmdb_id=%s
+                    ORDER BY season_number NULLS LAST, tmdb_id
+                """, (series_id,))
+                seasons = [dict(r) for r in cur.fetchall()]
+        if seasons:
+            for season in seasons:
+                out.extend(_expand_share_candidates(season))
+                if len(out) >= 80:
+                    break
+        else:
+            episodes = _get_episode_rows_for_media(row, only_with_files=True)
+            out.extend(_build_media_candidate(ep) for ep in episodes[:80])
+        if not out:
+            disabled = _build_media_candidate(row)
+            disabled['resolvable'] = False
+            disabled['message'] = '不直接分享整剧；未找到可分享的已入库季/单集'
+            out.append(disabled)
+        return out
+    return [_build_media_candidate(row)]
+
+
 @shared_resource_bp.route('/media/search', methods=['GET'])
 @admin_required
 def api_search_shareable_media():
@@ -799,7 +1038,8 @@ def api_search_shareable_media():
             cur.execute("""
                 SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
                        season_number, episode_number, release_year, release_date, last_air_date,
-                       file_sha1_json, file_pickcode_json, in_library, subscription_status
+                       file_sha1_json, file_pickcode_json, in_library, subscription_status,
+                       total_episodes, watchlist_tmdb_status
                 FROM media_metadata
                 WHERE item_type IN ('Movie','Series','Season','Episode')
                   AND (
@@ -815,15 +1055,22 @@ def api_search_shareable_media():
             rows = [dict(r) for r in cur.fetchall()]
 
     items = []
+    seen = set()
     for row in rows:
         try:
-            items.append(_build_media_candidate(row))
+            candidates = _expand_share_candidates(row)
+            for cand in candidates:
+                key = (cand.get('share_tmdb_id') or cand.get('tmdb_id'), cand.get('share_item_type') or cand.get('item_type'), cand.get('season_number'), cand.get('episode_number'), cand.get('root_fid'))
+                if key in seen:
+                    continue
+                seen.add(key)
+                items.append(cand)
         except Exception as e:
             logger.warning(f"  ➜ [共享资源] 构建可分享候选失败: {row.get('title') or row.get('tmdb_id')} -> {e}")
             row['resolvable'] = False
             row['message'] = str(e)
             items.append(row)
-    return jsonify({"success": True, "items": items})
+    return jsonify({"success": True, "items": items[:100]})
 
 
 @shared_resource_bp.route('/summary', methods=['GET'])
@@ -946,6 +1193,23 @@ def api_manual_create_share():
     if not root_fid:
         return jsonify({"success": False, "message": "缺少要分享的 115 文件/目录 FID/CID"}), 400
 
+    share_type = str(data.get('share_type') or '').strip()
+    item_type = str(data.get('item_type') or '').strip()
+    if share_type == 'series_pack':
+        return jsonify({"success": False, "message": "已禁用整剧分享；请按已完结季或单集分享"}), 400
+    if share_type == 'season_pack':
+        check_row = {
+            'item_type': 'Season',
+            'tmdb_id': data.get('parent_series_tmdb_id') or data.get('tmdb_id'),
+            'parent_series_tmdb_id': data.get('parent_series_tmdb_id') or data.get('tmdb_id'),
+            'season_number': data.get('season_number'),
+        }
+        policy = _share_policy_for_media(check_row)
+        if not policy.get('allowed'):
+            return jsonify({"success": False, "message": policy.get('message') or "未完结季禁止按季包分享，请选择单集分享"}), 400
+    if item_type == 'Episode':
+        data['share_type'] = 'episode_file'
+
     client = P115Service.get_client()
     if not client:
         return jsonify({"success": False, "message": "未配置可用的 115 Cookie 客户端，无法创建分享"}), 400
@@ -977,6 +1241,8 @@ def api_manual_create_share():
             item['item_type'] = 'Episode' if data.get('share_type') in ('season_pack', 'series_pack') and item.get('episode_number') else data.get('item_type')
         if not item.get('season_number'):
             item['season_number'] = data.get('season_number')
+        if not item.get('episode_number') and data.get('episode_number'):
+            item['episode_number'] = data.get('episode_number')
 
     record = shared_share_db.create_share_record({
         'share_code': share_code,
@@ -995,7 +1261,7 @@ def api_manual_create_share():
         'status': 'pending_review',
         'review_status': 'pending_review',
         'center_status': 'not_reported',
-        'raw_json': {'share_response': share_resp, 'root_info': info_resp},
+        'raw_json': {'share_response': share_resp, 'root_info': info_resp, 'manual_payload': data},
     })
     count = shared_share_db.replace_share_items(record['id'], files)
     record = shared_share_db.update_share_record(record['id'], item_count=count)
@@ -1034,13 +1300,20 @@ def api_check_share(record_id):
                 )
             if not files:
                 files = _collect_files_from_media_payload(record)
+            raw_payload = {}
+            try:
+                raw_payload = (record.get('raw_json') or {}).get('manual_payload') or {}
+            except Exception:
+                raw_payload = {}
             for item in files:
                 if not item.get('tmdb_id'):
                     item['tmdb_id'] = str(record.get('tmdb_id') or '')
                 if not item.get('item_type'):
-                    item['item_type'] = 'Episode' if record.get('share_type') in ('season_pack', 'series_pack') and item.get('episode_number') else record.get('item_type')
+                    item['item_type'] = 'Episode' if record.get('share_type') in ('season_pack', 'series_pack', 'episode_file') and (item.get('episode_number') or raw_payload.get('episode_number')) else record.get('item_type')
                 if not item.get('season_number'):
                     item['season_number'] = record.get('season_number')
+                if not item.get('episode_number') and raw_payload.get('episode_number'):
+                    item['episode_number'] = raw_payload.get('episode_number')
             if files:
                 added_count = shared_share_db.replace_share_items(record_id, files)
     except Exception as e:

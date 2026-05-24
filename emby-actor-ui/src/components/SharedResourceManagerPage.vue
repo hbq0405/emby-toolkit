@@ -58,7 +58,7 @@
 
           <n-tab-pane name="shares" tab="我的分享">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-              测试阶段可手动创建分享。创建后先检查审核状态，显示“已通过”后再登记中心。剧集建议按季目录分享，不要按单集分享。
+              测试阶段可手动创建分享。创建后先检查审核状态，显示“已通过”后再登记中心。已完结季可按季包分享；未完结/追更季禁止季包，只按单集分享。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="shareFilters.keyword" placeholder="搜索标题 / 目录名 / 分享码 / TMDb ID" clearable @keyup.enter="loadShares">
@@ -99,7 +99,7 @@
 
     <n-modal v-model:show="showManualShareModal" preset="card" title="手动创建共享资源" style="width: 920px; max-width: 96vw;" class="modal-card-lite">
       <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-        直接输入片名搜索本地 media_metadata，系统会用已记录的 PC/SHA1 反查 p115_filesystem_cache，自动定位可分享的 115 目录或文件。剧集会优先按季目录分享，不创建单集分享。
+        直接输入片名搜索本地 media_metadata，系统会用已记录的 PC/SHA1 反查 p115_filesystem_cache。已完结季可选季包；未完结季会自动展开为单集候选，避免 115 分享快照无法追更。
       </n-alert>
 
       <n-space class="toolbar" :vertical="isMobile" :size="12">
@@ -197,7 +197,7 @@ const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSize
 
 const manualShareForm = reactive({
   root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
-  share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: ''
+  share_type: 'season_pack', item_type: 'Season', season_number: 1, episode_number: null, release_year: null, receive_code: ''
 });
 
 const virtualStatusOptions = [
@@ -221,8 +221,8 @@ const manualItemTypeOptions = [
 const shareTypeOptions = [
   { label: '电影目录', value: 'movie_folder' },
   { label: '电影单文件', value: 'movie_file' },
-  { label: '季目录', value: 'season_pack' },
-  { label: '整剧目录', value: 'series_pack' },
+  { label: '已完结季包', value: 'season_pack' },
+  { label: '单集文件', value: 'episode_file' },
 ];
 const shareTypeLabel = (value) => (shareTypeOptions.find(opt => opt.value === value)?.label || value || '-');
 
@@ -276,7 +276,7 @@ const virtualColumns = [
 ];
 
 const shareColumns = [
-  { title: '标题', key: 'title', minWidth: 240, render: row => h('div', [h('div', { class: 'main-title' }, row.title || row.root_name || row.share_code), h('div', { class: 'sub-title' }, `${row.share_type || '-'} · TMDb ${row.tmdb_id || '-'}${row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : ''}`)]) },
+  { title: '标题', key: 'title', minWidth: 240, render: row => h('div', [h('div', { class: 'main-title' }, row.title || row.root_name || row.share_code), h('div', { class: 'sub-title' }, `${row.share_type || '-'} · TMDb ${row.tmdb_id || '-'}${row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : ''}${row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : ''}`)]) },
   { title: '审核', key: 'review_status', width: 110, render: row => tag(row.review_status || row.status) },
   { title: '中心', key: 'center_status', width: 110, render: row => tag(row.center_status) },
   { title: '分享码', key: 'share_code', width: 140, ellipsis: { tooltip: true } },
@@ -362,7 +362,7 @@ const refreshCredit = async () => { refreshingCredit.value = true; try { await a
 const resetManualShareForm = () => {
   Object.assign(manualShareForm, {
     root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
-    share_type: 'season_pack', item_type: 'Season', season_number: 1, release_year: null, receive_code: manualShareForm.receive_code || ''
+    share_type: 'season_pack', item_type: 'Season', season_number: 1, episode_number: null, release_year: null, receive_code: manualShareForm.receive_code || ''
   });
   selectedMedia.value = null;
 };
@@ -404,6 +404,7 @@ const chooseMediaCandidate = (row) => {
     share_type: row.share_type || 'season_pack',
     item_type: row.share_item_type || row.item_type || 'Season',
     season_number: row.season_number || null,
+    episode_number: row.episode_number || null,
     release_year: row.release_year || null,
   });
   message.success('已自动填充分享信息');
