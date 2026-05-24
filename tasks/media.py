@@ -2817,10 +2817,96 @@ def _download_tmdb_logo_for_icon_task(logo_path: str) -> Tuple[Optional[bytes], 
         return None, None
 
 
+def _prepare_studio_thumb_for_icon_task(
+    image_bytes: bytes,
+    content_type: Optional[str],
+    canvas_size: Tuple[int, int] = (1066, 600),
+    max_width_ratio: float = 0.78,
+    max_height_ratio: float = 0.56,
+) -> Tuple[bytes, str]:
+    """
+    将 TMDb 原始 logo 处理成 Emby Studio 更适合展示的 16:9 Thumb 图。
+
+    处理目标：
+    - 避免把超宽透明 logo 直接放进 Primary 后被 Emby 裁切。
+    - 统一输出 1066x600 PNG，logo 等比居中，四周留白。
+    - 根据 logo 明暗自动选择深/浅背景，避免黑 logo 在深色界面里不可见。
+
+    如果当前环境没有 Pillow，直接返回原图，由调用方仍然上传到 Thumb。
+    """
+    if not image_bytes:
+        return image_bytes, content_type or 'image/png'
+
+    # SVG 且没有被转成位图时，Pillow 无法处理；直接交给 Emby 尝试接收。
+    if (content_type or '').lower() in ('image/svg+xml', 'image/svg'):
+        return image_bytes, content_type or 'image/svg+xml'
+
+    try:
+        from io import BytesIO
+        from PIL import Image, ImageOps  # type: ignore
+
+        with Image.open(BytesIO(image_bytes)) as src:
+            src = ImageOps.exif_transpose(src).convert('RGBA')
+
+            # 以非透明像素估算 logo 明暗；暗色 logo 用浅底，亮色 logo 用深底。
+            alpha = src.getchannel('A')
+            bbox = alpha.getbbox()
+            if bbox:
+                src = src.crop(bbox)
+
+            pixels = src.getdata()
+            luminance_sum = 0.0
+            weight_sum = 0.0
+            for r, g, b, a in pixels:
+                if a <= 8:
+                    continue
+                weight = a / 255.0
+                luminance_sum += (0.2126 * r + 0.7152 * g + 0.0722 * b) * weight
+                weight_sum += weight
+
+            avg_luminance = luminance_sum / weight_sum if weight_sum else 255.0
+            if avg_luminance < 105:
+                background = (238, 238, 238, 255)  # 暗色 logo：浅底，避免黑字糊进暗色 UI。
+            else:
+                background = (45, 45, 45, 255)     # 亮色/彩色 logo：深底，贴近 Emby 暗色卡片。
+
+            canvas_w, canvas_h = canvas_size
+            max_w = int(canvas_w * max_width_ratio)
+            max_h = int(canvas_h * max_height_ratio)
+            src_w, src_h = src.size
+            if src_w <= 0 or src_h <= 0:
+                return image_bytes, content_type or 'image/png'
+
+            scale = min(max_w / src_w, max_h / src_h, 1.0 if max(src_w, src_h) < max(max_w, max_h) else 999.0)
+            # 小 logo 适当放大，但不要超过目标框。
+            if scale == 1.0 and src_w < max_w and src_h < max_h:
+                scale = min(max_w / src_w, max_h / src_h)
+
+            new_w = max(1, int(src_w * scale))
+            new_h = max(1, int(src_h * scale))
+            src = src.resize((new_w, new_h), Image.LANCZOS)
+
+            canvas = Image.new('RGBA', canvas_size, background)
+            x = (canvas_w - new_w) // 2
+            y = (canvas_h - new_h) // 2
+            canvas.alpha_composite(src, (x, y))
+
+            out = BytesIO()
+            canvas.save(out, format='PNG', optimize=True)
+            return out.getvalue(), 'image/png'
+
+    except Exception as e:
+        logger.warning(f"  ➜ [工作室图标] 生成 16:9 缩略图失败，将直接上传原图到 Thumb: {e}")
+        return image_bytes, content_type or 'image/png'
+
+
 def task_fill_studio_images(processor):
     """
     补全 Emby 工作室 / 播出平台图标。
-    流程：读取 studio_mapping -> 获取 Emby 已有 Studio 列表 -> 找出缺 Primary 图的条目 -> 通过 TMDb network/company logo_path 下载并上传。
+    流程：读取 studio_mapping -> 获取 Emby 已有 Studio 列表 -> 找出缺 Thumb 图的条目 -> 通过 TMDb network/company logo_path 下载并上传。
+
+    注意：Studio/播放平台页面的横向卡片更适合使用 Thumb，不适合把超宽 logo 直接塞进 Primary。
+    本任务会在成功上传 Thumb 后，顺手清理同一 Studio 上已有的 Primary 图，避免旧的裁切图继续被部分页面优先展示。
     """
     task_name = "补全工作室图标"
     logger.trace(f"--- 开始执行 '{task_name}' ---")
@@ -2854,7 +2940,7 @@ def task_fill_studio_images(processor):
             return
 
         candidates = []
-        skipped_has_image = 0
+        skipped_has_thumb = 0
         skipped_unmapped = 0
 
         for studio in studios:
@@ -2862,23 +2948,26 @@ def task_fill_studio_images(processor):
             if not name:
                 continue
 
-            image_tags = studio.get('ImageTags') or {}
-            has_primary = bool(image_tags.get('Primary') or studio.get('PrimaryImageTag'))
-            if has_primary:
-                skipped_has_image += 1
-                continue
-
             entry = lookup.get(_normalize_studio_name_for_icon_task(name))
             if not entry:
                 skipped_unmapped += 1
                 continue
 
-            candidates.append((studio, entry))
+            image_tags = studio.get('ImageTags') or {}
+            has_thumb = bool(image_tags.get('Thumb') or studio.get('ThumbImageTag'))
+            has_primary = bool(image_tags.get('Primary') or studio.get('PrimaryImageTag'))
+
+            # Thumb 已存在且没有遗留 Primary，说明已经是理想状态。
+            if has_thumb and not has_primary:
+                skipped_has_thumb += 1
+                continue
+
+            candidates.append((studio, entry, has_thumb, has_primary))
 
         total = len(candidates)
         logger.info(
-            f"  ➜ [工作室图标] Emby Studio 共 {len(studios)} 个；缺图且命中映射 {total} 个，"
-            f"已有图 {skipped_has_image} 个，未命中映射 {skipped_unmapped} 个。"
+            f"  ➜ [工作室图标] Emby Studio 共 {len(studios)} 个；需处理 {total} 个，"
+            f"已有 Thumb {skipped_has_thumb} 个，未命中映射 {skipped_unmapped} 个。"
         )
 
         if total == 0:
@@ -2886,46 +2975,65 @@ def task_fill_studio_images(processor):
             return
 
         success_count = 0
+        cleanup_primary_count = 0
         no_logo_count = 0
         download_failed_count = 0
         upload_failed_count = 0
 
-        for i, (studio, entry) in enumerate(candidates, start=1):
+        for i, (studio, entry, has_thumb, has_primary) in enumerate(candidates, start=1):
             if processor.is_stop_requested():
                 logger.warning("  ➜ [工作室图标] 任务被中止。")
                 break
 
             name = (studio.get('Name') or entry.get('label') or '').strip()
+            item_id = str(studio.get('Id') or '')
             progress = 15 + int((i / total) * 80)
             task_manager.update_status_from_thread(progress, f"正在补图 ({i}/{total}): {name}")
 
             try:
-                logo_path, source_desc = _resolve_studio_logo_path_from_tmdb(entry, processor.tmdb_api_key)
-                if not logo_path:
-                    no_logo_count += 1
-                    logger.info(f"  ➜ [工作室图标] {name} 未在 TMDb 找到 logo_path，跳过。")
-                    continue
+                thumb_ready = has_thumb
 
-                image_bytes, content_type = _download_tmdb_logo_for_icon_task(logo_path)
-                if not image_bytes:
-                    download_failed_count += 1
-                    continue
+                if not has_thumb:
+                    logo_path, source_desc = _resolve_studio_logo_path_from_tmdb(entry, processor.tmdb_api_key)
+                    if not logo_path:
+                        no_logo_count += 1
+                        logger.info(f"  ➜ [工作室图标] {name} 未在 TMDb 找到 logo_path，跳过。")
+                        continue
 
-                ok = emby.upload_item_image(
-                    base_url=processor.emby_url,
-                    api_key=processor.emby_api_key,
-                    item_id=str(studio.get('Id')),
-                    image_data=image_bytes,
-                    content_type=content_type or 'image/png',
-                    image_type='Primary',
-                    delete_existing=False
-                )
+                    image_bytes, content_type = _download_tmdb_logo_for_icon_task(logo_path)
+                    if not image_bytes:
+                        download_failed_count += 1
+                        continue
 
-                if ok:
-                    success_count += 1
-                    logger.info(f"  ➜ [工作室图标] 已为 [{name}] 上传图标，来源 {source_desc}。")
-                else:
-                    upload_failed_count += 1
+                    image_bytes, content_type = _prepare_studio_thumb_for_icon_task(image_bytes, content_type)
+
+                    ok = emby.upload_item_image(
+                        base_url=processor.emby_url,
+                        api_key=processor.emby_api_key,
+                        item_id=item_id,
+                        image_data=image_bytes,
+                        content_type=content_type or 'image/png',
+                        image_type='Thumb',
+                        delete_existing=True
+                    )
+
+                    if ok:
+                        thumb_ready = True
+                        success_count += 1
+                        logger.info(f"  ➜ [工作室图标] 已为 [{name}] 上传 Thumb 图标，来源 {source_desc}。")
+                    else:
+                        upload_failed_count += 1
+
+                # 成功拥有 Thumb 后，清理旧的 Primary，解决超宽 logo 被放进海报位后裁切的问题。
+                if thumb_ready and has_primary:
+                    if emby.delete_item_image(
+                        base_url=processor.emby_url,
+                        api_key=processor.emby_api_key,
+                        item_id=item_id,
+                        image_type='Primary'
+                    ):
+                        cleanup_primary_count += 1
+                        logger.info(f"  ➜ [工作室图标] 已清理 [{name}] 的旧 Primary 图。")
 
             except Exception as e_item:
                 upload_failed_count += 1
@@ -2935,8 +3043,9 @@ def task_fill_studio_images(processor):
                 time.sleep(0.2)
 
         final_msg = (
-            f"工作室图标补全完成：成功 {success_count}/{total}，"
-            f"TMDb无logo {no_logo_count}，下载失败 {download_failed_count}，上传失败 {upload_failed_count}。"
+            f"工作室图标补全完成：Thumb上传 {success_count}/{total}，"
+            f"清理Primary {cleanup_primary_count}，TMDb无logo {no_logo_count}，"
+            f"下载失败 {download_failed_count}，上传失败 {upload_failed_count}。"
         )
         logger.info(f"  ➜ {final_msg}")
         task_manager.update_status_from_thread(100, final_msg)
@@ -2944,4 +3053,3 @@ def task_fill_studio_images(processor):
     except Exception as e:
         logger.error(f"执行 '{task_name}' 时发生严重错误: {e}", exc_info=True)
         task_manager.update_status_from_thread(-1, f"任务失败: {e}")
-

@@ -1185,7 +1185,7 @@ def get_all_studios_from_emby(
             "api_key": api_key,
             "Recursive": "true",
             "IncludeItemTypes": "Studio",
-            "Fields": "Id,Name,ImageTags,PrimaryImageAspectRatio",
+            "Fields": "Id,Name,ImageTags,BackdropImageTags,PrimaryImageAspectRatio",
             "StartIndex": start_index,
             "Limit": batch_size,
         }
@@ -1214,6 +1214,44 @@ def get_all_studios_from_emby(
     return all_studios
 
 
+
+# --- 删除任意 Emby Item 的指定图片类型 ---
+def delete_item_image(
+    base_url: str,
+    api_key: str,
+    item_id: str,
+    image_type: str = "Primary"
+) -> bool:
+    """
+    删除任意 Emby Item 的指定图片类型。
+    主要用于清理 Studio 条目里不适合放 logo 的 Primary 图。
+    """
+    if not all([base_url, api_key, item_id, image_type]):
+        logger.error("delete_item_image: 参数不足。")
+        return False
+
+    base_url = base_url.rstrip('/')
+    url = f"{base_url}/Items/{item_id}/Images/{image_type}"
+    params = {"api_key": api_key}
+    headers = {
+        "X-Emby-Token": api_key,
+        "Accept": "application/json",
+    }
+
+    try:
+        response = emby_client.delete(url, headers=headers, params=params, timeout=30)
+        if response.status_code in (200, 204, 404):
+            # 404 说明本来就没有这类图，视为清理成功。
+            logger.debug(f"  ➜ 已清理 Item {item_id} 的 {image_type} 图片。")
+            return True
+
+        logger.warning(f"  ➜ 删除 Item 图片失败: HTTP {response.status_code} - {response.text[:300]}")
+        return False
+
+    except Exception as e:
+        logger.warning(f"删除 Item {item_id} 的 {image_type} 图片异常: {e}", exc_info=True)
+        return False
+
 # --- 给任意 Emby Item 上传图片 ---
 def upload_item_image(
     base_url: str,
@@ -1226,7 +1264,7 @@ def upload_item_image(
 ) -> bool:
     """
     给任意 Emby Item 上传图片。
-    可用于 Studio / Network / Collection / Movie / Series 等条目的 Primary 图。
+    可用于 Studio / Network / Collection / Movie / Series 等条目的 Primary / Thumb 等图片。
     """
     if not all([base_url, api_key, item_id, image_data]):
         logger.error("upload_item_image: 参数不足。")
