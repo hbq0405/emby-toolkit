@@ -827,9 +827,8 @@ class P115CookieClient:
     def share_send(self, file_ids, **kwargs):
         """创建当前账号自己的 115 分享。
 
-        /share/send 只负责创建分享；永久有效、自定义提取码、取消/删除分享
-        都统一走 /share/updateshare。这里恢复此前验证过可用的接口组合，
-        不再使用 /share/cancel 或 /share/delete 这类兼容性较差的端点。
+        说明：这是 Cookie/webapi 能力，用于“库内资源 -> 预分享资产”。
+        /share/send 只负责创建分享；有效期等配置需要再调用 /share/updateshare。
         """
         ids = [str(i).strip() for i in _p115_as_list(file_ids) if str(i or '').strip()]
         if not ids:
@@ -841,18 +840,17 @@ class P115CookieClient:
             "is_asc": 0,
             "order": "user_ptime",
         }
+        # 允许调用方覆盖 share/send 支持的额外参数，但不让空值污染 payload。
         for key, val in kwargs.items():
             if val is not None and val != "":
                 payload[key] = val
 
         if self.webapi and hasattr(self.webapi, 'share_send'):
             try:
-                resp = self.webapi.share_send(payload)
-                return _p115_normalize_common_response(resp)
+                return _p115_normalize_common_response(self.webapi.share_send(payload))
             except Exception as e:
                 if not _p115_is_severe_failure(e):
                     raise
-                logger.warning(f"  ➜ [115分享] p115client share_send 失败，改用原生接口: {e}")
 
         url = "https://webapi.115.com/share/send"
         r = self.request(url, method='POST', data=payload)
@@ -883,44 +881,39 @@ class P115CookieClient:
 
         if self.webapi and hasattr(self.webapi, 'share_update'):
             try:
-                resp = self.webapi.share_update(payload)
-                return _p115_normalize_common_response(resp)
+                return _p115_normalize_common_response(self.webapi.share_update(payload))
             except Exception as e:
                 if not _p115_is_severe_failure(e):
                     raise
-                logger.warning(f"  ➜ [115分享] p115client share_update 失败，改用原生接口: {e}")
 
         url = "https://webapi.115.com/share/updateshare"
+        logger.info(f"  ➜ [115分享] 更新分享设置: share_code={code}, action={action or 'update'}, duration={share_duration}")
         r = self.request(url, method='POST', data=payload)
-        return _p115_normalize_common_response(self._json_result(r))
+        resp = _p115_normalize_common_response(self._json_result(r))
+        if not resp.get('state'):
+            logger.warning(f"  ➜ [115分享] 更新分享设置失败: {resp}")
+        return resp
+
 
     def share_create(self, file_ids, share_duration=-1, receive_code=None):
-        """创建 115 分享。默认创建后立即更新为永久分享。"""
+        """兼容新共享资源代码：创建分享后立即更新为长期有效。"""
         resp = self.share_send(file_ids)
         if not _p115_success(resp):
-            logger.warning(f"  ➜ [115分享] 创建分享失败: {resp}")
             return _p115_normalize_common_response(resp)
-
         data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
         share_code = data.get('share_code') or resp.get('share_code')
         if share_code:
-            upd = self.share_update(
-                share_code,
-                share_duration=share_duration,
-                receive_code=receive_code,
-            )
+            upd = self.share_update(share_code, share_duration=share_duration, receive_code=receive_code)
             resp.setdefault('data', data)
             resp['data']['share_duration'] = share_duration
             resp['data']['update_response'] = upd
             if receive_code:
                 resp['data']['receive_code'] = receive_code
-            if not _p115_success(upd):
-                logger.warning(f"  ➜ [115分享] 分享已创建但更新永久/提取码失败: share={share_code}, resp={upd}")
         resp['state'] = _p115_success(resp)
         return resp
 
     def share_update_settings(self, share_code, share_duration=-1, receive_code=None, auto_fill_recvcode=0, receive_user_limit=''):
-        """兼容旧调用名：更新分享有效期/提取码。"""
+        """兼容新共享资源代码的命名，底层仍走旧版 share_update。"""
         return self.share_update(
             share_code,
             share_duration=share_duration,
@@ -928,44 +921,40 @@ class P115CookieClient:
             auto_fill_recvcode=auto_fill_recvcode,
             receive_user_limit=receive_user_limit,
         )
-
     def share_info(self, share_code, receive_code=None, cid=0, limit=100, offset=0):
-        """查询当前账号自己的分享信息；失败时兜底读取分享快照。"""
+        """查询分享信息。
+
+        - 本账号自己的分享：走 /share/shareinfo，用于审核/取消状态同步；
+        - 消费别人分享快照：传 receive_code/cid/limit 时走 /share/snap，兼容旧调用。
+        """
         code = str(share_code or '').strip()
         if not code:
             return {"state": False, "error_msg": "缺少 share_code，无法查询分享信息"}
 
+        # 兼容旧版检查逻辑：带 receive_code/cid/limit 的调用读取分享快照。
+        if receive_code is not None or cid not in (None, 0, '0') or int(limit or 0) != 100 or int(offset or 0) != 0:
+            url = "https://webapi.115.com/share/snap"
+            params = {
+                "share_code": code,
+                "receive_code": str(receive_code or ''),
+                "cid": str(cid or 0),
+                "limit": int(limit or 100),
+                "offset": int(offset or 0),
+            }
+            r = self.request(url, method='GET', params=params)
+            resp = self._json_result(r)
+            resp['state'] = _p115_success(resp)
+            return resp
+
         if self.webapi and hasattr(self.webapi, 'share_info'):
             try:
-                resp = self.webapi.share_info({"share_code": code})
-                if _p115_success(resp):
-                    return _p115_normalize_common_response(resp)
+                return _p115_normalize_common_response(self.webapi.share_info({"share_code": code}))
             except Exception as e:
                 if not _p115_is_severe_failure(e):
                     raise
-                logger.debug(f"  ➜ [115分享] p115client share_info 失败，改用原生接口: {e}")
-
-        info_url = "https://webapi.115.com/share/shareinfo"
-        r = self.request(info_url, method='GET', params={"share_code": code})
-        resp = self._json_result(r)
-        if _p115_success(resp):
-            return _p115_normalize_common_response(resp)
-
-        # 兜底：旧检查审核状态逻辑仍然需要 /share/snap，尤其是读取分享包内容/审核态。
-        snap_url = "https://webapi.115.com/share/snap"
-        params = {
-            'share_code': code,
-            'receive_code': str(receive_code or ''),
-            'cid': str(cid or 0),
-            'limit': int(limit or 100),
-            'offset': int(offset or 0),
-        }
-        r = self.request(snap_url, method='GET', params=params)
-        snap = self._json_result(r)
-        snap['state'] = _p115_success(snap)
-        if not snap.get('state'):
-            logger.warning(f"  ➜ [115分享] 查询分享信息失败: shareinfo={resp}; snap={snap}")
-        return snap
+        url = "https://webapi.115.com/share/shareinfo"
+        r = self.request(url, method='GET', params={"share_code": code})
+        return _p115_normalize_common_response(self._json_result(r))
 
     def share_list(self, payload=None):
         """查询当前账号自己的分享列表，用于和 115 实际审核/取消状态对齐。"""
@@ -978,25 +967,18 @@ class P115CookieClient:
             except Exception as e:
                 if not _p115_is_severe_failure(e):
                     raise
-                logger.debug(f"  ➜ [115分享] p115client share_list 失败，改用原生接口: {e}")
         url = "https://webapi.115.com/share/slist"
         r = self.request(url, method='GET', params=params)
         return _p115_normalize_common_response(self._json_result(r))
 
     def share_cancel(self, share_code):
         """取消当前账号自己的分享。"""
-        resp = self.share_update(share_code, action="cancel")
-        if not _p115_success(resp):
-            logger.warning(f"  ➜ [115分享] 取消分享失败: share={share_code}, resp={resp}")
-        return resp
+        return self.share_update(share_code, action="cancel")
 
     def share_delete(self, share_code):
         """删除当前账号自己的分享记录；失败时调用方可回退到 cancel。"""
-        resp = self.share_update(share_code, action="delete")
-        if not _p115_success(resp):
-            logger.warning(f"  ➜ [115分享] 删除分享失败: share={share_code}, resp={resp}")
-        return resp
-    
+        return self.share_update(share_code, action="delete")
+
     def life_batch_delete(self, delete_data_list):
         url = "https://life.115.com/api/1.0/web/1.0/life/life_batch_delete"
         # 115 要求 delete_data 是一个 JSON 字符串
@@ -1596,6 +1578,12 @@ class P115Service:
                     raise Exception("未配置 115 Cookie，无法执行离线下载")
                 return self._cookie.offline_add_urls(payload)
 
+            def share_import(self, share_code, receive_code, cid):
+                self._rate_limit()
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法执行转存")
+                return self._cookie.share_import(share_code, receive_code, cid)
+
             def share_send(self, file_ids, **kwargs):
                 self._rate_limit()
                 if not self._cookie:
@@ -1636,7 +1624,7 @@ class P115Service:
             def share_info(self, share_code, receive_code=None, cid=0, limit=100, offset=0):
                 self._rate_limit()
                 if not self._cookie:
-                    raise Exception("未配置 115 Cookie，无法检查分享状态")
+                    raise Exception("未配置 115 Cookie，无法查询分享状态")
                 return self._cookie.share_info(share_code, receive_code=receive_code, cid=cid, limit=limit, offset=offset)
 
             def share_list(self, payload=None):
@@ -1656,12 +1644,6 @@ class P115Service:
                 if not self._cookie:
                     raise Exception("未配置 115 Cookie，无法删除分享")
                 return self._cookie.share_delete(share_code)
-
-            def share_import(self, share_code, receive_code, cid):
-                self._rate_limit()
-                if not self._cookie:
-                    raise Exception("未配置 115 Cookie，无法执行转存")
-                return self._cookie.share_import(share_code, receive_code, cid)
 
         return StrictSplitClient(openapi, cookie)
     
@@ -4829,6 +4811,25 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                                         sha1=file_sha1, pick_code=pick_code, 
                                         local_path=file_local_path, size=file_size 
                                     )
+                                    # 负载均衡分享资产记录钩子：
+                                    # 对影巢/TG 等外部分享导入后再整理的资源，只有这里拿到的
+                                    # fid / pick_code / sha1 才是 STRM 实际播放文件身份。
+                                    share_ctx = getattr(self, 'external_share_context', None) or getattr(self, '_external_share_context', None)
+                                    if share_ctx:
+                                        try:
+                                            from database import p115_pool_db
+                                            p115_pool_db.record_share_asset_file_from_organize_context(share_ctx, {
+                                                'source_file_id': fid,
+                                                'source_pick_code': pick_code,
+                                                'sha1': file_sha1,
+                                                'file_name': new_filename,
+                                                'file_size': file_size,
+                                                'parent_cid': batch_target_cid,
+                                                'season_number': season_num,
+                                                'episode_number': file_item.get('_episode_num'),
+                                            })
+                                        except Exception as e:
+                                            logger.debug(f"  ➜ [负载均衡] 整理钩子记录分享文件失败: {e}")
                                     
                             elif is_sub:
                                 if config.get(constants.CONFIG_OPTION_115_DOWNLOAD_SUBS, True):

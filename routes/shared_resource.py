@@ -1407,7 +1407,9 @@ def api_promote_virtual_item(virtual_id):
         row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp={'state': True, '_reuse_existing': True}, existing=existing)
         return jsonify({"success": True, "message": "目标目录已有同名/同SHA1文件，已复用并标记转正", "data": row})
 
+    logger.info(f"  ➜ [共享资源] 转正开始移动: virtual_id={virtual_id}, fid={item.get('real_fid')}, target_cid={target_cid}, target_name={target_name}")
     resp = client.fs_move([str(item['real_fid'])], target_cid)
+    logger.info(f"  ➜ [共享资源] 转正移动返回: virtual_id={virtual_id}, resp={_resp_text(resp)}")
     if not resp or not resp.get('state'):
         # 115 偶尔 move 返回失败但实际已经移动，或者因为同名失败；再确认一次目标目录。
         existing_after = _find_existing_file_in_target(target_cid, item, client=client)
@@ -1415,6 +1417,7 @@ def api_promote_virtual_item(virtual_id):
             row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp=resp, existing=existing_after)
             return jsonify({"success": True, "message": "已确认目标目录存在该文件，已标记转正", "data": row})
         msg = f"115 移动失败: {_resp_text(resp)}"
+        logger.warning(f"  ➜ [共享资源] 转正失败: virtual_id={virtual_id}, fid={item.get('real_fid')}, target_cid={target_cid}, msg={msg}")
         if _is_duplicate_name_message(resp):
             msg += "；目标目录可能已有同名文件，但未能确认 SHA1/PC 一致，请刷新 115 缓存后重试。"
         return jsonify({"success": False, "message": msg}), 500
@@ -1749,23 +1752,57 @@ def api_cancel_share(record_id):
         return jsonify({"success": False, "message": "未配置可用的 115 Cookie 客户端"}), 400
 
     data = request.json or {}
-    resp = client.share_cancel(record.get('share_code'))
+    share_code = str(record.get('share_code') or '').strip()
+    if not share_code:
+        return jsonify({"success": False, "message": "分享码为空，无法取消", "data": record}), 400
+
+    logger.info(f"  ➜ [共享资源] 准备取消115分享: record_id={record_id}, title={record.get('title')}, share_code={share_code}")
+
+    attempts = []
+
+    def _try_cancel(label, func):
+        try:
+            resp = func()
+            attempts.append({'label': label, 'response': resp})
+            logger.info(f"  ➜ [共享资源] 取消分享尝试 {label} 返回: {_resp_text(resp)}")
+            return resp
+        except Exception as e:
+            attempts.append({'label': label, 'error': str(e)})
+            logger.exception(f"  ➜ [共享资源] 取消分享尝试 {label} 异常")
+            return {'state': False, 'error_msg': str(e)}
+
+    # 第一优先级：旧版已验证路径，底层是 /share/updateshare + action=cancel。
+    resp = _try_cancel('share_cancel', lambda: client.share_cancel(share_code))
+
+    # 兜底：如果当前客户端暴露 share_update，显式再走一次 action=cancel。
     if not resp or not resp.get('state'):
-        text = _resp_text(resp)
+        if hasattr(client, 'share_update'):
+            resp = _try_cancel('share_update_action_cancel', lambda: client.share_update(share_code, action='cancel'))
+
+    # 再兜底：部分账号 cancel 失败但 delete 可用。
+    if not resp or not resp.get('state'):
+        if hasattr(client, 'share_delete'):
+            resp = _try_cancel('share_delete', lambda: client.share_delete(share_code))
+
+    if not resp or not resp.get('state'):
+        text = _resp_text({'last': resp, 'attempts': attempts})
         # 分享已经不存在/已取消时，本地可以安全标记取消。
-        if any(k in text for k in ['分享不存在', '不存在该分享', '已取消', '取消分享', 'share not found', 'not found']):
+        if any(k in text for k in ['分享不存在', '不存在该分享', '已取消', '取消分享', 'share not found', 'not found', '没有该分享']):
             row = shared_share_db.update_share_record(record_id, status='cancelled', review_status='cancelled', cancelled_at='NOW()', last_error='远端分享已不存在，已同步本地状态')
-            shared_virtual_db.add_credit_ledger('share_cancelled', 0, '同步已取消/不存在的115分享', ref_id=str(record_id), title=record.get('title') or '', raw_json=resp)
+            shared_virtual_db.add_credit_ledger('share_cancelled', 0, '同步已取消/不存在的115分享', ref_id=str(record_id), title=record.get('title') or '', raw_json={'attempts': attempts})
             return jsonify({"success": True, "message": "远端分享已不存在，已同步本地取消状态", "data": row})
         # 调试/抢救用：允许只标记本地，避免界面卡死；默认不开。
         if data.get('force_local'):
             row = shared_share_db.update_share_record(record_id, status='cancel_failed', review_status=record.get('review_status') or '', last_error=f"远端取消失败，仅本地标记: {text}")
-            return jsonify({"success": True, "message": "远端取消失败，已仅本地标记为取消失败；分享可能仍然有效", "data": row})
+            return jsonify({"success": True, "message": "远端取消失败，已仅本地标记为取消失败；分享可能仍然有效", "data": row, "debug": attempts})
         row = shared_share_db.update_share_record(record_id, last_error=f"取消分享失败: {text}")
-        return jsonify({"success": False, "message": f"取消分享失败: {text}", "data": row}), 500
+        logger.warning(f"  ➜ [共享资源] 取消分享最终失败: record_id={record_id}, attempts={text}")
+        return jsonify({"success": False, "message": f"取消分享失败: {text}", "data": row, "debug": attempts}), 500
+
     row = shared_share_db.update_share_record(record_id, status='cancelled', review_status='cancelled', cancelled_at='NOW()', last_error='手动取消分享')
-    shared_virtual_db.add_credit_ledger('share_cancelled', 0, '手动取消115分享', ref_id=str(record_id), title=record.get('title') or '', raw_json=resp)
-    return jsonify({"success": True, "message": "已取消分享", "data": row})
+    shared_virtual_db.add_credit_ledger('share_cancelled', 0, '手动取消115分享', ref_id=str(record_id), title=record.get('title') or '', raw_json={'response': resp, 'attempts': attempts})
+    logger.info(f"  ➜ [共享资源] 已取消115分享: record_id={record_id}, share_code={share_code}")
+    return jsonify({"success": True, "message": "已取消分享", "data": row, "debug": attempts})
 
 
 @shared_resource_bp.route('/credit/refresh', methods=['POST'])
