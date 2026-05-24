@@ -2154,3 +2154,142 @@ def api_credit_ledger():
             logger.warning(f"  ➜ [共享资源] 同步中心贡献值流水失败，返回本地缓存: {e}")
     rows = shared_virtual_db.list_credit_ledger(limit=limit, actual_only=actual_only)
     return jsonify({"success": True, "items": rows, "sync": sync_result})
+
+# ======================================================================
+# 共享中心资源库 / 维护任务 API（v8.1）
+# ======================================================================
+def _raw_video_effect(stream: Dict[str, Any]) -> str:
+    text = json.dumps(stream.get('side_data_list') or [], ensure_ascii=False).upper()
+    color_transfer = str(stream.get('color_transfer') or '').lower()
+    color_primaries = str(stream.get('color_primaries') or '').lower()
+    if 'DOVI' in text or 'DOLBY VISION' in text:
+        m = re.search(r"dv_profile['\"]?\s*[:=]\s*['\"]?(\d+)", text, re.IGNORECASE)
+        profile = f"P{m.group(1)}" if m else ''
+        return f"Dolby Vision {profile}".strip()
+    if 'HDR10+' in text or 'SMPTE2094-40' in text:
+        return 'HDR10+'
+    if color_transfer == 'smpte2084':
+        return 'HDR10'
+    if color_primaries == 'bt2020':
+        return 'HDR'
+    return ''
+
+
+def _raw_codec_label(codec: str) -> str:
+    c = str(codec or '').lower()
+    return {
+        'hevc': 'HEVC', 'h265': 'HEVC', 'h264': 'AVC', 'avc': 'AVC',
+        'av1': 'AV1', 'eac3': 'DDP', 'ac3': 'AC3', 'truehd': 'TrueHD',
+        'dts': 'DTS', 'aac': 'AAC', 'flac': 'FLAC', 'subrip': 'SRT',
+        'ass': 'ASS', 'ssa': 'SSA', 'hdmv_pgs_subtitle': 'PGS', 'pgssub': 'PGS',
+    }.get(c, c.upper() if c else '')
+
+
+def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -> Dict[str, Any]:
+    """给前端中心资源库展示用：从 raw_ffprobe_json 提取准确版本参数。"""
+    source = source or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    streams = raw.get('streams') or []
+    fmt = raw.get('format') or {}
+    video = next((s for s in streams if str(s.get('codec_type')).lower() == 'video'), {})
+    audios = [s for s in streams if str(s.get('codec_type')).lower() == 'audio']
+    subs = [s for s in streams if str(s.get('codec_type')).lower() == 'subtitle']
+    width = int(video.get('width') or 0) if video else 0
+    height = int(video.get('height') or 0) if video else 0
+    resolution = '4K' if width >= 3800 else ('1080p' if width >= 1900 else (f'{height}p' if height else ''))
+    size = source.get('size') or fmt.get('size') or 0
+    try:
+        size = int(size or 0)
+    except Exception:
+        size = 0
+
+    def _track(s):
+        tags = s.get('tags') or {}
+        return {
+            'codec': _raw_codec_label(s.get('codec_name')),
+            'language': tags.get('language') or '',
+            'title': tags.get('title') or '',
+            'channels': s.get('channels'),
+            'layout': s.get('channel_layout') or '',
+        }
+
+    return {
+        'resolution': resolution,
+        'width': width,
+        'height': height,
+        'codec': _raw_codec_label(video.get('codec_name')) if video else '',
+        'effect': _raw_video_effect(video) if video else '',
+        'bit_depth': video.get('bits_per_raw_sample') or video.get('bits_per_sample') or '',
+        'fps': video.get('avg_frame_rate') or video.get('r_frame_rate') or '',
+        'duration': fmt.get('duration') or '',
+        'bitrate': fmt.get('bit_rate') or '',
+        'size': size,
+        'size_gb': round(size / 1024 / 1024 / 1024, 2) if size else 0,
+        'audio_count': len(audios),
+        'subtitle_count': len(subs),
+        'audios': [_track(s) for s in audios[:12]],
+        'subtitles': [_track(s) for s in subs[:20]],
+    }
+
+
+@shared_resource_bp.route('/center/sources', methods=['GET'])
+@admin_required
+def api_center_sources():
+    """前端中心资源库：列出中心已有共享源，并用 raw_ffprobe_json 标注版本参数。"""
+    client = None
+    try:
+        from handler.shared_center_client import SharedCenterClient
+        client = SharedCenterClient()
+        if not client.ready:
+            return jsonify({'success': False, 'message': '共享中心地址或 device_token 未配置'}), 400
+        data = client.list_sources(
+            q=request.args.get('keyword', ''),
+            tmdb_id=request.args.get('tmdb_id', ''),
+            item_type=request.args.get('item_type', ''),
+            status=request.args.get('status', 'alive,pending'),
+            limit=int(request.args.get('limit', 100) or 100),
+            offset=int(request.args.get('offset', 0) or 0),
+            include_raw=True,
+        )
+        items = []
+        for item in data.get('items') or []:
+            raw = item.get('raw_ffprobe_json') or {}
+            item['version_summary'] = _summarize_raw_ffprobe(raw, item)
+            items.append(item)
+        return jsonify({'success': True, 'items': items, 'total': data.get('total', len(items))})
+    except Exception as e:
+        logger.error(f"  ➜ [共享资源] 拉取中心资源库失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'拉取中心资源库失败: {e}'}), 500
+
+
+@shared_resource_bp.route('/center/import', methods=['POST'])
+@admin_required
+def api_center_import_sources():
+    data = _request_json()
+    source_ids = data.get('source_ids') or ([] if not data.get('source_id') else [data.get('source_id')])
+    mode = str(data.get('mode') or 'permanent').strip().lower()
+    if mode not in ('permanent', 'virtual'):
+        mode = 'permanent'
+    try:
+        from handler.shared_subscription_service import consume_center_sources
+        result = consume_center_sources(source_ids, mode=mode, context=data.get('context') or {})
+        status = 200 if result.get('success') else 400
+        return jsonify({'success': bool(result.get('success')), 'message': result.get('message') or result.get('action_type') or '处理完成', 'data': result}), status
+    except Exception as e:
+        logger.error(f"  ➜ [共享资源] 手动入库中心资源失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'手动入库失败: {e}'}), 500
+
+
+@shared_resource_bp.route('/tasks/maintenance', methods=['POST'])
+@admin_required
+def api_trigger_shared_resource_maintenance():
+    try:
+        import task_manager
+        ok = task_manager.trigger_shared_resource_maintenance_task()
+        if ok:
+            return jsonify({'success': True, 'message': '共享资源维护任务已提交到后台任务队列'})
+        return jsonify({'success': False, 'message': '任务提交失败，可能已有其他任务正在运行'}), 409
+    except Exception as e:
+        logger.error(f"  ➜ [共享资源] 提交维护任务失败: {e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'提交维护任务失败: {e}'}), 500

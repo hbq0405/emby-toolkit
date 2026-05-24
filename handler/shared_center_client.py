@@ -71,6 +71,30 @@ class SharedCenterClient:
             return {'results': []}
         return self._post('/api/v1/sources/search', {'items': items, 'limit_per_item': limit_per_item}, timeout=25)
 
+
+
+    def list_open_gaps(self, limit: int = 100) -> Dict[str, Any]:
+        limit = max(1, min(int(limit or 100), 500))
+        return self._get(f'/api/v1/gaps/open?limit={limit}', timeout=20)
+
+    def list_sources(self, *, q: str = '', tmdb_id: str = '', item_type: str = '', status: str = 'alive,pending',
+                     source_ids: List[str] = None, limit: int = 100, offset: int = 0, include_raw: bool = True) -> Dict[str, Any]:
+        """列出中心已有共享源。用于前端展示版本列表，也用于按 source_id 手动入库。"""
+        import urllib.parse
+        source_ids = [str(x).strip() for x in (source_ids or []) if str(x or '').strip()]
+        params = {
+            'q': q or '',
+            'tmdb_id': tmdb_id or '',
+            'item_type': item_type or '',
+            'status': status or '',
+            'limit': max(1, min(int(limit or 100), 500)),
+            'offset': max(0, int(offset or 0)),
+            'include_raw': '1' if include_raw else '0',
+        }
+        if source_ids:
+            params['source_ids'] = ','.join(source_ids)
+        query = urllib.parse.urlencode(params)
+        return self._get(f'/api/v1/sources/list?{query}', timeout=60 if include_raw else 25)
     def fetch_raw_ffprobe_batch(self, sha1_list: List[str]) -> Dict[str, Any]:
         sha1_list = [str(x or '').strip().upper() for x in sha1_list if x]
         if not sha1_list:

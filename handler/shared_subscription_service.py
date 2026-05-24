@@ -674,7 +674,7 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
         else:
             errors.append(f"{src.get('file_name')}: {text[:120]}")
             try:
-                client.report_transfer(src.get('source_id'), 'failed', expected_sha1=_norm_sha1(src.get('sha1')), expected_size=_safe_int(src.get('size'), 0) or None, message=text[:180])
+                client.report_transfer(src.get('source_id'), 'failed', expected_sha1=_norm_sha1(src.get('sha1')), expected_size=_safe_int(src.get('size'), 0) or None, message=f'external_share_import_failed: {text[:160]}')
             except Exception:
                 pass
     if ok > 0:
@@ -728,3 +728,44 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str, tmdb_id, item_
     if mode == 'virtual':
         return _consume_virtual(client, sources, context)
     return _consume_permanent(client, sources, context)
+
+
+def consume_center_sources(source_ids: List[str], mode: str = 'permanent', context: Dict[str, Any] = None) -> Dict[str, Any]:
+    """按中心 source_id 手动消费共享资源。
+
+    用于前端“中心资源库”标签页：管理员可以直接选择中心已有版本，按永久转存或虚拟入库处理。
+    """
+    if not shared_center_enabled():
+        return {'enabled': False, 'success': False, 'message': '共享资源未启用'}
+
+    source_ids = [str(x or '').strip() for x in (source_ids or []) if str(x or '').strip()]
+    if not source_ids:
+        return {'enabled': True, 'success': False, 'message': '缺少 source_ids'}
+
+    client = SharedCenterClient()
+    if not client.ready:
+        return {'enabled': True, 'success': False, 'message': '共享中心地址或 device_token 未配置'}
+
+    if not hasattr(client, 'list_sources'):
+        return {'enabled': True, 'success': False, 'message': 'SharedCenterClient 缺少 list_sources 方法，请同步 handler/shared_center_client.py'}
+
+    data = client.list_sources(source_ids=source_ids, limit=len(source_ids), include_raw=True)
+    sources = [x for x in (data.get('items') or []) if isinstance(x, dict)]
+    if not sources:
+        return {'enabled': True, 'success': False, 'message': '中心未返回可用资源'}
+
+    first = sources[0]
+    ctx = dict(context or {})
+    ctx.setdefault('title', first.get('title') or first.get('file_name') or '')
+    ctx.setdefault('tmdb_id', first.get('tmdb_id') or '')
+    ctx.setdefault('item_type', first.get('item_type') or '')
+    ctx.setdefault('season_number', first.get('season_number'))
+    ctx.setdefault('year', first.get('release_year'))
+
+    selected_mode = str(mode or '').strip().lower()
+    if selected_mode not in ('permanent', 'virtual'):
+        selected_mode = shared_resource_mode()
+
+    if selected_mode == 'virtual':
+        return _consume_virtual(client, sources, ctx)
+    return _consume_permanent(client, sources, ctx)

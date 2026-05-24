@@ -84,6 +84,33 @@
             />
           </n-tab-pane>
 
+
+          <n-tab-pane name="center" tab="中心资源库">
+            <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
+              展示共享中心当前可用资源；同一媒体项可列出多个版本。存在 raw_ffprobe_json 时，会显示准确的视频、音轨、字幕和体积参数。
+            </n-alert>
+            <n-space class="toolbar" :vertical="isMobile" :size="12">
+              <n-input v-model:value="centerFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="loadCenterSources">
+                <template #prefix><n-icon :component="SearchIcon" /></template>
+              </n-input>
+              <n-select v-model:value="centerFilters.item_type" :options="typeOptions" style="width: 140px" />
+              <n-select v-model:value="centerFilters.status" :options="centerStatusOptions" style="width: 150px" />
+              <n-button type="primary" :loading="centerLoading" @click="loadCenterSources">查询中心</n-button>
+              <n-button secondary :loading="maintenanceSubmitting" @click="triggerSharedMaintenance">执行维护任务</n-button>
+            </n-space>
+            <n-data-table
+              remote
+              :loading="centerLoading"
+              :columns="centerColumns"
+              :data="centerSources"
+              :pagination="centerPagination"
+              :row-key="row => row.source_id"
+              :scroll-x="1500"
+              @update:page="p => { centerPagination.page = p; loadCenterSources(); }"
+              @update:page-size="s => { centerPagination.pageSize = s; centerPagination.page = 1; loadCenterSources(); }"
+            />
+          </n-tab-pane>
+
           <n-tab-pane name="ledger" tab="贡献值明细">
             <n-data-table
               :loading="ledgerLoading"
@@ -180,6 +207,8 @@ const activeTab = ref('virtual');
 const loading = ref(false);
 const sharesLoading = ref(false);
 const ledgerLoading = ref(false);
+const centerLoading = ref(false);
+const maintenanceSubmitting = ref(false);
 const refreshingCredit = ref(false);
 const manualCreating = ref(false);
 const showManualShareModal = ref(false);
@@ -192,12 +221,15 @@ const summary = ref({ local: {}, shares: {}, credit: {} });
 const virtualItems = ref([]);
 const shareItems = ref([]);
 const ledgerItems = ref([]);
+const centerSources = ref([]);
 const ledgerCollapsedGroups = reactive({});
 
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
 const shareFilters = reactive({ keyword: '', status: 'all' });
+const centerFilters = reactive({ keyword: '', status: 'alive,pending', item_type: 'all' });
 const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
+const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 
 const manualShareForm = reactive({
   root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
@@ -207,13 +239,20 @@ const manualShareForm = reactive({
 const virtualStatusOptions = [
   { label: '全部状态', value: 'all' }, { label: '虚拟待播', value: 'virtual_ready' },
   { label: '已临时转存', value: 'cached' }, { label: '已看过', value: 'watched' },
-  { label: '转正整理中', value: 'promote_pending' }, { label: '已转正', value: 'promoted' }, { label: '已删除', value: 'deleted' }, { label: '异常', value: 'error' },
+  { label: '已转正', value: 'promoted' }, { label: '已删除', value: 'deleted' }, { label: '异常', value: 'error' },
 ];
 const shareStatusOptions = [
   { label: '全部状态', value: 'all' }, { label: '审核中', value: 'pending_review' },
   { label: '已通过', value: 'alive' }, { label: '已登记中心', value: 'reported' },
   { label: '部分登记', value: 'partial' }, { label: '失败/异常', value: 'failed' },
   { label: '已取消', value: 'cancelled' },
+];
+
+const centerStatusOptions = [
+  { label: '可用/待验证', value: 'alive,pending' },
+  { label: '仅可用', value: 'alive' },
+  { label: '仅待验证', value: 'pending' },
+  { label: '全部', value: '' },
 ];
 const typeOptions = [
   { label: '全部类型', value: 'all' }, { label: '电影', value: 'Movie' },
@@ -233,7 +272,7 @@ const shareTypeLabel = (value) => (shareTypeOptions.find(opt => opt.value === va
 const statusMap = {
   virtual_ready: { text: '虚拟待播', type: 'info' }, transferring: { text: '转存中', type: 'warning' },
   cached: { text: '已临时转存', type: 'success' }, watched: { text: '已看过', type: 'warning' },
-  promote_pending: { text: '转正整理中', type: 'warning' }, promoted: { text: '已转正', type: 'success' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
+  promoted: { text: '已转正', type: 'success' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
   pending_review: { text: '审核中', type: 'warning' }, alive: { text: '已通过', type: 'success' },
   reported: { text: '已登记', type: 'success' }, partial: { text: '部分登记', type: 'warning' },
   failed: { text: '失败', type: 'error' }, rejected: { text: '未通过', type: 'error' }, cancelled: { text: '已取消', type: 'default' },
@@ -250,34 +289,6 @@ const fmtBytes = (value) => {
 };
 const fmtDate = (value) => { if (!value) return '-'; try { return new Date(value).toLocaleString(); } catch { return String(value); } };
 const tag = (value) => { const meta = statusMap[value] || { text: value || '未知', type: 'default' }; return h(NTag, { type: meta.type, size: 'small', round: true }, { default: () => meta.text }); };
-
-const apiErrorMessage = (e, fallback = '操作失败') => {
-  const status = e?.response?.status;
-  const data = e?.response?.data;
-  let msg = '';
-  if (typeof data === 'string') {
-    msg = data.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 260);
-  } else if (data && typeof data === 'object') {
-    msg = data.message || data.error_msg || data.error || data.msg || '';
-    if (!msg && data.debug) {
-      try { msg = JSON.stringify(data.debug).slice(0, 260); } catch { msg = String(data.debug).slice(0, 260); }
-    }
-  }
-  if (!msg && e?.message) msg = e.message;
-  return status ? `HTTP ${status}: ${msg || fallback}` : (msg || fallback);
-};
-const logApiError = (label, e) => {
-  // 保留完整响应，避免后端返回 HTML/重定向/404 时界面只显示“失败”。
-  console.error(`[共享资源] ${label}`, { status: e?.response?.status, data: e?.response?.data, message: e?.message, error: e });
-};
-const ensureApiSuccess = (res) => {
-  if (res?.data && res.data.success === false) {
-    const err = new Error(res.data.message || 'API 返回失败');
-    err.response = { status: res.status || 200, data: res.data };
-    throw err;
-  }
-  return res;
-};
 
 const statCards = computed(() => {
   const local = summary.value.local || {};
@@ -302,7 +313,7 @@ const virtualColumns = [
   { title: '临时到期', key: 'expires_at', width: 170, render: row => fmtDate(row.expires_at) },
   { title: '更新时间', key: 'updated_at', width: 170, render: row => fmtDate(row.updated_at) },
   { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
-    h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: row.status === 'promoted' || row.status === 'deleted' || row.status === 'promote_pending', onClick: () => confirmPromote(row) }, { icon: () => h(NIcon, null, { default: () => h(PromoteIcon) }), default: () => row.real_fid ? '转正' : '转存整理' }),
+    h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: !row.real_fid || row.status === 'promoted' || row.status === 'deleted', onClick: () => confirmPromote(row) }, { icon: () => h(NIcon, null, { default: () => h(PromoteIcon) }), default: () => '转正' }),
     h(NButton, { size: 'small', type: 'error', ghost: true, disabled: row.status === 'deleted' || row.status === 'promoted', onClick: () => confirmDelete(row) }, { icon: () => h(NIcon, null, { default: () => h(TrashIcon) }), default: () => '删除' }),
   ]}) },
 ];
@@ -490,6 +501,70 @@ const toggleLedgerGroup = (key) => {
   ledgerCollapsedGroups[key] = ledgerCollapsedGroups[key] !== false ? false : true;
 };
 
+
+const centerTypeLabel = (value) => ({ Movie: '电影', Series: '剧集', Season: '季', Episode: '单集', movie: '电影', tv: '剧集', season: '季', episode: '单集' }[value] || value || '-');
+const versionSummaryText = (row) => {
+  const v = row.version_summary || {};
+  const parts = [v.resolution, v.effect, v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean);
+  return parts.length ? parts.join(' · ') : (row.quality || '未知版本');
+};
+const formatCenterSize = (row) => {
+  const gb = Number(row.version_summary?.size_gb || 0);
+  if (gb > 0) return `${gb.toFixed(gb >= 10 ? 1 : 2)} GB`;
+  const size = Number(row.size || 0);
+  return size ? `${(size / 1024 / 1024 / 1024).toFixed(2)} GB` : '-';
+};
+const trackText = (t) => {
+  const parts = [t.language, t.codec, t.channels ? `${t.channels}ch` : '', t.title].filter(Boolean);
+  return parts.join(' ');
+};
+const centerDetailText = (row) => {
+  const v = row.version_summary || {};
+  const audios = (v.audios || []).map(trackText).filter(Boolean).slice(0, 8).join(' / ');
+  const subs = (v.subtitles || []).map(trackText).filter(Boolean).slice(0, 10).join(' / ');
+  return [
+    `视频：${versionSummaryText(row)}${v.fps ? ` · ${v.fps}` : ''}`,
+    `音轨：${audios || `${v.audio_count || 0} 条`}`,
+    `字幕：${subs || `${v.subtitle_count || 0} 条`}`,
+  ].join('\n');
+};
+const importCenterSource = (row, mode) => {
+  const modeText = mode === 'virtual' ? '虚拟入库' : '永久转存';
+  dialog.info({
+    title: modeText,
+    content: `确定将中心资源《${row.title || row.file_name}》${modeText}吗？`,
+    positiveText: modeText,
+    negativeText: '取消',
+    onPositiveClick: async () => {
+      try {
+        const res = await axios.post('/api/shared/resources/center/import', { source_ids: [row.source_id], mode });
+        message.success(res.data?.message || '已提交');
+        await Promise.allSettled([loadVirtualItems(), loadSummary(), loadLedger()]);
+      } catch (e) {
+        message.error(e.response?.data?.message || `${modeText}失败`);
+      }
+    }
+  });
+};
+const centerColumns = [
+  { title: '媒体', key: 'title', minWidth: 260, render: row => h('div', null, [
+    h('div', { class: 'main-title' }, row.title || row.file_name || '-'),
+    h('div', { class: 'sub-title' }, `${centerTypeLabel(row.item_type)} · TMDb ${row.tmdb_id || '-'}${row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : ''}${row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : ''}`),
+    h('div', { class: 'sub-title' }, row.file_name || '')
+  ]) },
+  { title: '版本参数', key: 'version', minWidth: 260, render: row => h('div', null, [
+    h('div', { class: 'main-title' }, versionSummaryText(row)),
+    h('div', { class: 'sub-title pre-line' }, centerDetailText(row))
+  ]) },
+  { title: '大小', key: 'size', width: 100, render: row => formatCenterSize(row) },
+  { title: '状态', key: 'status', width: 110, render: row => tag(row.status) },
+  { title: '来源', key: 'contributor_name', minWidth: 140, ellipsis: { tooltip: true }, render: row => row.contributor_name || row.contributor_id || '-' },
+  { title: '操作', key: 'actions', width: 210, fixed: 'right', render: row => h(NSpace, { size: 6 }, { default: () => [
+    h(NButton, { size: 'small', type: 'primary', secondary: true, onClick: () => importCenterSource(row, 'permanent') }, { default: () => '永久转存' }),
+    h(NButton, { size: 'small', secondary: true, onClick: () => importCenterSource(row, 'virtual') }, { default: () => '虚拟入库' })
+  ] }) },
+];
+
 const ledgerColumns = [
   { title: '时间', key: 'created_at', width: 180, render: row => row.__group ? '本季汇总' : fmtDate(row.created_at) },
   { title: '事件', key: 'event_type', width: 190, render: row => {
@@ -514,9 +589,41 @@ const ledgerColumns = [
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { local: {}, shares: {}, credit: {} }; };
 const loadVirtualItems = async () => { loading.value = true; try { const res = await axios.get('/api/shared/resources/virtual', { params: { ...virtualFilters, page: virtualPagination.page, page_size: virtualPagination.pageSize } }); virtualItems.value = res.data?.items || []; virtualPagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载虚拟资源失败'); } finally { loading.value = false; } };
 const loadShares = async () => { sharesLoading.value = true; try { const res = await axios.get('/api/shared/resources/shares', { params: { ...shareFilters, page: sharePagination.page, page_size: sharePagination.pageSize } }); shareItems.value = res.data?.items || []; sharePagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载我的分享失败'); } finally { sharesLoading.value = false; } };
+
+const loadCenterSources = async () => {
+  centerLoading.value = true;
+  try {
+    const params = {
+      keyword: centerFilters.keyword,
+      item_type: centerFilters.item_type === 'all' ? '' : centerFilters.item_type,
+      status: centerFilters.status,
+      limit: centerPagination.pageSize,
+      offset: (centerPagination.page - 1) * centerPagination.pageSize,
+    };
+    const res = await axios.get('/api/shared/resources/center/sources', { params });
+    centerSources.value = res.data?.items || [];
+    centerPagination.itemCount = Number(res.data?.total || 0);
+  } catch (e) {
+    message.error(e.response?.data?.message || '加载中心资源库失败');
+  } finally {
+    centerLoading.value = false;
+  }
+};
+const triggerSharedMaintenance = async () => {
+  maintenanceSubmitting.value = true;
+  try {
+    const res = await axios.post('/api/shared/resources/tasks/maintenance');
+    message.success(res.data?.message || '维护任务已提交');
+  } catch (e) {
+    message.error(e.response?.data?.message || '提交维护任务失败');
+  } finally {
+    maintenanceSubmitting.value = false;
+  }
+};
+
 const loadLedger = async () => { ledgerLoading.value = true; try { const res = await axios.get('/api/shared/resources/credit/ledger', { params: { limit: 200, actual_only: 1, sync_center: 1 } }); ledgerItems.value = res.data?.items || []; } catch { message.error('加载贡献值流水失败'); } finally { ledgerLoading.value = false; } };
 const loadAll = async () => { await Promise.allSettled([loadSummary(), loadVirtualItems(), loadShares(), loadLedger()]); };
-const handleTabChange = (name) => { if (name === 'virtual') loadVirtualItems(); if (name === 'shares') loadShares(); if (name === 'ledger') loadLedger(); };
+const handleTabChange = (name) => { if (name === 'virtual') loadVirtualItems(); if (name === 'shares') loadShares(); if (name === 'center') loadCenterSources(); if (name === 'ledger') loadLedger(); };
 const refreshCredit = async () => { refreshingCredit.value = true; try { await axios.post('/api/shared/resources/credit/refresh'); message.success('贡献值已同步'); await Promise.allSettled([loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '刷新贡献值失败'); } finally { refreshingCredit.value = false; } };
 
 const resetManualShareForm = () => {
@@ -584,32 +691,12 @@ const manualCreateShare = async () => {
   } finally { manualCreating.value = false; }
 };
 
-const checkShare = async (row) => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/check`)); message.success(res.data?.message || '检查完成'); await Promise.allSettled([loadShares(), loadSummary()]); } catch (e) { logApiError('检查分享失败', e); message.error(apiErrorMessage(e, '检查失败')); } };
-const reportShare = async (row) => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/report-center`)); message.success(res.data?.message || '已登记中心'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { logApiError('登记中心失败', e); message.error(apiErrorMessage(e, '登记中心失败')); } };
-const uploadRawShare = async (row) => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/upload-rawffprobe`, { force: false })); message.success(res.data?.message || '媒体信息已上传'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { logApiError('上传媒体信息失败', e); message.error(apiErrorMessage(e, '上传媒体信息失败')); } };
-const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: `确定取消《${row.title || row.root_name}》的 115 分享吗？`, positiveText: '取消分享', negativeText: '保留', onPositiveClick: async () => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/shares/${row.id}/cancel`, {})); message.success(res.data?.message || '已取消分享'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { logApiError('取消分享失败', e); message.error(apiErrorMessage(e, '取消失败')); } } }); };
-const confirmDelete = (row) => { dialog.warning({ title: '删除虚拟资源', content: `确定删除《${row.title || row.file_name}》吗？如果已经播放转存，会同步删除 115 临时文件。`, positiveText: '删除', negativeText: '取消', onPositiveClick: async () => { try { const res = ensureApiSuccess(await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/delete`, { delete_remote: true, delete_local: true })); message.success(res.data?.message || '已删除'); await loadAll(); } catch (e) { logApiError('删除虚拟资源失败', e); message.error(apiErrorMessage(e, '删除失败')); } } }); };
-const confirmPromote = (row) => {
-  const unplayed = !row.real_fid;
-  dialog.info({
-    title: unplayed ? '转存到待整理并整理' : '转为永久转存',
-    content: unplayed
-      ? `《${row.title || row.file_name}》还没有播放过，将直接从分享转存到 115 待整理目录，禁用虚拟 STRM，并触发 task_scan_and_organize_115 生成正式 STRM。`
-      : `确定将《${row.title || row.file_name}》从临时转存目录移动到正式媒体库吗？`,
-    positiveText: unplayed ? '转存整理' : '转正',
-    negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        const res = ensureApiSuccess(await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/promote`, { direct_import_if_unplayed: true }));
-        message.success(res.data?.message || (unplayed ? '已提交转存整理' : '已转正'));
-        await loadAll();
-      } catch (e) {
-        logApiError('虚拟资源转正失败', e);
-        message.error(apiErrorMessage(e, '转正失败'));
-      }
-    }
-  });
-};
+const checkShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/check`); message.success(res.data?.message || '检查完成'); await Promise.allSettled([loadShares(), loadSummary()]); } catch (e) { message.error(e.response?.data?.message || '检查失败'); } };
+const reportShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/report-center`); message.success(res.data?.message || '已登记中心'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '登记中心失败'); } };
+const uploadRawShare = async (row) => { try { const res = await axios.post(`/api/shared/resources/shares/${row.id}/upload-rawffprobe`, { force: false }); message.success(res.data?.message || '媒体信息已上传'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '上传媒体信息失败'); } };
+const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: `确定取消《${row.title || row.root_name}》的 115 分享吗？`, positiveText: '取消分享', negativeText: '保留', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/shares/${row.id}/cancel`); message.success('已取消分享'); await Promise.allSettled([loadShares(), loadSummary(), loadLedger()]); } catch (e) { message.error(e.response?.data?.message || '取消失败'); } } }); };
+const confirmDelete = (row) => { dialog.warning({ title: '删除虚拟资源', content: `确定删除《${row.title || row.file_name}》吗？如果已经播放转存，会同步删除 115 临时文件。`, positiveText: '删除', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/delete`, { delete_remote: true, delete_local: true }); message.success('已删除'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '删除失败'); } } }); };
+const confirmPromote = (row) => { dialog.info({ title: '转为永久转存', content: `确定将《${row.title || row.file_name}》从临时转存目录移动到正式媒体库吗？`, positiveText: '转正', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/promote`); message.success('已转正'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '转正失败'); } } }); };
 
 onMounted(() => { checkMobile(); window.addEventListener('resize', checkMobile); loadAll(); });
 onUnmounted(() => window.removeEventListener('resize', checkMobile));
@@ -628,6 +715,7 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .toolbar { margin-bottom: 14px; }
 .main-title { font-weight: 600; }
 .sub-title { font-size: 12px; opacity: .6; margin-top: 3px; }
+.pre-line { white-space: pre-line; line-height: 1.55; }
 .selected-share-box { border: 1px solid rgba(128,128,128,.22); border-radius: 12px; padding: 12px 14px; background: rgba(128,128,128,.06); }
 .selected-title { font-weight: 700; margin-bottom: 6px; }
 .selected-desc { font-size: 12px; opacity: .68; line-height: 1.7; }
