@@ -1217,6 +1217,155 @@ def _resolve_virtual_promote_target(item: Dict[str, Any], data: Dict[str, Any], 
     return {'target_cid': str(target_cid or ''), 'target_name': target_name, 'target_info': target_info}
 
 
+
+def _resp_text(resp) -> str:
+    if resp is None:
+        return ''
+    try:
+        if isinstance(resp, dict):
+            return json.dumps(resp, ensure_ascii=False)
+    except Exception:
+        pass
+    return str(resp)
+
+
+def _is_same_target_message(resp) -> bool:
+    text = _resp_text(resp).lower()
+    return any(k in text for k in [
+        '目标目录相同', '同一目录', '已经在目标目录', 'already in', 'same folder', 'same directory'
+    ])
+
+
+def _is_duplicate_name_message(resp) -> bool:
+    text = _resp_text(resp).lower()
+    return any(k in text for k in [
+        '已存在', '同名', '文件名重复', 'same name', 'already exists', 'exist', 'duplicate'
+    ])
+
+
+def _get_cache_node(fid: str):
+    if not fid:
+        return None
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, parent_id, name, sha1, pick_code, size, local_path
+                    FROM p115_filesystem_cache
+                    WHERE id=%s
+                    LIMIT 1
+                    """,
+                    (str(fid),),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else None
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询115缓存节点失败 fid={fid}: {e}")
+    return None
+
+
+def _find_existing_file_in_target(target_cid: str, item: Dict[str, Any], client=None):
+    """转正兜底：目标目录已有同名/同SHA1文件时，直接复用目标文件，避免 115 move 同名失败。"""
+    target_cid = str(target_cid or '').strip()
+    if not target_cid:
+        return None
+    target_name = os.path.basename(str(item.get('file_name') or '').replace('\\', '/'))
+    expected_sha1 = str(item.get('sha1') or '').upper().strip()
+    expected_pc = str(item.get('real_pick_code') or item.get('pick_code') or '').strip()
+
+    # 1. 先查本地缓存，最快最稳。
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                clauses = ['parent_id = %s']
+                args = [target_cid]
+                sub = []
+                if expected_sha1:
+                    sub.append('UPPER(sha1) = %s')
+                    args.append(expected_sha1)
+                if expected_pc:
+                    sub.append('pick_code = %s')
+                    args.append(expected_pc)
+                if target_name:
+                    sub.append('name = %s')
+                    args.append(target_name)
+                if not sub:
+                    return None
+                cur.execute(
+                    f"""
+                    SELECT id, parent_id, name, sha1, pick_code, size, local_path
+                    FROM p115_filesystem_cache
+                    WHERE {' AND '.join(clauses)} AND ({' OR '.join(sub)})
+                    ORDER BY
+                      CASE WHEN UPPER(COALESCE(sha1,'')) = %s THEN 0 ELSE 1 END,
+                      CASE WHEN COALESCE(pick_code,'') = %s THEN 0 ELSE 1 END,
+                      CASE WHEN name = %s THEN 0 ELSE 1 END
+                    LIMIT 1
+                    """,
+                    args + [expected_sha1, expected_pc, target_name],
+                )
+                row = cur.fetchone()
+                if row:
+                    return dict(row)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 本地查找目标目录已有文件失败: {e}")
+
+    # 2. 再查远程目录，补齐 DB 缓存可能没同步的问题。
+    if client:
+        try:
+            res = client.fs_files({'cid': target_cid, 'limit': 1000, 'show_dir': 1, 'record_open_time': 0, 'count_folders': 0})
+            for f in (res or {}).get('data') or []:
+                fid = str(f.get('fid') or f.get('file_id') or f.get('id') or '').strip()
+                name = f.get('fn') or f.get('n') or f.get('file_name') or f.get('name') or ''
+                sha1 = str(f.get('sha1') or f.get('sha') or '').upper().strip()
+                pc = str(f.get('pc') or f.get('pick_code') or f.get('pickcode') or '').strip()
+                fc = str(f.get('fc') if f.get('fc') is not None else f.get('type') or '')
+                # 跳过目录。
+                if fc == '0' and not (sha1 or pc):
+                    continue
+                if (expected_sha1 and sha1 == expected_sha1) or (expected_pc and pc == expected_pc) or (target_name and name == target_name):
+                    return {'id': fid, 'parent_id': target_cid, 'name': name, 'sha1': sha1, 'pick_code': pc, 'size': f.get('size') or f.get('fs')}
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 远程查找目标目录已有文件失败: {e}")
+    return None
+
+
+def _mark_virtual_promoted_success(virtual_id: str, item: Dict[str, Any], target_cid: str, target_name: str, resp=None, existing=None):
+    promoted_fid = str((existing or {}).get('id') or item.get('real_fid') or '')
+    promoted_pc = (existing or {}).get('pick_code') or item.get('real_pick_code') or ''
+    message = f"手动转正到 {target_name or 'CID'} {target_cid}"
+    if existing:
+        message += '；目标目录已有同名/同SHA1文件，已复用目标文件'
+    row = shared_virtual_db.mark_virtual_promoted(
+        virtual_id,
+        promoted_fid=promoted_fid,
+        promoted_pick_code=promoted_pc,
+        message=message,
+    )
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if promoted_fid:
+                    cur.execute(
+                        """
+                        UPDATE p115_filesystem_cache
+                        SET parent_id=%s, updated_at=NOW()
+                        WHERE id=%s
+                        """,
+                        (str(target_cid), promoted_fid),
+                    )
+                conn.commit()
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 转正后更新 p115_filesystem_cache 失败: {e}")
+    shared_virtual_db.add_credit_ledger(
+        event_type='virtual_promoted', delta=0, reason='手动将虚拟资源转为永久转存',
+        virtual_id=virtual_id, source_id=item.get('source_id') or '', tmdb_id=item.get('tmdb_id') or '',
+        item_type=item.get('item_type') or '', title=item.get('title') or '',
+        raw_json={'target_cid': target_cid, 'move_response': resp, 'existing': existing},
+    )
+    return row
+
 @shared_resource_bp.route('/virtual/<virtual_id>/promote', methods=['POST'])
 @admin_required
 def api_promote_virtual_item(virtual_id):
@@ -1234,38 +1383,43 @@ def api_promote_virtual_item(virtual_id):
         return jsonify({"success": False, "message": "未配置可用的 115 客户端，无法转正"}), 400
 
     target_res = _resolve_virtual_promote_target(item, data, client=client)
-    target_cid = target_res.get('target_cid')
-    if not target_cid or str(target_cid) == '0':
-        return jsonify({"success": False, "message": "缺少正式媒体目录 CID，无法移动转正；请确认虚拟 STRM 已生成在正式分类目录下"}), 400
+    target_cid = str(target_res.get('target_cid') or '').strip()
+    target_name = target_res.get('target_name') or ''
+    if not target_cid or target_cid == '0':
+        return jsonify({"success": False, "message": "缺少正式媒体目录 CID，无法移动转正；请检查 p115_media_root_cid 是否配置，且虚拟 STRM 是否生成在正式分类目录下"}), 400
 
-    resp = client.fs_move([str(item['real_fid'])], str(target_cid))
+    # 0. 如果临时文件已经在目标目录，直接标记成功。
+    cache_node = _get_cache_node(str(item.get('real_fid') or ''))
+    if cache_node and str(cache_node.get('parent_id') or '') == target_cid:
+        row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp={'state': True, '_already_in_target': True})
+        return jsonify({"success": True, "message": "文件已在正式目录，已标记转正", "data": row})
+
+    # 1. 如果目标目录已经有同名/同 SHA1 文件，视为转正成功，避免 115 move 因同名失败。
+    existing = _find_existing_file_in_target(target_cid, item, client=client)
+    if existing:
+        # 如果临时目录里还有这份文件，尽力删除，不影响转正结果。
+        try:
+            real_fid = str(item.get('real_fid') or '')
+            if real_fid and real_fid != str(existing.get('id') or ''):
+                client.fs_delete([real_fid])
+        except Exception:
+            pass
+        row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp={'state': True, '_reuse_existing': True}, existing=existing)
+        return jsonify({"success": True, "message": "目标目录已有同名/同SHA1文件，已复用并标记转正", "data": row})
+
+    resp = client.fs_move([str(item['real_fid'])], target_cid)
     if not resp or not resp.get('state'):
-        return jsonify({"success": False, "message": f"115 移动失败: {resp}"}), 500
+        # 115 偶尔 move 返回失败但实际已经移动，或者因为同名失败；再确认一次目标目录。
+        existing_after = _find_existing_file_in_target(target_cid, item, client=client)
+        if existing_after or _is_same_target_message(resp):
+            row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp=resp, existing=existing_after)
+            return jsonify({"success": True, "message": "已确认目标目录存在该文件，已标记转正", "data": row})
+        msg = f"115 移动失败: {_resp_text(resp)}"
+        if _is_duplicate_name_message(resp):
+            msg += "；目标目录可能已有同名文件，但未能确认 SHA1/PC 一致，请刷新 115 缓存后重试。"
+        return jsonify({"success": False, "message": msg}), 500
 
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE p115_filesystem_cache
-                    SET parent_id=%s, updated_at=NOW()
-                    WHERE id=%s
-                    """,
-                    (str(target_cid), str(item.get('real_fid') or '')),
-                )
-                conn.commit()
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 转正后更新 p115_filesystem_cache 失败: {e}")
-
-    row = shared_virtual_db.mark_virtual_promoted(
-        virtual_id, promoted_fid=str(item.get('real_fid') or ''),
-        promoted_pick_code=item.get('real_pick_code') or '', message=f"手动转正到 {target_res.get('target_name') or 'CID'} {target_cid}",
-    )
-    shared_virtual_db.add_credit_ledger(
-        event_type='virtual_promoted', delta=0, reason='手动将虚拟资源转为永久转存',
-        virtual_id=virtual_id, source_id=item.get('source_id') or '', tmdb_id=item.get('tmdb_id') or '',
-        item_type=item.get('item_type') or '', title=item.get('title') or '', raw_json={"target_cid": target_cid, "move_response": resp},
-    )
+    row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp=resp)
     return jsonify({"success": True, "message": "已转为永久转存", "data": row})
 
 
@@ -1593,10 +1747,22 @@ def api_cancel_share(record_id):
     client = P115Service.get_client()
     if not client:
         return jsonify({"success": False, "message": "未配置可用的 115 Cookie 客户端"}), 400
+
+    data = request.json or {}
     resp = client.share_cancel(record.get('share_code'))
     if not resp or not resp.get('state'):
-        row = shared_share_db.update_share_record(record_id, last_error=f"取消分享失败: {resp}")
-        return jsonify({"success": False, "message": f"取消分享失败: {resp}", "data": row}), 500
+        text = _resp_text(resp)
+        # 分享已经不存在/已取消时，本地可以安全标记取消。
+        if any(k in text for k in ['分享不存在', '不存在该分享', '已取消', '取消分享', 'share not found', 'not found']):
+            row = shared_share_db.update_share_record(record_id, status='cancelled', review_status='cancelled', cancelled_at='NOW()', last_error='远端分享已不存在，已同步本地状态')
+            shared_virtual_db.add_credit_ledger('share_cancelled', 0, '同步已取消/不存在的115分享', ref_id=str(record_id), title=record.get('title') or '', raw_json=resp)
+            return jsonify({"success": True, "message": "远端分享已不存在，已同步本地取消状态", "data": row})
+        # 调试/抢救用：允许只标记本地，避免界面卡死；默认不开。
+        if data.get('force_local'):
+            row = shared_share_db.update_share_record(record_id, status='cancel_failed', review_status=record.get('review_status') or '', last_error=f"远端取消失败，仅本地标记: {text}")
+            return jsonify({"success": True, "message": "远端取消失败，已仅本地标记为取消失败；分享可能仍然有效", "data": row})
+        row = shared_share_db.update_share_record(record_id, last_error=f"取消分享失败: {text}")
+        return jsonify({"success": False, "message": f"取消分享失败: {text}", "data": row}), 500
     row = shared_share_db.update_share_record(record_id, status='cancelled', review_status='cancelled', cancelled_at='NOW()', last_error='手动取消分享')
     shared_virtual_db.add_credit_ledger('share_cancelled', 0, '手动取消115分享', ref_id=str(record_id), title=record.get('title') or '', raw_json=resp)
     return jsonify({"success": True, "message": "已取消分享", "data": row})

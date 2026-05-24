@@ -892,15 +892,75 @@ class P115CookieClient:
         return resp
 
     def share_cancel(self, share_code):
-        """取消分享。不同账号/版本接口可能返回字段不同，只统一 state。"""
+        """取消分享。
+
+        115 WebAPI 对取消分享的参数格式在不同端/版本上并不稳定：
+        有的吃 share_code，有的吃 share_code[]，有的 GET/POST 行为不同。
+        这里按多种格式依次尝试，并把每次返回带回去，方便前端显示真实错误。
+        """
         if not share_code:
             return {'state': False, 'error_msg': 'share_code 不能为空'}
-        for url in ("https://webapi.115.com/share/cancel", "https://webapi.115.com/share/delete"):
-            r = self.request(url, method='POST', data={'share_code': str(share_code)})
-            resp = self._json_result(r)
-            if _p115_success(resp):
-                return _p115_normalize_common_response(resp)
-        return _p115_normalize_common_response(resp)
+
+        code = str(share_code).strip()
+        attempts = []
+
+        # 1. 优先尝试 p115client 可能存在的封装方法。
+        if self.webapi:
+            for method_name in ('share_cancel', 'share_delete', 'share_remove', 'share_del'):
+                fn = getattr(self.webapi, method_name, None)
+                if not fn:
+                    continue
+                for args, kwargs in [((code,), {}), (([code],), {}), ((), {'share_code': code})]:
+                    try:
+                        resp = self._json_result(fn(*args, **kwargs))
+                        attempts.append({'method': method_name, 'args': str(args), 'resp': resp})
+                        if _p115_success(resp):
+                            out = _p115_normalize_common_response(resp)
+                            out['_cancel_method'] = method_name
+                            return out
+                    except TypeError:
+                        continue
+                    except Exception as e:
+                        attempts.append({'method': method_name, 'error': str(e)})
+                        continue
+
+        # 2. 原生 WebAPI 多端点、多参数格式兜底。
+        endpoints = [
+            ('POST', 'https://webapi.115.com/share/cancel'),
+            ('POST', 'https://webapi.115.com/share/delete'),
+            ('GET', 'https://webapi.115.com/share/cancel'),
+            ('GET', 'https://webapi.115.com/share/delete'),
+        ]
+        payloads = [
+            {'share_code': code},
+            {'share_codes': code},
+            {'share_code[]': code},
+            {'share_code[0]': code},
+            {'codes': code},
+        ]
+
+        last_resp = None
+        for method, url in endpoints:
+            for payload in payloads:
+                try:
+                    if method == 'GET':
+                        r = self.request(url, method='GET', params=payload)
+                    else:
+                        r = self.request(url, method='POST', data=payload)
+                    resp = self._json_result(r)
+                    last_resp = resp
+                    attempts.append({'method': method, 'url': url, 'payload': payload, 'resp': resp})
+                    if _p115_success(resp):
+                        out = _p115_normalize_common_response(resp)
+                        out['_cancel_method'] = f'{method} {url}'
+                        return out
+                except Exception as e:
+                    attempts.append({'method': method, 'url': url, 'payload': payload, 'error': str(e)})
+                    last_resp = {'state': False, 'error_msg': str(e)}
+
+        out = _p115_normalize_common_response(last_resp or {'state': False, 'error_msg': '取消分享失败'})
+        out['_attempts'] = attempts[-8:]
+        return out
     
     def life_batch_delete(self, delete_data_list):
         url = "https://life.115.com/api/1.0/web/1.0/life/life_batch_delete"

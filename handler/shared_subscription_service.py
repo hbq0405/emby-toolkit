@@ -366,9 +366,10 @@ def _remove_empty_parents(path: str, stop_root: str):
 
 
 def _media_root_cid() -> str:
+    # 正式媒体根目录必须和临时转存目录分离。
+    # 旧版曾 fallback 到 p115_shared_cache_cid，会导致“转正”目标仍在临时目录下。
     return str(
         _cfg('CONFIG_OPTION_115_MEDIA_ROOT_CID', 'p115_media_root_cid', '')
-        or _cfg('CONFIG_OPTION_115_SHARED_CACHE_CID', 'p115_shared_cache_cid', '')
         or '0'
     ).strip() or '0'
 
@@ -399,6 +400,8 @@ def ensure_virtual_target_by_rel_dir(rel_dir: str, client=None) -> Dict[str, str
         raise RuntimeError('未配置可用的 115 客户端，无法解析正式媒体目录')
 
     current_cid = _media_root_cid()
+    if not current_cid or str(current_cid) == '0':
+        raise RuntimeError('未配置 115 正式媒体库根目录 CID（p115_media_root_cid），无法为虚拟入库解析转正目录')
     built_parts = []
     for part in parts:
         built_parts.append(part)
