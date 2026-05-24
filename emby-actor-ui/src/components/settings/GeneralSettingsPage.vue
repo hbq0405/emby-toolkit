@@ -594,6 +594,76 @@
                             <n-text depth="3" style="font-size:0.8em;">在线从中心服务器获取媒体信息数据，需要神医Pro。</n-text>
                         </template>
                     </n-form-item>
+
+                    <n-divider title-placement="left" style="margin: 12px 0 8px; font-size: 0.9em; color: gray;">共享资源中心</n-divider>
+
+                    <n-form-item label="共享资源" path="p115_shared_resource_enabled">
+                        <n-switch v-model:value="configModel.p115_shared_resource_enabled" :disabled="organizeDependentDisabled">
+                            <template #checked>启用共享池</template>
+                            <template #unchecked>关闭</template>
+                        </n-switch>
+                        <template #feedback>
+                            <n-text depth="3" style="font-size:0.8em;">
+                                开启后，订阅优先查询共享资源池；未命中时自动登记缺口，仍继续走原有影巢 / TG / MP 流程。
+                            </n-text>
+                        </template>
+                    </n-form-item>
+
+                    <template v-if="configModel.p115_shared_resource_enabled">
+                        <n-form-item label="入库方式" path="p115_shared_resource_mode">
+                            <n-radio-group v-model:value="configModel.p115_shared_resource_mode" name="shared_resource_mode_group">
+                                <n-space vertical>
+                                    <n-radio value="permanent">
+                                        永久转存
+                                        <n-text depth="3" style="font-size:0.85em; margin-left: 6px;">命中共享池后直接转存到正式媒体目录，适合收藏。</n-text>
+                                    </n-radio>
+                                    <n-radio value="virtual">
+                                        虚拟入库
+                                        <n-text depth="3" style="font-size:0.85em; margin-left: 6px;">先生成 STRM 和媒体信息，播放时才临时转存。</n-text>
+                                    </n-radio>
+                                </n-space>
+                            </n-radio-group>
+                        </n-form-item>
+
+                        <template v-if="configModel.p115_shared_resource_mode === 'virtual'">
+                            <n-form-item label="临时转存目录" path="p115_shared_cache_cid">
+                                <n-input-group>
+                                    <n-input
+                                        :value="configModel.p115_shared_cache_name || configModel.p115_shared_cache_cid"
+                                        placeholder="请选择虚拟入库播放时的临时转存目录"
+                                        readonly
+                                        @click="openFolderSelector('shared_cache_path', configModel.p115_shared_cache_cid)"
+                                    >
+                                        <template #prefix><n-icon :component="FolderIcon" /></template>
+                                    </n-input>
+                                    <n-button type="primary" ghost @click="openFolderSelector('shared_cache_path', configModel.p115_shared_cache_cid)">选择</n-button>
+                                </n-input-group>
+                                <template #feedback>
+                                    <n-text depth="3" style="font-size:0.8em;">
+                                        虚拟入库资源首次播放时会转存到这里；确认值得收藏后，可再转为永久转存。
+                                    </n-text>
+                                </template>
+                            </n-form-item>
+
+                            <n-form-item label="临时保留天数" path="p115_shared_cache_retention_days">
+                                <n-input-number
+                                    v-model:value="configModel.p115_shared_cache_retention_days"
+                                    :min="1"
+                                    :max="365"
+                                    :step="1"
+                                    style="width: 150px;"
+                                >
+                                    <template #suffix>天</template>
+                                </n-input-number>
+                                <template #feedback>
+                                    <n-text depth="3" style="font-size:0.8em;">
+                                        超过保留期且未转为永久的临时转存文件，可由后续清理任务删除。
+                                    </n-text>
+                                </template>
+                            </n-form-item>
+                        </template>
+                    </template>
+
                     <n-form-item label="媒体信息格式化" path="p115_generate_mediainfo">
                       <n-switch v-model:value="configModel.p115_generate_mediainfo" :disabled="organizeDependentDisabled">
                           <template #checked>生成自定义媒体信息</template>
@@ -2493,6 +2563,19 @@ watch(
     }
   }
 );
+
+watch(
+  () => [configModel.value?.p115_shared_resource_enabled, configModel.value?.p115_shared_resource_mode],
+  ([enabled, mode]) => {
+    if (!configModel.value || !enabled) return;
+    if (!['permanent', 'virtual'].includes(mode)) {
+      configModel.value.p115_shared_resource_mode = 'permanent';
+    }
+    if (!configModel.value.p115_shared_cache_retention_days || Number(configModel.value.p115_shared_cache_retention_days) < 1) {
+      configModel.value.p115_shared_cache_retention_days = 7;
+    }
+  }
+);
 watch(() => [configModel.value?.proxy_enabled, configModel.value?.proxy_merge_native_libraries, configModel.value?.emby_server_url, configModel.value?.emby_api_key, configModel.value?.emby_user_id], ([proxyEnabled, mergeNative, url, apiKey, userId]) => {
   if (proxyEnabled && mergeNative && url && apiKey && userId) {
     fetchNativeViewsSimple();
@@ -3076,6 +3159,9 @@ const confirmFolderSelection = () => {
   } else if (selectorContext.value === 'media_root') {
     configModel.value.p115_media_root_cid = cid;
     configModel.value.p115_media_root_name = name;
+  } else if (selectorContext.value === 'shared_cache_path') {
+    configModel.value.p115_shared_cache_cid = cid;
+    configModel.value.p115_shared_cache_name = name;
   } else if (selectorContext.value === 'rule') {
     ruleManagerRef.value?.updateFolder(cid, name);
   } else if (selectorContext.value === 'share_transfer') {
@@ -3109,6 +3195,18 @@ const save = async () => {
         cleanConfigPayload.p115_generate_mediainfo = false;
         if (configModel.value) configModel.value.p115_generate_mediainfo = false;
         message.warning('媒体信息中心化与同步生成媒体信息互斥，已自动关闭“同步生成媒体信息”。');
+    }
+    if (cleanConfigPayload.p115_shared_resource_enabled) {
+        if (!['permanent', 'virtual'].includes(cleanConfigPayload.p115_shared_resource_mode)) {
+            cleanConfigPayload.p115_shared_resource_mode = 'permanent';
+            if (configModel.value) configModel.value.p115_shared_resource_mode = 'permanent';
+        }
+        if (cleanConfigPayload.p115_shared_resource_mode === 'virtual') {
+            if (!cleanConfigPayload.p115_shared_cache_retention_days || Number(cleanConfigPayload.p115_shared_cache_retention_days) < 1) {
+                cleanConfigPayload.p115_shared_cache_retention_days = 7;
+                if (configModel.value) configModel.value.p115_shared_cache_retention_days = 7;
+            }
+        }
     }
     const restartNeeded = initialRestartableConfig.value && (cleanConfigPayload.proxy_port !== initialRestartableConfig.value.proxy_port || cleanConfigPayload.log_rotation_size_mb !== initialRestartableConfig.value.log_rotation_size_mb || cleanConfigPayload.log_rotation_backup_count !== initialRestartableConfig.value.log_rotation_backup_count || cleanConfigPayload.emby_server_url !== initialRestartableConfig.value.emby_server_url);
     const performSaveAndUpdateState = async () => {
@@ -3377,6 +3475,8 @@ onMounted(async () => {
     if (!isLoading && componentIsMounted.value && configModel.value) {
       check115Status();
       if (!configModel.value.p115_auth_method) configModel.value.p115_auth_method = 'web';
+      if (!['permanent', 'virtual'].includes(configModel.value.p115_shared_resource_mode)) configModel.value.p115_shared_resource_mode = 'permanent';
+      if (!configModel.value.p115_shared_cache_retention_days || Number(configModel.value.p115_shared_cache_retention_days) < 1) configModel.value.p115_shared_cache_retention_days = 7;
       if (configModel.value.emby_server_url && configModel.value.emby_api_key) {
         fetchEmbyLibrariesInternal();
       }
