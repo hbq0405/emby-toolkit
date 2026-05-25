@@ -168,6 +168,42 @@ def _resp_ok(resp: Any) -> bool:
     return any(k in text for k in ('已存在', '已经转存', '转存过', 'already', 'exist'))
 
 
+def _is_already_transferred_resp(resp: Any) -> bool:
+    """判断 115 share_import 是否返回“本账号已经转存过”。
+
+    这类返回不能向中心上报 failed，因为分享本身通常是可用的；
+    但如果本地临时区已经找不到目标文件，就必须把 115 原始语义返回给用户，
+    避免显示“转存成功但未定位到目标视频”这种容易误导的提示。
+    """
+    if not isinstance(resp, dict):
+        return False
+    code = resp.get('errno') or resp.get('code') or resp.get('errNo')
+    if code in (4100024, '4100024'):
+        return True
+    try:
+        text = json.dumps(resp, ensure_ascii=False).lower()
+    except Exception:
+        text = str(resp).lower()
+    return any(k in text for k in ('你已经转存过', '已经转存过', '已经转存', '转存过该文件'))
+
+
+def _share_import_error_message(resp: Any) -> str:
+    if isinstance(resp, dict):
+        err = (
+            resp.get('error')
+            or resp.get('error_msg')
+            or resp.get('message')
+            or resp.get('msg')
+        )
+        if err:
+            return f"115 share_import 返回失败: {err}"
+    try:
+        raw = json.dumps(resp, ensure_ascii=False)
+    except Exception:
+        raw = str(resp)
+    return f"115 share_import 返回失败: {raw[:300]}"
+
+
 def _list_children(client, cid: str, limit=1000) -> List[Dict[str, Any]]:
     try:
         resp = client.fs_files({'cid': str(cid), 'limit': limit, 'offset': 0, 'show_dir': 1})
@@ -817,6 +853,19 @@ def ensure_playable_by_emby_item(
         ) or _find_file_by_fs_search(client, cache_cid, item)
 
         if not node or not node.get('pick_code'):
+            if _is_already_transferred_resp(import_resp):
+                msg = _share_import_error_message(import_resp)
+                shared_virtual_db.mark_virtual_error(virtual_id, msg)
+                # 注意：4100024 只是“本账号已接收过该分享”，不是共享源失效。
+                # 本地临时缓存被释放后无法再次定位目标文件时，不要向中心上报 failed。
+                return {
+                    'matched': True,
+                    'success': False,
+                    'virtual_id': virtual_id,
+                    'message': msg,
+                    'raw': import_resp,
+                }
+
             msg = '转存成功但未能在临时目录定位到目标视频或 pickcode'
             shared_virtual_db.mark_virtual_error(virtual_id, msg)
             _report_transfer_to_center(item, node or {}, result='failed', message=msg)
