@@ -590,11 +590,26 @@ const centerSeasonText = (row) => {
   const displayType = centerRowType(row);
   const s = row.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
   const e = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
-  const pack = row.pack_item_count ? `${row.pack_item_count}集包` : '';
+
   if (centerTypeLabel(displayType) === '电影') return '电影';
-  if (centerTypeLabel(displayType) === '剧集包') return ['剧集包', s, pack].filter(Boolean).join(' · ');
+
+  if (centerTypeLabel(displayType) === '剧集包') {
+    const count = row.pack_item_count ? `${row.pack_item_count}集` : '';
+    let range = '';
+    // 如果有具体的集数列表，提取出范围 (例如 E01-E20)
+    if (row.pack_episode_numbers && row.pack_episode_numbers.length > 1) {
+      const nums = row.pack_episode_numbers;
+      range = `E${String(nums[0]).padStart(2, '0')}-E${String(nums[nums.length - 1]).padStart(2, '0')}`;
+    } else if (row.pack_episode_numbers && row.pack_episode_numbers.length === 1) {
+      range = `E${String(row.pack_episode_numbers[0]).padStart(2, '0')}`;
+    }
+    const packDesc = [count, range ? `(${range})` : ''].filter(Boolean).join(' ');
+    return [s, packDesc || '剧集包'].filter(Boolean).join(' · ');
+  }
+
   if (centerTypeLabel(displayType) === '单集') return ['单集', s && e ? `${s}${e}` : (s || e)].filter(Boolean).join(' · ');
-  return [centerTypeLabel(displayType), s ? `${s}${e}` : '', pack].filter(Boolean).join(' · ') || '-';
+
+  return [centerTypeLabel(displayType), s ? `${s}${e}` : '', row.pack_item_count ? `${row.pack_item_count}集包` : ''].filter(Boolean).join(' · ') || '-';
 };
 const centerStatusTag = (row) => {
   const text = row.status_label || statusMap[row.status]?.text || row.status || '未知';
@@ -719,16 +734,12 @@ const allTrackTitle = (items) => {
 };
 
 const centerColumns = [
-  { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => {
-    const packRange = row.is_collapsed_pack && row.pack_episode_numbers?.length
-      ? ` · E${String(row.pack_episode_numbers[0]).padStart(2, '0')}-${String(row.pack_episode_numbers[row.pack_episode_numbers.length - 1]).padStart(2, '0')}`
-      : '';
-    return h('div', null, [
-      h('div', { class: 'main-title' }, centerTitleText(row)),
-      h('div', { class: 'sub-title' }, `TMDb ${row.tmdb_id || row.share_tmdb_id || '-'}${packRange}`)
-    ]);
-  }},
-  { title: '类型', key: 'item_type', width: 130, render: row => centerSeasonText(row) },
+  { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => h('div', null, [
+    h('div', { class: 'main-title' }, centerTitleText(row)),
+    h('div', { class: 'sub-title' }, `TMDb ${row.tmdb_id || row.share_tmdb_id || '-'}`)
+  ]) },
+  // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
+  { title: '类型', key: 'item_type', width: 160, render: row => lineStack(row.versions, it => h('span', centerSeasonText(it))) },
   { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = it.version_summary || {};
