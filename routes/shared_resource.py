@@ -382,7 +382,7 @@ def _parse_share_status(snap_resp: Dict[str, Any]) -> Dict[str, str]:
     share_state = str(info.get('share_state') or data.get('share_state') or '')
     forbid = info.get('forbid_reason') or ''
     if share_state == '1' and not forbid:
-        return {'status': 'alive', 'review_status': 'alive', 'message': '分享可访问'}
+        return {'status': 'alive', 'review_status': 'alive', 'message': '分享可用'}
     if forbid or info.get('have_vio_file'):
         return {'status': 'rejected', 'review_status': 'rejected', 'message': forbid or '分享包含违规/被屏蔽文件'}
     return {'status': 'pending_review', 'review_status': 'pending_review', 'message': f'分享状态 {share_state or "未知"}'}
@@ -2267,14 +2267,20 @@ def api_check_share(record_id):
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 检查分享时补扫包内文件失败: record={record_id}, err={e}", exc_info=True)
 
+    parsed_message = str(parsed.get('message') or '').strip()
+    is_share_ok = parsed.get('status') == 'alive' and parsed.get('review_status') == 'alive'
+    # last_error 只保存真正的异常/审核说明。分享正常时不要写“分享可用”，
+    # 否则前端“错误”列会把正常结果显示成错误信息。
+    last_error = '' if is_share_ok else parsed_message
+
     update_kwargs = dict(
         status=parsed['status'], review_status=parsed['review_status'], last_checked_at='NOW()',
-        last_error=parsed['message'], raw_json={'last_snap': snap},
+        last_error=last_error, raw_json={'last_snap': snap},
     )
     if added_count is not None:
         update_kwargs['item_count'] = added_count
     row = shared_share_db.update_share_record(record_id, **update_kwargs)
-    msg = parsed['message']
+    msg = parsed_message or ('分享可用' if is_share_ok else '检查完成')
     if added_count is not None:
         msg = f"{msg}，已补扫到 {added_count} 个视频文件"
     return jsonify({"success": True, "message": msg, "data": row, "raw": snap})

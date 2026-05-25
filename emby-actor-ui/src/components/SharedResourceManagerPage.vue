@@ -282,12 +282,30 @@ const manualItemTypeOptions = [
   { label: '电影', value: 'Movie' }, { label: '季', value: 'Season' }, { label: '剧集', value: 'Series' },
 ];
 const shareTypeOptions = [
-  { label: '电影目录', value: 'movie_folder' },
-  { label: '电影单文件', value: 'movie_file' },
-  { label: '季目录', value: 'season_pack' },
-  { label: '整剧目录', value: 'series_pack' },
+  { label: '电影', value: 'movie_folder' },
+  { label: '电影', value: 'movie_file' },
+  { label: '剧集包', value: 'season_pack' },
+  { label: '剧集包', value: 'series_pack' },
+  { label: '集', value: 'episode_file' },
 ];
-const shareTypeLabel = (value) => (shareTypeOptions.find(opt => opt.value === value)?.label || value || '-');
+const shareTypeLabel = (value) => ({
+  movie_file: '电影', movie_folder: '电影',
+  season_pack: '剧集包', series_pack: '剧集包',
+  episode_file: '集', Episode: '集', episode: '集',
+  Movie: '电影', movie: '电影', Season: '剧集包', Series: '剧集包',
+}[value] || shareTypeOptions.find(opt => opt.value === value)?.label || value || '-');
+const isSuccessShareMessage = (value) => {
+  const text = String(value || '').trim();
+  if (!text) return true;
+  return /^(分享可用|分享可访问|分享正常|可访问|正常|ok)$/i.test(text);
+};
+const shareErrorText = (row) => {
+  const status = String(row.status || row.review_status || '').toLowerCase();
+  const text = String(row.last_error || row.error || '').trim();
+  if (!text || isSuccessShareMessage(text)) return '-';
+  if (['alive', 'reported'].includes(status) && isSuccessShareMessage(text)) return '-';
+  return text;
+};
 
 const statusMap = {
   virtual_ready: { text: '虚拟待播', type: 'info' }, transferring: { text: '转存中', type: 'warning' },
@@ -350,7 +368,14 @@ const virtualColumns = [
 ];
 
 const shareColumns = [
-  { title: '标题', key: 'title', minWidth: 240, render: row => h('div', [h('div', { class: 'main-title' }, row.title || row.root_name || row.share_code), h('div', { class: 'sub-title' }, `${row.share_type || '-'} · TMDb ${row.tmdb_id || '-'}${row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : ''}`)]) },
+  { title: '标题', key: 'title', minWidth: 240, render: row => {
+    const seasonText = row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : '';
+    const episodeText = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
+    return h('div', [
+      h('div', { class: 'main-title' }, row.title || row.root_name || row.share_code),
+      h('div', { class: 'sub-title' }, `${shareTypeLabel(row.share_type)} · TMDb ${row.tmdb_id || '-'}${seasonText}${episodeText}`)
+    ]);
+  } },
   { title: '审核', key: 'review_status', width: 110, render: row => tag(row.review_status || row.status) },
   { title: '中心', key: 'center_status', width: 110, render: row => tag(row.center_status) },
   { title: '分享码', key: 'share_code', width: 140, ellipsis: { tooltip: true } },
@@ -366,7 +391,7 @@ const shareColumns = [
   } },
   { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
   { title: '检查时间', key: 'last_checked_at', width: 170, render: row => fmtDate(row.last_checked_at) },
-  { title: '错误', key: 'last_error', minWidth: 220, ellipsis: { tooltip: true } },
+  { title: '错误', key: 'last_error', minWidth: 220, ellipsis: { tooltip: true }, render: row => shareErrorText(row) },
   { title: '操作', key: 'actions', width: 300, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
     h(NButton, { size: 'small', type: 'info', ghost: true, onClick: () => checkShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CheckIcon) }), default: () => '检查' }),
     h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: !['alive','reported'].includes(row.status) && row.review_status !== 'alive', onClick: () => reportShare(row) }, { icon: () => h(NIcon, null, { default: () => h(ReportIcon) }), default: () => '登记' }),
