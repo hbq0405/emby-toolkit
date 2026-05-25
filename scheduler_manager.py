@@ -1,6 +1,8 @@
 # scheduler_manager.py
 
 import logging
+import hashlib
+import random
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.jobstores.base import JobLookupError
@@ -402,6 +404,13 @@ class SchedulerManager:
             logger.info("  ➜ 共享资源未启用，本次不设置共享资源自动维护定时任务。")
             return
 
+        install_id = str(cfg.get(getattr(constants, 'CONFIG_OPTION_115_SHARED_INSTALL_ID', 'p115_shared_install_id'), '')).strip()
+        if install_id:
+            # 用 install_id 的哈希值取模 30，确保同一个设备每次重启后都在固定的分钟执行，避免频繁重启导致任务密集执行
+            base_minute = int(hashlib.md5(install_id.encode()).hexdigest(), 16) % 30
+        else:
+            base_minute = random.randint(0, 29)
+
         def scheduled_shared_resource_maintenance_wrapper():
             try:
                 from tasks.shared_resource_tasks import task_shared_resource_maintenance
@@ -415,16 +424,19 @@ class SchedulerManager:
             except Exception as e:
                 logger.error(f"  ➜ 提交共享资源自动维护任务失败: {e}", exc_info=True)
 
-        cron_str = '*/30 * * * *'
         try:
             self.scheduler.add_job(
                 func=scheduled_shared_resource_maintenance_wrapper,
-                trigger=CronTrigger.from_crontab(cron_str, timezone=str(pytz.timezone(constants.TIMEZONE))),
+                trigger=CronTrigger(
+                    minute=f"{base_minute},{base_minute + 30}", 
+                    timezone=str(pytz.timezone(constants.TIMEZONE)), 
+                    jitter=120  # 在设定的分钟基础上，再随机延迟 0~120 秒执行
+                ),
                 id=SHARED_RESOURCE_MAINTENANCE_JOB_ID,
                 name="共享资源自动维护",
                 replace_existing=True
             )
-            logger.trace("  ➜ 已成功设置'共享资源自动维护'任务，执行计划: 每 30 分钟。")
+            logger.trace(f"  ➜ 已成功设置'共享资源自动维护'任务，执行计划: 每小时的 {base_minute}分 和 {base_minute+30}分 (附带120秒随机抖动)。")
         except Exception as e:
             logger.error(f"设置'共享资源自动维护'任务失败: {e}", exc_info=True)
 
