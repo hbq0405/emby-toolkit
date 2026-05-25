@@ -1216,6 +1216,197 @@ def api_list_virtual_items():
     return jsonify({"success": True, "items": items, "total": total})
 
 
+def _virtual_pack_delete_candidates(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """返回删除虚拟资源时应一起处理的同包分集。
+
+    中心资源按文件登记，但 115 分享经常是整季包。虚拟入库播放任意一集后，
+    share_import 实际会把整个包转入临时区；因此手动删除时也要以
+    contributor + share_code + season 为边界，一次性删除同包临时目录和本地投影。
+    """
+    if not item:
+        return []
+
+    share_code = str(item.get('share_code') or '').strip()
+    season_number = item.get('season_number')
+    item_type = str(item.get('item_type') or '').strip().lower()
+    has_episode = item.get('episode_number') not in [None, '']
+
+    if not share_code or season_number in [None, ''] or not (item_type in {'episode', 'season', 'series', 'tv'} or has_episode):
+        return [item]
+
+    try:
+        season_int = int(season_number)
+    except Exception:
+        season_int = season_number
+
+    contributor_id = str(item.get('contributor_id') or '').strip()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if contributor_id:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM shared_virtual_items
+                    WHERE status <> 'deleted'
+                      AND share_code = %s
+                      AND COALESCE(contributor_id, '') = %s
+                      AND season_number = %s
+                    ORDER BY COALESCE(episode_number, 999999), updated_at DESC
+                    """,
+                    (share_code, contributor_id, season_int),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT *
+                    FROM shared_virtual_items
+                    WHERE status <> 'deleted'
+                      AND share_code = %s
+                      AND season_number = %s
+                    ORDER BY COALESCE(episode_number, 999999), updated_at DESC
+                    """,
+                    (share_code, season_int),
+                )
+            rows = [dict(r) for r in cur.fetchall()]
+
+    return rows or [item]
+
+
+def _node_video_ext(name: str) -> bool:
+    return os.path.splitext(str(name or '').lower())[1] in VIDEO_EXTENSIONS
+
+
+def _node_matches_virtual_row(node: Dict[str, Any], row: Dict[str, Any]) -> bool:
+    if not node or not row:
+        return False
+    if node.get('is_dir'):
+        return False
+
+    node_sha1 = str(node.get('sha1') or node.get('sha') or '').strip().upper()
+    row_sha1 = str(row.get('sha1') or '').strip().upper()
+    if node_sha1 and row_sha1 and node_sha1 == row_sha1:
+        return True
+
+    node_name = str(node.get('name') or node.get('fn') or node.get('file_name') or '').strip()
+    row_name = str(row.get('file_name') or '').strip()
+    if node_name and row_name and node_name == row_name:
+        return True
+
+    try:
+        node_size = int(node.get('size') or node.get('fs') or 0)
+        row_size = int(row.get('size') or 0)
+    except Exception:
+        node_size = row_size = 0
+    if node_name and row_name and row_size > 0 and node_size > 0:
+        # 文件名基础部分相近 + 大小误差 2% 内，作为旧数据兜底。
+        node_base = os.path.splitext(node_name)[0].lower()
+        row_base = os.path.splitext(row_name)[0].lower()
+        if (node_base in row_base or row_base in node_base) and abs(node_size - row_size) <= max(16 * 1024 * 1024, row_size * 0.02):
+            return True
+    return False
+
+
+def _list_115_children_for_delete(client, cid: str) -> List[Dict[str, Any]]:
+    children = []
+    offset = 0
+    limit = 1000
+    while cid:
+        res = client.fs_files({'cid': str(cid), 'limit': limit, 'offset': offset, 'record_open_time': 0, 'count_folders': 0})
+        data = (res or {}).get('data') or []
+        for it in data:
+            name = it.get('fn') or it.get('n') or it.get('file_name') or ''
+            fc = it.get('fc') if it.get('fc') is not None else it.get('type')
+            is_dir = str(fc) == '0'
+            children.append({
+                'fid': str(it.get('fid') or it.get('file_id') or ''),
+                'name': name,
+                'sha1': it.get('sha1') or it.get('sha') or '',
+                'size': it.get('fs') or it.get('size') or 0,
+                'is_dir': is_dir,
+                'pick_code': it.get('pc') or it.get('pick_code') or '',
+            })
+        if len(data) < limit:
+            break
+        offset += limit
+    return children
+
+
+def _verified_pack_parent_for_delete(client, rows: List[Dict[str, Any]]) -> str:
+    """找出可安全整目录删除的临时包目录 CID。
+
+    只在满足以下条件时返回目录：
+    1. 多个虚拟分集有同一个 real_parent_id；
+    2. 该目录不是共享临时区根目录 cache_parent_id；
+    3. 目录内能匹配到同包分集文件，避免旧缓存污染时删错别的剧包。
+    """
+    rows = [r for r in rows or [] if r]
+    if len(rows) <= 1:
+        return ''
+
+    cache_roots = {str(r.get('cache_parent_id') or '').strip() for r in rows if str(r.get('cache_parent_id') or '').strip()}
+    parent_count: Dict[str, int] = {}
+    for r in rows:
+        parent = str(r.get('real_parent_id') or '').strip()
+        fid = str(r.get('real_fid') or '').strip()
+        if not parent or not fid or parent in cache_roots:
+            continue
+        parent_count[parent] = parent_count.get(parent, 0) + 1
+
+    if not parent_count:
+        return ''
+
+    # 优先选择命中集数最多的同一父目录。
+    candidates = sorted(parent_count.items(), key=lambda kv: kv[1], reverse=True)
+    for parent_id, count in candidates:
+        if count < 2:
+            continue
+        try:
+            children = _list_115_children_for_delete(client, parent_id)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享虚拟删除] 校验临时包目录失败 cid={parent_id}: {e}")
+            continue
+
+        matched = 0
+        for row in rows:
+            if any(_node_matches_virtual_row(node, row) for node in children):
+                matched += 1
+
+        # 至少匹配 1 个真实文件；多集包要求匹配 2 个更安全。
+        required = 2 if len(rows) >= 2 and len(children) >= 2 else 1
+        if matched >= required:
+            return parent_id
+        logger.warning(
+            "  ➜ [共享虚拟删除] 临时包目录校验未通过，跳过整目录删除: cid=%s, matched=%s/%s",
+            parent_id, matched, len(rows),
+        )
+    return ''
+
+
+def _remove_virtual_projection_files(rows: List[Dict[str, Any]]) -> int:
+    removed = 0
+    seen = set()
+    for row in rows or []:
+        for key in ('strm_path', 'mediainfo_path', 'nfo_path'):
+            path = str((row or {}).get(key) or '').strip()
+            if not path or path in seen:
+                continue
+            seen.add(path)
+            if _remove_file_quietly(path):
+                removed += 1
+    return removed
+
+
+def _mark_virtual_rows_deleted(rows: List[Dict[str, Any]], message: str) -> int:
+    count = 0
+    for row in rows or []:
+        vid = str((row or {}).get('virtual_id') or '').strip()
+        if not vid:
+            continue
+        if shared_virtual_db.mark_virtual_deleted(vid, message=message):
+            count += 1
+    return count
+
+
 @shared_resource_bp.route('/virtual/<virtual_id>/delete', methods=['POST'])
 @admin_required
 def api_delete_virtual_item(virtual_id):
@@ -1228,30 +1419,71 @@ def api_delete_virtual_item(virtual_id):
     delete_local = data.get('delete_local', True)
     messages = []
 
-    if delete_remote and item.get('real_fid'):
-        client = P115Service.get_client()
-        if not client:
-            return jsonify({"success": False, "message": "未配置可用的 115 客户端，无法删除临时转存文件"}), 400
-        resp = client.fs_delete([str(item['real_fid'])])
-        if not resp or not resp.get('state'):
-            return jsonify({"success": False, "message": f"115 删除失败: {resp}"}), 500
-        messages.append("115临时文件已删除")
+    pack_rows = _virtual_pack_delete_candidates(item)
+    is_pack_delete = len(pack_rows) > 1
+
+    if delete_remote:
+        # 已播放过的剧集包，115 实际是整包转存到临时区。
+        # 删除时优先删已校验的包目录；找不到包目录时再兜底删每个文件 fid。
+        remote_targets: List[str] = []
+        if any(r.get('real_fid') for r in pack_rows):
+            client = P115Service.get_client()
+            if not client:
+                return jsonify({"success": False, "message": "未配置可用的 115 客户端，无法删除临时转存文件"}), 400
+
+            pack_parent = _verified_pack_parent_for_delete(client, pack_rows)
+            if pack_parent:
+                remote_targets = [pack_parent]
+                messages.append("115临时包目录已删除")
+            else:
+                # 单文件或旧数据兜底：只删 real_fid，排除共享缓存根目录和包父目录。
+                cache_roots = {str(r.get('cache_parent_id') or '').strip() for r in pack_rows if str(r.get('cache_parent_id') or '').strip()}
+                seen = set()
+                for r in pack_rows:
+                    fid = str(r.get('real_fid') or '').strip()
+                    if not fid or fid in seen or fid in cache_roots:
+                        continue
+                    seen.add(fid)
+                    remote_targets.append(fid)
+                if remote_targets:
+                    messages.append(f"115临时文件已删除 {len(remote_targets)} 个")
+
+            if remote_targets:
+                resp = client.fs_delete(remote_targets)
+                if not resp or not resp.get('state'):
+                    return jsonify({"success": False, "message": f"115 删除失败: {resp}"}), 500
 
     if delete_local:
-        removed = []
-        for key in ('strm_path', 'mediainfo_path', 'nfo_path'):
-            if _remove_file_quietly(item.get(key)):
-                removed.append(key)
-        if removed:
-            messages.append("本地投影文件已删除")
+        removed_count = _remove_virtual_projection_files(pack_rows)
+        if removed_count:
+            messages.append(f"本地投影文件已删除 {removed_count} 个")
 
-    row = shared_virtual_db.mark_virtual_deleted(virtual_id, message='；'.join(messages) or '手动删除')
+    message_text = '；'.join(messages) or ('手动删除虚拟入库剧集包' if is_pack_delete else '手动删除虚拟入库资源')
+    deleted_count = _mark_virtual_rows_deleted(pack_rows, message_text)
+    row = shared_virtual_db.get_virtual_item(virtual_id) or item
+
     shared_virtual_db.add_credit_ledger(
-        event_type='virtual_deleted', delta=0, reason='手动删除虚拟入库资源',
-        virtual_id=virtual_id, source_id=item.get('source_id') or '', tmdb_id=item.get('tmdb_id') or '',
-        item_type=item.get('item_type') or '', title=item.get('title') or '', raw_json=data,
+        event_type='virtual_pack_deleted' if is_pack_delete else 'virtual_deleted',
+        delta=0,
+        reason=(
+            f"手动删除虚拟入库剧集包：{item.get('title') or item.get('file_name')}，共 {deleted_count} 集"
+            if is_pack_delete else '手动删除虚拟入库资源'
+        ),
+        virtual_id=virtual_id,
+        source_id=item.get('source_id') or '',
+        tmdb_id=item.get('tmdb_id') or '',
+        item_type=item.get('item_type') or '',
+        title=item.get('title') or '',
+        raw_json={**data, 'pack_virtual_ids': [r.get('virtual_id') for r in pack_rows]},
     )
-    return jsonify({"success": True, "message": "已删除虚拟资源", "data": row})
+
+    return jsonify({
+        "success": True,
+        "message": f"已删除虚拟资源包，共 {deleted_count} 集" if is_pack_delete else "已删除虚拟资源",
+        "data": row,
+        "deleted_count": deleted_count,
+        "is_pack_delete": is_pack_delete,
+    })
 
 
 def _resolve_virtual_promote_target(item: Dict[str, Any], data: Dict[str, Any], client=None) -> Dict[str, Any]:
