@@ -2491,20 +2491,41 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
 
 
 def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """中心资源库展示层去重：同一分享码下多个 SxxEyy 文件视作一个季分享包版本。"""
+    """中心资源库展示层去重：同一分享码下的一组分集/季条目视作一个季分享包版本。
+
+    v8.2 只按 item_type=episode + tmdb_id 分组，实际自动登记季包时可能会把每个文件
+    登记成 Season（或 episode 的 tmdb_id 是单集 ID），导致同一个 115 分享码下的 S01/S02
+    资源在中心资源库被拆成多行。这里改成以 contributor + share_code + season 为主键；
+    只要同一分享码下存在多个同季条目，就折叠为一个 Season 包。
+    """
     groups: Dict[str, List[Dict[str, Any]]] = {}
     passthrough: List[Dict[str, Any]] = []
-    for item in items or []:
-        item_type = str(item.get('item_type') or '').lower()
+
+    def _norm_season(value):
+        if value in [None, '']:
+            return ''
+        try:
+            return str(int(value))
+        except Exception:
+            return str(value).strip()
+
+    def _is_pack_candidate(item: Dict[str, Any]) -> bool:
+        item_type = str(item.get('item_type') or '').strip().lower()
         share_code = str(item.get('share_code') or '').strip()
-        season = item.get('season_number')
-        # 只有同一分享码下的多个 episode 才折叠；电影和真正的单集源不动。
-        if item_type == 'episode' and share_code and season not in [None, '']:
+        if not share_code:
+            return False
+        # episode 是天然候选；Season/tv/series 也可能是季包内每个文件被按季上下文登记。
+        if item_type in {'episode', 'season', 'tv', 'series'}:
+            return bool(_norm_season(item.get('season_number')))
+        # 老数据如果带了 episode_number，也按季包候选处理。
+        return bool(_norm_season(item.get('season_number')) and item.get('episode_number') not in [None, ''])
+
+    for item in items or []:
+        if _is_pack_candidate(item):
             key = '|'.join([
                 str(item.get('contributor_id') or ''),
-                share_code,
-                str(item.get('tmdb_id') or ''),
-                str(season),
+                str(item.get('share_code') or '').strip(),
+                _norm_season(item.get('season_number')),
             ])
             groups.setdefault(key, []).append(item)
         else:
@@ -2512,36 +2533,63 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
 
     collapsed = []
     for rows in groups.values():
+        # 同一分享码只有一个条目时，仍按原始条目展示，避免真正的单集资源被误标为季包。
         if len(rows) <= 1:
             passthrough.extend(rows)
             continue
+
         rows_sorted = sorted(rows, key=lambda r: int(r.get('size') or 0), reverse=True)
         rep = dict(rows_sorted[0])
         total_size = 0
         episode_numbers = []
         source_ids = []
+        tmdb_ids = []
+        has_any_episode = False
+
         for r in rows:
             try:
                 total_size += int(r.get('size') or 0)
             except Exception:
                 pass
-            source_ids.append(r.get('source_id'))
+
+            sid = r.get('source_id')
+            if sid:
+                source_ids.append(sid)
+
+            if r.get('tmdb_id') not in [None, '']:
+                tmdb_ids.append(str(r.get('tmdb_id')))
+
             try:
-                if r.get('episode_number') is not None:
-                    episode_numbers.append(int(r.get('episode_number')))
+                ep = r.get('episode_number')
+                if ep is not None and ep != '':
+                    episode_numbers.append(int(ep))
+                    has_any_episode = True
             except Exception:
                 pass
+
+        unique_source_ids = list(dict.fromkeys([x for x in source_ids if x]))
+        unique_tmdb_ids = list(dict.fromkeys(tmdb_ids))
+        unique_eps = sorted(set(episode_numbers))
+
         rep['item_type'] = 'Season'
         rep['episode_number'] = None
         rep['pack_item_count'] = len(rows)
-        rep['pack_episode_numbers'] = sorted(set(episode_numbers))
-        rep['pack_source_ids'] = [x for x in source_ids if x]
+        rep['pack_episode_numbers'] = unique_eps
+        rep['pack_source_ids'] = unique_source_ids
+        rep['pack_tmdb_ids'] = unique_tmdb_ids
         rep['share_type'] = 'season_pack'
+        rep['is_collapsed_pack'] = True
+
+        # 如果没有明确 episode_number，就至少告诉前端这是同分享码多文件包，避免显示成单个 Season 文件。
+        if not has_any_episode and not unique_eps:
+            rep['pack_note'] = f"同一分享码下 {len(rows)} 个文件"
+
         if total_size > 0:
             rep['size'] = total_size
             if isinstance(rep.get('version_summary'), dict):
                 rep['version_summary']['size'] = total_size
                 rep['version_summary']['size_gb'] = round(total_size / 1024 / 1024 / 1024, 2)
+
         collapsed.append(rep)
 
     return passthrough + collapsed
@@ -2646,7 +2694,9 @@ def api_center_sources():
         # 展示层把同一个季包分享码下的多集文件折叠成一个“季分享包”版本，
         # 避免《怪奇物语 S02》这种整季分享在中心资源库里被误看成一堆单集分享。
         items = [_decorate_center_source_row(x) for x in _collapse_center_season_pack_rows(items)]
-        return jsonify({'success': True, 'items': items, 'total': data.get('total', len(items))})
+        # 注意：中心服务的 total 是原始 shared_sources 数量。中心资源库这里已经做了季包折叠，
+        # 前端分页按展示行理解更自然，避免同一季包 9 个文件导致总数/当前页看起来异常。
+        return jsonify({'success': True, 'items': items, 'total': len(items), 'raw_total': data.get('total', len(items))})
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 拉取中心资源库失败: {e}", exc_info=True)
         return jsonify({'success': False, 'message': f'拉取中心资源库失败: {e}'}), 500
