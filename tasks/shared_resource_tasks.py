@@ -1265,7 +1265,8 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         logger.setLevel(logging.ERROR)
 
     def _status(progress: int, message: str):
-        # 静默调度时仍允许后台状态更新，但不依赖实时日志展示。
+        if maintenance_silent:
+            return
         task_manager.update_status_from_thread(progress, message)
 
     try:

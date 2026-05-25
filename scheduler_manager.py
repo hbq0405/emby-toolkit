@@ -414,15 +414,16 @@ class SchedulerManager:
         def scheduled_shared_resource_maintenance_wrapper():
             try:
                 from tasks.shared_resource_tasks import task_shared_resource_maintenance
-                task_manager.submit_task(
-                    task_function=task_shared_resource_maintenance,
-                    task_name="共享资源自动维护",
-                    processor_type='media',
-                    silent=True,
-                    maintenance_silent=True
+                import threading
+                t = threading.Thread(
+                    target=task_shared_resource_maintenance,
+                    kwargs={'maintenance_silent': True},
+                    name="SilentSharedMaintenance",
+                    daemon=True
                 )
+                t.start()
             except Exception as e:
-                logger.error(f"  ➜ 提交共享资源自动维护任务失败: {e}", exc_info=True)
+                logger.error(f"  ➜ 启动共享资源自动维护后台线程失败: {e}", exc_info=True)
 
         try:
             self.scheduler.add_job(
