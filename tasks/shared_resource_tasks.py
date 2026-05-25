@@ -87,10 +87,33 @@ def _parse_share_ok(resp: Dict[str, Any]) -> bool:
     return False
 
 
+def _share_resp_text(resp: Any) -> str:
+    try:
+        return json.dumps(resp, ensure_ascii=False).lower()
+    except Exception:
+        return str(resp or '').lower()
+
+
+def _looks_share_blocked(resp: Any) -> bool:
+    """115 审核违规/风控类状态。
+
+    这类分享不能当作普通失效处理；普通失效可重建，但违规分享如果被维护任务
+    反复重建，就会出现同一资源被自动分享多次。
+    """
+    text = _share_resp_text(resp)
+    return any(k in text for k in (
+        '违规', '违法', '侵权', '敏感', '禁止分享', '禁止访问',
+        '审核失败', '审核不通过', '分享状态异常',
+        'violation', 'illegal', 'blocked', 'forbidden', 'risk'
+    ))
+
+
 def _looks_share_alive(resp: Dict[str, Any]) -> bool:
     if not _parse_share_ok(resp):
         return False
-    text = json.dumps(resp, ensure_ascii=False).lower()
+    text = _share_resp_text(resp)
+    if _looks_share_blocked(resp):
+        return False
     return not any(k in text for k in ['已取消', '已失效', '不存在', '取消分享', 'expired', 'cancelled', 'not found'])
 
 
@@ -217,7 +240,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
 
     for record in records:
         status = str(record.get('status') or '')
-        if status in ('cancelled', 'deleted', 'dead'):
+        if status in ('cancelled', 'deleted', 'dead', 'blocked', 'violation'):
             continue
         share_code = str(record.get('share_code') or '').strip()
         if not share_code:
@@ -271,14 +294,32 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                     except Exception as e:
                         logger.warning(f"  ➜ [共享资源维护] 自动登记中心失败: share={share_code}, err={e}")
             else:
-                # 115 分享已不可用，撤销中心源并本地标记。
                 sha1s = [i.get('sha1') for i in (shared_share_db.list_share_items(record['id']) or []) if i.get('sha1')]
-                try:
-                    client.cancel_sources(share_code=share_code, sha1_list=sha1s, reason='auto_share_dead', delete_raw_ffprobe=True)
-                except Exception as e:
-                    logger.debug(f"  ➜ [共享资源维护] 撤销中心源失败: {e}")
-                shared_share_db.update_share_record(record['id'], status='dead', review_status='dead', center_status='cancelled', last_checked_at='NOW()', cancelled_at='NOW()', last_error='自动检测到115分享失效，已撤销中心源')
-                cancelled += 1
+                if _looks_share_blocked(snap):
+                    # 115 审核违规/风控：熔断这个自动分享，不再把它当普通 dead 缺口反复重建。
+                    try:
+                        client.cancel_sources(share_code=share_code, sha1_list=sha1s, reason='auto_share_violation', delete_raw_ffprobe=True)
+                    except Exception as e:
+                        logger.debug(f"  ➜ [共享资源维护] 撤销违规中心源失败: {e}")
+                    shared_share_db.update_share_record(
+                        record['id'],
+                        status='blocked',
+                        review_status='violation',
+                        center_status='cancelled',
+                        last_checked_at='NOW()',
+                        cancelled_at='NOW()',
+                        last_error='115 审核违规/风控，已熔断自动补缺分享，避免重复创建分享',
+                        raw_json={'last_snap': snap, 'auto_share_blocked': True},
+                    )
+                    cancelled += 1
+                else:
+                    # 115 分享已不可用，撤销中心源并本地标记。
+                    try:
+                        client.cancel_sources(share_code=share_code, sha1_list=sha1s, reason='auto_share_dead', delete_raw_ffprobe=True)
+                    except Exception as e:
+                        logger.debug(f"  ➜ [共享资源维护] 撤销中心源失败: {e}")
+                    shared_share_db.update_share_record(record['id'], status='dead', review_status='dead', center_status='cancelled', last_checked_at='NOW()', cancelled_at='NOW()', last_error='自动检测到115分享失效，已撤销中心源')
+                    cancelled += 1
         except Exception as e:
             logger.warning(f"  ➜ [共享资源维护] 同步分享状态异常: share={share_code}, err={e}")
         time.sleep(0.2)
@@ -329,24 +370,129 @@ def _find_local_media_for_gap(gap: Dict[str, Any]) -> Dict[str, Any] | None:
             return dict(row) if row else None
 
 
-def _has_existing_share_for_gap(gap: Dict[str, Any]) -> bool:
-    tmdb_id = str(gap.get('tmdb_id') or '')
-    item_type = str(gap.get('item_type') or '')
-    season = gap.get('season_number')
+def _dedupe_values(*vals) -> List[str]:
+    result = []
+    seen = set()
+    for v in vals:
+        if isinstance(v, (list, tuple, set)):
+            seq = v
+        else:
+            seq = (v,)
+        for x in seq:
+            s = str(x or '').strip()
+            if not s or s in seen:
+                continue
+            seen.add(s)
+            result.append(s)
+    return result
+
+
+def _has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] | None = None, files: List[Dict[str, Any]] | None = None) -> bool:
+    """判断中心缺口是否已经有本机分享在处理。返回 True 就绝对不再自动 share_create。
+
+    旧逻辑只按 tmdb_id + item_type + season_number 粗略判断，遇到单集缺口时容易因为
+    gap tmdb / candidate tmdb / parent_series_tmdb_id 口径不一致而漏判，维护任务就会每轮
+    都创建一个新 115 分享。这里改为三层去重：root_fid、sha1、媒体口径。
+    """
+    candidate = candidate or {}
+    files = files or []
+    item_type = str(gap.get('item_type') or candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
+    season = _safe_int(gap.get('season_number', candidate.get('season_number')), -1)
+    episode = _safe_int(gap.get('episode_number', candidate.get('episode_number')), -1)
+    root_fid = str(candidate.get('root_fid') or '').strip()
+    tmdb_ids = _dedupe_values(
+        gap.get('tmdb_id'),
+        candidate.get('share_tmdb_id'),
+        candidate.get('tmdb_id'),
+        candidate.get('parent_series_tmdb_id'),
+    )
+    sha1s = _dedupe_values([str(x.get('sha1') or '').strip().upper() for x in files or [] if x.get('sha1')])
+
+    # blocked/violation 也必须算“已有处理记录”，这样违规资源不会被下一轮自动重建。
+    active_statuses = (
+        'pending_review', 'alive', 'reported', 'partial', 'not_reported',
+        'blocked', 'violation', 'review_failed'
+    )
+
     with get_db_connection() as conn:
         with conn.cursor() as cur:
+            if root_fid:
+                cur.execute(
+                    """
+                    SELECT 1 FROM shared_share_records
+                    WHERE root_fid=%s
+                      AND status = ANY(%s)
+                    LIMIT 1
+                    """,
+                    (root_fid, list(active_statuses)),
+                )
+                if cur.fetchone() is not None:
+                    return True
+
+            if sha1s:
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM shared_share_records r
+                    JOIN shared_share_items i ON i.record_id = r.id
+                    WHERE UPPER(COALESCE(i.sha1, '')) = ANY(%s)
+                      AND r.status = ANY(%s)
+                    LIMIT 1
+                    """,
+                    (sha1s, list(active_statuses)),
+                )
+                if cur.fetchone() is not None:
+                    return True
+
+            if not tmdb_ids:
+                return False
+
+            if item_type == 'Movie':
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM shared_share_records r
+                    LEFT JOIN shared_share_items i ON i.record_id = r.id
+                    WHERE (r.tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
+                      AND (r.item_type IN ('Movie','movie','movie_file','movie_folder') OR i.item_type IN ('Movie','movie','movie_file'))
+                      AND r.status = ANY(%s)
+                    LIMIT 1
+                    """,
+                    (tmdb_ids, tmdb_ids, list(active_statuses)),
+                )
+                return cur.fetchone() is not None
+
+            if item_type == 'Episode':
+                cur.execute(
+                    """
+                    SELECT 1
+                    FROM shared_share_records r
+                    LEFT JOIN shared_share_items i ON i.record_id = r.id
+                    WHERE (r.tmdb_id = ANY(%s) OR r.parent_series_tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
+                      AND COALESCE(i.season_number, r.season_number, -1)=COALESCE(%s, -1)
+                      AND COALESCE(i.episode_number, -1)=COALESCE(%s, -1)
+                      AND r.status = ANY(%s)
+                    LIMIT 1
+                    """,
+                    (tmdb_ids, tmdb_ids, tmdb_ids, season, episode, list(active_statuses)),
+                )
+                return cur.fetchone() is not None
+
+            # Season / Series 都按“剧集包”处理，精确到季。
             cur.execute(
                 """
-                SELECT 1 FROM shared_share_records
-                WHERE tmdb_id=%s
-                  AND (item_type=%s OR %s IN ('Series','Season','Episode'))
-                  AND COALESCE(season_number, -1)=COALESCE(%s, -1)
-                  AND status NOT IN ('cancelled','dead','deleted','cancel_failed')
+                SELECT 1
+                FROM shared_share_records r
+                LEFT JOIN shared_share_items i ON i.record_id = r.id
+                WHERE (r.tmdb_id = ANY(%s) OR r.parent_series_tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
+                  AND COALESCE(i.season_number, r.season_number, -1)=COALESCE(%s, -1)
+                  AND r.status = ANY(%s)
                 LIMIT 1
                 """,
-                (tmdb_id, item_type, item_type, int(season) if season not in (None, '') else -1),
+                (tmdb_ids, tmdb_ids, tmdb_ids, season, list(active_statuses)),
             )
             return cur.fetchone() is not None
+
 
 
 def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) -> int:
@@ -379,6 +525,8 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                 continue
             candidate = sr._build_media_candidate(row)
             if not candidate.get('resolvable') or not candidate.get('root_fid'):
+                continue
+            if _has_existing_share_for_gap(gap, candidate=candidate):
                 continue
 
             # 遵守已有季包分享策略，避免未完结季整包分享。
