@@ -107,6 +107,10 @@ def _extract_list_from_fs_response(resp: Any) -> List[Dict[str, Any]]:
     return [x for x in candidates if isinstance(x, dict)]
 
 
+def _is_video_name(name: str) -> bool:
+    return os.path.splitext(str(name or '').lower())[1] in VIDEO_EXTS
+
+
 def _is_folder_node(node: Dict[str, Any]) -> bool:
     fc = node.get('fc')
     if fc is None:
@@ -115,6 +119,16 @@ def _is_folder_node(node: Dict[str, Any]) -> bool:
         return True
     if any(str(node.get(k)).lower() in ('1', 'true', 'yes', 'folder', 'dir') for k in ('is_dir', 'is_directory', 'is_folder')):
         return True
+
+    name = _pick(node, 'fn', 'n', 'file_name', 'name', 'title')
+    sha1 = _pick(node, 'sha1', 'sha', 'file_sha1')
+    size = _safe_int(_pick(node, 'fs', 'size', 'file_size', 's'), 0)
+
+    # 115 对目录有时也会返回 pick_code，但目录的 sha1 为空、size 为 0、且没有视频扩展名。
+    # 这类节点绝不能当成可播放文件，否则会把整季目录的 pickcode 传给播放直链接口。
+    if (not sha1) and size <= 0 and name and not _is_video_name(name):
+        return True
+
     return bool(_pick(node, 'cid')) and not any(_pick(node, k) for k in ('pc', 'pick_code', 'pickcode', 'sha1', 'sha', 'size', 'fs'))
 
 
@@ -163,10 +177,45 @@ def _list_children(client, cid: str, limit=1000) -> List[Dict[str, Any]]:
         return []
 
 
-def _find_file_recursive(client, root_cid: str, sha1: str = '', file_name: str = '', size: int = 0, max_depth: int = 5) -> Optional[Dict[str, Any]]:
-    target_sha1 = _norm_sha1(sha1)
-    target_name = os.path.basename(str(file_name or '')).lower()
-    target_stem = os.path.splitext(target_name)[0]
+def _norm_for_match(value: str) -> str:
+    text = str(value or '').lower()
+    text = os.path.splitext(os.path.basename(text))[0]
+    return re.sub(r'[^a-z0-9\u4e00-\u9fa5]+', '', text)
+
+
+def _node_matches_virtual_item(node: Dict[str, Any], item: Dict[str, Any], file_name: str = '', size: int = 0) -> bool:
+    """严格判断临时区节点是否就是当前虚拟项对应的视频文件。
+
+    不能用“搜索结果第一条”或“目录 pickcode”兜底，否则不同分享包会串台。
+    """
+    if not node or node.get('is_dir'):
+        return False
+    node_name = str(node.get('name') or '')
+    node_pick = str(node.get('pick_code') or '')
+    if not node_pick or not _is_video_name(node_name):
+        return False
+
+    target_sha1 = _norm_sha1(item.get('sha1'))
+    node_sha1 = _norm_sha1(node.get('sha1'))
+    if target_sha1:
+        return bool(node_sha1 and node_sha1 == target_sha1)
+
+    target_name = os.path.basename(str(file_name or item.get('file_name') or '')).lower()
+    node_name_lower = node_name.lower()
+    if target_name and node_name_lower == target_name:
+        return True
+
+    target_size = _safe_int(size or item.get('size'), 0)
+    node_size = _safe_int(node.get('size'), 0)
+    target_stem = _norm_for_match(target_name)
+    node_stem = _norm_for_match(node_name_lower)
+    name_close = bool(target_stem and node_stem and (target_stem in node_stem or node_stem in target_stem))
+    size_close = bool(target_size and node_size and abs(node_size - target_size) < 1024 * 1024)
+    return name_close and (size_close or not target_size)
+
+
+def _find_file_recursive(client, root_cid: str, sha1: str = '', file_name: str = '', size: int = 0, max_depth: int = 5, item: Dict[str, Any] = None) -> Optional[Dict[str, Any]]:
+    item = item or {'sha1': sha1, 'file_name': file_name, 'size': size}
     queue = [(str(root_cid), 0)]
     seen = set()
 
@@ -181,17 +230,8 @@ def _find_file_recursive(client, root_cid: str, sha1: str = '', file_name: str =
                     queue.append((node['fid'], depth + 1))
                 continue
 
-            node_name = str(node.get('name') or '').lower()
-            node_sha1 = _norm_sha1(node.get('sha1'))
-            node_size = _safe_int(node.get('size'), 0)
-
-            if target_sha1 and node_sha1 and node_sha1 == target_sha1:
+            if _node_matches_virtual_item(node, item, file_name=file_name, size=size):
                 return node
-            if target_name and node_name == target_name:
-                return node
-            if target_stem and target_stem in os.path.splitext(node_name)[0]:
-                if not size or not node_size or abs(node_size - size) < 1024 * 1024:
-                    return node
     return None
 
 
@@ -207,16 +247,12 @@ def _find_file_by_fs_search(client, cache_cid: str, item: Dict[str, Any]) -> Opt
         logger.debug(f"  ➜ [共享虚拟播放] fs_search 失败: {e}")
         return None
 
-    sha1 = _norm_sha1(item.get('sha1'))
-    size = _safe_int(item.get('size'), 0)
     for node in candidates:
-        if node.get('is_dir'):
-            continue
-        if sha1 and node.get('sha1') == sha1:
+        if _node_matches_virtual_item(node, item):
             return node
-        if size and node.get('size') and abs(node.get('size') - size) < 1024 * 1024:
-            return node
-    return candidates[0] if candidates else None
+
+    # 绝不返回 candidates[0]。115 搜索可能返回目录或其他资源包，直接兜底会导致串台。
+    return None
 
 
 def _upsert_p115_cache(node: Dict[str, Any], item: Dict[str, Any], cache_cid: str):
@@ -406,18 +442,30 @@ def ensure_playable_by_emby_item(
         # 可能其他并发请求已经完成转存，重新读一次。
         item = shared_virtual_db.get_virtual_item(virtual_id) or item
         if item.get('real_pick_code'):
-            _mark_played_debounced(virtual_id)
-            return {
-                'matched': True,
-                'success': True,
-                'virtual_id': virtual_id,
-                'pick_code': item.get('real_pick_code'),
-                'real_pick_code': item.get('real_pick_code'),
-                'real_fid': item.get('real_fid'),
-                'file_name': item.get('file_name') or display_name,
-                'title': item.get('title') or display_name,
-                'cached': True,
-            }
+            cached_node = None
+            raw_json = item.get('raw_json') if isinstance(item.get('raw_json'), dict) else {}
+            if isinstance(raw_json, dict) and isinstance(raw_json.get('last_import_node'), dict):
+                cached_node = _normalize_node(raw_json.get('last_import_node') or {})
+
+            # 老数据没有 last_import_node 时只能保守沿用；新链路必须校验，避免把其他剧/目录 pickcode 当成本集。
+            if not cached_node or _node_matches_virtual_item(cached_node, item, file_name=item.get('file_name') or display_name, size=_safe_int(item.get('size'), 0)):
+                _mark_played_debounced(virtual_id)
+                return {
+                    'matched': True,
+                    'success': True,
+                    'virtual_id': virtual_id,
+                    'pick_code': item.get('real_pick_code'),
+                    'real_pick_code': item.get('real_pick_code'),
+                    'real_fid': item.get('real_fid'),
+                    'file_name': item.get('file_name') or display_name,
+                    'title': item.get('title') or display_name,
+                    'cached': True,
+                }
+
+            logger.warning(
+                "  ➜ [共享虚拟播放] 已缓存 pickcode 与当前虚拟项不匹配，忽略旧缓存并重新定位: virtual_id=%s, cached=%s, current=%s",
+                virtual_id, cached_node.get('name') or cached_node.get('fid'), item.get('file_name') or display_name
+            )
 
         share_code = str(item.get('share_code') or '').strip()
         receive_code = str(item.get('receive_code') or '').strip()
@@ -438,6 +486,11 @@ def ensure_playable_by_emby_item(
             return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg}
 
         def _finalize_cached_node(node: Dict[str, Any], import_resp=None, message='播放触发临时转存成功', cached=False):
+            if not _node_matches_virtual_item(node, item, file_name=item.get('file_name') or display_name, size=_safe_int(item.get('size'), 0)):
+                msg = f"临时区定位到的节点不属于当前虚拟资源，拒绝复用: {node.get('name') or node.get('fid')}"
+                logger.warning(f"  ➜ [共享虚拟播放] {msg}")
+                shared_virtual_db.mark_virtual_error(virtual_id, msg)
+                return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg}
             _upsert_p115_cache(node, item, cache_cid)
             row = shared_virtual_db.mark_virtual_cached(
                 virtual_id,
@@ -486,6 +539,7 @@ def ensure_playable_by_emby_item(
             file_name=item.get('file_name') or display_name,
             size=_safe_int(item.get('size'), 0),
             max_depth=6,
+            item=item,
         ) or _find_file_by_fs_search(client, cache_cid, item)
         if existing_node and existing_node.get('pick_code'):
             logger.info(f"  ➜ [共享虚拟播放] 临时区已存在目标文件，复用 pickcode: {existing_node.get('name') or item.get('file_name')}")
@@ -522,6 +576,7 @@ def ensure_playable_by_emby_item(
             file_name=item.get('file_name') or display_name,
             size=_safe_int(item.get('size'), 0),
             max_depth=6,
+            item=item,
         ) or _find_file_by_fs_search(client, cache_cid, item)
 
         if not node or not node.get('pick_code'):
