@@ -853,6 +853,79 @@ def task_full_sync_strm_and_subs(processor=None):
                 cleaned_dirs = 0
                 import shutil
                 import re  # ★ 引入正则模块
+
+                # ★ 共享资源虚拟入库保护：
+                # 全量同步只从 115 正式分类目录递归拉取真实文件，虚拟入库 STRM 不在 115 文件列表里。
+                # 如果这里不把虚拟 STRM 加入有效文件集合，下面的“失效 STRM 清理”会把它们当孤儿文件删掉。
+                # 保护来源：1) shared_virtual_items 表记录；2) 本地扫描到的 etk-shared:// 协议 STRM。
+                protected_virtual_files = set()
+                local_root_abs = os.path.abspath(local_root)
+
+                def _normalize_local_file_path(path_value):
+                    path_value = str(path_value or '').strip()
+                    if not path_value:
+                        return ''
+                    try:
+                        if not os.path.isabs(path_value):
+                            path_value = os.path.join(local_root_abs, path_value)
+                        path_value = os.path.abspath(path_value)
+                        if path_value == local_root_abs or path_value.startswith(local_root_abs + os.sep):
+                            return path_value
+                    except Exception:
+                        return ''
+                    return ''
+
+                def _is_virtual_strm_file(path_value):
+                    try:
+                        if not path_value or not str(path_value).lower().endswith('.strm') or not os.path.exists(path_value):
+                            return False
+                        with open(path_value, 'r', encoding='utf-8', errors='ignore') as vf:
+                            head = vf.read(256).strip()
+                        return head.lower().startswith('etk-shared://') or 'etk-shared://play/' in head.lower()
+                    except Exception:
+                        return False
+
+                try:
+                    with get_db_connection() as conn:
+                        with conn.cursor() as cursor:
+                            cursor.execute(
+                                """
+                                SELECT strm_path, mediainfo_path, nfo_path
+                                FROM shared_virtual_items
+                                WHERE COALESCE(status, '') NOT IN ('deleted', 'promoted', 'promote_pending')
+                                """
+                            )
+                            for row in cursor.fetchall():
+                                row = dict(row)
+                                for key in ('strm_path', 'mediainfo_path', 'nfo_path'):
+                                    p = _normalize_local_file_path(row.get(key))
+                                    if p:
+                                        protected_virtual_files.add(p)
+                except Exception as e:
+                    # 兼容未初始化共享资源表/旧库，不能因此影响全量同步。
+                    logger.debug(f"  ➜ [全量同步] 读取共享虚拟入库保护列表失败，改用文件内容兜底: {e}")
+
+                # 内容兜底：即使数据库记录缺失，只要 STRM 内容是 etk-shared://，也绝不能清。
+                try:
+                    for _cid, _rel_path in cid_to_rel_path.items():
+                        _target_local_dir = os.path.join(local_root, _rel_path)
+                        if not os.path.exists(_target_local_dir):
+                            continue
+                        for _root_dir, _dirs, _files in os.walk(_target_local_dir):
+                            for _file in _files:
+                                if not _file.lower().endswith('.strm'):
+                                    continue
+                                _file_path = os.path.abspath(os.path.join(_root_dir, _file))
+                                if _is_virtual_strm_file(_file_path):
+                                    protected_virtual_files.add(_file_path)
+                except Exception as e:
+                    logger.debug(f"  ➜ [全量同步] 扫描虚拟 STRM 保护列表失败: {e}")
+
+                # 将虚拟 STRM 及其已生成的 mediainfo/nfo 纳入有效名单，后续衍生文件规则会继续保护同名字幕/海报等文件。
+                if protected_virtual_files:
+                    existed_virtual_files = {p for p in protected_virtual_files if os.path.exists(p)}
+                    valid_local_files.update(existed_virtual_files)
+                    logger.info(f"  ➜ [全量同步] 已保护 {len(existed_virtual_files)} 个共享虚拟入库本地投影文件，避免被清理。")
                 
                 # ★ 提取所有有效 STRM 的基础路径 (不含扩展名)
                 valid_strm_bases = set()
