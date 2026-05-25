@@ -24,6 +24,15 @@ def _cfg(name: str, fallback: str, default=None):
 def _enabled() -> bool:
     return shared_center_enabled()
 
+def _is_network_error(e: Any) -> bool:
+    """判断异常是否属于网络超时或连接失败"""
+    text = str(e).lower()
+    return any(k in text for k in (
+        'timeout', 'connection', 'read timed out', 
+        'max retries exceeded', 'name or service not known', 
+        'host is unreachable', 'socket'
+    ))
+
 
 def _safe_int(v, default=0):
     try:
@@ -371,6 +380,7 @@ def _cleanup_invalid_local_shares(client: SharedCenterClient, max_rows: int = 10
             rows = [dict(r) for r in cur.fetchall()]
 
     deleted = failed = 0
+    consecutive_errors = 0
     for record in rows:
         record_id = record.get('id')
         share_code = str(record.get('share_code') or '').strip()
@@ -386,6 +396,13 @@ def _cleanup_invalid_local_shares(client: SharedCenterClient, max_rows: int = 10
             continue
 
         center_ok, center_resp = _cancel_center_sources_for_record(client, record_id, share_code, 'share_invalid_or_blocked')
+        if not center_ok and _is_network_error(center_resp):
+            consecutive_errors += 1
+            if consecutive_errors >= 3:
+                logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束违规清理。")
+                break
+        else:
+            consecutive_errors = 0
         _mark_share_deleted(
             record,
             p115_resp=p115_resp,
@@ -490,6 +507,7 @@ def _cleanup_excess_local_shares(client: SharedCenterClient, max_active_shares: 
 
     p115 = P115Service.get_client()
     pruned = failed = 0
+    consecutive_errors = 0
     for record in candidates:
         record_id = record.get('id')
         share_code = str(record.get('share_code') or '').strip()
@@ -509,6 +527,13 @@ def _cleanup_excess_local_shares(client: SharedCenterClient, max_active_shares: 
                 continue
 
             center_ok, center_resp = _cancel_center_sources_for_record(client, record_id, share_code, 'max_active_shares_waterline')
+            if not center_ok and _is_network_error(center_resp):
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束水位清理。")
+                    break
+            else:
+                consecutive_errors = 0
             raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
             raw_json = dict(raw_json or {})
             raw_json['share_waterline_prune'] = {
@@ -553,6 +578,11 @@ def _cleanup_excess_local_shares(client: SharedCenterClient, max_active_shares: 
         except Exception as e:
             logger.warning(f"  ➜ [共享资源维护] 分享水位清理异常: record={record_id}, share={share_code}, err={e}", exc_info=True)
             failed += 1
+            if _is_network_error(e):
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束水位清理。")
+                    break
         time.sleep(0.25)
 
     if pruned or failed:
@@ -602,6 +632,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
 
     records, _ = shared_share_db.list_share_records(status='all', keyword='', page=1, page_size=max_records)
     checked = reported = cancelled = 0
+    consecutive_errors = 0
 
     # 延迟导入 routes.shared_resource，复用现有检查/上传/登记逻辑，避免两套实现分叉。
     try:
@@ -713,6 +744,11 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                     cancelled += 1
         except Exception as e:
             logger.warning(f"  ➜ [共享资源维护] 同步分享状态异常: share={share_code}, err={e}")
+            if _is_network_error(e):
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束分享状态同步。")
+                    break
         time.sleep(0.2)
 
     return {'checked': checked, 'reported': reported, 'cancelled': cancelled}
@@ -1174,6 +1210,7 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
     rows = _watching_missing_episodes(limit=max_items)
     consumed = gaps = skipped = 0
     mode = shared_resource_mode()
+    consecutive_errors = 0 
 
     for row in rows:
         try:
@@ -1205,6 +1242,11 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
                 gaps += 1
         except Exception as e:
             logger.warning(f"  ➜ [共享资源维护] 剧集追更共享消费失败: {row} -> {e}", exc_info=True)
+            if _is_network_error(e):
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束剧集追更。")
+                    break
         time.sleep(0.2)
 
     return {'missing': len(rows), 'consumed': consumed, 'gaps': gaps, 'skipped': skipped}
@@ -1234,6 +1276,23 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         client = SharedCenterClient()
         if not client.ready:
             _status(100, '共享中心地址或 device_token 未配置，跳过。')
+            return
+
+        _status(5, '正在测试中心服务器连通性...')
+        try:
+            from routes.shared_resource import _fetch_center_credit
+            credit_test = _fetch_center_credit()
+            if not credit_test.get('ok'):
+                msg = f"中心服务器连接失败 ({credit_test.get('message')})，为避免任务卡死，本次维护取消。"
+                if not maintenance_silent:
+                    logger.warning(f"  ➜ [共享资源维护] {msg}")
+                _status(100, msg)
+                return
+        except Exception as e:
+            msg = f"中心服务器连接超时或异常，为避免任务卡死，本次维护取消。"
+            if not maintenance_silent:
+                logger.warning(f"  ➜ [共享资源维护] {msg} ({e})")
+            _status(100, msg)
             return
 
         total = {}
