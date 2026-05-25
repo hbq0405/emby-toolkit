@@ -1570,9 +1570,18 @@ def api_delete_virtual_item(virtual_id):
         return jsonify({"success": False, "message": "虚拟资源不存在"}), 404
 
     data = _request_json()
-    delete_remote = data.get('delete_remote', True)
+    # 115 对同一账号接收同一分享有服务端“已转存”账本。
+    # 虚拟入库的临时缓存如果被物理删除，再次播放时 share_import 仍可能返回
+    # 4100024“你已经转存过该文件”，即使清空回收站/接收记录也无法立刻重转。
+    # 因此普通“删除虚拟入库”只删除本地投影并隐藏记录，默认保留 115 临时缓存。
+    # 只有显式传 release_cache/force_delete_remote/delete_remote_cache 时才真正释放网盘缓存。
+    requested_delete_remote = bool(data.get('delete_remote', True))
+    release_cache = bool(data.get('release_cache') or data.get('force_delete_remote') or data.get('delete_remote_cache'))
+    delete_remote = requested_delete_remote and release_cache
     delete_local = data.get('delete_local', True)
     messages = []
+    if requested_delete_remote and not release_cache:
+        messages.append('115临时转存缓存已保留，避免同账号重复转存被115拒绝')
 
     pack_rows = _virtual_pack_delete_candidates(item)
     is_pack_delete = len(pack_rows) > 1
@@ -1638,6 +1647,8 @@ def api_delete_virtual_item(virtual_id):
         "data": row,
         "deleted_count": deleted_count,
         "is_pack_delete": is_pack_delete,
+        "remote_cache_kept": bool(requested_delete_remote and not release_cache),
+        "remote_cache_released": bool(delete_remote),
     })
 
 
@@ -2877,13 +2888,77 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
     }
 
 
-def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """中心资源库展示层去重：同一分享码下的一组分集/季条目视作一个季分享包版本。
 
-    v8.2 只按 item_type=episode + tmdb_id 分组，实际自动登记季包时可能会把每个文件
-    登记成 Season（或 episode 的 tmdb_id 是单集 ID），导致同一个 115 分享码下的 S01/S02
-    资源在中心资源库被拆成多行。这里改成以 contributor + share_code + season 为主键；
-    只要同一分享码下存在多个同季条目，就折叠为一个 Season 包。
+def _center_norm_item_type(value: str) -> str:
+    """把中心/本地历史遗留 item_type 归一化到展示用三类。"""
+    return str(value or '').strip().lower().replace('-', '_').replace(' ', '_')
+
+
+def _center_is_movie_row(item: Dict[str, Any]) -> bool:
+    t = _center_norm_item_type(item.get('item_type'))
+    share_type = _center_norm_item_type(item.get('share_type'))
+    return t in {'movie', 'movies', 'film', 'movie_file', 'movie_folder'} or share_type in {'movie_file', 'movie_folder'}
+
+
+def _center_is_episode_row(item: Dict[str, Any]) -> bool:
+    t = _center_norm_item_type(item.get('item_type'))
+    if t in {'episode', 'episodes', 'episode_file'}:
+        return True
+    return item.get('episode_number') not in [None, ''] and not _center_is_movie_row(item)
+
+
+def _center_is_pack_like_row(item: Dict[str, Any]) -> bool:
+    t = _center_norm_item_type(item.get('item_type'))
+    share_type = _center_norm_item_type(item.get('share_type'))
+    if t in {'season', 'seasons', 'season_pack', 'series', 'series_pack', 'tv', 'show'}:
+        return True
+    if share_type in {'season_pack', 'series_pack'}:
+        return True
+    if item.get('pack_item_count'):
+        return True
+    return False
+
+
+def _center_display_type(item: Dict[str, Any]) -> str:
+    """中心资源库只暴露三类：Movie / Pack / Episode。"""
+    if not item:
+        return 'Unknown'
+    if item.get('is_collapsed_pack') or _center_is_pack_like_row(item):
+        return 'Pack'
+    if _center_is_movie_row(item):
+        return 'Movie'
+    if _center_is_episode_row(item):
+        return 'Episode'
+    # 兜底：有季号没集号，多半是季包；否则按原类型保留。
+    if item.get('season_number') not in [None, ''] and item.get('episode_number') in [None, '']:
+        return 'Pack'
+    t = _center_norm_item_type(item.get('item_type'))
+    if t == 'movie':
+        return 'Movie'
+    return 'Unknown'
+
+
+def _center_match_display_type(item: Dict[str, Any], wanted: str) -> bool:
+    wanted = str(wanted or '').strip().lower()
+    if not wanted or wanted in {'all', '全部类型'}:
+        return True
+    dtype = _center_display_type(item).lower()
+    alias = {
+        'movie': 'movie', 'movies': 'movie', '电影': 'movie',
+        'pack': 'pack', 'season': 'pack', 'series': 'pack', 'tv': 'pack', 'season_pack': 'pack', 'series_pack': 'pack', '剧集包': 'pack', '季': 'pack', '剧集': 'pack',
+        'episode': 'episode', 'episodes': 'episode', 'episode_file': 'episode', 'single': 'episode', '单集': 'episode',
+    }
+    return alias.get(wanted, wanted) == alias.get(dtype, dtype)
+
+
+def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """中心资源库展示层去重：同一分享码下的一组剧集文件视作一个“剧集包”。
+
+    展示模型统一成三类：电影、剧集包、单集。
+    - Movie/movie_file/movie_folder 永远按电影展示；
+    - 同一个 contributor + share_code + season 下存在多条剧集/分集记录时折叠为剧集包；
+    - Season/Series/tv/season_pack 即使只有一条，也按剧集包展示；
+    - 真正只有一条的 episode/episode_file 按单集展示，不误折叠。
     """
     groups: Dict[str, List[Dict[str, Any]]] = {}
     passthrough: List[Dict[str, Any]] = []
@@ -2896,33 +2971,37 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
         except Exception:
             return str(value).strip()
 
-    def _is_pack_candidate(item: Dict[str, Any]) -> bool:
-        item_type = str(item.get('item_type') or '').strip().lower()
-        share_code = str(item.get('share_code') or '').strip()
-        if not share_code:
-            return False
-        # episode 是天然候选；Season/tv/series 也可能是季包内每个文件被按季上下文登记。
-        if item_type in {'episode', 'season', 'tv', 'series'}:
-            return bool(_norm_season(item.get('season_number')))
-        # 老数据如果带了 episode_number，也按季包候选处理。
-        return bool(_norm_season(item.get('season_number')) and item.get('episode_number') not in [None, ''])
+    def _group_key(item: Dict[str, Any]) -> str:
+        return '|'.join([
+            str(item.get('contributor_id') or ''),
+            str(item.get('share_code') or '').strip(),
+            _norm_season(item.get('season_number')),
+        ])
 
     for item in items or []:
-        if _is_pack_candidate(item):
-            key = '|'.join([
-                str(item.get('contributor_id') or ''),
-                str(item.get('share_code') or '').strip(),
-                _norm_season(item.get('season_number')),
-            ])
-            groups.setdefault(key, []).append(item)
-        else:
-            passthrough.append(item)
+        if _center_is_movie_row(item):
+            row = dict(item)
+            row['display_type'] = 'Movie'
+            passthrough.append(row)
+            continue
 
-    collapsed = []
+        share_code = str(item.get('share_code') or '').strip()
+        season = _norm_season(item.get('season_number'))
+        if share_code and season and (_center_is_episode_row(item) or _center_is_pack_like_row(item)):
+            groups.setdefault(_group_key(item), []).append(item)
+        else:
+            row = dict(item)
+            row['display_type'] = _center_display_type(row)
+            passthrough.append(row)
+
+    collapsed: List[Dict[str, Any]] = []
     for rows in groups.values():
-        # 同一分享码只有一个条目时，仍按原始条目展示，避免真正的单集资源被误标为季包。
-        if len(rows) <= 1:
-            passthrough.extend(rows)
+        # Season/Series/tv/season_pack 本身就是剧集包；多条 episode 同分享码同季也折叠为剧集包。
+        must_pack = any(_center_is_pack_like_row(r) for r in rows)
+        if len(rows) <= 1 and not must_pack:
+            row = dict(rows[0])
+            row['display_type'] = 'Episode'
+            passthrough.append(row)
             continue
 
         rows_sorted = sorted(rows, key=lambda r: (1 if r.get('raw_ffprobe_json') else 0, int(r.get('size') or 0)), reverse=True)
@@ -2938,14 +3017,11 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
                 total_size += int(r.get('size') or 0)
             except Exception:
                 pass
-
             sid = r.get('source_id')
             if sid:
                 source_ids.append(sid)
-
             if r.get('tmdb_id') not in [None, '']:
                 tmdb_ids.append(str(r.get('tmdb_id')))
-
             try:
                 ep = r.get('episode_number')
                 if ep is not None and ep != '':
@@ -2958,6 +3034,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
         unique_tmdb_ids = list(dict.fromkeys(tmdb_ids))
         unique_eps = sorted(set(episode_numbers))
 
+        rep['display_type'] = 'Pack'
         rep['item_type'] = 'Season'
         rep['episode_number'] = None
         rep['pack_item_count'] = len(rows)
@@ -2966,8 +3043,6 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
         rep['pack_tmdb_ids'] = unique_tmdb_ids
         rep['share_type'] = 'season_pack'
         rep['is_collapsed_pack'] = True
-
-        # 如果没有明确 episode_number，就至少告诉前端这是同分享码多文件包，避免显示成单个 Season 文件。
         if not has_any_episode and not unique_eps:
             rep['pack_note'] = f"同一分享码下 {len(rows)} 个文件"
 
@@ -2984,12 +3059,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
 
 
 def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: str = 'alive,pending') -> List[Dict[str, Any]]:
-    """分页展示前补全同一分享码的季包条目，避免 30 条分页把 36 集季包截成 30 集。
-
-    中心接口按 shared_sources 原始文件分页；而 ETK 前端希望按“版本/分享包”展示。
-    如果当前页已经出现同一 share_code + season 的多个条目，就说明它极大概率是季包，
-    此时用 share_code 反查最多 500 条完整条目后再折叠，pack_item_count 才是真实集数。
-    """
+    """分页展示前补全同一分享码的剧集包条目，避免 30 条分页把 36 集包截成 30 集。"""
     items = list(items or [])
     if not client or not items:
         return items
@@ -3002,16 +3072,16 @@ def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: 
         except Exception:
             return str(value).strip()
 
-    # 只对“当前页已经能看出是同一分享码多文件”的资源做补全，避免 30 个单集分享触发 30 次额外请求。
     group_counts: Dict[str, int] = {}
     code_by_key: Dict[str, str] = {}
     for item in items:
+        if _center_is_movie_row(item):
+            continue
         share_code = str(item.get('share_code') or '').strip()
         season = _norm_season(item.get('season_number'))
-        item_type = str(item.get('item_type') or '').strip().lower()
         if not share_code or not season:
             continue
-        if item_type not in {'episode', 'season', 'tv', 'series'} and item.get('episode_number') in [None, '']:
+        if not (_center_is_episode_row(item) or _center_is_pack_like_row(item)):
             continue
         key = '|'.join([str(item.get('contributor_id') or ''), share_code, season])
         group_counts[key] = group_counts.get(key, 0) + 1
@@ -3019,17 +3089,15 @@ def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: 
 
     share_codes = []
     for key, count in group_counts.items():
-        if count >= 2:
-            code = code_by_key.get(key)
-            if code and code not in share_codes:
-                share_codes.append(code)
+        # 多条同包分集必须补全；Season/Series 单条也尽量补全，避免只拿到代表目录时看不到全集。
+        code = code_by_key.get(key)
+        if code and code not in share_codes and count >= 1:
+            share_codes.append(code)
 
     if not share_codes:
         return items
 
-    # 当前页通常只会有 1 个季包；这里给个保护上限，避免极端页面放大请求。
     share_codes = share_codes[:8]
-
     by_id: Dict[str, Dict[str, Any]] = {}
     ordered_ids: List[str] = []
 
@@ -3043,10 +3111,8 @@ def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: 
             return
         old = by_id[sid]
         merged = dict(row or {})
-        # 初始页 include_raw=True，补全查询 include_raw=False；不要用无 raw 的补全行覆盖已有 raw。
         if prefer_existing_raw and old.get('raw_ffprobe_json') and not merged.get('raw_ffprobe_json'):
             merged['raw_ffprobe_json'] = old.get('raw_ffprobe_json')
-        # 保留已经计算过/装饰过的临时字段。
         for k in ('version_summary', '_local_share_record_exists'):
             if k in old and k not in merged:
                 merged[k] = old[k]
@@ -3073,15 +3139,103 @@ def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: 
                 matched += 1
             total = int(res.get('total') or matched or 0)
             if total > matched:
-                logger.warning(
-                    "  ➜ [共享资源] 分享码 %s 可能超过 500 条，当前仅补全 %s/%s 条。",
-                    code, matched, total
-                )
-            logger.debug("  ➜ [共享资源] 季包分享码 %s 分页补全 %s 条。", code, matched)
+                logger.warning("  ➜ [共享资源] 分享码 %s 可能超过 500 条，当前仅补全 %s/%s 条。", code, matched, total)
+            logger.debug("  ➜ [共享资源] 剧集包分享码 %s 分页补全 %s 条。", code, matched)
         except Exception as e:
-            logger.warning(f"  ➜ [共享资源] 季包分页补全失败 share_code={code}: {e}")
+            logger.warning(f"  ➜ [共享资源] 剧集包分页补全失败 share_code={code}: {e}")
 
     return [by_id[sid] for sid in ordered_ids if sid in by_id]
+
+
+def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    raw_map = {str(r.get('source_id') or ''): r for r in (raw_rows or []) if r.get('source_id')}
+    merged = []
+    for row in base_rows or []:
+        sid = str(row.get('source_id') or '')
+        if sid and sid in raw_map:
+            new_row = dict(row)
+            raw_row = raw_map[sid]
+            # 只用 raw 查询补充 raw_ffprobe_json 和 raw 相关字段，不覆盖原始排序/聚合字段。
+            for key in ('raw_ffprobe_json', 'raw_error', 'object_key', 'raw_bytes', 'compressed_bytes', 'raw_schema_version', 'raw_created_at'):
+                if key in raw_row:
+                    new_row[key] = raw_row.get(key)
+            merged.append(new_row)
+        else:
+            merged.append(row)
+    return merged
+
+
+def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = 'alive,pending', limit: int = 30, offset: int = 0) -> Dict[str, Any]:
+    """按展示口径加载中心资源库。
+
+    中心接口是按 shared_sources 原始文件分页，前端需要按“电影 / 剧集包 / 单集”展示。
+    这里先拉取较大的原始窗口，做剧集包折叠与本地类型过滤，再对展示行分页；
+    最后只给当前展示页的代表 source_id 拉 raw_ffprobe_json，避免全量 raw 过重。
+    """
+    limit = max(1, min(int(limit or 30), 100))
+    offset = max(0, int(offset or 0))
+    target_count = offset + limit
+    raw_rows: List[Dict[str, Any]] = []
+    raw_total = None
+    raw_offset = 0
+    raw_page_size = 500
+    max_scan = 3000
+    display_rows: List[Dict[str, Any]] = []
+
+    # item_type 不下推给中心，避免 center 只支持精确 lower(item_type)=xxx 导致 episode_file/movie_file/season_pack 漏掉。
+    while raw_offset < max_scan:
+        res = client.list_sources(
+            q=keyword or '',
+            tmdb_id=tmdb_id or '',
+            item_type='',
+            status=status or 'alive,pending',
+            limit=raw_page_size,
+            offset=raw_offset,
+            include_raw=False,
+        )
+        page_items = list(res.get('items') or [])
+        if raw_total is None:
+            try:
+                raw_total = int(res.get('total') or 0)
+            except Exception:
+                raw_total = 0
+        if not page_items:
+            break
+
+        raw_rows.extend(page_items)
+        expanded = _expand_center_pack_page_items(client, raw_rows, status=status)
+        collapsed = _collapse_center_season_pack_rows(expanded)
+        display_rows = [r for r in collapsed if _center_match_display_type(r, display_type)]
+        if len(display_rows) >= target_count:
+            break
+        raw_offset += len(page_items)
+        if raw_total is not None and raw_offset >= raw_total:
+            break
+        if len(page_items) < raw_page_size:
+            break
+
+    display_total = len(display_rows)
+    page_rows = display_rows[offset:offset + limit]
+
+    # 只为当前页代表行补 raw，减少中心 raw zst 读取和网络负担。
+    source_ids = []
+    for row in page_rows:
+        sid = str(row.get('source_id') or '').strip()
+        if sid and sid not in source_ids:
+            source_ids.append(sid)
+    if source_ids:
+        try:
+            raw_res = client.list_sources(source_ids=source_ids, status='', limit=len(source_ids), offset=0, include_raw=True)
+            page_rows = _merge_rows_by_source_id(page_rows, raw_res.get('items') or [])
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 当前页 raw_ffprobe 补充失败，将使用无 raw 版本展示: {e}")
+
+    return {
+        'items': page_rows,
+        'total': display_total,
+        'raw_total': raw_total if raw_total is not None else len(raw_rows),
+        'scanned_raw': len(raw_rows),
+    }
 
 
 _CENTER_STATUS_LABELS = {
@@ -3155,40 +3309,39 @@ def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
 @shared_resource_bp.route('/center/sources', methods=['GET'])
 @admin_required
 def api_center_sources():
-    """前端中心资源库：列出中心已有共享源，并用 raw_ffprobe_json 标注版本参数。"""
-    client = None
+    """前端中心资源库：按电影 / 剧集包 / 单集三类展示中心已有共享源。"""
     try:
         from handler.shared_center_client import SharedCenterClient
         client = SharedCenterClient()
         if not client.ready:
             return jsonify({'success': False, 'message': '共享中心地址或 device_token 未配置'}), 400
-        data = client.list_sources(
-            q=request.args.get('keyword', ''),
+
+        page_data = _load_center_sources_for_display(
+            client,
+            keyword=request.args.get('keyword', ''),
             tmdb_id=request.args.get('tmdb_id', ''),
-            item_type=request.args.get('item_type', ''),
+            display_type=request.args.get('item_type', ''),
             status=request.args.get('status', 'alive,pending'),
-            limit=int(request.args.get('limit', 100) or 100),
+            limit=int(request.args.get('limit', 30) or 30),
             offset=int(request.args.get('offset', 0) or 0),
-            include_raw=True,
         )
-        raw_items = list(data.get('items') or [])
-        # 中心接口按原始文件分页，先按分享码补全当前页里的季包，再做展示层折叠。
-        # 否则 36 集季包在 page_size=30 时会被误显示为 30 集。
-        raw_items = _expand_center_pack_page_items(client, raw_items, status=request.args.get('status', 'alive,pending'))
+        raw_items = list(page_data.get('items') or [])
         local_share_codes = _load_local_share_code_set(raw_items)
         items = []
         for item in raw_items:
             item['_local_share_record_exists'] = str(item.get('share_code') or '').strip() in local_share_codes
             raw = item.get('raw_ffprobe_json') or {}
             item['version_summary'] = _summarize_raw_ffprobe(raw, item)
+            item['display_type'] = _center_display_type(item)
             items.append(_decorate_center_source_row(item))
 
-        # 展示层把同一个季包分享码下的多集文件折叠成一个“季分享包”版本，
-        # 避免《怪奇物语 S02》这种整季分享在中心资源库里被误看成一堆单集分享。
-        items = [_decorate_center_source_row(x) for x in _collapse_center_season_pack_rows(items)]
-        # 注意：中心服务的 total 是原始 shared_sources 数量。中心资源库这里已经做了季包折叠，
-        # 前端分页按展示行理解更自然，避免同一季包 9 个文件导致总数/当前页看起来异常。
-        return jsonify({'success': True, 'items': items, 'total': len(items), 'raw_total': data.get('total', len(items))})
+        return jsonify({
+            'success': True,
+            'items': items,
+            'total': int(page_data.get('total') or len(items)),
+            'raw_total': int(page_data.get('raw_total') or len(items)),
+            'scanned_raw': int(page_data.get('scanned_raw') or 0),
+        })
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 拉取中心资源库失败: {e}", exc_info=True)
         return jsonify({'success': False, 'message': f'拉取中心资源库失败: {e}'}), 500

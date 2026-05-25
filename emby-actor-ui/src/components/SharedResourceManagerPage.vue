@@ -100,13 +100,13 @@
           <n-tab-pane name="center" tab="中心资源库">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
               这里展示共享中心已收录的资源版本。
-“转存”会把资源转存到你的 115 网盘；“入库”则仅生成虚拟 STRM，不占用网盘空间，播放时再临时转存。
+“转存”会把资源转存到你的 115 待整理目录，并交给智能整理生成正式 STRM；“入库”会生成虚拟 STRM，不长期占用网盘空间，播放时再临时转存。每个版本会尽量展示分辨率、编码、HDR/杜比、音轨、字幕和文件大小。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="centerFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="loadCenterSources">
                 <template #prefix><n-icon :component="SearchIcon" /></template>
               </n-input>
-              <n-select v-model:value="centerFilters.item_type" :options="typeOptions" style="width: 140px" />
+              <n-select v-model:value="centerFilters.item_type" :options="centerTypeOptions" style="width: 140px" />
               <n-select v-model:value="centerFilters.status" :options="centerStatusOptions" style="width: 150px" />
               <n-button type="primary" :loading="centerLoading" @click="loadCenterSources">查询中心</n-button>
               <n-button secondary :loading="maintenanceSubmitting" @click="triggerSharedMaintenance">执行维护任务</n-button>
@@ -271,6 +271,12 @@ const centerStatusOptions = [
 const typeOptions = [
   { label: '全部类型', value: 'all' }, { label: '电影', value: 'Movie' },
   { label: '剧集', value: 'Series' }, { label: '季', value: 'Season' }, { label: '单集', value: 'Episode' },
+];
+const centerTypeOptions = [
+  { label: '全部类型', value: 'all' },
+  { label: '电影', value: 'Movie' },
+  { label: '剧集包', value: 'Pack' },
+  { label: '单集', value: 'Episode' },
 ];
 const manualItemTypeOptions = [
   { label: '电影', value: 'Movie' }, { label: '季', value: 'Season' }, { label: '剧集', value: 'Series' },
@@ -526,17 +532,26 @@ const toggleLedgerGroup = (key) => {
 };
 
 
-const centerTypeLabel = (value) => ({ Movie: '电影', Series: '剧集', Season: '季包', Episode: '单集', movie: '电影', tv: '剧集', season: '季包', episode: '单集' }[value] || value || '-');
+const centerTypeLabel = (value) => ({
+  Movie: '电影', movie: '电影', movies: '电影', movie_file: '电影', movie_folder: '电影',
+  Pack: '剧集包', pack: '剧集包', Season: '剧集包', season: '剧集包', Series: '剧集包', series: '剧集包', tv: '剧集包', season_pack: '剧集包', series_pack: '剧集包',
+  Episode: '单集', episode: '单集', episodes: '单集', episode_file: '单集',
+}[value] || value || '-');
+const centerRowType = (row) => row.display_type || (row.is_collapsed_pack || row.pack_item_count ? 'Pack' : row.item_type);
 const centerTitleText = (row) => {
   const title = row.title || row.media_title || '-';
   const year = row.release_year ? ` (${row.release_year})` : '';
   return `${title}${year}`;
 };
 const centerSeasonText = (row) => {
+  const displayType = centerRowType(row);
   const s = row.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
   const e = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
-  const pack = row.pack_item_count ? ` · ${row.pack_item_count}集包` : '';
-  return [centerTypeLabel(row.item_type), s ? `${s}${e}` : '', pack].filter(Boolean).join(' · ') || '-';
+  const pack = row.pack_item_count ? `${row.pack_item_count}集包` : '';
+  if (centerTypeLabel(displayType) === '电影') return '电影';
+  if (centerTypeLabel(displayType) === '剧集包') return ['剧集包', s, pack].filter(Boolean).join(' · ');
+  if (centerTypeLabel(displayType) === '单集') return ['单集', s && e ? `${s}${e}` : (s || e)].filter(Boolean).join(' · ');
+  return [centerTypeLabel(displayType), s ? `${s}${e}` : '', pack].filter(Boolean).join(' · ') || '-';
 };
 const centerStatusTag = (row) => {
   const text = row.status_label || statusMap[row.status]?.text || row.status || '未知';
@@ -580,7 +595,7 @@ const importCenterSource = (row, mode) => {
           context: {
             title: row.title || '',
             tmdb_id: row.tmdb_id || '',
-            item_type: row.item_type || '',
+            item_type: centerRowType(row) || row.item_type || '',
             season_number: row.season_number ?? null,
             episode_number: row.episode_number ?? null,
             year: row.release_year || '',
