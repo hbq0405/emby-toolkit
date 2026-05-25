@@ -684,6 +684,9 @@ const groupCenterSources = (items) => {
         season_number: item.season_number,
         episode_number: item.episode_number,
         display_type: centerRowType(item),
+        pack_item_count: item.pack_item_count,
+        pack_episode_numbers: item.pack_episode_numbers,
+        is_collapsed_pack: item.is_collapsed_pack,
         versions: [],
       };
       byKey.set(key, group);
@@ -716,10 +719,15 @@ const allTrackTitle = (items) => {
 };
 
 const centerColumns = [
-  { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => h('div', null, [
-    h('div', { class: 'main-title' }, centerTitleText(row)),
-    h('div', { class: 'sub-title' }, `TMDb ${row.tmdb_id || row.share_tmdb_id || '-'}`)
-  ]) },
+  { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => {
+    const packRange = row.is_collapsed_pack && row.pack_episode_numbers?.length
+      ? ` · E${String(row.pack_episode_numbers[0]).padStart(2, '0')}-${String(row.pack_episode_numbers[row.pack_episode_numbers.length - 1]).padStart(2, '0')}`
+      : '';
+    return h('div', null, [
+      h('div', { class: 'main-title' }, centerTitleText(row)),
+      h('div', { class: 'sub-title' }, `TMDb ${row.tmdb_id || row.share_tmdb_id || '-'}${packRange}`)
+    ]);
+  }},
   { title: '类型', key: 'item_type', width: 130, render: row => centerSeasonText(row) },
   { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
