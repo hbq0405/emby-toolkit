@@ -133,6 +133,7 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_115_SHARED_CACHE_NAME: (constants.CONFIG_SECTION_115, "string", "共享资源临时区"),
     constants.CONFIG_OPTION_115_SHARED_CACHE_RETENTION_DAYS: (constants.CONFIG_SECTION_115, "int", 7),
     constants.CONFIG_OPTION_115_SHARED_INSTALL_ID: (constants.CONFIG_SECTION_115, "string", ""),
+    constants.CONFIG_OPTION_115_SHARED_MAX_ACTIVE_SHARES: (constants.CONFIG_SECTION_115, "int", 0),
 
     # [General]
     "delay_between_items_sec": ("General", 'float', 0.5),

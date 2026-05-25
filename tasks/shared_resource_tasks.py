@@ -221,6 +221,378 @@ def _record_reportable(record: Dict[str, Any]) -> bool:
     return (record.get('status') in ('alive', 'reported') or record.get('review_status') == 'alive') and record.get('center_status') not in ('reported', 'partial')
 
 
+def _max_active_shares_limit() -> int:
+    """本机 115 分享数量上限；0 表示不限制。"""
+    return max(0, _safe_int(_cfg('CONFIG_OPTION_115_SHARED_MAX_ACTIVE_SHARES', 'p115_shared_max_active_shares', 0), 0))
+
+
+def _share_low_watermark(max_active_shares: int) -> int:
+    """低水位硬编码为上限的 80%，不暴露额外配置。"""
+    max_active_shares = max(0, int(max_active_shares or 0))
+    if max_active_shares <= 0:
+        return 0
+    return max(0, int(max_active_shares * 0.8))
+
+
+def _active_share_statuses() -> List[str]:
+    """本地仍应视为占用 115 分享名额的状态。"""
+    return [
+        'pending_review', 'alive', 'reported', 'partial', 'not_reported', 'review_failed',
+        'blocked', 'violation', 'cancel_failed',
+    ]
+
+
+def _invalid_share_statuses() -> List[str]:
+    """115 已判定违规/风控或上次删除失败的分享，维护任务应直接删除/重试。"""
+    return ['blocked', 'violation', 'cancel_failed']
+
+
+def _count_active_local_shares() -> int:
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*) AS n
+                FROM shared_share_records
+                WHERE COALESCE(share_code, '') <> ''
+                  AND status = ANY(%s)
+                """,
+                (_active_share_statuses(),),
+            )
+            row = cur.fetchone()
+            return int((dict(row) if row else {}).get('n') or 0)
+
+
+def _share_cancel_success(resp: Any) -> bool:
+    if isinstance(resp, dict):
+        if resp.get('state') is True or str(resp.get('state')).lower() in ('1', 'true'):
+            return True
+        if resp.get('errno') in (0, '0') or resp.get('code') in (0, '0', 200, '200'):
+            return True
+    text = _share_resp_text(resp)
+    return any(k in text for k in (
+        '已取消', '已删除', '取消成功', '删除成功', '不存在', 'not found',
+        'cancelled', 'canceled', 'deleted', 'success'
+    ))
+
+
+def _delete_115_share(p115, share_code: str) -> tuple[bool, Any]:
+    """删除/取消 115 分享。优先删除分享记录，失败再回退为取消分享。"""
+    if not p115:
+        return False, '115 客户端未初始化'
+    share_code = str(share_code or '').strip()
+    if not share_code:
+        return True, '缺少 share_code，视为无需删除 115 分享'
+
+    last_resp = None
+    for method_name in ('share_delete', 'share_cancel'):
+        method = getattr(p115, method_name, None)
+        if not callable(method):
+            continue
+        try:
+            last_resp = method(share_code)
+            if _share_cancel_success(last_resp):
+                return True, last_resp
+        except Exception as e:
+            last_resp = str(e)
+            continue
+    return False, last_resp or '当前 115 客户端不支持 share_delete/share_cancel'
+
+
+def _share_items_identity(record_id: int) -> tuple[List[str], List[str]]:
+    items = shared_share_db.list_share_items(record_id) or []
+    source_ids = [str(i.get('center_source_id') or '').strip() for i in items if str(i.get('center_source_id') or '').strip()]
+    sha1s = [str(i.get('sha1') or '').strip().upper() for i in items if str(i.get('sha1') or '').strip()]
+    return source_ids, sha1s
+
+
+def _cancel_center_sources_for_record(client: SharedCenterClient, record_id: int, share_code: str, reason: str) -> tuple[bool, Any]:
+    try:
+        source_ids, sha1s = _share_items_identity(record_id)
+        resp = client.cancel_sources(
+            share_code=share_code,
+            source_ids=source_ids,
+            sha1_list=sha1s,
+            reason=reason,
+            delete_raw_ffprobe=True,
+        )
+        return True, resp
+    except Exception as e:
+        return False, str(e)
+
+
+def _mark_share_deleted(record: Dict[str, Any], *, p115_resp: Any, center_resp: Any,
+                        center_ok: bool, reason: str, last_error: str,
+                        status: str = 'cancelled', review_status: str = 'cancelled'):
+    record_id = record.get('id')
+    raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+    raw_json = dict(raw_json or {})
+    raw_json.setdefault('share_maintenance_delete', {})
+    raw_json['share_maintenance_delete'].update({
+        'reason': reason,
+        'p115_response': p115_resp,
+        'center_response': center_resp,
+        'deleted_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+    })
+    shared_share_db.update_share_record(
+        record_id,
+        status=status,
+        review_status=review_status,
+        center_status='cancelled' if center_ok else 'cancel_failed',
+        cancelled_at='NOW()',
+        last_error=last_error if center_ok else f'{last_error}；中心撤销失败：{center_resp}',
+        raw_json=raw_json,
+    )
+
+
+def _cleanup_invalid_local_shares(client: SharedCenterClient, max_rows: int = 100) -> Dict[str, int]:
+    """违规/风控/上次删除失败的分享不参与水位评分，直接删除。"""
+    p115 = P115Service.get_client()
+    if not p115:
+        return {'share_invalid_deleted': 0, 'share_invalid_failed': 0}
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM shared_share_records
+                WHERE COALESCE(share_code, '') <> ''
+                  AND (
+                        status = ANY(%s)
+                     OR review_status = ANY(%s)
+                     OR center_status = 'cancel_failed'
+                  )
+                ORDER BY created_at ASC NULLS FIRST, id ASC
+                LIMIT %s
+                """,
+                (_invalid_share_statuses(), ['blocked', 'violation'], int(max_rows)),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+    deleted = failed = 0
+    for record in rows:
+        record_id = record.get('id')
+        share_code = str(record.get('share_code') or '').strip()
+        title = record.get('title') or record.get('root_name') or share_code or str(record_id)
+        p115_ok, p115_resp = _delete_115_share(p115, share_code)
+        if not p115_ok:
+            shared_share_db.update_share_record(
+                record_id,
+                status='cancel_failed',
+                last_error=f'违规/风控分享自动删除失败：{p115_resp}',
+            )
+            failed += 1
+            continue
+
+        center_ok, center_resp = _cancel_center_sources_for_record(client, record_id, share_code, 'share_invalid_or_blocked')
+        _mark_share_deleted(
+            record,
+            p115_resp=p115_resp,
+            center_resp=center_resp,
+            center_ok=center_ok,
+            reason='share_invalid_or_blocked',
+            last_error='115 返回违规/风控/删除失败重试，维护任务已直接删除分享',
+            status='cancelled',
+            review_status='violation' if record.get('review_status') == 'violation' or record.get('status') in ('blocked', 'violation') else 'cancelled',
+        )
+        shared_virtual_db.add_credit_ledger(
+            'share_invalid_deleted', 0,
+            f'删除违规/风控分享：{title}',
+            ref_id=str(record_id),
+            title=title,
+            raw_json={'share_code': share_code, 'p115_response': p115_resp, 'center_ok': center_ok},
+        )
+        deleted += 1
+        time.sleep(0.25)
+
+    if deleted or failed:
+        logger.info(f"  ➜ [共享资源维护] 违规/风控分享清理完成：删除 {deleted}，失败 {failed}。")
+    return {'share_invalid_deleted': deleted, 'share_invalid_failed': failed}
+
+
+def _load_share_waterline_candidates(target_active: int) -> tuple[int, List[Dict[str, Any]]]:
+    """按“转存热度 + 创建时间保护”综合评分，取出应清理的超额分享。"""
+    target_active = max(0, int(target_active or 0))
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                WITH active_records AS (
+                    SELECT r.*
+                    FROM shared_share_records r
+                    WHERE COALESCE(r.share_code, '') <> ''
+                      AND r.status = ANY(%s)
+                ), stats AS (
+                    SELECT
+                        r.id AS record_id,
+                        COUNT(DISTINCT l.id) FILTER (WHERE l.id IS NOT NULL) AS served_count,
+                        MAX(l.created_at) FILTER (WHERE l.id IS NOT NULL) AS last_served_at
+                    FROM active_records r
+                    LEFT JOIN shared_share_items i ON i.share_record_id = r.id
+                    LEFT JOIN shared_credit_ledger_local l
+                      ON l.event_type = 'center_shared_source_served'
+                     AND COALESCE(l.source_id, '') <> ''
+                     AND l.source_id IN (COALESCE(i.center_source_id, ''), COALESCE(r.center_source_id, ''))
+                    GROUP BY r.id
+                ), scored AS (
+                    SELECT
+                        r.*,
+                        COALESCE(s.served_count, 0) AS served_count,
+                        s.last_served_at,
+                        EXTRACT(EPOCH FROM (NOW() - COALESCE(r.created_at, NOW()))) / 86400.0 AS age_days,
+                        COUNT(*) OVER() AS total_active,
+                        (
+                            COALESCE(s.served_count, 0) * 100.0
+                            + CASE
+                                WHEN EXTRACT(EPOCH FROM (NOW() - COALESCE(r.created_at, NOW()))) / 86400.0 < 3
+                                  THEN (3 - EXTRACT(EPOCH FROM (NOW() - COALESCE(r.created_at, NOW()))) / 86400.0) * 50.0
+                                ELSE 0
+                              END
+                            - LEAST(EXTRACT(EPOCH FROM (NOW() - COALESCE(r.created_at, NOW()))) / 86400.0, 365.0)
+                            - CASE
+                                WHEN r.status IN ('blocked','violation','cancel_failed') THEN 1000.0
+                                ELSE 0
+                              END
+                        ) AS retention_score
+                    FROM active_records r
+                    LEFT JOIN stats s ON s.record_id = r.id
+                )
+                SELECT *
+                FROM scored
+                WHERE total_active > %s
+                ORDER BY retention_score ASC, served_count ASC, created_at ASC NULLS FIRST, id ASC
+                LIMIT GREATEST((SELECT MAX(total_active) FROM scored) - %s, 0)
+                """,
+                (_active_share_statuses(), target_active, target_active),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+            total = int(rows[0].get('total_active') or 0) if rows else _count_active_local_shares()
+            return total, rows
+
+
+def _cleanup_excess_local_shares(client: SharedCenterClient, max_active_shares: int = 0) -> Dict[str, int]:
+    """超过上限时删除到低水位；低水位硬编码为上限的 80%。"""
+    max_active_shares = max(0, int(max_active_shares or _max_active_shares_limit()))
+    if max_active_shares <= 0:
+        return {'share_limit': 0, 'share_low_watermark': 0, 'share_active': _count_active_local_shares(), 'share_pruned': 0, 'share_prune_failed': 0}
+
+    low_watermark = _share_low_watermark(max_active_shares)
+    total_active = _count_active_local_shares()
+    if total_active <= max_active_shares:
+        return {'share_limit': max_active_shares, 'share_low_watermark': low_watermark, 'share_active': total_active, 'share_pruned': 0, 'share_prune_failed': 0}
+
+    # 一旦超过高水位，就清到低水位，给后续自动分享留出空间。
+    total_active, candidates = _load_share_waterline_candidates(low_watermark)
+    if not candidates:
+        return {'share_limit': max_active_shares, 'share_low_watermark': low_watermark, 'share_active': total_active, 'share_pruned': 0, 'share_prune_failed': 0}
+
+    p115 = P115Service.get_client()
+    pruned = failed = 0
+    for record in candidates:
+        record_id = record.get('id')
+        share_code = str(record.get('share_code') or '').strip()
+        title = record.get('title') or record.get('root_name') or share_code or str(record_id)
+        served_count = _safe_int(record.get('served_count'), 0)
+        age_days = float(record.get('age_days') or 0)
+        retention_score = float(record.get('retention_score') or 0)
+        try:
+            p115_ok, p115_resp = _delete_115_share(p115, share_code)
+            if not p115_ok:
+                shared_share_db.update_share_record(
+                    record_id,
+                    status='cancel_failed',
+                    last_error=f'超过最大分享数自动清理失败，115 删除/取消分享失败：{p115_resp}',
+                )
+                failed += 1
+                continue
+
+            center_ok, center_resp = _cancel_center_sources_for_record(client, record_id, share_code, 'max_active_shares_waterline')
+            raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+            raw_json = dict(raw_json or {})
+            raw_json['share_waterline_prune'] = {
+                'max_active_shares': max_active_shares,
+                'low_watermark': low_watermark,
+                'active_before': total_active,
+                'served_count': served_count,
+                'age_days': round(age_days, 3),
+                'retention_score': round(retention_score, 3),
+                'p115_response': p115_resp,
+                'center_response': center_resp,
+                'pruned_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            }
+            shared_share_db.update_share_record(
+                record_id,
+                status='cancelled',
+                review_status='cancelled',
+                center_status='cancelled' if center_ok else 'cancel_failed',
+                cancelled_at='NOW()',
+                last_error=(
+                    f'活跃分享超过上限 {max_active_shares}，维护任务按 80% 低水位 {low_watermark} 自动清理；'
+                    f'转存次数 {served_count}，创建约 {age_days:.1f} 天，保留分 {retention_score:.1f}'
+                ) if center_ok else f'115 分享已删除，但中心撤销失败：{center_resp}',
+                raw_json=raw_json,
+            )
+            shared_virtual_db.add_credit_ledger(
+                'share_waterline_pruned', 0,
+                f'超过分享水位自动清理分享：{title}',
+                ref_id=str(record_id),
+                title=title,
+                raw_json={
+                    'share_code': share_code,
+                    'max_active_shares': max_active_shares,
+                    'low_watermark': low_watermark,
+                    'served_count': served_count,
+                    'age_days': round(age_days, 3),
+                    'retention_score': round(retention_score, 3),
+                    'center_ok': center_ok,
+                },
+            )
+            pruned += 1
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 分享水位清理异常: record={record_id}, share={share_code}, err={e}", exc_info=True)
+            failed += 1
+        time.sleep(0.25)
+
+    if pruned or failed:
+        logger.info(f"  ➜ [共享资源维护] 分享上限 {max_active_shares}，低水位 {low_watermark}，当前 {total_active}，已清理 {pruned}，失败 {failed}。")
+    return {
+        'share_limit': max_active_shares,
+        'share_low_watermark': low_watermark,
+        'share_active': total_active,
+        'share_pruned': pruned,
+        'share_prune_failed': failed,
+    }
+
+
+def _enforce_local_share_waterline(client: SharedCenterClient) -> Dict[str, int]:
+    """先直接删违规/风控分享，再在超过高水位时清到 80% 低水位。"""
+    result = {
+        'share_invalid_deleted': 0,
+        'share_invalid_failed': 0,
+        'share_pruned': 0,
+        'share_prune_failed': 0,
+        'share_limit': _max_active_shares_limit(),
+        'share_low_watermark': _share_low_watermark(_max_active_shares_limit()),
+        'share_active': _count_active_local_shares(),
+    }
+    invalid = _cleanup_invalid_local_shares(client)
+    result.update(invalid)
+    excess = _cleanup_excess_local_shares(client)
+    result.update(excess)
+    return result
+
+
+def _merge_maintenance_counts(total: Dict[str, Any], update: Dict[str, Any]):
+    """维护任务里多次执行水位检查时，计数项累加，状态项取最新。"""
+    for k, v in (update or {}).items():
+        if isinstance(v, (int, float)) and k not in ('share_limit', 'share_low_watermark', 'share_active'):
+            total[k] = total.get(k, 0) + v
+        else:
+            total[k] = v
+
+
 def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records: int = 80) -> Dict[str, int]:
     """自动同步 115 分享状态；可用后上传 raw 并登记中心；失效时撤销中心源。"""
     p115 = P115Service.get_client()
@@ -296,21 +668,40 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
             else:
                 sha1s = [i.get('sha1') for i in (shared_share_db.list_share_items(record['id']) or []) if i.get('sha1')]
                 if _looks_share_blocked(snap):
-                    # 115 审核违规/风控：熔断这个自动分享，不再把它当普通 dead 缺口反复重建。
+                    # 115 审核违规/风控：直接删除 115 分享并撤销中心源，避免占用分享名额。
+                    p115_ok, p115_resp = _delete_115_share(p115, share_code)
+                    center_ok = True
+                    center_resp = None
                     try:
-                        client.cancel_sources(share_code=share_code, sha1_list=sha1s, reason='auto_share_violation', delete_raw_ffprobe=True)
+                        center_resp = client.cancel_sources(share_code=share_code, sha1_list=sha1s, reason='auto_share_violation', delete_raw_ffprobe=True)
                     except Exception as e:
+                        center_ok = False
+                        center_resp = str(e)
                         logger.debug(f"  ➜ [共享资源维护] 撤销违规中心源失败: {e}")
-                    shared_share_db.update_share_record(
-                        record['id'],
-                        status='blocked',
-                        review_status='violation',
-                        center_status='cancelled',
-                        last_checked_at='NOW()',
-                        cancelled_at='NOW()',
-                        last_error='115 审核违规/风控，已熔断自动补缺分享，避免重复创建分享',
-                        raw_json={'last_snap': snap, 'auto_share_blocked': True},
-                    )
+                    raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+                    raw_json = dict(raw_json or {})
+                    raw_json.update({'last_snap': snap, 'auto_share_blocked': True, 'share_delete_response': p115_resp, 'center_cancel_response': center_resp})
+                    if p115_ok:
+                        shared_share_db.update_share_record(
+                            record['id'],
+                            status='cancelled',
+                            review_status='violation',
+                            center_status='cancelled' if center_ok else 'cancel_failed',
+                            last_checked_at='NOW()',
+                            cancelled_at='NOW()',
+                            last_error='115 审核违规/风控，维护任务已直接删除分享，避免占用分享名额',
+                            raw_json=raw_json,
+                        )
+                    else:
+                        shared_share_db.update_share_record(
+                            record['id'],
+                            status='cancel_failed',
+                            review_status='violation',
+                            center_status='cancelled' if center_ok else 'cancel_failed',
+                            last_checked_at='NOW()',
+                            last_error=f'115 审核违规/风控，但自动删除分享失败：{p115_resp}',
+                            raw_json=raw_json,
+                        )
                     cancelled += 1
                 else:
                     # 115 分享已不可用，撤销中心源并本地标记。
@@ -434,7 +825,7 @@ def _has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] |
                     """
                     SELECT 1
                     FROM shared_share_records r
-                    JOIN shared_share_items i ON i.record_id = r.id
+                    JOIN shared_share_items i ON i.share_record_id = r.id
                     WHERE UPPER(COALESCE(i.sha1, '')) = ANY(%s)
                       AND r.status = ANY(%s)
                     LIMIT 1
@@ -452,7 +843,7 @@ def _has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] |
                     """
                     SELECT 1
                     FROM shared_share_records r
-                    LEFT JOIN shared_share_items i ON i.record_id = r.id
+                    LEFT JOIN shared_share_items i ON i.share_record_id = r.id
                     WHERE (r.tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
                       AND (r.item_type IN ('Movie','movie','movie_file','movie_folder') OR i.item_type IN ('Movie','movie','movie_file'))
                       AND r.status = ANY(%s)
@@ -467,7 +858,7 @@ def _has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] |
                     """
                     SELECT 1
                     FROM shared_share_records r
-                    LEFT JOIN shared_share_items i ON i.record_id = r.id
+                    LEFT JOIN shared_share_items i ON i.share_record_id = r.id
                     WHERE (r.tmdb_id = ANY(%s) OR r.parent_series_tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
                       AND COALESCE(i.season_number, r.season_number, -1)=COALESCE(%s, -1)
                       AND COALESCE(i.episode_number, -1)=COALESCE(%s, -1)
@@ -483,7 +874,7 @@ def _has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] |
                 """
                 SELECT 1
                 FROM shared_share_records r
-                LEFT JOIN shared_share_items i ON i.record_id = r.id
+                LEFT JOIN shared_share_items i ON i.share_record_id = r.id
                 WHERE (r.tmdb_id = ANY(%s) OR r.parent_series_tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
                   AND COALESCE(i.season_number, r.season_number, -1)=COALESCE(%s, -1)
                   AND r.status = ANY(%s)
@@ -852,15 +1243,21 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         _status(25, '正在清理过期虚拟临时转存...')
         total['expired_virtual_cache_cleaned'] = _cleanup_expired_virtual_cache()
 
-        _status(40, '正在为中心缺口自动创建本机分享...')
+        _status(35, '正在检查分享水位并清理违规分享...')
+        _merge_maintenance_counts(total, _enforce_local_share_waterline(client))
+
+        _status(45, '正在为中心缺口自动创建本机分享...')
         total['auto_created_shares'] = _auto_share_center_open_gaps(client)
 
-        _status(58, '正在从中心资源库处理追更缺集...')
+        _status(60, '正在从中心资源库处理追更缺集...')
         follow_result = _auto_follow_watching_series_from_center()
         total.update({f'follow_{k}': v for k, v in follow_result.items()})
 
-        _status(72, '正在同步分享审核状态并自动登记中心...')
+        _status(74, '正在同步分享审核状态并自动登记中心...')
         total.update(_auto_check_and_report_local_shares(client))
+
+        _status(86, '正在复查分享水位...')
+        _merge_maintenance_counts(total, _enforce_local_share_waterline(client))
 
         _status(92, '正在同步贡献值快照...')
         try:
@@ -878,6 +1275,8 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"共享资源维护完成：登记缺口 {total.get('reported_gaps', 0)}，"
             f"清理临时转存 {total.get('expired_virtual_cache_cleaned', 0)}，"
             f"自动创建分享 {total.get('auto_created_shares', 0)}，"
+            f"违规分享清理 {total.get('share_invalid_deleted', 0)}/{total.get('share_invalid_failed', 0)}，"
+            f"水位清理 {total.get('share_pruned', 0)}/{total.get('share_prune_failed', 0)}，"
             f"追更命中 {total.get('follow_consumed', 0)}/{total.get('follow_missing', 0)}，"
             f"登记追更缺口 {total.get('follow_gaps', 0)}，"
             f"检查分享 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，"

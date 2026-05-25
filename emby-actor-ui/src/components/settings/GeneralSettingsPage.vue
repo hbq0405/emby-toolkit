@@ -625,6 +625,23 @@
                             </n-radio-group>
                         </n-form-item>
 
+                        <n-form-item label="最大活跃分享数" path="p115_shared_max_active_shares">
+                            <n-input-number
+                                v-model:value="configModel.p115_shared_max_active_shares"
+                                :min="0"
+                                :max="10000"
+                                :step="10"
+                                style="width: 150px;"
+                            >
+                                <template #suffix>条</template>
+                            </n-input-number>
+                            <template #feedback>
+                                <n-text depth="3" style="font-size:0.8em;">
+                                    0 表示不限制。维护任务发现超过上限时，会按转存次数和创建时间综合评分，清理到约 80% 水位；违规/风控分享会直接删除。
+                                </n-text>
+                            </template>
+                        </n-form-item>
+
                         <template v-if="configModel.p115_shared_resource_mode === 'virtual'">
                             <n-form-item label="临时转存目录" path="p115_shared_cache_cid">
                                 <n-input-group>
@@ -2580,6 +2597,9 @@ watch(
     if (!configModel.value.p115_shared_cache_retention_days || Number(configModel.value.p115_shared_cache_retention_days) < 1) {
       configModel.value.p115_shared_cache_retention_days = 7;
     }
+    if (configModel.value.p115_shared_max_active_shares === undefined || configModel.value.p115_shared_max_active_shares === null || Number(configModel.value.p115_shared_max_active_shares) < 0) {
+      configModel.value.p115_shared_max_active_shares = 0;
+    }
   }
 );
 watch(() => [configModel.value?.proxy_enabled, configModel.value?.proxy_merge_native_libraries, configModel.value?.emby_server_url, configModel.value?.emby_api_key, configModel.value?.emby_user_id], ([proxyEnabled, mergeNative, url, apiKey, userId]) => {
@@ -3207,6 +3227,13 @@ const save = async () => {
             cleanConfigPayload.p115_shared_resource_mode = 'permanent';
             if (configModel.value) configModel.value.p115_shared_resource_mode = 'permanent';
         }
+        if (cleanConfigPayload.p115_shared_max_active_shares === undefined || cleanConfigPayload.p115_shared_max_active_shares === null || Number(cleanConfigPayload.p115_shared_max_active_shares) < 0) {
+            cleanConfigPayload.p115_shared_max_active_shares = 0;
+            if (configModel.value) configModel.value.p115_shared_max_active_shares = 0;
+        } else {
+            cleanConfigPayload.p115_shared_max_active_shares = Math.floor(Number(cleanConfigPayload.p115_shared_max_active_shares));
+            if (configModel.value) configModel.value.p115_shared_max_active_shares = cleanConfigPayload.p115_shared_max_active_shares;
+        }
         if (cleanConfigPayload.p115_shared_resource_mode === 'virtual') {
             if (!cleanConfigPayload.p115_shared_cache_retention_days || Number(cleanConfigPayload.p115_shared_cache_retention_days) < 1) {
                 cleanConfigPayload.p115_shared_cache_retention_days = 7;
@@ -3483,6 +3510,7 @@ onMounted(async () => {
       if (!configModel.value.p115_auth_method) configModel.value.p115_auth_method = 'web';
       if (!['permanent', 'virtual'].includes(configModel.value.p115_shared_resource_mode)) configModel.value.p115_shared_resource_mode = 'permanent';
       if (!configModel.value.p115_shared_cache_retention_days || Number(configModel.value.p115_shared_cache_retention_days) < 1) configModel.value.p115_shared_cache_retention_days = 7;
+      if (configModel.value.p115_shared_max_active_shares === undefined || configModel.value.p115_shared_max_active_shares === null || Number(configModel.value.p115_shared_max_active_shares) < 0) configModel.value.p115_shared_max_active_shares = 0;
       if (configModel.value.emby_server_url && configModel.value.emby_api_key) {
         fetchEmbyLibrariesInternal();
       }
