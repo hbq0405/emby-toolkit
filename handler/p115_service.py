@@ -824,6 +824,29 @@ class P115CookieClient:
         r = self.request(url, method='POST', data=payload)
         return r.json() if hasattr(r, 'json') else r
 
+    def history_receive_list(self, offset=0, limit=100):
+        """获取 115 最近接收记录。
+
+        该接口仅用于清理“最近接收”历史展示，不保证能解除 115 服务器侧
+        对同一分享的“你已经转存过该文件”限制。
+        """
+        url = "https://webapi.115.com/history/receive_list"
+        payload = {
+            'offset': max(0, int(offset or 0)),
+            'limit': max(1, min(int(limit or 100), 500)),
+        }
+        r = self.request(url, method='GET', params=payload)
+        return self._json_result(r)
+
+    def history_delete(self, ids):
+        """删除 115 历史记录，ids 可为单个 id 或列表。"""
+        ids_list = [str(i).strip() for i in _p115_as_list(ids) if str(i or '').strip()]
+        if not ids_list:
+            return {'state': False, 'error_msg': '缺少历史记录 id'}
+        url = "https://webapi.115.com/history/delete"
+        r = self.request(url, method='POST', data={'id': ','.join(ids_list)})
+        return _p115_normalize_common_response(self._json_result(r))
+
     def share_send(self, file_ids, **kwargs):
         """创建当前账号自己的 115 分享。
 
@@ -972,49 +995,12 @@ class P115CookieClient:
         return _p115_normalize_common_response(self._json_result(r))
 
     def share_cancel(self, share_code):
-        """取消当前账号自己的分享。
-
-        /share/updateshare?action=cancel 在部分账号/端上会假失败；优先使用旧版稳定接口，
-        再回退到 updateshare，兼容不同 115 账号接口版本。
-        """
-        code = str(share_code or '').strip()
-        if not code:
-            return {"state": False, "error_msg": "缺少 share_code，无法取消分享"}
-        last_resp = None
-        for url in ("https://webapi.115.com/share/cancel", "https://webapi.115.com/share/delete"):
-            try:
-                r = self.request(url, method='POST', data={'share_code': code})
-                last_resp = self._json_result(r)
-                if _p115_success(last_resp):
-                    return _p115_normalize_common_response(last_resp)
-            except Exception as e:
-                last_resp = {'state': False, 'error_msg': str(e)}
-        fallback = self.share_update(code, action="cancel")
-        if _p115_success(fallback):
-            return _p115_normalize_common_response(fallback)
-        return _p115_normalize_common_response(fallback or last_resp)
+        """取消当前账号自己的分享。"""
+        return self.share_update(share_code, action="cancel")
 
     def share_delete(self, share_code):
-        """从“我的分享”列表删除当前账号自己的分享记录。
-
-        注意：这里不能回退到 /share/cancel。cancel 只会把分享变成“已取消”，仍可能继续
-        出现在 115 分享列表里；调用方需要据此区分“已取消”和“已从列表删除”。
-        """
-        code = str(share_code or '').strip()
-        if not code:
-            return {"state": False, "error_msg": "缺少 share_code，无法删除分享"}
-        last_resp = None
-        try:
-            r = self.request("https://webapi.115.com/share/delete", method='POST', data={'share_code': code})
-            last_resp = self._json_result(r)
-            if _p115_success(last_resp):
-                return _p115_normalize_common_response(last_resp)
-        except Exception as e:
-            last_resp = {'state': False, 'error_msg': str(e)}
-        fallback = self.share_update(code, action="delete")
-        if _p115_success(fallback):
-            return _p115_normalize_common_response(fallback)
-        return _p115_normalize_common_response(fallback or last_resp)
+        """删除当前账号自己的分享记录；失败时调用方可回退到 cancel。"""
+        return self.share_update(share_code, action="delete")
 
     def life_batch_delete(self, delete_data_list):
         url = "https://life.115.com/api/1.0/web/1.0/life/life_batch_delete"
@@ -1620,6 +1606,18 @@ class P115Service:
                 if not self._cookie:
                     raise Exception("未配置 115 Cookie，无法执行转存")
                 return self._cookie.share_import(share_code, receive_code, cid)
+
+            def history_receive_list(self, offset=0, limit=100):
+                self._rate_limit()
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法查询最近接收记录")
+                return self._cookie.history_receive_list(offset=offset, limit=limit)
+
+            def history_delete(self, ids):
+                self._rate_limit()
+                if not self._cookie:
+                    raise Exception("未配置 115 Cookie，无法删除历史记录")
+                return self._cookie.history_delete(ids)
 
             def share_send(self, file_ids, **kwargs):
                 self._rate_limit()

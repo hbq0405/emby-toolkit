@@ -43,6 +43,9 @@
       <n-card :bordered="false" class="dashboard-card">
         <n-tabs v-model:value="activeTab" animated type="line" @update:value="handleTabChange">
           <n-tab-pane name="virtual" tab="虚拟入库">
+            <n-alert type="warning" :bordered="false" style="margin-bottom: 12px;">
+              虚拟入库仅生成 STRM，播放时临时转存到临时缓存目录。值得收藏的资源请及时“转正”，以免临时缓存过期被删除后，无法再次转存。
+            </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="virtualFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="loadVirtualItems">
                 <template #prefix><n-icon :component="SearchIcon" /></template>

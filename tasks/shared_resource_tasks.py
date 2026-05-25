@@ -94,6 +94,106 @@ def _looks_share_alive(resp: Dict[str, Any]) -> bool:
     return not any(k in text for k in ['已取消', '已失效', '不存在', '取消分享', 'expired', 'cancelled', 'not found'])
 
 
+def _extract_115_history_items(resp: Any) -> List[Dict[str, Any]]:
+    """兼容不同 115 最近接收列表返回结构。"""
+    if not isinstance(resp, dict):
+        return []
+    candidates = []
+    data = resp.get('data')
+    if isinstance(data, list):
+        candidates = data
+    elif isinstance(data, dict):
+        for key in ('list', 'items', 'data', 'rows'):
+            if isinstance(data.get(key), list):
+                candidates = data.get(key)
+                break
+    if not candidates:
+        for key in ('list', 'items', 'rows'):
+            if isinstance(resp.get(key), list):
+                candidates = resp.get(key)
+                break
+    return [x for x in candidates if isinstance(x, dict)]
+
+
+def _history_item_id(row: Dict[str, Any]) -> str:
+    for key in ('id', 'hid', 'history_id', 'record_id'):
+        val = row.get(key)
+        if val not in (None, ''):
+            return str(val).strip()
+    return ''
+
+
+def _cleanup_recent_receive_history(p115, virtual_rows: List[Dict[str, Any]], max_pages: int = 3, page_size: int = 100) -> int:
+    """清理 115 最近接收记录中与已释放虚拟缓存相关的条目。
+
+    注意：history/delete 删除的是“历史记录/最近接收”展示项，不保证解除 115
+    后端对 share_import 的 4100024 已转存限制，所以这里是 best-effort。
+    """
+    if not p115 or not hasattr(p115, 'history_receive_list') or not hasattr(p115, 'history_delete'):
+        return 0
+
+    terms = set()
+    share_codes = set()
+    for row in virtual_rows or []:
+        share_code = str(row.get('share_code') or '').strip().lower()
+        if share_code:
+            share_codes.add(share_code)
+            terms.add(share_code)
+        raw = row.get('raw_json') if isinstance(row.get('raw_json'), dict) else {}
+        for val in (
+            row.get('title'),
+            row.get('file_name'),
+            raw.get('last_import_root_name') if isinstance(raw, dict) else '',
+        ):
+            val = str(val or '').strip().lower()
+            if not val:
+                continue
+            terms.add(val)
+            stem = val.rsplit('.', 1)[0] if '.' in val else val
+            if len(stem) >= 4:
+                terms.add(stem)
+
+    # 太短的词容易误删历史记录。
+    terms = {t for t in terms if len(t) >= 4}
+    if not terms:
+        return 0
+
+    ids = []
+    seen_ids = set()
+    for page in range(max(1, int(max_pages or 1))):
+        try:
+            resp = p115.history_receive_list(offset=page * page_size, limit=page_size)
+            items = _extract_115_history_items(resp)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 查询 115 最近接收记录失败: {e}")
+            break
+        if not items:
+            break
+        for item in items:
+            hid = _history_item_id(item)
+            if not hid or hid in seen_ids:
+                continue
+            text = json.dumps(item, ensure_ascii=False).lower()
+            if any(code and code in text for code in share_codes) or any(term in text for term in terms):
+                seen_ids.add(hid)
+                ids.append(hid)
+        if len(items) < page_size:
+            break
+
+    deleted = 0
+    for i in range(0, len(ids), 50):
+        batch = ids[i:i + 50]
+        try:
+            resp = p115.history_delete(batch)
+            if isinstance(resp, dict) and (resp.get('state') or resp.get('success')):
+                deleted += len(batch)
+            else:
+                logger.warning(f"  ➜ [共享资源维护] 删除 115 最近接收记录未确认成功: {resp}")
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 删除 115 最近接收记录失败: {e}")
+    return deleted
+
+
 def _record_reportable(record: Dict[str, Any]) -> bool:
     return (record.get('status') in ('alive', 'reported') or record.get('review_status') == 'alive') and record.get('center_status') not in ('reported', 'partial')
 
@@ -361,7 +461,7 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT virtual_id, title, file_name, real_fid, real_pick_code, real_parent_id, expires_at
+                SELECT virtual_id, title, file_name, share_code, raw_json, real_fid, real_pick_code, real_parent_id, expires_at
                 FROM shared_virtual_items
                 WHERE status IN ('cached','watched')
                   AND COALESCE(real_fid, '') <> ''
@@ -375,6 +475,7 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
             rows = [dict(r) for r in cur.fetchall()]
 
     cleaned = 0
+    cleaned_rows_for_history = []
     for row in rows:
         virtual_id = str(row.get('virtual_id') or '').strip()
         real_fid = str(row.get('real_fid') or '').strip()
@@ -425,9 +526,16 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
                     raw_json={'real_fid': real_fid, 'delete_response': resp},
                 )
                 cleaned += 1
+                cleaned_rows_for_history.append(row)
             except Exception as e:
                 logger.warning(f"  ➜ [共享资源维护] 清空虚拟临时转存状态失败: {virtual_id} -> {e}")
         time.sleep(0.15)
+
+    if cleaned_rows_for_history:
+        try:
+            _cleanup_recent_receive_history(p115, cleaned_rows_for_history)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 清理 115 最近接收记录异常: {e}")
 
     if cleaned:
         logger.info(f"  ➜ [共享资源维护] 已清理 {cleaned} 个过期虚拟临时转存文件。")
