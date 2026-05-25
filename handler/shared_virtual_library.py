@@ -379,19 +379,77 @@ def _extract_receive_titles(import_resp: Any) -> List[str]:
     return out
 
 
+def _path_node_cid(node: Dict[str, Any]) -> str:
+    if not isinstance(node, dict):
+        return ''
+    return str(node.get('cid') or node.get('file_id') or node.get('fid') or node.get('id') or '').strip()
+
+
+def _path_node_name(node: Dict[str, Any]) -> str:
+    if not isinstance(node, dict):
+        return ''
+    return str(node.get('name') or node.get('file_name') or node.get('fn') or node.get('n') or '').strip()
+
+
+def _find_import_root_node(client, cache_cid: str, current_node: Dict[str, Any] = None, import_resp: Any = None) -> Dict[str, str]:
+    """定位本次 share_import 在临时区生成的顶层目录。
+
+    115 分享包常见结构是：
+    共享临时区/cache_cid -> 分享根目录 -> Season 01 -> Exx.mkv。
+    real_parent_id 只会记录到 Season 01，删除时只删它会留下空的分享根目录。
+    因此这里尽量记录“分享根目录”的 CID，供后续整包删除。
+    """
+    cache_cid = str(cache_cid or '').strip()
+    if not cache_cid:
+        return {}
+
+    # 1. share_import 返回的 receive_title 通常就是顶层分享根目录名。
+    title_keys = {str(t).strip().lower() for t in _extract_receive_titles(import_resp) if str(t).strip()}
+    if title_keys:
+        try:
+            for child in _list_children(client, cache_cid):
+                name = str(child.get('name') or '').strip()
+                if child.get('is_dir') and child.get('fid') and name.lower() in title_keys:
+                    return {'fid': str(child.get('fid') or ''), 'name': name, 'source': 'receive_title'}
+        except Exception as e:
+            logger.debug(f"  ➜ [共享虚拟播放] 按 receive_title 定位导入根目录失败: {e}")
+
+    # 2. 用当前文件父目录的 115 path 反推 cache_cid 下的第一层子目录。
+    parent_id = str((current_node or {}).get('parent_id') or '').strip()
+    if parent_id and parent_id != cache_cid:
+        try:
+            res = client.fs_files({'cid': parent_id, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+            path_nodes = (res or {}).get('path') or []
+            for idx, path_node in enumerate(path_nodes):
+                if _path_node_cid(path_node) == cache_cid and idx + 1 < len(path_nodes):
+                    root_node = path_nodes[idx + 1] or {}
+                    root_cid = _path_node_cid(root_node)
+                    if root_cid and root_cid != cache_cid:
+                        return {'fid': root_cid, 'name': _path_node_name(root_node), 'source': 'path'}
+        except Exception as e:
+            logger.debug(f"  ➜ [共享虚拟播放] 按 115 path 反推导入根目录失败: parent={parent_id}, err={e}")
+
+    return {}
+
+
 def _find_import_root_candidates(client, cache_cid: str, item: Dict[str, Any], current_node: Dict[str, Any] = None, import_resp: Any = None) -> List[str]:
     """尽量把整包回填扫描范围限制在本次导入的目录内，避免临时区多包串台。"""
     candidates = []
+
+    import_root = _find_import_root_node(client, cache_cid, current_node=current_node, import_resp=import_resp)
+    if import_root.get('fid'):
+        candidates.append(str(import_root.get('fid')))
+
     titles = _extract_receive_titles(import_resp)
     title_keys = {str(t).strip().lower() for t in titles if str(t).strip()}
-
     if title_keys:
         for child in _list_children(client, cache_cid):
             name = str(child.get('name') or '').strip().lower()
             if name in title_keys and child.get('is_dir') and child.get('fid'):
                 candidates.append(str(child.get('fid')))
 
-    # 如果当前文件已经定位出来，优先扫它所在的目录，这通常就是季包目录。
+    # 如果当前文件已经定位出来，再扫它所在的目录。这通常是 Season 01 子目录，
+    # 仅作为导入根目录识别失败时的兜底，不能作为删除根目录的唯一依据。
     if current_node and current_node.get('parent_id'):
         candidates.append(str(current_node.get('parent_id')))
 
@@ -457,8 +515,15 @@ def _backfill_virtual_pack_cache(
     if cur_vid and current_node:
         matched[cur_vid] = current_node
 
+    import_root = _find_import_root_node(client, cache_cid, current_node=current_node, import_resp=import_resp)
+    import_root_cid = str(import_root.get('fid') or '').strip()
+    import_root_name = str(import_root.get('name') or '').strip()
+
     for root_cid in _find_import_root_candidates(client, cache_cid, item, current_node=current_node, import_resp=import_resp):
         more = _collect_matching_nodes_for_items(client, root_cid, pack_items)
+        if more and not import_root_cid and str(root_cid) != str(cache_cid):
+            # 老接口没返回 receive_title 时，至少把实际命中扫描根记录下来，供删除兜底。
+            import_root_cid = str(root_cid)
         matched.update({k: v for k, v in more.items() if k not in matched})
         if len(matched) >= len(pack_items):
             break
@@ -482,6 +547,8 @@ def _backfill_virtual_pack_cache(
             raw_json={
                 'last_import_resp': import_resp or {},
                 'last_import_node': node,
+                'last_import_root_cid': import_root_cid,
+                'last_import_root_name': import_root_name,
                 'last_play_user_id': user_id,
                 'pack_backfilled_by': cur_vid,
             },
@@ -642,6 +709,7 @@ def ensure_playable_by_emby_item(
                 shared_virtual_db.mark_virtual_error(virtual_id, msg)
                 return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg}
             _upsert_p115_cache(node, item, cache_cid)
+            import_root = _find_import_root_node(client, cache_cid, current_node=node, import_resp=import_resp or {})
             row = shared_virtual_db.mark_virtual_cached(
                 virtual_id,
                 real_fid=node.get('fid') or '',
@@ -651,7 +719,13 @@ def ensure_playable_by_emby_item(
                 cache_parent_name=cache_name,
                 expires_at=expires_at,
                 message=message,
-                raw_json={'last_import_resp': import_resp or {}, 'last_import_node': node, 'last_play_user_id': user_id},
+                raw_json={
+                    'last_import_resp': import_resp or {},
+                    'last_import_node': node,
+                    'last_import_root_cid': str(import_root.get('fid') or ''),
+                    'last_import_root_name': str(import_root.get('name') or ''),
+                    'last_play_user_id': user_id,
+                },
             ) or item
             shared_virtual_db.mark_virtual_played(virtual_id)
             shared_virtual_db.add_credit_ledger(

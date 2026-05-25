@@ -1306,64 +1306,215 @@ def _node_matches_virtual_row(node: Dict[str, Any], row: Dict[str, Any]) -> bool
     return False
 
 
-def _list_115_children_for_delete(client, cid: str) -> List[Dict[str, Any]]:
-    children = []
-    offset = 0
+def _list_115_children_for_delete(client, cid: str, max_depth: int = 5) -> List[Dict[str, Any]]:
+    """递归列出目录内节点，用于校验整包删除目标。
+
+    v9.4 只列了 real_parent_id 的直接子节点，遇到
+    临时区/分享根目录/Season 01/Exx.mkv 这类结构时，删除 Season 01
+    会留下空的分享根目录。这里改为可递归校验顶层分享根目录。
+    """
+    children: List[Dict[str, Any]] = []
+    queue = [(str(cid or '').strip(), 0)]
+    seen_dirs = set()
     limit = 1000
-    while cid:
-        res = client.fs_files({'cid': str(cid), 'limit': limit, 'offset': offset, 'record_open_time': 0, 'count_folders': 0})
-        data = (res or {}).get('data') or []
-        for it in data:
-            name = it.get('fn') or it.get('n') or it.get('file_name') or ''
-            fc = it.get('fc') if it.get('fc') is not None else it.get('type')
-            is_dir = str(fc) == '0'
-            children.append({
-                'fid': str(it.get('fid') or it.get('file_id') or ''),
-                'name': name,
-                'sha1': it.get('sha1') or it.get('sha') or '',
-                'size': it.get('fs') or it.get('size') or 0,
-                'is_dir': is_dir,
-                'pick_code': it.get('pc') or it.get('pick_code') or '',
-            })
-        if len(data) < limit:
-            break
-        offset += limit
+
+    while queue:
+        current_cid, depth = queue.pop(0)
+        if not current_cid or current_cid in seen_dirs or depth > max_depth:
+            continue
+        seen_dirs.add(current_cid)
+
+        offset = 0
+        while True:
+            res = client.fs_files({'cid': current_cid, 'limit': limit, 'offset': offset, 'record_open_time': 0, 'count_folders': 0})
+            data = (res or {}).get('data') or []
+            for it in data:
+                name = it.get('fn') or it.get('n') or it.get('file_name') or ''
+                fid = str(it.get('fid') or it.get('file_id') or '')
+                fc = it.get('fc') if it.get('fc') is not None else it.get('type')
+                is_dir = str(fc) == '0'
+                children.append({
+                    'fid': fid,
+                    'name': name,
+                    'sha1': it.get('sha1') or it.get('sha') or '',
+                    'size': it.get('fs') or it.get('size') or 0,
+                    'is_dir': is_dir,
+                    'pick_code': it.get('pc') or it.get('pick_code') or '',
+                    'parent_id': current_cid,
+                })
+                if is_dir and fid and depth < max_depth:
+                    queue.append((fid, depth + 1))
+            if len(data) < limit:
+                break
+            offset += limit
     return children
+
+
+def _row_raw_json(row: Dict[str, Any]) -> Dict[str, Any]:
+    raw = (row or {}).get('raw_json')
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            obj = json.loads(raw)
+            return obj if isinstance(obj, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _extract_receive_titles_for_delete(obj: Any) -> List[str]:
+    titles = []
+
+    def walk(x):
+        if isinstance(x, dict):
+            for key in ('receive_title', 'receive_name', 'file_name', 'name', 'title'):
+                val = x.get(key)
+                if isinstance(val, str) and val.strip():
+                    titles.append(val.strip())
+            for val in x.values():
+                if isinstance(val, (dict, list)):
+                    walk(val)
+        elif isinstance(x, list):
+            for val in x:
+                walk(val)
+
+    walk(obj)
+    seen = set()
+    out = []
+    for title in titles:
+        key = title.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(title)
+    return out
+
+
+def _path_node_cid_for_delete(node: Dict[str, Any]) -> str:
+    if not isinstance(node, dict):
+        return ''
+    return str(node.get('cid') or node.get('file_id') or node.get('fid') or node.get('id') or '').strip()
+
+
+def _path_node_name_for_delete(node: Dict[str, Any]) -> str:
+    if not isinstance(node, dict):
+        return ''
+    return str(node.get('name') or node.get('file_name') or node.get('fn') or node.get('n') or '').strip()
+
+
+def _find_cache_child_dir_by_titles_for_delete(client, cache_cid: str, titles: List[str]) -> List[Dict[str, str]]:
+    cache_cid = str(cache_cid or '').strip()
+    title_keys = {str(t).strip().lower() for t in titles or [] if str(t).strip()}
+    if not cache_cid or not title_keys:
+        return []
+    out = []
+    try:
+        for child in _list_115_children_for_delete(client, cache_cid, max_depth=0):
+            if child.get('is_dir') and child.get('fid') and str(child.get('name') or '').strip().lower() in title_keys:
+                out.append({'cid': str(child.get('fid')), 'name': str(child.get('name') or ''), 'source': 'receive_title'})
+    except Exception as e:
+        logger.debug(f"  ➜ [共享虚拟删除] 按 receive_title 查找导入根目录失败: cache={cache_cid}, err={e}")
+    return out
+
+
+def _top_child_under_cache_by_path_for_delete(client, cache_cid: str, descendant_cid: str) -> Dict[str, str]:
+    cache_cid = str(cache_cid or '').strip()
+    descendant_cid = str(descendant_cid or '').strip()
+    if not cache_cid or not descendant_cid or cache_cid == descendant_cid:
+        return {}
+    try:
+        res = client.fs_files({'cid': descendant_cid, 'limit': 1, 'record_open_time': 0, 'count_folders': 0})
+        path_nodes = (res or {}).get('path') or []
+        for idx, path_node in enumerate(path_nodes):
+            if _path_node_cid_for_delete(path_node) == cache_cid and idx + 1 < len(path_nodes):
+                root_node = path_nodes[idx + 1] or {}
+                root_cid = _path_node_cid_for_delete(root_node)
+                if root_cid and root_cid != cache_cid:
+                    return {'cid': root_cid, 'name': _path_node_name_for_delete(root_node), 'source': 'path'}
+    except Exception as e:
+        logger.debug(f"  ➜ [共享虚拟删除] 通过 115 path 反推导入根目录失败: descendant={descendant_cid}, err={e}")
+    return {}
+
+
+def _delete_root_candidates_for_pack(client, rows: List[Dict[str, Any]]) -> List[Dict[str, str]]:
+    """按优先级返回应删除的整包目录候选。
+
+    优先删除 share_import 生成的顶层分享根目录；旧数据没有记录时，
+    通过 receive_title 或 115 path 从 real_parent_id 反推“爷爷目录”。
+    """
+    rows = [r for r in rows or [] if r]
+    cache_roots = {str(r.get('cache_parent_id') or '').strip() for r in rows if str(r.get('cache_parent_id') or '').strip()}
+    candidates: List[Dict[str, str]] = []
+
+    def add(cid: str, name: str = '', source: str = ''):
+        cid = str(cid or '').strip()
+        if not cid or cid in cache_roots:
+            return
+        if any(x.get('cid') == cid for x in candidates):
+            return
+        candidates.append({'cid': cid, 'name': str(name or ''), 'source': source})
+
+    # 1. 新数据：播放转存时显式记录的顶层分享根目录。
+    for row in rows:
+        raw = _row_raw_json(row)
+        add(raw.get('last_import_root_cid'), raw.get('last_import_root_name'), 'recorded_root')
+
+    # 2. 新/旧数据：share_import 响应里的 receive_title 通常就是顶层目录名。
+    by_cache_titles: Dict[str, List[str]] = {}
+    for row in rows:
+        cache_cid = str(row.get('cache_parent_id') or '').strip()
+        raw = _row_raw_json(row)
+        titles = _extract_receive_titles_for_delete(raw.get('last_import_resp') or raw)
+        if cache_cid and titles:
+            by_cache_titles.setdefault(cache_cid, []).extend(titles)
+    for cache_cid, titles in by_cache_titles.items():
+        for hit in _find_cache_child_dir_by_titles_for_delete(client, cache_cid, titles):
+            add(hit.get('cid'), hit.get('name'), hit.get('source'))
+
+    # 3. 旧数据：只有 real_parent_id=Season 01 这类子目录时，用 path 反推 cache 下第一层子目录。
+    for row in rows:
+        cache_cid = str(row.get('cache_parent_id') or '').strip()
+        for descendant in (row.get('real_parent_id'), row.get('real_fid')):
+            hit = _top_child_under_cache_by_path_for_delete(client, cache_cid, str(descendant or '').strip())
+            if hit:
+                add(hit.get('cid'), hit.get('name'), hit.get('source'))
+
+    # 4. 最后兜底：同一 real_parent_id 命中多集时，删这个目录。
+    parent_count: Dict[str, int] = {}
+    for row in rows:
+        parent = str(row.get('real_parent_id') or '').strip()
+        fid = str(row.get('real_fid') or '').strip()
+        if parent and fid and parent not in cache_roots:
+            parent_count[parent] = parent_count.get(parent, 0) + 1
+    for parent, count in sorted(parent_count.items(), key=lambda kv: kv[1], reverse=True):
+        if count >= 2:
+            add(parent, '', 'real_parent_fallback')
+
+    return candidates
 
 
 def _verified_pack_parent_for_delete(client, rows: List[Dict[str, Any]]) -> str:
     """找出可安全整目录删除的临时包目录 CID。
 
-    只在满足以下条件时返回目录：
-    1. 多个虚拟分集有同一个 real_parent_id；
-    2. 该目录不是共享临时区根目录 cache_parent_id；
-    3. 目录内能匹配到同包分集文件，避免旧缓存污染时删错别的剧包。
+    优先删除 share_import 生成的顶层分享根目录，而不是只删文件父目录。
+    删除前会递归校验目录内至少能匹配到当前虚拟包的分集文件，避免串台缓存误删。
     """
     rows = [r for r in rows or [] if r]
     if len(rows) <= 1:
         return ''
 
-    cache_roots = {str(r.get('cache_parent_id') or '').strip() for r in rows if str(r.get('cache_parent_id') or '').strip()}
-    parent_count: Dict[str, int] = {}
-    for r in rows:
-        parent = str(r.get('real_parent_id') or '').strip()
-        fid = str(r.get('real_fid') or '').strip()
-        if not parent or not fid or parent in cache_roots:
-            continue
-        parent_count[parent] = parent_count.get(parent, 0) + 1
-
-    if not parent_count:
+    candidates = _delete_root_candidates_for_pack(client, rows)
+    if not candidates:
         return ''
 
-    # 优先选择命中集数最多的同一父目录。
-    candidates = sorted(parent_count.items(), key=lambda kv: kv[1], reverse=True)
-    for parent_id, count in candidates:
-        if count < 2:
+    for candidate in candidates:
+        cid = str(candidate.get('cid') or '').strip()
+        if not cid:
             continue
         try:
-            children = _list_115_children_for_delete(client, parent_id)
+            children = _list_115_children_for_delete(client, cid, max_depth=5)
         except Exception as e:
-            logger.warning(f"  ➜ [共享虚拟删除] 校验临时包目录失败 cid={parent_id}: {e}")
+            logger.warning(f"  ➜ [共享虚拟删除] 校验临时包目录失败 cid={cid}: {e}")
             continue
 
         matched = 0
@@ -1371,13 +1522,17 @@ def _verified_pack_parent_for_delete(client, rows: List[Dict[str, Any]]) -> str:
             if any(_node_matches_virtual_row(node, row) for node in children):
                 matched += 1
 
-        # 至少匹配 1 个真实文件；多集包要求匹配 2 个更安全。
-        required = 2 if len(rows) >= 2 and len(children) >= 2 else 1
+        required = 2 if len(rows) >= 2 else 1
         if matched >= required:
-            return parent_id
+            logger.info(
+                "  ➜ [共享虚拟删除] 已确认整包删除目录: cid=%s, name=%s, source=%s, matched=%s/%s",
+                cid, candidate.get('name') or '', candidate.get('source') or '', matched, len(rows),
+            )
+            return cid
+
         logger.warning(
-            "  ➜ [共享虚拟删除] 临时包目录校验未通过，跳过整目录删除: cid=%s, matched=%s/%s",
-            parent_id, matched, len(rows),
+            "  ➜ [共享虚拟删除] 临时包目录校验未通过，跳过整目录删除: cid=%s, source=%s, matched=%s/%s",
+            cid, candidate.get('source') or '', matched, len(rows),
         )
     return ''
 
@@ -1434,7 +1589,7 @@ def api_delete_virtual_item(virtual_id):
             pack_parent = _verified_pack_parent_for_delete(client, pack_rows)
             if pack_parent:
                 remote_targets = [pack_parent]
-                messages.append("115临时包目录已删除")
+                messages.append("115临时分享包根目录已删除")
             else:
                 # 单文件或旧数据兜底：只删 real_fid，排除共享缓存根目录和包父目录。
                 cache_roots = {str(r.get('cache_parent_id') or '').strip() for r in pack_rows if str(r.get('cache_parent_id') or '').strip()}
