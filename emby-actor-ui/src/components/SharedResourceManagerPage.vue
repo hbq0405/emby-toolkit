@@ -422,9 +422,11 @@ const ledgerEventLabel = (eventType) => {
   const map = {
     center_initial_credit: '基础贡献值',
     center_source_registered: '中心登记共享源',
-    center_source_registered_group: '本季汇总',
+    center_source_registered_group: '登记汇总',
     center_shared_source_served: '共享被转存',
+    center_shared_source_served_group: '分享加分汇总',
     center_shared_source_consumed: '转存共享资源',
+    center_shared_source_consumed_group: '转存扣分汇总',
     share_created: '创建分享',
     share_reported_center: '登记',
     share_raw_uploaded: '媒体信息',
@@ -434,6 +436,20 @@ const ledgerEventLabel = (eventType) => {
   };
   return map[eventType] || eventType || '-';
 };
+
+const foldableLedgerEpisodeEvents = new Set([
+  'center_source_registered',
+  'center_shared_source_served',
+  'center_shared_source_consumed',
+]);
+
+const ledgerGroupReasonPrefix = (eventType) => ({
+  center_source_registered: '本季登记共享',
+  center_shared_source_served: '本季分享加分',
+  center_shared_source_consumed: '本季转存扣分',
+}[eventType] || '本季贡献值');
+
+const ledgerGroupEventType = (eventType) => `${eventType}_group`;
 
 const formatDelta = (value) => {
   const n = Number(value || 0);
@@ -480,10 +496,8 @@ const parseLedgerEpisode = (row) => {
 
 const isFoldableLedgerEpisode = (row) => {
   if (!row || row.__group) return false;
-  if (row.event_type !== 'center_source_registered') return false;
-  const centerItem = getLedgerCenterItem(row);
-  const itemType = String(centerItem.item_type || row.item_type || '').toLowerCase();
-  return (itemType === 'episode' || !!parseLedgerEpisode(row)) && !!parseLedgerEpisode(row);
+  if (!foldableLedgerEpisodeEvents.has(row.event_type)) return false;
+  return !!parseLedgerEpisode(row);
 };
 
 const ledgerDisplayItems = computed(() => {
@@ -499,15 +513,17 @@ const ledgerDisplayItems = computed(() => {
     const ep = parseLedgerEpisode(row);
     const centerItem = getLedgerCenterItem(row);
     const tmdbKey = centerItem.parent_series_tmdb_id || centerItem.series_tmdb_id || row.parent_series_tmdb_id || centerItem.tmdb_id || row.tmdb_id || ep.seriesTitle;
-    const groupKey = `${tmdbKey}:S${String(ep.season).padStart(2, '0')}`;
+    const seasonCode = `S${String(ep.season).padStart(2, '0')}`;
+    const groupKey = `${row.event_type}:${tmdbKey}:${seasonCode}`;
 
     if (!groups.has(groupKey)) {
       const group = {
         __group: true,
         __row_key: `group:${groupKey}`,
         __group_key: groupKey,
-        event_type: 'center_source_registered_group',
-        title: `${ep.seriesTitle} S${String(ep.season).padStart(2, '0')}`,
+        event_type: ledgerGroupEventType(row.event_type),
+        source_event_type: row.event_type,
+        title: `${ep.seriesTitle} ${seasonCode}`,
         delta: 0,
         reason: '',
         created_at: row.created_at,
@@ -519,7 +535,7 @@ const ledgerDisplayItems = computed(() => {
     }
 
     const group = groups.get(groupKey);
-    group.children.push({ ...row, __child: true, __row_key: `child:${row.id || row.ref_id || ep.code}` });
+    group.children.push({ ...row, __child: true, __row_key: `child:${groupKey}:${row.id || row.ref_id || ep.code}` });
     group.episodeCodes.push(ep.code);
     group.delta += Number(row.delta || 0);
     if (!group.created_at || new Date(row.created_at).getTime() > new Date(group.created_at).getTime()) {
@@ -543,7 +559,8 @@ const ledgerDisplayItems = computed(() => {
     });
     const first = sortedCodes[0];
     const last = sortedCodes[sortedCodes.length - 1];
-    row.reason = `本季共享 ${row.children.length} 集，贡献值 ${formatDelta(row.delta)}${first && last ? `，范围 ${first} - ${last}` : ''}`;
+    const prefix = ledgerGroupReasonPrefix(row.source_event_type);
+    row.reason = `${prefix} ${row.children.length} 条，贡献值 ${formatDelta(row.delta)}${first && last ? `，范围 ${first} - ${last}` : ''}`;
     expanded.push(row);
 
     if (ledgerCollapsedGroups[row.__group_key] === false) {
@@ -728,7 +745,7 @@ const ledgerColumns = [
       const collapsed = ledgerCollapsedGroups[row.__group_key] !== false;
       return h(NButton, { size: 'tiny', text: true, onClick: () => toggleLedgerGroup(row.__group_key) }, {
         icon: () => h(NIcon, null, { default: () => h(collapsed ? ChevronForwardIcon : ChevronDownIcon) }),
-        default: () => '本季汇总'
+        default: () => ledgerEventLabel(row.event_type)
       });
     }
     if (row.__child) return h('span', { class: 'ledger-child-event' }, ledgerEventLabel(row.event_type));
