@@ -115,9 +115,9 @@
               remote
               :loading="centerLoading"
               :columns="centerColumns"
-              :data="centerSources"
+              :data="groupedCenterSources"
               :pagination="centerPagination"
-              :row-key="row => row.source_id"
+              :row-key="row => row.group_key || row.source_id"
               :scroll-x="1480"
               @update:page="p => { centerPagination.page = p; loadCenterSources(); }"
               @update:page-size="s => { centerPagination.pageSize = s; centerPagination.page = 1; loadCenterSources(); }"
@@ -236,6 +236,7 @@ const virtualItems = ref([]);
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
+const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || []));
 const ledgerCollapsedGroups = reactive({});
 
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
@@ -282,30 +283,12 @@ const manualItemTypeOptions = [
   { label: '电影', value: 'Movie' }, { label: '季', value: 'Season' }, { label: '剧集', value: 'Series' },
 ];
 const shareTypeOptions = [
-  { label: '电影', value: 'movie_folder' },
-  { label: '电影', value: 'movie_file' },
-  { label: '剧集包', value: 'season_pack' },
-  { label: '剧集包', value: 'series_pack' },
-  { label: '单集', value: 'episode_file' },
+  { label: '电影目录', value: 'movie_folder' },
+  { label: '电影单文件', value: 'movie_file' },
+  { label: '季目录', value: 'season_pack' },
+  { label: '整剧目录', value: 'series_pack' },
 ];
-const shareTypeLabel = (value) => ({
-  movie_file: '电影', movie_folder: '电影',
-  season_pack: '剧集包', series_pack: '剧集包',
-  episode_file: '单集', Episode: '单集', episode: '单集',
-  Movie: '电影', movie: '电影', Season: '剧集包', Series: '剧集包',
-}[value] || shareTypeOptions.find(opt => opt.value === value)?.label || value || '-');
-const isSuccessShareMessage = (value) => {
-  const text = String(value || '').trim();
-  if (!text) return true;
-  return /^(分享可用|分享可访问|分享正常|可访问|正常|ok)$/i.test(text);
-};
-const shareErrorText = (row) => {
-  const status = String(row.status || row.review_status || '').toLowerCase();
-  const text = String(row.last_error || row.error || '').trim();
-  if (!text || isSuccessShareMessage(text)) return '-';
-  if (['alive', 'reported'].includes(status) && isSuccessShareMessage(text)) return '-';
-  return text;
-};
+const shareTypeLabel = (value) => (shareTypeOptions.find(opt => opt.value === value)?.label || value || '-');
 
 const statusMap = {
   virtual_ready: { text: '虚拟待播', type: 'info' }, transferring: { text: '转存中', type: 'warning' },
@@ -368,14 +351,7 @@ const virtualColumns = [
 ];
 
 const shareColumns = [
-  { title: '标题', key: 'title', minWidth: 240, render: row => {
-    const seasonText = row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : '';
-    const episodeText = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
-    return h('div', [
-      h('div', { class: 'main-title' }, row.title || row.root_name || row.share_code),
-      h('div', { class: 'sub-title' }, `${shareTypeLabel(row.share_type)} · TMDb ${row.tmdb_id || '-'}${seasonText}${episodeText}`)
-    ]);
-  } },
+  { title: '标题', key: 'title', minWidth: 240, render: row => h('div', [h('div', { class: 'main-title' }, row.title || row.root_name || row.share_code), h('div', { class: 'sub-title' }, `${row.share_type || '-'} · TMDb ${row.tmdb_id || '-'}${row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : ''}`)]) },
   { title: '审核', key: 'review_status', width: 110, render: row => tag(row.review_status || row.status) },
   { title: '中心', key: 'center_status', width: 110, render: row => tag(row.center_status) },
   { title: '分享码', key: 'share_code', width: 140, ellipsis: { tooltip: true } },
@@ -391,7 +367,7 @@ const shareColumns = [
   } },
   { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
   { title: '检查时间', key: 'last_checked_at', width: 170, render: row => fmtDate(row.last_checked_at) },
-  { title: '错误', key: 'last_error', minWidth: 220, ellipsis: { tooltip: true }, render: row => shareErrorText(row) },
+  { title: '错误', key: 'last_error', minWidth: 220, ellipsis: { tooltip: true } },
   { title: '操作', key: 'actions', width: 300, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
     h(NButton, { size: 'small', type: 'info', ghost: true, onClick: () => checkShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CheckIcon) }), default: () => '检查' }),
     h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: !['alive','reported'].includes(row.status) && row.review_status !== 'alive', onClick: () => reportShare(row) }, { icon: () => h(NIcon, null, { default: () => h(ReportIcon) }), default: () => '登记' }),
@@ -635,27 +611,89 @@ const importCenterSource = (row, mode) => {
     }
   });
 };
+
+const centerGroupKey = (row) => {
+  const type = centerRowType(row);
+  const tmdb = row.tmdb_id || row.share_tmdb_id || row.parent_series_tmdb_id || '';
+  const title = row.title || row.media_title || '';
+  const season = row.season_number || '';
+  const episode = row.episode_number || '';
+  const baseType = centerTypeLabel(type);
+  if (baseType === '电影') return `movie:${tmdb || title}`;
+  if (baseType === '剧集包') return `pack:${tmdb || title}:S${season || ''}`;
+  if (baseType === '单集') return `ep:${tmdb || title}:S${season || ''}:E${episode || ''}`;
+  return `${baseType}:${tmdb || title}:${season}:${episode}`;
+};
+
+const groupCenterSources = (items) => {
+  const groups = [];
+  const byKey = new Map();
+  for (const item of (items || [])) {
+    const key = centerGroupKey(item);
+    let group = byKey.get(key);
+    if (!group) {
+      group = {
+        group_key: key,
+        title: item.title,
+        media_title: item.media_title,
+        tmdb_id: item.tmdb_id,
+        share_tmdb_id: item.share_tmdb_id,
+        release_year: item.release_year,
+        season_number: item.season_number,
+        episode_number: item.episode_number,
+        display_type: centerRowType(item),
+        versions: [],
+      };
+      byKey.set(key, group);
+      groups.push(group);
+    }
+    group.versions.push(item);
+  }
+  return groups;
+};
+
+const lineStack = (items, renderFn, tooltipFn = null) => {
+  const rows = (items || []).map((it, idx) => {
+    const content = renderFn(it, idx);
+    const title = tooltipFn ? tooltipFn(it, idx) : null;
+    return h('div', { class: 'center-version-line', key: idx, title: title || undefined }, [content]);
+  });
+  return h('div', { class: 'center-version-stack' }, rows);
+};
+
+const trackListToStrings = (items) => (items || []).map(x => typeof x === 'string' ? x : (x.display || [x.language, x.codec, x.channels ? `${x.channels}ch` : '', x.title].filter(Boolean).join(' '))).filter(Boolean);
+const defaultTrackText = (items) => {
+  const arr = trackListToStrings(items);
+  if (!arr.length) return '-';
+  const found = arr.find(x => /默认/.test(x));
+  return found || arr[0];
+};
+const allTrackTitle = (items) => {
+  const arr = trackListToStrings(items);
+  return arr.length ? arr.join('\n') : '';
+};
+
 const centerColumns = [
   { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => h('div', null, [
     h('div', { class: 'main-title' }, centerTitleText(row)),
-    h('div', { class: 'sub-title' }, `TMDb ${row.tmdb_id || '-'}`)
+    h('div', { class: 'sub-title' }, `TMDb ${row.tmdb_id || row.share_tmdb_id || '-'}`)
   ]) },
-  { title: '类型', key: 'item_type', width: 115, render: row => centerSeasonText(row) },
-  { title: '分辨率', key: 'resolution', width: 90, render: row => row.version_summary?.resolution || '-' },
-  { title: '视频编码', key: 'video_codec', width: 110, render: row => {
-    const v = row.version_summary || {};
-    return [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ') || '-';
-  } },
-  { title: 'HDR / 杜比', key: 'effect', width: 150, ellipsis: { tooltip: true }, render: row => row.version_summary?.effect || '-' },
-  { title: '帧率', key: 'fps', width: 110, render: row => row.version_summary?.fps || '-' },
-  { title: '音轨', key: 'audios', minWidth: 260, render: row => listCell(row.version_summary?.audio_list || row.version_summary?.audios, 3) },
-  { title: '字幕', key: 'subtitles', minWidth: 280, render: row => listCell(row.version_summary?.subtitle_list || row.version_summary?.subtitles, 4) },
-  { title: '大小', key: 'size', width: 95, render: row => formatCenterSize(row) },
-  { title: '可用性', key: 'status', width: 105, render: row => centerStatusTag(row) },
-  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => h(NSpace, { size: 6 }, { default: () => [
-    h(NButton, { size: 'small', type: 'primary', secondary: true, onClick: () => importCenterSource(row, 'permanent') }, { default: () => '转存' }),
-    h(NButton, { size: 'small', secondary: true, onClick: () => importCenterSource(row, 'virtual') }, { default: () => '入库' })
-  ] }) },
+  { title: '类型', key: 'item_type', width: 130, render: row => centerSeasonText(row) },
+  { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
+  { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
+    const v = it.version_summary || {};
+    return h('span', [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ') || '-');
+  }) },
+  { title: 'HDR / 杜比', key: 'effect', width: 150, render: row => lineStack(row.versions, it => h('span', it.version_summary?.effect || '-'), it => it.version_summary?.effect || '') },
+  { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', it.version_summary?.fps || '-')) },
+  { title: '音轨', key: 'audios', minWidth: 220, render: row => lineStack(row.versions, it => h('span', defaultTrackText(it.version_summary?.audio_list || it.version_summary?.audios)), it => allTrackTitle(it.version_summary?.audio_list || it.version_summary?.audios)) },
+  { title: '字幕', key: 'subtitles', minWidth: 220, render: row => lineStack(row.versions, it => h('span', defaultTrackText(it.version_summary?.subtitle_list || it.version_summary?.subtitles)), it => allTrackTitle(it.version_summary?.subtitle_list || it.version_summary?.subtitles)) },
+  { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
+  { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
+  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => lineStack(row.versions, it => h(NSpace, { size: 6 }, { default: () => [
+    h(NButton, { size: 'small', type: 'primary', secondary: true, onClick: () => importCenterSource(it, 'permanent') }, { default: () => '转存' }),
+    h(NButton, { size: 'small', secondary: true, onClick: () => importCenterSource(it, 'virtual') }, { default: () => '入库' })
+  ] })) },
 ];
 
 const ledgerColumns = [
@@ -859,5 +897,9 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
   white-space: nowrap;
   max-width: 100%;
 }
+
+
+.center-version-stack { display: flex; flex-direction: column; gap: 8px; }
+.center-version-line { min-height: 24px; display: flex; align-items: center; }
 
 </style>
