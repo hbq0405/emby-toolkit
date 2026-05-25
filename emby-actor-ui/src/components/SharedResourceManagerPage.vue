@@ -319,9 +319,17 @@ const statCards = computed(() => {
 });
 
 const virtualColumns = [
-  { title: '标题', key: 'title', minWidth: 230, render: row => h('div', [h('div', { class: 'main-title' }, row.title || row.file_name || row.tmdb_id), h('div', { class: 'sub-title' }, `${row.item_type || '-'} · TMDb ${row.tmdb_id || '-'}${row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : ''}${row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : ''}`)]) },
+  { title: '标题', key: 'title', minWidth: 230, render: row => {
+    const seasonText = row.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
+    const epText = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
+    const packText = row.is_collapsed_pack ? ` · ${row.pack_item_count || 0}集包${row.pack_episode_numbers?.length ? ` · E${String(row.pack_episode_numbers[0]).padStart(2, '0')}-${String(row.pack_episode_numbers[row.pack_episode_numbers.length - 1]).padStart(2, '0')}` : ''}` : '';
+    return h('div', [
+      h('div', { class: 'main-title' }, row.title || row.file_name || row.tmdb_id),
+      h('div', { class: 'sub-title' }, `${row.item_type || '-'} · TMDb ${row.tmdb_id || '-'}${seasonText ? ` · ${seasonText}` : ''}${epText}${packText}`)
+    ]);
+  } },
   { title: '状态', key: 'status', width: 120, render: row => tag(row.status) },
-  { title: '文件', key: 'file_name', minWidth: 260, ellipsis: { tooltip: true } },
+  { title: '文件', key: 'file_name', minWidth: 260, ellipsis: { tooltip: true }, render: row => row.is_collapsed_pack ? `${row.pack_item_count || 0}集包` : (row.file_name || '-') },
   { title: '大小', key: 'size', width: 110, render: row => fmtBytes(row.size) },
   { title: '播放', key: 'play_count', width: 90, render: row => `${row.play_count || 0} 次` },
   { title: '临时到期', key: 'expires_at', width: 170, render: row => fmtDate(row.expires_at) },

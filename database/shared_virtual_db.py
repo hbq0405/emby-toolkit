@@ -65,6 +65,140 @@ def get_local_summary() -> Dict[str, Any]:
     return {"local": local, "shares": shares, "credit": credit}
 
 
+def _norm_pack_season(value) -> str:
+    if value in [None, '']:
+        return ''
+    try:
+        return str(int(value))
+    except Exception:
+        return str(value).strip()
+
+
+def _collapse_virtual_pack_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """把同一 115 分享码下的同季虚拟分集折叠成一个季包展示行。
+
+    虚拟入库是按文件落库的，但中心资源里经常是一整个 115 季包分享：
+    播放任意一集都会把整个包临时转存。列表层继续逐集展示，会误导为
+    “一集一转存”。这里按 contributor + share_code + season 折叠，分页也在
+    折叠之后进行，避免 page_size=30 把 36 集误显示为 30 集。
+    """
+    groups: Dict[str, List[Dict[str, Any]]] = {}
+    passthrough: List[Dict[str, Any]] = []
+
+    for row in rows or []:
+        row = dict(row or {})
+        share_code = str(row.get('share_code') or '').strip()
+        season = _norm_pack_season(row.get('season_number'))
+        item_type = str(row.get('item_type') or '').strip().lower()
+        has_episode = row.get('episode_number') not in [None, '']
+        if share_code and season and (item_type in {'episode', 'season', 'series', 'tv'} or has_episode):
+            key = '|'.join([
+                str(row.get('contributor_id') or ''),
+                share_code,
+                season,
+            ])
+            groups.setdefault(key, []).append(row)
+        else:
+            passthrough.append(row)
+
+    collapsed: List[Dict[str, Any]] = []
+    for rows_in_group in groups.values():
+        if len(rows_in_group) <= 1:
+            passthrough.extend(rows_in_group)
+            continue
+
+        def _sort_key(r):
+            status_weight = 0
+            if r.get('real_pick_code'):
+                status_weight += 10
+            if r.get('status') in ('cached', 'watched'):
+                status_weight += 5
+            try:
+                ep = int(r.get('episode_number') or 99999)
+            except Exception:
+                ep = 99999
+            return (-status_weight, ep, str(r.get('updated_at') or ''))
+
+        sorted_rows = sorted(rows_in_group, key=_sort_key)
+        rep = dict(sorted_rows[0])
+        virtual_ids = []
+        source_ids = []
+        episode_numbers = []
+        total_size = 0
+        play_count = 0
+        statuses = []
+        latest_updated = rep.get('updated_at')
+        latest_expire = rep.get('expires_at')
+        cached_row = None
+
+        for r in rows_in_group:
+            vid = str(r.get('virtual_id') or '').strip()
+            if vid:
+                virtual_ids.append(vid)
+            sid = str(r.get('source_id') or '').strip()
+            if sid:
+                source_ids.append(sid)
+            try:
+                if r.get('episode_number') not in [None, '']:
+                    episode_numbers.append(int(r.get('episode_number')))
+            except Exception:
+                pass
+            try:
+                total_size += int(r.get('size') or 0)
+            except Exception:
+                pass
+            try:
+                play_count += int(r.get('play_count') or 0)
+            except Exception:
+                pass
+            statuses.append(str(r.get('status') or ''))
+            if r.get('updated_at') and (not latest_updated or str(r.get('updated_at')) > str(latest_updated)):
+                latest_updated = r.get('updated_at')
+            if r.get('expires_at') and (not latest_expire or str(r.get('expires_at')) > str(latest_expire)):
+                latest_expire = r.get('expires_at')
+            if not cached_row and r.get('real_pick_code'):
+                cached_row = r
+
+        if cached_row:
+            for k in ('real_fid', 'real_pick_code', 'real_parent_id'):
+                rep[k] = cached_row.get(k)
+
+        unique_statuses = set(s for s in statuses if s)
+        if len(unique_statuses) == 1:
+            rep['status'] = next(iter(unique_statuses))
+        elif any(s in ('cached', 'watched') for s in unique_statuses):
+            rep['status'] = 'cached'
+        elif any(s == 'transferring' for s in unique_statuses):
+            rep['status'] = 'transferring'
+        elif any(s == 'error' for s in unique_statuses):
+            rep['status'] = 'error'
+        else:
+            rep['status'] = 'virtual_ready'
+
+        eps = sorted(set(episode_numbers))
+        ep_range = ''
+        if eps:
+            ep_range = f"E{eps[0]:02d}" if len(eps) == 1 else f"E{eps[0]:02d}-E{eps[-1]:02d}"
+
+        rep['item_type'] = 'Season'
+        rep['episode_number'] = None
+        rep['pack_item_count'] = len(rows_in_group)
+        rep['pack_episode_numbers'] = eps
+        rep['pack_virtual_ids'] = list(dict.fromkeys(virtual_ids))
+        rep['pack_source_ids'] = list(dict.fromkeys(source_ids))
+        rep['is_collapsed_pack'] = True
+        rep['file_name'] = f"{len(rows_in_group)}集包" + (f"（{ep_range}）" if ep_range else '')
+        rep['size'] = total_size or rep.get('size')
+        rep['play_count'] = play_count
+        rep['updated_at'] = latest_updated
+        rep['expires_at'] = latest_expire
+        collapsed.append(rep)
+
+    result = passthrough + collapsed
+    result.sort(key=lambda r: str(r.get('updated_at') or ''), reverse=True)
+    return result
+
+
 def list_virtual_items(status='all', item_type='all', keyword='', page=1, page_size=30) -> Tuple[List[Dict[str, Any]], int]:
     page = max(1, int(page or 1))
     page_size = min(100, max(1, int(page_size or 30)))
@@ -83,19 +217,20 @@ def list_virtual_items(status='all', item_type='all', keyword='', page=1, page_s
     where_sql = 'WHERE ' + ' AND '.join(where) if where else ''
     with get_db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(f"SELECT COUNT(*) AS n FROM shared_virtual_items {where_sql}", args)
-            total = int((_row_to_dict(cur.fetchone()) or {}).get('n') or 0)
+            # 虚拟入库要先折叠季包，再分页；否则 page_size=30 会把 36 集季包截成 30 集。
             cur.execute(
                 f"""
                 SELECT * FROM shared_virtual_items
                 {where_sql}
                 ORDER BY updated_at DESC
-                LIMIT %s OFFSET %s
                 """,
-                args + [page_size, (page - 1) * page_size]
+                args,
             )
-            rows = [_row_to_dict(r) for r in cur.fetchall()]
-    return rows, total
+            raw_rows = [_row_to_dict(r) for r in cur.fetchall()]
+    rows = _collapse_virtual_pack_rows(raw_rows)
+    total = len(rows)
+    start = (page - 1) * page_size
+    return rows[start:start + page_size], total
 
 
 def get_virtual_item(virtual_id: str):

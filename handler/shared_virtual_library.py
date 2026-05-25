@@ -147,11 +147,11 @@ def _resp_ok(resp: Any) -> bool:
     if resp.get('state') is True or resp.get('success') is True:
         return True
     code = resp.get('code') or resp.get('errno') or resp.get('errNo')
-    if code in (0, '0', 200, '200'):
+    if code in (0, '0', 200, '200', 4100024, '4100024'):
         return True
     text = json.dumps(resp, ensure_ascii=False).lower()
-    # 115 有时重复转存/秒传会返回“已存在”，对播放而言可以继续定位文件。
-    return any(k in text for k in ('已存在', 'already', 'exist'))
+    # 115 有时重复转存/秒传会返回“已存在/已经转存过”，对播放而言可以继续定位文件。
+    return any(k in text for k in ('已存在', '已经转存', '转存过', 'already', 'exist'))
 
 
 def _list_children(client, cid: str, limit=1000) -> List[Dict[str, Any]]:
@@ -255,32 +255,98 @@ def _upsert_p115_cache(node: Dict[str, Any], item: Dict[str, Any], cache_cid: st
         logger.debug(f"  ➜ [共享虚拟播放] 回写 p115_filesystem_cache 失败: {e}")
 
 
-def _report_transfer_to_center(item: Dict[str, Any], node: Dict[str, Any], result='success', message=''):
-    source_id = item.get('source_id') or ''
-    if not source_id:
-        return
+def _collect_pack_items_for_transfer_report(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """同一个 115 share_code 下的同季虚拟项视作一次包转存。
+
+    115 的分享包是按 share_code 整包转存的：播放任意一集，115 实际会把整个季包
+    临时转到缓存目录。中心贡献值也应按包内 source_id 逐条上报，而不是只按当前
+    播放这一集上报。
+    """
+    share_code = str((item or {}).get('share_code') or '').strip()
+    if not share_code:
+        return [item]
+
+    season = item.get('season_number')
+    contributor_id = str((item or {}).get('contributor_id') or '').strip()
+    args = [share_code]
+    where = ["share_code=%s", "status <> 'deleted'", "source_id IS NOT NULL", "source_id <> ''"]
+    if season not in [None, '']:
+        where.append("COALESCE(season_number, -1) = %s")
+        try:
+            args.append(int(season))
+        except Exception:
+            args.append(season)
+    if contributor_id:
+        where.append("COALESCE(contributor_id, '') = %s")
+        args.append(contributor_id)
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT *
+                    FROM shared_virtual_items
+                    WHERE {' AND '.join(where)}
+                    ORDER BY COALESCE(episode_number, 999999), updated_at DESC
+                    """,
+                    args,
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+        if len(rows) > 1:
+            # 确保当前播放项也在列表里；去重并保序。
+            by_source = {}
+            for row in rows:
+                sid = str(row.get('source_id') or '')
+                if sid and sid not in by_source:
+                    by_source[sid] = row
+            cur_sid = str(item.get('source_id') or '')
+            if cur_sid and cur_sid not in by_source:
+                by_source[cur_sid] = item
+            return list(by_source.values())
+    except Exception as e:
+        logger.debug(f"  ➜ [共享虚拟播放] 收集包内 source_id 失败: {e}")
+    return [item]
+
+
+def _report_transfer_to_center(item: Dict[str, Any], node: Dict[str, Any], result='success', message='', whole_pack: bool = False):
     center_url = str(_cfg('CONFIG_OPTION_115_SHARED_CENTER_URL', 'https://shared.55565576.xyz') or '').rstrip('/')
     token = str(_cfg('CONFIG_OPTION_115_SHARED_DEVICE_TOKEN', '') or '').strip()
     if not center_url or not token:
         return
-    payload = {
-        'source_id': source_id,
-        'result': result,
-        'expected_sha1': _norm_sha1(item.get('sha1')),
-        'actual_sha1': _norm_sha1(node.get('sha1') or item.get('sha1')),
-        'expected_size': _safe_int(item.get('size'), 0) or None,
-        'actual_size': _safe_int(node.get('size') or item.get('size'), 0) or None,
-        'message': message,
-    }
-    try:
-        requests.post(
-            f"{center_url}/api/v1/transfers/report",
-            headers={'X-Device-Token': token, 'Content-Type': 'application/json'},
-            json=payload,
-            timeout=12,
-        )
-    except Exception as e:
-        logger.debug(f"  ➜ [共享虚拟播放] 上报中心转存结果失败: {e}")
+
+    report_items = _collect_pack_items_for_transfer_report(item) if whole_pack and result == 'success' else [item]
+    reported = 0
+    for report_item in report_items:
+        source_id = report_item.get('source_id') or ''
+        if not source_id:
+            continue
+        expected_sha1 = _norm_sha1(report_item.get('sha1'))
+        expected_size = _safe_int(report_item.get('size'), 0) or None
+        payload = {
+            'source_id': source_id,
+            'result': result,
+            'expected_sha1': expected_sha1,
+            # 包转存时不一定逐条定位每个文件，这里用登记源自身的 sha1/size 上报，
+            # 让中心按 source_id 逐条记账，避免只扣当前播放的一集。
+            'actual_sha1': expected_sha1 if whole_pack else _norm_sha1(node.get('sha1') or report_item.get('sha1')),
+            'expected_size': expected_size,
+            'actual_size': expected_size if whole_pack else (_safe_int(node.get('size') or report_item.get('size'), 0) or None),
+            'message': message,
+        }
+        try:
+            resp = requests.post(
+                f"{center_url}/api/v1/transfers/report",
+                headers={'X-Device-Token': token, 'Content-Type': 'application/json'},
+                json=payload,
+                timeout=12,
+            )
+            if resp.ok:
+                reported += 1
+        except Exception as e:
+            logger.debug(f"  ➜ [共享虚拟播放] 上报中心转存结果失败: {e}")
+    if whole_pack and reported > 1:
+        logger.info(f"  ➜ [共享虚拟播放] 已按整包转存向中心上报 {reported} 个 source_id。")
 
 
 def _lock_for(virtual_id: str) -> threading.Lock:
@@ -371,6 +437,65 @@ def ensure_playable_by_emby_item(
             shared_virtual_db.mark_virtual_error(virtual_id, msg)
             return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg}
 
+        def _finalize_cached_node(node: Dict[str, Any], import_resp=None, message='播放触发临时转存成功', cached=False):
+            _upsert_p115_cache(node, item, cache_cid)
+            row = shared_virtual_db.mark_virtual_cached(
+                virtual_id,
+                real_fid=node.get('fid') or '',
+                real_pick_code=node.get('pick_code') or '',
+                real_parent_id=node.get('parent_id') or cache_cid,
+                cache_parent_id=cache_cid,
+                cache_parent_name=cache_name,
+                expires_at=expires_at,
+                message=message,
+                raw_json={'last_import_resp': import_resp or {}, 'last_import_node': node, 'last_play_user_id': user_id},
+            ) or item
+            shared_virtual_db.mark_virtual_played(virtual_id)
+            shared_virtual_db.add_credit_ledger(
+                event_type='virtual_play_imported',
+                delta=0,
+                reason=f"播放触发临时转存：{row.get('title') or row.get('file_name')}",
+                ref_id=str(row.get('source_id') or virtual_id),
+                source_id=str(row.get('source_id') or ''),
+                virtual_id=virtual_id,
+                tmdb_id=str(row.get('tmdb_id') or ''),
+                item_type=str(row.get('item_type') or ''),
+                title=str(row.get('title') or row.get('file_name') or ''),
+                raw_json={'fid': node.get('fid'), 'pick_code': node.get('pick_code'), 'cache_cid': cache_cid, 'cached': cached},
+            )
+            # 整季分享包只要 115 完成一次转存，中心贡献值/扣分应按包内所有 source_id 上报。
+            _report_transfer_to_center(row, node, result='success', message=message, whole_pack=True)
+            return {
+                'matched': True,
+                'success': True,
+                'virtual_id': virtual_id,
+                'pick_code': node.get('pick_code'),
+                'real_pick_code': node.get('pick_code'),
+                'real_fid': node.get('fid'),
+                'file_name': node.get('name') or item.get('file_name') or display_name,
+                'title': item.get('title') or display_name,
+                'cached': bool(cached),
+            }
+
+        # 如果同一季包之前已经被播放任意一集触发过整包转存，下一集不应该再调用 share_import。
+        # 直接在临时目录按 SHA1/文件名定位目标文件即可，避免 115 返回 4100024 “你已经转存过该文件”。
+        existing_node = _find_file_recursive(
+            client,
+            cache_cid,
+            sha1=item.get('sha1') or '',
+            file_name=item.get('file_name') or display_name,
+            size=_safe_int(item.get('size'), 0),
+            max_depth=6,
+        ) or _find_file_by_fs_search(client, cache_cid, item)
+        if existing_node and existing_node.get('pick_code'):
+            logger.info(f"  ➜ [共享虚拟播放] 临时区已存在目标文件，复用 pickcode: {existing_node.get('name') or item.get('file_name')}")
+            return _finalize_cached_node(
+                existing_node,
+                import_resp={'state': True, '_already_cached_before_import': True},
+                message='临时区已存在，复用整包转存结果',
+                cached=True,
+            )
+
         shared_virtual_db.mark_virtual_transferring(virtual_id, '播放触发临时转存')
         logger.info(f"  ➜ [共享虚拟播放] 开始临时转存: {item.get('title') or item.get('file_name')} -> cid={cache_cid}")
 
@@ -405,41 +530,4 @@ def ensure_playable_by_emby_item(
             _report_transfer_to_center(item, node or {}, result='failed', message=msg)
             return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg, 'raw': import_resp}
 
-        _upsert_p115_cache(node, item, cache_cid)
-        row = shared_virtual_db.mark_virtual_cached(
-            virtual_id,
-            real_fid=node.get('fid') or '',
-            real_pick_code=node.get('pick_code') or '',
-            real_parent_id=node.get('parent_id') or cache_cid,
-            cache_parent_id=cache_cid,
-            cache_parent_name=cache_name,
-            expires_at=expires_at,
-            message='播放触发临时转存成功',
-            raw_json={'last_import_resp': import_resp, 'last_import_node': node, 'last_play_user_id': user_id},
-        ) or item
-        shared_virtual_db.mark_virtual_played(virtual_id)
-        shared_virtual_db.add_credit_ledger(
-            event_type='virtual_play_imported',
-            delta=0,
-            reason=f"播放触发临时转存：{row.get('title') or row.get('file_name')}",
-            ref_id=str(row.get('source_id') or virtual_id),
-            source_id=str(row.get('source_id') or ''),
-            virtual_id=virtual_id,
-            tmdb_id=str(row.get('tmdb_id') or ''),
-            item_type=str(row.get('item_type') or ''),
-            title=str(row.get('title') or row.get('file_name') or ''),
-            raw_json={'fid': node.get('fid'), 'pick_code': node.get('pick_code'), 'cache_cid': cache_cid},
-        )
-        _report_transfer_to_center(row, node, result='success', message='播放触发临时转存成功')
-
-        return {
-            'matched': True,
-            'success': True,
-            'virtual_id': virtual_id,
-            'pick_code': node.get('pick_code'),
-            'real_pick_code': node.get('pick_code'),
-            'real_fid': node.get('fid'),
-            'file_name': node.get('name') or item.get('file_name') or display_name,
-            'title': item.get('title') or display_name,
-            'cached': False,
-        }
+        return _finalize_cached_node(node, import_resp=import_resp, message='播放触发临时转存成功', cached=False)
