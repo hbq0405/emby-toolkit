@@ -28,6 +28,20 @@ _LAST_SCAN_KICK_AT = 0
 
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.ts', '.mov', '.m2ts', '.iso', '.wmv', '.flv'}
 
+def _center_request_kwargs(timeout: int) -> Dict[str, Any]:
+    """共享中心 HTTP 请求参数。
+
+    复用全局 Network 代理配置，只影响共享中心接口请求；
+    未开启代理时不传 proxies，保持原来的直连行为。
+    """
+    kwargs = {'timeout': timeout}
+    getter = getattr(config_manager, 'get_proxies_for_requests', None)
+    if callable(getter):
+        proxies = getter()
+        if proxies:
+            kwargs['proxies'] = proxies
+    return kwargs
+
 
 def _request_json() -> Dict[str, Any]:
     """安全读取 JSON 请求体。
@@ -71,13 +85,13 @@ def _fetch_center_credit() -> Dict[str, Any]:
         return {"ok": False, "message": "未配置共享中心 device_token"}
 
     headers = {"X-Device-Token": cfg["device_token"]}
-    me_resp = requests.get(f"{cfg['center_url']}/api/v1/me", headers=headers, timeout=12)
+    me_resp = requests.get(f"{cfg['center_url']}/api/v1/me", headers=headers, **_center_request_kwargs(12))
     me_resp.raise_for_status()
     me = me_resp.json() or {}
 
     stats = {}
     try:
-        stats_resp = requests.get(f"{cfg['center_url']}/api/v1/stats", headers=headers, timeout=12)
+        stats_resp = requests.get(f"{cfg['center_url']}/api/v1/stats", headers=headers, **_center_request_kwargs(12))
         if stats_resp.ok:
             stats = stats_resp.json() or {}
     except Exception as e:
@@ -89,7 +103,7 @@ def _fetch_center_credit() -> Dict[str, Any]:
             f"{cfg['center_url']}/api/v1/credit/ledger",
             headers=headers,
             params={"limit": 300},
-            timeout=12,
+            **_center_request_kwargs(12),
         )
         if ledger_resp.ok:
             center_ledger_items = (ledger_resp.json() or {}).get("items") or []
@@ -435,7 +449,7 @@ def _cancel_center_sources_for_share(record_id: int, record: Dict[str, Any]) -> 
         'local_record_id': record_id,
     }
     try:
-        resp = requests.post(f"{cfg['center_url']}/api/v1/sources/cancel", headers=headers, json=payload, timeout=25)
+        resp = requests.post(f"{cfg['center_url']}/api/v1/sources/cancel", headers=headers, json=payload, **_center_request_kwargs(25))
         if not resp.ok:
             return {'ok': False, 'status_code': resp.status_code, 'message': resp.text[:300], 'payload': payload}
         data = resp.json() if resp.text else {}
@@ -524,7 +538,7 @@ def _upload_item_raw_ffprobe_to_center(item: Dict[str, Any], cfg: Dict[str, Any]
         'raw_ffprobe_json': raw,
     }
     try:
-        resp = requests.post(f"{cfg['center_url']}/api/v1/rawffprobe/upload", headers=headers, json=payload, timeout=45)
+        resp = requests.post(f"{cfg['center_url']}/api/v1/rawffprobe/upload", headers=headers, json=payload, **_center_request_kwargs(45))
         if not resp.ok:
             return {'ok': False, 'status': 'http_error', 'message': f'HTTP {resp.status_code} {resp.text[:160]}'}
         shared_share_db.mark_item_raw_uploaded(item['id'], True)
@@ -2370,7 +2384,7 @@ def api_report_share_to_center(record_id):
             'has_raw_ffprobe': bool(item.get('raw_ffprobe_uploaded')),
         }
         try:
-            resp = requests.post(f"{cfg['center_url']}/api/v1/sources/register", headers=headers, json=payload, timeout=20)
+            resp = requests.post(f"{cfg['center_url']}/api/v1/sources/register", headers=headers, json=payload, **_center_request_kwargs(20))
             if not resp.ok:
                 errors.append(f"{item.get('file_name')}: HTTP {resp.status_code} {resp.text[:120]}")
                 continue

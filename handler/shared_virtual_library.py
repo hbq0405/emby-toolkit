@@ -19,6 +19,19 @@ from handler.p115_service import P115Service
 
 logger = logging.getLogger(__name__)
 
+def _center_request_kwargs(timeout: int) -> Dict[str, Any]:
+    """共享中心 HTTP 请求参数。
+
+    复用全局 Network 代理配置，只影响向共享中心上报的请求。
+    """
+    kwargs = {'timeout': timeout}
+    getter = getattr(config_manager, 'get_proxies_for_requests', None)
+    if callable(getter):
+        proxies = getter()
+        if proxies:
+            kwargs['proxies'] = proxies
+    return kwargs
+
 _LOCKS: Dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 _LAST_PLAY_MARK: Dict[str, float] = {}
@@ -628,7 +641,7 @@ def _report_transfer_to_center(item: Dict[str, Any], node: Dict[str, Any], resul
                 f"{center_url}/api/v1/transfers/report",
                 headers={'X-Device-Token': token, 'Content-Type': 'application/json'},
                 json=payload,
-                timeout=12,
+                **_center_request_kwargs(12),
             )
             if resp.ok:
                 reported += 1
