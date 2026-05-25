@@ -2203,6 +2203,13 @@ const tableInfo = {
   'p115_filesystem_cache': { cn: '115目录缓存', isSharable: false },
   'p115_mediainfo_cache': {cn: '媒体信息备份', isSharable: true },
   'p115_organize_records': {cn: '115整理记录', isSharable: false },
+  'shared_virtual_items': { cn: '虚拟入库记录', isSharable: false },
+  'shared_share_records': { cn: '我的分享记录', isSharable: false },
+  'shared_share_items': { cn: '分享文件明细', isSharable: false },
+  'shared_credit_snapshot': { cn: '贡献值快照', isSharable: false },
+  'shared_credit_ledger_local': { cn: '贡献值明细', isSharable: false },
+  'shared_maintenance_state': { cn: '共享维护状态', isSharable: false },
+  'p115_pool_client_user_map': { cn: '115账号用户亲和', isSharable: false },
   'washing_priority_groups': {cn: '115洗版规则', isSharable: false }
 };
 const tableDependencies = {

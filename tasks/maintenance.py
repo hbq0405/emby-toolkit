@@ -43,7 +43,15 @@ def _prepare_data_for_insert(table_name: str, table_data: List[Dict[str, Any]]) 
         },
         'user_templates': {'emby_policy_json', 'emby_configuration_json'},
         'p115_mediainfo_cache': {'mediainfo_json', 'raw_ffprobe_json'},
-        'washing_priority_groups': {'target_cids', 'priorities'}
+        'washing_priority_groups': {'target_cids', 'priorities'},
+        # 共享资源相关表：这些表大量使用 raw_json 保存接口回包/任务上下文，
+        # 需要显式按 JSONB 处理，否则导入 PostgreSQL 时会把 dict/list 当普通字符串插入失败。
+        'shared_virtual_items': {'raw_json'},
+        'shared_share_records': {'raw_json'},
+        'shared_share_items': {'raw_json'},
+        'shared_credit_snapshot': {'raw_json'},
+        'shared_credit_ledger_local': {'raw_json'},
+        'shared_maintenance_state': {'raw_json'},
     }
 
     LIST_TO_STRING_COLUMNS = {
@@ -112,8 +120,15 @@ def _share_import_table_data(cursor, table_name: str, columns: List[str], data: 
     CONFLICT_TARGETS = {
         'person_metadata': 'tmdb_person_id',
         'translation_cache': 'original_text',
-        'media_metadata': 'tmdb_id, item_type', 
-        'p115_mediainfo_cache': 'sha1'
+        'media_metadata': 'tmdb_id, item_type',
+        'p115_mediainfo_cache': 'sha1',
+        # 共享资源本地状态表默认不进入“共享导入”模式；这里补上冲突目标，
+        # 防止后续扩展或误选共享模式时直接报 Conflict target not defined。
+        'shared_virtual_items': 'virtual_id',
+        'shared_share_records': 'share_code',
+        'shared_share_items': 'share_record_id, fid',
+        'shared_credit_snapshot': 'id',
+        'shared_maintenance_state': 'task_name'
     }
     
     db_table_name = table_name.lower()
@@ -282,7 +297,10 @@ def _resync_primary_key_sequence(cursor, table_name: str):
         'resubscribe_rules': 'id',
         'media_cleanup_tasks': 'id',
         'user_templates': 'id',
-        'invitations': 'id'
+        'invitations': 'id',
+        'shared_share_records': 'id',
+        'shared_share_items': 'id',
+        'shared_credit_ledger_local': 'id'
     }
     
     pk_column = PRIMARY_KEY_COLUMNS.get(table_name.lower())
@@ -320,6 +338,9 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
     logger.info(f"  ➜ 后台任务开始：{task_name}，将恢复表: {tables_to_import}。")
     
     # ★★★ 共享白名单 ★★★
+    # 共享导入白名单：只允许真正可跨实例复用的公共数据。
+    # shared_* 是本机共享资源运行状态/分享记录/贡献值快照，包含本机 share_code、
+    # virtual_id、中心 source_id、贡献值流水等账号相关状态，不应作为“共享数据”导入别人实例。
     SHARABLE_TABLES = {'person_metadata', 'translation_cache', 'media_metadata', 'p115_mediainfo_cache'}
     
     # ★★★ 为新表添加中文名 ★★★
@@ -344,7 +365,15 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'p115_mediainfo_cache': '115媒体信息缓存',
         'p115_organize_records': '115整理记录',
         'washing_priority_groups': '115洗版规则',
-        'p115_filesystem_cache': '115目录缓存'
+        'p115_filesystem_cache': '115目录缓存',
+        'p115_pool_client_user_map': '115账号用户亲和',
+        # 共享资源模块新增表
+        'shared_virtual_items': '虚拟入库记录',
+        'shared_share_records': '我的分享记录',
+        'shared_share_items': '分享文件明细',
+        'shared_credit_snapshot': '贡献值快照',
+        'shared_credit_ledger_local': '贡献值明细',
+        'shared_maintenance_state': '共享维护状态'
     }
     summary_lines = []
     conn = None
@@ -363,7 +392,14 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
                 # --- 级别 1: 依赖级别 0 的表 ---
                 'emby_users_extended': 3,
                 'invitations': 4,
-                'actor_subscriptions': 10
+                'actor_subscriptions': 10,
+                # 共享资源表导入顺序：分享主表必须早于分享明细表。
+                'shared_share_records': 20,
+                'shared_share_items': 21,
+                'shared_virtual_items': 22,
+                'shared_credit_snapshot': 23,
+                'shared_credit_ledger_local': 24,
+                'shared_maintenance_state': 25
             }
             return order.get(table_name.lower(), 100)
 
