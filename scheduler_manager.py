@@ -18,6 +18,9 @@ from database import settings_db
 from tasks.core import get_task_registry
 
 logger = logging.getLogger(__name__)
+# APScheduler 默认会在每次定时任务成功后输出 "executed successfully"。
+# 共享资源维护属于高频后台任务，成功执行不需要刷实时日志；错误仍由 APScheduler 以 ERROR 输出。
+logging.getLogger('apscheduler.executors.default').setLevel(logging.WARNING)
 
 # --- 【V10 - 任务ID拆分】 ---
 # 为每个独立的定时任务定义清晰的ID
@@ -400,13 +403,14 @@ class SchedulerManager:
             return
 
         def scheduled_shared_resource_maintenance_wrapper():
-            logger.info("  ➜ 定时任务触发：共享资源自动维护。")
             try:
                 from tasks.shared_resource_tasks import task_shared_resource_maintenance
                 task_manager.submit_task(
                     task_function=task_shared_resource_maintenance,
                     task_name="共享资源自动维护",
-                    processor_type='media'
+                    processor_type='media',
+                    silent=True,
+                    maintenance_silent=True
                 )
             except Exception as e:
                 logger.error(f"  ➜ 提交共享资源自动维护任务失败: {e}", exc_info=True)

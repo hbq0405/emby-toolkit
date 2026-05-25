@@ -562,55 +562,77 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
 
     return {'missing': len(rows), 'consumed': consumed, 'gaps': gaps, 'skipped': skipped}
 
-def task_shared_resource_maintenance(processor=None):
-    """共享资源维护总任务。可由前端手动触发，也由调度器硬编码定时执行。"""
-    task_manager.update_status_from_thread(0, '正在初始化共享资源维护任务...')
-    if not _enabled():
-        task_manager.update_status_from_thread(100, '共享资源未启用，跳过。')
-        return
-    client = SharedCenterClient()
-    if not client.ready:
-        task_manager.update_status_from_thread(100, '共享中心地址或 device_token 未配置，跳过。')
-        return
+def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = False):
+    """共享资源维护总任务。可由前端手动触发，也由调度器硬编码定时执行。
 
-    total = {}
-    task_manager.update_status_from_thread(10, '正在自动登记本地缺口...')
-    total['reported_gaps'] = _report_local_wanted_gaps(client)
+    maintenance_silent=True 时用于调度器后台静默执行：不输出成功/进度/摘要日志；
+    未捕获异常仍会由 task_manager 以 ERROR 记录。
+    """
+    old_logger_level = None
+    if maintenance_silent:
+        # 调度器静默运行时，压制本模块的 INFO/WARNING 成功与进度日志；
+        # 真正未捕获的异常仍会由 task_manager 以 ERROR 记录。
+        old_logger_level = logger.level
+        logger.setLevel(logging.ERROR)
 
-    task_manager.update_status_from_thread(25, '正在清理过期虚拟临时转存...')
-    total['expired_virtual_cache_cleaned'] = _cleanup_expired_virtual_cache()
+    def _status(progress: int, message: str):
+        # 静默调度时仍允许后台状态更新，但不依赖实时日志展示。
+        task_manager.update_status_from_thread(progress, message)
 
-    task_manager.update_status_from_thread(40, '正在为中心缺口自动创建本机分享...')
-    total['auto_created_shares'] = _auto_share_center_open_gaps(client)
-
-    task_manager.update_status_from_thread(58, '正在从中心资源库处理追更缺集...')
-    follow_result = _auto_follow_watching_series_from_center()
-    total.update({f'follow_{k}': v for k, v in follow_result.items()})
-
-    task_manager.update_status_from_thread(72, '正在同步分享审核状态并自动登记中心...')
-    total.update(_auto_check_and_report_local_shares(client))
-
-    task_manager.update_status_from_thread(92, '正在同步贡献值快照...')
     try:
-        # 复用路由层已有的中心贡献值同步逻辑。
-        from routes.shared_resource import _fetch_center_credit
-        total['credit'] = _fetch_center_credit().get('ok', False)
-    except Exception as e:
-        logger.warning(f"  ➜ [共享资源维护] 同步贡献值失败: {e}")
-        total['credit'] = False
+        _status(0, '正在初始化共享资源维护任务...')
+        if not _enabled():
+            _status(100, '共享资源未启用，跳过。')
+            return
+        client = SharedCenterClient()
+        if not client.ready:
+            _status(100, '共享中心地址或 device_token 未配置，跳过。')
+            return
 
-    msg = (
-        f"共享资源维护完成：登记缺口 {total.get('reported_gaps', 0)}，"
-        f"清理临时转存 {total.get('expired_virtual_cache_cleaned', 0)}，"
-        f"自动创建分享 {total.get('auto_created_shares', 0)}，"
-        f"追更命中 {total.get('follow_consumed', 0)}/{total.get('follow_missing', 0)}，"
-        f"登记追更缺口 {total.get('follow_gaps', 0)}，"
-        f"检查分享 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，"
-        f"清理失效 {total.get('cancelled', 0)}。"
-    )
-    logger.info(f"=== {msg} ===")
-    task_manager.update_status_from_thread(100, msg)
+        total = {}
+        _status(10, '正在自动登记本地缺口...')
+        total['reported_gaps'] = _report_local_wanted_gaps(client)
 
+        _status(25, '正在清理过期虚拟临时转存...')
+        total['expired_virtual_cache_cleaned'] = _cleanup_expired_virtual_cache()
+
+        _status(40, '正在为中心缺口自动创建本机分享...')
+        total['auto_created_shares'] = _auto_share_center_open_gaps(client)
+
+        _status(58, '正在从中心资源库处理追更缺集...')
+        follow_result = _auto_follow_watching_series_from_center()
+        total.update({f'follow_{k}': v for k, v in follow_result.items()})
+
+        _status(72, '正在同步分享审核状态并自动登记中心...')
+        total.update(_auto_check_and_report_local_shares(client))
+
+        _status(92, '正在同步贡献值快照...')
+        try:
+            # 复用路由层已有的中心贡献值同步逻辑。
+            from routes.shared_resource import _fetch_center_credit
+            total['credit'] = _fetch_center_credit().get('ok', False)
+        except Exception as e:
+            if maintenance_silent:
+                logger.error(f"  ➜ [共享资源维护] 同步贡献值失败: {e}")
+            else:
+                logger.warning(f"  ➜ [共享资源维护] 同步贡献值失败: {e}")
+            total['credit'] = False
+
+        msg = (
+            f"共享资源维护完成：登记缺口 {total.get('reported_gaps', 0)}，"
+            f"清理临时转存 {total.get('expired_virtual_cache_cleaned', 0)}，"
+            f"自动创建分享 {total.get('auto_created_shares', 0)}，"
+            f"追更命中 {total.get('follow_consumed', 0)}/{total.get('follow_missing', 0)}，"
+            f"登记追更缺口 {total.get('follow_gaps', 0)}，"
+            f"检查分享 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，"
+            f"清理失效 {total.get('cancelled', 0)}。"
+        )
+        if not maintenance_silent:
+            logger.info(f"=== {msg} ===")
+        _status(100, msg)
+    finally:
+        if old_logger_level is not None:
+            logger.setLevel(old_logger_level)
 
 def trigger_shared_resource_maintenance_task() -> bool:
     """供路由/调度器调用的统一入口。"""

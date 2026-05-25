@@ -44,7 +44,7 @@ def is_task_running() -> bool:
     """检查是否有后台任务正在运行。"""
     return task_lock.locked()
 
-def _execute_task_with_lock(task_function: Callable, task_name: str, processor: Union[MediaProcessor, WatchlistProcessor, ActorSubscriptionProcessor], *args, **kwargs):
+def _execute_task_with_lock(task_function: Callable, task_name: str, processor: Union[MediaProcessor, WatchlistProcessor, ActorSubscriptionProcessor], *args, silent: bool = False, **kwargs):
     """【工人专用】通用后台任务执行器。"""
     global background_task_status
     
@@ -59,7 +59,8 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
             "is_running": True, "current_action": task_name, "last_action": task_name,
             "progress": 0, "message": f"{task_name} 初始化..."
         })
-        logger.info(f"  ➜ 后台任务 '{task_name}' 开始执行")
+        if not silent:
+            logger.info(f"  ➜ 后台任务 '{task_name}' 开始执行")
 
         task_completed_normally = False
         try:
@@ -81,7 +82,8 @@ def _execute_task_with_lock(task_function: Callable, task_name: str, processor: 
                 current_progress = 100
             
             update_status_from_thread(current_progress, final_message)
-            logger.info(f"  ➜ 后台任务 '{task_name}' 结束，最终状态: {final_message}")
+            if not silent:
+                logger.info(f"  ➜ 后台任务 '{task_name}' 结束，最终状态: {final_message}")
 
             background_task_status.update({
                 "is_running": False, "current_action": "无", "progress": 0, "message": "等待任务"
@@ -102,7 +104,11 @@ def task_worker_function():
                 logger.info("工人线程收到停止信号，即将退出。")
                 break
 
-            task_function, task_name, processor_type, args, kwargs = task_info
+            if len(task_info) == 6:
+                task_function, task_name, processor_type, args, kwargs, silent = task_info
+            else:
+                task_function, task_name, processor_type, args, kwargs = task_info
+                silent = False
             
             # ★★★ 核心修复：使用精确的、基于类型的调度逻辑 ★★★
             processor_map = {
@@ -119,7 +125,7 @@ def task_worker_function():
                 task_queue.task_done()
                 continue
 
-            _execute_task_with_lock(task_function, task_name, processor_to_use, *args, **kwargs)
+            _execute_task_with_lock(task_function, task_name, processor_to_use, *args, silent=silent, **kwargs)
             task_queue.task_done()
         except Exception as e:
             logger.error(f"通用工人线程发生未知错误: {e}", exc_info=True)
@@ -135,7 +141,7 @@ def start_task_worker_if_not_running():
         else:
             logger.trace("通用任务线程已在运行。")
 
-def submit_task(task_function: Callable, task_name: str, processor_type: ProcessorType = 'media', *args, **kwargs) -> bool:
+def submit_task(task_function: Callable, task_name: str, processor_type: ProcessorType = 'media', *args, silent: bool = False, **kwargs) -> bool:
     """
     【V2 - 公共接口】将一个任务提交到通用队列中。
     新增 processor_type 参数，用于精确指定任务所需的处理器。
@@ -144,14 +150,16 @@ def submit_task(task_function: Callable, task_name: str, processor_type: Process
 
     with task_lock:
         if background_task_status["is_running"]:
-            logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
+            if not silent:
+                logger.warning(f"任务 '{task_name}' 提交失败：已有任务正在运行。")
             return False
 
-        frontend_log_queue.clear()
-        logger.trace(f"  ➜ 任务 '{task_name}' 已提交到队列，并已清空前端日志。")
+        if not silent:
+            frontend_log_queue.clear()
+            logger.trace(f"  ➜ 任务 '{task_name}' 已提交到队列，并已清空前端日志。")
         
-        # ★★★ 核心修复：将 processor_type 加入任务信息元组 ★★★
-        task_info = (task_function, task_name, processor_type, args, kwargs)
+        # ★★★ 核心修复：将 processor_type 与静默标志加入任务信息元组 ★★★
+        task_info = (task_function, task_name, processor_type, args, kwargs, silent)
         task_queue.put(task_info)
         start_task_worker_if_not_running()
         return True
