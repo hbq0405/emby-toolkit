@@ -645,13 +645,14 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
     p115 = P115Service.get_client()
     if not p115:
         raise RuntimeError('115 客户端未初始化')
+    # 中心资源库“转存”不是直接入正式媒体库，而是先接收到 115 待整理目录，
+    # 再触发原有 115 智能整理流程。
     target_cid = str(
-        _cfg('CONFIG_OPTION_115_MEDIA_ROOT_CID', 'p115_media_root_cid', '')
-        or _cfg('CONFIG_OPTION_115_SHARED_CACHE_CID', 'p115_shared_cache_cid', '')
+        _cfg('CONFIG_OPTION_115_SAVE_PATH_CID', 'p115_save_path_cid', '')
         or ''
-    )
-    if not target_cid:
-        raise RuntimeError('未配置 115 媒体库根目录 CID，无法永久转存共享资源')
+    ).strip()
+    if not target_cid or target_cid == '0':
+        raise RuntimeError('未配置 115 待整理目录 CID（p115_save_path_cid），无法转存共享资源')
 
     # 同一个季/剧分享可能返回多集，按 share_code 去重，避免重复转存同一分享包。
     unique = []
