@@ -2538,7 +2538,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
             passthrough.extend(rows)
             continue
 
-        rows_sorted = sorted(rows, key=lambda r: int(r.get('size') or 0), reverse=True)
+        rows_sorted = sorted(rows, key=lambda r: (1 if r.get('raw_ffprobe_json') else 0, int(r.get('size') or 0)), reverse=True)
         rep = dict(rows_sorted[0])
         total_size = 0
         episode_numbers = []
@@ -2593,6 +2593,108 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
         collapsed.append(rep)
 
     return passthrough + collapsed
+
+
+
+def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: str = 'alive,pending') -> List[Dict[str, Any]]:
+    """分页展示前补全同一分享码的季包条目，避免 30 条分页把 36 集季包截成 30 集。
+
+    中心接口按 shared_sources 原始文件分页；而 ETK 前端希望按“版本/分享包”展示。
+    如果当前页已经出现同一 share_code + season 的多个条目，就说明它极大概率是季包，
+    此时用 share_code 反查最多 500 条完整条目后再折叠，pack_item_count 才是真实集数。
+    """
+    items = list(items or [])
+    if not client or not items:
+        return items
+
+    def _norm_season(value):
+        if value in [None, '']:
+            return ''
+        try:
+            return str(int(value))
+        except Exception:
+            return str(value).strip()
+
+    # 只对“当前页已经能看出是同一分享码多文件”的资源做补全，避免 30 个单集分享触发 30 次额外请求。
+    group_counts: Dict[str, int] = {}
+    code_by_key: Dict[str, str] = {}
+    for item in items:
+        share_code = str(item.get('share_code') or '').strip()
+        season = _norm_season(item.get('season_number'))
+        item_type = str(item.get('item_type') or '').strip().lower()
+        if not share_code or not season:
+            continue
+        if item_type not in {'episode', 'season', 'tv', 'series'} and item.get('episode_number') in [None, '']:
+            continue
+        key = '|'.join([str(item.get('contributor_id') or ''), share_code, season])
+        group_counts[key] = group_counts.get(key, 0) + 1
+        code_by_key[key] = share_code
+
+    share_codes = []
+    for key, count in group_counts.items():
+        if count >= 2:
+            code = code_by_key.get(key)
+            if code and code not in share_codes:
+                share_codes.append(code)
+
+    if not share_codes:
+        return items
+
+    # 当前页通常只会有 1 个季包；这里给个保护上限，避免极端页面放大请求。
+    share_codes = share_codes[:8]
+
+    by_id: Dict[str, Dict[str, Any]] = {}
+    ordered_ids: List[str] = []
+
+    def _put(row: Dict[str, Any], prefer_existing_raw: bool = True):
+        sid = str((row or {}).get('source_id') or '').strip()
+        if not sid:
+            return
+        if sid not in by_id:
+            by_id[sid] = dict(row or {})
+            ordered_ids.append(sid)
+            return
+        old = by_id[sid]
+        merged = dict(row or {})
+        # 初始页 include_raw=True，补全查询 include_raw=False；不要用无 raw 的补全行覆盖已有 raw。
+        if prefer_existing_raw and old.get('raw_ffprobe_json') and not merged.get('raw_ffprobe_json'):
+            merged['raw_ffprobe_json'] = old.get('raw_ffprobe_json')
+        # 保留已经计算过/装饰过的临时字段。
+        for k in ('version_summary', '_local_share_record_exists'):
+            if k in old and k not in merged:
+                merged[k] = old[k]
+        by_id[sid] = merged
+
+    for item in items:
+        _put(item, prefer_existing_raw=True)
+
+    for code in share_codes:
+        try:
+            res = client.list_sources(
+                q=code,
+                status=status or 'alive,pending',
+                limit=500,
+                offset=0,
+                include_raw=False,
+            )
+            fetched = res.get('items') or []
+            matched = 0
+            for row in fetched:
+                if str(row.get('share_code') or '').strip() != code:
+                    continue
+                _put(row, prefer_existing_raw=True)
+                matched += 1
+            total = int(res.get('total') or matched or 0)
+            if total > matched:
+                logger.warning(
+                    "  ➜ [共享资源] 分享码 %s 可能超过 500 条，当前仅补全 %s/%s 条。",
+                    code, matched, total
+                )
+            logger.debug("  ➜ [共享资源] 季包分享码 %s 分页补全 %s 条。", code, matched)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 季包分页补全失败 share_code={code}: {e}")
+
+    return [by_id[sid] for sid in ordered_ids if sid in by_id]
 
 
 _CENTER_STATUS_LABELS = {
@@ -2683,6 +2785,9 @@ def api_center_sources():
             include_raw=True,
         )
         raw_items = list(data.get('items') or [])
+        # 中心接口按原始文件分页，先按分享码补全当前页里的季包，再做展示层折叠。
+        # 否则 36 集季包在 page_size=30 时会被误显示为 30 集。
+        raw_items = _expand_center_pack_page_items(client, raw_items, status=request.args.get('status', 'alive,pending'))
         local_share_codes = _load_local_share_code_set(raw_items)
         items = []
         for item in raw_items:
