@@ -789,21 +789,39 @@ def ensure_playable_by_emby_item(
                 title=str(row.get('title') or row.get('file_name') or ''),
                 raw_json={'fid': node.get('fid'), 'pick_code': node.get('pick_code'), 'cache_cid': cache_cid, 'cached': cached},
             )
-            # 整季分享包是“一次 share_import 转入整包”。一旦当前集定位成功，立刻把同包所有分集
-            # 的 fid/pickcode 回填到 shared_virtual_items，下一集直接读缓存起播，不再逐集转存/定位。
-            _backfill_virtual_pack_cache(
-                client,
-                cache_cid,
-                cache_name,
-                expires_at,
-                row,
-                node,
-                import_resp=import_resp or {},
-                user_id=user_id,
-                message='临时区已存在，复用整包转存结果' if cached else '整包临时转存成功，批量回填 pickcode',
-            )
-            # 中心贡献值/扣分按包内所有 source_id 上报；中心有唯一约束，重复上报不会重复扣分。
-            _report_transfer_to_center(row, node, result='success', message=message, whole_pack=True)
+            # 性能优化：将耗时的整包回填和中心上报放入后台线程，让当前集秒播 
+            def _background_pack_tasks():
+                try:
+                    # 整季分享包是“一次 share_import 转入整包”。一旦当前集定位成功，立刻把同包所有分集
+                    # 的 fid/pickcode 回填到 shared_virtual_items，下一集直接读缓存起播。
+                    _backfill_virtual_pack_cache(
+                        client,
+                        cache_cid,
+                        cache_name,
+                        expires_at,
+                        row,
+                        node,
+                        import_resp=import_resp or {},
+                        user_id=user_id,
+                        message='临时区已存在，复用整包转存结果' if cached else '整包临时转存成功，批量回填 pickcode',
+                    )
+                except Exception as e:
+                    logger.error(f"  ➜ [共享虚拟播放] 后台回填整包 pickcode 失败: {e}")
+
+                try:
+                    # 中心贡献值/扣分按包内所有 source_id 上报；中心有唯一约束，重复上报不会重复扣分。
+                    _report_transfer_to_center(row, node, result='success', message=message, whole_pack=True)
+                except Exception as e:
+                    logger.error(f"  ➜ [共享虚拟播放] 后台上报中心转存结果失败: {e}")
+
+            # 启动幽灵线程执行耗时任务
+            threading.Thread(
+                target=_background_pack_tasks, 
+                name=f"VirtualBackfill-{virtual_id}", 
+                daemon=True
+            ).start()
+
+            # 立刻返回当前集的 pickcode 给播放器！
             return {
                 'matched': True,
                 'success': True,
