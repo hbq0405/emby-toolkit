@@ -291,21 +291,25 @@ def _upsert_p115_cache(node: Dict[str, Any], item: Dict[str, Any], cache_cid: st
         logger.debug(f"  ➜ [共享虚拟播放] 回写 p115_filesystem_cache 失败: {e}")
 
 
-def _collect_pack_items_for_transfer_report(item: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """同一个 115 share_code 下的同季虚拟项视作一次包转存。
+def _collect_virtual_pack_items(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """收集同一个分享包里的全部虚拟项。
 
-    115 的分享包是按 share_code 整包转存的：播放任意一集，115 实际会把整个季包
-    临时转到缓存目录。中心贡献值也应按包内 source_id 逐条上报，而不是只按当前
-    播放这一集上报。
+    虚拟剧集包的核心语义是“播放任意一集，115 会整包转存”。因此临时转存成功后
+    必须把同包所有分集的 fid/pickcode 一次性回填，否则下一集还会重新走 share_import，
+    既慢又容易被 115 返回“你已经转存过该文件”打断播放。
     """
-    share_code = str((item or {}).get('share_code') or '').strip()
+    item = item or {}
+    share_code = str(item.get('share_code') or '').strip()
     if not share_code:
         return [item]
 
     season = item.get('season_number')
-    contributor_id = str((item or {}).get('contributor_id') or '').strip()
+    contributor_id = str(item.get('contributor_id') or '').strip()
     args = [share_code]
-    where = ["share_code=%s", "status <> 'deleted'", "source_id IS NOT NULL", "source_id <> ''"]
+    where = [
+        "share_code=%s",
+        "status NOT IN ('deleted','promoted','promote_pending')",
+    ]
     if season not in [None, '']:
         where.append("COALESCE(season_number, -1) = %s")
         try:
@@ -324,25 +328,171 @@ def _collect_pack_items_for_transfer_report(item: Dict[str, Any]) -> List[Dict[s
                     SELECT *
                     FROM shared_virtual_items
                     WHERE {' AND '.join(where)}
-                    ORDER BY COALESCE(episode_number, 999999), updated_at DESC
+                    ORDER BY COALESCE(episode_number, 999999), file_name, updated_at DESC
                     """,
                     args,
                 )
                 rows = [dict(r) for r in cur.fetchall()]
-        if len(rows) > 1:
-            # 确保当前播放项也在列表里；去重并保序。
-            by_source = {}
+        if rows:
+            by_vid = {}
             for row in rows:
-                sid = str(row.get('source_id') or '')
-                if sid and sid not in by_source:
-                    by_source[sid] = row
-            cur_sid = str(item.get('source_id') or '')
-            if cur_sid and cur_sid not in by_source:
-                by_source[cur_sid] = item
-            return list(by_source.values())
+                vid = str(row.get('virtual_id') or '')
+                if vid and vid not in by_vid:
+                    by_vid[vid] = row
+            cur_vid = str(item.get('virtual_id') or '')
+            if cur_vid and cur_vid not in by_vid:
+                by_vid[cur_vid] = item
+            return list(by_vid.values())
     except Exception as e:
-        logger.debug(f"  ➜ [共享虚拟播放] 收集包内 source_id 失败: {e}")
+        logger.debug(f"  ➜ [共享虚拟播放] 收集虚拟包条目失败: {e}")
     return [item]
+
+
+def _collect_pack_items_for_transfer_report(item: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """同一个 115 share_code 下的同季虚拟项视作一次包转存，用于中心记账上报。"""
+    rows = _collect_virtual_pack_items(item)
+    report_rows = []
+    seen = set()
+    for row in rows:
+        sid = str(row.get('source_id') or '')
+        if sid and sid not in seen:
+            seen.add(sid)
+            report_rows.append(row)
+    return report_rows or [item]
+
+
+def _extract_receive_titles(import_resp: Any) -> List[str]:
+    titles = []
+    if isinstance(import_resp, dict):
+        for d in _iter_dicts(import_resp):
+            for key in ('receive_title', 'receive_name', 'file_name', 'name', 'title'):
+                val = d.get(key)
+                if isinstance(val, str) and val.strip():
+                    titles.append(val.strip())
+    seen = set()
+    out = []
+    for title in titles:
+        key = title.lower()
+        if key not in seen:
+            seen.add(key)
+            out.append(title)
+    return out
+
+
+def _find_import_root_candidates(client, cache_cid: str, item: Dict[str, Any], current_node: Dict[str, Any] = None, import_resp: Any = None) -> List[str]:
+    """尽量把整包回填扫描范围限制在本次导入的目录内，避免临时区多包串台。"""
+    candidates = []
+    titles = _extract_receive_titles(import_resp)
+    title_keys = {str(t).strip().lower() for t in titles if str(t).strip()}
+
+    if title_keys:
+        for child in _list_children(client, cache_cid):
+            name = str(child.get('name') or '').strip().lower()
+            if name in title_keys and child.get('is_dir') and child.get('fid'):
+                candidates.append(str(child.get('fid')))
+
+    # 如果当前文件已经定位出来，优先扫它所在的目录，这通常就是季包目录。
+    if current_node and current_node.get('parent_id'):
+        candidates.append(str(current_node.get('parent_id')))
+
+    # 最后才扫整个临时区。实际匹配仍然要求 sha1/文件名/大小严格命中。
+    candidates.append(str(cache_cid))
+
+    seen = set()
+    out = []
+    for cid in candidates:
+        if cid and cid not in seen:
+            seen.add(cid)
+            out.append(cid)
+    return out
+
+
+def _collect_matching_nodes_for_items(client, root_cid: str, pack_items: List[Dict[str, Any]], max_depth: int = 6) -> Dict[str, Dict[str, Any]]:
+    """在 root_cid 下遍历一次，按 sha1/文件名/大小严格匹配包内所有虚拟项。"""
+    result: Dict[str, Dict[str, Any]] = {}
+    items = [x for x in (pack_items or []) if x and x.get('virtual_id')]
+    if not items:
+        return result
+
+    queue = [(str(root_cid), 0)]
+    seen = set()
+    while queue and len(result) < len(items):
+        cid, depth = queue.pop(0)
+        if not cid or cid in seen or depth > max_depth:
+            continue
+        seen.add(cid)
+        for node in _list_children(client, cid):
+            if node.get('is_dir'):
+                if node.get('fid'):
+                    queue.append((node['fid'], depth + 1))
+                continue
+            for pack_item in items:
+                vid = str(pack_item.get('virtual_id') or '')
+                if not vid or vid in result:
+                    continue
+                if _node_matches_virtual_item(node, pack_item, file_name=pack_item.get('file_name'), size=_safe_int(pack_item.get('size'), 0)):
+                    result[vid] = node
+                    break
+    return result
+
+
+def _backfill_virtual_pack_cache(
+    client,
+    cache_cid: str,
+    cache_name: str,
+    expires_at,
+    item: Dict[str, Any],
+    current_node: Dict[str, Any],
+    import_resp: Any = None,
+    user_id: str = '',
+    message: str = '整包临时转存成功，批量回填 pickcode',
+) -> Dict[str, Dict[str, Any]]:
+    """整包转存后批量回填同包所有分集的 real_fid/real_pick_code。"""
+    pack_items = _collect_virtual_pack_items(item)
+    if len(pack_items) <= 1:
+        return {str(item.get('virtual_id') or ''): current_node} if current_node else {}
+
+    matched: Dict[str, Dict[str, Any]] = {}
+    cur_vid = str(item.get('virtual_id') or '')
+    if cur_vid and current_node:
+        matched[cur_vid] = current_node
+
+    for root_cid in _find_import_root_candidates(client, cache_cid, item, current_node=current_node, import_resp=import_resp):
+        more = _collect_matching_nodes_for_items(client, root_cid, pack_items)
+        matched.update({k: v for k, v in more.items() if k not in matched})
+        if len(matched) >= len(pack_items):
+            break
+
+    updated = 0
+    for pack_item in pack_items:
+        vid = str(pack_item.get('virtual_id') or '')
+        node = matched.get(vid)
+        if not vid or not node or not node.get('pick_code'):
+            continue
+        _upsert_p115_cache(node, pack_item, cache_cid)
+        shared_virtual_db.mark_virtual_cached(
+            vid,
+            real_fid=node.get('fid') or '',
+            real_pick_code=node.get('pick_code') or '',
+            real_parent_id=node.get('parent_id') or cache_cid,
+            cache_parent_id=cache_cid,
+            cache_parent_name=cache_name,
+            expires_at=expires_at,
+            message=message,
+            raw_json={
+                'last_import_resp': import_resp or {},
+                'last_import_node': node,
+                'last_play_user_id': user_id,
+                'pack_backfilled_by': cur_vid,
+            },
+        )
+        updated += 1
+
+    logger.info(
+        "  ➜ [共享虚拟播放] 整包临时转存完成，已批量回填 %s/%s 集 pickcode。",
+        updated, len(pack_items)
+    )
+    return matched
 
 
 def _report_transfer_to_center(item: Dict[str, Any], node: Dict[str, Any], result='success', message='', whole_pack: bool = False):
@@ -516,7 +666,20 @@ def ensure_playable_by_emby_item(
                 title=str(row.get('title') or row.get('file_name') or ''),
                 raw_json={'fid': node.get('fid'), 'pick_code': node.get('pick_code'), 'cache_cid': cache_cid, 'cached': cached},
             )
-            # 整季分享包只要 115 完成一次转存，中心贡献值/扣分应按包内所有 source_id 上报。
+            # 整季分享包是“一次 share_import 转入整包”。一旦当前集定位成功，立刻把同包所有分集
+            # 的 fid/pickcode 回填到 shared_virtual_items，下一集直接读缓存起播，不再逐集转存/定位。
+            _backfill_virtual_pack_cache(
+                client,
+                cache_cid,
+                cache_name,
+                expires_at,
+                row,
+                node,
+                import_resp=import_resp or {},
+                user_id=user_id,
+                message='临时区已存在，复用整包转存结果' if cached else '整包临时转存成功，批量回填 pickcode',
+            )
+            # 中心贡献值/扣分按包内所有 source_id 上报；中心有唯一约束，重复上报不会重复扣分。
             _report_transfer_to_center(row, node, result='success', message=message, whole_pack=True)
             return {
                 'matched': True,
