@@ -788,16 +788,65 @@ def ensure_playable_by_emby_item(
             )
 
         shared_virtual_db.mark_virtual_transferring(virtual_id, '播放触发临时转存')
-        logger.info(f"  ➜ [共享虚拟播放] 开始临时转存: {item.get('title') or item.get('file_name')} -> cid={cache_cid}")
+        logger.info(f"  ➜ [共享虚拟播放] 开始处理: {item.get('title') or item.get('file_name')} -> cid={cache_cid}")
 
         import_resp = None
-        try:
-            import_resp = client.share_import(share_code, receive_code, cache_cid)
-        except Exception as e:
-            msg = f'调用 115 share_import 失败: {e}'
-            shared_virtual_db.mark_virtual_error(virtual_id, msg)
-            _report_transfer_to_center(item, {}, result='failed', message=msg)
-            return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg}
+        fast_upload_success = False
+        
+        target_sha1 = _norm_sha1(item.get('sha1'))
+        target_size = _safe_int(item.get('size'), 0)
+        target_name = item.get('file_name') or display_name
+        # 只要之前成功转存过一次，数据库里就会有 real_pick_code
+        target_pc = item.get('real_pick_code') or item.get('pick_code')
+
+        # ====================================================================
+        # ★ 核心破解逻辑 1：使用 115:// 离线秒传 (成功率最高，完美绕过分享限制)
+        # ====================================================================
+        if target_sha1 and target_size > 0 and target_pc:
+            logger.info(f"  ➜ [共享虚拟播放] 尝试使用 115:// 离线秒传恢复文件...")
+            try:
+                # 构造标准 115 秒传链接
+                fast_link = f"115://{target_name}|{target_size}|{target_sha1}|{target_pc}"
+                payload = {'url[0]': fast_link, 'wp_path_id': cache_cid}
+                
+                # 调用 p115_service.py 中的 offline_add_urls
+                resp = client.offline_add_urls(payload)
+                if _resp_ok(resp):
+                    logger.info(f"  ➜ [共享虚拟播放] ✅ 离线秒传任务下发成功！")
+                    fast_upload_success = True
+                    time.sleep(0.5) # 给 115 服务器一点落盘时间
+            except Exception as e:
+                logger.debug(f"  ➜ [共享虚拟播放] 离线秒传失败: {e}")
+
+        # ====================================================================
+        # ★ 核心破解逻辑 2：如果没有 pick_code，尝试 OpenAPI 纯 SHA1 秒传
+        # ====================================================================
+        if not fast_upload_success and target_sha1 and target_size > 0:
+            logger.info(f"  ➜ [共享虚拟播放] 尝试使用 OpenAPI 接口进行纯 SHA1 秒传...")
+            try:
+                if hasattr(client, '_openapi') and client._openapi:
+                    # 强行用 sha1 作为 preid 碰运气
+                    resp = client._openapi.fs_upload_init(target_name, target_size, cache_cid, target_sha1, target_sha1)
+                    if resp and resp.get('state') and resp.get('data', {}).get('status') == 2:
+                        logger.info(f"  ➜ [共享虚拟播放] ✅ OpenAPI 纯 SHA1 秒传成功！")
+                        fast_upload_success = True
+            except Exception as e:
+                logger.debug(f"  ➜ [共享虚拟播放] OpenAPI 秒传失败: {e}")
+
+        if fast_upload_success:
+            import_resp = {'state': True, '_is_fast_upload': True}
+        else:
+            # ====================================================================
+            # 如果秒传都失败了，回退到原有的 share_import 逻辑
+            # ====================================================================
+            logger.info(f"  ➜ [共享虚拟播放] 执行分享链接转存...")
+            try:
+                import_resp = client.share_import(share_code, receive_code, cache_cid)
+            except Exception as e:
+                msg = f'调用 115 share_import 失败: {e}'
+                shared_virtual_db.mark_virtual_error(virtual_id, msg)
+                _report_transfer_to_center(item, {}, result='failed', message=msg)
+                return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg}
 
         if not _resp_ok(import_resp):
             msg = f"115 share_import 返回失败: {json.dumps(import_resp, ensure_ascii=False)[:300]}"
