@@ -2209,7 +2209,6 @@ const tableInfo = {
   'shared_credit_snapshot': { cn: '贡献值快照', isSharable: false },
   'shared_credit_ledger_local': { cn: '贡献值明细', isSharable: false },
   'shared_maintenance_state': { cn: '共享维护状态', isSharable: false },
-  'p115_pool_client_user_map': { cn: '115账号用户亲和', isSharable: false },
   'washing_priority_groups': {cn: '115洗版规则', isSharable: false }
 };
 const tableDependencies = {

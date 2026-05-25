@@ -366,7 +366,6 @@ def task_import_database(processor, file_content: str, tables_to_import: List[st
         'p115_organize_records': '115整理记录',
         'washing_priority_groups': '115洗版规则',
         'p115_filesystem_cache': '115目录缓存',
-        'p115_pool_client_user_map': '115账号用户亲和',
         # 共享资源模块新增表
         'shared_virtual_items': '虚拟入库记录',
         'shared_share_records': '我的分享记录',
