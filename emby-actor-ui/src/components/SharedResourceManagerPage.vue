@@ -66,8 +66,8 @@
 
           <n-tab-pane name="shares" tab="我的分享">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-              这里管理本机主动分享出去的资源。
-“检查”用于同步 115 分享是否可用；“登记”用于把已通过的分享登记到共享中心，登记成功后可获得贡献值；“取消”会撤销 115 分享并同步清理中心记录。剧集建议按季目录分享，不要按单集分享。
+              管理本机分享出去的资源。
+“检查”用于同步 115 分享是否可用；“登记”用于把已通过的分享登记到共享中心，登记成功后可获得贡献值；“取消”会撤销 115 分享并同步清理中心记录。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="shareFilters.keyword" placeholder="搜索标题 / 目录名 / 分享码 / TMDb ID" clearable @keyup.enter="loadShares">
@@ -97,7 +97,7 @@
           <n-tab-pane name="center" tab="中心资源库">
             <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
               这里展示共享中心已收录的资源版本。
-“转存”会把资源转存到你的 115 待整理目录，并交给智能整理生成正式 STRM；“入库”会生成虚拟 STRM，不长期占用网盘空间，播放时再临时转存。每个版本会尽量展示分辨率、编码、HDR/杜比、音轨、字幕和文件大小。
+“转存”会把资源转存到你的 115 网盘；“入库”则仅生成虚拟 STRM，不占用网盘空间，播放时再临时转存。
             </n-alert>
             <n-space class="toolbar" :vertical="isMobile" :size="12">
               <n-input v-model:value="centerFilters.keyword" placeholder="搜索标题 / 文件名 / TMDb ID / SHA1" clearable @keyup.enter="loadCenterSources">
