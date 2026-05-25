@@ -230,6 +230,7 @@ const mediaSearchKeyword = ref('');
 const mediaSearchLoading = ref(false);
 const mediaCandidates = ref([]);
 const selectedMedia = ref(null);
+const importingMap = reactive({});
 
 const summary = ref({ local: {}, shares: {}, credit: {} });
 const virtualItems = ref([]);
@@ -637,6 +638,35 @@ const listCell = (items, limit = 3) => {
     more ? h('div', { class: 'sub-title' }, more) : null
   ]);
 };
+const executeImport = async (row, mode) => {
+  const modeText = mode === 'virtual' ? '入库' : '转存';
+  // 标记该行正在 loading
+  importingMap[row.source_id] = mode;
+  try {
+    const sourceIds = Array.isArray(row.pack_source_ids) && row.pack_source_ids.length ? row.pack_source_ids : [row.source_id];
+    const res = await axios.post('/api/shared/resources/center/import', {
+      source_ids: sourceIds,
+      mode,
+      context: {
+        title: row.title || '',
+        tmdb_id: row.tmdb_id || '',
+        item_type: centerRowType(row) || row.item_type || '',
+        season_number: row.season_number ?? null,
+        episode_number: row.episode_number ?? null,
+        year: row.release_year || '',
+        share_type: row.share_type || '',
+      }
+    });
+    message.success(res.data?.message || '已提交');
+    await Promise.allSettled([loadVirtualItems(), loadSummary(), loadLedger()]);
+  } catch (e) {
+    message.error(e.response?.data?.message || `${modeText}失败`);
+  } finally {
+    // 请求结束，移除 loading 状态
+    delete importingMap[row.source_id];
+  }
+};
+
 const importCenterSource = (row, mode) => {
   const modeText = mode === 'virtual' ? '入库' : '转存';
   dialog.info({
@@ -644,27 +674,9 @@ const importCenterSource = (row, mode) => {
     content: `确定将中心资源《${centerTitleText(row)}》执行${modeText}吗？`,
     positiveText: modeText,
     negativeText: '取消',
-    onPositiveClick: async () => {
-      try {
-        const sourceIds = Array.isArray(row.pack_source_ids) && row.pack_source_ids.length ? row.pack_source_ids : [row.source_id];
-        const res = await axios.post('/api/shared/resources/center/import', {
-          source_ids: sourceIds,
-          mode,
-          context: {
-            title: row.title || '',
-            tmdb_id: row.tmdb_id || '',
-            item_type: centerRowType(row) || row.item_type || '',
-            season_number: row.season_number ?? null,
-            episode_number: row.episode_number ?? null,
-            year: row.release_year || '',
-            share_type: row.share_type || '',
-          }
-        });
-        message.success(res.data?.message || '已提交');
-        await Promise.allSettled([loadVirtualItems(), loadSummary(), loadLedger()]);
-      } catch (e) {
-        message.error(e.response?.data?.message || `${modeText}失败`);
-      }
+    // 注意：这里去掉了 async，让函数同步返回，这样弹窗会立刻关闭，不卡界面
+    onPositiveClick: () => {
+      executeImport(row, mode);
     }
   });
 };
@@ -751,10 +763,30 @@ const centerColumns = [
   { title: '字幕', key: 'subtitles', minWidth: 220, render: row => lineStack(row.versions, it => h('span', defaultTrackText(it.version_summary?.subtitle_list || it.version_summary?.subtitles)), it => allTrackTitle(it.version_summary?.subtitle_list || it.version_summary?.subtitles)) },
   { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
-  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => lineStack(row.versions, it => h(NSpace, { size: 6 }, { default: () => [
-    h(NButton, { size: 'small', type: 'primary', secondary: true, onClick: () => importCenterSource(it, 'permanent') }, { default: () => '转存' }),
-    h(NButton, { size: 'small', secondary: true, onClick: () => importCenterSource(it, 'virtual') }, { default: () => '入库' })
-  ] })) },
+  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => lineStack(row.versions, it => {
+    // 判断当前行是否正在转存或入库
+    const isImportingPermanent = importingMap[it.source_id] === 'permanent';
+    const isImportingVirtual = importingMap[it.source_id] === 'virtual';
+    const isAnyImporting = isImportingPermanent || isImportingVirtual;
+
+    return h(NSpace, { size: 6 }, { default: () => [
+      h(NButton, { 
+        size: 'small', 
+        type: 'primary', 
+        secondary: true, 
+        loading: isImportingPermanent, // 绑定转圈圈状态
+        disabled: isAnyImporting && !isImportingPermanent, // 如果正在入库，禁用转存按钮防误触
+        onClick: () => importCenterSource(it, 'permanent') 
+      }, { default: () => '转存' }),
+      h(NButton, { 
+        size: 'small', 
+        secondary: true, 
+        loading: isImportingVirtual, // 绑定转圈圈状态
+        disabled: isAnyImporting && !isImportingVirtual, // 如果正在转存，禁用入库按钮防误触
+        onClick: () => importCenterSource(it, 'virtual') 
+      }, { default: () => '入库' })
+    ] });
+  }) },
 ];
 
 const ledgerColumns = [
