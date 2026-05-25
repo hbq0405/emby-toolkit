@@ -788,51 +788,16 @@ def ensure_playable_by_emby_item(
             )
 
         shared_virtual_db.mark_virtual_transferring(virtual_id, '播放触发临时转存')
-        logger.info(f"  ➜ [共享虚拟播放] 开始处理: {item.get('title') or item.get('file_name')} -> cid={cache_cid}")
+        logger.info(f"  ➜ [共享虚拟播放] 开始临时转存: {item.get('title') or item.get('file_name')} -> cid={cache_cid}")
 
         import_resp = None
-        fast_upload_success = False
-        
-        target_sha1 = _norm_sha1(item.get('sha1'))
-        target_size = _safe_int(item.get('size'), 0)
-        target_name = item.get('file_name') or display_name
-        # 即使没有 pick_code，留空也行
-        target_pc = item.get('real_pick_code') or item.get('pick_code') or ""
-
-        # ====================================================================
-        # ★ 核心破解逻辑：使用 115:// 离线秒传 (无视分享链接限制)
-        # 即使没有 pick_code，只要有 sha1 和 size，115 离线服务器也能秒传！
-        # ====================================================================
-        if target_sha1 and target_size > 0:
-            logger.info(f"  ➜ [共享虚拟播放] 尝试使用 115:// 离线秒传恢复文件...")
-            try:
-                # 构造标准 115 秒传链接 (即使 target_pc 为空也完全合法)
-                fast_link = f"115://{target_name}|{target_size}|{target_sha1}|{target_pc}"
-                payload = {'url[0]': fast_link, 'wp_path_id': cache_cid}
-                
-                resp = client.offline_add_urls(payload)
-                if _resp_ok(resp):
-                    logger.info(f"  ➜ [共享虚拟播放] ✅ 离线秒传任务下发成功！等待落盘...")
-                    fast_upload_success = True
-                    # 离线任务下发后，115 服务器需要一点时间把文件映射到目录
-                    time.sleep(1.5) 
-            except Exception as e:
-                logger.debug(f"  ➜ [共享虚拟播放] 离线秒传失败: {e}")
-
-        if fast_upload_success:
-            import_resp = {'state': True, '_is_fast_upload': True}
-        else:
-            # ====================================================================
-            # 如果秒传失败，回退到原有的 share_import 逻辑
-            # ====================================================================
-            logger.info(f"  ➜ [共享虚拟播放] 执行分享链接转存...")
-            try:
-                import_resp = client.share_import(share_code, receive_code, cache_cid)
-            except Exception as e:
-                msg = f'调用 115 share_import 失败: {e}'
-                shared_virtual_db.mark_virtual_error(virtual_id, msg)
-                _report_transfer_to_center(item, {}, result='failed', message=msg)
-                return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg}
+        try:
+            import_resp = client.share_import(share_code, receive_code, cache_cid)
+        except Exception as e:
+            msg = f'调用 115 share_import 失败: {e}'
+            shared_virtual_db.mark_virtual_error(virtual_id, msg)
+            _report_transfer_to_center(item, {}, result='failed', message=msg)
+            return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg}
 
         if not _resp_ok(import_resp):
             msg = f"115 share_import 返回失败: {json.dumps(import_resp, ensure_ascii=False)[:300]}"
@@ -840,30 +805,16 @@ def ensure_playable_by_emby_item(
             _report_transfer_to_center(item, {}, result='failed', message=msg)
             return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg, 'raw': import_resp}
 
-        # ====================================================================
-        # ★ 增强版文件定位逻辑 (带重试机制，防止离线秒传还没落盘)
-        # ====================================================================
-        node = None
-        # 如果是秒传，最多重试 3 次 (约 4.5 秒)，给 115 离线服务器充足的反应时间
-        max_find_retries = 3 if fast_upload_success else 1
-        
-        for attempt in range(max_find_retries):
-            node = _find_file_recursive(
-                client,
-                cache_cid,
-                sha1=target_sha1,
-                file_name=target_name,
-                size=target_size,
-                max_depth=6,
-                item=item,
-            ) or _find_file_by_fs_search(client, cache_cid, item)
-            
-            if node and node.get('pick_code'):
-                break
-                
-            if attempt < max_find_retries - 1:
-                logger.info(f"  ➜ [共享虚拟播放] 临时目录暂未找到文件，等待 1.5 秒后重试 ({attempt+1}/{max_find_retries})...")
-                time.sleep(1.5)
+        # 115 转存后不一定直接返回目标文件 PC，统一按 SHA1 / 文件名在临时目录里定位。
+        node = _find_file_recursive(
+            client,
+            cache_cid,
+            sha1=item.get('sha1') or '',
+            file_name=item.get('file_name') or display_name,
+            size=_safe_int(item.get('size'), 0),
+            max_depth=6,
+            item=item,
+        ) or _find_file_by_fs_search(client, cache_cid, item)
 
         if not node or not node.get('pick_code'):
             msg = '转存成功但未能在临时目录定位到目标视频或 pickcode'
