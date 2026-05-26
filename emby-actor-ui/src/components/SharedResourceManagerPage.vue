@@ -117,9 +117,9 @@
               remote
               :loading="centerLoading"
               :columns="centerColumns"
-              :data="groupedCenterSources"
+              :data="centerSources"
               :pagination="centerPagination"
-              :row-key="row => row.group_key || row.source_id"
+              :row-key="row => row.share_code ? `${row.contributor_id || ''}-${row.share_code}` : row.source_id"
               :scroll-x="1480"
               @update:page="p => { centerPagination.page = p; loadCenterSources(); }"
               @update:page-size="s => { centerPagination.pageSize = s; centerPagination.page = 1; loadCenterSources(); }"
@@ -240,7 +240,6 @@ const virtualItems = ref([]);
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
-const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
 const ledgerCollapsedGroups = reactive({});
 
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
@@ -571,79 +570,14 @@ const isFoldableLedgerEpisode = (row) => {
   return !!parseLedgerEpisode(row);
 };
 
-const ledgerDisplayItems = computed(() => {
-  const result = [];
-  const groups = new Map();
+const ledgerDisplayItems = computed(() => (ledgerItems.value || []).map((row, idx) => ({
+  ...row,
+  __row_key: `row:${row.id || row.ref_id || row.share_code || row.created_at || idx}`,
+})));
 
-  for (const row of ledgerItems.value || []) {
-    if (!isFoldableLedgerEpisode(row)) {
-      result.push({ ...row, __row_key: `row:${row.id || row.ref_id || row.created_at || Math.random()}` });
-      continue;
-    }
 
-    const ep = parseLedgerEpisode(row);
-    const centerItem = getLedgerCenterItem(row);
-    const tmdbKey = centerItem.parent_series_tmdb_id || centerItem.series_tmdb_id || row.parent_series_tmdb_id || centerItem.tmdb_id || row.tmdb_id || ep.seriesTitle;
-    const seasonCode = `S${String(ep.season).padStart(2, '0')}`;
-    const groupKey = `${row.event_type}:${tmdbKey}:${seasonCode}`;
+const toggleLedgerGroup = () => {};
 
-    if (!groups.has(groupKey)) {
-      const group = {
-        __group: true,
-        __row_key: `group:${groupKey}`,
-        __group_key: groupKey,
-        event_type: ledgerGroupEventType(row.event_type),
-        source_event_type: row.event_type,
-        title: `${ep.seriesTitle} ${seasonCode}`,
-        delta: 0,
-        reason: '',
-        created_at: row.created_at,
-        children: [],
-        episodeCodes: [],
-      };
-      groups.set(groupKey, group);
-      result.push(group);
-    }
-
-    const group = groups.get(groupKey);
-    group.children.push({ ...row, __child: true, __row_key: `child:${groupKey}:${row.id || row.ref_id || ep.code}` });
-    group.episodeCodes.push(ep.code);
-    group.delta += Number(row.delta || 0);
-    if (!group.created_at || new Date(row.created_at).getTime() > new Date(group.created_at).getTime()) {
-      group.created_at = row.created_at;
-    }
-  }
-
-  const expanded = [];
-  for (const row of result) {
-    if (!row.__group) {
-      expanded.push(row);
-      continue;
-    }
-
-    const sortedCodes = [...new Set(row.episodeCodes)].sort((a, b) => {
-      const ma = String(a).match(/S(\d+)E(\d+)/i);
-      const mb = String(b).match(/S(\d+)E(\d+)/i);
-      const na = ma ? Number(ma[1]) * 10000 + Number(ma[2]) : 0;
-      const nb = mb ? Number(mb[1]) * 10000 + Number(mb[2]) : 0;
-      return na - nb;
-    });
-    const first = sortedCodes[0];
-    const last = sortedCodes[sortedCodes.length - 1];
-    const prefix = ledgerGroupReasonPrefix(row.source_event_type);
-    row.reason = `${prefix} ${row.children.length} 条，贡献值 ${formatDelta(row.delta)}${first && last ? `，范围 ${first} - ${last}` : ''}`;
-    expanded.push(row);
-
-    if (ledgerCollapsedGroups[row.__group_key] === false) {
-      expanded.push(...row.children);
-    }
-  }
-  return expanded;
-});
-
-const toggleLedgerGroup = (key) => {
-  ledgerCollapsedGroups[key] = ledgerCollapsedGroups[key] !== false ? false : true;
-};
 
 
 const centerTypeLabel = (value) => ({
@@ -655,29 +589,16 @@ const centerRowType = centerRowTypeSafe;
 const centerTitleText = (row) => standardTitleText(row);
 const centerSeasonText = (row) => {
   const displayType = centerRowType(row);
+  const label = centerTypeLabel(displayType);
   const s = row.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
   const e = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
 
-  if (centerTypeLabel(displayType) === '电影') return '电影';
-
-  if (centerTypeLabel(displayType) === '剧集包') {
-    const count = row.pack_item_count ? `${row.pack_item_count}集` : '';
-    let range = '';
-    // 如果有具体的集数列表，提取出范围 (例如 E01-E20)
-    if (row.pack_episode_numbers && row.pack_episode_numbers.length > 1) {
-      const nums = row.pack_episode_numbers;
-      range = `E${String(nums[0]).padStart(2, '0')}-E${String(nums[nums.length - 1]).padStart(2, '0')}`;
-    } else if (row.pack_episode_numbers && row.pack_episode_numbers.length === 1) {
-      range = `E${String(row.pack_episode_numbers[0]).padStart(2, '0')}`;
-    }
-    const packDesc = [count, range ? `(${range})` : ''].filter(Boolean).join(' ');
-    return [s, packDesc || '剧集包'].filter(Boolean).join(' · ');
-  }
-
-  if (centerTypeLabel(displayType) === '单集') return ['单集', s && e ? `${s}${e}` : (s || e)].filter(Boolean).join(' · ');
-
-  return [centerTypeLabel(displayType), s ? `${s}${e}` : '', row.pack_item_count ? `${row.pack_item_count}集包` : ''].filter(Boolean).join(' · ') || '-';
+  if (label === '电影') return '电影';
+  if (label === '剧集包') return ['剧集包', s].filter(Boolean).join(' · ');
+  if (label === '单集') return ['单集', s && e ? `${s}${e}` : (s || e)].filter(Boolean).join(' · ');
+  return [label, s && e ? `${s}${e}` : (s || e)].filter(Boolean).join(' · ') || '-';
 };
+
 const centerStatusTag = (row) => {
   const text = row.status_label || statusMap[row.status]?.text || row.status || '未知';
   const type = row.status_type || statusMap[row.status]?.type || 'default';
@@ -747,73 +668,9 @@ const importCenterSource = (row, mode) => {
   });
 };
 
-const centerGroupKey = (row) => {
-  const type = centerRowType(row);
-  const tmdb = row.tmdb_id || row.share_tmdb_id || row.parent_series_tmdb_id || '';
-  const title = row.title || row.media_title || '';
-  const season = row.season_number || '';
-  const episode = row.episode_number || '';
-  const baseType = centerTypeLabel(type);
-  if (baseType === '电影') return `movie:${tmdb || title}`;
-  if (baseType === '剧集包') return `pack:${tmdb || title}:S${season || ''}`;
-  if (baseType === '单集') return `ep:${tmdb || title}:S${season || ''}:E${episode || ''}`;
-  return `${baseType}:${tmdb || title}:${season}:${episode}`;
-};
+const centerRowVersions = (row) => [row];
 
-const groupCenterSources = (items, orderBy = 'latest') => {
-  const groups = [];
-  const byKey = new Map();
-  for (const item of (items || [])) {
-    const key = centerGroupKey(item);
-    let group = byKey.get(key);
-    if (!group) {
-      group = {
-        group_key: key,
-        title: item.title || item.standard_title,
-        media_title: item.media_title,
-        tmdb_id: item.tmdb_id,
-        share_tmdb_id: item.share_tmdb_id,
-        parent_series_tmdb_id: item.parent_series_tmdb_id,
-        release_year: item.release_year,
-        season_number: item.season_number,
-        episode_number: item.episode_number,
-        display_type: centerRowType(item),
-        pack_item_count: item.pack_item_count,
-        pack_episode_numbers: item.pack_episode_numbers,
-        is_collapsed_pack: item.is_collapsed_pack,
-        versions: [],
-      };
-      byKey.set(key, group);
-      groups.push(group);
-    }
-    group.versions.push(item);
-  }
-  for (const group of groups) {
-    // 👇 根据不同排序规则，对组内版本排序，并提取组的排序基准值
-    if (orderBy === 'popular') {
-      group.versions.sort((a, b) => (b.success_count || 0) - (a.success_count || 0));
-      group.sort_val = Math.max(...group.versions.map(v => v.success_count || 0));
-    } else if (orderBy === 'size') {
-      group.versions.sort((a, b) => (b.size || 0) - (a.size || 0));
-      group.sort_val = Math.max(...group.versions.map(v => v.size || 0));
-    } else if (orderBy === 'name') {
-      group.versions.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
-      group.sort_val = group.title || '';
-    } else {
-      group.versions.sort((a, b) => centerCreatedTime(b) - centerCreatedTime(a));
-      group.sort_val = centerCreatedTime(group.versions[0]);
-    }
-    group.created_at = group.versions[0]?.created_at || group.created_at;
-  }
-  
-  // 👇 对所有组进行排序
-  groups.sort((a, b) => {
-    if (orderBy === 'popular' || orderBy === 'size') return b.sort_val - a.sort_val;
-    if (orderBy === 'name') return String(a.sort_val).localeCompare(String(b.sort_val));
-    return b.sort_val - a.sort_val; // latest
-  });
-  return groups;
-};
+
 
 const lineStack = (items, renderFn, tooltipFn = null) => {
   const rows = (items || []).map((it, idx) => {
@@ -841,66 +698,56 @@ const centerColumns = [
     h('div', { class: 'main-title' }, centerTitleText(row)),
     metaLine(row)
   ]) },
-  // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
-  { title: '类型', key: 'item_type', width: 160, render: row => lineStack(row.versions, it => h('span', centerSeasonText(it))) },
-  { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
-  { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
-    const v = it.version_summary || {};
-    return h('span', [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ') || '-');
-  }) },
-  { title: 'HDR / 杜比', key: 'effect', width: 150, render: row => lineStack(row.versions, it => h('span', it.version_summary?.effect || '-'), it => it.version_summary?.effect || '') },
-  { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', it.version_summary?.fps || '-')) },
-  { title: '音轨', key: 'audios', minWidth: 220, render: row => lineStack(row.versions, it => h('span', defaultTrackText(it.version_summary?.audio_list || it.version_summary?.audios)), it => allTrackTitle(it.version_summary?.audio_list || it.version_summary?.audios)) },
-  { title: '字幕', key: 'subtitles', minWidth: 220, render: row => lineStack(row.versions, it => h('span', defaultTrackText(it.version_summary?.subtitle_list || it.version_summary?.subtitles)), it => allTrackTitle(it.version_summary?.subtitle_list || it.version_summary?.subtitles)) },
-  { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
-  { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
-  { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
-  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => lineStack(row.versions, it => {
-    // 判断当前行是否正在转存或入库
-    const isImportingPermanent = importingMap[it.source_id] === 'permanent';
-    const isImportingVirtual = importingMap[it.source_id] === 'virtual';
+  { title: '类型', key: 'item_type', width: 130, render: row => centerSeasonText(row) },
+  { title: '分辨率', key: 'resolution', width: 90, render: row => row.version_summary?.resolution || '-' },
+  { title: '视频编码', key: 'video_codec', width: 120, render: row => {
+    const v = row.version_summary || {};
+    return [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ') || '-';
+  } },
+  { title: 'HDR / 杜比', key: 'effect', width: 150, render: row => row.version_summary?.effect || '-' },
+  { title: '帧率', key: 'fps', width: 110, render: row => row.version_summary?.fps || '-' },
+  { title: '音轨', key: 'audios', minWidth: 220, render: row => h('span', { title: allTrackTitle(row.version_summary?.audio_list || row.version_summary?.audios) }, defaultTrackText(row.version_summary?.audio_list || row.version_summary?.audios)) },
+  { title: '字幕', key: 'subtitles', minWidth: 220, render: row => h('span', { title: allTrackTitle(row.version_summary?.subtitle_list || row.version_summary?.subtitles) }, defaultTrackText(row.version_summary?.subtitle_list || row.version_summary?.subtitles)) },
+  { title: '大小', key: 'size', width: 95, render: row => formatCenterSize(row) },
+  { title: '热度', key: 'success_count', width: 80, render: row => `${row.success_count || 0} 次` },
+  { title: '可用性', key: 'status', width: 105, render: row => centerStatusTag(row) },
+  { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => {
+    const isImportingPermanent = importingMap[row.source_id] === 'permanent';
+    const isImportingVirtual = importingMap[row.source_id] === 'virtual';
     const isAnyImporting = isImportingPermanent || isImportingVirtual;
 
     return h(NSpace, { size: 6 }, { default: () => [
-      h(NButton, { 
-        size: 'small', 
-        type: 'primary', 
-        secondary: true, 
-        loading: isImportingPermanent, // 绑定转圈圈状态
-        disabled: isAnyImporting && !isImportingPermanent, // 如果正在入库，禁用转存按钮防误触
-        onClick: () => importCenterSource(it, 'permanent') 
+      h(NButton, {
+        size: 'small',
+        type: 'primary',
+        secondary: true,
+        loading: isImportingPermanent,
+        disabled: isAnyImporting && !isImportingPermanent,
+        onClick: () => importCenterSource(row, 'permanent')
       }, { default: () => '转存' }),
-      h(NButton, { 
-        size: 'small', 
-        secondary: true, 
-        loading: isImportingVirtual, // 绑定转圈圈状态
-        disabled: isAnyImporting && !isImportingVirtual, // 如果正在转存，禁用入库按钮防误触
-        onClick: () => importCenterSource(it, 'virtual') 
+      h(NButton, {
+        size: 'small',
+        secondary: true,
+        loading: isImportingVirtual,
+        disabled: isAnyImporting && !isImportingVirtual,
+        onClick: () => importCenterSource(row, 'virtual')
       }, { default: () => '入库' })
     ] });
-  }) },
+  } },
 ];
 
+
 const ledgerColumns = [
-  { title: '时间', key: 'created_at', width: 180, render: row => row.__group ? '本季汇总' : fmtDate(row.created_at) },
-  { title: '事件', key: 'event_type', width: 190, render: row => {
-    if (row.__group) {
-      const collapsed = ledgerCollapsedGroups[row.__group_key] !== false;
-      return h(NButton, { size: 'tiny', text: true, onClick: () => toggleLedgerGroup(row.__group_key) }, {
-        icon: () => h(NIcon, null, { default: () => h(collapsed ? ChevronForwardIcon : ChevronDownIcon) }),
-        default: () => ledgerEventLabel(row.event_type)
-      });
-    }
-    if (row.__child) return h('span', { class: 'ledger-child-event' }, ledgerEventLabel(row.event_type));
-    return ledgerEventLabel(row.event_type);
-  } },
+  { title: '时间', key: 'created_at', width: 180, render: row => fmtDate(row.created_at) },
+  { title: '事件', key: 'event_type', width: 190, render: row => ledgerEventLabel(row.event_type) },
   { title: '变化', key: 'delta', width: 90, render: row => {
     const n = Number(row.delta || 0);
     return h(NTag, { type: n > 0 ? 'success' : (n < 0 ? 'error' : 'default'), size: 'small' }, { default: () => formatDelta(n) });
   } },
-  { title: '标题', key: 'title', minWidth: 220, ellipsis: { tooltip: true }, render: row => h('span', { class: row.__child ? 'ledger-child-title' : (row.__group ? 'ledger-group-title' : '') }, row.title || '-') },
-  { title: '原因', key: 'reason', minWidth: 360, ellipsis: { tooltip: true }, render: row => h('span', { class: row.__group ? 'ledger-group-reason' : '' }, row.reason || '-') },
+  { title: '标题', key: 'title', minWidth: 220, ellipsis: { tooltip: true }, render: row => row.title || '-' },
+  { title: '原因', key: 'reason', minWidth: 360, ellipsis: { tooltip: true }, render: row => row.reason || '-' },
 ];
+
 
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { local: {}, shares: {}, credit: {} }; };
 const loadVirtualItems = async () => { loading.value = true; try { const res = await axios.get('/api/shared/resources/virtual', { params: { ...virtualFilters, page: virtualPagination.page, page_size: virtualPagination.pageSize } }); virtualItems.value = res.data?.items || []; virtualPagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载虚拟资源失败'); } finally { loading.value = false; } };
