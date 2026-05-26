@@ -1,3 +1,4 @@
+<!-- src/components/SharedResourceManagerPage.vue -->
 <template>
   <div class="shared-page">
     <n-space vertical :size="18">
