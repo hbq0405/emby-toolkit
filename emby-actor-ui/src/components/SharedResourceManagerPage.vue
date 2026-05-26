@@ -245,7 +245,7 @@ const ledgerCollapsedGroups = reactive({});
 
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
 const shareFilters = reactive({ keyword: '', status: 'active' });
-const centerFilters = reactive({ keyword: '', status: '', item_type: 'all', order_by: 'latest' });
+const centerFilters = reactive({ keyword: '', status: 'alive,pending', item_type: 'all', order_by: 'latest' });
 const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
@@ -279,10 +279,9 @@ const shareStatusOptions = [
 ];
 
 const centerStatusOptions = [
-  { label: '可用/待验证', value: 'alive,pending' },
+  { label: '全部', value: '' },
   { label: '仅可用', value: 'alive' },
   { label: '仅待验证', value: 'pending' },
-  { label: '全部', value: '' },
 ];
 const typeOptions = [
   { label: '全部类型', value: 'all' }, { label: '电影', value: 'Movie' },
