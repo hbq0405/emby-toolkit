@@ -2675,12 +2675,19 @@ def api_list_my_shares():
             if identity.get('parent_series_tmdb_id'):
                 item['parent_series_tmdb_id'] = identity.get('parent_series_tmdb_id')
                 
-            # 👇 【新增】兼容老数据：如果数据库字段为空，尝试从 raw_json 里捞出来发给前端
-            if item.get('episode_number') is None and item.get('raw_json'):
-                raw = item['raw_json']
-                ep = (raw.get('standard_identity') or {}).get('episode_number') or \
-                     (raw.get('manual_payload') or {}).get('episode_number') or \
-                     (raw.get('auto_gap') or {}).get('episode_number')
+            # 👇 【修改】增强版老数据兼容：JSON提取不到就用正则从文件名提取
+            if item.get('episode_number') is None:
+                ep = None
+                if item.get('raw_json'):
+                    raw = item['raw_json']
+                    ep = (raw.get('standard_identity') or {}).get('episode_number') or \
+                         (raw.get('manual_payload') or {}).get('episode_number') or \
+                         (raw.get('auto_gap') or {}).get('episode_number')
+                
+                # 终极兜底：如果 JSON 里没有，直接从 root_name 或 title 里正则提取 (例如 S01E27 -> 27)
+                if ep is None:
+                    ep = _guess_episode_number(item.get('root_name') or item.get('title'))
+                    
                 if ep is not None:
                     item['episode_number'] = ep
                     
