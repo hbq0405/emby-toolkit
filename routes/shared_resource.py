@@ -2448,8 +2448,17 @@ def api_manual_create_share():
     for item in files:
         if not item.get('tmdb_id'):
             item['tmdb_id'] = str(data.get('tmdb_id') or '')
-        if not item.get('item_type'):
-            item['item_type'] = 'Episode' if data.get('share_type') in ('season_pack', 'series_pack') and item.get('episode_number') else data.get('item_type')
+
+        # 单集分享必须强制登记为 Episode。之前只在 item_type 为空时才填充，
+        # 如果上游兜底 payload 把 item_type 带成 Season，就会把每一集错误登记成“剧集包”。
+        share_type_now = str(data.get('share_type') or '').strip().lower()
+        if share_type_now == 'episode_file':
+            item['item_type'] = 'Episode'
+            if not item.get('episode_number') and data.get('episode_number'):
+                item['episode_number'] = data.get('episode_number')
+        elif not item.get('item_type'):
+            item['item_type'] = 'Episode' if share_type_now in ('season_pack', 'series_pack') and item.get('episode_number') else data.get('item_type')
+
         if not item.get('season_number'):
             item['season_number'] = data.get('season_number')
         if not item.get('episode_number') and data.get('episode_number'):
@@ -2545,8 +2554,15 @@ def api_check_share(record_id):
             for item in files:
                 if not item.get('tmdb_id'):
                     item['tmdb_id'] = str(record.get('tmdb_id') or '')
-                if not item.get('item_type'):
-                    item['item_type'] = 'Episode' if record.get('share_type') in ('season_pack', 'series_pack', 'episode_file') and (item.get('episode_number') or raw_payload.get('episode_number')) else record.get('item_type')
+
+                share_type_now = str(record.get('share_type') or '').strip().lower()
+                if share_type_now == 'episode_file':
+                    item['item_type'] = 'Episode'
+                    if not item.get('episode_number') and raw_payload.get('episode_number'):
+                        item['episode_number'] = raw_payload.get('episode_number')
+                elif not item.get('item_type'):
+                    item['item_type'] = 'Episode' if share_type_now in ('season_pack', 'series_pack') and (item.get('episode_number') or raw_payload.get('episode_number')) else record.get('item_type')
+
                 if not item.get('season_number'):
                     item['season_number'] = record.get('season_number')
                 if not item.get('episode_number') and raw_payload.get('episode_number'):
@@ -2610,8 +2626,15 @@ def api_report_share_to_center(record_id):
             for item in files:
                 if not item.get('tmdb_id'):
                     item['tmdb_id'] = str(record.get('tmdb_id') or '')
-                if not item.get('item_type'):
-                    item['item_type'] = 'Episode' if record.get('share_type') in ('season_pack', 'series_pack', 'episode_file') and (item.get('episode_number') or raw_payload.get('episode_number')) else record.get('item_type')
+
+                share_type_now = str(record.get('share_type') or '').strip().lower()
+                if share_type_now == 'episode_file':
+                    item['item_type'] = 'Episode'
+                    if not item.get('episode_number') and raw_payload.get('episode_number'):
+                        item['episode_number'] = raw_payload.get('episode_number')
+                elif not item.get('item_type'):
+                    item['item_type'] = 'Episode' if share_type_now in ('season_pack', 'series_pack') and (item.get('episode_number') or raw_payload.get('episode_number')) else record.get('item_type')
+
                 if not item.get('season_number'):
                     item['season_number'] = record.get('season_number')
                 if not item.get('episode_number') and raw_payload.get('episode_number'):
@@ -2673,8 +2696,13 @@ def api_report_share_to_center(record_id):
         if not sha1:
             errors.append(f"{item.get('file_name')} 缺少 SHA1，跳过")
             continue
-        is_season_pack = str(record.get('share_type') or '').lower() in ('season_pack', 'season', 'tv_pack') or (record.get('root_is_dir') and str(record.get('item_type') or '').lower() in ('season', 'series', 'tv'))
+        # 只有显式 season_pack / series_pack 才按“季包”登记中心。
+        # 不能再用 root_is_dir + item_type=Season 兜底，否则历史/兜底数据会把单集文件批量登记成剧集包。
+        record_share_type = str(record.get('share_type') or '').strip().lower()
+        is_season_pack = record_share_type in ('season_pack', 'series_pack', 'season', 'tv_pack')
         center_item_type = 'Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie')
+        if record_share_type == 'episode_file':
+            center_item_type = 'Episode'
         center_episode_number = None if is_season_pack else item.get('episode_number')
         standard_identity = _standard_share_identity(record, item, center_item_type=center_item_type)
         payload = {
@@ -3249,6 +3277,47 @@ def _center_is_pack_like_row(item: Dict[str, Any]) -> bool:
     return False
 
 
+
+def _center_infer_episode_number(item: Dict[str, Any]):
+    """从中心源记录里尽量推断单集集号，用于修复历史误登记的“假剧集包”。"""
+    item = item or {}
+    value = item.get('episode_number')
+    if value not in (None, ''):
+        try:
+            return int(value)
+        except Exception:
+            return value
+    for key in ('file_name', 'relative_path', 'title', 'root_name'):
+        ep = _guess_episode_number(str(item.get(key) or ''))
+        if ep is not None:
+            return ep
+    raw = item.get('raw_ffprobe_json')
+    if isinstance(raw, dict):
+        etk = raw.get('_etk') if isinstance(raw.get('_etk'), dict) else {}
+        for key in ('episode_number', 'episode'):
+            if etk.get(key) not in (None, ''):
+                try:
+                    return int(etk.get(key))
+                except Exception:
+                    return etk.get(key)
+    return None
+
+
+def _center_mark_as_episode_row(item: Dict[str, Any], episode_number=None) -> Dict[str, Any]:
+    row = dict(item or {})
+    ep = episode_number if episode_number not in (None, '') else _center_infer_episode_number(row)
+    if ep not in (None, ''):
+        row['episode_number'] = ep
+    row['item_type'] = 'Episode'
+    row['share_type'] = 'episode_file'
+    row['display_type'] = 'Episode'
+    row['is_collapsed_pack'] = False
+    row.pop('pack_item_count', None)
+    row.pop('pack_source_ids', None)
+    row.pop('pack_episode_numbers', None)
+    row.pop('pack_tmdb_ids', None)
+    return row
+
 def _center_display_type(item: Dict[str, Any]) -> str:
     """中心资源库只暴露三类：Movie / Pack / Episode。"""
     if not item:
@@ -3287,8 +3356,8 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
     展示模型统一成三类：电影、剧集包、单集。
     - Movie/movie_file/movie_folder 永远按电影展示；
     - 同一个 contributor + share_code + season 下存在多条剧集/分集记录时折叠为剧集包；
-    - Season/Series/tv/season_pack 即使只有一条，也按剧集包展示；
-    - 真正只有一条的 episode/episode_file 按单集展示，不误折叠。
+    - Season/Series/tv/season_pack 只有在同分享码下确实包含多集，或无法推断为单集时，才按剧集包展示；
+    - 历史误登记的“每个 share_code 只有一个文件、file_name 可推断集号”的 Season 行，按 Episode 单集展示。
     """
     groups: Dict[str, List[Dict[str, Any]]] = {}
     passthrough: List[Dict[str, Any]] = []
@@ -3326,12 +3395,16 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
 
     collapsed: List[Dict[str, Any]] = []
     for rows in groups.values():
-        # Season/Series/tv/season_pack 本身就是剧集包；多条 episode 同分享码同季也折叠为剧集包。
-        must_pack = any(_center_is_pack_like_row(r) for r in rows)
-        if len(rows) <= 1 and not must_pack:
+        # 多条同 share_code + season 的源才是“包”。单条源如果能从文件名/raw 推断集号，
+        # 多半是旧版本把 episode_file 错登记成 Season，展示层先按单集兜底，避免“每集都是剧集包”。
+        if len(rows) <= 1:
             row = dict(rows[0])
-            row['display_type'] = 'Episode'
-            passthrough.append(row)
+            inferred_ep = _center_infer_episode_number(row)
+            if inferred_ep not in (None, '') and _center_norm_item_type(row.get('source_provider')) != 'season_pack':
+                passthrough.append(_center_mark_as_episode_row(row, inferred_ep))
+            else:
+                row['display_type'] = 'Pack' if _center_is_pack_like_row(row) else 'Episode'
+                passthrough.append(row)
             continue
 
         rows_sorted = sorted(rows, key=lambda r: (1 if r.get('raw_ffprobe_json') else 0, int(r.get('size') or 0)), reverse=True)

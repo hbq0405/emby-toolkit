@@ -784,8 +784,11 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                             sha1 = str(item.get('sha1') or '').strip().upper()
                             if not sha1:
                                 continue
-                            is_season_pack = str(record.get('share_type') or '').lower() in ('season_pack', 'season', 'tv_pack') or (record.get('root_is_dir') and str(record.get('item_type') or '').lower() in ('season', 'series', 'tv'))
+                            record_share_type = str(record.get('share_type') or '').strip().lower()
+                            is_season_pack = record_share_type in ('season_pack', 'series_pack', 'season', 'tv_pack')
                             center_item_type = 'Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie')
+                            if record_share_type == 'episode_file':
+                                center_item_type = 'Episode'
                             standard_identity = sr._standard_share_identity(record, item, center_item_type=center_item_type) if sr is not None else {}
                             resp = client.register_source(
                                 tmdb_id=standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id'),
@@ -1134,7 +1137,14 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                     files = sr._collect_files_from_media_payload(payload)
                 for item in files:
                     item.setdefault('tmdb_id', str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or ''))
-                    item.setdefault('item_type', 'Episode' if candidate.get('share_type') in ('season_pack','series_pack') and item.get('episode_number') else candidate.get('share_item_type') or candidate.get('item_type'))
+                    share_type_now = str(candidate.get('share_type') or '').strip().lower()
+                    if share_type_now == 'episode_file':
+                        # 自动补缺展开出来的单集必须强制写 Episode，不能沿用 Season 缺口行。
+                        item['item_type'] = 'Episode'
+                        if not item.get('episode_number'):
+                            item['episode_number'] = candidate.get('episode_number')
+                    else:
+                        item.setdefault('item_type', 'Episode' if share_type_now in ('season_pack','series_pack') and item.get('episode_number') else candidate.get('share_item_type') or candidate.get('item_type'))
                     item.setdefault('season_number', candidate.get('season_number'))
                     item.setdefault('episode_number', candidate.get('episode_number'))
 
