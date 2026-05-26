@@ -4,7 +4,7 @@
   <!-- 视图 A: PC 端 (宽屏) -->
   <!-- ================================================================================== -->
   <n-layout v-if="!isMobile" content-style="padding: 24px; background-color: transparent;">
-    <div>
+    <div class="database-stats-page">
       <n-page-header title="数据看板" subtitle="了解您媒体库的核心数据统计" style="margin-bottom: 24px;">
       </n-page-header>
       
@@ -19,7 +19,7 @@
             </template>
             <n-space vertical :size="20">
               <!-- 顶部关键指标 (改为3列) -->
-              <n-grid :cols="2" :x-gap="12">
+              <n-grid :cols="2" :x-gap="12" class="inner-section-card hero-stats-card">
                 <n-gi>
                   <n-statistic label="已缓存媒体" class="centered-statistic">
                     <span class="stat-value">{{ stats.media_library.cached_total }}</span>
@@ -47,7 +47,7 @@
               <n-divider />
   
               <!-- 媒体库概览 -->
-              <div>
+              <div class="inner-section-card media-overview-card">
                 <div class="section-title">媒体库概览</div>
                 <n-grid :cols="2" :x-gap="24" style="margin-top: 12px; align-items: center;">
                   <n-gi>
@@ -98,7 +98,7 @@
               <n-divider />
   
               <!-- 系统日志与缓存 -->
-              <div>
+              <div class="inner-section-card system-cache-card">
                 <div class="section-title">系统日志与缓存</div>
                 <n-space justify="space-around" style="width: 100%; margin-top: 12px;">
                   <n-statistic label="翻译缓存" class="centered-statistic" :value="stats.system.translation_cache_count" />
@@ -181,7 +181,7 @@
               </div>
               <n-divider />
               <!-- MP 配额 -->
-                <n-grid :cols="3" :x-gap="12" class="quota-grid">
+                <n-grid :cols="3" :x-gap="12" class="quota-grid inner-section-card quota-section">
                   <n-gi class="quota-label-container">
                     <n-icon size="18" color="#18a058" style="margin-right: 6px"><CheckIcon /></n-icon>
                     <span>MP 订阅配额</span>
@@ -567,4 +567,130 @@ onUnmounted(() => {
 .mobile-value { font-size: 18px; font-weight: 600; }
 .mobile-row { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 6px; }
 .mobile-ranking-name { font-weight: 500; flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ================= PC 数据看板：内部信息分组卡片化 ================= */
+.database-stats-page {
+  min-height: 100%;
+}
+
+/* 页面级隐藏原来的硬分割线，改用分组卡片表达层级 */
+.database-stats-page :deep(.n-divider) {
+  display: none !important;
+}
+
+/* 外层大卡片内容统一紧凑一点 */
+.database-stats-page :deep(.dashboard-card > .n-card__content) {
+  padding-top: 12px !important;
+}
+
+/* 左侧内部卡片 + 右侧已有 section-container 统一玻璃化 */
+.inner-section-card,
+.section-container {
+  position: relative;
+  padding: 18px 20px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(148, 177, 255, 0.10);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  backdrop-filter: var(--card-backdrop-filter, blur(10px));
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px));
+}
+
+.hero-stats-card {
+  padding: 14px 20px 18px;
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.media-overview-card {
+  min-height: 250px;
+}
+
+.system-cache-card {
+  padding-bottom: 20px;
+}
+
+.quota-section {
+  margin: 0 !important;
+  min-height: 92px;
+}
+
+/* 分组标题：从普通标题改成小卡片标题 */
+.database-stats-page .section-title {
+  margin-bottom: 16px;
+  color: var(--accent-color, var(--n-primary-color)) !important;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-shadow: 0 0 10px var(--accent-glow-color, transparent);
+}
+
+/* 右侧统计块本身也做成更小一层的卡片，避免数字裸奔 */
+.database-stats-page .stat-block {
+  padding: 14px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.032);
+  border: 1px solid rgba(148, 177, 255, 0.08);
+  transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.database-stats-page .stat-block:hover {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(148, 177, 255, 0.18);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+}
+
+.database-stats-page .stat-block-title {
+  margin-bottom: 12px;
+  color: var(--n-text-color-2);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.database-stats-page .stat-item-group {
+  align-items: center;
+}
+
+.database-stats-page .stat-item-label {
+  font-size: 12px;
+  opacity: 0.78;
+}
+
+.database-stats-page .stat-item-value {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.database-stats-page .quota-label-container {
+  justify-content: flex-start;
+  color: var(--accent-color, var(--n-primary-color)) !important;
+}
+
+/* 发布组排行行项目也轻卡片化 */
+.database-stats-page .ranking-item {
+  min-height: 30px;
+  padding: 5px 6px;
+  border-radius: 10px;
+  transition: background-color 0.2s ease;
+}
+
+.database-stats-page .ranking-item:hover {
+  background: rgba(255, 255, 255, 0.055);
+}
+
+.database-stats-page .ranking-index {
+  color: var(--accent-color, var(--n-primary-color));
+}
+
+.database-stats-page .chart {
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.20));
+}
+
+/* 手机端顺手保持玻璃化一致 */
+.mobile-container :deep(.n-card) {
+  background: rgba(255, 255, 255, 0.045) !important;
+  border: 1px solid rgba(148, 177, 255, 0.10) !important;
+  backdrop-filter: var(--card-backdrop-filter, blur(10px));
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px));
+}
+
 </style>
