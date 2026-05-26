@@ -8,6 +8,7 @@ import time
 import threading
 import uuid
 import socket
+from datetime import datetime
 from typing import Dict, Any, List
 
 import requests
@@ -3614,6 +3615,25 @@ def _center_is_pack_like_row(item: Dict[str, Any]) -> bool:
 
 
 
+def _center_created_ts(item: Dict[str, Any]) -> float:
+    value = (item or {}).get('created_at')
+    if not value:
+        return 0.0
+    if hasattr(value, 'timestamp'):
+        try:
+            return float(value.timestamp())
+        except Exception:
+            return 0.0
+    text = str(value).strip()
+    if text.endswith('Z'):
+        text = text[:-1] + '+00:00'
+    try:
+        return float(datetime.fromisoformat(text).timestamp())
+    except Exception:
+        return 0.0
+
+
+
 def _center_infer_episode_number(item: Dict[str, Any]):
     """从中心源记录里尽量推断单集集号，用于修复历史误登记的“假剧集包”。"""
     item = item or {}
@@ -3745,6 +3765,9 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
 
         rows_sorted = sorted(rows, key=lambda r: (1 if r.get('raw_ffprobe_json') else 0, int(r.get('size') or 0)), reverse=True)
         rep = dict(rows_sorted[0])
+        newest_row = max(rows, key=_center_created_ts)
+        if newest_row.get('created_at'):
+            rep['created_at'] = newest_row.get('created_at')
         total_size = 0
         episode_numbers = []
         source_ids = []
@@ -3945,6 +3968,7 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
         expanded = _expand_center_pack_page_items(client, raw_rows, status=status)
         collapsed = _collapse_center_season_pack_rows(expanded)
         display_rows = [r for r in collapsed if _center_match_display_type(r, display_type)]
+        display_rows.sort(key=lambda r: (_center_created_ts(r), str(r.get('source_id') or '')), reverse=True)
         if len(display_rows) >= target_count:
             break
         raw_offset += len(page_items)

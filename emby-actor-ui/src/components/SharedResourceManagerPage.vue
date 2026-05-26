@@ -194,7 +194,7 @@ import { computed, h, onMounted, onUnmounted, reactive, ref } from 'vue';
 import axios from 'axios';
 import {
   NAlert, NButton, NCard, NDataTable, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
-  NInputNumber, NModal, NSelect, NSpace, NTabPane, NTabs, NTag, NText, useDialog, useMessage
+  NInputNumber, NModal, NSelect, NSpace, NTabPane, NTabs, NTag, NText, useDialog, useMessage, useThemeVars
 } from 'naive-ui';
 import {
   RefreshOutline as RefreshIcon,
@@ -212,6 +212,7 @@ import {
 
 const message = useMessage();
 const dialog = useDialog();
+const themeVars = useThemeVars();
 
 const isMobile = ref(false);
 const checkMobile = () => { isMobile.value = window.innerWidth <= 768; };
@@ -362,8 +363,17 @@ const tmdbLink = (row, labelPrefix = 'TMDb') => {
     href: tmdbHref(row),
     target: '_blank',
     rel: 'noopener noreferrer',
+    style: {
+      '--tmdb-color': themeVars.value.primaryColor,
+      '--tmdb-color-hover': themeVars.value.primaryColorHover,
+    },
     onClick: e => e.stopPropagation(),
   }, `${labelPrefix} ${id}`);
+};
+
+const centerCreatedTime = (row) => {
+  const t = new Date(row?.created_at || 0).getTime();
+  return Number.isFinite(t) ? t : 0;
 };
 const metaLine = (row, parts = []) => h('div', { class: 'sub-title' }, [tmdbLink(row), ...parts.filter(Boolean)]);
 
@@ -754,6 +764,12 @@ const groupCenterSources = (items) => {
     }
     group.versions.push(item);
   }
+  for (const group of groups) {
+    group.versions.sort((a, b) => centerCreatedTime(b) - centerCreatedTime(a));
+    const newest = group.versions[0] || {};
+    group.created_at = newest.created_at || group.created_at;
+  }
+  groups.sort((a, b) => centerCreatedTime(b) - centerCreatedTime(a));
   return groups;
 };
 
@@ -999,8 +1015,32 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .toolbar { margin-bottom: 14px; }
 .main-title { font-weight: 600; }
 .sub-title { font-size: 12px; opacity: .6; margin-top: 3px; }
-.tmdb-link { color: inherit; text-decoration: none; border-bottom: 1px dashed currentColor; }
-.tmdb-link:hover { opacity: 1; }
+.tmdb-link,
+.tmdb-link:visited,
+.tmdb-link:active {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 7px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 18px;
+  color: var(--tmdb-color, var(--primary-color, var(--n-primary-color, #18a058)));
+  background: rgba(24, 160, 88, .08);
+  background: color-mix(in srgb, currentColor 9%, transparent);
+  border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
+  text-decoration: none;
+  vertical-align: baseline;
+  transition: background-color .16s ease, border-color .16s ease, transform .16s ease;
+}
+.tmdb-link:hover {
+  color: var(--tmdb-color-hover, var(--tmdb-color, var(--primary-color-hover, var(--n-primary-color-hover, #18a058))));
+  background: rgba(24, 160, 88, .12);
+  background: color-mix(in srgb, currentColor 14%, transparent);
+  border-color: color-mix(in srgb, currentColor 38%, transparent);
+  text-decoration: none;
+}
+.tmdb-link:active { transform: translateY(1px); }
 .pre-line { white-space: pre-line; line-height: 1.55; }
 .selected-share-box { border: 1px solid rgba(128,128,128,.22); border-radius: 12px; padding: 12px 14px; background: rgba(128,128,128,.06); }
 .selected-title { font-weight: 700; margin-bottom: 6px; }
