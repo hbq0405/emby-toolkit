@@ -673,7 +673,16 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
         if not share_code:
             errors.append(f"{src.get('file_name')}: 缺少分享码")
             continue
+        logger.info(
+            f"  ➜ [共享资源] 中心命中，准备从115分享转存："
+            f"title={context.get('title')}, share={share_code}, "
+            f"source_id={src.get('source_id')}, file={src.get('file_name')}"
+        )
         resp = p115.share_import(share_code, receive_code, target_cid)
+        logger.info(
+            f"  ➜ [共享资源] 115分享转存返回：share={share_code}, "
+            f"resp={str(resp)[:300]}"
+        )
         text = json.dumps(resp, ensure_ascii=False) if isinstance(resp, dict) else str(resp)
         success = isinstance(resp, dict) and (resp.get('state') is True or resp.get('errno') in (0, '0') or resp.get('code') in (0, '0', 200, '200') or '已存在' in text)
         if success:
@@ -714,6 +723,7 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str, tmdb_id, item_
     try:
         data = client.search_sources(queries, limit_per_item=200)
         sources = _flatten_search_results(data)
+        logger.info(f"  ➜ [共享资源] 命中 {len(sources)} 个资源")
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 查询中心共享池失败: {e}")
 
