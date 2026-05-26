@@ -111,3 +111,53 @@
 .dashboard-card:nth-child(3) { animation-delay: 0.3s; }
 .dashboard-card:nth-child(4) { animation-delay: 0.4s; }
 .dashboard-card:nth-child(5) { animation-delay: 0.5s; }
+
+/* ================= 主题背景/玻璃卡片全局接管 =================
+   让 theme.js 的 --app-bg-color / --layout-panel-bg-color / --card-backdrop-filter 真正生效。
+   放在文件末尾，优先级高于前面的通用样式。
+================================================================ */
+:root {
+  --app-bg-color: var(--n-body-color, #101014);
+  --layout-panel-bg-color: var(--card-bg-color, rgba(20, 25, 45, 0.55));
+  --card-backdrop-filter: blur(10px);
+}
+
+html,
+body,
+#app {
+  min-height: 100%;
+  background: var(--app-bg-color, var(--n-body-color, #101014)) !important;
+  background-attachment: fixed !important;
+}
+
+body {
+  margin: 0;
+}
+
+/* 放开 Naive Layout，不然整体渐变背景会被布局底色盖住 */
+.n-layout,
+.n-layout-scroll-container,
+.n-layout-content,
+.app-main-content-wrapper,
+.page-content-inner-wrapper {
+  background: transparent !important;
+}
+
+/* 顶栏、侧栏改成玻璃层，跟随主题变量 */
+.n-layout-header,
+.n-layout-sider {
+  background: var(--layout-panel-bg-color, var(--card-bg-color, rgba(20, 25, 45, 0.55))) !important;
+  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+  border-color: var(--card-border-color) !important;
+}
+
+/* 普通 Naive 卡片也吃主题透明度，不只 dashboard-card 生效 */
+.n-card:not(.modal-card-lite) {
+  background: var(--card-bg-color) !important;
+  border-color: var(--card-border-color) !important;
+  box-shadow: 0 4px 12px var(--card-shadow-color), 0 0 20px -5px var(--accent-glow-color) !important;
+  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+}
+

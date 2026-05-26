@@ -128,7 +128,118 @@ export const themes = {
     }
   },
 
-  // ================= 主题八: 极简风格 (无特效) =================
+  // ================= 主题八: 深空流光 =================
+  codex: {
+    name: '深空流光',
+    light: {
+      custom: {
+        '--app-bg-color': 'radial-gradient(circle at 12% 8%, rgba(92, 151, 255, 0.26), transparent 28%), radial-gradient(circle at 88% 14%, rgba(151, 91, 255, 0.22), transparent 32%), linear-gradient(135deg, #eef5ff 0%, #f3f0ff 42%, #edf7ff 100%)',
+        '--layout-panel-bg-color': 'rgba(255, 255, 255, 0.42)',
+        '--card-bg-color': 'rgba(255, 255, 255, 0.58)',
+        '--modal-solid-bg-color': 'rgb(246, 248, 255)',
+        '--card-border-color': 'rgba(80, 110, 180, 0.18)',
+        '--card-shadow-color': 'rgba(28, 47, 90, 0.12)',
+        '--card-backdrop-filter': 'blur(18px) saturate(135%)',
+        '--accent-color': '#4f7cff',
+        '--accent-glow-color': 'rgba(79, 124, 255, 0.28)',
+        '--text-color': '#1f2a44'
+      },
+      naive: {
+        common: {
+          primaryColor: '#4f7cff',
+          primaryColorHover: '#6f95ff',
+          primaryColorPressed: '#3d67df',
+          primaryColorSuppl: '#4f7cff',
+          bodyColor: '#eef5ff',
+          cardColor: 'rgba(255, 255, 255, 0.58)',
+          modalColor: 'rgb(246, 248, 255)'
+        },
+        Card: {
+          color: 'rgba(255, 255, 255, 0.58)',
+          colorEmbedded: 'rgba(255, 255, 255, 0.44)',
+          borderColor: 'rgba(80, 110, 180, 0.18)',
+          boxShadow: '0 18px 50px rgba(28, 47, 90, 0.12)'
+        },
+        Layout: {
+          color: 'transparent',
+          headerColor: 'rgba(255, 255, 255, 0.36)',
+          siderColor: 'rgba(255, 255, 255, 0.42)',
+          footerColor: 'transparent'
+        },
+        Menu: {
+          itemTextColor: '#53617c',
+          itemIconColor: '#53617c',
+          itemTextColorHover: 'var(--n-common-primary-color)',
+          itemIconColorHover: 'var(--n-common-primary-color)',
+          itemTextColorActive: 'var(--n-common-primary-color)',
+          itemIconColorActive: 'var(--n-common-primary-color)',
+          itemTextColorActiveHover: 'var(--n-common-primary-color)',
+          itemIconColorActiveHover: 'var(--n-common-primary-color)',
+          itemColorActive: 'rgba(79, 124, 255, 0.12)',
+          itemColorActiveHover: 'rgba(79, 124, 255, 0.16)'
+        },
+        Switch: { railColorActive: '#4f7cff' },
+        Slider: { fillColor: '#4f7cff' },
+        Checkbox: { colorChecked: '#4f7cff', checkMarkColor: '#ffffff', borderChecked: '#4f7cff' },
+        Button: { textColorPrimary: '#ffffff' }
+      }
+    },
+    dark: {
+      custom: {
+        '--app-bg-color': 'radial-gradient(circle at 14% 10%, rgba(72, 132, 255, 0.30), transparent 30%), radial-gradient(circle at 82% 18%, rgba(123, 92, 255, 0.28), transparent 34%), radial-gradient(circle at 45% 94%, rgba(14, 165, 233, 0.18), transparent 36%), linear-gradient(135deg, #071021 0%, #10163a 48%, #090d20 100%)',
+        '--layout-panel-bg-color': 'rgba(12, 18, 40, 0.50)',
+        '--card-bg-color': 'rgba(14, 22, 48, 0.58)',
+        '--modal-solid-bg-color': 'rgb(14, 22, 48)',
+        '--card-border-color': 'rgba(159, 181, 255, 0.14)',
+        '--card-shadow-color': 'rgba(0, 0, 0, 0.38)',
+        '--card-backdrop-filter': 'blur(20px) saturate(145%)',
+        '--accent-color': '#8fb4ff',
+        '--accent-glow-color': 'rgba(143, 180, 255, 0.38)',
+        '--text-color': '#eef4ff'
+      },
+      naive: {
+        common: {
+          primaryColor: '#8fb4ff',
+          primaryColorHover: '#a8c5ff',
+          primaryColorPressed: '#6d96e8',
+          primaryColorSuppl: '#8fb4ff',
+          bodyColor: '#071021',
+          cardColor: 'rgba(14, 22, 48, 0.58)',
+          modalColor: 'rgb(14, 22, 48)'
+        },
+        Card: {
+          color: 'rgba(14, 22, 48, 0.58)',
+          colorEmbedded: 'rgba(20, 30, 62, 0.48)',
+          borderColor: 'rgba(159, 181, 255, 0.14)',
+          boxShadow: '0 18px 60px rgba(0, 0, 0, 0.38)'
+        },
+        Layout: {
+          color: 'transparent',
+          headerColor: 'rgba(12, 18, 40, 0.46)',
+          siderColor: 'rgba(12, 18, 40, 0.50)',
+          footerColor: 'transparent'
+        },
+        Menu: {
+          itemTextColor: '#aeb9d6',
+          itemIconColor: '#aeb9d6',
+          itemTextColorHover: '#ffffff',
+          itemIconColorHover: '#ffffff',
+          itemTextColorActive: 'var(--n-common-primary-color)',
+          itemIconColorActive: 'var(--n-common-primary-color)',
+          itemTextColorActiveHover: 'var(--n-common-primary-color)',
+          itemIconColorActiveHover: 'var(--n-common-primary-color)',
+          itemColorActive: 'rgba(143, 180, 255, 0.14)',
+          itemColorActiveHover: 'rgba(143, 180, 255, 0.18)'
+        },
+        Switch: { railColorActive: '#8fb4ff' },
+        Slider: { fillColor: '#8fb4ff' },
+        Checkbox: { colorChecked: '#8fb4ff', checkMarkColor: '#071021', borderChecked: '#8fb4ff' },
+        Button: { textColorPrimary: '#071021' }
+      }
+    }
+  },
+
+  // ================= 主题九: 极简风格 (无特效) =================
   minimal: {
     name: '极简风格',
     light: {
