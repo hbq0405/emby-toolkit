@@ -331,6 +331,38 @@ const fmtBytes = (value) => {
 const fmtDate = (value) => { if (!value) return '-'; try { return new Date(value).toLocaleString(); } catch { return String(value); } };
 const tag = (value) => { const meta = statusMap[value] || { text: value || '未知', type: 'default' }; return h(NTag, { type: meta.type, size: 'small', round: true }, { default: () => meta.text }); };
 
+const appendYear = (title, year) => {
+  const base = String(title || '').trim() || '-';
+  const y = year ? String(year).trim() : '';
+  if (!y || base === '-') return base;
+  return new RegExp(`\\(${y}\\)\\s*$`).test(base) ? base : `${base} (${y})`;
+};
+const standardTitleText = (row, fallback = '') => appendYear(row?.title || row?.standard_title || row?.media_title || fallback || row?.file_name || row?.root_name || row?.tmdb_id, row?.release_year);
+const tmdbIdForRow = (row) => String(row?.parent_series_tmdb_id || row?.share_tmdb_id || row?.tmdb_id || '').trim();
+const tmdbMediaKind = (row) => {
+  const type = String(centerRowTypeSafe(row) || row?.display_type || row?.item_type || row?.share_type || '').toLowerCase();
+  if (type.includes('movie') || type === 'film' || type === '电影') return 'movie';
+  return 'tv';
+};
+const centerRowTypeSafe = (row) => row?.display_type || (row?.is_collapsed_pack || row?.pack_item_count ? 'Pack' : row?.item_type);
+const tmdbHref = (row) => {
+  const id = tmdbIdForRow(row);
+  if (!id) return '';
+  return `https://www.themoviedb.org/${tmdbMediaKind(row)}/${encodeURIComponent(id)}`;
+};
+const tmdbLink = (row, labelPrefix = 'TMDb') => {
+  const id = tmdbIdForRow(row);
+  if (!id) return `${labelPrefix} -`;
+  return h('a', {
+    class: 'tmdb-link',
+    href: tmdbHref(row),
+    target: '_blank',
+    rel: 'noopener noreferrer',
+    onClick: e => e.stopPropagation(),
+  }, `${labelPrefix} ${id}`);
+};
+const metaLine = (row, parts = []) => h('div', { class: 'sub-title' }, [tmdbLink(row), ...parts.filter(Boolean)]);
+
 const hasCenterDevice = computed(() => Boolean((summary.value.credit || {}).device_id));
 
 const statCards = computed(() => {
@@ -353,8 +385,8 @@ const virtualColumns = [
     const epText = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
     const packText = row.is_collapsed_pack ? ` · ${row.pack_item_count || 0}集包${row.pack_episode_numbers?.length ? ` · E${String(row.pack_episode_numbers[0]).padStart(2, '0')}-${String(row.pack_episode_numbers[row.pack_episode_numbers.length - 1]).padStart(2, '0')}` : ''}` : '';
     return h('div', [
-      h('div', { class: 'main-title' }, row.title || row.file_name || row.tmdb_id),
-      h('div', { class: 'sub-title' }, `${resourceTypeLabel(row.item_type)} · TMDb ${row.tmdb_id || '-'}${seasonText ? ` · ${seasonText}` : ''}${epText}${packText}`)
+      h('div', { class: 'main-title' }, standardTitleText(row, row.file_name)),
+      metaLine(row, [` · ${resourceTypeLabel(row.item_type)}`, seasonText ? ` · ${seasonText}` : '', epText, packText])
     ]);
   } },
   { title: '状态', key: 'status', width: 120, render: row => tag(row.status) },
@@ -374,8 +406,8 @@ const shareColumns = [
     const seasonText = row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : '';
     const episodeText = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
     return h('div', [
-      h('div', { class: 'main-title' }, row.title || row.root_name || row.share_code),
-      h('div', { class: 'sub-title' }, `${shareTypeLabel(row.share_type)} · TMDb ${row.tmdb_id || '-'}${seasonText}${episodeText}`)
+      h('div', { class: 'main-title' }, standardTitleText(row, row.root_name || row.share_code)),
+      metaLine(row, [` · ${shareTypeLabel(row.share_type)}`, seasonText, episodeText])
     ]);
   } },
   { title: '审核', key: 'review_status', width: 110, render: row => tag(row.review_status || row.status) },
@@ -403,8 +435,8 @@ const shareColumns = [
 
 const mediaSearchColumns = [
   { title: '媒体', key: 'display_title', minWidth: 260, render: row => h('div', [
-    h('div', { class: 'main-title' }, row.display_title || row.title || row.tmdb_id),
-    h('div', { class: 'sub-title' }, `${resourceTypeLabel(row.item_type)} · TMDb ${row.share_tmdb_id || row.tmdb_id || '-'}${row.release_year ? ` · ${row.release_year}` : ''}`)
+    h('div', { class: 'main-title' }, appendYear(row.display_title || row.standard_title || row.title || row.tmdb_id, row.release_year)),
+    metaLine(row, [` · ${resourceTypeLabel(row.item_type)}`])
   ]) },
   { title: '入库', key: 'in_library', width: 80, render: row => h(NTag, { size: 'small', type: row.in_library ? 'success' : 'default' }, { default: () => row.in_library ? '已入库' : '未入库' }) },
   { title: '可分享根目录/文件', key: 'root_name', minWidth: 260, render: row => h('div', [
@@ -581,12 +613,8 @@ const centerTypeLabel = (value) => ({
   Pack: '剧集包', pack: '剧集包', Season: '剧集包', season: '剧集包', Series: '剧集包', series: '剧集包', tv: '剧集包', season_pack: '剧集包', series_pack: '剧集包',
   Episode: '单集', episode: '单集', episodes: '单集', episode_file: '单集',
 }[value] || value || '-');
-const centerRowType = (row) => row.display_type || (row.is_collapsed_pack || row.pack_item_count ? 'Pack' : row.item_type);
-const centerTitleText = (row) => {
-  const title = row.title || row.media_title || '-';
-  const year = row.release_year ? ` (${row.release_year})` : '';
-  return `${title}${year}`;
-};
+const centerRowType = centerRowTypeSafe;
+const centerTitleText = (row) => standardTitleText(row);
 const centerSeasonText = (row) => {
   const displayType = centerRowType(row);
   const s = row.season_number ? `S${String(row.season_number).padStart(2, '0')}` : '';
@@ -703,10 +731,11 @@ const groupCenterSources = (items) => {
     if (!group) {
       group = {
         group_key: key,
-        title: item.title,
+        title: item.title || item.standard_title,
         media_title: item.media_title,
         tmdb_id: item.tmdb_id,
         share_tmdb_id: item.share_tmdb_id,
+        parent_series_tmdb_id: item.parent_series_tmdb_id,
         release_year: item.release_year,
         season_number: item.season_number,
         episode_number: item.episode_number,
@@ -748,7 +777,7 @@ const allTrackTitle = (items) => {
 const centerColumns = [
   { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => h('div', null, [
     h('div', { class: 'main-title' }, centerTitleText(row)),
-    h('div', { class: 'sub-title' }, `TMDb ${row.tmdb_id || row.share_tmdb_id || '-'}`)
+    metaLine(row)
   ]) },
   // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
   { title: '类型', key: 'item_type', width: 160, render: row => lineStack(row.versions, it => h('span', centerSeasonText(it))) },
@@ -917,7 +946,7 @@ const chooseMediaCandidate = (row) => {
     root_fid: row.root_fid || '',
     root_name: row.root_name || '',
     root_is_dir: row.root_is_dir !== false,
-    title: row.display_title || row.title || row.root_name || '',
+    title: row.standard_title || row.series_title || row.title || row.display_title || row.root_name || '',
     tmdb_id: row.share_tmdb_id || row.tmdb_id || '',
     parent_series_tmdb_id: row.parent_series_tmdb_id || '',
     share_type: row.share_type || 'season_pack',
@@ -966,6 +995,8 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .toolbar { margin-bottom: 14px; }
 .main-title { font-weight: 600; }
 .sub-title { font-size: 12px; opacity: .6; margin-top: 3px; }
+.tmdb-link { color: inherit; text-decoration: none; border-bottom: 1px dashed currentColor; }
+.tmdb-link:hover { opacity: 1; }
 .pre-line { white-space: pre-line; line-height: 1.55; }
 .selected-share-box { border: 1px solid rgba(128,128,128,.22); border-radius: 12px; padding: 12px 14px; background: rgba(128,128,128,.06); }
 .selected-title { font-weight: 700; margin-bottom: 6px; }

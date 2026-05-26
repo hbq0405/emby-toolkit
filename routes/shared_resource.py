@@ -689,18 +689,222 @@ def _get_media_row(tmdb_id: str, item_type: str):
             return dict(row) if row else None
 
 
-def _get_series_title(series_tmdb_id: str):
+def _media_title_value(row: Dict[str, Any]) -> str:
+    """只取 media_metadata.title 作为标准片名；没有时才兜底 original_title。"""
+    row = row or {}
+    return str(row.get('title') or row.get('original_title') or '').strip()
+
+
+def _media_release_year_value(row: Dict[str, Any]):
+    row = row or {}
+    return _parse_release_year(row)
+
+
+def _get_series_identity(series_tmdb_id: str) -> Dict[str, Any]:
     if not series_tmdb_id:
-        return ''
+        return {}
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT title FROM media_metadata
+                SELECT tmdb_id, item_type, title, original_title, release_year, release_date, last_air_date
+                FROM media_metadata
                 WHERE tmdb_id=%s AND item_type='Series'
                 LIMIT 1
             """, (str(series_tmdb_id),))
             row = cur.fetchone()
-            return (dict(row).get('title') if row else '') or ''
+            if not row:
+                return {}
+            row = dict(row)
+            return {
+                'tmdb_id': str(row.get('tmdb_id') or series_tmdb_id),
+                'item_type': 'Series',
+                'title': _media_title_value(row),
+                'release_year': _media_release_year_value(row),
+                'raw_row': row,
+            }
+
+
+def _get_series_title(series_tmdb_id: str):
+    return (_get_series_identity(series_tmdb_id) or {}).get('title') or ''
+
+
+def _get_media_row_loose(tmdb_id: str, item_type: str = ''):
+    """按 TMDb ID 尽量找 media_metadata 行。item_type 为空时按层级优先。"""
+    tmdb_id = str(tmdb_id or '').strip()
+    item_type = str(item_type or '').strip()
+    if not tmdb_id:
+        return None
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            if item_type:
+                cur.execute("""
+                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                           season_number, episode_number, release_year, release_date, last_air_date
+                    FROM media_metadata
+                    WHERE tmdb_id=%s AND item_type=%s
+                    LIMIT 1
+                """, (tmdb_id, item_type))
+                row = cur.fetchone()
+                if row:
+                    return dict(row)
+            cur.execute("""
+                SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                       season_number, episode_number, release_year, release_date, last_air_date
+                FROM media_metadata
+                WHERE tmdb_id=%s
+                ORDER BY CASE item_type WHEN 'Series' THEN 0 WHEN 'Movie' THEN 1 WHEN 'Season' THEN 2 WHEN 'Episode' THEN 3 ELSE 9 END
+                LIMIT 1
+            """, (tmdb_id,))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+
+def _standard_media_identity_for_share(data: Dict[str, Any], item: Dict[str, Any] = None) -> Dict[str, Any]:
+    """返回共享展示/登记使用的标准媒体身份。
+
+    规则：
+    - Movie 用电影自身 media_metadata.title；
+    - Series/Season/Episode 统一用父剧 Series 行的 media_metadata.title；
+    - release_year 同步取对应标准条目的年份；
+    - 查不到数据库时才兜底调用方传入标题，绝不从 115 文件名反推片名。
+    """
+    data = dict(data or {})
+    item = dict(item or {})
+
+    item_type = str(
+        data.get('item_type') or item.get('item_type') or data.get('share_item_type') or item.get('share_item_type') or ''
+    ).strip()
+    share_type = str(data.get('share_type') or item.get('share_type') or '').strip().lower()
+    if share_type in ('season_pack', 'series_pack', 'tv_pack'):
+        item_type = 'Season'
+    elif share_type in ('movie_file', 'movie_folder') and not item_type:
+        item_type = 'Movie'
+
+    tmdb_id = str(data.get('tmdb_id') or item.get('tmdb_id') or data.get('share_tmdb_id') or item.get('share_tmdb_id') or '').strip()
+    parent_series_id = str(
+        data.get('parent_series_tmdb_id') or item.get('parent_series_tmdb_id') or
+        data.get('series_tmdb_id') or item.get('series_tmdb_id') or ''
+    ).strip()
+    season_number = data.get('season_number', item.get('season_number'))
+    episode_number = data.get('episode_number', item.get('episode_number'))
+
+    row = _get_media_row_loose(tmdb_id, item_type) if tmdb_id else None
+
+    # 季/集分享登记使用父剧 TMDb ID 和父剧标准片名。
+    if item_type in ('Series', 'Season', 'Episode') or share_type in ('season_pack', 'series_pack', 'episode_file', 'tv_pack'):
+        if not parent_series_id and row:
+            parent_series_id = str(row.get('parent_series_tmdb_id') or '').strip()
+            if not parent_series_id and row.get('item_type') == 'Series':
+                parent_series_id = str(row.get('tmdb_id') or '').strip()
+
+        # 中心缺口/分享记录对 Season/Episode 常直接传父剧 tmdb_id。
+        if not parent_series_id and tmdb_id:
+            series_identity = _get_series_identity(tmdb_id)
+            if series_identity:
+                parent_series_id = str(series_identity.get('tmdb_id') or tmdb_id)
+
+        # 仍未拿到父剧时，用 season/episode 条件从 media_metadata 反查。
+        if not parent_series_id and tmdb_id:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    if item_type == 'Season' and season_number not in (None, ''):
+                        cur.execute("""
+                            SELECT parent_series_tmdb_id
+                            FROM media_metadata
+                            WHERE item_type='Season' AND (tmdb_id=%s OR parent_series_tmdb_id=%s) AND season_number=%s
+                            LIMIT 1
+                        """, (tmdb_id, tmdb_id, int(season_number)))
+                    elif item_type == 'Episode' and season_number not in (None, '') and episode_number not in (None, ''):
+                        cur.execute("""
+                            SELECT parent_series_tmdb_id
+                            FROM media_metadata
+                            WHERE item_type='Episode' AND (tmdb_id=%s OR parent_series_tmdb_id=%s)
+                              AND season_number=%s AND episode_number=%s
+                            LIMIT 1
+                        """, (tmdb_id, tmdb_id, int(season_number), int(episode_number)))
+                    else:
+                        cur.execute("""
+                            SELECT parent_series_tmdb_id
+                            FROM media_metadata
+                            WHERE tmdb_id=%s AND parent_series_tmdb_id IS NOT NULL
+                            LIMIT 1
+                        """, (tmdb_id,))
+                    parent_row = cur.fetchone()
+                    if parent_row:
+                        parent_series_id = str(dict(parent_row).get('parent_series_tmdb_id') or '').strip()
+
+        series_identity = _get_series_identity(parent_series_id or tmdb_id)
+        if series_identity:
+            return {
+                'tmdb_id': str(series_identity.get('tmdb_id') or parent_series_id or tmdb_id),
+                'item_type': item_type or 'Series',
+                'parent_series_tmdb_id': str(series_identity.get('tmdb_id') or parent_series_id or tmdb_id),
+                'title': series_identity.get('title') or '',
+                'release_year': series_identity.get('release_year'),
+                'season_number': season_number,
+                'episode_number': episode_number,
+                'source': 'media_metadata.series',
+            }
+
+        # 找不到父剧行时，最多兜底当前 media_metadata 行 title。
+        if row:
+            return {
+                'tmdb_id': parent_series_id or tmdb_id,
+                'item_type': item_type or row.get('item_type'),
+                'parent_series_tmdb_id': parent_series_id or row.get('parent_series_tmdb_id') or '',
+                'title': _media_title_value(row),
+                'release_year': _media_release_year_value(row),
+                'season_number': season_number or row.get('season_number'),
+                'episode_number': episode_number or row.get('episode_number'),
+                'source': 'media_metadata.fallback_row',
+            }
+
+    if item_type == 'Movie' and tmdb_id:
+        movie_row = row if row and row.get('item_type') == 'Movie' else _get_media_row_loose(tmdb_id, 'Movie')
+        if movie_row:
+            return {
+                'tmdb_id': str(movie_row.get('tmdb_id') or tmdb_id),
+                'item_type': 'Movie',
+                'parent_series_tmdb_id': '',
+                'title': _media_title_value(movie_row),
+                'release_year': _media_release_year_value(movie_row),
+                'season_number': None,
+                'episode_number': None,
+                'source': 'media_metadata.movie',
+            }
+
+    return {
+        'tmdb_id': tmdb_id,
+        'item_type': item_type,
+        'parent_series_tmdb_id': parent_series_id,
+        'title': str(data.get('title') or item.get('title') or '').strip(),
+        'release_year': data.get('release_year') or item.get('release_year'),
+        'season_number': season_number,
+        'episode_number': episode_number,
+        'source': 'payload_fallback',
+    }
+
+
+def _standard_share_identity(record: Dict[str, Any], item: Dict[str, Any] = None, center_item_type: str = '') -> Dict[str, Any]:
+    """按本地分享记录 + 文件明细解析中心登记用标准标题。"""
+    record = dict(record or {})
+    item = dict(item or {})
+    payload = dict(record)
+    if item:
+        # item 的 season/episode/sha1 可补充，但 title 仍以 record/media_metadata 为准。
+        for key in ('tmdb_id', 'item_type', 'season_number', 'episode_number', 'parent_series_tmdb_id'):
+            if item.get(key) not in (None, ''):
+                payload[key] = item.get(key)
+    if center_item_type:
+        payload['item_type'] = center_item_type
+    if str(record.get('share_type') or '').lower() in ('season_pack', 'series_pack', 'tv_pack'):
+        payload['item_type'] = 'Season'
+    identity = _standard_media_identity_for_share(payload)
+    if not identity.get('title'):
+        identity['title'] = str(record.get('title') or '').strip()
+    if not identity.get('release_year'):
+        identity['release_year'] = record.get('release_year')
+    return identity
 
 
 def _collect_media_identifiers(row: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -1074,12 +1278,18 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
 
 def _build_media_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
     row = dict(row)
-    year = _parse_release_year(row)
     parent_series_id = row.get('parent_series_tmdb_id')
     if row.get('item_type') in {'Season', 'Episode'} and not parent_series_id:
         parent_series_id = str(row.get('tmdb_id') or '').split('_')[0] if '_' in str(row.get('tmdb_id') or '') else ''
-    series_title = _get_series_title(parent_series_id) if parent_series_id else ''
+
+    series_identity = _get_series_identity(parent_series_id) if parent_series_id else {}
+    series_title = series_identity.get('title') or ''
+    series_year = series_identity.get('release_year')
+
     title = row.get('title') or row.get('original_title') or row.get('tmdb_id')
+    year = series_year if row.get('item_type') in {'Season', 'Episode'} and series_year else _parse_release_year(row)
+    standard_title = series_title if row.get('item_type') in {'Season', 'Episode'} and series_title else title
+
     display_title = title
     if row.get('item_type') == 'Season':
         display_title = f"{series_title or title} S{int(row.get('season_number') or 0):02d}" if row.get('season_number') else (series_title or title)
@@ -1096,6 +1306,7 @@ def _build_media_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
         **row,
         'display_title': display_title,
         'series_title': series_title,
+        'standard_title': standard_title,
         'release_year': year,
         'parent_series_tmdb_id': parent_series_id,
         'share_tmdb_id': str(share_tmdb_id or ''),
@@ -2132,6 +2343,20 @@ def api_list_my_shares():
         page=int(request.args.get('page', 1) or 1),
         page_size=int(request.args.get('page_size', 30) or 30),
     )
+    # 展示层也用 media_metadata 标准标题兜底，旧记录无需迁移即可显示为“TMDb 标准片名 + 年份”。
+    for item in items:
+        try:
+            identity = _standard_share_identity(item)
+            if identity.get('title'):
+                item['title'] = identity.get('title')
+            if identity.get('release_year'):
+                item['release_year'] = identity.get('release_year')
+            if identity.get('tmdb_id'):
+                item['tmdb_id'] = str(identity.get('tmdb_id'))
+            if identity.get('parent_series_tmdb_id'):
+                item['parent_series_tmdb_id'] = identity.get('parent_series_tmdb_id')
+        except Exception:
+            pass
     return jsonify({"success": True, "items": items, "total": total})
 
 
@@ -2206,6 +2431,14 @@ def api_manual_create_share():
         if not item.get('episode_number') and data.get('episode_number'):
             item['episode_number'] = data.get('episode_number')
 
+    standard_identity = _standard_media_identity_for_share({
+        **data,
+        'item_type': data.get('item_type') or 'Season',
+        'share_type': data.get('share_type') or ('season_pack' if data.get('season_number') else 'movie_folder'),
+    })
+    standard_title = standard_identity.get('title') or str(data.get('title') or '').strip() or root_name
+    standard_year = standard_identity.get('release_year') or data.get('release_year')
+
     record = shared_share_db.create_share_record({
         'share_code': share_code,
         'receive_code': receive_code,
@@ -2214,16 +2447,16 @@ def api_manual_create_share():
         'root_fid': root_fid,
         'root_name': root_name,
         'root_is_dir': root_is_dir,
-        'tmdb_id': str(data.get('tmdb_id') or ''),
+        'tmdb_id': str(standard_identity.get('tmdb_id') or data.get('tmdb_id') or ''),
         'item_type': data.get('item_type') or 'Season',
-        'parent_series_tmdb_id': data.get('parent_series_tmdb_id'),
+        'parent_series_tmdb_id': standard_identity.get('parent_series_tmdb_id') or data.get('parent_series_tmdb_id'),
         'season_number': data.get('season_number'),
-        'title': data.get('title') or root_name,
-        'release_year': data.get('release_year'),
+        'title': standard_title,
+        'release_year': standard_year,
         'status': 'pending_review',
         'review_status': 'pending_review',
         'center_status': 'not_reported',
-        'raw_json': {'share_response': share_resp, 'root_info': info_resp, 'manual_payload': data},
+        'raw_json': {'share_response': share_resp, 'root_info': info_resp, 'manual_payload': data, 'standard_identity': standard_identity},
     })
     count = shared_share_db.replace_share_items(record['id'], files)
     record = shared_share_db.update_share_record(record['id'], item_count=count)
@@ -2367,13 +2600,14 @@ def api_report_share_to_center(record_id):
         is_season_pack = str(record.get('share_type') or '').lower() in ('season_pack', 'season', 'tv_pack') or (record.get('root_is_dir') and str(record.get('item_type') or '').lower() in ('season', 'series', 'tv'))
         center_item_type = 'Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie')
         center_episode_number = None if is_season_pack else item.get('episode_number')
+        standard_identity = _standard_share_identity(record, item, center_item_type=center_item_type)
         payload = {
-            'tmdb_id': str(item.get('tmdb_id') or record.get('tmdb_id') or ''),
+            'tmdb_id': str(standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id') or ''),
             'item_type': center_item_type,
             'season_number': item.get('season_number') or record.get('season_number'),
             'episode_number': center_episode_number,
-            'title': record.get('title') or item.get('file_name'),
-            'release_year': record.get('release_year'),
+            'title': standard_identity.get('title') or record.get('title') or '',
+            'release_year': standard_identity.get('release_year') or record.get('release_year'),
             'sha1': sha1,
             'size': int(item.get('size') or 0),
             'file_name': item.get('file_name') or '',
@@ -3295,6 +3529,17 @@ def _load_local_share_code_set(items: List[Dict[str, Any]]) -> set:
 def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     """给中心资源库行补充面向前端的可读来源/状态。"""
     item = item or {}
+    # 本机能命中 media_metadata 时，用标准片名/年份修正中心历史标题；远端未知来源则保持中心返回值。
+    try:
+        identity = _standard_media_identity_for_share(item)
+        if identity.get('title'):
+            item['title'] = identity.get('title')
+        if identity.get('release_year') and not item.get('release_year'):
+            item['release_year'] = identity.get('release_year')
+        if identity.get('parent_series_tmdb_id'):
+            item['parent_series_tmdb_id'] = identity.get('parent_series_tmdb_id')
+    except Exception:
+        pass
     status = str(item.get('status') or '').strip()
     status_text, status_type = _CENTER_STATUS_LABELS.get(status, (status or '未知', 'default'))
     provider = str(item.get('source_provider') or '').strip() or 'user_share'

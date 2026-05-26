@@ -672,13 +672,15 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                             if not sha1:
                                 continue
                             is_season_pack = str(record.get('share_type') or '').lower() in ('season_pack', 'season', 'tv_pack') or (record.get('root_is_dir') and str(record.get('item_type') or '').lower() in ('season', 'series', 'tv'))
+                            center_item_type = 'Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie')
+                            standard_identity = sr._standard_share_identity(record, item, center_item_type=center_item_type) if sr is not None else {}
                             resp = client.register_source(
-                                tmdb_id=item.get('tmdb_id') or record.get('tmdb_id'),
-                                item_type='Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie'),
+                                tmdb_id=standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id'),
+                                item_type=center_item_type,
                                 season_number=item.get('season_number') or record.get('season_number'),
                                 episode_number=None if is_season_pack else item.get('episode_number'),
-                                title=record.get('title') or item.get('file_name'),
-                                release_year=record.get('release_year'),
+                                title=standard_identity.get('title') or record.get('title') or '',
+                                release_year=standard_identity.get('release_year') or record.get('release_year'),
                                 sha1=sha1,
                                 size=_safe_int(item.get('size'), 0),
                                 file_name=item.get('file_name') or '',
@@ -976,7 +978,17 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
             receive_code = data.get('receive_code') or ''
             share_url = data.get('share_url') or (f"https://115.com/s/{share_code}" if share_code else '')
             root_fid = str(candidate.get('root_fid'))
-            root_name = candidate.get('root_name') or candidate.get('title') or root_fid
+            standard_identity = sr._standard_media_identity_for_share({
+                'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id'),
+                'item_type': candidate.get('share_item_type') or candidate.get('item_type'),
+                'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id'),
+                'season_number': candidate.get('season_number'),
+                'episode_number': candidate.get('episode_number'),
+                'title': candidate.get('standard_title') or candidate.get('title'),
+                'release_year': candidate.get('release_year'),
+                'share_type': candidate.get('share_type'),
+            })
+            root_name = candidate.get('root_name') or standard_identity.get('title') or root_fid
             root_is_dir = candidate.get('root_is_dir') is not False
 
             files = sr._collect_files_from_115(p115, root_fid, root_name=root_name, max_depth=6, assume_dir=root_is_dir)
@@ -1004,16 +1016,16 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                 'root_fid': root_fid,
                 'root_name': root_name,
                 'root_is_dir': root_is_dir,
-                'tmdb_id': str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or ''),
+                'tmdb_id': str(standard_identity.get('tmdb_id') or candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or ''),
                 'item_type': candidate.get('share_item_type') or candidate.get('item_type') or 'Movie',
-                'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id'),
+                'parent_series_tmdb_id': standard_identity.get('parent_series_tmdb_id') or candidate.get('parent_series_tmdb_id'),
                 'season_number': candidate.get('season_number'),
-                'title': candidate.get('display_title') or candidate.get('title') or root_name,
-                'release_year': candidate.get('release_year'),
+                'title': standard_identity.get('title') or candidate.get('standard_title') or candidate.get('title') or root_name,
+                'release_year': standard_identity.get('release_year') or candidate.get('release_year'),
                 'status': 'pending_review',
                 'review_status': 'pending_review',
                 'center_status': 'not_reported',
-                'raw_json': {'auto_gap': gap, 'share_response': share_resp, 'candidate': candidate},
+                'raw_json': {'auto_gap': gap, 'share_response': share_resp, 'candidate': candidate, 'standard_identity': standard_identity},
             })
             shared_share_db.replace_share_items(record['id'], files)
             shared_virtual_db.add_credit_ledger('share_auto_created_for_gap', 0, '命中中心缺口并自动创建115分享，等待审核', ref_id=str(record['id']), title=record.get('title') or '', raw_json={'gap': gap, 'share_code': share_code})
