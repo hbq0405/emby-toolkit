@@ -167,7 +167,7 @@
       :title="isEditing ? '编辑合集配置' : '创建新合集'"
       :bordered="false"
       size="huge"
-      class="modal-card-lite custom-modal"
+      class="custom-modal glass-modal"
     >
       <!-- 头部类型选择区 (仅在新建或未锁定时显示，或者你想一直显示也可以，这里做成卡片式) -->
       <div v-if="!isEditing" class="type-selection-section">

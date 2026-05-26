@@ -139,7 +139,7 @@
       </n-card>
     </n-space>
 
-    <n-modal v-model:show="showManualShareModal" preset="card" title="手动创建共享资源" style="width: 920px; max-width: 96vw;" class="modal-card-lite">
+    <n-modal v-model:show="showManualShareModal" preset="card" title="手动创建共享资源" style="width: 920px; max-width: 96vw;" class="custom-modal glass-modal">
       <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
         直接输入片名搜索本地 media_metadata，系统会用已记录的 PC/SHA1 反查 p115_filesystem_cache，自动定位可分享的 115 目录或文件。剧集会优先按季目录分享，不创建单集分享。
       </n-alert>
