@@ -536,6 +536,7 @@ def init_db():
                         item_type TEXT,
                         parent_series_tmdb_id TEXT,
                         season_number INTEGER,
+                        episode_number INTEGER,
                         title TEXT,
                         release_year INTEGER,
                         status TEXT NOT NULL DEFAULT 'pending_review',
@@ -713,6 +714,9 @@ def init_db():
                             "config_main_role_only": "BOOLEAN NOT NULL DEFAULT FALSE",
                             "config_min_vote_count": "INTEGER NOT NULL DEFAULT 10",
                             "last_scanned_tmdb_ids_json": "JSONB"
+                        },
+                        'shared_share_records': {
+                            "episode_number": "INTEGER"
                         }
                     }
 

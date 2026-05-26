@@ -404,15 +404,7 @@ const virtualColumns = [
 const shareColumns = [
   { title: '标题', key: 'title', minWidth: 240, render: row => {
     const seasonText = row.season_number ? ` · S${String(row.season_number).padStart(2, '0')}` : '';
-    
-    let ep = row.episode_number;
-    if (ep == null && row.raw_json) {
-      ep = row.raw_json.standard_identity?.episode_number 
-        || row.raw_json.manual_payload?.episode_number 
-        || row.raw_json.auto_gap?.episode_number;
-    }
-    const episodeText = (ep != null && ep !== '') ? `E${String(ep).padStart(2, '0')}` : '';
-
+    const episodeText = row.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
     return h('div', [
       h('div', { class: 'main-title' }, standardTitleText(row, row.root_name || row.share_code)),
       metaLine(row, [` · ${shareTypeLabel(row.share_type)}`, seasonText, episodeText])

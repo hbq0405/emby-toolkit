@@ -1013,6 +1013,7 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                     'item_type': candidate.get('share_item_type') or candidate.get('item_type') or 'Movie',
                     'parent_series_tmdb_id': standard_identity.get('parent_series_tmdb_id') or candidate.get('parent_series_tmdb_id'),
                     'season_number': candidate.get('season_number'),
+                    'episode_number': candidate.get('episode_number'),
                     'title': standard_identity.get('title') or candidate.get('standard_title') or candidate.get('title') or root_name,
                     'release_year': standard_identity.get('release_year') or candidate.get('release_year'),
                     'status': 'pending_review',

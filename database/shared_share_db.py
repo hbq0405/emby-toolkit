@@ -29,9 +29,9 @@ def create_share_record(data: Dict[str, Any]) -> Dict[str, Any]:
             cur.execute("""
                 INSERT INTO shared_share_records(
                     share_code, receive_code, share_url, share_type, root_fid, root_name,
-                    root_is_dir, tmdb_id, item_type, parent_series_tmdb_id, season_number,
+                    root_is_dir, tmdb_id, item_type, parent_series_tmdb_id, season_number, episode_number,
                     title, release_year, status, review_status, center_status, raw_json
-                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
+                ) VALUES(%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s::jsonb)
                 ON CONFLICT(share_code) DO UPDATE SET
                     receive_code=EXCLUDED.receive_code,
                     share_url=EXCLUDED.share_url,
@@ -43,6 +43,7 @@ def create_share_record(data: Dict[str, Any]) -> Dict[str, Any]:
                     item_type=EXCLUDED.item_type,
                     parent_series_tmdb_id=EXCLUDED.parent_series_tmdb_id,
                     season_number=EXCLUDED.season_number,
+                    episode_number=EXCLUDED.episode_number,  -- 👈 【新增】冲突更新
                     title=EXCLUDED.title,
                     release_year=EXCLUDED.release_year,
                     status=EXCLUDED.status,
@@ -55,7 +56,9 @@ def create_share_record(data: Dict[str, Any]) -> Dict[str, Any]:
                 data.get('share_code'), data.get('receive_code'), data.get('share_url'),
                 data.get('share_type') or 'season_pack', str(data.get('root_fid') or ''), data.get('root_name'),
                 bool(data.get('root_is_dir', True)), data.get('tmdb_id'), data.get('item_type'),
-                data.get('parent_series_tmdb_id'), data.get('season_number'), data.get('title'), data.get('release_year'),
+                data.get('parent_series_tmdb_id'), data.get('season_number'), 
+                data.get('episode_number'),  # 👈 【新增】参数映射
+                data.get('title'), data.get('release_year'),
                 data.get('status') or 'pending_review', data.get('review_status') or 'pending_review',
                 data.get('center_status') or 'not_reported', _as_jsonb(data.get('raw_json') or data),
             ))
@@ -144,7 +147,7 @@ def list_share_items(record_id: int):
 def update_share_record(record_id: int, **fields):
     allowed = {
         'status', 'review_status', 'center_status', 'center_source_id', 'item_count', 'reported_count',
-        'last_checked_at', 'reported_at', 'cancelled_at', 'last_error', 'raw_json'
+        'last_checked_at', 'reported_at', 'cancelled_at', 'last_error', 'raw_json', 'episode_number'
     }
     sets, args = [], []
     for k, v in fields.items():

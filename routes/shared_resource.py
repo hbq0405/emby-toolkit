@@ -2663,7 +2663,6 @@ def api_list_my_shares():
         page=int(request.args.get('page', 1) or 1),
         page_size=int(request.args.get('page_size', 30) or 30),
     )
-    # 展示层也用 media_metadata 标准标题兜底，旧记录无需迁移即可显示为“TMDb 标准片名 + 年份”。
     for item in items:
         try:
             identity = _standard_share_identity(item)
@@ -2675,6 +2674,16 @@ def api_list_my_shares():
                 item['tmdb_id'] = str(identity.get('tmdb_id'))
             if identity.get('parent_series_tmdb_id'):
                 item['parent_series_tmdb_id'] = identity.get('parent_series_tmdb_id')
+                
+            # 👇 【新增】兼容老数据：如果数据库字段为空，尝试从 raw_json 里捞出来发给前端
+            if item.get('episode_number') is None and item.get('raw_json'):
+                raw = item['raw_json']
+                ep = (raw.get('standard_identity') or {}).get('episode_number') or \
+                     (raw.get('manual_payload') or {}).get('episode_number') or \
+                     (raw.get('auto_gap') or {}).get('episode_number')
+                if ep is not None:
+                    item['episode_number'] = ep
+                    
         except Exception:
             pass
     return jsonify({"success": True, "items": items, "total": total})
@@ -2799,6 +2808,7 @@ def api_manual_create_share():
         'item_type': data.get('item_type') or 'Season',
         'parent_series_tmdb_id': standard_identity.get('parent_series_tmdb_id') or data.get('parent_series_tmdb_id'),
         'season_number': data.get('season_number'),
+        'episode_number': data.get('episode_number'),
         'title': standard_title,
         'release_year': standard_year,
         'status': 'pending_review',
