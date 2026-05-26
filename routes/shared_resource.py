@@ -1291,6 +1291,8 @@ def _get_episode_rows_for_media(row: Dict[str, Any], only_with_files: bool = Fal
         return rows
     out = []
     for r in rows:
+        if not r.get('in_library'):
+            continue
         if _norm_pc_list(_json_array_values(r.get('file_pickcode_json'))) or _norm_sha1_list(_json_array_values(r.get('file_sha1_json'))):
             out.append(r)
     return out
