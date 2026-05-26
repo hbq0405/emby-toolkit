@@ -1299,10 +1299,11 @@ def _get_episode_rows_for_media(row: Dict[str, Any], only_with_files: bool = Fal
 def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
     """判断某季是否适合按季包分享。
 
-    共享季包只信任内部追剧模块的 Season.watching_status：
-    - 只有 Season.watching_status == 'Completed' 才认为该季明确完结；
-    - Completed 之后仍要校验 total_episodes 明确，且本地已有文件集数 >= total_episodes；
-    - 其他状态（NONE/Watching/Paused/Pending 等）一律按单集分享。
+    唯一完结真理：media_metadata 中 Season 行的 watching_status。
+    - Season.watching_status == 'Completed'：该季可按完整季方向处理；
+    - 其他状态：一律视为未完结，只允许单集分享；
+    - total_episodes 缺失时，用该季已知 Episode 行数量兜底；
+    - 季包仍要求本地已有文件集数 >= 应有集数，避免半季被误当季包。
     """
     row = row or {}
     parent_series_id = row.get('parent_series_tmdb_id') or row.get('tmdb_id')
@@ -1316,12 +1317,17 @@ def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
 
     expected = _safe_int(row.get('total_episodes'), 0)
     season_title = ''
-    watching_status = str(row.get('watching_status') or '').strip()
+    watching_status = ''
+
+    # 关键：不信 Series 状态、不信 TMDb status、不信 force_ended；只信 Season.watching_status。
     if parent_series_id and season_number is not None:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT total_episodes, title, watching_status
+                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                           season_number, episode_number, release_year, release_date, last_air_date,
+                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
+                           total_episodes, watching_status, watchlist_tmdb_status
                     FROM media_metadata
                     WHERE item_type='Season'
                       AND parent_series_tmdb_id=%s
@@ -1334,7 +1340,12 @@ def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
                     season_row = dict(season_row)
                     expected = _safe_int(season_row.get('total_episodes'), expected)
                     season_title = season_row.get('title') or ''
-                    watching_status = str(season_row.get('watching_status') or watching_status or '').strip()
+                    watching_status = str(season_row.get('watching_status') or '').strip()
+                else:
+                    # 没有 Season 行时，不要用父剧状态猜测完结；最多保留调用方传入值用于提示。
+                    watching_status = str(row.get('watching_status') or '').strip()
+    else:
+        watching_status = str(row.get('watching_status') or '').strip()
 
     episode_rows = _get_episode_rows_for_media(
         {**row, 'parent_series_tmdb_id': parent_series_id, 'season_number': season_number, 'item_type': 'Season'},
@@ -1351,20 +1362,27 @@ def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
     known_count = len(episode_rows)
     local_count = len(local_rows)
     season_completed = watching_status.lower() == 'completed'
+
+    expected_source = 'season.total_episodes'
+    if not expected and season_completed and known_count > 0:
+        expected = known_count
+        expected_source = 'known_episode_rows'
+
     complete = bool(season_completed and expected and local_count >= expected)
 
     if not season_completed:
-        reason = f"本季 watching_status={watching_status or 'NONE'}，不是 Completed，禁止季包，改按单集分享"
+        reason = f"Season.watching_status={watching_status or 'NONE'}，不是 Completed，禁止季包，改按单集分享"
     elif not expected:
-        reason = f'本季已标记 Completed，但 total_episodes 不明确；本地已有 {local_count} 集，仍按单集分享更安全'
+        reason = f'本季 Season.watching_status=Completed，但 total_episodes 不明确且没有可兜底的 Episode 行；本地已有 {local_count} 集，仍按单集分享更安全'
     elif complete:
-        reason = f'本季 watching_status=Completed，且已齐 {local_count}/{expected} 集，允许按季包分享'
+        reason = f'本季 Season.watching_status=Completed，且已齐 {local_count}/{expected} 集，允许按季包分享'
     else:
-        reason = f'本季 watching_status=Completed，但尚未齐集 {local_count}/{expected}，禁止季包，改按单集分享'
+        reason = f'本季 Season.watching_status=Completed，但尚未齐集 {local_count}/{expected}，禁止季包，改按单集分享'
 
     return {
         'complete': complete,
         'expected': expected,
+        'expected_source': expected_source,
         'known_count': known_count,
         'local_count': local_count,
         'reason': reason,
@@ -1536,19 +1554,59 @@ def _build_media_candidate(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+
+def _load_completed_season_row_for_episode(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Episode 搜索命中时，如果所属 Season 已 Completed，返回 Season 行用于提升为季包候选。"""
+    row = row or {}
+    parent_series_id = str(row.get('parent_series_tmdb_id') or '').strip()
+    season_number = row.get('season_number')
+    if not parent_series_id or season_number in (None, ''):
+        return {}
+    try:
+        season_number = int(season_number)
+    except Exception:
+        return {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                           season_number, episode_number, release_year, release_date, last_air_date,
+                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
+                           total_episodes, watching_status, watchlist_tmdb_status
+                    FROM media_metadata
+                    WHERE item_type='Season'
+                      AND parent_series_tmdb_id=%s
+                      AND season_number=%s
+                      AND LOWER(COALESCE(watching_status, ''))='completed'
+                    ORDER BY tmdb_id
+                    LIMIT 1
+                """, (parent_series_id, season_number))
+                season_row = cur.fetchone()
+                return dict(season_row) if season_row else {}
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 查询单集所属 Completed 季失败: series={parent_series_id}, season={season_number}, err={e}")
+        return {}
+
+
 def _expand_share_candidates(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     """搜索结果展开策略：
     - Movie：一个候选；
     - Series：不直接分享整剧，展开为各季/单集；
-    - Season 完整：季包候选；
-    - Season 未完整：展开已有文件的 Episode 候选；
-    - Episode：单集候选。
+    - Season.watching_status=Completed 且齐集：只显示季包候选；
+    - Season 未 Completed 或未齐集：展开已有文件的 Episode 候选；
+    - Episode 命中时，如果所属季已 Completed 且齐集，提升为对应季包，避免完整季被拆成单集。
     """
     row = dict(row or {})
     item_type = row.get('item_type')
     if item_type == 'Movie':
         return [_build_media_candidate(row)]
     if item_type == 'Episode':
+        season_row = _load_completed_season_row_for_episode(row)
+        if season_row:
+            policy = _share_policy_for_media(season_row)
+            if policy.get('allowed'):
+                return [_build_media_candidate(season_row)]
         return [_build_media_candidate(row)]
     if item_type == 'Season':
         policy = _share_policy_for_media(row)
@@ -1564,7 +1622,7 @@ def _expand_share_candidates(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     if item_type == 'Series':
         out = []
         series_id = str(row.get('tmdb_id') or '')
-        # 优先展开 Season 行；没有 Season 行时直接展开已有文件的 Episode。
+        # 优先展开 Season 行。Completed 的季只出季包；未 Completed 的季才展开单集。
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
@@ -1580,11 +1638,12 @@ def _expand_share_candidates(row: Dict[str, Any]) -> List[Dict[str, Any]]:
         if seasons:
             for season in seasons:
                 out.extend(_expand_share_candidates(season))
-                if len(out) >= 80:
+                if len(out) >= 100:
                     break
         else:
             episodes = _get_episode_rows_for_media(row, only_with_files=True)
-            out.extend(_build_media_candidate(ep) for ep in episodes[:80])
+            for ep in episodes[:100]:
+                out.extend(_expand_share_candidates(ep))
         if not out:
             disabled = _build_media_candidate(row)
             disabled['resolvable'] = False
@@ -1601,26 +1660,60 @@ def api_search_shareable_media():
     if len(keyword) < 1:
         return jsonify({"success": True, "items": []})
     limit = max(1, min(int(request.args.get('limit', 20) or 20), 50))
+    # 搜索命中 Episode 时，也要把同一父剧的 Season 行带出来；否则“季标题不含剧名”的库会只返回 SxxEyy。
+    search_limit = min(300, max(limit * 5, 100))
+    result_limit = min(500, max(limit * 10, 150))
     kw = f'%{keyword}%'
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                       season_number, episode_number, release_year, release_date, last_air_date,
-                       file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                       total_episodes, watchlist_tmdb_status
-                FROM media_metadata
-                WHERE item_type IN ('Movie','Series','Season','Episode')
-                  AND (
-                    title ILIKE %s OR original_title ILIKE %s OR tmdb_id ILIKE %s
-                  )
+                WITH matched AS (
+                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                           season_number, episode_number, release_year, release_date, last_air_date,
+                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
+                           total_episodes, watching_status, watchlist_tmdb_status
+                    FROM media_metadata
+                    WHERE item_type IN ('Movie','Series','Season','Episode')
+                      AND (
+                        title ILIKE %s OR original_title ILIKE %s OR tmdb_id ILIKE %s
+                      )
+                    ORDER BY
+                      CASE item_type WHEN 'Movie' THEN 0 WHEN 'Series' THEN 1 WHEN 'Season' THEN 2 ELSE 3 END,
+                      in_library DESC,
+                      COALESCE(release_year, 0) DESC,
+                      title NULLS LAST
+                    LIMIT %s
+                ), related_series AS (
+                    SELECT DISTINCT
+                        CASE
+                            WHEN item_type='Series' THEN tmdb_id
+                            WHEN item_type IN ('Season','Episode') THEN parent_series_tmdb_id
+                            ELSE NULL
+                        END AS series_id
+                    FROM matched
+                ), expanded AS (
+                    SELECT * FROM matched
+                    UNION ALL
+                    SELECT s.tmdb_id, s.item_type, s.title, s.original_title, s.parent_series_tmdb_id,
+                           s.season_number, s.episode_number, s.release_year, s.release_date, s.last_air_date,
+                           s.file_sha1_json, s.file_pickcode_json, s.in_library, s.subscription_status,
+                           s.total_episodes, s.watching_status, s.watchlist_tmdb_status
+                    FROM media_metadata s
+                    JOIN related_series rs ON rs.series_id IS NOT NULL
+                                          AND s.item_type='Season'
+                                          AND s.parent_series_tmdb_id=rs.series_id
+                )
+                SELECT *
+                FROM expanded
                 ORDER BY
                   CASE item_type WHEN 'Movie' THEN 0 WHEN 'Season' THEN 1 WHEN 'Series' THEN 2 ELSE 3 END,
+                  season_number NULLS LAST,
+                  episode_number NULLS LAST,
                   in_library DESC,
                   COALESCE(release_year, 0) DESC,
                   title NULLS LAST
                 LIMIT %s
-            """, (kw, kw, kw, limit))
+            """, (kw, kw, kw, search_limit, result_limit))
             rows = [dict(r) for r in cur.fetchall()]
 
     items = []
