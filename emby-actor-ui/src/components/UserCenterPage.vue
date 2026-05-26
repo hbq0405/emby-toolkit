@@ -1,7 +1,7 @@
 <!-- src/components/UserCenterPage.vue -->
 <template>
   <!-- 动态 Padding -->
-  <div :style="{ padding: isMobile ? '12px' : '24px' }"> 
+  <div class="user-center-page" :style="{ padding: isMobile ? '12px' : '24px' }"> 
     
     <!-- 头部 -->
     <n-page-header :title="`欢迎回来, ${accountInfo?.name || authStore.username}`" subtitle="在这里查看您的账户信息" />
@@ -566,4 +566,73 @@ onUnmounted(() => {
 /* 暗色模式适配 */
 html.dark .mobile-history-item { background-color: rgba(255, 255, 255, 0.03); border: 1px solid rgba(255, 255, 255, 0.05); }
 html.dark .history-item-notes { background: rgba(255,255,255,0.05); }
+
+/* 用户中心：让卡片内部信息层也跟随玻璃主题 */
+.user-center-page :deep(.n-card.dashboard-card) {
+  overflow: hidden;
+}
+
+.user-center-page :deep(.n-card.dashboard-card > .n-card__content) {
+  background: transparent !important;
+}
+
+/* 账户详情表格：n-descriptions 自带底色，需要单独打穿 */
+.user-center-page :deep(.n-descriptions) {
+  --n-th-color: rgba(255, 255, 255, 0.035) !important;
+  --n-td-color: rgba(255, 255, 255, 0.018) !important;
+  --n-border-color: rgba(148, 177, 255, 0.10) !important;
+  background: transparent !important;
+}
+
+.user-center-page :deep(.n-descriptions-table),
+.user-center-page :deep(.n-descriptions-table-wrapper) {
+  background: transparent !important;
+}
+
+.user-center-page :deep(.n-descriptions-table-header),
+.user-center-page :deep(.n-descriptions-table-content),
+.user-center-page :deep(.n-descriptions td),
+.user-center-page :deep(.n-descriptions th) {
+  background-color: transparent !important;
+  border-color: rgba(148, 177, 255, 0.10) !important;
+}
+
+/* 播放记录 / 订阅历史：n-list 自带背景，需要打穿 */
+.user-center-page :deep(.n-list) {
+  --n-color: transparent !important;
+  --n-border-color: rgba(148, 177, 255, 0.10) !important;
+  --n-item-color-hover: rgba(255, 255, 255, 0.045) !important;
+  background: transparent !important;
+}
+
+.user-center-page :deep(.n-list .n-list-item) {
+  background: transparent !important;
+  border-color: rgba(148, 177, 255, 0.10) !important;
+}
+
+.user-center-page :deep(.n-list .n-list-item:hover) {
+  background: rgba(255, 255, 255, 0.045) !important;
+}
+
+/* 输入框也别一块死实色 */
+.user-center-page :deep(.n-input) {
+  --n-color: rgba(255, 255, 255, 0.045) !important;
+  --n-color-focus: rgba(255, 255, 255, 0.07) !important;
+  --n-border: 1px solid rgba(148, 177, 255, 0.16) !important;
+  --n-border-hover: 1px solid var(--accent-color) !important;
+  --n-border-focus: 1px solid var(--accent-color) !important;
+  --n-box-shadow-focus: 0 0 0 2px var(--accent-glow-color) !important;
+}
+
+/* 移动端历史记录也同步玻璃化 */
+.mobile-history-item {
+  background-color: rgba(255, 255, 255, 0.035) !important;
+  border: 1px solid rgba(148, 177, 255, 0.10) !important;
+  backdrop-filter: var(--card-backdrop-filter, blur(10px));
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px));
+}
+
+.history-item-notes {
+  background: rgba(255, 255, 255, 0.035) !important;
+}
 </style>
