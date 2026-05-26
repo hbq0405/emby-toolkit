@@ -1,6 +1,6 @@
 <!-- src/MainLayout.vue -->
 <template>
-  <n-layout class="app-root-layout" style="height: 100vh; position: relative;">
+  <n-layout style="height: 100vh; position: relative;">
     <n-layout-header :bordered="false" class="app-header">
       <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
         
@@ -192,7 +192,7 @@
       </n-layout-sider>
       <n-layout-content
         class="app-main-content-wrapper"
-        content-style="padding: 24px; background-color: var(--app-bg-color); transition: background-color 0.3s;"
+        content-style="padding: 24px; transition: background-color 0.3s;"
         :native-scrollbar="false"
       >
       <div class="page-content-inner-wrapper">
@@ -861,13 +861,6 @@ const setRandomTheme = () => {
 
 <style>
 /* ... (保留你原有的 style 代码不变) ... */
-.app-root-layout,
-.app-header,
-.app-main-content-wrapper,
-.page-content-inner-wrapper {
-  background-color: var(--app-bg-color) !important;
-  transition: background-color 0.3s ease-in-out;
-}
 .app-header { padding: 0 16px; height: 60px; display: flex; align-items: center; font-size: 1.25em; font-weight: 600; flex-shrink: 0; }
 .app-main-content-wrapper { height: 100%; display: flex; flex-direction: column; }
 .page-content-inner-wrapper { flex-grow: 1; overflow-y: auto; }

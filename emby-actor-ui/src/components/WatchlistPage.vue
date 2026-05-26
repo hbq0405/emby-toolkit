@@ -527,7 +527,7 @@
                 </div>
                 <!-- 子选项展开区域 -->
                 <n-collapse-transition :show="watchlistConfig.auto_resub_ended">
-                  <div class="setting-sub-panel" style="margin-top: 8px; padding: 4px 12px;">
+                  <div class="setting-sub-panel" style="margin-top: 8px; padding: 4px 12px; background-color: rgba(0,0,0,0.03);">
                     <!-- 洗版超时天数 -->
                     <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
                       <span style="font-size: 13px; font-weight: 500;">洗版超时取消 (天)</span>
@@ -1759,8 +1759,8 @@ html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
 }
 
 .settings-card {
-  background-color: transparent;
-  border: 1px solid var(--card-border-color, var(--n-border-color));
+  background-color: var(--n-card-color);
+  border: 1px solid var(--n-border-color);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -1811,8 +1811,7 @@ html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
 .setting-sub-panel {
   margin-top: 12px;
   padding: 12px;
-  background-color: transparent;
-  border: 1px solid var(--card-border-color, var(--n-border-color));
+  background-color: rgba(128, 128, 128, 0.06);
   border-radius: 6px;
 }
 
