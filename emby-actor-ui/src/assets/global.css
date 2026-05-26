@@ -154,7 +154,9 @@ body {
 
 /* 普通 Naive 卡片也吃主题透明度，不只 dashboard-card 生效 */
 .n-card:not(.modal-card-lite) {
+  --n-color: var(--card-bg-color) !important;
   background: var(--card-bg-color) !important;
+  background-color: var(--card-bg-color) !important;
   border-color: var(--card-border-color) !important;
   box-shadow: 0 4px 12px var(--card-shadow-color), 0 0 20px -5px var(--accent-glow-color) !important;
   backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
@@ -168,8 +170,9 @@ body {
 .n-modal .n-card,
 .n-dialog .n-card,
 .n-popover .n-card {
+  --n-color: var(--modal-solid-bg-color, var(--n-color)) !important;
   background: var(--modal-solid-bg-color, var(--n-color)) !important;
-  border-color: var(--card-border-color, var(--n-border-color)) !important;
+  background-color: var(--modal-solid-bg-color, var(--n-color)) !important;
   backdrop-filter: none !important;
   -webkit-backdrop-filter: none !important;
   animation: none !important;
