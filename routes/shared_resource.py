@@ -617,6 +617,195 @@ def _raw_missing_message(missing: List[Dict[str, Any]], limit: int = 6) -> str:
     return "缺少 raw_ffprobe_json，禁止分享/登记中心：" + "；".join(shown) + suffix
 
 
+
+def _guess_season_episode_numbers(text: str):
+    """从文件名/标题里尽量解析 SxxEyy，用于老数据和外来分享兜底。"""
+    text = str(text or '')
+    patterns = [
+        r'[Ss](\d{1,3})[.\s_-]*[Ee](\d{1,4})',
+        r'第\s*(\d{1,3})\s*季\s*第?\s*(\d{1,4})\s*[集话]',
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if not m:
+            continue
+        try:
+            return int(m.group(1)), int(m.group(2))
+        except Exception:
+            return None, None
+    return None, None
+
+
+def _iter_text_values(obj, max_depth: int = 5):
+    """递归抽取短文本，给杜比/HDR 识别做兜底。"""
+    if max_depth < 0:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(k, str):
+                yield k
+            yield from _iter_text_values(v, max_depth - 1)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            yield from _iter_text_values(item, max_depth - 1)
+    elif obj is not None:
+        text = str(obj)
+        if text and len(text) <= 400:
+            yield text
+
+
+def _normalize_dovi_profile(raw_profile: str) -> str:
+    raw_profile = str(raw_profile or '').strip().upper().replace('PROFILE', '').replace('P', '').strip()
+    if not raw_profile:
+        return ''
+    raw_profile = raw_profile.replace('_', '.')
+    if raw_profile in ('81', '8.1'):
+        return 'P8.1'
+    if raw_profile in ('82', '8.2'):
+        return 'P8.2'
+    if raw_profile in ('84', '8.4'):
+        return 'P8.4'
+    m = re.search(r'(\d+(?:\.\d+)?)', raw_profile)
+    return f"P{m.group(1)}" if m else ''
+
+
+def _extract_dovi_profile_from_text(text: str) -> str:
+    text = str(text or '')
+    patterns = [
+        r'DoviProfile\s*([0-9.]+)',
+        r'Dolby\s*Vision[^,\n\r;]*?Profile\s*([0-9.]+)',
+        r'\bDV(?:P|[\s._-]*Profile)?\s*([0-9.]+)',
+        r'\bDOVI[^,\n\r;]*?\bP(?:rofile)?\s*([0-9.]+)',
+        r'\bP(5|7|8(?:\.\d+)?)\b',
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return _normalize_dovi_profile(m.group(1))
+    m = re.search(r'dv_profile["\']?\s*[:=]\s*["\']?(\d+(?:\.\d+)?)', text, re.IGNORECASE)
+    if m:
+        return _normalize_dovi_profile(m.group(1))
+    return ''
+
+
+def _raw_video_stream(raw: Dict[str, Any]) -> Dict[str, Any]:
+    raw = raw or {}
+    if raw.get('MediaSourceInfo'):
+        streams = (raw.get('MediaSourceInfo') or {}).get('MediaStreams') or []
+        return next((s for s in streams if str(s.get('Type') or '').lower() == 'video'), {}) or {}
+    if raw.get('MediaStreams'):
+        streams = raw.get('MediaStreams') or []
+        return next((s for s in streams if str(s.get('Type') or '').lower() == 'video'), {}) or {}
+    streams = raw.get('streams') or []
+    return next((s for s in streams if str(s.get('codec_type') or s.get('type') or '').lower() == 'video'), {}) or {}
+
+
+def _video_effect_key(raw: Dict[str, Any], summary: Dict[str, Any] = None) -> str:
+    """生成 HDR/杜比一致性 key：SDR/HDR10/HDR10+/HLG/DV-P5/DV-P8.1 等。"""
+    summary = summary or {}
+    effect = str(summary.get('effect') or '')
+    video = _raw_video_stream(raw)
+    text = ' | '.join([effect] + list(_iter_text_values(video, max_depth=4)))
+    upper = text.upper()
+
+    dovi_profile = _extract_dovi_profile_from_text(text)
+    if 'DOLBY' in upper or 'DOVI' in upper or dovi_profile:
+        return f"DV-{dovi_profile or 'UNKNOWN'}"
+
+    if 'HDR10+' in upper or 'SMPTE2094' in upper:
+        return 'HDR10+'
+    if 'HLG' in upper or 'ARIB-STD-B67' in upper:
+        return 'HLG'
+    if 'HDR10' in upper or 'SMPTE2084' in upper or 'BT2020' in upper:
+        return 'HDR10'
+    if 'HDR' in upper:
+        return 'HDR'
+    return 'SDR'
+
+
+def _season_pack_file_signature(item: Dict[str, Any]) -> Dict[str, Any]:
+    """从 raw_ffprobe_json 提取季包一致性校验所需的视频签名。"""
+    item = item or {}
+    sha1 = str(item.get('sha1') or '').strip().upper()
+    raw = _load_local_raw_ffprobe(sha1)
+    if not raw:
+        return {
+            'ok': False,
+            'sha1': sha1,
+            'file_name': item.get('file_name') or item.get('name') or sha1,
+            'reason': '缺少 raw_ffprobe_json',
+        }
+    summary = _summarize_raw_ffprobe(raw, item)
+    width = int(summary.get('width') or 0)
+    height = int(summary.get('height') or 0)
+    resolution = f"{width}x{height}" if width and height else (summary.get('resolution') or '')
+    if not resolution:
+        return {
+            'ok': False,
+            'sha1': sha1,
+            'file_name': item.get('file_name') or item.get('name') or sha1,
+            'reason': '无法从 raw_ffprobe_json 解析视频分辨率',
+        }
+    effect_key = _video_effect_key(raw, summary)
+    return {
+        'ok': True,
+        'sha1': sha1,
+        'file_name': item.get('file_name') or item.get('name') or sha1,
+        'resolution': resolution,
+        'resolution_label': summary.get('resolution') or resolution,
+        'effect_key': effect_key,
+        'effect': summary.get('effect') or ('SDR' if effect_key == 'SDR' else effect_key),
+    }
+
+
+def _validate_season_pack_consistency(files: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """季包一致性校验：分辨率、HDR/杜比必须全季一致。
+
+    特别是 Dolby Vision P5/P8/P8.1 不能混用，否则同一个季包在客户端侧体验不可控。
+    """
+    signatures = []
+    invalid = []
+    for item in files or []:
+        sig = _season_pack_file_signature(item)
+        if not sig.get('ok'):
+            invalid.append(sig)
+        else:
+            signatures.append(sig)
+
+    if invalid:
+        return {
+            'ok': False,
+            'message': '季包一致性校验失败：存在无法解析媒体信息的文件',
+            'invalid': invalid,
+            'signatures': signatures,
+        }
+
+    if len(signatures) <= 1:
+        return {'ok': True, 'signatures': signatures, 'groups': {}}
+
+    groups = {}
+    for sig in signatures:
+        key = f"{sig.get('resolution')}|{sig.get('effect_key')}"
+        groups.setdefault(key, []).append(sig)
+
+    if len(groups) == 1:
+        return {'ok': True, 'signatures': signatures, 'groups': groups}
+
+    samples = []
+    for key, rows in groups.items():
+        first = rows[0]
+        samples.append(
+            f"{first.get('resolution_label') or first.get('resolution')} / {first.get('effect') or first.get('effect_key')}: "
+            f"{len(rows)} 个，示例 {first.get('file_name')}"
+        )
+    return {
+        'ok': False,
+        'message': '季包一致性校验失败：同一季包内分辨率或 HDR/杜比类型不一致；' + '；'.join(samples),
+        'signatures': signatures,
+        'groups': groups,
+    }
+
+
 def _json_array_values(value):
     """media_metadata 的 file_sha1_json / file_pickcode_json 可能是数组、字符串或对象，这里尽量提取稳定标识。"""
     if value is None:
@@ -2472,6 +2661,15 @@ def api_manual_create_share():
             "missing_raw": missing_raw,
         }), 400
 
+    if str(data.get('share_type') or '').strip().lower() == 'season_pack':
+        consistency = _validate_season_pack_consistency(files)
+        if not consistency.get('ok'):
+            return jsonify({
+                "success": False,
+                "message": consistency.get('message') or "季包媒体参数不一致，禁止创建分享",
+                "season_pack_consistency": consistency,
+            }), 400
+
     receive_code = str(data.get('receive_code') or '').strip() or None
     share_resp = client.share_create([root_fid], share_duration=-1, receive_code=receive_code)
     if not share_resp or not share_resp.get('state'):
@@ -2687,6 +2885,28 @@ def api_report_share_to_center(record_id):
             "missing_raw": missing_raw,
             "raw_summary": raw_summary,
         }), 400
+
+    record_share_type_for_check = str(record.get('share_type') or '').strip().lower()
+    if record_share_type_for_check in ('season_pack', 'series_pack', 'season', 'tv_pack'):
+        consistency = _validate_season_pack_consistency(items)
+        if not consistency.get('ok'):
+            row = shared_share_db.update_share_record(
+                record_id,
+                center_status='failed',
+                last_error=consistency.get('message') or '季包媒体参数不一致，禁止登记中心',
+            )
+            shared_virtual_db.add_credit_ledger(
+                'share_season_pack_inconsistent_blocked', 0,
+                '季包分辨率或 HDR/杜比不一致，已阻止登记中心',
+                ref_id=str(record_id), title=record.get('title') or '',
+                raw_json={'season_pack_consistency': consistency},
+            )
+            return jsonify({
+                "success": False,
+                "message": consistency.get('message') or "季包媒体参数不一致，禁止登记中心",
+                "data": row,
+                "season_pack_consistency": consistency,
+            }), 400
 
     reported = 0
     errors = []

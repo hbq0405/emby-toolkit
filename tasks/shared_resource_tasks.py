@@ -779,6 +779,22 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                 last_error=(sr._raw_missing_message(missing_raw) if missing_raw and hasattr(sr, '_raw_missing_message') else '存在 raw_ffprobe_json 未上传的分享项，禁止自动登记中心'),
                             )
                             continue
+                        record_share_type_for_check = str(record.get('share_type') or '').strip().lower()
+                        if record_share_type_for_check in ('season_pack', 'series_pack', 'season', 'tv_pack') and hasattr(sr, '_validate_season_pack_consistency'):
+                            consistency = sr._validate_season_pack_consistency(items)
+                            if not consistency.get('ok'):
+                                shared_share_db.update_share_record(
+                                    record['id'],
+                                    center_status='failed',
+                                    last_error=consistency.get('message') or '季包媒体参数不一致，禁止自动登记中心',
+                                )
+                                shared_virtual_db.add_credit_ledger(
+                                    'share_season_pack_inconsistent_blocked', 0,
+                                    '季包分辨率或 HDR/杜比不一致，已阻止自动登记中心',
+                                    ref_id=str(record['id']), title=record.get('title') or '',
+                                    raw_json={'season_pack_consistency': consistency},
+                                )
+                                continue
                         ok = 0
                         for item in items:
                             sha1 = str(item.get('sha1') or '').strip().upper()
@@ -1154,6 +1170,12 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                     missing_raw = sr._files_missing_raw_ffprobe(files)
                     if missing_raw:
                         logger.info(f"  ➜ [共享资源维护] 自动分享跳过缺 raw_ffprobe_json 的资源：{candidate.get('display_title')} -> {sr._raw_missing_message(missing_raw) if hasattr(sr, '_raw_missing_message') else missing_raw}")
+                        continue
+
+                if str(candidate.get('share_type') or '').strip().lower() == 'season_pack' and hasattr(sr, '_validate_season_pack_consistency'):
+                    consistency = sr._validate_season_pack_consistency(files)
+                    if not consistency.get('ok'):
+                        logger.info(f"  ➜ [共享资源维护] 自动分享跳过媒体参数不一致的季包：{candidate.get('display_title')} -> {consistency.get('message')}")
                         continue
 
                 if _has_existing_share_for_gap(candidate_gap, candidate=candidate, files=files):
