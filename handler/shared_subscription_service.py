@@ -1027,10 +1027,7 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
                 'washing_rejected': True,
             }
     else:
-        logger.info(
-            f"  ➜ [共享资源] 当前覆盖模式为 {rename_config.get('conflict_mode')}，跳过洗版预检，"
-            f"中心源直接进入共享永久转存流程。"
-        )
+        logger.info(f"  ➜ [共享资源] 当前覆盖模式为 {rename_config.get('conflict_mode')}，跳过洗版预检，")
 
     # 同一个季/剧分享可能返回多集，按 share_code 去重，避免重复转存同一分享包。
     unique = []
@@ -1071,7 +1068,7 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
                 pass
     if ok > 0:
         kick_result = _kick_115_organize_detached(
-            reason=f"共享资源永久转存成功 ok={ok}, title={context.get('title') or ''}",
+            reason=f"共享资源转存成功 {ok} 个",
             delay=3.0,
         )
         logger.info(f"  ➜ [共享资源] 115 待整理扫描触发结果: {kick_result}")
@@ -1095,7 +1092,6 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str, tmdb_id, item_
     try:
         data = client.search_sources(queries, limit_per_item=200)
         sources = _flatten_search_results(data)
-        logger.info(f"  ➜ [共享资源] 命中 {len(sources)} 个资源")
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 查询中心共享池失败: {e}")
 
