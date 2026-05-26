@@ -761,7 +761,7 @@ const centerGroupKey = (row) => {
   return `${baseType}:${tmdb || title}:${season}:${episode}`;
 };
 
-const groupCenterSources = (items) => {
+const groupCenterSources = (items, orderBy = 'latest') => {
   const groups = [];
   const byKey = new Map();
   for (const item of (items || [])) {
