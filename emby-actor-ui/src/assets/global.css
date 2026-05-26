@@ -161,3 +161,18 @@ body {
   -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
 }
 
+/* ================= 修复：全局 n-card 玻璃化不要误伤 Naive Modal / Dialog / Popover =================
+   n-modal preset="card" 内部本质还是 .n-card；如果只写 .n-card:not(.modal-card-lite)，
+   某些情况下 class 不一定落在内部卡片上，会导致弹窗被透明玻璃样式误伤。
+================================================================ */
+.n-modal .n-card,
+.n-dialog .n-card,
+.n-popover .n-card {
+  background: var(--modal-solid-bg-color, var(--n-color)) !important;
+  border-color: var(--card-border-color, var(--n-border-color)) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  animation: none !important;
+  transform: none !important;
+  opacity: 1 !important;
+}

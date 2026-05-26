@@ -66,6 +66,9 @@
             :class="{ 'is-paused': item.status === 'paused' }"
             @click="handleEditClick(item)"
           >
+            <!-- 拖拽手柄：避免 SortableJS 抢占整张卡片点击，导致编辑模态框不弹出 -->
+            <div class="drag-handle" @click.stop title="拖拽排序">☰</div>
+
             <!-- 背景层：图片或渐变 -->
             <div class="card-bg">
               <n-image 
@@ -2010,7 +2013,7 @@ const initSortable = () => {
   sortableInstance = Sortable.create(gridEl, {
     animation: 200,
     draggable: '.grid-item',
-    handle: '.collection-card',
+    handle: '.drag-handle',
     
     filter: '.card-actions, button, .n-button, .n-icon', 
     preventOnFilter: false, // 允许按钮的点击事件正常触发
@@ -2349,7 +2352,6 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
   border-radius: 12px;
   overflow: hidden;
   cursor: pointer;
-  cursor: grab;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   transition: transform 0.2s, box-shadow 0.2s, filter 0.3s;
   background-color: #202023;
@@ -2357,7 +2359,7 @@ createRuleWatcher(() => currentCollection.value.definition.dynamic_rules);
 }
 
 .collection-card:active {
-  cursor: grabbing;
+  cursor: pointer;
 }
 
 .collection-card:hover {
