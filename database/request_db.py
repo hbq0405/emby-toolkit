@@ -113,17 +113,21 @@ def set_media_status_wanted(
                 if force_unignore:
                     # 强制模式（用户手动点击）：允许覆盖
                     sql = """
-                        UPDATE media_metadata 
-                        SET subscription_status = 'WANTED', 
-                            subscription_sources_json = subscription_sources_json || %(source)s::jsonb, 
-                            ignore_reason = NULL, 
+                        UPDATE media_metadata
+                        SET
+                            subscription_status = 'WANTED',
+                            -- 强制取消忽略时，状态切换才是核心；来源只做去重追加，不能因为来源重复挡住状态恢复
+                            subscription_sources_json = CASE
+                                WHEN COALESCE(subscription_sources_json, '[]'::jsonb) @> %(source)s::jsonb THEN
+                                    COALESCE(subscription_sources_json, '[]'::jsonb)
+                                ELSE
+                                    COALESCE(subscription_sources_json, '[]'::jsonb) || %(source)s::jsonb
+                            END,
+                            ignore_reason = NULL,
                             last_synced_at = NOW()
-                        WHERE tmdb_id = %(tmdb_id)s 
-                          AND item_type = %(item_type)s 
-                          AND subscription_status = 'IGNORED' 
-                          -- 用户手动点击时，通常也允许覆盖已入库状态（比如手动洗版）
-                          -- 所以这里不加 in_library 限制，或者根据需求加
-                          AND NOT (subscription_sources_json @> %(source)s::jsonb);
+                        WHERE tmdb_id = %(tmdb_id)s
+                          AND item_type = %(item_type)s
+                          AND subscription_status = 'IGNORED';
                     """
                     execute_batch(cursor, sql, data_to_upsert)
                     conn.commit()
