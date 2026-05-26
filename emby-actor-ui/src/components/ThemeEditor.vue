@@ -42,9 +42,10 @@
             </n-gi>
             
             <!-- 其他颜色设置 -->
-            <n-gi><n-form-item label="卡片背景"><n-color-picker v-model:value="editableTheme.custom['--card-bg-color']" /></n-form-item></n-gi>
-            <n-gi><n-form-item label="卡片边框"><n-color-picker v-model:value="editableTheme.custom['--card-border-color']" /></n-form-item></n-gi>
-            <n-gi><n-form-item label="卡片阴影"><n-color-picker v-model:value="editableTheme.custom['--card-shadow-color']" /></n-form-item></n-gi>
+            <n-gi><n-form-item label="整体背景"><n-color-picker v-model:value="editableTheme.custom['--app-bg-color']" :show-alpha="true" /></n-form-item></n-gi>
+            <n-gi><n-form-item label="卡片背景"><n-color-picker v-model:value="editableTheme.custom['--card-bg-color']" :show-alpha="true" /></n-form-item></n-gi>
+            <n-gi><n-form-item label="卡片边框"><n-color-picker v-model:value="editableTheme.custom['--card-border-color']" :show-alpha="true" /></n-form-item></n-gi>
+            <n-gi><n-form-item label="卡片阴影"><n-color-picker v-model:value="editableTheme.custom['--card-shadow-color']" :show-alpha="true" /></n-form-item></n-gi>
             <n-gi><n-form-item label="卡片文字"><n-color-picker v-model:value="editableTheme.custom['--text-color']" /></n-form-item></n-gi>
           </n-grid>
         </n-tab-pane>
@@ -54,7 +55,7 @@
           <n-grid :cols="2" :x-gap="24">
             <n-gi><n-form-item label="UI主色调 (Naive UI)"><n-color-picker v-model:value="editableTheme.naive.common.primaryColor" /></n-form-item></n-gi>
             <n-gi><n-form-item label="卡片标题色 (自定义)"><n-color-picker v-model:value="editableTheme.custom['--accent-color']" /></n-form-item></n-gi>
-            <n-gi><n-form-item label="主题辉光色 (Glow)"><n-color-picker v-model:value="editableTheme.custom['--accent-glow-color']" /></n-form-item></n-gi>
+            <n-gi><n-form-item label="主题辉光色 (Glow)"><n-color-picker v-model:value="editableTheme.custom['--accent-glow-color']" :show-alpha="true" /></n-form-item></n-gi>
           </n-grid>
         </n-tab-pane>
         <n-tab-pane name="sidebar" tab="侧边栏与菜单">
@@ -91,6 +92,60 @@ const editableTheme = ref(null);
 // ★★★ 修改核心：cardScale 独立为一个 ref，不依赖 editableTheme ★★★
 const cardScale = ref(1);
 
+const ensureEditableThemeShape = (theme) => {
+  if (!theme) return theme;
+
+  theme.custom = theme.custom || {};
+  theme.naive = theme.naive || {};
+  theme.naive.common = theme.naive.common || {};
+  theme.naive.Card = theme.naive.Card || {};
+
+  theme.custom['--app-bg-color'] =
+    theme.custom['--app-bg-color'] ||
+    theme.naive.common.bodyColor ||
+    '#101014';
+  theme.naive.common.bodyColor = theme.custom['--app-bg-color'];
+
+  theme.custom['--card-bg-color'] =
+    theme.custom['--card-bg-color'] ||
+    theme.naive.Card.color ||
+    theme.naive.common.cardColor ||
+    'rgba(255, 255, 255, 0.85)';
+  theme.naive.Card.color = theme.custom['--card-bg-color'];
+  theme.naive.common.cardColor = theme.custom['--card-bg-color'];
+
+  theme.custom['--card-border-color'] =
+    theme.custom['--card-border-color'] ||
+    theme.naive.Card.borderColor ||
+    'rgba(0, 0, 0, 0.1)';
+  theme.naive.Card.borderColor = theme.custom['--card-border-color'];
+
+  return theme;
+};
+
+const syncNaiveTokensFromCustom = (theme) => {
+  if (!theme) return;
+
+  theme.custom = theme.custom || {};
+  theme.naive = theme.naive || {};
+  theme.naive.common = theme.naive.common || {};
+  theme.naive.Card = theme.naive.Card || {};
+
+  if (theme.custom['--app-bg-color']) {
+    theme.naive.common.bodyColor = theme.custom['--app-bg-color'];
+  }
+
+  if (theme.custom['--card-bg-color']) {
+    theme.naive.Card.color = theme.custom['--card-bg-color'];
+    theme.naive.common.cardColor = theme.custom['--card-bg-color'];
+  }
+
+  if (theme.custom['--card-border-color']) {
+    theme.naive.Card.borderColor = theme.custom['--card-border-color'];
+  }
+};
+
+
 // 初始化：从 localStorage 读取，如果没有则默认为 1
 const initScale = () => {
   const savedScale = localStorage.getItem('global_card_scale');
@@ -115,13 +170,14 @@ watch(() => props.show, (newVal) => {
     initScale(); // 确保滑块位置正确
     if (props.initialTheme) {
       const currentModeTheme = props.initialTheme[props.isDark ? 'dark' : 'light'];
-      editableTheme.value = cloneDeep(currentModeTheme);
+      editableTheme.value = ensureEditableThemeShape(cloneDeep(currentModeTheme));
     }
   }
 }, { immediate: true });
 
 watch(editableTheme, (newVal) => {
   if (props.show && newVal) {
+    syncNaiveTokensFromCustom(newVal);
     emit('update:preview', newVal);
   }
 }, { deep: true });
@@ -138,7 +194,7 @@ const handleClose = () => {
 
 const handleReset = () => {
     const originalTheme = props.initialTheme[props.isDark ? 'dark' : 'light'];
-    editableTheme.value = cloneDeep(originalTheme);
+    editableTheme.value = ensureEditableThemeShape(cloneDeep(originalTheme));
     // 如果你想让重置也重置缩放，取消下面这行的注释：
     cardScale.value = 1; 
     message.info('已撤销本次更改。');

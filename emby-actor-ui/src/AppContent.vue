@@ -72,6 +72,61 @@ let statusIntervalId = null;
 
 const app = document.getElementById('app');
 
+const normalizeThemeConfig = (rawThemeConfig) => {
+  if (!rawThemeConfig) return rawThemeConfig;
+
+  const themeConfig = cloneDeep(rawThemeConfig);
+  themeConfig.custom = themeConfig.custom || {};
+  themeConfig.naive = themeConfig.naive || {};
+  themeConfig.naive.common = themeConfig.naive.common || {};
+  themeConfig.naive.Card = themeConfig.naive.Card || {};
+
+  // 整体背景：自定义变量和 Naive UI bodyColor 保持一套值，避免一个生效一个不生效。
+  const appBgColor =
+    themeConfig.custom['--app-bg-color'] ||
+    themeConfig.naive.common.bodyColor ||
+    '#101014';
+  themeConfig.custom['--app-bg-color'] = appBgColor;
+  themeConfig.naive.common.bodyColor = appBgColor;
+
+  // 卡片背景：自定义变量、Naive Card.color、Naive common.cardColor 必须同步。
+  // 之前只改 --card-bg-color，普通 n-card 仍然吃 Naive 的旧 color，所以透明度看起来不生效。
+  const cardBgColor =
+    themeConfig.custom['--card-bg-color'] ||
+    themeConfig.naive.Card.color ||
+    themeConfig.naive.common.cardColor;
+  if (cardBgColor) {
+    themeConfig.custom['--card-bg-color'] = cardBgColor;
+    themeConfig.naive.Card.color = cardBgColor;
+    themeConfig.naive.common.cardColor = cardBgColor;
+  }
+
+  const cardBorderColor =
+    themeConfig.custom['--card-border-color'] ||
+    themeConfig.naive.Card.borderColor;
+  if (cardBorderColor) {
+    themeConfig.custom['--card-border-color'] = cardBorderColor;
+    themeConfig.naive.Card.borderColor = cardBorderColor;
+  }
+
+  return themeConfig;
+};
+
+const applyCssVariables = (themeConfig) => {
+  const root = document.documentElement;
+  for (const key in themeConfig.custom) {
+    root.style.setProperty(key, themeConfig.custom[key]);
+  }
+
+  // body / #app 不一定直接被 Naive UI 接管，手动写一下，整体背景切换才稳定。
+  const appBgColor = themeConfig.custom['--app-bg-color'];
+  if (appBgColor) {
+    document.body.style.backgroundColor = appBgColor;
+    app?.style.setProperty('background-color', appBgColor);
+  }
+};
+
+
 const applyTheme = (themeKey, isDark) => {
   const root = document.documentElement;
   const themeMode = isDark ? 'dark' : 'light';
@@ -89,10 +144,9 @@ const applyTheme = (themeKey, isDark) => {
     themeConfig = themes[themeKey]?.[themeMode] || themes.default[themeMode];
   }
 
-  app.dispatchEvent(new CustomEvent('update-naive-theme', { detail: themeConfig.naive }));
-  for (const key in themeConfig.custom) {
-    root.style.setProperty(key, themeConfig.custom[key]);
-  }
+  themeConfig = normalizeThemeConfig(themeConfig);
+  app?.dispatchEvent(new CustomEvent('update-naive-theme', { detail: themeConfig.naive }));
+  applyCssVariables(themeConfig);
   root.classList.remove('dark', 'light');
   root.classList.add(isDark ? 'dark' : 'light');
 };
@@ -152,10 +206,11 @@ const handleModeChange = (isDark) => {
 const handleSaveCustomTheme = async (newThemeConfigForCurrentMode) => {
   try {
     const fullCustomTheme = cloneDeep(themeForEditor.value);
+    const normalizedThemeConfig = normalizeThemeConfig(newThemeConfigForCurrentMode);
     if (isDarkTheme.value) {
-        fullCustomTheme.dark = newThemeConfigForCurrentMode;
+        fullCustomTheme.dark = normalizedThemeConfig;
     } else {
-        fullCustomTheme.light = newThemeConfigForCurrentMode;
+        fullCustomTheme.light = normalizedThemeConfig;
     }
     await axios.post('/api/config/custom_theme', fullCustomTheme);
     userCustomTheme.value = fullCustomTheme;
@@ -197,12 +252,10 @@ const handleEditorClose = (show) => {
 };
 
 const handlePreviewUpdate = (themeConfig) => {
-    previewTheme.value = themeConfig;
-    app.dispatchEvent(new CustomEvent('update-naive-theme', { detail: themeConfig.naive }));
-    const root = document.documentElement;
-    for (const key in themeConfig.custom) {
-        root.style.setProperty(key, themeConfig.custom[key]);
-    }
+    const normalizedThemeConfig = normalizeThemeConfig(themeConfig);
+    previewTheme.value = normalizedThemeConfig;
+    app?.dispatchEvent(new CustomEvent('update-naive-theme', { detail: normalizedThemeConfig.naive }));
+    applyCssVariables(normalizedThemeConfig);
 };
 
 watch([isDarkTheme, selectedTheme], ([isDark, themeKey]) => {

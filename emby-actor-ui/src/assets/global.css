@@ -2,9 +2,36 @@
 /* ★★★ 1. 在最顶部添加默认值，防止报错 ★★★ */
 :root {
   --card-scale: 1;
+  --app-bg-color: #101014;
+}
+
+html,
+body,
+#app {
+  background-color: var(--app-bg-color) !important;
+  transition: background-color 0.3s ease-in-out;
+}
+
+.fullscreen-container,
+.app-main-content-wrapper,
+.page-content-inner-wrapper {
+  background-color: var(--app-bg-color) !important;
+  transition: background-color 0.3s ease-in-out;
+}
+
+/* 普通 Naive 卡片也跟随卡片背景变量，避免只有 dashboard-card 生效 */
+.n-card {
+  background-color: var(--card-bg-color) !important;
+}
+
+/* 弹窗卡片保持不透明，避免主题编辑器和确认框被背景穿透影响阅读 */
+.n-modal .n-card,
+.n-card.modal-card-lite {
+  background-color: var(--modal-solid-bg-color) !important;
 }
 .n-card.dashboard-card {
   background: var(--card-bg-color) !important;
+  background-color: var(--card-bg-color) !important;
   border: 1px solid var(--card-border-color) !important;
   box-shadow: 0 4px 12px var(--card-shadow-color), 0 0 20px -5px var(--accent-glow-color) !important;
   color: var(--text-color) !important;
