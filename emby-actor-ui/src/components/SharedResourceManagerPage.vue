@@ -1105,4 +1105,81 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .center-version-stack { display: flex; flex-direction: column; gap: 8px; }
 .center-version-line { min-height: 24px; display: flex; align-items: center; }
 
+/* 共享资源管理：表格玻璃化 */
+.shared-page :deep(.n-data-table) {
+  --n-th-color: rgba(255, 255, 255, 0.045) !important;
+  --n-td-color: transparent !important;
+  --n-td-color-hover: rgba(255, 255, 255, 0.055) !important;
+  --n-border-color: rgba(148, 177, 255, 0.11) !important;
+  --n-merged-border-color: rgba(148, 177, 255, 0.11) !important;
+  background: transparent !important;
+}
+
+/* 表格外壳 */
+.shared-page :deep(.n-data-table-wrapper),
+.shared-page :deep(.n-data-table-base-table),
+.shared-page :deep(.n-data-table-base-table-body),
+.shared-page :deep(.n-data-table-table) {
+  background: transparent !important;
+}
+
+/* 表头 */
+.shared-page :deep(.n-data-table-th) {
+  background-color: rgba(255, 255, 255, 0.045) !important;
+  border-color: rgba(148, 177, 255, 0.11) !important;
+}
+
+/* 单元格 */
+.shared-page :deep(.n-data-table-td) {
+  background-color: transparent !important;
+  border-color: rgba(148, 177, 255, 0.11) !important;
+}
+
+/* hover 行 */
+.shared-page :deep(.n-data-table-tr:hover .n-data-table-td) {
+  background-color: rgba(255, 255, 255, 0.055) !important;
+}
+
+/* 空数据 / loading 区域 */
+.shared-page :deep(.n-data-table-empty),
+.shared-page :deep(.n-data-table-loading) {
+  background: transparent !important;
+}
+
+/* 分页区域也别实心 */
+.shared-page :deep(.n-data-table .n-pagination) {
+  background: transparent !important;
+}
+
+/* 弹窗里的 n-data-table 也玻璃化 */
+.custom-modal .n-data-table {
+  --n-th-color: rgba(255, 255, 255, 0.045) !important;
+  --n-td-color: transparent !important;
+  --n-td-color-hover: rgba(255, 255, 255, 0.055) !important;
+  --n-border-color: rgba(148, 177, 255, 0.11) !important;
+  --n-merged-border-color: rgba(148, 177, 255, 0.11) !important;
+  background: transparent !important;
+}
+
+.custom-modal .n-data-table-wrapper,
+.custom-modal .n-data-table-base-table,
+.custom-modal .n-data-table-base-table-body,
+.custom-modal .n-data-table-table,
+.custom-modal .n-data-table-empty,
+.custom-modal .n-data-table-loading {
+  background: transparent !important;
+}
+
+.custom-modal .n-data-table-th {
+  background-color: rgba(255, 255, 255, 0.045) !important;
+}
+
+.custom-modal .n-data-table-td {
+  background-color: transparent !important;
+}
+
+.custom-modal .n-data-table-tr:hover .n-data-table-td {
+  background-color: rgba(255, 255, 255, 0.055) !important;
+}
+
 </style>
