@@ -3728,131 +3728,110 @@ def _center_match_display_type(item: Dict[str, Any], wanted: str) -> bool:
 
 
 def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """中心资源库展示层统一按 115 分享码折叠。
+    """中心资源库展示层去重：同一分享码下的一组剧集文件视作一个“剧集包”。
 
-    业务口径：share_code 才是资源可用性、转存、贡献值的最小单位。
-    因此无论电影、单集还是剧集包，同一个 contributor_id + share_code
-    只展示一条记录；包内文件数只参与大小/媒体信息汇总和导入时 source_ids，
-    不再在前端展示 E01-E36 这类范围。
+    展示模型统一成三类：电影、剧集包、单集。
+    - Movie/movie_file/movie_folder 永远按电影展示；
+    - 同一个 contributor + share_code + season 下存在多条剧集/分集记录时折叠为剧集包；
+    - Season/Series/tv/season_pack 只有在同分享码下确实包含多集，或无法推断为单集时，才按剧集包展示；
+    - 历史误登记的“每个 share_code 只有一个文件、file_name 可推断集号”的 Season 行，按 Episode 单集展示。
     """
     groups: Dict[str, List[Dict[str, Any]]] = {}
     passthrough: List[Dict[str, Any]] = []
 
+    def _norm_season(value):
+        if value in [None, '']:
+            return ''
+        try:
+            return str(int(value))
+        except Exception:
+            return str(value).strip()
+
+    def _group_key(item: Dict[str, Any]) -> str:
+        return '|'.join([
+            str(item.get('contributor_id') or ''),
+            str(item.get('share_code') or '').strip(),
+            _norm_season(item.get('season_number')),
+        ])
+
     for item in items or []:
-        share_code = str((item or {}).get('share_code') or '').strip()
-        contributor_id = str((item or {}).get('contributor_id') or '').strip()
-        if not share_code:
-            row = dict(item or {})
-            row['display_type'] = _center_display_type(row)
+        if _center_is_movie_row(item):
+            row = dict(item)
+            row['display_type'] = 'Movie'
             passthrough.append(row)
             continue
-        key = '|'.join([contributor_id, share_code])
-        groups.setdefault(key, []).append(dict(item or {}))
+
+        share_code = str(item.get('share_code') or '').strip()
+        season = _norm_season(item.get('season_number'))
+        if share_code and season and (_center_is_episode_row(item) or _center_is_pack_like_row(item)):
+            groups.setdefault(_group_key(item), []).append(item)
+        else:
+            row = dict(item)
+            row['display_type'] = _center_display_type(row)
+            passthrough.append(row)
 
     collapsed: List[Dict[str, Any]] = []
-
-    def _status_rank(value: str) -> int:
-        value = str(value or '').strip().lower()
-        return {
-            'alive': 5,
-            'pending': 4,
-            'reported': 4,
-            'pending_review': 3,
-            'dead': 2,
-            'expired': 1,
-            'rejected': 1,
-            'cancelled': 0,
-        }.get(value, 0)
-
     for rows in groups.values():
-        rows_sorted = sorted(
-            rows,
-            key=lambda r: (
-                1 if r.get('raw_ffprobe_json') else 0,
-                _status_rank(r.get('status')),
-                int(r.get('success_count') or 0),
-                int(r.get('size') or 0),
-                _center_created_ts(r),
-            ),
-            reverse=True,
-        )
+        # 多条同 share_code + season 的源才是“包”。单条源如果能从文件名/raw 推断集号，
+        # 多半是旧版本把 episode_file 错登记成 Season，展示层先按单集兜底，避免“每集都是剧集包”。
+        if len(rows) <= 1:
+            row = dict(rows[0])
+            inferred_ep = _center_infer_episode_number(row)
+            if inferred_ep not in (None, '') and _center_norm_item_type(row.get('source_provider')) != 'season_pack':
+                passthrough.append(_center_mark_as_episode_row(row, inferred_ep))
+            else:
+                row['display_type'] = 'Pack' if _center_is_pack_like_row(row) else 'Episode'
+                passthrough.append(row)
+            continue
+
+        rows_sorted = sorted(rows, key=lambda r: (1 if r.get('raw_ffprobe_json') else 0, int(r.get('size') or 0)), reverse=True)
         rep = dict(rows_sorted[0])
         newest_row = max(rows, key=_center_created_ts)
         if newest_row.get('created_at'):
             rep['created_at'] = newest_row.get('created_at')
-
+        total_size = 0
+        total_success = 0
+        episode_numbers = []
         source_ids = []
         tmdb_ids = []
-        episode_numbers = []
-        total_size = 0
-        # success_count 在中心端按包级口径只应该有一条代表记录递增；
-        # 这里用 SUM 兼容旧数据，也能兼容历史文件级 success_count。
-        total_success = 0
-        statuses = []
+        has_any_episode = False
 
         for r in rows:
-            sid = str(r.get('source_id') or '').strip()
-            if sid and sid not in source_ids:
-                source_ids.append(sid)
-            if r.get('tmdb_id') not in [None, '']:
-                tmdb_ids.append(str(r.get('tmdb_id')))
-            try:
-                if r.get('episode_number') not in [None, '']:
-                    episode_numbers.append(int(r.get('episode_number')))
-            except Exception:
-                pass
             try:
                 total_size += int(r.get('size') or 0)
             except Exception:
                 pass
+            total_success += int(r.get('success_count') or 0)
+            sid = r.get('source_id')
+            if sid:
+                source_ids.append(sid)
+            if r.get('tmdb_id') not in [None, '']:
+                tmdb_ids.append(str(r.get('tmdb_id')))
             try:
-                total_success += int(r.get('success_count') or 0)
+                ep = r.get('episode_number')
+                if ep is not None and ep != '':
+                    episode_numbers.append(int(ep))
+                    has_any_episode = True
             except Exception:
                 pass
-            statuses.append(str(r.get('status') or '').strip())
 
-        # 同分享码任意一条可用，整包就是可用；否则取状态优先级最高的一条。
-        if any(str(x).lower() == 'alive' for x in statuses):
-            rep['status'] = 'alive'
-        else:
-            rep['status'] = max(statuses, key=_status_rank) if statuses else rep.get('status')
-
-        display_types = [_center_display_type(r) for r in rows]
-        movie_count = sum(1 for t in display_types if t == 'Movie')
-        episode_count = sum(1 for t in display_types if t == 'Episode')
-        pack_count = sum(1 for t in display_types if t == 'Pack')
-        if movie_count == len(rows):
-            display_type = 'Movie'
-            rep['item_type'] = 'Movie'
-            rep['share_type'] = rep.get('share_type') or 'movie_file'
-        elif len(rows) == 1:
-            inferred_ep = _center_infer_episode_number(rep)
-            share_type_norm = _center_norm_item_type(rep.get('share_type'))
-            if episode_count == 1 or (inferred_ep not in (None, '') and share_type_norm not in {'season_pack', 'series_pack'}):
-                display_type = 'Episode'
-                rep['item_type'] = 'Episode'
-                rep['share_type'] = 'episode_file'
-                rep['episode_number'] = inferred_ep if inferred_ep not in (None, '') else rep.get('episode_number')
-            else:
-                display_type = 'Pack'
-                rep['item_type'] = 'Season'
-                rep['share_type'] = 'season_pack'
-                rep['episode_number'] = None
-        else:
-            display_type = 'Pack'
-            rep['item_type'] = 'Season'
-            rep['share_type'] = 'season_pack'
-            rep['episode_number'] = None
-
+        unique_source_ids = list(dict.fromkeys([x for x in source_ids if x]))
         unique_tmdb_ids = list(dict.fromkeys(tmdb_ids))
         unique_eps = sorted(set(episode_numbers))
-        rep['display_type'] = display_type
+
+        rep['display_type'] = 'Pack'
+        rep['item_type'] = 'Season'
+        rep['episode_number'] = None
         rep['pack_item_count'] = len(rows)
-        rep['pack_source_ids'] = source_ids
-        rep['pack_tmdb_ids'] = unique_tmdb_ids
         rep['pack_episode_numbers'] = unique_eps
-        rep['is_collapsed_pack'] = len(rows) > 1
+        rep['pack_source_ids'] = unique_source_ids
+        rep['pack_tmdb_ids'] = unique_tmdb_ids
+        rep['share_type'] = 'season_pack'
+        rep['is_collapsed_pack'] = True
         rep['success_count'] = total_success
+        if not has_any_episode and not unique_eps:
+            rep['pack_note'] = f"同一分享码下 {len(rows)} 个文件"
+
         if total_size > 0:
             rep['size'] = total_size
             if isinstance(rep.get('version_summary'), dict):
@@ -3862,6 +3841,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
         collapsed.append(rep)
 
     return passthrough + collapsed
+
 
 
 def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: str = 'alive,pending') -> List[Dict[str, Any]]:
@@ -3974,8 +3954,8 @@ def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dic
 def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = 'alive,pending', order_by: str = 'latest', limit: int = 30, offset: int = 0) -> Dict[str, Any]:
     """按展示口径加载中心资源库。
 
-    中心接口是按 shared_sources 原始文件分页，前端需要按 share_code 包级展示。
-    这里先拉取较大的原始窗口，按 contributor_id + share_code 折叠，再做本地类型过滤和展示行分页；
+    中心接口是按 shared_sources 原始文件分页，前端需要按“电影 / 剧集包 / 单集”展示。
+    这里先拉取较大的原始窗口，做剧集包折叠与本地类型过滤，再对展示行分页；
     最后只给当前展示页的代表 source_id 拉 raw_ffprobe_json，避免全量 raw 过重。
     """
     limit = max(1, min(int(limit or 30), 100))
