@@ -3025,6 +3025,13 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 s_val = season_num if season_num is not None else 1
                 e_val = episode_num if episode_num is not None else 1
                 val = f"S{s_val:02d}E{e_val:02d}" 
+            elif block in ('episode_name_zh', 'episode_no_zh') and is_tv:
+                e_val = episode_num if episode_num is not None else 1
+                val = f"第{e_val}集"
+            elif block in ('s_e_zh', 'season_episode_zh') and is_tv:
+                s_val = season_num if season_num is not None else 1
+                e_val = episode_num if episode_num is not None else 1
+                val = f"第{s_val}季{e_val}集"
             elif block == 'season_name_en' and is_tv:
                 val = f"Season {season_num:02d}" if season_num is not None else None
             elif block == 'season_name_en_no0' and is_tv:
