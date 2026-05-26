@@ -2965,7 +2965,7 @@ def api_report_share_to_center(record_id):
         return jsonify({"success": False, "message": "分享包内没有可登记的视频文件；已尝试从115目录和本地缓存补扫但仍未命中，请确认 root_fid 是季目录且 p115_filesystem_cache 已同步该目录"}), 400
 
     # 登记中心前先上传 raw_ffprobe_json；同时用 raw.format.size 回填本地 size=0 的条目。
-    raw_summary = _upload_share_raw_ffprobe_to_center(record_id, cfg, headers, force=False)
+    raw_summary = _upload_share_raw_ffprobe_to_center(record_id, cfg, headers, force=True)
     # 重新读取 items，确保 size/raw_ffprobe_uploaded 是最新状态。
     items = shared_share_db.list_share_items(record_id)
 
@@ -3059,7 +3059,28 @@ def api_report_share_to_center(record_id):
             'has_raw_ffprobe': bool(item.get('raw_ffprobe_uploaded')),
         }
         try:
-            resp = requests.post(f"{cfg['center_url']}/api/v1/sources/register", headers=headers, json=payload, **_center_request_kwargs(20))
+            resp = requests.post(
+                f"{cfg['center_url']}/api/v1/sources/register",
+                headers=headers,
+                json=payload,
+                **_center_request_kwargs(20)
+            )
+
+            # 中心提示 raw 缺失时，强制重传 raw 后再登记一次
+            if resp.status_code == 400 and 'raw_ffprobe_json required before source register' in (resp.text or ''):
+                raw_retry = _upload_item_raw_ffprobe_to_center(item, cfg, headers, force=True)
+                if raw_retry.get('ok'):
+                    payload['has_raw_ffprobe'] = True
+                    resp = requests.post(
+                        f"{cfg['center_url']}/api/v1/sources/register",
+                        headers=headers,
+                        json=payload,
+                        **_center_request_kwargs(20)
+                    )
+                else:
+                    errors.append(f"{item.get('file_name')}: raw重传失败 {raw_retry.get('message')}")
+                    continue
+
             if not resp.ok:
                 errors.append(f"{item.get('file_name')}: HTTP {resp.status_code} {resp.text[:120]}")
                 continue

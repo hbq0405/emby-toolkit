@@ -671,7 +671,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                     # 自动补 raw + 登记中心。
                     try:
                         cfg, headers = sr._center_headers()
-                        sr._upload_share_raw_ffprobe_to_center(record['id'], cfg, headers, force=False)
+                        sr._upload_share_raw_ffprobe_to_center(record['id'], cfg, headers, force=True)
                     except Exception as e:
                         logger.debug(f"  ➜ [共享资源维护] 自动上传 raw 失败，继续尝试登记中心: {e}")
                     try:
