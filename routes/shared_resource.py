@@ -1627,13 +1627,13 @@ def _expand_share_candidates(row: Dict[str, Any]) -> List[Dict[str, Any]]:
             with conn.cursor() as cur:
                 cur.execute("""
                     SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                           season_number, episode_number, release_year, release_date, last_air_date,
-                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                           total_episodes, watching_status, watchlist_tmdb_status
+                        season_number, episode_number, release_year, release_date, last_air_date,
+                        file_sha1_json, file_pickcode_json, in_library, subscription_status,
+                        total_episodes, watching_status, watchlist_tmdb_status
                     FROM media_metadata
-                    WHERE item_type='Season' 
-                      AND parent_series_tmdb_id=%s
-                      AND in_library=TRUE
+                    WHERE item_type='Season'
+                    AND parent_series_tmdb_id=%s
+                    AND in_library=TRUE
                     ORDER BY season_number NULLS LAST, tmdb_id
                 """, (series_id,))
                 seasons = [dict(r) for r in cur.fetchall()]
