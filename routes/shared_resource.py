@@ -581,6 +581,42 @@ def _upload_share_raw_ffprobe_to_center(record_id: int, cfg: Dict[str, Any], hea
     }
 
 
+
+def _files_missing_raw_ffprobe(files: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """返回缺失 raw_ffprobe_json 的分享文件列表。
+
+    共享资源展示和中心入库都依赖 raw_ffprobe_json 解析清晰度、编码、音轨、字幕等信息。
+    没有 raw 的文件禁止创建/登记分享，避免中心出现全是 "-" 的垃圾版本。
+    """
+    missing = []
+    seen = set()
+    for item in files or []:
+        sha1 = str((item or {}).get('sha1') or '').strip().upper()
+        name = str((item or {}).get('file_name') or (item or {}).get('name') or sha1 or '未知文件')
+        key = sha1 or f"no-sha1:{name}"
+        if key in seen:
+            continue
+        seen.add(key)
+        if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1 or ''):
+            missing.append({'sha1': sha1, 'file_name': name, 'reason': '缺少 SHA1，无法匹配 raw_ffprobe_json'})
+            continue
+        if not _load_local_raw_ffprobe(sha1):
+            missing.append({'sha1': sha1, 'file_name': name, 'reason': '本地 p115_mediainfo_cache 缺少 raw_ffprobe_json'})
+    return missing
+
+
+def _raw_missing_message(missing: List[Dict[str, Any]], limit: int = 6) -> str:
+    shown = []
+    for item in (missing or [])[:max(1, int(limit or 6))]:
+        name = str(item.get('file_name') or item.get('sha1') or '未知文件')
+        reason = str(item.get('reason') or '缺少 raw_ffprobe_json')
+        shown.append(f"{name}（{reason}）")
+    suffix = ''
+    if len(missing or []) > len(shown):
+        suffix = f" 等 {len(missing)} 个文件"
+    return "缺少 raw_ffprobe_json，禁止分享/登记中心：" + "；".join(shown) + suffix
+
+
 def _json_array_values(value):
     """media_metadata 的 file_sha1_json / file_pickcode_json 可能是数组、字符串或对象，这里尽量提取稳定标识。"""
     if value is None:
@@ -2391,22 +2427,12 @@ def api_manual_create_share():
     if not client:
         return jsonify({"success": False, "message": "未配置可用的 115 Cookie 客户端，无法创建分享"}), 400
 
-    receive_code = str(data.get('receive_code') or '').strip() or None
-    share_resp = client.share_create([root_fid], share_duration=-1, receive_code=receive_code)
-    if not share_resp or not share_resp.get('state'):
-        return jsonify({"success": False, "message": f"创建 115 分享失败: {share_resp}"}), 500
-
-    share_data = share_resp.get('data') or {}
-    share_code = share_data.get('share_code') or share_resp.get('share_code')
-    share_url = share_data.get('share_url') or (f"https://115.com/s/{share_code}" if share_code else '')
-    receive_code = receive_code or share_data.get('receive_code') or ''
-
+    # 先定位分享文件并校验 raw_ffprobe_json；缺 raw 时不创建 115 分享，避免生成垃圾 share_code。
     info_resp = client.fs_get_info(root_fid)
     node = (info_resp or {}).get('data') or {}
     root_name = data.get('root_name') or _node_name(node) or root_fid
     # 前端搜索阶段已经根据 PC/SHA1 和 p115_filesystem_cache 判断过 root_is_dir，
-    # 这里应优先信任前端传入值；fs_get_info 对目录偶尔返回字段不完整，会误判成文件，
-    # 导致季包创建成功但 item_count=0，后续登记中心报“分享包内没有可登记的视频文件”。
+    # 这里应优先信任前端传入值；fs_get_info 对目录偶尔返回字段不完整，会误判成文件。
     if 'root_is_dir' in data:
         root_is_dir = _boolish(data.get('root_is_dir'), default=True)
     else:
@@ -2416,6 +2442,8 @@ def api_manual_create_share():
     files = _collect_files_from_115(client, root_fid, root_name=root_name, max_depth=max_depth, assume_dir=root_is_dir)
     if not files:
         files = _collect_files_from_media_payload(data)
+    if not files:
+        return jsonify({"success": False, "message": "未能定位到可分享的视频文件，禁止创建空分享"}), 400
 
     for item in files:
         if not item.get('tmdb_id'):
@@ -2426,6 +2454,24 @@ def api_manual_create_share():
             item['season_number'] = data.get('season_number')
         if not item.get('episode_number') and data.get('episode_number'):
             item['episode_number'] = data.get('episode_number')
+
+    missing_raw = _files_missing_raw_ffprobe(files)
+    if missing_raw:
+        return jsonify({
+            "success": False,
+            "message": _raw_missing_message(missing_raw),
+            "missing_raw": missing_raw,
+        }), 400
+
+    receive_code = str(data.get('receive_code') or '').strip() or None
+    share_resp = client.share_create([root_fid], share_duration=-1, receive_code=receive_code)
+    if not share_resp or not share_resp.get('state'):
+        return jsonify({"success": False, "message": f"创建 115 分享失败: {share_resp}"}), 500
+
+    share_data = share_resp.get('data') or {}
+    share_code = share_data.get('share_code') or share_resp.get('share_code')
+    share_url = share_data.get('share_url') or (f"https://115.com/s/{share_code}" if share_code else '')
+    receive_code = receive_code or share_data.get('receive_code') or ''
 
     standard_identity = _standard_media_identity_for_share({
         **data,
@@ -2584,6 +2630,40 @@ def api_report_share_to_center(record_id):
     raw_summary = _upload_share_raw_ffprobe_to_center(record_id, cfg, headers, force=False)
     # 重新读取 items，确保 size/raw_ffprobe_uploaded 是最新状态。
     items = shared_share_db.list_share_items(record_id)
+
+    missing_raw = _files_missing_raw_ffprobe(items)
+    not_uploaded = [
+        i for i in items
+        if str(i.get('sha1') or '').strip()
+        and not i.get('raw_ffprobe_uploaded')
+        and not any(str(m.get('sha1') or '').upper() == str(i.get('sha1') or '').upper() for m in missing_raw)
+    ]
+    if missing_raw or not_uploaded or raw_summary.get('errors'):
+        errors = []
+        if missing_raw:
+            errors.append(_raw_missing_message(missing_raw))
+        if not_uploaded:
+            errors.append('存在 raw_ffprobe_json 尚未成功上传中心的分享项，禁止登记中心')
+        if raw_summary.get('errors'):
+            errors.extend(raw_summary.get('errors')[:5])
+        row = shared_share_db.update_share_record(
+            record_id,
+            center_status='failed',
+            last_error='；'.join(errors[:8]),
+        )
+        shared_virtual_db.add_credit_ledger(
+            'share_raw_missing_blocked', 0,
+            f"分享缺少 raw_ffprobe_json，已阻止登记中心：{len(missing_raw)} 个缺失，{len(not_uploaded)} 个未上传",
+            ref_id=str(record_id), title=record.get('title') or '',
+            raw_json={'missing_raw': missing_raw, 'not_uploaded': not_uploaded, 'raw_summary': raw_summary}
+        )
+        return jsonify({
+            "success": False,
+            "message": '；'.join(errors[:5]) or "缺少 raw_ffprobe_json，禁止登记中心",
+            "data": row,
+            "missing_raw": missing_raw,
+            "raw_summary": raw_summary,
+        }), 400
 
     reported = 0
     errors = []

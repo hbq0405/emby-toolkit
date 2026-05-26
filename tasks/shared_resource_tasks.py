@@ -428,6 +428,106 @@ def _cleanup_invalid_local_shares(client: SharedCenterClient, max_rows: int = 10
     return {'share_invalid_deleted': deleted, 'share_invalid_failed': failed}
 
 
+
+def _cleanup_missing_raw_local_shares(client: SharedCenterClient, max_rows: int = 100) -> Dict[str, int]:
+    """自清洁：本地分享项缺少 raw_ffprobe_json 的分享直接删除。
+
+    缺 raw 的源无法在中心展示清晰度、编码、音轨、字幕，也不能被可靠消费；
+    因此不参与水位评分，发现后直接撤销 115 分享和中心登记。
+    """
+    p115 = P115Service.get_client()
+    if not p115:
+        return {'share_raw_missing_deleted': 0, 'share_raw_missing_failed': 0}
+
+    try:
+        from routes import shared_resource as sr
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源维护] 无法加载 raw_ffprobe 检查辅助函数，跳过缺 raw 自清洁: {e}")
+        return {'share_raw_missing_deleted': 0, 'share_raw_missing_failed': 0}
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT *
+                FROM shared_share_records
+                WHERE COALESCE(share_code, '') <> ''
+                  AND status = ANY(%s)
+                ORDER BY created_at ASC NULLS FIRST, id ASC
+                LIMIT %s
+                """,
+                (_active_share_statuses(), int(max_rows)),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+    deleted = failed = 0
+    consecutive_errors = 0
+    for record in rows:
+        record_id = record.get('id')
+        share_code = str(record.get('share_code') or '').strip()
+        title = record.get('title') or record.get('root_name') or share_code or str(record_id)
+        try:
+            items = shared_share_db.list_share_items(record_id) or []
+            if not items:
+                continue
+            missing = sr._files_missing_raw_ffprobe(items)
+            if not missing:
+                continue
+
+            p115_ok, p115_resp = _delete_115_share(p115, share_code)
+            if not p115_ok:
+                shared_share_db.update_share_record(
+                    record_id,
+                    status='cancel_failed',
+                    last_error=f'缺少 raw_ffprobe_json 自动清理失败，115 删除/取消分享失败：{p115_resp}',
+                    raw_json={**(record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}), 'missing_raw_ffprobe': missing},
+                )
+                failed += 1
+                continue
+
+            center_ok, center_resp = _cancel_center_sources_for_record(client, record_id, share_code, 'raw_ffprobe_missing')
+            if not center_ok and _is_network_error(center_resp):
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束缺 raw 清理。")
+                    break
+            else:
+                consecutive_errors = 0
+
+            _mark_share_deleted(
+                record,
+                p115_resp=p115_resp,
+                center_resp=center_resp,
+                center_ok=center_ok,
+                reason='raw_ffprobe_missing',
+                last_error=f'分享文件缺少 raw_ffprobe_json，维护任务已直接删除分享：{sr._raw_missing_message(missing)}',
+                status='cancelled',
+                review_status='raw_missing',
+            )
+            shared_virtual_db.add_credit_ledger(
+                'share_raw_missing_deleted', 0,
+                f'删除缺少 raw_ffprobe_json 的分享：{title}',
+                ref_id=str(record_id),
+                title=title,
+                raw_json={'share_code': share_code, 'missing_raw': missing, 'center_ok': center_ok},
+            )
+            deleted += 1
+            time.sleep(0.25)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 缺 raw 分享清理异常: record={record_id}, share={share_code}, err={e}", exc_info=True)
+            failed += 1
+            if _is_network_error(e):
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束缺 raw 清理。")
+                    break
+
+    if deleted or failed:
+        logger.info(f"  ➜ [共享资源维护] 缺 raw_ffprobe_json 分享清理完成：删除 {deleted}，失败 {failed}。")
+    return {'share_raw_missing_deleted': deleted, 'share_raw_missing_failed': failed}
+
+
+
 def _load_share_waterline_candidates(target_active: int) -> tuple[int, List[Dict[str, Any]]]:
     """按“转存热度 + 创建时间保护”综合评分，取出应清理的超额分享。"""
     target_active = max(0, int(target_active or 0))
@@ -601,6 +701,8 @@ def _enforce_local_share_waterline(client: SharedCenterClient) -> Dict[str, int]
     result = {
         'share_invalid_deleted': 0,
         'share_invalid_failed': 0,
+        'share_raw_missing_deleted': 0,
+        'share_raw_missing_failed': 0,
         'share_pruned': 0,
         'share_prune_failed': 0,
         'share_limit': _max_active_shares_limit(),
@@ -609,6 +711,8 @@ def _enforce_local_share_waterline(client: SharedCenterClient) -> Dict[str, int]
     }
     invalid = _cleanup_invalid_local_shares(client)
     result.update(invalid)
+    raw_missing = _cleanup_missing_raw_local_shares(client)
+    result.update(raw_missing)
     excess = _cleanup_excess_local_shares(client)
     result.update(excess)
     return result
@@ -666,6 +770,15 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                     try:
                         # 直接复用 route 的核心注册逻辑不方便调用带 Flask request 的视图，这里手动按 shared_share_items 注册。
                         items = shared_share_db.list_share_items(record['id'])
+                        missing_raw = sr._files_missing_raw_ffprobe(items) if sr is not None and hasattr(sr, '_files_missing_raw_ffprobe') else []
+                        not_uploaded = [i for i in items if str(i.get('sha1') or '').strip() and not i.get('raw_ffprobe_uploaded')]
+                        if missing_raw or not_uploaded:
+                            shared_share_db.update_share_record(
+                                record['id'],
+                                center_status='failed',
+                                last_error=(sr._raw_missing_message(missing_raw) if missing_raw and hasattr(sr, '_raw_missing_message') else '存在 raw_ffprobe_json 未上传的分享项，禁止自动登记中心'),
+                            )
+                            continue
                         ok = 0
                         for item in items:
                             sha1 = str(item.get('sha1') or '').strip().upper()
@@ -1025,6 +1138,14 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
                     item.setdefault('season_number', candidate.get('season_number'))
                     item.setdefault('episode_number', candidate.get('episode_number'))
 
+                if not files:
+                    continue
+                if hasattr(sr, '_files_missing_raw_ffprobe'):
+                    missing_raw = sr._files_missing_raw_ffprobe(files)
+                    if missing_raw:
+                        logger.info(f"  ➜ [共享资源维护] 自动分享跳过缺 raw_ffprobe_json 的资源：{candidate.get('display_title')} -> {sr._raw_missing_message(missing_raw) if hasattr(sr, '_raw_missing_message') else missing_raw}")
+                        continue
+
                 if _has_existing_share_for_gap(candidate_gap, candidate=candidate, files=files):
                     continue
 
@@ -1379,6 +1500,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"清理临时转存 {total.get('expired_virtual_cache_cleaned', 0)}，"
             f"自动创建分享 {total.get('auto_created_shares', 0)}，"
             f"违规分享清理 {total.get('share_invalid_deleted', 0)}/{total.get('share_invalid_failed', 0)}，"
+            f"缺raw清理 {total.get('share_raw_missing_deleted', 0)}/{total.get('share_raw_missing_failed', 0)}，"
             f"水位清理 {total.get('share_pruned', 0)}/{total.get('share_prune_failed', 0)}，"
             f"追更命中 {total.get('follow_consumed', 0)}/{total.get('follow_missing', 0)}，"
             f"登记追更缺口 {total.get('follow_gaps', 0)}，"
