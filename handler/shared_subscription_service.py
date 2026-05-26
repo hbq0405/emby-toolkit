@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Tuple
 import config_manager
 import constants
 from database.connection import get_db_connection
+from database import settings_db
 from handler.p115_service import P115Service, P115CacheManager, SmartOrganizer
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled, shared_resource_mode
