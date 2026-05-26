@@ -925,7 +925,12 @@ def _has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] |
 
 
 def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) -> int:
-    """中心有缺口而本机已入库时，自动创建 115 分享。可用后由下一轮维护自动登记中心。"""
+    """中心有缺口而本机已入库时，自动创建 115 分享。可用后由下一轮维护自动登记中心。
+
+    注意：Season 缺口不能直接 _build_media_candidate 后放弃。
+    _expand_share_candidates 会复用手动分享的策略：Completed 且齐集才给 season_pack；
+    未完结/未齐集季会展开为已有 Episode，逐集自动分享。
+    """
     try:
         gaps = (client.list_open_gaps(limit=limit).get('items') or [])
     except Exception as e:
@@ -947,92 +952,118 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
     created = 0
     for gap in gaps:
         try:
-            if _has_existing_share_for_gap(gap):
+            gap_item_type = str(gap.get('item_type') or '').strip()
+            # Movie/Episode 可以先用缺口口径粗略去重；Season 要等展开成候选后逐个去重，
+            # 否则同季已有 1 个单集分享就会误判整季无需继续分享。
+            if gap_item_type in ('Movie', 'Episode') and _has_existing_share_for_gap(gap):
                 continue
+
             row = _find_local_media_for_gap(gap)
             if not row:
                 continue
-            candidate = sr._build_media_candidate(row)
-            if not candidate.get('resolvable') or not candidate.get('root_fid'):
-                continue
-            if _has_existing_share_for_gap(gap, candidate=candidate):
-                continue
 
-            # 遵守已有季包分享策略，避免未完结季整包分享。
-            if candidate.get('share_type') == 'season_pack':
-                policy = sr._share_policy_for_media({
-                    'item_type': 'Season',
-                    'tmdb_id': candidate.get('parent_series_tmdb_id') or candidate.get('tmdb_id'),
-                    'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id') or candidate.get('tmdb_id'),
-                    'season_number': candidate.get('season_number'),
-                })
-                if not policy.get('allowed'):
+            if hasattr(sr, '_expand_share_candidates'):
+                candidates = sr._expand_share_candidates(row)
+            else:
+                candidates = [sr._build_media_candidate(row)]
+
+            for candidate in candidates:
+                if not candidate.get('resolvable') or not candidate.get('root_fid'):
                     continue
 
-            share_resp = p115.share_create([str(candidate.get('root_fid'))], share_duration=-1, receive_code=None)
-            if not share_resp or not share_resp.get('state'):
-                logger.warning(f"  ➜ [共享资源维护] 自动创建分享失败: {candidate.get('display_title')} -> {share_resp}")
-                continue
-            data = share_resp.get('data') or {}
-            share_code = data.get('share_code') or share_resp.get('share_code')
-            receive_code = data.get('receive_code') or ''
-            share_url = data.get('share_url') or (f"https://115.com/s/{share_code}" if share_code else '')
-            root_fid = str(candidate.get('root_fid'))
-            standard_identity = sr._standard_media_identity_for_share({
-                'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id'),
-                'item_type': candidate.get('share_item_type') or candidate.get('item_type'),
-                'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id'),
-                'season_number': candidate.get('season_number'),
-                'episode_number': candidate.get('episode_number'),
-                'title': candidate.get('standard_title') or candidate.get('title'),
-                'release_year': candidate.get('release_year'),
-                'share_type': candidate.get('share_type'),
-            })
-            root_name = candidate.get('root_name') or standard_identity.get('title') or root_fid
-            root_is_dir = candidate.get('root_is_dir') is not False
+                candidate_gap = {
+                    **gap,
+                    'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or gap.get('tmdb_id'),
+                    'item_type': candidate.get('share_item_type') or candidate.get('item_type') or gap.get('item_type'),
+                    'season_number': candidate.get('season_number', gap.get('season_number')),
+                    'episode_number': candidate.get('episode_number', gap.get('episode_number')),
+                }
+                if _has_existing_share_for_gap(candidate_gap, candidate=candidate):
+                    continue
 
-            files = sr._collect_files_from_115(p115, root_fid, root_name=root_name, max_depth=6, assume_dir=root_is_dir)
-            if not files:
-                payload = {
+                # 二次遵守季包策略，避免未完结季整包分享。
+                if candidate.get('share_type') == 'season_pack':
+                    policy = sr._share_policy_for_media({
+                        'item_type': 'Season',
+                        'tmdb_id': candidate.get('parent_series_tmdb_id') or candidate.get('tmdb_id'),
+                        'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id') or candidate.get('tmdb_id'),
+                        'season_number': candidate.get('season_number'),
+                    })
+                    if not policy.get('allowed'):
+                        continue
+
+                root_fid = str(candidate.get('root_fid'))
+                standard_identity = sr._standard_media_identity_for_share({
                     'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id'),
                     'item_type': candidate.get('share_item_type') or candidate.get('item_type'),
                     'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id'),
                     'season_number': candidate.get('season_number'),
                     'episode_number': candidate.get('episode_number'),
-                    'title': candidate.get('display_title') or candidate.get('title'),
+                    'title': candidate.get('standard_title') or candidate.get('title'),
+                    'release_year': candidate.get('release_year'),
+                    'share_type': candidate.get('share_type'),
+                })
+                root_name = candidate.get('root_name') or standard_identity.get('title') or root_fid
+                root_is_dir = candidate.get('root_is_dir') is not False
+
+                # 先收集文件并做 sha1 级去重，避免重复创建 115 分享。
+                files = sr._collect_files_from_115(p115, root_fid, root_name=root_name, max_depth=6, assume_dir=root_is_dir)
+                if not files:
+                    payload = {
+                        'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id'),
+                        'item_type': candidate.get('share_item_type') or candidate.get('item_type'),
+                        'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id'),
+                        'season_number': candidate.get('season_number'),
+                        'episode_number': candidate.get('episode_number'),
+                        'title': candidate.get('display_title') or candidate.get('title'),
+                        'root_name': root_name,
+                    }
+                    files = sr._collect_files_from_media_payload(payload)
+                for item in files:
+                    item.setdefault('tmdb_id', str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or ''))
+                    item.setdefault('item_type', 'Episode' if candidate.get('share_type') in ('season_pack','series_pack') and item.get('episode_number') else candidate.get('share_item_type') or candidate.get('item_type'))
+                    item.setdefault('season_number', candidate.get('season_number'))
+                    item.setdefault('episode_number', candidate.get('episode_number'))
+
+                if _has_existing_share_for_gap(candidate_gap, candidate=candidate, files=files):
+                    continue
+
+                share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=None)
+                if not share_resp or not share_resp.get('state'):
+                    logger.warning(f"  ➜ [共享资源维护] 自动创建分享失败: {candidate.get('display_title')} -> {share_resp}")
+                    continue
+
+                data = share_resp.get('data') or {}
+                share_code = data.get('share_code') or share_resp.get('share_code')
+                receive_code = data.get('receive_code') or ''
+                share_url = data.get('share_url') or (f"https://115.com/s/{share_code}" if share_code else '')
+
+                record = shared_share_db.create_share_record({
+                    'share_code': share_code,
+                    'receive_code': receive_code,
+                    'share_url': share_url,
+                    'share_type': candidate.get('share_type') or 'movie_folder',
+                    'root_fid': root_fid,
                     'root_name': root_name,
-                }
-                files = sr._collect_files_from_media_payload(payload)
-            for item in files:
-                item.setdefault('tmdb_id', str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or ''))
-                item.setdefault('item_type', 'Episode' if candidate.get('share_type') in ('season_pack','series_pack') and item.get('episode_number') else candidate.get('share_item_type') or candidate.get('item_type'))
-                item.setdefault('season_number', candidate.get('season_number'))
-                item.setdefault('episode_number', candidate.get('episode_number'))
-            record = shared_share_db.create_share_record({
-                'share_code': share_code,
-                'receive_code': receive_code,
-                'share_url': share_url,
-                'share_type': candidate.get('share_type') or 'movie_folder',
-                'root_fid': root_fid,
-                'root_name': root_name,
-                'root_is_dir': root_is_dir,
-                'tmdb_id': str(standard_identity.get('tmdb_id') or candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or ''),
-                'item_type': candidate.get('share_item_type') or candidate.get('item_type') or 'Movie',
-                'parent_series_tmdb_id': standard_identity.get('parent_series_tmdb_id') or candidate.get('parent_series_tmdb_id'),
-                'season_number': candidate.get('season_number'),
-                'title': standard_identity.get('title') or candidate.get('standard_title') or candidate.get('title') or root_name,
-                'release_year': standard_identity.get('release_year') or candidate.get('release_year'),
-                'status': 'pending_review',
-                'review_status': 'pending_review',
-                'center_status': 'not_reported',
-                'raw_json': {'auto_gap': gap, 'share_response': share_resp, 'candidate': candidate, 'standard_identity': standard_identity},
-            })
-            shared_share_db.replace_share_items(record['id'], files)
-            shared_virtual_db.add_credit_ledger('share_auto_created_for_gap', 0, '命中中心缺口并自动创建115分享，等待审核', ref_id=str(record['id']), title=record.get('title') or '', raw_json={'gap': gap, 'share_code': share_code})
-            created += 1
+                    'root_is_dir': root_is_dir,
+                    'tmdb_id': str(standard_identity.get('tmdb_id') or candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or ''),
+                    'item_type': candidate.get('share_item_type') or candidate.get('item_type') or 'Movie',
+                    'parent_series_tmdb_id': standard_identity.get('parent_series_tmdb_id') or candidate.get('parent_series_tmdb_id'),
+                    'season_number': candidate.get('season_number'),
+                    'title': standard_identity.get('title') or candidate.get('standard_title') or candidate.get('title') or root_name,
+                    'release_year': standard_identity.get('release_year') or candidate.get('release_year'),
+                    'status': 'pending_review',
+                    'review_status': 'pending_review',
+                    'center_status': 'not_reported',
+                    'raw_json': {'auto_gap': gap, 'share_response': share_resp, 'candidate': candidate, 'standard_identity': standard_identity},
+                })
+                shared_share_db.replace_share_items(record['id'], files)
+                shared_virtual_db.add_credit_ledger('share_auto_created_for_gap', 0, '命中中心缺口并自动创建115分享，等待审核', ref_id=str(record['id']), title=record.get('title') or '', raw_json={'gap': gap, 'share_code': share_code})
+                created += 1
+                time.sleep(0.3)
         except Exception as e:
             logger.warning(f"  ➜ [共享资源维护] 自动分享中心缺口失败: {gap} -> {e}", exc_info=True)
-        time.sleep(0.3)
+        time.sleep(0.1)
     return created
 
 
