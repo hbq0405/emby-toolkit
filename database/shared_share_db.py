@@ -94,7 +94,9 @@ def list_share_records(status='all', keyword='', page=1, page_size=30) -> Tuple[
     page = max(1, int(page or 1))
     page_size = min(100, max(1, int(page_size or 30)))
     where, args = [], []
-    if status and status != 'all':
+    if status == 'active':
+        where.append("r.status NOT IN ('cancelled', 'deleted', 'cancel_failed')")
+    elif status and status != 'all':
         where.append('(r.status=%s OR r.review_status=%s OR r.center_status=%s)')
         args.extend([status, status, status])
     if keyword:
@@ -517,10 +519,3 @@ def has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] = 
                 (tmdb_ids, tmdb_ids, tmdb_ids, season, statuses),
             )
             return cur.fetchone() is not None
-
-def delete_share_record(record_id: int):
-    """物理删除分享记录及其关联的文件明细"""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM shared_share_records WHERE id=%s", (record_id,))
-            conn.commit()

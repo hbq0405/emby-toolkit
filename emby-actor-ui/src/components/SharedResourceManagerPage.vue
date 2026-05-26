@@ -241,7 +241,7 @@ const groupedCenterSources = computed(() => groupCenterSources(centerSources.val
 const ledgerCollapsedGroups = reactive({});
 
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
-const shareFilters = reactive({ keyword: '', status: 'all' });
+const shareFilters = reactive({ keyword: '', status: 'active' });
 const centerFilters = reactive({ keyword: '', status: 'alive,pending', item_type: 'all' });
 const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
@@ -258,9 +258,13 @@ const virtualStatusOptions = [
   { label: '已转正', value: 'promoted' }, { label: '已删除', value: 'deleted' }, { label: '异常', value: 'error' },
 ];
 const shareStatusOptions = [
-  { label: '全部状态', value: 'all' }, { label: '审核中', value: 'pending_review' },
-  { label: '已通过', value: 'alive' }, { label: '已登记', value: 'reported' },
-  { label: '部分登记', value: 'partial' }, { label: '失败/异常', value: 'failed' },
+  { label: '有效分享', value: 'active' }, 
+  { label: '全部状态', value: 'all' }, 
+  { label: '审核中', value: 'pending_review' },
+  { label: '已通过', value: 'alive' }, 
+  { label: '已登记', value: 'reported' },
+  { label: '部分登记', value: 'partial' }, 
+  { label: '失败/异常', value: 'failed' },
   { label: '已取消', value: 'cancelled' },
 ];
 
