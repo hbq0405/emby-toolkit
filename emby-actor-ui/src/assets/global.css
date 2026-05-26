@@ -138,3 +138,63 @@ body,
 .dashboard-card:nth-child(3) { animation-delay: 0.3s; }
 .dashboard-card:nth-child(4) { animation-delay: 0.4s; }
 .dashboard-card:nth-child(5) { animation-delay: 0.5s; }
+
+/* === 主题透明背景统一兜底：解决页面组件二次底色 === */
+
+/* 页面整体背景 */
+html,
+body,
+#app,
+.n-layout,
+.n-layout-content,
+.n-layout-scroll-container {
+  background: var(--app-bg-color, var(--n-body-color)) !important;
+}
+
+/* 所有普通 n-card 都吃自定义卡片背景，不再只限制 dashboard-card */
+.n-card:not(.modal-card-lite) {
+  background: var(--card-bg-color, var(--n-card-color)) !important;
+  background-color: var(--card-bg-color, var(--n-card-color)) !important;
+  border-color: var(--card-border-color, var(--n-border-color)) !important;
+  color: var(--text-color, var(--n-text-color)) !important;
+}
+
+/* n-card 内部分区必须透明，否则会盖住外层透明背景 */
+.n-card:not(.modal-card-lite) > .n-card__content,
+.n-card:not(.modal-card-lite) > .n-card__header,
+.n-card:not(.modal-card-lite) > .n-card__footer,
+.n-card:not(.modal-card-lite) > .n-card__action {
+  background: transparent !important;
+  background-color: transparent !important;
+}
+
+/* 常见页面自定义卡片/面板，不允许再用 var(--n-card-color) 压一层 */
+.settings-card,
+.stat-card,
+.stats-card,
+.info-card,
+.content-card,
+.config-card,
+.resource-card,
+.filter-card,
+.table-card,
+.panel-card,
+.form-card,
+.setting-sub-panel {
+  background-color: transparent !important;
+}
+
+/* 表格、列表、描述组件经常自带底色，也要穿透 */
+.n-card .n-data-table,
+.n-card .n-data-table-base-table,
+.n-card .n-data-table-base-table-body,
+.n-card .n-data-table-th,
+.n-card .n-data-table-td,
+.n-card .n-list,
+.n-card .n-list-item,
+.n-card .n-descriptions,
+.n-card .n-descriptions-table,
+.n-card .n-descriptions-table-wrapper,
+.n-card .n-descriptions-table-content {
+  background-color: transparent !important;
+}
