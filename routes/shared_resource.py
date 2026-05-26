@@ -1707,6 +1707,7 @@ def api_search_shareable_media():
                     JOIN related_series rs ON rs.series_id IS NOT NULL
                                           AND s.item_type='Season'
                                           AND s.parent_series_tmdb_id=rs.series_id
+                    WHERE s.in_library = TRUE
                 )
                 SELECT *
                 FROM expanded
