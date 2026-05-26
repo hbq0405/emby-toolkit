@@ -109,6 +109,7 @@
               </n-input>
               <n-select v-model:value="centerFilters.item_type" :options="centerTypeOptions" style="width: 140px" />
               <n-select v-model:value="centerFilters.status" :options="centerStatusOptions" style="width: 150px" />
+              <n-select v-model:value="centerFilters.order_by" :options="centerOrderOptions" style="width: 130px" />
               <n-button type="primary" :loading="centerLoading" @click="loadCenterSources">查询中心</n-button>
               <n-button secondary :loading="maintenanceSubmitting" @click="triggerSharedMaintenance">执行维护任务</n-button>
             </n-space>
@@ -239,15 +240,22 @@ const virtualItems = ref([]);
 const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
-const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || []));
+const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
 const ledgerCollapsedGroups = reactive({});
 
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
 const shareFilters = reactive({ keyword: '', status: 'active' });
-const centerFilters = reactive({ keyword: '', status: 'alive,pending', item_type: 'all' });
+const centerFilters = reactive({ keyword: '', status: 'alive,pending', item_type: 'all', order_by: 'latest' });
 const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
+
+const centerOrderOptions = [
+  { label: '最新分享', value: 'latest' },
+  { label: '热门分享', value: 'popular' },
+  { label: '文件大小', value: 'size' },
+  { label: '名称排序', value: 'name' },
+];
 
 const manualShareForm = reactive({
   root_fid: '', root_name: '', root_is_dir: true, title: '', tmdb_id: '', parent_series_tmdb_id: '',
@@ -782,11 +790,29 @@ const groupCenterSources = (items) => {
     group.versions.push(item);
   }
   for (const group of groups) {
-    group.versions.sort((a, b) => centerCreatedTime(b) - centerCreatedTime(a));
-    const newest = group.versions[0] || {};
-    group.created_at = newest.created_at || group.created_at;
+    // 👇 根据不同排序规则，对组内版本排序，并提取组的排序基准值
+    if (orderBy === 'popular') {
+      group.versions.sort((a, b) => (b.success_count || 0) - (a.success_count || 0));
+      group.sort_val = Math.max(...group.versions.map(v => v.success_count || 0));
+    } else if (orderBy === 'size') {
+      group.versions.sort((a, b) => (b.size || 0) - (a.size || 0));
+      group.sort_val = Math.max(...group.versions.map(v => v.size || 0));
+    } else if (orderBy === 'name') {
+      group.versions.sort((a, b) => (a.title || '').localeCompare(b.title || ''));
+      group.sort_val = group.title || '';
+    } else {
+      group.versions.sort((a, b) => centerCreatedTime(b) - centerCreatedTime(a));
+      group.sort_val = centerCreatedTime(group.versions[0]);
+    }
+    group.created_at = group.versions[0]?.created_at || group.created_at;
   }
-  groups.sort((a, b) => centerCreatedTime(b) - centerCreatedTime(a));
+  
+  // 👇 对所有组进行排序
+  groups.sort((a, b) => {
+    if (orderBy === 'popular' || orderBy === 'size') return b.sort_val - a.sort_val;
+    if (orderBy === 'name') return String(a.sort_val).localeCompare(String(b.sort_val));
+    return b.sort_val - a.sort_val; // latest
+  });
   return groups;
 };
 
@@ -828,6 +854,7 @@ const centerColumns = [
   { title: '音轨', key: 'audios', minWidth: 220, render: row => lineStack(row.versions, it => h('span', defaultTrackText(it.version_summary?.audio_list || it.version_summary?.audios)), it => allTrackTitle(it.version_summary?.audio_list || it.version_summary?.audios)) },
   { title: '字幕', key: 'subtitles', minWidth: 220, render: row => lineStack(row.versions, it => h('span', defaultTrackText(it.version_summary?.subtitle_list || it.version_summary?.subtitles)), it => allTrackTitle(it.version_summary?.subtitle_list || it.version_summary?.subtitles)) },
   { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
+  { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
   { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => lineStack(row.versions, it => {
     // 判断当前行是否正在转存或入库
@@ -887,6 +914,7 @@ const loadCenterSources = async () => {
       keyword: centerFilters.keyword,
       item_type: centerFilters.item_type === 'all' ? '' : centerFilters.item_type,
       status: centerFilters.status,
+      order_by: centerFilters.order_by,
       limit: centerPagination.pageSize,
       offset: (centerPagination.page - 1) * centerPagination.pageSize,
     };

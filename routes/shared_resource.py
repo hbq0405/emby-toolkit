@@ -3769,6 +3769,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
         if newest_row.get('created_at'):
             rep['created_at'] = newest_row.get('created_at')
         total_size = 0
+        total_success = 0
         episode_numbers = []
         source_ids = []
         tmdb_ids = []
@@ -3779,6 +3780,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
                 total_size += int(r.get('size') or 0)
             except Exception:
                 pass
+            total_success += int(r.get('success_count') or 0)
             sid = r.get('source_id')
             if sid:
                 source_ids.append(sid)
@@ -3805,6 +3807,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
         rep['pack_tmdb_ids'] = unique_tmdb_ids
         rep['share_type'] = 'season_pack'
         rep['is_collapsed_pack'] = True
+        rep['success_count'] = total_success
         if not has_any_episode and not unique_eps:
             rep['pack_note'] = f"同一分享码下 {len(rows)} 个文件"
 
@@ -3927,7 +3930,7 @@ def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dic
     return merged
 
 
-def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = 'alive,pending', limit: int = 30, offset: int = 0) -> Dict[str, Any]:
+def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = 'alive,pending', order_by: str = 'latest', limit: int = 30, offset: int = 0) -> Dict[str, Any]:
     """按展示口径加载中心资源库。
 
     中心接口是按 shared_sources 原始文件分页，前端需要按“电影 / 剧集包 / 单集”展示。
@@ -3951,6 +3954,7 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
             tmdb_id=tmdb_id or '',
             item_type='',
             status=status or 'alive,pending',
+            order_by=order_by,
             limit=raw_page_size,
             offset=raw_offset,
             include_raw=False,
@@ -3968,7 +3972,15 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
         expanded = _expand_center_pack_page_items(client, raw_rows, status=status)
         collapsed = _collapse_center_season_pack_rows(expanded)
         display_rows = [r for r in collapsed if _center_match_display_type(r, display_type)]
-        display_rows.sort(key=lambda r: (_center_created_ts(r), str(r.get('source_id') or '')), reverse=True)
+        if order_by == 'popular':
+            display_rows.sort(key=lambda r: (int(r.get('success_count') or 0), _center_created_ts(r)), reverse=True)
+        elif order_by == 'name':
+            display_rows.sort(key=lambda r: (str(r.get('title') or ''), -_center_created_ts(r)))
+        elif order_by == 'size':
+            display_rows.sort(key=lambda r: (int(r.get('size') or 0), _center_created_ts(r)), reverse=True)
+        else:
+            display_rows.sort(key=lambda r: (_center_created_ts(r), str(r.get('source_id') or '')), reverse=True)
+            
         if len(display_rows) >= target_count:
             break
         raw_offset += len(page_items)
@@ -4090,6 +4102,7 @@ def api_center_sources():
             tmdb_id=request.args.get('tmdb_id', ''),
             display_type=request.args.get('item_type', ''),
             status=request.args.get('status', 'alive,pending'),
+            order_by=request.args.get('order_by', 'latest'),
             limit=int(request.args.get('limit', 30) or 30),
             offset=int(request.args.get('offset', 0) or 0),
         )
