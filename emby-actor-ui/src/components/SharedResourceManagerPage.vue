@@ -355,20 +355,36 @@ const tmdbHref = (row) => {
   if (!id) return '';
   return `https://www.themoviedb.org/${tmdbMediaKind(row)}/${encodeURIComponent(id)}`;
 };
+const openTmdb = (row) => {
+  const href = tmdbHref(row);
+  if (!href) return;
+  const win = window.open(href, '_blank', 'noopener,noreferrer');
+  if (win) win.opener = null;
+};
 const tmdbLink = (row, labelPrefix = 'TMDb') => {
   const id = tmdbIdForRow(row);
   if (!id) return `${labelPrefix} -`;
-  return h('a', {
-    class: 'tmdb-link',
-    href: tmdbHref(row),
-    target: '_blank',
-    rel: 'noopener noreferrer',
+  return h('span', {
+    class: 'tmdb-pill',
+    role: 'link',
+    tabindex: 0,
+    title: `打开 TMDb ${id}`,
     style: {
       '--tmdb-color': themeVars.value.primaryColor,
-      '--tmdb-color-hover': themeVars.value.primaryColorHover,
+      '--tmdb-color-hover': themeVars.value.primaryColorHover || themeVars.value.primaryColor,
     },
-    onClick: e => e.stopPropagation(),
-  }, `${labelPrefix} ${id}`);
+    onClick: e => { e.stopPropagation(); openTmdb(row); },
+    onKeydown: e => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        e.stopPropagation();
+        openTmdb(row);
+      }
+    },
+  }, [
+    h('span', { class: 'tmdb-pill-label' }, labelPrefix),
+    h('span', { class: 'tmdb-pill-id' }, id),
+  ]);
 };
 
 const centerCreatedTime = (row) => {
@@ -1014,33 +1030,51 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .stat-desc { margin-top: 8px; font-size: 12px; opacity: .65; }
 .toolbar { margin-bottom: 14px; }
 .main-title { font-weight: 600; }
-.sub-title { font-size: 12px; opacity: .6; margin-top: 3px; }
-.tmdb-link,
-.tmdb-link:visited,
-.tmdb-link:active {
+.sub-title {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--n-text-color-3, rgba(128,128,128,.78));
+  margin-top: 5px;
+  opacity: 1;
+}
+.tmdb-pill {
   display: inline-flex;
   align-items: center;
-  padding: 1px 7px;
+  gap: 4px;
+  padding: 2px 8px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 650;
   line-height: 18px;
-  color: var(--tmdb-color, var(--primary-color, var(--n-primary-color, #18a058)));
-  background: rgba(24, 160, 88, .08);
-  background: color-mix(in srgb, currentColor 9%, transparent);
-  border: 1px solid color-mix(in srgb, currentColor 24%, transparent);
-  text-decoration: none;
-  vertical-align: baseline;
-  transition: background-color .16s ease, border-color .16s ease, transform .16s ease;
+  color: var(--tmdb-color, #e91e63) !important;
+  background: rgba(233, 30, 99, .10);
+  background: color-mix(in srgb, currentColor 11%, transparent);
+  border: 1px solid rgba(233, 30, 99, .26);
+  border-color: color-mix(in srgb, currentColor 28%, transparent);
+  text-decoration: none !important;
+  cursor: pointer;
+  user-select: none;
+  vertical-align: middle;
+  transition: background-color .16s ease, border-color .16s ease, color .16s ease, transform .16s ease;
 }
-.tmdb-link:hover {
-  color: var(--tmdb-color-hover, var(--tmdb-color, var(--primary-color-hover, var(--n-primary-color-hover, #18a058))));
-  background: rgba(24, 160, 88, .12);
-  background: color-mix(in srgb, currentColor 14%, transparent);
-  border-color: color-mix(in srgb, currentColor 38%, transparent);
-  text-decoration: none;
+.tmdb-pill:hover {
+  color: var(--tmdb-color-hover, var(--tmdb-color, #e91e63)) !important;
+  background: rgba(233, 30, 99, .16);
+  background: color-mix(in srgb, currentColor 17%, transparent);
+  border-color: rgba(233, 30, 99, .42);
+  border-color: color-mix(in srgb, currentColor 46%, transparent);
+  transform: translateY(-1px);
 }
-.tmdb-link:active { transform: translateY(1px); }
+.tmdb-pill:active { transform: translateY(0); }
+.tmdb-pill:focus-visible {
+  outline: 2px solid var(--tmdb-color, #e91e63);
+  outline-offset: 2px;
+}
+.tmdb-pill-label { opacity: .74; letter-spacing: .02em; }
+.tmdb-pill-id { font-variant-numeric: tabular-nums; }
 .pre-line { white-space: pre-line; line-height: 1.55; }
 .selected-share-box { border: 1px solid rgba(128,128,128,.22); border-radius: 12px; padding: 12px 14px; background: rgba(128,128,128,.06); }
 .selected-title { font-weight: 700; margin-bottom: 6px; }
