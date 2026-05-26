@@ -17,9 +17,10 @@
               <span class="card-title">核心数据</span>
               <n-spin v-if="loading.core || loading.library || loading.system" size="small" style="float: right" />
             </template>
-            <n-space vertical :size="20">
-              <!-- 顶部关键指标 (改为3列) -->
-              <n-grid :cols="2" :x-gap="12" class="inner-section-card hero-stats-card">
+            <div class="core-card-stack">
+              <!-- 顶部关键指标 -->
+              <div class="inner-section-card hero-stats-card">
+                <n-grid :cols="2" :x-gap="12">
                 <n-gi>
                   <n-statistic label="已缓存媒体" class="centered-statistic">
                     <span class="stat-value">{{ stats.media_library.cached_total }}</span>
@@ -42,14 +43,15 @@
                     </div>
                   </n-statistic>
                 </n-gi>
-              </n-grid>
+                </n-grid>
+              </div>
   
               <n-divider />
   
               <!-- 媒体库概览 -->
               <div class="inner-section-card media-overview-card">
                 <div class="section-title">媒体库概览</div>
-                <n-grid :cols="2" :x-gap="24" style="margin-top: 12px; align-items: center;">
+                <n-grid :cols="2" :x-gap="24" class="media-overview-grid" style="margin-top: 12px; align-items: center;">
                   <n-gi>
                     <v-chart class="chart" :option="resolutionChartOptions" autoresize style="height: 180px;" />
                   </n-gi>
@@ -106,7 +108,7 @@
                   <n-statistic label="待复核" class="centered-statistic" :value="stats.system.failed_log_count" />
                 </n-space>
               </div>
-            </n-space>
+            </div>
           </n-card>
         </n-gi>
         
@@ -117,7 +119,7 @@
               <span class="card-title">智能订阅</span>
               <n-spin v-if="loading.subscription || loading.rankings" size="small" style="float: right" />
             </template>
-            <n-space vertical :size="24" class="subscription-center-card">
+            <div class="subscription-center-card">
               
               <div class="section-container">
                 <div class="section-title">媒体追踪</div>
@@ -181,7 +183,8 @@
               </div>
               <n-divider />
               <!-- MP 配额 -->
-                <n-grid :cols="3" :x-gap="12" class="quota-grid inner-section-card quota-section">
+              <div class="inner-section-card quota-section">
+                <n-grid :cols="3" :x-gap="12" class="quota-grid">
                   <n-gi class="quota-label-container">
                     <n-icon size="18" color="#18a058" style="margin-right: 6px"><CheckIcon /></n-icon>
                     <span>MP 订阅配额</span>
@@ -189,14 +192,16 @@
                   <n-gi class="stat-block"><div class="stat-item"><div class="stat-item-label">今日已用</div><div class="stat-item-value">{{ stats.subscriptions_card.quota.mp.consumed }}</div></div></n-gi>
                   <n-gi class="stat-block"><div class="stat-item"><div class="stat-item-label">今日剩余</div><div class="stat-item-value">{{ stats.subscriptions_card.quota.mp.available }}</div></div></n-gi>
                 </n-grid>
+              </div>
                 
               <n-divider />
   
               <!-- 发布组统计区 -->
-              <div class="section-container">
+              <div class="section-container ranking-section">
                 <n-grid :cols="2" :x-gap="24">
                   <!-- 左列：今日排行 -->
                   <n-gi>
+                    <div class="ranking-panel">
                     <div class="section-title">今日发布组 (Top {{ stats.release_group_ranking.length }})</div>
                     <n-space vertical :size="12" style="width: 100%;">
                       <div v-if="stats.release_group_ranking.length === 0">
@@ -221,10 +226,12 @@
                         />
                       </div>
                     </n-space>
+                    </div>
                   </n-gi>
   
                   <!-- 右列：历史排行 -->
                   <n-gi>
+                    <div class="ranking-panel">
                     <div class="section-title">历史发布组 (Top {{ stats.historical_release_group_ranking.length }})</div>
                     <n-space vertical :size="12" style="width: 100%;">
                       <div v-if="stats.historical_release_group_ranking.length === 0">
@@ -249,10 +256,11 @@
                         />
                       </div>
                     </n-space>
+                    </div>
                   </n-gi>
                 </n-grid>
               </div>
-            </n-space>
+            </div>
           </n-card>
         </n-gi>
   
@@ -579,14 +587,24 @@ onUnmounted(() => {
 }
 
 /* 外层大卡片内容统一紧凑一点 */
+.database-stats-page :deep(.dashboard-card) {
+  overflow: hidden;
+}
+
 .database-stats-page :deep(.dashboard-card > .n-card__content) {
+  height: 100%;
   padding-top: 12px !important;
 }
 
 /* 左侧内部卡片 + 右侧已有 section-container 统一玻璃化 */
 .inner-section-card,
-.section-container {
+.section-container,
+.ranking-panel {
   position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
   padding: 18px 20px;
   border-radius: 16px;
   background: rgba(255, 255, 255, 0.035);
@@ -596,22 +614,61 @@ onUnmounted(() => {
   -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px));
 }
 
+/* 用自己的 flex 栈替代 n-space，避免内部小卡片被 n-grid/padding 撑出外层 */
+.core-card-stack,
+.subscription-center-card {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.core-card-stack { gap: 20px; }
+.subscription-center-card { gap: 16px; }
+
 .hero-stats-card {
+  flex: 0 0 auto;
   padding: 14px 20px 18px;
   background: rgba(255, 255, 255, 0.025);
 }
 
 .media-overview-card {
-  min-height: 250px;
+  flex: 1 1 auto;
+  min-height: 320px;
+  display: flex;
+  flex-direction: column;
+}
+
+.media-overview-card .media-overview-grid {
+  flex: 1;
 }
 
 .system-cache-card {
+  flex: 0 0 auto;
   padding-bottom: 20px;
 }
 
 .quota-section {
+  flex: 0 0 auto;
   margin: 0 !important;
   min-height: 92px;
+}
+
+.quota-section .quota-grid {
+  width: 100%;
+}
+
+.ranking-section {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.ranking-panel {
+  height: 100%;
+  padding: 14px 16px;
+  background: rgba(255, 255, 255, 0.026);
 }
 
 /* 分组标题：从普通标题改成小卡片标题 */
