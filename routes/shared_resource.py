@@ -1631,7 +1631,9 @@ def _expand_share_candidates(row: Dict[str, Any]) -> List[Dict[str, Any]]:
                            file_sha1_json, file_pickcode_json, in_library, subscription_status,
                            total_episodes, watching_status, watchlist_tmdb_status
                     FROM media_metadata
-                    WHERE item_type='Season' AND parent_series_tmdb_id=%s
+                    WHERE item_type='Season' 
+                      AND parent_series_tmdb_id=%s
+                      AND in_library=TRUE
                     ORDER BY season_number NULLS LAST, tmdb_id
                 """, (series_id,))
                 seasons = [dict(r) for r in cur.fetchall()]
