@@ -1,6 +1,6 @@
 <!-- src/components/CustomCollectionsManager.vue -->
 <template>
-  <n-layout content-style="padding: 24px;" background-color="transparent">
+  <n-layout content-style="padding: 24px; background-color: transparent;">
     <div class="custom-collections-manager">
       <!-- 1. 页面头部 -->
       <n-page-header>
