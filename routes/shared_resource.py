@@ -3882,14 +3882,8 @@ _CENTER_SOURCE_PROVIDER_LABELS = {
 
 
 def _load_local_share_code_set(items: List[Dict[str, Any]]) -> set:
-    codes = sorted({str(x.get('share_code') or '').strip() for x in (items or []) if str(x.get('share_code') or '').strip()})
-    if not codes:
-        return set()
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT share_code FROM shared_share_records WHERE share_code = ANY(%s)", (codes,))
-                return {str(r.get('share_code') or '').strip() for r in cur.fetchall()}
+        return shared_share_db.get_existing_share_code_set(items)
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 查询本地分享来源失败: {e}")
         return set()

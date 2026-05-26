@@ -245,31 +245,16 @@ def _share_low_watermark(max_active_shares: int) -> int:
 
 def _active_share_statuses() -> List[str]:
     """本地仍应视为占用 115 分享名额的状态。"""
-    return [
-        'pending_review', 'alive', 'reported', 'partial', 'not_reported', 'review_failed',
-        'blocked', 'violation', 'cancel_failed',
-    ]
+    return shared_share_db.active_share_statuses()
 
 
 def _invalid_share_statuses() -> List[str]:
     """115 已判定违规/风控或上次删除失败的分享，维护任务应直接删除/重试。"""
-    return ['blocked', 'violation', 'cancel_failed']
+    return shared_share_db.invalid_share_statuses()
 
 
 def _count_active_local_shares() -> int:
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT COUNT(*) AS n
-                FROM shared_share_records
-                WHERE COALESCE(share_code, '') <> ''
-                  AND status = ANY(%s)
-                """,
-                (_active_share_statuses(),),
-            )
-            row = cur.fetchone()
-            return int((dict(row) if row else {}).get('n') or 0)
+    return shared_share_db.count_active_share_records(_active_share_statuses())
 
 
 def _share_cancel_success(resp: Any) -> bool:
@@ -360,24 +345,11 @@ def _cleanup_invalid_local_shares(client: SharedCenterClient, max_rows: int = 10
     if not p115:
         return {'share_invalid_deleted': 0, 'share_invalid_failed': 0}
 
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT *
-                FROM shared_share_records
-                WHERE COALESCE(share_code, '') <> ''
-                  AND (
-                        status = ANY(%s)
-                     OR review_status = ANY(%s)
-                     OR center_status = 'cancel_failed'
-                  )
-                ORDER BY created_at ASC NULLS FIRST, id ASC
-                LIMIT %s
-                """,
-                (_invalid_share_statuses(), ['blocked', 'violation'], int(max_rows)),
-            )
-            rows = [dict(r) for r in cur.fetchall()]
+    rows = shared_share_db.list_invalid_share_records(
+        limit=max_rows,
+        invalid_statuses=_invalid_share_statuses(),
+        review_statuses=['blocked', 'violation'],
+    )
 
     deleted = failed = 0
     consecutive_errors = 0
@@ -445,20 +417,11 @@ def _cleanup_missing_raw_local_shares(client: SharedCenterClient, max_rows: int 
         logger.warning(f"  ➜ [共享资源维护] 无法加载 raw_ffprobe 检查辅助函数，跳过缺 raw 自清洁: {e}")
         return {'share_raw_missing_deleted': 0, 'share_raw_missing_failed': 0}
 
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT *
-                FROM shared_share_records
-                WHERE COALESCE(share_code, '') <> ''
-                  AND status = ANY(%s)
-                ORDER BY created_at ASC NULLS FIRST, id ASC
-                LIMIT %s
-                """,
-                (_active_share_statuses(), int(max_rows)),
-            )
-            rows = [dict(r) for r in cur.fetchall()]
+    rows = shared_share_db.list_active_share_records(
+        limit=max_rows,
+        statuses=_active_share_statuses(),
+        order_by='created_asc',
+    )
 
     deleted = failed = 0
     consecutive_errors = 0
@@ -530,63 +493,7 @@ def _cleanup_missing_raw_local_shares(client: SharedCenterClient, max_rows: int 
 
 def _load_share_waterline_candidates(target_active: int) -> tuple[int, List[Dict[str, Any]]]:
     """按“转存热度 + 创建时间保护”综合评分，取出应清理的超额分享。"""
-    target_active = max(0, int(target_active or 0))
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                WITH active_records AS (
-                    SELECT r.*
-                    FROM shared_share_records r
-                    WHERE COALESCE(r.share_code, '') <> ''
-                      AND r.status = ANY(%s)
-                ), stats AS (
-                    SELECT
-                        r.id AS record_id,
-                        COUNT(DISTINCT l.id) FILTER (WHERE l.id IS NOT NULL) AS served_count,
-                        MAX(l.created_at) FILTER (WHERE l.id IS NOT NULL) AS last_served_at
-                    FROM active_records r
-                    LEFT JOIN shared_share_items i ON i.share_record_id = r.id
-                    LEFT JOIN shared_credit_ledger_local l
-                      ON l.event_type = 'center_shared_source_served'
-                     AND COALESCE(l.source_id, '') <> ''
-                     AND l.source_id IN (COALESCE(i.center_source_id, ''), COALESCE(r.center_source_id, ''))
-                    GROUP BY r.id
-                ), scored AS (
-                    SELECT
-                        r.*,
-                        COALESCE(s.served_count, 0) AS served_count,
-                        s.last_served_at,
-                        EXTRACT(EPOCH FROM (NOW() - COALESCE(r.created_at, NOW()))) / 86400.0 AS age_days,
-                        COUNT(*) OVER() AS total_active,
-                        (
-                            COALESCE(s.served_count, 0) * 100.0
-                            + CASE
-                                WHEN EXTRACT(EPOCH FROM (NOW() - COALESCE(r.created_at, NOW()))) / 86400.0 < 3
-                                  THEN (3 - EXTRACT(EPOCH FROM (NOW() - COALESCE(r.created_at, NOW()))) / 86400.0) * 50.0
-                                ELSE 0
-                              END
-                            - LEAST(EXTRACT(EPOCH FROM (NOW() - COALESCE(r.created_at, NOW()))) / 86400.0, 365.0)
-                            - CASE
-                                WHEN r.status IN ('blocked','violation','cancel_failed') THEN 1000.0
-                                ELSE 0
-                              END
-                        ) AS retention_score
-                    FROM active_records r
-                    LEFT JOIN stats s ON s.record_id = r.id
-                )
-                SELECT *
-                FROM scored
-                WHERE total_active > %s
-                ORDER BY retention_score ASC, served_count ASC, created_at ASC NULLS FIRST, id ASC
-                LIMIT GREATEST((SELECT MAX(total_active) FROM scored) - %s, 0)
-                """,
-                (_active_share_statuses(), target_active, target_active),
-            )
-            rows = [dict(r) for r in cur.fetchall()]
-            total = int(rows[0].get('total_active') or 0) if rows else _count_active_local_shares()
-            return total, rows
+    return shared_share_db.load_share_waterline_candidates(target_active, _active_share_statuses())
 
 
 def _cleanup_excess_local_shares(client: SharedCenterClient, max_active_shares: int = 0) -> Dict[str, int]:
@@ -949,110 +856,13 @@ def _dedupe_values(*vals) -> List[str]:
 
 
 def _has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] | None = None, files: List[Dict[str, Any]] | None = None) -> bool:
-    """判断中心缺口是否已经有本机分享在处理。返回 True 就绝对不再自动 share_create。
-
-    旧逻辑只按 tmdb_id + item_type + season_number 粗略判断，遇到单集缺口时容易因为
-    gap tmdb / candidate tmdb / parent_series_tmdb_id 口径不一致而漏判，维护任务就会每轮
-    都创建一个新 115 分享。这里改为三层去重：root_fid、sha1、媒体口径。
-    """
-    candidate = candidate or {}
-    files = files or []
-    item_type = str(gap.get('item_type') or candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
-    season = _safe_int(gap.get('season_number', candidate.get('season_number')), -1)
-    episode = _safe_int(gap.get('episode_number', candidate.get('episode_number')), -1)
-    root_fid = str(candidate.get('root_fid') or '').strip()
-    tmdb_ids = _dedupe_values(
-        gap.get('tmdb_id'),
-        candidate.get('share_tmdb_id'),
-        candidate.get('tmdb_id'),
-        candidate.get('parent_series_tmdb_id'),
+    """判断中心缺口是否已经有本机分享在处理。返回 True 就绝对不再自动 share_create。"""
+    return shared_share_db.has_existing_share_for_gap(
+        gap or {},
+        candidate or {},
+        files or [],
+        statuses=_active_share_statuses(),
     )
-    sha1s = _dedupe_values([str(x.get('sha1') or '').strip().upper() for x in files or [] if x.get('sha1')])
-
-    # blocked/violation 也必须算“已有处理记录”，这样违规资源不会被下一轮自动重建。
-    active_statuses = (
-        'pending_review', 'alive', 'reported', 'partial', 'not_reported',
-        'blocked', 'violation', 'review_failed'
-    )
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            if root_fid:
-                cur.execute(
-                    """
-                    SELECT 1 FROM shared_share_records
-                    WHERE root_fid=%s
-                      AND status = ANY(%s)
-                    LIMIT 1
-                    """,
-                    (root_fid, list(active_statuses)),
-                )
-                if cur.fetchone() is not None:
-                    return True
-
-            if sha1s:
-                cur.execute(
-                    """
-                    SELECT 1
-                    FROM shared_share_records r
-                    JOIN shared_share_items i ON i.share_record_id = r.id
-                    WHERE UPPER(COALESCE(i.sha1, '')) = ANY(%s)
-                      AND r.status = ANY(%s)
-                    LIMIT 1
-                    """,
-                    (sha1s, list(active_statuses)),
-                )
-                if cur.fetchone() is not None:
-                    return True
-
-            if not tmdb_ids:
-                return False
-
-            if item_type == 'Movie':
-                cur.execute(
-                    """
-                    SELECT 1
-                    FROM shared_share_records r
-                    LEFT JOIN shared_share_items i ON i.share_record_id = r.id
-                    WHERE (r.tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
-                      AND (r.item_type IN ('Movie','movie','movie_file','movie_folder') OR i.item_type IN ('Movie','movie','movie_file'))
-                      AND r.status = ANY(%s)
-                    LIMIT 1
-                    """,
-                    (tmdb_ids, tmdb_ids, list(active_statuses)),
-                )
-                return cur.fetchone() is not None
-
-            if item_type == 'Episode':
-                cur.execute(
-                    """
-                    SELECT 1
-                    FROM shared_share_records r
-                    LEFT JOIN shared_share_items i ON i.share_record_id = r.id
-                    WHERE (r.tmdb_id = ANY(%s) OR r.parent_series_tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
-                      AND COALESCE(i.season_number, r.season_number, -1)=COALESCE(%s, -1)
-                      AND COALESCE(i.episode_number, -1)=COALESCE(%s, -1)
-                      AND r.status = ANY(%s)
-                    LIMIT 1
-                    """,
-                    (tmdb_ids, tmdb_ids, tmdb_ids, season, episode, list(active_statuses)),
-                )
-                return cur.fetchone() is not None
-
-            # Season / Series 都按“剧集包”处理，精确到季。
-            cur.execute(
-                """
-                SELECT 1
-                FROM shared_share_records r
-                LEFT JOIN shared_share_items i ON i.share_record_id = r.id
-                WHERE (r.tmdb_id = ANY(%s) OR r.parent_series_tmdb_id = ANY(%s) OR i.tmdb_id = ANY(%s))
-                  AND COALESCE(i.season_number, r.season_number, -1)=COALESCE(%s, -1)
-                  AND r.status = ANY(%s)
-                LIMIT 1
-                """,
-                (tmdb_ids, tmdb_ids, tmdb_ids, season, list(active_statuses)),
-            )
-            return cur.fetchone() is not None
 
 
 
