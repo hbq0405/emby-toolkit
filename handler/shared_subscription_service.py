@@ -673,11 +673,6 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
         if not share_code:
             errors.append(f"{src.get('file_name')}: 缺少分享码")
             continue
-        logger.info(
-            f"  ➜ [共享资源] 中心命中，准备从115分享转存："
-            f"title={context.get('title')}, share={share_code}, "
-            f"source_id={src.get('source_id')}, file={src.get('file_name')}"
-        )
         resp = p115.share_import(share_code, receive_code, target_cid)
         logger.info(
             f"  ➜ [共享资源] 115分享转存返回：share={share_code}, "
