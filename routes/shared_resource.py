@@ -1678,6 +1678,7 @@ def api_search_shareable_media():
                            total_episodes, watching_status, watchlist_tmdb_status
                     FROM media_metadata
                     WHERE item_type IN ('Movie','Series','Season','Episode')
+                      AND in_library = TRUE
                       AND (
                         title ILIKE %s OR original_title ILIKE %s OR tmdb_id ILIKE %s
                       )
