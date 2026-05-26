@@ -4,6 +4,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 import uuid
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -19,6 +21,43 @@ from handler.shared_center_client import SharedCenterClient, shared_center_enabl
 logger = logging.getLogger(__name__)
 
 VIDEO_EXTS = {'.mkv', '.mp4', '.ts', '.m2ts', '.avi', '.mov', '.wmv', '.flv', '.rmvb', '.webm', '.iso'}
+_ORGANIZE_KICK_LOCK = threading.Lock()
+_LAST_ORGANIZE_KICK_AT = 0
+
+
+def _kick_115_organize_detached(reason: str = '', delay: float = 3.0) -> Dict[str, Any]:
+    """共享资源永久转存成功后，绕过单线程 task_manager，异步踢 115 待整理扫描。"""
+    global _LAST_ORGANIZE_KICK_AT
+
+    now = time.time()
+    with _ORGANIZE_KICK_LOCK:
+        if now - _LAST_ORGANIZE_KICK_AT < 10:
+            return {
+                'started': False,
+                'message': '115 整理扫描刚触发过，本次不重复启动',
+            }
+        _LAST_ORGANIZE_KICK_AT = now
+
+    def _runner():
+        if delay and delay > 0:
+            time.sleep(delay)
+        try:
+            from tasks.p115 import task_scan_and_organize_115
+            logger.info(f"  ➜ [共享资源] 异步触发 115 待整理扫描: {reason or 'shared-permanent-import'}")
+            task_scan_and_organize_115()
+        except Exception as e:
+            logger.error(f"  ➜ [共享资源] 异步触发 115 待整理扫描失败: {e}", exc_info=True)
+
+    threading.Thread(
+        target=_runner,
+        name='shared-permanent-import-organize',
+        daemon=True,
+    ).start()
+
+    return {
+        'started': True,
+        'message': '已异步触发 115 待整理扫描',
+    }
 
 
 class _MediainfoBuilder(P115MediaAnalyzerMixin):
@@ -641,6 +680,305 @@ def _consume_virtual(client: SharedCenterClient, sources: List[Dict[str, Any]], 
         created += 1
     return {'success': created > 0, 'mode': 'virtual', 'count': created, 'action_type': '共享虚拟'}
 
+def _guess_se_from_source(src: Dict[str, Any], context: Dict[str, Any]):
+    s_num = src.get('season_number') if src.get('season_number') not in (None, '') else context.get('season_number')
+    e_num = src.get('episode_number')
+
+    try:
+        s_num = int(s_num) if s_num not in (None, '') else None
+    except Exception:
+        s_num = None
+    try:
+        e_num = int(e_num) if e_num not in (None, '') else None
+    except Exception:
+        e_num = None
+
+    if s_num is None or e_num is None:
+        name = str(src.get('file_name') or '')
+        m = re.search(r'[Ss](\d{1,3})[. _-]*[Ee](\d{1,4})', name)
+        if m:
+            if s_num is None:
+                s_num = int(m.group(1))
+            if e_num is None:
+                e_num = int(m.group(2))
+
+    return s_num, e_num
+
+
+def _load_center_raw_map(client: SharedCenterClient, sources: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    raw_map = {}
+
+    # 手动中心资源库 include_raw=True 时，source 里可能已经带 raw。
+    for src in sources or []:
+        sha1 = _norm_sha1(src.get('sha1'))
+        raw = src.get('raw_ffprobe_json')
+        if sha1 and isinstance(raw, dict):
+            raw_map[sha1] = raw
+
+    missing_sha1s = []
+    for src in sources or []:
+        sha1 = _norm_sha1(src.get('sha1'))
+        if sha1 and sha1 not in raw_map and sha1 not in missing_sha1s:
+            missing_sha1s.append(sha1)
+
+    if missing_sha1s and hasattr(client, 'fetch_raw_ffprobe_batch'):
+        data = client.fetch_raw_ffprobe_batch(missing_sha1s)
+        for item in (data or {}).get('items') or []:
+            sha1 = _norm_sha1(item.get('sha1'))
+            raw = item.get('raw_ffprobe_json')
+            if sha1 and item.get('status') == 'ok' and isinstance(raw, dict):
+                raw_map[sha1] = raw
+
+    return raw_map
+
+
+def _cache_center_raw_as_local_mediainfo(src: Dict[str, Any], raw: Dict[str, Any]) -> bool:
+    """中心 RAW -> 本地 p115_mediainfo_cache.mediainfo_json，供 WashingService 读取。"""
+    sha1 = _norm_sha1(src.get('sha1'))
+    if not sha1 or not isinstance(raw, dict):
+        return False
+
+    file_node = {
+        'fn': src.get('file_name') or sha1,
+        'file_name': src.get('file_name') or sha1,
+        'sha1': sha1,
+        'fs': _safe_int(src.get('size'), 0),
+        'size': _safe_int(src.get('size'), 0),
+    }
+
+    try:
+        builder = _MediainfoBuilder()
+        emby_obj = builder._build_emby_mediainfo_from_ffprobe(raw, file_node, sha1=sha1)
+        if not emby_obj:
+            return False
+        P115CacheManager.save_mediainfo_cache(sha1, emby_obj, raw)
+        return True
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 中心 RAW 转本地 MediaInfo 失败: {src.get('file_name')} -> {e}")
+        return False
+
+
+def _washing_new_level(sha1: str, file_name: str, file_size: int, target_cid: str,
+                       media_type: str, original_lang: str = '', has_external_subtitle: bool = False):
+    """读取 WashingService 的真实规则优先级。level 越小优先级越高。"""
+    from handler.resubscribe_service import WashingService
+
+    raw_info = WashingService._get_raw_info_by_sha1(sha1)
+    if isinstance(raw_info, list) and raw_info:
+        new_info = dict(raw_info[0])
+    elif isinstance(raw_info, dict):
+        new_info = dict(raw_info)
+    else:
+        return 999, '无法读取本地 MediaInfo'
+
+    new_info['filename'] = file_name
+    new_info['_file_size'] = file_size
+    new_info['_original_lang'] = original_lang
+    new_info['has_external_subtitle'] = has_external_subtitle
+
+    norm_new = WashingService._normalize_info(new_info)
+    db_media_type = 'Movie' if str(media_type).lower() == 'movie' else 'Series'
+    priorities = WashingService._load_priorities(db_media_type, target_cid)
+
+    if not priorities:
+        return 999, '未配置优先级规则'
+
+    return WashingService.get_level(norm_new, priorities)
+
+
+def _raw_quality_score(src: Dict[str, Any], raw: Dict[str, Any]) -> int:
+    """同一洗版优先级下的兜底排序。主裁判仍是 WashingService。"""
+    text = f"{src.get('file_name') or ''} {json.dumps(raw or {}, ensure_ascii=False)[:4000]}".upper()
+    score = 0
+
+    if '2160' in text or '3840' in text or '4K' in text:
+        score += 40
+    elif '1080' in text or '1920' in text:
+        score += 20
+    elif '720' in text:
+        score += 10
+
+    if 'REMUX' in text:
+        score += 30
+    elif 'WEB-DL' in text or 'WEBDL' in text:
+        score += 18
+    elif 'WEBRIP' in text:
+        score += 10
+
+    if 'DOLBY' in text or 'DOVI' in text or re.search(r'\bDV\b', text):
+        score += 12
+    elif 'HDR10+' in text:
+        score += 10
+    elif 'HDR10' in text or 'HDR' in text:
+        score += 6
+
+    if 'HEVC' in text or 'H.265' in text or 'H265' in text:
+        score += 5
+
+    size_gb = (_safe_int(src.get('size'), 0) or 0) / 1024 / 1024 / 1024
+    score += min(int(size_gb), 30)
+    return score
+
+
+def _select_sources_by_washing_before_import(
+    client: SharedCenterClient,
+    p115,
+    sources: List[Dict[str, Any]],
+    context: Dict[str, Any],
+) -> tuple[List[Dict[str, Any]], List[str]]:
+    """永久转存前按洗版规则筛选中心源。
+
+    同一个 share_code 视为一个包：
+    - 包内任一视频 REJECT/SKIP，则整包不转存；
+    - 包内视频均 ACCEPT/REPLACE，才允许转存；
+    - 多个包均合格时，选择洗版优先级最高的包。
+    """
+    from handler.resubscribe_service import WashingService
+
+    raw_map = _load_center_raw_map(client, sources)
+    errors = []
+
+    groups = {}
+    order = []
+    for src in sources or []:
+        code = src.get('share_code') or src.get('source_id')
+        if not code:
+            errors.append(f"{src.get('file_name')}: 缺少分享码")
+            continue
+        if code not in groups:
+            groups[code] = []
+            order.append(code)
+        groups[code].append(src)
+
+    candidates = []
+
+    for idx, code in enumerate(order):
+        rows = groups.get(code) or []
+        rejected = False
+        group_best_level = 999
+        group_action_rank = 0
+        group_quality = 0
+        group_reasons = []
+
+        for src in rows:
+            file_name = src.get('file_name') or ''
+            ext = os.path.splitext(file_name)[1].lower()
+            if ext not in VIDEO_EXTS:
+                continue
+
+            sha1 = _norm_sha1(src.get('sha1'))
+            raw = raw_map.get(sha1)
+            if not raw:
+                rejected = True
+                errors.append(f"{file_name}: 中心缺少 RAW，洗版预检拒绝转存")
+                break
+
+            if not _cache_center_raw_as_local_mediainfo(src, raw):
+                rejected = True
+                errors.append(f"{file_name}: RAW 无法转换为本地 MediaInfo，洗版预检拒绝转存")
+                break
+
+            source_item_type = str(src.get('item_type') or context.get('item_type') or '')
+            media_type = 'movie' if source_item_type == 'Movie' else 'tv'
+
+            if media_type == 'movie':
+                tmdb_for_washing = str(src.get('tmdb_id') or context.get('tmdb_id') or '')
+            else:
+                tmdb_for_washing = str(
+                    context.get('parent_tmdb_id')
+                    or src.get('parent_series_tmdb_id')
+                    or src.get('tmdb_id')
+                    or context.get('tmdb_id')
+                    or ''
+                )
+
+            s_num, e_num = _guess_se_from_source(src, context)
+
+            try:
+                organizer = SmartOrganizer(
+                    p115,
+                    int(tmdb_for_washing),
+                    media_type,
+                    context.get('title') or src.get('title') or file_name,
+                    None,
+                    False,
+                )
+                if media_type == 'tv' and s_num is not None:
+                    organizer.forced_season = int(s_num)
+
+                target_cid_for_washing = organizer.get_target_cid(
+                    season_num=s_num if media_type == 'tv' else None
+                )
+                original_lang = (organizer.raw_metadata or {}).get('lang_code')
+            except Exception as e:
+                rejected = True
+                errors.append(f"{file_name}: 无法计算洗版目标目录，拒绝转存 -> {e}")
+                break
+
+            file_size = _safe_int(src.get('size'), 0)
+
+            action, reason = WashingService.decide_washing_action(
+                sha1=sha1,
+                file_name=file_name,
+                file_size=file_size,
+                target_cid=str(target_cid_for_washing),
+                media_type=media_type,
+                tmdb_id=str(tmdb_for_washing),
+                season_num=s_num,
+                episode_num=e_num,
+                original_lang=original_lang,
+                is_active_washing=False,
+                has_external_subtitle=False,
+            )
+
+            if action in ('REJECT', 'SKIP'):
+                rejected = True
+                errors.append(f"{file_name}: 洗版预检拒绝 [{action}] {reason}")
+                break
+
+            level, level_reason = _washing_new_level(
+                sha1,
+                file_name,
+                file_size,
+                str(target_cid_for_washing),
+                media_type,
+                original_lang=original_lang,
+                has_external_subtitle=False,
+            )
+
+            if level > 0:
+                group_best_level = min(group_best_level, level)
+
+            group_action_rank = max(group_action_rank, 2 if action == 'REPLACE' else 1)
+            group_quality += _raw_quality_score(src, raw)
+            group_reasons.append(f"{file_name}: {action}; level={level}; {reason or level_reason}")
+
+        if rejected:
+            continue
+
+        if rows:
+            # level 越小越好；无规则 level=999，走质量兜底。
+            score = (1000 - min(group_best_level, 999)) * 100000 + group_action_rank * 10000 + group_quality
+            candidates.append({
+                'score': score,
+                'index': idx,
+                'share_code': code,
+                'rows': rows,
+                'reasons': group_reasons,
+            })
+
+    if not candidates:
+        return [], errors or ['所有中心共享源均未通过洗版预检']
+
+    candidates.sort(key=lambda x: (x['score'], -x['index']), reverse=True)
+    best = candidates[0]
+
+    logger.info(
+        f"  ➜ [共享资源] 洗版预检选定中心源: share={best['share_code']}, "
+        f"score={best['score']}, reasons={best['reasons'][:3]}"
+    )
+
+    return best['rows'], errors
 
 def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]], context: Dict[str, Any]) -> Dict[str, Any]:
     p115 = P115Service.get_client()
@@ -654,6 +992,33 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
     ).strip()
     if not target_cid or target_cid == '0':
         raise RuntimeError('未配置 115 待整理目录 CID（p115_save_path_cid），无法转存共享资源')
+    
+    # 永久转存前预检：
+    # - replace：提前调用洗版模块裁决，避免不合格资源进入待整理；
+    # - skip / keep_both：不做洗版预检，直接放行，交给后续 SmartOrganizer 按覆盖模式处理。
+    rename_config = settings_db.get_setting('p115_rename_config') or {}
+    if rename_config.get('conflict_mode') == 'replace':
+        sources, washing_errors = _select_sources_by_washing_before_import(
+            client,
+            p115,
+            sources,
+            context,
+        )
+        if not sources:
+            logger.info(f"  ➜ [共享资源] 中心源全部被洗版预检拒绝: {washing_errors[:5]}")
+            return {
+                'success': False,
+                'mode': 'permanent',
+                'count': 0,
+                'action_type': '共享永久转存',
+                'errors': washing_errors,
+                'washing_rejected': True,
+            }
+    else:
+        logger.info(
+            f"  ➜ [共享资源] 当前覆盖模式为 {rename_config.get('conflict_mode')}，跳过洗版预检，"
+            f"中心源直接进入共享永久转存流程。"
+        )
 
     # 同一个季/剧分享可能返回多集，按 share_code 去重，避免重复转存同一分享包。
     unique = []
@@ -693,11 +1058,11 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
             except Exception:
                 pass
     if ok > 0:
-        try:
-            import task_manager
-            task_manager.trigger_115_organize_task()
-        except Exception:
-            pass
+        kick_result = _kick_115_organize_detached(
+            reason=f"共享资源永久转存成功 ok={ok}, title={context.get('title') or ''}",
+            delay=3.0,
+        )
+        logger.info(f"  ➜ [共享资源] 115 待整理扫描触发结果: {kick_result}")
     return {'success': ok > 0, 'mode': 'permanent', 'count': ok, 'action_type': '共享永久转存', 'errors': errors}
 
 
