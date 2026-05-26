@@ -825,6 +825,7 @@ def _select_sources_by_washing_before_import(
     p115,
     sources: List[Dict[str, Any]],
     context: Dict[str, Any],
+    raw_map: Dict[str, Dict[str, Any]] = None
 ) -> tuple[List[Dict[str, Any]], List[str]]:
     """永久转存前按洗版规则筛选中心源。
 
@@ -835,7 +836,8 @@ def _select_sources_by_washing_before_import(
     """
     from handler.resubscribe_service import WashingService
 
-    raw_map = _load_center_raw_map(client, sources)
+    if raw_map is None:
+        raw_map = _load_center_raw_map(client, sources)
     errors = []
 
     groups = {}
@@ -993,6 +995,15 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
     if not target_cid or target_cid == '0':
         raise RuntimeError('未配置 115 待整理目录 CID（p115_save_path_cid），无法转存共享资源')
     
+    # 无论当前是什么覆盖模式，都提前拉取中心 RAW 并写入本地 MediaInfo 缓存
+    # 避免后续 115 整理时因缺失缓存而触发缓慢的在线提取
+    raw_map = _load_center_raw_map(client, sources)
+    for src in sources:
+        sha1 = _norm_sha1(src.get('sha1'))
+        raw = raw_map.get(sha1)
+        if raw:
+            _cache_center_raw_as_local_mediainfo(src, raw)
+    
     # 永久转存前预检：
     # - replace：提前调用洗版模块裁决，避免不合格资源进入待整理；
     # - skip / keep_both：不做洗版预检，直接放行，交给后续 SmartOrganizer 按覆盖模式处理。
@@ -1003,6 +1014,7 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
             p115,
             sources,
             context,
+            raw_map=raw_map
         )
         if not sources:
             logger.info(f"  ➜ [共享资源] 中心源全部被洗版预检拒绝: {washing_errors[:5]}")
