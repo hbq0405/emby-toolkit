@@ -518,3 +518,9 @@ def has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] = 
             )
             return cur.fetchone() is not None
 
+def delete_share_record(record_id: int):
+    """物理删除分享记录及其关联的文件明细"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM shared_share_records WHERE id=%s", (record_id,))
+            conn.commit()

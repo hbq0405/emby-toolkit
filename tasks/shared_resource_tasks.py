@@ -319,24 +319,30 @@ def _mark_share_deleted(record: Dict[str, Any], *, p115_resp: Any, center_resp: 
                         center_ok: bool, reason: str, last_error: str,
                         status: str = 'cancelled', review_status: str = 'cancelled'):
     record_id = record.get('id')
-    raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
-    raw_json = dict(raw_json or {})
-    raw_json.setdefault('share_maintenance_delete', {})
-    raw_json['share_maintenance_delete'].update({
-        'reason': reason,
-        'p115_response': p115_resp,
-        'center_response': center_resp,
-        'deleted_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-    })
-    shared_share_db.update_share_record(
-        record_id,
-        status=status,
-        review_status=review_status,
-        center_status='cancelled' if center_ok else 'cancel_failed',
-        cancelled_at='NOW()',
-        last_error=last_error if center_ok else f'{last_error}；中心撤销失败：{center_resp}',
-        raw_json=raw_json,
-    )
+    
+    if center_ok:
+        # 👈 【修改】115 删了，中心也撤销了，直接硬删除，不留垃圾数据
+        shared_share_db.delete_share_record(record_id)
+    else:
+        # 中心撤销失败，保留记录以便下次任务重试，防止中心留死链
+        raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+        raw_json = dict(raw_json or {})
+        raw_json.setdefault('share_maintenance_delete', {})
+        raw_json['share_maintenance_delete'].update({
+            'reason': reason,
+            'p115_response': p115_resp,
+            'center_response': center_resp,
+            'deleted_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+        })
+        shared_share_db.update_share_record(
+            record_id,
+            status=status,
+            review_status=review_status,
+            center_status='cancel_failed',
+            cancelled_at='NOW()',
+            last_error=f'{last_error}；中心撤销失败：{center_resp}',
+            raw_json=raw_json,
+        )
 
 
 def _cleanup_invalid_local_shares(client: SharedCenterClient, max_rows: int = 100) -> Dict[str, int]:
@@ -525,11 +531,19 @@ def _cleanup_excess_local_shares(client: SharedCenterClient, max_active_shares: 
         try:
             p115_ok, p115_resp = _delete_115_share(p115, share_code)
             if not p115_ok:
-                shared_share_db.update_share_record(
-                    record_id,
-                    status='cancel_failed',
-                    last_error=f'超过最大分享数自动清理失败，115 删除/取消分享失败：{p115_resp}',
-                )
+                if center_ok:
+                    # 👈 【修改】中心撤销成功，直接硬删除
+                    shared_share_db.delete_share_record(record_id)
+                else:
+                    shared_share_db.update_share_record(
+                        record_id,
+                        status='cancelled',
+                        review_status='cancelled',
+                        center_status='cancel_failed',
+                        cancelled_at='NOW()',
+                        last_error=f'115 分享已删除，但中心撤销失败：{center_resp}',
+                        raw_json=raw_json,
+                    )
                 failed += 1
                 continue
 
@@ -753,25 +767,18 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                     raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
                     raw_json = dict(raw_json or {})
                     raw_json.update({'last_snap': snap, 'auto_share_blocked': True, 'share_delete_response': p115_resp, 'center_cancel_response': center_resp})
-                    if p115_ok:
-                        shared_share_db.update_share_record(
-                            record['id'],
-                            status='cancelled',
-                            review_status='violation',
-                            center_status='cancelled' if center_ok else 'cancel_failed',
-                            last_checked_at='NOW()',
-                            cancelled_at='NOW()',
-                            last_error='115 审核违规/风控，维护任务已直接删除分享，避免占用分享名额',
-                            raw_json=raw_json,
-                        )
+                    if p115_ok and center_ok:
+                        # 👈 【修改】违规分享，撤销成功直接硬删除
+                        shared_share_db.delete_share_record(record['id'])
                     else:
                         shared_share_db.update_share_record(
                             record['id'],
-                            status='cancel_failed',
+                            status='cancel_failed' if not p115_ok else 'cancelled',
                             review_status='violation',
                             center_status='cancelled' if center_ok else 'cancel_failed',
                             last_checked_at='NOW()',
-                            last_error=f'115 审核违规/风控，但自动删除分享失败：{p115_resp}',
+                            cancelled_at='NOW()' if p115_ok else None,
+                            last_error='115 审核违规/风控，维护任务已直接删除分享' if p115_ok else f'115 审核违规，但自动删除失败：{p115_resp}',
                             raw_json=raw_json,
                         )
                     cancelled += 1
@@ -779,9 +786,11 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                     # 115 分享已不可用，撤销中心源并本地标记。
                     try:
                         client.cancel_sources(share_code=share_code, sha1_list=sha1s, reason='auto_share_dead', delete_raw_ffprobe=True)
+                        # 👈 【修改】115 已经失效，中心也撤销成功了，直接硬删除
+                        shared_share_db.delete_share_record(record['id'])
                     except Exception as e:
                         logger.debug(f"  ➜ [共享资源维护] 撤销中心源失败: {e}")
-                    shared_share_db.update_share_record(record['id'], status='dead', review_status='dead', center_status='cancelled', last_checked_at='NOW()', cancelled_at='NOW()', last_error='自动检测到115分享失效，已撤销中心源')
+                        shared_share_db.update_share_record(record['id'], status='dead', review_status='dead', center_status='cancel_failed', last_checked_at='NOW()', cancelled_at='NOW()', last_error='自动检测到115分享失效，但撤销中心源失败')
                     cancelled += 1
         except Exception as e:
             logger.warning(f"  ➜ [共享资源维护] 同步分享状态异常: share={share_code}, err={e}")
