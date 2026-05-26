@@ -3,7 +3,7 @@
   <!-- ================================================================================== -->
   <!-- 视图 A: PC 端 (宽屏) -->
   <!-- ================================================================================== -->
-  <n-layout v-if="!isMobile" content-style="padding: 24px;">
+  <n-layout v-if="!isMobile" content-style="padding: 24px; background-color: transparent;">
     <div>
       <n-page-header title="数据看板" subtitle="了解您媒体库的核心数据统计" style="margin-bottom: 24px;">
       </n-page-header>
