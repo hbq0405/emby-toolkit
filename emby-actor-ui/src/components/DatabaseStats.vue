@@ -414,11 +414,8 @@ import VChart from 'vue-echarts';
 
 use([ CanvasRenderer, PieChart, TitleComponent, TooltipComponent, LegendComponent ]);
 
-// --- 移动端检测 ---
-const isMobile = ref(false);
-const checkMobile = () => {
-  isMobile.value = window.innerWidth < 768;
-};
+import { useResponsive } from '../composables/useResponsive';
+const { isMobile } = useResponsive();
 
 // --- 状态与数据 (共享) ---
 const loading = reactive({
@@ -539,12 +536,7 @@ const handleIconError = (e) => {
 };
 
 onMounted(() => {
-  checkMobile();
-  window.addEventListener('resize', checkMobile);
   fetchCore(); fetchLibrary(); fetchSystem(); fetchSubscription(); fetchRankings();
-});
-onUnmounted(() => {
-  window.removeEventListener('resize', checkMobile);
 });
 </script>
 
