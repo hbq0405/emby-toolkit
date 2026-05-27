@@ -1053,19 +1053,45 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
             f"resp={str(resp)[:300]}"
         )
         text = json.dumps(resp, ensure_ascii=False) if isinstance(resp, dict) else str(resp)
-        success = isinstance(resp, dict) and (resp.get('state') is True or resp.get('errno') in (0, '0') or resp.get('code') in (0, '0', 200, '200') or '已存在' in text)
+        
+        # =====================================================================
+        # ★ 核心修复 1：将 4100024 (你已经转存过该文件) 视为成功！
+        # =====================================================================
+        is_already_saved = isinstance(resp, dict) and str(resp.get('errno')) == '4100024'
+        
+        success = isinstance(resp, dict) and (
+            resp.get('state') is True 
+            or str(resp.get('errno')) in ('0', '4100024') 
+            or str(resp.get('code')) in ('0', '200') 
+            or '已存在' in text
+            or '已经转存过' in text
+        )
+        
         if success:
             ok += 1
             try:
-                client.report_transfer(src.get('source_id'), 'success', expected_sha1=_norm_sha1(src.get('sha1')), expected_size=_safe_int(src.get('size'), 0) or None, message='permanent import submitted')
+                # 如果是已经转存过，向中心汇报时附带说明，但状态依然是 success
+                msg = 'already saved' if is_already_saved else 'permanent import submitted'
+                client.report_transfer(src.get('source_id'), 'success', expected_sha1=_norm_sha1(src.get('sha1')), expected_size=_safe_int(src.get('size'), 0) or None, message=msg)
             except Exception:
                 pass
         else:
             errors.append(f"{src.get('file_name')}: {text[:120]}")
-            try:
-                client.report_transfer(src.get('source_id'), 'failed', expected_sha1=_norm_sha1(src.get('sha1')), expected_size=_safe_int(src.get('size'), 0) or None, message=f'external_share_import_failed: {text[:160]}')
-            except Exception:
-                pass
+            
+            # =====================================================================
+            # ★ 核心修复 2：如果是用户自身的限制，绝对不要向中心上报 failed 误伤分享者
+            # 4100010: 空间不足 | 4100025: 转存超限 | 770004/990001: API 频率限制
+            # =====================================================================
+            is_user_limit = any(kw in text for kw in ['空间不足', '超过限制', '频繁', '上限', '770004', '990001', '4100010'])
+            
+            if not is_user_limit:
+                try:
+                    client.report_transfer(src.get('source_id'), 'failed', expected_sha1=_norm_sha1(src.get('sha1')), expected_size=_safe_int(src.get('size'), 0) or None, message=f'external_share_import_failed: {text[:160]}')
+                except Exception:
+                    pass
+            else:
+                logger.warning(f"  ➜ [共享资源] 触发用户自身网盘限制(空间/次数/频率)，跳过向中心上报失败，以免误伤资源提供者。")
+                
     if ok > 0:
         kick_result = _kick_115_organize_detached(
             reason=f"共享资源转存成功 {ok} 个",
