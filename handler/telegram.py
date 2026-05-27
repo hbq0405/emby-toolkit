@@ -1434,8 +1434,26 @@ def _tg_handle_subscribe(chat_id: str):
                 _tg_send_plain(chat_id, f"❌ 无法解析订阅信息：{display_title}")
                 return
 
-            # 标记订阅来源
-            subscription_source = {'type': 'telegram_search', 'user_id': chat_id, 'name': 'TG 搜索'}
+            # --- 新增：查询 TG ID 绑定的 Emby 用户名 ---
+            emby_username = 'TG 搜索'  # 默认兜底名称
+            try:
+                with get_db_connection() as conn:
+                    with conn.cursor() as cursor:
+                        cursor.execute("""
+                            SELECT u.name 
+                            FROM emby_users u
+                            JOIN emby_users_extended e ON u.id = e.emby_user_id
+                            WHERE e.telegram_chat_id = %s
+                        """, (str(chat_id),))
+                        row = cursor.fetchone()
+                        if row and row.get('name'):
+                            # 如果查到了绑定的用户，使用该用户名 (可按需加上 TG 后缀以作区分)
+                            emby_username = f"{row['name']}" 
+            except Exception as e:
+                logger.error(f"  ➜ [TG交互] 查询 TG ID {chat_id} 绑定的 Emby 用户名失败: {e}")
+
+            # 标记订阅来源，使用查询到的用户名
+            subscription_source = {'type': 'telegram_search', 'user_id': chat_id, 'name': emby_username}
             
             # 调用 helpers 的通用订阅函数
             # tmdb_to_emby_item_map 传空字典即可，内部会自动查库校验
