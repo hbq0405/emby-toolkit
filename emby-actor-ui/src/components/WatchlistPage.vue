@@ -1431,15 +1431,10 @@ const saveTotalEpisodes = async (item) => {
   }
 };
 
-// ★★★ 新增：移动端检测 ★★★
-const isMobile = ref(false);
-const checkMobile = () => {
-  isMobile.value = window.innerWidth < 768;
-};
+import { useResponsive } from '../composables/useResponsive';
+const { isMobile } = useResponsive();
 
 onMounted(() => {
-  checkMobile();
-  window.addEventListener('resize', checkMobile);
   fetchWatchlist();
   observer = new IntersectionObserver(
     (entries) => {
@@ -1455,7 +1450,6 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', checkMobile);
   if (observer) {
     observer.disconnect();
   }
