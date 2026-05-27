@@ -2081,13 +2081,8 @@ const defaultStreamModalRef = ref(null);
 const musicModalRef = ref(null);
 const ruleManagerRef = ref(null);
 
-const MOBILE_BREAKPOINT = 768;
-const isMobile = ref(false);
-
-const updateViewportState = () => {
-  if (typeof window === 'undefined') return;
-  isMobile.value = window.innerWidth <= MOBILE_BREAKPOINT;
-};
+import { useResponsive } from '../../composables/useResponsive';
+const { isMobile, breakpoint } = useResponsive();
 
 const pageContentStyle = computed(() => ({
   padding: isMobile.value ? '12px' : '24px'
@@ -3499,10 +3494,6 @@ const handleCorrectSequences = async () => {
 };
 
 onMounted(async () => {
-  updateViewportState();
-  if (typeof window !== 'undefined') {
-    window.addEventListener('resize', updateViewportState, { passive: true });
-  }
   componentIsMounted.value = true;
   unwatchGlobal = watch(loadingConfig, (isLoading) => {
     if (!isLoading && componentIsMounted.value && configModel.value) {
@@ -3533,9 +3524,6 @@ onMounted(async () => {
   checkUserBotStatus();
 });
 onUnmounted(() => {
-  if (typeof window !== 'undefined') {
-    window.removeEventListener('resize', updateViewportState);
-  }
   componentIsMounted.value = false;
   if (unwatchGlobal) unwatchGlobal();
   if (unwatchEmbyConfig) unwatchEmbyConfig();
