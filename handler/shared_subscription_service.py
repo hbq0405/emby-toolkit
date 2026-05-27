@@ -1101,17 +1101,7 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
     return {'success': ok > 0, 'mode': 'permanent', 'count': ok, 'action_type': '共享永久转存', 'errors': errors}
 
 
-def try_consume_shared_resource(
-        item: Dict[str, Any],
-        title: str,
-        tmdb_id,
-        item_type: str,
-        parent_tmdb_id=None,
-        season_number=None,
-        year='',
-        source_filter=None,
-        report_gap_when_empty: bool = True,
-    ) -> Dict[str, Any]:
+def try_consume_shared_resource(item: Dict[str, Any], title: str, tmdb_id, item_type: str, parent_tmdb_id=None, season_number=None, year='') -> Dict[str, Any]:
     if not shared_center_enabled():
         return {'enabled': False, 'success': False, 'reported_gap': False}
 
@@ -1131,21 +1121,13 @@ def try_consume_shared_resource(
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 查询中心共享池失败: {e}")
 
-    if source_filter is not None and sources:
-        try:
-            sources = [s for s in sources if source_filter(s)]
-        except Exception as e:
-            logger.warning(f"  ➜ [共享资源] 过滤中心共享源失败，视为未命中: {e}")
-            sources = []
-
     if not sources:
         reported = False
-        if report_gap_when_empty:
-            try:
-                client.report_gaps(queries)
-                reported = True
-            except Exception as e:
-                logger.warning(f"  ➜ [共享资源] 中心未命中，登记缺口失败: {e}")
+        try:
+            client.report_gaps(queries)
+            reported = True
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 中心未命中，登记缺口失败: {e}")
         return {'enabled': True, 'success': False, 'reported_gap': reported}
 
     context = {
