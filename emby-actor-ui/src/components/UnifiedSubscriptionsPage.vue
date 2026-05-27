@@ -937,14 +937,10 @@ const clearSelection = () => {
   selectedItems.value = [];
 };
 
-const isMobile = ref(false);
-const checkMobile = () => {
-  isMobile.value = window.innerWidth < 768;
-};
+import { useResponsive } from '../composables/useResponsive';
+const { isMobile } = useResponsive();
 
 onMounted(() => {
-  checkMobile();
-  window.addEventListener('resize', checkMobile);
   fetchData(true); 
   
   loadStrategyConfig();
@@ -958,7 +954,6 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  window.removeEventListener('resize', checkMobile);
   if (observer) observer.disconnect();
 });
 
