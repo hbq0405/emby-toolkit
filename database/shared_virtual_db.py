@@ -598,6 +598,24 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
     items = list(items or [])
     device_snapshot = device_snapshot or {}
     device_id = device_snapshot.get('device_id') or device_snapshot.get('id') or ''
+    initial_credit_created_at = device_snapshot.get('created_at') or device_snapshot.get('updated_at')
+
+    if device_id and not initial_credit_created_at:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT created_at
+                    FROM shared_credit_ledger_local
+                    WHERE event_type = 'center_initial_credit'
+                      AND ref_id = %s
+                    ORDER BY created_at ASC
+                    LIMIT 1
+                    """,
+                    (device_id,),
+                )
+                existing = _row_to_dict(cur.fetchone()) or {}
+                initial_credit_created_at = existing.get('created_at')
 
     # 中心的基础 20 分是 devices.credit 默认值，不在 credit_ledger 里。
     # 为了让前端能解释“总分 = 基础分 + 贡献分”，本地展示时补一条虚拟流水。
@@ -613,7 +631,7 @@ def sync_center_credit_ledger(items: List[Dict[str, Any]], device_snapshot: Dict
             'item_type': '',
             'title': '基础贡献值',
             'file_name': '',
-            'created_at': device_snapshot.get('created_at') or device_snapshot.get('updated_at'),
+            'created_at': initial_credit_created_at,
         })
 
     with get_db_connection() as conn:

@@ -116,6 +116,21 @@ def _looks_share_blocked(resp: Any) -> bool:
         'violation', 'illegal', 'blocked', 'forbidden', 'risk'
     ))
 
+def _looks_share_source_missing(resp: Any) -> bool:
+    """115 返回源文件/目录已不存在，属于确定性失败，应加入自动分享黑名单。"""
+    if isinstance(resp, dict):
+        if resp.get('errno') in (4100005, '4100005'):
+            return True
+
+    text = _share_resp_text(resp)
+    return any(k in text for k in (
+        '4100005',
+        '分享的文件(夹)已被移动或删除',
+        '文件(夹)已被移动或删除',
+        '已被移动或删除',
+        'file has been moved or deleted',
+        'folder has been moved or deleted',
+    ))
 
 def _looks_share_alive(resp: Dict[str, Any]) -> bool:
     if not _parse_share_ok(resp):
@@ -634,6 +649,100 @@ def _merge_maintenance_counts(total: Dict[str, Any], update: Dict[str, Any]):
             total[k] = v
 
 
+def _load_active_local_share_code_set() -> set[str]:
+    """本地仍应存在/占用名额的 share_code 集合。"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT share_code
+                FROM shared_share_records
+                WHERE COALESCE(share_code, '') <> ''
+                  AND status = ANY(%s)
+                """,
+                (_active_share_statuses(),),
+            )
+            return {
+                str((row or {}).get('share_code') or '').strip()
+                for row in cur.fetchall()
+                if str((row or {}).get('share_code') or '').strip()
+            }
+
+
+def _cleanup_orphan_center_sources(client: SharedCenterClient, page_size: int = 200, max_pages: int = 20) -> Dict[str, int]:
+    """对账中心登记源与本地活动分享，自动撤销已经不在本地的中心孤儿源。"""
+    local_active_codes = _load_active_local_share_code_set()
+    orphan_groups: Dict[str, Dict[str, Any]] = {}
+    checked = 0
+    consecutive_errors = 0
+
+    for page in range(max(1, int(max_pages or 1))):
+        try:
+            resp = client.list_sources(
+                status='alive,pending,dead',
+                mine_only=True,
+                include_raw=False,
+                order_by='latest',
+                limit=page_size,
+                offset=page * page_size,
+            )
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 拉取中心自有共享源失败: {e}")
+            if _is_network_error(e):
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束中心孤儿源对账。")
+            return {'center_orphan_checked': checked, 'center_orphan_cancelled': 0, 'center_orphan_failed': 1}
+
+        consecutive_errors = 0
+        items = resp.get('items') or []
+        total = _safe_int(resp.get('total'), len(items))
+        if not items:
+            break
+
+        for item in items:
+            if not bool(item.get('is_mine')):
+                continue
+            checked += 1
+            share_code = str(item.get('share_code') or '').strip()
+            if not share_code or share_code in local_active_codes:
+                continue
+            group = orphan_groups.setdefault(share_code, {'source_ids': set(), 'sha1_list': set()})
+            source_id = str(item.get('source_id') or '').strip()
+            sha1 = str(item.get('sha1') or '').strip().upper()
+            if source_id:
+                group['source_ids'].add(source_id)
+            if sha1:
+                group['sha1_list'].add(sha1)
+
+        if (page + 1) * page_size >= total:
+            break
+
+    cancelled = failed = 0
+    for share_code, group in orphan_groups.items():
+        try:
+            client.cancel_sources(
+                share_code=share_code,
+                source_ids=sorted(group['source_ids']),
+                sha1_list=sorted(group['sha1_list']),
+                reason='local_record_missing',
+                delete_raw_ffprobe=True,
+            )
+            cancelled += 1
+        except Exception as e:
+            failed += 1
+            logger.warning(f"  ➜ [共享资源维护] 撤销中心孤儿共享源失败: share={share_code}, err={e}")
+        time.sleep(0.2)
+
+    if cancelled or failed:
+        logger.info(f"  ➜ [共享资源维护] 中心孤儿共享源对账完成：撤销 {cancelled}，失败 {failed}。")
+    return {
+        'center_orphan_checked': checked,
+        'center_orphan_cancelled': cancelled,
+        'center_orphan_failed': failed,
+    }
+
+
 def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records: int = 80) -> Dict[str, int]:
     """自动同步 115 分享状态；可用后上传 raw 并登记中心；失效时撤销中心源。"""
     p115 = P115Service.get_client()
@@ -703,6 +812,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                 )
                                 continue
                         ok = 0
+                        errors = []
                         for item in items:
                             sha1 = str(item.get('sha1') or '').strip().upper()
                             if not sha1:
@@ -713,7 +823,8 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                             if record_share_type == 'episode_file':
                                 center_item_type = 'Episode'
                             standard_identity = sr._standard_share_identity(record, item, center_item_type=center_item_type) if sr is not None else {}
-                            resp = client.register_source(
+                            
+                            register_kwargs = dict(
                                 tmdb_id=standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id'),
                                 item_type=center_item_type,
                                 season_number=item.get('season_number') or record.get('season_number'),
@@ -729,14 +840,51 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                 receive_code=record.get('receive_code') or '',
                                 has_raw_ffprobe=bool(item.get('raw_ffprobe_uploaded')),
                             )
-                            if resp.get('source_id'):
-                                shared_share_db.mark_item_reported(item['id'], resp.get('source_id'))
-                                ok += 1
-                        if ok:
-                            shared_share_db.update_share_record(record['id'], center_status='reported', status='reported', reported_count=ok, reported_at='NOW()', last_error='自动登记中心成功')
+                            
+                            try:
+                                resp = client.register_source(**register_kwargs)
+                                if resp.get('source_id'):
+                                    shared_share_db.mark_item_reported(item['id'], resp.get('source_id'))
+                                    ok += 1
+                            except Exception as e:
+                                err_str = str(e)
+                                # 兼容中心提示 raw 缺失时，强制重传 raw 后再登记一次（与手动登记逻辑保持一致）
+                                if '400' in err_str and 'raw_ffprobe_json required' in err_str:
+                                    try:
+                                        cfg, headers = sr._center_headers()
+                                        raw_retry = sr._upload_item_raw_ffprobe_to_center(item, cfg, headers, force=True)
+                                        if raw_retry.get('ok'):
+                                            register_kwargs['has_raw_ffprobe'] = True
+                                            resp = client.register_source(**register_kwargs)
+                                            if resp.get('source_id'):
+                                                shared_share_db.mark_item_reported(item['id'], resp.get('source_id'))
+                                                ok += 1
+                                                continue
+                                    except Exception as retry_e:
+                                        err_str = f"重传raw后登记失败: {retry_e}"
+                                
+                                logger.warning(f"  ➜ [共享资源维护] 自动登记中心单项失败: {item.get('file_name')} -> {err_str}")
+                                errors.append(f"{item.get('file_name')}: {err_str}")
+
+                        if ok > 0:
+                            center_status = 'reported' if ok == len(items) and not errors else 'partial'
+                            shared_share_db.update_share_record(
+                                record['id'], 
+                                center_status=center_status, 
+                                status='reported' if center_status == 'reported' else record.get('status'), 
+                                reported_count=ok, 
+                                reported_at='NOW()', 
+                                last_error='自动登记中心成功' if not errors else '；'.join(errors[:5])
+                            )
                             reported += 1
+                        elif errors:
+                            shared_share_db.update_share_record(
+                                record['id'],
+                                center_status='failed',
+                                last_error='自动登记中心失败：' + '；'.join(errors[:5])
+                            )
                     except Exception as e:
-                        logger.warning(f"  ➜ [共享资源维护] 自动登记中心失败: share={share_code}, err={e}")
+                        logger.warning(f"  ➜ [共享资源维护] 自动登记中心过程发生异常: share={share_code}, err={e}")
             else:
                 sha1s = [i.get('sha1') for i in (shared_share_db.list_share_items(record['id']) or []) if i.get('sha1')]
                 if _looks_share_blocked(snap):
@@ -865,7 +1013,82 @@ def _has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] |
         statuses=_active_share_statuses() + ['cancelled', 'cancel_failed', 'deleted'],
     )
 
+def _blacklist_auto_gap_candidate(
+    gap: Dict[str, Any],
+    candidate: Dict[str, Any],
+    files: List[Dict[str, Any]],
+    *,
+    root_fid: str,
+    root_name: str,
+    share_resp: Any,
+    reason: str = 'source_missing',
+) -> None:
+    """把自动分享失败的候选落成本地黑名单，避免高频维护任务反复重试。"""
+    try:
+        standard_identity = {
+            'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or gap.get('tmdb_id'),
+            'item_type': candidate.get('share_item_type') or candidate.get('item_type') or gap.get('item_type'),
+            'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id') or gap.get('parent_series_tmdb_id'),
+            'season_number': candidate.get('season_number', gap.get('season_number')),
+            'episode_number': candidate.get('episode_number', gap.get('episode_number')),
+            'title': candidate.get('standard_title') or candidate.get('display_title') or candidate.get('title') or root_name,
+            'release_year': candidate.get('release_year') or gap.get('release_year'),
+        }
 
+        record = shared_share_db.create_share_record({
+            # 没有真正 share_code，留空即可；如果你的表对 share_code 有唯一约束，见下面“如果空 share_code 报错”。
+            'share_code': f"AUTOFAIL_{standard_identity.get('item_type')}_{standard_identity.get('tmdb_id')}_S{standard_identity.get('season_number') or 0}_E{standard_identity.get('episode_number') or 0}_{root_fid}",
+            'receive_code': '',
+            'share_url': '',
+            'share_type': candidate.get('share_type') or 'auto_gap_failed',
+            'root_fid': str(root_fid or ''),
+            'root_name': root_name or '',
+            'root_is_dir': candidate.get('root_is_dir') is not False,
+            'tmdb_id': str(standard_identity.get('tmdb_id') or ''),
+            'item_type': standard_identity.get('item_type') or 'Movie',
+            'parent_series_tmdb_id': standard_identity.get('parent_series_tmdb_id'),
+            'season_number': standard_identity.get('season_number'),
+            'episode_number': standard_identity.get('episode_number'),
+            'title': standard_identity.get('title') or root_name or '',
+            'release_year': standard_identity.get('release_year'),
+            'status': 'deleted',
+            'review_status': reason,
+            'center_status': 'cancelled',
+            'last_error': f'自动创建115分享失败，已加入黑名单：{share_resp}',
+            'raw_json': {
+                'auto_gap_blacklist': True,
+                'blacklist_reason': reason,
+                'gap': gap,
+                'candidate': candidate,
+                'root_fid': str(root_fid or ''),
+                'root_name': root_name or '',
+                'share_create_response': share_resp,
+                'blacklisted_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            },
+        })
+
+        if files:
+            shared_share_db.replace_share_items(record['id'], files)
+
+        shared_virtual_db.add_credit_ledger(
+            'share_auto_gap_blacklisted',
+            0,
+            f"自动分享失败加入黑名单：{standard_identity.get('title') or root_name}",
+            ref_id=str(record['id']),
+            title=standard_identity.get('title') or root_name or '',
+            raw_json={
+                'reason': reason,
+                'root_fid': str(root_fid or ''),
+                'share_response': share_resp,
+                'gap': gap,
+            },
+        )
+    except Exception as e:
+        logger.warning(
+            f"  ➜ [共享资源维护] 自动分享失败候选加入黑名单失败: "
+            f"root_fid={root_fid}, root_name={root_name}, err={e}",
+            exc_info=True,
+        )
 
 def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) -> int:
     """中心有缺口而本机已入库时，自动创建 115 分享。可用后由下一轮维护自动登记中心。
@@ -994,7 +1217,39 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
 
                 share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=None)
                 if not share_resp or not share_resp.get('state'):
-                    logger.warning(f"  ➜ [共享资源维护] 自动创建分享失败: {candidate.get('display_title')} -> {share_resp}")
+                    if _looks_share_source_missing(share_resp):
+                        _blacklist_auto_gap_candidate(
+                            gap,
+                            candidate,
+                            files,
+                            root_fid=root_fid,
+                            root_name=root_name,
+                            share_resp=share_resp,
+                            reason='source_missing',
+                        )
+                        logger.warning(
+                            f"  ➜ [共享资源维护] 自动创建分享失败且源文件已失效，已加入黑名单: "
+                            f"{candidate.get('display_title')} root_fid={root_fid} -> {share_resp}"
+                        )
+                    elif _looks_share_blocked(share_resp):
+                        _blacklist_auto_gap_candidate(
+                            gap,
+                            candidate,
+                            files,
+                            root_fid=root_fid,
+                            root_name=root_name,
+                            share_resp=share_resp,
+                            reason='share_blocked',
+                        )
+                        logger.warning(
+                            f"  ➜ [共享资源维护] 自动创建分享失败且疑似违规/风控，已加入黑名单: "
+                            f"{candidate.get('display_title')} root_fid={root_fid} -> {share_resp}"
+                        )
+                    else:
+                        logger.warning(
+                            f"  ➜ [共享资源维护] 自动创建分享失败: "
+                            f"{candidate.get('display_title')} root_fid={root_fid} -> {share_resp}"
+                        )
                     continue
 
                 data = share_resp.get('data') or {}
@@ -1324,6 +1579,9 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         _status(74, '正在同步分享审核状态并自动登记中心...')
         total.update(_auto_check_and_report_local_shares(client))
 
+        _status(82, '正在对账中心残留共享源...')
+        total.update(_cleanup_orphan_center_sources(client))
+
         _status(86, '正在复查分享水位...')
         _merge_maintenance_counts(total, _enforce_local_share_waterline(client))
 
@@ -1346,6 +1604,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"违规分享清理 {total.get('share_invalid_deleted', 0)}/{total.get('share_invalid_failed', 0)}，"
             f"缺raw清理 {total.get('share_raw_missing_deleted', 0)}/{total.get('share_raw_missing_failed', 0)}，"
             f"水位清理 {total.get('share_pruned', 0)}/{total.get('share_prune_failed', 0)}，"
+            f"中心残留清理 {total.get('center_orphan_cancelled', 0)}/{total.get('center_orphan_failed', 0)}，"
             f"追更命中 {total.get('follow_consumed', 0)}/{total.get('follow_missing', 0)}，"
             f"登记追更缺口 {total.get('follow_gaps', 0)}，"
             f"检查分享 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，"

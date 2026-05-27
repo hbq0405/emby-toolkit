@@ -750,6 +750,7 @@ def _tg_build_resource_page_keyboard(total_count: int, page: int) -> dict:
     if page < page_count - 1:
         nav_row.append({"text": "下一页 ➡️", "callback_data": f"tg_res_page:{page + 1}"})
     keyboard.append(nav_row)
+    keyboard.append([{"text": "🔔 订阅该项目", "callback_data": "tg_subscribe"}])
     keyboard.append([{"text": "取消", "callback_data": "tg_search_cancel"}])
     return {"inline_keyboard": keyboard}
 
@@ -1203,7 +1204,26 @@ def _tg_query_hdhive_resources(chat_id: str, selection_number: int, target_seaso
                 msg = f"❌ 没有找到可处理资源：{title} ({year})"
                 if notes:
                     msg += "\n" + "\n".join(f"- {n}" for n in notes)
-                _tg_send_plain(chat_id, msg)
+                # 找不到资源时，保留会话并提供订阅按钮 
+                _tg_set_session(chat_id, {
+                    "stage": "hdhive_resources",
+                    "media": media,
+                    "all_resources": [],
+                    "resources": [],
+                    "page": 0,
+                    "raw_count": hdhive_raw_count,
+                    "filtered_count": hdhive_filtered_count,
+                    "used_filtered": hdhive_used_filtered,
+                    "channel_count": len(channel_resources),
+                    "notes": notes,
+                })
+                reply_markup = {
+                    "inline_keyboard": [
+                        [{"text": "🔔 订阅该项目", "callback_data": "tg_subscribe"}],
+                        [{"text": "取消", "callback_data": "tg_search_cancel"}]
+                    ]
+                }
+                _tg_send_plain(chat_id, msg, reply_markup=reply_markup)
                 return
 
             _tg_set_session(chat_id, {
@@ -1353,6 +1373,90 @@ def _tg_start_hdhive_transfer(chat_id: str, selection_number: int):
 
     threading.Thread(target=run, name="TG_Resource_Search_Transfer", daemon=True).start()
 
+def _tg_handle_subscribe(chat_id: str):
+    """处理 TG 搜索界面的订阅按钮点击"""
+    session = _tg_get_session(chat_id)
+    if not session or session.get("stage") != "hdhive_resources":
+        _tg_send_plain(chat_id, "❌ 当前没有可订阅的项目，请重新搜索。")
+        return
+
+    media = session.get("media") or {}
+    tmdb_id = media.get("tmdb_id")
+    media_type = media.get("media_type")
+    title = media.get("title") or "未知标题"
+    year = media.get("year") or ""
+    display_title = f"{title} ({year})" if year else title
+
+    if not tmdb_id:
+        _tg_send_plain(chat_id, "❌ 缺少 TMDb ID，无法订阅。")
+        return
+
+    # 清理会话防止重复点击
+    _tg_clear_session(chat_id)
+    _tg_send_plain(chat_id, f"⏳ 正在提交订阅：{display_title}...", disable_notification=True)
+
+    def run():
+        try:
+            from tasks.helpers import process_subscription_items_and_update_db
+            from handler.tmdb import get_tv_details
+            
+            api_key = _tg_get_tmdb_api_key()
+            tmdb_items = []
+            
+            if media_type == "movie":
+                tmdb_items.append({
+                    'tmdb_id': tmdb_id,
+                    'media_type': 'Movie',
+                    'season': None
+                })
+            elif media_type == "tv":
+                # 剧集需要按季订阅，拉取详情获取所有季
+                details = get_tv_details(tmdb_id, api_key)
+                if details and 'seasons' in details:
+                    for s in details['seasons']:
+                        s_num = s.get('season_number')
+                        # 过滤掉第 0 季 (特别篇)，通常只订阅正片
+                        if s_num is not None and s_num > 0:
+                            tmdb_items.append({
+                                'tmdb_id': tmdb_id,
+                                'media_type': 'Series',
+                                'season': s_num
+                            })
+                else:
+                    # 兜底订阅第 1 季
+                    tmdb_items.append({
+                        'tmdb_id': tmdb_id,
+                        'media_type': 'Series',
+                        'season': 1
+                    })
+
+            if not tmdb_items:
+                _tg_send_plain(chat_id, f"❌ 无法解析订阅信息：{display_title}")
+                return
+
+            # 标记订阅来源
+            subscription_source = {'type': 'telegram_search', 'user_id': chat_id}
+            
+            # 调用 helpers 的通用订阅函数
+            # tmdb_to_emby_item_map 传空字典即可，内部会自动查库校验
+            processed_ids = process_subscription_items_and_update_db(
+                tmdb_items=tmdb_items,
+                tmdb_to_emby_item_map={}, 
+                subscription_source=subscription_source,
+                tmdb_api_key=api_key
+            )
+            
+            if processed_ids:
+                _tg_send_plain(chat_id, f"✅ 订阅已提交：{display_title}\n系统将在后台自动监控并处理。")
+            else:
+                _tg_send_plain(chat_id, f"⚠️ 订阅请求已处理：{display_title}\n(可能已在库或已处于订阅状态)")
+
+        except Exception as e:
+            logger.error(f"  ➜ [TG交互] 提交订阅失败: {e}", exc_info=True)
+            _tg_send_plain(chat_id, f"❌ 提交订阅异常：{e}")
+
+    threading.Thread(target=run, name="TG_Resource_Subscribe", daemon=True).start()
+
 def _tg_try_handle_resource_session_input(chat_id: str, text: str) -> bool:
     """处理资源搜索会话中的数字回复/取消。返回 True 表示已消费消息。"""
     stripped = str(text or "").strip()
@@ -1493,6 +1597,11 @@ def _handle_callback_query(callback_query: dict):
         except Exception as e:
             logger.error(f"  ➜ [TG资源搜索] 处理资源选择按钮失败: {e}", exc_info=True)
             _tg_send_plain(chat_id, "❌ 选择失败，请重新输入片名搜索。")
+        return
+
+    # 处理订阅按钮点击 
+    if data == 'tg_subscribe':
+        _tg_handle_subscribe(chat_id)
         return
 
     # 4. 处理任务触发逻辑
@@ -1769,11 +1878,13 @@ def send_hdhive_checkin_notification(checkin_res: dict, is_gambler: bool, user_i
 
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    separator = "\\-" * 24
+
     # 构造精简版 MarkdownV2 文本 
     text = (
         f"【{status_icon} *{escape_markdown(status_title)}*】\n"
         f"📢 *执行结果*\n"
-        f"{'\\-' * 24}\n"
+        f"{separator}\n"
         f"🕒 *时间*: `{escape_markdown(current_time)}`\n"
         f"👤 *用户*: `{escape_markdown(username)}`\n"
         f"📍 *模式*: {escape_markdown(mode_text)}\n"

@@ -1871,4 +1871,42 @@ html.dark .progress-separator :deep(.n-progress-graph-line-rail) {
     font-size: 0.85em;
   }
 }
+/* 智能追剧策略配置：浅色模式输入框柔化，避免白色块突兀 */
+:global(html:not(.dark)) .settings-layout :deep(.n-input),
+:global(html:not(.dark)) .settings-layout :deep(.n-input-number) {
+  --n-color: rgba(255, 255, 255, 0.42) !important;
+  --n-color-focus: rgba(255, 255, 255, 0.62) !important;
+  --n-color-disabled: rgba(255, 255, 255, 0.28) !important;
+
+  --n-border: 1px solid rgba(0, 0, 0, 0.08) !important;
+  --n-border-hover: 1px solid rgba(0, 0, 0, 0.14) !important;
+  --n-border-focus: 1px solid var(--accent-color) !important;
+
+  --n-box-shadow-focus: 0 0 0 2px var(--accent-glow-color) !important;
+  --n-placeholder-color: rgba(0, 0, 0, 0.38) !important;
+  --n-text-color: rgba(0, 0, 0, 0.78) !important;
+}
+
+:global(html:not(.dark)) .settings-layout :deep(.n-input-wrapper),
+:global(html:not(.dark)) .settings-layout :deep(.n-input__input),
+:global(html:not(.dark)) .settings-layout :deep(.n-input__suffix) {
+  background: transparent !important;
+}
+
+/* 浅色模式下子配置面板也别用黑灰底，改成柔和玻璃白 */
+:global(html:not(.dark)) .settings-layout .setting-sub-panel {
+  background-color: rgba(255, 255, 255, 0.32) !important;
+  border: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+/* 覆盖那个内联 background-color: rgba(0,0,0,0.03) 的展开块 */
+:global(html:not(.dark)) .settings-layout .setting-sub-panel[style] {
+  background-color: rgba(255, 255, 255, 0.32) !important;
+}
+
+/* 浅色模式下设置卡片整体也稍微柔一点 */
+:global(html:not(.dark)) .settings-layout .settings-card {
+  background-color: rgba(255, 255, 255, 0.42) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
 </style>
