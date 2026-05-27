@@ -22,24 +22,25 @@
     <div v-if="isLoading" class="dashboard-card"><n-spin size="large" /></div>
     <div v-else-if="error" class="center-container"><n-alert title="加载错误" type="error">{{ error }}</n-alert></div>
     
-    <div v-else>
-      <n-list hoverable clickable>
-        <n-list-item v-for="(release, index) in appStore.releases" :key="release.version">
-          <n-thing>
-            <template #header>
-              <n-space align="center">
-                <a :href="release.url" target="_blank" class="version-link">{{ release.version }}</a>
-                <n-tag v-if="index === 0" type="success" size="small" round>最新软件版本</n-tag>
-                <n-tag v-if="release.version === appStore.currentVersion" type="info" size="small" round>当前版本</n-tag>
-              </n-space>
-            </template>
-            <template #header-extra>
-              <n-text :depth="3">{{ formatReleaseDate(release.published_at) }}</n-text>
-            </template>
-            <div class="changelog-content" v-html="renderMarkdown(release.changelog)"></div>
-          </n-thing>
-        </n-list-item>
-      </n-list>
+    <div v-else class="releases-container">
+      <n-card
+        v-for="(release, index) in appStore.releases"
+        :key="release.version"
+        :bordered="false"
+        class="dashboard-card"
+      >
+        <template #header>
+          <n-space align="center" justify="space-between">
+            <n-space align="center">
+              <a :href="release.url" target="_blank" class="version-link">{{ release.version }}</a>
+              <n-tag v-if="index === 0" type="success" size="small" round>最新软件版本</n-tag>
+              <n-tag v-if="release.version === appStore.currentVersion" type="info" size="small" round>当前版本</n-tag>
+            </n-space>
+            <n-text :depth="3">{{ formatReleaseDate(release.published_at) }}</n-text>
+          </n-space>
+        </template>
+        <div class="changelog-content" v-html="renderMarkdown(release.changelog)"></div>
+      </n-card>
     </div>
 
     <!-- ▼▼▼【优化后】更新进度模态框 ▼▼▼ -->
@@ -76,7 +77,7 @@ import { marked } from 'marked';
 import { formatDistanceToNow, parseISO } from 'date-fns';
 import { zhCN } from 'date-fns/locale';
 import { 
-  NLayout, NPageHeader, NDivider, NSpin, NAlert, NList, NListItem, NThing, 
+  NLayout, NPageHeader, NDivider, NSpin, NAlert, NCard,
   NTag, NSpace, NButton, NIcon, NText, NModal, NTooltip, useDialog,
   NImage, NP // 确保导入了 NImage 和 NP
 } from 'naive-ui';
@@ -184,6 +185,11 @@ onMounted(fetchData);
 }
 .version-link:hover {
   text-decoration: underline;
+}
+.releases-container {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 .changelog-content {
   margin-top: 8px;
