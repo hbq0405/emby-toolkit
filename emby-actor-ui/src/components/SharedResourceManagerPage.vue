@@ -216,8 +216,8 @@ const message = useMessage();
 const dialog = useDialog();
 const themeVars = useThemeVars();
 
-const isMobile = ref(false);
-const checkMobile = () => { isMobile.value = window.innerWidth <= 768; };
+import { useResponsive } from '../composables/useResponsive';
+const { isMobile } = useResponsive();
 
 const activeTab = ref('virtual');
 const loading = ref(false);
@@ -1042,8 +1042,7 @@ const cancelShare = (row) => { dialog.warning({ title: '取消分享', content: 
 const confirmDelete = (row) => { dialog.warning({ title: '删除虚拟资源', content: `确定删除《${row.title || row.file_name}》吗？如果已经播放转存，会同步删除 115 临时文件。`, positiveText: '删除', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/delete`, { delete_remote: true, delete_local: true }); message.success('已删除'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '删除失败'); } } }); };
 const confirmPromote = (row) => { dialog.info({ title: '转为正式资源', content: `确定将《${row.title || row.file_name}》从临时转存目录移动到正式媒体库吗？`, positiveText: '转正', negativeText: '取消', onPositiveClick: async () => { try { await axios.post(`/api/shared/resources/virtual/${row.virtual_id}/promote`); message.success('已转正'); await loadAll(); } catch (e) { message.error(e.response?.data?.message || '转正失败'); } } }); };
 
-onMounted(() => { checkMobile(); window.addEventListener('resize', checkMobile); loadAll(); });
-onUnmounted(() => window.removeEventListener('resize', checkMobile));
+onMounted(() => { loadAll(); });
 </script>
 
 <style scoped>
