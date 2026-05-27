@@ -830,8 +830,8 @@ def _select_sources_by_washing_before_import(
     """永久转存前按洗版规则筛选中心源。
 
     同一个 share_code 视为一个包：
-    - 包内任一视频 REJECT/SKIP，则整包不转存；
-    - 包内视频均 ACCEPT/REPLACE，才允许转存；
+    - 包内只要有任意一个视频是 ACCEPT/REPLACE，就允许转存整包；
+    - 只有当包内所有视频都被 REJECT/SKIP 时，才拒绝整包；
     - 多个包均合格时，选择洗版优先级最高的包。
     """
     from handler.resubscribe_service import WashingService
@@ -861,6 +861,7 @@ def _select_sources_by_washing_before_import(
         group_action_rank = 0
         group_quality = 0
         group_reasons = []
+        has_acceptable = False  # ★ 新增：记录包内是否有我们需要的文件
 
         for src in rows:
             file_name = src.get('file_name') or ''
@@ -933,10 +934,13 @@ def _select_sources_by_washing_before_import(
                 has_external_subtitle=False,
             )
 
+            # ★ 核心修复：不再一票否决，而是记录状态并跳过计分
             if action in ('REJECT', 'SKIP'):
-                rejected = True
-                errors.append(f"{file_name}: 洗版预检拒绝 [{action}] {reason}")
-                break
+                group_reasons.append(f"{file_name}: 洗版预检 [{action}] {reason}")
+                continue
+
+            # 只要走到这里，说明是 ACCEPT 或 REPLACE
+            has_acceptable = True
 
             level, level_reason = _washing_new_level(
                 sha1,
@@ -956,6 +960,11 @@ def _select_sources_by_washing_before_import(
             group_reasons.append(f"{file_name}: {action}; level={level}; {reason or level_reason}")
 
         if rejected:
+            continue
+
+        # ★ 核心修复：只有当包内【所有】视频都被跳过/拒绝时，才拒绝整个分享包
+        if not has_acceptable:
+            errors.append(f"分享包 {code} 内所有文件均被洗版拒绝/跳过")
             continue
 
         if rows:
@@ -995,18 +1004,12 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
     if not target_cid or target_cid == '0':
         raise RuntimeError('未配置 115 待整理目录 CID（p115_save_path_cid），无法转存共享资源')
     
-    # 无论当前是什么覆盖模式，都提前拉取中心 RAW 并写入本地 MediaInfo 缓存
-    # 避免后续 115 整理时因缺失缓存而触发缓慢的在线提取
     raw_map = _load_center_raw_map(client, sources)
-    for src in sources:
-        sha1 = _norm_sha1(src.get('sha1'))
-        raw = raw_map.get(sha1)
-        if raw:
-            _cache_center_raw_as_local_mediainfo(src, raw)
     
+    # ★ 核心修复：解决重复写入缓存的问题
     # 永久转存前预检：
-    # - replace：提前调用洗版模块裁决，避免不合格资源进入待整理；
-    # - skip / keep_both：不做洗版预检，直接放行，交给后续 SmartOrganizer 按覆盖模式处理。
+    # - replace：提前调用洗版模块裁决，洗版模块内部会负责写入缓存；
+    # - skip / keep_both：不做洗版预检，直接在这里遍历写入缓存。
     rename_config = settings_db.get_setting('p115_rename_config') or {}
     if rename_config.get('conflict_mode') == 'replace':
         sources, washing_errors = _select_sources_by_washing_before_import(
@@ -1027,7 +1030,13 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
                 'washing_rejected': True,
             }
     else:
-        logger.info(f"  ➜ [共享资源] 当前覆盖模式为 {rename_config.get('conflict_mode')}，跳过洗版预检，")
+        logger.info(f"  ➜ [共享资源] 当前覆盖模式为 {rename_config.get('conflict_mode')}，跳过洗版预检。")
+        # 非洗版模式下，在这里统一写入缓存
+        for src in sources:
+            sha1 = _norm_sha1(src.get('sha1'))
+            raw = raw_map.get(sha1)
+            if raw:
+                _cache_center_raw_as_local_mediainfo(src, raw)
 
     # 同一个季/剧分享可能返回多集，按 share_code 去重，避免重复转存同一分享包。
     unique = []
