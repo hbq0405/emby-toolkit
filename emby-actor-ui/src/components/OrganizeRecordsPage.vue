@@ -211,11 +211,8 @@ const editForm = ref({
   batch_mode: 'merge'
 });
 
-// 响应式视口：移动端隐藏次要列，并把信息合并到“名称演变”列里
-const isMobile = ref(typeof window !== 'undefined' ? window.innerWidth <= 768 : false);
-const updateViewport = () => {
-  if (typeof window !== 'undefined') isMobile.value = window.innerWidth <= 768;
-};
+import { useResponsive } from '../composables/useResponsive';
+const { isMobile } = useResponsive();
 const layoutContentStyle = computed(() => ({
   padding: isMobile.value ? '12px' : '24px'
 }));
@@ -555,14 +552,8 @@ const batchDelete = () => {
 };
 
 onMounted(() => {
-  updateViewport();
-  if (typeof window !== 'undefined') window.addEventListener('resize', updateViewport);
   fetchCategories();
   fetchRecords();
-});
-
-onBeforeUnmount(() => {
-  if (typeof window !== 'undefined') window.removeEventListener('resize', updateViewport);
 });
 </script>
 
