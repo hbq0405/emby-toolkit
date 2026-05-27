@@ -1567,7 +1567,7 @@ def _watching_missing_episodes(limit: int = 120) -> List[Dict[str, Any]]:
                              END,
                              last_updated_at DESC NULLS LAST
                 ),
-                missing AS (
+                all_episodes AS (
                     SELECT DISTINCT ON (e.parent_series_tmdb_id, e.season_number, e.episode_number)
                         e.tmdb_id,
                         e.item_type,
@@ -1577,6 +1577,7 @@ def _watching_missing_episodes(limit: int = 120) -> List[Dict[str, Any]]:
                         e.title,
                         e.release_year,
                         e.release_date,
+                        COALESCE(e.in_library, FALSE) AS in_library,
                         ws.season_tmdb_id,
                         ws.season_title,
                         ws.watching_status,
@@ -1586,13 +1587,13 @@ def _watching_missing_episodes(limit: int = 120) -> List[Dict[str, Any]]:
                       ON e.item_type='Episode'
                      AND e.parent_series_tmdb_id = ws.parent_series_tmdb_id
                      AND e.season_number = ws.season_number
-                    WHERE COALESCE(e.in_library, FALSE) = FALSE
-                      AND e.episode_number IS NOT NULL
+                    WHERE e.episode_number IS NOT NULL
                       AND COALESCE(e.subscription_status, 'NONE') NOT IN ('IGNORED')
                       AND (e.release_date IS NULL OR e.release_date <= CURRENT_DATE)
                     ORDER BY e.parent_series_tmdb_id,
                              e.season_number,
                              e.episode_number,
+                             COALESCE(e.in_library, FALSE) DESC, -- ★ 核心修复：优先取在库的记录，防止被占位符覆盖
                              e.last_updated_at DESC NULLS LAST,
                              e.release_date DESC NULLS LAST
                 )
@@ -1608,7 +1609,8 @@ def _watching_missing_episodes(limit: int = 120) -> List[Dict[str, Any]]:
                     season_tmdb_id,
                     season_title,
                     watching_status
-                FROM missing
+                FROM all_episodes
+                WHERE in_library = FALSE -- ★ 核心修复：在去重后的最外层过滤，确保真正缺失
                 ORDER BY season_last_updated_at DESC NULLS LAST,
                          parent_series_tmdb_id,
                          season_number,
