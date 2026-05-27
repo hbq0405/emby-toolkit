@@ -504,6 +504,11 @@ const ledgerEventLabel = (eventType) => {
   return map[eventType] || eventType || '-';
 };
 
+const formatDelta = (value) => {
+  const n = Number(value || 0);
+  return n > 0 ? `+${n}` : String(n);
+};
+
 const ledgerDisplayItems = computed(() => (ledgerItems.value || []).map((row, index) => ({
   ...row,
   __row_key: `row:${row.id || row.ref_id || row.created_at || index}`,
