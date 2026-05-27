@@ -501,20 +501,12 @@ const initializeSortable = (container, sequenceRef, instanceRef) => {
   return null;
 };
 
-const isMobile = ref(false);
-const checkMobile = () => {
-  isMobile.value = window.innerWidth < 768;
-};
+import { useResponsive } from '../../composables/useResponsive';
+const { isMobile } = useResponsive();
 
 // --- Lifecycle and Watchers ---
 onMounted(() => {
-  checkMobile();
-  window.addEventListener('resize', checkMobile);
   fetchAvailableTasks();
-});
-
-onBeforeUnmount(() => {
-  window.removeEventListener('resize', checkMobile);
 });
 
 watch(showHighFreqChainConfigModal, (newValue) => {
