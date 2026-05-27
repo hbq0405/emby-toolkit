@@ -1878,11 +1878,13 @@ def send_hdhive_checkin_notification(checkin_res: dict, is_gambler: bool, user_i
 
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+    separator = "\\-" * 24
+
     # 构造精简版 MarkdownV2 文本 
     text = (
         f"【{status_icon} *{escape_markdown(status_title)}*】\n"
         f"📢 *执行结果*\n"
-        f"{'\\-' * 24}\n"
+        f"{separator}\n"
         f"🕒 *时间*: `{escape_markdown(current_time)}`\n"
         f"👤 *用户*: `{escape_markdown(username)}`\n"
         f"📍 *模式*: {escape_markdown(mode_text)}\n"

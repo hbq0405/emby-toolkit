@@ -649,6 +649,100 @@ def _merge_maintenance_counts(total: Dict[str, Any], update: Dict[str, Any]):
             total[k] = v
 
 
+def _load_active_local_share_code_set() -> set[str]:
+    """本地仍应存在/占用名额的 share_code 集合。"""
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT share_code
+                FROM shared_share_records
+                WHERE COALESCE(share_code, '') <> ''
+                  AND status = ANY(%s)
+                """,
+                (_active_share_statuses(),),
+            )
+            return {
+                str((row or {}).get('share_code') or '').strip()
+                for row in cur.fetchall()
+                if str((row or {}).get('share_code') or '').strip()
+            }
+
+
+def _cleanup_orphan_center_sources(client: SharedCenterClient, page_size: int = 200, max_pages: int = 20) -> Dict[str, int]:
+    """对账中心登记源与本地活动分享，自动撤销已经不在本地的中心孤儿源。"""
+    local_active_codes = _load_active_local_share_code_set()
+    orphan_groups: Dict[str, Dict[str, Any]] = {}
+    checked = 0
+    consecutive_errors = 0
+
+    for page in range(max(1, int(max_pages or 1))):
+        try:
+            resp = client.list_sources(
+                status='alive,pending,dead',
+                mine_only=True,
+                include_raw=False,
+                order_by='latest',
+                limit=page_size,
+                offset=page * page_size,
+            )
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 拉取中心自有共享源失败: {e}")
+            if _is_network_error(e):
+                consecutive_errors += 1
+                if consecutive_errors >= 3:
+                    logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束中心孤儿源对账。")
+            return {'center_orphan_checked': checked, 'center_orphan_cancelled': 0, 'center_orphan_failed': 1}
+
+        consecutive_errors = 0
+        items = resp.get('items') or []
+        total = _safe_int(resp.get('total'), len(items))
+        if not items:
+            break
+
+        for item in items:
+            if not bool(item.get('is_mine')):
+                continue
+            checked += 1
+            share_code = str(item.get('share_code') or '').strip()
+            if not share_code or share_code in local_active_codes:
+                continue
+            group = orphan_groups.setdefault(share_code, {'source_ids': set(), 'sha1_list': set()})
+            source_id = str(item.get('source_id') or '').strip()
+            sha1 = str(item.get('sha1') or '').strip().upper()
+            if source_id:
+                group['source_ids'].add(source_id)
+            if sha1:
+                group['sha1_list'].add(sha1)
+
+        if (page + 1) * page_size >= total:
+            break
+
+    cancelled = failed = 0
+    for share_code, group in orphan_groups.items():
+        try:
+            client.cancel_sources(
+                share_code=share_code,
+                source_ids=sorted(group['source_ids']),
+                sha1_list=sorted(group['sha1_list']),
+                reason='local_record_missing',
+                delete_raw_ffprobe=True,
+            )
+            cancelled += 1
+        except Exception as e:
+            failed += 1
+            logger.warning(f"  ➜ [共享资源维护] 撤销中心孤儿共享源失败: share={share_code}, err={e}")
+        time.sleep(0.2)
+
+    if cancelled or failed:
+        logger.info(f"  ➜ [共享资源维护] 中心孤儿共享源对账完成：撤销 {cancelled}，失败 {failed}。")
+    return {
+        'center_orphan_checked': checked,
+        'center_orphan_cancelled': cancelled,
+        'center_orphan_failed': failed,
+    }
+
+
 def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records: int = 80) -> Dict[str, int]:
     """自动同步 115 分享状态；可用后上传 raw 并登记中心；失效时撤销中心源。"""
     p115 = P115Service.get_client()
@@ -1485,6 +1579,9 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         _status(74, '正在同步分享审核状态并自动登记中心...')
         total.update(_auto_check_and_report_local_shares(client))
 
+        _status(82, '正在对账中心残留共享源...')
+        total.update(_cleanup_orphan_center_sources(client))
+
         _status(86, '正在复查分享水位...')
         _merge_maintenance_counts(total, _enforce_local_share_waterline(client))
 
@@ -1507,6 +1604,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"违规分享清理 {total.get('share_invalid_deleted', 0)}/{total.get('share_invalid_failed', 0)}，"
             f"缺raw清理 {total.get('share_raw_missing_deleted', 0)}/{total.get('share_raw_missing_failed', 0)}，"
             f"水位清理 {total.get('share_pruned', 0)}/{total.get('share_prune_failed', 0)}，"
+            f"中心残留清理 {total.get('center_orphan_cancelled', 0)}/{total.get('center_orphan_failed', 0)}，"
             f"追更命中 {total.get('follow_consumed', 0)}/{total.get('follow_missing', 0)}，"
             f"登记追更缺口 {total.get('follow_gaps', 0)}，"
             f"检查分享 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，"

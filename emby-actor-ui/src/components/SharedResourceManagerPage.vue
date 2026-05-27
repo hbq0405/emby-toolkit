@@ -490,6 +490,7 @@ const ledgerEventLabel = (eventType) => {
     center_initial_credit: '基础贡献值',
     center_source_registered: '中心登记共享源',
     center_source_registered_group: '中心登记共享源',
+    center_deleted_shared_source_summary: '已删除共享源',
     center_shared_source_served: '共享被转存',
     center_shared_source_served_group: '共享被转存',
     center_shared_source_consumed: '转存共享资源',
@@ -509,10 +510,53 @@ const formatDelta = (value) => {
   return n > 0 ? `+${n}` : String(n);
 };
 
-const ledgerDisplayItems = computed(() => (ledgerItems.value || []).map((row, index) => ({
-  ...row,
-  __row_key: `row:${row.id || row.ref_id || row.created_at || index}`,
-})));
+const isDeletedCenterSourceLedgerRow = (row) => {
+  const eventType = String(row?.event_type || '');
+  const title = String(row?.title || '').trim();
+  return (
+    title === '已删除共享源' &&
+    (eventType === 'center_shared_source_served' || eventType === 'center_shared_source_consumed')
+  );
+};
+
+const buildDeletedCenterSourceSummaryRow = (rows) => {
+  if (!rows.length) return null;
+  const sorted = [...rows].sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+  const latest = sorted[0] || {};
+  const delta = rows.reduce((sum, row) => sum + Number(row?.delta || 0), 0);
+  const servedCount = rows.filter(row => row?.event_type === 'center_shared_source_served').length;
+  const consumedCount = rows.filter(row => row?.event_type === 'center_shared_source_consumed').length;
+  return {
+    ...latest,
+    id: `deleted-center-source-summary:${latest.created_at || '0'}`,
+    event_type: 'center_deleted_shared_source_summary',
+    title: `已删除共享源（汇总 ${rows.length} 条）`,
+    delta,
+    reason: `已汇总展示 ${rows.length} 条历史共享源积分变化；共享被转存 ${servedCount} 条，转存共享资源 ${consumedCount} 条。`,
+    raw_json: {
+      ...(latest.raw_json || {}),
+      deleted_source_summary: {
+        item_count: rows.length,
+        served_count: servedCount,
+        consumed_count: consumedCount,
+        delta,
+      },
+    },
+  };
+};
+
+const ledgerDisplayItems = computed(() => {
+  const rows = Array.isArray(ledgerItems.value) ? ledgerItems.value : [];
+  const deletedRows = rows.filter(isDeletedCenterSourceLedgerRow);
+  const normalRows = rows.filter(row => !isDeletedCenterSourceLedgerRow(row));
+  const summaryRow = buildDeletedCenterSourceSummaryRow(deletedRows);
+  const merged = summaryRow ? [...normalRows, summaryRow] : normalRows;
+  merged.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+  return merged.map((row, index) => ({
+    ...row,
+    __row_key: `row:${row.id || row.ref_id || row.created_at || index}`,
+  }));
+});
 
 
 const centerTypeLabel = (value) => ({
