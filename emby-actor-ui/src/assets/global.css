@@ -185,3 +185,53 @@ body {
   transform: none !important;
   opacity: 1 !important;
 }
+
+/* 自建合集创建/编辑弹窗：允许玻璃化，不再走 modal-card-lite 实心背景 */
+.n-modal .custom-modal,
+.n-card.custom-modal,
+.custom-modal {
+  --n-color: var(--card-bg-color) !important;
+  --n-border-color: var(--card-border-color) !important;
+
+  background: var(--card-bg-color) !important;
+  background-color: var(--card-bg-color) !important;
+  border: 1px solid var(--card-border-color) !important;
+  color: var(--text-color) !important;
+
+  backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
+
+  box-shadow:
+    0 18px 60px var(--card-shadow-color),
+    0 0 36px -12px var(--accent-glow-color) !important;
+}
+
+/* 弹窗内容区透明 */
+.n-modal .custom-modal .n-card__content,
+.n-modal .custom-modal .n-card__footer,
+.n-modal .custom-modal .n-card-header,
+.custom-modal .n-card__content,
+.custom-modal .n-card__footer,
+.custom-modal .n-card-header {
+  background: transparent !important;
+}
+
+/* 弹窗里的配置小卡片也别实心 */
+.custom-modal .config-card,
+.custom-modal .type-card,
+.custom-modal .rule-row,
+.custom-modal .n-card[embedded] {
+  --n-color: rgba(255, 255, 255, 0.045) !important;
+  background: rgba(255, 255, 255, 0.045) !important;
+  background-color: rgba(255, 255, 255, 0.045) !important;
+  border-color: rgba(148, 177, 255, 0.12) !important;
+  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+}
+
+/* 选中的类型卡片保留一点强调 */
+.custom-modal .type-card.active {
+  background: rgba(143, 180, 255, 0.12) !important;
+  border-color: var(--accent-color) !important;
+  box-shadow: 0 0 0 1px var(--accent-color) inset, 0 0 18px -8px var(--accent-glow-color) !important;
+}
