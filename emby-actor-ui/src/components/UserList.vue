@@ -44,16 +44,17 @@
     </n-space>
 
     <!-- 数据表格 -->
-    <n-data-table
-      :columns="columns"
-      :data="filteredAndSortedUsers"
-      :loading="loading"
-      :row-key="row => row.Id"
-      v-model:checked-row-keys="checkedRowKeys"
-      @update:sorter="handleSorterChange"
-      @row-click="handleRowClick"
-      style="margin-top: 12px;"
-    />
+    <n-card :bordered="false" class="dashboard-card" style="margin-top: 12px; padding: 0;">
+      <n-data-table
+        :columns="columns"
+        :data="filteredAndSortedUsers"
+        :loading="loading"
+        :row-key="row => row.Id"
+        v-model:checked-row-keys="checkedRowKeys"
+        @update:sorter="handleSorterChange"
+        @row-click="handleRowClick"
+      />
+    </n-card>
 
     <!-- 续期模态框 (保持不变) -->
     <n-modal v-model:show="isExpirationModalVisible" preset="card" style="width: 500px" :title="`设置用户 “${currentUser?.Name}” 的有效期`" :bordered="false" size="huge">
