@@ -743,16 +743,135 @@ def _cleanup_orphan_center_sources(client: SharedCenterClient, page_size: int = 
     }
 
 
+def _load_center_own_share_snapshot(client: SharedCenterClient, page_size: int = 500, max_pages: int = 10) -> Dict[str, Dict[str, Any]] | None:
+    """拉取中心端当前设备共享源快照，用于修复“本地分享可用但中心源被误删”的情况。
+
+    返回 None 表示中心查询失败。调用方不能把 None 当作“中心没有数据”，
+    否则网络抖动时会误触发大批量补登。
+    """
+    snapshot: Dict[str, Dict[str, Any]] = {}
+    for page in range(max(1, int(max_pages or 1))):
+        try:
+            resp = client.list_sources(
+                status='alive,pending,dead,reported,cancelled,expired,rejected',
+                mine_only=True,
+                include_raw=False,
+                order_by='latest',
+                limit=page_size,
+                offset=page * page_size,
+            )
+        except TypeError:
+            # 兼容旧中心 / 旧客户端：不认识扩展状态时退回已知状态。
+            try:
+                resp = client.list_sources(
+                    status='alive,pending,dead',
+                    mine_only=True,
+                    include_raw=False,
+                    order_by='latest',
+                    limit=page_size,
+                    offset=page * page_size,
+                )
+            except Exception as e:
+                logger.warning(f"  ➜ [共享资源维护] 拉取中心共享源快照失败: {e}")
+                return None
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 拉取中心共享源快照失败: {e}")
+            return None
+
+        items = resp.get('items') or []
+        total = _safe_int(resp.get('total'), len(items))
+        for item in items:
+            if not bool(item.get('is_mine')):
+                continue
+            share_code = str(item.get('share_code') or '').strip()
+            if not share_code:
+                continue
+            group = snapshot.setdefault(share_code, {
+                'source_ids': set(),
+                'sha1s': set(),
+                'healthy_sha1s': set(),
+                'dead_sha1s': set(),
+                'statuses': set(),
+            })
+            source_id = str(item.get('source_id') or '').strip()
+            sha1 = str(item.get('sha1') or '').strip().upper()
+            status = str(item.get('status') or '').strip().lower()
+            if source_id:
+                group['source_ids'].add(source_id)
+            if sha1:
+                group['sha1s'].add(sha1)
+            if status:
+                group['statuses'].add(status)
+            # 中心源必须同时满足：源状态可消费 + raw_ffprobe 仍存在，才算健康。
+            has_raw = bool(item.get('has_raw_ffprobe'))
+            object_key = str(item.get('object_key') or '').strip()
+            if sha1 and status in ('alive', 'pending', 'reported') and has_raw and object_key:
+                group['healthy_sha1s'].add(sha1)
+            if sha1 and status in ('dead', 'cancelled', 'expired', 'rejected'):
+                group['dead_sha1s'].add(sha1)
+
+        if not items or (page + 1) * page_size >= total:
+            break
+    return snapshot
+
+
+def _center_share_sync_reason(center_snapshot: Dict[str, Dict[str, Any]] | None, share_code: str, items: List[Dict[str, Any]]) -> str:
+    """判断本地活跃分享是否需要重新同步到中心。"""
+    if center_snapshot is None:
+        return ''
+    share_code = str(share_code or '').strip()
+    if not share_code:
+        return ''
+    local_sha1s = {
+        str(item.get('sha1') or '').strip().upper()
+        for item in (items or [])
+        if str(item.get('sha1') or '').strip()
+    }
+    center = center_snapshot.get(share_code)
+    if not center:
+        return 'center_missing'
+    if not local_sha1s:
+        return ''
+
+    center_sha1s = set(center.get('sha1s') or set())
+    healthy_sha1s = set(center.get('healthy_sha1s') or set())
+    dead_sha1s = set(center.get('dead_sha1s') or set())
+
+    if local_sha1s & dead_sha1s:
+        return 'center_dead'
+    if local_sha1s - center_sha1s:
+        return 'center_missing_items'
+    if local_sha1s - healthy_sha1s:
+        return 'center_raw_missing'
+    return ''
+
+
+def _center_share_sync_reason_text(reason: str) -> str:
+    return {
+        'center_missing': '中心服务器已没有该分享码',
+        'center_missing_items': '中心服务器缺少该分享码的部分文件',
+        'center_raw_missing': '中心服务器该分享码的媒体信息不完整',
+        'center_dead': '中心服务器该分享码被标记为失效',
+    }.get(str(reason or ''), str(reason or ''))
+
+
 def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records: int = 80) -> Dict[str, int]:
-    """自动同步 115 分享状态；可用后上传 raw 并登记中心；失效时撤销中心源。"""
+    """自动同步 115 分享状态；可用后上传 raw 并登记中心；失效时撤销中心源。
+
+    增加中心反向对账：如果 115 本地分享仍可用，但中心端 share_code 已缺失、缺文件、
+    raw 缺失或被标记 dead，则自动重新上传 raw 并登记中心，修复旧版本误删中心源造成的断档。
+    """
     p115 = P115Service.get_client()
     if not p115:
         logger.warning("  ➜ [共享资源维护] 115 客户端未初始化，跳过分享状态同步。")
-        return {'checked': 0, 'reported': 0, 'cancelled': 0}
+        return {'checked': 0, 'reported': 0, 'cancelled': 0, 'resynced': 0}
 
     records, _ = shared_share_db.list_share_records(status='all', keyword='', page=1, page_size=max_records)
-    checked = reported = cancelled = 0
+    checked = reported = cancelled = resynced = 0
     consecutive_errors = 0
+
+    # 先拉取一次中心端“我的共享源”快照，后面逐个本地分享对账，避免每条分享都请求中心。
+    center_snapshot = _load_center_own_share_snapshot(client)
 
     # 延迟导入 routes.shared_resource，复用现有检查/上传/登记逻辑，避免两套实现分叉。
     try:
@@ -776,7 +895,33 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                 update = {'status': 'alive', 'review_status': 'alive', 'last_checked_at': 'NOW()', 'last_error': '分享可用', 'raw_json': {'last_snap': snap}}
                 shared_share_db.update_share_record(record['id'], **update)
                 record = shared_share_db.get_share_record(record['id']) or record
-                if _record_reportable(record) and sr is not None:
+                items = shared_share_db.list_share_items(record['id']) or []
+                sync_reason = _center_share_sync_reason(center_snapshot, share_code, items)
+                need_report = _record_reportable(record) or bool(sync_reason)
+
+                if need_report and sr is not None:
+                    if sync_reason:
+                        reason_text = _center_share_sync_reason_text(sync_reason)
+                        logger.info(f"  ➜ [共享资源维护] 本地分享仍可用但中心登记异常，准备重新登记: share={share_code}, reason={reason_text}")
+                        shared_share_db.update_share_record(
+                            record['id'],
+                            center_status='not_reported',
+                            last_error=f'{reason_text}，维护任务将重新登记中心',
+                        )
+                        # 中心源如果是 dead，register_source 当前不会把 dead 自动拉回 pending；
+                        # 先删除中心旧源但保留 raw，再重新登记，避免继续不可见。
+                        if sync_reason == 'center_dead':
+                            try:
+                                sha1s = [str(i.get('sha1') or '').strip().upper() for i in items if str(i.get('sha1') or '').strip()]
+                                client.cancel_sources(
+                                    share_code=share_code,
+                                    sha1_list=sha1s,
+                                    reason='local_alive_center_resync',
+                                    delete_raw_ffprobe=False,
+                                )
+                            except Exception as e:
+                                logger.debug(f"  ➜ [共享资源维护] 删除中心 dead 源失败，继续尝试重新登记: share={share_code}, err={e}")
+
                     # 自动补 raw + 登记中心。
                     try:
                         cfg, headers = sr._center_headers()
@@ -785,7 +930,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                         logger.debug(f"  ➜ [共享资源维护] 自动上传 raw 失败，继续尝试登记中心: {e}")
                     try:
                         # 直接复用 route 的核心注册逻辑不方便调用带 Flask request 的视图，这里手动按 shared_share_items 注册。
-                        items = shared_share_db.list_share_items(record['id'])
+                        items = shared_share_db.list_share_items(record['id']) or []
                         missing_raw = sr._files_missing_raw_ffprobe(items) if sr is not None and hasattr(sr, '_files_missing_raw_ffprobe') else []
                         not_uploaded = [i for i in items if str(i.get('sha1') or '').strip() and not i.get('raw_ffprobe_uploaded')]
                         if missing_raw or not_uploaded:
@@ -823,7 +968,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                             if record_share_type == 'episode_file':
                                 center_item_type = 'Episode'
                             standard_identity = sr._standard_share_identity(record, item, center_item_type=center_item_type) if sr is not None else {}
-                            
+
                             register_kwargs = dict(
                                 tmdb_id=standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id'),
                                 item_type=center_item_type,
@@ -840,7 +985,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                 receive_code=record.get('receive_code') or '',
                                 has_raw_ffprobe=bool(item.get('raw_ffprobe_uploaded')),
                             )
-                            
+
                             try:
                                 resp = client.register_source(**register_kwargs)
                                 if resp.get('source_id'):
@@ -862,21 +1007,34 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                                 continue
                                     except Exception as retry_e:
                                         err_str = f"重传raw后登记失败: {retry_e}"
-                                
+
                                 logger.warning(f"  ➜ [共享资源维护] 自动登记中心单项失败: {item.get('file_name')} -> {err_str}")
                                 errors.append(f"{item.get('file_name')}: {err_str}")
 
                         if ok > 0:
                             center_status = 'reported' if ok == len(items) and not errors else 'partial'
+                            last_error = '自动登记中心成功' if not errors else '；'.join(errors[:5])
+                            if sync_reason and not errors:
+                                last_error = f'中心同步补登成功：{_center_share_sync_reason_text(sync_reason)}'
                             shared_share_db.update_share_record(
-                                record['id'], 
-                                center_status=center_status, 
-                                status='reported' if center_status == 'reported' else record.get('status'), 
-                                reported_count=ok, 
-                                reported_at='NOW()', 
-                                last_error='自动登记中心成功' if not errors else '；'.join(errors[:5])
+                                record['id'],
+                                center_status=center_status,
+                                status='reported' if center_status == 'reported' else record.get('status'),
+                                reported_count=ok,
+                                reported_at='NOW()',
+                                last_error=last_error,
                             )
                             reported += 1
+                            if sync_reason:
+                                resynced += 1
+                                # 更新内存快照，避免同一个分享码后续同轮被误判仍缺失。
+                                local_sha1s = {str(i.get('sha1') or '').strip().upper() for i in items if str(i.get('sha1') or '').strip()}
+                                if center_snapshot is not None:
+                                    group = center_snapshot.setdefault(share_code, {'source_ids': set(), 'sha1s': set(), 'healthy_sha1s': set(), 'dead_sha1s': set(), 'statuses': set()})
+                                    group['sha1s'].update(local_sha1s)
+                                    group['healthy_sha1s'].update(local_sha1s)
+                                    group['dead_sha1s'].difference_update(local_sha1s)
+                                    group['statuses'].add('pending')
                         elif errors:
                             shared_share_db.update_share_record(
                                 record['id'],
@@ -940,7 +1098,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                     break
         time.sleep(0.2)
 
-    return {'checked': checked, 'reported': reported, 'cancelled': cancelled}
+    return {'checked': checked, 'reported': reported, 'cancelled': cancelled, 'resynced': resynced}
 
 
 def _find_local_media_for_gap(gap: Dict[str, Any]) -> Dict[str, Any] | None:
@@ -1639,6 +1797,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"追更命中 {total.get('follow_consumed', 0)}/{total.get('follow_missing', 0)}，"
             f"登记追更缺口 {total.get('follow_gaps', 0)}，"
             f"检查分享 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，"
+            f"中心补登 {total.get('resynced', 0)}，"
             f"清理失效 {total.get('cancelled', 0)}。"
         )
         if not maintenance_silent:
