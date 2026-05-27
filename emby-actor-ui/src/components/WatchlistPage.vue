@@ -595,6 +595,42 @@
             </div>
 
             <n-divider style="margin: 0" />
+
+            <div class="setting-item">
+              <div class="setting-icon"><n-icon :component="RefreshIcon" /></div>
+              <div class="setting-content">
+                <div class="setting-header">
+                  <div class="setting-label">剧集订阅洗版参数</div>
+                </div>
+                <div class="setting-desc">
+                  剧集向 MoviePilot 提交订阅时的洗版参数，已完结剧集始终强制全集洗版。
+                </div>
+                <div class="setting-sub-panel" style="margin-top: 8px; padding: 4px 12px; background-color: rgba(0,0,0,0.03);">
+                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px dashed var(--n-border-color);">
+                    <div style="display: flex; flex-direction: column; gap: 2px;">
+                      <span style="font-size: 13px; font-weight: 500;">分集洗版</span>
+                      <span style="font-size: 12px; color: var(--n-text-color-3);">适合边追更边洗版。</span>
+                    </div>
+                    <n-switch v-model:value="watchlistConfig.series_subscription_best_version" size="small">
+                      <template #checked>开启</template>
+                      <template #unchecked>关闭</template>
+                    </n-switch>
+                  </div>
+                  <div style="display: flex; justify-content: space-between; align-items: center; padding: 8px 0;">
+                    <div style="display: flex; flex-direction: column; gap: 2px;">
+                      <span style="font-size: 13px; font-weight: 500;">全集洗版</span>
+                      <span style="font-size: 12px; color: var(--n-text-color-3);">仅下载完结包。</span>
+                    </div>
+                    <n-switch v-model:value="watchlistConfig.series_subscription_best_version_full" size="small">
+                      <template #checked>开启</template>
+                      <template #unchecked>关闭</template>
+                    </n-switch>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <n-divider style="margin: 0" />
             
           </div>
           <!-- 第三组：跟踪与维护 -->
@@ -702,6 +738,8 @@ const watchlistConfig = ref({
   auto_delete_mp_history: false,
   auto_delete_download_tasks: false,
   sync_mp_subscription: false,
+  series_subscription_best_version: false,
+  series_subscription_best_version_full: false,
   revival_check_days: 365,
   tg_channel_tracking: false
 });
@@ -727,6 +765,8 @@ const openConfigModal = async () => {
          auto_delete_download_tasks: data.auto_delete_download_tasks ?? false,
          enable_backfill: data.enable_backfill ?? false,
          sync_mp_subscription: data.sync_mp_subscription ?? false,
+         series_subscription_best_version: data.series_subscription_best_version ?? data.sync_mp_subscription_episode_wash ?? false,
+         series_subscription_best_version_full: data.series_subscription_best_version_full ?? data.sync_mp_subscription_full_wash ?? false,
          revival_check_days: data.revival_check_days ?? 365,
          tg_channel_tracking: data.tg_channel_tracking ?? false
        };
