@@ -207,9 +207,7 @@ import {
   ShareSocialOutline as ShareIcon,
   CheckmarkCircleOutline as CheckIcon,
   CloudDoneOutline as ReportIcon,
-  CloseCircleOutline as CancelIcon,
-  ChevronForwardOutline as ChevronForwardIcon,
-  ChevronDownOutline as ChevronDownIcon
+  CloseCircleOutline as CancelIcon
 } from '@vicons/ionicons5';
 
 const message = useMessage();
@@ -241,8 +239,6 @@ const shareItems = ref([]);
 const ledgerItems = ref([]);
 const centerSources = ref([]);
 const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
-const ledgerCollapsedGroups = reactive({});
-
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
 const shareFilters = reactive({ keyword: '', status: 'active' });
 const centerFilters = reactive({ keyword: '', status: '', item_type: 'all', order_by: 'latest' });
@@ -493,11 +489,11 @@ const ledgerEventLabel = (eventType) => {
   const map = {
     center_initial_credit: '基础贡献值',
     center_source_registered: '中心登记共享源',
-    center_source_registered_group: '登记汇总',
+    center_source_registered_group: '中心登记共享源',
     center_shared_source_served: '共享被转存',
-    center_shared_source_served_group: '分享加分汇总',
+    center_shared_source_served_group: '共享被转存',
     center_shared_source_consumed: '转存共享资源',
-    center_shared_source_consumed_group: '转存扣分汇总',
+    center_shared_source_consumed_group: '转存共享资源',
     share_created: '创建分享',
     share_reported_center: '登记',
     share_raw_uploaded: '媒体信息',
@@ -508,142 +504,10 @@ const ledgerEventLabel = (eventType) => {
   return map[eventType] || eventType || '-';
 };
 
-const foldableLedgerEpisodeEvents = new Set([
-  'center_source_registered',
-  'center_shared_source_served',
-  'center_shared_source_consumed',
-]);
-
-const ledgerGroupReasonPrefix = (eventType) => ({
-  center_source_registered: '本季登记共享',
-  center_shared_source_served: '本季分享加分',
-  center_shared_source_consumed: '本季转存扣分',
-}[eventType] || '本季贡献值');
-
-const ledgerGroupEventType = (eventType) => `${eventType}_group`;
-
-const formatDelta = (value) => {
-  const n = Number(value || 0);
-  return n > 0 ? `+${n}` : String(n);
-};
-
-const getLedgerCenterItem = (row) => {
-  const raw = row?.raw_json || {};
-  if (raw && typeof raw === 'object') return raw.center_item || raw;
-  return {};
-};
-
-const stripEpisodeCode = (value) => String(value || '')
-  .replace(/\s*S\d{1,3}\s*[._ -]*E\d{1,4}\b/ig, '')
-  .replace(/\s*S\d{1,3}\b/ig, '')
-  .replace(/\s+/g, ' ')
-  .trim();
-
-const parseLedgerEpisode = (row) => {
-  const centerItem = getLedgerCenterItem(row);
-  const title = String(row.title || centerItem.title || centerItem.file_name || '');
-  const fileName = String(centerItem.file_name || row.file_name || '');
-  let season = Number(centerItem.season_number || row.season_number || 0);
-  let episode = Number(centerItem.episode_number || row.episode_number || 0);
-
-  if (!season || !episode) {
-    const m = title.match(/\bS(\d{1,3})\s*[._ -]*E(\d{1,4})\b/i)
-      || fileName.match(/\bS(\d{1,3})\s*[._ -]*E(\d{1,4})\b/i);
-    if (m) {
-      season = season || Number(m[1]);
-      episode = episode || Number(m[2]);
-    }
-  }
-  if (!season || !episode) return null;
-
-  const seriesTitle = stripEpisodeCode(centerItem.title || row.title || '') || '剧集';
-  return {
-    seriesTitle,
-    season,
-    episode,
-    code: `S${String(season).padStart(2, '0')}E${String(episode).padStart(2, '0')}`
-  };
-};
-
-const isFoldableLedgerEpisode = (row) => {
-  if (!row || row.__group) return false;
-  if (!foldableLedgerEpisodeEvents.has(row.event_type)) return false;
-  return !!parseLedgerEpisode(row);
-};
-
-const ledgerDisplayItems = computed(() => {
-  const result = [];
-  const groups = new Map();
-
-  for (const row of ledgerItems.value || []) {
-    if (!isFoldableLedgerEpisode(row)) {
-      result.push({ ...row, __row_key: `row:${row.id || row.ref_id || row.created_at || Math.random()}` });
-      continue;
-    }
-
-    const ep = parseLedgerEpisode(row);
-    const centerItem = getLedgerCenterItem(row);
-    const tmdbKey = centerItem.parent_series_tmdb_id || centerItem.series_tmdb_id || row.parent_series_tmdb_id || centerItem.tmdb_id || row.tmdb_id || ep.seriesTitle;
-    const seasonCode = `S${String(ep.season).padStart(2, '0')}`;
-    const groupKey = `${row.event_type}:${tmdbKey}:${seasonCode}`;
-
-    if (!groups.has(groupKey)) {
-      const group = {
-        __group: true,
-        __row_key: `group:${groupKey}`,
-        __group_key: groupKey,
-        event_type: ledgerGroupEventType(row.event_type),
-        source_event_type: row.event_type,
-        title: `${ep.seriesTitle} ${seasonCode}`,
-        delta: 0,
-        reason: '',
-        created_at: row.created_at,
-        children: [],
-        episodeCodes: [],
-      };
-      groups.set(groupKey, group);
-      result.push(group);
-    }
-
-    const group = groups.get(groupKey);
-    group.children.push({ ...row, __child: true, __row_key: `child:${groupKey}:${row.id || row.ref_id || ep.code}` });
-    group.episodeCodes.push(ep.code);
-    group.delta += Number(row.delta || 0);
-    if (!group.created_at || new Date(row.created_at).getTime() > new Date(group.created_at).getTime()) {
-      group.created_at = row.created_at;
-    }
-  }
-
-  const expanded = [];
-  for (const row of result) {
-    if (!row.__group) {
-      expanded.push(row);
-      continue;
-    }
-
-    const sortedCodes = [...new Set(row.episodeCodes)].sort((a, b) => {
-      const ma = String(a).match(/S(\d+)E(\d+)/i);
-      const mb = String(b).match(/S(\d+)E(\d+)/i);
-      const na = ma ? Number(ma[1]) * 10000 + Number(ma[2]) : 0;
-      const nb = mb ? Number(mb[1]) * 10000 + Number(mb[2]) : 0;
-      return na - nb;
-    });
-    const first = sortedCodes[0];
-    const last = sortedCodes[sortedCodes.length - 1];
-    const prefix = ledgerGroupReasonPrefix(row.source_event_type);
-    row.reason = `${prefix} ${row.children.length} 条，贡献值 ${formatDelta(row.delta)}${first && last ? `，范围 ${first} - ${last}` : ''}`;
-    expanded.push(row);
-
-    if (ledgerCollapsedGroups[row.__group_key] === false) {
-      expanded.push(...row.children);
-    }
-  }
-  return expanded;
-});
-
-const toggleLedgerGroup = (key) => {
-  ledgerCollapsedGroups[key] = ledgerCollapsedGroups[key] !== false ? false : true;
-};
+const ledgerDisplayItems = computed(() => (ledgerItems.value || []).map((row, index) => ({
+  ...row,
+  __row_key: `row:${row.id || row.ref_id || row.created_at || index}`,
+})));
 
 
 const centerTypeLabel = (value) => ({
@@ -882,25 +746,16 @@ const centerColumns = [
 ];
 
 const ledgerColumns = [
-  { title: '时间', key: 'created_at', width: 180, render: row => row.__group ? '本季汇总' : fmtDate(row.created_at) },
-  { title: '事件', key: 'event_type', width: 190, render: row => {
-    if (row.__group) {
-      const collapsed = ledgerCollapsedGroups[row.__group_key] !== false;
-      return h(NButton, { size: 'tiny', text: true, onClick: () => toggleLedgerGroup(row.__group_key) }, {
-        icon: () => h(NIcon, null, { default: () => h(collapsed ? ChevronForwardIcon : ChevronDownIcon) }),
-        default: () => ledgerEventLabel(row.event_type)
-      });
-    }
-    if (row.__child) return h('span', { class: 'ledger-child-event' }, ledgerEventLabel(row.event_type));
-    return ledgerEventLabel(row.event_type);
-  } },
+  { title: '时间', key: 'created_at', width: 180, render: row => fmtDate(row.created_at) },
+  { title: '事件', key: 'event_type', width: 190, render: row => ledgerEventLabel(row.event_type) },
   { title: '变化', key: 'delta', width: 90, render: row => {
     const n = Number(row.delta || 0);
     return h(NTag, { type: n > 0 ? 'success' : (n < 0 ? 'error' : 'default'), size: 'small' }, { default: () => formatDelta(n) });
   } },
-  { title: '标题', key: 'title', minWidth: 220, ellipsis: { tooltip: true }, render: row => h('span', { class: row.__child ? 'ledger-child-title' : (row.__group ? 'ledger-group-title' : '') }, row.title || '-') },
-  { title: '原因', key: 'reason', minWidth: 360, ellipsis: { tooltip: true }, render: row => h('span', { class: row.__group ? 'ledger-group-reason' : '' }, row.reason || '-') },
+  { title: '标题', key: 'title', minWidth: 220, ellipsis: { tooltip: true }, render: row => row.title || '-' },
+  { title: '原因', key: 'reason', minWidth: 360, ellipsis: { tooltip: true }, render: row => row.reason || '-' },
 ];
+
 
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { local: {}, shares: {}, credit: {} }; };
 const loadVirtualItems = async () => { loading.value = true; try { const res = await axios.get('/api/shared/resources/virtual', { params: { ...virtualFilters, page: virtualPagination.page, page_size: virtualPagination.pageSize } }); virtualItems.value = res.data?.items || []; virtualPagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载虚拟资源失败'); } finally { loading.value = false; } };
@@ -1110,10 +965,6 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
 .warning-text { color: #d03050; font-size: 12px; }
 
-.ledger-group-title { font-weight: 600; }
-.ledger-group-reason { color: var(--text-color-2); }
-.ledger-child-title { padding-left: 22px; }
-.ledger-child-event { color: var(--text-color-3); }
 
 
 .center-track-list {
