@@ -1435,7 +1435,7 @@ def _tg_handle_subscribe(chat_id: str):
                 return
 
             # 标记订阅来源
-            subscription_source = {'type': 'telegram_search', 'user_id': chat_id}
+            subscription_source = {'type': 'telegram_search', 'user_id': chat_id, 'name': 'TG 搜索'}
             
             # 调用 helpers 的通用订阅函数
             # tmdb_to_emby_item_map 传空字典即可，内部会自动查库校验
