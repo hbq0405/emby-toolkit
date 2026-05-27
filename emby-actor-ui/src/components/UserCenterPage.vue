@@ -272,11 +272,8 @@ const isFetchingBotLink = ref(false);
 const playbackData = ref(null);
 const playbackFilter = ref('all');
 const playbackLoading = ref(false);
-// 移动端检测
-const isMobile = ref(false);
-const checkMobile = () => {
-  isMobile.value = window.innerWidth < 768;
-};
+import { useResponsive } from '../composables/useResponsive';
+const { isMobile } = useResponsive();
 
 // 分页相关状态
 const currentPage = ref(1);
@@ -466,8 +463,6 @@ watch(filterStatus, () => {
 });
 
 onMounted(async () => {
-  checkMobile();
-  window.addEventListener('resize', checkMobile);
   try {
     const [accountResponse] = await Promise.all([
       axios.get('/api/portal/account-info'),
@@ -486,9 +481,7 @@ onMounted(async () => {
   fetchPlaybackStats();
 });
 
-onUnmounted(() => {
-  window.removeEventListener('resize', checkMobile);
-});
+
 </script>
 
 <style scoped>
