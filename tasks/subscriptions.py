@@ -1767,6 +1767,8 @@ def task_auto_subscribe(processor):
                         source_display_parts.append(f"演员订阅({source.get('name', '未知')})")
                     elif source_type in ['custom_collection', 'native_collection']:
                         source_display_parts.append(f"合集({source.get('name', '未知')})")
+                    elif source_type == 'telegram_search':
+                        source_display_parts.append(f"TG({source.get('name', '未知')})")
                     elif source_type == 'watchlist':
                         source_display_parts.append("追剧补全")
                 
@@ -1819,6 +1821,8 @@ def task_auto_subscribe(processor):
                     action_tag = "影巢转存"
                 elif detail.get('action') == '频道':
                     action_tag = "频道转存"
+                elif detail.get('action') == 'TG':
+                    action_tag = "TG搜索"
                 else:
                     action_tag = "MP订阅"
                 
