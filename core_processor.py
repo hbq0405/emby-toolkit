@@ -3471,7 +3471,7 @@ class MediaProcessor:
                                 if stream.get("width") and stream.get("height"):
                                     return True, ""
                                     
-                    return False, f"{label_prefix}缺失媒体信息: 文件 (-mediainfo.json) 且无有效视频流数据"
+                    return False, f"缺失媒体信息: {label_prefix}"
 
                 if item_type in ['Movie', 'Episode']:
                     emby_path = item_details_from_emby.get("Path")
