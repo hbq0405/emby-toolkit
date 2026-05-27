@@ -684,23 +684,81 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                 record = shared_share_db.get_share_record(record['id']) or record
                 if _record_reportable(record) and sr is not None:
                     # 自动补 raw + 登记中心。
+                    # 注意：中心端不是看 has_raw_ffprobe=True，而是硬查 raw_ffprobe_index + zst 文件。
+                    # 所以这里必须先确保 raw 真上传成功；失败就禁止登记，不能继续假装入池。
                     try:
                         cfg, headers = sr._center_headers()
-                        sr._upload_share_raw_ffprobe_to_center(record['id'], cfg, headers, force=True)
+                        raw_summary = sr._upload_share_raw_ffprobe_to_center(record['id'], cfg, headers, force=True)
                     except Exception as e:
-                        logger.debug(f"  ➜ [共享资源维护] 自动上传 raw 失败，继续尝试登记中心: {e}")
+                        msg = f"自动上传 raw_ffprobe_json 失败，已阻止自动登记中心：{e}"
+                        shared_share_db.update_share_record(
+                            record['id'],
+                            center_status='failed',
+                            last_error=msg,
+                        )
+                        shared_virtual_db.add_credit_ledger(
+                            'share_raw_missing_blocked', 0,
+                            msg,
+                            ref_id=str(record['id']),
+                            title=record.get('title') or '',
+                            raw_json={'error': str(e)},
+                        )
+                        logger.warning(f"  ➜ [共享资源维护] {msg}")
+                        continue
+
                     try:
-                        # 直接复用 route 的核心注册逻辑不方便调用带 Flask request 的视图，这里手动按 shared_share_items 注册。
+                        # 上传 raw 后必须重新读取 items，确保 raw_ffprobe_uploaded / size 是最新状态。
                         items = shared_share_db.list_share_items(record['id'])
-                        missing_raw = sr._files_missing_raw_ffprobe(items) if sr is not None and hasattr(sr, '_files_missing_raw_ffprobe') else []
-                        not_uploaded = [i for i in items if str(i.get('sha1') or '').strip() and not i.get('raw_ffprobe_uploaded')]
-                        if missing_raw or not_uploaded:
+                        if not items:
+                            msg = '分享包内没有可登记的视频文件，禁止自动登记中心'
                             shared_share_db.update_share_record(
                                 record['id'],
                                 center_status='failed',
-                                last_error=(sr._raw_missing_message(missing_raw) if missing_raw and hasattr(sr, '_raw_missing_message') else '存在 raw_ffprobe_json 未上传的分享项，禁止自动登记中心'),
+                                last_error=msg,
                             )
                             continue
+
+                        missing_raw = sr._files_missing_raw_ffprobe(items)
+                        missing_sha1s = {
+                            str(m.get('sha1') or '').strip().upper()
+                            for m in missing_raw
+                            if str(m.get('sha1') or '').strip()
+                        }
+                        not_uploaded = [
+                            i for i in items
+                            if str(i.get('sha1') or '').strip()
+                            and not i.get('raw_ffprobe_uploaded')
+                            and str(i.get('sha1') or '').strip().upper() not in missing_sha1s
+                        ]
+
+                        if missing_raw or not_uploaded or raw_summary.get('errors'):
+                            errors = []
+                            if missing_raw:
+                                errors.append(sr._raw_missing_message(missing_raw))
+                            if not_uploaded:
+                                errors.append('存在 raw_ffprobe_json 尚未成功上传中心的分享项，禁止自动登记中心')
+                            if raw_summary.get('errors'):
+                                errors.extend(raw_summary.get('errors')[:5])
+
+                            msg = '；'.join(errors[:8]) or '缺少 raw_ffprobe_json，禁止自动登记中心'
+                            shared_share_db.update_share_record(
+                                record['id'],
+                                center_status='failed',
+                                last_error=msg,
+                            )
+                            shared_virtual_db.add_credit_ledger(
+                                'share_raw_missing_blocked', 0,
+                                f"分享缺少 raw_ffprobe_json，已阻止自动登记中心：{len(missing_raw)} 个缺失，{len(not_uploaded)} 个未上传",
+                                ref_id=str(record['id']),
+                                title=record.get('title') or '',
+                                raw_json={
+                                    'missing_raw': missing_raw,
+                                    'not_uploaded': not_uploaded,
+                                    'raw_summary': raw_summary,
+                                },
+                            )
+                            continue
+
                         record_share_type_for_check = str(record.get('share_type') or '').strip().lower()
                         if record_share_type_for_check in ('season_pack', 'series_pack', 'season', 'tv_pack') and hasattr(sr, '_validate_season_pack_consistency'):
                             consistency = sr._validate_season_pack_consistency(items)
@@ -713,22 +771,34 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                 shared_virtual_db.add_credit_ledger(
                                     'share_season_pack_inconsistent_blocked', 0,
                                     '季包分辨率或 HDR/杜比不一致，已阻止自动登记中心',
-                                    ref_id=str(record['id']), title=record.get('title') or '',
+                                    ref_id=str(record['id']),
+                                    title=record.get('title') or '',
                                     raw_json={'season_pack_consistency': consistency},
                                 )
                                 continue
+
                         ok = 0
+                        errors = []
+                        first_source_id = None
+
                         for item in items:
                             sha1 = str(item.get('sha1') or '').strip().upper()
                             if not sha1:
+                                errors.append(f"{item.get('file_name')}: 缺少 SHA1")
                                 continue
+
                             record_share_type = str(record.get('share_type') or '').strip().lower()
                             is_season_pack = record_share_type in ('season_pack', 'series_pack', 'season', 'tv_pack')
                             center_item_type = 'Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie')
                             if record_share_type == 'episode_file':
                                 center_item_type = 'Episode'
-                            standard_identity = sr._standard_share_identity(record, item, center_item_type=center_item_type) if sr is not None else {}
-                            resp = client.register_source(
+
+                            standard_identity = sr._standard_share_identity(record, item, center_item_type=center_item_type)
+
+                            raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+                            source_provider = 'auto_gap_share' if raw_json.get('auto_gap') else 'user_share'
+
+                            register_kwargs = dict(
                                 tmdb_id=standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id'),
                                 item_type=center_item_type,
                                 season_number=item.get('season_number') or record.get('season_number'),
@@ -739,19 +809,73 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                 size=_safe_int(item.get('size'), 0),
                                 file_name=item.get('file_name') or '',
                                 quality='',
-                                source_provider='auto_gap_share' if ((record.get('raw_json') or {}).get('auto_gap')) else 'user_share',
+                                source_provider=source_provider,
                                 share_code=record.get('share_code'),
                                 receive_code=record.get('receive_code') or '',
                                 has_raw_ffprobe=bool(item.get('raw_ffprobe_uploaded')),
                             )
-                            if resp.get('source_id'):
-                                shared_share_db.mark_item_reported(item['id'], resp.get('source_id'))
+
+                            try:
+                                resp = client.register_source(**register_kwargs)
+                            except Exception as e:
+                                err_text = str(e)
+
+                                # 和手动登记保持一致：中心说 raw 缺失，就强制重传单个 raw 后再登记一次。
+                                if 'raw_ffprobe_json required before source register' in err_text:
+                                    raw_retry = sr._upload_item_raw_ffprobe_to_center(item, cfg, headers, force=True)
+                                    if raw_retry.get('ok'):
+                                        register_kwargs['has_raw_ffprobe'] = True
+                                        try:
+                                            resp = client.register_source(**register_kwargs)
+                                        except Exception as retry_e:
+                                            errors.append(f"{item.get('file_name')}: raw重传后登记仍失败 {retry_e}")
+                                            continue
+                                    else:
+                                        errors.append(f"{item.get('file_name')}: raw重传失败 {raw_retry.get('message')}")
+                                        continue
+                                else:
+                                    errors.append(f"{item.get('file_name')}: {err_text}")
+                                    continue
+
+                            source_id = resp.get('source_id') if isinstance(resp, dict) else None
+                            if source_id:
+                                first_source_id = first_source_id or source_id
+                                shared_share_db.mark_item_reported(item['id'], source_id)
                                 ok += 1
-                        if ok:
-                            shared_share_db.update_share_record(record['id'], center_status='reported', status='reported', reported_count=ok, reported_at='NOW()', last_error='自动登记中心成功')
+                            else:
+                                errors.append(f"{item.get('file_name')}: 中心登记返回缺少 source_id")
+
+                        center_status = 'reported' if ok == len(items) and not errors else ('partial' if ok > 0 else 'failed')
+                        update_kwargs = dict(
+                            center_status=center_status,
+                            status='reported' if center_status == 'reported' else record.get('status'),
+                            center_source_id=first_source_id,
+                            reported_count=ok,
+                            last_error='自动登记中心成功' if center_status == 'reported' else '；'.join(errors[:5]),
+                        )
+                        if ok > 0:
+                            update_kwargs['reported_at'] = 'NOW()'
+
+                        shared_share_db.update_share_record(record['id'], **update_kwargs)
+                        shared_virtual_db.add_credit_ledger(
+                            'share_reported_center', 0,
+                            f"自动登记中心 {ok}/{len(items)} 条；raw上传 {raw_summary.get('uploaded', 0)} 条，缺失 {raw_summary.get('missing', 0)} 条",
+                            ref_id=str(record['id']),
+                            title=record.get('title') or '',
+                            raw_json={'errors': errors, 'raw_summary': raw_summary},
+                        )
+
+                        if ok > 0:
                             reported += 1
+
                     except Exception as e:
-                        logger.warning(f"  ➜ [共享资源维护] 自动登记中心失败: share={share_code}, err={e}")
+                        msg = f"自动登记中心失败：{e}"
+                        shared_share_db.update_share_record(
+                            record['id'],
+                            center_status='failed',
+                            last_error=msg,
+                        )
+                        logger.warning(f"  ➜ [共享资源维护] 自动登记中心失败: share={share_code}, err={e}", exc_info=True)
             else:
                 sha1s = [i.get('sha1') for i in (shared_share_db.list_share_items(record['id']) or []) if i.get('sha1')]
                 if _looks_share_blocked(snap):
