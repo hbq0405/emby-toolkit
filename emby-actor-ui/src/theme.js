@@ -5,7 +5,7 @@ export const themes = {
   default: {
     name: '赛博科技',
     light: {
-      custom: { '--card-bg-color': 'rgba(255, 255, 255, 0.85)', '--modal-solid-bg-color': 'rgb(255, 255, 255)', '--card-border-color': 'rgba(0, 0, 0, 0.1)', '--card-shadow-color': 'rgba(0, 0, 0, 0.08)', '--accent-color': '#007aff', '--accent-glow-color': 'rgba(0, 122, 255, 0.2)', '--text-color': '#1a1a1a' },
+      custom: { '--app-bg-color': '#FEF8F0', '--card-bg-color': 'rgba(255, 255, 255, 0.85)', '--modal-solid-bg-color': 'rgb(255, 255, 255)', '--card-border-color': 'rgba(0, 0, 0, 0.1)', '--card-shadow-color': 'rgba(0, 0, 0, 0.08)', '--accent-color': '#007aff', '--accent-glow-color': 'rgba(0, 122, 255, 0.2)', '--text-color': '#1a1a1a' },
       naive: { common: { primaryColor: '#007aff', bodyColor: '#f0f2f5' }, Card: { color: 'rgba(255, 255, 255, 0.85)', borderColor: 'rgba(0, 0, 0, 0.1)' }, Layout: { siderColor: '#f5f7fa' }, Menu: { itemTextColor: '#4c5b6a', itemIconColor: '#4c5b6a', itemTextColorHover: 'var(--n-common-primary-color)', itemIconColorHover: 'var(--n-common-primary-color)', itemTextColorActive: 'var(--n-common-primary-color)', itemIconColorActive: 'var(--n-common-primary-color)', itemTextColorActiveHover: 'var(--n-common-primary-color)', itemIconColorActiveHover: 'var(--n-common-primary-color)' } }
     },
     dark: {
@@ -22,7 +22,7 @@ export const themes = {
   glass: {
     name: '玻璃拟态',
     light: {
-      custom: { '--card-bg-color': 'rgba(255, 255, 255, 0.6)', '--modal-solid-bg-color': 'rgb(255, 255, 255)', '--card-border-color': 'rgba(0, 0, 0, 0.1)', '--card-shadow-color': 'rgba(0, 0, 0, 0.1)', '--accent-color': '#e91e63', '--accent-glow-color': 'rgba(233, 30, 99, 0.3)', '--text-color': '#1a1a1a' },
+      custom: { '--app-bg-color': '#FEF8F0', '--card-bg-color': 'rgba(255, 255, 255, 0.6)', '--modal-solid-bg-color': 'rgb(255, 255, 255)', '--card-border-color': 'rgba(0, 0, 0, 0.1)', '--card-shadow-color': 'rgba(0, 0, 0, 0.1)', '--accent-color': '#e91e63', '--accent-glow-color': 'rgba(233, 30, 99, 0.3)', '--text-color': '#1a1a1a' },
       naive: { common: { primaryColor: '#e91e63', bodyColor: '#f0f2f5' }, Card: { color: 'rgba(255, 255, 255, 0.6)', borderColor: 'rgba(0, 0, 0, 0.1)' }, Layout: { siderColor: 'rgba(250, 245, 255, 0.7)' }, Menu: { itemTextColor: '#6c5f78', itemIconColor: '#6c5f78', itemTextColorActive: 'var(--n-common-primary-color)', itemIconColorActive: 'var(--n-common-primary-color)' } }
     },
     dark: {
@@ -39,7 +39,7 @@ export const themes = {
   synthwave: {
     name: '落日浪潮',
     light: {
-      custom: { '--card-bg-color': 'rgba(240, 230, 255, 0.8)', '--modal-solid-bg-color': 'rgb(240, 230, 255)', '--card-border-color': 'rgba(228, 90, 216, 0.6)', '--card-shadow-color': 'rgba(0, 0, 0, 0.1)', '--accent-color': '#ff3d8d', '--accent-glow-color': 'rgba(255, 61, 141, 0.4)', '--text-color': '#1a1a1a' },
+      custom: { '--app-bg-color': '#FEF8F0', '--card-bg-color': 'rgba(240, 230, 255, 0.8)', '--modal-solid-bg-color': 'rgb(240, 230, 255)', '--card-border-color': 'rgba(228, 90, 216, 0.6)', '--card-shadow-color': 'rgba(0, 0, 0, 0.1)', '--accent-color': '#ff3d8d', '--accent-glow-color': 'rgba(255, 61, 141, 0.4)', '--text-color': '#1a1a1a' },
       naive: { common: { primaryColor: '#ff3d8d', bodyColor: '#f0f2f5' }, Card: { color: 'rgba(240, 230, 255, 0.8)', borderColor: 'rgba(228, 90, 216, 0.6)' }, Layout: { siderColor: '#f2eaff' }, Menu: { itemTextColor: '#6c5f78', itemIconColor: '#6c5f78', itemTextColorActive: 'var(--n-common-primary-color)', itemIconColorActive: 'var(--n-common-primary-color)' } }
     },
     dark: {
@@ -56,7 +56,7 @@ export const themes = {
   holo: {
     name: '全息机甲',
     light: {
-      custom: { '--card-bg-color': 'rgba(230, 245, 255, 0.85)', '--modal-solid-bg-color': 'rgb(230, 245, 255)', '--card-border-color': 'rgba(20, 120, 220, 0.4)', '--card-shadow-color': 'rgba(0, 0, 0, 0.08)', '--accent-color': '#0d6efd', '--accent-glow-color': 'rgba(13, 110, 253, 0.3)', '--text-color': '#061a40' },
+      custom: { '--app-bg-color': '#FEF8F0', '--card-bg-color': 'rgba(230, 245, 255, 0.85)', '--modal-solid-bg-color': 'rgb(230, 245, 255)', '--card-border-color': 'rgba(20, 120, 220, 0.4)', '--card-shadow-color': 'rgba(0, 0, 0, 0.08)', '--accent-color': '#0d6efd', '--accent-glow-color': 'rgba(13, 110, 253, 0.3)', '--text-color': '#061a40' },
       naive: { common: { primaryColor: '#0d6efd', bodyColor: '#f0f2f5' }, Card: { color: 'rgba(230, 245, 255, 0.85)', borderColor: 'rgba(20, 120, 220, 0.4)' }, Layout: { siderColor: '#e6f7ff' }, Menu: { itemTextColor: '#061a40', itemIconColor: '#061a40', itemTextColorActive: 'var(--n-common-primary-color)', itemIconColorActive: 'var(--n-common-primary-color)' } }
     },
     dark: {
@@ -73,7 +73,7 @@ export const themes = {
   comic: {
     name: '美漫硬派',
     light: {
-      custom: { '--card-bg-color': '#f0f0f0', '--modal-solid-bg-color': '#f0f0f0', '--card-border-color': '#000000', '--card-shadow-color': 'rgba(0, 0, 0, 0.2)', '--accent-color': '#d93025', '--accent-glow-color': 'rgba(217, 48, 37, 0.4)', '--text-color': '#000000' },
+      custom: { '--app-bg-color': '#FEF8F0', '--card-bg-color': '#f0f0f0', '--modal-solid-bg-color': '#f0f0f0', '--card-border-color': '#000000', '--card-shadow-color': 'rgba(0, 0, 0, 0.2)', '--accent-color': '#d93025', '--accent-glow-color': 'rgba(217, 48, 37, 0.4)', '--text-color': '#000000' },
       naive: { common: { primaryColor: '#d93025', bodyColor: '#f0f0f0' }, Card: { color: '#f0f0f0', borderColor: '#000000' }, Layout: { siderColor: '#e6e6e6' }, Menu: { itemTextColor: '#333333', itemIconColor: '#333333', itemTextColorActive: '#ffffff', itemIconColorActive: '#ffffff', itemTextColorActiveHover: '#ffffff', itemIconColorActiveHover: '#ffffff' } }
     },
     dark: {
@@ -90,7 +90,7 @@ export const themes = {
   forest: {
     name: '森海秘境',
     light: {
-      custom: { '--card-bg-color': 'rgba(255, 255, 255, 0.8)', '--modal-solid-bg-color': 'rgb(255, 255, 255)', '--card-border-color': 'rgba(46, 125, 50, 0.2)', '--card-shadow-color': 'rgba(0, 0, 0, 0.08)', '--accent-color': '#2E7D32', '--accent-glow-color': 'rgba(46, 125, 50, 0.3)', '--text-color': '#41444B' },
+      custom: { '--app-bg-color': '#FEF8F0', '--card-bg-color': 'rgba(255, 255, 255, 0.8)', '--modal-solid-bg-color': 'rgb(255, 255, 255)', '--card-border-color': 'rgba(46, 125, 50, 0.2)', '--card-shadow-color': 'rgba(0, 0, 0, 0.08)', '--accent-color': '#2E7D32', '--accent-glow-color': 'rgba(46, 125, 50, 0.3)', '--text-color': '#41444B' },
       naive: {
         common: { primaryColor: '#2E7D32', primaryColorHover: '#388E3C', primaryColorPressed: '#1B5E20', primaryColorSuppl: '#2E7D32', bodyColor: '#F5F5F0' },
         Card: { color: 'rgba(255, 255, 255, 0.8)', borderColor: 'rgba(46, 125, 50, 0.2)' }, Layout: { siderColor: '#E8E5DA' }, Menu: { itemTextColor: '#5D6168', itemIconColor: '#5D6168', itemTextColorActive: 'var(--n-common-primary-color)', itemIconColorActive: 'var(--n-common-primary-color)' },
@@ -111,7 +111,7 @@ export const themes = {
   alert: {
     name: '赤色警戒',
     light: {
-      custom: { '--card-bg-color': 'rgba(255, 255, 255, 0.85)', '--modal-solid-bg-color': 'rgb(255, 255, 255)', '--card-border-color': 'rgba(0, 0, 0, 0.1)', '--card-shadow-color': 'rgba(0, 0, 0, 0.1)', '--accent-color': '#F44336', '--accent-glow-color': 'rgba(244, 67, 54, 0.3)', '--text-color': '#222222' },
+      custom: { '--app-bg-color': '#FEF8F0', '--card-bg-color': 'rgba(255, 255, 255, 0.85)', '--modal-solid-bg-color': 'rgb(255, 255, 255)', '--card-border-color': 'rgba(0, 0, 0, 0.1)', '--card-shadow-color': 'rgba(0, 0, 0, 0.1)', '--accent-color': '#F44336', '--accent-glow-color': 'rgba(244, 67, 54, 0.3)', '--text-color': '#222222' },
       naive: {
         common: { primaryColor: '#F44336', primaryColorHover: '#E53935', primaryColorPressed: '#C62828', primaryColorSuppl: '#F44336', bodyColor: '#F8F8F8' },
         Card: { color: 'rgba(255, 255, 255, 0.85)', borderColor: 'rgba(0, 0, 0, 0.1)' }, Layout: { siderColor: '#FFFFFF' }, Menu: { itemTextColor: '#555555', itemIconColor: '#555555', itemTextColorActive: 'var(--n-common-primary-color)', itemIconColorActive: 'var(--n-common-primary-color)' },
@@ -243,7 +243,7 @@ export const themes = {
   minimal: {
     name: '极简风格',
     light: {
-      custom: { '--card-bg-color': '#ffffff', '--modal-solid-bg-color': '#ffffff', '--card-border-color': '#e0e0e0', '--card-shadow-color': 'rgba(0, 0, 0, 0.05)', '--accent-color': '#42b983', '--accent-glow-color': 'transparent', '--text-color': '#333333' },
+      custom: { '--app-bg-color': '#FEF8F0', '--card-bg-color': '#ffffff', '--modal-solid-bg-color': '#ffffff', '--card-border-color': '#e0e0e0', '--card-shadow-color': 'rgba(0, 0, 0, 0.05)', '--accent-color': '#42b983', '--accent-glow-color': 'transparent', '--text-color': '#333333' },
       naive: {
         common: { primaryColor: '#42b983', bodyColor: '#f5f5f5' },
         Card: { color: '#ffffff', borderColor: '#e0e0e0' },
