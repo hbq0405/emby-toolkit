@@ -718,6 +718,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                 )
                                 continue
                         ok = 0
+                        errors = []
                         for item in items:
                             sha1 = str(item.get('sha1') or '').strip().upper()
                             if not sha1:
@@ -728,7 +729,8 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                             if record_share_type == 'episode_file':
                                 center_item_type = 'Episode'
                             standard_identity = sr._standard_share_identity(record, item, center_item_type=center_item_type) if sr is not None else {}
-                            resp = client.register_source(
+                            
+                            register_kwargs = dict(
                                 tmdb_id=standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id'),
                                 item_type=center_item_type,
                                 season_number=item.get('season_number') or record.get('season_number'),
@@ -744,14 +746,51 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                 receive_code=record.get('receive_code') or '',
                                 has_raw_ffprobe=bool(item.get('raw_ffprobe_uploaded')),
                             )
-                            if resp.get('source_id'):
-                                shared_share_db.mark_item_reported(item['id'], resp.get('source_id'))
-                                ok += 1
-                        if ok:
-                            shared_share_db.update_share_record(record['id'], center_status='reported', status='reported', reported_count=ok, reported_at='NOW()', last_error='自动登记中心成功')
+                            
+                            try:
+                                resp = client.register_source(**register_kwargs)
+                                if resp.get('source_id'):
+                                    shared_share_db.mark_item_reported(item['id'], resp.get('source_id'))
+                                    ok += 1
+                            except Exception as e:
+                                err_str = str(e)
+                                # 兼容中心提示 raw 缺失时，强制重传 raw 后再登记一次（与手动登记逻辑保持一致）
+                                if '400' in err_str and 'raw_ffprobe_json required' in err_str:
+                                    try:
+                                        cfg, headers = sr._center_headers()
+                                        raw_retry = sr._upload_item_raw_ffprobe_to_center(item, cfg, headers, force=True)
+                                        if raw_retry.get('ok'):
+                                            register_kwargs['has_raw_ffprobe'] = True
+                                            resp = client.register_source(**register_kwargs)
+                                            if resp.get('source_id'):
+                                                shared_share_db.mark_item_reported(item['id'], resp.get('source_id'))
+                                                ok += 1
+                                                continue
+                                    except Exception as retry_e:
+                                        err_str = f"重传raw后登记失败: {retry_e}"
+                                
+                                logger.warning(f"  ➜ [共享资源维护] 自动登记中心单项失败: {item.get('file_name')} -> {err_str}")
+                                errors.append(f"{item.get('file_name')}: {err_str}")
+
+                        if ok > 0:
+                            center_status = 'reported' if ok == len(items) and not errors else 'partial'
+                            shared_share_db.update_share_record(
+                                record['id'], 
+                                center_status=center_status, 
+                                status='reported' if center_status == 'reported' else record.get('status'), 
+                                reported_count=ok, 
+                                reported_at='NOW()', 
+                                last_error='自动登记中心成功' if not errors else '；'.join(errors[:5])
+                            )
                             reported += 1
+                        elif errors:
+                            shared_share_db.update_share_record(
+                                record['id'],
+                                center_status='failed',
+                                last_error='自动登记中心失败：' + '；'.join(errors[:5])
+                            )
                     except Exception as e:
-                        logger.warning(f"  ➜ [共享资源维护] 自动登记中心失败: share={share_code}, err={e}")
+                        logger.warning(f"  ➜ [共享资源维护] 自动登记中心过程发生异常: share={share_code}, err={e}")
             else:
                 sha1s = [i.get('sha1') for i in (shared_share_db.list_share_items(record['id']) or []) if i.get('sha1')]
                 if _looks_share_blocked(snap):
