@@ -3926,7 +3926,7 @@ def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: 
             total = int(res.get('total') or matched or 0)
             if total > matched:
                 logger.warning("  ➜ [共享资源] 分享码 %s 可能超过 500 条，当前仅补全 %s/%s 条。", code, matched, total)
-            logger.debug("  ➜ [共享资源] 剧集包分享码 %s 分页补全 %s 条。", code, matched)
+            logger.trace("  ➜ [共享资源] 剧集包分享码 %s 分页补全 %s 条。", code, matched)
         except Exception as e:
             logger.warning(f"  ➜ [共享资源] 剧集包分页补全失败 share_code={code}: {e}")
 
