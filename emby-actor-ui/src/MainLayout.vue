@@ -1,55 +1,36 @@
 <!-- src/MainLayout.vue -->
 <template>
   <n-layout style="height: 100vh; position: relative;">
+    <!-- iOS 风格顶栏 -->
     <n-layout-header :bordered="false" class="app-header">
-      <div style="display: flex; justify-content: space-between; align-items: center; width: 100%;">
-        
-        <!-- 左侧：Logo 与 菜单按钮 -->
-        <div style="display: flex; align-items: center;">
-          <n-button 
-            v-if="isMobile" 
-            text 
-            style="font-size: 24px; margin-right: 12px;" 
-            @click="collapsed = !collapsed"
+      <div class="app-header-inner">
+        <!-- 左：菜单按钮 + Logo -->
+        <div class="app-header-left">
+          <n-button
+            v-if="isMobile && authStore.isLoggedIn"
+            text
+            class="header-menu-btn"
+            @click="toggleSidebar"
           >
-            <n-icon :component="MenuOutline" />
+            <n-icon :component="MenuOutline" size="24" />
           </n-button>
-
-          <span class="text-effect">
-            <img
-              :src="logo"
-              alt="Logo"
-              style="height: 1.5em; vertical-align: middle; margin-right: 0.3em;"
-            />
-            <span v-if="!isMobile || !collapsed">Emby Toolkit</span>
-          </span>
+          <img :src="logo" alt="Logo" class="header-logo" />
+          <span class="header-brand" v-if="!isMobile">Emby Toolkit</span>
         </div>
 
-        <!-- 中间：任务状态 (仅桌面端显示) -->
-        <div 
+        <!-- 中：任务状态 (仅桌面端) -->
+        <div
           v-if="!isMobile && authStore.isAdmin && props.taskStatus && props.taskStatus.current_action !== '空闲' && props.taskStatus.current_action !== '无'"
           class="header-task-status"
         >
           <div class="status-content">
-            <n-text class="status-text">
-              <n-spin 
-                v-if="props.taskStatus.is_running" 
-                size="small" 
-                style="margin-right: 8px; vertical-align: middle;" 
-              />
-              <n-icon 
-                v-else 
-                :component="SchedulerIcon" 
-                size="18" 
-                style="margin-right: 8px; vertical-align: middle; opacity: 0.6;" 
-              />
-              <strong :style="{ color: props.taskStatus.is_running ? '#2080f0' : 'inherit' }">
-                {{ props.taskStatus.current_action }}
-              </strong>
-              <span class="status-divider">-</span>
-              <span class="status-message">{{ props.taskStatus.message }}</span>
-            </n-text>
-            
+            <n-spin v-if="props.taskStatus.is_running" size="small" style="margin-right: 8px;" />
+            <n-icon v-else :component="SchedulerIcon" size="16" style="margin-right: 6px; opacity: 0.5;" />
+            <span class="status-dot" :class="{ running: props.taskStatus.is_running }"></span>
+            <span class="status-label">{{ props.taskStatus.current_action }}</span>
+            <span class="status-divider">—</span>
+            <span class="status-message">{{ props.taskStatus.message }}</span>
+
             <n-progress
               v-if="props.taskStatus.is_running && props.taskStatus.progress >= 0"
               type="line"
@@ -57,128 +38,72 @@
               :show-indicator="false"
               processing
               status="info"
-              style="width: 100px; margin: 0 12px;"
+              class="status-progress"
             />
 
-            <n-tooltip trigger="hover">
-              <template #trigger>
-                <n-button
-                  v-if="props.taskStatus.is_running"
-                  type="error"
-                  size="tiny"
-                  circle
-                  secondary
-                  @click="triggerStopTask"
-                >
-                  <template #icon><n-icon :component="StopIcon" /></template>
-                </n-button>
-              </template>
-              停止任务
-            </n-tooltip>
+            <n-button
+              v-if="props.taskStatus.is_running"
+              type="error"
+              size="tiny"
+              circle
+              secondary
+              @click="triggerStopTask"
+              class="status-stop-btn"
+            >
+              <template #icon><n-icon :component="StopIcon" /></template>
+            </n-button>
           </div>
         </div>
 
-        <!-- 右侧：工具栏 -->
-        <div style="display: flex; align-items: center; gap: 8px;">
-            <n-button-group v-if="authStore.isAdmin" size="small">
-              <n-tooltip>
-                <template #trigger>
-                  <n-button @click="isRealtimeLogVisible = true" circle>
-                    <template #icon><n-icon :component="ReaderOutline" /></template>
-                  </n-button>
-                </template>
-                实时日志
-              </n-tooltip>
-              <n-tooltip>
-                <template #trigger>
-                  <n-button @click="isHistoryLogVisible = true" circle>
-                    <template #icon><n-icon :component="ArchiveOutline" /></template>
-                  </n-button>
-                </template>
-                历史日志
-              </n-tooltip>
-            </n-button-group>
+        <!-- 右：工具栏 -->
+        <div class="app-header-right">
+          <n-button-group v-if="authStore.isAdmin && !isMobile" size="small">
+            <n-tooltip><template #trigger><n-button @click="isRealtimeLogVisible = true" circle><template #icon><n-icon :component="ReaderOutline" /></template></n-button></template>实时日志</n-tooltip>
+            <n-tooltip><template #trigger><n-button @click="isHistoryLogVisible = true" circle><template #icon><n-icon :component="ArchiveOutline" /></template></n-button></template>历史日志</n-tooltip>
+          </n-button-group>
 
-            <!-- 用户名下拉菜单 -->
-            <n-dropdown 
-              v-if="authStore.isLoggedIn" 
-              trigger="hover" 
-              :options="userOptions" 
-              @select="handleUserSelect"
-            >
-              <div style="display: flex; align-items: center; cursor: pointer; gap: 4px;">
-                <span style="font-size: 14px;">
-                  {{ isMobile ? '' : `欢迎, ${authStore.username}` }}
-                </span>
-                <n-icon v-if="isMobile" size="20" :component="UserCenterIcon" />
-                <svg v-else xmlns="http://www.w3.org/2000/svg" width="1em" height="1em" viewBox="0 0 24 24"><path fill="currentColor" d="m7 10l5 5l5-5z"></path></svg>
-              </div>
-            </n-dropdown>
+          <n-dropdown v-if="authStore.isLoggedIn" trigger="hover" :options="userOptions" @select="handleUserSelect">
+            <div class="user-menu-trigger">
+              <n-icon size="20" :component="UserCenterIcon" />
+              <span v-if="!isMobile" class="user-name">{{ authStore.username }}</span>
+            </div>
+          </n-dropdown>
 
-            <!-- 桌面端显示版本号和主题 -->
-            <template v-if="!isMobile">
-              <span style="font-size: 12px; color: #999;">v{{ appVersion }}</span>
+          <template v-if="!isMobile">
+            <span class="version-badge">v{{ appVersion }}</span>
+            <n-select :value="props.selectedTheme" @update:value="v => emit('update:selected-theme', v)" :options="themeOptions" size="small" class="theme-selector" />
+            <n-button v-if="props.selectedTheme === 'custom'" @click="emit('edit-custom-theme')" circle size="small"><template #icon><n-icon :component="PaletteIcon" /></template></n-button>
+            <n-button @click="setRandomTheme" circle size="small"><template #icon><n-icon :component="ShuffleIcon" /></template></n-button>
+          </template>
 
-              <n-select
-                :value="props.selectedTheme"
-                @update:value="newValue => emit('update:selected-theme', newValue)"
-                :options="themeOptions"
-                size="small"
-                style="width: 120px;"
-              />
-              
-              <n-tooltip v-if="props.selectedTheme === 'custom'">
-                <template #trigger>
-                  <n-button @click="emit('edit-custom-theme')" circle size="small">
-                    <template #icon><n-icon :component="PaletteIcon" /></template>
-                  </n-button>
-                </template>
-                编辑我的专属主题
-              </n-tooltip>
-
-              <n-tooltip>
-                <template #trigger>
-                  <n-button @click="setRandomTheme" circle size="small">
-                    <template #icon><n-icon :component="ShuffleIcon" /></template>
-                  </n-button>
-                </template>
-                随机主题
-              </n-tooltip>
-            </template>
-
-            <!-- 明暗模式切换器 -->
-            <n-switch 
-              :value="props.isDark" 
-              @update:value="newValue => emit('update:is-dark', newValue)"
-              size="small"
-            >
-              <template #checked-icon><n-icon :component="MoonIcon" /></template>
-              <template #unchecked-icon><n-icon :component="SunnyIcon" /></template>
-            </n-switch>
-          </div>
+          <n-switch :value="props.isDark" @update:value="v => emit('update:is-dark', v)">
+            <template #checked-icon><n-icon :component="MoonIcon" /></template>
+            <template #unchecked-icon><n-icon :component="SunnyIcon" /></template>
+          </n-switch>
+        </div>
       </div>
     </n-layout-header>
-    
-    <n-layout has-sider style="height: calc(100vh - 60px); position: relative;">
-      <div 
-        v-if="isMobile && !collapsed" 
-        class="mobile-sider-mask"
-        @click="collapsed = true"
-      ></div>
 
+    <!-- 主区域 -->
+    <n-layout has-sider class="app-main">
+      <!-- 移动端遮罩 -->
+      <transition name="ios-fade">
+        <div v-if="isMobile && !collapsed" class="mobile-sider-mask" @click="closeSidebar"></div>
+      </transition>
+
+      <!-- 侧边栏 -->
       <n-layout-sider
         :bordered="false"
         collapse-mode="width"
         :collapsed-width="isMobile ? 0 : 64"
         :width="240"
         :show-trigger="isMobile ? false : 'arrow-circle'"
-        content-style="padding-top: 10px;"
+        content-style="padding-top: 4px;"
         :native-scrollbar="false"
         :collapsed="collapsed"
         @update:collapsed="val => collapsed = val"
-        :class="{ 'mobile-sider': isMobile }"
+        :class="{ 'mobile-sider': isMobile, 'sider-open': !collapsed }"
       >
-        <!-- ★ 增加 v-if 确保数据加载完成后再渲染，以使 default-expanded-keys 生效 -->
         <n-menu
           v-if="isMenuReady"
           :collapsed="collapsed"
@@ -188,80 +113,49 @@
           :value="activeMenuKey"
           :default-expanded-keys="defaultExpandedKeys"
           @update:value="handleMenuUpdate"
+          class="ios-menu"
         />
       </n-layout-sider>
-      <n-layout-content
-        class="app-main-content-wrapper"
-        content-style="padding: 24px; transition: background-color 0.3s;"
-        :native-scrollbar="false"
-      >
-      <div class="page-content-inner-wrapper">
+
+      <!-- 内容区 -->
+      <n-layout-content class="app-main-content-wrapper" :content-style="{ padding: contentPadding }" :native-scrollbar="false">
+        <div class="page-content-inner-wrapper">
           <router-view v-slot="slotProps">
             <component :is="slotProps.Component" :task-status="props.taskStatus" />
           </router-view>
         </div>
       </n-layout-content>
     </n-layout>
-    
-    <!-- 实时日志模态框 -->
+
+    <!-- 实时日志 -->
     <n-modal v-model:show="isRealtimeLogVisible" preset="card" style="width: 95%; max-width: 900px;" title="实时任务日志" class="modal-card-lite">
-       <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh; font-size: 13px; line-height: 1.6;"/>
+      <n-log ref="logRef" :log="logContent" trim class="log-panel" style="height: 60vh; font-size: 13px; line-height: 1.6;" />
     </n-modal>
 
-    <!-- 历史日志模态框 -->
     <LogViewer v-model:show="isHistoryLogVisible" />
 
-    <!-- ★★★ 自定义菜单编辑器模态框 ★★★ -->
+    <!-- 菜单编辑器 -->
     <n-modal v-model:show="isMenuEditorVisible" preset="card" style="width: 95%; max-width: 650px;" title="自定义侧边栏菜单 (全局生效)">
       <div style="max-height: 60vh; overflow-y: auto; padding-right: 10px; user-select: none;">
-        
         <div v-for="(group, gIndex) in menuConfigTree" :key="group.key" style="margin-bottom: 20px;">
-          <!-- 一级菜单配置 -->
           <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 8px; background: rgba(128,128,128,0.1); padding: 8px; border-radius: 6px;">
             <n-switch v-model:value="group.visible" size="small" />
             <n-input v-model:value="group.label" :placeholder="getOriginalLabel(group.key)" size="small" style="width: 180px;" />
             <span style="color: #888; font-size: 12px; flex: 1;">(一级菜单)</span>
-            
-            <!-- 默认展开/折叠控制 -->
             <div style="display: flex; align-items: center; gap: 4px;">
               <span style="font-size: 12px; color: #666;">默认展开:</span>
               <n-switch v-model:value="group.expanded" size="small" />
             </div>
           </div>
-          
-          <!-- 二级菜单配置 (支持拖拽) -->
-          <div 
-            style="padding-left: 24px; min-height: 10px;"
-            @dragover.prevent="onDragOverEmpty($event, gIndex)"
-            @drop="onDropEmpty($event, gIndex)"
-          >
-            <div 
-              v-for="(child, cIndex) in group.children" 
-              :key="child.key" 
-              class="draggable-item"
-              :class="{
-                'drag-over-top': dragTarget?.gIndex === gIndex && dragTarget?.cIndex === cIndex && dragPosition === 'top',
-                'drag-over-bottom': dragTarget?.gIndex === gIndex && dragTarget?.cIndex === cIndex && dragPosition === 'bottom',
-                'is-dragging': dragSource?.gIndex === gIndex && dragSource?.cIndex === cIndex
-              }"
-              draggable="true"
-              @dragstart="onDragStart($event, gIndex, cIndex)"
-              @dragover.prevent="onDragOver($event, gIndex, cIndex)"
-              @drop="onDrop($event, gIndex, cIndex)"
-              @dragend="onDragEnd"
-            >
+          <div style="padding-left: 24px; min-height: 10px;" @dragover.prevent="onDragOverEmpty($event, gIndex)" @drop="onDropEmpty($event, gIndex)">
+            <div v-for="(child, cIndex) in group.children" :key="child.key" class="draggable-item" :class="{ 'drag-over-top': dragTarget?.gIndex === gIndex && dragTarget?.cIndex === cIndex && dragPosition === 'top', 'drag-over-bottom': dragTarget?.gIndex === gIndex && dragTarget?.cIndex === cIndex && dragPosition === 'bottom', 'is-dragging': dragSource?.gIndex === gIndex && dragSource?.cIndex === cIndex }" draggable="true" @dragstart="onDragStart($event, gIndex, cIndex)" @dragover.prevent="onDragOver($event, gIndex, cIndex)" @drop="onDrop($event, gIndex, cIndex)" @dragend="onDragEnd">
               <n-icon size="18" style="cursor: grab; color: #999;"><MenuOutline /></n-icon>
               <n-switch v-model:value="child.visible" size="small" />
               <n-input v-model:value="child.label" :placeholder="getOriginalLabel(child.key)" size="small" style="width: 200px;" />
             </div>
-            
-            <!-- 空组提示 -->
-            <div v-if="group.children.length === 0" class="empty-group-dropzone">
-              拖拽菜单至此处
-            </div>
+            <div v-if="group.children.length === 0" class="empty-group-dropzone">拖拽菜单至此处</div>
           </div>
         </div>
-
       </div>
       <template #footer>
         <n-space justify="space-between">
@@ -271,9 +165,7 @@
           </span>
           <n-space>
             <n-popconfirm @positive-click="resetMenuConfig" negative-text="取消" positive-text="确定">
-              <template #trigger>
-                <n-button type="error" ghost :loading="isSavingMenu">恢复默认</n-button>
-              </template>
+              <template #trigger><n-button type="error" ghost :loading="isSavingMenu">恢复默认</n-button></template>
               确定要恢复所有菜单的默认名称、顺序和显示状态吗？
             </n-popconfirm>
             <n-button type="primary" @click="saveMenuConfig" :loading="isSavingMenu">保存并应用</n-button>
@@ -340,20 +232,55 @@ import logo from './assets/logo.png'
 const message = useMessage();
 const dialog = useDialog();
 
-const isMobile = ref(false);
+import { useResponsive } from './composables/useResponsive';
 
-const checkMobile = () => {
-  isMobile.value = window.innerWidth < 768;
+const { isMobile, isTablet, isDesktop, isTouchDevice, contentPadding } = useResponsive();
+
+// ================= 触控手势 (移动端侧栏) =================
+let touchStartX = 0;
+let touchStartY = 0;
+const SWIPE_THRESHOLD = 60;
+
+const onTouchStart = (e) => {
+  touchStartX = e.touches[0].clientX;
+  touchStartY = e.touches[0].clientY;
 };
 
+const onTouchMove = (e) => {
+  // 只在侧栏关闭时检测右滑
+  if (collapsed.value && isMobile.value) {
+    const dx = e.touches[0].clientX - touchStartX;
+    const dy = e.touches[0].clientY - touchStartY;
+    if (dx > SWIPE_THRESHOLD && Math.abs(dy) < 80) {
+      collapsed.value = false;
+    }
+  }
+};
+
+const onTouchEnd = () => {};
+
+const toggleSidebar = () => {
+  collapsed.value = !collapsed.value;
+};
+
+const closeSidebar = () => {
+  collapsed.value = true;
+};
+// ========================================================
+
 onMounted(() => {
-  checkMobile();
-  window.addEventListener('resize', checkMobile);
-  initMenuConfig(); 
+  initMenuConfig();
+  if (isTouchDevice.value) {
+    document.addEventListener('touchstart', onTouchStart, { passive: true });
+    document.addEventListener('touchmove', onTouchMove, { passive: true });
+  }
 });
 
 onUnmounted(() => {
-  window.removeEventListener('resize', checkMobile);
+  if (isTouchDevice.value) {
+    document.removeEventListener('touchstart', onTouchStart);
+    document.removeEventListener('touchmove', onTouchMove);
+  }
 });
 
 const triggerStopTask = async () => {
@@ -377,7 +304,7 @@ const route = useRoute();
 const authStore = useAuthStore();
 
 // 侧边栏状态：移动端默认收起，桌面端读取上次的习惯（首次访问默认展开）
-const collapsed = ref(window.innerWidth < 768 ? true : localStorage.getItem('sidebar_collapsed') === 'true');
+const collapsed = ref(isMobile.value ? true : localStorage.getItem('sidebar_collapsed') === 'true');
 
 // 记住用户对侧边栏的展开/收起操作（仅限桌面端）
 watch(collapsed, (newVal) => {
@@ -860,38 +787,358 @@ const setRandomTheme = () => {
 </script>
 
 <style>
-/* ... (保留你原有的 style 代码不变) ... */
-.app-header { padding: 0 16px; height: 60px; display: flex; align-items: center; font-size: 1.25em; font-weight: 600; flex-shrink: 0; }
-.app-main-content-wrapper { height: 100%; display: flex; flex-direction: column; }
-.page-content-inner-wrapper { flex-grow: 1; overflow-y: auto; }
-.n-menu .n-menu-item-group-title { font-size: 12px; font-weight: 500; color: #8e8e93; padding-left: 24px; margin-top: 16px; margin-bottom: 8px; }
-.n-menu .n-menu-item-group:first-child .n-menu-item-group-title { margin-top: 0; }
-html.dark .n-menu .n-menu-item-group-title { color: #828287; }
-
-.header-task-status { flex: 2; display: flex; justify-content: center; align-items: center; margin: 0 20px; overflow: hidden; min-width: 0; }
-.status-content { display: flex; align-items: center; background-color: rgba(0, 0, 0, 0.03); padding: 4px 12px; border-radius: 20px; border: 1px solid rgba(0, 0, 0, 0.05); max-width: 100%; }
-html.dark .status-content { background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.05); }
-.status-text { font-size: 13px; display: flex; align-items: center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 1; min-width: 0; }
-.status-divider { margin: 0 8px; opacity: 0.5; flex-shrink: 0; }
-.status-message { opacity: 0.8; max-width: 600px; overflow: hidden; text-overflow: ellipsis; display: inline-block; vertical-align: bottom; }
-
-@media (max-width: 768px) {
-  .app-header { padding: 0 12px; }
-  .status-message { max-width: 150px; }
-  .header-task-status { margin: 0 8px; flex: 1; }
-  .mobile-sider { position: absolute; left: 0; top: 0; bottom: 0; z-index: 1000; height: 100%; box-shadow: 2px 0 8px rgba(0,0,0,0.15); }
-  .mobile-sider-mask { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background-color: rgba(0,0,0,0.4); z-index: 999; backdrop-filter: blur(2px); }
-  .n-layout-content .page-content-inner-wrapper { padding: 12px !important; }
+/* ================= iOS 风格顶栏 ================= */
+.app-header {
+  height: 52px;
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--card-border-color);
+  box-shadow: 0 0 20px -8px var(--accent-glow-color);
 }
 
-/* ★★★ 拖拽相关样式 ★★★ */
+.app-header-inner {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  height: 100%;
+  padding: 0 16px;
+}
+
+.app-header-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.header-menu-btn {
+  font-size: 22px !important;
+  padding: 6px !important;
+  margin: 0 !important;
+}
+
+.header-logo {
+  height: 28px;
+  width: 28px;
+  border-radius: 6px;
+}
+
+.header-brand {
+  font-size: 17px;
+  font-weight: 640;
+  letter-spacing: 0.2px;
+  color: var(--text-color);
+}
+
+.app-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 状态指示器 */
+.header-task-status {
+  flex: 1;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 0 16px;
+  min-width: 0;
+}
+
+.status-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 14px;
+  border-radius: var(--radius-pill);
+  background: rgba(128, 128, 128, 0.06);
+  font-size: 13px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(128, 128, 128, 0.3);
+  flex-shrink: 0;
+}
+
+.status-dot.running {
+  background: #34c759;
+  box-shadow: 0 0 6px rgba(52, 199, 89, 0.6);
+  animation: pulse-dot 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+.status-label {
+  font-weight: 590;
+  white-space: nowrap;
+  color: var(--text-color);
+  opacity: 0.9;
+}
+
+.status-divider {
+  opacity: 0.35;
+  flex-shrink: 0;
+}
+
+.status-message {
+  opacity: 0.65;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
+}
+
+.status-progress {
+  width: 80px !important;
+  flex-shrink: 0;
+}
+
+.status-stop-btn {
+  flex-shrink: 0;
+}
+
+.version-badge {
+  font-size: 12px;
+  color: var(--text-color);
+  opacity: 0.4;
+  font-weight: 460;
+}
+
+.theme-selector {
+  width: 100px !important;
+}
+
+.user-menu-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: var(--radius-button);
+  transition: background 0.2s;
+}
+
+.user-menu-trigger:hover {
+  background: rgba(128, 128, 128, 0.08);
+}
+
+.user-name {
+  font-size: 14px;
+  font-weight: 460;
+  color: var(--text-color);
+  opacity: 0.85;
+}
+
+/* ================= 主区域 ================= */
+.app-main {
+  height: calc(100vh - 52px);
+  position: relative;
+}
+
+.app-main-content-wrapper {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.page-content-inner-wrapper {
+  flex-grow: 1;
+  overflow-y: auto;
+}
+
+/* ================= iOS 侧边栏菜单 ================= */
+.ios-menu {
+  --n-item-height: 40px !important;
+}
+
+/* 分组标题 */
+.ios-menu .n-menu-item-group-title {
+  font-size: 12px;
+  font-weight: 590;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--text-color) !important;
+  opacity: 0.4;
+  padding: 20px 20px 6px 20px !important;
+}
+
+.ios-menu .n-menu-item-group:first-child .n-menu-item-group-title {
+  padding-top: 4px !important;
+}
+
+/* 菜单项 */
+.ios-menu .n-menu-item {
+  margin: 0 8px 4px 8px !important;
+}
+
+.ios-menu .n-menu-item-content {
+  font-size: 13px !important;
+  border-radius: 10px !important;
+  padding: 0 12px !important;
+  overflow: visible !important;
+  position: relative !important;
+  backdrop-filter: blur(16px) saturate(130%);
+  -webkit-backdrop-filter: blur(16px) saturate(130%);
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+/* 菜单项 hover — 极淡玻璃背景 */
+.ios-menu .n-menu-item-content:hover {
+  background: rgba(128, 128, 128, 0.05) !important;
+}
+
+/* 菜单项 active — ::before 伪元素不被裁剪 */
+.ios-menu .n-menu-item-content--selected,
+.ios-menu .n-menu-item-content--child-active {
+  background: transparent !important;
+  backdrop-filter: blur(24px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(24px) saturate(150%) !important;
+}
+
+.ios-menu .n-menu-item-content--selected::before,
+.ios-menu .n-menu-item-content--child-active::before {
+  content: '';
+  position: absolute;
+  top: 0; left: 0; right: 0; bottom: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 0;
+  background: rgba(128, 128, 128, 0.12);
+  backdrop-filter: blur(24px) saturate(150%);
+  -webkit-backdrop-filter: blur(24px) saturate(150%);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+}
+
+.ios-menu .n-menu-item-content--selected .n-menu-item-content__icon,
+.ios-menu .n-menu-item-content--child-active .n-menu-item-content__icon {
+  filter: drop-shadow(0 0 4px var(--accent-glow-color));
+}
+
+.ios-menu .n-menu-item-content--selected:hover,
+.ios-menu .n-menu-item-content--child-active:hover {
+  background: rgba(128, 128, 128, 0.18) !important;
+}
+
+.ios-menu .n-menu-item-content--selected .n-menu-item-content__icon,
+.ios-menu .n-menu-item-content--child-active .n-menu-item-content__icon {
+  filter: drop-shadow(0 0 4px var(--accent-glow-color));
+}
+
+/* 菜单文字 */
+.ios-menu .n-menu-item-content__icon {
+  font-size: 18px !important;
+  color: var(--text-color) !important;
+  opacity: 0.6;
+  transition: opacity 0.2s;
+}
+
+.ios-menu .n-menu-item-content:hover .n-menu-item-content__icon {
+  opacity: 0.85;
+}
+
+.ios-menu .n-menu-item-content--selected .n-menu-item-content__icon {
+  opacity: 1;
+  color: var(--accent-color) !important;
+}
+
+/* 折叠态 */
+.ios-menu.n-menu--collapsed .n-menu-item {
+  margin: 0 auto 4px auto !important;
+}
+
+.ios-menu.n-menu--collapsed .n-menu-item-content {
+  justify-content: center;
+  padding: 0 !important;
+}
+
+.ios-menu.n-menu--collapsed .n-menu-item-content__icon {
+  font-size: 20px !important;
+  opacity: 0.7;
+}
+
+/* ================= 移动端侧栏 (iOS Files 抽屉风格) ================= */
+@media (max-width: 767px) {
+  .app-header {
+    height: 48px;
+  }
+
+  .app-header-inner {
+    padding: 0 12px;
+  }
+
+  .header-logo {
+    height: 24px;
+    width: 24px;
+  }
+
+  .app-main {
+    height: calc(100vh - 48px);
+  }
+
+  .mobile-sider {
+    position: fixed !important;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    z-index: 1200;
+    height: 100vh;
+    width: 280px !important;
+    border-radius: 0 var(--radius-sidebar-mobile) var(--radius-sidebar-mobile) 0 !important;
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.2) !important;
+    transform: translateX(-100%);
+    transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1) !important;
+    overflow: hidden;
+  }
+
+  .mobile-sider.sider-open {
+    transform: translateX(0) !important;
+  }
+
+  .mobile-sider-mask {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.35);
+    z-index: 1199;
+    backdrop-filter: blur(8px);
+    -webkit-backdrop-filter: blur(8px);
+  }
+
+  .ios-menu .n-menu-item {
+    margin: 0 12px 4px 12px !important;
+  }
+}
+
+/* ================= iOS 淡入动画 ================= */
+.ios-fade-enter-active {
+  transition: opacity 0.25s ease-out;
+}
+.ios-fade-leave-active {
+  transition: opacity 0.2s ease-in;
+}
+.ios-fade-enter-from,
+.ios-fade-leave-to {
+  opacity: 0;
+}
+
+/* ================= 拖拽相关样式 ================= */
 .draggable-item {
   display: flex;
   align-items: center;
   gap: 12px;
   margin-bottom: 8px;
   padding: 4px 8px;
-  border-radius: 4px;
+  border-radius: var(--radius-inner);
   transition: background-color 0.2s;
   border: 1px solid transparent;
 }
@@ -900,33 +1147,27 @@ html.dark .status-content { background-color: rgba(255, 255, 255, 0.05); border:
   background-color: rgba(128, 128, 128, 0.05);
 }
 
-/* 正在被拖拽的元素半透明 */
 .draggable-item.is-dragging {
   opacity: 0.4;
 }
 
-/* 拖拽目标指示线 */
 .drag-over-top {
-  border-top: 2px solid #2080f0 !important;
+  border-top: 2px solid var(--accent-color, #2080f0) !important;
 }
 
 .drag-over-bottom {
-  border-bottom: 2px solid #2080f0 !important;
+  border-bottom: 2px solid var(--accent-color, #2080f0) !important;
 }
 
-/* 空组的拖拽区域 */
 .empty-group-dropzone {
   height: 32px;
-  border: 1px dashed #ccc;
-  border-radius: 4px;
+  border: 1px dashed var(--card-border-color);
+  border-radius: var(--radius-inner);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #999;
+  opacity: 0.4;
   font-size: 12px;
   margin-bottom: 8px;
-}
-html.dark .empty-group-dropzone {
-  border-color: #555;
 }
 </style>
