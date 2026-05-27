@@ -682,7 +682,8 @@ def _consume_virtual(client: SharedCenterClient, sources: List[Dict[str, Any]], 
 
 def _guess_se_from_source(src: Dict[str, Any], context: Dict[str, Any]):
     s_num = src.get('season_number') if src.get('season_number') not in (None, '') else context.get('season_number')
-    e_num = src.get('episode_number')
+    # ★ 核心修复：补充从 context 兜底获取 episode_number
+    e_num = src.get('episode_number') if src.get('episode_number') not in (None, '') else context.get('episode_number')
 
     try:
         s_num = int(s_num) if s_num not in (None, '') else None
@@ -1130,6 +1131,21 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str, tmdb_id, item_
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 查询中心共享池失败: {e}")
 
+    # =================================================================
+    # ★ 核心修复：精准过滤中心返回的无关单集，防止“幽灵追更”日志
+    # =================================================================
+    req_e_num = item.get('episode_number')
+    if req_e_num is not None and str(req_e_num).strip() != '':
+        filtered_sources = []
+        for src in sources:
+            src_e_num = src.get('episode_number')
+            # 如果中心返回的源明确标明了集号，且与我们请求的集号不符，直接丢弃！
+            # (如果 src_e_num 为空，说明可能是季包，保留放行)
+            if src_e_num is not None and str(src_e_num).strip() != '' and int(src_e_num) != int(req_e_num):
+                continue
+            filtered_sources.append(src)
+        sources = filtered_sources
+
     if not sources:
         reported = False
         try:
@@ -1145,6 +1161,7 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str, tmdb_id, item_
         'item_type': item_type,
         'parent_tmdb_id': str(parent_tmdb_id or ''),
         'season_number': season_number,
+        'episode_number': item.get('episode_number'), # ★ 确保 context 里有 episode_number
         'year': year,
     }
 
