@@ -116,6 +116,21 @@ def _looks_share_blocked(resp: Any) -> bool:
         'violation', 'illegal', 'blocked', 'forbidden', 'risk'
     ))
 
+def _looks_share_source_missing(resp: Any) -> bool:
+    """115 返回源文件/目录已不存在，属于确定性失败，应加入自动分享黑名单。"""
+    if isinstance(resp, dict):
+        if resp.get('errno') in (4100005, '4100005'):
+            return True
+
+    text = _share_resp_text(resp)
+    return any(k in text for k in (
+        '4100005',
+        '分享的文件(夹)已被移动或删除',
+        '文件(夹)已被移动或删除',
+        '已被移动或删除',
+        'file has been moved or deleted',
+        'folder has been moved or deleted',
+    ))
 
 def _looks_share_alive(resp: Dict[str, Any]) -> bool:
     if not _parse_share_ok(resp):
@@ -865,7 +880,82 @@ def _has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] |
         statuses=_active_share_statuses() + ['cancelled', 'cancel_failed', 'deleted'],
     )
 
+def _blacklist_auto_gap_candidate(
+    gap: Dict[str, Any],
+    candidate: Dict[str, Any],
+    files: List[Dict[str, Any]],
+    *,
+    root_fid: str,
+    root_name: str,
+    share_resp: Any,
+    reason: str = 'source_missing',
+) -> None:
+    """把自动分享失败的候选落成本地黑名单，避免高频维护任务反复重试。"""
+    try:
+        standard_identity = {
+            'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or gap.get('tmdb_id'),
+            'item_type': candidate.get('share_item_type') or candidate.get('item_type') or gap.get('item_type'),
+            'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id') or gap.get('parent_series_tmdb_id'),
+            'season_number': candidate.get('season_number', gap.get('season_number')),
+            'episode_number': candidate.get('episode_number', gap.get('episode_number')),
+            'title': candidate.get('standard_title') or candidate.get('display_title') or candidate.get('title') or root_name,
+            'release_year': candidate.get('release_year') or gap.get('release_year'),
+        }
 
+        record = shared_share_db.create_share_record({
+            # 没有真正 share_code，留空即可；如果你的表对 share_code 有唯一约束，见下面“如果空 share_code 报错”。
+            'share_code': f"AUTOFAIL_{standard_identity.get('item_type')}_{standard_identity.get('tmdb_id')}_S{standard_identity.get('season_number') or 0}_E{standard_identity.get('episode_number') or 0}_{root_fid}",
+            'receive_code': '',
+            'share_url': '',
+            'share_type': candidate.get('share_type') or 'auto_gap_failed',
+            'root_fid': str(root_fid or ''),
+            'root_name': root_name or '',
+            'root_is_dir': candidate.get('root_is_dir') is not False,
+            'tmdb_id': str(standard_identity.get('tmdb_id') or ''),
+            'item_type': standard_identity.get('item_type') or 'Movie',
+            'parent_series_tmdb_id': standard_identity.get('parent_series_tmdb_id'),
+            'season_number': standard_identity.get('season_number'),
+            'episode_number': standard_identity.get('episode_number'),
+            'title': standard_identity.get('title') or root_name or '',
+            'release_year': standard_identity.get('release_year'),
+            'status': 'deleted',
+            'review_status': reason,
+            'center_status': 'cancelled',
+            'last_error': f'自动创建115分享失败，已加入黑名单：{share_resp}',
+            'raw_json': {
+                'auto_gap_blacklist': True,
+                'blacklist_reason': reason,
+                'gap': gap,
+                'candidate': candidate,
+                'root_fid': str(root_fid or ''),
+                'root_name': root_name or '',
+                'share_create_response': share_resp,
+                'blacklisted_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            },
+        })
+
+        if files:
+            shared_share_db.replace_share_items(record['id'], files)
+
+        shared_virtual_db.add_credit_ledger(
+            'share_auto_gap_blacklisted',
+            0,
+            f"自动分享失败加入黑名单：{standard_identity.get('title') or root_name}",
+            ref_id=str(record['id']),
+            title=standard_identity.get('title') or root_name or '',
+            raw_json={
+                'reason': reason,
+                'root_fid': str(root_fid or ''),
+                'share_response': share_resp,
+                'gap': gap,
+            },
+        )
+    except Exception as e:
+        logger.warning(
+            f"  ➜ [共享资源维护] 自动分享失败候选加入黑名单失败: "
+            f"root_fid={root_fid}, root_name={root_name}, err={e}",
+            exc_info=True,
+        )
 
 def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) -> int:
     """中心有缺口而本机已入库时，自动创建 115 分享。可用后由下一轮维护自动登记中心。
@@ -994,7 +1084,39 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
 
                 share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=None)
                 if not share_resp or not share_resp.get('state'):
-                    logger.warning(f"  ➜ [共享资源维护] 自动创建分享失败: {candidate.get('display_title')} -> {share_resp}")
+                    if _looks_share_source_missing(share_resp):
+                        _blacklist_auto_gap_candidate(
+                            gap,
+                            candidate,
+                            files,
+                            root_fid=root_fid,
+                            root_name=root_name,
+                            share_resp=share_resp,
+                            reason='source_missing',
+                        )
+                        logger.warning(
+                            f"  ➜ [共享资源维护] 自动创建分享失败且源文件已失效，已加入黑名单: "
+                            f"{candidate.get('display_title')} root_fid={root_fid} -> {share_resp}"
+                        )
+                    elif _looks_share_blocked(share_resp):
+                        _blacklist_auto_gap_candidate(
+                            gap,
+                            candidate,
+                            files,
+                            root_fid=root_fid,
+                            root_name=root_name,
+                            share_resp=share_resp,
+                            reason='share_blocked',
+                        )
+                        logger.warning(
+                            f"  ➜ [共享资源维护] 自动创建分享失败且疑似违规/风控，已加入黑名单: "
+                            f"{candidate.get('display_title')} root_fid={root_fid} -> {share_resp}"
+                        )
+                    else:
+                        logger.warning(
+                            f"  ➜ [共享资源维护] 自动创建分享失败: "
+                            f"{candidate.get('display_title')} root_fid={root_fid} -> {share_resp}"
+                        )
                     continue
 
                 data = share_resp.get('data') or {}
