@@ -1,140 +1,130 @@
-/* global.css */
-/* ★★★ 1. 在最顶部添加默认值，防止报错 ★★★ */
+/* iOS 原生风格 · 玻璃拟态全面重构 ============== */
+
+/* SF Font Stack */
 :root {
+  --font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
   --card-scale: 1;
-}
-.n-card.dashboard-card {
-  background: var(--card-bg-color) !important;
-  border: 1px solid var(--card-border-color) !important;
-  box-shadow: 0 4px 12px var(--card-shadow-color), 0 0 20px -5px var(--accent-glow-color) !important;
-  color: var(--text-color) !important;
-  border-radius: 12px !important;
-  backdrop-filter: blur(10px) !important;
-  -webkit-backdrop-filter: blur(10px) !important;
-  transition: all 0.3s ease-in-out !important;
-  height: 100%;
-  display: flex !important;
-  flex-direction: column !important;
-  opacity: 0;
-  font-size: calc(14px * var(--card-scale, 1));
-  /* 使用 zoom 可以让卡片变大时自动撑开布局，不会重叠 */
-  /* 注意：transform 会和下面的 animation 冲突，所以这里推荐用 zoom */
-  transform: translateY(20px); 
-  animation: card-fade-in 0.5s ease-out forwards;
-}
-
-/* 2. 优化系列卡片 (横向布局) 的样式，防止被压扁 */
-.n-card.dashboard-card.series-card > .n-card__content {
-  flex-direction: row !important;
-  justify-content: flex-start !important;
-  padding: 12px !important;
-  gap: 16px !important; /* 增加一点间距 */
-  overflow: hidden; /* 防止内容溢出 */
-}
-
-/* 3. 锁定海报图片的尺寸，防止它被拉伸 */
-.card-poster-container {
-  flex-shrink: 0; /* 禁止海报缩小 */
-  /* 让海报大小也随比例缩放 */
-  width: calc(120px * var(--card-scale, 1)) !important; 
-  height: calc(180px * var(--card-scale, 1)) !important;
-  overflow: hidden;
-  border-radius: 8px;
-}
-
-.dashboard-card > .n-card__content {
-  flex-grow: 1 !important;
-  display: flex !important;
-  flex-direction: column !important;
-  justify-content: space-between !important;
-}
-.n-card.dashboard-card:hover {
-  transform: translateY(-5px) !important;
-  box-shadow: 0 8px 20px var(--card-shadow-color), 0 0 35px var(--accent-glow-color) !important;
-}
-.dashboard-card .card-title {
-  color: var(--accent-color) !important; /* ★★★ 灵魂归位！★★★ */
-  font-weight: 600 !important;
-  letter-spacing: 1px;
-  text-shadow: 0 0 8px var(--accent-glow-color);
-}
-.n-card.dashboard-card.series-card {
-  flex-direction: row !important;
-  height: auto !important;
-}
-.n-card.dashboard-card.series-card > .n-card__content {
-  flex-direction: row !important;
-  justify-content: flex-start !important;
-  padding: 12px !important;
-  gap: 12px !important;
-}
-.text-effect {
-  font-weight: 900;
-  font-size: 2rem; /* 根据需求调整字体大小 */
-  color: #f0f0f0; /* 主字体颜色 */
-  letter-spacing: 0.05em; /* 字母间距 */
-  text-transform: uppercase;
-  /* 多重阴影模拟立体感和质感 */
-  text-shadow:
-    1px 1px 0 #222,    /* 黑色偏移阴影 */
-    2px 2px 1px #555,  /* 灰色柔和阴影 */
-    0 0 5px #fff,     /* 白色光晕 */
-    0 0 3px #ccc;    /* 更大范围光晕 */
-}
-/* ★★★ 为模态框准备的“轻量版”样式 ★★★ */
-.modal-card-lite {
-  /* 使用我们新定义的、绝对不透明的背景色变量！ */
-  background-color: var(--modal-solid-bg-color) !important;
-
-  /* 边框还是用原来的，保持风格统一 */
-  border: 1px solid var(--card-border-color) !important;
-  
-  /* 继承我们自定义的圆角 */
-  border-radius: 12px !important;
-
-  /* 给一个简单、不卡顿的阴影，让它有点立体感 */
-  box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.32) !important;
-
-  /* 确保动画效果被彻底禁用，保证丝滑 */
-  animation: none !important;
-  transition: none !important;
-}
-
-/* 顺便把 hover 效果也干掉，防止意外的性能问题 */
-.modal-card-lite:hover {
-  transform: none !important;
-  box-shadow: 0 6px 16px -8px rgba(0, 0, 0, 0.32) !important;
-}
-@keyframes card-fade-in { to { opacity: 1; transform: translateY(0); } }
-.dashboard-card:nth-child(1) { animation-delay: 0.1s; }
-.dashboard-card:nth-child(2) { animation-delay: 0.2s; }
-.dashboard-card:nth-child(3) { animation-delay: 0.3s; }
-.dashboard-card:nth-child(4) { animation-delay: 0.4s; }
-.dashboard-card:nth-child(5) { animation-delay: 0.5s; }
-
-/* ================= 主题背景/玻璃卡片全局接管 =================
-   让 theme.js 的 --app-bg-color / --layout-panel-bg-color / --card-backdrop-filter 真正生效。
-   放在文件末尾，优先级高于前面的通用样式。
-================================================================ */
-:root {
   --app-bg-color: var(--n-body-color, #101014);
   --layout-panel-bg-color: var(--card-bg-color, rgba(20, 25, 45, 0.55));
-  --card-backdrop-filter: blur(10px);
+  --card-backdrop-filter: blur(20px);
 }
 
-html,
-body,
-#app {
+/* === 排版层级系统 (iOS SF 标准) === */
+:root {
+  --fs-hero: 28px;
+  --lh-hero: 1.2;
+  --fw-hero: 700;
+
+  --fs-h1: 20px;
+  --lh-h1: 1.25;
+  --fw-h1: 640;
+
+  --fs-h2: 17px;
+  --lh-h2: 1.3;
+  --fw-h2: 590;
+
+  --fs-body: 15px;
+  --lh-body: 1.4;
+  --fw-body: 400;
+
+  --fs-subhead: 13px;
+  --lh-subhead: 1.35;
+  --fw-subhead: 460;
+
+  --fs-caption: 12px;
+  --lh-caption: 1.3;
+  --fw-caption: 400;
+
+  --fs-tiny: 11px;
+  --lh-tiny: 1.25;
+  --fw-tiny: 400;
+}
+
+/* === 圆角体系 (iPhone 13 连续曲率) === */
+:root {
+  --radius-card: 22px;
+  --radius-inner: 16px;
+  --radius-input: 14px;
+  --radius-button: 12px;
+  --radius-modal: 26px;
+  --radius-menu: 12px;
+  --radius-pill: 100px;
+  --radius-sidebar-mobile: 20px;
+}
+
+/* === 基础 === */
+html, body, #app {
   min-height: 100%;
-  background: var(--app-bg-color, var(--n-body-color, #101014)) !important;
+  background: var(--app-bg-color, #101014) !important;
   background-attachment: fixed !important;
+  font-family: var(--font-family);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
 }
 
 body {
   margin: 0;
 }
 
-/* 放开 Naive Layout，不然整体渐变背景会被布局底色盖住 */
+/* === 排版类 === */
+.page-title {
+  font-size: var(--fs-hero);
+  font-weight: var(--fw-hero);
+  line-height: var(--lh-hero);
+  letter-spacing: 0.37px;
+  color: var(--text-color, var(--n-text-color));
+}
+
+.section-title {
+  font-size: var(--fs-h1);
+  font-weight: var(--fw-h1);
+  line-height: var(--lh-h1);
+  letter-spacing: 0.2px;
+  color: var(--text-color, var(--n-text-color));
+}
+
+.card-title {
+  font-size: var(--fs-h2);
+  font-weight: var(--fw-h2);
+  line-height: var(--lh-h2);
+  letter-spacing: 0.15px;
+  color: var(--accent-color) !important;
+}
+
+.subsection-title {
+  font-size: var(--fs-body);
+  font-weight: 590;
+  line-height: var(--lh-body);
+  color: var(--text-color, var(--n-text-color));
+  opacity: 0.9;
+}
+
+.body-text {
+  font-size: var(--fs-body);
+  font-weight: var(--fw-body);
+  line-height: var(--lh-body);
+  color: var(--text-color, var(--n-text-color));
+  opacity: 0.85;
+}
+
+.subhead-text {
+  font-size: var(--fs-subhead);
+  font-weight: var(--fw-subhead);
+  line-height: var(--lh-subhead);
+  color: var(--text-color, var(--n-text-color));
+  opacity: 0.7;
+}
+
+.caption {
+  font-size: var(--fs-caption);
+  font-weight: var(--fw-caption);
+  line-height: var(--lh-caption);
+  color: var(--text-color, var(--n-text-color));
+  opacity: 0.5;
+}
+
+/* === 透明布局（让背景渐变透出） === */
 .n-layout,
 .n-layout-scroll-container,
 .n-layout-content,
@@ -143,64 +133,226 @@ body {
   background: transparent !important;
 }
 
-/* 顶栏、侧栏改成玻璃层，跟随主题变量 */
+/* === 顶栏、侧栏玻璃 === */
 .n-layout-header,
 .n-layout-sider {
   background: var(--layout-panel-bg-color, var(--card-bg-color, rgba(20, 25, 45, 0.55))) !important;
-  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
-  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+  backdrop-filter: var(--card-backdrop-filter, blur(20px)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(20px)) !important;
   border-color: var(--card-border-color) !important;
 }
 
-/* 普通 Naive 卡片也吃主题透明度，不只 dashboard-card 生效 */
+/* === 全部卡片 iOS 玻璃化 === */
 .n-card:not(.modal-card-lite) {
   --n-color: var(--card-bg-color) !important;
   background: var(--card-bg-color) !important;
   background-color: var(--card-bg-color) !important;
-  border-color: var(--card-border-color) !important;
-  box-shadow: 0 4px 12px var(--card-shadow-color), 0 0 20px -5px var(--accent-glow-color) !important;
-  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
-  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+  border: 1px solid var(--card-border-color) !important;
+  border-radius: var(--radius-card) !important;
+  box-shadow:
+    0 1px 3px rgba(0, 0, 0, 0.06),
+    0 4px 12px var(--card-shadow-color),
+    0 0 24px -8px var(--accent-glow-color) !important;
+  backdrop-filter: var(--card-backdrop-filter, blur(20px) saturate(150%) brightness(105%)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(20px) saturate(150%) brightness(105%)) !important;
+  transition: all 0.25s cubic-bezier(0.4, 0, 0.2, 1) !important;
 }
 
-/* ================= 修复：全局 n-card 玻璃化不要误伤 Naive Modal / Dialog / Popover =================
-   n-modal preset="card" 内部本质还是 .n-card；如果只写 .n-card:not(.modal-card-lite)，
-   某些情况下 class 不一定落在内部卡片上，会导致弹窗被透明玻璃样式误伤。
-================================================================ */
+/* 内边框高光（iOS 玻璃边缘光效） */
+.n-card:not(.modal-card-lite)::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  border-radius: var(--radius-card) var(--radius-card) 0 0;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.08), transparent);
+  pointer-events: none;
+}
+
+html.light .n-card:not(.modal-card-lite)::before {
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.25), transparent);
+}
+
+/* 卡片 header 分隔线 */
+.n-card:not(.modal-card-lite) > .n-card-header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--card-border-color);
+  margin-bottom: 4px;
+}
+
+/* dashboard-card 增强 */
+.n-card.dashboard-card {
+  height: 100%;
+  display: flex !important;
+  flex-direction: column !important;
+  opacity: 0;
+  font-size: calc(14px * var(--card-scale, 1));
+  transform: translateY(20px);
+  animation: card-fade-in 0.5s ease-out forwards;
+}
+
+.n-card.dashboard-card:hover {
+  transform: translateY(-4px) !important;
+  box-shadow:
+    0 2px 8px rgba(0, 0, 0, 0.08),
+    0 8px 24px var(--card-shadow-color),
+    0 0 36px -8px var(--accent-glow-color) !important;
+}
+
+.dashboard-card > .n-card__content {
+  flex-grow: 1 !important;
+  display: flex !important;
+  flex-direction: column !important;
+  justify-content: space-between !important;
+}
+
+/* 系列卡片横向布局 */
+.n-card.dashboard-card.series-card {
+  flex-direction: row !important;
+  height: auto !important;
+}
+
+.n-card.dashboard-card.series-card > .n-card__content {
+  flex-direction: row !important;
+  justify-content: flex-start !important;
+  padding: 12px !important;
+  gap: 16px !important;
+  overflow: hidden;
+}
+
+/* 卡片标题强调 */
+.dashboard-card .card-title,
+.n-card-header__main {
+  color: var(--accent-color) !important;
+  font-weight: 590 !important;
+  letter-spacing: 0.15px;
+}
+
+/* 海报容器 */
+.card-poster-container {
+  flex-shrink: 0;
+  width: calc(120px * var(--card-scale, 1)) !important;
+  height: calc(180px * var(--card-scale, 1)) !important;
+  overflow: hidden;
+  border-radius: var(--radius-inner);
+}
+
+/* === iOS 弹窗玻璃化 === */
+/* 弹窗：不用实心，用深色玻璃 */
 .n-modal .n-card,
-.n-dialog .n-card,
-.n-popover .n-card {
-  --n-color: var(--modal-solid-bg-color, var(--n-color)) !important;
-  background: var(--modal-solid-bg-color, var(--n-color)) !important;
-  background-color: var(--modal-solid-bg-color, var(--n-color)) !important;
-  backdrop-filter: none !important;
-  -webkit-backdrop-filter: none !important;
+.n-dialog .n-card {
+  --n-color: rgba(20, 22, 30, 0.88) !important;
+  background: rgba(20, 22, 30, 0.88) !important;
+  background-color: rgba(20, 22, 30, 0.88) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: var(--radius-modal) !important;
+  box-shadow:
+    0 20px 60px rgba(0, 0, 0, 0.5),
+    0 0 40px -12px var(--accent-glow-color) !important;
+  backdrop-filter: blur(40px) saturate(160%) !important;
+  -webkit-backdrop-filter: blur(40px) saturate(160%) !important;
   animation: none !important;
   transform: none !important;
   opacity: 1 !important;
 }
 
-/* 自建合集创建/编辑弹窗：允许玻璃化，不再走 modal-card-lite 实心背景 */
+html.light .n-modal .n-card,
+html.light .n-dialog .n-card {
+  --n-color: rgba(255, 255, 255, 0.88) !important;
+  background: rgba(255, 255, 255, 0.88) !important;
+  background-color: rgba(255, 255, 255, 0.88) !important;
+  border-color: rgba(0, 0, 0, 0.08) !important;
+}
+
+.n-modal .n-card::before {
+  display: none;
+}
+
+/* 弹窗标题加粗 */
+.n-modal .n-card-header__main {
+  font-size: var(--fs-h2) !important;
+  font-weight: 640 !important;
+  letter-spacing: 0.2px;
+}
+
+/* 弹窗底部 footer 分割 */
+.n-modal .n-card__footer {
+  border-top: 1px solid var(--card-border-color);
+  padding-top: 16px;
+  margin-top: 8px;
+}
+
+/* === 移动端弹窗 (底部 Sheet) === */
+@media (max-width: 767px) {
+  .n-modal {
+    align-items: flex-end !important;
+  }
+  .n-modal .n-card {
+    width: 100% !important;
+    max-width: 100% !important;
+    max-height: 90vh !important;
+    border-radius: var(--radius-modal) var(--radius-modal) 0 0 !important;
+    margin: 0 !important;
+    transform: translateY(0) !important;
+    animation: ios-sheet-slide-up 0.4s cubic-bezier(0.22, 1, 0.36, 1) forwards !important;
+  }
+  /* 拖拽手柄 (iOS sheet 横条) */
+  .n-modal .n-card::after {
+    content: '';
+    position: absolute;
+    top: 8px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 36px;
+    height: 5px;
+    border-radius: 3px;
+    background: rgba(128, 128, 128, 0.3);
+    z-index: 10;
+  }
+  html.light .n-modal .n-card::after {
+    background: rgba(0, 0, 0, 0.15);
+  }
+
+  @keyframes ios-sheet-slide-up {
+    from { transform: translateY(100%); }
+    to { transform: translateY(0); }
+  }
+
+  /* 移动端弹窗 footer 按钮堆叠 */
+  .n-modal .n-card__footer .n-space {
+    flex-direction: column-reverse !important;
+    gap: 8px !important;
+  }
+  .n-modal .n-card__footer .n-button {
+    width: 100% !important;
+    height: 48px !important;
+    font-size: var(--fs-body) !important;
+    border-radius: var(--radius-button) !important;
+  }
+  .n-modal .n-card__footer .n-button:last-child {
+    font-weight: 590;
+  }
+}
+
+/* === 自建合集弹窗：继承玻璃 === */
 .n-modal .custom-modal,
 .n-card.custom-modal,
 .custom-modal {
   --n-color: var(--card-bg-color) !important;
   --n-border-color: var(--card-border-color) !important;
-
   background: var(--card-bg-color) !important;
   background-color: var(--card-bg-color) !important;
   border: 1px solid var(--card-border-color) !important;
   color: var(--text-color) !important;
-
-  backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
-  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
-
+  backdrop-filter: var(--card-backdrop-filter, blur(20px) saturate(150%)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(20px) saturate(150%)) !important;
   box-shadow:
     0 18px 60px var(--card-shadow-color),
     0 0 36px -12px var(--accent-glow-color) !important;
 }
 
-/* 弹窗内容区透明 */
 .n-modal .custom-modal .n-card__content,
 .n-modal .custom-modal .n-card__footer,
 .n-modal .custom-modal .n-card-header,
@@ -210,7 +362,6 @@ body {
   background: transparent !important;
 }
 
-/* 弹窗里的配置小卡片也别实心 */
 .custom-modal .config-card,
 .custom-modal .type-card,
 .custom-modal .rule-row,
@@ -223,9 +374,249 @@ body {
   -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
 }
 
-/* 选中的类型卡片保留一点强调 */
 .custom-modal .type-card.active {
   background: rgba(143, 180, 255, 0.12) !important;
   border-color: var(--accent-color) !important;
   box-shadow: 0 0 0 1px var(--accent-color) inset, 0 0 18px -8px var(--accent-glow-color) !important;
+}
+
+/* === 通用 iOS 组件样式 === */
+
+/* 提示/通知/对话框 iOS 圆角 */
+.n-message {
+  border-radius: var(--radius-card) !important;
+}
+.n-notification {
+  border-radius: var(--radius-card) !important;
+}
+.n-dialog:not(.n-card) {
+  border-radius: var(--radius-modal) !important;
+}
+.n-data-table {
+  border-radius: var(--radius-card) !important;
+  overflow: hidden;
+}
+
+/* 通用设置标签页字体加粗加大 */
+.settings-tabs.n-tabs--line-type .n-tabs-tab {
+  font-size: 15px !important;
+  font-weight: 590 !important;
+}
+
+/* Radio 按钮组玻璃化 — 无分隔线、液态玻璃选中态、高对比易读 */
+.n-radio-group .n-radio-button {
+  border: none !important;
+  border-right: none !important;
+  border-left: none !important;
+  border-top: none !important;
+  border-bottom: none !important;
+  outline: none !important;
+  border-radius: 10px !important;
+  margin: 0 !important;
+  padding: 4px 14px !important;
+  background: transparent !important;
+  backdrop-filter: none;
+  font-size: 13px !important;
+  font-weight: 500 !important;
+  letter-spacing: 0.2px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.n-radio-group .n-radio-button:not(:last-child),
+.n-radio-group.n-radio-group--button-type .n-radio-button:not(:last-child) {
+  border-right: none !important;
+  border: none !important;
+}
+.n-radio-group .n-radio-button:not(:first-child),
+.n-radio-group.n-radio-group--button-type .n-radio-button:not(:first-child) {
+  border-left: none !important;
+}
+.n-radio-group .n-radio-button::before,
+.n-radio-group .n-radio-button::after {
+  display: none !important;
+  content: none !important;
+  width: 0 !important;
+  height: 0 !important;
+}
+.n-radio-group .n-radio-button__dot {
+  display: none !important;
+}
+.n-radio-group .n-radio-button .n-radio-button__inner,
+.n-radio-group .n-radio-button label {
+  border: none !important;
+  background: transparent !important;
+}
+
+/* Radio 组容器 — 轻微玻璃底衬，让选中态更明显 */
+.n-radio-group {
+  background: rgba(128, 128, 128, 0.04) !important;
+  border-radius: 12px !important;
+  padding: 2px !important;
+  gap: 2px !important;
+}
+.n-radio-group .n-radio-button:not(.n-radio-button--checked) {
+  color: var(--text-color) !important;
+  opacity: 0.65;
+}
+.n-radio-group .n-radio-button.n-radio-button--checked {
+  background: rgba(128, 128, 128, 0.12) !important;
+  backdrop-filter: blur(20px) saturate(150%) !important;
+  -webkit-backdrop-filter: blur(20px) saturate(150%) !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  color: var(--text-color) !important;
+  opacity: 1;
+  font-weight: 590;
+}
+
+/* 操作提示等 n-alert 统一圆角 */
+.n-alert {
+  border-radius: var(--radius-card) !important;
+}
+
+/* 输入框 iOS 化 */
+.n-input {
+  border-radius: var(--radius-input) !important;
+}
+.n-input__input {
+  font-size: var(--fs-body) !important;
+}
+.n-input .n-input__border {
+  border-radius: var(--radius-input) !important;
+}
+
+/* 选择器 */
+.n-select .n-base-selection {
+  border-radius: var(--radius-input) !important;
+}
+
+/* 下拉弹出菜单玻璃化 */
+.n-base-select-menu {
+  border-radius: var(--radius-card) !important;
+  overflow: hidden;
+  background: var(--card-bg-color) !important;
+  backdrop-filter: var(--card-backdrop-filter, blur(20px) saturate(150%)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(20px) saturate(150%)) !important;
+  border: 1px solid var(--card-border-color) !important;
+  box-shadow: 0 8px 32px var(--card-shadow-color) !important;
+}
+.n-base-select-option {
+  border-radius: var(--radius-inner) !important;
+  margin: 2px 6px;
+  transition: background 0.15s ease;
+}
+.n-base-select-option.n-base-select-option--selected {
+  background: rgba(128, 128, 128, 0.12) !important;
+}
+.n-base-select-option.n-base-select-option--active {
+  background: rgba(128, 128, 128, 0.06) !important;
+}
+
+/* 按钮 */
+.n-button {
+  border-radius: var(--radius-button) !important;
+  font-size: var(--fs-body) !important;
+  letter-spacing: 0.2px;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1) !important;
+}
+
+.n-button:active {
+  transform: scale(0.97);
+}
+
+/* 标签/徽章 → 胶囊 */
+.n-tag {
+  border-radius: var(--radius-pill) !important;
+}
+
+/* Switch → iOS 风格 */
+.n-switch {
+  --n-rail-height: 30px !important;
+  --n-rail-width: 50px !important;
+  --n-button-height: 26px !important;
+  --n-button-width: 26px !important;
+}
+
+/* 选项标签页 (segmented control) */
+.n-tabs.n-tabs--segment-type .n-tabs-tab {
+  border-radius: var(--radius-input) !important;
+}
+
+/* 文字选项标签页 */
+.n-tabs.n-tabs--line-type .n-tabs-tab {
+  font-size: var(--fs-subhead);
+  font-weight: 460;
+  letter-spacing: 0.2px;
+}
+
+/* === 移动端全局 === */
+@media (max-width: 767px) {
+  .n-layout-content > .n-layout-scroll-container {
+    padding: 12px !important;
+  }
+  .page-content-inner-wrapper {
+    padding: 0 !important;
+  }
+}
+
+/* === iOS 弹簧动画曲线 === */
+:root {
+  --ease-ios: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-ios-spring: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* === 文本效果 === */
+.text-effect {
+  font-weight: 900;
+  font-size: 2rem;
+  color: #f0f0f0;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  text-shadow:
+    1px 1px 0 #222,
+    2px 2px 1px #555,
+    0 0 5px #fff,
+    0 0 3px #ccc;
+}
+
+/* === 动画 === */
+@keyframes card-fade-in {
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.dashboard-card:nth-child(1) { animation-delay: 0.05s; }
+.dashboard-card:nth-child(2) { animation-delay: 0.1s; }
+.dashboard-card:nth-child(3) { animation-delay: 0.15s; }
+.dashboard-card:nth-child(4) { animation-delay: 0.2s; }
+.dashboard-card:nth-child(5) { animation-delay: 0.25s; }
+.dashboard-card:nth-child(6) { animation-delay: 0.3s; }
+.dashboard-card:nth-child(7) { animation-delay: 0.35s; }
+.dashboard-card:nth-child(8) { animation-delay: 0.4s; }
+.dashboard-card:nth-child(9) { animation-delay: 0.45s; }
+.dashboard-card:nth-child(10) { animation-delay: 0.5s; }
+
+/* === 触控优化 (44px 最小目标) === */
+@media (hover: none) and (pointer: coarse) {
+  .n-button,
+  .n-menu-item,
+  .n-switch,
+  .n-checkbox,
+  .n-radio {
+    min-height: 44px;
+  }
+
+  .n-button:active {
+    transform: scale(0.97);
+    opacity: 0.8;
+  }
+
+  .n-card:active {
+    transform: scale(0.99);
+  }
+
+  /* 滚动优化 */
+  * {
+    -webkit-overflow-scrolling: touch;
+  }
 }
