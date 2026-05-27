@@ -97,7 +97,7 @@
       <n-grid :x-gap="24" :y-gap="24" :cols="1" responsive="screen" item-responsive>
         <n-gi span="1">
            <n-divider title-placement="left" style="margin-top: 24px;">高级策略</n-divider>
-           <n-card size="small" :bordered="false" style="background: rgba(0,0,0,0.02);">
+           <n-card class="rule-card setting-card" size="small" :bordered="false">
             <n-space vertical size="large">
               
               <!-- 保留每种分辨率 -->
@@ -159,7 +159,13 @@
       </div>
 
       <!-- 编辑优先级弹窗 -->
-      <n-modal v-model:show="showEditModal" preset="card" style="width: 500px;" title="编辑优先级">
+      <n-modal
+          v-model:show="showEditModal"
+          preset="card"
+          style="width: 500px;"
+          title="编辑优先级"
+          class="cleanup-edit-modal glass-modal"
+        >
         <p style="margin-top: 0; color: #888;">
           拖拽下方的标签来调整关键字的优先级。排在越上面的关键字，代表版本越好。
         </p>
@@ -459,5 +465,76 @@ onMounted(fetchSettings);
   cursor: grab;
   width: 100%;
   justify-content: center;
+}
+
+/* 去重规则弹窗内的小卡片玻璃化 */
+.rule-card,
+.setting-card,
+.fallback-card {
+  --n-color: rgba(255, 255, 255, 0.045) !important;
+  --n-border-color: rgba(148, 177, 255, 0.12) !important;
+
+  background: rgba(255, 255, 255, 0.045) !important;
+  background-color: rgba(255, 255, 255, 0.045) !important;
+  border: 1px solid rgba(148, 177, 255, 0.12) !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12) !important;
+
+  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+
+  transition: box-shadow 0.2s, transform 0.2s, background-color 0.2s;
+}
+
+/* 可拖拽规则卡片 */
+.rule-card {
+  cursor: move;
+}
+
+.rule-card:hover {
+  background: rgba(255, 255, 255, 0.065) !important;
+  background-color: rgba(255, 255, 255, 0.065) !important;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18), 0 0 18px -10px var(--accent-glow-color) !important;
+}
+
+/* 兜底卡片不要再用实体底 */
+.fallback-card {
+  cursor: default;
+  border-style: dashed !important;
+}
+
+/* 卡片内容区域也打穿 */
+.rule-card :deep(.n-card__content),
+.setting-card :deep(.n-card__content),
+.fallback-card :deep(.n-card__content) {
+  background: transparent !important;
+}
+
+/* 编辑优先级弹窗本体玻璃化 */
+:deep(.cleanup-edit-modal) {
+  --n-color: var(--card-bg-color) !important;
+  --n-border-color: var(--card-border-color) !important;
+
+  background: var(--card-bg-color) !important;
+  background-color: var(--card-bg-color) !important;
+  border: 1px solid var(--card-border-color) !important;
+
+  backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
+}
+
+/* 编辑优先级里的拖拽标签容器 */
+.priority-tags-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  background: rgba(255, 255, 255, 0.045) !important;
+  background-color: rgba(255, 255, 255, 0.045) !important;
+  border: 1px solid rgba(148, 177, 255, 0.12);
+  padding: 12px;
+  border-radius: 8px;
+
+  backdrop-filter: var(--card-backdrop-filter, blur(10px));
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px));
 }
 </style>

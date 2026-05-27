@@ -60,13 +60,19 @@
       <n-empty v-if="rules.length === 0" description="暂无规则" />
 
       <!-- 规则弹窗 -->
-      <n-modal v-model:show="showModal" preset="card" style="width: 900px;" :title="modalTitle">
+      <n-modal
+          v-model:show="showModal"
+          preset="card"
+          style="width: 900px;"
+          :title="modalTitle"
+          class="resubscribe-rule-modal glass-modal"
+        >
         <n-form ref="formRef" :model="currentRule" :rules="formRules" label-placement="top">
           
           <!-- 1. 顶部：基础信息与模式选择 -->
           <n-grid :x-gap="24" :y-gap="24" :cols="2">
             <n-gi :span="2">
-              <n-card size="small" embedded :bordered="false" style="background: var(--n-action-color);">
+              <n-card class="modal-inner-card base-rule-card" size="small" embedded :bordered="false">
                 <n-grid :cols="2" :x-gap="24">
                   <n-gi>
                     <n-form-item path="name" label="规则名称">
@@ -99,7 +105,7 @@
 
                   <!-- ★★★ 核心修改区域：通用筛选构建器 ★★★ -->
                   <n-gi :span="2">
-                    <n-card title="限定范围 (通用筛选)" size="small" style="margin-bottom: 12px; margin-top: 12px;">
+                    <n-card title="限定范围 (通用筛选)" class="modal-inner-card scope-card" size="small">
                       <template #header-extra>
                         <n-tag type="info" size="small" :bordered="false">条件之间为“与”关系 (AND)</n-tag>
                       </template>
@@ -206,7 +212,7 @@
 
             <!-- 2. 左侧列：筛选条件 (Condition) -->
             <n-gi>
-              <n-card title="筛选条件 (命中规则的条件)" size="small" segmented>
+              <n-card title="筛选条件 (命中规则的条件)" class="modal-inner-card" size="small" segmented>
                 <template #header-extra>
                   <n-tag type="warning" size="small" :bordered="false">满足任一条件即命中</n-tag>
                 </template>
@@ -385,7 +391,7 @@
 
             <!-- 3. 右侧列：执行动作 (Action) -->
             <n-gi>
-              <n-card title="执行动作" size="small" segmented style="height: 100%;">
+              <n-card title="执行动作" class="modal-inner-card action-card" size="small" segmented>
                 
                 <!-- 模式 A: 洗版设置 -->
                 <div v-if="currentRule.rule_type === 'resubscribe'">
@@ -433,7 +439,7 @@
 
                       <div
                         v-if="currentRule.custom_resubscribe_enabled"
-                        style="margin-left: 34px; margin-top: 4px; padding: 8px; background: var(--n-color-embedded); border-radius: 4px;"
+                        class="custom-resubscribe-box"
                       >
                         <n-checkbox v-model:checked="currentRule.resubscribe_subtitle_effect_only">
                           要求包含特效字幕 (正则匹配)
@@ -792,4 +798,81 @@ onMounted(loadData);
 .rule-op { width: 110px !important; flex-shrink: 0; }
 .rule-value { flex: 1; min-width: 0; }
 .rule-value > .n-select, .rule-value > .n-input-number, .rule-value > .n-input { width: 100% !important; }
+
+/* 规则管理弹窗本体玻璃化 */
+:global(.resubscribe-rule-modal) {
+  --n-color: var(--card-bg-color) !important;
+  --n-border-color: var(--card-border-color) !important;
+
+  background: var(--card-bg-color) !important;
+  background-color: var(--card-bg-color) !important;
+  border: 1px solid var(--card-border-color) !important;
+
+  backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(16px) saturate(135%)) !important;
+}
+
+/* 弹窗里的所有内层卡片统一玻璃化 */
+:global(.resubscribe-rule-modal) .modal-inner-card,
+:global(.resubscribe-rule-modal) .n-card[embedded] {
+  --n-color: rgba(255, 255, 255, 0.045) !important;
+  --n-border-color: rgba(148, 177, 255, 0.12) !important;
+  --n-color-embedded: rgba(255, 255, 255, 0.035) !important;
+  --n-action-color: rgba(255, 255, 255, 0.055) !important;
+
+  background: rgba(255, 255, 255, 0.045) !important;
+  background-color: rgba(255, 255, 255, 0.045) !important;
+  border: 1px solid rgba(148, 177, 255, 0.12) !important;
+  border-radius: 12px !important;
+
+  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+}
+
+/* segmented 卡片的头部、内容也要打穿 */
+:global(.resubscribe-rule-modal) .modal-inner-card .n-card-header,
+:global(.resubscribe-rule-modal) .modal-inner-card .n-card__content,
+:global(.resubscribe-rule-modal) .modal-inner-card .n-card__footer {
+  background: transparent !important;
+}
+
+/* 限定条件行 */
+:global(.resubscribe-rule-modal) .rule-row {
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(148, 177, 255, 0.09);
+}
+
+/* 筛选项分割线别用亮色实体线 */
+:global(.resubscribe-rule-modal) .filter-item {
+  border-bottom-color: rgba(148, 177, 255, 0.12) !important;
+}
+
+/* 自定义洗版配置块 */
+.custom-resubscribe-box {
+  margin-left: 34px;
+  margin-top: 4px;
+  padding: 8px;
+  border-radius: 8px;
+
+  background: rgba(255, 255, 255, 0.045) !important;
+  border: 1px solid rgba(148, 177, 255, 0.10);
+
+  backdrop-filter: var(--card-backdrop-filter, blur(10px));
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px));
+}
+
+/* 顶部规则列表卡片也顺手统一 */
+.rule-card {
+  --n-color: rgba(255, 255, 255, 0.045) !important;
+  --n-border-color: rgba(148, 177, 255, 0.12) !important;
+
+  background: rgba(255, 255, 255, 0.045) !important;
+  background-color: rgba(255, 255, 255, 0.045) !important;
+  border: 1px solid rgba(148, 177, 255, 0.12) !important;
+
+  backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px)) !important;
+}
 </style>
