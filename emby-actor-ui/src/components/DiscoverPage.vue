@@ -10,6 +10,7 @@
             <template #header>
               <span class="card-title">筛选条件</span>
             </template>
+            <div class="filter-section">
             <n-space vertical size="large">
               <n-space align="center">
                 <label>搜索:</label>
@@ -29,7 +30,7 @@
               </n-space>
               <n-space align="center">
                 <label>排序:</label>
-                <n-radio-group v-model:value="filters['sort_by']" :disabled="isSearchMode">
+                <n-radio-group v-model:value="filters['sort_by']" :disabled="isSearchMode" class="discover-sort-group">
                   <n-radio-button value="popularity.desc" label="热度降序" />
                   <n-radio-button value="popularity.asc" label="热度升序" />
                   <n-radio-button :value="mediaType === 'movie' ? 'primary_release_date.desc' : 'first_air_date.desc'" label="上映日期降序" />
@@ -154,6 +155,7 @@
                 </n-switch>
               </n-space>
             </n-space>
+            </div>
           </n-card>
         </n-gi>
         <!-- 右侧“每日推荐”面板 -->
@@ -475,10 +477,8 @@ const normalizePortalStatus = (rawStatus, fallbackStatus = 'WANTED') => {
 };
 
 const sentinel = ref(null);
-const isMobile = ref(false);
-const checkMobile = () => {
-  isMobile.value = window.innerWidth < 768;
-};
+import { useResponsive } from '../composables/useResponsive';
+const { isMobile } = useResponsive();
 
 // ★★★ 季选择模态框相关状态 ★★★
 const showSeasonModal = ref(false);
@@ -903,8 +903,6 @@ watch(searchQuery, (newValue) => { resetAndFetch(); });
 watch([() => filters.sort_by, () => filters.vote_average_gte, selectedGenres, selectedRegions, selectedLanguage, selectedKeywords, selectedStudios, genreFilterMode, yearFrom, yearTo, selectedRating, hideInLibrary], () => { resetAndFetch(); }, { deep: true });
 let observer = null;
 onMounted(() => {
-  checkMobile();
-  window.addEventListener('resize', checkMobile);
   fetchGenres();
   fetchCountries();
   fetchLanguages();
@@ -912,7 +910,7 @@ onMounted(() => {
   fetchStudios();
   fetchRatings();
   fetchEmbyConfig(); 
-  fetchSubscriptionStatus(); // ★ 获取订阅状态
+  fetchSubscriptionStatus();
   fetchRecommendationPool();
   resetAndFetch();
   observer = new IntersectionObserver((entries) => {
@@ -921,7 +919,6 @@ onMounted(() => {
   if (sentinel.value) { observer.observe(sentinel.value); }
 });
 onUnmounted(() => { 
-  window.removeEventListener('resize', checkMobile);
   if (observer) { observer.disconnect(); } 
 });
 </script>
@@ -1184,5 +1181,34 @@ onUnmounted(() => {
   cursor: not-allowed;
   pointer-events: none;
   opacity: 0.5;
+}
+.filter-section .n-space-align-center {
+  background: var(--card-bg-color);
+  border-radius: var(--radius-inner);
+  padding: 10px 14px;
+  border: 1px solid var(--card-border-color);
+  backdrop-filter: var(--card-backdrop-filter, blur(10px));
+  -webkit-backdrop-filter: var(--card-backdrop-filter, blur(10px));
+}
+.filter-section label {
+  min-width: 72px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-color);
+  opacity: 0.7;
+  flex-shrink: 0;
+}
+@media (max-width: 767px) {
+  .filter-section .n-space-align-center {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .filter-section label {
+    min-width: 60px;
+  }
+}
+.discover-sort-group {
+  flex-wrap: wrap;
+  gap: 4px;
 }
 </style>
