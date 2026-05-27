@@ -1381,13 +1381,13 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
 
 
 def _watching_missing_episodes(limit: int = 120) -> List[Dict[str, Any]]:
-    """查询正在追更/暂停追更季下尚未入库的分集。"""
+    """查询正在追更/暂停追更季下尚未入库的分集。按 父剧+季+集 去重，避免脏数据重复消费。"""
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
                 WITH watch_seasons AS (
-                    SELECT
+                    SELECT DISTINCT ON (parent_series_tmdb_id, season_number)
                         tmdb_id AS season_tmdb_id,
                         parent_series_tmdb_id,
                         season_number,
@@ -1400,30 +1400,61 @@ def _watching_missing_episodes(limit: int = 120) -> List[Dict[str, Any]]:
                       AND watching_status IN ('Watching','Paused')
                       AND parent_series_tmdb_id IS NOT NULL
                       AND season_number IS NOT NULL
+                    ORDER BY parent_series_tmdb_id,
+                             season_number,
+                             CASE watching_status
+                                 WHEN 'Watching' THEN 0
+                                 WHEN 'Paused' THEN 1
+                                 ELSE 2
+                             END,
+                             last_updated_at DESC NULLS LAST
+                ),
+                missing AS (
+                    SELECT DISTINCT ON (e.parent_series_tmdb_id, e.season_number, e.episode_number)
+                        e.tmdb_id,
+                        e.item_type,
+                        e.parent_series_tmdb_id,
+                        e.season_number,
+                        e.episode_number,
+                        e.title,
+                        e.release_year,
+                        e.release_date,
+                        ws.season_tmdb_id,
+                        ws.season_title,
+                        ws.watching_status,
+                        ws.last_updated_at AS season_last_updated_at
+                    FROM media_metadata e
+                    JOIN watch_seasons ws
+                      ON e.item_type='Episode'
+                     AND e.parent_series_tmdb_id = ws.parent_series_tmdb_id
+                     AND e.season_number = ws.season_number
+                    WHERE COALESCE(e.in_library, FALSE) = FALSE
+                      AND e.episode_number IS NOT NULL
+                      AND COALESCE(e.subscription_status, 'NONE') NOT IN ('IGNORED')
+                      AND (e.release_date IS NULL OR e.release_date <= CURRENT_DATE)
+                    ORDER BY e.parent_series_tmdb_id,
+                             e.season_number,
+                             e.episode_number,
+                             e.last_updated_at DESC NULLS LAST,
+                             e.release_date DESC NULLS LAST
                 )
                 SELECT
-                    e.tmdb_id,
-                    e.item_type,
-                    e.parent_series_tmdb_id,
-                    e.season_number,
-                    e.episode_number,
-                    e.title,
-                    e.release_year,
-                    e.release_date,
-                    ws.season_tmdb_id,
-                    ws.season_title,
-                    ws.watching_status
-                FROM media_metadata e
-                JOIN watch_seasons ws
-                  ON e.item_type='Episode'
-                 AND e.parent_series_tmdb_id = ws.parent_series_tmdb_id
-                 AND e.season_number = ws.season_number
-                WHERE COALESCE(e.in_library, FALSE) = FALSE
-                  AND e.episode_number IS NOT NULL
-                  AND COALESCE(e.subscription_status, 'NONE') NOT IN ('IGNORED')
-                  AND (e.release_date IS NULL OR e.release_date <= CURRENT_DATE)
-                ORDER BY ws.last_updated_at DESC NULLS LAST,
-                         e.parent_series_tmdb_id, e.season_number, e.episode_number
+                    tmdb_id,
+                    item_type,
+                    parent_series_tmdb_id,
+                    season_number,
+                    episode_number,
+                    title,
+                    release_year,
+                    release_date,
+                    season_tmdb_id,
+                    season_title,
+                    watching_status
+                FROM missing
+                ORDER BY season_last_updated_at DESC NULLS LAST,
+                         parent_series_tmdb_id,
+                         season_number,
+                         episode_number
                 LIMIT %s
                 """,
                 (int(limit),),
@@ -1445,7 +1476,7 @@ def _has_local_virtual_projection_for_episode(row: Dict[str, Any]) -> bool:
                     """
                     SELECT 1
                     FROM shared_virtual_items
-                    WHERE status NOT IN ('deleted','promoted')
+                    WHERE status <> 'deleted'
                       AND (parent_series_tmdb_id=%s OR tmdb_id=%s)
                       AND COALESCE(season_number, -1)=COALESCE(%s, -1)
                       AND COALESCE(episode_number, -1)=COALESCE(%s, -1)
@@ -1477,7 +1508,7 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
 
     for row in rows:
         try:
-            if mode == 'virtual' and _has_local_virtual_projection_for_episode(row):
+            if _has_local_virtual_projection_for_episode(row):
                 skipped += 1
                 continue
 
