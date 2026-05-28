@@ -200,6 +200,62 @@ def _guess_episode_number(name: str):
     return None
 
 
+def _safe_size_bytes(value, default=0) -> int:
+    """把 115/中心返回的文件大小统一转成字节数。
+
+    115 部分接口会返回展示字符串，例如 "3.78GB"，而数据库写入和中心登记
+    都要求纯数字字节数。这里集中兜底，避免 int("3.78GB") 直接炸。
+    """
+    if value in (None, ''):
+        return default
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    text = str(value).strip()
+    if not text:
+        return default
+
+    # 先处理纯数字/小数字符串；逗号分隔的大数字也兼容。
+    normalized = text.replace(',', '').strip()
+    try:
+        return int(float(normalized))
+    except Exception:
+        pass
+
+    upper = normalized.upper().replace(' ', '')
+    upper = upper.replace('（', '(').replace('）', ')')
+    m = re.match(r'^([0-9]+(?:\.[0-9]+)?)([KMGTPE]?I?B?|BYTE|BYTES)$', upper)
+    if not m:
+        return default
+
+    number = float(m.group(1))
+    unit = m.group(2) or 'B'
+    unit = unit.replace('BYTES', 'B').replace('BYTE', 'B')
+    # 115 的 GB/MB 展示通常按二进制体积理解；KiB/MiB 同样归一处理。
+    if unit in ('B', ''):
+        multiplier = 1
+    elif unit in ('K', 'KB', 'KIB'):
+        multiplier = 1024
+    elif unit in ('M', 'MB', 'MIB'):
+        multiplier = 1024 ** 2
+    elif unit in ('G', 'GB', 'GIB'):
+        multiplier = 1024 ** 3
+    elif unit in ('T', 'TB', 'TIB'):
+        multiplier = 1024 ** 4
+    elif unit in ('P', 'PB', 'PIB'):
+        multiplier = 1024 ** 5
+    elif unit in ('E', 'EB', 'EIB'):
+        multiplier = 1024 ** 6
+    else:
+        return default
+    return int(number * multiplier)
+
+
 def _collect_files_from_cache(root_fid: str, root_name: str = '', max_depth: int = 6) -> List[Dict[str, Any]]:
     """从 p115_filesystem_cache 递归收集 root_fid 下的视频文件。
     用作 115 远程目录接口字段不完整/审核中返回不全时的兜底。
@@ -243,7 +299,7 @@ def _collect_files_from_cache(root_fid: str, root_name: str = '', max_depth: int
         files.append({
             'fid': str(row.get('id') or ''),
             'sha1': (str(row.get('sha1')).upper() if row.get('sha1') else None),
-            'size': row.get('size') or 0,
+            'size': _safe_size_bytes(row.get('size')),
             'file_name': name,
             'relative_path': rel,
             'episode_number': _guess_episode_number(name),
@@ -322,7 +378,7 @@ def _collect_files_from_media_payload(data: Dict[str, Any]) -> List[Dict[str, An
         files.append({
             'fid': fid,
             'sha1': sha1 or None,
-            'size': r.get('size') or 0,
+            'size': _safe_size_bytes(r.get('size')),
             'file_name': name,
             'relative_path': r.get('local_path') or name,
             'tmdb_id': str(item_tmdb_id),
@@ -358,7 +414,7 @@ def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_dept
         return [{
             'fid': _node_id(root_info) or str(root_fid),
             'sha1': root_info.get('sha1') or root_info.get('sha') or root_info.get('file_sha1'),
-            'size': root_info.get('size') or root_info.get('fs') or root_info.get('s') or 0,
+            'size': _safe_size_bytes(root_info.get('size') or root_info.get('fs') or root_info.get('s')),
             'file_name': name,
             'relative_path': name,
             'episode_number': _guess_episode_number(name),
@@ -387,7 +443,7 @@ def _collect_files_from_115(client, root_fid: str, root_name: str = '', max_dept
             files.append({
                 'fid': node_id,
                 'sha1': node.get('sha1') or node.get('sha') or node.get('file_sha1'),
-                'size': node.get('size') or node.get('fs') or node.get('s') or 0,
+                'size': _safe_size_bytes(node.get('size') or node.get('fs') or node.get('s')),
                 'file_name': name,
                 'relative_path': rel,
                 'episode_number': _guess_episode_number(name),
@@ -527,7 +583,7 @@ def _infer_size_from_raw(raw: Dict[str, Any]) -> int:
         fmt = raw.get('format') or {}
         size = fmt.get('size')
         if size is not None and str(size).strip():
-            return int(float(size))
+            return _safe_size_bytes(size)
     except Exception:
         pass
     return 0
@@ -547,7 +603,7 @@ def _upload_item_raw_ffprobe_to_center(item: Dict[str, Any], cfg: Dict[str, Any]
         return {'ok': False, 'status': 'missing_raw', 'message': '本地 p115_mediainfo_cache 没有 raw_ffprobe_json'}
 
     raw_size = _infer_size_from_raw(raw)
-    item_size = int(item.get('size') or 0)
+    item_size = _safe_size_bytes(item.get('size'))
     final_size = item_size if item_size > 0 else raw_size
 
     payload = {
@@ -575,12 +631,12 @@ def _upload_share_raw_ffprobe_to_center(record_id: int, cfg: Dict[str, Any], hea
     errors = []
     size_fixed = 0
     for item in items:
-        before_size = int(item.get('size') or 0)
+        before_size = _safe_size_bytes(item.get('size'))
         result = _upload_item_raw_ffprobe_to_center(item, cfg, headers, force=force)
         if result.get('ok'):
             if result.get('status') == 'uploaded':
                 uploaded += 1
-                if before_size <= 0 and int(result.get('size') or 0) > 0:
+                if before_size <= 0 and _safe_size_bytes(result.get('size')) > 0:
                     size_fixed += 1
             else:
                 skipped += 1
@@ -1479,7 +1535,7 @@ def _resolve_share_root(media_row: Dict[str, Any]) -> Dict[str, Any]:
         root_name = file_rows[0].get('name') or root_id
     elif item_type == 'Episode':
         # 未完结剧集只允许单集分享。若同一集存在多个版本，默认选 size 最大的那个视频文件。
-        candidates = sorted(file_rows, key=lambda r: _safe_int(r.get('size'), 0), reverse=True)
+        candidates = sorted(file_rows, key=lambda r: _safe_size_bytes(r.get('size')), reverse=True)
         picked = candidates[0]
         root_id = str(picked.get('id') or '')
         root_is_dir = False
@@ -1856,8 +1912,8 @@ def _node_matches_virtual_row(node: Dict[str, Any], row: Dict[str, Any]) -> bool
         return True
 
     try:
-        node_size = int(node.get('size') or node.get('fs') or 0)
-        row_size = int(row.get('size') or 0)
+        node_size = _safe_size_bytes(node.get('size') or node.get('fs'))
+        row_size = _safe_size_bytes(row.get('size'))
     except Exception:
         node_size = row_size = 0
     if node_name and row_name and row_size > 0 and node_size > 0:
@@ -1900,7 +1956,7 @@ def _list_115_children_for_delete(client, cid: str, max_depth: int = 5) -> List[
                     'fid': fid,
                     'name': name,
                     'sha1': it.get('sha1') or it.get('sha') or '',
-                    'size': it.get('fs') or it.get('size') or 0,
+                    'size': _safe_size_bytes(it.get('fs') or it.get('size')),
                     'is_dir': is_dir,
                     'pick_code': it.get('pc') or it.get('pick_code') or '',
                     'parent_id': current_cid,
@@ -2358,7 +2414,7 @@ def _find_existing_file_in_target(target_cid: str, item: Dict[str, Any], client=
                 if fc == '0' and not (sha1 or pc):
                     continue
                 if (expected_sha1 and sha1 == expected_sha1) or (expected_pc and pc == expected_pc) or (target_name and name == target_name):
-                    return {'id': fid, 'parent_id': target_cid, 'name': name, 'sha1': sha1, 'pick_code': pc, 'size': f.get('size') or f.get('fs')}
+                    return {'id': fid, 'parent_id': target_cid, 'name': name, 'sha1': sha1, 'pick_code': pc, 'size': _safe_size_bytes(f.get('size') or f.get('fs'))}
         except Exception as e:
             logger.debug(f"  ➜ [共享资源] 远程查找目标目录已有文件失败: {e}")
     return None
@@ -2497,7 +2553,7 @@ def _as_virtual_node_from_existing(existing: Dict[str, Any], fallback_item: Dict
         'name': existing.get('name') or existing.get('file_name') or fallback_item.get('file_name') or '',
         'pick_code': existing.get('pick_code') or existing.get('pc') or '',
         'sha1': str(existing.get('sha1') or fallback_item.get('sha1') or '').upper(),
-        'size': existing.get('size') or fallback_item.get('size') or 0,
+        'size': _safe_size_bytes(existing.get('size') or fallback_item.get('size')),
     }
 
 
@@ -2541,7 +2597,7 @@ def _import_virtual_to_save_path(virtual_id: str, item: Dict[str, Any], save_cid
                 save_cid,
                 sha1=item.get('sha1') or '',
                 file_name=item.get('file_name') or display_name,
-                size=_safe_int(item.get('size'), 0),
+                size=_safe_size_bytes(item.get('size')),
                 max_depth=6,
             ) or _find_file_by_fs_search(client, save_cid, item)
             if node and node.get('fid'):
@@ -3067,7 +3123,7 @@ def api_report_share_to_center(record_id):
             'title': standard_identity.get('title') or record.get('title') or '',
             'release_year': standard_identity.get('release_year') or record.get('release_year'),
             'sha1': sha1,
-            'size': int(item.get('size') or 0),
+            'size': _safe_size_bytes(item.get('size')),
             'file_name': item.get('file_name') or '',
             'quality': '',
             'source_provider': 'user_share',
@@ -3519,8 +3575,8 @@ def _build_center_emby_info(raw: Dict[str, Any], source: Dict[str, Any]) -> Dict
     file_node = {
         'fn': source.get('file_name') or source.get('title') or source.get('sha1') or 'unknown.mkv',
         'n': source.get('file_name') or source.get('title') or source.get('sha1') or 'unknown.mkv',
-        'fs': source.get('size') or (raw.get('format') or {}).get('size') or 0,
-        'size': source.get('size') or (raw.get('format') or {}).get('size') or 0,
+        'fs': _safe_size_bytes(source.get('size') or (raw.get('format') or {}).get('size')),
+        'size': _safe_size_bytes(source.get('size') or (raw.get('format') or {}).get('size')),
         'sha1': source.get('sha1') or '',
     }
     metadata_context = {
@@ -3558,7 +3614,7 @@ def _summarize_raw_ffprobe(raw: Dict[str, Any], source: Dict[str, Any] = None) -
 
     size = source.get('size') or media_info.get('Size') or (raw.get('format') or {}).get('size') or 0
     try:
-        size = int(float(size or 0))
+        size = _safe_size_bytes(size)
     except Exception:
         size = 0
 
@@ -3801,7 +3857,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
                 passthrough.append(row)
             continue
 
-        rows_sorted = sorted(rows, key=lambda r: (1 if r.get('raw_ffprobe_json') else 0, int(r.get('size') or 0)), reverse=True)
+        rows_sorted = sorted(rows, key=lambda r: (1 if r.get('raw_ffprobe_json') else 0, _safe_size_bytes(r.get('size'))), reverse=True)
         rep = dict(rows_sorted[0])
         newest_row = max(rows, key=_center_created_ts)
         if newest_row.get('created_at'):
@@ -3815,7 +3871,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
 
         for r in rows:
             try:
-                total_size += int(r.get('size') or 0)
+                total_size += _safe_size_bytes(r.get('size'))
             except Exception:
                 pass
             total_success += int(r.get('success_count') or 0)
@@ -4015,7 +4071,7 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
         elif order_by == 'name':
             display_rows.sort(key=lambda r: (str(r.get('title') or ''), -_center_created_ts(r)))
         elif order_by == 'size':
-            display_rows.sort(key=lambda r: (int(r.get('size') or 0), _center_created_ts(r)), reverse=True)
+            display_rows.sort(key=lambda r: (_safe_size_bytes(r.get('size')), _center_created_ts(r)), reverse=True)
         else:
             display_rows.sort(key=lambda r: (_center_created_ts(r), str(r.get('source_id') or '')), reverse=True)
             
