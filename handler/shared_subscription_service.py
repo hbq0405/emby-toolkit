@@ -1583,8 +1583,9 @@ def consume_center_sources(source_ids: List[str], mode: str = 'permanent', conte
 
     data = client.list_sources(source_ids=source_ids, limit=len(source_ids), include_raw=True)
     sources = [x for x in (data.get('items') or []) if isinstance(x, dict)]
+    sources = _filter_sources_by_episode_transfer_policy(sources)
     if not sources:
-        return {'enabled': True, 'success': False, 'message': '中心未返回可用资源'}
+        return {'enabled': True, 'success': False, 'message': '中心未返回可用资源，或已被单集转存开关过滤'}
 
     first = sources[0]
     ctx = dict(context or {})

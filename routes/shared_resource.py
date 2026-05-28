@@ -2363,7 +2363,6 @@ def api_delete_virtual_item(virtual_id):
 
     message_text = '；'.join(messages) or ('手动删除虚拟入库剧集包' if is_pack_delete else '手动删除虚拟入库资源')
     deleted_count = _mark_virtual_rows_deleted(pack_rows, message_text)
-    row = shared_virtual_db.get_virtual_item(virtual_id) or item
 
     shared_virtual_db.add_credit_ledger(
         event_type='virtual_pack_deleted' if is_pack_delete else 'virtual_deleted',
@@ -2383,7 +2382,7 @@ def api_delete_virtual_item(virtual_id):
     return jsonify({
         "success": True,
         "message": f"已删除虚拟资源包，共 {deleted_count} 集" if is_pack_delete else "已删除虚拟资源",
-        "data": row,
+        "data": None,
         "deleted_count": deleted_count,
         "is_pack_delete": is_pack_delete,
         "remote_cache_kept": bool(requested_delete_remote and not release_cache),
@@ -4342,6 +4341,30 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
     }
 
 
+def _center_episode_hidden_by_config() -> bool:
+    try:
+        return bool(settings_db.get_shared_resource_config().get('p115_shared_disable_episode_transfer', False))
+    except Exception:
+        return False
+
+
+def _filter_center_rows_by_episode_policy(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not _center_episode_hidden_by_config():
+        return list(rows or [])
+    filtered = []
+    blocked = 0
+    for row in rows or []:
+        dtype = str(_center_display_type(row) or '').strip().lower()
+        item_type = str((row or {}).get('item_type') or '').strip().lower()
+        if dtype == 'episode' or item_type == 'episode':
+            blocked += 1
+            continue
+        filtered.append(row)
+    if blocked:
+        logger.info(f"  ➜ [共享资源] 中心资源库已按配置隐藏单集资源 {blocked} 条。")
+    return filtered
+
+
 _CENTER_STATUS_LABELS = {
     'alive': ('可用', 'success'),
     'pending': ('待验证', 'warning'),
@@ -4435,7 +4458,7 @@ def api_center_sources():
             limit=int(request.args.get('limit', 30) or 30),
             offset=int(request.args.get('offset', 0) or 0),
         )
-        raw_items = list(page_data.get('items') or [])
+        raw_items = _filter_center_rows_by_episode_policy(page_data.get('items') or [])
         local_share_codes = _load_local_share_code_set(raw_items)
         items = []
         for item in raw_items:
@@ -4448,7 +4471,7 @@ def api_center_sources():
         return jsonify({
             'success': True,
             'items': items,
-            'total': int(page_data.get('total') or len(items)),
+            'total': int(len(items)),
             'raw_total': int(page_data.get('raw_total') or len(items)),
             'scanned_raw': int(page_data.get('scanned_raw') or 0),
         })

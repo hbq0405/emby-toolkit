@@ -435,10 +435,6 @@ def _promote_virtual_rows_async(rows: List[dict], reason: str):
             try:
                 result = promote_virtual_item_internal(vid, data={}, reason=reason)
                 if result.get('success'):
-                    with get_db_connection() as conn:
-                        with conn.cursor() as cur:
-                            cur.execute("UPDATE shared_virtual_items SET auto_promoted_at=NOW() WHERE virtual_id=%s", (vid,))
-                        conn.commit()
                     logger.info(f"  ➜ [共享虚拟转正] 自动转正成功: virtual_id={vid}, reason={reason}")
                 else:
                     logger.warning(f"  ➜ [共享虚拟转正] 自动转正失败: virtual_id={vid}, msg={result.get('message')}")

@@ -450,11 +450,10 @@ def mark_virtual_deleted(virtual_id: str, message=''):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                UPDATE shared_virtual_items
-                SET status='deleted', deleted_at=NOW(), updated_at=NOW(), last_error=%s
+                DELETE FROM shared_virtual_items
                 WHERE virtual_id=%s
                 RETURNING *
-            """, (message, virtual_id))
+            """, (virtual_id,))
             row = _row_to_dict(cur.fetchone())
             conn.commit()
             return row
@@ -464,12 +463,10 @@ def mark_virtual_promoted(virtual_id: str, promoted_fid='', promoted_pick_code='
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
-                UPDATE shared_virtual_items
-                SET status='promoted', promoted_at=NOW(), updated_at=NOW(),
-                    promoted_fid=%s, promoted_pick_code=%s, last_error=%s
+                DELETE FROM shared_virtual_items
                 WHERE virtual_id=%s
                 RETURNING *
-            """, (promoted_fid, promoted_pick_code, message, virtual_id))
+            """, (virtual_id,))
             row = _row_to_dict(cur.fetchone())
             conn.commit()
             return row
