@@ -669,11 +669,30 @@ def _load_active_local_share_code_set() -> set[str]:
             }
 
 
+_EXTERNAL_CENTER_SOURCE_PROVIDERS = {'hdhive', 'tg_channel', 'tg_channel_hdhive'}
+
+
+def _is_external_center_source(item: Dict[str, Any]) -> bool:
+    """中心源是否来自外部资源入口。
+
+    影巢 / TG 频道外部分享并不会写入 shared_share_records，
+    不能参与“中心源 vs 本地我的分享记录”的孤儿对账；
+    否则会把正常外部转存登记误判为 local_record_missing 并撤销。
+    """
+    provider = str((item or {}).get('source_provider') or '').strip().lower()
+    return provider in _EXTERNAL_CENTER_SOURCE_PROVIDERS
+
+
 def _cleanup_orphan_center_sources(client: SharedCenterClient, page_size: int = 200, max_pages: int = 20) -> Dict[str, int]:
-    """对账中心登记源与本地活动分享，自动撤销已经不在本地的中心孤儿源。"""
+    """对账中心登记源与本地活动分享，自动撤销已经不在本地的中心孤儿源。
+
+    只清理本机真实创建的分享源。影巢、TG 频道这类外部分享源本来就没有
+    shared_share_records 本地记录，必须排除，否则会被误撤销。
+    """
     local_active_codes = _load_active_local_share_code_set()
     orphan_groups: Dict[str, Dict[str, Any]] = {}
     checked = 0
+    skipped_external = 0
     consecutive_errors = 0
 
     for page in range(max(1, int(max_pages or 1))):
@@ -692,7 +711,12 @@ def _cleanup_orphan_center_sources(client: SharedCenterClient, page_size: int = 
                 consecutive_errors += 1
                 if consecutive_errors >= 3:
                     logger.error("  ➜ [共享资源维护] 连续 3 次网络请求失败，触发熔断，提前结束中心孤儿源对账。")
-            return {'center_orphan_checked': checked, 'center_orphan_cancelled': 0, 'center_orphan_failed': 1}
+            return {
+                'center_orphan_checked': checked,
+                'center_orphan_skipped_external': skipped_external,
+                'center_orphan_cancelled': 0,
+                'center_orphan_failed': 1,
+            }
 
         consecutive_errors = 0
         items = resp.get('items') or []
@@ -704,6 +728,13 @@ def _cleanup_orphan_center_sources(client: SharedCenterClient, page_size: int = 
             if not bool(item.get('is_mine')):
                 continue
             checked += 1
+
+            # 影巢 / TG 频道等外部来源只是在本机消费后登记到中心，
+            # 不会生成 shared_share_records，因此不能按本地 share_code 对账清理。
+            if _is_external_center_source(item):
+                skipped_external += 1
+                continue
+
             share_code = str(item.get('share_code') or '').strip()
             if not share_code or share_code in local_active_codes:
                 continue
@@ -734,10 +765,14 @@ def _cleanup_orphan_center_sources(client: SharedCenterClient, page_size: int = 
             logger.warning(f"  ➜ [共享资源维护] 撤销中心孤儿共享源失败: share={share_code}, err={e}")
         time.sleep(0.2)
 
-    if cancelled or failed:
-        logger.info(f"  ➜ [共享资源维护] 中心孤儿共享源对账完成：撤销 {cancelled}，失败 {failed}。")
+    if cancelled or failed or skipped_external:
+        logger.info(
+            "  ➜ [共享资源维护] 中心孤儿共享源对账完成：检查 %s，跳过外部来源 %s，撤销 %s，失败 %s。",
+            checked, skipped_external, cancelled, failed,
+        )
     return {
         'center_orphan_checked': checked,
+        'center_orphan_skipped_external': skipped_external,
         'center_orphan_cancelled': cancelled,
         'center_orphan_failed': failed,
     }
