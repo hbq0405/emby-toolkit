@@ -2540,6 +2540,109 @@ def _find_existing_file_in_target(target_cid: str, item: Dict[str, Any], client=
     return None
 
 
+def _try_rename_promoted_file(client, item: Dict[str, Any], target_cid: str, promoted_fid: str) -> Dict[str, Any]:
+    """已播放虚拟资源直接转正后，补走正式入库命名规则。"""
+    promoted_fid = str(promoted_fid or '').strip()
+    target_cid = str(target_cid or '').strip()
+    if not client or not promoted_fid or not target_cid:
+        return {'renamed': False, 'reason': 'missing_client_or_ids'}
+
+    try:
+        from handler.shared_subscription_service import _sanitize_filename, _tv_parent_tmdb_id
+        from handler.p115_service import SmartOrganizer
+    except Exception as e:
+        return {'renamed': False, 'reason': f'import_failed:{e}'}
+
+    file_name = str(item.get('file_name') or '').strip()
+    if not file_name or '.' not in file_name:
+        return {'renamed': False, 'reason': 'invalid_original_name'}
+
+    raw = item.get('raw_json') or {}
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    context = raw.get('context') if isinstance(raw.get('context'), dict) else {}
+    source = raw.get('center_source') if isinstance(raw.get('center_source'), dict) else {}
+
+    media_type = 'movie'
+    item_type = str(item.get('item_type') or source.get('item_type') or context.get('item_type') or '').strip()
+    season_num = item.get('season_number')
+    episode_num = item.get('episode_number')
+    if item_type in ('Episode', 'Season', 'Series') or season_num not in (None, ''):
+        media_type = 'tv'
+
+    tmdb_id = (
+        _tv_parent_tmdb_id(context, source) if media_type == 'tv'
+        else (context.get('tmdb_id') or source.get('tmdb_id') or item.get('tmdb_id'))
+    )
+    if not tmdb_id:
+        return {'renamed': False, 'reason': 'missing_tmdb_id'}
+
+    try:
+        tmdb_id_int = int(str(tmdb_id))
+    except Exception:
+        return {'renamed': False, 'reason': f'invalid_tmdb_id:{tmdb_id}'}
+
+    title = context.get('title') or source.get('title') or item.get('title') or file_name
+    organizer = SmartOrganizer(client, tmdb_id_int, media_type, title, None, False)
+    if media_type == 'tv' and season_num not in (None, ''):
+        try:
+            organizer.forced_season = int(season_num)
+        except Exception:
+            pass
+
+    fake_node = {
+        'fn': file_name,
+        'sha1': item.get('sha1') or source.get('sha1') or '',
+        '_forced_season': season_num,
+        '_forced_episode': episode_num,
+    }
+    safe_title = _sanitize_filename(title or file_name.rsplit('.', 1)[0])
+    year = context.get('year') or source.get('release_year') or item.get('release_year')
+    original_title = organizer.details.get('original_title') or organizer.details.get('title') or title
+
+    try:
+        new_name, _, _, _, _, _, _ = organizer._rename_file_node(
+            fake_node,
+            safe_title,
+            year=year,
+            is_tv=(media_type == 'tv'),
+            original_title=original_title,
+            pre_fetched_mediainfo=None,
+            local_pre_fetched_mediainfo=None,
+            silent_log=True,
+        )
+    except Exception as e:
+        return {'renamed': False, 'reason': f'build_name_failed:{e}'}
+
+    new_name = str(new_name or '').strip()
+    if not new_name or new_name == file_name:
+        return {'renamed': False, 'reason': 'same_name', 'name': file_name}
+
+    rename_resp = client.fs_rename((promoted_fid, new_name))
+    if not rename_resp or not rename_resp.get('state'):
+        return {'renamed': False, 'reason': 'rename_failed', 'name': new_name, 'resp': rename_resp}
+
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE p115_filesystem_cache
+                    SET name=%s, parent_id=%s, updated_at=NOW()
+                    WHERE id=%s
+                    """,
+                    (new_name, target_cid, promoted_fid),
+                )
+                conn.commit()
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 转正后回写 p115_filesystem_cache 文件名失败: {e}")
+
+    return {'renamed': True, 'name': new_name, 'resp': rename_resp}
+
+
 def _mark_virtual_promoted_success(virtual_id: str, item: Dict[str, Any], target_cid: str, target_name: str, resp=None, existing=None):
     promoted_fid = str((existing or {}).get('id') or (existing or {}).get('fid') or (existing or {}).get('file_id') or item.get('real_fid') or '')
     promoted_pc = (existing or {}).get('pick_code') or (existing or {}).get('pc') or item.get('real_pick_code') or item.get('promoted_pick_code') or ''
@@ -2834,7 +2937,25 @@ def promote_virtual_item_internal(virtual_id: str, data: Dict[str, Any] = None, 
             msg += "；目标目录可能已有同名文件，但未能确认 SHA1/PC 一致，请刷新 115 缓存后重试。"
         return {"success": False, "message": msg, "status_code": 500}
 
-    row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp={**(resp or {}), '_promote_reason': reason})
+    rename_result = _try_rename_promoted_file(client, item, target_cid, str(item.get('real_fid') or ''))
+    if rename_result.get('renamed'):
+        logger.info(
+            "  ➜ [共享资源] 转正后已按正式规则重命名: virtual_id=%s, fid=%s, new_name=%s",
+            virtual_id, item.get('real_fid'), rename_result.get('name')
+        )
+    elif rename_result.get('reason') not in ('same_name', 'missing_tmdb_id', 'invalid_original_name'):
+        logger.warning(
+            "  ➜ [共享资源] 转正后重命名未生效: virtual_id=%s, fid=%s, reason=%s, detail=%s",
+            virtual_id, item.get('real_fid'), rename_result.get('reason'), _resp_text(rename_result.get('resp'))
+        )
+
+    row = _mark_virtual_promoted_success(
+        virtual_id,
+        {**item, 'file_name': rename_result.get('name') or item.get('file_name')},
+        target_cid,
+        target_name,
+        resp={**(resp or {}), '_promote_reason': reason, '_rename_result': rename_result},
+    )
     return {"success": True, "message": "已转为永久转存", "data": row, "status_code": 200}
 
 
