@@ -1684,6 +1684,15 @@ def _has_local_virtual_projection_for_episode(row: Dict[str, Any]) -> bool:
         return False
 
 
+def _episode_guard_key(row: Dict[str, Any]) -> str:
+    parent = str(row.get('parent_series_tmdb_id') or '').strip()
+    season = _safe_int(row.get('season_number'), -1)
+    episode = _safe_int(row.get('episode_number'), -1)
+    if not parent or season < 0 or episode < 0:
+        return ''
+    return f'{parent}|{season}|{episode}'
+
+
 def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, int]:
     """把 Watching / Paused 季的缺失分集纳入共享中心消费链路。"""
     if not _enabled():
@@ -1700,9 +1709,22 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
     consumed = gaps = skipped = 0
     mode = shared_resource_mode()
     consecutive_errors = 0 
+    consumed_share_codes = set()
+    covered_episode_keys = set()
 
     for row in rows:
         try:
+            row_key = _episode_guard_key(row)
+            if row_key and row_key in covered_episode_keys:
+                skipped += 1
+                logger.info(
+                    "  ➜ [共享资源维护] 追更缺集已被本轮前序季包覆盖，跳过重复消费：%s S%02dE%02d",
+                    row.get('season_title') or row.get('parent_series_tmdb_id'),
+                    _safe_int(row.get('season_number'), 0),
+                    _safe_int(row.get('episode_number'), 0),
+                )
+                continue
+
             if _has_local_virtual_projection_for_episode(row):
                 skipped += 1
                 continue
@@ -1717,7 +1739,16 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
                 parent_tmdb_id=parent_tmdb,
                 season_number=row.get('season_number'),
                 year=row.get('release_year') or '',
+                exclude_share_codes=sorted(consumed_share_codes),
             )
+            for share_code in result.get('matched_share_codes') or []:
+                share_code = str(share_code or '').strip()
+                if share_code:
+                    consumed_share_codes.add(share_code)
+            for key in result.get('covered_episode_keys') or []:
+                key = str(key or '').strip()
+                if key:
+                    covered_episode_keys.add(key)
             if result.get('success'):
                 if result.get('skipped_existing') and not _safe_int(result.get('count'), 0):
                     skipped += 1

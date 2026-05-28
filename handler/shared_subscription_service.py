@@ -98,6 +98,12 @@ def _share_import_resp_code(resp: Any) -> str:
     return ''
 
 
+def _source_identity_code(src: Dict[str, Any]) -> str:
+    if not isinstance(src, dict):
+        return ''
+    return str(src.get('share_code') or src.get('source_id') or '').strip()
+
+
 def _is_share_import_already_saved(resp: Any) -> bool:
     """115 返回“你已经转存过该文件”时，只代表本账号幂等限制，不代表中心共享源失效。"""
     code = _share_import_resp_code(resp)
@@ -108,6 +114,12 @@ def _is_share_import_already_saved(resp: Any) -> bool:
         or '你已经转存过' in text
         or '已经转存过' in text
         or '转存过该文件' in text
+        or '已接收过' in text
+        or '已经接收过' in text
+        or '重复接收' in text
+        or '无需重复' in text
+        or 'already received' in text
+        or 'already saved' in text
     )
 
 
@@ -138,6 +150,11 @@ def _is_share_import_local_account_issue(resp: Any) -> bool:
 
 def _is_share_import_source_dead(resp: Any) -> bool:
     """只有明确死链/提取码错误/源文件删除，才允许向中心上报 failed。"""
+    if _is_share_import_local_account_issue(resp):
+        return False
+    code = _share_import_resp_code(resp)
+    if code in ('4100005',):
+        return True
     text = _share_import_resp_text(resp).lower()
     return any(k in text for k in (
         '分享已取消', '分享已失效', '分享不存在', '取消分享', '已取消', '已失效',
@@ -231,6 +248,39 @@ def _local_existing_hit_for_import_group(src: Dict[str, Any], context: Dict[str,
         if local:
             return {'source': src, 'local': local}
     return {}
+
+
+def _episode_guard_key(parent_tmdb_id, season_number, episode_number) -> str:
+    parent = str(parent_tmdb_id or '').strip()
+    season = _safe_int(season_number, -1)
+    episode = _safe_int(episode_number, -1)
+    if not parent or season < 0 or episode < 0:
+        return ''
+    return f'{parent}|{season}|{episode}'
+
+
+def _collect_episode_guard_keys(sources: List[Dict[str, Any]], context: Dict[str, Any]) -> List[str]:
+    keys = set()
+    context_parent = str(context.get('parent_tmdb_id') or context.get('tmdb_id') or '').strip()
+    context_key = _episode_guard_key(
+        context_parent,
+        context.get('season_number'),
+        context.get('episode_number'),
+    )
+    if context_key:
+        keys.add(context_key)
+
+    for src in sources or []:
+        if not isinstance(src, dict) or not _source_relevant_to_context(src, context):
+            continue
+        key = _episode_guard_key(
+            context_parent or src.get('parent_series_tmdb_id') or src.get('tmdb_id'),
+            src.get('season_number') if src.get('season_number') not in (None, '') else context.get('season_number'),
+            src.get('episode_number') if src.get('episode_number') not in (None, '') else context.get('episode_number'),
+        )
+        if key:
+            keys.add(key)
+    return sorted(keys)
 
 
 def _sanitize_filename(name: str) -> str:
@@ -1304,7 +1354,16 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
     }
 
 
-def try_consume_shared_resource(item: Dict[str, Any], title: str, tmdb_id, item_type: str, parent_tmdb_id=None, season_number=None, year='') -> Dict[str, Any]:
+def try_consume_shared_resource(
+    item: Dict[str, Any],
+    title: str,
+    tmdb_id,
+    item_type: str,
+    parent_tmdb_id=None,
+    season_number=None,
+    year='',
+    exclude_share_codes: List[str] | None = None,
+) -> Dict[str, Any]:
     if not shared_center_enabled():
         return {'enabled': False, 'success': False, 'reported_gap': False}
 
@@ -1339,7 +1398,34 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str, tmdb_id, item_
             filtered_sources.append(src)
         sources = filtered_sources
 
+    excluded_codes = {
+        str(code or '').strip()
+        for code in (exclude_share_codes or [])
+        if str(code or '').strip()
+    }
+    excluded_hits = 0
+    if excluded_codes:
+        filtered_sources = []
+        for src in sources:
+            code = _source_identity_code(src)
+            if code and code in excluded_codes:
+                excluded_hits += 1
+                continue
+            filtered_sources.append(src)
+        if excluded_hits:
+            logger.info(f"  ➜ [共享资源] 已过滤 {excluded_hits} 个本轮已消费的 share_code，避免重复转存同一季包。")
+        sources = filtered_sources
+
     if not sources:
+        if excluded_hits:
+            return {
+                'enabled': True,
+                'success': False,
+                'reported_gap': False,
+                'skipped_existing': True,
+                'matched_share_codes': [],
+                'covered_episode_keys': [],
+            }
         reported = False
         try:
             client.report_gaps(queries)
@@ -1359,9 +1445,15 @@ def try_consume_shared_resource(item: Dict[str, Any], title: str, tmdb_id, item_
     }
 
     mode = shared_resource_mode()
+    matched_share_codes = sorted({_source_identity_code(src) for src in sources if _source_identity_code(src)})
+    covered_episode_keys = _collect_episode_guard_keys(sources, context)
     if mode == 'virtual':
-        return _consume_virtual(client, sources, context)
-    return _consume_permanent(client, sources, context)
+        result = _consume_virtual(client, sources, context)
+    else:
+        result = _consume_permanent(client, sources, context)
+    result['matched_share_codes'] = matched_share_codes
+    result['covered_episode_keys'] = covered_episode_keys
+    return result
 
 
 def consume_center_sources(source_ids: List[str], mode: str = 'permanent', context: Dict[str, Any] = None) -> Dict[str, Any]:
