@@ -54,6 +54,7 @@ class SharedCenterClient:
     def _headers(self) -> Dict[str, str]:
         return {
             'X-Device-Token': self.device_token,
+            'X-Client-Version': str(getattr(constants, 'APP_VERSION', '') or ''),
             'Content-Type': 'application/json',
         }
 
