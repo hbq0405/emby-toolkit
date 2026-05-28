@@ -196,7 +196,7 @@ import { computed, h, onMounted, onUnmounted, reactive, ref } from 'vue';
 import axios from 'axios';
 import {
   NAlert, NButton, NCard, NDataTable, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
-  NInputNumber, NModal, NSelect, NSpace, NTabPane, NTabs, NTag, NText, useDialog, useMessage, useThemeVars
+  NInputNumber, NModal, NSelect, NSpace, NTabPane, NTabs, NTag, NText, NTooltip, useDialog, useMessage, useThemeVars
 } from 'naive-ui';
 import {
   RefreshOutline as RefreshIcon,
@@ -545,18 +545,120 @@ const buildDeletedCenterSourceSummaryRow = (rows) => {
   };
 };
 
+
+const normalizeLedgerKeyPart = (value) => String(value ?? '').trim().replace(/\s+/g, ' ');
+const ledgerTimeValue = (row) => {
+  const t = new Date(row?.created_at || 0).getTime();
+  return Number.isFinite(t) ? t : 0;
+};
+const ledgerRawJson = (row) => (row?.raw_json && typeof row.raw_json === 'object') ? row.raw_json : {};
+const ledgerFileKey = (row) => {
+  const raw = ledgerRawJson(row);
+  const source = (raw.source && typeof raw.source === 'object') ? raw.source : {};
+  const sharedSource = (raw.shared_source && typeof raw.shared_source === 'object') ? raw.shared_source : {};
+  const media = (raw.media && typeof raw.media === 'object') ? raw.media : {};
+  const candidates = [
+    row?.source_id, row?.shared_source_id, row?.center_source_id,
+    raw.source_id, raw.shared_source_id, raw.center_source_id, raw.shared_source_key,
+    raw.sha1, raw.file_sha1, raw.pc, raw.pick_code, raw.file_id, raw.fid, raw.cid, raw.root_fid,
+    source.source_id, source.sha1, source.file_sha1, source.pc, source.pick_code, source.file_id, source.fid, source.cid,
+    sharedSource.source_id, sharedSource.sha1, sharedSource.file_sha1, sharedSource.pc, sharedSource.pick_code, sharedSource.file_id, sharedSource.fid, sharedSource.cid,
+    media.sha1, media.file_sha1, media.pc, media.pick_code, media.file_id, media.fid, media.cid,
+  ].map(normalizeLedgerKeyPart).filter(Boolean);
+  if (candidates.length) return candidates[0];
+  return normalizeLedgerKeyPart(row?.title || raw.title || raw.file_name || raw.name);
+};
+const shouldAggregateLedgerRow = (row) => {
+  const eventType = normalizeLedgerKeyPart(row?.event_type);
+  const title = normalizeLedgerKeyPart(row?.title || ledgerRawJson(row).title || ledgerRawJson(row).file_name || ledgerRawJson(row).name);
+  const fileKey = ledgerFileKey(row);
+  return Boolean(
+    eventType &&
+    fileKey &&
+    title &&
+    !eventType.endsWith('_group') &&
+    eventType !== 'center_deleted_shared_source_summary' &&
+    !isDeletedCenterSourceLedgerRow(row)
+  );
+};
+const ledgerAggregateKey = (row) => `${normalizeLedgerKeyPart(row?.event_type)}::${ledgerFileKey(row)}`;
+const buildAggregatedLedgerReason = (latest, rows, totalDelta) => {
+  const unitDelta = Number(latest?.delta || 0);
+  const sameDelta = rows.every(row => Number(row?.delta || 0) === unitDelta);
+  const creditText = sameDelta ? `贡献值 ${formatDelta(unitDelta)}*${rows.length}` : `贡献值合计 ${formatDelta(totalDelta)}（${rows.length} 条）`;
+  const reason = String(latest?.reason || '').trim();
+  if (reason) {
+    const replaced = reason.replace(/贡献值\s*[+-]?\d+(?:\.\d+)?(?=\s*[，,。；;、]?$)/, creditText);
+    if (replaced !== reason) return replaced;
+    return `${reason}，${creditText}`;
+  }
+  return `${ledgerEventLabel(latest?.event_type)}：${latest?.title || '-'}，${creditText}`;
+};
+const buildAggregatedLedgerRow = (rows, index) => {
+  const sorted = [...rows].sort((a, b) => ledgerTimeValue(b) - ledgerTimeValue(a));
+  const latest = sorted[0] || {};
+  const delta = rows.reduce((sum, row) => sum + Number(row?.delta || 0), 0);
+  return {
+    ...latest,
+    id: `ledger-aggregate:${ledgerAggregateKey(latest)}:${index}`,
+    created_at: latest.created_at,
+    delta,
+    reason: buildAggregatedLedgerReason(latest, rows, delta),
+    __ledger_aggregated: true,
+    __ledger_count: rows.length,
+    __ledger_records: sorted,
+  };
+};
+const aggregateLedgerRows = (rows) => {
+  const groups = new Map();
+  const passthrough = [];
+  rows.forEach((row) => {
+    if (!shouldAggregateLedgerRow(row)) {
+      passthrough.push(row);
+      return;
+    }
+    const key = ledgerAggregateKey(row);
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(row);
+  });
+  const aggregated = [];
+  let index = 0;
+  groups.forEach((items) => {
+    if (items.length > 1) aggregated.push(buildAggregatedLedgerRow(items, index++));
+    else passthrough.push(items[0]);
+  });
+  return [...passthrough, ...aggregated];
+};
+
 const ledgerDisplayItems = computed(() => {
   const rows = Array.isArray(ledgerItems.value) ? ledgerItems.value : [];
   const deletedRows = rows.filter(isDeletedCenterSourceLedgerRow);
   const normalRows = rows.filter(row => !isDeletedCenterSourceLedgerRow(row));
   const summaryRow = buildDeletedCenterSourceSummaryRow(deletedRows);
-  const merged = summaryRow ? [...normalRows, summaryRow] : normalRows;
-  merged.sort((a, b) => new Date(b.created_at || 0).getTime() - new Date(a.created_at || 0).getTime());
+  const merged = summaryRow ? [...aggregateLedgerRows(normalRows), summaryRow] : aggregateLedgerRows(normalRows);
+  merged.sort((a, b) => ledgerTimeValue(b) - ledgerTimeValue(a));
   return merged.map((row, index) => ({
     ...row,
-    __row_key: `row:${row.id || row.ref_id || row.created_at || index}`,
+    __row_key: row.__ledger_aggregated
+      ? row.id
+      : `row:${row.id || row.ref_id || row.created_at || index}`,
   }));
 });
+
+const ledgerTooltipContent = (row) => h('div', { class: 'ledger-detail-tooltip' }, [
+  h('div', { class: 'ledger-detail-title' }, `已聚合 ${row.__ledger_count || 0} 条详细记录`),
+  ...(row.__ledger_records || []).map((item, index) => h('div', { class: 'ledger-detail-item' }, [
+    h('div', { class: 'ledger-detail-meta' }, `${index + 1}. ${fmtDate(item.created_at)} ｜ ${ledgerEventLabel(item.event_type)} ｜ ${formatDelta(item.delta)}`),
+    h('div', { class: 'ledger-detail-reason' }, item.reason || item.title || '-'),
+  ])),
+]);
+const withLedgerTooltip = (row, node, extraClass = '') => {
+  if (!row?.__ledger_aggregated) return node;
+  return h(NTooltip, { trigger: 'hover', placement: 'top-start', style: { maxWidth: '760px' } }, {
+    trigger: () => h('span', { class: ['ledger-tooltip-trigger', extraClass].filter(Boolean).join(' ') }, [node]),
+    default: () => ledgerTooltipContent(row),
+  });
+};
 
 
 const centerTypeLabel = (value) => ({
@@ -795,14 +897,15 @@ const centerColumns = [
 ];
 
 const ledgerColumns = [
-  { title: '时间', key: 'created_at', width: 180, render: row => fmtDate(row.created_at) },
-  { title: '事件', key: 'event_type', width: 190, render: row => ledgerEventLabel(row.event_type) },
+  { title: '时间', key: 'created_at', width: 180, render: row => withLedgerTooltip(row, fmtDate(row.created_at)) },
+  { title: '事件', key: 'event_type', width: 190, render: row => withLedgerTooltip(row, ledgerEventLabel(row.event_type)) },
   { title: '变化', key: 'delta', width: 90, render: row => {
     const n = Number(row.delta || 0);
-    return h(NTag, { type: n > 0 ? 'success' : (n < 0 ? 'error' : 'default'), size: 'small' }, { default: () => formatDelta(n) });
+    const node = h(NTag, { type: n > 0 ? 'success' : (n < 0 ? 'error' : 'default'), size: 'small' }, { default: () => formatDelta(n) });
+    return withLedgerTooltip(row, node);
   } },
-  { title: '标题', key: 'title', minWidth: 220, ellipsis: { tooltip: true }, render: row => row.title || '-' },
-  { title: '原因', key: 'reason', minWidth: 360, ellipsis: { tooltip: true }, render: row => row.reason || '-' },
+  { title: '标题', key: 'title', minWidth: 220, ellipsis: { tooltip: true }, render: row => withLedgerTooltip(row, row.title || '-') },
+  { title: '原因', key: 'reason', minWidth: 360, ellipsis: { tooltip: true }, render: row => withLedgerTooltip(row, row.reason || '-') },
 ];
 
 
@@ -1107,6 +1210,37 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 
 .custom-modal .n-data-table-tr:hover .n-data-table-td {
   background-color: rgba(255, 255, 255, 0.055) !important;
+}
+
+
+.ledger-tooltip-trigger {
+  display: inline-flex;
+  max-width: 100%;
+  align-items: center;
+  cursor: help;
+}
+.ledger-detail-tooltip {
+  max-width: 740px;
+  line-height: 1.55;
+  white-space: normal;
+}
+.ledger-detail-title {
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+.ledger-detail-item {
+  padding: 6px 0;
+  border-top: 1px solid rgba(255, 255, 255, .12);
+}
+.ledger-detail-meta {
+  font-size: 12px;
+  opacity: .86;
+  margin-bottom: 3px;
+}
+.ledger-detail-reason {
+  font-size: 12px;
+  opacity: .72;
+  word-break: break-all;
 }
 
 </style>
