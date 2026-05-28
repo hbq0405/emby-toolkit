@@ -120,6 +120,142 @@ def api_test_ai_connection():
         logger.error(f"AI 测试失败: {error_msg}")
         return jsonify({"success": False, "message": f"测试失败: {error_msg}"}), 500
 
+
+def _normalize_openai_base_url(base_url, provider):
+    """将 OpenAI 兼容服务的 Base URL 规整到 /models 可直接拼接的层级。"""
+    base_url = (base_url or "").strip().rstrip("/")
+
+    if not base_url:
+        if provider == "zhipuai":
+            base_url = "https://open.bigmodel.cn/api/paas/v4"
+        else:
+            base_url = "https://api.openai.com/v1"
+
+    for suffix in ("/chat/completions", "/completions", "/responses", "/models"):
+        if base_url.endswith(suffix):
+            base_url = base_url[: -len(suffix)]
+
+    return base_url.rstrip("/")
+
+
+def _extract_model_ids(payload, provider):
+    """兼容 OpenAI / SiliconFlow / Gemini 等常见 models 返回结构。"""
+    raw_models = []
+
+    if isinstance(payload, dict):
+        if isinstance(payload.get("data"), list):
+            raw_models = payload["data"]
+        elif isinstance(payload.get("models"), list):
+            raw_models = payload["models"]
+        elif isinstance(payload.get("items"), list):
+            raw_models = payload["items"]
+    elif isinstance(payload, list):
+        raw_models = payload
+
+    model_ids = []
+    seen = set()
+
+    for item in raw_models:
+        model_id = None
+
+        if isinstance(item, str):
+            model_id = item
+        elif isinstance(item, dict):
+            # OpenAI / OpenAI-compatible 常见 id；Gemini 常见 name: models/gemini-xxx
+            model_id = item.get("id") or item.get("name") or item.get("model")
+
+            # Gemini 只保留支持文本生成的模型，避免 embedding / tuning 等模型混进来
+            if provider == "gemini":
+                methods = item.get("supportedGenerationMethods") or item.get("supported_generation_methods")
+                if isinstance(methods, list) and "generateContent" not in methods:
+                    continue
+
+        if not model_id:
+            continue
+
+        model_id = str(model_id).strip()
+        if provider == "gemini" and model_id.startswith("models/"):
+            model_id = model_id.split("/", 1)[1]
+
+        if model_id and model_id not in seen:
+            seen.add(model_id)
+            model_ids.append(model_id)
+
+    return model_ids
+
+
+@system_bp.route('/ai/models', methods=['POST'])
+@admin_required
+def api_get_ai_models():
+    """
+    根据前端当前填写的 AI 配置，实时拉取服务商支持的模型列表。
+    不保存配置，只用于前端下拉选择模型名。
+    """
+    data = request.json or {}
+    provider = (data.get("ai_provider") or "openai").strip()
+    api_key = (data.get("ai_api_key") or "").strip()
+    base_url = (data.get("ai_base_url") or "").strip()
+
+    if not api_key:
+        return jsonify({"success": False, "message": "请先填写 API Key"}), 400
+
+    try:
+        proxies = config_manager.get_proxies_for_requests()
+        headers = {"Accept": "application/json"}
+        params = None
+
+        if provider == "gemini":
+            # Google Gemini 官方 models 接口使用 key 查询参数。
+            gemini_base = base_url.rstrip("/") if base_url else "https://generativelanguage.googleapis.com/v1beta"
+            if gemini_base.endswith("/models"):
+                models_url = gemini_base
+            else:
+                models_url = f"{gemini_base}/models"
+            params = {"key": api_key}
+        else:
+            # OpenAI / SiliconFlow / 智谱 OpenAI 兼容接口都走 Authorization: Bearer + /models。
+            normalized_base = _normalize_openai_base_url(base_url, provider)
+            models_url = f"{normalized_base}/models"
+            headers["Authorization"] = f"Bearer {api_key}"
+
+        logger.info(f"  ➜ 正在刷新 AI 模型列表，provider={provider}, url={models_url}")
+        response = requests.get(models_url, headers=headers, params=params, timeout=20, proxies=proxies)
+
+        if response.status_code in (401, 403):
+            return jsonify({"success": False, "message": "认证失败，请检查 API Key 是否正确。"}), response.status_code
+
+        response.raise_for_status()
+
+        try:
+            payload = response.json()
+        except ValueError:
+            return jsonify({"success": False, "message": "模型接口未返回 JSON 数据，请检查 API Base URL 是否正确。"}), 500
+
+        models = _extract_model_ids(payload, provider)
+        return jsonify({
+            "success": True,
+            "models": models,
+            "count": len(models)
+        })
+
+    except requests.exceptions.ConnectTimeout:
+        return jsonify({"success": False, "message": "连接模型接口超时，请检查网络或代理配置。"}), 500
+    except requests.exceptions.ProxyError as e:
+        return jsonify({"success": False, "message": f"代理连接失败: {e}"}), 500
+    except requests.exceptions.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else 500
+        detail = ""
+        try:
+            detail = e.response.text[:300] if e.response is not None else ""
+        except Exception:
+            detail = ""
+        return jsonify({"success": False, "message": f"模型接口返回 HTTP {status_code}。{detail}"}), 500
+    except requests.exceptions.RequestException as e:
+        return jsonify({"success": False, "message": f"请求模型接口失败: {e}"}), 500
+    except Exception as e:
+        logger.error(f"刷新 AI 模型列表失败: {e}", exc_info=True)
+        return jsonify({"success": False, "message": f"刷新模型列表失败: {e}"}), 500
+
 # --- 代理测试 ---
 @system_bp.route('/proxy/test', methods=['POST'])
 def test_proxy_connection():

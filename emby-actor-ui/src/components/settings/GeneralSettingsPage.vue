@@ -1088,7 +1088,32 @@
                         <n-input type="password" show-password-on="mousedown" v-model:value="configModel.ai_api_key" placeholder="输入你的 API Key" />
                       </n-form-item>
                       <n-form-item label="模型名称" path="ai_model_name">
-                        <n-input v-model:value="configModel.ai_model_name" placeholder="例如: gpt-3.5-turbo, glm-4" />
+                        <n-input-group>
+                          <n-select
+                            v-model:value="configModel.ai_model_name"
+                            :options="aiModelSelectOptions"
+                            filterable
+                            tag
+                            clearable
+                            placeholder="点击右侧刷新后选择，或手动输入模型名"
+                            style="flex: 1;"
+                          />
+                          <n-button
+                            type="primary"
+                            ghost
+                            @click="refreshAIModels"
+                            :loading="isFetchingAIModels"
+                            :disabled="!configModel.ai_api_key"
+                          >
+                            <template #icon><n-icon :component="RefreshIcon" /></template>
+                            刷新
+                          </n-button>
+                        </n-input-group>
+                        <template #feedback>
+                          <n-text depth="3" style="font-size:0.8em;">
+                            从当前 AI 服务商的 models 接口读取，刷新后可直接下拉选择；仍支持手动输入。
+                          </n-text>
+                        </template>
                       </n-form-item>
                       <n-form-item label="API Base URL (可选)" path="ai_base_url">
                         <n-input v-model:value="configModel.ai_base_url" placeholder="用于代理或第三方兼容服务" />
@@ -2477,6 +2502,51 @@ const testProxy = async () => {
     isTestingProxy.value = false;
   }
 };
+const refreshAIModels = async () => {
+  if (!configModel.value?.ai_api_key) {
+    message.warning('请先填写 API Key 再刷新模型列表。');
+    return;
+  }
+
+  isFetchingAIModels.value = true;
+  try {
+    const response = await axios.post('/api/ai/models', configModel.value);
+    const models = Array.isArray(response.data?.models) ? response.data.models : [];
+
+    aiModelOptions.value = models.map(model => ({
+      label: model,
+      value: model
+    }));
+
+    if (models.length === 0) {
+      message.warning('接口连接成功，但没有返回可用模型。');
+      return;
+    }
+
+    if (!configModel.value.ai_model_name && models.length === 1) {
+      configModel.value.ai_model_name = models[0];
+    }
+
+    message.success(`已刷新 ${models.length} 个模型，请在下拉框中选择。`);
+  } catch (error) {
+    const errorMsg = error.response?.data?.message || error.message;
+    message.error(`刷新模型失败: ${errorMsg}`);
+  } finally {
+    isFetchingAIModels.value = false;
+  }
+};
+
+watch(
+  () => [
+    configModel.value?.ai_provider,
+    configModel.value?.ai_base_url,
+    configModel.value?.ai_api_key
+  ],
+  () => {
+    aiModelOptions.value = [];
+  }
+);
+
 const testAI = async () => {
   if (!configModel.value.ai_api_key) {
     message.warning('请先填写 API Key 再进行测试。');
@@ -2487,7 +2557,7 @@ const testAI = async () => {
   try {
     // 将当前的 configModel 传给后端进行即时测试
     const response = await axios.post('/api/ai/test', configModel.value);
-    
+
     if (response.data.success) {
       // 使用 dialog 弹出详细结果，看起来更专业
       dialog.success({
@@ -2614,6 +2684,21 @@ const aiProviderOptions = ref([
   { label: '智谱AI (ZhipuAI)', value: 'zhipuai' },
   { label: 'Google Gemini', value: 'gemini' },
 ]);
+
+const isFetchingAIModels = ref(false);
+const aiModelOptions = ref([]);
+const aiModelSelectOptions = computed(() => {
+  const currentModel = (configModel.value?.ai_model_name || '').trim();
+  if (!currentModel) return aiModelOptions.value;
+
+  const exists = aiModelOptions.value.some(option => option.value === currentModel);
+  if (exists) return aiModelOptions.value;
+
+  return [
+    { label: currentModel, value: currentModel },
+    ...aiModelOptions.value
+  ];
+});
 const isExporting = ref(false);
 const exportModalVisible = ref(false);
 const allDbTables = ref([]);
