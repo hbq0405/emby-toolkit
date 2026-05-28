@@ -4,6 +4,7 @@ import threading
 import extensions
 import requests
 import logging
+import re
 from datetime import datetime
 from config_manager import APP_CONFIG, get_proxies_for_requests
 from handler.emby import get_emby_item_details
@@ -73,6 +74,289 @@ def escape_markdown(text: str) -> str:
     # 根据 Telegram Bot API 文档，这些字符需要转义: _ * [ ] ( ) ~ ` > # + - = | { } . !
     escape_chars = r'_*[]()~`>#+-=|{}.!'
     return ''.join(f'\\{char}' if char in escape_chars else char for char in text)
+
+
+def _markdown_code_text(value) -> str:
+    """MarkdownV2 行内代码内容：只转义反斜杠和反引号，避免尺寸/分辨率被加多余反斜杠。"""
+    text = str(value or "").strip()
+    return text.replace('\\', '\\\\').replace('`', '\\`')
+
+
+def _parse_size_to_bytes(value) -> int:
+    """兼容 Emby/115/历史缓存里可能出现的数字、纯数字字符串、3.78GB 这类体积。"""
+    if value in (None, ""):
+        return 0
+    if isinstance(value, (int, float)):
+        try:
+            return int(value)
+        except Exception:
+            return 0
+
+    text = str(value).strip().upper().replace(",", "")
+    if not text:
+        return 0
+
+    try:
+        return int(float(text))
+    except Exception:
+        pass
+
+    m = re.search(r"([0-9]+(?:\.[0-9]+)?)\s*(TIB|TB|GIB|GB|MIB|MB|KIB|KB|B)?", text)
+    if not m:
+        return 0
+    number = float(m.group(1))
+    unit = m.group(2) or "B"
+    multipliers = {
+        "B": 1,
+        "KB": 1024,
+        "KIB": 1024,
+        "MB": 1024 ** 2,
+        "MIB": 1024 ** 2,
+        "GB": 1024 ** 3,
+        "GIB": 1024 ** 3,
+        "TB": 1024 ** 4,
+        "TIB": 1024 ** 4,
+    }
+    return int(number * multipliers.get(unit, 1))
+
+
+def _format_size_for_notice(size_bytes: int) -> str:
+    try:
+        size_bytes = int(size_bytes or 0)
+    except Exception:
+        size_bytes = 0
+    if size_bytes <= 0:
+        return ""
+
+    tb = 1024 ** 4
+    gb = 1024 ** 3
+    mb = 1024 ** 2
+    if size_bytes >= tb:
+        return f"{size_bytes / tb:.2f}TB"
+    if size_bytes >= gb:
+        value = size_bytes / gb
+        return f"{value:.0f}GB" if value >= 100 else f"{value:.1f}GB"
+    if size_bytes >= mb:
+        return f"{size_bytes / mb:.0f}MB"
+    return f"{max(1, size_bytes // 1024)}KB"
+
+
+def _iter_notice_text_values(obj, max_depth: int = 4):
+    if max_depth < 0:
+        return
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            if isinstance(k, str):
+                yield k
+            yield from _iter_notice_text_values(v, max_depth - 1)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            yield from _iter_notice_text_values(item, max_depth - 1)
+    elif obj is not None:
+        text = str(obj)
+        if text and len(text) <= 400:
+            yield text
+
+
+def _normalize_notice_dovi_profile(raw_profile: str) -> str:
+    raw_profile = str(raw_profile or '').strip().upper().replace('PROFILE', '').replace('P', '').strip()
+    if not raw_profile:
+        return ''
+    raw_profile = raw_profile.replace('_', '.')
+    if raw_profile in ('81', '8.1'):
+        return 'P8.1'
+    if raw_profile in ('82', '8.2'):
+        return 'P8.2'
+    if raw_profile in ('84', '8.4'):
+        return 'P8.4'
+    m = re.search(r'(\d+(?:\.\d+)?)', raw_profile)
+    return f"P{m.group(1)}" if m else ''
+
+
+def _extract_notice_dovi_profile(text: str) -> str:
+    text = str(text or '')
+    patterns = [
+        r'DoviProfile\s*([0-9.]+)',
+        r'Dolby\s*Vision[^,\n\r;]*?Profile\s*([0-9.]+)',
+        r'\bDV(?:P|[\s._-]*Profile)?\s*([0-9.]+)',
+        r'\bDOVI[^,\n\r;]*?\bP(?:rofile)?\s*([0-9.]+)',
+        r'\bP(5|7|8(?:\.\d+)?)\b',
+    ]
+    for pat in patterns:
+        m = re.search(pat, text, re.IGNORECASE)
+        if m:
+            return _normalize_notice_dovi_profile(m.group(1))
+    m = re.search(r'dv_profile["\']?\s*[:=]\s*["\']?(\d+(?:\.\d+)?)', text, re.IGNORECASE)
+    if m:
+        return _normalize_notice_dovi_profile(m.group(1))
+    return ''
+
+
+def _notice_video_stream_from_source(source: dict) -> dict:
+    source = source or {}
+    streams = source.get('MediaStreams') or source.get('media_streams') or source.get('streams') or []
+    for stream in streams:
+        if str(stream.get('Type') or stream.get('type') or stream.get('codec_type') or '').lower() == 'video':
+            return stream or {}
+    return {}
+
+
+def _notice_media_sources(details: dict) -> list:
+    details = details or {}
+    sources = details.get('MediaSources') or details.get('media_sources') or []
+    if isinstance(sources, list) and sources:
+        return sources
+    if isinstance(details.get('MediaSourceInfo'), dict):
+        return [details.get('MediaSourceInfo')]
+    # 极少数接口把 MediaStreams 直接挂在 item 上，也包装成一个伪 source 处理。
+    if details.get('MediaStreams'):
+        return [{'MediaStreams': details.get('MediaStreams'), 'Size': details.get('Size')}]
+    return []
+
+
+def _notice_resolution_label(video: dict) -> str:
+    video = video or {}
+    width = video.get('Width') or video.get('width')
+    height = video.get('Height') or video.get('height')
+    try:
+        width = int(width or 0)
+        height = int(height or 0)
+    except Exception:
+        width, height = 0, 0
+    if not width or not height:
+        return ''
+
+    if height >= 2100:
+        label = '2160p'
+    elif height >= 1400:
+        label = '1440p'
+    elif height >= 1000:
+        label = '1080p'
+    elif height >= 700:
+        label = '720p'
+    else:
+        label = f'{height}p'
+    return f'{label} / {width}x{height}'
+
+
+def _notice_hdr_label(source: dict, video: dict) -> str:
+    video = video or {}
+    text = ' | '.join(_iter_notice_text_values({'source': source or {}, 'video': video}, max_depth=4))
+    upper = text.upper()
+
+    dovi_profile = _extract_notice_dovi_profile(text)
+    if 'DOLBY VISION' in upper or 'DOVI' in upper or re.search(r'\bDV\b', upper) or dovi_profile:
+        return f"Dolby Vision {dovi_profile}".strip()
+
+    if 'HDR10+' in upper or 'HDR10PLUS' in upper or 'SMPTE2094' in upper:
+        return 'HDR10+'
+    if 'HLG' in upper or 'ARIB-STD-B67' in upper:
+        return 'HLG'
+    if 'HDR10' in upper or 'SMPTE2084' in upper or 'BT2020' in upper:
+        return 'HDR10'
+    if re.search(r'\bHDR\b', upper):
+        return 'HDR'
+    if upper:
+        return 'SDR'
+    return ''
+
+
+def _notice_source_size(source: dict, details: dict) -> int:
+    source = source or {}
+    details = details or {}
+    for key in ('Size', 'size', 'FileSize', 'file_size'):
+        size = _parse_size_to_bytes(source.get(key))
+        if size > 0:
+            return size
+    for key in ('Size', 'size', 'FileSize', 'file_size'):
+        size = _parse_size_to_bytes(details.get(key))
+        if size > 0:
+            return size
+    return 0
+
+
+def _notice_item_summary(details: dict) -> dict:
+    """从一个 Movie/Episode 的 Emby 详情里提取分辨率、体积、HDR/杜比。"""
+    details = details or {}
+    sources = _notice_media_sources(details)
+    best = {}
+    for source in sources:
+        video = _notice_video_stream_from_source(source)
+        resolution = _notice_resolution_label(video)
+        size = _notice_source_size(source, details)
+        hdr = _notice_hdr_label(source, video) if video or source else ''
+        if resolution or size > 0 or hdr:
+            current = {'resolution': resolution, 'size': size, 'hdr': hdr}
+            # 多源时优先体积最大的源，通常就是主版本。
+            if not best or size > int(best.get('size') or 0):
+                best = current
+    return best
+
+
+def _fetch_notice_item_details(item_id: str) -> dict:
+    """通知阶段兜底补取 MediaSources，避免 webhook 原始 item_details 没带视频流参数。"""
+    if not item_id:
+        return {}
+    try:
+        emby_url = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
+        api_key = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_KEY)
+        user_id = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_USER_ID)
+        return get_emby_item_details(
+            item_id,
+            emby_url,
+            api_key,
+            user_id,
+            fields="IndexNumber,ParentIndexNumber,MediaSources,MediaStreams,Path,Size",
+        ) or {}
+    except Exception as e:
+        logger.debug(f"  ➜ [通知] 补取媒体参数失败: item={item_id}, err={e}")
+        return {}
+
+
+def _build_notice_media_params_text(detail_list: list) -> str:
+    """生成入库/追更通知里的三行参数：分辨率、体积、HDR/杜比。"""
+    summaries = []
+    for detail in detail_list or []:
+        summary = _notice_item_summary(detail)
+        if summary:
+            summaries.append(summary)
+
+    if not summaries:
+        return ''
+
+    def uniq(values):
+        out = []
+        for value in values:
+            value = str(value or '').strip()
+            if value and value not in out:
+                out.append(value)
+        return out
+
+    resolutions = uniq(s.get('resolution') for s in summaries)
+    hdr_values = uniq(s.get('hdr') for s in summaries)
+    total_size = sum(int(s.get('size') or 0) for s in summaries)
+    file_count = sum(1 for s in summaries if int(s.get('size') or 0) > 0 or s.get('resolution') or s.get('hdr'))
+
+    lines = []
+    if resolutions:
+        res_text = ' / '.join(resolutions[:3])
+        if len(resolutions) > 3:
+            res_text += f' 等{len(resolutions)}种'
+        lines.append(f"🎞️ *分辨率*: `{_markdown_code_text(res_text)}`")
+
+    size_text = _format_size_for_notice(total_size)
+    if size_text:
+        if file_count > 1:
+            size_text = f"{size_text}（{file_count}个文件）"
+        lines.append(f"💾 *体积*: `{_markdown_code_text(size_text)}`")
+
+    if hdr_values:
+        hdr_text = ' / '.join(hdr_values[:4])
+        if len(hdr_values) > 4:
+            hdr_text += f' 等{len(hdr_values)}种'
+        lines.append(f"🌈 *HDR/杜比*: `{_markdown_code_text(hdr_text)}`")
+
+    return ("\n".join(lines) + "\n") if lines else ''
 
 # --- 通用的 Telegram 文本消息发送函数 ---
 def send_telegram_message(chat_id: str, text: str, disable_notification: bool = False, reply_markup: dict = None):
@@ -171,8 +455,9 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         escaped_title = escape_markdown(title)
         escaped_overview = escape_markdown(overview)
 
-        # --- 2. 准备剧集信息 (如果适用) ---
+        # --- 2. 准备剧集信息/媒体参数 (如果适用) ---
         episode_info_text = ""
+        media_param_details = []
         if item_type == "Series" and new_episode_ids:
             emby_url = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_SERVER_URL)
             api_key = APP_CONFIG.get(constants.CONFIG_OPTION_EMBY_API_KEY)
@@ -181,17 +466,33 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
             # 收集原始数据而不是直接格式化字符串，这样我们可以在格式化字符串时使用
             raw_episodes = [] 
             for ep_id in new_episode_ids:
-                detail = get_emby_item_details(ep_id, emby_url, api_key, user_id, fields="IndexNumber,ParentIndexNumber")
+                detail = get_emby_item_details(
+                    ep_id,
+                    emby_url,
+                    api_key,
+                    user_id,
+                    fields="IndexNumber,ParentIndexNumber,MediaSources,MediaStreams,Path,Size"
+                )
                 if detail:
                     season_num = detail.get("ParentIndexNumber", 0)
                     episode_num = detail.get("IndexNumber", 0)
                     # 收集元组 (季号, 集号)
                     raw_episodes.append((season_num, episode_num))
+                    media_param_details.append(detail)
             
             # 调用辅助函数生成合并后的字符串
             if raw_episodes:
                 formatted_episodes = _format_episode_ranges(raw_episodes)
                 episode_info_text = f"🎞️ *集数*: `{formatted_episodes}`\n"
+        elif item_type in {"Movie", "Episode"}:
+            media_param_details = [item_details]
+            # 有些 webhook 负载不带 MediaSources，这里补查一次 Emby，避免参数显示为空。
+            if not _notice_item_summary(item_details):
+                fetched_details = _fetch_notice_item_details(item_id)
+                if fetched_details:
+                    media_param_details = [fetched_details]
+
+        media_param_text = _build_notice_media_params_text(media_param_details)
 
         # --- 3. 调用本地数据库获取图片路径 ---
         photo_url = None
@@ -251,6 +552,7 @@ def send_media_notification(item_details: dict, notification_type: str = 'new', 
         caption = (
             f"{media_icon} *{escaped_title}* {notification_title}\n\n"
             f"{episode_info_text}"
+            f"{media_param_text}"
             f"⏰ *时间*: `{current_time}`\n"
             f"📝 *剧情*: {escaped_overview}"
             f"{review_warning}"
