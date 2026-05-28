@@ -2,23 +2,19 @@
 # 共享资源自动维护任务：缺口登记、分享审核同步、中心登记、失效清理、中心缺口自动分享。
 import json
 import logging
+import os
 import time
 from typing import Dict, Any, List
 
 import config_manager
 import constants
 import task_manager
-from database import shared_share_db, shared_virtual_db
+from database import shared_share_db, shared_virtual_db, settings_db
 from database.connection import get_db_connection
 from handler.p115_service import P115Service
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled
 
 logger = logging.getLogger(__name__)
-
-
-def _cfg(name: str, fallback: str, default=None):
-    key = getattr(constants, name, fallback)
-    return (config_manager.APP_CONFIG or {}).get(key, default)
 
 
 def _enabled() -> bool:
@@ -41,6 +37,110 @@ def _safe_int(v, default=0):
         return int(float(v))
     except Exception:
         return default
+
+
+def _safe_bool(v, default=False) -> bool:
+    if v is None:
+        return bool(default)
+    if isinstance(v, str):
+        return v.strip().lower() in ('1', 'true', 'yes', 'on', '启用', '开启')
+    return bool(v)
+
+
+def _jsonb_non_empty_sql_expr(column: str) -> str:
+    """生成 JSONB 标识字段非空判断，兼容数组/对象/字符串。"""
+    return f"""
+    (
+        CASE jsonb_typeof({column})
+            WHEN 'array' THEN jsonb_array_length({column}) > 0
+            WHEN 'object' THEN {column} <> '{{}}'::jsonb
+            WHEN 'string' THEN btrim({column}::text, '"') <> ''
+            ELSE FALSE
+        END
+    )
+    """
+
+
+def _series_has_physical_episode_identity(parent_tmdb_id: str) -> bool:
+    """同一父剧下只要已有物理入库分集，后续追更消费就走永久转存。"""
+    parent_tmdb_id = str(parent_tmdb_id or '').strip()
+    if not parent_tmdb_id:
+        return False
+    has_sha1 = _jsonb_non_empty_sql_expr('file_sha1_json')
+    has_pc = _jsonb_non_empty_sql_expr('file_pickcode_json')
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT 1
+                    FROM media_metadata
+                    WHERE item_type='Episode'
+                      AND parent_series_tmdb_id=%s
+                      AND COALESCE(in_library, FALSE)=TRUE
+                      AND ({has_sha1} OR {has_pc})
+                    LIMIT 1
+                    """,
+                    (parent_tmdb_id,),
+                )
+                return cur.fetchone() is not None
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源维护] 检查追更剧集是否已有物理入库分集失败: parent={parent_tmdb_id}, err={e}")
+    return False
+
+
+def _consume_mode_for_watching_row(default_mode: str, row: Dict[str, Any]) -> str:
+    default_mode = str(default_mode or 'permanent').strip().lower()
+    if default_mode != 'virtual':
+        return default_mode
+    parent = str((row or {}).get('parent_series_tmdb_id') or '').strip()
+    if parent and _series_has_physical_episode_identity(parent):
+        return 'permanent'
+    return default_mode
+
+
+def _remove_file_quietly(path: str) -> bool:
+    if not path:
+        return False
+    try:
+        if os.path.exists(path) and os.path.isfile(path):
+            os.remove(path)
+            return True
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源维护] 删除本地投影文件失败: {path} -> {e}")
+    return False
+
+
+def _row_raw_json(row: Dict[str, Any]) -> Dict[str, Any]:
+    raw = (row or {}).get('raw_json')
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.strip():
+        try:
+            val = json.loads(raw)
+            return val if isinstance(val, dict) else {}
+        except Exception:
+            return {}
+    return {}
+
+
+def _delete_emby_item_for_virtual(row: Dict[str, Any]) -> Dict[str, Any]:
+    raw = _row_raw_json(row)
+    emby_item_id = str(row.get('emby_item_id') or raw.get('last_play_emby_item_id') or raw.get('emby_item_id') or '').strip()
+    if not emby_item_id:
+        return {'ok': False, 'skipped': True, 'message': 'missing_emby_item_id'}
+    emby_url = (config_manager.APP_CONFIG or {}).get(getattr(constants, 'CONFIG_OPTION_EMBY_SERVER_URL', 'emby_server_url'))
+    emby_api_key = (config_manager.APP_CONFIG or {}).get(getattr(constants, 'CONFIG_OPTION_EMBY_API_KEY', 'emby_api_key'))
+    emby_user_id = (config_manager.APP_CONFIG or {}).get(getattr(constants, 'CONFIG_OPTION_EMBY_USER_ID', 'emby_user_id'))
+    if not emby_url or not emby_api_key:
+        return {'ok': False, 'skipped': True, 'message': 'missing_emby_config', 'emby_item_id': emby_item_id}
+    try:
+        from handler import emby
+        ok = emby.delete_item(emby_item_id, emby_url, emby_api_key, emby_user_id or '')
+        return {'ok': bool(ok), 'emby_item_id': emby_item_id}
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源维护] 删除过期虚拟 Emby 媒体项失败: item={emby_item_id}, err={e}")
+        return {'ok': False, 'emby_item_id': emby_item_id, 'message': str(e)}
 
 
 def _gap_item(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -247,7 +347,7 @@ def _record_reportable(record: Dict[str, Any]) -> bool:
 
 def _max_active_shares_limit() -> int:
     """本机 115 分享数量上限；0 表示不限制。"""
-    return max(0, _safe_int(_cfg('CONFIG_OPTION_115_SHARED_MAX_ACTIVE_SHARES', 'p115_shared_max_active_shares', 0), 0))
+    return max(0, _safe_int(settings_db.get_shared_resource_config().get('p115_shared_max_active_shares', 0), 0))
 
 
 def _share_low_watermark(max_active_shares: int) -> int:
@@ -1482,7 +1582,7 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
 
 
 def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
-    """删除已过期的虚拟入库临时转存文件，但保留虚拟 STRM/记录，后续播放可再次临时转存。"""
+    """删除已过期且未转正的虚拟入库临时缓存，同时删除 Emby 媒体项。"""
     p115 = P115Service.get_client()
     if not p115:
         logger.warning("  ➜ [共享资源维护] 115 客户端未初始化，跳过过期临时转存清理。")
@@ -1492,7 +1592,8 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT virtual_id, title, file_name, share_code, raw_json, real_fid, real_pick_code, real_parent_id, expires_at
+                SELECT virtual_id, title, file_name, share_code, raw_json, real_fid, real_pick_code,
+                       real_parent_id, expires_at, strm_path, mediainfo_path, nfo_path, emby_item_id
                 FROM shared_virtual_items
                 WHERE status IN ('cached','watched')
                   AND COALESCE(real_fid, '') <> ''
@@ -1525,24 +1626,35 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
             delete_ok = any(k in text for k in ['不存在', 'not found'])
             logger.debug(f"  ➜ [共享资源维护] 删除过期临时转存异常: {virtual_id}/{real_fid} -> {e}")
 
-        # 无论远端是否已经被手动删除，只要确认过期，就清空本地 real_*，防止继续使用过期 pickcode。
         if delete_ok or resp is not None:
+            emby_delete = _delete_emby_item_for_virtual(row)
+            removed_projection = 0
+            for key in ('strm_path', 'mediainfo_path', 'nfo_path'):
+                if _remove_file_quietly(str(row.get(key) or '')):
+                    removed_projection += 1
             try:
                 with get_db_connection() as conn:
                     with conn.cursor() as cur:
                         cur.execute(
                             """
                             UPDATE shared_virtual_items
-                            SET status='virtual_ready',
+                            SET status='deleted',
                                 real_fid='', real_pick_code='', real_parent_id='', expires_at=NULL,
+                                deleted_at=NOW(),
                                 last_error=%s,
                                 raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
                                 updated_at=NOW()
                             WHERE virtual_id=%s
                             """,
                             (
-                                '临时转存已过期，维护任务已清理；下次播放将重新转存',
-                                json.dumps({'expired_cache_cleaned_at': time.strftime('%Y-%m-%d %H:%M:%S'), 'real_fid': real_fid, 'delete_response': resp}, ensure_ascii=False),
+                                '临时转存已过期且未转正，维护任务已清理临时缓存并删除 Emby 媒体项',
+                                json.dumps({
+                                    'expired_cache_cleaned_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                                    'real_fid': real_fid,
+                                    'delete_response': resp,
+                                    'emby_delete': emby_delete,
+                                    'removed_projection_files': removed_projection,
+                                }, ensure_ascii=False),
                                 virtual_id,
                             ),
                         )
@@ -1550,16 +1662,16 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
                     conn.commit()
                 shared_virtual_db.add_credit_ledger(
                     'virtual_cache_expired_cleaned', 0,
-                    f'清理过期虚拟临时转存：{title}',
+                    f'清理过期虚拟临时转存并删除 Emby 媒体项：{title}',
                     ref_id=virtual_id,
                     virtual_id=virtual_id,
                     title=title,
-                    raw_json={'real_fid': real_fid, 'delete_response': resp},
+                    raw_json={'real_fid': real_fid, 'delete_response': resp, 'emby_delete': emby_delete, 'removed_projection_files': removed_projection},
                 )
                 cleaned += 1
                 cleaned_rows_for_history.append(row)
             except Exception as e:
-                logger.warning(f"  ➜ [共享资源维护] 清空虚拟临时转存状态失败: {virtual_id} -> {e}")
+                logger.warning(f"  ➜ [共享资源维护] 标记虚拟资源已删除失败: {virtual_id} -> {e}")
         time.sleep(0.15)
 
     if cleaned_rows_for_history:
@@ -1568,8 +1680,6 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
         except Exception as e:
             logger.warning(f"  ➜ [共享资源维护] 清理 115 最近接收记录异常: {e}")
 
-    if cleaned:
-        logger.info(f"  ➜ [共享资源维护] 已清理 {cleaned} 个过期虚拟临时转存文件。")
     return cleaned
 
 
@@ -1731,6 +1841,14 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
 
             parent_tmdb = row.get('parent_series_tmdb_id')
             title = row.get('title') or row.get('season_title') or f"S{_safe_int(row.get('season_number'), 1):02d}E{_safe_int(row.get('episode_number'), 0):02d}"
+            consume_mode = _consume_mode_for_watching_row(mode, row)
+            if consume_mode != mode:
+                logger.info(
+                    "  ➜ [共享资源维护] 追更剧集已有物理入库分集，本次消费强制永久转存：%s S%02dE%02d",
+                    row.get('season_title') or parent_tmdb,
+                    _safe_int(row.get('season_number'), 0),
+                    _safe_int(row.get('episode_number'), 0),
+                )
             result = try_consume_shared_resource(
                 row,
                 title=title,
@@ -1740,6 +1858,7 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
                 season_number=row.get('season_number'),
                 year=row.get('release_year') or '',
                 exclude_share_codes=sorted(consumed_share_codes),
+                force_mode=consume_mode,
             )
             for share_code in result.get('matched_share_codes') or []:
                 share_code = str(share_code or '').strip()

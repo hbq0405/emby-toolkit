@@ -7,6 +7,7 @@ import requests
 
 import config_manager
 import constants
+from database import settings_db
 
 logger = logging.getLogger(__name__)
 
@@ -51,27 +52,24 @@ def _request_kwargs(timeout: int) -> Dict[str, Any]:
     return kwargs
 
 
-def _cfg_const(name: str, fallback: str, default=None):
-    key = getattr(constants, name, fallback)
-    return (config_manager.APP_CONFIG or {}).get(key, default)
+def _shared_cfg() -> Dict[str, Any]:
+    return settings_db.get_shared_resource_config()
 
 
 def shared_center_enabled() -> bool:
-    value = _cfg_const('CONFIG_OPTION_115_SHARED_RESOURCE_ENABLED', 'p115_shared_resource_enabled', False)
-    if isinstance(value, str):
-        value = value.strip().lower() in ('1', 'true', 'yes', 'on', '启用')
-    return bool(value)
+    return bool(_shared_cfg().get('p115_shared_resource_enabled'))
 
 
 def shared_resource_mode() -> str:
-    mode = str(_cfg_const('CONFIG_OPTION_115_SHARED_RESOURCE_MODE', 'p115_shared_resource_mode', 'permanent') or 'permanent').strip().lower()
+    mode = str(_shared_cfg().get('p115_shared_resource_mode') or 'permanent').strip().lower()
     return 'virtual' if mode == 'virtual' else 'permanent'
 
 
 class SharedCenterClient:
     def __init__(self):
-        self.base_url = str(_cfg_const('CONFIG_OPTION_115_SHARED_CENTER_URL', 'p115_shared_center_url', 'https://shared.55565576.xyz') or '').rstrip('/')
-        self.device_token = str(_cfg_const('CONFIG_OPTION_115_SHARED_DEVICE_TOKEN', 'p115_shared_device_token', '') or '').strip()
+        cfg = _shared_cfg()
+        self.base_url = str(cfg.get('p115_shared_center_url') or 'https://shared.55565576.xyz').rstrip('/')
+        self.device_token = str(cfg.get('p115_shared_device_token') or '').strip()
 
     @property
     def ready(self) -> bool:
@@ -109,7 +107,7 @@ class SharedCenterClient:
 
         首选公开自助注册接口 /api/v1/devices/register。
         如果中心尚未升级且传入 admin_token，则回退到旧的管理员注册接口。
-        注意：该方法不依赖现有 device_token，专门用于首次生成 p115_shared_device_token。
+        注意：该方法不依赖现有 device_token，专门用于首次生成共享中心 device_token。
         """
         if not self.base_url:
             raise RuntimeError('共享中心地址未配置')

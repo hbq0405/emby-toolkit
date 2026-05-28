@@ -192,3 +192,95 @@ def remove_item_from_recommendation_pool(tmdb_id: str):
     except Exception as e:
         # 发生错误时，数据库连接会自动回滚，所以这里不用显式 rollback
         logger.error(f"从推荐池移除 TMDB ID {tmdb_id} 时失败: {e}", exc_info=True)
+
+# ======================================================================
+# 模块: 共享资源独立配置
+# ======================================================================
+SHARED_RESOURCE_CONFIG_KEY = getattr(constants, 'APP_SETTING_SHARED_RESOURCE_CONFIG', 'shared_resource_config')
+
+DEFAULT_SHARED_RESOURCE_CONFIG = {
+    'p115_shared_resource_enabled': False,
+    'p115_shared_center_url': 'https://shared.55565576.xyz',
+    'p115_shared_device_token': '',
+    'p115_shared_resource_mode': 'permanent',
+    'p115_shared_max_active_shares': 0,
+    'p115_shared_cache_cid': '',
+    'p115_shared_cache_name': '',
+    'p115_shared_cache_retention_days': 7,
+    'p115_shared_auto_promote_enabled': False,
+    'p115_shared_auto_promote_tv_episodes': 2,
+    'p115_shared_auto_promote_movie_progress': 80,
+    'p115_shared_install_id': '',
+}
+
+
+def _shared_bool(value, default: bool = False) -> bool:
+    if value is None:
+        return bool(default)
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on', '启用', '开启')
+    return bool(value)
+
+
+def _shared_int(value, default: int = 0, minimum: int = None, maximum: int = None) -> int:
+    try:
+        if value in (None, ''):
+            n = int(default)
+        else:
+            n = int(float(value))
+    except Exception:
+        n = int(default)
+    if minimum is not None:
+        n = max(int(minimum), n)
+    if maximum is not None:
+        n = min(int(maximum), n)
+    return n
+
+
+def normalize_shared_resource_config(value: Optional[Dict[str, Any]] = None, base: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """规范化共享资源配置。
+
+    注意：共享资源配置是独立 app_settings 记录，不再读写 dynamic_app_config / APP_CONFIG。
+    """
+    merged = dict(DEFAULT_SHARED_RESOURCE_CONFIG)
+    if isinstance(base, dict):
+        merged.update(base)
+    if isinstance(value, dict):
+        merged.update(value)
+
+    center_url = str(merged.get('p115_shared_center_url') or DEFAULT_SHARED_RESOURCE_CONFIG['p115_shared_center_url']).strip().rstrip('/')
+    if not center_url:
+        center_url = DEFAULT_SHARED_RESOURCE_CONFIG['p115_shared_center_url']
+    mode = str(merged.get('p115_shared_resource_mode') or 'permanent').strip().lower()
+    if mode not in ('permanent', 'virtual'):
+        mode = 'permanent'
+
+    return {
+        'p115_shared_resource_enabled': _shared_bool(merged.get('p115_shared_resource_enabled'), False),
+        'p115_shared_center_url': center_url,
+        'p115_shared_device_token': str(merged.get('p115_shared_device_token') or '').strip(),
+        'p115_shared_resource_mode': mode,
+        'p115_shared_max_active_shares': _shared_int(merged.get('p115_shared_max_active_shares'), 0, 0, 10000),
+        'p115_shared_cache_cid': str(merged.get('p115_shared_cache_cid') or '').strip(),
+        'p115_shared_cache_name': str(merged.get('p115_shared_cache_name') or '').strip(),
+        'p115_shared_cache_retention_days': _shared_int(merged.get('p115_shared_cache_retention_days'), 7, 1, 365),
+        'p115_shared_auto_promote_enabled': _shared_bool(merged.get('p115_shared_auto_promote_enabled'), False),
+        'p115_shared_auto_promote_tv_episodes': _shared_int(merged.get('p115_shared_auto_promote_tv_episodes'), 2, 1, 99),
+        'p115_shared_auto_promote_movie_progress': _shared_int(merged.get('p115_shared_auto_promote_movie_progress'), 80, 1, 100),
+        'p115_shared_install_id': str(merged.get('p115_shared_install_id') or '').strip(),
+    }
+
+
+def get_shared_resource_config() -> Dict[str, Any]:
+    """读取共享资源独立配置。"""
+    data = get_setting(SHARED_RESOURCE_CONFIG_KEY) or {}
+    return normalize_shared_resource_config(data if isinstance(data, dict) else {})
+
+
+def save_shared_resource_config(value: Dict[str, Any]) -> Dict[str, Any]:
+    """保存共享资源独立配置，并返回规范化后的完整配置。"""
+    current = get_shared_resource_config()
+    payload = normalize_shared_resource_config(value if isinstance(value, dict) else {}, base=current)
+    save_setting(SHARED_RESOURCE_CONFIG_KEY, payload)
+    return payload
+

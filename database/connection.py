@@ -496,6 +496,10 @@ def init_db():
                         share_code TEXT,
                         receive_code TEXT,
                         contributor_id TEXT,
+                        emby_item_id TEXT,
+                        media_source_id TEXT,
+                        auto_promote_completed BOOLEAN DEFAULT FALSE,
+                        auto_promoted_at TIMESTAMP WITH TIME ZONE,
                         cache_parent_id TEXT,
                         cache_parent_name TEXT,
                         real_fid TEXT,
@@ -773,6 +777,8 @@ def init_db():
                     # 7.5 【115 媒体信息共享缓存】按 SHA1 从 media_metadata 反查 TMDb / 原语言
                     # 用于给旧 raw_ffprobe_json 自动补齐 _etk，不需要重新拉 115 直链 ffprobe。
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_file_sha1_json_gin ON media_metadata USING GIN(file_sha1_json);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_file_pickcode_json_gin ON media_metadata USING GIN(file_pickcode_json);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_mm_episode_parent_library ON media_metadata (parent_series_tmdb_id, item_type, in_library) WHERE item_type = 'Episode';")
 
                     # 8. 【JSONB 数组筛选】加速 类型、标签、国家、制片厂、关键词的查询
                     # 使用 GIN 索引配合 jsonb_path_ops，查询速度比普通 GIN 更快
@@ -806,9 +812,15 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_sha1_upper ON p115_filesystem_cache (UPPER(sha1)) WHERE sha1 IS NOT NULL AND sha1 <> '';")
 
                     # 12.5 【共享资源】加速虚拟入库、我的共享和贡献值页面
+                    cursor.execute("ALTER TABLE shared_virtual_items ADD COLUMN IF NOT EXISTS emby_item_id TEXT;")
+                    cursor.execute("ALTER TABLE shared_virtual_items ADD COLUMN IF NOT EXISTS media_source_id TEXT;")
+                    cursor.execute("ALTER TABLE shared_virtual_items ADD COLUMN IF NOT EXISTS auto_promote_completed BOOLEAN DEFAULT FALSE;")
+                    cursor.execute("ALTER TABLE shared_virtual_items ADD COLUMN IF NOT EXISTS auto_promoted_at TIMESTAMP WITH TIME ZONE;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_status_updated ON shared_virtual_items (status, updated_at DESC);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_media ON shared_virtual_items (tmdb_id, item_type, season_number, episode_number);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_sha1 ON shared_virtual_items (sha1);")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_emby_item ON shared_virtual_items (emby_item_id) WHERE emby_item_id IS NOT NULL AND emby_item_id <> '';")
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_parent_promoted ON shared_virtual_items (parent_series_tmdb_id, status) WHERE parent_series_tmdb_id IS NOT NULL;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_expires_at ON shared_virtual_items (expires_at) WHERE status IN ('cached', 'watched');")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_status_updated ON shared_share_records (status, updated_at DESC);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_media ON shared_share_records (tmdb_id, item_type, season_number);")

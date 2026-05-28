@@ -17,7 +17,7 @@ from flask import Blueprint, jsonify, request
 import config_manager
 import constants
 from extensions import admin_required
-from database import shared_virtual_db, shared_share_db
+from database import shared_virtual_db, shared_share_db, settings_db
 from database.connection import get_db_connection
 from handler.p115_service import P115Service
 
@@ -76,13 +76,95 @@ def _request_json() -> Dict[str, Any]:
 
 
 def _get_shared_config() -> Dict[str, Any]:
-    cfg = config_manager.APP_CONFIG or {}
+    cfg = settings_db.get_shared_resource_config()
     return {
-        "enabled": bool(cfg.get(constants.CONFIG_OPTION_115_SHARED_RESOURCE_ENABLED, False)),
-        "center_url": (cfg.get(constants.CONFIG_OPTION_115_SHARED_CENTER_URL) or "https://shared.55565576.xyz").rstrip('/'),
-        "device_token": cfg.get(constants.CONFIG_OPTION_115_SHARED_DEVICE_TOKEN) or "",
-        "mode": cfg.get(constants.CONFIG_OPTION_115_SHARED_RESOURCE_MODE) or "permanent",
+        "enabled": bool(cfg.get('p115_shared_resource_enabled', False)),
+        "center_url": (cfg.get('p115_shared_center_url') or "https://shared.55565576.xyz").rstrip('/'),
+        "device_token": cfg.get('p115_shared_device_token') or "",
+        "mode": cfg.get('p115_shared_resource_mode') or "permanent",
+        "install_id": cfg.get('p115_shared_install_id') or "",
     }
+
+
+def _shared_resource_config_payload() -> Dict[str, Any]:
+    return settings_db.get_shared_resource_config()
+
+
+def _sanitize_shared_resource_config(data: Dict[str, Any]) -> Dict[str, Any]:
+    return settings_db.normalize_shared_resource_config(data, base=settings_db.get_shared_resource_config())
+
+
+def _jsonb_non_empty_sql_expr(column: str) -> str:
+    """生成 JSONB 标识字段非空判断。
+
+    media_metadata.file_sha1_json / file_pickcode_json 正常是数组，
+    这里顺手兼容历史上可能写入的对象/字符串结构。
+    """
+    return f"""
+    (
+        CASE jsonb_typeof({column})
+            WHEN 'array' THEN jsonb_array_length({column}) > 0
+            WHEN 'object' THEN {column} <> '{{}}'::jsonb
+            WHEN 'string' THEN btrim({column}::text, '"') <> ''
+            ELSE FALSE
+        END
+    )
+    """
+
+
+def _series_has_physical_episode_identity(parent_tmdb_id: str) -> bool:
+    """同一父剧下只要已有物理入库分集，后续共享追更就强制永久转存。
+
+    不再依赖 shared_virtual_items 的 promoted/promote_pending 状态，
+    因为物理入库可能来自手动整理、MP、115 直出等其它途径。
+    """
+    parent_tmdb_id = str(parent_tmdb_id or '').strip()
+    if not parent_tmdb_id:
+        return False
+    has_sha1 = _jsonb_non_empty_sql_expr('file_sha1_json')
+    has_pc = _jsonb_non_empty_sql_expr('file_pickcode_json')
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT 1
+                    FROM media_metadata
+                    WHERE item_type='Episode'
+                      AND parent_series_tmdb_id = %s
+                      AND COALESCE(in_library, FALSE) = TRUE
+                      AND ({has_sha1} OR {has_pc})
+                    LIMIT 1
+                    """,
+                    (parent_tmdb_id,),
+                )
+                return cur.fetchone() is not None
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 检查追更剧集是否已有物理入库分集失败: parent={parent_tmdb_id}, err={e}")
+    return False
+
+
+def _force_permanent_if_series_has_physical_episode(mode: str, context: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
+    mode = str(mode or 'permanent').strip().lower()
+    if mode != 'virtual':
+        return mode, {}
+    ctx = context or {}
+    item_type = str(ctx.get('item_type') or ctx.get('share_item_type') or '').strip().lower()
+    season = ctx.get('season_number')
+    episode = ctx.get('episode_number')
+    parent_tmdb = str(
+        ctx.get('parent_series_tmdb_id') or ctx.get('series_tmdb_id') or
+        (ctx.get('tmdb_id') if item_type in ('series', 'season', 'episode', 'tv') or season not in (None, '') or episode not in (None, '') else '') or ''
+    ).strip()
+    is_tv = item_type in ('series', 'season', 'episode', 'tv', 'pack', 'season_pack', 'series_pack', 'episode_file') or season not in (None, '') or episode not in (None, '')
+    if is_tv and parent_tmdb and _series_has_physical_episode_identity(parent_tmdb):
+        return 'permanent', {
+            'forced_permanent': True,
+            'reason': '该剧已有物理入库分集，后续共享追更强制永久转存',
+            'parent_series_tmdb_id': parent_tmdb,
+            'judge_by': 'media_metadata.file_sha1_json/file_pickcode_json',
+        }
+    return mode, {}
 
 
 def _remove_file_quietly(path: str) -> bool:
@@ -1815,6 +1897,44 @@ def api_search_shareable_media():
     return jsonify({"success": True, "items": items[:100]})
 
 
+@shared_resource_bp.route('/config', methods=['GET', 'POST'])
+@admin_required
+def api_shared_resource_config():
+    if request.method == 'GET':
+        return jsonify({'success': True, 'data': _shared_resource_config_payload()})
+
+    data = _request_json()
+    payload = settings_db.save_shared_resource_config(data)
+    return jsonify({'success': True, 'message': '共享资源配置已保存', 'data': payload})
+
+
+@shared_resource_bp.route('/115/folders', methods=['GET'])
+@admin_required
+def api_shared_115_folders():
+    client = P115Service.get_client()
+    if not client:
+        return jsonify({'success': False, 'message': '未配置可用的 115 客户端'}), 400
+    cid = str(request.args.get('cid') or '0').strip() or '0'
+    try:
+        resp = client.fs_files({'cid': cid, 'limit': 1000, 'offset': 0, 'show_dir': 1, 'record_open_time': 0, 'count_folders': 0})
+        folders = []
+        for node in (resp or {}).get('data') or []:
+            if not _is_folder(node):
+                continue
+            name = _node_name(node)
+            fid = _node_id(node)
+            if not fid:
+                continue
+            folders.append({'id': str(fid), 'name': name or str(fid), 'parent_id': cid})
+        path = []
+        for node in (resp or {}).get('path') or []:
+            path.append({'id': str(node.get('cid') or node.get('file_id') or node.get('fid') or node.get('id') or ''), 'name': str(node.get('name') or node.get('file_name') or node.get('fn') or node.get('n') or '')})
+        return jsonify({'success': True, 'data': folders, 'path': path, 'cid': cid})
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 读取 115 目录失败: cid={cid}, err={e}", exc_info=True)
+        return jsonify({'success': False, 'message': f'读取 115 目录失败: {e}'}), 500
+
+
 @shared_resource_bp.route('/summary', methods=['GET'])
 @admin_required
 def api_shared_summary():
@@ -2644,20 +2764,18 @@ def _import_virtual_to_save_path(virtual_id: str, item: Dict[str, Any], save_cid
     kick = _kick_p115_scan_and_organize(f'unplayed-promote:{virtual_id}')
     return {'row': row, 'node': node, 'import_resp': import_resp, 'existing': existing, 'kick': kick, 'located': True}
 
-@shared_resource_bp.route('/virtual/<virtual_id>/promote', methods=['POST'])
-@admin_required
-def api_promote_virtual_item(virtual_id):
-    logger.info(f"  ➜ [共享资源] 收到虚拟资源转正请求: virtual_id={virtual_id}")
+def promote_virtual_item_internal(virtual_id: str, data: Dict[str, Any] = None, reason: str = 'manual') -> Dict[str, Any]:
+    logger.info(f"  ➜ [共享资源] 收到虚拟资源转正请求: virtual_id={virtual_id}, reason={reason}")
     item = shared_virtual_db.get_virtual_item(virtual_id)
     if not item:
-        return jsonify({"success": False, "message": "虚拟资源不存在"}), 404
+        return {"success": False, "message": "虚拟资源不存在", "status_code": 404}
     if item.get('status') == 'promoted':
-        return jsonify({"success": True, "message": "该资源已经是永久转存", "data": item})
+        return {"success": True, "message": "该资源已经是永久转存", "data": item, "status_code": 200}
 
-    data = _request_json()
+    data = data or {}
     client = P115Service.get_client()
     if not client:
-        return jsonify({"success": False, "message": "未配置可用的 115 客户端，无法转正"}), 400
+        return {"success": False, "message": "未配置可用的 115 客户端，无法转正", "status_code": 400}
 
     # 未播放过的虚拟资源没有 real_fid：直接转存到“待整理”目录，然后踢正式整理任务处理。
     if not item.get('real_fid'):
@@ -2665,67 +2783,67 @@ def api_promote_virtual_item(virtual_id):
         save_cid = str(save_target.get('target_cid') or '').strip()
         save_name = save_target.get('target_name') or '待整理'
         if not save_cid or save_cid == '0':
-            return jsonify({"success": False, "message": "该虚拟资源还没有播放转存记录，且未配置 115 待整理目录 CID，无法直接转存；请检查 p115_save_path_cid"}), 400
+            return {"success": False, "message": "该虚拟资源还没有播放转存记录，且未配置 115 待整理目录 CID，无法直接转存；请检查 p115_save_path_cid", "status_code": 400}
         try:
             result = _import_virtual_to_save_path(virtual_id, item, save_cid, save_name, client)
         except Exception as e:
             logger.warning(f"  ➜ [共享资源] 未播放转正失败: virtual_id={virtual_id}, err={e}", exc_info=True)
-            return jsonify({"success": False, "message": str(e)}), 500
+            return {"success": False, "message": str(e), "status_code": 500}
 
         if result.get('located'):
             msg = f"未播放资源已转存到待整理目录 [{save_name}]，已禁用虚拟STRM，并已触发 115 整理任务生成正式STRM"
         else:
             msg = f"115 已接收转存到待整理目录 [{save_name}]，已禁用虚拟STRM；暂未定位到具体文件，已触发 115 整理任务继续扫描并生成正式STRM"
-        return jsonify({
-            "success": True,
-            "message": msg,
-            "data": result.get('row') or item,
-            "scan_kick": result.get('kick'),
-            "located": bool(result.get('located')),
-        })
+        return {"success": True, "message": msg, "data": result.get('row') or item, "scan_kick": result.get('kick'), "located": bool(result.get('located')), "status_code": 200}
 
     target_res = _resolve_virtual_promote_target(item, data, client=client)
     target_cid = str(target_res.get('target_cid') or '').strip()
     target_name = target_res.get('target_name') or ''
     if not target_cid or target_cid == '0':
-        return jsonify({"success": False, "message": "缺少正式媒体目录 CID，无法移动转正；请检查 p115_media_root_cid 是否配置，且虚拟 STRM 是否生成在正式分类目录下"}), 400
+        return {"success": False, "message": "缺少正式媒体目录 CID，无法移动转正；请检查 p115_media_root_cid 是否配置，且虚拟 STRM 是否生成在正式分类目录下", "status_code": 400}
 
     # 0. 如果临时文件已经在目标目录，直接标记成功。
     cache_node = _get_cache_node(str(item.get('real_fid') or ''))
     if cache_node and str(cache_node.get('parent_id') or '') == target_cid:
-        row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp={'state': True, '_already_in_target': True})
-        return jsonify({"success": True, "message": "文件已在正式目录，已标记转正", "data": row})
+        row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp={'state': True, '_already_in_target': True, '_promote_reason': reason})
+        return {"success": True, "message": "文件已在正式目录，已标记转正", "data": row, "status_code": 200}
 
     # 1. 如果目标目录已经有同名/同 SHA1 文件，视为转正成功，避免 115 move 因同名失败。
     existing = _find_existing_file_in_target(target_cid, item, client=client)
     if existing:
-        # 如果临时目录里还有这份文件，尽力删除，不影响转正结果。
         try:
             real_fid = str(item.get('real_fid') or '')
             if real_fid and real_fid != str(existing.get('id') or ''):
                 client.fs_delete([real_fid])
         except Exception:
             pass
-        row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp={'state': True, '_reuse_existing': True}, existing=existing)
-        return jsonify({"success": True, "message": "目标目录已有同名/同SHA1文件，已复用并标记转正", "data": row})
+        row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp={'state': True, '_reuse_existing': True, '_promote_reason': reason}, existing=existing)
+        return {"success": True, "message": "目标目录已有同名/同SHA1文件，已复用并标记转正", "data": row, "status_code": 200}
 
-    logger.info(f"  ➜ [共享资源] 转正开始移动: virtual_id={virtual_id}, fid={item.get('real_fid')}, target_cid={target_cid}, target_name={target_name}")
+    logger.info(f"  ➜ [共享资源] 转正开始移动: virtual_id={virtual_id}, fid={item.get('real_fid')}, target_cid={target_cid}, target_name={target_name}, reason={reason}")
     resp = client.fs_move([str(item['real_fid'])], target_cid)
     logger.info(f"  ➜ [共享资源] 转正移动返回: virtual_id={virtual_id}, resp={_resp_text(resp)}")
     if not resp or not resp.get('state'):
-        # 115 偶尔 move 返回失败但实际已经移动，或者因为同名失败；再确认一次目标目录。
         existing_after = _find_existing_file_in_target(target_cid, item, client=client)
         if existing_after or _is_same_target_message(resp):
             row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp=resp, existing=existing_after)
-            return jsonify({"success": True, "message": "已确认目标目录存在该文件，已标记转正", "data": row})
+            return {"success": True, "message": "已确认目标目录存在该文件，已标记转正", "data": row, "status_code": 200}
         msg = f"115 移动失败: {_resp_text(resp)}"
         logger.warning(f"  ➜ [共享资源] 转正失败: virtual_id={virtual_id}, fid={item.get('real_fid')}, target_cid={target_cid}, msg={msg}")
         if _is_duplicate_name_message(resp):
             msg += "；目标目录可能已有同名文件，但未能确认 SHA1/PC 一致，请刷新 115 缓存后重试。"
-        return jsonify({"success": False, "message": msg}), 500
+        return {"success": False, "message": msg, "status_code": 500}
 
-    row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp=resp)
-    return jsonify({"success": True, "message": "已转为永久转存", "data": row})
+    row = _mark_virtual_promoted_success(virtual_id, item, target_cid, target_name, resp={**(resp or {}), '_promote_reason': reason})
+    return {"success": True, "message": "已转为永久转存", "data": row, "status_code": 200}
+
+
+@shared_resource_bp.route('/virtual/<virtual_id>/promote', methods=['POST'])
+@admin_required
+def api_promote_virtual_item(virtual_id):
+    result = promote_virtual_item_internal(virtual_id, data=_request_json(), reason='manual')
+    status = int(result.pop('status_code', 200) or 200)
+    return jsonify(result), status
 
 
 @shared_resource_bp.route('/shares', methods=['GET'])
@@ -3323,30 +3441,26 @@ def api_cancel_share(record_id):
 
 
 def _ensure_shared_install_id() -> str:
-    key = getattr(constants, 'CONFIG_OPTION_115_SHARED_INSTALL_ID', 'p115_shared_install_id')
-    install_id = str((config_manager.APP_CONFIG or {}).get(key) or '').strip()
+    cfg = settings_db.get_shared_resource_config()
+    install_id = str(cfg.get('p115_shared_install_id') or '').strip()
     if not install_id:
         install_id = f"etk-{uuid.uuid4().hex}"
-        config_manager.save_config({key: install_id})
+        settings_db.save_shared_resource_config({'p115_shared_install_id': install_id})
     return install_id
 
 
 @shared_resource_bp.route('/center/device/register', methods=['POST'])
 @admin_required
 def api_register_center_device():
-    """首次连接共享中心：注册设备并写入 p115_shared_device_token。"""
+    """首次连接共享中心：注册设备并写入共享资源独立配置。"""
     data = _request_json()
     cfg = _get_shared_config()
-    center_url_key = getattr(constants, 'CONFIG_OPTION_115_SHARED_CENTER_URL', 'p115_shared_center_url')
-    token_key = getattr(constants, 'CONFIG_OPTION_115_SHARED_DEVICE_TOKEN', 'p115_shared_device_token')
-    enabled_key = getattr(constants, 'CONFIG_OPTION_115_SHARED_RESOURCE_ENABLED', 'p115_shared_resource_enabled')
-    install_key = getattr(constants, 'CONFIG_OPTION_115_SHARED_INSTALL_ID', 'p115_shared_install_id')
 
     center_url = str(data.get('center_url') or cfg.get('center_url') or '').strip().rstrip('/')
     if not center_url:
         return jsonify({'success': False, 'message': '共享中心地址未配置'}), 400
 
-    install_id = str((config_manager.APP_CONFIG or {}).get(install_key) or '').strip()
+    install_id = str(cfg.get('install_id') or '').strip()
     if not install_id:
         install_id = f"etk-{uuid.uuid4().hex}"
 
@@ -3373,11 +3487,11 @@ def api_register_center_device():
         if not device_token:
             return jsonify({'success': False, 'message': '中心服务器未返回 device_token', 'data': result}), 502
 
-        config_manager.save_config({
-            center_url_key: center_url,
-            token_key: device_token,
-            install_key: install_id,
-            enabled_key: True,
+        settings_db.save_shared_resource_config({
+            'p115_shared_center_url': center_url,
+            'p115_shared_device_token': device_token,
+            'p115_shared_install_id': install_id,
+            'p115_shared_resource_enabled': True,
         })
         logger.info(f"  ➜ [共享资源] 中心设备注册成功: device_id={device_id or '-'}, center={center_url}")
 
@@ -3389,7 +3503,7 @@ def api_register_center_device():
 
         return jsonify({
             'success': True,
-            'message': '中心设备已注册，p115_shared_device_token 已自动写入',
+            'message': '中心设备已注册，device_token 已保存到共享资源独立配置',
             'device_id': device_id,
             'device_token_masked': device_token[:8] + '...' + device_token[-6:] if len(device_token) > 16 else '******',
             'data': {'device_id': device_id, 'credit': credit_result},
@@ -4230,9 +4344,19 @@ def api_center_import_sources():
     mode = str(data.get('mode') or 'permanent').strip().lower()
     if mode not in ('permanent', 'virtual'):
         mode = 'permanent'
+    context = data.get('context') or {}
+    mode, force_info = _force_permanent_if_series_has_physical_episode(mode, context)
+    if force_info:
+        context = {**context, 'shared_mode_forced': force_info}
+        logger.info(
+            "  ➜ [共享资源] 中心资源手动入库模式因已有物理分集改为永久转存: parent=%s",
+            force_info.get('parent_series_tmdb_id') or '-',
+        )
     try:
         from handler.shared_subscription_service import consume_center_sources
-        result = consume_center_sources(source_ids, mode=mode, context=data.get('context') or {})
+        result = consume_center_sources(source_ids, mode=mode, context=context)
+        if force_info:
+            result['mode_forced'] = force_info
         status = 200 if result.get('success') else 400
         return jsonify({'success': bool(result.get('success')), 'message': result.get('message') or result.get('action_type') or '处理完成', 'data': result}), status
     except Exception as e:

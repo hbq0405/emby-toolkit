@@ -69,6 +69,10 @@ def _cfg(name: str, fallback: str, default=None):
     return (config_manager.APP_CONFIG or {}).get(key, default)
 
 
+def _shared_cfg(key: str, default=None):
+    return settings_db.get_shared_resource_config().get(key, default)
+
+
 def _safe_int(value, default=0):
     try:
         if value in (None, ''):
@@ -838,8 +842,8 @@ def _upsert_virtual_item(source: Dict[str, Any], context: Dict[str, Any], strm_p
                     source.get('share_code') or '',
                     source.get('receive_code') or '',
                     source.get('contributor_id') or source.get('provider_id') or '',
-                    str(_cfg('CONFIG_OPTION_115_SHARED_CACHE_CID', 'p115_shared_cache_cid', '') or ''),
-                    str(_cfg('CONFIG_OPTION_115_SHARED_CACHE_NAME', 'p115_shared_cache_name', '') or ''),
+                    str(_shared_cfg('p115_shared_cache_cid', '') or ''),
+                    str(_shared_cfg('p115_shared_cache_name', '') or ''),
                     str(target_info.get('target_parent_id') or ''),
                     str(target_info.get('target_parent_name') or ''),
                     json.dumps(raw_json, ensure_ascii=False),

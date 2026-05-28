@@ -13,7 +13,7 @@ import requests
 
 import config_manager
 import constants
-from database import shared_virtual_db
+from database import shared_virtual_db, settings_db
 from database.connection import get_db_connection
 from handler.p115_service import P115Service
 
@@ -40,31 +40,19 @@ _LAST_PLAY_GUARD = threading.Lock()
 VIDEO_EXTS = {'.mkv', '.mp4', '.ts', '.m2ts', '.avi', '.mov', '.wmv', '.flv', '.rmvb', '.webm', '.iso'}
 
 
-def _cfg(name: str, default=None):
-    key = getattr(constants, name, None)
-    if key:
-        return config_manager.APP_CONFIG.get(key, default)
-    fallback = {
-        'CONFIG_OPTION_115_SHARED_RESOURCE_ENABLED': 'p115_shared_resource_enabled',
-        'CONFIG_OPTION_115_SHARED_RESOURCE_MODE': 'p115_shared_resource_mode',
-        'CONFIG_OPTION_115_SHARED_CACHE_CID': 'p115_shared_cache_cid',
-        'CONFIG_OPTION_115_SHARED_CACHE_NAME': 'p115_shared_cache_name',
-        'CONFIG_OPTION_115_SHARED_CACHE_RETENTION_DAYS': 'p115_shared_cache_retention_days',
-        'CONFIG_OPTION_115_SHARED_CENTER_URL': 'p115_shared_center_url',
-        'CONFIG_OPTION_115_SHARED_DEVICE_TOKEN': 'p115_shared_device_token',
-    }.get(name)
-    return config_manager.APP_CONFIG.get(fallback, default) if fallback else default
+def _cfg(key: str, default=None):
+    return settings_db.get_shared_resource_config().get(key, default)
 
 
 def _is_enabled() -> bool:
-    value = _cfg('CONFIG_OPTION_115_SHARED_RESOURCE_ENABLED', False)
+    value = _cfg('p115_shared_resource_enabled', False)
     if isinstance(value, str):
         value = value.strip().lower() in ('1', 'true', 'yes', 'on', '启用')
     return bool(value)
 
 
 def _virtual_mode_enabled() -> bool:
-    return str(_cfg('CONFIG_OPTION_115_SHARED_RESOURCE_MODE', 'permanent') or '').lower() == 'virtual'
+    return str(_cfg('p115_shared_resource_mode', 'permanent') or '').lower() == 'virtual'
 
 
 def _safe_int(value, default=0) -> int:
@@ -665,8 +653,8 @@ def _backfill_virtual_pack_cache(
 
 
 def _report_transfer_to_center(item: Dict[str, Any], node: Dict[str, Any], result='success', message='', whole_pack: bool = False):
-    center_url = str(_cfg('CONFIG_OPTION_115_SHARED_CENTER_URL', 'https://shared.55565576.xyz') or '').rstrip('/')
-    token = str(_cfg('CONFIG_OPTION_115_SHARED_DEVICE_TOKEN', '') or '').strip()
+    center_url = str(_cfg('p115_shared_center_url', 'https://shared.55565576.xyz') or '').rstrip('/')
+    token = str(_cfg('p115_shared_device_token', '') or '').strip()
     if not center_url or not token:
         return
 
@@ -728,6 +716,84 @@ def _mark_played_debounced(virtual_id: str, interval_seconds: int = 60):
     return shared_virtual_db.mark_virtual_played(virtual_id)
 
 
+def _is_tv_virtual_item(item: Dict[str, Any]) -> bool:
+    """判断虚拟项是否属于电视剧/剧集。"""
+    item = item or {}
+    item_type = str(item.get('item_type') or '').strip().lower()
+    return (
+        item_type in ('series', 'season', 'episode', 'tv')
+        or item.get('season_number') not in (None, '')
+        or item.get('episode_number') not in (None, '')
+        or bool(item.get('parent_series_tmdb_id'))
+    )
+
+
+def _touch_virtual_playback_metadata(
+    virtual_id: str,
+    item: Dict[str, Any],
+    emby_item_id: str = '',
+    user_id: str = '',
+    media_source_id: str = '',
+):
+    """回写虚拟项与 Emby 播放事件的绑定关系，并按最后播放时间续期电视剧临时缓存。"""
+    if not virtual_id:
+        return
+    raw_patch = {
+        'last_play_emby_item_id': str(emby_item_id or ''),
+        'last_play_user_id': str(user_id or ''),
+        'last_play_media_source_id': str(media_source_id or ''),
+        'last_play_touched_at': datetime.now(timezone.utc).isoformat(),
+    }
+    retention_days = max(1, _safe_int(_cfg('p115_shared_cache_retention_days', 7), 7))
+    reset_expire = _is_tv_virtual_item(item)
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                if reset_expire:
+                    cur.execute(
+                        """
+                        UPDATE shared_virtual_items
+                        SET emby_item_id = COALESCE(NULLIF(%s, ''), emby_item_id),
+                            media_source_id = COALESCE(NULLIF(%s, ''), media_source_id),
+                            expires_at = CASE
+                                WHEN status IN ('cached','watched') AND COALESCE(real_fid, '') <> ''
+                                THEN NOW() + (%s || ' days')::interval
+                                ELSE expires_at
+                            END,
+                            raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
+                            updated_at = NOW()
+                        WHERE virtual_id = %s
+                        """,
+                        (
+                            str(emby_item_id or ''),
+                            str(media_source_id or ''),
+                            int(retention_days),
+                            json.dumps(raw_patch, ensure_ascii=False),
+                            str(virtual_id),
+                        ),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        UPDATE shared_virtual_items
+                        SET emby_item_id = COALESCE(NULLIF(%s, ''), emby_item_id),
+                            media_source_id = COALESCE(NULLIF(%s, ''), media_source_id),
+                            raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
+                            updated_at = NOW()
+                        WHERE virtual_id = %s
+                        """,
+                        (
+                            str(emby_item_id or ''),
+                            str(media_source_id or ''),
+                            json.dumps(raw_patch, ensure_ascii=False),
+                            str(virtual_id),
+                        ),
+                    )
+            conn.commit()
+    except Exception as e:
+        logger.debug(f"  ➜ [共享虚拟播放] 回写播放绑定/续期信息失败: virtual_id={virtual_id}, err={e}")
+
+
 def ensure_playable_by_emby_item(
     emby_item_id: str = '',
     user_id: str = '',
@@ -760,6 +826,13 @@ def ensure_playable_by_emby_item(
     with lock:
         # 可能其他并发请求已经完成转存，重新读一次。
         item = shared_virtual_db.get_virtual_item(virtual_id) or item
+        _touch_virtual_playback_metadata(
+            virtual_id,
+            item,
+            emby_item_id=str(emby_item_id or ''),
+            user_id=str(user_id or ''),
+            media_source_id=media_source_id,
+        )
         if item.get('real_pick_code'):
             cached_node = None
             raw_json = item.get('raw_json') if isinstance(item.get('raw_json'), dict) else {}
@@ -793,9 +866,9 @@ def ensure_playable_by_emby_item(
             shared_virtual_db.mark_virtual_error(virtual_id, msg)
             return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg}
 
-        cache_cid = str(item.get('cache_parent_id') or _cfg('CONFIG_OPTION_115_SHARED_CACHE_CID', '0') or '0').strip()
-        cache_name = str(item.get('cache_parent_name') or _cfg('CONFIG_OPTION_115_SHARED_CACHE_NAME', '共享资源临时区') or '共享资源临时区')
-        retention_days = max(1, _safe_int(_cfg('CONFIG_OPTION_115_SHARED_CACHE_RETENTION_DAYS', 7), 7))
+        cache_cid = str(item.get('cache_parent_id') or _cfg('p115_shared_cache_cid', '0') or '0').strip()
+        cache_name = str(item.get('cache_parent_name') or _cfg('p115_shared_cache_name', '共享资源临时区') or '共享资源临时区')
+        retention_days = max(1, _safe_int(_cfg('p115_shared_cache_retention_days', 7), 7))
         expires_at = datetime.now(timezone.utc) + timedelta(days=retention_days)
 
         client = P115Service.get_client()

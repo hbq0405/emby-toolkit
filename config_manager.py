@@ -125,15 +125,6 @@ DYNAMIC_CONFIG_DEF = {
     constants.CONFIG_OPTION_115_APP_ID: (constants.CONFIG_SECTION_115, 'string', ""),
     constants.CONFIG_OPTION_115_LIFE_MONITOR_ENABLED: (constants.CONFIG_SECTION_115, "boolean", False),
     constants.CONFIG_OPTION_115_LIFE_MONITOR_INTERVAL: (constants.CONFIG_SECTION_115, "int", 5),
-    constants.CONFIG_OPTION_115_SHARED_RESOURCE_ENABLED: (constants.CONFIG_SECTION_115, "boolean", False),
-    constants.CONFIG_OPTION_115_SHARED_CENTER_URL: (constants.CONFIG_SECTION_115, "string", "https://shared.55565576.xyz"),
-    constants.CONFIG_OPTION_115_SHARED_DEVICE_TOKEN: (constants.CONFIG_SECTION_115, "password", ""),
-    constants.CONFIG_OPTION_115_SHARED_RESOURCE_MODE: (constants.CONFIG_SECTION_115, "string", "permanent"),
-    constants.CONFIG_OPTION_115_SHARED_CACHE_CID: (constants.CONFIG_SECTION_115, "string", "0"),
-    constants.CONFIG_OPTION_115_SHARED_CACHE_NAME: (constants.CONFIG_SECTION_115, "string", "共享资源临时区"),
-    constants.CONFIG_OPTION_115_SHARED_CACHE_RETENTION_DAYS: (constants.CONFIG_SECTION_115, "int", 7),
-    constants.CONFIG_OPTION_115_SHARED_INSTALL_ID: (constants.CONFIG_SECTION_115, "string", ""),
-    constants.CONFIG_OPTION_115_SHARED_MAX_ACTIVE_SHARES: (constants.CONFIG_SECTION_115, "int", 0),
 
     # [General]
     "delay_between_items_sec": ("General", 'float', 0.5),

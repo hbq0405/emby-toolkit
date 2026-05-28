@@ -10,6 +10,10 @@
               <n-text depth="3">集中管理共享资源：虚拟入库、本机分享、中心资源转存/入库和贡献值流水。</n-text>
             </div>
             <n-space>
+              <n-button secondary @click="openSharedConfigModal">
+                <template #icon><n-icon :component="SettingsIcon" /></template>
+                配置
+              </n-button>
               <n-button :type="hasCenterDevice ? 'default' : 'warning'" ghost :loading="registeringDevice" @click="registerCenterDevice">
                 <template #icon><n-icon :component="SyncIcon" /></template>
                 {{ hasCenterDevice ? '重置设备' : '注册设备' }}
@@ -27,7 +31,7 @@
         </template>
 
         <n-alert v-if="!hasCenterDevice" class="center-register-alert" type="warning" :bordered="false" style="margin-bottom: 12px;">
-          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并自动写入 p115_shared_device_token；之后才能同步贡献值、登记分享、转存或入库中心资源。
+          共享资源中心尚未注册设备。点击右上角“注册设备”后，系统会向中心申请 device_token，并保存到共享资源独立配置；之后才能同步贡献值、登记分享、转存或入库中心资源。
         </n-alert>
 
         <n-grid :cols="isMobile ? 2 : 6" :x-gap="12" :y-gap="12">
@@ -140,6 +144,110 @@
       </n-card>
     </n-space>
 
+    <n-modal v-model:show="showSharedConfigModal" preset="card" title="共享资源 / 虚拟入库配置" style="width: 880px; max-width: 96vw;" class="custom-modal glass-modal">
+      <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
+        这里集中管理共享资源中心、虚拟入库临时缓存和自动转正规则；全局配置页中的共享资源配置已迁移到这里。
+      </n-alert>
+      <n-spin :show="sharedConfigLoading">
+        <n-form :model="sharedConfigForm" label-placement="left" label-width="150">
+          <n-divider title-placement="left">共享资源中心</n-divider>
+          <n-form-item label="共享资源">
+            <n-switch v-model:value="sharedConfigForm.p115_shared_resource_enabled">
+              <template #checked>启用共享池</template>
+              <template #unchecked>关闭</template>
+            </n-switch>
+          </n-form-item>
+          <n-form-item label="中心地址">
+            <n-input v-model:value="sharedConfigForm.p115_shared_center_url" placeholder="https://shared.55565576.xyz" />
+          </n-form-item>
+          <n-form-item label="设备 Token">
+            <n-input v-model:value="sharedConfigForm.p115_shared_device_token" type="password" show-password-on="click" placeholder="注册设备后自动写入，也可手动粘贴" />
+          </n-form-item>
+          <n-form-item label="默认入库方式">
+            <n-radio-group v-model:value="sharedConfigForm.p115_shared_resource_mode" name="shared_resource_mode_group">
+              <n-space vertical>
+                <n-radio value="permanent">永久转存 <n-text depth="3">命中共享池后直接转存到正式媒体目录。</n-text></n-radio>
+                <n-radio value="virtual">虚拟入库 <n-text depth="3">先生成 STRM，播放时才临时转存。</n-text></n-radio>
+              </n-space>
+            </n-radio-group>
+          </n-form-item>
+          <n-form-item label="最大活跃分享数">
+            <n-input-number v-model:value="sharedConfigForm.p115_shared_max_active_shares" :min="0" :max="10000" :step="10" style="width: 180px;">
+              <template #suffix>条</template>
+            </n-input-number>
+            <template #feedback>0 表示不限制；维护任务超过上限时清理到约 80% 水位。</template>
+          </n-form-item>
+
+          <n-divider title-placement="left">虚拟入库缓存</n-divider>
+          <n-form-item label="临时转存目录">
+            <n-input-group>
+              <n-input :value="sharedConfigForm.p115_shared_cache_name || sharedConfigForm.p115_shared_cache_cid" placeholder="请选择虚拟入库播放时的临时转存目录" readonly @click="openSharedFolderModal">
+                <template #prefix><n-icon :component="FolderIcon" /></template>
+              </n-input>
+              <n-button type="primary" ghost @click="openSharedFolderModal">选择</n-button>
+            </n-input-group>
+          </n-form-item>
+          <n-form-item label="临时保留天数">
+            <n-input-number v-model:value="sharedConfigForm.p115_shared_cache_retention_days" :min="1" :max="365" :step="1" style="width: 180px;">
+              <template #suffix>天</template>
+            </n-input-number>
+            <template #feedback>电视剧会按最后一次播放时间重置保留期；过期且未转正时，维护任务会删除临时缓存和 Emby 媒体项。</template>
+          </n-form-item>
+
+          <n-divider title-placement="left">自动转正</n-divider>
+          <n-form-item label="自动转正">
+            <n-switch v-model:value="sharedConfigForm.p115_shared_auto_promote_enabled">
+              <template #checked>开启</template>
+              <template #unchecked>关闭</template>
+            </n-switch>
+          </n-form-item>
+          <template v-if="sharedConfigForm.p115_shared_auto_promote_enabled">
+            <n-form-item label="电视剧触发条件">
+              <n-input-number v-model:value="sharedConfigForm.p115_shared_auto_promote_tv_episodes" :min="1" :max="99" :step="1" style="width: 180px;">
+                <template #suffix>集看完</template>
+              </n-input-number>
+              <template #feedback>同一季虚拟入库剧集看完达到该集数后，自动转正已看分集；同剧后续追更会根据 media_metadata 的 SHA1/PickCode 判断是否强制永久转存。</template>
+            </n-form-item>
+            <n-form-item label="电影触发条件">
+              <n-input-number v-model:value="sharedConfigForm.p115_shared_auto_promote_movie_progress" :min="1" :max="100" :step="5" style="width: 180px;">
+                <template #suffix>%</template>
+              </n-input-number>
+              <template #feedback>Webhook 播放进度达到该百分比后自动转正。</template>
+            </n-form-item>
+          </template>
+        </n-form>
+      </n-spin>
+      <template #footer>
+        <n-space justify="space-between" align="center">
+          <n-text depth="3">追更剧集只要已有物理入库分集，后续消费共享中心会自动改走永久转存。</n-text>
+          <n-space>
+            <n-button @click="showSharedConfigModal = false">取消</n-button>
+            <n-button type="primary" :loading="sharedConfigSaving" @click="saveSharedConfig">保存配置</n-button>
+          </n-space>
+        </n-space>
+      </template>
+    </n-modal>
+
+    <n-modal v-model:show="showSharedFolderModal" preset="card" title="选择临时转存目录" style="width: 680px; max-width: 96vw;" class="custom-modal glass-modal">
+      <n-space vertical :size="12">
+        <n-space>
+          <n-button secondary :disabled="sharedFolderCid === '0'" @click="loadSharedFolders(sharedFolderParentCid || '0')">
+            <template #icon><n-icon :component="ArrowBackIcon" /></template>
+            上一级
+          </n-button>
+          <n-button secondary @click="selectSharedFolder({ id: sharedFolderCid, name: sharedFolderName || '当前目录' })">选择当前目录</n-button>
+        </n-space>
+        <n-data-table
+          size="small"
+          :loading="sharedFolderLoading"
+          :columns="sharedFolderColumns"
+          :data="sharedFolderList"
+          :pagination="{ pageSize: 10 }"
+          :row-key="row => row.id"
+        />
+      </n-space>
+    </n-modal>
+
     <n-modal v-model:show="showManualShareModal" preset="card" title="手动创建共享资源" style="width: 920px; max-width: 96vw;" class="custom-modal glass-modal">
       <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
         直接输入片名搜索本地 media_metadata，系统会用已记录的 PC/SHA1 反查 p115_filesystem_cache，自动定位可分享的 115 目录或文件。剧集会优先按季目录分享，不创建单集分享。
@@ -195,13 +303,17 @@
 import { computed, h, onMounted, onUnmounted, reactive, ref } from 'vue';
 import axios from 'axios';
 import {
-  NAlert, NButton, NCard, NDataTable, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
-  NInputNumber, NModal, NSelect, NSpace, NTabPane, NTabs, NTag, NText, NTooltip, useDialog, useMessage, useThemeVars
+  NAlert, NButton, NCard, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
+  NInputGroup, NInputNumber, NModal, NRadio, NRadioGroup, NSelect, NSpace, NSpin, NSwitch,
+  NTabPane, NTabs, NTag, NText, NTooltip, useDialog, useMessage, useThemeVars
 } from 'naive-ui';
 import {
   RefreshOutline as RefreshIcon,
   SearchOutline as SearchIcon,
   SyncOutline as SyncIcon,
+  SettingsOutline as SettingsIcon,
+  FolderOpenOutline as FolderIcon,
+  ArrowBackOutline as ArrowBackIcon,
   TrashOutline as TrashIcon,
   CloudUploadOutline as PromoteIcon,
   ShareSocialOutline as ShareIcon,
@@ -226,6 +338,28 @@ const maintenanceSubmitting = ref(false);
 const refreshingCredit = ref(false);
 const registeringDevice = ref(false);
 const manualCreating = ref(false);
+const showSharedConfigModal = ref(false);
+const sharedConfigLoading = ref(false);
+const sharedConfigSaving = ref(false);
+const showSharedFolderModal = ref(false);
+const sharedFolderLoading = ref(false);
+const sharedFolderCid = ref('0');
+const sharedFolderParentCid = ref('0');
+const sharedFolderName = ref('根目录');
+const sharedFolderList = ref([]);
+const sharedConfigForm = reactive({
+  p115_shared_resource_enabled: false,
+  p115_shared_center_url: 'https://shared.55565576.xyz',
+  p115_shared_device_token: '',
+  p115_shared_resource_mode: 'permanent',
+  p115_shared_max_active_shares: 0,
+  p115_shared_cache_cid: '',
+  p115_shared_cache_name: '',
+  p115_shared_cache_retention_days: 7,
+  p115_shared_auto_promote_enabled: false,
+  p115_shared_auto_promote_tv_episodes: 2,
+  p115_shared_auto_promote_movie_progress: 80,
+});
 const showManualShareModal = ref(false);
 const mediaSearchKeyword = ref('');
 const mediaSearchLoading = ref(false);
@@ -730,8 +864,10 @@ const executeImport = async (row, mode) => {
       mode,
       context: {
         title: row.title || '',
-        tmdb_id: row.tmdb_id || '',
-        item_type: centerRowType(row) || row.item_type || '',
+        tmdb_id: row.tmdb_id || row.share_tmdb_id || '',
+        parent_series_tmdb_id: row.parent_series_tmdb_id || row.series_tmdb_id || '',
+        item_type: row.item_type || row.share_item_type || centerRowType(row) || '',
+        display_type: centerRowType(row) || '',
         season_number: row.season_number ?? null,
         episode_number: row.episode_number ?? null,
         year: row.release_year || '',
@@ -896,6 +1032,14 @@ const centerColumns = [
   }) },
 ];
 
+const sharedFolderColumns = [
+  { title: '目录名', key: 'name', render: row => h('span', { class: 'main-title' }, row.name || row.id) },
+  { title: '操作', key: 'actions', width: 160, render: row => h(NSpace, { size: 6 }, { default: () => [
+    h(NButton, { size: 'small', secondary: true, onClick: () => loadSharedFolders(row.id, row.name) }, { default: () => '进入' }),
+    h(NButton, { size: 'small', type: 'primary', secondary: true, onClick: () => selectSharedFolder(row) }, { default: () => '选择' }),
+  ] }) },
+];
+
 const ledgerColumns = [
   { title: '时间', key: 'created_at', width: 180, render: row => withLedgerTooltip(row, fmtDate(row.created_at)) },
   { title: '事件', key: 'event_type', width: 190, render: row => withLedgerTooltip(row, ledgerEventLabel(row.event_type)) },
@@ -908,6 +1052,89 @@ const ledgerColumns = [
   { title: '原因', key: 'reason', minWidth: 360, ellipsis: { tooltip: true }, render: row => withLedgerTooltip(row, row.reason || '-') },
 ];
 
+
+const applySharedConfig = (data = {}) => {
+  Object.assign(sharedConfigForm, {
+    p115_shared_resource_enabled: Boolean(data.p115_shared_resource_enabled),
+    p115_shared_center_url: data.p115_shared_center_url || 'https://shared.55565576.xyz',
+    p115_shared_device_token: data.p115_shared_device_token || '',
+    p115_shared_resource_mode: ['permanent', 'virtual'].includes(data.p115_shared_resource_mode) ? data.p115_shared_resource_mode : 'permanent',
+    p115_shared_max_active_shares: Number(data.p115_shared_max_active_shares ?? 0),
+    p115_shared_cache_cid: data.p115_shared_cache_cid || '',
+    p115_shared_cache_name: data.p115_shared_cache_name || '',
+    p115_shared_cache_retention_days: Number(data.p115_shared_cache_retention_days || 7),
+    p115_shared_auto_promote_enabled: Boolean(data.p115_shared_auto_promote_enabled),
+    p115_shared_auto_promote_tv_episodes: Number(data.p115_shared_auto_promote_tv_episodes || 2),
+    p115_shared_auto_promote_movie_progress: Number(data.p115_shared_auto_promote_movie_progress || 80),
+  });
+};
+
+const loadSharedConfig = async () => {
+  sharedConfigLoading.value = true;
+  try {
+    const res = await axios.get('/api/shared/resources/config');
+    applySharedConfig(res.data?.data || {});
+  } catch (e) {
+    message.error(e.response?.data?.message || '加载共享资源配置失败');
+  } finally {
+    sharedConfigLoading.value = false;
+  }
+};
+
+const openSharedConfigModal = async () => {
+  showSharedConfigModal.value = true;
+  await loadSharedConfig();
+};
+
+const saveSharedConfig = async () => {
+  sharedConfigSaving.value = true;
+  try {
+    if (!['permanent', 'virtual'].includes(sharedConfigForm.p115_shared_resource_mode)) sharedConfigForm.p115_shared_resource_mode = 'permanent';
+    sharedConfigForm.p115_shared_max_active_shares = Math.max(0, Math.floor(Number(sharedConfigForm.p115_shared_max_active_shares || 0)));
+    sharedConfigForm.p115_shared_cache_retention_days = Math.max(1, Math.floor(Number(sharedConfigForm.p115_shared_cache_retention_days || 7)));
+    sharedConfigForm.p115_shared_auto_promote_tv_episodes = Math.max(1, Math.floor(Number(sharedConfigForm.p115_shared_auto_promote_tv_episodes || 2)));
+    sharedConfigForm.p115_shared_auto_promote_movie_progress = Math.min(100, Math.max(1, Math.floor(Number(sharedConfigForm.p115_shared_auto_promote_movie_progress || 80))));
+    const res = await axios.post('/api/shared/resources/config', { ...sharedConfigForm });
+    applySharedConfig(res.data?.data || sharedConfigForm);
+    message.success(res.data?.message || '共享资源配置已保存');
+    showSharedConfigModal.value = false;
+    await loadSummary();
+  } catch (e) {
+    message.error(e.response?.data?.message || '保存共享资源配置失败');
+  } finally {
+    sharedConfigSaving.value = false;
+  }
+};
+
+const loadSharedFolders = async (cid = '0', name = '') => {
+  sharedFolderLoading.value = true;
+  try {
+    const res = await axios.get('/api/shared/resources/115/folders', { params: { cid: cid || '0' } });
+    sharedFolderList.value = res.data?.data || [];
+    sharedFolderCid.value = String(res.data?.cid || cid || '0');
+    const path = res.data?.path || [];
+    const idx = path.findIndex(p => String(p.id) === String(sharedFolderCid.value));
+    const parentNode = idx > 0 ? path[idx - 1] : null;
+    sharedFolderParentCid.value = String(parentNode?.id || '0');
+    sharedFolderName.value = name || path[path.length - 1]?.name || (sharedFolderCid.value === '0' ? '根目录' : sharedFolderCid.value);
+  } catch (e) {
+    message.error(e.response?.data?.message || '读取 115 目录失败');
+  } finally {
+    sharedFolderLoading.value = false;
+  }
+};
+
+const openSharedFolderModal = async () => {
+  showSharedFolderModal.value = true;
+  await loadSharedFolders(sharedConfigForm.p115_shared_cache_cid || '0', sharedConfigForm.p115_shared_cache_name || '');
+};
+
+const selectSharedFolder = (row) => {
+  sharedConfigForm.p115_shared_cache_cid = String(row?.id || sharedFolderCid.value || '0');
+  sharedConfigForm.p115_shared_cache_name = row?.name || sharedFolderName.value || sharedConfigForm.p115_shared_cache_cid;
+  showSharedFolderModal.value = false;
+  message.success(`已选择临时目录：${sharedConfigForm.p115_shared_cache_name}`);
+};
 
 const loadSummary = async () => { const res = await axios.get('/api/shared/resources/summary'); summary.value = res.data?.data || { local: {}, shares: {}, credit: {} }; };
 const loadVirtualItems = async () => { loading.value = true; try { const res = await axios.get('/api/shared/resources/virtual', { params: { ...virtualFilters, page: virtualPagination.page, page_size: virtualPagination.pageSize } }); virtualItems.value = res.data?.items || []; virtualPagination.itemCount = Number(res.data?.total || 0); } catch (e) { message.error(e.response?.data?.message || '加载虚拟资源失败'); } finally { loading.value = false; } };
@@ -966,7 +1193,7 @@ const registerCenterDevice = async () => {
   if (hasCenterDevice.value) {
     dialog.warning({
       title: '重置中心设备令牌',
-      content: '这会重新向共享中心申请 device_token，并覆盖本地 p115_shared_device_token。通常只在 token 失效或迁移中心后使用。确定继续吗？',
+      content: '这会重新向共享中心申请 device_token，并覆盖共享资源独立配置中的设备 Token。通常只在 token 失效或迁移中心后使用。确定继续吗？',
       positiveText: '重置',
       negativeText: '取消',
       onPositiveClick: doRegister,
