@@ -206,7 +206,7 @@
               <n-input-number v-model:value="sharedConfigForm.p115_shared_auto_promote_tv_episodes" :min="1" :max="99" :step="1" style="width: 180px;">
                 <template #suffix>集看完</template>
               </n-input-number>
-              <template #feedback>同一季虚拟入库剧集看完达到该集数后，自动转正已看分集；同剧后续追更会根据 media_metadata 的 SHA1/PickCode 判断是否强制永久转存。</template>
+              <template #feedback>同一季虚拟入库剧集看完达到该集数后，自动转正已看分集；后续追更会强制永久转存。</template>
             </n-form-item>
             <n-form-item label="电影触发条件">
               <n-input-number v-model:value="sharedConfigForm.p115_shared_auto_promote_movie_progress" :min="1" :max="100" :step="5" style="width: 180px;">
@@ -219,7 +219,7 @@
       </n-spin>
       <template #footer>
         <n-space justify="space-between" align="center">
-          <n-text depth="3">追更剧集只要已有物理入库分集，后续消费共享中心会自动改走永久转存。</n-text>
+          <n-text depth="3">追更剧集只要已有物理入库分集，后续自动改走永久转存。</n-text>
           <n-space>
             <n-button @click="showSharedConfigModal = false">取消</n-button>
             <n-button type="primary" :loading="sharedConfigSaving" @click="saveSharedConfig">保存配置</n-button>

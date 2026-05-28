@@ -883,7 +883,13 @@ def _consume_virtual(client: SharedCenterClient, sources: List[Dict[str, Any]], 
         has_mi = _save_raw_and_write_mediainfo(source, raw_map, mediainfo_path)
         _upsert_virtual_item(source, context, strm_path, mediainfo_path if has_mi else '', target_info=target_info)
         created += 1
-    return {'success': created > 0, 'mode': 'virtual', 'count': created, 'action_type': '共享虚拟'}
+    return {
+        'success': created > 0,
+        'mode': 'virtual',
+        'count': created,
+        'action_type': '虚拟入库',
+        'message': '虚拟入库成功' if created > 0 else '虚拟入库未生成任何资源',
+    }
 
 def _guess_se_from_source(src: Dict[str, Any], context: Dict[str, Any]):
     s_num = src.get('season_number') if src.get('season_number') not in (None, '') else context.get('season_number')
