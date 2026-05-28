@@ -160,11 +160,36 @@ def _candidate_rows_for_auto_promote(row: dict) -> List[dict]:
     return rows
 
 
+def _truthy(value) -> bool:
+    if value is True:
+        return True
+    if isinstance(value, str):
+        return value.strip().lower() in ('1', 'true', 'yes', 'on', 'played', 'complete', 'completed', '已播放')
+    if isinstance(value, (int, float)):
+        return value == 1
+    return False
+
+
+def _pick_nested_bool(*values) -> bool:
+    return any(_truthy(v) for v in values)
+
+
 def _playback_progress_percent(data: dict, playback_info: dict) -> float:
-    if playback_info.get('PlayedToCompletion') is True:
-        return 100.0
-    pos = playback_info.get('PositionTicks') or playback_info.get('PlaybackPositionTicks')
     item = (data or {}).get('Item') or {}
+    user_data = (data or {}).get('UserData') or item.get('UserData') or {}
+    if _pick_nested_bool(
+        playback_info.get('PlayedToCompletion'),
+        playback_info.get('IsPlayedToCompletion'),
+        user_data.get('Played'),
+        item.get('Played'),
+    ):
+        return 100.0
+    pos = (
+        playback_info.get('PositionTicks')
+        or playback_info.get('PlaybackPositionTicks')
+        or user_data.get('PlaybackPositionTicks')
+        or user_data.get('PlaybackPosition')
+    )
     runtime = playback_info.get('RunTimeTicks') or item.get('RunTimeTicks') or item.get('RunTime')
     try:
         pos = float(pos or 0)
@@ -174,6 +199,21 @@ def _playback_progress_percent(data: dict, playback_info: dict) -> float:
     except Exception:
         pass
     return 0.0
+
+
+def _episode_played_to_completion(data: dict, playback_info: dict) -> bool:
+    item = (data or {}).get('Item') or {}
+    user_data = (data or {}).get('UserData') or item.get('UserData') or {}
+    if _pick_nested_bool(
+        playback_info.get('PlayedToCompletion'),
+        playback_info.get('IsPlayedToCompletion'),
+        user_data.get('Played'),
+        item.get('Played'),
+    ):
+        return True
+    # Emby 某些客户端的 stop 事件不带 PlayedToCompletion，但会带接近片尾的 PositionTicks。
+    # 电视剧自动转正按“看完几集”计数，80% 以上按完播兜底，避免事件字段差异导致不计数。
+    return _playback_progress_percent(data, playback_info) >= 80.0
 
 
 def _promote_virtual_rows_async(rows: List[dict], reason: str):
@@ -246,13 +286,23 @@ def _handle_shared_virtual_playback_event(data: dict, event_type: str, item_id: 
 
     item_type_l = str(item_type or item.get('Type') or '').lower()
     if item_type_l == 'episode':
-        if event_type != 'playback.stop' or playback_info.get('PlayedToCompletion') is not True:
+        if event_type != 'playback.stop':
+            return
+        if not _episode_played_to_completion(data, playback_info):
+            logger.debug(
+                "  ➜ [共享虚拟转正] 剧集播放停止但未达到完播条件，跳过计数: item=%s, progress=%.1f%%",
+                item_id, _playback_progress_percent(data, playback_info)
+            )
             return
         for row in rows:
             _mark_virtual_completed_for_auto(row, user_id, event_type, playback_info)
         threshold = _cfg_int('', 'p115_shared_auto_promote_tv_episodes', 2, 1, 99)
         base_row = rows[0]
         watched_count = _completed_virtual_episode_count(base_row)
+        logger.info(
+            "  ➜ [共享虚拟转正] 虚拟剧集完播计数: watched=%s/%s, item=%s",
+            watched_count, threshold, item_id
+        )
         if watched_count >= threshold:
             _promote_virtual_rows_async(
                 _candidate_rows_for_auto_promote(base_row),

@@ -1181,6 +1181,16 @@ def emby_webhook():
         if not user_id or not item_id_from_webhook:
             return jsonify({"status": "event_ignored_missing_data"}), 200
 
+        # Webhook 只当传达室：播放事件先投递给共享虚拟入库任务。
+        # 这里不能依赖后面的 Series 反查或 user_media_data 更新成功，
+        # 虚拟入库的 Episode 在某些情况下反查父剧失败，会导致剧集自动转正事件被提前吞掉。
+        if event_type in ["playback.start", "playback.pause", "playback.stop"]:
+            try:
+                from tasks.shared_virtual_playback_tasks import dispatch_shared_virtual_playback_event
+                dispatch_shared_virtual_playback_event(data, event_type, item_id_from_webhook, item_type_from_webhook, user_id)
+            except Exception as e:
+                logger.warning(f"  ➜ [共享虚拟转正] 播放事件任务投递失败: {e}", exc_info=True)
+
         id_to_update_in_db = None
         if item_type_from_webhook in ['Movie', 'Series']:
             id_to_update_in_db = item_id_from_webhook
@@ -1254,12 +1264,6 @@ def emby_webhook():
                     # 如果获取失败，不影响主流程，日志中继续使用ID
                     pass
                 logger.trace(f"  ➜ Webhook: 已更新用户 '{user_name_for_log}' 对项目 '{item_name_for_log}' 的状态 ({event_type})。")
-                # Webhook 只当传达室：共享虚拟入库的自动转正/统计逻辑丢给 tasks 处理。
-                try:
-                    from tasks.shared_virtual_playback_tasks import dispatch_shared_virtual_playback_event
-                    dispatch_shared_virtual_playback_event(data, event_type, item_id_from_webhook, item_type_from_webhook, user_id)
-                except Exception as e:
-                    logger.warning(f"  ➜ [共享虚拟转正] 播放事件任务投递失败: {e}", exc_info=True)
                 return jsonify({"status": "user_data_updated"}), 200
             else:
                 logger.debug(f"  ➜ Webhook '{event_type}' 未包含可更新的用户数据，已忽略。")

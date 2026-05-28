@@ -869,11 +869,10 @@ def _consume_virtual(client: SharedCenterClient, sources: List[Dict[str, Any]], 
     for source in sources:
         file_name = source.get('file_name') or f"{source.get('sha1')}.mkv"
         rel_dir = _virtual_rel_dir(source, context)
-        target_info = {}
-        try:
-            target_info = ensure_virtual_target_by_rel_dir(rel_dir, client=P115Service.get_client())
-        except Exception as e:
-            logger.warning(f"  ➜ [共享虚拟] 解析正式转正目录失败，后续转正时会再次尝试: {e}")
+        # 虚拟入库阶段只生成本地 STRM，不提前在 115 正式媒体库创建目录。
+        # 否则用户还没转正，就会看到正式分类目录里多出空目录。
+        # 真正转正时 promote_virtual_item_internal 会按 strm_path 再解析/创建目标目录。
+        target_info = {'target_rel_dir': rel_dir}
         stem = os.path.splitext(_sanitize_filename(file_name))[0]
         strm_path = os.path.join(root, rel_dir, f"{stem}.strm")
         mediainfo_path = os.path.join(root, rel_dir, f"{stem}-mediainfo.json")
