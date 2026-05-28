@@ -1367,6 +1367,7 @@ def try_consume_shared_resource(
     season_number=None,
     year='',
     exclude_share_codes: List[str] | None = None,
+    force_mode: str | None = None,
 ) -> Dict[str, Any]:
     if not shared_center_enabled():
         return {'enabled': False, 'success': False, 'reported_gap': False}
@@ -1448,7 +1449,8 @@ def try_consume_shared_resource(
         'year': year,
     }
 
-    mode = shared_resource_mode()
+    override_mode = str(force_mode or '').strip().lower()
+    mode = override_mode if override_mode in ('permanent', 'virtual') else shared_resource_mode()
     matched_share_codes = sorted({_source_identity_code(src) for src in sources if _source_identity_code(src)})
     covered_episode_keys = _collect_episode_guard_keys(sources, context)
     if mode == 'virtual':
