@@ -440,6 +440,26 @@ def _flatten_search_results(search_data: Dict[str, Any]) -> List[Dict[str, Any]]
     return unique
 
 
+def _episode_transfer_disabled() -> bool:
+    return bool(settings_db.get_shared_resource_config().get('p115_shared_disable_episode_transfer', False))
+
+
+def _filter_sources_by_episode_transfer_policy(sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not _episode_transfer_disabled():
+        return list(sources or [])
+    filtered = []
+    blocked = 0
+    for src in sources or []:
+        item_type = str((src or {}).get('item_type') or '').strip().lower()
+        if item_type == 'episode':
+            blocked += 1
+            continue
+        filtered.append(src)
+    if blocked:
+        logger.info(f"  ➜ [共享资源] 已按配置过滤中心单集资源 {blocked} 条。")
+    return filtered
+
+
 def _get_local_strm_root() -> str:
     return str(_cfg('CONFIG_OPTION_LOCAL_STRM_ROOT', 'local_strm_root', '/mnt/media') or '/mnt/media')
 
@@ -1462,6 +1482,7 @@ def try_consume_shared_resource(
     try:
         data = client.search_sources(queries, limit_per_item=200)
         sources = _flatten_search_results(data)
+        sources = _filter_sources_by_episode_transfer_policy(sources)
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 查询中心共享池失败: {e}")
 

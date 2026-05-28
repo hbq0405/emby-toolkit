@@ -203,6 +203,7 @@ DEFAULT_SHARED_RESOURCE_CONFIG = {
     'p115_shared_center_url': 'https://shared.55565576.xyz',
     'p115_shared_device_token': '',
     'p115_shared_resource_mode': 'permanent',
+    'p115_shared_disable_episode_transfer': False,
     'p115_shared_max_active_shares': 0,
     'p115_shared_cache_cid': '',
     'p115_shared_cache_name': '',
@@ -260,6 +261,7 @@ def normalize_shared_resource_config(value: Optional[Dict[str, Any]] = None, bas
         'p115_shared_center_url': center_url,
         'p115_shared_device_token': str(merged.get('p115_shared_device_token') or '').strip(),
         'p115_shared_resource_mode': mode,
+        'p115_shared_disable_episode_transfer': _shared_bool(merged.get('p115_shared_disable_episode_transfer'), False),
         'p115_shared_max_active_shares': _shared_int(merged.get('p115_shared_max_active_shares'), 0, 0, 10000),
         'p115_shared_cache_cid': str(merged.get('p115_shared_cache_cid') or '').strip(),
         'p115_shared_cache_name': str(merged.get('p115_shared_cache_name') or '').strip(),
@@ -283,4 +285,3 @@ def save_shared_resource_config(value: Dict[str, Any]) -> Dict[str, Any]:
     payload = normalize_shared_resource_config(value if isinstance(value, dict) else {}, base=current)
     save_setting(SHARED_RESOURCE_CONFIG_KEY, payload)
     return payload
-

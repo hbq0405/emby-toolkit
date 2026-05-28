@@ -171,6 +171,13 @@
               </n-space>
             </n-radio-group>
           </n-form-item>
+          <n-form-item label="共享池单集转存">
+            <n-switch v-model:value="sharedConfigForm.p115_shared_disable_episode_transfer">
+              <template #checked>禁止单集</template>
+              <template #unchecked>允许单集</template>
+            </n-switch>
+            <template #feedback>仅影响共享池中心源消费；开启后会过滤 `Episode` 单集资源，电影和季包不受影响。</template>
+          </n-form-item>
           <n-form-item label="最大活跃分享数">
             <n-input-number v-model:value="sharedConfigForm.p115_shared_max_active_shares" :min="0" :max="10000" :step="10" style="width: 180px;">
               <template #suffix>条</template>
@@ -352,6 +359,7 @@ const sharedConfigForm = reactive({
   p115_shared_center_url: 'https://shared.55565576.xyz',
   p115_shared_device_token: '',
   p115_shared_resource_mode: 'permanent',
+  p115_shared_disable_episode_transfer: false,
   p115_shared_max_active_shares: 0,
   p115_shared_cache_cid: '',
   p115_shared_cache_name: '',
@@ -1059,6 +1067,7 @@ const applySharedConfig = (data = {}) => {
     p115_shared_center_url: data.p115_shared_center_url || 'https://shared.55565576.xyz',
     p115_shared_device_token: data.p115_shared_device_token || '',
     p115_shared_resource_mode: ['permanent', 'virtual'].includes(data.p115_shared_resource_mode) ? data.p115_shared_resource_mode : 'permanent',
+    p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
     p115_shared_max_active_shares: Number(data.p115_shared_max_active_shares ?? 0),
     p115_shared_cache_cid: data.p115_shared_cache_cid || '',
     p115_shared_cache_name: data.p115_shared_cache_name || '',
