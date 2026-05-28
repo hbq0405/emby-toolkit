@@ -12,7 +12,7 @@ from telethon.errors import SessionPasswordNeededError, AuthKeyUnregisteredError
 import config_manager
 import constants
 from database import settings_db
-from handler.p115_service import P115Service, SmartOrganizer
+from handler.p115_service import P115Service
 from utils import DEFAULT_TG_REGEX
 from database.connection import get_db_connection
 from gevent import spawn
@@ -1177,96 +1177,6 @@ class TGUserBotManager:
 def _process_tg_queue():
     import requests 
 
-    def _try_precise_organize_imported_share(client, target_cid, task, share_code, receive_code, import_res):
-        """频道/影巢消息转存成功后，尽量直接定位刚转存的文件并精准整理。\n\n        这样可以把原始 115 分享码挂到 SmartOrganizer 上；后续 ffprobe 生成 raw_ffprobe_json 时，\n        p115_media_analyzer 会自动上传 raw 并登记共享中心源，从而给用户计算贡献值。\n        """
-        try:
-            data = (import_res or {}).get('data') or {}
-            receive_title = data.get('receive_title') or data.get('file_name') or data.get('name') or ''
-            if not receive_title:
-                logger.debug("  ➜ [频道监听] 转存成功但未返回文件名，无法精准定位，交由待整理扫描兜底。")
-                return False
-
-            tmdb_id = str(task.get('tmdb_id') or '').strip()
-            if not tmdb_id:
-                logger.debug("  ➜ [频道监听] 缺少 TMDb ID，跳过共享中心自动登记，仅执行普通整理。")
-
-            media_type = 'tv' if str(task.get('item_type') or '').lower() in ('tv', 'series', 'season', 'episode') else 'movie'
-            season_number = task.get('season_number')
-            episode_number = task.get('episode_number')
-            is_pack_share = bool(task.get('is_pack') or task.get('is_completed_pack'))
-            # 频道整季包/完结包的 share_code 指向整个分享包；不能因为当前正在处理某一集文件就登记成 Episode。
-            item_type_for_center = 'Movie' if media_type == 'movie' else ('Season' if is_pack_share else ('Episode' if episode_number is not None else 'Season'))
-
-            target_item = None
-            for attempt in range(1, 4):
-                time.sleep(attempt * 2)
-                try:
-                    search_res = client.fs_files({'cid': target_cid, 'search_value': receive_title, 'limit': 20, 'record_open_time': 0, 'count_folders': 0})
-                    for item in (search_res or {}).get('data') or []:
-                        name = item.get('fn') or item.get('n') or item.get('file_name') or item.get('name')
-                        if name == receive_title:
-                            target_item = item
-                            break
-                    if target_item:
-                        logger.info(f"  ➜ [频道监听] 已定位转存文件，准备精准整理并挂载共享上报上下文: {receive_title}")
-                        break
-                except Exception as e:
-                    logger.debug(f"  ➜ [频道监听] 定位转存文件失败({attempt}/3): {e}")
-
-            if not target_item:
-                logger.debug(f"  ➜ [频道监听] 未能定位转存文件 '{receive_title}'，交由待整理扫描兜底。")
-                return False
-
-            shared_auto_context = {
-                'share_code': share_code,
-                'receive_code': receive_code or '',
-                'tmdb_id': tmdb_id,
-                'media_type': media_type,
-                'item_type': item_type_for_center,
-                'season_number': season_number,
-                'episode_number': None if is_pack_share else episode_number,
-                'is_pack': is_pack_share,
-                'is_completed_pack': bool(task.get('is_completed_pack')),
-                'share_type': 'season_pack' if is_pack_share and media_type == 'tv' else 'episode_file',
-                'source_granularity': 'season_pack' if is_pack_share and media_type == 'tv' else 'file',
-                'title': task.get('title') or receive_title,
-                'release_year': task.get('year'),
-                'source_provider': 'tg_channel_hdhive' if 'hdhive.com' in str(task.get('target_link') or '') else 'tg_channel',
-            }
-
-            root_item = {
-                'fid': target_item.get('fid') or target_item.get('file_id'),
-                'fn': receive_title,
-                'fc': target_item.get('fc') if target_item.get('fc') is not None else target_item.get('file_category', '1'),
-                'pid': target_cid,
-                'pc': target_item.get('pc') or target_item.get('pick_code'),
-                'sha1': target_item.get('sha1') or target_item.get('sha'),
-                'fs': target_item.get('fs') or target_item.get('size'),
-                '_forced_season': season_number,
-                '_forced_episode': None if is_pack_share else episode_number,
-                '_shared_auto_source_context': shared_auto_context,
-            }
-
-            organizer = SmartOrganizer(
-                client=client,
-                tmdb_id=tmdb_id,
-                media_type=media_type,
-                original_title=task.get('title') or receive_title,
-                use_ai=False,
-            )
-            if season_number is not None:
-                organizer.forced_season = season_number
-            organizer.shared_auto_source_context = shared_auto_context
-
-            target_sort_cid = organizer.get_target_cid()
-            ok = organizer.execute(root_item, target_sort_cid)
-            if ok:
-                logger.info("  ➜ [频道监听] 精准整理完成；如本次产生 raw_ffprobe_json，将自动登记共享中心。")
-            return bool(ok)
-        except Exception as e:
-            logger.warning(f"  ➜ [频道监听] 精准整理/共享自动登记链路失败，回退到普通扫描: {e}", exc_info=True)
-            return False
-
     while True:
         try:
             task = tg_task_queue.get() 
@@ -1452,9 +1362,6 @@ def _process_tg_queue():
                     res = client.share_import(share_code, receive_code, target_cid)
                     if res and res.get('state'):
                         logger.info(f"  ➜ [频道监听] 资源转存成功！正在触发整理...")
-                        precise_done = _try_precise_organize_imported_share(
-                            client, target_cid, task, share_code, receive_code, res
-                        )
                         
                         notify_types = config_manager.APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_NOTIFY_TYPES, constants.DEFAULT_TELEGRAM_NOTIFY_TYPES)
                         if 'transfer_success' in notify_types:
@@ -1467,8 +1374,7 @@ def _process_tg_queue():
                         try:
                             import task_manager
                             import threading
-                            # 精准整理成功后仍延迟踢一脚待整理扫描，兜底处理同包字幕/漏网文件；扫描目录为空会自动结束。
-                            threading.Timer(8.0 if precise_done else 3.0, task_manager.trigger_115_organize_task).start()
+                            threading.Timer(3.0, task_manager.trigger_115_organize_task).start()
                         except: pass
                     else:
                         err = res.get('error_msg') or res.get('message') or str(res) or '未知错误'

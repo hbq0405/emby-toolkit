@@ -301,10 +301,49 @@ def _completed_virtual_episode_count(row: dict) -> int:
 
 def _candidate_rows_for_auto_promote(row: dict) -> List[dict]:
     parent, season, _ = _virtual_identity_values(row or {})
-    rows = _candidate_completed_rows(row, include_promote_pending=False)
+    season_key = _safe_int(season, -1)
+    rows = []
+    if parent:
+        try:
+            with get_db_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT *
+                        FROM shared_virtual_items
+                        WHERE COALESCE(status, '') NOT IN ('deleted','promoted','promote_pending')
+                          AND (
+                                parent_series_tmdb_id=%s
+                             OR tmdb_id=%s
+                             OR COALESCE(raw_json->>'auto_promote_parent_series_tmdb_id', '')=%s
+                             OR COALESCE(raw_json->'context'->>'parent_series_tmdb_id', '')=%s
+                             OR COALESCE(raw_json->'context'->>'series_tmdb_id', '')=%s
+                             OR COALESCE(raw_json->'context'->>'parent_tmdb_id', '')=%s
+                             OR COALESCE(raw_json->'center_source'->>'parent_series_tmdb_id', '')=%s
+                             OR COALESCE(raw_json->'center_source'->>'series_tmdb_id', '')=%s
+                          )
+                        ORDER BY COALESCE(episode_number, 999999), updated_at DESC
+                        LIMIT 500
+                        """,
+                        (parent, parent, parent, parent, parent, parent, parent, parent),
+                    )
+                    fetched = [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            logger.warning(f"  ➜ [共享虚拟转正] 查询整季自动转正候选失败: parent={parent}, season={season}, err={e}")
+            fetched = []
+
+        seen_vid = set()
+        for r in fetched:
+            r_parent, r_season, _ = _virtual_identity_values(r)
+            if r_parent == parent and _safe_int(r_season, -1) == season_key:
+                vid = str(r.get('virtual_id') or '')
+                if vid and vid not in seen_vid:
+                    seen_vid.add(vid)
+                    rows.append(r)
+
     if rows:
         logger.info(
-            "  ➜ [共享虚拟转正] 自动转正候选: series=%s, season=%s, rows=%s",
+            "  ➜ [共享虚拟转正] 自动转正候选(整季): series=%s, season=%s, rows=%s",
             parent or '-', season if season is not None else '-', len(rows)
         )
         return rows
