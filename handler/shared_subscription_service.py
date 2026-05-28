@@ -82,6 +82,40 @@ def _safe_int(value, default=0):
         return default
 
 
+def _extract_episode_number_fallback(source: Dict[str, Any] | None = None, context: Dict[str, Any] | None = None):
+    source = source or {}
+    context = context or {}
+    for value in (
+        source.get('episode_number'),
+        context.get('episode_number'),
+    ):
+        episode = _safe_int(value, None)
+        if episode is not None:
+            return episode
+
+    text = ' '.join(
+        str(v or '').strip()
+        for v in (
+            source.get('file_name'),
+            source.get('title'),
+            context.get('file_name'),
+            context.get('title'),
+        )
+        if str(v or '').strip()
+    )
+    if not text:
+        return None
+
+    for pattern in (
+        r'(?i)\bS\d{1,2}\s*[._ -]*E(\d{1,4})\b',
+        r'第\s*(\d{1,4})\s*[集话話]',
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return _safe_int(match.group(1), None)
+    return None
+
+
 def _tv_parent_tmdb_id(context: Dict[str, Any] | None = None, source: Dict[str, Any] | None = None) -> str:
     """统一提取父剧 TMDb ID。
 
@@ -868,7 +902,7 @@ def _upsert_virtual_item(source: Dict[str, Any], context: Dict[str, Any], strm_p
                     source.get('item_type') or context.get('item_type') or 'Movie',
                     _tv_parent_tmdb_id(context, source) or None,
                     source.get('season_number') or context.get('season_number'),
-                    source.get('episode_number'),
+                    _extract_episode_number_fallback(source, context),
                     context.get('title') or source.get('title') or source.get('file_name'),
                     _safe_int(source.get('release_year') or context.get('year'), None),
                     _norm_sha1(source.get('sha1')),

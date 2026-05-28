@@ -2,6 +2,7 @@
 # 共享虚拟入库播放事件任务：Webhook 只负责转发，自动续期/自动转正都在这里处理。
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from typing import List
 
@@ -11,6 +12,39 @@ from database import settings_db
 from database.connection import get_db_connection
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_episode_number_from_row_text(row: dict):
+    """从剧集标题/文件名兜底提取集号，兼容旧虚拟行没落 episode_number 的情况。"""
+    row = row or {}
+    raw = _raw_json_dict(row.get('raw_json'))
+    context = raw.get('context') if isinstance(raw.get('context'), dict) else {}
+    source = raw.get('center_source') if isinstance(raw.get('center_source'), dict) else {}
+    text = ' '.join(
+        str(v or '').strip()
+        for v in (
+            row.get('title'),
+            row.get('file_name'),
+            row.get('strm_path'),
+            context.get('title'),
+            context.get('file_name'),
+            source.get('title'),
+            source.get('file_name'),
+        )
+        if str(v or '').strip()
+    )
+    if not text:
+        return None
+
+    for pattern in (
+        r'(?i)\bS\d{1,2}\s*[._ -]*E(\d{1,4})\b',
+        r'(?i)\bE[P]?\s*(\d{1,4})\b',
+        r'第\s*(\d{1,4})\s*[集话話]',
+    ):
+        match = re.search(pattern, text)
+        if match:
+            return _safe_int(match.group(1), None)
+    return None
 
 
 def _cfg_bool(name: str, fallback: str, default=False) -> bool:
@@ -116,7 +150,7 @@ def _virtual_episode_number(row: dict):
         n = _safe_int(value, None)
         if n is not None:
             return n
-    return None
+    return _extract_episode_number_from_row_text(row)
 
 
 def _virtual_identity_values(row: dict) -> tuple[str, int | None, int | None]:
