@@ -82,6 +82,43 @@ def _safe_int(value, default=0):
         return default
 
 
+def _tv_parent_tmdb_id(context: Dict[str, Any] | None = None, source: Dict[str, Any] | None = None) -> str:
+    """统一提取父剧 TMDb ID。
+
+    共享中心对 Episode/Season 的 tmdb_id 可能是“父剧 ID”，也可能是
+    “季/集自身 ID”。自动转正按同剧同季计数，必须优先使用 context / source
+    里的 parent_series_tmdb_id / parent_tmdb_id，不能把每一集自己的 tmdb_id
+    当成父剧，否则每集都会被单独统计成 watched=1。
+    """
+    ctx = context or {}
+    src = source or {}
+    item_type = str(src.get('item_type') or ctx.get('item_type') or '').strip()
+    season = src.get('season_number') if src.get('season_number') not in (None, '') else ctx.get('season_number')
+    episode = src.get('episode_number') if src.get('episode_number') not in (None, '') else ctx.get('episode_number')
+
+    for value in (
+        ctx.get('parent_series_tmdb_id'),
+        ctx.get('series_tmdb_id'),
+        ctx.get('parent_tmdb_id'),
+        src.get('parent_series_tmdb_id'),
+        src.get('series_tmdb_id'),
+    ):
+        value = str(value or '').strip()
+        if value:
+            return value
+
+    # 只有明确是剧/季，或没有集号时，才允许用 tmdb_id 当父剧兜底。
+    # 对 Episode 不要优先拿 source.tmdb_id，否则中心如果存的是“集自身 ID”，
+    # 自动转正计数会永远卡在 1/阈值。
+    if item_type in ('Series', 'Season') or (season not in (None, '') and episode in (None, '')):
+        for value in (ctx.get('tmdb_id'), src.get('tmdb_id')):
+            value = str(value or '').strip()
+            if value:
+                return value
+
+    return ''
+
+
 def _norm_sha1(value: str) -> str:
     return str(value or '').strip().upper()
 
@@ -265,7 +302,7 @@ def _episode_guard_key(parent_tmdb_id, season_number, episode_number) -> str:
 
 def _collect_episode_guard_keys(sources: List[Dict[str, Any]], context: Dict[str, Any]) -> List[str]:
     keys = set()
-    context_parent = str(context.get('parent_tmdb_id') or context.get('tmdb_id') or '').strip()
+    context_parent = _tv_parent_tmdb_id(context, None)
     context_key = _episode_guard_key(
         context_parent,
         context.get('season_number'),
@@ -277,8 +314,9 @@ def _collect_episode_guard_keys(sources: List[Dict[str, Any]], context: Dict[str
     for src in sources or []:
         if not isinstance(src, dict) or not _source_relevant_to_context(src, context):
             continue
+        parent = _tv_parent_tmdb_id(context, src) or context_parent
         key = _episode_guard_key(
-            context_parent or src.get('parent_series_tmdb_id') or src.get('tmdb_id'),
+            parent,
             src.get('season_number') if src.get('season_number') not in (None, '') else context.get('season_number'),
             src.get('episode_number') if src.get('episode_number') not in (None, '') else context.get('episode_number'),
         )
@@ -556,7 +594,7 @@ def _virtual_rel_dir(source: Dict[str, Any], context: Dict[str, Any]) -> str:
     if item_type in ('Episode', 'Season', 'Series') or str(context.get('item_type') or '') in ('Season', 'Series') or season is not None:
         media_type = 'tv'
 
-    tmdb_id = context.get('parent_tmdb_id') if media_type == 'tv' else None
+    tmdb_id = _tv_parent_tmdb_id(context, source) if media_type == 'tv' else None
     tmdb_id = tmdb_id or context.get('tmdb_id') or source.get('tmdb_id')
 
     try:
@@ -828,7 +866,7 @@ def _upsert_virtual_item(source: Dict[str, Any], context: Dict[str, Any], strm_p
                     source.get('source_key'),
                     str(source.get('tmdb_id') or context.get('tmdb_id') or ''),
                     source.get('item_type') or context.get('item_type') or 'Movie',
-                    context.get('parent_tmdb_id') or (str(source.get('tmdb_id')) if source.get('item_type') in ('Episode','Season','Series') else None),
+                    _tv_parent_tmdb_id(context, source) or None,
                     source.get('season_number') or context.get('season_number'),
                     source.get('episode_number'),
                     context.get('title') or source.get('title') or source.get('file_name'),
@@ -1448,7 +1486,9 @@ def try_consume_shared_resource(
         'title': title,
         'tmdb_id': str(tmdb_id or ''),
         'item_type': item_type,
-        'parent_tmdb_id': str(parent_tmdb_id or ''),
+        # parent_tmdb_id 保留给旧调用方；parent_series_tmdb_id 是新链路唯一推荐字段。
+        'parent_tmdb_id': str(parent_tmdb_id or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or ''),
+        'parent_series_tmdb_id': str(parent_tmdb_id or item.get('parent_series_tmdb_id') or item.get('series_tmdb_id') or ''),
         'season_number': season_number,
         'episode_number': item.get('episode_number'), # ★ 确保 context 里有 episode_number
         'year': year,
@@ -1496,7 +1536,10 @@ def consume_center_sources(source_ids: List[str], mode: str = 'permanent', conte
     ctx.setdefault('title', first.get('title') or first.get('file_name') or '')
     ctx.setdefault('tmdb_id', first.get('tmdb_id') or '')
     ctx.setdefault('item_type', first.get('item_type') or '')
+    ctx.setdefault('parent_series_tmdb_id', first.get('parent_series_tmdb_id') or first.get('series_tmdb_id') or ctx.get('parent_tmdb_id') or '')
+    ctx.setdefault('parent_tmdb_id', ctx.get('parent_series_tmdb_id') or first.get('parent_series_tmdb_id') or first.get('series_tmdb_id') or '')
     ctx.setdefault('season_number', first.get('season_number'))
+    ctx.setdefault('episode_number', first.get('episode_number'))
     ctx.setdefault('year', first.get('release_year'))
 
     selected_mode = str(mode or '').strip().lower()
