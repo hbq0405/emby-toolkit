@@ -82,6 +82,157 @@ def _norm_sha1(value: str) -> str:
     return str(value or '').strip().upper()
 
 
+def _share_import_resp_text(resp: Any) -> str:
+    try:
+        return json.dumps(resp, ensure_ascii=False)
+    except Exception:
+        return str(resp or '')
+
+
+def _share_import_resp_code(resp: Any) -> str:
+    if isinstance(resp, dict):
+        for key in ('errno', 'code', 'errNo'):
+            value = resp.get(key)
+            if value not in (None, ''):
+                return str(value)
+    return ''
+
+
+def _is_share_import_already_saved(resp: Any) -> bool:
+    """115 返回“你已经转存过该文件”时，只代表本账号幂等限制，不代表中心共享源失效。"""
+    code = _share_import_resp_code(resp)
+    text = _share_import_resp_text(resp).lower()
+    return (
+        code == '4100024'
+        or '4100024' in text
+        or '你已经转存过' in text
+        or '已经转存过' in text
+        or '转存过该文件' in text
+    )
+
+
+def _share_import_success(resp: Any) -> bool:
+    text = _share_import_resp_text(resp).lower()
+    if _is_share_import_already_saved(resp):
+        return True
+    if isinstance(resp, dict):
+        if resp.get('state') is True or resp.get('success') is True:
+            return True
+        code = _share_import_resp_code(resp)
+        if code in ('0', '200'):
+            return True
+    return any(k in text for k in ('已存在', '已经转存', '转存过', 'already', 'exist'))
+
+
+def _is_share_import_local_account_issue(resp: Any) -> bool:
+    """本机账号/频率/空间/幂等问题，不应上报中心 failed。"""
+    if _is_share_import_already_saved(resp):
+        return True
+    text = _share_import_resp_text(resp).lower()
+    return any(k in text for k in (
+        '空间不足', '超过限制', '转存超限', '任务上限', '频繁',
+        '770004', '990001', '4100010', '4100025',
+        'quota', 'limit', 'too many', 'rate',
+    ))
+
+
+def _is_share_import_source_dead(resp: Any) -> bool:
+    """只有明确死链/提取码错误/源文件删除，才允许向中心上报 failed。"""
+    text = _share_import_resp_text(resp).lower()
+    return any(k in text for k in (
+        '分享已取消', '分享已失效', '分享不存在', '取消分享', '已取消', '已失效',
+        '提取码错误', '访问码错误', '密码错误',
+        '文件(夹)已被移动或删除', '已被移动或删除', '源文件不存在',
+        'share not found', 'expired', 'cancelled', 'canceled', 'not found', 'deleted',
+    ))
+
+
+def _find_local_p115_file_by_sha1(sha1: str) -> Dict[str, Any]:
+    """按 SHA1 兜底判断本账号是否已经有这个文件。
+
+    只查 p115_filesystem_cache：这是本地 115 文件树缓存，命中即说明该 SHA1
+    已经在本账号某处存在；因此无需再次 share_import，也绝不能因为 115 返回
+    4100024 去污染中心共享源状态。
+    """
+    sha1 = _norm_sha1(sha1)
+    if not sha1:
+        return {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, parent_id, name, local_path, sha1, pick_code, size, updated_at
+                    FROM p115_filesystem_cache
+                    WHERE sha1 IS NOT NULL
+                      AND sha1 <> ''
+                      AND UPPER(sha1) = %s
+                    ORDER BY
+                        CASE WHEN COALESCE(pick_code, '') <> '' THEN 0 ELSE 1 END,
+                        updated_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (sha1,),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else {}
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 按 SHA1 查询 p115_filesystem_cache 失败: sha1={sha1}, err={e}")
+    return {}
+
+
+def _source_relevant_to_context(src: Dict[str, Any], context: Dict[str, Any]) -> bool:
+    """判断中心源是否和本次消费目标相关，用于按 SHA1 跳过重复转存。"""
+    if not src or not context:
+        return True
+    item_type = str(context.get('item_type') or '').strip()
+    if item_type == 'Episode':
+        ctx_s = _safe_int(context.get('season_number'), -999)
+        ctx_e = _safe_int(context.get('episode_number'), -999)
+        src_s_raw = src.get('season_number')
+        src_e_raw = src.get('episode_number')
+        # 中心季包/旧数据可能没有集号；这种记录仍视为与当前目标相关。
+        if src_e_raw not in (None, ''):
+            if _safe_int(src_e_raw, -998) != ctx_e:
+                return False
+        if src_s_raw not in (None, '') and ctx_s != -999:
+            if _safe_int(src_s_raw, -998) != ctx_s:
+                return False
+        return True
+    if item_type == 'Season':
+        ctx_s = _safe_int(context.get('season_number'), -999)
+        src_s_raw = src.get('season_number')
+        return src_s_raw in (None, '') or ctx_s == -999 or _safe_int(src_s_raw, -998) == ctx_s
+    if item_type == 'Movie':
+        src_type = str(src.get('item_type') or '').strip()
+        return src_type in ('', 'Movie')
+    return True
+
+
+def _local_existing_hit_for_import_group(src: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    """同一 share_code 可能聚合多条中心源；优先用本次目标相关源的 SHA1 查本地。"""
+    rows = src.get('_group_sources') if isinstance(src, dict) else None
+    rows = [r for r in (rows or [src]) if isinstance(r, dict)]
+    relevant_rows = [r for r in rows if _source_relevant_to_context(r, context)] or rows
+
+    # 先查与本次目标相关的 SHA1；若命中，说明同一个文件已经在本账号存在。
+    for row in relevant_rows:
+        sha1 = _norm_sha1(row.get('sha1'))
+        if not sha1:
+            continue
+        local = _find_local_p115_file_by_sha1(sha1)
+        if local:
+            return {'source': row, 'local': local}
+
+    # 最后兜底查代表行，防止中心旧数据缺少 season/episode 导致相关性判断失准。
+    sha1 = _norm_sha1(src.get('sha1') if isinstance(src, dict) else '')
+    if sha1:
+        local = _find_local_p115_file_by_sha1(sha1)
+        if local:
+            return {'source': src, 'local': local}
+    return {}
+
+
 def _sanitize_filename(name: str) -> str:
     name = str(name or '').strip()
     name = re.sub(r'[\\/:*?"<>|]+', ' ', name)
@@ -1039,7 +1190,13 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
             if raw:
                 _cache_center_raw_as_local_mediainfo(src, raw)
 
-    # 同一个季/剧分享可能返回多集，按 share_code 去重，避免重复转存同一分享包。
+    # 同一个季/剧分享可能返回多集，按 share_code 去重，避免重复转存同一分享包；
+    # 同时保留同包全部 source，便于用目标 SHA1 查 p115_filesystem_cache 做本地兜底。
+    grouped_sources = {}
+    for src in sources:
+        code = src.get('share_code') or src.get('source_id')
+        grouped_sources.setdefault(code, []).append(src)
+
     unique = []
     seen_share = set()
     for src in sources:
@@ -1047,9 +1204,12 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
         if code in seen_share:
             continue
         seen_share.add(code)
+        src = dict(src)
+        src['_group_sources'] = grouped_sources.get(code) or [src]
         unique.append(src)
 
     ok = 0
+    skipped_existing = 0
     errors = []
     for src in unique:
         share_code = src.get('share_code') or ''
@@ -1057,58 +1217,91 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
         if not share_code:
             errors.append(f"{src.get('file_name')}: 缺少分享码")
             continue
+
+        # 关键兜底：真正调用 115 share_import 前，先按中心源 SHA1 查本地 115 文件树缓存。
+        # 命中说明这个文件已经在本账号存在，直接跳过转存，避免 115 返回 4100024 后再误伤中心源。
+        local_hit = _local_existing_hit_for_import_group(src, context)
+        if local_hit:
+            hit_src = local_hit.get('source') or src
+            local = local_hit.get('local') or {}
+            skipped_existing += 1
+            logger.info(
+                "  ➜ [共享资源] 本地 p115_filesystem_cache 已存在相同 SHA1，跳过重复转存："
+                f"share={share_code}, sha1={_norm_sha1(hit_src.get('sha1'))}, "
+                f"local={local.get('name') or local.get('id')}, pick_code={local.get('pick_code') or '-'}"
+            )
+            continue
+
         resp = p115.share_import(share_code, receive_code, target_cid)
         logger.info(
             f"  ➜ [共享资源] 115分享转存返回：share={share_code}, "
             f"resp={str(resp)[:300]}"
         )
-        text = json.dumps(resp, ensure_ascii=False) if isinstance(resp, dict) else str(resp)
-        
-        # =====================================================================
-        # ★ 核心修复 1：将 4100024 (你已经转存过该文件) 视为成功！
-        # =====================================================================
-        is_already_saved = isinstance(resp, dict) and str(resp.get('errno')) == '4100024'
-        
-        success = isinstance(resp, dict) and (
-            resp.get('state') is True 
-            or str(resp.get('errno')) in ('0', '4100024') 
-            or str(resp.get('code')) in ('0', '200') 
-            or '已存在' in text
-            or '已经转存过' in text
-        )
-        
+        text = _share_import_resp_text(resp)
+        is_already_saved = _is_share_import_already_saved(resp)
+        success = _share_import_success(resp)
+
         if success:
             ok += 1
-            try:
-                # 如果是已经转存过，向中心汇报时附带说明，但状态依然是 success
-                msg = 'already saved' if is_already_saved else 'permanent import submitted'
-                client.report_transfer(src.get('source_id'), 'success', expected_sha1=_norm_sha1(src.get('sha1')), expected_size=_safe_int(src.get('size'), 0) or None, message=msg)
-            except Exception:
-                pass
+            if is_already_saved:
+                # 4100024 是本账号已经接收过该分享，不是本次真实转存成功；不要向中心重复报 success，
+                # 但也绝不能报 failed。触发一次整理扫描，让已存在文件尽快被识别入库。
+                logger.info(
+                    f"  ➜ [共享资源] 115 提示本账号已转存过，视为本地幂等命中，跳过中心 failed 上报：share={share_code}"
+                )
+            else:
+                try:
+                    client.report_transfer(
+                        src.get('source_id'),
+                        'success',
+                        expected_sha1=_norm_sha1(src.get('sha1')),
+                        expected_size=_safe_int(src.get('size'), 0) or None,
+                        message='permanent import submitted',
+                    )
+                except Exception:
+                    pass
         else:
             errors.append(f"{src.get('file_name')}: {text[:120]}")
-            
-            # =====================================================================
-            # ★ 核心修复 2：如果是用户自身的限制，绝对不要向中心上报 failed 误伤分享者
-            # 4100010: 空间不足 | 4100025: 转存超限 | 770004/990001: API 频率限制
-            # =====================================================================
-            is_user_limit = any(kw in text for kw in ['空间不足', '超过限制', '频繁', '上限', '770004', '990001', '4100010'])
-            
-            if not is_user_limit:
+
+            if _is_share_import_local_account_issue(resp):
+                logger.warning(
+                    "  ➜ [共享资源] 转存失败属于本账号限制/幂等问题，跳过向中心上报 failed，"
+                    f"避免误伤资源提供者：share={share_code}, resp={text[:180]}"
+                )
+            elif _is_share_import_source_dead(resp):
                 try:
-                    client.report_transfer(src.get('source_id'), 'failed', expected_sha1=_norm_sha1(src.get('sha1')), expected_size=_safe_int(src.get('size'), 0) or None, message=f'external_share_import_failed: {text[:160]}')
+                    client.report_transfer(
+                        src.get('source_id'),
+                        'failed',
+                        expected_sha1=_norm_sha1(src.get('sha1')),
+                        expected_size=_safe_int(src.get('size'), 0) or None,
+                        message=f'external_share_import_failed: {text[:160]}',
+                    )
                 except Exception:
                     pass
             else:
-                logger.warning(f"  ➜ [共享资源] 触发用户自身网盘限制(空间/次数/频率)，跳过向中心上报失败，以免误伤资源提供者。")
-                
+                logger.warning(
+                    "  ➜ [共享资源] 转存失败原因不确定，先只记本地错误，不上报中心 failed："
+                    f"share={share_code}, resp={text[:180]}"
+                )
+
     if ok > 0:
         kick_result = _kick_115_organize_detached(
             reason=f"共享资源转存成功 {ok} 个",
             delay=3.0,
         )
         logger.info(f"  ➜ [共享资源] 115 待整理扫描触发结果: {kick_result}")
-    return {'success': ok > 0, 'mode': 'permanent', 'count': ok, 'action_type': '共享永久转存', 'errors': errors}
+    elif skipped_existing > 0:
+        logger.info(f"  ➜ [共享资源] 本地已存在 {skipped_existing} 个共享源，未重复调用 115 转存。")
+
+    return {
+        'success': (ok > 0 or skipped_existing > 0),
+        'mode': 'permanent',
+        'count': ok,
+        'skipped_existing': skipped_existing,
+        'action_type': '共享永久转存',
+        'errors': errors,
+    }
 
 
 def try_consume_shared_resource(item: Dict[str, Any], title: str, tmdb_id, item_type: str, parent_tmdb_id=None, season_number=None, year='') -> Dict[str, Any]:

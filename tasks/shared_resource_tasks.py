@@ -1684,14 +1684,23 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
                 year=row.get('release_year') or '',
             )
             if result.get('success'):
-                consumed += 1
-                logger.info(
-                    "  ➜ [共享资源维护] 追更缺集命中中心资源并已%s：%s S%02dE%02d",
-                    '虚拟入库' if result.get('mode') == 'virtual' else '永久转存',
-                    row.get('season_title') or parent_tmdb,
-                    _safe_int(row.get('season_number'), 0),
-                    _safe_int(row.get('episode_number'), 0),
-                )
+                if result.get('skipped_existing') and not _safe_int(result.get('count'), 0):
+                    skipped += 1
+                    logger.info(
+                        "  ➜ [共享资源维护] 追更缺集命中中心资源，但本地 SHA1 已存在，跳过重复转存：%s S%02dE%02d",
+                        row.get('season_title') or parent_tmdb,
+                        _safe_int(row.get('season_number'), 0),
+                        _safe_int(row.get('episode_number'), 0),
+                    )
+                else:
+                    consumed += 1
+                    logger.info(
+                        "  ➜ [共享资源维护] 追更缺集命中中心资源并已%s：%s S%02dE%02d",
+                        '虚拟入库' if result.get('mode') == 'virtual' else '永久转存',
+                        row.get('season_title') or parent_tmdb,
+                        _safe_int(row.get('season_number'), 0),
+                        _safe_int(row.get('episode_number'), 0),
+                    )
             elif result.get('reported_gap'):
                 gaps += 1
         except Exception as e:

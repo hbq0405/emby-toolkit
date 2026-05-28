@@ -802,6 +802,8 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_parent_id ON p115_filesystem_cache (parent_id);")
                     # 加速 "全局搜索某个文件"
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_name ON p115_filesystem_cache (name);")
+                    # 加速共享资源按 SHA1 判断本账号是否已存在同文件，避免重复 share_import。
+                    cursor.execute("CREATE INDEX IF NOT EXISTS idx_p115_sha1_upper ON p115_filesystem_cache (UPPER(sha1)) WHERE sha1 IS NOT NULL AND sha1 <> '';")
 
                     # 12.5 【共享资源】加速虚拟入库、我的共享和贡献值页面
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_status_updated ON shared_virtual_items (status, updated_at DESC);")

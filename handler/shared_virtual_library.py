@@ -168,17 +168,32 @@ def _normalize_node(node: Dict[str, Any], parent_id: str = '') -> Dict[str, Any]
     }
 
 
+def _resp_text(resp: Any) -> str:
+    try:
+        return json.dumps(resp, ensure_ascii=False)
+    except Exception:
+        return str(resp or '')
+
+
+def _resp_code(resp: Any) -> str:
+    if isinstance(resp, dict):
+        for key in ('errno', 'code', 'errNo'):
+            value = resp.get(key)
+            if value not in (None, ''):
+                return str(value)
+    return ''
+
+
 def _resp_ok(resp: Any) -> bool:
-    if not isinstance(resp, dict):
-        return False
-    if resp.get('state') is True or resp.get('success') is True:
-        return True
-    code = resp.get('code') or resp.get('errno') or resp.get('errNo')
-    if code in (0, '0', 200, '200', 4100024, '4100024'):
-        return True
-    text = json.dumps(resp, ensure_ascii=False).lower()
+    text = _resp_text(resp).lower()
+    if isinstance(resp, dict):
+        if resp.get('state') is True or resp.get('success') is True:
+            return True
+        code = _resp_code(resp)
+        if code in ('0', '200', '4100024'):
+            return True
     # 115 有时重复转存/秒传会返回“已存在/已经转存过”，对播放而言可以继续定位文件。
-    return any(k in text for k in ('已存在', '已经转存', '转存过', 'already', 'exist'))
+    return any(k in text for k in ('已存在', '已经转存', '转存过', 'already', 'exist', '4100024'))
 
 
 def _is_already_transferred_resp(resp: Any) -> bool:
@@ -188,16 +203,54 @@ def _is_already_transferred_resp(resp: Any) -> bool:
     但如果本地临时区已经找不到目标文件，就必须把 115 原始语义返回给用户，
     避免显示“转存成功但未定位到目标视频”这种容易误导的提示。
     """
-    if not isinstance(resp, dict):
-        return False
-    code = resp.get('errno') or resp.get('code') or resp.get('errNo')
-    if code in (4100024, '4100024'):
+    code = _resp_code(resp)
+    if code == '4100024':
         return True
+    text = _resp_text(resp).lower()
+    return any(k in text for k in ('4100024', '你已经转存过', '已经转存过', '已经转存', '转存过该文件'))
+
+
+def _find_local_p115_file_by_sha1(sha1: str) -> Dict[str, Any]:
+    sha1 = _norm_sha1(sha1)
+    if not sha1:
+        return {}
     try:
-        text = json.dumps(resp, ensure_ascii=False).lower()
-    except Exception:
-        text = str(resp).lower()
-    return any(k in text for k in ('你已经转存过', '已经转存过', '已经转存', '转存过该文件'))
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, parent_id, name, local_path, sha1, pick_code, size, updated_at
+                    FROM p115_filesystem_cache
+                    WHERE sha1 IS NOT NULL
+                      AND sha1 <> ''
+                      AND UPPER(sha1) = %s
+                      AND COALESCE(pick_code, '') <> ''
+                    ORDER BY updated_at DESC NULLS LAST
+                    LIMIT 1
+                    """,
+                    (sha1,),
+                )
+                row = cur.fetchone()
+                return dict(row) if row else {}
+    except Exception as e:
+        logger.warning(f"  ➜ [共享虚拟播放] 按 SHA1 查询 p115_filesystem_cache 失败: sha1={sha1}, err={e}")
+    return {}
+
+
+def _node_from_p115_cache_row(row: Dict[str, Any]) -> Dict[str, Any]:
+    if not row:
+        return {}
+    return {
+        'fid': str(row.get('id') or ''),
+        'parent_id': str(row.get('parent_id') or ''),
+        'name': str(row.get('name') or ''),
+        'pick_code': str(row.get('pick_code') or ''),
+        'sha1': _norm_sha1(row.get('sha1')),
+        'size': _safe_int(row.get('size'), 0),
+        'is_dir': False,
+        '_from_p115_filesystem_cache': True,
+        'local_path': row.get('local_path'),
+    }
 
 
 def _share_import_error_message(resp: Any) -> str:
@@ -854,6 +907,29 @@ def ensure_playable_by_emby_item(
                 cached=True,
             )
 
+        # 全局 SHA1 兜底：如果正式库/待整理目录已经有同 SHA1 文件，直接复用 pickcode，
+        # 不写入 shared_virtual_items 的 real_fid，避免过期清理误删正式媒体库文件。
+        local_row = _find_local_p115_file_by_sha1(item.get('sha1') or '')
+        local_node = _node_from_p115_cache_row(local_row)
+        if local_node and local_node.get('pick_code'):
+            logger.info(
+                f"  ➜ [共享虚拟播放] p115_filesystem_cache 已存在目标 SHA1，跳过临时转存并复用 pickcode: "
+                f"{local_node.get('name') or item.get('file_name')}"
+            )
+            shared_virtual_db.mark_virtual_played(virtual_id)
+            return {
+                'matched': True,
+                'success': True,
+                'virtual_id': virtual_id,
+                'pick_code': local_node.get('pick_code'),
+                'real_pick_code': local_node.get('pick_code'),
+                'real_fid': local_node.get('fid'),
+                'file_name': local_node.get('name') or item.get('file_name') or display_name,
+                'title': item.get('title') or display_name,
+                'cached': True,
+                'local_existing': True,
+            }
+
         shared_virtual_db.mark_virtual_transferring(virtual_id, '播放触发临时转存')
         logger.info(f"  ➜ [共享虚拟播放] 开始临时转存: {item.get('title') or item.get('file_name')} -> cid={cache_cid}")
 
@@ -867,7 +943,32 @@ def ensure_playable_by_emby_item(
             return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg}
 
         if not _resp_ok(import_resp):
-            msg = f"115 share_import 返回失败: {json.dumps(import_resp, ensure_ascii=False)[:300]}"
+            msg = f"115 share_import 返回失败: {_resp_text(import_resp)[:300]}"
+            if _is_already_transferred_resp(import_resp):
+                local_row = _find_local_p115_file_by_sha1(item.get('sha1') or '')
+                local_node = _node_from_p115_cache_row(local_row)
+                if local_node and local_node.get('pick_code'):
+                    logger.info(
+                        f"  ➜ [共享虚拟播放] 115 返回已转存过，且本地 SHA1 缓存命中，复用 pickcode: "
+                        f"{local_node.get('name') or item.get('file_name')}"
+                    )
+                    shared_virtual_db.mark_virtual_played(virtual_id)
+                    return {
+                        'matched': True,
+                        'success': True,
+                        'virtual_id': virtual_id,
+                        'pick_code': local_node.get('pick_code'),
+                        'real_pick_code': local_node.get('pick_code'),
+                        'real_fid': local_node.get('fid'),
+                        'file_name': local_node.get('name') or item.get('file_name') or display_name,
+                        'title': item.get('title') or display_name,
+                        'cached': True,
+                        'local_existing': True,
+                    }
+                shared_virtual_db.mark_virtual_error(virtual_id, msg)
+                # 4100024 是本账号已接收过，不是中心源失效，不上报 failed。
+                return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg, 'raw': import_resp}
+
             shared_virtual_db.mark_virtual_error(virtual_id, msg)
             _report_transfer_to_center(item, {}, result='failed', message=msg)
             return {'matched': True, 'success': False, 'virtual_id': virtual_id, 'message': msg, 'raw': import_resp}
