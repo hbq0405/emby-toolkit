@@ -63,16 +63,13 @@ def _virtual_raw_parts(row: dict) -> tuple[dict, dict]:
 
 
 def _virtual_series_key(row: dict) -> str:
-    """同剧统计键。优先使用 raw_json.context 里的父剧 ID。
-
-    v7 之前有些虚拟单集会把每一集自己的 tmdb_id 写进
-    parent_series_tmdb_id，导致自动转正按“每集一个父剧”统计，日志永远
-    watched=1/阈值。这里优先读 context/source 的 parent_series_tmdb_id /
-    parent_tmdb_id，并兼容旧行。
-    """
+    """同剧统计键。优先使用播放完成时写入的 auto_promote_* 身份。"""
     row = row or {}
-    context, source = _virtual_raw_parts(row)
+    raw = _raw_json_dict(row.get('raw_json'))
+    context = raw.get('context') if isinstance(raw.get('context'), dict) else {}
+    source = raw.get('center_source') if isinstance(raw.get('center_source'), dict) else {}
     for value in (
+        raw.get('auto_promote_parent_series_tmdb_id'),
         context.get('parent_series_tmdb_id'),
         context.get('series_tmdb_id'),
         context.get('parent_tmdb_id'),
@@ -91,8 +88,15 @@ def _virtual_series_key(row: dict) -> str:
 
 
 def _virtual_season_number(row: dict):
-    context, source = _virtual_raw_parts(row)
-    for value in (row.get('season_number'), context.get('season_number'), source.get('season_number')):
+    raw = _raw_json_dict((row or {}).get('raw_json'))
+    context = raw.get('context') if isinstance(raw.get('context'), dict) else {}
+    source = raw.get('center_source') if isinstance(raw.get('center_source'), dict) else {}
+    for value in (
+        raw.get('auto_promote_season_number'),
+        row.get('season_number'),
+        context.get('season_number'),
+        source.get('season_number'),
+    ):
         n = _safe_int(value, None)
         if n is not None:
             return n
@@ -100,8 +104,15 @@ def _virtual_season_number(row: dict):
 
 
 def _virtual_episode_number(row: dict):
-    context, source = _virtual_raw_parts(row)
-    for value in (row.get('episode_number'), context.get('episode_number'), source.get('episode_number')):
+    raw = _raw_json_dict((row or {}).get('raw_json'))
+    context = raw.get('context') if isinstance(raw.get('context'), dict) else {}
+    source = raw.get('center_source') if isinstance(raw.get('center_source'), dict) else {}
+    for value in (
+        raw.get('auto_promote_episode_number'),
+        row.get('episode_number'),
+        context.get('episode_number'),
+        source.get('episode_number'),
+    ):
         n = _safe_int(value, None)
         if n is not None:
             return n
@@ -141,10 +152,11 @@ def _find_virtual_rows_for_emby_item(emby_item_id: str, item_path: str = '') -> 
     return []
 
 
-def _mark_virtual_completed_for_auto(row: dict, user_id: str, event_type: str, playback_info: dict):
+def _mark_virtual_completed_for_auto(row: dict, user_id: str, event_type: str, playback_info: dict) -> dict:
+    """标记当前虚拟分集已完播，并返回刷新后的数据库行。"""
     vid = str((row or {}).get('virtual_id') or '').strip()
     if not vid:
-        return
+        return row or {}
     parent, season, episode = _virtual_identity_values(row or {})
     payload = {
         'auto_promote_completed': True,
@@ -156,22 +168,32 @@ def _mark_virtual_completed_for_auto(row: dict, user_id: str, event_type: str, p
         'auto_promote_season_number': season,
         'auto_promote_episode_number': episode,
     }
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                UPDATE shared_virtual_items
-                SET auto_promote_completed=TRUE,
-                    parent_series_tmdb_id=COALESCE(NULLIF(%s, ''), parent_series_tmdb_id),
-                    season_number=COALESCE(%s, season_number),
-                    episode_number=COALESCE(%s, episode_number),
-                    raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
-                    updated_at=NOW()
-                WHERE virtual_id=%s
-                """,
-                (parent, season, episode, json.dumps(payload, ensure_ascii=False), vid),
-            )
-        conn.commit()
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE shared_virtual_items
+                    SET auto_promote_completed=TRUE,
+                        parent_series_tmdb_id=COALESCE(NULLIF(%s, ''), parent_series_tmdb_id),
+                        season_number=COALESCE(%s, season_number),
+                        episode_number=COALESCE(%s, episode_number),
+                        raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
+                        updated_at=NOW()
+                    WHERE virtual_id=%s
+                    """,
+                    (parent, season, episode, json.dumps(payload, ensure_ascii=False), vid),
+                )
+                changed = cur.rowcount
+                if changed <= 0:
+                    logger.warning("  ➜ [共享虚拟转正] 完播标记未命中虚拟资源: virtual_id=%s", vid)
+                cur.execute("SELECT * FROM shared_virtual_items WHERE virtual_id=%s", (vid,))
+                refreshed = cur.fetchone()
+            conn.commit()
+            return dict(refreshed) if refreshed else (row or {})
+    except Exception as e:
+        logger.warning(f"  ➜ [共享虚拟转正] 写入完播标记失败: virtual_id={vid}, err={e}", exc_info=True)
+        return row or {}
 
 
 def _candidate_completed_rows(row: dict, include_promote_pending: bool = True) -> List[dict]:
@@ -179,7 +201,16 @@ def _candidate_completed_rows(row: dict, include_promote_pending: bool = True) -
     if not parent:
         return []
     season_key = _safe_int(season, -1)
-    status_filter = "status NOT IN ('deleted')" if include_promote_pending else "status NOT IN ('deleted','promoted','promote_pending')"
+    if include_promote_pending:
+        status_filter = "COALESCE(status, '') <> 'deleted'"
+    else:
+        status_filter = "COALESCE(status, '') NOT IN ('deleted','promoted','promote_pending')"
+    completed_filter = """
+    (
+        COALESCE(auto_promote_completed, FALSE) IS TRUE
+        OR LOWER(COALESCE(raw_json->>'auto_promote_completed', '')) IN ('true','1','yes','on')
+    )
+    """
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -188,11 +219,11 @@ def _candidate_completed_rows(row: dict, include_promote_pending: bool = True) -
                     SELECT *
                     FROM shared_virtual_items
                     WHERE {status_filter}
-                      AND auto_promote_completed IS TRUE
-                      AND COALESCE(season_number, -1)=COALESCE(%s, -1)
+                      AND {completed_filter}
                       AND (
                             parent_series_tmdb_id=%s
                          OR tmdb_id=%s
+                         OR COALESCE(raw_json->>'auto_promote_parent_series_tmdb_id', '')=%s
                          OR COALESCE(raw_json->'context'->>'parent_series_tmdb_id', '')=%s
                          OR COALESCE(raw_json->'context'->>'series_tmdb_id', '')=%s
                          OR COALESCE(raw_json->'context'->>'parent_tmdb_id', '')=%s
@@ -200,16 +231,17 @@ def _candidate_completed_rows(row: dict, include_promote_pending: bool = True) -
                          OR COALESCE(raw_json->'center_source'->>'series_tmdb_id', '')=%s
                       )
                     ORDER BY COALESCE(episode_number, 999999), updated_at DESC
-                    LIMIT 80
+                    LIMIT 200
                     """,
-                    (season_key, parent, parent, parent, parent, parent, parent, parent),
+                    (parent, parent, parent, parent, parent, parent, parent, parent),
                 )
                 rows = [dict(r) for r in cur.fetchall()]
     except Exception as e:
-        logger.debug(f"  ➜ [共享虚拟转正] 查询已看虚拟剧集失败: parent={parent}, season={season}, err={e}")
+        logger.warning(f"  ➜ [共享虚拟转正] 查询已看虚拟剧集失败: parent={parent}, season={season}, err={e}")
         return []
 
-    # 再用 Python 按统一身份过滤一次，兼容已写脏的旧行。
+    # 再用 Python 按统一身份过滤一次：这里会读取 raw_json 顶层 auto_promote_*，
+    # 兼容 v8 已经写入完播标记但列值/旧 context 不一致的脏行。
     filtered = []
     seen_vid = set()
     for r in rows:
@@ -390,11 +422,21 @@ def _handle_shared_virtual_playback_event(data: dict, event_type: str, item_id: 
                 item_id, _playback_progress_percent(data, playback_info)
             )
             return
+        marked_rows = []
         for row in rows:
-            _mark_virtual_completed_for_auto(row, user_id, event_type, playback_info)
+            marked_rows.append(_mark_virtual_completed_for_auto(row, user_id, event_type, playback_info))
         threshold = _cfg_int('', 'p115_shared_auto_promote_tv_episodes', 2, 1, 99)
-        base_row = rows[0]
+        base_row = marked_rows[0] if marked_rows else rows[0]
         watched_count = _completed_virtual_episode_count(base_row)
+        if watched_count == 0:
+            # 理论上刚标记的当前集至少应计 1；如果查询被旧脏数据绊住，
+            # 也不要让日志继续显示 0/阈值 误导排查。
+            current_keys = set()
+            for r in marked_rows:
+                _, s_no, e_no = _virtual_identity_values(r)
+                if e_no is not None:
+                    current_keys.add((s_no if s_no is not None else -1, e_no))
+            watched_count = len(current_keys)
         parent, season, _ = _virtual_identity_values(base_row)
         logger.info(
             "  ➜ [共享虚拟转正] 虚拟剧集完播计数: watched=%s/%s, item=%s, series=%s, season=%s",
