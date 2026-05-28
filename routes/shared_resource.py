@@ -44,6 +44,23 @@ def _center_request_kwargs(timeout: int) -> Dict[str, Any]:
     return kwargs
 
 
+def _client_app_version() -> str:
+    """当前 ETK 客户端版本号。
+
+    中心服务器版本门禁只认请求头 X-Client-Version；
+    这里直接读取 constants.APP_VERSION，避免再增加一套用户配置。
+    """
+    return str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0').strip() or '0.0.0'
+
+
+def _center_headers_for_cfg(cfg: Dict[str, Any]) -> Dict[str, str]:
+    return {
+        'X-Device-Token': str((cfg or {}).get('device_token') or '').strip(),
+        'Content-Type': 'application/json',
+        'X-Client-Version': _client_app_version(),
+    }
+
+
 def _request_json() -> Dict[str, Any]:
     """安全读取 JSON 请求体。
 
@@ -85,7 +102,7 @@ def _fetch_center_credit() -> Dict[str, Any]:
     if not cfg["device_token"]:
         return {"ok": False, "message": "未配置共享中心 device_token"}
 
-    headers = {"X-Device-Token": cfg["device_token"]}
+    headers = _center_headers_for_cfg(cfg)
     me_resp = requests.get(f"{cfg['center_url']}/api/v1/me", headers=headers, **_center_request_kwargs(12))
     me_resp.raise_for_status()
     me = me_resp.json() or {}
@@ -407,7 +424,7 @@ def _center_headers():
     cfg = _get_shared_config()
     if not cfg['device_token']:
         raise RuntimeError('未配置共享中心 device_token')
-    return cfg, {'X-Device-Token': cfg['device_token'], 'Content-Type': 'application/json'}
+    return cfg, _center_headers_for_cfg(cfg)
 
 
 
@@ -440,7 +457,7 @@ def _cancel_center_sources_for_share(record_id: int, record: Dict[str, Any]) -> 
     if not share_code and not source_ids and not sha1_list:
         return {'ok': True, 'skipped': True, 'message': '本地没有 share_code/source_id/sha1，无需撤销中心源'}
 
-    headers = {'X-Device-Token': cfg['device_token'], 'Content-Type': 'application/json'}
+    headers = _center_headers_for_cfg(cfg)
     payload = {
         'share_code': share_code or None,
         'source_ids': sorted(source_ids),

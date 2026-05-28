@@ -10,6 +10,32 @@ import constants
 
 logger = logging.getLogger(__name__)
 
+
+def _app_version() -> str:
+    return str(getattr(constants, 'APP_VERSION', '0.0.0') or '0.0.0').strip() or '0.0.0'
+
+
+def _client_user_agent() -> str:
+    return f"ETK/{_app_version()}"
+
+
+def _raise_for_center_error(resp):
+    if resp.ok:
+        return
+    if resp.status_code == 426:
+        try:
+            body = resp.json()
+        except Exception:
+            body = {}
+        min_version = body.get('min_client_version') if isinstance(body, dict) else ''
+        client_version = body.get('client_version') if isinstance(body, dict) else ''
+        message = body.get('message') if isinstance(body, dict) else ''
+        raise RuntimeError(
+            message or f"共享中心拒绝服务：当前客户端版本 {client_version or _app_version()} 低于中心要求 {min_version or '未知'}，请升级 ETK 后再使用共享资源。"
+        )
+    raise RuntimeError(f"共享中心请求失败: {resp.status_code} {resp.text[:200]}")
+
+
 def _request_kwargs(timeout: int) -> Dict[str, Any]:
     """共享中心 HTTP 请求参数。
 
@@ -52,10 +78,13 @@ class SharedCenterClient:
         return bool(self.base_url and self.device_token)
 
     def _headers(self) -> Dict[str, str]:
+        version = _app_version()
         return {
             'X-Device-Token': self.device_token,
-            'X-Client-Version': str(getattr(constants, 'APP_VERSION', '') or ''),
+            'X-Client-Version': version,
+            'X-ETK-Version': version,
             'Content-Type': 'application/json',
+            'User-Agent': _client_user_agent(),
         }
 
     def _post(self, path: str, payload: Dict[str, Any], timeout: int = 20) -> Dict[str, Any]:
@@ -63,8 +92,7 @@ class SharedCenterClient:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
         resp = requests.post(url, headers=self._headers(), json=payload, **_request_kwargs(timeout))
-        if not resp.ok:
-            raise RuntimeError(f"共享中心请求失败: {resp.status_code} {resp.text[:200]}")
+        _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
     def _get(self, path: str, timeout: int = 15) -> Dict[str, Any]:
@@ -72,8 +100,7 @@ class SharedCenterClient:
             raise RuntimeError('共享中心地址或 device_token 未配置')
         url = f"{self.base_url}{path}"
         resp = requests.get(url, headers=self._headers(), **_request_kwargs(timeout))
-        if not resp.ok:
-            raise RuntimeError(f"共享中心请求失败: {resp.status_code} {resp.text[:200]}")
+        _raise_for_center_error(resp)
         return resp.json() if resp.text else {}
 
 
@@ -90,18 +117,28 @@ class SharedCenterClient:
             'name': str(name or '').strip() or 'ETK Device',
             'install_id': str(install_id or '').strip(),
         }
+        headers = {
+            'X-Client-Version': _app_version(),
+            'X-ETK-Version': _app_version(),
+            'Content-Type': 'application/json',
+            'User-Agent': _client_user_agent(),
+        }
         url = f"{self.base_url}/api/v1/devices/register"
-        resp = requests.post(url, json=payload, **_request_kwargs(20))
+        resp = requests.post(url, headers=headers, json=payload, **_request_kwargs(20))
         if resp.status_code == 404 and admin_token:
             # 兼容未升级的私有中心：使用管理员接口注册，但这种方式无法按 install_id 幂等。
             admin_url = f"{self.base_url}/api/v1/admin/devices/register"
+            admin_headers = dict(headers)
+            admin_headers['X-Admin-Token'] = str(admin_token)
             resp = requests.post(
                 admin_url,
-                headers={'X-Admin-Token': str(admin_token)},
+                headers=admin_headers,
                 json={'name': payload['name']},
                 **_request_kwargs(20),
             )
         if not resp.ok:
+            if resp.status_code == 426:
+                _raise_for_center_error(resp)
             raise RuntimeError(f"共享中心设备注册失败: {resp.status_code} {resp.text[:300]}")
         return resp.json() if resp.text else {}
 
