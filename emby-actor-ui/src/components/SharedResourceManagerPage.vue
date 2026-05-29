@@ -1007,6 +1007,7 @@ const importCenterSource = (row, mode) => {
 };
 
 const centerGroupKey = (row) => {
+  if (row?.display_group_key) return row.display_group_key;
   const type = centerRowType(row);
   const tmdb = row.tmdb_id || row.share_tmdb_id || row.parent_series_tmdb_id || '';
   const title = row.title || row.media_title || '';
