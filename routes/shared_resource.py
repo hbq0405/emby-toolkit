@@ -4331,11 +4331,24 @@ def _center_is_episode_row(item: Dict[str, Any]) -> bool:
 def _center_is_pack_like_row(item: Dict[str, Any]) -> bool:
     t = _center_norm_item_type(item.get('item_type'))
     share_type = _center_norm_item_type(item.get('share_type'))
+
+    # 只有中心明确折叠后的行，或来源语义明确是季包/剧集包时，才按 Pack。
+    # v3 曾把 single_rows 也带上的 pack_item_count=1 当成 Pack，导致电影显示成“1集”，
+    # 单集也被误折叠成多版本。这里不能用 pack_item_count 作为首要判断。
+    if item.get('is_collapsed_pack') is True:
+        return True
     if t in {'season', 'seasons', 'season_pack', 'series', 'series_pack', 'tv', 'show'}:
         return True
-    if share_type in {'season_pack', 'series_pack'}:
+    if share_type in {'season_pack', 'series_pack', 'tv_pack'}:
         return True
-    if item.get('pack_item_count'):
+
+    # 历史/外部数据 item_type 可能为空；只有在没有电影/单集语义、且确实包含多文件时，
+    # 才把 pack_item_count 作为兜底包判断。
+    try:
+        pack_count = int(item.get('pack_item_count') or 0)
+    except Exception:
+        pack_count = 0
+    if pack_count > 1 and t not in {'movie', 'movies', 'film', 'movie_file', 'movie_folder', 'episode', 'episodes', 'episode_file'}:
         return True
     return False
 
@@ -4404,12 +4417,16 @@ def _center_display_type(item: Dict[str, Any]) -> str:
     """中心资源库只暴露三类：Movie / Pack / Episode。"""
     if not item:
         return 'Unknown'
-    if item.get('is_collapsed_pack') or _center_is_pack_like_row(item):
-        return 'Pack'
+
+    # 判断优先级必须是：电影 > 单集 > 明确剧集包。
+    # single_rows 会携带 pack_item_count=1 给前端做文件状态标记，不能因此覆盖 Movie/Episode。
     if _center_is_movie_row(item):
         return 'Movie'
     if _center_is_episode_row(item):
         return 'Episode'
+    if item.get('is_collapsed_pack') or _center_is_pack_like_row(item):
+        return 'Pack'
+
     # 兜底：有季号没集号，多半是季包；否则按原类型保留。
     if item.get('season_number') not in [None, ''] and item.get('episode_number') in [None, '']:
         return 'Pack'
