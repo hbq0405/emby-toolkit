@@ -185,8 +185,11 @@ class SharedCenterClient:
 
 
 
-    def upload_raw_ffprobe(self, sha1: str, raw_ffprobe_json: Dict[str, Any], size=None) -> Dict[str, Any]:
-        """上传 raw_ffprobe_json 到共享中心，供其他设备复用媒体信息。"""
+    def upload_raw_ffprobe(self, sha1: str, raw_ffprobe_json: Dict[str, Any], size=None, summary_json: Dict[str, Any] = None) -> Dict[str, Any]:
+        """上传 raw_ffprobe_json 到共享中心，供其他设备复用媒体信息。
+
+        完整 RAW 仍然上传保存；summary_json 只给中心资源库列表页减小传输体积。
+        """
         sha1 = str(sha1 or '').strip().upper()
         if not sha1 or not raw_ffprobe_json:
             return {'ok': False, 'message': '缺少 sha1 或 raw_ffprobe_json'}
@@ -194,6 +197,7 @@ class SharedCenterClient:
             'sha1': sha1,
             'size': size,
             'raw_ffprobe_json': raw_ffprobe_json,
+            'summary_json': summary_json or None,
         }
         return self._post('/api/v1/rawffprobe/upload', payload, timeout=60)
 
@@ -211,6 +215,7 @@ class SharedCenterClient:
                 'sha1': sha1,
                 'size': item.get('size'),
                 'raw_ffprobe_json': raw,
+                'summary_json': item.get('summary_json') or None,
             })
         if not payload_items:
             return {'ok': True, 'ok_count': 0, 'fail_count': 0, 'items': []}

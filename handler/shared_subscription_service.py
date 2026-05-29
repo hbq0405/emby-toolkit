@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Tuple
 import config_manager
 import constants
 from database.connection import get_db_connection
-from database import settings_db
+from database import settings_db, shared_share_db
 from handler.p115_service import P115Service, P115CacheManager, SmartOrganizer
 from handler.p115_media_analyzer import P115MediaAnalyzerMixin
 from handler.shared_center_client import SharedCenterClient, shared_center_enabled, shared_resource_mode
@@ -1035,6 +1035,252 @@ def _load_center_raw_map(client: SharedCenterClient, sources: List[Dict[str, Any
     return raw_map
 
 
+def _backup_instruction_from_report(report_resp: Dict[str, Any] | None) -> Dict[str, Any]:
+    if not isinstance(report_resp, dict):
+        return {}
+    info = report_resp.get('backup_share') or report_resp.get('backup_instruction') or {}
+    if isinstance(info, dict) and info.get('should_create'):
+        return info
+    return {}
+
+
+def _node_id_from_115(node: Dict[str, Any]) -> str:
+    return str(
+        (node or {}).get('cid')
+        or (node or {}).get('file_id')
+        or (node or {}).get('fid')
+        or (node or {}).get('id')
+        or ''
+    ).strip()
+
+
+def _node_name_from_115(node: Dict[str, Any]) -> str:
+    return str(
+        (node or {}).get('file_name')
+        or (node or {}).get('fn')
+        or (node or {}).get('name')
+        or (node or {}).get('n')
+        or ''
+    ).strip()
+
+
+def _node_sha1_from_115(node: Dict[str, Any]) -> str:
+    return _norm_sha1((node or {}).get('sha1') or (node or {}).get('sha') or (node or {}).get('file_sha1'))
+
+
+def _node_is_dir_from_115(node: Dict[str, Any]) -> bool:
+    if not isinstance(node, dict):
+        return False
+    for key in ('is_dir', 'is_folder', 'folder'):
+        if key in node:
+            return bool(node.get(key))
+    fc = str(node.get('fc') or node.get('file_category') or '').strip()
+    if fc == '0':
+        return True
+    if str(node.get('type') or '').lower() in ('folder', 'dir', 'directory'):
+        return True
+    return not bool(_node_sha1_from_115(node)) and not os.path.splitext(_node_name_from_115(node))[1]
+
+
+def _list_115_children(client, cid: str, limit: int = 1000) -> List[Dict[str, Any]]:
+    try:
+        resp = client.fs_files({'cid': str(cid), 'limit': limit, 'offset': 0, 'show_dir': 1, 'record_open_time': 0, 'count_folders': 0})
+        data = (resp or {}).get('data') or []
+        return [x for x in data if isinstance(x, dict)]
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询 115 子节点失败: cid={cid}, err={e}")
+        return []
+
+
+def _find_received_backup_root(client, import_resp: Dict[str, Any], target_cid: str, sources: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """根据 share_import 返回和待整理目录定位刚转存的根节点，供备份分享使用。"""
+    data = (import_resp or {}).get('data') if isinstance(import_resp, dict) else {}
+    data = data if isinstance(data, dict) else {}
+    receive_title = str(data.get('receive_title') or data.get('title') or '').strip()
+    expected_sha1s = {_norm_sha1(s.get('sha1')) for s in (sources or []) if _norm_sha1(s.get('sha1'))}
+
+    children = _list_115_children(client, target_cid)
+    # 优先按接收标题在待整理目录下定位，避免误把 target_cid 自己拿去分享。
+    if receive_title:
+        for node in children:
+            if _node_name_from_115(node) == receive_title:
+                return {
+                    'fid': _node_id_from_115(node),
+                    'name': receive_title,
+                    'is_dir': _node_is_dir_from_115(node),
+                    'source': 'target_children_title',
+                    'node': node,
+                }
+
+    # 电影文件转存时，115 可能直接落文件；按 SHA1 兜底定位。
+    if expected_sha1s:
+        for node in children:
+            if _node_sha1_from_115(node) in expected_sha1s:
+                return {
+                    'fid': _node_id_from_115(node),
+                    'name': _node_name_from_115(node),
+                    'is_dir': False,
+                    'source': 'target_children_sha1',
+                    'node': node,
+                }
+
+    # 最后才使用 share_import 返回里的明确 ID。pid 在不同接口里有歧义，所以只作为兜底。
+    for key in ('fid', 'file_id', 'cid', 'id', 'pid'):
+        value = str(data.get(key) or '').strip()
+        if value and value != str(target_cid):
+            return {
+                'fid': value,
+                'name': receive_title or value,
+                'is_dir': bool(_safe_int(data.get('recv_folder_count'), 0) > 0),
+                'source': f'import_resp_{key}',
+                'node': data,
+            }
+    return {}
+
+
+def _build_backup_share_items(client, root: Dict[str, Any], sources: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    try:
+        from routes import shared_resource as sr
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 无法加载备份分享文件收集辅助函数: {e}")
+        return []
+
+    files = sr._collect_files_from_115(
+        client,
+        str(root.get('fid') or ''),
+        root_name=root.get('name') or '',
+        max_depth=8,
+        assume_dir=bool(root.get('is_dir')),
+    )
+    source_by_sha1 = {_norm_sha1(s.get('sha1')): s for s in (sources or []) if _norm_sha1(s.get('sha1'))}
+    for item in files or []:
+        sha1 = _norm_sha1(item.get('sha1'))
+        src = source_by_sha1.get(sha1) or {}
+        if src:
+            item['tmdb_id'] = str(src.get('tmdb_id') or item.get('tmdb_id') or '')
+            item['item_type'] = src.get('item_type') or item.get('item_type')
+            item['season_number'] = src.get('season_number') if src.get('season_number') not in (None, '') else item.get('season_number')
+            item['episode_number'] = src.get('episode_number') if src.get('episode_number') not in (None, '') else item.get('episode_number')
+            item['size'] = item.get('size') or src.get('size') or 0
+            item['file_name'] = item.get('file_name') or src.get('file_name') or ''
+    return files or []
+
+
+def _create_backup_share_after_import(
+    center_client: SharedCenterClient,
+    p115,
+    src: Dict[str, Any],
+    import_resp: Dict[str, Any],
+    target_cid: str,
+    report_resp: Dict[str, Any] | None,
+    context: Dict[str, Any],
+) -> Dict[str, Any]:
+    """中心下发备份指令后，用刚转存到本机 115 的资源创建一个普通分享并登记中心。"""
+    instruction = _backup_instruction_from_report(report_resp)
+    if not instruction:
+        return {'created': False, 'skipped': True, 'reason': 'no_instruction'}
+
+    item_type = str(instruction.get('item_type') or src.get('item_type') or '').strip().lower()
+    if item_type == 'episode':
+        return {'created': False, 'skipped': True, 'reason': 'episode_no_backup'}
+
+    group_sources = [x for x in (src.get('_group_sources') or []) if isinstance(x, dict)] or [src]
+    instruction_sources = [x for x in (instruction.get('sources') or []) if isinstance(x, dict)]
+    sources = instruction_sources or group_sources
+
+    root = _find_received_backup_root(p115, import_resp, target_cid, sources)
+    if not root.get('fid'):
+        return {'created': False, 'skipped': False, 'reason': 'received_root_not_found', 'instruction': instruction}
+
+    try:
+        share_resp = p115.share_create([str(root['fid'])], share_duration=-1, receive_code=None)
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 创建备份分享失败: root={root}, err={e}")
+        return {'created': False, 'skipped': False, 'reason': 'share_create_exception', 'message': str(e)}
+    if not share_resp or not share_resp.get('state'):
+        logger.warning(f"  ➜ [共享资源] 创建备份分享失败: root={root}, resp={share_resp}")
+        return {'created': False, 'skipped': False, 'reason': 'share_create_failed', 'response': share_resp}
+
+    share_data = share_resp.get('data') or {}
+    share_code = share_data.get('share_code') or share_resp.get('share_code')
+    receive_code = share_data.get('receive_code') or ''
+    share_url = share_data.get('share_url') or (f"https://115.com/s/{share_code}" if share_code else '')
+    is_season_pack = item_type == 'season'
+
+    files = _build_backup_share_items(p115, root, sources)
+    if not files:
+        logger.warning(f"  ➜ [共享资源] 备份分享已创建但未能收集文件明细，暂不登记中心: share={share_code}, root={root}")
+        return {'created': True, 'registered': False, 'reason': 'no_files', 'share_code': share_code, 'share_response': share_resp}
+
+    try:
+        from routes import shared_resource as sr
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 备份分享无法加载登记辅助函数: {e}")
+        return {'created': True, 'registered': False, 'reason': 'helper_unavailable', 'share_code': share_code}
+
+    standard = sources[0] if sources else src
+    record = shared_share_db.create_share_record({
+        'share_code': share_code,
+        'receive_code': receive_code,
+        'share_url': share_url,
+        'share_type': 'season_pack' if is_season_pack else ('movie_folder' if root.get('is_dir') else 'movie_file'),
+        'root_fid': str(root.get('fid') or ''),
+        'root_name': root.get('name') or standard.get('title') or standard.get('file_name') or str(root.get('fid') or ''),
+        'root_is_dir': bool(root.get('is_dir')),
+        'tmdb_id': str(standard.get('tmdb_id') or context.get('tmdb_id') or ''),
+        'item_type': 'Season' if is_season_pack else 'Movie',
+        'parent_series_tmdb_id': context.get('parent_series_tmdb_id') or context.get('parent_tmdb_id') or None,
+        'season_number': standard.get('season_number') if standard.get('season_number') not in (None, '') else context.get('season_number'),
+        'episode_number': None,
+        'title': standard.get('title') or context.get('title') or root.get('name') or '',
+        'release_year': standard.get('release_year') or context.get('year'),
+        'status': 'pending_review',
+        'review_status': 'pending_review',
+        'center_status': 'not_reported',
+        'raw_json': {
+            'auto_backup_share': True,
+            'backup_instruction': instruction,
+            'source_share_code': src.get('share_code'),
+            'import_response': import_resp,
+            'backup_share_response': share_resp,
+            'received_root': root,
+        },
+    })
+    count = shared_share_db.replace_share_items(record['id'], files)
+    record = shared_share_db.update_share_record(record['id'], item_count=count) or record
+
+    cfg, headers = sr._center_headers()
+    raw_result = sr._upload_share_raw_ffprobe_to_center(record['id'], cfg, headers, force=True)
+    items = shared_share_db.list_share_items(record['id']) or []
+    register_result = sr._register_share_items_to_center(record, items, cfg, headers, source_provider='user_share')
+    ok = int(register_result.get('reported') or 0)
+    errors = list(register_result.get('errors') or [])
+    center_status = 'reported' if ok == len(items) and not errors else ('partial' if ok > 0 else 'failed')
+    shared_share_db.update_share_record(
+        record['id'],
+        center_status=center_status,
+        status='reported' if center_status == 'reported' else record.get('status'),
+        reported_count=ok,
+        reported_at='NOW()' if ok > 0 else None,
+        last_error='自动备份分享登记成功' if center_status == 'reported' else '自动备份分享登记未完成：' + '；'.join(errors[:5]),
+    )
+    logger.info(
+        "  ➜ [共享资源] 已按中心指令创建备份分享：share=%s, files=%s, registered=%s/%s, raw=%s",
+        share_code, len(items), ok, len(items), raw_result,
+    )
+    return {
+        'created': True,
+        'registered': ok > 0,
+        'share_code': share_code,
+        'record_id': record.get('id'),
+        'reported': ok,
+        'total': len(items),
+        'center_status': center_status,
+        'raw_result': raw_result,
+        'errors': errors,
+    }
+
+
 def _cache_center_raw_as_local_mediainfo(src: Dict[str, Any], raw: Dict[str, Any]) -> bool:
     """中心 RAW -> 本地 p115_mediainfo_cache.mediainfo_json，供 WashingService 读取。"""
     sha1 = _norm_sha1(src.get('sha1'))
@@ -1401,16 +1647,32 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
                     f"  ➜ [共享资源] 115 提示本账号已转存过，视为本地幂等命中，跳过中心 failed 上报：share={share_code}"
                 )
             else:
+                report_resp = None
                 try:
-                    client.report_transfer(
+                    report_resp = client.report_transfer(
                         src.get('source_id'),
                         'success',
                         expected_sha1=_norm_sha1(src.get('sha1')),
                         expected_size=_safe_int(src.get('size'), 0) or None,
                         message='permanent import submitted',
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"  ➜ [共享资源] 上报转存成功失败，跳过备份分享触发: share={share_code}, err={e}")
+
+                if report_resp:
+                    backup_result = _create_backup_share_after_import(
+                        client,
+                        p115,
+                        src,
+                        resp,
+                        target_cid,
+                        report_resp,
+                        context,
+                    )
+                    if backup_result.get('created'):
+                        logger.info(f"  ➜ [共享资源] 自动备份分享处理完成: {backup_result}")
+                    elif not backup_result.get('skipped'):
+                        logger.warning(f"  ➜ [共享资源] 自动备份分享未完成: {backup_result}")
         else:
             errors.append(f"{src.get('file_name')}: {text[:120]}")
 
