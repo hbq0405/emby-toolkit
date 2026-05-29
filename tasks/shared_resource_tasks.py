@@ -2455,28 +2455,34 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
                 logger.warning(f"  ➜ [共享资源维护] 同步贡献值失败: {e}")
             total['credit'] = False
 
-        msg = (
-            f"共享资源维护完成：登记缺口 {total.get('reported_gaps', 0)}，"
-            f"清理临时转存 {total.get('expired_virtual_cache_cleaned', 0)}，"
-            f"自动创建分享 {total.get('auto_created_shares', 0)}，"
-            f"完结汇总 创建季包 {total.get('season_rollup_created', 0)}、清理单集 {total.get('season_rollup_cancelled', 0)}/{total.get('season_rollup_failed', 0)}，"
-            f"违规分享清理 {total.get('share_invalid_deleted', 0)}/{total.get('share_invalid_failed', 0)}，"
-            f"缺raw清理 {total.get('share_raw_missing_deleted', 0)}/{total.get('share_raw_missing_failed', 0)}，"
-            f"水位清理 {total.get('share_pruned', 0)}/{total.get('share_prune_failed', 0)}，"
-            f"中心残留清理 {total.get('center_orphan_cancelled', 0)}/{total.get('center_orphan_failed', 0)}，"
-            f"追更命中 {total.get('follow_consumed', 0)}/{total.get('follow_missing', 0)}，"
-            f"登记追更缺口 {total.get('follow_gaps', 0)}，"
-            f"检查分享 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，"
-            f"中心补登 {total.get('resynced', 0)}，"
-            f"清理失效 {total.get('cancelled', 0)}。"
-        )
-        
         if old_logger_level is not None:
             logger.setLevel(old_logger_level)
             old_logger_level = None
-            
-        logger.info(f"=== {msg} ===")
-        _status(100, msg)
+
+        # 1. 给控制台日志用的多行列表（一目了然）
+        log_msg = (
+            "\n=== 共享资源维护完成 ===\n"
+            f"  ➜ 登记缺口: {total.get('reported_gaps', 0)}\n"
+            f"  ➜ 清理临时转存: {total.get('expired_virtual_cache_cleaned', 0)}\n"
+            f"  ➜ 自动创建分享: {total.get('auto_created_shares', 0)}\n"
+            f"  ➜ 完结季包汇总: 创建季包 {total.get('season_rollup_created', 0)}，清理单集 {total.get('season_rollup_cancelled', 0)}/{total.get('season_rollup_failed', 0)}\n"
+            f"  ➜ 违规分享清理: {total.get('share_invalid_deleted', 0)}/{total.get('share_invalid_failed', 0)}\n"
+            f"  ➜ 缺 raw 清理: {total.get('share_raw_missing_deleted', 0)}/{total.get('share_raw_missing_failed', 0)}\n"
+            f"  ➜ 分享水位清理: {total.get('share_pruned', 0)}/{total.get('share_prune_failed', 0)}\n"
+            f"  ➜ 中心残留清理: {total.get('center_orphan_cancelled', 0)}/{total.get('center_orphan_failed', 0)}\n"
+            f"  ➜ 剧集追更命中: {total.get('follow_consumed', 0)}/{total.get('follow_missing', 0)}\n"
+            f"  ➜ 登记追更缺口: {total.get('follow_gaps', 0)}\n"
+            f"  ➜ 分享状态同步: 检查 {total.get('checked', 0)}，自动登记 {total.get('reported', 0)}，中心补登 {total.get('resynced', 0)}，清理失效 {total.get('cancelled', 0)}\n"
+            "========================"
+        )
+        logger.info(log_msg)
+        
+        # 2. 给前端任务面板用的单行简报（防止撑破 UI）
+        status_msg = (
+            f"维护完成：登记缺口 {total.get('reported_gaps', 0)}，创建分享 {total.get('auto_created_shares', 0)}，"
+            f"追更命中 {total.get('follow_consumed', 0)}，自动登记 {total.get('reported', 0)}。详细摘要请查看日志。"
+        )
+        _status(100, status_msg)
     finally:
         # 确保发生异常时也能恢复日志级别
         if old_logger_level is not None:
