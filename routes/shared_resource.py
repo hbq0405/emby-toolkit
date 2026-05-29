@@ -558,6 +558,104 @@ def _parse_share_status(snap_resp: Dict[str, Any]) -> Dict[str, str]:
     return {'status': 'pending_review', 'review_status': 'pending_review', 'message': f'分享状态 {share_state or "未知"}'}
 
 
+
+def _flatten_share_meta_text(obj: Any, max_depth: int = 5) -> str:
+    """把分享记录里的 raw_json / 嵌套来源字段压成短文本，用于来源识别。"""
+    parts = []
+
+    def walk(value, depth: int):
+        if depth < 0 or value is None:
+            return
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k is not None:
+                    parts.append(str(k))
+                walk(v, depth - 1)
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                walk(item, depth - 1)
+            return
+        text = str(value).strip()
+        if text and len(text) <= 300:
+            parts.append(text)
+
+    walk(obj, max_depth)
+    return ' '.join(parts)
+
+
+def _decorate_my_share_source_row(item: Dict[str, Any], center_provider: str = '') -> Dict[str, Any]:
+    """给“我的分享”本地记录补充来源字段。
+
+    中心资源库的来源来自中心 sources.source_provider；
+    我的分享来自本地 shared_share_records，老数据通常只把来源藏在 raw_json，
+    所以这里统一展开成前端可直接消费的字段，避免前端无脑兜底成“手动分享”。
+    """
+    item = item or {}
+    raw = _safe_json_obj(item.get('raw_json')) or {}
+
+    provider = str(
+        center_provider or item.get('source_provider') or item.get('share_source') or item.get('create_mode') or
+        raw.get('source_provider') or raw.get('share_source') or raw.get('create_mode') or ''
+    ).strip()
+
+    meta_text = ' '.join([
+        provider,
+        str(item.get('source_provider_label') or ''),
+        str(item.get('source_label') or ''),
+        _flatten_share_meta_text(raw),
+    ]).lower()
+
+    is_auto = False
+    if provider in {'auto_gap_share', 'auto_share', 'maintenance', 'maintenance_task', 'scheduler', 'task'}:
+        is_auto = True
+    elif any(raw.get(k) for k in ('auto_gap', 'auto_payload', 'auto_task', 'maintenance_payload', 'maintenance_task')):
+        is_auto = True
+    elif re.search(r'(auto|自动|maintenance|scheduler|schedule|task|gap|缺口|维护)', meta_text, re.IGNORECASE):
+        is_auto = True
+
+    if is_auto:
+        provider = provider or 'auto_gap_share'
+        label = '自动分享'
+    else:
+        # 手动创建接口会写 raw_json.manual_payload；老数据没有来源时也按手动分享兜底。
+        provider = provider or 'manual_share'
+        label = '手动分享'
+
+    item['source_provider'] = provider
+    item['source_provider_label'] = label
+    item['source_label'] = label
+    item['is_auto_share'] = bool(is_auto)
+    item['is_manual_share'] = not bool(is_auto)
+    return item
+
+
+def _load_my_share_center_provider_map(items: List[Dict[str, Any]]) -> Dict[str, str]:
+    """用本地 center_source_id 批量反查中心 source_provider，修复 raw_json 被旧版检查覆盖后的老数据。"""
+    source_ids = []
+    for item in items or []:
+        sid = str((item or {}).get('center_source_id') or '').strip()
+        if sid and sid not in source_ids:
+            source_ids.append(sid)
+    if not source_ids:
+        return {}
+    try:
+        from handler.shared_center_client import SharedCenterClient
+        client = SharedCenterClient()
+        if not getattr(client, 'ready', False):
+            return {}
+        result = client.list_sources(source_ids=source_ids, status='', limit=len(source_ids), offset=0, include_raw=False)
+        out = {}
+        for row in result.get('items') or []:
+            sid = str(row.get('source_id') or '').strip()
+            provider = str(row.get('source_provider') or '').strip()
+            if sid and provider:
+                out[sid] = provider
+        return out
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 反查中心分享来源失败: {e}")
+        return {}
+
 def _center_headers():
     cfg = _get_shared_config()
     if not cfg['device_token']:
@@ -3102,6 +3200,7 @@ def api_list_my_shares():
         page=int(request.args.get('page', 1) or 1),
         page_size=int(request.args.get('page_size', 30) or 30),
     )
+    center_provider_map = _load_my_share_center_provider_map(items)
     for item in items:
         try:
             identity = _standard_share_identity(item)
@@ -3132,6 +3231,12 @@ def api_list_my_shares():
                     
         except Exception:
             pass
+
+        try:
+            _decorate_my_share_source_row(item, center_provider=center_provider_map.get(str(item.get('center_source_id') or '').strip(), ''))
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 装饰我的分享来源失败: id={item.get('id') or item.get('record_id')}, err={e}")
+
     return jsonify({"success": True, "items": items, "total": total})
 
 
@@ -3331,9 +3436,11 @@ def api_check_share(record_id):
     # 否则前端“错误”列会把正常结果显示成错误信息。
     last_error = '' if is_share_ok else parsed_message
 
+    # 不要用 {'last_snap': snap} 覆盖整块 raw_json，否则会丢掉 manual_payload / auto_gap 等来源标识。
+    old_raw_json = _safe_json_obj(record.get('raw_json')) or {}
     update_kwargs = dict(
         status=parsed['status'], review_status=parsed['review_status'], last_checked_at='NOW()',
-        last_error=last_error, raw_json={'last_snap': snap},
+        last_error=last_error, raw_json={**old_raw_json, 'last_snap': snap},
     )
     if added_count is not None:
         update_kwargs['item_count'] = added_count
