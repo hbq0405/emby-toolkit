@@ -3071,12 +3071,18 @@ class MediaProcessor:
             update_status_callback(100, "全量处理完成")
     
     # --- 核心处理总管 ---
-    def process_single_item(self, emby_item_id: str, force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None):
+    def process_single_item(self, emby_item_id: str, force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None, media_info_only: bool = False):
         """
         入口函数，它会先检查是否需要跳过已处理的项目。
+
+        Args:
+            emby_item_id: Emby 项目 ID。
+            force_full_update: 是否强制执行完整处理。
+            specific_episode_ids: 剧集增量入库时限定处理的分集 ID。
+            media_info_only: 仅刷新媒体信息资产缓存，用于“缺失媒体信息”待复核项的极速修复。
         """
-        # 1. 除非强制，否则跳过已处理的
-        if not force_full_update and not specific_episode_ids and emby_item_id in self.processed_items_cache:
+        # 1. 除非强制，否则跳过已处理的；媒体信息修复模式必须绕过 processed_log
+        if not force_full_update and not specific_episode_ids and not media_info_only and emby_item_id in self.processed_items_cache:
             item_name_from_cache = self.processed_items_cache.get(emby_item_id, f"ID:{emby_item_id}")
             logger.info(f"媒体 '{item_name_from_cache}' 跳过已处理记录。")
             return True
@@ -3113,16 +3119,18 @@ class MediaProcessor:
         return self._process_item_core_logic(
             item_details_from_emby=item_details,
             force_full_update=force_full_update,
-            specific_episode_ids=specific_episode_ids
+            specific_episode_ids=specific_episode_ids,
+            media_info_only=media_info_only
         )
 
     # ---核心处理流程 ---
-    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None):
+    def _process_item_core_logic(self, item_details_from_emby: Dict[str, Any], force_full_update: bool = False, specific_episode_ids: Optional[List[str]] = None, media_info_only: bool = False):
         """
         【V3 极简架构版】
         彻底分离“预处理”和“Webhook回流”逻辑。
         - 预处理/强制刷新：执行完整的 TMDb -> AI翻译 -> 演员处理 -> NFO生成。
         - Webhook回流：秒级命中缓存，仅提取 Emby ID 和视频流信息更新数据库，拒绝一切冗余操作。
+        - 媒体信息修复：强制绕过 processed_log，但复用数据库缓存，只刷新视频流/资产信息。
         """
         item_id = item_details_from_emby.get("Id")
         item_name_for_log = item_details_from_emby.get("Name", f"未知项目(ID:{item_id})")
@@ -3146,8 +3154,20 @@ class MediaProcessor:
             formatted_metadata = None
             final_processed_cast = None
 
+            # 媒体信息修复模式：即使是强制重处理，也只允许命中数据库缓存后刷新资产信息
+            if media_info_only:
+                payload, cast = self._reconstruct_full_data_from_db(tmdb_id, item_type)
+                if payload and cast:
+                    formatted_metadata = payload
+                    final_processed_cast = cast
+                    is_webhook_feedback = True
+                    logger.info(f"  ➜ [媒体信息修复] 命中数据库缓存，跳过 TMDb/AI/演员处理/NFO生成，仅刷新视频流资产信息。")
+                else:
+                    logger.warning(f"  ➜ [媒体信息修复] 未命中可复用的数据库元数据/演员缓存，无法执行轻量修复，已跳过重型流程。")
+                    return False
+
             # 只要不是强制刷新，就尝试从数据库捞取预处理时存入的完整元数据
-            if not force_full_update:
+            elif not force_full_update:
                 payload, cast = self._reconstruct_full_data_from_db(tmdb_id, item_type)
                 if payload and cast:
                     formatted_metadata = payload
@@ -3416,19 +3436,23 @@ class MediaProcessor:
                     emby.notify_emby_file_changes([media_path], self.emby_url, self.emby_api_key)
                     time.sleep(3) # 等待 Emby 处理文件变更事件
 
-            # 7. 无论是预处理还是回流，都要刷新 Emby 元数据以确保外挂字幕可以加载
-            emby.refresh_emby_item_metadata(
-                item_emby_id=item_id,
-                emby_server_url=self.emby_url,
-                emby_api_key=self.emby_api_key,
-                user_id_for_ops=self.emby_user_id,
-                replace_all_metadata_param=False, 
-                replace_all_images_param=False,
-                item_name_for_log=item_name_for_log
-            )
+            # 7. 正常处理/回流需要刷新 Emby 元数据以确保外挂字幕可以加载；
+            #    媒体信息修复模式只写数据库，不再触发 Emby/NFO/图片/人物链路。
+            if not media_info_only:
+                emby.refresh_emby_item_metadata(
+                    item_emby_id=item_id,
+                    emby_server_url=self.emby_url,
+                    emby_api_key=self.emby_api_key,
+                    user_id_for_ops=self.emby_user_id,
+                    replace_all_metadata_param=False, 
+                    replace_all_images_param=False,
+                    item_name_for_log=item_name_for_log
+                )
+            else:
+                logger.info(f"  ➜ [媒体信息修复] 跳过 Emby 元数据刷新，仅准备写入数据库媒体信息。")
 
             if is_webhook_feedback:
-                logger.debug(f"  ➜ [webhook回流] 开始质检...")
+                logger.debug(f"  ➜ [{'媒体信息修复' if media_info_only else 'webhook回流'}] 开始质检...")
 
             # ======================================================================
             # 统一收尾流程 (更新数据库、质检、合集、通知)
@@ -3505,18 +3529,22 @@ class MediaProcessor:
                 genres = [g.get('name') for g in raw_genres if g.get('name')] if raw_genres and isinstance(raw_genres[0], dict) else raw_genres
                 is_animation = "Animation" in genres or "动画" in genres or "Documentary" in genres or "纪录" in genres or "记录" in genres
                 
-                processing_score = actor_utils.evaluate_cast_processing_quality(
-                    final_cast=final_processed_cast, 
-                    original_cast_count=original_emby_actor_count,
-                    expected_final_count=len(final_processed_cast), 
-                    is_animation=is_animation
-                )
-
-                if is_webhook_feedback:
-                    logger.info(f"  ➜ [webhook回流] 基于缓存数据的实时复核评分: {processing_score:.2f}")
-                
                 raw_min_score = self.config.get("min_score_for_review", constants.DEFAULT_MIN_SCORE_FOR_REVIEW)
                 min_score_for_review = float(raw_min_score)
+
+                if media_info_only:
+                    processing_score = max(10.0, min_score_for_review)
+                    logger.info(f"  ➜ [媒体信息修复] 仅执行视频流质检，跳过演员评分。")
+                else:
+                    processing_score = actor_utils.evaluate_cast_processing_quality(
+                        final_cast=final_processed_cast, 
+                        original_cast_count=original_emby_actor_count,
+                        expected_final_count=len(final_processed_cast), 
+                        is_animation=is_animation
+                    )
+
+                    if is_webhook_feedback:
+                        logger.info(f"  ➜ [webhook回流] 基于缓存数据的实时复核评分: {processing_score:.2f}")
                 
                 target_log_id = item_id
                 target_log_name = item_name_for_log
@@ -3552,7 +3580,7 @@ class MediaProcessor:
 
             # 4. 刷新向量库
             is_pure_episode_update = (item_type == 'Series' and specific_episode_ids)
-            if item_type in ['Movie', 'Series'] and not is_pure_episode_update and self.config.get(constants.CONFIG_OPTION_PROXY_ENABLED) and self.config.get(constants.CONFIG_OPTION_AI_VECTOR):
+            if item_type in ['Movie', 'Series'] and not is_pure_episode_update and not media_info_only and self.config.get(constants.CONFIG_OPTION_PROXY_ENABLED) and self.config.get(constants.CONFIG_OPTION_AI_VECTOR):
                 try:
                     threading.Thread(target=RecommendationEngine.refresh_cache).start()
                     logger.debug(f"  ➜ [智能推荐] 已触发向量缓存刷新，'{item_name_for_log}' 将即刻加入推荐池。")

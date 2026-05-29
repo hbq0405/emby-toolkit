@@ -201,7 +201,7 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
     1. 直接查本地数据库获取该项目的所有物理路径和 SHA1 (0 API 消耗)。
     2. 如果是手动强制重扫，定点清空数据库媒体信息缓存，并调用神医接口清除 Emby 缓存(自动删本地JSON)。
     3. 仅针对这些路径进行定点媒体信息恢复/提取，彻底杜绝全局扫描。
-    4. 执行标准的全量元数据刮削流程。
+    4. 执行标准的全量元数据刮削流程；如果失败原因是“缺失媒体信息”，则只刷新媒体信息资产缓存。
     """
     logger.trace(f"  ➜ 后台任务开始执行 ({item_name_for_ui})")
     
@@ -356,14 +356,25 @@ def task_reprocess_single_item(processor, item_id: str, item_name_for_ui: str, f
             logger.info(f"  ➜ 成功定点恢复了 {restored_count} 个媒体信息文件。")
 
         # =================================================================
-        # 步骤 4：标准处理流程 (验收成果 & 刮削元数据)
+        # 步骤 4：验收成果 & 写入数据库
         # =================================================================
-        task_manager.update_status_from_thread(50, f"正在重新刮削元数据: {item_name_for_ui}")
-        
-        processor.process_single_item(
-            item_id, 
-            force_full_update=True
-        )
+        if is_missing_info:
+            logger.info(f"  ➜ 缺失媒体信息修复模式：跳过演员翻译、NFO、图片、人物同步等重型流程，仅刷新媒体信息资产缓存。")
+            task_manager.update_status_from_thread(50, f"正在写入媒体信息: {item_name_for_ui}")
+            success = processor.process_single_item(
+                item_id,
+                force_full_update=True,
+                media_info_only=True
+            )
+            if not success:
+                task_manager.update_status_from_thread(-1, f"媒体信息轻量修复失败: {item_name_for_ui}")
+                return
+        else:
+            task_manager.update_status_from_thread(50, f"正在重新刮削元数据: {item_name_for_ui}")
+            processor.process_single_item(
+                item_id, 
+                force_full_update=True
+            )
         
         logger.trace(f"  ➜ 后台任务完成 ({item_name_for_ui})")
 
