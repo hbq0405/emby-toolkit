@@ -12,14 +12,26 @@ import config_manager
 
 logger = logging.getLogger(__name__)
 
-def task_download_from_hdhive(api_key, slug, tmdb_id, media_type, title):
+def task_download_from_hdhive(api_key=None, slug=None, tmdb_id=None, media_type=None, title=None):
     """
     核心任务：从影巢解锁 -> 转存 115 -> 搜索真实ID -> 精准整理
     """
     logger.info(f"=== ➜ 开始从影巢获取资源: {title} (TMDB: {tmdb_id}) ===")
     
-    # api_key 参数保留兼容旧调用签名；新版影巢授权通过统一 Relay 完成。
-    hdhive = HDHiveClient(api_key)
+    # api_key 参数仅保留兼容旧调用签名；新版影巢授权通过统一 Relay + OpenAPI OAuth 完成。
+    hdhive = HDHiveClient()
+    if not hdhive.ping():
+        auth_url = ''
+        try:
+            auth_url = hdhive.authorize_url()
+        except Exception:
+            auth_url = ''
+        if auth_url:
+            logger.error(f"  ➜ 影巢尚未完成 OpenAPI 授权，无法解锁资源。请到影巢设置页授权，或打开授权链接: {auth_url}")
+        else:
+            logger.error("  ➜ 影巢尚未完成 OpenAPI 授权，无法解锁资源。请到影巢设置页完成授权。")
+        return False
+
     unlock_data = hdhive.unlock_resource(slug)
     
     if not unlock_data:

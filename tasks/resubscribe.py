@@ -1262,19 +1262,28 @@ def _execute_resubscribe(processor, task_name: str, target):
         # 场景 B: 影巢资源
         # =======================================================
         elif sub_source == 'hdhive':
-            hdhive_config = settings_db.get_setting("hdhive_config") or {}
-            api_key = hdhive_config.get("api_key")
-            if not api_key:
-                logger.error(f"  ➜ [影巢] 未配置 API Key，无法处理: {item_name}")
-                continue
-
+            # 新版影巢统一使用 OpenAPI OAuth 授权，经 HDHive Relay 转发请求。
+            # 不再读取/校验个人 API Key；只要求用户在影巢设置页完成授权。
             media_type = 'movie' if item_type == 'Movie' else 'tv'
             target_season = season_number if item_type == 'Season' else None
 
-            hdhive_client = HDHiveClient(api_key)
+            hdhive_client = HDHiveClient()
+            if not hdhive_client.ping():
+                auth_url = ''
+                try:
+                    auth_url = hdhive_client.authorize_url()
+                except Exception:
+                    auth_url = ''
+                if auth_url:
+                    logger.error(f"  ➜ [影巢] 尚未完成 OpenAPI 授权，无法处理: {item_name}。请到影巢设置页授权，或打开授权链接: {auth_url}")
+                else:
+                    logger.error(f"  ➜ [影巢] 尚未完成 OpenAPI 授权，无法处理: {item_name}。请到影巢设置页完成授权。")
+                continue
+
             resources = hdhive_client.get_resources(
                 tmdb_id=tmdb_id,
-                media_type=media_type
+                media_type=media_type,
+                target_season=target_season
             )
 
             if not resources:
@@ -1284,7 +1293,8 @@ def _execute_resubscribe(processor, task_name: str, target):
             before_count = len(resources)
             resources = filter_hdhive_resources(
                 resources,
-                media_type=media_type
+                media_type=media_type,
+                target_season=target_season
             )
 
             if not resources:
@@ -1321,7 +1331,6 @@ def _execute_resubscribe(processor, task_name: str, target):
             )
 
             ok = task_download_from_hdhive(
-                api_key=api_key,
                 slug=slug,
                 tmdb_id=tmdb_id,
                 media_type=media_type,
