@@ -741,6 +741,54 @@ def _infer_size_from_raw(raw: Dict[str, Any]) -> int:
     return 0
 
 
+def _build_raw_ffprobe_summary_for_center(raw: Dict[str, Any], item: Dict[str, Any], final_size: int = 0) -> Dict[str, Any]:
+    """上传 RAW 时同步生成中心列表页轻量 MediaInfo 摘要。
+
+    完整 raw_ffprobe_json 仍然作为资产上传和保存；summary_json 只服务中心资源库列表页，
+    避免前端打开列表时再拉完整 RAW / 解压 zst / 重跑 MediaInfo 格式化。
+    """
+    if not isinstance(raw, dict) or not raw:
+        return {}
+
+    source = {
+        'sha1': str((item or {}).get('sha1') or '').strip().upper(),
+        'file_name': (item or {}).get('file_name') or (item or {}).get('name') or (item or {}).get('title') or '',
+        'title': (item or {}).get('title') or (item or {}).get('file_name') or '',
+        'size': final_size or (item or {}).get('size') or _infer_size_from_raw(raw),
+        'tmdb_id': (item or {}).get('tmdb_id') or (raw.get('_etk') or {}).get('tmdb_id'),
+        'item_type': (item or {}).get('item_type') or (item or {}).get('share_type') or (raw.get('_etk') or {}).get('type'),
+    }
+
+    try:
+        summary = _summarize_raw_ffprobe(raw, source)
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 生成中心轻量 MediaInfo 摘要失败: sha1={source.get('sha1')[:8]}, err={e}")
+        return {}
+
+    if not isinstance(summary, dict):
+        return {}
+
+    allowed_keys = {
+        'resolution', 'width', 'height', 'video_codec', 'codec', 'effect', 'bit_depth',
+        'fps', 'bitrate', 'container', 'video_display', 'size', 'size_gb',
+        'audio_count', 'subtitle_count', 'audio_list', 'subtitle_list',
+        'audios', 'subtitles', 'formatted_by',
+    }
+    compact = {k: summary.get(k) for k in allowed_keys if k in summary}
+
+    # 防御性压缩：列表页只需要展示语言/参数，不要让异常数据把 summary_json 撑大。
+    for key, max_len in (('audio_list', 16), ('subtitle_list', 24), ('audios', 16), ('subtitles', 24)):
+        value = compact.get(key)
+        if isinstance(value, list):
+            compact[key] = value[:max_len]
+
+    try:
+        # 确保可 JSON 序列化，同时顺手把 Decimal/datetime 等意外对象转成字符串。
+        return json.loads(json.dumps(compact, ensure_ascii=False, default=str))
+    except Exception:
+        return {}
+
+
 def _upload_item_raw_ffprobe_to_center(item: Dict[str, Any], cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
     """上传单个分享文件的 raw_ffprobe_json 到中心服务器。返回 ok/missing/error。"""
     sha1 = str(item.get('sha1') or '').strip().upper()
@@ -758,10 +806,13 @@ def _upload_item_raw_ffprobe_to_center(item: Dict[str, Any], cfg: Dict[str, Any]
     item_size = _safe_size_bytes(item.get('size'))
     final_size = item_size if item_size > 0 else raw_size
 
+    summary_json = _build_raw_ffprobe_summary_for_center(raw, item, final_size)
+
     payload = {
         'sha1': sha1,
         'size': final_size or None,
         'raw_ffprobe_json': raw,
+        'summary_json': summary_json or None,
     }
     try:
         resp = requests.post(f"{cfg['center_url']}/api/v1/rawffprobe/upload", headers=headers, json=payload, **_center_request_kwargs(45))
@@ -836,6 +887,7 @@ def _upload_share_raw_ffprobe_to_center_batch(items: List[Dict[str, Any]], cfg: 
         raw_size = _infer_size_from_raw(raw)
         item_size = _safe_size_bytes(item.get('size'))
         final_size = item_size if item_size > 0 else raw_size
+        summary_json = _build_raw_ffprobe_summary_for_center(raw, item, final_size)
         prepared.append({
             'item': item,
             'before_size': item_size,
@@ -844,6 +896,7 @@ def _upload_share_raw_ffprobe_to_center_batch(items: List[Dict[str, Any]], cfg: 
                 'sha1': sha1,
                 'size': final_size or None,
                 'raw_ffprobe_json': raw,
+                'summary_json': summary_json or None,
             },
         })
 
@@ -4751,7 +4804,7 @@ def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dic
             new_row = dict(row)
             raw_row = raw_map[sid]
             # 只用 raw 查询补充 raw_ffprobe_json 和 raw 相关字段，不覆盖原始排序/聚合字段。
-            for key in ('raw_ffprobe_json', 'raw_error', 'object_key', 'raw_bytes', 'compressed_bytes', 'raw_schema_version', 'raw_created_at'):
+            for key in ('raw_ffprobe_json', 'summary_json', 'raw_error', 'object_key', 'raw_bytes', 'compressed_bytes', 'raw_schema_version', 'raw_created_at'):
                 if key in raw_row:
                     new_row[key] = raw_row.get(key)
             merged.append(new_row)
@@ -4763,12 +4816,47 @@ def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dic
 def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = 'alive,pending', order_by: str = 'latest', limit: int = 30, offset: int = 0, local_filter: str = '') -> Dict[str, Any]:
     """按展示口径加载中心资源库。
 
-    中心接口是按 shared_sources 原始文件分页，前端需要按“电影 / 剧集包 / 单集”展示。
-    这里先拉取较大的原始窗口，做剧集包折叠与本地类型过滤，再对展示行分页；
-    最后只给当前展示页的代表 source_id 拉 raw_ffprobe_json，避免全量 raw 过重。
+    新中心优先走 /api/v1/sources/display-list：分页、排序、剧集包聚合都在中心端完成，
+    本地只补当前页的本地入库状态。旧中心没有该接口时，自动回退到旧的本地扫描折叠逻辑。
+    local_filter 已废弃：中心端不知道本地 media_metadata / p115_filesystem_cache，前端也不再提供“只看未入库”。
     """
     limit = max(1, min(int(limit or 30), 100))
     offset = max(0, int(offset or 0))
+
+    # 新接口：中心直接返回展示行 + summary_json，不再补拉完整 raw_ffprobe_json。
+    try:
+        cfg = _get_shared_config()
+        if cfg.get('center_url') and cfg.get('device_token'):
+            resp = requests.get(
+                f"{cfg['center_url']}/api/v1/sources/display-list",
+                headers=_center_headers_for_cfg(cfg),
+                params={
+                    'q': keyword or '',
+                    'tmdb_id': tmdb_id or '',
+                    'item_type': display_type or '',
+                    'status': status or 'alive,pending',
+                    'order_by': order_by or 'latest',
+                    'limit': limit,
+                    'offset': offset,
+                },
+                **_center_request_kwargs(30),
+            )
+            if resp.ok:
+                data = resp.json() or {}
+                page_rows = list(data.get('items') or [])
+                page_rows = _annotate_center_rows_local_library(page_rows)
+                return {
+                    'items': page_rows,
+                    'total': int(data.get('total') or len(page_rows)),
+                    'raw_total': int(data.get('raw_total') or data.get('total') or len(page_rows)),
+                    'scanned_raw': int(data.get('scanned_raw') or len(page_rows)),
+                }
+            if resp.status_code not in (404, 405):
+                logger.debug(f"  ➜ [共享资源] 中心 display-list 返回异常，回退旧列表逻辑: HTTP {resp.status_code} {resp.text[:160]}")
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 中心 display-list 不可用，回退旧列表逻辑: {e}")
+
+    # 旧中心兼容逻辑：仍然只用无 raw 原始窗口做折叠；不再为了列表展示补拉完整 RAW。
     target_count = offset + limit
     raw_rows: List[Dict[str, Any]] = []
     raw_total = None
@@ -4777,7 +4865,6 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
     max_scan = 3000
     display_rows: List[Dict[str, Any]] = []
 
-    # item_type 不下推给中心，避免 center 只支持精确 lower(item_type)=xxx 导致 episode_file/movie_file/season_pack 漏掉。
     while raw_offset < max_scan:
         res = client.list_sources(
             q=keyword or '',
@@ -4811,10 +4898,6 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
         else:
             display_rows.sort(key=lambda r: (_center_created_ts(r), str(r.get('source_id') or '')), reverse=True)
 
-        if str(local_filter or '').strip().lower() in ('not_full', 'not_fully_in_library', 'missing'):
-            display_rows = _annotate_center_rows_local_library(display_rows)
-            display_rows = [r for r in display_rows if _center_row_not_fully_in_library(r)]
-            
         if len(display_rows) >= target_count:
             break
         raw_offset += len(page_items)
@@ -4825,21 +4908,6 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
 
     display_total = len(display_rows)
     page_rows = display_rows[offset:offset + limit]
-
-    # 只为当前页代表行补 raw，减少中心 raw zst 读取和网络负担。
-    source_ids = []
-    for row in page_rows:
-        sid = str(row.get('source_id') or '').strip()
-        if sid and sid not in source_ids:
-            source_ids.append(sid)
-    if source_ids:
-        try:
-            raw_res = client.list_sources(source_ids=source_ids, status='', limit=len(source_ids), offset=0, include_raw=True)
-            page_rows = _merge_rows_by_source_id(page_rows, raw_res.get('items') or [])
-        except Exception as e:
-            logger.debug(f"  ➜ [共享资源] 当前页 raw_ffprobe 补充失败，将使用无 raw 版本展示: {e}")
-
-    # 无论是否启用筛选，当前页都补充文件级入库状态，供前端显示绿色勾/部分入库。
     page_rows = _annotate_center_rows_local_library(page_rows)
 
     return {
@@ -4966,15 +5034,37 @@ def api_center_sources():
             order_by=request.args.get('order_by', 'latest'),
             limit=int(request.args.get('limit', 30) or 30),
             offset=int(request.args.get('offset', 0) or 0),
-            local_filter=request.args.get('local_filter', ''),
         )
         raw_items = _filter_center_rows_by_episode_policy(page_data.get('items') or [])
+
+        # 兼容升级前的中心老数据：旧 RAW 已保存但没有 summary_json 时，只对当前页缺摘要的代表行补一次 RAW。
+        # 新上传的数据会直接命中 summary_json，不再走这条重路径。
+        missing_summary_source_ids = []
+        for row in raw_items:
+            sid = str(row.get('source_id') or '').strip()
+            if sid and not isinstance(row.get('summary_json'), dict) and not row.get('raw_ffprobe_json'):
+                missing_summary_source_ids.append(sid)
+        missing_summary_source_ids = list(dict.fromkeys(missing_summary_source_ids))[:100]
+        if missing_summary_source_ids:
+            try:
+                raw_res = client.list_sources(
+                    source_ids=missing_summary_source_ids,
+                    status='',
+                    limit=len(missing_summary_source_ids),
+                    offset=0,
+                    include_raw=True,
+                )
+                raw_items = _merge_rows_by_source_id(raw_items, raw_res.get('items') or [])
+            except Exception as e:
+                logger.debug(f"  ➜ [共享资源] 当前页缺失 summary_json 的 RAW 兼容补充失败: {e}")
+
         local_share_codes = _load_local_share_code_set(raw_items)
         items = []
         for item in raw_items:
             item['_local_share_record_exists'] = str(item.get('share_code') or '').strip() in local_share_codes
+            summary_json = item.get('summary_json') if isinstance(item.get('summary_json'), dict) else None
             raw = item.get('raw_ffprobe_json') or {}
-            item['version_summary'] = _summarize_raw_ffprobe(raw, item)
+            item['version_summary'] = summary_json or _summarize_raw_ffprobe(raw, item)
             item['display_type'] = _center_display_type(item)
             items.append(_decorate_center_source_row(item))
 

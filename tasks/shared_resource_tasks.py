@@ -935,6 +935,7 @@ def _load_center_own_share_snapshot(client: SharedCenterClient, page_size: int =
                 'source_ids': set(),
                 'sha1s': set(),
                 'healthy_sha1s': set(),
+                'summary_missing_sha1s': set(),
                 'dead_sha1s': set(),
                 'statuses': set(),
             })
@@ -952,6 +953,9 @@ def _load_center_own_share_snapshot(client: SharedCenterClient, page_size: int =
             object_key = str(item.get('object_key') or '').strip()
             if sha1 and status in ('alive', 'pending', 'reported') and has_raw and object_key:
                 group['healthy_sha1s'].add(sha1)
+                summary_json = item.get('summary_json')
+                if not isinstance(summary_json, dict) or not summary_json:
+                    group['summary_missing_sha1s'].add(sha1)
             if sha1 and status in ('dead', 'cancelled', 'expired', 'rejected'):
                 group['dead_sha1s'].add(sha1)
 
@@ -980,6 +984,7 @@ def _center_share_sync_reason(center_snapshot: Dict[str, Dict[str, Any]] | None,
 
     center_sha1s = set(center.get('sha1s') or set())
     healthy_sha1s = set(center.get('healthy_sha1s') or set())
+    summary_missing_sha1s = set(center.get('summary_missing_sha1s') or set())
     dead_sha1s = set(center.get('dead_sha1s') or set())
 
     if local_sha1s & dead_sha1s:
@@ -988,6 +993,8 @@ def _center_share_sync_reason(center_snapshot: Dict[str, Dict[str, Any]] | None,
         return 'center_missing_items'
     if local_sha1s - healthy_sha1s:
         return 'center_raw_missing'
+    if local_sha1s & summary_missing_sha1s:
+        return 'center_summary_missing'
     return ''
 
 
@@ -996,6 +1003,7 @@ def _center_share_sync_reason_text(reason: str) -> str:
         'center_missing': '中心服务器已没有该分享码',
         'center_missing_items': '中心服务器缺少该分享码的部分文件',
         'center_raw_missing': '中心服务器该分享码的媒体信息不完整',
+        'center_summary_missing': '中心服务器该分享码缺少轻量媒体摘要',
         'center_dead': '中心服务器该分享码被标记为失效',
     }.get(str(reason or ''), str(reason or ''))
 
@@ -1076,7 +1084,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                             except Exception as e:
                                 logger.debug(f"  ➜ [共享资源维护] 删除中心 dead 源失败，继续尝试重新登记: share={share_code}, err={e}")
 
-                    # 自动补 raw + 登记中心。
+                    # 自动补 RAW。新版上传逻辑会同步生成 summary_json，维护任务也能顺手回填旧中心数据缺失的轻量媒体摘要。
                     try:
                         cfg, headers = sr._center_headers()
                         sr._upload_share_raw_ffprobe_to_center(record['id'], cfg, headers, force=True)
@@ -1141,9 +1149,17 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                 # 更新内存快照，避免同一个分享码后续同轮被误判仍缺失。
                                 local_sha1s = {str(i.get('sha1') or '').strip().upper() for i in items if str(i.get('sha1') or '').strip()}
                                 if center_snapshot is not None:
-                                    group = center_snapshot.setdefault(share_code, {'source_ids': set(), 'sha1s': set(), 'healthy_sha1s': set(), 'dead_sha1s': set(), 'statuses': set()})
+                                    group = center_snapshot.setdefault(share_code, {
+                                        'source_ids': set(),
+                                        'sha1s': set(),
+                                        'healthy_sha1s': set(),
+                                        'summary_missing_sha1s': set(),
+                                        'dead_sha1s': set(),
+                                        'statuses': set(),
+                                    })
                                     group['sha1s'].update(local_sha1s)
                                     group['healthy_sha1s'].update(local_sha1s)
+                                    group.setdefault('summary_missing_sha1s', set()).difference_update(local_sha1s)
                                     group['dead_sha1s'].difference_update(local_sha1s)
                                     group['statuses'].add('pending')
                         elif errors:

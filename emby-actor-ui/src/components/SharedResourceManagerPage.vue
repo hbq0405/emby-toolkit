@@ -114,10 +114,6 @@
               <n-select v-model:value="centerFilters.item_type" :options="centerTypeOptions" style="width: 140px" />
               <n-select v-model:value="centerFilters.status" :options="centerStatusOptions" style="width: 150px" />
               <n-select v-model:value="centerFilters.order_by" :options="centerOrderOptions" style="width: 130px" />
-              <n-checkbox
-                v-model:checked="centerFilters.only_not_full_library"
-                @update:checked="() => { centerPagination.page = 1; loadCenterSources(); }"
-              >只显示未完全入库</n-checkbox>
               <n-button type="primary" :loading="centerLoading" @click="loadCenterSources">查询中心</n-button>
               <n-button secondary :loading="maintenanceSubmitting" @click="triggerSharedMaintenance">执行维护任务</n-button>
             </n-space>
@@ -387,7 +383,7 @@ const centerSources = ref([]);
 const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
 const shareFilters = reactive({ keyword: '', status: 'active' });
-const centerFilters = reactive({ keyword: '', status: '', item_type: 'all', order_by: 'latest', only_not_full_library: false });
+const centerFilters = reactive({ keyword: '', status: '', item_type: 'all', order_by: 'latest' });
 const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
@@ -1391,7 +1387,6 @@ const loadCenterSources = async () => {
       item_type: centerFilters.item_type === 'all' ? '' : centerFilters.item_type,
       status: centerFilters.status,
       order_by: centerFilters.order_by,
-      local_filter: centerFilters.only_not_full_library ? 'not_full' : '',
       limit: centerPagination.pageSize,
       offset: (centerPagination.page - 1) * centerPagination.pageSize,
     };
