@@ -396,15 +396,15 @@ class SchedulerManager:
         except JobLookupError:
             pass
 
-        cfg = config_manager.APP_CONFIG or {}
-        enabled = cfg.get(getattr(constants, 'CONFIG_OPTION_115_SHARED_RESOURCE_ENABLED', 'p115_shared_resource_enabled'), False)
-        if isinstance(enabled, str):
-            enabled = enabled.strip().lower() in ('1', 'true', 'yes', 'on', '启用')
+        cfg = settings_db.get_shared_resource_config()
+        enabled = cfg.get('p115_shared_resource_enabled', False)
+        
         if not enabled:
             logger.info("  ➜ 共享资源未启用，本次不设置共享资源自动维护定时任务。")
             return
 
-        install_id = str(cfg.get(getattr(constants, 'CONFIG_OPTION_115_SHARED_INSTALL_ID', 'p115_shared_install_id'), '')).strip()
+        install_id = cfg.get('p115_shared_install_id', '')
+
         if install_id:
             # 用 install_id 的哈希值取模 30，确保同一个设备每次重启后都在固定的分钟执行，避免频繁重启导致任务密集执行
             base_minute = int(hashlib.md5(install_id.encode()).hexdigest(), 16) % 30
