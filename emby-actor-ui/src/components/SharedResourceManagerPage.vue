@@ -1083,16 +1083,11 @@ const compactTrackText = (items) => {
   const selected = arr.find(isDefaultTrack) || arr[0];
   return stripTrackParams(trackRawText(selected)) || '-';
 };
-const compactTrackTitle = (items) => {
+const fullTrackTooltipText = (items) => {
   const arr = trackListToArray(items)
-    .map(item => stripTrackParams(trackRawText(item)))
+    .map(item => String(trackRawText(item) || '').trim())
     .filter(Boolean);
-  if (!arr.length) return '';
-  const counts = new Map();
-  for (const text of arr) counts.set(text, (counts.get(text) || 0) + 1);
-  return Array.from(counts.entries())
-    .map(([text, count]) => count > 1 ? `${text} ×${count}` : text)
-    .join('\n');
+  return arr.join('\n');
 };
 
 const versionAudioTracks = (it) => it?.version_summary?.audio_list || it?.version_summary?.audios || it?.version_summary?.audio_tracks || it?.version_summary?.audio || [];
@@ -1113,8 +1108,8 @@ const centerColumns = [
   }) },
   { title: 'HDR / 杜比', key: 'effect', width: 150, render: row => lineStack(row.versions, it => h('span', it.version_summary?.effect || '-'), it => it.version_summary?.effect || '') },
   { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', it.version_summary?.fps || '-')) },
-  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionAudioTracks(it))), it => compactTrackTitle(versionAudioTracks(it))) },
-  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionSubtitleTracks(it))), it => compactTrackTitle(versionSubtitleTracks(it))) },
+  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionAudioTracks(it))), it => fullTrackTooltipText(versionAudioTracks(it))) },
+  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionSubtitleTracks(it))), it => fullTrackTooltipText(versionSubtitleTracks(it))) },
   { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
   { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
