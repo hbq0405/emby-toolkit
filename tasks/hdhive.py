@@ -195,18 +195,6 @@ def task_download_from_hdhive(api_key=None, slug=None, tmdb_id=None, media_type=
             return True
 
         # 构造 root_item 触发 SmartOrganizer (补全 pc, sha1, fs 等生成 STRM 必需的关键信息)
-        shared_auto_context = None
-        if str(media_type or '').lower() == 'movie':
-            shared_auto_context = {
-                'share_code': share_code,
-                'receive_code': access_code or '',
-                'tmdb_id': str(tmdb_id or ''),
-                'media_type': 'movie',
-                'item_type': 'Movie',
-                'title': title,
-                'source_provider': 'hdhive',
-            }
-
         root_item = {
             'fid': target_item.get('fid') or target_item.get('file_id'),
             'fn': receive_title,
@@ -214,10 +202,8 @@ def task_download_from_hdhive(api_key=None, slug=None, tmdb_id=None, media_type=
             'pid': save_cid,
             'pc': target_item.get('pc') or target_item.get('pick_code'),
             'sha1': target_item.get('sha1') or target_item.get('sha'),
-            'fs': target_item.get('fs') or target_item.get('size'),
+            'fs': target_item.get('fs') or target_item.get('size')
         }
-        if shared_auto_context:
-            root_item['_shared_auto_source_context'] = shared_auto_context
         
         organizer = SmartOrganizer(
             client=client, 
@@ -226,8 +212,6 @@ def task_download_from_hdhive(api_key=None, slug=None, tmdb_id=None, media_type=
             original_title=title,
             use_ai=False 
         )
-        if shared_auto_context:
-            organizer.shared_auto_source_context = shared_auto_context
         
         target_cid = organizer.get_target_cid()
         organizer.execute(root_item, target_cid)
