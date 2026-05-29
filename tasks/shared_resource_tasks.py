@@ -89,12 +89,22 @@ def _series_has_physical_episode_identity(parent_tmdb_id: str) -> bool:
     return False
 
 
-def _consume_mode_for_watching_row(default_mode: str, row: Dict[str, Any]) -> str:
+def _consume_mode_for_watching_row(default_mode: str, row: Dict[str, Any], physical_parent_cache: Dict[str, bool] = None) -> str:
     default_mode = str(default_mode or 'permanent').strip().lower()
     if default_mode != 'virtual':
         return default_mode
     parent = str((row or {}).get('parent_series_tmdb_id') or '').strip()
-    if parent and _series_has_physical_episode_identity(parent):
+    if not parent:
+        return default_mode
+
+    if physical_parent_cache is not None:
+        if parent not in physical_parent_cache:
+            physical_parent_cache[parent] = _series_has_physical_episode_identity(parent)
+        has_physical = bool(physical_parent_cache.get(parent))
+    else:
+        has_physical = _series_has_physical_episode_identity(parent)
+
+    if has_physical:
         return 'permanent'
     return default_mode
 
@@ -1027,10 +1037,7 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
             checked += 1
             alive = _looks_share_alive(snap)
             if alive:
-                raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
-                raw_json = dict(raw_json or {})
-                raw_json['last_snap'] = snap
-                update = {'status': 'alive', 'review_status': 'alive', 'last_checked_at': 'NOW()', 'last_error': '分享可用', 'raw_json': raw_json}
+                update = {'status': 'alive', 'review_status': 'alive', 'last_checked_at': 'NOW()', 'last_error': '分享可用', 'raw_json': {'last_snap': snap}}
                 shared_share_db.update_share_record(record['id'], **update)
                 record = shared_share_db.get_share_record(record['id']) or record
                 items = shared_share_db.list_share_items(record['id']) or []
@@ -1781,6 +1788,7 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
     consecutive_errors = 0 
     consumed_share_codes = set()
     covered_episode_keys = set()
+    physical_parent_cache = {}
 
     for row in rows:
         try:
@@ -1801,14 +1809,8 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
 
             parent_tmdb = row.get('parent_series_tmdb_id')
             title = row.get('title') or row.get('season_title') or f"S{_safe_int(row.get('season_number'), 1):02d}E{_safe_int(row.get('episode_number'), 0):02d}"
-            consume_mode = _consume_mode_for_watching_row(mode, row)
-            if consume_mode != mode:
-                logger.info(
-                    "  ➜ [共享资源维护] 追更剧集已有物理入库分集，本次消费强制永久转存：%s S%02dE%02d",
-                    row.get('season_title') or parent_tmdb,
-                    _safe_int(row.get('season_number'), 0),
-                    _safe_int(row.get('episode_number'), 0),
-                )
+            consume_mode = _consume_mode_for_watching_row(mode, row, physical_parent_cache)
+            forced_permanent = consume_mode != mode
             result = try_consume_shared_resource(
                 row,
                 title=title,
@@ -1839,13 +1841,22 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
                     )
                 else:
                     consumed += 1
-                    logger.info(
-                        "  ➜ [共享资源维护] 追更缺集命中中心资源并已%s：%s S%02dE%02d",
-                        '虚拟入库' if result.get('mode') == 'virtual' else '永久转存',
-                        row.get('season_title') or parent_tmdb,
-                        _safe_int(row.get('season_number'), 0),
-                        _safe_int(row.get('episode_number'), 0),
-                    )
+                    action_label = '虚拟入库' if result.get('mode') == 'virtual' else '永久转存'
+                    if forced_permanent and result.get('mode') == 'permanent':
+                        logger.info(
+                            "  ➜ [共享资源维护] 追更缺集命中中心资源；本剧已有物理入库分集，已按永久转存处理：%s S%02dE%02d",
+                            row.get('season_title') or parent_tmdb,
+                            _safe_int(row.get('season_number'), 0),
+                            _safe_int(row.get('episode_number'), 0),
+                        )
+                    else:
+                        logger.info(
+                            "  ➜ [共享资源维护] 追更缺集命中中心资源并已%s：%s S%02dE%02d",
+                            action_label,
+                            row.get('season_title') or parent_tmdb,
+                            _safe_int(row.get('season_number'), 0),
+                            _safe_int(row.get('episode_number'), 0),
+                        )
             elif result.get('reported_gap'):
                 gaps += 1
         except Exception as e:
