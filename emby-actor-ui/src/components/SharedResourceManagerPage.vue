@@ -489,19 +489,31 @@ const shareFailureReasonText = (row) => {
   return '';
 };
 const shareSourceText = (row) => {
-  const rawParts = [
-    row?.source_provider, row?.source_provider_label, row?.source_label, row?.provider, row?.origin,
-    row?.share_origin, row?.share_source, row?.source_type, row?.create_mode, row?.created_by,
-    row?.creator_type, row?.submitter_type, row?.register_from, row?.register_source, row?.task_source,
-    row?.task_type, row?.client_source, row?.share_kind, row?.source, row?.shared_source, row?.extra, row?.raw,
-  ].map(pickShareMetaText).filter(Boolean);
-  const allText = rawParts.join(' ').toLowerCase();
+  const raw = (row?.raw_json && typeof row.raw_json === 'object') ? row.raw_json : {};
+  const providerText = pickShareMetaText([
+    row?.source_provider,
+    row?.share_source,
+    row?.create_mode,
+    raw?.source_provider,
+    raw?.share_source,
+    raw?.create_mode,
+  ]).toLowerCase().replace(/[\s-]+/g, '_');
+  const labelText = pickShareMetaText([
+    row?.source_provider_label,
+    row?.source_label,
+    raw?.source_provider_label,
+    raw?.source_label,
+  ]).toLowerCase();
 
-  if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance) return '自动分享';
-  if (/(auto|自动|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动分享';
-  if (row?.is_manual_share || row?.manual_created || row?.created_by_user || /(manual|user_share|手动|人工)/i.test(allText)) return '手动分享';
+  const rawManual = Boolean(raw?.manual_payload || raw?.manual_share || raw?.manual_create || raw?.manual_created || raw?.manual_context);
+  const rawAuto = Boolean(raw?.auto_gap || raw?.auto_payload || raw?.auto_task || raw?.maintenance_payload || raw?.maintenance_task || raw?.auto_share_payload || raw?.auto_context);
+  const providerManual = /(user_share|manual_share|manual|local_manual|manual_create|manual_created)/i.test(providerText) || /手动分享/.test(labelText);
+  const providerAuto = /(auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /自动分享/.test(labelText);
 
-  // 旧数据如果没有来源字段，基本都是前端手动创建的本机分享。这里不要再显示空备注。
+  // 手动标记优先。手动创建的分享即使后续由维护任务自动检查/登记中心，也仍然叫“手动分享”。
+  if (row?.is_manual_share || row?.manual_created || row?.created_by_user || rawManual || providerManual) return '手动分享';
+  if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance || rawAuto || providerAuto) return '自动分享';
+
   return '手动分享';
 };
 const shareRemarkNode = (row) => {

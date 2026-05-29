@@ -1037,7 +1037,16 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
             checked += 1
             alive = _looks_share_alive(snap)
             if alive:
-                update = {'status': 'alive', 'review_status': 'alive', 'last_checked_at': 'NOW()', 'last_error': '分享可用', 'raw_json': {'last_snap': snap}}
+                old_raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+                update = {
+                    'status': 'alive',
+                    'review_status': 'alive',
+                    'last_checked_at': 'NOW()',
+                    # 正常可用不再写入 last_error，避免前端“备注”误把成功状态当原因。
+                    'last_error': '',
+                    # 保留 auto_gap / manual_payload 等来源标记，只追加 last_snap。
+                    'raw_json': {**old_raw_json, 'last_snap': snap},
+                }
                 shared_share_db.update_share_record(record['id'], **update)
                 record = shared_share_db.get_share_record(record['id']) or record
                 items = shared_share_db.list_share_items(record['id']) or []
