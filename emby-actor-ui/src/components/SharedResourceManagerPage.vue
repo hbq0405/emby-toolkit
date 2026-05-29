@@ -382,7 +382,7 @@ const ledgerItems = ref([]);
 const centerSources = ref([]);
 const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
-const shareFilters = reactive({ keyword: '', status: 'active' });
+const shareFilters = reactive({ keyword: '', status: 'active', order_by: 'created_desc' });
 const centerFilters = reactive({ keyword: '', status: '', item_type: 'all', order_by: 'latest' });
 const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });

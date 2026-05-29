@@ -91,9 +91,23 @@ def replace_share_items(record_id: int, items: List[Dict[str, Any]]) -> int:
             return count
 
 
-def list_share_records(status='all', keyword='', page=1, page_size=30) -> Tuple[List[Dict[str, Any]], int]:
+def _share_records_order_sql(order_by: str = 'created_desc') -> str:
+    """我的分享列表排序口径。默认按创建时间倒序，避免 updated_at 被状态同步反复改写后看起来乱跳。"""
+    order_by = str(order_by or 'created_desc').strip().lower()
+    if order_by == 'created_asc':
+        return 'r.created_at ASC NULLS LAST, r.id ASC'
+    if order_by == 'updated_desc':
+        return 'r.updated_at DESC NULLS LAST, r.id DESC'
+    if order_by == 'updated_asc':
+        return 'r.updated_at ASC NULLS LAST, r.id ASC'
+    # created_desc / 默认：只按创建时间展示，状态同步、RAW补传、中心补登不会打乱列表顺序。
+    return 'r.created_at DESC NULLS LAST, r.id DESC'
+
+
+def list_share_records(status='all', keyword='', page=1, page_size=30, order_by='created_desc') -> Tuple[List[Dict[str, Any]], int]:
     page = max(1, int(page or 1))
     page_size = min(100, max(1, int(page_size or 30)))
+    order_sql = _share_records_order_sql(order_by)
     where, args = [], []
     if status == 'active':
         where.append("r.status NOT IN ('cancelled', 'deleted', 'cancel_failed')")
@@ -126,7 +140,7 @@ def list_share_records(status='all', keyword='', page=1, page_size=30) -> Tuple[
                     GROUP BY share_record_id
                 ) s ON s.share_record_id = r.id
                 {where_sql}
-                ORDER BY r.updated_at DESC
+                ORDER BY {order_sql}
                 LIMIT %s OFFSET %s
             """, args + [page_size, (page - 1) * page_size])
             rows = [_row_to_dict(r) for r in cur.fetchall()]

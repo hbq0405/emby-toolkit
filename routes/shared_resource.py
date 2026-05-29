@@ -3219,12 +3219,15 @@ def api_promote_virtual_item(virtual_id):
 @shared_resource_bp.route('/shares', methods=['GET'])
 @admin_required
 def api_list_my_shares():
+    order_by = str(request.args.get('order_by') or 'created_desc').strip() or 'created_desc'
     items, total = shared_share_db.list_share_records(
         status=request.args.get('status', 'all'),
         keyword=request.args.get('keyword', ''),
         page=int(request.args.get('page', 1) or 1),
         page_size=int(request.args.get('page_size', 30) or 30),
+        order_by=order_by,
     )
+
     for item in items:
         try:
             identity = _standard_share_identity(item)
