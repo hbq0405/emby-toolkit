@@ -1675,7 +1675,6 @@ def _select_sources_by_washing_before_import(
         group_action_rank = 0
         group_quality = 0
         group_reasons = []
-        has_acceptable = False  # ★ 新增：记录包内是否有我们需要的文件
 
         for src in rows:
             file_name = src.get('file_name') or ''
@@ -1748,13 +1747,12 @@ def _select_sources_by_washing_before_import(
                 has_external_subtitle=False,
             )
 
-            # ★ 核心修复：不再一票否决，而是记录状态并跳过计分
+            # ★ 回退为一票否决：只要包内有任意一个视频被拒绝/跳过，整个包就拒绝，避免转存残缺季包
             if action in ('REJECT', 'SKIP'):
-                group_reasons.append(f"{file_name}: 洗版预检 [{action}] {reason}")
-                continue
-
-            # 只要走到这里，说明是 ACCEPT 或 REPLACE
-            has_acceptable = True
+                rejected = True
+                # 直接把具体的文件名和拒绝原因加入到 errors 中，这样日志和前端都能直接看到
+                errors.append(f"[{code}] {file_name}: 洗版预检 [{action}] {reason}")
+                break
 
             level, level_reason = _washing_new_level(
                 sha1,
@@ -1774,11 +1772,6 @@ def _select_sources_by_washing_before_import(
             group_reasons.append(f"{file_name}: {action}; level={level}; {reason or level_reason}")
 
         if rejected:
-            continue
-
-        # ★ 核心修复：只有当包内【所有】视频都被跳过/拒绝时，才拒绝整个分享包
-        if not has_acceptable:
-            errors.append(f"分享包 {code} 内所有文件均被洗版拒绝/跳过")
             continue
 
         if rows:
