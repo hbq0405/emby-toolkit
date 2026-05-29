@@ -951,10 +951,15 @@ const versionSummaryText = (row) => {
   return parts.length ? parts.join(' · ') : (row.quality || '未知版本');
 };
 const formatCenterSize = (row) => {
+  // 修复：优先使用外层的 size，对于季包来说，外层 size 是 SQL SUM 出来的整包总大小
+  const size = Number(row.size || 0);
+  if (size > 0) return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
+  
+  // 兜底：如果外层没有，再尝试使用媒体信息里的单集大小
   const gb = Number(row.version_summary?.size_gb || 0);
   if (gb > 0) return `${gb.toFixed(gb >= 10 ? 1 : 2)} GB`;
-  const size = Number(row.size || 0);
-  return size ? `${(size / 1024 / 1024 / 1024).toFixed(2)} GB` : '-';
+  
+  return '-';
 };
 const listCell = (items, limit = 3) => {
   const arr = (items || []).map(x => typeof x === 'string' ? x : (x.display || [x.language, x.codec, x.channels ? `${x.channels}ch` : '', x.title].filter(Boolean).join(' '))).filter(Boolean);
