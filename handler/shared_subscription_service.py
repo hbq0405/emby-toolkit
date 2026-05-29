@@ -1827,7 +1827,7 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
             raw_map=raw_map
         )
         if not sources:
-            logger.info(f"  ➜ [共享资源] 中心源全部被洗版预检拒绝: {washing_errors[:5]}")
+            logger.info(f"  ➜ [共享资源] 已被洗版预检拒绝: {washing_errors[:5]}")
             return {
                 'success': False,
                 'mode': 'permanent',
