@@ -1201,7 +1201,6 @@ const localLibraryTag = (it) => {
   const label = info.label || (status === 'full' ? '已入库' : status === 'partial' ? '部分入库' : status === 'none' ? '未入库' : '无法判断');
   const tagType = info.tag_type || (status === 'full' ? 'success' : status === 'partial' ? 'warning' : 'default');
   return h(NTag, { size: 'small', round: true, type: tagType, class: 'center-library-tag' }, {
-    icon: status === 'full' ? () => h(NIcon, { component: CheckIcon }) : undefined,
     default: () => label,
   });
 };
