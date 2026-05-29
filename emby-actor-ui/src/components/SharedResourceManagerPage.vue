@@ -1112,6 +1112,24 @@ const fullTrackTooltipLines = (items) => {
     .filter(Boolean);
 };
 
+const compactEffectText = (value) => {
+  let text = String(value || '').trim();
+  if (!text || text === '-') return '-';
+
+  // Dolby Vision P8.1 / HDR10 -> P8.1 / HDR10
+  // Dolby Vision P7 / HDR10  -> P7 / HDR10
+  // 兼容 DOVI / DV / Profile 8.1 这几类常见写法。
+  text = text
+    .replace(/\b(?:dolby\s*vision|dovi|dv)\s*(?:profile\s*)?p?\s*(5|7|8(?:\.\d+)?)/ig, 'P$1')
+    .replace(/\b(?:dolby\s*vision|dovi)\b/ig, 'DV')
+    .replace(/\bprofile\s*(5|7|8(?:\.\d+)?)\b/ig, 'P$1')
+    .replace(/\s*([/／|,，、])\s*/g, ' $1 ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  return text || '-';
+};
+
 const versionAudioTracks = (it) => it?.version_summary?.audio_list || it?.version_summary?.audios || it?.version_summary?.audio_tracks || it?.version_summary?.audio || [];
 const versionSubtitleTracks = (it) => it?.version_summary?.subtitle_list || it?.version_summary?.subtitles || it?.version_summary?.subtitle_tracks || it?.version_summary?.subtitle || [];
 const localLibraryInfo = (it) => it?.local_library || {};
@@ -1162,7 +1180,7 @@ const centerColumns = [
     const v = it.version_summary || {};
     return h('span', [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ') || '-');
   }) },
-  { title: 'HDR / 杜比', key: 'effect', width: 150, render: row => lineStack(row.versions, it => h('span', it.version_summary?.effect || '-'), it => it.version_summary?.effect || '') },
+  { title: 'HDR / 杜比', key: 'effect', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-effect-compact' }, compactEffectText(it.version_summary?.effect)), it => it.version_summary?.effect || '') },
   { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', it.version_summary?.fps || '-')) },
   { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionAudioTracks(it))), it => fullTrackTooltipLines(versionAudioTracks(it))) },
   { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionSubtitleTracks(it))), it => fullTrackTooltipLines(versionSubtitleTracks(it))) },
@@ -1523,7 +1541,8 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
   white-space: nowrap;
   max-width: 100%;
 }
-.center-track-compact {
+.center-track-compact,
+.center-effect-compact {
   display: inline-block;
   max-width: 100%;
   overflow: hidden;
