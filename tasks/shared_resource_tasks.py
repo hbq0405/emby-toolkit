@@ -2370,9 +2370,12 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
 def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = False):
     """共享资源维护总任务。可由前端手动触发，也由调度器硬编码定时执行。
 
-    maintenance_silent=True 时用于调度器后台静默执行：不输出成功/进度/摘要日志；
+    maintenance_silent=True 时用于调度器后台静默执行：压制中间过程日志，但保留开始和结束摘要；
     未捕获异常仍会由 task_manager 以 ERROR 记录。
     """
+    if maintenance_silent:
+        logger.info("  ➜ [共享资源维护] 后台自动维护任务开始执行...")
+
     old_logger_level = None
     if maintenance_silent:
         # 调度器静默运行时，压制本模块的 INFO/WARNING 成功与进度日志；
@@ -2401,14 +2404,13 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             credit_test = _fetch_center_credit()
             if not credit_test.get('ok'):
                 msg = f"中心服务器连接失败 ({credit_test.get('message')})，为避免任务卡死，本次维护取消。"
-                if not maintenance_silent:
-                    logger.warning(f"  ➜ [共享资源维护] {msg}")
+                # 连通性失败属于重要异常，无论是否静默都以 ERROR 级别输出
+                logger.error(f"  ➜ [共享资源维护] {msg}")
                 _status(100, msg)
                 return
         except Exception as e:
             msg = f"中心服务器连接超时或异常，为避免任务卡死，本次维护取消。"
-            if not maintenance_silent:
-                logger.warning(f"  ➜ [共享资源维护] {msg} ({e})")
+            logger.error(f"  ➜ [共享资源维护] {msg} ({e})")
             _status(100, msg)
             return
 
@@ -2468,10 +2470,15 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"中心补登 {total.get('resynced', 0)}，"
             f"清理失效 {total.get('cancelled', 0)}。"
         )
-        if not maintenance_silent:
-            logger.info(f"=== {msg} ===")
+        
+        if old_logger_level is not None:
+            logger.setLevel(old_logger_level)
+            old_logger_level = None
+            
+        logger.info(f"=== {msg} ===")
         _status(100, msg)
     finally:
+        # 确保发生异常时也能恢复日志级别
         if old_logger_level is not None:
             logger.setLevel(old_logger_level)
 
