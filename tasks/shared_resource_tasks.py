@@ -1557,6 +1557,494 @@ def _auto_share_center_open_gaps(client: SharedCenterClient, limit: int = 80) ->
 
 
 
+
+def _season_rollup_parent_id(record: Dict[str, Any]) -> str:
+    """从单集分享记录里取父剧 TMDb ID。"""
+    return str((record or {}).get('parent_series_tmdb_id') or (record or {}).get('tmdb_id') or '').strip()
+
+
+def _active_episode_share_statuses_for_rollup() -> List[str]:
+    """完结汇总只处理仍然占用分享名额/中心源的活动单集分享。"""
+    return _active_share_statuses()
+
+
+def _load_completed_season_episode_share_groups(limit: int = 30) -> List[Dict[str, Any]]:
+    """找出“已有单集分享，但所属 Season.watching_status=Completed”的季。
+
+    只信 Season 行的 watching_status，不参考 Series 状态或 TMDb status。
+    """
+    statuses = _active_episode_share_statuses_for_rollup()
+    if not statuses:
+        return []
+
+    max_rows = max(50, int(limit or 30) * 20)
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    r.*,
+                    s.tmdb_id AS _season_tmdb_id,
+                    s.title AS _season_title,
+                    s.original_title AS _season_original_title,
+                    s.parent_series_tmdb_id AS _season_parent_series_tmdb_id,
+                    s.season_number AS _season_number,
+                    s.release_year AS _season_release_year,
+                    s.release_date AS _season_release_date,
+                    s.last_air_date AS _season_last_air_date,
+                    s.file_sha1_json AS _season_file_sha1_json,
+                    s.file_pickcode_json AS _season_file_pickcode_json,
+                    s.in_library AS _season_in_library,
+                    s.subscription_status AS _season_subscription_status,
+                    s.total_episodes AS _season_total_episodes,
+                    s.watching_status AS _season_watching_status,
+                    s.watchlist_tmdb_status AS _season_watchlist_tmdb_status,
+                    s.last_updated_at AS _season_last_updated_at
+                FROM shared_share_records r
+                JOIN media_metadata s
+                  ON s.item_type = 'Season'
+                 AND s.parent_series_tmdb_id = COALESCE(NULLIF(r.parent_series_tmdb_id, ''), NULLIF(r.tmdb_id, ''))
+                 AND s.season_number = r.season_number
+                WHERE r.status = ANY(%s)
+                  AND COALESCE(s.watching_status, '') = 'Completed'
+                  AND COALESCE(r.share_code, '') <> ''
+                  AND r.season_number IS NOT NULL
+                  AND (
+                        LOWER(COALESCE(r.share_type, '')) = 'episode_file'
+                        OR COALESCE(r.item_type, '') = 'Episode'
+                        OR r.episode_number IS NOT NULL
+                  )
+                  AND LOWER(COALESCE(r.share_type, '')) NOT IN ('season_pack', 'series_pack', 'tv_pack', 'season')
+                ORDER BY s.last_updated_at DESC NULLS LAST,
+                         r.parent_series_tmdb_id,
+                         r.season_number,
+                         r.episode_number NULLS LAST,
+                         r.created_at ASC
+                LIMIT %s
+                """,
+                (statuses, max_rows),
+            )
+            rows = [dict(r) for r in cur.fetchall()]
+
+    groups: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        parent = str(row.get('_season_parent_series_tmdb_id') or row.get('parent_series_tmdb_id') or row.get('tmdb_id') or '').strip()
+        season_number = row.get('_season_number') if row.get('_season_number') not in (None, '') else row.get('season_number')
+        try:
+            season_number_int = int(season_number)
+        except Exception:
+            continue
+        if not parent:
+            continue
+
+        key = f'{parent}|{season_number_int}'
+        group = groups.setdefault(key, {
+            'parent_series_tmdb_id': parent,
+            'season_number': season_number_int,
+            'season_row': {
+                'tmdb_id': str(row.get('_season_tmdb_id') or ''),
+                'item_type': 'Season',
+                'title': row.get('_season_title'),
+                'original_title': row.get('_season_original_title'),
+                'parent_series_tmdb_id': parent,
+                'season_number': season_number_int,
+                'release_year': row.get('_season_release_year'),
+                'release_date': row.get('_season_release_date'),
+                'last_air_date': row.get('_season_last_air_date'),
+                'file_sha1_json': row.get('_season_file_sha1_json'),
+                'file_pickcode_json': row.get('_season_file_pickcode_json'),
+                'in_library': row.get('_season_in_library'),
+                'subscription_status': row.get('_season_subscription_status'),
+                'total_episodes': row.get('_season_total_episodes'),
+                'watching_status': row.get('_season_watching_status'),
+                'watchlist_tmdb_status': row.get('_season_watchlist_tmdb_status'),
+            },
+            'episode_records': [],
+        })
+
+        record = {
+            k: v for k, v in row.items()
+            if not str(k).startswith('_season_')
+        }
+        if not any(str(x.get('id')) == str(record.get('id')) for x in group['episode_records']):
+            group['episode_records'].append(record)
+
+    return list(groups.values())[:max(1, int(limit or 30))]
+
+
+def _has_active_season_pack_share(parent_series_tmdb_id: str, season_number) -> bool:
+    parent_series_tmdb_id = str(parent_series_tmdb_id or '').strip()
+    if not parent_series_tmdb_id or season_number in (None, ''):
+        return False
+    try:
+        season_number = int(season_number)
+    except Exception:
+        return False
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT 1
+                FROM shared_share_records
+                WHERE status = ANY(%s)
+                  AND COALESCE(season_number, -1) = %s
+                  AND (
+                        COALESCE(parent_series_tmdb_id, '') = %s
+                        OR COALESCE(tmdb_id, '') = %s
+                  )
+                  AND (
+                        LOWER(COALESCE(share_type, '')) IN ('season_pack', 'series_pack', 'tv_pack', 'season')
+                        OR (
+                            COALESCE(item_type, '') = 'Season'
+                            AND episode_number IS NULL
+                        )
+                  )
+                LIMIT 1
+                """,
+                (_active_share_statuses(), season_number, parent_series_tmdb_id, parent_series_tmdb_id),
+            )
+            return cur.fetchone() is not None
+
+
+def _select_season_pack_candidate(sr, season_row: Dict[str, Any]) -> Dict[str, Any]:
+    """复用手动分享候选构造，只接受真正的 season_pack 候选。"""
+    candidates = []
+    if hasattr(sr, '_expand_share_candidates'):
+        candidates = sr._expand_share_candidates(season_row) or []
+    elif hasattr(sr, '_build_media_candidate'):
+        candidates = [sr._build_media_candidate(season_row)]
+
+    for candidate in candidates:
+        if str(candidate.get('share_type') or '').strip().lower() == 'season_pack' and candidate.get('resolvable') and candidate.get('root_fid'):
+            return candidate
+    return {}
+
+
+def _prepare_season_pack_files(sr, p115, candidate: Dict[str, Any], standard_identity: Dict[str, Any]) -> tuple[List[Dict[str, Any]], str]:
+    """收集季包文件，并做 raw / 一致性校验。"""
+    root_fid = str(candidate.get('root_fid') or '').strip()
+    root_name = candidate.get('root_name') or standard_identity.get('title') or root_fid
+    root_is_dir = candidate.get('root_is_dir') is not False
+
+    files = sr._collect_files_from_115(p115, root_fid, root_name=root_name, max_depth=8, assume_dir=root_is_dir)
+    if not files:
+        payload = {
+            'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id'),
+            'item_type': candidate.get('share_item_type') or candidate.get('item_type') or 'Season',
+            'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id'),
+            'season_number': candidate.get('season_number'),
+            'title': candidate.get('display_title') or candidate.get('title') or standard_identity.get('title'),
+            'root_name': root_name,
+        }
+        files = sr._collect_files_from_media_payload(payload)
+
+    for item in files or []:
+        item.setdefault('tmdb_id', str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or standard_identity.get('tmdb_id') or ''))
+        # 季包里的每个文件仍保留 Episode 明细，中心登记时会由 record.share_type=season_pack 聚合成季包源。
+        if not item.get('item_type'):
+            item['item_type'] = 'Episode' if item.get('episode_number') else 'Season'
+        item.setdefault('season_number', candidate.get('season_number'))
+        if not item.get('episode_number') and candidate.get('episode_number'):
+            item['episode_number'] = candidate.get('episode_number')
+
+    if not files:
+        return [], '未能定位到可分享的视频文件，跳过完结季汇总'
+
+    if hasattr(sr, '_files_missing_raw_ffprobe'):
+        missing_raw = sr._files_missing_raw_ffprobe(files)
+        if missing_raw:
+            if hasattr(sr, '_raw_missing_message'):
+                return [], sr._raw_missing_message(missing_raw)
+            return [], f'缺少 raw_ffprobe_json：{missing_raw}'
+
+    if hasattr(sr, '_validate_season_pack_consistency'):
+        consistency = sr._validate_season_pack_consistency(files)
+        if not consistency.get('ok'):
+            return [], consistency.get('message') or '季包媒体参数不一致，跳过完结季汇总'
+
+    return files, ''
+
+
+def _create_completed_season_pack_share(
+    client: SharedCenterClient,
+    p115,
+    season_row: Dict[str, Any],
+    episode_records: List[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """创建完结季季包分享；成功后返回新分享记录。"""
+    try:
+        from routes import shared_resource as sr
+    except Exception as e:
+        return {'ok': False, 'message': f'无法加载共享资源辅助函数：{e}'}
+
+    if hasattr(sr, '_share_policy_for_media'):
+        policy = sr._share_policy_for_media(season_row)
+        if not policy.get('allowed') or str(policy.get('share_type') or '').lower() != 'season_pack':
+            return {'ok': False, 'message': policy.get('message') or '当前季不符合季包分享策略'}
+
+    candidate = _select_season_pack_candidate(sr, season_row)
+    if not candidate:
+        return {'ok': False, 'message': '未找到可创建季包的分享根目录'}
+
+    standard_identity = sr._standard_media_identity_for_share({
+        'tmdb_id': candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or season_row.get('parent_series_tmdb_id') or season_row.get('tmdb_id'),
+        'item_type': 'Season',
+        'parent_series_tmdb_id': candidate.get('parent_series_tmdb_id') or season_row.get('parent_series_tmdb_id'),
+        'season_number': candidate.get('season_number') or season_row.get('season_number'),
+        'title': candidate.get('standard_title') or candidate.get('title') or season_row.get('title'),
+        'release_year': candidate.get('release_year') or season_row.get('release_year'),
+        'share_type': 'season_pack',
+    })
+
+    files, file_error = _prepare_season_pack_files(sr, p115, candidate, standard_identity)
+    if file_error:
+        return {'ok': False, 'message': file_error}
+
+    root_fid = str(candidate.get('root_fid') or '').strip()
+    root_name = candidate.get('root_name') or standard_identity.get('title') or root_fid
+    root_is_dir = candidate.get('root_is_dir') is not False
+
+    share_resp = p115.share_create([root_fid], share_duration=-1, receive_code=None)
+    if not share_resp or not share_resp.get('state'):
+        return {'ok': False, 'message': f'创建完结季季包分享失败：{share_resp}', 'share_response': share_resp}
+
+    data = share_resp.get('data') or {}
+    share_code = data.get('share_code') or share_resp.get('share_code')
+    receive_code = data.get('receive_code') or ''
+    share_url = data.get('share_url') or (f"https://115.com/s/{share_code}" if share_code else '')
+
+    source_record_ids = [r.get('id') for r in episode_records if r.get('id') is not None]
+    season_number = candidate.get('season_number') or season_row.get('season_number')
+    parent_series_id = standard_identity.get('parent_series_tmdb_id') or candidate.get('parent_series_tmdb_id') or season_row.get('parent_series_tmdb_id')
+
+    record = shared_share_db.create_share_record({
+        'share_code': share_code,
+        'receive_code': receive_code,
+        'share_url': share_url,
+        'share_type': 'season_pack',
+        'root_fid': root_fid,
+        'root_name': root_name,
+        'root_is_dir': root_is_dir,
+        'tmdb_id': str(standard_identity.get('tmdb_id') or parent_series_id or ''),
+        'item_type': 'Season',
+        'parent_series_tmdb_id': parent_series_id,
+        'season_number': season_number,
+        'episode_number': None,
+        'title': standard_identity.get('title') or candidate.get('standard_title') or candidate.get('title') or root_name,
+        'release_year': standard_identity.get('release_year') or candidate.get('release_year') or season_row.get('release_year'),
+        'status': 'pending_review',
+        'review_status': 'pending_review',
+        'center_status': 'not_reported',
+        # 继续写 auto_gap，复用现有“自动分享”识别与中心 source_provider=auto_gap_share 逻辑。
+        'raw_json': {
+            'auto_gap': {
+                'type': 'season_completed_rollup',
+                'parent_series_tmdb_id': parent_series_id,
+                'season_number': season_number,
+                'source_record_ids': source_record_ids,
+                'reason': 'Season.watching_status=Completed',
+            },
+            'auto_completed_season_pack': True,
+            'season_completed_rollup': {
+                'source_record_ids': source_record_ids,
+                'source_share_codes': [r.get('share_code') for r in episode_records if r.get('share_code')],
+                'created_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            },
+            'share_response': share_resp,
+            'candidate': candidate,
+            'standard_identity': standard_identity,
+        },
+    })
+    count = shared_share_db.replace_share_items(record['id'], files)
+    record = shared_share_db.update_share_record(record['id'], item_count=count) or record
+
+    shared_virtual_db.add_credit_ledger(
+        'share_completed_season_pack_created',
+        0,
+        f"完结季汇总创建季包分享：{record.get('title') or root_name} S{_safe_int(season_number, 0):02d}",
+        ref_id=str(record.get('id')),
+        title=record.get('title') or root_name,
+        raw_json={
+            'share_code': share_code,
+            'source_record_ids': source_record_ids,
+            'parent_series_tmdb_id': parent_series_id,
+            'season_number': season_number,
+            'item_count': count,
+        },
+    )
+
+    return {'ok': True, 'record': record, 'items': files, 'share_response': share_resp}
+
+
+def _cancel_episode_records_after_season_rollup(
+    client: SharedCenterClient,
+    p115,
+    episode_records: List[Dict[str, Any]],
+    *,
+    new_pack_record: Dict[str, Any] | None = None,
+    reason: str = 'season_completed_rollup',
+) -> Dict[str, int]:
+    """取消同季单集分享，并撤销它们在中心的源。"""
+    cancelled = 0
+    failed = 0
+    new_pack_id = str((new_pack_record or {}).get('id') or '')
+    new_pack_share_code = str((new_pack_record or {}).get('share_code') or '').strip()
+
+    seen_ids = set()
+    for record in episode_records or []:
+        record_id = record.get('id')
+        if record_id in seen_ids:
+            continue
+        seen_ids.add(record_id)
+        if new_pack_id and str(record_id) == new_pack_id:
+            continue
+
+        share_code = str(record.get('share_code') or '').strip()
+        title = record.get('title') or record.get('root_name') or share_code or str(record_id)
+        p115_ok, p115_resp = _delete_115_share(p115, share_code)
+        if not p115_ok:
+            old_raw = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+            shared_share_db.update_share_record(
+                record_id,
+                status='cancel_failed',
+                last_error=f'完结季已汇总为季包，但取消单集分享失败：{p115_resp}',
+                raw_json={
+                    **dict(old_raw or {}),
+                    'season_completed_rollup_cancel_failed': {
+                        'reason': reason,
+                        'new_pack_record_id': (new_pack_record or {}).get('id'),
+                        'new_pack_share_code': new_pack_share_code,
+                        'p115_response': p115_resp,
+                        'failed_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                    },
+                },
+            )
+            failed += 1
+            continue
+
+        center_ok, center_resp = _cancel_center_sources_for_record(client, record_id, share_code, reason)
+        _mark_share_deleted(
+            record,
+            p115_resp=p115_resp,
+            center_resp=center_resp,
+            center_ok=center_ok,
+            reason=reason,
+            last_error=(
+                f"所属季已完结并汇总为季包分享"
+                f"{f'（新分享码 {new_pack_share_code}）' if new_pack_share_code else ''}，维护任务已取消该单集分享"
+            ),
+            status='cancelled',
+            review_status='cancelled',
+        )
+        shared_virtual_db.add_credit_ledger(
+            'share_episode_cancelled_after_season_rollup',
+            0,
+            f'完结季汇总后取消单集分享：{title}',
+            ref_id=str(record_id),
+            title=title,
+            raw_json={
+                'share_code': share_code,
+                'new_pack_record_id': (new_pack_record or {}).get('id'),
+                'new_pack_share_code': new_pack_share_code,
+                'center_ok': center_ok,
+                'center_response': center_resp,
+            },
+        )
+        cancelled += 1
+        time.sleep(0.2)
+
+    return {'cancelled': cancelled, 'failed': failed}
+
+
+def _rollup_completed_season_episode_shares(client: SharedCenterClient, max_groups: int = 20) -> Dict[str, int]:
+    """完结汇总：Season.watching_status=Completed 后，用季包替换同季单集分享。"""
+    result = {
+        'season_rollup_groups': 0,
+        'season_rollup_created': 0,
+        'season_rollup_existing_pack': 0,
+        'season_rollup_cancelled': 0,
+        'season_rollup_failed': 0,
+        'season_rollup_skipped': 0,
+    }
+
+    p115 = P115Service.get_client()
+    if not p115:
+        result['season_rollup_skipped'] += 1
+        return result
+
+    groups = _load_completed_season_episode_share_groups(limit=max_groups)
+    if not groups:
+        return result
+
+    for group in groups:
+        parent = group.get('parent_series_tmdb_id')
+        season_number = group.get('season_number')
+        episode_records = group.get('episode_records') or []
+        season_row = group.get('season_row') or {}
+        if not parent or season_number in (None, '') or not episode_records:
+            result['season_rollup_skipped'] += 1
+            continue
+
+        result['season_rollup_groups'] += 1
+        try:
+            if _has_active_season_pack_share(parent, season_number):
+                cancel_result = _cancel_episode_records_after_season_rollup(
+                    client,
+                    p115,
+                    episode_records,
+                    new_pack_record=None,
+                    reason='season_completed_rollup_existing_pack',
+                )
+                result['season_rollup_existing_pack'] += 1
+                result['season_rollup_cancelled'] += cancel_result.get('cancelled', 0)
+                result['season_rollup_failed'] += cancel_result.get('failed', 0)
+                logger.info(
+                    "  ➜ [共享资源维护] 已存在完结季季包，已清理同季单集分享: parent=%s S%02d, cancelled=%s, failed=%s",
+                    parent, _safe_int(season_number, 0), cancel_result.get('cancelled', 0), cancel_result.get('failed', 0),
+                )
+                continue
+
+            create_result = _create_completed_season_pack_share(client, p115, season_row, episode_records)
+            if not create_result.get('ok'):
+                result['season_rollup_skipped'] += 1
+                logger.info(
+                    "  ➜ [共享资源维护] 完结季汇总跳过: parent=%s S%02d -> %s",
+                    parent, _safe_int(season_number, 0), create_result.get('message') or 'unknown',
+                )
+                continue
+
+            new_record = create_result.get('record') or {}
+            result['season_rollup_created'] += 1
+            cancel_result = _cancel_episode_records_after_season_rollup(
+                client,
+                p115,
+                episode_records,
+                new_pack_record=new_record,
+                reason='season_completed_rollup',
+            )
+            result['season_rollup_cancelled'] += cancel_result.get('cancelled', 0)
+            result['season_rollup_failed'] += cancel_result.get('failed', 0)
+            logger.info(
+                "  ➜ [共享资源维护] 完结季汇总完成: parent=%s S%02d, pack_share=%s, cancelled=%s, failed=%s",
+                parent,
+                _safe_int(season_number, 0),
+                new_record.get('share_code') or '-',
+                cancel_result.get('cancelled', 0),
+                cancel_result.get('failed', 0),
+            )
+        except Exception as e:
+            result['season_rollup_failed'] += 1
+            logger.warning(
+                "  ➜ [共享资源维护] 完结季汇总异常: parent=%s S%s -> %s",
+                parent, season_number, e, exc_info=True,
+            )
+        time.sleep(0.3)
+
+    return result
+
+
+
 def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
     """删除已过期且未转正的虚拟入库临时缓存，同时删除 Emby 媒体项。"""
     p115 = P115Service.get_client()
@@ -1937,6 +2425,9 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         _status(45, '正在为中心缺口自动创建本机分享...')
         total['auto_created_shares'] = _auto_share_center_open_gaps(client)
 
+        _status(52, '正在汇总已完结季的单集分享...')
+        total.update(_rollup_completed_season_episode_shares(client))
+
         _status(60, '正在从中心资源库处理追更缺集...')
         follow_result = _auto_follow_watching_series_from_center()
         total.update({f'follow_{k}': v for k, v in follow_result.items()})
@@ -1966,6 +2457,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"共享资源维护完成：登记缺口 {total.get('reported_gaps', 0)}，"
             f"清理临时转存 {total.get('expired_virtual_cache_cleaned', 0)}，"
             f"自动创建分享 {total.get('auto_created_shares', 0)}，"
+            f"完结汇总 创建季包 {total.get('season_rollup_created', 0)}、清理单集 {total.get('season_rollup_cancelled', 0)}/{total.get('season_rollup_failed', 0)}，"
             f"违规分享清理 {total.get('share_invalid_deleted', 0)}/{total.get('share_invalid_failed', 0)}，"
             f"缺raw清理 {total.get('share_raw_missing_deleted', 0)}/{total.get('share_raw_missing_failed', 0)}，"
             f"水位清理 {total.get('share_pruned', 0)}/{total.get('share_prune_failed', 0)}，"

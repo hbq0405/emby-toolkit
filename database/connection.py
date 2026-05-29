@@ -824,6 +824,17 @@ def init_db():
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_svi_expires_at ON shared_virtual_items (expires_at) WHERE status IN ('cached', 'watched');")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_status_updated ON shared_share_records (status, updated_at DESC);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssr_media ON shared_share_records (tmdb_id, item_type, season_number);")
+                    # 完结汇总：快速找到某父剧某季下仍活动的单集分享。
+                    cursor.execute("""
+                        CREATE INDEX IF NOT EXISTS idx_ssr_completed_rollup_lookup
+                        ON shared_share_records (parent_series_tmdb_id, season_number, status, share_type)
+                        WHERE season_number IS NOT NULL
+                          AND (
+                                episode_number IS NOT NULL
+                                OR item_type = 'Episode'
+                                OR share_type = 'episode_file'
+                          );
+                    """)
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssi_record ON shared_share_items (share_record_id);")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_ssi_sha1 ON shared_share_items (sha1) WHERE sha1 IS NOT NULL;")
                     cursor.execute("CREATE INDEX IF NOT EXISTS idx_shared_credit_ledger_created ON shared_credit_ledger_local (created_at DESC);")
