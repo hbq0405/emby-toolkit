@@ -1043,7 +1043,25 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
         try:
             snap = p115.share_info(share_code, record.get('receive_code'), cid=0, limit=1)
             checked += 1
-            alive = _looks_share_alive(snap)
+            review = {}
+            if sr is not None and hasattr(sr, '_parse_share_status'):
+                try:
+                    review = sr._parse_share_status(snap) or {}
+                except Exception:
+                    review = {}
+            alive = (review.get('status') == 'alive') or _looks_share_alive(snap)
+            if not alive and review.get('status') == 'pending_review':
+                # 115 审核中不等于死链。维护任务只更新本地状态，不能撤销中心源/删除分享。
+                old_raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+                shared_share_db.update_share_record(
+                    record['id'],
+                    status='pending_review',
+                    review_status='pending_review',
+                    last_checked_at='NOW()',
+                    last_error=review.get('message') or '115 分享仍在审核中，等待下次维护任务复查',
+                    raw_json={**old_raw_json, 'last_snap': snap},
+                )
+                continue
             if alive:
                 old_raw_json = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
                 update = {

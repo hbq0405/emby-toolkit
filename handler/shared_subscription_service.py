@@ -1249,35 +1249,31 @@ def _create_backup_share_after_import(
     count = shared_share_db.replace_share_items(record['id'], files)
     record = shared_share_db.update_share_record(record['id'], item_count=count) or record
 
-    cfg, headers = sr._center_headers()
-    raw_result = sr._upload_share_raw_ffprobe_to_center(record['id'], cfg, headers, force=True)
+    # 备份分享刚创建出来时，115 可能仍处于审核中。
+    # 这里不能立即上传 RAW 并登记中心，否则中心资源库会出现“本地仍审核中、中心已上线”的脏状态。
+    # 正确流程是：只落本地“我的分享”记录，等待维护任务/手动检查确认 share_info=alive 后，再走既有登记中心逻辑。
     items = shared_share_db.list_share_items(record['id']) or []
-    register_result = sr._register_share_items_to_center(record, items, cfg, headers, source_provider='user_share')
-    ok = int(register_result.get('reported') or 0)
-    errors = list(register_result.get('errors') or [])
-    center_status = 'reported' if ok == len(items) and not errors else ('partial' if ok > 0 else 'failed')
     shared_share_db.update_share_record(
         record['id'],
-        center_status=center_status,
-        status='reported' if center_status == 'reported' else record.get('status'),
-        reported_count=ok,
-        reported_at='NOW()' if ok > 0 else None,
-        last_error='自动备份分享登记成功' if center_status == 'reported' else '自动备份分享登记未完成：' + '；'.join(errors[:5]),
+        center_status='not_reported',
+        status='pending_review',
+        review_status='pending_review',
+        reported_count=0,
+        last_error='自动备份分享已创建，等待 115 审核通过后由维护任务登记中心',
     )
     logger.info(
-        "  ➜ [共享资源] 已按中心指令创建备份分享：share=%s, files=%s, registered=%s/%s, raw=%s",
-        share_code, len(items), ok, len(items), raw_result,
+        "  ➜ [共享资源] 已按中心指令创建备份分享，等待审核通过后再登记中心：share=%s, files=%s",
+        share_code, len(items),
     )
     return {
         'created': True,
-        'registered': ok > 0,
+        'registered': False,
         'share_code': share_code,
         'record_id': record.get('id'),
-        'reported': ok,
+        'reported': 0,
         'total': len(items),
-        'center_status': center_status,
-        'raw_result': raw_result,
-        'errors': errors,
+        'center_status': 'not_reported',
+        'reason': 'pending_review_wait_for_maintenance',
     }
 
 
