@@ -841,18 +841,37 @@ const centerStatusTag = (row) => {
   return h(NTag, { type, size: 'small', round: true }, { default: () => text });
 };
 const centerSourceText = (row) => {
-  const label = String(row?.source_provider_label || row?.source_scope_label || row?.source_label || '').trim();
-  if (/(自动|补缺)/.test(label)) return '自动分享';
-  if (/影巢/.test(label)) return '影巢';
-  if (/频道|TG/.test(label)) return '频道';
-  if (/手动|用户/.test(label)) return '手动分享';
+  // 中心端历史字段不完全统一：自动维护创建、手动创建、频道/影巢外部源可能分别落在
+  // source_provider / source_label / provider / origin / create_mode 等字段里。这里不要缺省成“手动分享”，
+  // 否则自动分享只要字段名换了就会被误判。
+  const pickText = (value) => {
+    if (value == null) return '';
+    if (typeof value === 'object') {
+      return [
+        value.source_provider, value.source_provider_label, value.source_label, value.provider, value.origin,
+        value.share_source, value.source_type, value.share_type, value.create_mode, value.created_by, value.task_type, value.submitter_type, value.label, value.name,
+      ].filter(v => v != null).join(' ');
+    }
+    return String(value);
+  };
+  const rawParts = [
+    row?.source_provider, row?.provider, row?.origin, row?.share_origin, row?.share_source, row?.source_type,
+    row?.create_mode, row?.created_by, row?.creator_type, row?.submitter_type, row?.register_from, row?.register_source,
+    row?.task_source, row?.task_type, row?.client_source, row?.share_kind, row?.source, row?.shared_source, row?.extra, row?.raw,
+  ].map(pickText).filter(Boolean);
+  const labelParts = [row?.source_provider_label, row?.source_label].map(pickText).filter(Boolean);
+  const rawText = rawParts.join(' ').toLowerCase();
+  const labelText = labelParts.join(' ').toLowerCase();
+  const allText = `${rawText} ${labelText}`;
 
-  const provider = String(row?.source_provider || '').trim();
-  if (provider === 'auto_gap_share') return '自动分享';
-  if (provider === 'hdhive') return '影巢';
-  if (provider === 'tg_channel' || provider === 'tg_channel_hdhive') return '频道';
-  if (provider === 'user_share' || provider === 'manual_share') return '手动分享';
-  return '手动分享';
+  if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance) return '自动分享';
+  if (/(hdhive|影巢)/i.test(allText)) return '影巢';
+  if (/(tg_channel|telegram|频道)/i.test(allText)) return '频道';
+  if (/(auto|自动|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动分享';
+  if (/(manual|user_share|手动|人工)/i.test(allText) || row?.is_manual_share) return '手动分享';
+
+  const label = labelParts.join(' ').trim();
+  return label || '本机分享';
 };
 const centerSourceTag = (row) => {
   const text = centerSourceText(row);
@@ -1002,39 +1021,68 @@ const lineStack = (items, renderFn, tooltipFn = null) => {
   return h('div', { class: 'center-version-stack' }, rows);
 };
 
-const extractTrackLanguage = (item) => {
-  if (!item) return '';
-  if (typeof item === 'object') {
-    const direct = String(item.language || item.lang || item.language_name || '').trim();
-    if (direct) return direct;
-    item = item.display || item.title || '';
-  }
-
-  let text = String(item || '').trim();
+const trackListToArray = (items) => {
+  if (!Array.isArray(items)) return items ? [items] : [];
+  return items;
+};
+const languageMap = {
+  eng: '英语', en: '英语', english: '英语',
+  chi: '中文', zho: '中文', zh: '中文', chinese: '中文', cmn: '中文', mandarin: '国语',
+  yue: '粤语', cantonese: '粤语',
+  jpn: '日语', ja: '日语', japanese: '日语',
+  kor: '韩语', ko: '韩语', korean: '韩语',
+  fre: '法语', fra: '法语', fr: '法语', french: '法语',
+  ger: '德语', deu: '德语', de: '德语', german: '德语',
+  spa: '西语', es: '西语', spanish: '西语',
+  rus: '俄语', ru: '俄语', russian: '俄语',
+  tha: '泰语', th: '泰语', thai: '泰语',
+};
+const stripTrackParams = (value) => {
+  let text = String(value || '').trim();
   if (!text) return '';
-  text = text.replace(/\s*\((?:默认|default)\)\s*/gi, ' ').trim();
-  text = text.replace(/\([^)]*\)/g, ' ').replace(/\s+/g, ' ').trim();
+  const lower = text.toLowerCase();
+  if (languageMap[lower]) return languageMap[lower];
 
-  const match = text.match(/^(.+?)(?=\s+(?:DTS(?:-HD)?|TRUEHD|ATMOS|DDP|EAC3|AC3|AAC|FLAC|PCM|LPCM|OPUS|VORBIS|MP3|PGS|PGSSUB|SRT|ASS|SSA|VTT|WEBVTT|\d+(?:\.\d+)?))/i);
-  if (match?.[1]) return match[1].trim();
-  return text.split(/\s*\/\s*/)[0].trim();
+  text = text
+    .replace(/（[^）]*）/g, ' ')
+    .replace(/\([^)]*\)/g, ' ')
+    .replace(/\[[^\]]*\]/g, ' ')
+    .replace(/【[^】]*】/g, ' ')
+    .replace(/默认|default|forced|强制|内封|外挂|外置/ig, ' ')
+    .replace(/\b(truehd|dts[- ]?hd(?: ma)?|dts|e[- ]?ac[- ]?3|ddp|ac[- ]?3|aac|flac|mp3|opus|pcm|pgssub|pgs|subrip|srt|ass|ssa|mov[_ -]?text|webvtt|vobsub|dvdsub|stereo|mono|atmos|dolby|dual mono)\b/ig, ' ')
+    .replace(/\b[0-9](?:\.[0-9])?\s*(?:ch|channels?)\b/ig, ' ')
+    .replace(/\b[257]\.1(?:\.[24])?\b/g, ' ')
+    .replace(/[·/|,，]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const normalized = text.toLowerCase();
+  if (languageMap[normalized]) return languageMap[normalized];
+  if (/简体/.test(text) && !/^中文/.test(text) && !/中英/.test(text)) return `中文简体${text.replace(/简体/g, '').trim() ? ` ${text.replace(/简体/g, '').trim()}` : ''}`.trim();
+  if (/繁体/.test(text) && !/^中文/.test(text) && !/中英/.test(text)) return `中文繁体${text.replace(/繁体/g, '').trim() ? ` ${text.replace(/繁体/g, '').trim()}` : ''}`.trim();
+  return text;
 };
-const trackListToStrings = (items) => {
-  const list = [];
-  for (const item of items || []) {
-    const value = extractTrackLanguage(item);
-    if (value && !list.includes(value)) list.push(value);
-  }
-  return list;
+const trackRawText = (item) => {
+  if (item == null) return '';
+  if (typeof item === 'string') return item;
+  return item.display || item.display_title || item.title || item.name || item.label || item.language || item.lang || '';
 };
-const defaultTrackText = (items) => {
-  const arr = trackListToStrings(items);
+const isDefaultTrack = (item) => {
+  if (item == null) return false;
+  if (typeof item === 'object' && (item.is_default === true || item.default === true || item.selected === true)) return true;
+  return /默认|default/i.test(trackRawText(item));
+};
+const compactTrackText = (items) => {
+  const arr = trackListToArray(items);
   if (!arr.length) return '-';
-  return arr[0];
+  const selected = arr.find(isDefaultTrack) || arr[0];
+  return stripTrackParams(trackRawText(selected)) || '-';
 };
-const allTrackTitle = (items) => {
-  const arr = trackListToStrings(items);
-  return arr.length ? arr.join('\n') : '';
+const compactTrackTitle = (items) => {
+  const arr = trackListToArray(items)
+    .map(item => stripTrackParams(trackRawText(item)))
+    .filter(Boolean);
+  return Array.from(new Set(arr)).join('\n');
 };
 
 const centerColumns = [
@@ -1044,7 +1092,7 @@ const centerColumns = [
   ]) },
   // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
   { title: '类型', key: 'item_type', width: 160, render: row => lineStack(row.versions, it => h('span', centerSeasonText(it))) },
-  { title: '来源', key: 'source_provider', width: 96, render: row => lineStack(row.versions, it => centerSourceTag(it), it => it.source_provider_label || it.source_label || centerSourceText(it)) },
+  { title: '来源', key: 'source_provider', width: 110, render: row => lineStack(row.versions, it => centerSourceTag(it), it => it.source_provider_label || it.source_label || centerSourceText(it)) },
   { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = it.version_summary || {};
@@ -1052,8 +1100,8 @@ const centerColumns = [
   }) },
   { title: 'HDR / 杜比', key: 'effect', width: 150, render: row => lineStack(row.versions, it => h('span', it.version_summary?.effect || '-'), it => it.version_summary?.effect || '') },
   { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', it.version_summary?.fps || '-')) },
-  { title: '音轨', key: 'audios', width: 118, render: row => lineStack(row.versions, it => h('span', defaultTrackText(it.version_summary?.audio_list || it.version_summary?.audios)), it => allTrackTitle(it.version_summary?.audio_list || it.version_summary?.audios)) },
-  { title: '字幕', key: 'subtitles', width: 118, render: row => lineStack(row.versions, it => h('span', defaultTrackText(it.version_summary?.subtitle_list || it.version_summary?.subtitles)), it => allTrackTitle(it.version_summary?.subtitle_list || it.version_summary?.subtitles)) },
+  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(it.version_summary?.audio_list || it.version_summary?.audios)), it => compactTrackTitle(it.version_summary?.audio_list || it.version_summary?.audios)) },
+  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(it.version_summary?.subtitle_list || it.version_summary?.subtitles)), it => compactTrackTitle(it.version_summary?.subtitle_list || it.version_summary?.subtitles)) },
   { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
   { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
@@ -1408,6 +1456,13 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 100%;
+}
+.center-track-compact {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 
