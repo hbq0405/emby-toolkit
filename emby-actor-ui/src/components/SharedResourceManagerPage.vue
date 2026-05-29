@@ -1012,15 +1012,29 @@ const groupCenterSources = (items, orderBy = 'latest') => {
   return groups;
 };
 
+const renderLineTooltipContent = (value) => {
+  if (Array.isArray(value)) {
+    const lines = value.map(line => String(line || '').trim()).filter(Boolean);
+    if (!lines.length) return null;
+    return h('div', { class: 'center-cell-tooltip-list' }, lines.map((line, idx) =>
+      h('div', { class: 'center-cell-tooltip-line', key: `tooltip-line-${idx}` }, line)
+    ));
+  }
+  const text = String(value || '').trim();
+  if (!text) return null;
+  return h('div', { class: 'center-cell-tooltip-content' }, text);
+};
+
 const lineStack = (items, renderFn, tooltipFn = null) => {
   const rows = (items || []).map((it, idx) => {
     const content = renderFn(it, idx);
-    const title = tooltipFn ? String(tooltipFn(it, idx) || '').trim() : '';
+    const tooltipValue = tooltipFn ? tooltipFn(it, idx) : null;
+    const tooltipNode = renderLineTooltipContent(tooltipValue);
     const lineNode = h('div', { class: 'center-version-line', key: `line-${idx}` }, [content]);
-    if (!title) return lineNode;
+    if (!tooltipNode) return lineNode;
     return h(NTooltip, { key: idx, trigger: 'hover', placement: 'top', delay: 250 }, {
       trigger: () => lineNode,
-      default: () => h('div', { class: 'center-cell-tooltip-content' }, title)
+      default: () => tooltipNode
     });
   });
   return h('div', { class: 'center-version-stack' }, rows);
@@ -1083,11 +1097,16 @@ const compactTrackText = (items) => {
   const selected = arr.find(isDefaultTrack) || arr[0];
   return stripTrackParams(trackRawText(selected)) || '-';
 };
-const fullTrackTooltipText = (items) => {
+const fullTrackTooltipLines = (items) => {
   const arr = trackListToArray(items)
-    .map(item => String(trackRawText(item) || '').trim())
+    .map(item => {
+      let text = String(trackRawText(item) || '').trim();
+      if (!text) return '';
+      if (isDefaultTrack(item) && !/默认|default/i.test(text)) text = `${text}（默认）`;
+      return text.replace(/\s+/g, ' ').trim();
+    })
     .filter(Boolean);
-  return arr.join('\n');
+  return arr;
 };
 
 const versionAudioTracks = (it) => it?.version_summary?.audio_list || it?.version_summary?.audios || it?.version_summary?.audio_tracks || it?.version_summary?.audio || [];
@@ -1108,8 +1127,8 @@ const centerColumns = [
   }) },
   { title: 'HDR / 杜比', key: 'effect', width: 150, render: row => lineStack(row.versions, it => h('span', it.version_summary?.effect || '-'), it => it.version_summary?.effect || '') },
   { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', it.version_summary?.fps || '-')) },
-  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionAudioTracks(it))), it => fullTrackTooltipText(versionAudioTracks(it))) },
-  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionSubtitleTracks(it))), it => fullTrackTooltipText(versionSubtitleTracks(it))) },
+  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionAudioTracks(it))), it => fullTrackTooltipLines(versionAudioTracks(it))) },
+  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionSubtitleTracks(it))), it => fullTrackTooltipLines(versionSubtitleTracks(it))) },
   { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
   { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
@@ -1477,6 +1496,8 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .center-version-stack { display: flex; flex-direction: column; gap: 8px; }
 .center-version-line { min-height: 24px; display: flex; align-items: center; }
 .center-cell-tooltip-content { white-space: pre-line; max-width: 320px; line-height: 1.6; }
+.center-cell-tooltip-list { display: flex; flex-direction: column; gap: 6px; max-width: 360px; }
+.center-cell-tooltip-line { white-space: nowrap; line-height: 1.6; }
 
 /* 共享资源管理：表格玻璃化 */
 .shared-page :deep(.n-data-table) {
