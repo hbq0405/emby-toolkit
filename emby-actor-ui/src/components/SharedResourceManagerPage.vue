@@ -124,7 +124,7 @@
               :data="groupedCenterSources"
               :pagination="centerPagination"
               :row-key="row => row.group_key || row.source_id"
-              :scroll-x="1480"
+              :scroll-x="1600"
               @update:page="p => { centerPagination.page = p; loadCenterSources(); }"
               @update:page-size="s => { centerPagination.pageSize = s; centerPagination.page = 1; loadCenterSources(); }"
             />
@@ -840,6 +840,24 @@ const centerStatusTag = (row) => {
   const type = row.status_type || statusMap[row.status]?.type || 'default';
   return h(NTag, { type, size: 'small', round: true }, { default: () => text });
 };
+const centerSourceText = (row) => {
+  const provider = String(row?.source_provider || '').trim();
+  if (provider === 'auto_gap_share') return '自动分享';
+  if (provider === 'hdhive') return '影巢';
+  if (provider === 'tg_channel' || provider === 'tg_channel_hdhive') return '频道';
+  if (provider === 'user_share' || provider === 'manual_share') return '手动分享';
+
+  const label = String(row?.source_provider_label || row?.source_label || '').trim();
+  if (/自动/.test(label)) return '自动分享';
+  if (/影巢/.test(label)) return '影巢';
+  if (/频道/.test(label)) return '频道';
+  return '手动分享';
+};
+const centerSourceTag = (row) => {
+  const text = centerSourceText(row);
+  const type = text === '自动分享' ? 'warning' : (text === '手动分享' ? 'default' : 'info');
+  return h(NTag, { type, size: 'small', round: true }, { default: () => text });
+};
 const versionSummaryText = (row) => {
   const v = row.version_summary || {};
   const parts = [v.resolution, v.effect, v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : '', v.fps].filter(Boolean);
@@ -1002,6 +1020,7 @@ const centerColumns = [
   ]) },
   // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
   { title: '类型', key: 'item_type', width: 160, render: row => lineStack(row.versions, it => h('span', centerSeasonText(it))) },
+  { title: '来源', key: 'source_provider', width: 110, render: row => lineStack(row.versions, it => centerSourceTag(it), it => it.source_provider_label || it.source_label || centerSourceText(it)) },
   { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = it.version_summary || {};
