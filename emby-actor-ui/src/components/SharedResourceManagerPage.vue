@@ -1235,7 +1235,7 @@ const centerColumns = [
   ]) },
   // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
   { title: '类型', key: 'item_type', width: 160, render: row => lineStack(row.versions, it => h('span', centerSeasonText(it))) },
-  { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
+  { title: '分辨率', key: 'resolution', width: 60, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = it.version_summary || {};
     return h('span', [v.video_codec || v.codec, v.bit_depth ? `${v.bit_depth}bit` : ''].filter(Boolean).join(' · ') || '-');
@@ -1245,7 +1245,7 @@ const centerColumns = [
   { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionAudioTracks(it))), it => fullTrackTooltipLines(versionAudioTracks(it))) },
   { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionSubtitleTracks(it))), it => fullTrackTooltipLines(versionSubtitleTracks(it))) },
   { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
-  { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
+  { title: '热度', key: 'success_count', width: 70, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
   { title: '入库', key: 'local_library', width: 135, render: row => lineStack(row.versions, it => localLibraryTag(it), it => localLibraryTooltipLines(it)) },
   { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => lineStack(row.versions, it => {
