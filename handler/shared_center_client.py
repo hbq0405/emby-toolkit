@@ -197,6 +197,25 @@ class SharedCenterClient:
         }
         return self._post('/api/v1/rawffprobe/upload', payload, timeout=60)
 
+    def upload_raw_ffprobe_batch(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """批量上传 raw_ffprobe_json。用于季包；失败项由调用方单条重传。"""
+        payload_items = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            sha1 = str(item.get('sha1') or '').strip().upper()
+            raw = item.get('raw_ffprobe_json')
+            if not sha1 or not raw:
+                continue
+            payload_items.append({
+                'sha1': sha1,
+                'size': item.get('size'),
+                'raw_ffprobe_json': raw,
+            })
+        if not payload_items:
+            return {'ok': True, 'ok_count': 0, 'fail_count': 0, 'items': []}
+        return self._post('/api/v1/rawffprobe/upload-batch', {'items': payload_items}, timeout=120)
+
     def register_source(self, *, tmdb_id, item_type, sha1, file_name, share_code,
                         receive_code='', season_number=None, episode_number=None,
                         title='', release_year=None, size=None, quality='',
@@ -222,6 +241,13 @@ class SharedCenterClient:
             'has_raw_ffprobe': bool(has_raw_ffprobe),
         }
         return self._post('/api/v1/sources/register', payload, timeout=25)
+
+    def register_sources_batch(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """批量登记共享源。中心端任一条失败会整包回滚。"""
+        payload_items = [dict(x) for x in (items or []) if isinstance(x, dict)]
+        if not payload_items:
+            return {'ok': True, 'ok_count': 0, 'fail_count': 0, 'items': []}
+        return self._post('/api/v1/sources/register-batch', {'items': payload_items}, timeout=90)
 
     def cancel_sources(self, share_code: str = '', source_ids: List[str] = None, sha1_list: List[str] = None, reason: str = 'share_cancelled', delete_raw_ffprobe: bool = True) -> Dict[str, Any]:
         """从共享中心撤销当前设备登记的共享源，并同步删除对应媒体信息。

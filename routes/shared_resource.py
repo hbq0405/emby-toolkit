@@ -705,14 +705,18 @@ def _upload_item_raw_ffprobe_to_center(item: Dict[str, Any], cfg: Dict[str, Any]
         return {'ok': False, 'status': 'error', 'message': str(e)}
 
 
-def _upload_share_raw_ffprobe_to_center(record_id: int, cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
-    items = shared_share_db.list_share_items(record_id)
+def _is_season_pack_record(record: Dict[str, Any]) -> bool:
+    """只有显式季包/剧集包才走批量链路，单集和电影保持原单条接口。"""
+    return str((record or {}).get('share_type') or '').strip().lower() in ('season_pack', 'series_pack', 'season', 'tv_pack')
+
+
+def _upload_share_raw_ffprobe_to_center_single_loop(items: List[Dict[str, Any]], cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
     uploaded = 0
     skipped = 0
     missing = 0
     errors = []
     size_fixed = 0
-    for item in items:
+    for item in items or []:
         before_size = _safe_size_bytes(item.get('size'))
         result = _upload_item_raw_ffprobe_to_center(item, cfg, headers, force=force)
         if result.get('ok'):
@@ -728,13 +732,122 @@ def _upload_share_raw_ffprobe_to_center(record_id: int, cfg: Dict[str, Any], hea
             else:
                 errors.append(f"{item.get('file_name')}: {result.get('message')}")
     return {
-        'total': len(items),
+        'total': len(items or []),
         'uploaded': uploaded,
         'skipped': skipped,
         'missing': missing,
         'size_fixed': size_fixed,
         'errors': errors,
+        'batch_used': False,
+        'all_ok': (uploaded + skipped == len(items or []) and missing == 0 and not errors),
     }
+
+
+def _upload_share_raw_ffprobe_to_center_batch(items: List[Dict[str, Any]], cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
+    uploaded = 0
+    skipped = 0
+    missing = 0
+    errors = []
+    size_fixed = 0
+    prepared = []
+
+    for item in items or []:
+        sha1 = str(item.get('sha1') or '').strip().upper()
+        if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1):
+            missing += 1
+            continue
+        if item.get('raw_ffprobe_uploaded') and not force:
+            skipped += 1
+            continue
+        raw = _load_local_raw_ffprobe(sha1)
+        if not raw:
+            missing += 1
+            continue
+        raw_size = _infer_size_from_raw(raw)
+        item_size = _safe_size_bytes(item.get('size'))
+        final_size = item_size if item_size > 0 else raw_size
+        prepared.append({
+            'item': item,
+            'before_size': item_size,
+            'final_size': final_size,
+            'payload': {
+                'sha1': sha1,
+                'size': final_size or None,
+                'raw_ffprobe_json': raw,
+            },
+        })
+
+    chunk_size = 10
+    batch_unavailable = False
+    for start in range(0, len(prepared), chunk_size):
+        chunk = prepared[start:start + chunk_size]
+        payload = {'items': [x['payload'] for x in chunk]}
+        try:
+            resp = requests.post(
+                f"{cfg['center_url']}/api/v1/rawffprobe/upload-batch",
+                headers=headers,
+                json=payload,
+                **_center_request_kwargs(120),
+            )
+            if resp.status_code in (404, 405):
+                batch_unavailable = True
+                raise RuntimeError(f"中心不支持批量RAW上传接口: HTTP {resp.status_code}")
+            if not resp.ok:
+                raise RuntimeError(f"HTTP {resp.status_code} {resp.text[:160]}")
+            data = resp.json() or {}
+            result_items = data.get('items') or []
+        except Exception as e:
+            # 批量请求整体失败时，对本 chunk 自动退回单条重传，避免季包因网络抖动整包失败。
+            logger.warning(f"  ➜ [共享资源] 季包批量上传 RAW 失败，自动改为单条重传: {e}")
+            result_items = [{'index': i, 'ok': False, 'message': str(e)} for i in range(len(chunk))]
+
+        by_index = {int(r.get('index')): r for r in result_items if isinstance(r, dict) and str(r.get('index', '')).lstrip('-').isdigit()}
+        for idx, info in enumerate(chunk):
+            item = info['item']
+            result = by_index.get(idx) or {}
+            ok = bool(result.get('ok'))
+            if ok:
+                shared_share_db.mark_item_raw_uploaded(item['id'], True)
+                if info['final_size'] > 0 and info['before_size'] <= 0:
+                    shared_share_db.update_share_item_size(item['id'], info['final_size'])
+                    size_fixed += 1
+                uploaded += 1
+                continue
+
+            # 批量返回单项失败时，按要求自动单条重传一次。
+            retry = _upload_item_raw_ffprobe_to_center(item, cfg, headers, force=True)
+            if retry.get('ok'):
+                if retry.get('status') == 'uploaded':
+                    uploaded += 1
+                    if info['before_size'] <= 0 and _safe_size_bytes(retry.get('size')) > 0:
+                        size_fixed += 1
+                else:
+                    skipped += 1
+            else:
+                if retry.get('status') in {'missing_raw', 'missing_sha1'}:
+                    missing += 1
+                else:
+                    errors.append(f"{item.get('file_name')}: 批量失败后单条重传失败 {retry.get('message') or result.get('message')}")
+
+    return {
+        'total': len(items or []),
+        'uploaded': uploaded,
+        'skipped': skipped,
+        'missing': missing,
+        'size_fixed': size_fixed,
+        'errors': errors,
+        'batch_used': True,
+        'batch_unavailable': batch_unavailable,
+        'all_ok': (uploaded + skipped == len(items or []) and missing == 0 and not errors),
+    }
+
+
+def _upload_share_raw_ffprobe_to_center(record_id: int, cfg: Dict[str, Any], headers: Dict[str, str], force: bool = False) -> Dict[str, Any]:
+    record = shared_share_db.get_share_record(record_id) or {}
+    items = shared_share_db.list_share_items(record_id) or []
+    if _is_season_pack_record(record):
+        return _upload_share_raw_ffprobe_to_center_batch(items, cfg, headers, force=force)
+    return _upload_share_raw_ffprobe_to_center_single_loop(items, cfg, headers, force=force)
 
 
 
@@ -3217,6 +3330,211 @@ def api_check_share(record_id):
     return jsonify({"success": True, "message": msg, "data": row, "raw": snap})
 
 
+
+def _build_center_source_payload(record: Dict[str, Any], item: Dict[str, Any], *, source_provider: str = 'user_share') -> Dict[str, Any]:
+    """把本地 share_record/share_item 转成中心登记 payload。"""
+    sha1 = str(item.get('sha1') or '').strip().upper()
+    record_share_type = str((record or {}).get('share_type') or '').strip().lower()
+    is_season_pack = _is_season_pack_record(record)
+    center_item_type = 'Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie')
+    if record_share_type == 'episode_file':
+        center_item_type = 'Episode'
+    center_episode_number = None if is_season_pack else item.get('episode_number')
+    standard_identity = _standard_share_identity(record, item, center_item_type=center_item_type)
+    return {
+        'tmdb_id': str(standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id') or ''),
+        'item_type': center_item_type,
+        'season_number': item.get('season_number') or record.get('season_number'),
+        'episode_number': center_episode_number,
+        'title': standard_identity.get('title') or record.get('title') or '',
+        'release_year': standard_identity.get('release_year') or record.get('release_year'),
+        'sha1': sha1,
+        'size': _safe_size_bytes(item.get('size')),
+        'file_name': item.get('file_name') or '',
+        'quality': '',
+        'source_provider': source_provider or 'user_share',
+        'share_code': record.get('share_code'),
+        'receive_code': record.get('receive_code') or '',
+        'has_raw_ffprobe': bool(item.get('raw_ffprobe_uploaded')),
+    }
+
+
+def _register_single_source_payload(payload: Dict[str, Any], item: Dict[str, Any], cfg: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
+    resp = requests.post(
+        f"{cfg['center_url']}/api/v1/sources/register",
+        headers=headers,
+        json=payload,
+        **_center_request_kwargs(20),
+    )
+
+    # 中心提示 raw 缺失时，强制重传 raw 后再登记一次。
+    if resp.status_code == 400 and 'raw_ffprobe_json required before source register' in (resp.text or ''):
+        raw_retry = _upload_item_raw_ffprobe_to_center(item, cfg, headers, force=True)
+        if raw_retry.get('ok'):
+            payload = dict(payload)
+            payload['has_raw_ffprobe'] = True
+            resp = requests.post(
+                f"{cfg['center_url']}/api/v1/sources/register",
+                headers=headers,
+                json=payload,
+                **_center_request_kwargs(20),
+            )
+        else:
+            return {'ok': False, 'message': f"raw重传失败 {raw_retry.get('message')}"}
+
+    if not resp.ok:
+        return {'ok': False, 'message': f"HTTP {resp.status_code} {resp.text[:160]}"}
+    data = resp.json() or {}
+    return {'ok': True, 'source_id': data.get('source_id'), 'data': data}
+
+
+def _register_share_items_to_center(record: Dict[str, Any], items: List[Dict[str, Any]], cfg: Dict[str, Any], headers: Dict[str, str], *, source_provider: str = 'user_share') -> Dict[str, Any]:
+    """登记分享项到中心。
+
+    单集/电影沿用单条接口；季包走批量接口。季包批量失败时只重传 RAW，再整包重试，最终必须全成功才标记入池。
+    """
+    items = items or []
+    errors = []
+    first_source_id = None
+    reported = 0
+    is_season_pack = _is_season_pack_record(record)
+
+    payloads = []
+    payload_items = []
+    for item in items:
+        sha1 = str(item.get('sha1') or '').strip().upper()
+        if not sha1:
+            errors.append(f"{item.get('file_name')} 缺少 SHA1")
+            continue
+        payloads.append(_build_center_source_payload(record, item, source_provider=source_provider))
+        payload_items.append(item)
+
+    if errors:
+        return {
+            'reported': 0,
+            'errors': errors,
+            'first_source_id': None,
+            'batch_used': is_season_pack,
+            'item_results': [],
+        }
+
+    if not is_season_pack:
+        item_results = []
+        for item, payload in zip(payload_items, payloads):
+            try:
+                result = _register_single_source_payload(payload, item, cfg, headers)
+            except Exception as e:
+                result = {'ok': False, 'message': str(e)}
+            if result.get('ok'):
+                source_id = result.get('source_id') or ''
+                shared_share_db.mark_item_reported(item['id'], source_id)
+                first_source_id = first_source_id or source_id
+                reported += 1
+            else:
+                errors.append(f"{item.get('file_name')}: {result.get('message')}")
+            item_results.append({
+                'sha1': payload.get('sha1'),
+                'file_name': item.get('file_name') or '',
+                'ok': bool(result.get('ok')),
+                'source_id': result.get('source_id') or '',
+                'message': result.get('message') or '',
+            })
+        return {
+            'reported': reported,
+            'errors': errors,
+            'first_source_id': first_source_id,
+            'batch_used': False,
+            'item_results': item_results,
+        }
+
+    def _post_batch_register() -> Dict[str, Any]:
+        resp = requests.post(
+            f"{cfg['center_url']}/api/v1/sources/register-batch",
+            headers=headers,
+            json={'items': payloads},
+            **_center_request_kwargs(90),
+        )
+        if not resp.ok:
+            return {
+                'ok': False,
+                'items': [{'index': i, 'ok': False, 'message': f"HTTP {resp.status_code} {resp.text[:160]}"} for i in range(len(payloads))],
+                'message': f"HTTP {resp.status_code} {resp.text[:160]}",
+            }
+        return resp.json() or {}
+
+    data = _post_batch_register()
+    retried_raw = 0
+    if not data.get('ok'):
+        # 批量返回 raw 缺失时，按失败项自动单条重传 RAW，然后整包重新登记一次。
+        for result in data.get('items') or []:
+            msg = str(result.get('message') or '')
+            idx = result.get('index')
+            try:
+                idx = int(idx)
+            except Exception:
+                idx = -1
+            if idx < 0 or idx >= len(payload_items):
+                continue
+            if 'raw_ffprobe_json required' not in msg:
+                continue
+            raw_retry = _upload_item_raw_ffprobe_to_center(payload_items[idx], cfg, headers, force=True)
+            if raw_retry.get('ok'):
+                payloads[idx]['has_raw_ffprobe'] = True
+                retried_raw += 1
+        if retried_raw > 0:
+            data = _post_batch_register()
+
+    if data.get('ok'):
+        by_index = {}
+        for result in data.get('items') or []:
+            try:
+                by_index[int(result.get('index'))] = result
+            except Exception:
+                continue
+        for idx, item in enumerate(payload_items):
+            result = by_index.get(idx) or {}
+            source_id = result.get('source_id') or ''
+            if not source_id:
+                errors.append(f"{item.get('file_name')}: 批量登记返回缺少 source_id")
+                continue
+            shared_share_db.mark_item_reported(item['id'], source_id)
+            first_source_id = first_source_id or source_id
+            reported += 1
+        if reported != len(payload_items):
+            errors.append(f"季包登记未全量成功：{reported}/{len(payload_items)}")
+    else:
+        for result in data.get('items') or []:
+            idx = result.get('index')
+            try:
+                idx = int(idx)
+            except Exception:
+                idx = -1
+            item_name = payload_items[idx].get('file_name') if 0 <= idx < len(payload_items) else result.get('file_name')
+            msg = result.get('message') or data.get('message') or '批量登记失败'
+            errors.append(f"{item_name or '未知文件'}: {msg}")
+        if not errors:
+            errors.append(data.get('message') or '季包批量登记失败')
+
+    # 季包必须整包全成功才算入池；不允许 partial。
+    if reported != len(payload_items):
+        return {
+            'reported': 0,
+            'errors': errors[:20],
+            'first_source_id': None,
+            'batch_used': True,
+            'retried_raw': retried_raw,
+            'item_results': data.get('items') or [],
+        }
+
+    return {
+        'reported': reported,
+        'errors': [],
+        'first_source_id': first_source_id,
+        'batch_used': True,
+        'retried_raw': retried_raw,
+        'item_results': data.get('items') or [],
+    }
+
 @shared_resource_bp.route('/shares/<int:record_id>/report-center', methods=['POST'])
 @admin_required
 def api_report_share_to_center(record_id):
@@ -3336,72 +3654,10 @@ def api_report_share_to_center(record_id):
                 "season_pack_consistency": consistency,
             }), 400
 
-    reported = 0
-    errors = []
-    first_source_id = None
-    for item in items:
-        sha1 = str(item.get('sha1') or '').strip().upper()
-        if not sha1:
-            errors.append(f"{item.get('file_name')} 缺少 SHA1，跳过")
-            continue
-        # 只有显式 season_pack / series_pack 才按“季包”登记中心。
-        # 不能再用 root_is_dir + item_type=Season 兜底，否则历史/兜底数据会把单集文件批量登记成剧集包。
-        record_share_type = str(record.get('share_type') or '').strip().lower()
-        is_season_pack = record_share_type in ('season_pack', 'series_pack', 'season', 'tv_pack')
-        center_item_type = 'Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie')
-        if record_share_type == 'episode_file':
-            center_item_type = 'Episode'
-        center_episode_number = None if is_season_pack else item.get('episode_number')
-        standard_identity = _standard_share_identity(record, item, center_item_type=center_item_type)
-        payload = {
-            'tmdb_id': str(standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id') or ''),
-            'item_type': center_item_type,
-            'season_number': item.get('season_number') or record.get('season_number'),
-            'episode_number': center_episode_number,
-            'title': standard_identity.get('title') or record.get('title') or '',
-            'release_year': standard_identity.get('release_year') or record.get('release_year'),
-            'sha1': sha1,
-            'size': _safe_size_bytes(item.get('size')),
-            'file_name': item.get('file_name') or '',
-            'quality': '',
-            'source_provider': 'user_share',
-            'share_code': record.get('share_code'),
-            'receive_code': record.get('receive_code') or '',
-            'has_raw_ffprobe': bool(item.get('raw_ffprobe_uploaded')),
-        }
-        try:
-            resp = requests.post(
-                f"{cfg['center_url']}/api/v1/sources/register",
-                headers=headers,
-                json=payload,
-                **_center_request_kwargs(20)
-            )
-
-            # 中心提示 raw 缺失时，强制重传 raw 后再登记一次
-            if resp.status_code == 400 and 'raw_ffprobe_json required before source register' in (resp.text or ''):
-                raw_retry = _upload_item_raw_ffprobe_to_center(item, cfg, headers, force=True)
-                if raw_retry.get('ok'):
-                    payload['has_raw_ffprobe'] = True
-                    resp = requests.post(
-                        f"{cfg['center_url']}/api/v1/sources/register",
-                        headers=headers,
-                        json=payload,
-                        **_center_request_kwargs(20)
-                    )
-                else:
-                    errors.append(f"{item.get('file_name')}: raw重传失败 {raw_retry.get('message')}")
-                    continue
-
-            if not resp.ok:
-                errors.append(f"{item.get('file_name')}: HTTP {resp.status_code} {resp.text[:120]}")
-                continue
-            data = resp.json() or {}
-            source_id = data.get('source_id')
-            first_source_id = first_source_id or source_id
-            shared_share_db.mark_item_reported(item['id'], source_id or '')
-            reported += 1
-        except Exception as e:
-            errors.append(f"{item.get('file_name')}: {e}")
+    source_register = _register_share_items_to_center(record, items, cfg, headers, source_provider='user_share')
+    reported = int(source_register.get('reported') or 0)
+    errors = list(source_register.get('errors') or [])
+    first_source_id = source_register.get('first_source_id') or None
 
     center_status = 'reported' if reported > 0 and not errors else ('partial' if reported > 0 else 'failed')
     row = shared_share_db.update_share_record(
@@ -3417,7 +3673,7 @@ def api_report_share_to_center(record_id):
         'share_reported_center', 0,
         f"登记中心 {reported}/{len(items)} 条；raw上传 {raw_summary.get('uploaded', 0)} 条，缺失 {raw_summary.get('missing', 0)} 条",
         ref_id=str(record_id), title=record.get('title') or '',
-        raw_json={'errors': errors, 'raw_summary': raw_summary}
+        raw_json={'errors': errors, 'raw_summary': raw_summary, 'source_register': source_register}
     )
     msg = (
         f"已登记 {reported}/{len(items)} 条；"
@@ -3428,7 +3684,7 @@ def api_report_share_to_center(record_id):
     )
     if raw_summary.get('errors'):
         errors.extend(raw_summary.get('errors')[:5])
-    return jsonify({"success": reported > 0, "message": msg, "data": row, "errors": errors, "raw_summary": raw_summary})
+    return jsonify({"success": reported > 0 and not errors, "message": msg, "data": row, "errors": errors, "raw_summary": raw_summary, "source_register": source_register})
 
 
 @shared_resource_bp.route('/shares/<int:record_id>/upload-rawffprobe', methods=['POST'])

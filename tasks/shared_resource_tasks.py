@@ -1091,60 +1091,17 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                     raw_json={'season_pack_consistency': consistency},
                                 )
                                 continue
-                        ok = 0
-                        errors = []
-                        for item in items:
-                            sha1 = str(item.get('sha1') or '').strip().upper()
-                            if not sha1:
-                                continue
-                            record_share_type = str(record.get('share_type') or '').strip().lower()
-                            is_season_pack = record_share_type in ('season_pack', 'series_pack', 'season', 'tv_pack')
-                            center_item_type = 'Season' if is_season_pack else (item.get('item_type') or record.get('item_type') or 'Movie')
-                            if record_share_type == 'episode_file':
-                                center_item_type = 'Episode'
-                            standard_identity = sr._standard_share_identity(record, item, center_item_type=center_item_type) if sr is not None else {}
-
-                            register_kwargs = dict(
-                                tmdb_id=standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id'),
-                                item_type=center_item_type,
-                                season_number=item.get('season_number') or record.get('season_number'),
-                                episode_number=None if is_season_pack else item.get('episode_number'),
-                                title=standard_identity.get('title') or record.get('title') or '',
-                                release_year=standard_identity.get('release_year') or record.get('release_year'),
-                                sha1=sha1,
-                                size=_safe_int(item.get('size'), 0),
-                                file_name=item.get('file_name') or '',
-                                quality='',
-                                source_provider='auto_gap_share' if ((record.get('raw_json') or {}).get('auto_gap')) else 'user_share',
-                                share_code=record.get('share_code'),
-                                receive_code=record.get('receive_code') or '',
-                                has_raw_ffprobe=bool(item.get('raw_ffprobe_uploaded')),
+                        source_provider = 'auto_gap_share' if ((record.get('raw_json') or {}).get('auto_gap')) else 'user_share'
+                        if sr is not None and hasattr(sr, '_register_share_items_to_center'):
+                            cfg, headers = sr._center_headers()
+                            register_result = sr._register_share_items_to_center(
+                                record, items, cfg, headers, source_provider=source_provider
                             )
-
-                            try:
-                                resp = client.register_source(**register_kwargs)
-                                if resp.get('source_id'):
-                                    shared_share_db.mark_item_reported(item['id'], resp.get('source_id'))
-                                    ok += 1
-                            except Exception as e:
-                                err_str = str(e)
-                                # 兼容中心提示 raw 缺失时，强制重传 raw 后再登记一次（与手动登记逻辑保持一致）
-                                if '400' in err_str and 'raw_ffprobe_json required' in err_str:
-                                    try:
-                                        cfg, headers = sr._center_headers()
-                                        raw_retry = sr._upload_item_raw_ffprobe_to_center(item, cfg, headers, force=True)
-                                        if raw_retry.get('ok'):
-                                            register_kwargs['has_raw_ffprobe'] = True
-                                            resp = client.register_source(**register_kwargs)
-                                            if resp.get('source_id'):
-                                                shared_share_db.mark_item_reported(item['id'], resp.get('source_id'))
-                                                ok += 1
-                                                continue
-                                    except Exception as retry_e:
-                                        err_str = f"重传raw后登记失败: {retry_e}"
-
-                                logger.warning(f"  ➜ [共享资源维护] 自动登记中心单项失败: {item.get('file_name')} -> {err_str}")
-                                errors.append(f"{item.get('file_name')}: {err_str}")
+                            ok = int(register_result.get('reported') or 0)
+                            errors = list(register_result.get('errors') or [])
+                        else:
+                            ok = 0
+                            errors = ['共享资源登记辅助函数不可用，无法自动登记中心']
 
                         if ok > 0:
                             center_status = 'reported' if ok == len(items) and not errors else 'partial'
