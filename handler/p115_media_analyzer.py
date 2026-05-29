@@ -2441,17 +2441,19 @@ class P115MediaAnalyzerMixin:
             return True
 
         try:
-            from handler.shared_center_client import SharedCenterClient, shared_center_enabled
+            from handler.shared_center_client import SharedCenterClient
+            from database import settings_db
         except Exception as e:
             logger.debug(f"  ➜ [共享资源自动登记] 无法导入共享中心客户端: {e}")
             return False
 
-        if not shared_center_enabled():
+        # ★ 核心优化：只要有 Token 就顺手登记（白嫖贡献值），不强制要求开启共享资源主开关
+        shared_cfg = settings_db.get_shared_resource_config()
+        if not shared_cfg.get('p115_shared_device_token'):
             return False
 
         center = SharedCenterClient()
         if not center.ready:
-            logger.debug("  ➜ [共享资源自动登记] 已启用共享资源，但中心地址/token 未配置，跳过。")
             return False
 
         tmdb_id = self._shared_auto_pick(
