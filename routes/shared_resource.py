@@ -3331,11 +3331,9 @@ def api_check_share(record_id):
     # 否则前端“错误”列会把正常结果显示成错误信息。
     last_error = '' if is_share_ok else parsed_message
 
-    merged_raw = dict(record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {})
-    merged_raw['last_snap'] = snap
     update_kwargs = dict(
         status=parsed['status'], review_status=parsed['review_status'], last_checked_at='NOW()',
-        last_error=last_error, raw_json=merged_raw,
+        last_error=last_error, raw_json={'last_snap': snap},
     )
     if added_count is not None:
         update_kwargs['item_count'] = added_count
@@ -4373,6 +4371,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
         episode_numbers = []
         source_ids = []
         tmdb_ids = []
+        pack_items = []
         has_any_episode = False
 
         for r in rows:
@@ -4386,6 +4385,17 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
                 source_ids.append(sid)
             if r.get('tmdb_id') not in [None, '']:
                 tmdb_ids.append(str(r.get('tmdb_id')))
+            pack_items.append({
+                'source_id': r.get('source_id'),
+                'sha1': str(r.get('sha1') or '').strip().upper(),
+                'file_name': r.get('file_name') or r.get('title') or '',
+                'relative_path': r.get('relative_path') or '',
+                'tmdb_id': r.get('tmdb_id'),
+                'item_type': r.get('item_type'),
+                'season_number': r.get('season_number'),
+                'episode_number': r.get('episode_number'),
+                'size': r.get('size'),
+            })
             try:
                 ep = r.get('episode_number')
                 if ep is not None and ep != '':
@@ -4405,6 +4415,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
         rep['pack_episode_numbers'] = unique_eps
         rep['pack_source_ids'] = unique_source_ids
         rep['pack_tmdb_ids'] = unique_tmdb_ids
+        rep['pack_items'] = pack_items
         rep['share_type'] = 'season_pack'
         rep['is_collapsed_pack'] = True
         rep['success_count'] = total_success
@@ -4512,6 +4523,221 @@ def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: 
     return [by_id[sid] for sid in ordered_ids if sid in by_id]
 
 
+def _center_norm_sha1(value: str) -> str:
+    text = str(value or '').strip().upper()
+    return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
+
+
+def _center_row_file_entries(row: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """把中心展示行拆成文件级条目，用于本地入库状态判断。"""
+    row = row or {}
+    candidates = row.get('pack_items') if isinstance(row.get('pack_items'), list) else None
+    if not candidates:
+        candidates = [row]
+
+    entries = []
+    seen = set()
+    for item in candidates or []:
+        if not isinstance(item, dict):
+            continue
+        sha1 = _center_norm_sha1(item.get('sha1'))
+        name = str(item.get('file_name') or item.get('relative_path') or item.get('title') or sha1 or '').strip()
+        key = sha1 or f"{item.get('source_id') or ''}|{name}|{item.get('episode_number') or ''}"
+        if key in seen:
+            continue
+        seen.add(key)
+        entries.append({
+            'source_id': item.get('source_id'),
+            'sha1': sha1,
+            'file_name': name,
+            'relative_path': item.get('relative_path') or '',
+            'season_number': item.get('season_number'),
+            'episode_number': item.get('episode_number'),
+            'size': item.get('size'),
+        })
+
+    # 如果折叠包只有代表行，但中心给了 pack_item_count，至少保留总数，避免误判为 1/1。
+    expected = _safe_int(row.get('pack_item_count'), 0)
+    if expected > len(entries):
+        for idx in range(len(entries), expected):
+            entries.append({
+                'source_id': '',
+                'sha1': '',
+                'file_name': f'未知文件 #{idx + 1}',
+                'relative_path': '',
+                'season_number': row.get('season_number'),
+                'episode_number': None,
+                'size': 0,
+            })
+    return entries
+
+
+def _load_local_library_sha1_index(sha1s: List[str]) -> Dict[str, Dict[str, Any]]:
+    """按 SHA1 查询本地是否已有该文件。media_metadata 严格代表媒体库，p115 缓存作为兜底。"""
+    sha1s = list(dict.fromkeys([_center_norm_sha1(x) for x in (sha1s or []) if _center_norm_sha1(x)]))
+    if not sha1s:
+        return {}
+
+    index = {sha1: {'media_metadata': [], 'p115_filesystem_cache': []} for sha1 in sha1s}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT
+                        matched.sha1 AS sha1,
+                        m.tmdb_id,
+                        m.item_type,
+                        m.parent_series_tmdb_id,
+                        m.season_number,
+                        m.episode_number,
+                        m.title,
+                        m.in_library
+                    FROM media_metadata m
+                    JOIN LATERAL (
+                        SELECT UPPER(v) AS sha1
+                        FROM jsonb_array_elements_text(
+                            CASE
+                                WHEN jsonb_typeof(m.file_sha1_json) = 'array' THEN m.file_sha1_json
+                                WHEN jsonb_typeof(m.file_sha1_json) = 'string' THEN jsonb_build_array(m.file_sha1_json)
+                                ELSE '[]'::jsonb
+                            END
+                        ) AS arr(v)
+                        UNION
+                        SELECT UPPER(e.key) AS sha1
+                        FROM jsonb_each_text(
+                            CASE WHEN jsonb_typeof(m.file_sha1_json) = 'object' THEN m.file_sha1_json ELSE '{}'::jsonb END
+                        ) AS e(key, value)
+                        UNION
+                        SELECT UPPER(e.value) AS sha1
+                        FROM jsonb_each_text(
+                            CASE WHEN jsonb_typeof(m.file_sha1_json) = 'object' THEN m.file_sha1_json ELSE '{}'::jsonb END
+                        ) AS e(key, value)
+                    ) matched ON matched.sha1 = ANY(%s)
+                    WHERE COALESCE(m.in_library, FALSE) = TRUE
+                    """,
+                    (sha1s,),
+                )
+                for row in cur.fetchall():
+                    d = dict(row)
+                    sha1 = _center_norm_sha1(d.get('sha1'))
+                    if sha1 in index:
+                        index[sha1]['media_metadata'].append(d)
+
+                cur.execute(
+                    """
+                    SELECT UPPER(sha1) AS sha1, id, parent_id, name, local_path, pick_code, size
+                    FROM p115_filesystem_cache
+                    WHERE sha1 IS NOT NULL AND sha1 <> '' AND UPPER(sha1) = ANY(%s)
+                    ORDER BY updated_at DESC NULLS LAST
+                    """,
+                    (sha1s,),
+                )
+                for row in cur.fetchall():
+                    d = dict(row)
+                    sha1 = _center_norm_sha1(d.get('sha1'))
+                    if sha1 in index:
+                        index[sha1]['p115_filesystem_cache'].append(d)
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 查询本地入库状态失败: {e}")
+    return index
+
+
+def _center_file_entry_label(entry: Dict[str, Any]) -> str:
+    entry = entry or {}
+    season = entry.get('season_number')
+    episode = entry.get('episode_number')
+    prefix = ''
+    try:
+        if season not in (None, '') and episode not in (None, ''):
+            prefix = f"S{int(season):02d}E{int(episode):02d} "
+        elif season not in (None, ''):
+            prefix = f"S{int(season):02d} "
+    except Exception:
+        pass
+    return (prefix + str(entry.get('file_name') or entry.get('sha1') or '未知文件')).strip()
+
+
+def _annotate_center_rows_local_library(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """为中心展示行补充文件级/包级本地入库状态。"""
+    rows = list(rows or [])
+    all_sha1s = []
+    row_entries = []
+    for row in rows:
+        entries = _center_row_file_entries(row)
+        row_entries.append(entries)
+        all_sha1s.extend([e.get('sha1') for e in entries if e.get('sha1')])
+
+    local_index = _load_local_library_sha1_index(all_sha1s)
+
+    for row, entries in zip(rows, row_entries):
+        files = []
+        hit_count = 0
+        known_count = 0
+        for entry in entries:
+            sha1 = entry.get('sha1') or ''
+            hit = local_index.get(sha1) if sha1 else None
+            media_hits = (hit or {}).get('media_metadata') or []
+            p115_hits = (hit or {}).get('p115_filesystem_cache') or []
+            is_in = bool(media_hits or p115_hits)
+            if sha1:
+                known_count += 1
+            if is_in:
+                hit_count += 1
+            files.append({
+                **entry,
+                'label': _center_file_entry_label(entry),
+                'in_library': is_in,
+                'library_sources': [x for x in [
+                    'media_metadata' if media_hits else '',
+                    'p115_filesystem_cache' if p115_hits else '',
+                ] if x],
+                'media_hit_count': len(media_hits),
+                'p115_hit_count': len(p115_hits),
+            })
+
+        total = max(len(entries), _safe_int(row.get('pack_item_count'), 0), 1)
+        unknown_count = max(0, total - known_count)
+        missing_count = max(0, total - hit_count)
+
+        if known_count <= 0:
+            status = 'unknown'
+            label = '无法判断'
+            tag_type = 'default'
+        elif hit_count >= total and unknown_count == 0:
+            status = 'full'
+            label = '已入库' if total <= 1 else f'已入库 {hit_count}/{total}'
+            tag_type = 'success'
+        elif hit_count > 0:
+            status = 'partial'
+            label = f'部分入库 {hit_count}/{total}'
+            tag_type = 'warning'
+        else:
+            status = 'none'
+            label = '未入库' if total <= 1 else f'未入库 0/{total}'
+            tag_type = 'default'
+
+        row['local_library'] = {
+            'status': status,
+            'label': label,
+            'tag_type': tag_type,
+            'hit_count': hit_count,
+            'known_count': known_count,
+            'unknown_count': unknown_count,
+            'missing_count': missing_count,
+            'total_count': total,
+            'is_fully_in_library': status == 'full',
+            'is_not_fully_in_library': status != 'full',
+            'files': files[:200],
+        }
+    return rows
+
+
+def _center_row_not_fully_in_library(row: Dict[str, Any]) -> bool:
+    local = (row or {}).get('local_library') or {}
+    return not bool(local.get('is_fully_in_library'))
+
+
 def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     raw_map = {str(r.get('source_id') or ''): r for r in (raw_rows or []) if r.get('source_id')}
     merged = []
@@ -4530,7 +4756,7 @@ def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dic
     return merged
 
 
-def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = 'alive,pending', order_by: str = 'latest', limit: int = 30, offset: int = 0) -> Dict[str, Any]:
+def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = 'alive,pending', order_by: str = 'latest', limit: int = 30, offset: int = 0, local_filter: str = '') -> Dict[str, Any]:
     """按展示口径加载中心资源库。
 
     中心接口是按 shared_sources 原始文件分页，前端需要按“电影 / 剧集包 / 单集”展示。
@@ -4580,6 +4806,10 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
             display_rows.sort(key=lambda r: (_safe_size_bytes(r.get('size')), _center_created_ts(r)), reverse=True)
         else:
             display_rows.sort(key=lambda r: (_center_created_ts(r), str(r.get('source_id') or '')), reverse=True)
+
+        if str(local_filter or '').strip().lower() in ('not_full', 'not_fully_in_library', 'missing'):
+            display_rows = _annotate_center_rows_local_library(display_rows)
+            display_rows = [r for r in display_rows if _center_row_not_fully_in_library(r)]
             
         if len(display_rows) >= target_count:
             break
@@ -4604,6 +4834,9 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
             page_rows = _merge_rows_by_source_id(page_rows, raw_res.get('items') or [])
         except Exception as e:
             logger.debug(f"  ➜ [共享资源] 当前页 raw_ffprobe 补充失败，将使用无 raw 版本展示: {e}")
+
+    # 无论是否启用筛选，当前页都补充文件级入库状态，供前端显示绿色勾/部分入库。
+    page_rows = _annotate_center_rows_local_library(page_rows)
 
     return {
         'items': page_rows,
@@ -4665,51 +4898,6 @@ def _load_local_share_code_set(items: List[Dict[str, Any]]) -> set:
         return set()
 
 
-def _load_local_share_meta_map(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
-    """按 share_code 拉取本机分享记录元信息，用于修正中心历史来源展示。
-
-    旧版本自动补缺分享在同步审核状态时可能把中心 source_provider 登记成
-    user_share；只要本地 share_record.raw_json 仍保留 auto_gap 标记，前端展示就应
-    识别为“自动分享”。
-    """
-    codes = sorted({
-        str((item or {}).get('share_code') or '').strip()
-        for item in (items or [])
-        if str((item or {}).get('share_code') or '').strip()
-    })
-    if not codes:
-        return {}
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT share_code, id, share_type, status, center_status, raw_json
-                    FROM shared_share_records
-                    WHERE share_code = ANY(%s)
-                    """,
-                    (codes,),
-                )
-                rows = [dict(r) for r in cur.fetchall()]
-        result = {}
-        for row in rows:
-            code = str(row.get('share_code') or '').strip()
-            if not code:
-                continue
-            raw = row.get('raw_json')
-            row['raw_json'] = raw if isinstance(raw, dict) else (_safe_json_obj(raw) or {})
-            result[code] = row
-        return result
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 查询本地分享元信息失败: {e}")
-        return {}
-
-
-def _local_share_meta_is_auto_gap(meta: Dict[str, Any]) -> bool:
-    raw = (meta or {}).get('raw_json') if isinstance((meta or {}).get('raw_json'), dict) else {}
-    return bool(raw.get('auto_gap') or raw.get('auto_gap_blacklist') or raw.get('created_from_maintenance'))
-
-
 def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     """给中心资源库行补充面向前端的可读来源/状态。"""
     item = item or {}
@@ -4727,9 +4915,6 @@ def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     status = str(item.get('status') or '').strip()
     status_text, status_type = _CENTER_STATUS_LABELS.get(status, (status or '未知', 'default'))
     provider = str(item.get('source_provider') or '').strip() or 'user_share'
-    local_share_meta = item.get('_local_share_record_meta') if isinstance(item.get('_local_share_record_meta'), dict) else {}
-    if provider in ('user_share', 'manual_share') and _local_share_meta_is_auto_gap(local_share_meta):
-        provider = 'auto_gap_share'
     provider_label = _CENTER_SOURCE_PROVIDER_LABELS.get(provider, provider or '未知来源')
     is_mine = bool(item.get('is_mine'))
 
@@ -4755,8 +4940,6 @@ def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     item['source_provider_label'] = provider_label
     item['source_scope_label'] = scope_label
     item['source_label'] = f"{scope_label} · {provider_label}" if provider_label not in scope_label else scope_label
-    # 元信息只用于后端判定来源，不返回给前端，避免把 last_snap/share_response 这类大 JSON 带回页面。
-    item.pop('_local_share_record_meta', None)
     return item
 
 
@@ -4779,16 +4962,13 @@ def api_center_sources():
             order_by=request.args.get('order_by', 'latest'),
             limit=int(request.args.get('limit', 30) or 30),
             offset=int(request.args.get('offset', 0) or 0),
+            local_filter=request.args.get('local_filter', ''),
         )
         raw_items = _filter_center_rows_by_episode_policy(page_data.get('items') or [])
-        local_share_meta_map = _load_local_share_meta_map(raw_items)
-        local_share_codes = set(local_share_meta_map.keys()) or _load_local_share_code_set(raw_items)
+        local_share_codes = _load_local_share_code_set(raw_items)
         items = []
         for item in raw_items:
-            share_code = str(item.get('share_code') or '').strip()
-            item['_local_share_record_exists'] = share_code in local_share_codes
-            if share_code in local_share_meta_map:
-                item['_local_share_record_meta'] = local_share_meta_map[share_code]
+            item['_local_share_record_exists'] = str(item.get('share_code') or '').strip() in local_share_codes
             raw = item.get('raw_ffprobe_json') or {}
             item['version_summary'] = _summarize_raw_ffprobe(raw, item)
             item['display_type'] = _center_display_type(item)
@@ -4797,7 +4977,7 @@ def api_center_sources():
         return jsonify({
             'success': True,
             'items': items,
-            'total': int(len(items)),
+            'total': int(page_data.get('total') or len(items)),
             'raw_total': int(page_data.get('raw_total') or len(items)),
             'scanned_raw': int(page_data.get('scanned_raw') or 0),
         })

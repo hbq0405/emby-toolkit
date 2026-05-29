@@ -114,6 +114,10 @@
               <n-select v-model:value="centerFilters.item_type" :options="centerTypeOptions" style="width: 140px" />
               <n-select v-model:value="centerFilters.status" :options="centerStatusOptions" style="width: 150px" />
               <n-select v-model:value="centerFilters.order_by" :options="centerOrderOptions" style="width: 130px" />
+              <n-checkbox
+                v-model:checked="centerFilters.only_not_full_library"
+                @update:checked="() => { centerPagination.page = 1; loadCenterSources(); }"
+              >只显示未完全入库</n-checkbox>
               <n-button type="primary" :loading="centerLoading" @click="loadCenterSources">查询中心</n-button>
               <n-button secondary :loading="maintenanceSubmitting" @click="triggerSharedMaintenance">执行维护任务</n-button>
             </n-space>
@@ -124,7 +128,7 @@
               :data="groupedCenterSources"
               :pagination="centerPagination"
               :row-key="row => row.group_key || row.source_id"
-              :scroll-x="1600"
+              :scroll-x="1740"
               @update:page="p => { centerPagination.page = p; loadCenterSources(); }"
               @update:page-size="s => { centerPagination.pageSize = s; centerPagination.page = 1; loadCenterSources(); }"
             />
@@ -310,7 +314,7 @@
 import { computed, h, onMounted, onUnmounted, reactive, ref } from 'vue';
 import axios from 'axios';
 import {
-  NAlert, NButton, NCard, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
+  NAlert, NButton, NCard, NCheckbox, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
   NInputGroup, NInputNumber, NModal, NRadio, NRadioGroup, NSelect, NSpace, NSpin, NSwitch,
   NTabPane, NTabs, NTag, NText, NTooltip, useDialog, useMessage, useThemeVars
 } from 'naive-ui';
@@ -383,7 +387,7 @@ const centerSources = ref([]);
 const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
 const shareFilters = reactive({ keyword: '', status: 'active' });
-const centerFilters = reactive({ keyword: '', status: '', item_type: 'all', order_by: 'latest' });
+const centerFilters = reactive({ keyword: '', status: '', item_type: 'all', order_by: 'latest', only_not_full_library: false });
 const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
@@ -1098,7 +1102,7 @@ const compactTrackText = (items) => {
   return stripTrackParams(trackRawText(selected)) || '-';
 };
 const fullTrackTooltipLines = (items) => {
-  const arr = trackListToArray(items)
+  return trackListToArray(items)
     .map(item => {
       let text = String(trackRawText(item) || '').trim();
       if (!text) return '';
@@ -1106,11 +1110,44 @@ const fullTrackTooltipLines = (items) => {
       return text.replace(/\s+/g, ' ').trim();
     })
     .filter(Boolean);
-  return arr;
 };
 
 const versionAudioTracks = (it) => it?.version_summary?.audio_list || it?.version_summary?.audios || it?.version_summary?.audio_tracks || it?.version_summary?.audio || [];
 const versionSubtitleTracks = (it) => it?.version_summary?.subtitle_list || it?.version_summary?.subtitles || it?.version_summary?.subtitle_tracks || it?.version_summary?.subtitle || [];
+const localLibraryInfo = (it) => it?.local_library || {};
+const localLibraryTag = (it) => {
+  const info = localLibraryInfo(it);
+  const status = info.status || 'unknown';
+  const label = info.label || (status === 'full' ? '已入库' : status === 'partial' ? '部分入库' : status === 'none' ? '未入库' : '无法判断');
+  const tagType = info.tag_type || (status === 'full' ? 'success' : status === 'partial' ? 'warning' : 'default');
+  return h(NTag, { size: 'small', round: true, type: tagType, class: 'center-library-tag' }, {
+    icon: status === 'full' ? () => h(NIcon, { component: CheckIcon }) : undefined,
+    default: () => label,
+  });
+};
+const localLibraryTooltipLines = (it) => {
+  const info = localLibraryInfo(it);
+  const lines = [];
+  if (info.label) lines.push(info.label);
+  const files = Array.isArray(info.files) ? info.files : [];
+  const inRows = files.filter(f => f.in_library);
+  const outRows = files.filter(f => !f.in_library && f.sha1);
+  const unknownRows = files.filter(f => !f.sha1);
+  const pushRows = (title, rows, limit = 16) => {
+    if (!rows.length) return;
+    lines.push(`${title}：`);
+    rows.slice(0, limit).forEach(f => {
+      const source = Array.isArray(f.library_sources) && f.library_sources.length ? ` · ${f.library_sources.join('+')}` : '';
+      lines.push(`  ${f.label || f.file_name || f.sha1 || '-'}${source}`);
+    });
+    if (rows.length > limit) lines.push(`  ……另有 ${rows.length - limit} 个`);
+  };
+  pushRows('已入库', inRows);
+  pushRows('未入库', outRows);
+  pushRows('无法判断 SHA1', unknownRows, 8);
+  if (!lines.length) lines.push('未返回本地入库状态');
+  return lines;
+};
 
 const centerColumns = [
   { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => h('div', null, [
@@ -1132,6 +1169,7 @@ const centerColumns = [
   { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
   { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
+  { title: '入库', key: 'local_library', width: 135, render: row => lineStack(row.versions, it => localLibraryTag(it), it => localLibraryTooltipLines(it)) },
   { title: '操作', key: 'actions', width: 190, fixed: 'right', render: row => lineStack(row.versions, it => {
     // 判断当前行是否正在转存或入库
     const isImportingPermanent = importingMap[it.source_id] === 'permanent';
@@ -1275,6 +1313,7 @@ const loadCenterSources = async () => {
       item_type: centerFilters.item_type === 'all' ? '' : centerFilters.item_type,
       status: centerFilters.status,
       order_by: centerFilters.order_by,
+      local_filter: centerFilters.only_not_full_library ? 'not_full' : '',
       limit: centerPagination.pageSize,
       offset: (centerPagination.page - 1) * centerPagination.pageSize,
     };
@@ -1496,8 +1535,9 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .center-version-stack { display: flex; flex-direction: column; gap: 8px; }
 .center-version-line { min-height: 24px; display: flex; align-items: center; }
 .center-cell-tooltip-content { white-space: pre-line; max-width: 320px; line-height: 1.6; }
-.center-cell-tooltip-list { display: flex; flex-direction: column; gap: 6px; max-width: 360px; }
+.center-cell-tooltip-list { display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
 .center-cell-tooltip-line { white-space: nowrap; line-height: 1.6; }
+.center-library-tag { max-width: 128px; }
 
 /* 共享资源管理：表格玻璃化 */
 .shared-page :deep(.n-data-table) {
