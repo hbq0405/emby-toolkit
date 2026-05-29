@@ -1229,13 +1229,12 @@ const localLibraryTooltipLines = (it) => {
 };
 
 const centerColumns = [
-  { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => h('div', null, [
+  { title: '片名', key: 'title', minWidth: 210, fixed: 'left', render: row => h('div', null, [
     h('div', { class: 'main-title' }, centerTitleText(row)),
     metaLine(row)
   ]) },
   // 👇 将类型列改为按版本拆分多行 (lineStack)，并加宽到 160
   { title: '类型', key: 'item_type', width: 160, render: row => lineStack(row.versions, it => h('span', centerSeasonText(it))) },
-  { title: '来源', key: 'source_provider', width: 110, render: row => lineStack(row.versions, it => centerSourceTag(it), it => it.source_provider_label || it.source_label || centerSourceText(it)) },
   { title: '分辨率', key: 'resolution', width: 90, render: row => lineStack(row.versions, it => h('span', it.version_summary?.resolution || '-')) },
   { title: '视频编码', key: 'video_codec', width: 120, render: row => lineStack(row.versions, it => {
     const v = it.version_summary || {};
