@@ -1044,6 +1044,151 @@ def _backup_instruction_from_report(report_resp: Dict[str, Any] | None) -> Dict[
     return {}
 
 
+def _share_source_rows(src: Dict[str, Any]) -> List[Dict[str, Any]]:
+    rows = (src or {}).get('_group_sources') if isinstance(src, dict) else None
+    rows = [x for x in (rows or []) if isinstance(x, dict)]
+    if rows:
+        return rows
+    return [src] if isinstance(src, dict) else []
+
+
+def _looks_like_shared_tv_pack(src: Dict[str, Any], context: Dict[str, Any]) -> bool:
+    """判断本次中心源是否属于剧/季包转存。
+
+    单集不包裹，避免把普通追更单集额外套一层剧目录；
+    季包/剧包则先创建“剧名 (年份) {tmdb=xxx}”目录，再把分享转进去，
+    让待整理扫描能从顶层目录直接识别 TMDb。
+    """
+    src = src or {}
+    context = context or {}
+    rows = _share_source_rows(src)
+    item_types = {
+        str((row or {}).get('item_type') or '').strip().lower()
+        for row in rows + [src, context]
+        if isinstance(row, dict)
+    }
+    share_type = str(src.get('share_type') or context.get('share_type') or '').strip().lower()
+    display_type = str(src.get('display_type') or context.get('display_type') or '').strip().lower()
+
+    if share_type in ('season_pack', 'series_pack', 'tv_pack', 'season'):
+        return True
+    if display_type in ('pack', 'season_pack') or bool(src.get('is_collapsed_pack')):
+        return True
+    if item_types & {'season', 'series', 'season_pack', 'series_pack', 'tv_pack'}:
+        return True
+
+    # 中心旧数据/搜索接口可能把季包拆成多条 Episode 源返回。
+    # 只有多条同分享码、同季分集才视作季包；单集 len=1 不处理。
+    if len(rows) >= 2:
+        has_season = any((row or {}).get('season_number') not in (None, '') for row in rows)
+        has_episode = any((row or {}).get('episode_number') not in (None, '') for row in rows)
+        if has_season and has_episode:
+            return True
+    return False
+
+
+def _source_season_number(src: Dict[str, Any], context: Dict[str, Any] = None):
+    context = context or {}
+    for value in (
+        (src or {}).get('season_number'),
+        context.get('season_number'),
+    ):
+        season = _safe_int(value, None)
+        if season is not None:
+            return season
+    for row in _share_source_rows(src):
+        season = _safe_int((row or {}).get('season_number'), None)
+        if season is not None:
+            return season
+    return None
+
+
+def _build_tv_import_root_name(p115, src: Dict[str, Any], context: Dict[str, Any]) -> str:
+    """生成待整理目录下的剧标准根目录名：剧名 + 年份 + TMDb。"""
+    src = src or {}
+    context = context or {}
+    parent_tmdb = _tv_parent_tmdb_id(context, src) or str(src.get('tmdb_id') or context.get('tmdb_id') or '').strip()
+    title = str(context.get('title') or src.get('title') or src.get('file_name') or '').strip()
+    season = _source_season_number(src, context)
+
+    root_name = ''
+    if parent_tmdb:
+        try:
+            organizer = SmartOrganizer(p115, int(parent_tmdb), 'tv', title or str(parent_tmdb), None, False)
+            if season is not None:
+                organizer.forced_season = int(season)
+            root_name = _build_standard_root_name(organizer, 'tv', title or str(parent_tmdb))
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源] 生成剧标准目录名失败，使用兜底名称: tmdb={parent_tmdb}, err={e}")
+
+    if not root_name:
+        fallback_title = _sanitize_filename(title or str(parent_tmdb or 'Unknown'))
+        year = str(context.get('year') or src.get('release_year') or '').strip()
+        year_part = f" ({year})" if re.fullmatch(r'(?:19|20)\d{2}', year) and f"({year})" not in fallback_title else ''
+        tmdb_part = f" {{tmdb={parent_tmdb}}}" if parent_tmdb else ''
+        root_name = f"{fallback_title}{year_part}{tmdb_part}".strip()
+
+    # 无论用户主目录格式怎么配，待整理兜底识别必须带 tmdb。
+    if parent_tmdb and not re.search(r'(?:tmdb|tmdbid)[=\-_]*' + re.escape(str(parent_tmdb)) + r'\b', root_name, re.IGNORECASE):
+        root_name = f"{root_name} {{tmdb={parent_tmdb}}}"
+
+    # 待整理根目录只创建一层剧根目录，不能把用户主目录格式里的 / 带进去。
+    root_name = _sanitize_filename(str(root_name).replace('/', ' ').replace('\\', ' '))
+    root_name = re.sub(r'\s+', ' ', root_name).strip()
+    return root_name or (f"{parent_tmdb}" if parent_tmdb else '')
+
+
+def _extract_created_cid(resp: Dict[str, Any]) -> str:
+    if not isinstance(resp, dict):
+        return ''
+    data = resp.get('data') if isinstance(resp.get('data'), dict) else {}
+    return str(
+        resp.get('cid')
+        or resp.get('file_id')
+        or resp.get('id')
+        or data.get('cid')
+        or data.get('file_id')
+        or data.get('id')
+        or ''
+    ).strip()
+
+
+def _ensure_tv_pack_import_container(p115, base_cid: str, src: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    """季包/剧包转存前，先在待整理目录创建剧标准目录，并返回新的转存目标 CID。"""
+    if not _looks_like_shared_tv_pack(src, context):
+        return {'cid': str(base_cid or ''), 'wrapped': False}
+
+    root_name = _build_tv_import_root_name(p115, src, context)
+    if not root_name:
+        return {'cid': str(base_cid or ''), 'wrapped': False, 'reason': 'missing_root_name'}
+
+    try:
+        mk_resp = p115.fs_mkdir(root_name, base_cid)
+        cid = _extract_created_cid(mk_resp)
+        if mk_resp and mk_resp.get('state') and cid:
+            try:
+                P115CacheManager.save_cid(cid, str(base_cid), root_name)
+                P115CacheManager.update_local_path(cid, root_name)
+            except Exception:
+                pass
+            logger.info(
+                "  ➜ [共享资源] 季包转存前已准备剧标准目录：%s -> cid=%s",
+                root_name, cid,
+            )
+            return {
+                'cid': cid,
+                'name': root_name,
+                'wrapped': True,
+                'is_tv_pack': True,
+                'parent_cid': str(base_cid or ''),
+                'mkdir_response': mk_resp,
+            }
+        logger.warning(f"  ➜ [共享资源] 创建剧标准目录失败，回退转存到待整理根目录: name={root_name}, resp={mk_resp}")
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 创建剧标准目录异常，回退转存到待整理根目录: name={root_name}, err={e}")
+    return {'cid': str(base_cid or ''), 'name': root_name, 'wrapped': False, 'reason': 'mkdir_failed'}
+
+
 def _node_id_from_115(node: Dict[str, Any]) -> str:
     return str(
         (node or {}).get('cid')
@@ -1092,37 +1237,154 @@ def _list_115_children(client, cid: str, limit: int = 1000) -> List[Dict[str, An
         return []
 
 
-def _find_received_backup_root(client, import_resp: Dict[str, Any], target_cid: str, sources: List[Dict[str, Any]]) -> Dict[str, Any]:
-    """根据 share_import 返回和待整理目录定位刚转存的根节点，供备份分享使用。"""
+def _season_dir_name_candidates(season_number) -> List[str]:
+    season = _safe_int(season_number, None)
+    if season is None:
+        return []
+    return [
+        f"Season {season}",
+        f"Season {season:02d}",
+        f"S{season}",
+        f"S{season:02d}",
+        f"第{season}季",
+    ]
+
+
+def _first_source_season_number(sources: List[Dict[str, Any]]):
+    for row in sources or []:
+        season = _safe_int((row or {}).get('season_number'), None)
+        if season is not None:
+            return season
+    return None
+
+
+def _node_as_backup_root(node: Dict[str, Any], source: str, fallback_name: str = '') -> Dict[str, Any]:
+    fid = _node_id_from_115(node)
+    if not fid:
+        return {}
+    return {
+        'fid': fid,
+        'name': _node_name_from_115(node) or fallback_name or fid,
+        'is_dir': _node_is_dir_from_115(node),
+        'source': source,
+        'node': node,
+    }
+
+
+def _find_season_dir_child(children: List[Dict[str, Any]], season_number) -> Dict[str, Any]:
+    candidates = {x.lower() for x in _season_dir_name_candidates(season_number)}
+    if not candidates:
+        return {}
+    for node in children or []:
+        if not _node_is_dir_from_115(node):
+            continue
+        name = _node_name_from_115(node)
+        if name.lower() in candidates:
+            return _node_as_backup_root(node, 'prepared_tv_import_season_dir', name)
+    return {}
+
+
+def _prepare_fallback_season_dir_for_backup(client, parent_cid: str, children: List[Dict[str, Any]], season_number) -> Dict[str, Any]:
+    """标准剧目录下没有季目录时，临时创建 Season xx 并把本次接收内容移进去。
+
+    这是兜底保护：备份分享绝不直接分享标准剧目录，避免该剧后续其它季进入同目录后，
+    被已有分享码一并暴露出去。
+    """
+    season = _safe_int(season_number, None)
+    if season is None:
+        return {}
+    movable_ids = []
+    for node in children or []:
+        fid = _node_id_from_115(node)
+        if fid:
+            movable_ids.append(fid)
+    if not movable_ids:
+        return {}
+
+    season_name = f"Season {season:02d}"
+    try:
+        mk_resp = client.fs_mkdir(season_name, parent_cid)
+        season_cid = _extract_created_cid(mk_resp)
+        if not (mk_resp and mk_resp.get('state') and season_cid):
+            logger.warning(f"  ➜ [共享资源] 创建备份季目录失败，放弃自动备份分享: name={season_name}, resp={mk_resp}")
+            return {}
+        try:
+            move_resp = client.fs_move(movable_ids, season_cid)
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源] 移动备份季内容失败，放弃自动备份分享: season={season_name}, err={e}")
+            return {}
+        if move_resp and move_resp.get('state'):
+            try:
+                P115CacheManager.save_cid(season_cid, str(parent_cid), season_name)
+            except Exception:
+                pass
+            logger.info(
+                "  ➜ [共享资源] 已为备份分享创建季目录并移动接收内容：%s -> cid=%s, files=%s",
+                season_name, season_cid, len(movable_ids),
+            )
+            return {
+                'fid': str(season_cid),
+                'name': season_name,
+                'is_dir': True,
+                'source': 'prepared_tv_import_created_season_dir',
+                'node': {'cid': str(season_cid), 'file_id': str(season_cid), 'file_name': season_name, 'name': season_name},
+            }
+        logger.warning(f"  ➜ [共享资源] 移动备份季内容失败，放弃自动备份分享: season={season_name}, resp={move_resp}")
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 准备备份季目录异常，放弃自动备份分享: season={season_name}, err={e}")
+    return {}
+
+
+def _find_received_backup_root(client, import_resp: Dict[str, Any], target_cid: str, sources: List[Dict[str, Any]], import_container: Dict[str, Any] = None) -> Dict[str, Any]:
+    """根据 share_import 返回和待整理目录定位刚转存的根节点，供备份分享使用。
+
+    注意：v12 会在待整理目录下先创建“剧名 (年份) {tmdb=xxx}”标准剧目录，
+    再把季包转存进去。这个标准剧目录只用于整理任务识别，不能作为备份分享根；
+    备份分享必须仍然分享真实季目录（如 Season 1），避免把该剧目录下其它季一并分享出去。
+    """
     data = (import_resp or {}).get('data') if isinstance(import_resp, dict) else {}
     data = data if isinstance(data, dict) else {}
     receive_title = str(data.get('receive_title') or data.get('title') or '').strip()
     expected_sha1s = {_norm_sha1(s.get('sha1')) for s in (sources or []) if _norm_sha1(s.get('sha1'))}
 
     children = _list_115_children(client, target_cid)
-    # 优先按接收标题在待整理目录下定位，避免误把 target_cid 自己拿去分享。
+    wrapped_tv_import = bool((import_container or {}).get('wrapped') and (import_container or {}).get('cid'))
+
+    # 优先按接收标题定位。对季包来说，这里通常会命中 Season 1 / S01 等真实季目录。
     if receive_title:
         for node in children:
             if _node_name_from_115(node) == receive_title:
-                return {
-                    'fid': _node_id_from_115(node),
-                    'name': receive_title,
-                    'is_dir': _node_is_dir_from_115(node),
-                    'source': 'target_children_title',
-                    'node': node,
-                }
+                return _node_as_backup_root(node, 'target_children_title', receive_title)
+
+    if wrapped_tv_import:
+        # v12 以后，target_cid 是临时创建的“剧标准目录”。备份分享不能直接分享它，
+        # 必须从它下面找真实季目录。
+        season = _first_source_season_number(sources)
+        season_root = _find_season_dir_child(children, season)
+        if season_root:
+            return season_root
+
+        dir_children = [node for node in children if _node_is_dir_from_115(node)]
+        if len(dir_children) == 1:
+            return _node_as_backup_root(dir_children[0], 'prepared_tv_import_single_child_dir')
+
+        # 如果接收结果被 115 直接平铺到剧目录下，兜底创建 Season xx，把本次接收内容移进去，
+        # 再分享这个季目录。这样不会把同剧其它季暴露到这个备份分享里。
+        prepared = _prepare_fallback_season_dir_for_backup(client, target_cid, children, season)
+        if prepared:
+            return prepared
+
+        logger.warning(
+            "  ➜ [共享资源] 季包备份分享未找到可分享的季目录，已放弃自动备份，避免误分享整剧目录: "
+            f"target_cid={target_cid}, receive_title={receive_title or '-'}"
+        )
+        return {}
 
     # 电影文件转存时，115 可能直接落文件；按 SHA1 兜底定位。
     if expected_sha1s:
         for node in children:
             if _node_sha1_from_115(node) in expected_sha1s:
-                return {
-                    'fid': _node_id_from_115(node),
-                    'name': _node_name_from_115(node),
-                    'is_dir': False,
-                    'source': 'target_children_sha1',
-                    'node': node,
-                }
+                return _node_as_backup_root(node, 'target_children_sha1')
 
     # 最后才使用 share_import 返回里的明确 ID。pid 在不同接口里有歧义，所以只作为兜底。
     for key in ('fid', 'file_id', 'cid', 'id', 'pid'):
@@ -1174,6 +1436,7 @@ def _create_backup_share_after_import(
     target_cid: str,
     report_resp: Dict[str, Any] | None,
     context: Dict[str, Any],
+    import_container: Dict[str, Any] = None,
 ) -> Dict[str, Any]:
     """中心下发备份指令后，用刚转存到本机 115 的资源创建一个普通分享并登记中心。"""
     instruction = _backup_instruction_from_report(report_resp)
@@ -1188,7 +1451,7 @@ def _create_backup_share_after_import(
     instruction_sources = [x for x in (instruction.get('sources') or []) if isinstance(x, dict)]
     sources = instruction_sources or group_sources
 
-    root = _find_received_backup_root(p115, import_resp, target_cid, sources)
+    root = _find_received_backup_root(p115, import_resp, target_cid, sources, import_container=import_container)
     if not root.get('fid'):
         return {'created': False, 'skipped': False, 'reason': 'received_root_not_found', 'instruction': instruction}
 
@@ -1625,9 +1888,11 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
             )
             continue
 
-        resp = p115.share_import(share_code, receive_code, target_cid)
+        import_container = _ensure_tv_pack_import_container(p115, target_cid, src, context)
+        import_target_cid = str(import_container.get('cid') or target_cid)
+        resp = p115.share_import(share_code, receive_code, import_target_cid)
         logger.info(
-            f"  ➜ [共享资源] 115分享转存返回：share={share_code}, "
+            f"  ➜ [共享资源] 115分享转存返回：share={share_code}, cid={import_target_cid}, "
             f"resp={str(resp)[:300]}"
         )
         text = _share_import_resp_text(resp)
@@ -1661,9 +1926,10 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
                         p115,
                         src,
                         resp,
-                        target_cid,
+                        import_target_cid,
                         report_resp,
                         context,
+                        import_container=import_container,
                     )
                     if backup_result.get('created'):
                         logger.info(f"  ➜ [共享资源] 自动备份分享处理完成: {backup_result}")
