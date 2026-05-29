@@ -18,6 +18,16 @@ def _as_jsonb(value: Any) -> str:
     return json.dumps(value if value is not None else {}, ensure_ascii=False, default=_json_default)
 
 
+def _nullable_int(value):
+    """把前端/中心链路里常见的空字符串统一转成 NULL，避免写入 integer 列时报错。"""
+    if value in (None, ''):
+        return None
+    try:
+        return int(float(value))
+    except Exception:
+        return None
+
+
 def _row_to_dict(row):
     if row is None:
         return None
@@ -57,9 +67,9 @@ def create_share_record(data: Dict[str, Any]) -> Dict[str, Any]:
                 data.get('share_code'), data.get('receive_code'), data.get('share_url'),
                 data.get('share_type') or 'season_pack', str(data.get('root_fid') or ''), data.get('root_name'),
                 bool(data.get('root_is_dir', True)), data.get('tmdb_id'), data.get('item_type'),
-                data.get('parent_series_tmdb_id'), data.get('season_number'), 
-                data.get('episode_number'),  # 👈 【新增】参数映射
-                data.get('title'), data.get('release_year'),
+                data.get('parent_series_tmdb_id'), _nullable_int(data.get('season_number')), 
+                _nullable_int(data.get('episode_number')),  # 👈 【新增】参数映射
+                data.get('title'), _nullable_int(data.get('release_year')),
                 data.get('status') or 'pending_review', data.get('review_status') or 'pending_review',
                 data.get('center_status') or 'not_reported', _as_jsonb(data.get('raw_json') or data),
             ))
@@ -82,7 +92,7 @@ def replace_share_items(record_id: int, items: List[Dict[str, Any]]) -> int:
                 """, (
                     record_id, item.get('fid'), item.get('sha1'), int(item.get('size') or 0),
                     item.get('file_name') or item.get('name') or '', item.get('relative_path') or '',
-                    item.get('tmdb_id'), item.get('item_type'), item.get('season_number'), item.get('episode_number'),
+                    item.get('tmdb_id'), item.get('item_type'), _nullable_int(item.get('season_number')), _nullable_int(item.get('episode_number')),
                     _as_jsonb(item.get('raw_json') or item),
                 ))
                 count += 1
