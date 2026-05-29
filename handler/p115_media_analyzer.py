@@ -2397,6 +2397,125 @@ class P115MediaAnalyzerMixin:
             return 'Season'
         return 'Movie'
 
+    def _shared_auto_report_to_center(self, sha1, raw_ffprobe_json, file_node=None, metadata_context=None, emby_mediainfo=None):
+        """外部分享在 ffprobe 成功后自动登记到共享中心，仅电影允许进入分享池。"""
+        sha1 = str(sha1 or '').strip().upper()
+        if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1 or ''):
+            return False
+        if not isinstance(raw_ffprobe_json, dict):
+            return False
+
+        file_node = file_node if isinstance(file_node, dict) else {}
+        metadata_context = metadata_context if isinstance(metadata_context, dict) else {}
+
+        node_ctx = file_node.get('_shared_auto_source_context') if isinstance(file_node.get('_shared_auto_source_context'), dict) else {}
+        attr_ctx = getattr(self, 'shared_auto_source_context', None)
+        attr_ctx = attr_ctx if isinstance(attr_ctx, dict) else {}
+
+        ctx = {}
+        for part in (attr_ctx, node_ctx, metadata_context):
+            if isinstance(part, dict):
+                ctx.update({k: v for k, v in part.items() if v not in [None, '', [], {}]})
+
+        share_code = self._shared_auto_pick(ctx, file_node, keys=['share_code', '_share_code', 'shared_share_code'])
+        if not share_code:
+            return False
+
+        raw_item_type = self._shared_auto_pick(
+            ctx,
+            {'media_type': getattr(self, 'media_type', None)},
+            raw_ffprobe_json.get('_etk') if isinstance(raw_ffprobe_json.get('_etk'), dict) else {},
+            keys=['item_type', 'media_type', 'type'],
+            default='Movie'
+        )
+        item_type = self._shared_auto_normalize_item_type(raw_item_type)
+        if item_type != 'Movie':
+            logger.debug(f"  ➜ [共享资源自动登记] 非电影资源不再自动入池: {raw_item_type}")
+            return False
+
+        reported = getattr(self, '_shared_auto_reported_sha1s', None)
+        if reported is None:
+            reported = set()
+            setattr(self, '_shared_auto_reported_sha1s', reported)
+        if sha1 in reported:
+            return True
+
+        try:
+            from handler.shared_center_client import SharedCenterClient, shared_center_enabled
+        except Exception as e:
+            logger.debug(f"  ➜ [共享资源自动登记] 无法导入共享中心客户端: {e}")
+            return False
+
+        if not shared_center_enabled():
+            return False
+
+        center = SharedCenterClient()
+        if not center.ready:
+            logger.debug("  ➜ [共享资源自动登记] 已启用共享资源，但中心地址/token 未配置，跳过。")
+            return False
+
+        tmdb_id = self._shared_auto_pick(
+            ctx,
+            {'tmdb_id': getattr(self, 'tmdb_id', None)},
+            raw_ffprobe_json.get('_etk') if isinstance(raw_ffprobe_json.get('_etk'), dict) else {},
+            keys=['tmdb_id', 'tmdbid', 'tmdbId'],
+        )
+        if not tmdb_id:
+            logger.debug(f"  ➜ [共享资源自动登记] 电影缺少 TMDb ID，跳过登记: {sha1[:8]}")
+            return False
+
+        file_name = self._shared_auto_pick(
+            file_node, ctx,
+            keys=['fn', 'n', 'file_name', 'original_name', 'name', 'title'],
+            default=sha1
+        )
+        file_name = str(file_name or sha1)
+        receive_code = self._shared_auto_pick(ctx, file_node, keys=['receive_code', '_receive_code', 'access_code'], default='')
+        title = self._shared_auto_pick(ctx, {'title': getattr(self, 'original_title', None)}, keys=['title', 'root_name', 'media_title'], default=file_name)
+        release_year = self._shared_auto_pick(ctx, keys=['release_year', 'year'], default=None)
+        quality = self._shared_auto_pick(ctx, keys=['quality'], default='')
+        source_provider = self._shared_auto_pick(ctx, keys=['source_provider', 'source_origin'], default='user_share')
+
+        size = self._shared_auto_pick(file_node, ctx, keys=['fs', 'size', 'file_size'], default=None)
+        try:
+            size = int(float(size)) if size not in [None, ''] else None
+        except Exception:
+            size = None
+        if not size:
+            try:
+                fmt = raw_ffprobe_json.get('format') or {}
+                size = int(float(fmt.get('size') or 0)) or None
+            except Exception:
+                size = None
+
+        try:
+            center.upload_raw_ffprobe(sha1=sha1, raw_ffprobe_json=raw_ffprobe_json, size=size)
+            source = center.register_source(
+                tmdb_id=str(tmdb_id),
+                item_type='Movie',
+                season_number=None,
+                episode_number=None,
+                title=title,
+                release_year=release_year,
+                sha1=sha1,
+                size=size,
+                file_name=file_name,
+                quality=quality,
+                share_code=share_code,
+                receive_code=receive_code,
+                has_raw_ffprobe=True,
+                source_provider=source_provider,
+            )
+            reported.add(sha1)
+            logger.info(
+                f"  ➜ [共享资源自动登记] 已上传媒体信息并登记电影中心源: "
+                f"{file_name} | TMDb:{tmdb_id} | Movie | source={source.get('source_id') or 'updated'}"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源自动登记] 上传/登记失败: {file_name} -> {e}")
+            return False
+
     def _fetch_and_parse_mediainfo(self, sha1, guessed_info=None, pre_fetched_mediainfo=None, local_pre_fetched_mediainfo=None, file_node=None, silent_log=False):
         """
         通过 SHA1 获取真实的媒体信息，并转换为乐高重命名参数。
@@ -2423,6 +2542,18 @@ class P115MediaAnalyzerMixin:
             if cached_text:
                 raw_json = json.loads(cached_text) if isinstance(cached_text, str) else cached_text
                 data_source = "本地缓存(DB)"
+                try:
+                    cached_raw_ffprobe = _get_p115_cache_manager().get_raw_ffprobe_cache(sha1)
+                    if cached_raw_ffprobe:
+                        self._shared_auto_report_to_center(
+                            sha1,
+                            cached_raw_ffprobe,
+                            file_node=file_node,
+                            metadata_context=guessed_info,
+                            emby_mediainfo=raw_json
+                        )
+                except Exception as e:
+                    logger.debug(f"  ➜ [共享资源自动登记] 缓存 raw 上报跳过: {sha1[:8]} -> {e}")
                 if not silent_log:
                     logger.debug(f"  ➜ [媒体信息] 命中本地 DB 缓存: {sha1[:8]}")
         except Exception as e:
@@ -2437,6 +2568,13 @@ class P115MediaAnalyzerMixin:
             if raw_json:
                 data_source = "ffprobe解析"
                 _get_p115_cache_manager().save_mediainfo_cache(sha1, raw_json, raw_ffprobe)
+                self._shared_auto_report_to_center(
+                    sha1,
+                    raw_ffprobe,
+                    file_node=file_node,
+                    metadata_context=guessed_info,
+                    emby_mediainfo=raw_json
+                )
 
         if not raw_json:
             return {}
