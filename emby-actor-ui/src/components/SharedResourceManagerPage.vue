@@ -1015,8 +1015,13 @@ const groupCenterSources = (items, orderBy = 'latest') => {
 const lineStack = (items, renderFn, tooltipFn = null) => {
   const rows = (items || []).map((it, idx) => {
     const content = renderFn(it, idx);
-    const title = tooltipFn ? tooltipFn(it, idx) : null;
-    return h('div', { class: 'center-version-line', key: idx, title: title || undefined }, [content]);
+    const title = tooltipFn ? String(tooltipFn(it, idx) || '').trim() : '';
+    const lineNode = h('div', { class: 'center-version-line', key: `line-${idx}` }, [content]);
+    if (!title) return lineNode;
+    return h(NTooltip, { key: idx, trigger: 'hover', placement: 'top', delay: 250 }, {
+      trigger: () => lineNode,
+      default: () => h('div', { class: 'center-cell-tooltip-content' }, title)
+    });
   });
   return h('div', { class: 'center-version-stack' }, rows);
 };
@@ -1082,8 +1087,16 @@ const compactTrackTitle = (items) => {
   const arr = trackListToArray(items)
     .map(item => stripTrackParams(trackRawText(item)))
     .filter(Boolean);
-  return Array.from(new Set(arr)).join('\n');
+  if (!arr.length) return '';
+  const counts = new Map();
+  for (const text of arr) counts.set(text, (counts.get(text) || 0) + 1);
+  return Array.from(counts.entries())
+    .map(([text, count]) => count > 1 ? `${text} ×${count}` : text)
+    .join('\n');
 };
+
+const versionAudioTracks = (it) => it?.version_summary?.audio_list || it?.version_summary?.audios || it?.version_summary?.audio_tracks || it?.version_summary?.audio || [];
+const versionSubtitleTracks = (it) => it?.version_summary?.subtitle_list || it?.version_summary?.subtitles || it?.version_summary?.subtitle_tracks || it?.version_summary?.subtitle || [];
 
 const centerColumns = [
   { title: '片名', key: 'title', minWidth: 190, fixed: 'left', render: row => h('div', null, [
@@ -1100,8 +1113,8 @@ const centerColumns = [
   }) },
   { title: 'HDR / 杜比', key: 'effect', width: 150, render: row => lineStack(row.versions, it => h('span', it.version_summary?.effect || '-'), it => it.version_summary?.effect || '') },
   { title: '帧率', key: 'fps', width: 110, render: row => lineStack(row.versions, it => h('span', it.version_summary?.fps || '-')) },
-  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(it.version_summary?.audio_list || it.version_summary?.audios)), it => compactTrackTitle(it.version_summary?.audio_list || it.version_summary?.audios)) },
-  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(it.version_summary?.subtitle_list || it.version_summary?.subtitles)), it => compactTrackTitle(it.version_summary?.subtitle_list || it.version_summary?.subtitles)) },
+  { title: '音轨', key: 'audios', width: 120, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionAudioTracks(it))), it => compactTrackTitle(versionAudioTracks(it))) },
+  { title: '字幕', key: 'subtitles', width: 150, render: row => lineStack(row.versions, it => h('span', { class: 'center-track-compact' }, compactTrackText(versionSubtitleTracks(it))), it => compactTrackTitle(versionSubtitleTracks(it))) },
   { title: '大小', key: 'size', width: 95, render: row => lineStack(row.versions, it => h('span', formatCenterSize(it))) },
   { title: '热度', key: 'success_count', width: 80, render: row => lineStack(row.versions, it => h('span', `${it.success_count || 0} 次`)) },
   { title: '可用性', key: 'status', width: 105, render: row => lineStack(row.versions, it => centerStatusTag(it)) },
@@ -1468,6 +1481,7 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 
 .center-version-stack { display: flex; flex-direction: column; gap: 8px; }
 .center-version-line { min-height: 24px; display: flex; align-items: center; }
+.center-cell-tooltip-content { white-space: pre-line; max-width: 320px; line-height: 1.6; }
 
 /* 共享资源管理：表格玻璃化 */
 .shared-page :deep(.n-data-table) {

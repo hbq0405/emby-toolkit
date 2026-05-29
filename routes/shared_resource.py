@@ -3331,9 +3331,11 @@ def api_check_share(record_id):
     # 否则前端“错误”列会把正常结果显示成错误信息。
     last_error = '' if is_share_ok else parsed_message
 
+    merged_raw = dict(record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {})
+    merged_raw['last_snap'] = snap
     update_kwargs = dict(
         status=parsed['status'], review_status=parsed['review_status'], last_checked_at='NOW()',
-        last_error=last_error, raw_json={'last_snap': snap},
+        last_error=last_error, raw_json=merged_raw,
     )
     if added_count is not None:
         update_kwargs['item_count'] = added_count
@@ -4663,6 +4665,51 @@ def _load_local_share_code_set(items: List[Dict[str, Any]]) -> set:
         return set()
 
 
+def _load_local_share_meta_map(items: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    """按 share_code 拉取本机分享记录元信息，用于修正中心历史来源展示。
+
+    旧版本自动补缺分享在同步审核状态时可能把中心 source_provider 登记成
+    user_share；只要本地 share_record.raw_json 仍保留 auto_gap 标记，前端展示就应
+    识别为“自动分享”。
+    """
+    codes = sorted({
+        str((item or {}).get('share_code') or '').strip()
+        for item in (items or [])
+        if str((item or {}).get('share_code') or '').strip()
+    })
+    if not codes:
+        return {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT share_code, id, share_type, status, center_status, raw_json
+                    FROM shared_share_records
+                    WHERE share_code = ANY(%s)
+                    """,
+                    (codes,),
+                )
+                rows = [dict(r) for r in cur.fetchall()]
+        result = {}
+        for row in rows:
+            code = str(row.get('share_code') or '').strip()
+            if not code:
+                continue
+            raw = row.get('raw_json')
+            row['raw_json'] = raw if isinstance(raw, dict) else (_safe_json_obj(raw) or {})
+            result[code] = row
+        return result
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 查询本地分享元信息失败: {e}")
+        return {}
+
+
+def _local_share_meta_is_auto_gap(meta: Dict[str, Any]) -> bool:
+    raw = (meta or {}).get('raw_json') if isinstance((meta or {}).get('raw_json'), dict) else {}
+    return bool(raw.get('auto_gap') or raw.get('auto_gap_blacklist') or raw.get('created_from_maintenance'))
+
+
 def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     """给中心资源库行补充面向前端的可读来源/状态。"""
     item = item or {}
@@ -4680,6 +4727,9 @@ def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     status = str(item.get('status') or '').strip()
     status_text, status_type = _CENTER_STATUS_LABELS.get(status, (status or '未知', 'default'))
     provider = str(item.get('source_provider') or '').strip() or 'user_share'
+    local_share_meta = item.get('_local_share_record_meta') if isinstance(item.get('_local_share_record_meta'), dict) else {}
+    if provider in ('user_share', 'manual_share') and _local_share_meta_is_auto_gap(local_share_meta):
+        provider = 'auto_gap_share'
     provider_label = _CENTER_SOURCE_PROVIDER_LABELS.get(provider, provider or '未知来源')
     is_mine = bool(item.get('is_mine'))
 
@@ -4705,6 +4755,8 @@ def _decorate_center_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     item['source_provider_label'] = provider_label
     item['source_scope_label'] = scope_label
     item['source_label'] = f"{scope_label} · {provider_label}" if provider_label not in scope_label else scope_label
+    # 元信息只用于后端判定来源，不返回给前端，避免把 last_snap/share_response 这类大 JSON 带回页面。
+    item.pop('_local_share_record_meta', None)
     return item
 
 
@@ -4729,10 +4781,14 @@ def api_center_sources():
             offset=int(request.args.get('offset', 0) or 0),
         )
         raw_items = _filter_center_rows_by_episode_policy(page_data.get('items') or [])
-        local_share_codes = _load_local_share_code_set(raw_items)
+        local_share_meta_map = _load_local_share_meta_map(raw_items)
+        local_share_codes = set(local_share_meta_map.keys()) or _load_local_share_code_set(raw_items)
         items = []
         for item in raw_items:
-            item['_local_share_record_exists'] = str(item.get('share_code') or '').strip() in local_share_codes
+            share_code = str(item.get('share_code') or '').strip()
+            item['_local_share_record_exists'] = share_code in local_share_codes
+            if share_code in local_share_meta_map:
+                item['_local_share_record_meta'] = local_share_meta_map[share_code]
             raw = item.get('raw_ffprobe_json') or {}
             item['version_summary'] = _summarize_raw_ffprobe(raw, item)
             item['display_type'] = _center_display_type(item)
