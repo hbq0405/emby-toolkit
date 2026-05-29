@@ -3533,6 +3533,15 @@ def _register_single_source_payload(payload: Dict[str, Any], item: Dict[str, Any
     return {'ok': True, 'source_id': data.get('source_id'), 'data': data}
 
 
+def _source_provider_for_share_record(record: Dict[str, Any], fallback: str = 'user_share') -> str:
+    raw = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+    if raw.get('auto_backup_share') or raw.get('backup_share') or raw.get('backup_mirror') or raw.get('backup_instruction'):
+        return 'backup_mirror'
+    if raw.get('auto_gap'):
+        return 'auto_gap_share'
+    return fallback or 'user_share'
+
+
 def _register_share_items_to_center(record: Dict[str, Any], items: List[Dict[str, Any]], cfg: Dict[str, Any], headers: Dict[str, str], *, source_provider: str = 'user_share') -> Dict[str, Any]:
     """登记分享项到中心。
 
@@ -3799,7 +3808,8 @@ def api_report_share_to_center(record_id):
                 "season_pack_consistency": consistency,
             }), 400
 
-    source_register = _register_share_items_to_center(record, items, cfg, headers, source_provider='user_share')
+    source_provider = _source_provider_for_share_record(record, 'user_share')
+    source_register = _register_share_items_to_center(record, items, cfg, headers, source_provider=source_provider)
     reported = int(source_register.get('reported') or 0)
     errors = list(source_register.get('errors') or [])
     first_source_id = source_register.get('first_source_id') or None

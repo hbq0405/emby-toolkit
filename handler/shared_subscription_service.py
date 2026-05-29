@@ -1502,6 +1502,12 @@ def _create_backup_share_after_import(
         'center_status': 'not_reported',
         'raw_json': {
             'auto_backup_share': True,
+            'backup_share': True,
+            'backup_mirror': True,
+            'source_provider': 'backup_mirror',
+            'share_source': 'backup_mirror',
+            'source_provider_label': '备份分享',
+            'source_label': '备份分享',
             'backup_instruction': instruction,
             'source_share_code': src.get('share_code'),
             'import_response': import_resp,

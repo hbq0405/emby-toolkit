@@ -1136,7 +1136,13 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                     raw_json={'season_pack_consistency': consistency},
                                 )
                                 continue
-                        source_provider = 'auto_gap_share' if ((record.get('raw_json') or {}).get('auto_gap')) else 'user_share'
+                        raw_meta = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+                        if raw_meta.get('auto_backup_share') or raw_meta.get('backup_share') or raw_meta.get('backup_mirror') or raw_meta.get('backup_instruction'):
+                            source_provider = 'backup_mirror'
+                        elif raw_meta.get('auto_gap'):
+                            source_provider = 'auto_gap_share'
+                        else:
+                            source_provider = 'user_share'
                         if sr is not None and hasattr(sr, '_register_share_items_to_center'):
                             cfg, headers = sr._center_headers()
                             register_result = sr._register_share_items_to_center(

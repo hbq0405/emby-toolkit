@@ -501,11 +501,15 @@ const shareSourceText = (row) => {
     raw?.source_label,
   ]).toLowerCase();
 
+  const rawBackup = Boolean(raw?.auto_backup_share || raw?.backup_share || raw?.backup_instruction || raw?.backup_mirror || raw?.backup_fingerprint);
   const rawManual = Boolean(raw?.manual_payload || raw?.manual_share || raw?.manual_create || raw?.manual_created || raw?.manual_context);
   const rawAuto = Boolean(raw?.auto_gap || raw?.auto_payload || raw?.auto_task || raw?.maintenance_payload || raw?.maintenance_task || raw?.auto_share_payload || raw?.auto_context);
+  const providerBackup = /(backup_mirror|backup_share|auto_backup_share|backup)/i.test(providerText) || /(备份分享|备份源|镜像分享)/.test(labelText);
   const providerManual = /(user_share|manual_share|manual|local_manual|manual_create|manual_created)/i.test(providerText) || /手动分享/.test(labelText);
   const providerAuto = /(auto_gap_share|auto_share|auto_task|maintenance_task|maintenance_share|scheduler|scheduled_share|gap_share|watching_gap_share)/i.test(providerText) || /自动分享/.test(labelText);
 
+  // 备份分享是中心下发的特殊来源，必须优先于 user_share/manual 兜底判断。
+  if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || rawBackup || providerBackup) return '备份分享';
   // 手动标记优先。手动创建的分享即使后续由维护任务自动检查/登记中心，也仍然叫“手动分享”。
   if (row?.is_manual_share || row?.manual_created || row?.created_by_user || rawManual || providerManual) return '手动分享';
   if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance || rawAuto || providerAuto) return '自动分享';
@@ -518,7 +522,7 @@ const shareRemarkNode = (row) => {
     return h('span', { class: 'share-remark-text share-remark-error', title: reason }, reason);
   }
   const source = shareSourceText(row);
-  const type = source === '自动分享' ? 'warning' : 'default';
+  const type = source === '自动分享' ? 'warning' : (source === '备份分享' ? 'info' : 'default');
   return h(NTag, { type, size: 'small', round: true }, { default: () => source });
 };
 
@@ -926,6 +930,7 @@ const centerSourceText = (row) => {
   const labelText = labelParts.join(' ').toLowerCase();
   const allText = `${rawText} ${labelText}`;
 
+  if (row?.is_backup_share || row?.backup_share || row?.auto_backup_share || /(backup_mirror|backup_share|auto_backup_share|backup|备份分享|备份源|镜像分享)/i.test(allText)) return '备份分享';
   if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance) return '自动分享';
   if (/(hdhive|影巢)/i.test(allText)) return '影巢';
   if (/(tg_channel|telegram|频道)/i.test(allText)) return '频道';
