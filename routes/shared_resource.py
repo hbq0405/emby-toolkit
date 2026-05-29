@@ -993,7 +993,12 @@ def _video_effect_key(raw: Dict[str, Any], summary: Dict[str, Any] = None) -> st
 
 
 def _season_pack_file_signature(item: Dict[str, Any]) -> Dict[str, Any]:
-    """从 raw_ffprobe_json 提取季包一致性校验所需的视频签名。"""
+    """从 raw_ffprobe_json 提取季包一致性校验所需的视频签名。
+
+    注意：这里的“分辨率一致”按展示档位判断（4K/1080p/720p），
+    不按精确像素高宽判断。否则同为 2160p/4K 的个别剧集只要裁切高度
+    略有差异，就会被拆成两个组，但报错文案仍显示 4K / SDR，造成误判。
+    """
     item = item or {}
     sha1 = str(item.get('sha1') or '').strip().upper()
     raw = _load_local_raw_ffprobe(sha1)
@@ -1007,8 +1012,12 @@ def _season_pack_file_signature(item: Dict[str, Any]) -> Dict[str, Any]:
     summary = _summarize_raw_ffprobe(raw, item)
     width = int(summary.get('width') or 0)
     height = int(summary.get('height') or 0)
-    resolution = f"{width}x{height}" if width and height else (summary.get('resolution') or '')
-    if not resolution:
+    pixel_resolution = f"{width}x{height}" if width and height else ''
+    resolution_label = str(summary.get('resolution') or '').strip()
+    if not resolution_label and width and height:
+        resolution_label = _center_resolution(width, height) or pixel_resolution
+    resolution_key = resolution_label or pixel_resolution
+    if not resolution_key:
         return {
             'ok': False,
             'sha1': sha1,
@@ -1020,10 +1029,14 @@ def _season_pack_file_signature(item: Dict[str, Any]) -> Dict[str, Any]:
         'ok': True,
         'sha1': sha1,
         'file_name': item.get('file_name') or item.get('name') or sha1,
-        'resolution': resolution,
-        'resolution_label': summary.get('resolution') or resolution,
+        # 分组 key：按 4K/1080p 这类档位，而不是 3840x1608/3840x2160 的精确像素。
+        'resolution': resolution_key,
+        'resolution_label': resolution_label or resolution_key,
+        # 保留精确像素用于日志排查，但不参与一致性判断。
+        'pixel_resolution': pixel_resolution,
         'effect_key': effect_key,
-        'effect': summary.get('effect') or ('SDR' if effect_key == 'SDR' else effect_key),
+        # 展示时优先使用真正参与分组的 effect_key，避免 UI 看起来两个组都是 SDR。
+        'effect': effect_key or summary.get('effect') or 'SDR',
     }
 
 
@@ -1063,8 +1076,9 @@ def _validate_season_pack_consistency(files: List[Dict[str, Any]]) -> Dict[str, 
     samples = []
     for key, rows in groups.items():
         first = rows[0]
+        pixel_note = f"，像素 {first.get('pixel_resolution')}" if first.get('pixel_resolution') else ''
         samples.append(
-            f"{first.get('resolution_label') or first.get('resolution')} / {first.get('effect') or first.get('effect_key')}: "
+            f"{first.get('resolution_label') or first.get('resolution')} / {first.get('effect_key') or first.get('effect')}{pixel_note}: "
             f"{len(rows)} 个，示例 {first.get('file_name')}"
         )
     return {
