@@ -4647,77 +4647,6 @@ def _center_row_file_entries(row: Dict[str, Any]) -> List[Dict[str, Any]]:
     return entries
 
 
-def _load_local_library_sha1_index(sha1s: List[str]) -> Dict[str, Dict[str, Any]]:
-    """按 SHA1 查询本地是否已有该文件。media_metadata 严格代表媒体库，p115 缓存作为兜底。"""
-    sha1s = list(dict.fromkeys([_center_norm_sha1(x) for x in (sha1s or []) if _center_norm_sha1(x)]))
-    if not sha1s:
-        return {}
-
-    index = {sha1: {'media_metadata': [], 'p115_filesystem_cache': []} for sha1 in sha1s}
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT DISTINCT
-                        matched.sha1 AS sha1,
-                        m.tmdb_id,
-                        m.item_type,
-                        m.parent_series_tmdb_id,
-                        m.season_number,
-                        m.episode_number,
-                        m.title,
-                        m.in_library
-                    FROM media_metadata m
-                    JOIN LATERAL (
-                        SELECT UPPER(v) AS sha1
-                        FROM jsonb_array_elements_text(
-                            CASE
-                                WHEN jsonb_typeof(m.file_sha1_json) = 'array' THEN m.file_sha1_json
-                                WHEN jsonb_typeof(m.file_sha1_json) = 'string' THEN jsonb_build_array(m.file_sha1_json)
-                                ELSE '[]'::jsonb
-                            END
-                        ) AS arr(v)
-                        UNION
-                        SELECT UPPER(e.key) AS sha1
-                        FROM jsonb_each_text(
-                            CASE WHEN jsonb_typeof(m.file_sha1_json) = 'object' THEN m.file_sha1_json ELSE '{}'::jsonb END
-                        ) AS e(key, value)
-                        UNION
-                        SELECT UPPER(e.value) AS sha1
-                        FROM jsonb_each_text(
-                            CASE WHEN jsonb_typeof(m.file_sha1_json) = 'object' THEN m.file_sha1_json ELSE '{}'::jsonb END
-                        ) AS e(key, value)
-                    ) matched ON matched.sha1 = ANY(%s)
-                    WHERE COALESCE(m.in_library, FALSE) = TRUE
-                    """,
-                    (sha1s,),
-                )
-                for row in cur.fetchall():
-                    d = dict(row)
-                    sha1 = _center_norm_sha1(d.get('sha1'))
-                    if sha1 in index:
-                        index[sha1]['media_metadata'].append(d)
-
-                cur.execute(
-                    """
-                    SELECT UPPER(sha1) AS sha1, id, parent_id, name, local_path, pick_code, size
-                    FROM p115_filesystem_cache
-                    WHERE sha1 IS NOT NULL AND sha1 <> '' AND UPPER(sha1) = ANY(%s)
-                    ORDER BY updated_at DESC NULLS LAST
-                    """,
-                    (sha1s,),
-                )
-                for row in cur.fetchall():
-                    d = dict(row)
-                    sha1 = _center_norm_sha1(d.get('sha1'))
-                    if sha1 in index:
-                        index[sha1]['p115_filesystem_cache'].append(d)
-    except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 查询本地入库状态失败: {e}")
-    return index
-
-
 def _center_file_entry_label(entry: Dict[str, Any]) -> str:
     entry = entry or {}
     season = entry.get('season_number')
@@ -4743,7 +4672,7 @@ def _annotate_center_rows_local_library(rows: List[Dict[str, Any]]) -> List[Dict
         row_entries.append(entries)
         all_sha1s.extend([e.get('sha1') for e in entries if e.get('sha1')])
 
-    local_index = _load_local_library_sha1_index(all_sha1s)
+    local_index = shared_share_db.load_local_library_sha1_index(all_sha1s)
 
     for row, entries in zip(rows, row_entries):
         files = []

@@ -1,6 +1,7 @@
 # database/shared_share_db.py
 # 我的共享资源：本地分享记录与分享包明细
 import json
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
@@ -519,3 +520,78 @@ def has_existing_share_for_gap(gap: Dict[str, Any], candidate: Dict[str, Any] = 
                 (tmdb_ids, tmdb_ids, tmdb_ids, season, statuses),
             )
             return cur.fetchone() is not None
+
+def _center_norm_sha1(value: str) -> str:
+    text = str(value or '').strip().upper()
+    return text if re.fullmatch(r'[A-F0-9]{40}', text) else ''
+
+def load_local_library_sha1_index(sha1s: List[str]) -> Dict[str, Dict[str, Any]]:
+    """按 SHA1 查询本地是否已有该文件。media_metadata 严格代表媒体库，p115 缓存作为兜底。"""
+    sha1s = list(dict.fromkeys([_center_norm_sha1(x) for x in (sha1s or []) if _center_norm_sha1(x)]))
+    if not sha1s:
+        return {}
+
+    index = {sha1: {'media_metadata': [], 'p115_filesystem_cache': []} for sha1 in sha1s}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT
+                        matched.sha1 AS sha1,
+                        m.tmdb_id,
+                        m.item_type,
+                        m.parent_series_tmdb_id,
+                        m.season_number,
+                        m.episode_number,
+                        m.title,
+                        m.in_library
+                    FROM media_metadata m
+                    JOIN LATERAL (
+                        SELECT UPPER(v) AS sha1
+                        FROM jsonb_array_elements_text(
+                            CASE
+                                WHEN jsonb_typeof(m.file_sha1_json) = 'array' THEN m.file_sha1_json
+                                WHEN jsonb_typeof(m.file_sha1_json) = 'string' THEN jsonb_build_array(m.file_sha1_json)
+                                ELSE '[]'::jsonb
+                            END
+                        ) AS arr(v)
+                        UNION
+                        SELECT UPPER(e.key) AS sha1
+                        FROM jsonb_each_text(
+                            CASE WHEN jsonb_typeof(m.file_sha1_json) = 'object' THEN m.file_sha1_json ELSE '{}'::jsonb END
+                        ) AS e(key, value)
+                        UNION
+                        SELECT UPPER(e.value) AS sha1
+                        FROM jsonb_each_text(
+                            CASE WHEN jsonb_typeof(m.file_sha1_json) = 'object' THEN m.file_sha1_json ELSE '{}'::jsonb END
+                        ) AS e(key, value)
+                    ) matched ON matched.sha1 = ANY(%s)
+                    WHERE COALESCE(m.in_library, FALSE) = TRUE
+                    """,
+                    (sha1s,),
+                )
+                for row in cur.fetchall():
+                    d = dict(row)
+                    sha1 = _center_norm_sha1(d.get('sha1'))
+                    if sha1 in index:
+                        index[sha1]['media_metadata'].append(d)
+
+                cur.execute(
+                    """
+                    SELECT UPPER(sha1) AS sha1, id, parent_id, name, local_path, pick_code, size
+                    FROM p115_filesystem_cache
+                    WHERE sha1 IS NOT NULL AND sha1 <> '' AND UPPER(sha1) = ANY(%s)
+                    ORDER BY updated_at DESC NULLS LAST
+                    """,
+                    (sha1s,),
+                )
+                for row in cur.fetchall():
+                    d = dict(row)
+                    sha1 = _center_norm_sha1(d.get('sha1'))
+                    if sha1 in index:
+                        index[sha1]['p115_filesystem_cache'].append(d)
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).warning(f"  ➜ [共享资源DB] 查询本地入库状态失败: {e}")
+    return index
