@@ -456,12 +456,62 @@ const isSuccessShareMessage = (value) => {
   if (!text) return true;
   return /^(分享可用|分享可访问|分享正常|可访问|正常|ok)$/i.test(text);
 };
-const shareErrorText = (row) => {
-  const status = String(row.status || row.review_status || '').toLowerCase();
-  const text = String(row.last_error || row.error || '').trim();
-  if (!text || isSuccessShareMessage(text)) return '-';
-  if (['alive', 'reported'].includes(status) && isSuccessShareMessage(text)) return '-';
-  return text;
+const pickShareMetaText = (value) => {
+  if (value == null) return '';
+  if (typeof value === 'object') {
+    return [
+      value.source_provider, value.source_provider_label, value.source_label, value.provider, value.origin,
+      value.share_source, value.share_origin, value.source_type, value.share_type, value.create_mode,
+      value.created_by, value.creator_type, value.task_source, value.task_type, value.register_from,
+      value.register_source, value.label, value.name, value.message, value.reason,
+    ].map(pickShareMetaText).filter(Boolean).join(' ');
+  }
+  return String(value).trim();
+};
+const shareFailureReasonText = (row) => {
+  const statusParts = [row?.status, row?.review_status, row?.center_status].map(v => String(v || '').toLowerCase()).filter(Boolean);
+  const failedStatus = statusParts.find(v => ['failed', 'error', 'dead', 'expired', 'rejected'].includes(v));
+  const rawErrorText = [
+    row?.last_error, row?.error, row?.error_message, row?.failure_reason, row?.fail_reason,
+  ].map(v => String(v || '').trim()).find(v => v && !isSuccessShareMessage(v));
+
+  if (rawErrorText) return rawErrorText;
+
+  if (failedStatus) {
+    const rawReasonText = [row?.reason, row?.message, row?.status_message, row?.review_message]
+      .map(v => String(v || '').trim()).find(v => v && !isSuccessShareMessage(v));
+    if (rawReasonText) return rawReasonText;
+
+    const label = statusMap[failedStatus]?.text || row?.status_label || row?.review_status_label || '分享失败';
+    return label === '分享失败' ? label : `分享失败：${label}`;
+  }
+
+  return '';
+};
+const shareSourceText = (row) => {
+  const rawParts = [
+    row?.source_provider, row?.source_provider_label, row?.source_label, row?.provider, row?.origin,
+    row?.share_origin, row?.share_source, row?.source_type, row?.create_mode, row?.created_by,
+    row?.creator_type, row?.submitter_type, row?.register_from, row?.register_source, row?.task_source,
+    row?.task_type, row?.client_source, row?.share_kind, row?.source, row?.shared_source, row?.extra, row?.raw,
+  ].map(pickShareMetaText).filter(Boolean);
+  const allText = rawParts.join(' ').toLowerCase();
+
+  if (row?.is_auto_share || row?.auto_created || row?.created_by_task || row?.from_auto_task || row?.is_gap_share || row?.is_auto_created || row?.auto_share || row?.auto_registered || row?.from_maintenance || row?.created_from_maintenance) return '自动分享';
+  if (/(auto|自动|maintenance|scheduler|schedule|task|gap)/i.test(allText)) return '自动分享';
+  if (row?.is_manual_share || row?.manual_created || row?.created_by_user || /(manual|user_share|手动|人工)/i.test(allText)) return '手动分享';
+
+  // 旧数据如果没有来源字段，基本都是前端手动创建的本机分享。这里不要再显示空备注。
+  return '手动分享';
+};
+const shareRemarkNode = (row) => {
+  const reason = shareFailureReasonText(row);
+  if (reason) {
+    return h('span', { class: 'share-remark-text share-remark-error', title: reason }, reason);
+  }
+  const source = shareSourceText(row);
+  const type = source === '自动分享' ? 'warning' : 'default';
+  return h(NTag, { type, size: 'small', round: true }, { default: () => source });
 };
 
 const statusMap = {
@@ -605,7 +655,7 @@ const shareColumns = [
   } },
   { title: '创建时间', key: 'created_at', width: 170, render: row => fmtDate(row.created_at) },
   { title: '检查时间', key: 'last_checked_at', width: 170, render: row => fmtDate(row.last_checked_at) },
-  { title: '错误', key: 'last_error', minWidth: 220, ellipsis: { tooltip: true }, render: row => shareErrorText(row) },
+  { title: '备注', key: 'share_remark', minWidth: 220, ellipsis: { tooltip: true }, render: row => shareRemarkNode(row) },
   { title: '操作', key: 'actions', width: 300, fixed: 'right', render: row => h(NSpace, { size: 8 }, { default: () => [
     h(NButton, { size: 'small', type: 'info', ghost: true, onClick: () => checkShare(row) }, { icon: () => h(NIcon, null, { default: () => h(CheckIcon) }), default: () => '检查' }),
     h(NButton, { size: 'small', type: 'primary', ghost: true, disabled: !['alive','reported'].includes(row.status) && row.review_status !== 'alive', onClick: () => reportShare(row) }, { icon: () => h(NIcon, null, { default: () => h(ReportIcon) }), default: () => '登记' }),
@@ -1527,6 +1577,8 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .selected-desc { font-size: 12px; opacity: .68; line-height: 1.7; }
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
 .warning-text { color: #d03050; font-size: 12px; }
+.share-remark-text { display: inline-block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.share-remark-error { color: #d03050; }
 
 
 
