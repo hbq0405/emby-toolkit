@@ -5037,34 +5037,17 @@ def api_center_sources():
         )
         raw_items = _filter_center_rows_by_episode_policy(page_data.get('items') or [])
 
-        # 兼容升级前的中心老数据：旧 RAW 已保存但没有 summary_json 时，只对当前页缺摘要的代表行补一次 RAW。
-        # 新上传的数据会直接命中 summary_json，不再走这条重路径。
-        missing_summary_source_ids = []
-        for row in raw_items:
-            sid = str(row.get('source_id') or '').strip()
-            if sid and not isinstance(row.get('summary_json'), dict) and not row.get('raw_ffprobe_json'):
-                missing_summary_source_ids.append(sid)
-        missing_summary_source_ids = list(dict.fromkeys(missing_summary_source_ids))[:100]
-        if missing_summary_source_ids:
-            try:
-                raw_res = client.list_sources(
-                    source_ids=missing_summary_source_ids,
-                    status='',
-                    limit=len(missing_summary_source_ids),
-                    offset=0,
-                    include_raw=True,
-                )
-                raw_items = _merge_rows_by_source_id(raw_items, raw_res.get('items') or [])
-            except Exception as e:
-                logger.debug(f"  ➜ [共享资源] 当前页缺失 summary_json 的 RAW 兼容补充失败: {e}")
+        # 列表接口只消费中心端预生成的 summary_json。
+        # 不再为老数据缺摘要做 include_raw=True 兜底，否则打开中心资源库时仍会批量拉完整 RAW，越改越慢。
 
         local_share_codes = _load_local_share_code_set(raw_items)
         items = []
         for item in raw_items:
             item['_local_share_record_exists'] = str(item.get('share_code') or '').strip() in local_share_codes
             summary_json = item.get('summary_json') if isinstance(item.get('summary_json'), dict) else None
-            raw = item.get('raw_ffprobe_json') or {}
-            item['version_summary'] = summary_json or _summarize_raw_ffprobe(raw, item)
+            item['version_summary'] = summary_json or {}
+            # 双保险：列表响应不携带完整 RAW，避免调试/兼容路径把大对象带回前端。
+            item.pop('raw_ffprobe_json', None)
             item['display_type'] = _center_display_type(item)
             items.append(_decorate_center_source_row(item))
 
