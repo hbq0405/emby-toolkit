@@ -1391,14 +1391,25 @@ def _safe_json_value(value, fallback=None):
 
 def _asset_detail_items(value) -> List[Dict[str, Any]]:
     parsed = _safe_json_value(value, fallback=[])
+
+    def meaningful_asset(item: Dict[str, Any]) -> bool:
+        if not isinstance(item, dict) or not item:
+            return False
+        # 只把真正的视频资产明细当成可匹配对象。Series/Season 行常见 asset_details_json={}，
+        # 如果直接返回 [{}]，全剧/季包只要勾一个参数就必然匹配失败。
+        return any(item.get(k) not in (None, '', [], {}) for k in (
+            'resolution_display', 'codec_display', 'effect_display', 'frame_rate',
+            'audio_display', 'subtitle_display', 'size_bytes', 'video_codec', 'width', 'height'
+        ))
+
     if isinstance(parsed, dict):
         # asset_details_json 历史上可能是单对象，也可能包在 files/items/assets 里。
         for key in ('items', 'files', 'assets', 'asset_details'):
             if isinstance(parsed.get(key), list):
-                return [x for x in parsed.get(key) if isinstance(x, dict)]
-        return [parsed]
+                return [x for x in parsed.get(key) if meaningful_asset(x)]
+        return [parsed] if meaningful_asset(parsed) else []
     if isinstance(parsed, list):
-        return [x for x in parsed if isinstance(x, dict)]
+        return [x for x in parsed if meaningful_asset(x)]
     return []
 
 
@@ -1520,12 +1531,17 @@ def _asset_matches_share_request_params(asset: Dict[str, Any], params: Dict[str,
 def _load_share_request_candidate_assets(candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
     """读取候选资源对应的 asset_details_json，用于求分享参数过滤。"""
     candidate = candidate or {}
-    inline = _asset_detail_items(candidate.get('asset_details_json'))
-    if inline:
-        return inline
-
     share_item_type = str(candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
     share_type = str(candidate.get('share_type') or '').strip().lower()
+
+    # 电影/单集候选自身就是具体视频，可以直接使用行内 asset_details_json。
+    # 全剧/季包候选对应的是 Series/Season 聚合行，必须下钻到 Episode 行读取每集资产，
+    # 否则 Series/Season 行上的空 asset_details_json 会导致“任意参数都匹配不上”。
+    if share_item_type not in {'Series', 'Season'} and share_type not in ('series_pack', 'tv_pack', 'season_pack'):
+        inline = _asset_detail_items(candidate.get('asset_details_json'))
+        if inline:
+            return inline
+
     tmdb_id = str(candidate.get('share_tmdb_id') or candidate.get('tmdb_id') or '').strip()
     parent_series_id = str(candidate.get('parent_series_tmdb_id') or '').strip()
     season_number = candidate.get('season_number')
@@ -1666,6 +1682,25 @@ def _candidate_matches_share_request_target(candidate: Dict[str, Any], request_f
     return True
 
 
+def _candidate_size_matches_share_request(assets: List[Dict[str, Any]], size_range: str, aggregate: bool = False) -> bool:
+    size_range = str(size_range or '').strip()
+    if not size_range:
+        return True
+    bounds = _parse_request_size_range(size_range)
+    if not bounds:
+        return True
+    low, high = bounds
+    if aggregate:
+        size_bytes = sum(_safe_float((asset or {}).get('size_bytes') or (asset or {}).get('size') or 0, 0.0) for asset in assets or [])
+        size_gb = size_bytes / (1024 ** 3) if size_bytes else 0.0
+        if low is not None and size_gb + 1e-6 < low:
+            return False
+        if high is not None and size_gb - 1e-6 > high:
+            return False
+        return True
+    return all(_asset_matches_share_request_params(asset, {'size_range': size_range}) for asset in assets or [])
+
+
 def _candidate_matches_share_request_params(candidate: Dict[str, Any], params: Dict[str, Any]) -> bool:
     params = {k: v for k, v in (params or {}).items() if str(v or '').strip()}
     if not params:
@@ -1675,10 +1710,20 @@ def _candidate_matches_share_request_params(candidate: Dict[str, Any], params: D
         return False
     share_type = str(candidate.get('share_type') or '').strip().lower()
     share_item_type = str(candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
-    strict_all = share_item_type == 'Season' or share_type in ('season_pack', 'series_pack', 'tv_pack') or bool(candidate.get('root_is_dir') and _safe_int(candidate.get('file_count'), 1) > 1)
+    strict_all = share_item_type in {'Season', 'Series'} or share_type in ('season_pack', 'series_pack', 'tv_pack') or bool(candidate.get('root_is_dir') and _safe_int(candidate.get('file_count'), 1) > 1)
+
+    # 多文件包的体积范围按整包总大小匹配；其它画质/编码/HDR/帧率/音轨/字幕仍要求包内每个视频都满足。
+    # 否则“全剧 50-100GB”会被误解成每一集都必须 50-100GB。
+    params_without_size = {k: v for k, v in params.items() if k != 'size_range'}
+    size_range = params.get('size_range')
     if strict_all:
-        return all(_asset_matches_share_request_params(asset, params) for asset in assets)
-    return any(_asset_matches_share_request_params(asset, params) for asset in assets)
+        if params_without_size and not all(_asset_matches_share_request_params(asset, params_without_size) for asset in assets):
+            return False
+        return _candidate_size_matches_share_request(assets, size_range, aggregate=len(assets) > 1)
+
+    if params_without_size and not any(_asset_matches_share_request_params(asset, params_without_size) for asset in assets):
+        return False
+    return _candidate_size_matches_share_request(assets, size_range, aggregate=False)
 
 
 
@@ -4881,8 +4926,9 @@ def api_list_share_requests():
 def _enrich_share_request_payload_for_quote(payload: Dict[str, Any]) -> Dict[str, Any]:
     """本地代理侧为求分享报价补充可验证的 TMDb 元数据。
 
-    中心端不保存 TMDb API Key，报价仍由中心端最终计算；客户端只补充
-    全剧求分享所需的 season_count，用于“多季按单季基准累加”。
+    全剧求分享的基准悬赏必须以 TMDb 为准，而不是以本地 media_metadata 已入库季数为准。
+    否则求片人本地一集都没有时，全剧基准会被低估成 1 季甚至 0 季；
+    本地库只负责“我有资源”候选匹配，不参与需求侧计价。
     """
     data = dict(payload or {})
     target_type = str(data.get('target_type') or '').strip().lower()
@@ -4890,6 +4936,8 @@ def _enrich_share_request_payload_for_quote(payload: Dict[str, Any]) -> Dict[str
     if target_type not in {'series', 'tv'} and not (media_type in {'tv', 'series'} and target_type in {'', 'series'}):
         return data
 
+    # 前端/TMDb 选择结果如果已经带了可信季数，也可以直接使用。
+    # 但不要用本地 media_metadata 的季数覆盖它。
     if _safe_int(data.get('season_count') or data.get('number_of_seasons'), 0) > 0:
         return data
 
@@ -4901,25 +4949,35 @@ def _enrich_share_request_payload_for_quote(payload: Dict[str, Any]) -> Dict[str
     if not api_key:
         return data
 
+    tmdb_season_numbers = []
     try:
         from handler import tmdb as tmdb_handler
         details = tmdb_handler.get_tv_details(int(tmdb_id), api_key, append_to_response='seasons') or {}
-        seasons = details.get('seasons') or []
-        season_numbers = []
-        for season in seasons:
+        for season in (details.get('seasons') or []):
             try:
                 sn = int(season.get('season_number'))
             except Exception:
                 continue
-            if sn > 0 and sn not in season_numbers:
-                season_numbers.append(sn)
-        if season_numbers:
-            data['season_count'] = len(season_numbers)
-            data['season_numbers'] = season_numbers
-        elif details.get('number_of_seasons'):
-            data['season_count'] = max(1, int(details.get('number_of_seasons') or 1))
+            # TMDb season_number=0 是 Specials，不计入全剧基础季数。
+            if sn > 0 and sn not in tmdb_season_numbers:
+                tmdb_season_numbers.append(sn)
+
+        if tmdb_season_numbers:
+            tmdb_season_numbers.sort()
+            data['season_count'] = len(tmdb_season_numbers)
+            data['season_numbers'] = tmdb_season_numbers
+            return data
+
+        number_of_seasons = _safe_int(details.get('number_of_seasons'), 0)
+        if number_of_seasons > 0:
+            data['season_count'] = number_of_seasons
+            data['season_numbers'] = list(range(1, number_of_seasons + 1))
+            return data
     except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 补充求分享全剧季数失败: tmdb={tmdb_id}, err={e}")
+        logger.debug(f"  ➜ [共享资源] 按 TMDb 补充求分享全剧季数失败: tmdb={tmdb_id}, err={e}")
+
+    # TMDb 拉取失败时保持 payload 原样，由中心端按最低 1 季兜底；
+    # 不再使用本地 media_metadata 季数，避免需求侧计价被本地库污染。
     return data
 
 
