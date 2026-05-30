@@ -149,38 +149,32 @@
             </n-space>
 
             <n-spin :show="requestLoading">
-              <n-grid v-if="shareRequests.length" :cols="isMobile ? 1 : 3" :x-gap="14" :y-gap="14">
-                <n-gi v-for="req in shareRequests" :key="req.group_id">
-                  <n-card size="small" :bordered="false" class="share-request-card">
-                    <div class="share-request-card-body">
-                      <img class="share-request-poster" :src="requestPosterUrl(req)" @error="onRequestPosterError" />
-                      <div class="share-request-info">
-                        <div class="share-request-title">{{ appendYear(req.title, req.release_year) }}</div>
-                        <div class="share-request-meta">
-                          {{ requestTargetText(req) }} · TMDb {{ req.tmdb_id || '-' }}
-                        </div>
-                        <div class="share-request-condition">{{ requestConditionText(req) }}</div>
-                        <n-space size="small" class="share-request-tags">
-                          <n-tag size="small" round type="warning">悬赏池 {{ req.bounty_total || req.current_bounty || 0 }}</n-tag>
-                          <n-tag size="small" round type="info">同求 ×{{ req.co_request_count || 0 }}</n-tag>
-                          <n-tag size="small" round :type="req.status === 'open' ? 'success' : 'default'">{{ requestStatusLabel(req.status) }}</n-tag>
-                        </n-space>
-                        <div class="share-request-time">{{ fmtDate(req.created_at) }} 发起，{{ req.expires_at ? fmtDate(req.expires_at) + ' 到期' : '长期有效' }}</div>
+              <div v-if="shareRequests.length" class="share-request-grid">
+                <n-card v-for="req in shareRequests" :key="req.group_id" size="small" :bordered="false" class="share-request-card">
+                  <div class="share-request-card-body">
+                    <img class="share-request-poster" :src="requestPosterUrl(req)" @error="onRequestPosterError" />
+                    <div class="share-request-info">
+                      <div class="share-request-title">{{ appendYear(req.title, req.release_year) }}</div>
+                      <div class="share-request-meta">{{ requestTargetText(req) }} · TMDb {{ req.tmdb_id || '-' }}</div>
+                      <div class="share-request-condition">{{ requestConditionText(req) }}</div>
+                      <div class="share-request-tags">
+                        <n-tag size="small" round type="warning">悬赏 {{ req.bounty_total || req.current_bounty || 0 }}</n-tag>
+                        <n-tag size="small" round type="info">同求 ×{{ req.co_request_count || 0 }}</n-tag>
+                        <n-tag size="small" round :type="req.status === 'open' ? 'success' : 'default'">{{ requestStatusLabel(req.status) }}</n-tag>
                       </div>
+                      <div class="share-request-time">{{ fmtDate(req.created_at) }} 发起 · {{ req.expires_at ? fmtDate(req.expires_at) + ' 到期' : '长期有效' }}</div>
                     </div>
-                    <template #footer>
-                      <n-space justify="space-between" align="center">
-                        <n-text depth="3">{{ req.joined_by_me ? (req.my_role === 'owner' ? '我发起的求分享' : '我已同求') : '尚未参与' }}</n-text>
-                        <n-space size="small">
-                          <n-button size="small" secondary :disabled="req.status !== 'open'" @click="openLocalShareForRequest(req)">我有资源</n-button>
-                          <n-button size="small" type="primary" secondary :disabled="req.status !== 'open' || req.joined_by_me || req.my_role === 'owner'" @click="confirmCoRequest(req)">同求</n-button>
-                          <n-button v-if="req.joined_by_me && req.status === 'open'" size="small" type="error" ghost @click="confirmCancelShareRequest(req)">取消</n-button>
-                        </n-space>
-                      </n-space>
-                    </template>
-                  </n-card>
-                </n-gi>
-              </n-grid>
+                  </div>
+                  <div class="share-request-footer">
+                    <span class="share-request-owner">{{ requestParticipationText(req) }}</span>
+                    <div class="share-request-actions">
+                      <n-button size="tiny" secondary :disabled="!canProvideShareRequest(req)" @click="openLocalShareForRequest(req)">我有资源</n-button>
+                      <n-button size="tiny" type="primary" secondary :disabled="req.status !== 'open' || req.joined_by_me || req.my_role === 'owner'" @click="confirmCoRequest(req)">同求</n-button>
+                      <n-button v-if="req.joined_by_me && req.status === 'open'" size="tiny" type="error" ghost @click="confirmCancelShareRequest(req)">取消</n-button>
+                    </div>
+                  </div>
+                </n-card>
+              </div>
               <n-card v-else :bordered="false" class="empty-request-card">
                 <n-text depth="3">暂无求分享。可以点击“求资源”发布一个悬赏需求。</n-text>
               </n-card>
@@ -240,6 +234,13 @@
               <template #suffix>条</template>
             </n-input-number>
             <template #feedback>0 表示不限制；维护任务超过上限时清理到约 80% 水位。</template>
+          </n-form-item>
+          <n-form-item label="自动响应求分享">
+            <n-switch v-model:value="sharedConfigForm.p115_shared_auto_share_requests_enabled">
+              <template #checked>自动分享别人所求</template>
+              <template #unchecked>关闭</template>
+            </n-switch>
+            <template #feedback>维护任务会拉取中心“求分享”列表，跳过自己发起/同求的需求，按参数匹配本地媒体库，命中后自动创建 115 分享并等待审核登记。</template>
           </n-form-item>
 
           <n-divider title-placement="left">虚拟入库缓存</n-divider>
@@ -430,6 +431,7 @@ const sharedConfigForm = reactive({
   p115_shared_resource_mode: 'permanent',
   p115_shared_disable_episode_transfer: false,
   p115_shared_max_active_shares: 0,
+  p115_shared_auto_share_requests_enabled: false,
   p115_shared_cache_cid: '',
   p115_shared_cache_name: '',
   p115_shared_cache_retention_days: 7,
@@ -828,6 +830,12 @@ const shareRequestTargetOptions = computed(() => {
 });
 
 const requestStatusLabel = (status) => statusMap[status]?.text || status || '未知';
+const requestParticipationText = (row = {}) => {
+  if (row.my_role === 'owner') return '我发起的求分享';
+  if (row.joined_by_me) return '我已同求';
+  return '别人发布的求分享';
+};
+const canProvideShareRequest = (row = {}) => row.status === 'open' && row.my_role !== 'owner';
 const requestTargetTypeLabel = (value) => ({
   movie: '电影', series: '全剧', season: '单季', episode: '单集', episode_batch: '单季',
 }[String(value || '').toLowerCase()] || value || '-');
@@ -1585,6 +1593,7 @@ const applySharedConfig = (data = {}) => {
     p115_shared_resource_mode: ['permanent', 'virtual'].includes(data.p115_shared_resource_mode) ? data.p115_shared_resource_mode : 'permanent',
     p115_shared_disable_episode_transfer: Boolean(data.p115_shared_disable_episode_transfer),
     p115_shared_max_active_shares: Number(data.p115_shared_max_active_shares ?? 0),
+    p115_shared_auto_share_requests_enabled: Boolean(data.p115_shared_auto_share_requests_enabled),
     p115_shared_cache_cid: data.p115_shared_cache_cid || '',
     p115_shared_cache_name: data.p115_shared_cache_name || '',
     p115_shared_cache_retention_days: Number(data.p115_shared_cache_retention_days || 7),
@@ -2121,14 +2130,71 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .selected-desc { font-size: 12px; opacity: .68; line-height: 1.7; }
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
 
-.share-request-card { min-height: 238px; background: rgba(128,128,128,.055); border-radius: 14px; }
-.share-request-card-body { display: flex; gap: 12px; min-height: 136px; }
-.share-request-poster { width: 74px; height: 108px; object-fit: cover; border-radius: 10px; background: rgba(128,128,128,.16); flex: 0 0 auto; }
+.share-request-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(330px * var(--card-scale, 1))), 1fr));
+  gap: calc(12px * var(--card-scale, 1));
+}
+.share-request-card {
+  height: 100%;
+  min-height: calc(174px * var(--card-scale, 1));
+  background: rgba(128,128,128,.055);
+  border-radius: calc(14px * var(--card-scale, 1));
+  overflow: hidden;
+  font-size: calc(13px * var(--card-scale, 1));
+}
+.share-request-card :deep(.n-card__content) {
+  padding: calc(10px * var(--card-scale, 1)) !important;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: calc(8px * var(--card-scale, 1));
+}
+.share-request-card :deep(.n-button),
+.share-request-card :deep(.n-tag) { font-size: inherit !important; }
+.share-request-card-body { display: flex; gap: calc(10px * var(--card-scale, 1)); min-height: 0; flex: 1; }
+.share-request-poster {
+  width: calc(66px * var(--card-scale, 1));
+  height: calc(96px * var(--card-scale, 1));
+  object-fit: cover;
+  border-radius: calc(9px * var(--card-scale, 1));
+  background: rgba(128,128,128,.16);
+  flex: 0 0 auto;
+}
 .share-request-info { min-width: 0; flex: 1; }
-.share-request-title { font-size: 15px; font-weight: 700; line-height: 1.35; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; }
-.share-request-meta, .share-request-condition, .share-request-time { font-size: 12px; color: var(--n-text-color-3, rgba(128,128,128,.78)); line-height: 1.55; }
-.share-request-condition { margin-top: 6px; min-height: 18px; word-break: break-all; }
-.share-request-tags { margin-top: 8px; }
+.share-request-title {
+  font-size: 1.08em;
+  font-weight: 700;
+  line-height: 1.28;
+  margin-bottom: 3px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.share-request-meta, .share-request-condition, .share-request-time {
+  font-size: .88em;
+  color: var(--n-text-color-3, rgba(128,128,128,.78));
+  line-height: 1.45;
+}
+.share-request-condition {
+  margin-top: 3px;
+  min-height: 1.35em;
+  word-break: break-all;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+.share-request-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.share-request-time { margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.share-request-footer { display: flex; align-items: center; justify-content: space-between; gap: 8px; border-top: 1px solid rgba(128,128,128,.12); padding-top: 8px; }
+.share-request-owner { color: var(--n-text-color-3, rgba(128,128,128,.78)); font-size: .88em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.share-request-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .empty-request-card { text-align: center; padding: 24px; background: rgba(128,128,128,.055); border-radius: 14px; }
 .share-request-quote-box { border: 1px solid rgba(128,128,128,.20); border-radius: 12px; padding: 12px 14px; background: rgba(128,128,128,.065); margin-top: 12px; }
 .quote-title { font-weight: 700; margin-bottom: 8px; }

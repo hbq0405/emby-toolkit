@@ -152,6 +152,20 @@ class SharedCenterClient:
 
 
 
+
+    def list_share_requests(self, *, status: str = 'open', keyword: str = '', media_type: str = '', target_type: str = '', limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+        """拉取共享中心求分享列表。维护任务用于自动响应别人发布的求分享。"""
+        import urllib.parse
+        params = {
+            'status': status or 'open',
+            'keyword': keyword or '',
+            'media_type': media_type or '',
+            'target_type': target_type or '',
+            'limit': max(1, min(int(limit or 100), 200)),
+            'offset': max(0, int(offset or 0)),
+        }
+        return self._get(f"/api/v1/share-requests?{urllib.parse.urlencode(params)}", timeout=25)
+
     def list_open_gaps(self, limit: int = 100) -> Dict[str, Any]:
         limit = max(1, min(int(limit or 100), 500))
         return self._get(f'/api/v1/gaps/open?limit={limit}', timeout=20)

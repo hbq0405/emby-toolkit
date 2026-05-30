@@ -89,7 +89,10 @@ def _get_shared_config() -> Dict[str, Any]:
 
 
 def _shared_resource_config_payload() -> Dict[str, Any]:
-    return settings_db.get_shared_resource_config()
+    payload = settings_db.get_shared_resource_config()
+    if isinstance(payload, dict):
+        payload.setdefault('p115_shared_auto_share_requests_enabled', False)
+    return payload
 
 
 def _sanitize_shared_resource_config(data: Dict[str, Any]) -> Dict[str, Any]:
@@ -2964,7 +2967,10 @@ def api_shared_resource_config():
         return jsonify({'success': True, 'data': _shared_resource_config_payload()})
 
     data = _request_json()
+    data['p115_shared_auto_share_requests_enabled'] = _boolish(data.get('p115_shared_auto_share_requests_enabled'), False)
     payload = settings_db.save_shared_resource_config(data)
+    if isinstance(payload, dict):
+        payload.setdefault('p115_shared_auto_share_requests_enabled', data['p115_shared_auto_share_requests_enabled'])
     return jsonify({'success': True, 'message': '共享资源配置已保存', 'data': payload})
 
 
