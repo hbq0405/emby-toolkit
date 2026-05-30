@@ -240,7 +240,7 @@ def _build_notice_asset_params_text(emby_item_ids: list) -> str:
     file_count = len(assets)
 
     lines = []
-    quality_parts = [part for part in (quality, resolution, codec) if part]
+    quality_parts = [part for part in (quality, resolution, codec) if part and part != "未知"]
     if quality_parts:
         lines.append(f"🎞️ *画质*: `{_markdown_code_text(' / '.join(quality_parts))}`")
     if effect:
@@ -1090,7 +1090,9 @@ def _tg_resource_quality_text(resource: dict, limit: int = 96) -> str:
             preferred.append(value)
 
     if preferred:
-        return _tg_truncate(" / ".join(dict.fromkeys(preferred)), limit=limit)
+        filtered = [v for v in dict.fromkeys(preferred) if v != "未知"]
+        if filtered:
+            return _tg_truncate(" / ".join(filtered), limit=limit)
 
     # 字段不全时，用名称字段兜底，但避免把 slug 当质量说明。
     for key in ("title", "name", "resource_name", "share_name", "filename", "file_name"):
