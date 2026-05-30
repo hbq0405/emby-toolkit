@@ -1634,11 +1634,13 @@ def _candidate_matches_share_request_target(candidate: Dict[str, Any], request_f
     if target_type == 'season':
         return req_season is None or cand_season == req_season
     if target_type == 'episode':
+        # 求的是单集，就只能展示/创建单集分享。
+        # 115 本身没有“按分享包指定只分享某一集”的能力，不能拿整季包冒充单集响应，
+        # 否则前端会创建 season_pack，中心登记也会变成剧集包。
+        if cand_type != 'Episode' or str(candidate.get('share_type') or '').lower() == 'season_pack':
+            return False
         if req_season is not None and cand_season != req_season:
             return False
-        # 季包可以满足单集求分享；单集候选必须集号一致。
-        if cand_type == 'Season' or str(candidate.get('share_type') or '').lower() == 'season_pack':
-            return True
         return req_episode is None or cand_episode == req_episode
     if target_type == 'episode_batch':
         # 历史兼容：曾经的集数范围现在按单季季包处理。
@@ -1659,6 +1661,56 @@ def _candidate_matches_share_request_params(candidate: Dict[str, Any], params: D
     if strict_all:
         return all(_asset_matches_share_request_params(asset, params) for asset in assets)
     return any(_asset_matches_share_request_params(asset, params) for asset in assets)
+
+
+
+def _load_exact_episode_row_for_share_request(request_filter: Dict[str, Any]) -> Dict[str, Any]:
+    """求分享响应专用：按父剧 TMDb + S/E 直接定位本地单集行。"""
+    request_filter = request_filter or {}
+    if str(request_filter.get('target_type') or '').strip().lower() != 'episode':
+        return {}
+    parent_tmdb_id = str(request_filter.get('tmdb_id') or '').strip()
+    season_number = _safe_int(request_filter.get('season_number'), None)
+    episode_number = _safe_int(request_filter.get('episode_number'), None)
+    if not parent_tmdb_id or season_number is None or episode_number is None:
+        return {}
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
+                           season_number, episode_number, release_year, release_date, last_air_date,
+                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
+                           total_episodes, watching_status, watchlist_tmdb_status, asset_details_json
+                    FROM media_metadata
+                    WHERE item_type='Episode'
+                      AND parent_series_tmdb_id=%s
+                      AND season_number=%s
+                      AND episode_number=%s
+                      AND in_library=TRUE
+                    ORDER BY tmdb_id
+                    LIMIT 1
+                """, (parent_tmdb_id, season_number, episode_number))
+                row = cur.fetchone()
+                return dict(row) if row else {}
+    except Exception as e:
+        logger.warning(
+            f"  ➜ [共享资源] 求分享单集候选定位失败: series={parent_tmdb_id}, S{season_number}E{episode_number}, err={e}"
+        )
+        return {}
+
+
+def _expand_share_candidates_for_share_request(row: Dict[str, Any], request_filter: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """求分享响应专用展开。
+
+    普通“手动分享”搜索为了少展示碎片，会把已完结季的单集提升为季包；
+    但求分享如果目标是单集，就必须创建单集分享，不能展示季包候选。
+    """
+    request_filter = request_filter or {}
+    if str(request_filter.get('target_type') or '').strip().lower() == 'episode':
+        ep_row = _load_exact_episode_row_for_share_request(request_filter)
+        return [_build_media_candidate(ep_row)] if ep_row else []
+    return _expand_share_candidates(row)
 
 
 def _filter_candidates_for_share_request(candidates: List[Dict[str, Any]], request_filter: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -2531,11 +2583,13 @@ def api_search_shareable_media():
             """, (kw, kw, kw, search_limit, result_limit))
             rows = [dict(r) for r in cur.fetchall()]
 
+    request_filter = _share_request_filter_from_args(request.args)
+
     items = []
     seen = set()
     for row in rows:
         try:
-            candidates = _expand_share_candidates(row)
+            candidates = _expand_share_candidates_for_share_request(row, request_filter)
             for cand in candidates:
                 key = (cand.get('share_tmdb_id') or cand.get('tmdb_id'), cand.get('share_item_type') or cand.get('item_type'), cand.get('season_number'), cand.get('episode_number'), cand.get('root_fid'))
                 if key in seen:
@@ -2548,7 +2602,6 @@ def api_search_shareable_media():
             row['message'] = str(e)
             items.append(row)
 
-    request_filter = _share_request_filter_from_args(request.args)
     before_filter_count = len(items)
     items = _filter_candidates_for_share_request(items, request_filter)
     return jsonify({
@@ -3687,6 +3740,18 @@ def api_list_share_items(record_id):
 @admin_required
 def api_manual_create_share():
     data = _request_json()
+
+    # 响应“单集求分享”时强制创建单集分享。
+    # 即使前端/旧缓存误传了 season_pack，也不能把单集悬赏登记成剧集包。
+    share_request_payload = data.get('share_request_payload') if isinstance(data.get('share_request_payload'), dict) else {}
+    if str((share_request_payload or {}).get('target_type') or '').strip().lower() == 'episode':
+        data['share_type'] = 'episode_file'
+        data['item_type'] = 'Episode'
+        if (share_request_payload or {}).get('season_number') not in (None, ''):
+            data['season_number'] = share_request_payload.get('season_number')
+        if (share_request_payload or {}).get('episode_number') not in (None, ''):
+            data['episode_number'] = share_request_payload.get('episode_number')
+
     root_fid = str(data.get('root_fid') or '').strip()
     if not root_fid:
         return jsonify({"success": False, "message": "缺少要分享的 115 文件/目录 FID/CID"}), 400
