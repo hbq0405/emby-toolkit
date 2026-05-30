@@ -462,6 +462,25 @@ const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' }
 const shareFilters = reactive({ keyword: '', status: 'active', order_by: 'created_desc' });
 const centerFilters = reactive({ keyword: '', status: 'alive,pending,replenish', item_type: 'all', order_by: 'latest' });
 const requestFilters = reactive({ keyword: '', status: 'open', media_type: 'all', target_type: 'all' });
+const requestStatusOptions = [
+  { label: '求分享中', value: 'open' },
+  { label: '全部状态', value: 'all' },
+  { label: '已完成', value: 'fulfilled' },
+  { label: '已过期', value: 'expired' },
+  { label: '已取消', value: 'cancelled' },
+];
+const requestMediaTypeOptions = [
+  { label: '全部媒体', value: 'all' },
+  { label: '电影', value: 'movie' },
+  { label: '剧集', value: 'tv' },
+];
+const requestTargetTypeFilterOptions = [
+  { label: '全部目标', value: 'all' },
+  { label: '电影', value: 'movie' },
+  { label: '全剧', value: 'series' },
+  { label: '单季', value: 'season' },
+  { label: '单集', value: 'episode' },
+];
 const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
@@ -805,13 +824,12 @@ const shareRequestTargetOptions = computed(() => {
     { label: '全剧', value: 'series' },
     { label: '单季', value: 'season' },
     { label: '单集', value: 'episode' },
-    { label: '集数范围', value: 'episode_batch' },
   ];
 });
 
 const requestStatusLabel = (status) => statusMap[status]?.text || status || '未知';
 const requestTargetTypeLabel = (value) => ({
-  movie: '电影', series: '全剧', season: '单季', episode: '单集', episode_batch: '集数范围',
+  movie: '电影', series: '全剧', season: '单季', episode: '单集', episode_batch: '单季',
 }[String(value || '').toLowerCase()] || value || '-');
 const requestTargetText = (row) => {
   const target = String(row?.target_type || '').toLowerCase();
@@ -819,11 +837,7 @@ const requestTargetText = (row) => {
   const episode = row?.episode_number ? `E${String(row.episode_number).padStart(2, '0')}` : '';
   if (target === 'season') return `${requestTargetTypeLabel(target)} ${season || ''}`.trim();
   if (target === 'episode') return `${requestTargetTypeLabel(target)} ${season}${episode}`.trim();
-  if (target === 'episode_batch') {
-    const eps = Array.isArray(row?.episode_numbers) ? row.episode_numbers : [];
-    const range = eps.length ? `E${String(eps[0]).padStart(2, '0')}${eps.length > 1 ? `-E${String(eps[eps.length - 1]).padStart(2, '0')}` : ''}` : '';
-    return `${requestTargetTypeLabel(target)} ${season}${range}`.trim();
-  }
+  if (target === 'episode_batch') return `${requestTargetTypeLabel(target)} ${season || ''}`.trim();
   return requestTargetTypeLabel(target || row?.media_type);
 };
 const requestConditionText = (row) => {
@@ -1680,9 +1694,7 @@ const compactRequestParams = () => {
 };
 
 const buildShareRequestPayload = () => {
-  const episodeNumbers = shareRequestForm.target_type === 'episode_batch'
-    ? parseEpisodeText(shareRequestEpisodeText.value)
-    : (shareRequestForm.target_type === 'episode' && shareRequestForm.episode_number ? [Number(shareRequestForm.episode_number)] : []);
+  const episodeNumbers = shareRequestForm.target_type === 'episode' && shareRequestForm.episode_number ? [Number(shareRequestForm.episode_number)] : [];
   return {
     tmdb_id: shareRequestForm.tmdb_id,
     media_type: shareRequestForm.media_type,
@@ -1691,7 +1703,7 @@ const buildShareRequestPayload = () => {
     release_year: shareRequestForm.release_year,
     poster_path: shareRequestForm.poster_path,
     overview: shareRequestForm.overview,
-    season_number: ['season','episode','episode_batch'].includes(shareRequestForm.target_type) ? shareRequestForm.season_number : null,
+    season_number: ['season','episode'].includes(shareRequestForm.target_type) ? shareRequestForm.season_number : null,
     episode_number: shareRequestForm.target_type === 'episode' ? shareRequestForm.episode_number : null,
     episode_numbers: episodeNumbers,
     params_json: compactRequestParams(),
@@ -1798,11 +1810,10 @@ const loadShareRequests = async () => {
 
 const submitShareRequest = async () => {
   if (!selectedShareRequestMedia.value) return message.warning('请先搜索并选择 TMDb 目标');
-  if (shareRequestForm.media_type === 'tv' && ['season','episode','episode_batch'].includes(shareRequestForm.target_type) && !shareRequestForm.season_number) {
+  if (shareRequestForm.media_type === 'tv' && ['season','episode'].includes(shareRequestForm.target_type) && !shareRequestForm.season_number) {
     return message.warning('请填写季号');
   }
   if (shareRequestForm.target_type === 'episode' && !shareRequestForm.episode_number) return message.warning('请填写集号');
-  if (shareRequestForm.target_type === 'episode_batch' && !parseEpisodeText(shareRequestEpisodeText.value).length) return message.warning('请填写集数范围');
   shareRequestSubmitting.value = true;
   try {
     const payload = buildShareRequestPayload();

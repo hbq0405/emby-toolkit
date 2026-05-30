@@ -1,7 +1,7 @@
 <template>
   <n-modal v-model:show="visible" preset="card" title="共享池求分享" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal">
     <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-      先搜索并确认 TMDb 目标，再选择电影 / 全剧 / 单季 / 单集范围和可自动校验的媒体参数。中心端会按参数自动计算需要冻结的贡献值。
+      先搜索并确认 TMDb 目标，再选择电影 / 全剧 / 单季 / 单集和可自动校验的媒体参数。中心端会按参数自动计算需要冻结的贡献值。
     </n-alert>
 
     <n-space class="toolbar" :vertical="isMobile" :size="12">
@@ -35,14 +35,6 @@
 
     <n-form :model="form" label-placement="left" label-width="105" style="margin-top: 12px;">
       <n-divider title-placement="left">求分享目标</n-divider>
-      <n-form-item label="媒体类型">
-        <n-radio-group v-model:value="requestMediaType">
-          <n-space>
-            <n-radio value="movie">电影</n-radio>
-            <n-radio value="tv">剧集</n-radio>
-          </n-space>
-        </n-radio-group>
-      </n-form-item>
       <n-form-item label="目标类型">
         <n-radio-group v-model:value="form.target_type">
           <n-space>
@@ -51,7 +43,7 @@
         </n-radio-group>
       </n-form-item>
       <n-grid v-if="form.media_type === 'tv'" :cols="isMobile ? 1 : 3" :x-gap="12">
-        <n-gi v-if="['season','episode','episode_batch'].includes(form.target_type)">
+        <n-gi v-if="['season','episode'].includes(form.target_type)">
           <n-form-item label="季号">
             <n-input-number v-model:value="form.season_number" :min="1" :max="999" style="width: 100%;" />
           </n-form-item>
@@ -59,11 +51,6 @@
         <n-gi v-if="form.target_type === 'episode'">
           <n-form-item label="集号">
             <n-input-number v-model:value="form.episode_number" :min="1" :max="9999" style="width: 100%;" />
-          </n-form-item>
-        </n-gi>
-        <n-gi v-if="form.target_type === 'episode_batch'" :span="isMobile ? 1 : 2">
-          <n-form-item label="集数范围">
-            <n-input v-model:value="episodeText" placeholder="例如 23,24,25 或 23-28" />
           </n-form-item>
         </n-gi>
       </n-grid>
@@ -143,7 +130,6 @@ const searchKeyword = ref('');
 const searchItems = ref([]);
 const selectedMedia = ref(null);
 const requestMediaType = ref('movie');
-const episodeText = ref('');
 const quote = ref(null);
 
 const defaultParamOptions = () => ({
@@ -207,7 +193,6 @@ const targetOptions = computed(() => {
     { label: '全剧', value: 'series' },
     { label: '单季', value: 'season' },
     { label: '单集', value: 'episode' },
-    { label: '集数范围', value: 'episode_batch' },
   ];
 });
 
@@ -216,24 +201,6 @@ const appendYear = (title, year) => {
   const y = year ? String(year).trim() : '';
   if (!y || base === '-') return base;
   return new RegExp(`\\(${y}\\)\\s*$`).test(base) ? base : `${base} (${y})`;
-};
-
-const parseEpisodeText = (text) => {
-  const out = [];
-  String(text || '').split(/[，,、\s]+/).forEach(part => {
-    part = part.trim();
-    if (!part) return;
-    const m = part.match(/^(\d{1,4})\s*[-~]\s*(\d{1,4})$/);
-    if (m) {
-      let a = Number(m[1]); let b = Number(m[2]);
-      if (a > b) [a, b] = [b, a];
-      for (let n = a; n <= b && out.length < 200; n += 1) if (!out.includes(n)) out.push(n);
-    } else {
-      const n = Number(part);
-      if (Number.isFinite(n) && n > 0 && !out.includes(n)) out.push(Math.floor(n));
-    }
-  });
-  return out.sort((a, b) => a - b);
 };
 
 const compactParams = () => {
@@ -248,9 +215,7 @@ const compactParams = () => {
 };
 
 const buildPayload = () => {
-  const episodeNumbers = form.target_type === 'episode_batch'
-    ? parseEpisodeText(episodeText.value)
-    : (form.target_type === 'episode' && form.episode_number ? [Number(form.episode_number)] : []);
+  const episodeNumbers = form.target_type === 'episode' && form.episode_number ? [Number(form.episode_number)] : [];
   return {
     tmdb_id: form.tmdb_id,
     media_type: form.media_type,
@@ -259,7 +224,7 @@ const buildPayload = () => {
     release_year: form.release_year,
     poster_path: form.poster_path,
     overview: form.overview,
-    season_number: ['season','episode','episode_batch'].includes(form.target_type) ? form.season_number : null,
+    season_number: ['season','episode'].includes(form.target_type) ? form.season_number : null,
     episode_number: form.target_type === 'episode' ? form.episode_number : null,
     episode_numbers: episodeNumbers,
     params_json: compactParams(),
@@ -290,7 +255,6 @@ const reset = () => {
   searchItems.value = [];
   selectedMedia.value = null;
   requestMediaType.value = 'movie';
-  episodeText.value = '';
   quote.value = null;
   Object.assign(form, {
     tmdb_id: '', media_type: 'movie', target_type: 'movie', title: '', release_year: null,
@@ -316,7 +280,6 @@ const applyMedia = async (row) => {
     season_number: 1,
     episode_number: 1,
   });
-  episodeText.value = '';
   if (props.initialTarget && typeof props.initialTarget === 'object') {
     Object.assign(form, {
       target_type: props.initialTarget.target_type || form.target_type,
@@ -324,8 +287,13 @@ const applyMedia = async (row) => {
       episode_number: props.initialTarget.episode_number || form.episode_number,
     });
     if (Array.isArray(props.initialTarget.episode_numbers) && props.initialTarget.episode_numbers.length) {
-      form.target_type = 'episode_batch';
-      episodeText.value = props.initialTarget.episode_numbers.join(',');
+      if (props.initialTarget.episode_numbers.length === 1) {
+        form.target_type = 'episode';
+        form.episode_number = Number(props.initialTarget.episode_numbers[0]) || form.episode_number;
+      } else {
+        // 115 分享没有“指定集数范围”的能力，多集缺口统一按季包求分享。
+        form.target_type = 'season';
+      }
     }
   }
   if (props.initialParams && typeof props.initialParams === 'object') {
@@ -374,11 +342,10 @@ const loadParamOptions = async () => {
 
 const submit = async () => {
   if (!selectedMedia.value) return message.warning('请先搜索并选择 TMDb 目标');
-  if (form.media_type === 'tv' && ['season','episode','episode_batch'].includes(form.target_type) && !form.season_number) {
+  if (form.media_type === 'tv' && ['season','episode'].includes(form.target_type) && !form.season_number) {
     return message.warning('请填写季号');
   }
   if (form.target_type === 'episode' && !form.episode_number) return message.warning('请填写集号');
-  if (form.target_type === 'episode_batch' && !parseEpisodeText(episodeText.value).length) return message.warning('请填写集数范围');
   submitting.value = true;
   try {
     const payload = buildPayload();
@@ -401,8 +368,7 @@ watch(requestMediaType, (value) => {
     form.target_type = 'movie';
     form.season_number = 1;
     form.episode_number = 1;
-    episodeText.value = '';
-  } else if (form.target_type === 'movie') {
+    } else if (form.target_type === 'movie') {
     form.target_type = 'season';
   }
   if (selectedMedia.value && ((selectedMedia.value.media_type === 'movie' ? 'movie' : 'tv') !== mediaType)) {
@@ -431,7 +397,6 @@ watch(
     form.target_type,
     form.season_number,
     form.episode_number,
-    episodeText.value,
     form.params.resolution,
     form.params.codec,
     form.params.effect,

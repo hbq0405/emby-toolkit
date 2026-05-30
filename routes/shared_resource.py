@@ -1641,11 +1641,8 @@ def _candidate_matches_share_request_target(candidate: Dict[str, Any], request_f
             return True
         return req_episode is None or cand_episode == req_episode
     if target_type == 'episode_batch':
-        if req_season is not None and cand_season != req_season:
-            return False
-        if cand_type == 'Season' or str(candidate.get('share_type') or '').lower() == 'season_pack':
-            return True
-        return not req_episodes or cand_episode in req_episodes
+        # 历史兼容：曾经的集数范围现在按单季季包处理。
+        return req_season is None or cand_season == req_season
     return True
 
 
@@ -4574,8 +4571,17 @@ def api_share_request_tmdb_search():
         return jsonify({'success': False, 'message': '未配置 TMDb API Key，无法搜索求分享目标'}), 400
     try:
         from handler import tmdb as tmdb_handler
-        data = tmdb_handler.search_multi_media(keyword, api_key, page=page) or {}
-        items = [_normalize_tmdb_search_item(it) for it in (data.get('results') or [])]
+        media_type = str(request.args.get('media_type') or request.args.get('type') or 'all').strip().lower()
+        if media_type in {'movie', 'film'}:
+            data = tmdb_handler.search_media_for_discover(keyword, api_key, item_type='movie', page=page) or {}
+            raw_items = [dict(it, media_type='movie') for it in (data.get('results') or [])]
+        elif media_type in {'tv', 'series', 'show'}:
+            data = tmdb_handler.search_media_for_discover(keyword, api_key, item_type='tv', page=page) or {}
+            raw_items = [dict(it, media_type='tv') for it in (data.get('results') or [])]
+        else:
+            data = tmdb_handler.search_multi_media(keyword, api_key, page=page) or {}
+            raw_items = data.get('results') or []
+        items = [_normalize_tmdb_search_item(it) for it in raw_items]
         items = [it for it in items if it.get('tmdb_id') and it.get('title')]
         return jsonify({
             'success': True,
