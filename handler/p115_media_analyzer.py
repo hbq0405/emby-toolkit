@@ -446,6 +446,7 @@ class P115MediaAnalyzerMixin:
         - tmdb_id
         - type: movie / tv
         - original_language
+        - season_number / episode_number
         - sha1
         """
         if not isinstance(probe_data, dict):
@@ -498,6 +499,16 @@ class P115MediaAnalyzerMixin:
         tmdb_id = _first("tmdb_id", "tmdbid", "tmdbId", "TMDbId", "tmdb")
         media_type = _first("media_type", "item_type", "type", "Type")
         original_language = _first("original_language", "original_lang", "originalLanguage", "OriginalLanguage")
+        season_number = _first("season_number", "season", "seasonNumber", "SeasonNumber", "_forced_season")
+        episode_number = _first("episode_number", "episode", "episodeNumber", "EpisodeNumber", "_forced_episode")
+
+        def _etk_int(value):
+            try:
+                if value in (None, ""):
+                    return None
+                return int(float(value))
+            except Exception:
+                return None
 
         type_text = str(media_type or "").strip().lower()
         if type_text in ["movie", "movies", "film", "电影"]:
@@ -511,6 +522,8 @@ class P115MediaAnalyzerMixin:
             "tmdb_id": str(tmdb_id).strip() if tmdb_id not in [None, ""] else None,
             "type": normalized_type or None,
             "original_language": str(original_language).strip() if original_language not in [None, ""] else None,
+            "season_number": _etk_int(season_number),
+            "episode_number": _etk_int(episode_number),
             "sha1": str(sha1).strip().upper() if sha1 else None,
         }
         etk_context = {k: v for k, v in etk_context.items() if v not in [None, "", [], {}]}
@@ -2348,8 +2361,33 @@ class P115MediaAnalyzerMixin:
         if not raw_json:
             return {}
 
+        # 2.5 raw_ffprobe_json 顶层 _etk 是共享身份真相；这里直接取季集号，后续整理无需再从文件名正则猜。
+        etk_identity = {}
+        try:
+            raw_probe = _get_p115_cache_manager().get_raw_ffprobe_cache(sha1)
+            if isinstance(raw_probe, dict) and isinstance(raw_probe.get("_etk"), dict):
+                etk_identity = raw_probe.get("_etk") or {}
+        except Exception:
+            etk_identity = {}
+
+        def _etk_identity_int(*values):
+            for value in values:
+                try:
+                    if value in (None, ""):
+                        continue
+                    return int(float(value))
+                except Exception:
+                    continue
+            return None
+
         # 3. 开始解析 Emby 的真实数据
         info = {}
+        etk_season_number = _etk_identity_int(etk_identity.get("season_number"), etk_identity.get("season"), etk_identity.get("s"))
+        etk_episode_number = _etk_identity_int(etk_identity.get("episode_number"), etk_identity.get("episode"), etk_identity.get("e"))
+        if etk_season_number is not None:
+            info["season_number"] = etk_season_number
+        if etk_episode_number is not None:
+            info["episode_number"] = etk_episode_number
         try:
             if isinstance(raw_json, list) and len(raw_json) > 0:
                 source_info = raw_json[0].get("MediaSourceInfo", raw_json[0])
@@ -2472,5 +2510,11 @@ class P115MediaAnalyzerMixin:
 
         except Exception as e:
             logger.warning(f"  ➜ 解析真实媒体信息失败: {e}")
+
+        # streams 分支会重置 info，这里再次回填 _etk 季集号，确保整理链路能直接使用缓存身份。
+        if etk_season_number is not None:
+            info["season_number"] = etk_season_number
+        if etk_episode_number is not None:
+            info["episode_number"] = etk_episode_number
 
         return info

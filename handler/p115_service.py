@@ -1909,7 +1909,8 @@ class P115CacheManager:
         ctx = raw_ffprobe_json.get("_etk")
         if isinstance(ctx, dict):
             # 只保留跨账号、长期稳定的共享字段。
-            allowed = {"tmdb_id", "type", "original_language", "sha1"}
+            # season_number / episode_number 是媒体身份的一部分，上传到中心后可避免消费端再次从文件名正则猜集号。
+            allowed = {"tmdb_id", "type", "original_language", "sha1", "season_number", "episode_number"}
             raw_ffprobe_json["_etk"] = {
                 k: v for k, v in ctx.items()
                 if k in allowed and v not in [None, "", [], {}]
@@ -1984,6 +1985,7 @@ class P115CacheManager:
         - tmdb_id: Movie 用自身 TMDb；剧集/季/集统一用父剧 TMDb
         - type: movie / tv
         - original_language: 优先子项，兜底父剧
+        - season_number / episode_number: Episode 行直接携带，供共享消费端免正则识别季集号
         - sha1
         """
         if not sha1:
@@ -1999,6 +2001,8 @@ class P115CacheManager:
                 m.tmdb_id,
                 m.item_type,
                 m.parent_series_tmdb_id,
+                m.season_number,
+                m.episode_number,
                 COALESCE(NULLIF(m.original_language, ''), NULLIF(p.original_language, '')) AS original_language
             FROM media_metadata m
             LEFT JOIN media_metadata p
@@ -2035,10 +2039,20 @@ class P115CacheManager:
         else:
             return {}
 
+        def _ctx_int(value):
+            try:
+                if value in (None, ''):
+                    return None
+                return int(float(value))
+            except Exception:
+                return None
+
         ctx = {
             'tmdb_id': str(tmdb_id).strip() if tmdb_id not in [None, ''] else None,
             'type': media_type,
             'original_language': str(row.get('original_language')).strip() if row.get('original_language') not in [None, ''] else None,
+            'season_number': _ctx_int(row.get('season_number')),
+            'episode_number': _ctx_int(row.get('episode_number')),
             'sha1': sha1,
         }
         return {k: v for k, v in ctx.items() if v not in [None, '', [], {}]}
@@ -2123,9 +2137,12 @@ class P115CacheManager:
                     ctx = raw_probe.get('_etk') if isinstance(raw_probe.get('_etk'), dict) else {}
                     need_backfill = not P115CacheManager._raw_ffprobe_has_useful_etk(raw_probe)
 
-                    # 即使已有 _etk，也允许补齐缺失的 original_language / sha1。
+                    # 即使已有 _etk，也允许补齐缺失的 original_language / sha1 / 季集号。
                     if not ctx.get('original_language') or not ctx.get('sha1'):
                         need_backfill = True
+                    if str(ctx.get('type') or '').strip().lower() in ('tv', 'series', 'season', 'episode'):
+                        if ctx.get('season_number') in (None, '') or ctx.get('episode_number') in (None, ''):
+                            need_backfill = True
 
                     if need_backfill:
                         local_ctx = P115CacheManager._build_etk_context_from_media_metadata(cursor, sha1)
@@ -3234,9 +3251,29 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                         video_info[k] = v
                     
         # 解析季集号
-        # ★ 优先使用 Webhook 强塞进来的精准数据
+        # ★ 优先使用 Webhook 强塞进来的精准数据，其次直接吃 raw_ffprobe_json 顶层 _etk 的季集号。
         season_num = file_node.get('_forced_season')
         episode_num = file_node.get('_forced_episode')
+
+        def _se_int(value):
+            try:
+                if value in (None, ''):
+                    return None
+                return int(float(value))
+            except Exception:
+                return None
+
+        if is_tv and real_info:
+            if season_num is None:
+                season_num = _se_int(real_info.get('season_number'))
+            if episode_num is None:
+                episode_num = _se_int(real_info.get('episode_number'))
+            if (real_info.get('season_number') not in (None, '') or real_info.get('episode_number') not in (None, '')) and not silent_log:
+                logger.info(
+                    f"  ➜ [raw_ffprobe季集号] 命中缓存身份 -> "
+                    f"S{int(season_num if season_num is not None else 1):02d}"
+                    f"E{int(episode_num if episode_num is not None else 0):02d} | {original_name}"
+                )
 
         if is_tv and (season_num is None or episode_num is None):
             rel_path = file_node.get('rel_path', '')
@@ -5241,6 +5278,19 @@ def _extract_raw_ffprobe_identity(raw_ffprobe_json):
     original_language = ctx.get("original_language")
     sha1 = ctx.get("sha1")
 
+    def _identity_int(*values):
+        for value in values:
+            try:
+                if value in (None, ''):
+                    continue
+                return int(float(value))
+            except Exception:
+                continue
+        return None
+
+    season_number = _identity_int(ctx.get("season_number"), ctx.get("season"), ctx.get("s"))
+    episode_number = _identity_int(ctx.get("episode_number"), ctx.get("episode"), ctx.get("e"))
+
     if not tmdb_id or not media_type:
         return None
 
@@ -5256,6 +5306,8 @@ def _extract_raw_ffprobe_identity(raw_ffprobe_json):
         "tmdb_id": str(tmdb_id).strip(),
         "media_type": normalized_type,
         "original_language": str(original_language).strip() if original_language not in [None, ""] else None,
+        "season_number": season_number,
+        "episode_number": episode_number,
         "sha1": str(sha1).strip().upper() if sha1 not in [None, ""] else None,
     }
     return {k: v for k, v in identity.items() if v not in [None, "", [], {}]}
@@ -5333,9 +5385,14 @@ def _identify_media_enhanced(filename, main_dir_name=None, has_season_subdirs=Fa
         else:
             media_type = probe_type
             official_title = _fetch_title_by_id(tmdb_id, media_type)
+            se_text = ''
+            if probe_identity.get('season_number') not in (None, ''):
+                se_text += f", S{int(probe_identity.get('season_number')):02d}"
+            if probe_identity.get('episode_number') not in (None, ''):
+                se_text += f"E{int(probe_identity.get('episode_number')):02d}"
             logger.info(
                 f"  ➜ [raw_ffprobe识别] 命中共享媒体信息缓存: "
-                f"TMDb:{tmdb_id}, type:{media_type}"
+                f"TMDb:{tmdb_id}, type:{media_type}{se_text}"
                 f"{', lang:' + probe_identity.get('original_language') if probe_identity.get('original_language') else ''}"
             )
             return tmdb_id, media_type, official_title or filename
