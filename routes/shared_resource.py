@@ -28,6 +28,8 @@ _SCAN_KICK_LOCK = threading.Lock()
 _LAST_SCAN_KICK_AT = 0
 
 VIDEO_EXTENSIONS = {'.mp4', '.mkv', '.avi', '.ts', '.mov', '.m2ts', '.iso', '.wmv', '.flv'}
+CENTER_SOURCE_STATUS_REPLENISH = 'replenish'
+CENTER_DISPLAY_SOURCE_STATUSES = 'alive,pending,replenish'
 
 def _center_request_kwargs(timeout: int) -> Dict[str, Any]:
     """共享中心 HTTP 请求参数。
@@ -4592,7 +4594,7 @@ def _collapse_center_season_pack_rows(items: List[Dict[str, Any]]) -> List[Dict[
 
 
 
-def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: str = 'alive,pending') -> List[Dict[str, Any]]:
+def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: str = CENTER_DISPLAY_SOURCE_STATUSES) -> List[Dict[str, Any]]:
     """分页展示前补全同一分享码的剧集包条目，避免 30 条分页把 36 集包截成 30 集。"""
     items = list(items or [])
     if not client or not items:
@@ -4659,7 +4661,7 @@ def _expand_center_pack_page_items(client, items: List[Dict[str, Any]], status: 
         try:
             res = client.list_sources(
                 q=code,
-                status=status or 'alive,pending',
+                status=status or CENTER_DISPLAY_SOURCE_STATUSES,
                 limit=500,
                 offset=0,
                 include_raw=False,
@@ -4843,7 +4845,7 @@ def _merge_rows_by_source_id(base_rows: List[Dict[str, Any]], raw_rows: List[Dic
     return merged
 
 
-def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = 'alive,pending', order_by: str = 'latest', limit: int = 30, offset: int = 0, local_filter: str = '') -> Dict[str, Any]:
+def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str = '', display_type: str = '', status: str = CENTER_DISPLAY_SOURCE_STATUSES, order_by: str = 'latest', limit: int = 30, offset: int = 0, local_filter: str = '') -> Dict[str, Any]:
     """按展示口径加载中心资源库。
 
     新中心优先走 /api/v1/sources/display-list：分页、排序、剧集包聚合都在中心端完成，
@@ -4864,7 +4866,7 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
                     'q': keyword or '',
                     'tmdb_id': tmdb_id or '',
                     'item_type': display_type or '',
-                    'status': status or 'alive,pending',
+                    'status': status or CENTER_DISPLAY_SOURCE_STATUSES,
                     'order_by': order_by or 'latest',
                     'limit': limit,
                     'offset': offset,
@@ -4900,7 +4902,7 @@ def _load_center_sources_for_display(client, *, keyword: str = '', tmdb_id: str 
             q=keyword or '',
             tmdb_id=tmdb_id or '',
             item_type='',
-            status=status or 'alive,pending',
+            status=status or CENTER_DISPLAY_SOURCE_STATUSES,
             order_by=order_by,
             limit=raw_page_size,
             offset=raw_offset,
@@ -4975,6 +4977,7 @@ def _filter_center_rows_by_episode_policy(rows: List[Dict[str, Any]]) -> List[Di
 _CENTER_STATUS_LABELS = {
     'alive': ('可用', 'success'),
     'pending': ('待验证', 'warning'),
+    CENTER_SOURCE_STATUS_REPLENISH: ('待补充', 'error'),
     'dead': ('失效', 'error'),
     'rejected': ('已拒绝', 'error'),
     'expired': ('已过期', 'default'),
@@ -5060,7 +5063,7 @@ def api_center_sources():
             keyword=request.args.get('keyword', ''),
             tmdb_id=request.args.get('tmdb_id', ''),
             display_type=request.args.get('item_type', ''),
-            status=request.args.get('status', 'alive,pending'),
+            status=request.args.get('status', CENTER_DISPLAY_SOURCE_STATUSES),
             order_by=request.args.get('order_by', 'latest'),
             limit=int(request.args.get('limit', 30) or 30),
             offset=int(request.args.get('offset', 0) or 0),
@@ -5098,10 +5101,12 @@ def api_center_sources():
 def api_center_import_sources():
     data = _request_json()
     source_ids = data.get('source_ids') or ([] if not data.get('source_id') else [data.get('source_id')])
+    context = data.get('context') or {}
+    if str(context.get('status') or '').strip().lower() == CENTER_SOURCE_STATUS_REPLENISH:
+        return jsonify({'success': False, 'message': '该中心资源处于待补充状态，只用于精准补源展示，不能转存或入库'}), 400
     mode = str(data.get('mode') or 'permanent').strip().lower()
     if mode not in ('permanent', 'virtual'):
         mode = 'permanent'
-    context = data.get('context') or {}
     mode, force_info = _force_permanent_if_series_has_physical_episode(mode, context)
     if force_info:
         context = {**context, 'shared_mode_forced': force_info}

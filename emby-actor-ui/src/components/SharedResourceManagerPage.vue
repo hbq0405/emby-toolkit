@@ -383,7 +383,7 @@ const centerSources = ref([]);
 const groupedCenterSources = computed(() => groupCenterSources(centerSources.value || [], centerFilters.order_by));
 const virtualFilters = reactive({ keyword: '', status: 'all', item_type: 'all' });
 const shareFilters = reactive({ keyword: '', status: 'active', order_by: 'created_desc' });
-const centerFilters = reactive({ keyword: '', status: '', item_type: 'all', order_by: 'latest' });
+const centerFilters = reactive({ keyword: '', status: 'alive,pending,replenish', item_type: 'all', order_by: 'latest' });
 const virtualPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const sharePagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
 const centerPagination = reactive({ page: 1, pageSize: 30, itemCount: 0, showSizePicker: true, pageSizes: [20, 30, 50, 100] });
@@ -417,9 +417,10 @@ const shareStatusOptions = [
 ];
 
 const centerStatusOptions = [
-  { label: '全部', value: '' },
+  { label: '全部', value: 'alive,pending,replenish' },
   { label: '仅可用', value: 'alive' },
   { label: '仅待验证', value: 'pending' },
+  { label: '仅待补充', value: 'replenish' },
 ];
 const typeOptions = [
   { label: '全部类型', value: 'all' }, { label: '电影', value: 'Movie' },
@@ -531,7 +532,7 @@ const statusMap = {
   cached: { text: '已临时转存', type: 'success' }, watched: { text: '已看过', type: 'warning' },
   promoted: { text: '已转正', type: 'success' }, deleted: { text: '已删除', type: 'default' }, error: { text: '异常', type: 'error' },
   pending_review: { text: '审核中', type: 'warning' }, alive: { text: '可用', type: 'success' },
-  pending: { text: '待验证', type: 'warning' }, dead: { text: '失效', type: 'error' }, expired: { text: '已过期', type: 'default' },
+  pending: { text: '待验证', type: 'warning' }, replenish: { text: '待补充', type: 'error' }, dead: { text: '失效', type: 'error' }, expired: { text: '已过期', type: 'default' },
   reported: { text: '已登记', type: 'success' }, partial: { text: '部分登记', type: 'warning' },
   failed: { text: '失败', type: 'error' }, rejected: { text: '未通过', type: 'error' }, cancelled: { text: '已取消', type: 'default' },
   not_reported: { text: '未登记', type: 'default' },
@@ -971,8 +972,17 @@ const listCell = (items, limit = 3) => {
     more ? h('div', { class: 'sub-title' }, more) : null
   ]);
 };
+const isCenterReplenishRow = (row) => String(row?.status || '').trim().toLowerCase() === 'replenish';
+const centerReplenishActionNode = () => h(NTooltip, { trigger: 'hover', placement: 'top' }, {
+  trigger: () => h(NTag, { type: 'error', size: 'small', round: true }, { default: () => '等待补充' }),
+  default: () => '该资源处于待补充状态：中心仅保留 SHA1/媒体信息用于精准补源，不能转存或虚拟入库。'
+});
 const executeImport = async (row, mode) => {
   const modeText = mode === 'virtual' ? '入库' : '转存';
+  if (isCenterReplenishRow(row)) {
+    message.warning('该资源处于待补充状态，不能转存或入库');
+    return;
+  }
   // 标记该行正在 loading
   importingMap[row.source_id] = mode;
   try {
@@ -990,6 +1000,7 @@ const executeImport = async (row, mode) => {
         episode_number: row.episode_number ?? null,
         year: row.release_year || '',
         share_type: row.share_type || '',
+        status: row.status || '',
       }
     });
     message.success(res.data?.message || '已提交');
@@ -1004,6 +1015,10 @@ const executeImport = async (row, mode) => {
 
 const importCenterSource = (row, mode) => {
   const modeText = mode === 'virtual' ? '入库' : '转存';
+  if (isCenterReplenishRow(row)) {
+    message.warning('该资源处于待补充状态，不能转存或入库');
+    return;
+  }
   dialog.info({
     title: modeText,
     content: `确定将中心资源《${centerTitleText(row)}》执行${modeText}吗？`,
@@ -1261,6 +1276,10 @@ const centerColumns = [
     const isImportingPermanent = importingMap[it.source_id] === 'permanent';
     const isImportingVirtual = importingMap[it.source_id] === 'virtual';
     const isAnyImporting = isImportingPermanent || isImportingVirtual;
+
+    if (isCenterReplenishRow(it)) {
+      return centerReplenishActionNode();
+    }
 
     return h(NSpace, { size: 6 }, { default: () => [
       h(NButton, { 

@@ -898,7 +898,7 @@ def _load_center_own_share_snapshot(client: SharedCenterClient, page_size: int =
     for page in range(max(1, int(max_pages or 1))):
         try:
             resp = client.list_sources(
-                status='alive,pending,dead,reported,cancelled,expired,rejected',
+                status='alive,pending,replenish,dead,reported,cancelled,expired,rejected',
                 mine_only=True,
                 include_raw=False,
                 order_by='latest',
@@ -936,6 +936,7 @@ def _load_center_own_share_snapshot(client: SharedCenterClient, page_size: int =
                 'sha1s': set(),
                 'healthy_sha1s': set(),
                 'summary_missing_sha1s': set(),
+                'replenish_sha1s': set(),
                 'dead_sha1s': set(),
                 'statuses': set(),
             })
@@ -956,6 +957,8 @@ def _load_center_own_share_snapshot(client: SharedCenterClient, page_size: int =
                 summary_json = item.get('summary_json')
                 if not isinstance(summary_json, dict) or not summary_json:
                     group['summary_missing_sha1s'].add(sha1)
+            if sha1 and status == 'replenish':
+                group['replenish_sha1s'].add(sha1)
             if sha1 and status in ('dead', 'cancelled', 'expired', 'rejected'):
                 group['dead_sha1s'].add(sha1)
 
@@ -985,8 +988,11 @@ def _center_share_sync_reason(center_snapshot: Dict[str, Dict[str, Any]] | None,
     center_sha1s = set(center.get('sha1s') or set())
     healthy_sha1s = set(center.get('healthy_sha1s') or set())
     summary_missing_sha1s = set(center.get('summary_missing_sha1s') or set())
+    replenish_sha1s = set(center.get('replenish_sha1s') or set())
     dead_sha1s = set(center.get('dead_sha1s') or set())
 
+    if local_sha1s & replenish_sha1s:
+        return 'center_replenish'
     if local_sha1s & dead_sha1s:
         return 'center_dead'
     if local_sha1s - center_sha1s:
@@ -1004,6 +1010,7 @@ def _center_share_sync_reason_text(reason: str) -> str:
         'center_missing_items': '中心服务器缺少该分享码的部分文件',
         'center_raw_missing': '中心服务器该分享码的媒体信息不完整',
         'center_summary_missing': '中心服务器该分享码缺少轻量媒体摘要',
+        'center_replenish': '中心服务器该分享码处于待补充',
         'center_dead': '中心服务器该分享码被标记为失效',
     }.get(str(reason or ''), str(reason or ''))
 
@@ -1178,12 +1185,14 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
                                         'sha1s': set(),
                                         'healthy_sha1s': set(),
                                         'summary_missing_sha1s': set(),
+                                        'replenish_sha1s': set(),
                                         'dead_sha1s': set(),
                                         'statuses': set(),
                                     })
                                     group['sha1s'].update(local_sha1s)
                                     group['healthy_sha1s'].update(local_sha1s)
                                     group.setdefault('summary_missing_sha1s', set()).difference_update(local_sha1s)
+                                    group.setdefault('replenish_sha1s', set()).difference_update(local_sha1s)
                                     group['dead_sha1s'].difference_update(local_sha1s)
                                     group['statuses'].add('pending')
                         elif errors:
