@@ -1162,7 +1162,7 @@ def _extract_created_cid(resp: Dict[str, Any]) -> str:
     ).strip()
 
 
-def def _ensure_tv_pack_import_container(p115, base_cid: str, src: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+def _ensure_tv_pack_import_container(p115, base_cid: str, src: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """季包/单集转存前，先在待整理目录创建剧标准目录，并返回新的转存目标 CID。"""
     
     # 👇 将原来的 _looks_like_shared_tv_pack 替换为 _should_wrap_tv_import
