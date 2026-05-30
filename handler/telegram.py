@@ -229,7 +229,7 @@ def _build_notice_asset_params_text(emby_item_ids: list) -> str:
     if not assets:
         return ''
 
-    quality = _notice_join_unique(_notice_asset_value(a, 'quality_display') for a in assets)
+    quality_parts = [part for part in (quality, resolution, codec) if part and part != "未知"]
     resolution = _notice_join_unique(_notice_asset_resolution(a) for a in assets)
     codec = _notice_join_unique(_notice_asset_value(a, 'codec_display', 'video_codec') for a in assets)
     effect = _notice_join_unique(_notice_asset_value(a, 'effect_display') for a in assets)
@@ -1090,7 +1090,10 @@ def _tg_resource_quality_text(resource: dict, limit: int = 96) -> str:
             preferred.append(value)
 
     if preferred:
-        return _tg_truncate(" / ".join(dict.fromkeys(preferred)), limit=limit)
+        filtered = [v for v in dict.fromkeys(preferred) if v != "未知"]
+        if filtered:
+            return _tg_truncate(" / ".join(filtered), limit=limit)
+
 
     # 字段不全时，用名称字段兜底，但避免把 slug 当质量说明。
     for key in ("title", "name", "resource_name", "share_name", "filename", "file_name"):
