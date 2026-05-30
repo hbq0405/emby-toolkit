@@ -5,7 +5,11 @@
     </n-alert>
 
     <n-space class="toolbar" :vertical="isMobile" :size="12">
-      <n-input v-model:value="searchKeyword" placeholder="搜索电影 / 剧集" clearable @keyup.enter="searchTmdb">
+      <n-radio-group v-model:value="requestMediaType" size="small" class="media-type-switch">
+        <n-radio-button value="movie">电影</n-radio-button>
+        <n-radio-button value="tv">剧集</n-radio-button>
+      </n-radio-group>
+      <n-input v-model:value="searchKeyword" :placeholder="requestMediaType === 'movie' ? '搜索电影' : '搜索剧集'" clearable @keyup.enter="searchTmdb">
         <template #prefix><n-icon :component="SearchIcon" /></template>
       </n-input>
       <n-button type="primary" :loading="searchLoading" @click="searchTmdb">搜索 TMDb</n-button>
@@ -31,6 +35,14 @@
 
     <n-form :model="form" label-placement="left" label-width="105" style="margin-top: 12px;">
       <n-divider title-placement="left">求分享目标</n-divider>
+      <n-form-item label="媒体类型">
+        <n-radio-group v-model:value="requestMediaType">
+          <n-space>
+            <n-radio value="movie">电影</n-radio>
+            <n-radio value="tv">剧集</n-radio>
+          </n-space>
+        </n-radio-group>
+      </n-form-item>
       <n-form-item label="目标类型">
         <n-radio-group v-model:value="form.target_type">
           <n-space>
@@ -105,7 +117,7 @@ import { computed, h, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import axios from 'axios';
 import {
   NAlert, NButton, NDataTable, NDivider, NForm, NFormItem, NGi, NGrid, NIcon, NInput,
-  NInputNumber, NModal, NRadio, NRadioGroup, NSelect, NSpace, NSwitch, NText, useMessage
+  NInputNumber, NModal, NRadio, NRadioButton, NRadioGroup, NSelect, NSpace, NSwitch, NText, useMessage
 } from 'naive-ui';
 import { SearchOutline as SearchIcon } from '@vicons/ionicons5';
 
@@ -130,6 +142,7 @@ const submitting = ref(false);
 const searchKeyword = ref('');
 const searchItems = ref([]);
 const selectedMedia = ref(null);
+const requestMediaType = ref('movie');
 const episodeText = ref('');
 const quote = ref(null);
 
@@ -189,7 +202,7 @@ const form = reactive({
 });
 
 const targetOptions = computed(() => {
-  if (form.media_type === 'movie') return [{ label: '电影', value: 'movie' }];
+  if (requestMediaType.value === 'movie') return [{ label: '电影', value: 'movie' }];
   return [
     { label: '全剧', value: 'series' },
     { label: '单季', value: 'season' },
@@ -276,6 +289,7 @@ const reset = () => {
   searchKeyword.value = '';
   searchItems.value = [];
   selectedMedia.value = null;
+  requestMediaType.value = 'movie';
   episodeText.value = '';
   quote.value = null;
   Object.assign(form, {
@@ -290,6 +304,7 @@ const applyMedia = async (row) => {
   if (!row) return;
   selectedMedia.value = row;
   const mediaType = row.media_type === 'movie' ? 'movie' : 'tv';
+  requestMediaType.value = mediaType;
   Object.assign(form, {
     tmdb_id: row.tmdb_id || '',
     media_type: mediaType,
@@ -324,7 +339,7 @@ const searchTmdb = async () => {
   if (!keyword) return message.warning('请输入要搜索的片名');
   searchLoading.value = true;
   try {
-    const res = await axios.get('/api/shared/resources/share-requests/tmdb/search', { params: { keyword } });
+    const res = await axios.get('/api/shared/resources/share-requests/tmdb/search', { params: { keyword, media_type: requestMediaType.value } });
     searchItems.value = res.data?.items || [];
     if (!searchItems.value.length) message.info('TMDb 没有搜索到结果');
   } catch (e) {
@@ -378,6 +393,31 @@ const submit = async () => {
   }
 };
 
+
+watch(requestMediaType, (value) => {
+  const mediaType = value === 'tv' ? 'tv' : 'movie';
+  form.media_type = mediaType;
+  if (mediaType === 'movie') {
+    form.target_type = 'movie';
+    form.season_number = 1;
+    form.episode_number = 1;
+    episodeText.value = '';
+  } else if (form.target_type === 'movie') {
+    form.target_type = 'season';
+  }
+  if (selectedMedia.value && ((selectedMedia.value.media_type === 'movie' ? 'movie' : 'tv') !== mediaType)) {
+    selectedMedia.value = null;
+    form.tmdb_id = '';
+    form.title = '';
+    form.release_year = null;
+    form.poster_path = '';
+    form.overview = '';
+    quote.value = null;
+  }
+  searchItems.value = [];
+  scheduleQuote();
+});
+
 watch(() => props.show, async (show) => {
   if (!show) return;
   reset();
@@ -411,6 +451,7 @@ onUnmounted(() => { window.removeEventListener('resize', checkMobile); clearTime
 
 <style scoped>
 .toolbar { margin-bottom: 12px; }
+.media-type-switch { flex: 0 0 auto; }
 .selected-share-box {
   padding: 12px 14px;
   border-radius: 14px;
