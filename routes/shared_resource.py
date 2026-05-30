@@ -19,7 +19,7 @@ import constants
 from extensions import admin_required
 from database import shared_virtual_db, shared_share_db, settings_db
 from database.connection import get_db_connection
-from handler.p115_service import P115Service
+from handler.p115_service import P115Service, P115CacheManager
 
 shared_resource_bp = Blueprint('shared_resource_bp', __name__, url_prefix='/api/shared/resources')
 logger = logging.getLogger(__name__)
@@ -737,30 +737,48 @@ def _decorate_my_share_source_row(item: Dict[str, Any]) -> Dict[str, Any]:
     return item
 
 
+def _raw_ffprobe_has_media_payload(raw: Dict[str, Any]) -> bool:
+    """判断 raw_ffprobe_json 是否包含可用于展示/整理的真实媒体信息。"""
+    if not isinstance(raw, dict):
+        return False
+    if isinstance(raw.get('format'), dict) or isinstance(raw.get('streams'), list):
+        return True
+    if isinstance(raw.get('MediaSourceInfo'), dict) or isinstance(raw.get('MediaStreams'), list):
+        return True
+    return False
+
+
 def _load_local_raw_ffprobe(sha1: str):
-    """从本地 p115_mediainfo_cache 读取 raw_ffprobe_json。"""
+    """从本地 p115_mediainfo_cache 读取 raw_ffprobe_json，并在上传前补齐 _etk 身份。"""
     sha1 = str(sha1 or '').strip().upper()
     if not re.fullmatch(r'[A-Fa-f0-9]{40}', sha1):
         return None
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT raw_ffprobe_json
-                    FROM p115_mediainfo_cache
-                    WHERE sha1=%s AND raw_ffprobe_json IS NOT NULL
-                    LIMIT 1
-                    """,
-                    (sha1,),
-                )
-                row = cur.fetchone()
-                if not row:
-                    return None
-                raw = dict(row).get('raw_ffprobe_json')
-                return _safe_json_obj(raw)
+        # 不能直接 SELECT raw_ffprobe_json：旧缓存可能只有 _etk.sha1，缺 tmdb_id/type。
+        # get_raw_ffprobe_cache 会按 SHA1 从 media_metadata 回填 tmdb_id/type/original_language，
+        # 并同步写回 p115_mediainfo_cache，避免把“残疾 RAW”上传到中心。
+        raw = P115CacheManager.get_raw_ffprobe_cache(sha1)
+        raw = _safe_json_obj(raw)
+        if not raw:
+            return None
+        # get_raw_ffprobe_cache 在 raw 为空时会创建只有 _etk 的最小缓存。
+        # 这种缓存只能辅助识别，不能当完整 RAW 上传到中心，否则中心资源库仍缺媒体参数。
+        if not _raw_ffprobe_has_media_payload(raw):
+            logger.warning(
+                "  ➜ [共享资源] 本地 raw_ffprobe_json 只有 _etk 身份，没有 format/streams，禁止上传中心: "
+                f"sha1={sha1}"
+            )
+            return None
+        ctx = raw.get('_etk') if isinstance(raw.get('_etk'), dict) else {}
+        if not ctx.get('tmdb_id') or not ctx.get('type'):
+            logger.warning(
+                "  ➜ [共享资源] 本地 raw_ffprobe_json 未能从 media_metadata 补齐 _etk.tmdb_id/type，禁止上传中心: "
+                f"sha1={sha1}"
+            )
+            return None
+        return raw
     except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 查询本地 raw_ffprobe_json 失败: sha1={sha1}, err={e}")
+        logger.warning(f"  ➜ [共享资源] 查询/补齐本地 raw_ffprobe_json 失败: sha1={sha1}, err={e}")
         return None
 
 
