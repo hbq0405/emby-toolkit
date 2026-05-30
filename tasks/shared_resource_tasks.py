@@ -1849,11 +1849,14 @@ def _has_existing_share_for_replenish(payload: Dict[str, Any], files: List[Dict[
         'season_number': payload.get('season_number'),
         'episode_number': payload.get('episode_number'),
     }
+    # 待补充补源不能被历史取消/删除记录拦截。
+    # 场景：用户主动取消原分享 -> 中心转为 replenish -> 本地还留着 cancelled 记录。
+    # 如果这里把 cancelled/deleted 也当“已有分享”，维护任务会命中 SHA1 但永远跳过创建新补源分享。
     return shared_share_db.has_existing_share_for_gap(
         gap_like,
         candidate,
         files or [],
-        statuses=_active_share_statuses() + ['cancelled', 'cancel_failed', 'deleted'],
+        statuses=_active_share_statuses(),
     )
 
 
@@ -1895,6 +1898,11 @@ def _auto_share_center_replenish_sources(client: SharedCenterClient, limit: int 
 
             payload, files = _replenish_group_to_share_payload(group, local_rows_by_sha1, sr)
             if not payload or not files:
+                logger.info(
+                    "  ➜ [共享资源维护] 待补充命中但无法构造分享载荷，跳过: sha1=%s, group=%s",
+                    ','.join(sha1s)[:80],
+                    {k: group.get(k) for k in ('kind', 'sha1s')}
+                )
                 result['skipped'] += 1
                 continue
 
@@ -1917,6 +1925,11 @@ def _auto_share_center_replenish_sources(client: SharedCenterClient, limit: int 
                     continue
 
             if _has_existing_share_for_replenish(payload, files):
+                logger.info(
+                    "  ➜ [共享资源维护] 待补充命中但本地已有活跃分享记录，跳过重复创建: %s sha1=%s",
+                    payload.get('title') or payload.get('root_name') or '-',
+                    ','.join(payload.get('center_sha1s') or [])[:80],
+                )
                 result['skipped'] += 1
                 continue
 
