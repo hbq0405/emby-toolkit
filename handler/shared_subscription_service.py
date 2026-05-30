@@ -1052,16 +1052,18 @@ def _share_source_rows(src: Dict[str, Any]) -> List[Dict[str, Any]]:
     return [src] if isinstance(src, dict) else []
 
 
-def _looks_like_shared_tv_pack(src: Dict[str, Any], context: Dict[str, Any]) -> bool:
-    """判断本次中心源是否属于剧/季包转存。
+def _should_wrap_tv_import(src: Dict[str, Any], context: Dict[str, Any]) -> bool:
+    """判断转存前是否需要在待整理目录预先创建标准剧目录 (剧名 (年份) {tmdb=xxx})。
 
-    单集不包裹，避免把普通追更单集额外套一层剧目录；
-    季包/剧包则先创建“剧名 (年份) {tmdb=xxx}”目录，再把分享转进去，
-    让待整理扫描能从顶层目录直接识别 TMDb。
+    - 全剧包 (Series Pack): 否。分享根目录本身就是剧名，再套一层会导致目录嵌套过深，影响整理模块识别。
+    - 季包 (Season Pack): 是。分享根目录通常只是 "Season 01"，缺乏剧集特征，必须套壳。
+    - 单集 (Episode): 是。单集文件名可能很简陋 (如 S01E01.mp4)，套壳能保证整理模块 100% 识别。
+    - 电影 (Movie): 否。
     """
     src = src or {}
     context = context or {}
     rows = _share_source_rows(src)
+    
     item_types = {
         str((row or {}).get('item_type') or '').strip().lower()
         for row in rows + [src, context]
@@ -1070,20 +1072,27 @@ def _looks_like_shared_tv_pack(src: Dict[str, Any], context: Dict[str, Any]) -> 
     share_type = str(src.get('share_type') or context.get('share_type') or '').strip().lower()
     display_type = str(src.get('display_type') or context.get('display_type') or '').strip().lower()
 
-    if share_type in ('season_pack', 'series_pack', 'tv_pack', 'season'):
+    # 1. 明确的全剧包 -> 绝对不套壳
+    if share_type in ('series_pack', 'tv_pack') or 'series' in item_types:
+        return False
+        
+    # 2. 明确的季包 -> 套壳
+    if share_type in ('season_pack', 'season') or 'season' in item_types:
         return True
     if display_type in ('pack', 'season_pack') or bool(src.get('is_collapsed_pack')):
         return True
-    if item_types & {'season', 'series', 'season_pack', 'series_pack', 'tv_pack'}:
+
+    # 3. 明确的单集 -> 套壳 (防止文件名太简陋导致识别失败)
+    if share_type == 'episode_file' or 'episode' in item_types:
         return True
 
-    # 中心旧数据/搜索接口可能把季包拆成多条 Episode 源返回。
-    # 只有多条同分享码、同季分集才视作季包；单集 len=1 不处理。
+    # 4. 兜底判断 (基于多文件特征)
     if len(rows) >= 2:
         has_season = any((row or {}).get('season_number') not in (None, '') for row in rows)
         has_episode = any((row or {}).get('episode_number') not in (None, '') for row in rows)
         if has_season and has_episode:
             return True
+            
     return False
 
 
@@ -1153,9 +1162,11 @@ def _extract_created_cid(resp: Dict[str, Any]) -> str:
     ).strip()
 
 
-def _ensure_tv_pack_import_container(p115, base_cid: str, src: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-    """季包/剧包转存前，先在待整理目录创建剧标准目录，并返回新的转存目标 CID。"""
-    if not _looks_like_shared_tv_pack(src, context):
+def def _ensure_tv_pack_import_container(p115, base_cid: str, src: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
+    """季包/单集转存前，先在待整理目录创建剧标准目录，并返回新的转存目标 CID。"""
+    
+    # 👇 将原来的 _looks_like_shared_tv_pack 替换为 _should_wrap_tv_import
+    if not _should_wrap_tv_import(src, context):
         return {'cid': str(base_cid or ''), 'wrapped': False}
 
     root_name = _build_tv_import_root_name(p115, src, context)
@@ -1172,7 +1183,7 @@ def _ensure_tv_pack_import_container(p115, base_cid: str, src: Dict[str, Any], c
             except Exception:
                 pass
             logger.info(
-                "  ➜ [共享资源] 季包转存前已准备剧标准目录：%s -> cid=%s",
+                "  ➜ [共享资源] 转存前已准备剧标准目录：%s -> cid=%s",
                 root_name, cid,
             )
             return {
