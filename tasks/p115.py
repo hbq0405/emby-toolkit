@@ -291,9 +291,20 @@ def task_scan_and_organize_115(processor=None):
                     elif m2: season_num = int(m2.group(1))
                     elif m3: season_num = int(m3.group(1))
 
+                # 👇 核心修改：提取组内第一个视频的 SHA1，传给识别函数，直接从 RAW 提取 TMDb ID！
+                group_sha1 = None
+                for f in g_files:
+                    f_name = f.get('fn', '')
+                    ext = f_name.split('.')[-1].lower() if '.' in f_name else ''
+                    if ext in ['mp4', 'mkv', 'avi', 'ts', 'iso', 'rmvb', 'wmv', 'mov', 'm2ts', 'flv', 'mpg']:
+                        group_sha1 = f.get('sha1') or f.get('sha')
+                        if group_sha1:
+                            break
+
                 tmdb_id, media_type, title = _identify_media_enhanced(
                     g_top_name, main_dir_name=g_top_name, has_season_subdirs=group["has_season_dir"],
-                    forced_media_type=forced_type, ai_translator=ai_translator, use_ai=use_ai, is_folder=False
+                    forced_media_type=forced_type, ai_translator=ai_translator, use_ai=use_ai, is_folder=False,
+                    sha1=group_sha1  # 👈 关键：传入 SHA1
                 )
                 
                 if not tmdb_id:

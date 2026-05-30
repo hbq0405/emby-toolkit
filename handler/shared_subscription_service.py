@@ -366,11 +366,6 @@ def _sanitize_filename(name: str) -> str:
     return name or 'Unknown'
 
 
-def _media_year(value) -> str:
-    m = re.search(r'((?:19|20)\d{2})', str(value or ''))
-    return m.group(1) if m else ''
-
-
 def _build_gap_item(*, tmdb_id, item_type, title='', season_number=None, episode_number=None, year='') -> Dict[str, Any]:
     item_type = str(item_type or '').strip()
     return {
@@ -1051,51 +1046,6 @@ def _share_source_rows(src: Dict[str, Any]) -> List[Dict[str, Any]]:
         return rows
     return [src] if isinstance(src, dict) else []
 
-
-def _should_wrap_tv_import(src: Dict[str, Any], context: Dict[str, Any]) -> bool:
-    """判断转存前是否需要在待整理目录预先创建标准剧目录 (剧名 (年份) {tmdb=xxx})。
-
-    - 全剧包 (Series Pack): 否。分享根目录本身就是剧名，再套一层会导致目录嵌套过深，影响整理模块识别。
-    - 季包 (Season Pack): 是。分享根目录通常只是 "Season 01"，缺乏剧集特征，必须套壳。
-    - 单集 (Episode): 是。单集文件名可能很简陋 (如 S01E01.mp4)，套壳能保证整理模块 100% 识别。
-    - 电影 (Movie): 否。
-    """
-    src = src or {}
-    context = context or {}
-    rows = _share_source_rows(src)
-    
-    item_types = {
-        str((row or {}).get('item_type') or '').strip().lower()
-        for row in rows + [src, context]
-        if isinstance(row, dict)
-    }
-    share_type = str(src.get('share_type') or context.get('share_type') or '').strip().lower()
-    display_type = str(src.get('display_type') or context.get('display_type') or '').strip().lower()
-
-    # 1. 明确的全剧包 -> 绝对不套壳
-    if share_type in ('series_pack', 'tv_pack') or 'series' in item_types:
-        return False
-        
-    # 2. 明确的季包 -> 套壳
-    if share_type in ('season_pack', 'season') or 'season' in item_types:
-        return True
-    if display_type in ('pack', 'season_pack') or bool(src.get('is_collapsed_pack')):
-        return True
-
-    # 3. 明确的单集 -> 套壳 (防止文件名太简陋导致识别失败)
-    if share_type == 'episode_file' or 'episode' in item_types:
-        return True
-
-    # 4. 兜底判断 (基于多文件特征)
-    if len(rows) >= 2:
-        has_season = any((row or {}).get('season_number') not in (None, '') for row in rows)
-        has_episode = any((row or {}).get('episode_number') not in (None, '') for row in rows)
-        if has_season and has_episode:
-            return True
-            
-    return False
-
-
 def _source_season_number(src: Dict[str, Any], context: Dict[str, Any] = None):
     context = context or {}
     for value in (
@@ -1111,42 +1061,6 @@ def _source_season_number(src: Dict[str, Any], context: Dict[str, Any] = None):
             return season
     return None
 
-
-def _build_tv_import_root_name(p115, src: Dict[str, Any], context: Dict[str, Any]) -> str:
-    """生成待整理目录下的剧标准根目录名：剧名 + 年份 + TMDb。"""
-    src = src or {}
-    context = context or {}
-    parent_tmdb = _tv_parent_tmdb_id(context, src) or str(src.get('tmdb_id') or context.get('tmdb_id') or '').strip()
-    title = str(context.get('title') or src.get('title') or src.get('file_name') or '').strip()
-    season = _source_season_number(src, context)
-
-    root_name = ''
-    if parent_tmdb:
-        try:
-            organizer = SmartOrganizer(p115, int(parent_tmdb), 'tv', title or str(parent_tmdb), None, False)
-            if season is not None:
-                organizer.forced_season = int(season)
-            root_name = _build_standard_root_name(organizer, 'tv', title or str(parent_tmdb))
-        except Exception as e:
-            logger.debug(f"  ➜ [共享资源] 生成剧标准目录名失败，使用兜底名称: tmdb={parent_tmdb}, err={e}")
-
-    if not root_name:
-        fallback_title = _sanitize_filename(title or str(parent_tmdb or 'Unknown'))
-        year = str(context.get('year') or src.get('release_year') or '').strip()
-        year_part = f" ({year})" if re.fullmatch(r'(?:19|20)\d{2}', year) and f"({year})" not in fallback_title else ''
-        tmdb_part = f" {{tmdb={parent_tmdb}}}" if parent_tmdb else ''
-        root_name = f"{fallback_title}{year_part}{tmdb_part}".strip()
-
-    # 无论用户主目录格式怎么配，待整理兜底识别必须带 tmdb。
-    if parent_tmdb and not re.search(r'(?:tmdb|tmdbid)[=\-_]*' + re.escape(str(parent_tmdb)) + r'\b', root_name, re.IGNORECASE):
-        root_name = f"{root_name} {{tmdb={parent_tmdb}}}"
-
-    # 待整理根目录只创建一层剧根目录，不能把用户主目录格式里的 / 带进去。
-    root_name = _sanitize_filename(str(root_name).replace('/', ' ').replace('\\', ' '))
-    root_name = re.sub(r'\s+', ' ', root_name).strip()
-    return root_name or (f"{parent_tmdb}" if parent_tmdb else '')
-
-
 def _extract_created_cid(resp: Dict[str, Any]) -> str:
     if not isinstance(resp, dict):
         return ''
@@ -1160,44 +1074,6 @@ def _extract_created_cid(resp: Dict[str, Any]) -> str:
         or data.get('id')
         or ''
     ).strip()
-
-
-def _ensure_tv_pack_import_container(p115, base_cid: str, src: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
-    """季包/单集转存前，先在待整理目录创建剧标准目录，并返回新的转存目标 CID。"""
-    
-    # 👇 将原来的 _looks_like_shared_tv_pack 替换为 _should_wrap_tv_import
-    if not _should_wrap_tv_import(src, context):
-        return {'cid': str(base_cid or ''), 'wrapped': False}
-
-    root_name = _build_tv_import_root_name(p115, src, context)
-    if not root_name:
-        return {'cid': str(base_cid or ''), 'wrapped': False, 'reason': 'missing_root_name'}
-
-    try:
-        mk_resp = p115.fs_mkdir(root_name, base_cid)
-        cid = _extract_created_cid(mk_resp)
-        if mk_resp and mk_resp.get('state') and cid:
-            try:
-                P115CacheManager.save_cid(cid, str(base_cid), root_name)
-                P115CacheManager.update_local_path(cid, root_name)
-            except Exception:
-                pass
-            logger.info(
-                "  ➜ [共享资源] 转存前已准备剧标准目录：%s -> cid=%s",
-                root_name, cid,
-            )
-            return {
-                'cid': cid,
-                'name': root_name,
-                'wrapped': True,
-                'is_tv_pack': True,
-                'parent_cid': str(base_cid or ''),
-                'mkdir_response': mk_resp,
-            }
-        logger.warning(f"  ➜ [共享资源] 创建剧标准目录失败，回退转存到待整理根目录: name={root_name}, resp={mk_resp}")
-    except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 创建剧标准目录异常，回退转存到待整理根目录: name={root_name}, err={e}")
-    return {'cid': str(base_cid or ''), 'name': root_name, 'wrapped': False, 'reason': 'mkdir_failed'}
 
 
 def _node_id_from_115(node: Dict[str, Any]) -> str:
@@ -1898,8 +1774,9 @@ def _consume_permanent(client: SharedCenterClient, sources: List[Dict[str, Any]]
             )
             continue
 
-        import_container = _ensure_tv_pack_import_container(p115, target_cid, src, context)
-        import_target_cid = str(import_container.get('cid') or target_cid)
+        import_target_cid = str(target_cid)
+        import_container = {}
+
         resp = p115.share_import(share_code, receive_code, import_target_cid)
         logger.info(
             f"  ➜ [共享资源] 115分享转存返回：share={share_code}, cid={import_target_cid}, "
