@@ -845,6 +845,24 @@ const requestConditionText = (row) => {
   const parts = [params.resolution, params.codec, params.effect, params.frame_rate ? `${params.frame_rate}fps` : '', params.audio, params.subtitle, params.size_range].filter(Boolean);
   return parts.length ? parts.join(' · ') : '不限参数';
 };
+const parseShareRequestJsonObject = (value) => {
+  if (value && typeof value === 'object') return value;
+  if (typeof value === 'string' && value.trim()) {
+    try {
+      const parsed = JSON.parse(value);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+  return {};
+};
+const requestSeasonCountValue = (row) => {
+  const price = parseShareRequestJsonObject(row?.price_breakdown);
+  const value = row?.season_count || row?.number_of_seasons || price.season_count;
+  const n = Number(value || 0);
+  return Number.isFinite(n) && n > 0 ? Math.floor(n) : '';
+};
 const shareRequestSearchFilterParams = (row) => {
   if (!row) return {};
   const paramsJson = row.params_json && typeof row.params_json === 'object' ? row.params_json : {};
@@ -854,6 +872,7 @@ const shareRequestSearchFilterParams = (row) => {
     request_media_type: row.media_type || '',
     request_target_type: row.target_type || '',
     request_season_number: row.season_number || '',
+    request_season_count: requestSeasonCountValue(row),
     request_episode_number: row.episode_number || '',
     request_episode_numbers_json: JSON.stringify(eps),
     request_params_json: JSON.stringify(paramsJson),
