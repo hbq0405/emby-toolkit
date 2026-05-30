@@ -4878,11 +4878,57 @@ def api_list_share_requests():
         return jsonify({'success': False, 'message': f'拉取求分享列表失败: {e}'}), 500
 
 
+def _enrich_share_request_payload_for_quote(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """本地代理侧为求分享报价补充可验证的 TMDb 元数据。
+
+    中心端不保存 TMDb API Key，报价仍由中心端最终计算；客户端只补充
+    全剧求分享所需的 season_count，用于“多季按单季基准累加”。
+    """
+    data = dict(payload or {})
+    target_type = str(data.get('target_type') or '').strip().lower()
+    media_type = str(data.get('media_type') or '').strip().lower()
+    if target_type not in {'series', 'tv'} and not (media_type in {'tv', 'series'} and target_type in {'', 'series'}):
+        return data
+
+    if _safe_int(data.get('season_count') or data.get('number_of_seasons'), 0) > 0:
+        return data
+
+    tmdb_id = str(data.get('tmdb_id') or '').strip()
+    if not tmdb_id:
+        return data
+
+    api_key = _tmdb_api_key_for_share_request()
+    if not api_key:
+        return data
+
+    try:
+        from handler import tmdb as tmdb_handler
+        details = tmdb_handler.get_tv_details(int(tmdb_id), api_key, append_to_response='seasons') or {}
+        seasons = details.get('seasons') or []
+        season_numbers = []
+        for season in seasons:
+            try:
+                sn = int(season.get('season_number'))
+            except Exception:
+                continue
+            if sn > 0 and sn not in season_numbers:
+                season_numbers.append(sn)
+        if season_numbers:
+            data['season_count'] = len(season_numbers)
+            data['season_numbers'] = season_numbers
+        elif details.get('number_of_seasons'):
+            data['season_count'] = max(1, int(details.get('number_of_seasons') or 1))
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 补充求分享全剧季数失败: tmdb={tmdb_id}, err={e}")
+    return data
+
+
 @shared_resource_bp.route('/share-requests/quote', methods=['POST'])
 @admin_required
 def api_quote_share_request():
     try:
-        data = _center_json_request('POST', '/api/v1/share-requests/quote', json_body=_request_json(), timeout=20)
+        payload = _enrich_share_request_payload_for_quote(_request_json())
+        data = _center_json_request('POST', '/api/v1/share-requests/quote', json_body=payload, timeout=20)
         return jsonify({'success': True, 'data': data})
     except Exception as e:
         return jsonify({'success': False, 'message': f'求分享报价失败: {e}'}), 400
@@ -4892,7 +4938,8 @@ def api_quote_share_request():
 @admin_required
 def api_create_share_request():
     try:
-        data = _center_json_request('POST', '/api/v1/share-requests', json_body=_request_json(), timeout=30)
+        payload = _enrich_share_request_payload_for_quote(_request_json())
+        data = _center_json_request('POST', '/api/v1/share-requests', json_body=payload, timeout=30)
         _fetch_center_credit()
         return jsonify({'success': True, 'message': '求分享已发布，贡献值已冻结', 'data': data})
     except Exception as e:
