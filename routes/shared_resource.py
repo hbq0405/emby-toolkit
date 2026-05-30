@@ -1804,7 +1804,7 @@ def _load_real_completed_season_info_for_share_request(series_id: str) -> Dict[s
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT tmdb_id, title, season_number, in_library, watching_status, force_ended
+                    SELECT tmdb_id, title, season_number, in_library, watching_status, CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
                     FROM media_metadata
                     WHERE item_type='Season'
                       AND parent_series_tmdb_id=%s
@@ -2478,7 +2478,8 @@ def _get_episode_rows_for_media(row: Dict[str, Any], only_with_files: bool = Fal
                     SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
                            season_number, episode_number, release_year, release_date, last_air_date,
                            file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                           total_episodes, watching_status, watchlist_tmdb_status, force_ended
+                           total_episodes, watching_status, watchlist_tmdb_status,
+                           CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
                     FROM media_metadata
                     WHERE {where}
                     ORDER BY season_number NULLS LAST, episode_number NULLS LAST, tmdb_id
@@ -2527,7 +2528,8 @@ def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
                     SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
                            season_number, episode_number, release_year, release_date, last_air_date,
                            file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                           total_episodes, watching_status, watchlist_tmdb_status, force_ended
+                           total_episodes, watching_status, watchlist_tmdb_status,
+                           CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
                     FROM media_metadata
                     WHERE item_type='Season'
                       AND parent_series_tmdb_id=%s
@@ -2775,13 +2777,14 @@ def _load_completed_season_row_for_episode(row: Dict[str, Any]) -> Dict[str, Any
                     SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
                            season_number, episode_number, release_year, release_date, last_air_date,
                            file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                           total_episodes, watching_status, watchlist_tmdb_status, force_ended
+                           total_episodes, watching_status, watchlist_tmdb_status,
+                           CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
                     FROM media_metadata
                     WHERE item_type='Season'
                       AND parent_series_tmdb_id=%s
                       AND season_number=%s
                       AND LOWER(COALESCE(watching_status, ''))='completed'
-                      AND COALESCE(force_ended, FALSE) = FALSE
+                      AND LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) NOT IN ('1','true','yes','on','t','y')
                     ORDER BY tmdb_id
                     LIMIT 1
                 """, (parent_series_id, season_number))
@@ -2876,7 +2879,8 @@ def api_search_shareable_media():
                     SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
                            season_number, episode_number, release_year, release_date, last_air_date,
                            file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                           total_episodes, watching_status, watchlist_tmdb_status, force_ended
+                           total_episodes, watching_status, watchlist_tmdb_status,
+                           CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
                     FROM media_metadata
                     WHERE item_type IN ('Movie','Series','Season','Episode')
                       AND in_library = TRUE
@@ -2903,7 +2907,8 @@ def api_search_shareable_media():
                     SELECT s.tmdb_id, s.item_type, s.title, s.original_title, s.parent_series_tmdb_id,
                            s.season_number, s.episode_number, s.release_year, s.release_date, s.last_air_date,
                            s.file_sha1_json, s.file_pickcode_json, s.in_library, s.subscription_status,
-                           s.total_episodes, s.watching_status, s.watchlist_tmdb_status
+                           s.total_episodes, s.watching_status, s.watchlist_tmdb_status,
+                           CASE WHEN LOWER(COALESCE(to_jsonb(s)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
                     FROM media_metadata s
                     JOIN related_series rs ON rs.series_id IS NOT NULL
                                           AND s.item_type='Season'
