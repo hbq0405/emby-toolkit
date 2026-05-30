@@ -57,7 +57,7 @@
 
       <n-divider title-placement="left">匹配参数</n-divider>
       <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-        参数取值来自 helpers 的标准媒体分析结果，和 media_metadata.asset_details_json 保持一致。来源/发布组和备注不参与求分享匹配，避免文件名猜测和人工描述破坏自动化。
+        参数取值来自视频流标准媒体分析结果，和媒体库资产数据保持一致，可以精确求取所需资源，而非文件名虚标的参数。
       </n-alert>
       <n-grid :cols="isMobile ? 1 : 3" :x-gap="12">
         <n-gi><n-form-item label="分辨率"><n-select v-model:value="form.params.resolution" :options="paramOptions.resolution" clearable placeholder="不限" /></n-form-item></n-gi>
