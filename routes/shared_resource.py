@@ -118,35 +118,7 @@ def _jsonb_non_empty_sql_expr(column: str) -> str:
 
 
 def _series_has_physical_episode_identity(parent_tmdb_id: str) -> bool:
-    """同一父剧下只要已有物理入库分集，后续共享追更就强制永久转存。
-
-    不再依赖 shared_virtual_items 的 promoted/promote_pending 状态，
-    因为物理入库可能来自手动整理、MP、115 直出等其它途径。
-    """
-    parent_tmdb_id = str(parent_tmdb_id or '').strip()
-    if not parent_tmdb_id:
-        return False
-    has_sha1 = _jsonb_non_empty_sql_expr('file_sha1_json')
-    has_pc = _jsonb_non_empty_sql_expr('file_pickcode_json')
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT 1
-                    FROM media_metadata
-                    WHERE item_type='Episode'
-                      AND parent_series_tmdb_id = %s
-                      AND COALESCE(in_library, FALSE) = TRUE
-                      AND ({has_sha1} OR {has_pc})
-                    LIMIT 1
-                    """,
-                    (parent_tmdb_id,),
-                )
-                return cur.fetchone() is not None
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 检查追更剧集是否已有物理入库分集失败: parent={parent_tmdb_id}, err={e}")
-    return False
+    return shared_share_db.check_series_has_physical_episode(parent_tmdb_id)
 
 
 def _force_permanent_if_series_has_physical_episode(mode: str, context: Dict[str, Any]) -> tuple[str, Dict[str, Any]]:
@@ -344,39 +316,7 @@ def _safe_size_bytes(value, default=0) -> int:
 
 
 def _collect_files_from_cache(root_fid: str, root_name: str = '', max_depth: int = 6) -> List[Dict[str, Any]]:
-    """从 p115_filesystem_cache 递归收集 root_fid 下的视频文件。
-    用作 115 远程目录接口字段不完整/审核中返回不全时的兜底。
-    """
-    if not root_fid:
-        return []
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    WITH RECURSIVE tree AS (
-                        SELECT id, parent_id, name, local_path, sha1, pick_code, size,
-                               0 AS depth, CAST('' AS text) AS rel_path
-                        FROM p115_filesystem_cache
-                        WHERE id = %s
-                        UNION ALL
-                        SELECT c.id, c.parent_id, c.name, c.local_path, c.sha1, c.pick_code, c.size,
-                               t.depth + 1 AS depth,
-                               CASE WHEN t.rel_path = '' THEN c.name ELSE t.rel_path || '/' || c.name END AS rel_path
-                        FROM p115_filesystem_cache c
-                        JOIN tree t ON c.parent_id = t.id
-                        WHERE t.depth < %s
-                    )
-                    SELECT * FROM tree
-                    ORDER BY depth, rel_path, name
-                    """,
-                    (str(root_fid), int(max_depth)),
-                )
-                rows = [dict(r) for r in cur.fetchall()]
-    except Exception as e:
-        logger.warning(f"  ➜ [共享资源] 从 p115_filesystem_cache 收集分享文件失败: root={root_fid}, err={e}")
-        return []
-
+    rows = shared_share_db.get_p115_files_from_cache_tree(root_fid, max_depth)
     files = []
     for row in rows:
         name = str(row.get('name') or '')
@@ -1542,14 +1482,10 @@ def _asset_matches_share_request_params(asset: Dict[str, Any], params: Dict[str,
 
 
 def _load_share_request_candidate_assets(candidate: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """读取候选资源对应的 asset_details_json，用于求分享参数过滤。"""
     candidate = candidate or {}
     share_item_type = str(candidate.get('share_item_type') or candidate.get('item_type') or '').strip()
     share_type = str(candidate.get('share_type') or '').strip().lower()
 
-    # 电影/单集候选自身就是具体视频，可以直接使用行内 asset_details_json。
-    # 全剧/季包候选对应的是 Series/Season 聚合行，必须下钻到 Episode 行读取每集资产，
-    # 否则 Series/Season 行上的空 asset_details_json 会导致“任意参数都匹配不上”。
     if share_item_type not in {'Series', 'Season'} and share_type not in ('series_pack', 'tv_pack', 'season_pack'):
         inline = _asset_detail_items(candidate.get('asset_details_json'))
         if inline:
@@ -1561,76 +1497,14 @@ def _load_share_request_candidate_assets(candidate: Dict[str, Any]) -> List[Dict
     episode_number = candidate.get('episode_number')
 
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                if share_item_type == 'Movie':
-                    cur.execute(
-                        """
-                        SELECT asset_details_json
-                        FROM media_metadata
-                        WHERE item_type='Movie' AND tmdb_id=%s
-                        LIMIT 1
-                        """,
-                        (tmdb_id,),
-                    )
-                    rows = cur.fetchall()
-                elif share_item_type == 'Episode' and parent_series_id and season_number not in (None, '') and episode_number not in (None, ''):
-                    cur.execute(
-                        """
-                        SELECT asset_details_json
-                        FROM media_metadata
-                        WHERE item_type='Episode'
-                          AND parent_series_tmdb_id=%s
-                          AND season_number=%s
-                          AND episode_number=%s
-                        LIMIT 5
-                        """,
-                        (str(parent_series_id), int(season_number), int(episode_number)),
-                    )
-                    rows = cur.fetchall()
-                elif share_item_type == 'Series' or share_type in ('series_pack', 'tv_pack'):
-                    series_id = parent_series_id or tmdb_id
-                    if series_id:
-                        cur.execute(
-                            """
-                            SELECT asset_details_json
-                            FROM media_metadata
-                            WHERE item_type='Episode'
-                              AND parent_series_tmdb_id=%s
-                              AND in_library=TRUE
-                            ORDER BY season_number NULLS LAST, episode_number NULLS LAST, tmdb_id
-                            LIMIT 2000
-                            """,
-                            (str(series_id),),
-                        )
-                        rows = cur.fetchall()
-                    else:
-                        rows = []
-                elif (share_item_type == 'Season' or share_type in ('season_pack',)) and (parent_series_id or tmdb_id) and season_number not in (None, ''):
-                    cur.execute(
-                        """
-                        SELECT asset_details_json
-                        FROM media_metadata
-                        WHERE item_type='Episode'
-                          AND parent_series_tmdb_id=%s
-                          AND season_number=%s
-                          AND in_library=TRUE
-                        ORDER BY episode_number NULLS LAST, tmdb_id
-                        LIMIT 300
-                        """,
-                        (str(parent_series_id or tmdb_id), int(season_number)),
-                    )
-                    rows = cur.fetchall()
-                else:
-                    rows = []
+        rows = shared_share_db.get_asset_details_for_candidate(share_item_type, tmdb_id, parent_series_id, season_number, episode_number, share_type)
     except Exception as e:
-        # 老库没有 asset_details_json 字段时，直接视为无法匹配精确参数。
         logger.debug(f"  ➜ [共享资源] 读取候选 asset_details_json 失败: {candidate.get('display_title') or candidate.get('title')} -> {e}")
         return []
 
     assets: List[Dict[str, Any]] = []
     for row in rows or []:
-        assets.extend(_asset_detail_items((dict(row) if not isinstance(row, dict) else row).get('asset_details_json')))
+        assets.extend(_asset_detail_items(row.get('asset_details_json')))
     return assets
 
 
@@ -1743,7 +1617,6 @@ def _candidate_matches_share_request_params(candidate: Dict[str, Any], params: D
 
 
 def _load_series_row_for_share_request(request_filter: Dict[str, Any], fallback_row: Dict[str, Any] = None) -> Dict[str, Any]:
-    """求分享响应专用：按父剧 TMDb 定位本地 Series 行；没有 Series 行时构造虚拟行。"""
     request_filter = request_filter or {}
     fallback_row = dict(fallback_row or {})
     series_tmdb_id = str(
@@ -1754,22 +1627,8 @@ def _load_series_row_for_share_request(request_filter: Dict[str, Any], fallback_
     if not series_tmdb_id:
         return {}
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                           season_number, episode_number, release_year, release_date, last_air_date,
-                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                           total_episodes, watching_status, watchlist_tmdb_status, asset_details_json
-                    FROM media_metadata
-                    WHERE item_type='Series'
-                      AND tmdb_id=%s
-                    ORDER BY in_library DESC, tmdb_id
-                    LIMIT 1
-                """, (series_tmdb_id,))
-                row = cur.fetchone()
-                if row:
-                    return dict(row)
+        row = shared_share_db.get_series_row_for_share_request(series_tmdb_id)
+        if row: return row
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 求分享全剧候选定位 Series 行失败: series={series_tmdb_id}, err={e}")
 
@@ -1794,55 +1653,30 @@ def _load_series_row_for_share_request(request_filter: Dict[str, Any], fallback_
 
 
 def _load_real_completed_season_info_for_share_request(series_id: str) -> Dict[str, Any]:
-    """全剧求分享候选校验：只把真实完结季计入全剧季数。
-
-    Season.watching_status=Completed 且 force_ended != true 才算真实完结；
-    force_ended 是用户手动强制完结，只能服务本地整理策略，不能冒充真实完结资源响应全剧求分享。
-    集数不再按 total_episodes 逐集校验，ETK 写入 Season Completed 前已有更完整的完结判断。
-    """
     series_id = str(series_id or '').strip()
     if not series_id:
         return {'real_completed': [], 'force_ended': [], 'completed_not_in_library': [], 'empty_shell': [], 'rows': []}
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT tmdb_id, title, season_number, total_episodes, in_library, watching_status, CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
-                    FROM media_metadata
-                    WHERE item_type='Season'
-                      AND parent_series_tmdb_id=%s
-                      AND COALESCE(season_number, 0) > 0
-                    ORDER BY season_number NULLS LAST, tmdb_id
-                """, (series_id,))
-                rows = [dict(r) for r in cur.fetchall()]
+        rows = shared_share_db.get_real_completed_season_info(series_id)
     except Exception as e:
         logger.warning(f"  ➜ [共享资源] 读取全剧真实完结季状态失败: series={series_id}, err={e}")
         return {'real_completed': [], 'force_ended': [], 'completed_not_in_library': [], 'empty_shell': [], 'rows': [], 'error': str(e)}
 
-    real_completed = []
-    force_ended = []
-    completed_not_in_library = []
-    empty_shell = []
+    real_completed, force_ended, completed_not_in_library, empty_shell = [], [], [], []
     for row in rows:
         sn = _safe_int(row.get('season_number'), None)
-        if sn is None or sn <= 0:
-            continue
+        if sn is None or sn <= 0: continue
         total_episodes = _safe_int(row.get('total_episodes'), None)
         if total_episodes is not None and total_episodes <= 0:
-            # 本地/TMDb 可能提前建出“正季 0 集”的空壳季。
-            # 这种季没有可分享文件，不能让全剧求分享永远卡死。
             empty_shell.append(sn)
             continue
         completed = str(row.get('watching_status') or '').strip().lower() == 'completed'
         forced = _db_truthy(row.get('force_ended'))
         if completed and forced:
             force_ended.append(sn)
-            continue
-        if completed and not forced:
-            if row.get('in_library'):
-                real_completed.append(sn)
-            else:
-                completed_not_in_library.append(sn)
+        elif completed and not forced:
+            if row.get('in_library'): real_completed.append(sn)
+            else: completed_not_in_library.append(sn)
     return {
         'real_completed': sorted(set(real_completed)),
         'force_ended': sorted(set(force_ended)),
@@ -2007,38 +1841,16 @@ def _build_series_pack_candidate_for_share_request(series_row: Dict[str, Any], r
     }
 
 def _load_exact_episode_row_for_share_request(request_filter: Dict[str, Any]) -> Dict[str, Any]:
-    """求分享响应专用：按父剧 TMDb + S/E 直接定位本地单集行。"""
     request_filter = request_filter or {}
-    if str(request_filter.get('target_type') or '').strip().lower() != 'episode':
-        return {}
+    if str(request_filter.get('target_type') or '').strip().lower() != 'episode': return {}
     parent_tmdb_id = str(request_filter.get('tmdb_id') or '').strip()
     season_number = _safe_int(request_filter.get('season_number'), None)
     episode_number = _safe_int(request_filter.get('episode_number'), None)
-    if not parent_tmdb_id or season_number is None or episode_number is None:
-        return {}
+    if not parent_tmdb_id or season_number is None or episode_number is None: return {}
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                           season_number, episode_number, release_year, release_date, last_air_date,
-                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                           total_episodes, watching_status, watchlist_tmdb_status, asset_details_json
-                    FROM media_metadata
-                    WHERE item_type='Episode'
-                      AND parent_series_tmdb_id=%s
-                      AND season_number=%s
-                      AND episode_number=%s
-                      AND in_library=TRUE
-                    ORDER BY tmdb_id
-                    LIMIT 1
-                """, (parent_tmdb_id, season_number, episode_number))
-                row = cur.fetchone()
-                return dict(row) if row else {}
+        return shared_share_db.get_exact_episode_row_for_share_request(parent_tmdb_id, season_number, episode_number) or {}
     except Exception as e:
-        logger.warning(
-            f"  ➜ [共享资源] 求分享单集候选定位失败: series={parent_tmdb_id}, S{season_number}E{episode_number}, err={e}"
-        )
+        logger.warning(f"  ➜ [共享资源] 求分享单集候选定位失败: series={parent_tmdb_id}, S{season_number}E{episode_number}, err={e}")
         return {}
 
 
@@ -2106,19 +1918,7 @@ def _parse_release_year(row: Dict[str, Any]):
 
 
 def _get_media_row(tmdb_id: str, item_type: str):
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                       season_number, episode_number, release_year, release_date, last_air_date,
-                       file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                       total_episodes, watching_status, watchlist_tmdb_status
-                FROM media_metadata
-                WHERE tmdb_id=%s AND item_type=%s
-                LIMIT 1
-            """, (str(tmdb_id), str(item_type)))
-            row = cur.fetchone()
-            return dict(row) if row else None
+    return shared_share_db.get_media_metadata_row(tmdb_id, item_type)
 
 
 def _media_title_value(row: Dict[str, Any]) -> str:
@@ -2133,27 +1933,15 @@ def _media_release_year_value(row: Dict[str, Any]):
 
 
 def _get_series_identity(series_tmdb_id: str) -> Dict[str, Any]:
-    if not series_tmdb_id:
-        return {}
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT tmdb_id, item_type, title, original_title, release_year, release_date, last_air_date
-                FROM media_metadata
-                WHERE tmdb_id=%s AND item_type='Series'
-                LIMIT 1
-            """, (str(series_tmdb_id),))
-            row = cur.fetchone()
-            if not row:
-                return {}
-            row = dict(row)
-            return {
-                'tmdb_id': str(row.get('tmdb_id') or series_tmdb_id),
-                'item_type': 'Series',
-                'title': _media_title_value(row),
-                'release_year': _media_release_year_value(row),
-                'raw_row': row,
-            }
+    row = shared_share_db.get_series_identity(series_tmdb_id)
+    if not row: return {}
+    return {
+        'tmdb_id': str(row.get('tmdb_id') or series_tmdb_id),
+        'item_type': 'Series',
+        'title': _media_title_value(row),
+        'release_year': _media_release_year_value(row),
+        'raw_row': row,
+    }
 
 
 def _get_series_title(series_tmdb_id: str):
@@ -2161,36 +1949,7 @@ def _get_series_title(series_tmdb_id: str):
 
 
 def _get_media_row_loose(tmdb_id: str, item_type: str = ''):
-    """按 TMDb ID 尽量找 media_metadata 行。item_type 为空时按层级优先。"""
-    tmdb_id = str(tmdb_id or '').strip()
-    item_type = str(item_type or '').strip()
-    if not tmdb_id:
-        return None
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            if item_type:
-                cur.execute("""
-                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                           season_number, episode_number, release_year, release_date, last_air_date,
-                           watching_status
-                    FROM media_metadata
-                    WHERE tmdb_id=%s AND item_type=%s
-                    LIMIT 1
-                """, (tmdb_id, item_type))
-                row = cur.fetchone()
-                if row:
-                    return dict(row)
-            cur.execute("""
-                SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                       season_number, episode_number, release_year, release_date, last_air_date,
-                       watching_status
-                FROM media_metadata
-                WHERE tmdb_id=%s
-                ORDER BY CASE item_type WHEN 'Series' THEN 0 WHEN 'Movie' THEN 1 WHEN 'Season' THEN 2 WHEN 'Episode' THEN 3 ELSE 9 END
-                LIMIT 1
-            """, (tmdb_id,))
-            row = cur.fetchone()
-            return dict(row) if row else None
+    return shared_share_db.get_media_metadata_row_loose(tmdb_id, item_type)
 
 
 def _standard_media_identity_for_share(data: Dict[str, Any], item: Dict[str, Any] = None) -> Dict[str, Any]:
@@ -2342,58 +2101,22 @@ def _standard_share_identity(record: Dict[str, Any], item: Dict[str, Any] = None
 
 
 def _collect_media_identifiers(row: Dict[str, Any]) -> Dict[str, List[str]]:
-    """根据媒体层级收集 PC/SHA1。Season/Series 会向下找 Episode。"""
-    if not row:
-        return {'pickcodes': [], 'sha1s': [], 'episode_rows': []}
-
+    if not row: return {'pickcodes': [], 'sha1s': [], 'episode_rows': []}
     rows = [row]
     item_type = row.get('item_type')
     series_id = row.get('parent_series_tmdb_id') or row.get('tmdb_id')
     season_number = row.get('season_number')
 
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            if item_type == 'Season':
-                # 优先按父剧集 + 季号找本季所有分集；兼容 tmdb_id 季ID场景。
-                if series_id and season_number is not None:
-                    cur.execute("""
-                        SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                               season_number, episode_number, release_year, release_date, last_air_date,
-                               file_sha1_json, file_pickcode_json, in_library, subscription_status
-                        FROM media_metadata
-                        WHERE item_type='Episode'
-                          AND parent_series_tmdb_id=%s
-                          AND season_number=%s
-                        ORDER BY episode_number NULLS LAST, tmdb_id
-                    """, (str(series_id), int(season_number)))
-                    episode_rows = [dict(r) for r in cur.fetchall()]
-                    if episode_rows:
-                        rows = episode_rows
-            elif item_type == 'Series':
-                season_filter = []
-                for value in (row.get('season_numbers_filter') or []):
-                    sn = _safe_int(value, None)
-                    if sn is not None and sn not in season_filter:
-                        season_filter.append(sn)
-                extra_where = ''
-                args = [str(series_id)]
-                if row.get('positive_seasons_only'):
-                    extra_where += ' AND COALESCE(season_number, 0) > 0'
-                if season_filter:
-                    extra_where += ' AND season_number = ANY(%s)'
-                    args.append(season_filter)
-                cur.execute(f"""
-                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                           season_number, episode_number, release_year, release_date, last_air_date,
-                           file_sha1_json, file_pickcode_json, in_library, subscription_status
-                    FROM media_metadata
-                    WHERE item_type='Episode' AND parent_series_tmdb_id=%s
-                          {extra_where}
-                    ORDER BY season_number NULLS LAST, episode_number NULLS LAST, tmdb_id
-                """, args)
-                episode_rows = [dict(r) for r in cur.fetchall()]
-                if episode_rows:
-                    rows = episode_rows
+    if item_type == 'Season' and series_id and season_number is not None:
+        episode_rows = shared_share_db.get_episode_rows_by_season(series_id, season_number)
+        if episode_rows: rows = episode_rows
+    elif item_type == 'Series':
+        season_filter = []
+        for value in (row.get('season_numbers_filter') or []):
+            sn = _safe_int(value, None)
+            if sn is not None and sn not in season_filter: season_filter.append(sn)
+        episode_rows = shared_share_db.get_episode_rows_by_series_filter(series_id, season_filter, row.get('positive_seasons_only'))
+        if episode_rows: rows = episode_rows
 
     pickcodes, sha1s = [], []
     for r in rows:
@@ -2408,19 +2131,7 @@ def _collect_media_identifiers(row: Dict[str, Any]) -> Dict[str, List[str]]:
 
 
 def _get_p115_file_rows(pickcodes: List[str], sha1s: List[str]) -> List[Dict[str, Any]]:
-    if not pickcodes and not sha1s:
-        return []
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, parent_id, name, local_path, sha1, pick_code, size
-                FROM p115_filesystem_cache
-                WHERE (%s::text[] <> '{}'::text[] AND pick_code = ANY(%s))
-                   OR (%s::text[] <> '{}'::text[] AND UPPER(sha1) = ANY(%s))
-                ORDER BY parent_id, name
-            """, (pickcodes, pickcodes, sha1s, sha1s))
-            rows = [dict(r) for r in cur.fetchall()]
-    # 去重，避免 PC/SHA1 同时命中同一文件。
+    rows = shared_share_db.get_p115_file_rows_by_pc_sha1(pickcodes, sha1s)
     seen, out = set(), []
     for r in rows:
         key = str(r.get('id') or '')
@@ -2431,18 +2142,7 @@ def _get_p115_file_rows(pickcodes: List[str], sha1s: List[str]) -> List[Dict[str
 
 
 def _get_p115_node(node_id: str):
-    if not node_id:
-        return None
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT id, parent_id, name, local_path, sha1, pick_code, size
-                FROM p115_filesystem_cache
-                WHERE id=%s
-                LIMIT 1
-            """, (str(node_id),))
-            row = cur.fetchone()
-            return dict(row) if row else None
+    return shared_share_db.get_p115_node_by_id(node_id)
 
 
 def _ancestor_chain(parent_id: str, max_depth: int = 20) -> List[str]:
@@ -2475,7 +2175,6 @@ def _episode_label_from_row(row: Dict[str, Any], series_title: str = '') -> str:
 
 
 def _get_episode_rows_for_media(row: Dict[str, Any], only_with_files: bool = False, season_number=None) -> List[Dict[str, Any]]:
-    """按 Series/Season/Episode 层级返回分集行。only_with_files=True 时只返回已有 PC/SHA1 的分集。"""
     row = row or {}
     item_type = row.get('item_type')
     if item_type == 'Episode':
@@ -2485,91 +2184,46 @@ def _get_episode_rows_for_media(row: Dict[str, Any], only_with_files: bool = Fal
         target_season = season_number if season_number not in (None, '') else row.get('season_number')
         if item_type == 'Season' and not parent_series_id:
             parent_series_id = str(row.get('tmdb_id') or '').split('_')[0] if '_' in str(row.get('tmdb_id') or '') else ''
-        if not parent_series_id:
-            return []
-        where = "item_type='Episode' AND parent_series_tmdb_id=%s"
-        args = [str(parent_series_id)]
+        if not parent_series_id: return []
+        
+        # 复用下沉的 DB 方法
         if target_season not in (None, ''):
-            where += " AND season_number=%s"
-            try:
-                args.append(int(target_season))
-            except Exception:
-                args.append(target_season)
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(f"""
-                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                           season_number, episode_number, release_year, release_date, last_air_date,
-                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                           total_episodes, watching_status, watchlist_tmdb_status,
-                           CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
-                    FROM media_metadata
-                    WHERE {where}
-                    ORDER BY season_number NULLS LAST, episode_number NULLS LAST, tmdb_id
-                """, args)
-                rows = [dict(r) for r in cur.fetchall()]
-    if not only_with_files:
-        return rows
+            rows = shared_share_db.get_episode_rows_by_season(parent_series_id, target_season)
+        else:
+            rows = shared_share_db.get_episode_rows_by_series_filter(parent_series_id, [], False)
+
+    if not only_with_files: return rows
     out = []
     for r in rows:
-        if not r.get('in_library'):
-            continue
+        if not r.get('in_library'): continue
         if _norm_pc_list(_json_array_values(r.get('file_pickcode_json'))) or _norm_sha1_list(_json_array_values(r.get('file_sha1_json'))):
             out.append(r)
     return out
 
 
 def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
-    """判断某季是否适合按季包分享。
-
-    完结真理：media_metadata 中 Season 行的 watching_status + force_ended。
-    - Season.watching_status == 'Completed' 且 force_ended != true：该季可按完整季方向处理；
-    - force_ended=true 是用户手动强制完结，不算真实完结，不能作为求分享/季包依据；
-    - 不再逐集核对 total_episodes，ETK 写入 Season Completed 前已有更完整的完结判断；
-    - 但本地至少要能找到 1 个已有 PC/SHA1 的视频文件，否则没东西可分享。
-    """
     row = row or {}
     parent_series_id = row.get('parent_series_tmdb_id') or row.get('tmdb_id')
     if row.get('item_type') == 'Episode':
         parent_series_id = row.get('parent_series_tmdb_id')
     season_number = row.get('season_number')
-    try:
-        season_number = int(season_number) if season_number not in (None, '') else None
-    except Exception:
-        season_number = None
+    try: season_number = int(season_number) if season_number not in (None, '') else None
+    except Exception: season_number = None
 
     expected = _safe_int(row.get('total_episodes'), 0)
     season_title = ''
     watching_status = ''
     force_ended = _db_truthy(row.get('force_ended'))
 
-    # 关键：不信 Series 状态、不信 TMDb status；只信 Season.watching_status，且 force_ended=true 不算真实完结。
     if parent_series_id and season_number is not None:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                           season_number, episode_number, release_year, release_date, last_air_date,
-                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                           total_episodes, watching_status, watchlist_tmdb_status,
-                           CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
-                    FROM media_metadata
-                    WHERE item_type='Season'
-                      AND parent_series_tmdb_id=%s
-                      AND season_number=%s
-                    ORDER BY tmdb_id
-                    LIMIT 1
-                """, (str(parent_series_id), season_number))
-                season_row = cur.fetchone()
-                if season_row:
-                    season_row = dict(season_row)
-                    expected = _safe_int(season_row.get('total_episodes'), expected)
-                    season_title = season_row.get('title') or ''
-                    watching_status = str(season_row.get('watching_status') or '').strip()
-                    force_ended = _db_truthy(season_row.get('force_ended'))
-                else:
-                    # 没有 Season 行时，不要用父剧状态猜测完结；最多保留调用方传入值用于提示。
-                    watching_status = str(row.get('watching_status') or '').strip()
+        season_row = shared_share_db.get_season_completion_status(parent_series_id, season_number)
+        if season_row:
+            expected = _safe_int(season_row.get('total_episodes'), expected)
+            season_title = season_row.get('title') or ''
+            watching_status = str(season_row.get('watching_status') or '').strip()
+            force_ended = _db_truthy(season_row.get('force_ended'))
+        else:
+            watching_status = str(row.get('watching_status') or '').strip()
     else:
         watching_status = str(row.get('watching_status') or '').strip()
 
@@ -2579,10 +2233,7 @@ def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
     )
     local_rows = []
     for ep in episode_rows:
-        if ep.get('in_library') and (
-            _norm_pc_list(_json_array_values(ep.get('file_pickcode_json'))) or
-            _norm_sha1_list(_json_array_values(ep.get('file_sha1_json')))
-        ):
+        if ep.get('in_library') and (_norm_pc_list(_json_array_values(ep.get('file_pickcode_json'))) or _norm_sha1_list(_json_array_values(ep.get('file_sha1_json')))):
             local_rows.append(ep)
 
     known_count = len(episode_rows)
@@ -2596,25 +2247,15 @@ def _season_completion_info(row: Dict[str, Any]) -> Dict[str, Any]:
 
     complete = bool(season_completed and local_count > 0)
 
-    if force_ended:
-        reason = '本季 force_ended=true，仅为用户手动强制完结，不算真实完结，禁止季包，改按单集分享'
-    elif watching_status.lower() != 'completed':
-        reason = f"Season.watching_status={watching_status or 'NONE'}，不是 Completed，禁止季包，改按单集分享"
-    elif complete:
-        reason = f'本季 Season.watching_status=Completed 且非强制完结，本地已有 {local_count} 个视频标识，允许按季包分享'
-    else:
-        reason = '本季 Season.watching_status=Completed 且非强制完结，但本地没有可分享 PC/SHA1，仍按单集分享更安全'
+    if force_ended: reason = '本季 force_ended=true，仅为用户手动强制完结，不算真实完结，禁止季包，改按单集分享'
+    elif watching_status.lower() != 'completed': reason = f"Season.watching_status={watching_status or 'NONE'}，不是 Completed，禁止季包，改按单集分享"
+    elif complete: reason = f'本季 Season.watching_status=Completed 且非强制完结，本地已有 {local_count} 个视频标识，允许按季包分享'
+    else: reason = '本季 Season.watching_status=Completed 且非强制完结，但本地没有可分享 PC/SHA1，仍按单集分享更安全'
 
     return {
-        'complete': complete,
-        'expected': expected,
-        'expected_source': expected_source,
-        'known_count': known_count,
-        'local_count': local_count,
-        'reason': reason,
-        'season_title': season_title,
-        'watching_status': watching_status,
-        'force_ended': force_ended,
+        'complete': complete, 'expected': expected, 'expected_source': expected_source,
+        'known_count': known_count, 'local_count': local_count, 'reason': reason,
+        'season_title': season_title, 'watching_status': watching_status, 'force_ended': force_ended,
     }
 
 
@@ -2891,66 +2532,10 @@ def api_search_shareable_media():
     if len(keyword) < 1:
         return jsonify({"success": True, "items": []})
     limit = max(1, min(int(request.args.get('limit', 20) or 20), 50))
-    # 搜索命中 Episode 时，也要把同一父剧的 Season 行带出来；否则“季标题不含剧名”的库会只返回 SxxEyy。
     search_limit = min(300, max(limit * 5, 100))
     result_limit = min(500, max(limit * 10, 150))
-    kw = f'%{keyword}%'
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                WITH matched AS (
-                    SELECT tmdb_id, item_type, title, original_title, parent_series_tmdb_id,
-                           season_number, episode_number, release_year, release_date, last_air_date,
-                           file_sha1_json, file_pickcode_json, in_library, subscription_status,
-                           total_episodes, watching_status, watchlist_tmdb_status,
-                           CASE WHEN LOWER(COALESCE(to_jsonb(media_metadata)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
-                    FROM media_metadata
-                    WHERE item_type IN ('Movie','Series','Season','Episode')
-                      AND in_library = TRUE
-                      AND (
-                        title ILIKE %s OR original_title ILIKE %s OR tmdb_id ILIKE %s
-                      )
-                    ORDER BY
-                      CASE item_type WHEN 'Movie' THEN 0 WHEN 'Series' THEN 1 WHEN 'Season' THEN 2 ELSE 3 END,
-                      in_library DESC,
-                      COALESCE(release_year, 0) DESC,
-                      title NULLS LAST
-                    LIMIT %s
-                ), related_series AS (
-                    SELECT DISTINCT
-                        CASE
-                            WHEN item_type='Series' THEN tmdb_id
-                            WHEN item_type IN ('Season','Episode') THEN parent_series_tmdb_id
-                            ELSE NULL
-                        END AS series_id
-                    FROM matched
-                ), expanded AS (
-                    SELECT * FROM matched
-                    UNION ALL
-                    SELECT s.tmdb_id, s.item_type, s.title, s.original_title, s.parent_series_tmdb_id,
-                           s.season_number, s.episode_number, s.release_year, s.release_date, s.last_air_date,
-                           s.file_sha1_json, s.file_pickcode_json, s.in_library, s.subscription_status,
-                           s.total_episodes, s.watching_status, s.watchlist_tmdb_status,
-                           CASE WHEN LOWER(COALESCE(to_jsonb(s)->>'force_ended', '')) IN ('1','true','yes','on','t','y') THEN TRUE ELSE FALSE END AS force_ended
-                    FROM media_metadata s
-                    JOIN related_series rs ON rs.series_id IS NOT NULL
-                                          AND s.item_type='Season'
-                                          AND s.parent_series_tmdb_id=rs.series_id
-                    WHERE s.in_library = TRUE
-                )
-                SELECT *
-                FROM expanded
-                ORDER BY
-                  CASE item_type WHEN 'Movie' THEN 0 WHEN 'Season' THEN 1 WHEN 'Series' THEN 2 ELSE 3 END,
-                  season_number NULLS LAST,
-                  episode_number NULLS LAST,
-                  in_library DESC,
-                  COALESCE(release_year, 0) DESC,
-                  title NULLS LAST
-                LIMIT %s
-            """, (kw, kw, kw, search_limit, result_limit))
-            rows = [dict(r) for r in cur.fetchall()]
-
+    
+    rows = shared_share_db.search_shareable_media(keyword, search_limit, result_limit)
     request_filter = _share_request_filter_from_args(request.args)
 
     items = []
@@ -2960,8 +2545,7 @@ def api_search_shareable_media():
             candidates = _expand_share_candidates_for_share_request(row, request_filter)
             for cand in candidates:
                 key = (cand.get('share_tmdb_id') or cand.get('tmdb_id'), cand.get('share_item_type') or cand.get('item_type'), cand.get('season_number'), cand.get('episode_number'), cand.get('root_fid'))
-                if key in seen:
-                    continue
+                if key in seen: continue
                 seen.add(key)
                 items.append(cand)
         except Exception as e:
@@ -3484,7 +3068,6 @@ def _resolve_virtual_promote_target(item: Dict[str, Any], data: Dict[str, Any], 
     if target_cid and str(target_cid) != '0':
         return {'target_cid': str(target_cid), 'target_name': target_name, 'target_info': target_info}
 
-    # 旧虚拟项可能没有 target_parent_id；通过本地 STRM 分类目录反推并创建 115 正式目录。
     try:
         from handler.shared_subscription_service import ensure_virtual_target_from_strm_path
         target_info = ensure_virtual_target_from_strm_path(item.get('strm_path') or '', client=client)
@@ -3492,17 +3075,7 @@ def _resolve_virtual_promote_target(item: Dict[str, Any], data: Dict[str, Any], 
         target_name = target_info.get('target_parent_name') or target_name
         if target_cid:
             try:
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            UPDATE shared_virtual_items
-                            SET target_parent_id=%s, target_parent_name=%s, updated_at=NOW()
-                            WHERE virtual_id=%s
-                            """,
-                            (str(target_cid), target_name or '', item.get('virtual_id')),
-                        )
-                        conn.commit()
+                shared_share_db.update_virtual_target_parent(item.get('virtual_id'), target_cid, target_name)
             except Exception as e:
                 logger.debug(f"  ➜ [共享资源] 回填虚拟项正式目录失败: {e}")
     except Exception as e:
@@ -3538,74 +3111,22 @@ def _is_duplicate_name_message(resp) -> bool:
 
 
 def _get_cache_node(fid: str):
-    if not fid:
-        return None
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, parent_id, name, sha1, pick_code, size, local_path
-                    FROM p115_filesystem_cache
-                    WHERE id=%s
-                    LIMIT 1
-                    """,
-                    (str(fid),),
-                )
-                row = cur.fetchone()
-                return dict(row) if row else None
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源] 查询115缓存节点失败 fid={fid}: {e}")
-    return None
+    return shared_share_db.get_p115_node_by_id(fid)
 
 
 def _find_existing_file_in_target(target_cid: str, item: Dict[str, Any], client=None):
-    """转正兜底：目标目录已有同名/同SHA1文件时，直接复用目标文件，避免 115 move 同名失败。"""
     target_cid = str(target_cid or '').strip()
-    if not target_cid:
-        return None
+    if not target_cid: return None
     target_name = os.path.basename(str(item.get('file_name') or '').replace('\\', '/'))
     expected_sha1 = str(item.get('sha1') or '').upper().strip()
     expected_pc = str(item.get('real_pick_code') or item.get('pick_code') or '').strip()
 
-    # 1. 先查本地缓存，最快最稳。
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                clauses = ['parent_id = %s']
-                args = [target_cid]
-                sub = []
-                if expected_sha1:
-                    sub.append('UPPER(sha1) = %s')
-                    args.append(expected_sha1)
-                if expected_pc:
-                    sub.append('pick_code = %s')
-                    args.append(expected_pc)
-                if target_name:
-                    sub.append('name = %s')
-                    args.append(target_name)
-                if not sub:
-                    return None
-                cur.execute(
-                    f"""
-                    SELECT id, parent_id, name, sha1, pick_code, size, local_path
-                    FROM p115_filesystem_cache
-                    WHERE {' AND '.join(clauses)} AND ({' OR '.join(sub)})
-                    ORDER BY
-                      CASE WHEN UPPER(COALESCE(sha1,'')) = %s THEN 0 ELSE 1 END,
-                      CASE WHEN COALESCE(pick_code,'') = %s THEN 0 ELSE 1 END,
-                      CASE WHEN name = %s THEN 0 ELSE 1 END
-                    LIMIT 1
-                    """,
-                    args + [expected_sha1, expected_pc, target_name],
-                )
-                row = cur.fetchone()
-                if row:
-                    return dict(row)
+        row = shared_share_db.find_existing_p115_file_in_target(target_cid, expected_sha1, expected_pc, target_name)
+        if row: return row
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 本地查找目标目录已有文件失败: {e}")
 
-    # 2. 再查远程目录，补齐 DB 缓存可能没同步的问题。
     if client:
         try:
             res = client.fs_files({'cid': target_cid, 'limit': 1000, 'show_dir': 1, 'record_open_time': 0, 'count_folders': 0})
@@ -3615,9 +3136,7 @@ def _find_existing_file_in_target(target_cid: str, item: Dict[str, Any], client=
                 sha1 = str(f.get('sha1') or f.get('sha') or '').upper().strip()
                 pc = str(f.get('pc') or f.get('pick_code') or f.get('pickcode') or '').strip()
                 fc = str(f.get('fc') if f.get('fc') is not None else f.get('type') or '')
-                # 跳过目录。
-                if fc == '0' and not (sha1 or pc):
-                    continue
+                if fc == '0' and not (sha1 or pc): continue
                 if (expected_sha1 and sha1 == expected_sha1) or (expected_pc and pc == expected_pc) or (target_name and name == target_name):
                     return {'id': fid, 'parent_id': target_cid, 'name': name, 'sha1': sha1, 'pick_code': pc, 'size': _safe_size_bytes(f.get('size') or f.get('fs'))}
         except Exception as e:
@@ -3711,17 +3230,7 @@ def _try_rename_promoted_file(client, item: Dict[str, Any], target_cid: str, pro
         return {'renamed': False, 'reason': 'rename_failed', 'name': new_name, 'resp': rename_resp}
 
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    UPDATE p115_filesystem_cache
-                    SET name=%s, parent_id=%s, updated_at=NOW()
-                    WHERE id=%s
-                    """,
-                    (new_name, target_cid, promoted_fid),
-                )
-                conn.commit()
+        shared_share_db.update_p115_cache_parent(promoted_fid, target_cid, new_name)
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 转正后回写 p115_filesystem_cache 文件名失败: {e}")
 
@@ -3747,18 +3256,8 @@ def _mark_virtual_promoted_success(virtual_id: str, item: Dict[str, Any], target
         message=f"{message}；{projection_result.get('message') or ''}".rstrip('；'),
     )
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                if promoted_fid:
-                    cur.execute(
-                        """
-                        UPDATE p115_filesystem_cache
-                        SET parent_id=%s, updated_at=NOW()
-                        WHERE id=%s
-                        """,
-                        (str(target_cid), promoted_fid),
-                    )
-                conn.commit()
+        if promoted_fid:
+            shared_share_db.update_p115_cache_parent(promoted_fid, target_cid)
     except Exception as e:
         logger.debug(f"  ➜ [共享资源] 转正后更新 p115_filesystem_cache 失败: {e}")
     shared_virtual_db.add_credit_ledger(

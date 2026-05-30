@@ -63,31 +63,7 @@ def _jsonb_non_empty_sql_expr(column: str) -> str:
 
 
 def _series_has_physical_episode_identity(parent_tmdb_id: str) -> bool:
-    """同一父剧下只要已有物理入库分集，后续追更消费就走永久转存。"""
-    parent_tmdb_id = str(parent_tmdb_id or '').strip()
-    if not parent_tmdb_id:
-        return False
-    has_sha1 = _jsonb_non_empty_sql_expr('file_sha1_json')
-    has_pc = _jsonb_non_empty_sql_expr('file_pickcode_json')
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT 1
-                    FROM media_metadata
-                    WHERE item_type='Episode'
-                      AND parent_series_tmdb_id=%s
-                      AND COALESCE(in_library, FALSE)=TRUE
-                      AND ({has_sha1} OR {has_pc})
-                    LIMIT 1
-                    """,
-                    (parent_tmdb_id,),
-                )
-                return cur.fetchone() is not None
-    except Exception as e:
-        logger.debug(f"  ➜ [共享资源维护] 检查追更剧集是否已有物理入库分集失败: parent={parent_tmdb_id}, err={e}")
-    return False
+    return shared_share_db.check_series_has_physical_episode(parent_tmdb_id)
 
 
 def _consume_mode_for_watching_row(default_mode: str, row: Dict[str, Any], physical_parent_cache: Dict[str, bool] = None) -> str:
@@ -166,29 +142,10 @@ def _gap_item(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _report_local_wanted_gaps(client: SharedCenterClient, limit: int = 200) -> int:
-    """把本机订阅/想看但尚未入库的项目登记到中心缺口池。"""
-    rows = []
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT tmdb_id, item_type, parent_series_tmdb_id, season_number, episode_number,
-                       title, release_year
-                FROM media_metadata
-                WHERE COALESCE(in_library, FALSE) = FALSE
-                  AND item_type IN ('Movie','Series','Season','Episode')
-                  AND subscription_status IN ('WANTED','REQUESTED','SUBSCRIBED','PENDING_RELEASE')
-                ORDER BY last_updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-                LIMIT %s
-                """,
-                (int(limit),),
-            )
-            rows = [dict(r) for r in cur.fetchall()]
-
+    rows = shared_share_db.get_local_wanted_gaps(limit)
     items = [_gap_item(r) for r in rows]
     items = [x for x in items if x.get('tmdb_id') and x.get('item_type')]
-    if not items:
-        return 0
+    if not items: return 0
     try:
         resp = client.report_gaps(items)
         return int(resp.get('count') or len(items))
@@ -780,23 +737,7 @@ def _merge_maintenance_counts(total: Dict[str, Any], update: Dict[str, Any]):
 
 
 def _load_active_local_share_code_set() -> set[str]:
-    """本地仍应存在/占用名额的 share_code 集合。"""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT share_code
-                FROM shared_share_records
-                WHERE COALESCE(share_code, '') <> ''
-                  AND status = ANY(%s)
-                """,
-                (_active_share_statuses(),),
-            )
-            return {
-                str((row or {}).get('share_code') or '').strip()
-                for row in cur.fetchall()
-                if str((row or {}).get('share_code') or '').strip()
-            }
+    return shared_share_db.get_active_local_share_code_set(_active_share_statuses())
 
 
 _EXTERNAL_CENTER_SOURCE_PROVIDERS = {'hdhive', 'tg_channel', 'tg_channel_hdhive'}
@@ -1298,46 +1239,12 @@ def _auto_check_and_report_local_shares(client: SharedCenterClient, max_records:
 
 
 def _find_local_media_for_gap(gap: Dict[str, Any]) -> Dict[str, Any] | None:
-    """中心缺口命中本地媒体库后返回 media_metadata 行。"""
     tmdb_id = str(gap.get('tmdb_id') or '').strip()
     item_type = str(gap.get('item_type') or '').strip()
     season = gap.get('season_number')
     episode = gap.get('episode_number')
-    if not tmdb_id or not item_type:
-        return None
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            if item_type == 'Movie':
-                cur.execute("SELECT * FROM media_metadata WHERE item_type='Movie' AND tmdb_id=%s AND in_library=TRUE LIMIT 1", (tmdb_id,))
-            elif item_type in ('Season', 'Series'):
-                if season not in (None, ''):
-                    cur.execute(
-                        """
-                        SELECT * FROM media_metadata
-                        WHERE item_type='Season' AND parent_series_tmdb_id=%s AND season_number=%s AND in_library=TRUE
-                        LIMIT 1
-                        """,
-                        (tmdb_id, int(season)),
-                    )
-                else:
-                    cur.execute("SELECT * FROM media_metadata WHERE item_type='Series' AND tmdb_id=%s AND in_library=TRUE LIMIT 1", (tmdb_id,))
-            elif item_type == 'Episode':
-                cur.execute(
-                    """
-                    SELECT * FROM media_metadata
-                    WHERE item_type='Episode'
-                      AND (parent_series_tmdb_id=%s OR tmdb_id=%s)
-                      AND COALESCE(season_number, -1)=COALESCE(%s, -1)
-                      AND COALESCE(episode_number, -1)=COALESCE(%s, -1)
-                      AND in_library=TRUE
-                    LIMIT 1
-                    """,
-                    (tmdb_id, tmdb_id, int(season or -1), int(episode or -1)),
-                )
-            else:
-                return None
-            row = cur.fetchone()
-            return dict(row) if row else None
+    if not tmdb_id or not item_type: return None
+    return shared_share_db.find_local_media_for_gap(tmdb_id, item_type, season, episode)
 
 
 def _dedupe_values(*vals) -> List[str]:
@@ -1696,54 +1603,19 @@ def _request_filter_from_center_row(req: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _load_seed_media_row_for_share_request(req_filter: Dict[str, Any], sr) -> Dict[str, Any]:
-    """按求分享目标定位一个本地 media_metadata 种子行，再交给 shared_resource 展开候选。"""
     target = str((req_filter or {}).get('target_type') or '').strip().lower()
     media = str((req_filter or {}).get('media_type') or '').strip().lower()
     tmdb_id = str((req_filter or {}).get('tmdb_id') or '').strip()
     season = req_filter.get('season_number')
-    episode = req_filter.get('episode_number')
-    if not tmdb_id:
-        return {}
+    if not tmdb_id: return {}
     if target in ('series', 'tv'):
-        try:
-            return sr._load_series_row_for_share_request(req_filter, {}) or {}
-        except Exception:
-            return {}
+        try: return sr._load_series_row_for_share_request(req_filter, {}) or {}
+        except Exception: return {}
     if target == 'episode':
-        try:
-            return sr._load_exact_episode_row_for_share_request(req_filter) or {}
-        except Exception:
-            return {}
+        try: return sr._load_exact_episode_row_for_share_request(req_filter) or {}
+        except Exception: return {}
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                if media == 'movie' or target == 'movie':
-                    cur.execute(
-                        """
-                        SELECT * FROM media_metadata
-                        WHERE item_type='Movie' AND tmdb_id=%s AND COALESCE(in_library, FALSE)=TRUE
-                        ORDER BY last_updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-                        LIMIT 1
-                        """,
-                        (tmdb_id,),
-                    )
-                elif target == 'season' and season not in (None, ''):
-                    cur.execute(
-                        """
-                        SELECT * FROM media_metadata
-                        WHERE item_type='Season'
-                          AND parent_series_tmdb_id=%s
-                          AND season_number=%s
-                          AND COALESCE(in_library, FALSE)=TRUE
-                        ORDER BY last_updated_at DESC NULLS LAST, created_at DESC NULLS LAST
-                        LIMIT 1
-                        """,
-                        (tmdb_id, int(season)),
-                    )
-                else:
-                    return {}
-                row = cur.fetchone()
-                return dict(row) if row else {}
+        return shared_share_db.get_seed_media_row_for_share_request(target, media, tmdb_id, season)
     except Exception as e:
         logger.debug(f"  ➜ [共享资源维护] 求分享本地种子媒体查询失败: {req_filter} -> {e}")
         return {}
@@ -2040,21 +1912,9 @@ def _load_center_replenish_groups(client: SharedCenterClient, limit: int = 200, 
 def _find_local_cache_rows_by_sha1s(sha1s: List[str]) -> Dict[str, Dict[str, Any]]:
     sha1s = [str(s or '').strip().upper() for s in (sha1s or []) if str(s or '').strip()]
     sha1s = list(dict.fromkeys(sha1s))
-    if not sha1s:
-        return {}
+    if not sha1s: return {}
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, parent_id, name, local_path, sha1, pick_code, size
-                    FROM p115_filesystem_cache
-                    WHERE UPPER(sha1) = ANY(%s)
-                    ORDER BY COALESCE(size, 0) DESC, updated_at DESC NULLS LAST, name ASC
-                    """,
-                    (sha1s,),
-                )
-                rows = [dict(r) for r in cur.fetchall()]
+        rows = shared_share_db.find_local_cache_rows_by_sha1s(sha1s)
     except Exception as e:
         logger.warning(f"  ➜ [共享资源维护] 按 SHA1 查询本地 115 缓存失败: {e}")
         return {}
@@ -2063,10 +1923,8 @@ def _find_local_cache_rows_by_sha1s(sha1s: List[str]) -> Dict[str, Dict[str, Any
     for row in rows:
         sha1 = str(row.get('sha1') or '').strip().upper()
         name = str(row.get('name') or '')
-        if not sha1 or sha1 in out:
-            continue
+        if not sha1 or sha1 in out: continue
         if not os.path.splitext(name.lower())[1] in getattr(__import__('routes.shared_resource', fromlist=['VIDEO_EXTENSIONS']), 'VIDEO_EXTENSIONS', {'.mp4', '.mkv', '.avi', '.ts', '.mov', '.m2ts', '.iso', '.wmv', '.flv'}):
-            # p115_filesystem_cache 可能缓存字幕/图片等同名附属文件，补源只认视频。
             continue
         out[sha1] = row
     return out
@@ -2346,73 +2204,18 @@ def _active_episode_share_statuses_for_rollup() -> List[str]:
 
 
 def _load_completed_season_episode_share_groups(limit: int = 30) -> List[Dict[str, Any]]:
-    """找出“已有单集分享，但所属 Season.watching_status=Completed”的季。
-
-    只信 Season 行的 watching_status，不参考 Series 状态或 TMDb status。
-    """
     statuses = _active_episode_share_statuses_for_rollup()
-    if not statuses:
-        return []
-
+    if not statuses: return []
     max_rows = max(50, int(limit or 30) * 20)
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT
-                    r.*,
-                    s.tmdb_id AS _season_tmdb_id,
-                    s.title AS _season_title,
-                    s.original_title AS _season_original_title,
-                    s.parent_series_tmdb_id AS _season_parent_series_tmdb_id,
-                    s.season_number AS _season_number,
-                    s.release_year AS _season_release_year,
-                    s.release_date AS _season_release_date,
-                    s.last_air_date AS _season_last_air_date,
-                    s.file_sha1_json AS _season_file_sha1_json,
-                    s.file_pickcode_json AS _season_file_pickcode_json,
-                    s.in_library AS _season_in_library,
-                    s.subscription_status AS _season_subscription_status,
-                    s.total_episodes AS _season_total_episodes,
-                    s.watching_status AS _season_watching_status,
-                    s.watchlist_tmdb_status AS _season_watchlist_tmdb_status,
-                    s.last_updated_at AS _season_last_updated_at
-                FROM shared_share_records r
-                JOIN media_metadata s
-                  ON s.item_type = 'Season'
-                 AND s.parent_series_tmdb_id = COALESCE(NULLIF(r.parent_series_tmdb_id, ''), NULLIF(r.tmdb_id, ''))
-                 AND s.season_number = r.season_number
-                WHERE r.status = ANY(%s)
-                  AND COALESCE(s.watching_status, '') = 'Completed'
-                  AND COALESCE(r.share_code, '') <> ''
-                  AND r.season_number IS NOT NULL
-                  AND (
-                        LOWER(COALESCE(r.share_type, '')) = 'episode_file'
-                        OR COALESCE(r.item_type, '') = 'Episode'
-                        OR r.episode_number IS NOT NULL
-                  )
-                  AND LOWER(COALESCE(r.share_type, '')) NOT IN ('season_pack', 'series_pack', 'tv_pack', 'season')
-                ORDER BY s.last_updated_at DESC NULLS LAST,
-                         r.parent_series_tmdb_id,
-                         r.season_number,
-                         r.episode_number NULLS LAST,
-                         r.created_at ASC
-                LIMIT %s
-                """,
-                (statuses, max_rows),
-            )
-            rows = [dict(r) for r in cur.fetchall()]
+    rows = shared_share_db.get_completed_season_episode_share_groups(statuses, max_rows)
 
     groups: Dict[str, Dict[str, Any]] = {}
     for row in rows:
         parent = str(row.get('_season_parent_series_tmdb_id') or row.get('parent_series_tmdb_id') or row.get('tmdb_id') or '').strip()
         season_number = row.get('_season_number') if row.get('_season_number') not in (None, '') else row.get('season_number')
-        try:
-            season_number_int = int(season_number)
-        except Exception:
-            continue
-        if not parent:
-            continue
+        try: season_number_int = int(season_number)
+        except Exception: continue
+        if not parent: continue
 
         key = f'{parent}|{season_number_int}'
         group = groups.setdefault(key, {
@@ -2439,10 +2242,7 @@ def _load_completed_season_episode_share_groups(limit: int = 30) -> List[Dict[st
             'episode_records': [],
         })
 
-        record = {
-            k: v for k, v in row.items()
-            if not str(k).startswith('_season_')
-        }
+        record = {k: v for k, v in row.items() if not str(k).startswith('_season_')}
         if not any(str(x.get('id')) == str(record.get('id')) for x in group['episode_records']):
             group['episode_records'].append(record)
 
@@ -2451,37 +2251,10 @@ def _load_completed_season_episode_share_groups(limit: int = 30) -> List[Dict[st
 
 def _has_active_season_pack_share(parent_series_tmdb_id: str, season_number) -> bool:
     parent_series_tmdb_id = str(parent_series_tmdb_id or '').strip()
-    if not parent_series_tmdb_id or season_number in (None, ''):
-        return False
-    try:
-        season_number = int(season_number)
-    except Exception:
-        return False
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT 1
-                FROM shared_share_records
-                WHERE status = ANY(%s)
-                  AND COALESCE(season_number, -1) = %s
-                  AND (
-                        COALESCE(parent_series_tmdb_id, '') = %s
-                        OR COALESCE(tmdb_id, '') = %s
-                  )
-                  AND (
-                        LOWER(COALESCE(share_type, '')) IN ('season_pack', 'series_pack', 'tv_pack', 'season')
-                        OR (
-                            COALESCE(item_type, '') = 'Season'
-                            AND episode_number IS NULL
-                        )
-                  )
-                LIMIT 1
-                """,
-                (_active_share_statuses(), season_number, parent_series_tmdb_id, parent_series_tmdb_id),
-            )
-            return cur.fetchone() is not None
+    if not parent_series_tmdb_id or season_number in (None, ''): return False
+    try: season_number = int(season_number)
+    except Exception: return False
+    return shared_share_db.check_active_season_pack_share(parent_series_tmdb_id, season_number, _active_share_statuses())
 
 
 def _select_season_pack_candidate(sr, season_row: Dict[str, Any]) -> Dict[str, Any]:
@@ -2823,29 +2596,12 @@ def _rollup_completed_season_episode_shares(client: SharedCenterClient, max_grou
 
 
 def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
-    """删除已过期且未转正的虚拟入库临时缓存，同时删除 Emby 媒体项。"""
     p115 = P115Service.get_client()
     if not p115:
         logger.warning("  ➜ [共享资源维护] 115 客户端未初始化，跳过过期临时转存清理。")
         return 0
 
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT virtual_id, title, file_name, share_code, raw_json, real_fid, real_pick_code,
-                       real_parent_id, expires_at, strm_path, mediainfo_path, nfo_path, emby_item_id
-                FROM shared_virtual_items
-                WHERE status IN ('cached','watched')
-                  AND COALESCE(real_fid, '') <> ''
-                  AND expires_at IS NOT NULL
-                  AND expires_at < NOW()
-                ORDER BY expires_at ASC
-                LIMIT %s
-                """,
-                (int(max_rows),),
-            )
-            rows = [dict(r) for r in cur.fetchall()]
+    rows = shared_share_db.get_expired_virtual_cache_rows(max_rows)
 
     cleaned = 0
     cleaned_rows_for_history = []
@@ -2853,8 +2609,7 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
         virtual_id = str(row.get('virtual_id') or '').strip()
         real_fid = str(row.get('real_fid') or '').strip()
         title = row.get('title') or row.get('file_name') or virtual_id
-        if not virtual_id or not real_fid:
-            continue
+        if not virtual_id or not real_fid: continue
 
         resp = None
         delete_ok = False
@@ -2871,42 +2626,25 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
             emby_delete = _delete_emby_item_for_virtual(row)
             removed_projection = 0
             for key in ('strm_path', 'mediainfo_path', 'nfo_path'):
-                if _remove_file_quietly(str(row.get(key) or '')):
-                    removed_projection += 1
+                if _remove_file_quietly(str(row.get(key) or '')): removed_projection += 1
             try:
-                with get_db_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(
-                            """
-                            UPDATE shared_virtual_items
-                            SET status='deleted',
-                                real_fid='', real_pick_code='', real_parent_id='', expires_at=NULL,
-                                deleted_at=NOW(),
-                                last_error=%s,
-                                raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
-                                updated_at=NOW()
-                            WHERE virtual_id=%s
-                            """,
-                            (
-                                '临时转存已过期且未转正，维护任务已清理临时缓存并删除 Emby 媒体项',
-                                json.dumps({
-                                    'expired_cache_cleaned_at': time.strftime('%Y-%m-%d %H:%M:%S'),
-                                    'real_fid': real_fid,
-                                    'delete_response': resp,
-                                    'emby_delete': emby_delete,
-                                    'removed_projection_files': removed_projection,
-                                }, ensure_ascii=False),
-                                virtual_id,
-                            ),
-                        )
-                        cur.execute("DELETE FROM p115_filesystem_cache WHERE id=%s", (real_fid,))
-                    conn.commit()
+                shared_virtual_db.mark_virtual_deleted(
+                    virtual_id,
+                    message='临时转存已过期且未转正，维护任务已清理临时缓存并删除 Emby 媒体项',
+                    raw_json={
+                        'expired_cache_cleaned_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                        'real_fid': real_fid,
+                        'delete_response': resp,
+                        'emby_delete': emby_delete,
+                        'removed_projection_files': removed_projection,
+                    }
+                )
+                shared_share_db.delete_p115_cache_node(real_fid)
+                
                 shared_virtual_db.add_credit_ledger(
                     'virtual_cache_expired_cleaned', 0,
                     f'清理过期虚拟临时转存并删除 Emby 媒体项：{title}',
-                    ref_id=virtual_id,
-                    virtual_id=virtual_id,
-                    title=title,
+                    ref_id=virtual_id, virtual_id=virtual_id, title=title,
                     raw_json={'real_fid': real_fid, 'delete_response': resp, 'emby_delete': emby_delete, 'removed_projection_files': removed_projection},
                 )
                 cleaned += 1
@@ -2916,121 +2654,23 @@ def _cleanup_expired_virtual_cache(max_rows: int = 80) -> int:
         time.sleep(0.15)
 
     if cleaned_rows_for_history:
-        try:
-            _cleanup_recent_receive_history(p115, cleaned_rows_for_history)
-        except Exception as e:
-            logger.warning(f"  ➜ [共享资源维护] 清理 115 最近接收记录异常: {e}")
+        try: _cleanup_recent_receive_history(p115, cleaned_rows_for_history)
+        except Exception as e: logger.warning(f"  ➜ [共享资源维护] 清理 115 最近接收记录异常: {e}")
 
     return cleaned
 
 
 def _watching_missing_episodes(limit: int = 120) -> List[Dict[str, Any]]:
-    """查询正在追更/暂停追更季下尚未入库的分集。按 父剧+季+集 去重，避免脏数据重复消费。"""
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                WITH watch_seasons AS (
-                    SELECT DISTINCT ON (parent_series_tmdb_id, season_number)
-                        tmdb_id AS season_tmdb_id,
-                        parent_series_tmdb_id,
-                        season_number,
-                        title AS season_title,
-                        release_year,
-                        watching_status,
-                        last_updated_at
-                    FROM media_metadata
-                    WHERE item_type='Season'
-                      AND watching_status IN ('Watching','Paused')
-                      AND parent_series_tmdb_id IS NOT NULL
-                      AND season_number IS NOT NULL
-                    ORDER BY parent_series_tmdb_id,
-                             season_number,
-                             CASE watching_status
-                                 WHEN 'Watching' THEN 0
-                                 WHEN 'Paused' THEN 1
-                                 ELSE 2
-                             END,
-                             last_updated_at DESC NULLS LAST
-                ),
-                all_episodes AS (
-                    SELECT DISTINCT ON (e.parent_series_tmdb_id, e.season_number, e.episode_number)
-                        e.tmdb_id,
-                        e.item_type,
-                        e.parent_series_tmdb_id,
-                        e.season_number,
-                        e.episode_number,
-                        e.title,
-                        e.release_year,
-                        e.release_date,
-                        COALESCE(e.in_library, FALSE) AS in_library,
-                        ws.season_tmdb_id,
-                        ws.season_title,
-                        ws.watching_status,
-                        ws.last_updated_at AS season_last_updated_at
-                    FROM media_metadata e
-                    JOIN watch_seasons ws
-                      ON e.item_type='Episode'
-                     AND e.parent_series_tmdb_id = ws.parent_series_tmdb_id
-                     AND e.season_number = ws.season_number
-                    WHERE e.episode_number IS NOT NULL
-                      AND COALESCE(e.subscription_status, 'NONE') NOT IN ('IGNORED')
-                      AND (e.release_date IS NULL OR e.release_date <= CURRENT_DATE)
-                    ORDER BY e.parent_series_tmdb_id,
-                             e.season_number,
-                             e.episode_number,
-                             COALESCE(e.in_library, FALSE) DESC, -- ★ 核心修复：优先取在库的记录，防止被占位符覆盖
-                             e.last_updated_at DESC NULLS LAST,
-                             e.release_date DESC NULLS LAST
-                )
-                SELECT
-                    tmdb_id,
-                    item_type,
-                    parent_series_tmdb_id,
-                    season_number,
-                    episode_number,
-                    title,
-                    release_year,
-                    release_date,
-                    season_tmdb_id,
-                    season_title,
-                    watching_status
-                FROM all_episodes
-                WHERE in_library = FALSE -- ★ 核心修复：在去重后的最外层过滤，确保真正缺失
-                ORDER BY season_last_updated_at DESC NULLS LAST,
-                         parent_series_tmdb_id,
-                         season_number,
-                         episode_number
-                LIMIT %s
-                """,
-                (int(limit),),
-            )
-            return [dict(r) for r in cur.fetchall()]
+    return shared_share_db.get_watching_missing_episodes(limit)
 
 
 def _has_local_virtual_projection_for_episode(row: Dict[str, Any]) -> bool:
-    """避免维护任务反复为同一缺失分集创建虚拟 STRM。"""
     parent = str(row.get('parent_series_tmdb_id') or '')
     season = _safe_int(row.get('season_number'), -1)
     episode = _safe_int(row.get('episode_number'), -1)
-    if not parent or season < 0 or episode < 0:
-        return False
+    if not parent or season < 0 or episode < 0: return False
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT 1
-                    FROM shared_virtual_items
-                    WHERE status <> 'deleted'
-                      AND (parent_series_tmdb_id=%s OR tmdb_id=%s)
-                      AND COALESCE(season_number, -1)=COALESCE(%s, -1)
-                      AND COALESCE(episode_number, -1)=COALESCE(%s, -1)
-                    LIMIT 1
-                    """,
-                    (parent, parent, season, episode),
-                )
-                return cur.fetchone() is not None
+        return shared_share_db.check_local_virtual_projection_exists(parent, season, episode)
     except Exception:
         return False
 
