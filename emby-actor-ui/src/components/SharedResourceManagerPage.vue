@@ -500,9 +500,7 @@ const shareRequestForm = reactive({
   params: defaultShareRequestParams(),
   expires_days: 7,
   auto_escalation: false,
-  escalation_mode: 'double',
   escalation_interval_hours: 24,
-  max_bounty: null,
 });
 
 const virtualStatusOptions = [
@@ -1699,9 +1697,7 @@ const buildShareRequestPayload = () => {
     params_json: compactRequestParams(),
     expires_days: shareRequestForm.expires_days || 7,
     auto_escalation: Boolean(shareRequestForm.auto_escalation),
-    escalation_mode: shareRequestForm.escalation_mode || 'double',
     escalation_interval_hours: shareRequestForm.escalation_interval_hours || 24,
-    max_bounty: shareRequestForm.max_bounty || null,
   };
 };
 
@@ -1713,9 +1709,6 @@ const refreshShareRequestQuote = async () => {
     const res = await axios.post('/api/shared/resources/share-requests/quote', payload);
     const q = res.data?.data || null;
     shareRequestQuote.value = q;
-    if (q?.max_bounty && (!shareRequestForm.max_bounty || shareRequestForm.max_bounty < q.current_bounty)) {
-      shareRequestForm.max_bounty = q.max_bounty;
-    }
   } catch (e) {
     // 报价失败不弹爆，只在提交时提示。
     console.warn('share request quote failed', e);
@@ -1736,7 +1729,7 @@ const resetShareRequestForm = () => {
     tmdb_id: '', media_type: 'movie', target_type: 'movie', title: '', release_year: null,
     poster_path: '', overview: '', season_number: 1, episode_number: 1,
     params: defaultShareRequestParams(), expires_days: 7, auto_escalation: false,
-    escalation_mode: 'double', escalation_interval_hours: 24, max_bounty: null,
+    escalation_interval_hours: 24,
   });
 };
 
@@ -1778,7 +1771,6 @@ const chooseShareRequestMedia = async (row) => {
     overview: row.overview || '',
     season_number: 1,
     episode_number: 1,
-    max_bounty: null,
   });
   shareRequestEpisodeText.value = '';
   await refreshShareRequestQuote();
@@ -2028,7 +2020,6 @@ watch(
     shareRequestForm.params.size_range,
     shareRequestForm.auto_escalation,
     shareRequestForm.escalation_interval_hours,
-    shareRequestForm.max_bounty,
   ],
   () => scheduleShareRequestQuote(),
 );

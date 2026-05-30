@@ -75,17 +75,14 @@
       <n-divider title-placement="left">悬赏与有效期</n-divider>
       <n-grid :cols="isMobile ? 1 : 3" :x-gap="12">
         <n-gi><n-form-item label="有效期"><n-input-number v-model:value="form.expires_days" :min="1" :max="365" style="width: 100%;"><template #suffix>天</template></n-input-number></n-form-item></n-gi>
-        <n-gi><n-form-item label="超时加价"><n-switch v-model:value="form.auto_escalation"><template #checked>开启</template><template #unchecked>关闭</template></n-switch></n-form-item></n-gi>
-        <n-gi><n-form-item label="最高冻结"><n-input-number v-model:value="form.max_bounty" :min="quote?.current_bounty || 2" :max="1000" style="width: 100%;"><template #suffix>贡献值</template></n-input-number></n-form-item></n-gi>
-      </n-grid>
-      <n-grid v-if="form.auto_escalation" :cols="isMobile ? 1 : 2" :x-gap="12">
-        <n-gi><n-form-item label="加价周期"><n-input-number v-model:value="form.escalation_interval_hours" :min="1" :max="168" style="width: 100%;"><template #suffix>小时</template></n-input-number></n-form-item></n-gi>
-        <n-gi><n-form-item label="加价方式"><n-select v-model:value="form.escalation_mode" :options="escalationOptions" /></n-form-item></n-gi>
+        <n-gi><n-form-item label="超时加倍"><n-switch v-model:value="form.auto_escalation"><template #checked>开启</template><template #unchecked>关闭</template></n-switch></n-form-item></n-gi>
+        <n-gi v-if="form.auto_escalation"><n-form-item label="加倍周期"><n-input-number v-model:value="form.escalation_interval_hours" :min="1" :max="168" style="width: 100%;"><template #suffix>小时</template></n-input-number></n-form-item></n-gi>
       </n-grid>
     </n-form>
 
     <div class="share-request-quote-box">
-      <div class="quote-title">预计悬赏：{{ quote?.current_bounty || '-' }}，最高冻结：{{ quote?.max_bounty || form.max_bounty || '-' }}</div>
+      <div class="quote-title">预计悬赏：{{ quote?.current_bounty || '-' }}，最高冻结：{{ quote?.max_bounty || '-' }}</div>
+      <div v-if="quote?.auto_escalation" class="quote-note">超时加倍：每 {{ quote.escalation_interval_hours }} 小时加倍，按有效期最多 {{ quote.escalation_rounds }} 轮自动冻结。</div>
       <div class="quote-breakdown">
         <span v-for="it in (quote?.breakdown || [])" :key="it.key" class="quote-chip">{{ it.label }} +{{ it.delta }}</span>
       </div>
@@ -93,7 +90,7 @@
 
     <template #footer>
       <n-space justify="space-between" align="center">
-        <n-text depth="3">提交后会按最高冻结值扣除贡献值；未成交取消/过期后退回未使用部分。</n-text>
+        <n-text depth="3">最高冻结由中心自动计算；关闭超时加倍时只冻结当前悬赏。</n-text>
         <n-space>
           <n-button @click="visible = false">取消</n-button>
           <n-button type="primary" :disabled="!selectedMedia" :loading="submitting" @click="submit">发布求分享</n-button>
@@ -188,15 +185,8 @@ const form = reactive({
   params: defaultParams(),
   expires_days: 7,
   auto_escalation: false,
-  escalation_mode: 'double',
   escalation_interval_hours: 24,
-  max_bounty: null,
 });
-
-const escalationOptions = [
-  { label: '翻倍', value: 'double' },
-  { label: '固定增加', value: 'fixed_increment' },
-];
 
 const targetOptions = computed(() => {
   if (form.media_type === 'movie') return [{ label: '电影', value: 'movie' }];
@@ -262,9 +252,7 @@ const buildPayload = () => {
     params_json: compactParams(),
     expires_days: form.expires_days || 7,
     auto_escalation: Boolean(form.auto_escalation),
-    escalation_mode: form.escalation_mode || 'double',
     escalation_interval_hours: form.escalation_interval_hours || 24,
-    max_bounty: form.max_bounty || null,
   };
 };
 
@@ -275,9 +263,6 @@ const refreshQuote = async () => {
     const res = await axios.post('/api/shared/resources/share-requests/quote', buildPayload());
     const data = res.data?.data || null;
     quote.value = data;
-    if (data?.max_bounty && (!form.max_bounty || form.max_bounty < data.current_bounty)) {
-      form.max_bounty = data.max_bounty;
-    }
   } catch (e) {
     console.warn('share request quote failed', e);
   }
@@ -297,7 +282,7 @@ const reset = () => {
     tmdb_id: '', media_type: 'movie', target_type: 'movie', title: '', release_year: null,
     poster_path: '', overview: '', season_number: 1, episode_number: 1,
     params: defaultParams(), expires_days: 7, auto_escalation: false,
-    escalation_mode: 'double', escalation_interval_hours: 24, max_bounty: null,
+    escalation_interval_hours: 24,
   });
 };
 
@@ -315,7 +300,6 @@ const applyMedia = async (row) => {
     overview: row.overview || '',
     season_number: 1,
     episode_number: 1,
-    max_bounty: null,
   });
   episodeText.value = '';
   if (props.initialTarget && typeof props.initialTarget === 'object') {
@@ -417,7 +401,6 @@ watch(
     form.params.size_range,
     form.auto_escalation,
     form.escalation_interval_hours,
-    form.max_bounty,
   ],
   () => scheduleQuote(),
 );
@@ -446,6 +429,7 @@ onUnmounted(() => { window.removeEventListener('resize', checkMobile); clearTime
   border: 1px solid rgba(24, 160, 88, 0.22);
 }
 .quote-title { font-weight: 700; margin-bottom: 8px; }
+.quote-note { font-size: 12px; opacity: .78; margin-bottom: 8px; }
 .quote-breakdown { display: flex; flex-wrap: wrap; gap: 6px; }
 .quote-chip {
   font-size: 12px;
