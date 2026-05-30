@@ -4324,6 +4324,32 @@ def api_check_share(record_id):
 
 
 
+def _share_request_group_id_for_record(record: Dict[str, Any]) -> str:
+    raw = record.get('raw_json') if isinstance(record.get('raw_json'), dict) else {}
+    manual = raw.get('manual_payload') if isinstance(raw.get('manual_payload'), dict) else {}
+    payload = raw.get('share_request_payload') if isinstance(raw.get('share_request_payload'), dict) else {}
+    for value in (
+        record.get('share_request_group_id'),
+        raw.get('share_request_group_id'),
+        manual.get('share_request_group_id'),
+        payload.get('group_id'),
+        payload.get('share_request_group_id'),
+    ):
+        text = str(value or '').strip()
+        if text:
+            return text
+    return ''
+
+
+def _ensure_share_request_listener_async():
+    """有 open 求分享时启动客户端后台长轮询，不依赖前端页面存活。"""
+    try:
+        from tasks.shared_resource_tasks import ensure_share_request_event_listener
+        ensure_share_request_event_listener()
+    except Exception as e:
+        logger.debug(f"  ➜ [共享资源] 启动求分享事件监听失败: {e}")
+
+
 def _build_center_source_payload(record: Dict[str, Any], item: Dict[str, Any], *, source_provider: str = 'user_share') -> Dict[str, Any]:
     """把本地 share_record/share_item 转成中心登记 payload。"""
     sha1 = str(item.get('sha1') or '').strip().upper()
@@ -4339,7 +4365,7 @@ def _build_center_source_payload(record: Dict[str, Any], item: Dict[str, Any], *
         center_item_type = 'Episode'
     center_episode_number = None if is_season_pack else item.get('episode_number')
     standard_identity = _standard_share_identity(record, item, center_item_type=center_item_type)
-    return {
+    payload = {
         'tmdb_id': str(standard_identity.get('tmdb_id') or item.get('tmdb_id') or record.get('tmdb_id') or ''),
         'item_type': center_item_type,
         'season_number': item.get('season_number') or record.get('season_number'),
@@ -4355,6 +4381,10 @@ def _build_center_source_payload(record: Dict[str, Any], item: Dict[str, Any], *
         'receive_code': record.get('receive_code') or '',
         'has_raw_ffprobe': bool(item.get('raw_ffprobe_uploaded')),
     }
+    share_request_group_id = _share_request_group_id_for_record(record)
+    if share_request_group_id:
+        payload['share_request_group_id'] = share_request_group_id
+    return payload
 
 
 def _register_single_source_payload(payload: Dict[str, Any], item: Dict[str, Any], cfg: Dict[str, Any], headers: Dict[str, str]) -> Dict[str, Any]:
@@ -5041,6 +5071,8 @@ def api_list_share_requests():
             'limit': int(request.args.get('limit', 50) or 50),
             'offset': int(request.args.get('offset', 0) or 0),
         }, timeout=25)
+        if any(bool(item.get('joined_by_me')) and item.get('status') == 'open' for item in (data.get('items') or [])):
+            _ensure_share_request_listener_async()
         return jsonify({'success': True, 'items': data.get('items') or [], 'total': int(data.get('total') or 0)})
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 拉取求分享列表失败: {e}", exc_info=True)
@@ -5123,6 +5155,7 @@ def api_create_share_request():
         payload = _enrich_share_request_payload_for_quote(_request_json())
         data = _center_json_request('POST', '/api/v1/share-requests', json_body=payload, timeout=30)
         _fetch_center_credit()
+        _ensure_share_request_listener_async()
         return jsonify({'success': True, 'message': '求分享已发布，贡献值已冻结', 'data': data})
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 创建求分享失败: {e}", exc_info=True)
@@ -5135,6 +5168,7 @@ def api_co_request_share(group_id):
     try:
         data = _center_json_request('POST', f'/api/v1/share-requests/{group_id}/co-request', json_body=_request_json(), timeout=25)
         _fetch_center_credit()
+        _ensure_share_request_listener_async()
         return jsonify({'success': True, 'message': data.get('message') or '同求成功，贡献值已冻结', 'data': data})
     except Exception as e:
         logger.error(f"  ➜ [共享资源] 同求失败: {e}", exc_info=True)

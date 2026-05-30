@@ -166,6 +166,24 @@ class SharedCenterClient:
         }
         return self._get(f"/api/v1/share-requests?{urllib.parse.urlencode(params)}", timeout=25)
 
+    def poll_share_request_events(self, *, timeout: int = 25, limit: int = 5) -> Dict[str, Any]:
+        """长轮询领取“我发起/同求的资源已有人分享”事件。"""
+        import urllib.parse
+        timeout = max(1, min(int(timeout or 25), 55))
+        limit = max(1, min(int(limit or 5), 20))
+        query = urllib.parse.urlencode({'timeout': timeout, 'limit': limit})
+        return self._get(f'/api/v1/share-requests/events/poll?{query}', timeout=timeout + 10)
+
+    def ack_share_request_event(self, event_id: str, result: str = 'success', message: str = '') -> Dict[str, Any]:
+        event_id = str(event_id or '').strip()
+        if not event_id:
+            return {'ok': False, 'message': 'missing event_id'}
+        return self._post(
+            f'/api/v1/share-requests/events/{event_id}/ack',
+            {'result': result or 'success', 'message': message or ''},
+            timeout=15,
+        )
+
     def list_open_gaps(self, limit: int = 100) -> Dict[str, Any]:
         limit = max(1, min(int(limit or 100), 500))
         return self._get(f'/api/v1/gaps/open?limit={limit}', timeout=20)
@@ -238,7 +256,8 @@ class SharedCenterClient:
     def register_source(self, *, tmdb_id, item_type, sha1, file_name, share_code,
                         receive_code='', season_number=None, episode_number=None,
                         title='', release_year=None, size=None, quality='',
-                        has_raw_ffprobe=True, source_provider='user_share') -> Dict[str, Any]:
+                        has_raw_ffprobe=True, source_provider='user_share',
+                        share_request_group_id: str = '') -> Dict[str, Any]:
         """登记一个可被共享中心消费的 115 分享源。
 
         中心端按“当前设备 + SHA1”幂等计分：首次登记 +1，重复登记只更新分享码/元数据。
@@ -259,6 +278,8 @@ class SharedCenterClient:
             'receive_code': str(receive_code or '').strip() or None,
             'has_raw_ffprobe': bool(has_raw_ffprobe),
         }
+        if str(share_request_group_id or '').strip():
+            payload['share_request_group_id'] = str(share_request_group_id).strip()
         return self._post('/api/v1/sources/register', payload, timeout=25)
 
     def register_sources_batch(self, items: List[Dict[str, Any]]) -> Dict[str, Any]:

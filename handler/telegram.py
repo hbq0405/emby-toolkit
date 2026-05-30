@@ -2141,3 +2141,64 @@ def stop_telegram_bot():
     global _tg_polling_active
     _tg_polling_active = False
     logger.info("  ➜ Telegram 机器人交互监听已停止。")
+
+
+def send_share_request_push_notification(event: dict, result: dict = None, success: bool = True):
+    """求分享命中后，客户端长轮询自动转存完成通知。"""
+    try:
+        result = result or {}
+        title = str((event or {}).get('title') or ((event or {}).get('payload') or {}).get('title') or '未知资源')
+        group_id = str((event or {}).get('group_id') or '')
+        source_id = str((event or {}).get('source_id') or '')
+        target_type = str((event or {}).get('target_type') or '')
+        season_number = (event or {}).get('season_number')
+        episode_number = (event or {}).get('episode_number')
+        bounty = (event or {}).get('current_bounty')
+        mode = str(result.get('mode') or result.get('action_type') or '')
+        message = str(result.get('message') or result.get('error') or '')
+        current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        target_text = ''
+        try:
+            if target_type in ('series', 'tv'):
+                target_text = '全剧'
+            elif target_type == 'season' and season_number not in (None, ''):
+                target_text = f"S{int(season_number):02d}"
+            elif target_type == 'episode' and season_number not in (None, '') and episode_number not in (None, ''):
+                target_text = f"S{int(season_number):02d}E{int(episode_number):02d}"
+        except Exception:
+            target_text = ''
+
+        status_title = '✅ 求分享已命中并自动转存成功' if success else '⚠️ 求分享命中但自动转存失败'
+        lines = [
+            f"*{escape_markdown(status_title)}*",
+            "",
+            f"🎬 *资源*: `{_markdown_code_text(title)}`",
+        ]
+        if target_text:
+            lines.append(f"🎯 *目标*: `{_markdown_code_text(target_text)}`")
+        if bounty not in (None, ''):
+            lines.append(f"🏆 *悬赏*: `{_markdown_code_text(str(bounty))}`")
+        if mode:
+            lines.append(f"📥 *模式*: `{_markdown_code_text(mode)}`")
+        if source_id:
+            lines.append(f"🆔 *来源*: `{_markdown_code_text(source_id)}`")
+        if group_id:
+            lines.append(f"🔖 *求分享*: `{_markdown_code_text(group_id)}`")
+        lines.append(f"🕒 *时间*: `{_markdown_code_text(current_time)}`")
+        if message:
+            lines.append(f"📝 *结果*: {escape_markdown(message[:300])}")
+
+        text = "\n".join(lines)
+        global_channel_id = APP_CONFIG.get(constants.CONFIG_OPTION_TELEGRAM_CHANNEL_ID)
+        admin_ids = set(user_db.get_admin_telegram_chat_ids())
+        targets = set()
+        if global_channel_id:
+            targets.add(str(global_channel_id))
+        for aid in admin_ids:
+            if aid:
+                targets.add(str(aid))
+        for target in targets:
+            send_telegram_message(target, text)
+    except Exception as e:
+        logger.error(f"  ➜ 发送求分享自动转存通知失败: {e}", exc_info=True)

@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import time
+import threading
 from typing import Dict, Any, List
 
 import config_manager
@@ -12,7 +13,7 @@ import task_manager
 from database import shared_share_db, shared_virtual_db, settings_db
 from database.connection import get_db_connection
 from handler.p115_service import P115Service
-from handler.shared_center_client import SharedCenterClient, shared_center_enabled
+from handler.shared_center_client import SharedCenterClient, shared_center_enabled, shared_resource_mode
 
 logger = logging.getLogger(__name__)
 
@@ -3143,6 +3144,158 @@ def _auto_follow_watching_series_from_center(max_items: int = 80) -> Dict[str, i
 
     return {'missing': len(rows), 'consumed': consumed, 'gaps': gaps, 'skipped': skipped}
 
+
+# ======================================================================
+# 求分享命中定向转存：客户端仅在自己有 open 求分享/同求时启动长轮询。
+# ======================================================================
+_share_request_event_listener_lock = threading.Lock()
+_share_request_event_listener_thread = None
+_share_request_event_listener_stop = threading.Event()
+
+
+def _my_active_share_request_count(client: SharedCenterClient) -> int:
+    try:
+        resp = client.list_share_requests(status='open', limit=100, offset=0)
+        items = resp.get('items') or []
+        return sum(1 for item in items if bool(item.get('joined_by_me')) and str(item.get('status') or 'open') == 'open')
+    except Exception as e:
+        logger.debug(f"  ➜ [求分享监听] 检查我的开放求分享失败: {e}")
+        return 0
+
+
+def _notify_share_request_push(event: Dict[str, Any], result: Dict[str, Any], success: bool):
+    try:
+        from handler.telegram import send_share_request_push_notification
+        send_share_request_push_notification(event, result=result, success=success)
+    except Exception as e:
+        logger.debug(f"  ➜ [求分享监听] 发送自动转存通知失败: {e}")
+
+
+def _handle_share_request_event(client: SharedCenterClient, event: Dict[str, Any]) -> Dict[str, Any]:
+    event = dict(event or {})
+    event_id = str(event.get('event_id') or '').strip()
+    source_id = str(event.get('source_id') or '').strip()
+    title = event.get('title') or (event.get('payload') or {}).get('title') or source_id
+    if not event_id or not source_id:
+        return {'success': False, 'message': '事件缺少 event_id/source_id'}
+
+    try:
+        from handler.shared_subscription_service import consume_center_sources
+    except Exception as e:
+        msg = f'共享资源消费入口不可用：{e}'
+        try:
+            client.ack_share_request_event(event_id, result='failed', message=msg)
+        except Exception:
+            pass
+        _notify_share_request_push(event, {'message': msg}, False)
+        return {'success': False, 'message': msg}
+
+    try:
+        mode = shared_resource_mode()
+        context = {
+            'source': 'share_request_push',
+            'share_request_event_id': event_id,
+            'share_request_group_id': event.get('group_id'),
+            'title': title,
+            'target_type': event.get('target_type'),
+            'season_number': event.get('season_number'),
+            'episode_number': event.get('episode_number'),
+        }
+        logger.info("  ➜ [求分享监听] 收到命中事件，开始自动转存: %s source=%s", title, source_id)
+        result = consume_center_sources([source_id], mode=mode, context=context) or {}
+        ok = bool(result.get('success'))
+        message = result.get('message') or result.get('action_type') or ('自动转存成功' if ok else '自动转存失败')
+        try:
+            client.ack_share_request_event(event_id, result='success' if ok else 'failed', message=message)
+        except Exception as e:
+            logger.debug(f"  ➜ [求分享监听] 回执中心事件失败: event={event_id}, err={e}")
+        if ok:
+            shared_virtual_db.add_credit_ledger(
+                'share_request_push_import_success', 0,
+                f'求分享命中后自动转存：{title}',
+                ref_id=str(event.get('group_id') or event_id),
+                title=title,
+                raw_json={'event': event, 'result': result},
+            )
+        else:
+            shared_virtual_db.add_credit_ledger(
+                'share_request_push_import_failed', 0,
+                f'求分享命中但自动转存失败：{title}',
+                ref_id=str(event.get('group_id') or event_id),
+                title=title,
+                raw_json={'event': event, 'result': result},
+            )
+        _notify_share_request_push(event, result, ok)
+        return result
+    except Exception as e:
+        msg = f'自动转存异常：{e}'
+        logger.warning(f"  ➜ [求分享监听] 处理命中事件失败: {event} -> {e}", exc_info=True)
+        try:
+            client.ack_share_request_event(event_id, result='failed', message=msg)
+        except Exception:
+            pass
+        _notify_share_request_push(event, {'message': msg}, False)
+        return {'success': False, 'message': msg}
+
+
+def _share_request_event_listener_worker():
+    logger.info("  ➜ [求分享监听] 长轮询监听已启动。")
+    client = SharedCenterClient()
+    idle_errors = 0
+    try:
+        while not _share_request_event_listener_stop.is_set():
+            if not _enabled() or not client.ready:
+                break
+            if _my_active_share_request_count(client) <= 0:
+                logger.info("  ➜ [求分享监听] 当前没有开放的本人求分享/同求，停止长轮询。")
+                break
+            try:
+                resp = client.poll_share_request_events(timeout=25, limit=5)
+                idle_errors = 0
+            except Exception as e:
+                idle_errors += 1
+                logger.debug(f"  ➜ [求分享监听] 长轮询失败，将重试: {e}")
+                if idle_errors >= 12:
+                    logger.warning("  ➜ [求分享监听] 连续长轮询失败过多，停止监听，等待下次求分享/维护任务重新启动。")
+                    break
+                time.sleep(min(30, 3 * idle_errors))
+                continue
+
+            for event in resp.get('items') or []:
+                if _share_request_event_listener_stop.is_set():
+                    break
+                _handle_share_request_event(client, event)
+    finally:
+        logger.info("  ➜ [求分享监听] 长轮询监听已停止。")
+
+
+def ensure_share_request_event_listener() -> bool:
+    """启动求分享长轮询监听。没有本人 open 求分享时不会启动。"""
+    if not _enabled():
+        return False
+    client = SharedCenterClient()
+    if not client.ready:
+        return False
+    if _my_active_share_request_count(client) <= 0:
+        return False
+    global _share_request_event_listener_thread
+    with _share_request_event_listener_lock:
+        if _share_request_event_listener_thread and _share_request_event_listener_thread.is_alive():
+            return True
+        _share_request_event_listener_stop.clear()
+        _share_request_event_listener_thread = threading.Thread(
+            target=_share_request_event_listener_worker,
+            name='ShareRequestEventListener',
+            daemon=True,
+        )
+        _share_request_event_listener_thread.start()
+        return True
+
+
+def stop_share_request_event_listener():
+    _share_request_event_listener_stop.set()
+
+
 def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = False):
     """共享资源维护总任务。可由前端手动触发，也由调度器硬编码定时执行。
 
@@ -3217,6 +3370,9 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         _status(60, '正在从中心资源库处理追更缺集...')
         follow_result = _auto_follow_watching_series_from_center()
         total.update({f'follow_{k}': v for k, v in follow_result.items()})
+
+        _status(72, '正在启动求分享命中长轮询监听...')
+        total['share_request_listener'] = ensure_share_request_event_listener()
 
         _status(74, '正在同步分享审核状态并自动登记中心...')
         total.update(_auto_check_and_report_local_shares(client))
