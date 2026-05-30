@@ -4167,6 +4167,70 @@ def api_credit_ledger():
 # ======================================================================
 # 求分享 API：客户端代理中心端 + TMDb 搜索
 # ======================================================================
+
+def _share_request_default_param_options() -> Dict[str, Any]:
+    return {
+        'resolution': [
+            {'label': '4K', 'value': '4k'},
+            {'label': '1080p', 'value': '1080p'},
+            {'label': '720p', 'value': '720p'},
+            {'label': '480p', 'value': '480p'},
+        ],
+        'codec': [
+            {'label': 'HEVC', 'value': 'HEVC'},
+            {'label': 'H.264', 'value': 'H.264'},
+            {'label': 'AV1', 'value': 'AV1'},
+            {'label': 'VP9', 'value': 'VP9'},
+        ],
+        'effect': [
+            {'label': 'DoVi P8', 'value': 'DoVi_P8'},
+            {'label': 'DoVi P7', 'value': 'DoVi_P7'},
+            {'label': 'DoVi P5', 'value': 'DoVi_P5'},
+            {'label': 'DoVi', 'value': 'DoVi'},
+            {'label': 'HDR10+', 'value': 'HDR10+'},
+            {'label': 'HDR', 'value': 'HDR'},
+            {'label': 'SDR', 'value': 'SDR'},
+        ],
+        'frame_rate': [
+            {'label': '≥ 60 fps', 'value': '60'},
+            {'label': '≥ 50 fps', 'value': '50'},
+            {'label': '≥ 30 fps', 'value': '30'},
+            {'label': '24 fps', 'value': '24'},
+        ],
+        'audio': [
+            {'label': '国语', 'value': '国语'},
+            {'label': '粤语', 'value': '粤语'},
+            {'label': '英语', 'value': '英语'},
+            {'label': '日语', 'value': '日语'},
+            {'label': '韩语', 'value': '韩语'},
+        ],
+        'subtitle': [
+            {'label': '简体', 'value': '简体'},
+            {'label': '繁体', 'value': '繁体'},
+            {'label': '英文', 'value': '英文'},
+            {'label': '日文', 'value': '日文'},
+            {'label': '韩文', 'value': '韩文'},
+            {'label': '无', 'value': '无'},
+        ],
+    }
+
+
+def _share_request_param_options_from_helpers() -> Dict[str, Any]:
+    try:
+        from tasks.helpers import get_standard_asset_option_values
+        options = get_standard_asset_option_values()
+        if isinstance(options, dict) and options:
+            return options
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源] 读取 helpers 标准媒体参数失败，使用内置兜底: {e}")
+    return _share_request_default_param_options()
+
+
+@shared_resource_bp.route('/share-requests/param-options', methods=['GET'])
+@admin_required
+def api_share_request_param_options():
+    return jsonify({'success': True, 'data': _share_request_param_options_from_helpers()})
+
 @shared_resource_bp.route('/share-requests/tmdb/search', methods=['GET'])
 @admin_required
 def api_share_request_tmdb_search():

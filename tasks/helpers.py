@@ -856,6 +856,53 @@ def _build_hardsub_for_analysis(video_title: str):
 
     return None
 
+
+def get_standard_asset_option_values() -> Dict[str, List[Dict[str, str]]]:
+    """返回与 media_metadata.asset_details_json 对齐的标准媒体参数选项。
+
+    求分享、缺集扫描、洗版等模块统一使用这里的取值，后续按 asset_details_json
+    做自动匹配时就不需要再做文件名猜测。
+    """
+    _keyword_map, audio_display_map, sub_display_map = _build_language_runtime_maps()
+
+    def _unique_options(values):
+        seen = set()
+        out = []
+        for label, value in values:
+            label = str(label or '').strip()
+            value = str(value or label).strip()
+            if not label or not value or value in seen:
+                continue
+            seen.add(value)
+            out.append({'label': label, 'value': value})
+        return out
+
+    audio_values = [(label, label) for _code, label in sorted(audio_display_map.items(), key=lambda x: x[1])]
+    subtitle_values = [(label, label) for _code, label in sorted(sub_display_map.items(), key=lambda x: x[1])]
+
+    return {
+        # 对应 asset_details_json.resolution_display
+        'resolution': _unique_options([
+            ('4K', '4k'), ('1080p', '1080p'), ('720p', '720p'), ('480p', '480p'),
+        ]),
+        # 对应 asset_details_json.codec_display
+        'codec': _unique_options([
+            ('HEVC', 'HEVC'), ('H.264', 'H.264'), ('AV1', 'AV1'), ('VP9', 'VP9'),
+        ]),
+        # 对应 asset_details_json.effect_display
+        'effect': _unique_options([
+            ('DoVi P8', 'DoVi_P8'), ('DoVi P7', 'DoVi_P7'), ('DoVi P5', 'DoVi_P5'),
+            ('DoVi', 'DoVi'), ('HDR10+', 'HDR10+'), ('HDR', 'HDR'), ('SDR', 'SDR'),
+        ]),
+        # 对应 asset_details_json.frame_rate。匹配时按不低于该帧率处理。
+        'frame_rate': _unique_options([
+            ('≥ 60 fps', '60'), ('≥ 50 fps', '50'), ('≥ 30 fps', '30'), ('24 fps', '24'),
+        ]),
+        # 对应 asset_details_json.audio_display / subtitle_display 的标准展示值。
+        'audio': _unique_options(audio_values),
+        'subtitle': _unique_options(subtitle_values + [('无', '无')]),
+    }
+
 # --- 判断电影是否满足订阅条件 ---
 def is_movie_subscribable(movie_id: int, api_key: str, config: dict) -> bool:
     """

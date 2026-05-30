@@ -361,108 +361,10 @@
       </template>
     </n-modal>
 
-    <n-modal v-model:show="showShareRequestModal" preset="card" title="共享池求分享" style="width: 980px; max-width: 96vw;" class="custom-modal glass-modal">
-      <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
-        先搜索并确认 TMDb 目标，再选择电影 / 全剧 / 单季 / 单集范围和媒体参数。中心端会按参数自动计算需要冻结的贡献值。
-      </n-alert>
-
-      <n-space class="toolbar" :vertical="isMobile" :size="12">
-        <n-input v-model:value="shareRequestSearchKeyword" placeholder="搜索电影 / 剧集" clearable @keyup.enter="searchShareRequestTmdb">
-          <template #prefix><n-icon :component="SearchIcon" /></template>
-        </n-input>
-        <n-button type="primary" :loading="shareRequestSearchLoading" @click="searchShareRequestTmdb">搜索 TMDb</n-button>
-      </n-space>
-
-      <n-data-table
-        v-if="shareRequestSearchItems.length"
-        size="small"
-        :loading="shareRequestSearchLoading"
-        :columns="shareRequestSearchColumns"
-        :data="shareRequestSearchItems"
-        :pagination="{ pageSize: 5 }"
-        :row-key="row => `${row.media_type}-${row.tmdb_id}`"
-        style="margin-bottom: 14px;"
-      />
-
-      <div v-if="selectedShareRequestMedia" class="selected-share-box">
-        <div class="selected-title">已选择：{{ appendYear(selectedShareRequestMedia.title, selectedShareRequestMedia.release_year) }}</div>
-        <div class="selected-desc">
-          {{ selectedShareRequestMedia.media_type === 'movie' ? '电影' : '剧集' }} · TMDb {{ selectedShareRequestMedia.tmdb_id }}
-        </div>
-      </div>
-
-      <n-form :model="shareRequestForm" label-placement="left" label-width="105" style="margin-top: 12px;">
-        <n-divider title-placement="left">求分享目标</n-divider>
-        <n-form-item label="目标类型">
-          <n-radio-group v-model:value="shareRequestForm.target_type">
-            <n-space>
-              <n-radio v-for="opt in shareRequestTargetOptions" :key="opt.value" :value="opt.value">{{ opt.label }}</n-radio>
-            </n-space>
-          </n-radio-group>
-        </n-form-item>
-        <n-grid v-if="shareRequestForm.media_type === 'tv'" :cols="isMobile ? 1 : 3" :x-gap="12">
-          <n-gi v-if="['season','episode','episode_batch'].includes(shareRequestForm.target_type)">
-            <n-form-item label="季号">
-              <n-input-number v-model:value="shareRequestForm.season_number" :min="1" :max="999" style="width: 100%;" />
-            </n-form-item>
-          </n-gi>
-          <n-gi v-if="shareRequestForm.target_type === 'episode'">
-            <n-form-item label="集号">
-              <n-input-number v-model:value="shareRequestForm.episode_number" :min="1" :max="9999" style="width: 100%;" />
-            </n-form-item>
-          </n-gi>
-          <n-gi v-if="shareRequestForm.target_type === 'episode_batch'" :span="isMobile ? 1 : 2">
-            <n-form-item label="集数范围">
-              <n-input v-model:value="shareRequestEpisodeText" placeholder="例如 23,24,25 或 23-28" />
-            </n-form-item>
-          </n-gi>
-        </n-grid>
-
-        <n-divider title-placement="left">匹配参数</n-divider>
-        <n-grid :cols="isMobile ? 1 : 3" :x-gap="12">
-          <n-gi><n-form-item label="分辨率"><n-select v-model:value="shareRequestForm.params.resolution" :options="requestResolutionOptions" clearable placeholder="不限" /></n-form-item></n-gi>
-          <n-gi><n-form-item label="编码"><n-select v-model:value="shareRequestForm.params.codec" :options="requestCodecOptions" clearable placeholder="不限" /></n-form-item></n-gi>
-          <n-gi><n-form-item label="HDR/杜比"><n-select v-model:value="shareRequestForm.params.effect" :options="requestEffectOptions" clearable placeholder="不限" /></n-form-item></n-gi>
-          <n-gi><n-form-item label="来源"><n-select v-model:value="shareRequestForm.params.source" :options="requestSourceOptions" clearable placeholder="不限" /></n-form-item></n-gi>
-          <n-gi><n-form-item label="音轨"><n-select v-model:value="shareRequestForm.params.audio" :options="requestAudioOptions" clearable placeholder="不限" /></n-form-item></n-gi>
-          <n-gi><n-form-item label="字幕"><n-select v-model:value="shareRequestForm.params.subtitle" :options="requestSubtitleOptions" clearable placeholder="不限" /></n-form-item></n-gi>
-        </n-grid>
-        <n-form-item label="体积范围">
-          <n-input v-model:value="shareRequestForm.params.size_range" placeholder="例如 ≤10GB、20-40GB，留空不限" />
-        </n-form-item>
-        <n-form-item label="备注要求">
-          <n-input v-model:value="shareRequestForm.params.note" type="textarea" :autosize="{ minRows: 2, maxRows: 4 }" placeholder="例如指定版本组、不要国语配音、优先 Remux 等" />
-        </n-form-item>
-
-        <n-divider title-placement="left">悬赏与有效期</n-divider>
-        <n-grid :cols="isMobile ? 1 : 3" :x-gap="12">
-          <n-gi><n-form-item label="有效期"><n-input-number v-model:value="shareRequestForm.expires_days" :min="1" :max="365" style="width: 100%;"><template #suffix>天</template></n-input-number></n-form-item></n-gi>
-          <n-gi><n-form-item label="超时加价"><n-switch v-model:value="shareRequestForm.auto_escalation"><template #checked>开启</template><template #unchecked>关闭</template></n-switch></n-form-item></n-gi>
-          <n-gi><n-form-item label="最高冻结"><n-input-number v-model:value="shareRequestForm.max_bounty" :min="shareRequestQuote?.current_bounty || 2" :max="1000" style="width: 100%;"><template #suffix>贡献值</template></n-input-number></n-form-item></n-gi>
-        </n-grid>
-        <n-grid v-if="shareRequestForm.auto_escalation" :cols="isMobile ? 1 : 2" :x-gap="12">
-          <n-gi><n-form-item label="加价周期"><n-input-number v-model:value="shareRequestForm.escalation_interval_hours" :min="1" :max="168" style="width: 100%;"><template #suffix>小时</template></n-input-number></n-form-item></n-gi>
-          <n-gi><n-form-item label="加价方式"><n-select v-model:value="shareRequestForm.escalation_mode" :options="requestEscalationOptions" /></n-form-item></n-gi>
-        </n-grid>
-      </n-form>
-
-      <div class="share-request-quote-box">
-        <div class="quote-title">预计悬赏：{{ shareRequestQuote?.current_bounty || '-' }}，最高冻结：{{ shareRequestQuote?.max_bounty || shareRequestForm.max_bounty || '-' }}</div>
-        <div class="quote-breakdown">
-          <span v-for="it in (shareRequestQuote?.breakdown || [])" :key="it.key" class="quote-chip">{{ it.label }} +{{ it.delta }}</span>
-        </div>
-      </div>
-
-      <template #footer>
-        <n-space justify="space-between" align="center">
-          <n-text depth="3">提交后会按最高冻结值扣除贡献值；未成交取消/过期后退回未使用部分。</n-text>
-          <n-space>
-            <n-button @click="showShareRequestModal = false">取消</n-button>
-            <n-button type="primary" :disabled="!selectedShareRequestMedia" :loading="shareRequestSubmitting" @click="submitShareRequest">发布求分享</n-button>
-          </n-space>
-        </n-space>
-      </template>
-    </n-modal>
+    <ShareRequestCreateModal
+      v-model:show="showShareRequestModal"
+      @created="handleShareRequestCreated"
+    />
   </div>
 </template>
 
@@ -488,6 +390,7 @@ import {
   CloudDoneOutline as ReportIcon,
   CloseCircleOutline as CancelIcon
 } from '@vicons/ionicons5';
+import ShareRequestCreateModal from './ShareRequestCreateModal.vue';
 
 const message = useMessage();
 const dialog = useDialog();
@@ -575,11 +478,10 @@ const defaultShareRequestParams = () => ({
   resolution: null,
   codec: null,
   effect: null,
-  source: null,
+  frame_rate: null,
   audio: null,
   subtitle: null,
   size_range: '',
-  note: '',
 });
 const shareRequestForm = reactive({
   tmdb_id: '',
@@ -924,7 +826,7 @@ const requestTargetText = (row) => {
 };
 const requestConditionText = (row) => {
   const params = (row?.params_json && typeof row.params_json === 'object') ? row.params_json : {};
-  const parts = [params.resolution, params.codec, params.effect, params.source, params.audio, params.subtitle, params.size_range].filter(Boolean);
+  const parts = [params.resolution, params.codec, params.effect, params.frame_rate ? `${params.frame_rate}fps` : '', params.audio, params.subtitle, params.size_range].filter(Boolean);
   return parts.length ? parts.join(' · ') : '不限参数';
 };
 const requestPosterUrl = (row) => {
@@ -1784,6 +1686,11 @@ const openShareRequestModal = () => {
   showShareRequestModal.value = true;
 };
 
+const handleShareRequestCreated = async () => {
+  activeTab.value = 'requests';
+  await Promise.allSettled([loadShareRequests(), loadSummary(), loadLedger()]);
+};
+
 const searchShareRequestTmdb = async () => {
   const keyword = String(shareRequestSearchKeyword.value || '').trim();
   if (!keyword) return message.warning('请输入要搜索的片名');
@@ -2031,11 +1938,10 @@ watch(
     shareRequestForm.params.resolution,
     shareRequestForm.params.codec,
     shareRequestForm.params.effect,
-    shareRequestForm.params.source,
+    shareRequestForm.params.frame_rate,
     shareRequestForm.params.audio,
     shareRequestForm.params.subtitle,
     shareRequestForm.params.size_range,
-    shareRequestForm.params.note,
     shareRequestForm.auto_escalation,
     shareRequestForm.escalation_interval_hours,
     shareRequestForm.max_bounty,
