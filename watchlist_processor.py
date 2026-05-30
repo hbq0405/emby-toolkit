@@ -1642,7 +1642,7 @@ class WatchlistProcessor:
             if is_latest_season_partial:
                 final_status = STATUS_WATCHING
                 paused_until_date = None
-                logger.info(f"  ➜ [本地未集齐保护] TMDb状态为 '{new_tmdb_status}'，但 S{latest_s_num} 本地只有 {local_latest_s_episodes}/{latest_s_total_episodes or '未知'} 集，保持“追剧中”，不抢完结包。")
+                logger.info(f"  ➜ [本地未集齐保护] TMDb状态为 '{new_tmdb_status}'，但 S{latest_s_num} 本地只有 {local_latest_s_episodes}/{latest_s_total_episodes or '未知'} 集，保持“追剧中”。")
             else:
                 final_status = STATUS_COMPLETED
                 paused_until_date = None
@@ -1663,7 +1663,7 @@ class WatchlistProcessor:
             elif is_latest_season_partial:
                 final_status = STATUS_WATCHING
                 paused_until_date = None
-                logger.info(f"  ➜ [本地未集齐保护] 本季大结局虽已播出，但 S{latest_s_num} 本地只有 {local_latest_s_episodes}/{latest_s_total_episodes or '未知'} 集，保持“追剧中”，不抢完结包。")
+                logger.info(f"  ➜ [本地未集齐保护] 本季大结局虽已播出，但 S{latest_s_num} 本地只有 {local_latest_s_episodes}/{latest_s_total_episodes or '未知'} 集，保持“追剧中”。")
             else:
                 final_status = STATUS_COMPLETED
                 paused_until_date = None
@@ -1737,7 +1737,7 @@ class WatchlistProcessor:
                     elif current_season_total > 0 and local_last_season_episodes < current_season_total:
                         final_status = STATUS_WATCHING
                         paused_until_date = None
-                        logger.info(f"  ➜ [本地未集齐保护] 无待播集信息，但 S{last_s_num} 本地只有 {local_last_season_episodes}/{current_season_total} 集，保持“追剧中”，不抢完结包。")
+                        logger.info(f"  ➜ [本地未集齐保护] 无待播集信息，但 S{last_s_num} 本地只有 {local_last_season_episodes}/{current_season_total} 集，保持“追剧中”。")
 
                     # 有本地文件但总集数未知，无法证明已经集齐，也不能完结。
                     elif current_season_total <= 0 and local_last_season_episodes > 0:
