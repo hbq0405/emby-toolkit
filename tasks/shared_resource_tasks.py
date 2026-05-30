@@ -2667,6 +2667,416 @@ def _watching_missing_episodes(limit: int = 120) -> List[Dict[str, Any]]:
     return shared_share_db.get_watching_missing_episodes(limit)
 
 
+# ======================================================================
+# 虚拟入库分享健康检查：当前分享失效时切换到备份/完结季包
+# ======================================================================
+_CENTER_CONSUMABLE_STATUSES = {'alive', 'pending', 'reported'}
+_SINGLE_EPISODE_TYPES = {'episode', 'episode_file', 'single'}
+_SEASON_PACK_TYPES = {'season', 'season_pack', 'series', 'series_pack', 'tv', 'show'}
+
+
+def _source_id_list(rows: List[Dict[str, Any]]) -> List[str]:
+    out = []
+    seen = set()
+    for row in rows or []:
+        sid = str((row or {}).get('source_id') or '').strip()
+        if sid and sid not in seen:
+            seen.add(sid)
+            out.append(sid)
+    return out
+
+
+def _load_center_sources_by_id(client: SharedCenterClient, source_ids: List[str], batch_size: int = 80) -> Dict[str, Dict[str, Any]] | None:
+    """按 source_id 批量获取中心源。None 表示中心查询失败，调用方不得据此删除虚拟项。"""
+    source_ids = [str(x or '').strip() for x in (source_ids or []) if str(x or '').strip()]
+    if not source_ids:
+        return {}
+    result: Dict[str, Dict[str, Any]] = {}
+    statuses = 'alive,pending,replenish,dead,cancelled,expired,rejected'
+    for i in range(0, len(source_ids), max(1, int(batch_size or 80))):
+        batch = source_ids[i:i + batch_size]
+        try:
+            resp = client.list_sources(
+                source_ids=batch,
+                status=statuses,
+                mine_only=False,
+                include_raw=False,
+                limit=max(len(batch), 1),
+                offset=0,
+            )
+        except TypeError as e:
+            logger.warning(f"  ➜ [共享资源维护] 当前共享中心客户端不支持按 source_id 校验虚拟入库源，跳过本轮检查: {e}")
+            return None
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 批量查询虚拟入库中心源失败，跳过本轮检查: {e}")
+            return None
+        for item in resp.get('items') or []:
+            sid = str((item or {}).get('source_id') or '').strip()
+            if sid:
+                result[sid] = dict(item)
+    return result
+
+
+def _center_source_consumable(source: Dict[str, Any]) -> bool:
+    if not source:
+        return False
+    status = str(source.get('status') or '').strip().lower()
+    if status not in _CENTER_CONSUMABLE_STATUSES:
+        return False
+    if str(source.get('share_code') or '').strip() == '':
+        return False
+    # list_sources 非 mine_only 时中心已经会过滤 raw；这里仍保守兜底。
+    if source.get('has_raw_ffprobe') is False:
+        return False
+    return True
+
+
+def _share_alive_for_virtual(p115, share_code: str, receive_code: str = '', cache: Dict[tuple, Any] = None) -> bool | None:
+    """校验 115 分享是否仍可访问。None 表示网络/接口异常，不应据此删除虚拟项。"""
+    share_code = str(share_code or '').strip()
+    receive_code = str(receive_code or '').strip()
+    if not share_code or not p115:
+        return True
+    cache = cache if cache is not None else {}
+    key = (share_code, receive_code)
+    if key in cache:
+        return cache[key]
+    try:
+        snap = p115.share_info(share_code, receive_code, cid=0, limit=1)
+        alive = _looks_share_alive(snap)
+        cache[key] = alive
+        return alive
+    except Exception as e:
+        if _is_network_error(e):
+            logger.debug(f"  ➜ [共享资源维护] 校验 115 分享遇到网络异常，暂不判定失效: share={share_code}, err={e}")
+            cache[key] = None
+            return None
+        logger.debug(f"  ➜ [共享资源维护] 校验 115 分享失败，按不可用处理: share={share_code}, err={e}")
+        cache[key] = False
+        return False
+
+
+def _virtual_current_source_unhealthy_reason(
+    row: Dict[str, Any],
+    center_sources_by_id: Dict[str, Dict[str, Any]],
+    p115,
+    share_alive_cache: Dict[tuple, Any],
+) -> str:
+    source_id = str((row or {}).get('source_id') or '').strip()
+    current_source = center_sources_by_id.get(source_id) if source_id else None
+    if source_id:
+        if not current_source:
+            return 'center_source_missing'
+        if not _center_source_consumable(current_source):
+            return f"center_source_{str(current_source.get('status') or 'unusable').lower()}"
+
+    share_code = str((current_source or {}).get('share_code') or (row or {}).get('share_code') or '').strip()
+    receive_code = str((current_source or {}).get('receive_code') or (row or {}).get('receive_code') or '').strip()
+    if not share_code:
+        return 'missing_share_code'
+    alive = _share_alive_for_virtual(p115, share_code, receive_code, share_alive_cache)
+    if alive is None:
+        return ''
+    if not alive:
+        return 'p115_share_dead'
+    return ''
+
+
+def _virtual_raw_context(row: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    raw = _json_dict((row or {}).get('raw_json'))
+    context = raw.get('context') if isinstance(raw.get('context'), dict) else {}
+    source = raw.get('center_source') if isinstance(raw.get('center_source'), dict) else {}
+    replacement = raw.get('replacement_center_source') if isinstance(raw.get('replacement_center_source'), dict) else {}
+    if replacement:
+        source = {**source, **replacement}
+    return context, source
+
+
+def _virtual_identity(row: Dict[str, Any]) -> Dict[str, Any]:
+    row = row or {}
+    context, source = _virtual_raw_context(row)
+    item_type = str(row.get('item_type') or context.get('item_type') or source.get('item_type') or '').strip()
+
+    def first_text(*values):
+        for value in values:
+            text = str(value or '').strip()
+            if text:
+                return text
+        return ''
+
+    def first_int(*values):
+        for value in values:
+            n = _safe_int(value, None)
+            if n is not None:
+                return n
+        return None
+
+    parent = first_text(
+        row.get('parent_series_tmdb_id'),
+        context.get('parent_series_tmdb_id'), context.get('series_tmdb_id'), context.get('parent_tmdb_id'),
+        source.get('parent_series_tmdb_id'), source.get('series_tmdb_id'),
+    )
+    tmdb_id = first_text(row.get('tmdb_id'), context.get('tmdb_id'), source.get('tmdb_id'))
+    if not parent and item_type.lower() in _SEASON_PACK_TYPES:
+        parent = tmdb_id
+    # 早期中心单集/季包都可能把 tmdb_id 写成父剧 ID；Episode 搜索优先用 parent，没有 parent 再用 tmdb_id。
+    season = first_int(row.get('season_number'), context.get('season_number'), source.get('season_number'))
+    episode = first_int(row.get('episode_number'), context.get('episode_number'), source.get('episode_number'))
+    return {
+        'tmdb_id': tmdb_id,
+        'parent_series_tmdb_id': parent,
+        'season_number': season,
+        'episode_number': episode,
+        'sha1': str(row.get('sha1') or source.get('sha1') or '').strip().upper(),
+        'item_type': item_type or 'Episode',
+    }
+
+
+def _search_center_sources_cached(client: SharedCenterClient, query: Dict[str, Any], cache: Dict[str, List[Dict[str, Any]]], limit: int = 200) -> List[Dict[str, Any]]:
+    key = json.dumps(query or {}, ensure_ascii=False, sort_keys=True)
+    if key in cache:
+        return cache[key]
+    try:
+        resp = client.search_sources([query], limit_per_item=limit)
+        results = resp.get('results') or []
+        items = []
+        if results:
+            items = [dict(x) for x in (results[0].get('items') or []) if isinstance(x, dict)]
+        cache[key] = items
+        return items
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源维护] 查询虚拟入库备用共享源失败: query={query}, err={e}")
+        cache[key] = []
+        return []
+
+
+def _candidate_source_rank(source: Dict[str, Any]) -> tuple:
+    status = str((source or {}).get('status') or '').strip().lower()
+    return (
+        0 if status == 'alive' else 1,
+        _safe_int((source or {}).get('success_count'), 0),
+        _safe_int((source or {}).get('fail_count'), 0),
+        str((source or {}).get('last_verified_at') or (source or {}).get('created_at') or ''),
+        str((source or {}).get('source_id') or ''),
+    )
+
+
+def _source_can_replace_virtual(
+    source: Dict[str, Any],
+    row: Dict[str, Any],
+    *,
+    require_pack: bool = False,
+    p115=None,
+    share_alive_cache: Dict[tuple, Any] = None,
+) -> bool:
+    if not _center_source_consumable(source):
+        return False
+    old_source_id = str((row or {}).get('source_id') or '').strip()
+    if old_source_id and str(source.get('source_id') or '').strip() == old_source_id:
+        return False
+    expected_sha1 = str((row or {}).get('sha1') or '').strip().upper()
+    if expected_sha1 and str(source.get('sha1') or '').strip().upper() != expected_sha1:
+        return False
+    item_type = str(source.get('item_type') or '').strip().lower()
+    if require_pack and item_type not in _SEASON_PACK_TYPES:
+        return False
+    alive = _share_alive_for_virtual(p115, source.get('share_code') or '', source.get('receive_code') or '', share_alive_cache)
+    return alive is not False and alive is not None
+
+
+def _find_replacement_source_for_virtual(
+    client: SharedCenterClient,
+    row: Dict[str, Any],
+    *,
+    p115=None,
+    search_cache: Dict[str, List[Dict[str, Any]]] = None,
+    share_alive_cache: Dict[tuple, Any] = None,
+) -> tuple[Dict[str, Any], str]:
+    """优先完结季包/季包，其次同集备份，返回新的中心源。"""
+    search_cache = search_cache if search_cache is not None else {}
+    share_alive_cache = share_alive_cache if share_alive_cache is not None else {}
+    ident = _virtual_identity(row)
+    parent = ident.get('parent_series_tmdb_id') or ident.get('tmdb_id')
+    season = ident.get('season_number')
+    episode = ident.get('episode_number')
+    sha1 = ident.get('sha1')
+
+    # 1. 剧集优先找同季季包。完结季汇总删除单集后，这里会直接切到季包里的同 SHA1 文件。
+    if parent and season is not None:
+        season_query = {'tmdb_id': parent, 'item_type': 'Season', 'season_number': season, 'episode_number': None}
+        season_items = _search_center_sources_cached(client, season_query, search_cache, limit=300)
+        pack_candidates = [
+            x for x in season_items
+            if str(x.get('sha1') or '').strip().upper() == sha1
+            and _source_can_replace_virtual(x, row, require_pack=True, p115=p115, share_alive_cache=share_alive_cache)
+        ]
+        if pack_candidates:
+            return sorted(pack_candidates, key=_candidate_source_rank)[0], 'season_pack'
+
+    # 2. 没有季包时，再找同集备份共享。
+    episode_queries = []
+    if parent and season is not None and episode is not None:
+        episode_queries.append({'tmdb_id': parent, 'item_type': 'Episode', 'season_number': season, 'episode_number': episode})
+    tmdb_id = ident.get('tmdb_id')
+    if tmdb_id and tmdb_id != parent and season is not None and episode is not None:
+        episode_queries.append({'tmdb_id': tmdb_id, 'item_type': 'Episode', 'season_number': season, 'episode_number': episode})
+    if not episode_queries and tmdb_id:
+        episode_queries.append({'tmdb_id': tmdb_id, 'item_type': 'Episode', 'season_number': season, 'episode_number': episode})
+
+    single_candidates = []
+    for query in episode_queries:
+        for src in _search_center_sources_cached(client, query, search_cache, limit=120):
+            if _source_can_replace_virtual(src, row, require_pack=False, p115=p115, share_alive_cache=share_alive_cache):
+                # Episode 查询理论上只返回单集；这里兜底排除季包，确保优先级语义清晰。
+                if str(src.get('item_type') or '').strip().lower() in _SINGLE_EPISODE_TYPES:
+                    single_candidates.append(src)
+    if single_candidates:
+        return sorted(single_candidates, key=_candidate_source_rank)[0], 'episode_backup'
+
+    return {}, ''
+
+
+def _cleanup_virtual_projection_files(row: Dict[str, Any]) -> int:
+    removed = 0
+    for key in ('strm_path', 'mediainfo_path', 'nfo_path'):
+        if _remove_file_quietly(str((row or {}).get(key) or '')):
+            removed += 1
+    return removed
+
+
+def _delete_virtual_item_for_dead_share(row: Dict[str, Any], reason: str, p115=None) -> bool:
+    virtual_id = str((row or {}).get('virtual_id') or '').strip()
+    if not virtual_id:
+        return False
+    title = (row or {}).get('title') or (row or {}).get('file_name') or virtual_id
+    real_fid = str((row or {}).get('real_fid') or '').strip()
+    delete_resp = None
+    if p115 and real_fid:
+        try:
+            delete_resp = p115.fs_delete([real_fid])
+            shared_share_db.delete_p115_cache_node(real_fid)
+        except Exception as e:
+            delete_resp = {'error': str(e)}
+            logger.debug(f"  ➜ [共享资源维护] 删除失效虚拟入库临时文件失败: virtual={virtual_id}, fid={real_fid}, err={e}")
+    emby_delete = _delete_emby_item_for_virtual(row)
+    removed_projection = _cleanup_virtual_projection_files(row)
+    try:
+        shared_virtual_db.mark_virtual_deleted(
+            virtual_id,
+            message=f'虚拟入库原分享已失效且没有可用季包/单集备份，维护任务已删除投影：{reason}',
+            raw_json={
+                'virtual_source_health_deleted_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+                'reason': reason,
+                'real_fid': real_fid,
+                'delete_response': delete_resp,
+                'emby_delete': emby_delete,
+                'removed_projection_files': removed_projection,
+            },
+        )
+        shared_virtual_db.add_credit_ledger(
+            'virtual_source_dead_deleted', 0,
+            f'虚拟入库源失效且无备份，已删除：{title}',
+            ref_id=virtual_id,
+            virtual_id=virtual_id,
+            title=title,
+            raw_json={'reason': reason, 'real_fid': real_fid, 'delete_response': delete_resp, 'emby_delete': emby_delete},
+        )
+        return True
+    except TypeError:
+        # 兼容旧 shared_virtual_db.mark_virtual_deleted(message) 签名。
+        shared_virtual_db.mark_virtual_deleted(
+            virtual_id,
+            message=f'虚拟入库原分享已失效且没有可用季包/单集备份，维护任务已删除投影：{reason}',
+        )
+        return True
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源维护] 标记失效虚拟入库删除失败: virtual={virtual_id}, err={e}", exc_info=True)
+        return False
+
+
+def _check_and_repair_virtual_item_sources(client: SharedCenterClient, limit: int = 300) -> Dict[str, int]:
+    """维护任务虚拟入库分享有效性检查。失效时优先切换完结季包，其次单集备份，最后删除投影。"""
+    result = {'checked': 0, 'invalid': 0, 'switched_pack': 0, 'switched_episode': 0, 'deleted': 0, 'skipped': 0, 'failed': 0}
+    try:
+        rows = shared_share_db.get_virtual_items_for_share_health(limit)
+    except Exception as e:
+        logger.warning(f"  ➜ [共享资源维护] 查询虚拟入库健康检查列表失败: {e}")
+        result['failed'] += 1
+        return result
+    if not rows:
+        return result
+
+    result['checked'] = len(rows)
+    center_sources = _load_center_sources_by_id(client, _source_id_list(rows))
+    if center_sources is None:
+        result['skipped'] = len(rows)
+        return result
+
+    p115 = P115Service.get_client()
+    share_alive_cache: Dict[tuple, Any] = {}
+    search_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+    for row in rows:
+        virtual_id = str((row or {}).get('virtual_id') or '').strip()
+        title = (row or {}).get('title') or (row or {}).get('file_name') or virtual_id
+        try:
+            reason = _virtual_current_source_unhealthy_reason(row, center_sources, p115, share_alive_cache)
+            if not reason:
+                continue
+            result['invalid'] += 1
+            replacement, mode = _find_replacement_source_for_virtual(
+                client,
+                row,
+                p115=p115,
+                search_cache=search_cache,
+                share_alive_cache=share_alive_cache,
+            )
+            if replacement:
+                message = (
+                    f"虚拟入库原分享不可用({reason})，已切换到"
+                    f"{'完结季包/季包' if mode == 'season_pack' else '单集备份'}：{replacement.get('share_code') or replacement.get('source_id')}"
+                )
+                shared_share_db.update_virtual_item_center_source(virtual_id, replacement, message=message)
+                shared_virtual_db.add_credit_ledger(
+                    'virtual_source_replaced', 0,
+                    f"虚拟入库源失效自动切换备份：{title}",
+                    ref_id=str(replacement.get('source_id') or virtual_id),
+                    source_id=str(replacement.get('source_id') or ''),
+                    virtual_id=virtual_id,
+                    tmdb_id=str((row or {}).get('tmdb_id') or ''),
+                    item_type=str((row or {}).get('item_type') or ''),
+                    title=title,
+                    raw_json={'reason': reason, 'mode': mode, 'replacement': replacement, 'old_share_code': row.get('share_code'), 'old_source_id': row.get('source_id')},
+                )
+                if mode == 'season_pack':
+                    result['switched_pack'] += 1
+                else:
+                    result['switched_episode'] += 1
+                logger.info(
+                    "  ➜ [共享资源维护] 虚拟入库源失效，已切换到%s: %s old=%s new=%s",
+                    '季包' if mode == 'season_pack' else '单集备份',
+                    title,
+                    row.get('share_code') or row.get('source_id'),
+                    replacement.get('share_code') or replacement.get('source_id'),
+                )
+            else:
+                if _delete_virtual_item_for_dead_share(row, reason, p115=p115):
+                    result['deleted'] += 1
+                else:
+                    result['failed'] += 1
+        except Exception as e:
+            logger.warning(f"  ➜ [共享资源维护] 虚拟入库源健康检查失败: virtual={virtual_id}, title={title}, err={e}", exc_info=True)
+            result['failed'] += 1
+        time.sleep(0.1)
+
+    if result['invalid'] or result['deleted'] or result['switched_pack'] or result['switched_episode']:
+        logger.info(
+            "  ➜ [共享资源维护] 虚拟入库源健康检查完成：检查 %s，异常 %s，切季包 %s，切单集备份 %s，删除 %s，失败 %s。",
+            result['checked'], result['invalid'], result['switched_pack'], result['switched_episode'], result['deleted'], result['failed'],
+        )
+    return result
+
+
 def _has_local_virtual_projection_for_episode(row: Dict[str, Any]) -> bool:
     parent = str(row.get('parent_series_tmdb_id') or '')
     season = _safe_int(row.get('season_number'), -1)
@@ -3020,6 +3430,10 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         _status(74, '正在同步分享审核状态并自动登记中心...')
         total.update(_auto_check_and_report_local_shares(client))
 
+        _status(78, '正在检查虚拟入库分享有效性并切换备份...')
+        virtual_health = _check_and_repair_virtual_item_sources(client)
+        total.update({f'virtual_source_{k}': v for k, v in virtual_health.items()})
+
         _status(82, '正在对账中心残留共享源...')
         total.update(_cleanup_orphan_center_sources(client))
 
@@ -3051,6 +3465,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
             f"  ➜ 自动响应求分享: 检查 {total.get('request_auto_checked', 0)}，命中 {total.get('request_auto_matched', 0)}，创建 {total.get('request_auto_created', 0)}，跳过 {total.get('request_auto_skipped', 0)}，失败 {total.get('request_auto_failed', 0)}\n"
             f"  ➜ 待补充补源: 检查 {total.get('replenish_checked', 0)}，命中 {total.get('replenish_matched', 0)}，创建 {total.get('replenish_created', 0)}，跳过 {total.get('replenish_skipped', 0)}，失败 {total.get('replenish_failed', 0)}\n"
             f"  ➜ 完结季包汇总: 创建季包 {total.get('season_rollup_created', 0)}，清理单集 {total.get('season_rollup_cancelled', 0)}/{total.get('season_rollup_failed', 0)}\n"
+            f"  ➜ 虚拟入库源检查: 检查 {total.get('virtual_source_checked', 0)}，异常 {total.get('virtual_source_invalid', 0)}，切季包 {total.get('virtual_source_switched_pack', 0)}，切单集 {total.get('virtual_source_switched_episode', 0)}，删除 {total.get('virtual_source_deleted', 0)}，失败 {total.get('virtual_source_failed', 0)}\n"
             f"  ➜ 违规分享清理: {total.get('share_invalid_deleted', 0)}/{total.get('share_invalid_failed', 0)}\n"
             f"  ➜ 缺 raw 清理: {total.get('share_raw_missing_deleted', 0)}/{total.get('share_raw_missing_failed', 0)}\n"
             f"  ➜ 分享水位清理: {total.get('share_pruned', 0)}/{total.get('share_prune_failed', 0)}\n"
@@ -3066,6 +3481,7 @@ def task_shared_resource_maintenance(processor=None, maintenance_silent: bool = 
         status_msg = (
             f"维护完成：登记缺口 {total.get('reported_gaps', 0)}，创建分享 {total.get('auto_created_shares', 0)}，"
             f"响应求分享 {total.get('request_auto_created', 0)}，待补充创建 {total.get('replenish_created', 0)}，"
+            f"虚拟源切换 {total.get('virtual_source_switched_pack', 0) + total.get('virtual_source_switched_episode', 0)}，"
             f"追更命中 {total.get('follow_consumed', 0)}，自动登记 {total.get('reported', 0)}。详细摘要请查看日志。"
         )
         _status(100, status_msg)

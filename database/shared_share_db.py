@@ -1032,6 +1032,79 @@ def get_expired_virtual_cache_rows(limit: int) -> List[Dict[str, Any]]:
             """, (int(limit),))
             return [_row_to_dict(r) for r in cur.fetchall()]
 
+def get_virtual_items_for_share_health(limit: int = 300) -> List[Dict[str, Any]]:
+    """查询仍保留虚拟投影、需要校验中心分享有效性的虚拟入库记录。"""
+    limit = max(1, min(int(limit or 300), 1000))
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT *
+                FROM shared_virtual_items
+                WHERE COALESCE(status, '') NOT IN ('deleted','promoted','promote_pending')
+                  AND (
+                        COALESCE(source_id, '') <> ''
+                     OR COALESCE(share_code, '') <> ''
+                  )
+                ORDER BY
+                    CASE
+                        WHEN COALESCE(real_pick_code, '') = '' THEN 0
+                        ELSE 1
+                    END,
+                    updated_at ASC NULLS FIRST,
+                    created_at ASC NULLS FIRST
+                LIMIT %s
+            """, (limit,))
+            return [_row_to_dict(r) for r in cur.fetchall()]
+
+
+def update_virtual_item_center_source(virtual_id: str, source: Dict[str, Any], message: str = '') -> Dict[str, Any]:
+    """把虚拟入库记录切换到新的中心共享源。媒体身份保持原虚拟项不变，只替换分享来源。"""
+    if not virtual_id or not source:
+        return None
+    raw_patch = {
+        'virtual_source_replaced_at': datetime.utcnow().isoformat(),
+        'virtual_source_replace_message': message or '',
+        'replacement_center_source': source,
+    }
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                UPDATE shared_virtual_items
+                SET source_id = COALESCE(NULLIF(%s, ''), source_id),
+                    source_key = COALESCE(NULLIF(%s, ''), source_key),
+                    source_provider = COALESCE(NULLIF(%s, ''), source_provider),
+                    share_code = COALESCE(NULLIF(%s, ''), share_code),
+                    receive_code = COALESCE(%s, receive_code),
+                    contributor_id = COALESCE(NULLIF(%s, ''), contributor_id),
+                    sha1 = COALESCE(NULLIF(%s, ''), sha1),
+                    size = CASE WHEN COALESCE(%s, 0) > 0 THEN %s ELSE size END,
+                    file_name = COALESCE(NULLIF(%s, ''), file_name),
+                    quality = COALESCE(NULLIF(%s, ''), quality),
+                    status = CASE WHEN status='error' THEN 'virtual_ready' ELSE status END,
+                    last_error = %s,
+                    raw_json = COALESCE(raw_json, '{}'::jsonb) || %s::jsonb,
+                    updated_at = NOW()
+                WHERE virtual_id=%s
+                RETURNING *
+            """, (
+                str(source.get('source_id') or ''),
+                str(source.get('source_key') or ''),
+                str(source.get('source_provider') or 'shared_center'),
+                str(source.get('share_code') or ''),
+                str(source.get('receive_code') or ''),
+                str(source.get('contributor_id') or source.get('provider_id') or ''),
+                _center_norm_sha1(source.get('sha1')),
+                _safe_int(source.get('size'), 0), _safe_int(source.get('size'), 0),
+                str(source.get('file_name') or ''),
+                str(source.get('quality') or ''),
+                message or '',
+                _as_jsonb(raw_patch),
+                str(virtual_id),
+            ))
+            row = _row_to_dict(cur.fetchone())
+            conn.commit()
+            return row
+
 def find_local_cache_rows_by_sha1s(sha1s: List[str]) -> List[Dict[str, Any]]:
     with get_db_connection() as conn:
         with conn.cursor() as cur:
