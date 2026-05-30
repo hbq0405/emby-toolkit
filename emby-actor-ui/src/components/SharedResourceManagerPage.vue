@@ -45,7 +45,7 @@
         </n-grid>
       </n-card>
 
-      <n-card :bordered="false" class="dashboard-card">
+      <n-card :bordered="false" class="dashboard-card shared-list-card">
         <n-tabs v-model:value="activeTab" animated type="line" @update:value="handleTabChange">
           <n-tab-pane name="virtual" tab="虚拟入库">
             <n-alert type="warning" :bordered="false" style="margin-bottom: 12px;">
@@ -148,7 +148,7 @@
               </n-button>
             </n-space>
 
-            <n-spin :show="requestLoading">
+            <n-spin class="share-request-spin" :show="requestLoading">
               <div v-if="shareRequests.length" class="share-request-grid">
                 <n-card v-for="req in shareRequests" :key="req.group_id" size="small" :bordered="false" class="share-request-card">
                   <div class="share-request-card-body">
@@ -2070,6 +2070,13 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 <style scoped>
 .shared-page { padding: 0; }
 .dashboard-card { border-radius: 14px; overflow: hidden; }
+.shared-list-card { overflow: visible; }
+.shared-list-card :deep(.n-card__content),
+.shared-list-card :deep(.n-tabs),
+.shared-list-card :deep(.n-tab-pane),
+.share-request-spin,
+.share-request-spin :deep(.n-spin-container),
+.share-request-spin :deep(.n-spin-content) { overflow: visible; }
 .page-header { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
 .page-title { font-size: 20px; font-weight: 700; margin-bottom: 6px; }
 .card-title { font-size: 16px; font-weight: 700; }
@@ -2131,6 +2138,9 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 @media (max-width: 768px) { .page-header { flex-direction: column; } }
 
 .share-request-grid {
+  box-sizing: border-box;
+  width: 100%;
+  padding: calc(6px * var(--card-scale, 1)) calc(12px * var(--card-scale, 1)) calc(22px * var(--card-scale, 1));
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(330px * var(--card-scale, 1))), 1fr));
   gap: calc(12px * var(--card-scale, 1));
