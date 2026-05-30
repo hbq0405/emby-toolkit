@@ -1123,6 +1123,14 @@ class WatchlistProcessor:
                 cursor.execute(sql, (tmdb_id, season_number))
                 rows = cursor.fetchall()
 
+            local_episode_count = len(rows)
+            if expected_episode_count and local_episode_count < expected_episode_count:
+                logger.info(
+                    f"  ➜ [一致性检查] 第 {season_number} 季 本地集数不足: "
+                    f"{local_episode_count}/{expected_episode_count}，不能视为完结达标。"
+                )
+                return False
+
             # 检查一致性 (分辨率、制作组、编码)
             resolutions = set()
             groups = set()
@@ -1574,15 +1582,16 @@ class WatchlistProcessor:
                         logger.debug(f"  ➜ [预判] S{last_s_num} 总集数({total_ep_count}) > 保护阈值({aggressive_threshold}) 且已播至最后一集，标记为本季大结局。")
 
         # ==============================================================================
-        # ★★★ 激进完结策略 ★★★
+        # ★★★ 本地完结门槛 ★★★
         # ==============================================================================
-        is_aggressive_completed = False
-        
-        # ★ 新增：读取 TG 追更配置
+        # 取消“提前完结抢完结包”：不再因为 TMDb 大结局已播出 / 状态已完结就直接把本地半截剧判完结。
+        # 三段规则：
+        # 1. 本地 0 集：视为没有追这一季，可以完结/休眠；
+        # 2. 本地 1～N-1 集：视为追到一半，必须继续保持追剧，不能完结；
+        # 3. 本地 N/N 集：本地已集齐，才允许完结并触发后续完结洗版/等待完结包逻辑。
         watchlist_cfg = settings_db.get_setting('watchlist_config') or {}
         tg_channel_tracking = watchlist_cfg.get('tg_channel_tracking', False)
         
-        # 1. 找到最新一季的信息
         tmdb_seasons_list = latest_series_data.get('seasons', [])
         valid_tmdb_seasons = sorted(
             [s for s in tmdb_seasons_list if s.get('season_number', 0) > 0], 
@@ -1593,84 +1602,57 @@ class WatchlistProcessor:
         local_latest_s_episodes = 0
         latest_s_total_episodes = 0
         latest_s_num = 0
+        latest_season_local_state = "unknown"  # unknown / not_started / partial / complete
 
         if valid_tmdb_seasons:
             latest_s_info = valid_tmdb_seasons[0]
             latest_s_num = latest_s_info.get('season_number')
-            # TMDb 记录的最新季总集数
-            latest_s_total_episodes = latest_s_info.get('episode_count', 0)
-            
-            # 本地已入库的最新季集数
+            latest_s_total_episodes = latest_s_info.get('episode_count', 0) or 0
             local_latest_s_episodes = len(emby_seasons.get(latest_s_num, set()))
 
-            # 2. 获取最新播出集的信息 (用于时间判定)
-            last_ep_number = 0
-            last_air_date = None
-            if last_episode_to_air:
-                # 只有当最后播出集属于最新一季时，才参与进度判定
-                if last_episode_to_air.get('season_number') == latest_s_num:
-                    last_ep_number = last_episode_to_air.get('episode_number', 0)
-                
-                if date_str := last_episode_to_air.get('air_date'):
-                    try:
-                        last_air_date = datetime.strptime(date_str, '%Y-%m-%d').date()
-                    except ValueError: pass
+            if local_latest_s_episodes <= 0:
+                latest_season_local_state = "not_started"
+            elif latest_s_total_episodes > 0 and local_latest_s_episodes >= latest_s_total_episodes:
+                latest_season_local_state = "complete"
+            else:
+                latest_season_local_state = "partial"
 
-            # 3. 核心判定逻辑 (针对最新季)
-            # 只有当最新季集数超过保护阈值时才触发
-            if latest_s_total_episodes > aggressive_threshold:
-                
-                # 条件 A: 时间维度 (最新季的最后一集已播出)
-                if last_ep_number >= latest_s_total_episodes and last_air_date and last_air_date <= today:
-                    # ★ 核心修改：如果开启了 TG 追更，禁用时间维度的激进完结！必须等本地集齐！
-                    if tg_channel_tracking:
-                        logger.debug(f"  ➜ [TG追更保护] 大结局(E{last_ep_number})已播出，但因开启了TG追更，禁用时间维度的激进完结，等待本地集齐。")
-                    else:
-                        is_aggressive_completed = True
-                        logger.info(f"  ➜ 《{item_name}》 （第 {latest_s_num} 季） 大结局(E{last_ep_number})已播出，判定完结。")
-                
-                # 条件 B: 收藏维度 (最新季本地已集齐)
-                if not is_aggressive_completed and local_latest_s_episodes >= latest_s_total_episodes:
-                    is_aggressive_completed = True
-                    logger.info(f"  ➜ 《{item_name}》 （第 {latest_s_num} 季） 本地已集齐 {local_latest_s_episodes}/{latest_s_total_episodes} 集，判定完结。")
+            logger.debug(
+                f"  ➜ [本地完结门槛] S{latest_s_num}: 本地 {local_latest_s_episodes}/{latest_s_total_episodes or '未知'}，"
+                f"状态={latest_season_local_state}。"
+            )
+
+        is_latest_season_not_started = latest_season_local_state == "not_started"
+        is_local_latest_season_completed = latest_season_local_state == "complete"
+        is_latest_season_partial = latest_season_local_state == "partial"
 
         # ==============================================================================
         # ★★★ 重构后的状态判定逻辑 ★★★
         # ==============================================================================
 
-        # 如果开启了 TG 追更，且本地最新季还没集齐，绝对不允许系统将其判定为“已完结”！
-        tg_protection_active = tg_channel_tracking and (local_latest_s_episodes < latest_s_total_episodes) and (latest_s_total_episodes > 0)
-
-        # 防无限洗版死循环 
-        # 如果旧状态已经是“已完结”，且没有明确的未来新集排期，说明当前的“缺集”是因为洗版删除了旧文件。
-        # 此时必须临时解除 TG 保护锁，防止状态倒退回“追剧中”从而引发无限洗版。
-        if tg_protection_active and old_status == STATUS_COMPLETED and not effective_next_episode:
-            logger.info(f"  ➜ [防洗版死循环] 《{item_name}》当前缺集，但旧状态已是完结，判定为洗版下载中，临时解除 TG 追更保护锁。")
-            tg_protection_active = False
-
-        # 规则 1: 激进策略优先 -> 直接完结
-        if is_aggressive_completed:
+        # 规则 1: 本地最新季已集齐 -> 允许完结
+        if is_local_latest_season_completed:
             final_status = STATUS_COMPLETED
             paused_until_date = None
-            
-            if real_next_episode_to_air:
-                logger.info(f"  ➜ [判定-TMDb已完结] 虽本地缺集，但满足完结策略，强制判定“已完结”以触发洗版(抢完结包)。")
-            else:
-                logger.info(f"  ➜ [判定-本地已集齐] 满足完结策略，判定“已完结”。")
+            logger.info(f"  ➜ [判定-本地已集齐] 《{item_name}》S{latest_s_num} 本地已集齐 {local_latest_s_episodes}/{latest_s_total_episodes} 集，判定“已完结”。")
 
-        # 规则 2: TMDb 状态已完结 -> 直接完结 (不考虑本地是否集齐)
+        # 规则 2: TMDb 状态已完结
+        # 本地 0 集：说明没追这一季，可以完结；本地半截：必须继续追，不能抢完结包。
         elif is_ended_on_tmdb:
-            # ★ 核心修改：TG 保护锁拦截
-            if tg_protection_active:
+            if is_latest_season_partial:
                 final_status = STATUS_WATCHING
                 paused_until_date = None
-                logger.info(f"  ➜ [TG追更保护] TMDb状态虽为 '{new_tmdb_status}'，但本地未集齐 ({local_latest_s_episodes}/{latest_s_total_episodes})，强制保持“追剧中”以接收TG推送。")
+                logger.info(f"  ➜ [本地未集齐保护] TMDb状态为 '{new_tmdb_status}'，但 S{latest_s_num} 本地只有 {local_latest_s_episodes}/{latest_s_total_episodes or '未知'} 集，保持“追剧中”，不抢完结包。")
             else:
                 final_status = STATUS_COMPLETED
                 paused_until_date = None
-                logger.info(f"  ➜ [判定-规则1] TMDb状态为 '{new_tmdb_status}'，判定为“已完结”。")
+                if is_latest_season_not_started:
+                    logger.info(f"  ➜ [判定-未追本季] TMDb状态为 '{new_tmdb_status}'，且 S{latest_s_num} 本地 0 集，视为未追本季，判定“已完结”。")
+                else:
+                    logger.info(f"  ➜ [判定-TMDb已完结] TMDb状态为 '{new_tmdb_status}'，且本地没有半截追更，判定“已完结”。")
 
-        # 规则 3: 本季大结局已播出 (且无明确下一集) -> 直接完结 (不考虑本地是否集齐)
+        # 规则 3: 本季大结局已播出且无明确下一集
+        # 只作为“是否可以休眠”的信号；如果本地已经追了一部分但没集齐，不能完结。
         elif is_season_finale and not effective_next_episode:
             is_suspiciously_short = (new_tmdb_status == "Returning Series" and total_ep_count <= 3)
             
@@ -1678,16 +1660,17 @@ class WatchlistProcessor:
                 final_status = STATUS_WATCHING
                 paused_until_date = None
                 logger.info(f"  ➜ [安全锁生效] 虽检测到疑似大结局 (S{last_s_num}E{last_e_num})，但该季仅 {total_ep_count} 集且刚播出 {days_since_last} 天，判定为数据滞后，保持“追剧中”。")
+            elif is_latest_season_partial:
+                final_status = STATUS_WATCHING
+                paused_until_date = None
+                logger.info(f"  ➜ [本地未集齐保护] 本季大结局虽已播出，但 S{latest_s_num} 本地只有 {local_latest_s_episodes}/{latest_s_total_episodes or '未知'} 集，保持“追剧中”，不抢完结包。")
             else:
-                # ★ 核心修改：TG 保护锁拦截
-                if tg_protection_active:
-                    final_status = STATUS_WATCHING
-                    paused_until_date = None
-                    logger.info(f"  ➜ [TG追更保护] 本季大结局虽已播出，但本地未集齐 ({local_latest_s_episodes}/{latest_s_total_episodes})，强制保持“追剧中”以接收TG推送。")
+                final_status = STATUS_COMPLETED
+                paused_until_date = None
+                if is_latest_season_not_started:
+                    logger.info(f"  ➜ [判定-未追本季] 本季大结局已播出，但 S{latest_s_num} 本地 0 集，视为未追本季，判定“已完结”。")
                 else:
-                    final_status = STATUS_COMPLETED
-                    paused_until_date = None
-                    logger.info(f"  ➜ [判定-规则2] 本季大结局 (S{last_s_num}E{last_e_num}) 已播出，判定为“已完结”。")
+                    logger.info(f"  ➜ [判定-本季结束] 本季大结局 (S{last_s_num}E{last_e_num}) 已播出，且本地没有半截追更，判定“已完结”。")
 
         # 规则 4: 连载中逻辑
         else:
@@ -1743,25 +1726,36 @@ class WatchlistProcessor:
                     # 说明用户根本没开始追这一季，直接判定为完结！
                     # ==============================================================================
                     has_local_last_season = last_s_num in emby_seasons if last_s_num else False
+                    local_last_season_episodes = len(emby_seasons.get(last_s_num, set())) if last_s_num else 0
 
-                    if not has_local_last_season:
+                    if (not has_local_last_season) or local_last_season_episodes <= 0:
                         final_status = STATUS_COMPLETED
                         paused_until_date = None
-                        logger.info(f"  zzz [判定-未入库] 虽本季尚未播完，但本地无该季 (S{last_s_num}) 任何文件，判定为“已完结”。")
+                        logger.info(f"  zzz [判定-未入库] 本地无该季 (S{last_s_num}) 任何文件，视为未追本季，判定为“已完结”。")
                     
-                    # 2. 核心判断：
-                    # 条件：状态是“连载中” AND (当前季总集数 > 0) AND (已播集号 < 总集数)
-                    # 只要满足这个条件，说明这季还没播完，绝对不能判完结。
+                    # 本地已经有一部分，但还没达到该季总集数：必须继续追，不能因为无下一集排期而完结。
+                    elif current_season_total > 0 and local_last_season_episodes < current_season_total:
+                        final_status = STATUS_WATCHING
+                        paused_until_date = None
+                        logger.info(f"  ➜ [本地未集齐保护] 无待播集信息，但 S{last_s_num} 本地只有 {local_last_season_episodes}/{current_season_total} 集，保持“追剧中”，不抢完结包。")
+
+                    # 有本地文件但总集数未知，无法证明已经集齐，也不能完结。
+                    elif current_season_total <= 0 and local_last_season_episodes > 0:
+                        final_status = STATUS_WATCHING
+                        paused_until_date = None
+                        logger.info(f"  ➜ [本地未集齐保护] S{last_s_num} 本地已有 {local_last_season_episodes} 集，但 TMDb 总集数未知，保持“追剧中”。")
+                    
+                    # 状态仍是连载中，且 TMDb 显示当前季尚未播完：继续追。
                     elif new_tmdb_status == "Returning Series" and last_e_num and current_season_total > 0 and last_e_num < current_season_total:
                         final_status = STATUS_WATCHING
                         paused_until_date = None
                         logger.info(f"  ➜ [判定-连载中] 虽无未来排期，但本季尚未播完 (进度: S{last_s_num} - {last_e_num}/{current_season_total})，判定为数据滞后，保持“追剧中”。")
                     
-                    # 否则 -> 判定完结
+                    # 否则：本地已达到该季总集数，允许完结。
                     else:
                         final_status = STATUS_COMPLETED
                         paused_until_date = None
-                        logger.info(f"  ➜ [判定-已完结] 无待播集信息，且本季已完结或剧集已完结 (进度: S{last_s_num} - {last_e_num}/{current_season_total})。")
+                        logger.info(f"  ➜ [判定-本地已集齐] 无待播集信息，且 S{last_s_num} 本地已集齐 {local_last_season_episodes}/{current_season_total} 集，判定“已完结”。")
                 
                 else:
                     # 极端情况：无任何日期信息
@@ -1781,6 +1775,10 @@ class WatchlistProcessor:
             # 安全检查：如果 TMDb 明确说是 Ended/Canceled，那就不救了，是真的完结了
             if new_tmdb_status in ["Ended", "Canceled"]:
                  pass 
+            
+            # 本地 0 集代表没追这一季，允许完结/休眠，不再被自动待定救回追更。
+            elif final_status == STATUS_COMPLETED and is_latest_season_not_started:
+                logger.debug(f"  ➜ [自动待定跳过] 《{item_name}》S{latest_s_num} 本地 0 集，视为未追本季，保持“已完结”。")
             
             # 核心检查：如果 TMDb 还在连载(Returning Series)，但满足新剧条件(集数少、时间短)
             elif self._check_auto_pending_condition(latest_series_data, auto_pending_cfg):
@@ -1817,20 +1815,24 @@ class WatchlistProcessor:
                     target_season = valid_seasons[-1]
                     last_s_num = target_season.get('season_number')
                     last_ep_count = target_season.get('episode_count', 0)
+                    local_target_count = len(emby_seasons.get(last_s_num, set()))
                     
-                    tg_channel_tracking = watchlist_cfg.get('tg_channel_tracking', False)
-                    
-                    if tg_channel_tracking:
-                        if self._check_season_consistency(tmdb_id, last_s_num, last_ep_count):
-                            logger.info(f"  ➜ [TG洗版拦截] 《{item_name}》S{last_s_num} 本地文件一致性完美，无需洗版。")
-                        else:
-                            # ★ 核心：不一致，开启等待标志！
-                            set_waiting_flag = True
-                            logger.info(f"  ➜ [TG洗版拦截] 《{item_name}》S{last_s_num} 完结但文件不一致。已开启 '等待完结包' 标志，静候 TG 频道发布。")
+                    if local_target_count <= 0:
+                        logger.info(f"  ➜ [完结洗版跳过] 《{item_name}》S{last_s_num} 本地 0 集，视为未追本季，不触发洗版/等待完结包。")
                     else:
-                        # 未开启 TG 追更，走原来的 MP 洗版逻辑
-                        logger.info(f"  ➜ [完结洗版] 《{item_name}》由 {translate_internal_status(old_status)} 转为完结，立即提交 MP 洗版。")
-                        self._handle_auto_resub_ended(tmdb_id, item_name, last_s_num, last_ep_count)
+                        tg_channel_tracking = watchlist_cfg.get('tg_channel_tracking', False)
+                        
+                        if tg_channel_tracking:
+                            if self._check_season_consistency(tmdb_id, last_s_num, last_ep_count):
+                                logger.info(f"  ➜ [TG洗版拦截] 《{item_name}》S{last_s_num} 本地文件一致性完美，无需洗版。")
+                            else:
+                                # ★ 核心：不一致，开启等待标志！
+                                set_waiting_flag = True
+                                logger.info(f"  ➜ [TG洗版拦截] 《{item_name}》S{last_s_num} 完结但文件不一致。已开启 '等待完结包' 标志，静候 TG 频道发布。")
+                        else:
+                            # 未开启 TG 追更，走原来的 MP 洗版逻辑
+                            logger.info(f"  ➜ [完结洗版] 《{item_name}》由 {translate_internal_status(old_status)} 转为完结，立即提交 MP 洗版。")
+                            self._handle_auto_resub_ended(tmdb_id, item_name, last_s_num, last_ep_count)
 
         # 如果剧集恢复连载（出新季了），必须清除等待标志，防止误判
         if final_status in [STATUS_WATCHING, STATUS_PAUSED, STATUS_PENDING]:
