@@ -313,14 +313,14 @@
     </n-modal>
 
     <n-modal v-model:show="showManualShareModal" preset="card" title="手动创建共享资源" style="width: 920px; max-width: 96vw;" class="custom-modal glass-modal">
-      <n-alert type="info" :bordered="false" style="margin-bottom: 12px;">
+      <n-alert v-if="!activeLocalShareRequest" type="info" :bordered="false" style="margin-bottom: 12px;">
         直接输入片名搜索本地 media_metadata，系统会用已记录的 PC/SHA1 反查 p115_filesystem_cache，自动定位可分享的 115 目录或文件。剧集会优先按季目录分享，不创建单集分享。
       </n-alert>
       <n-alert v-if="activeLocalShareRequest" type="warning" :bordered="false" style="margin-bottom: 12px;">
-        正在响应求分享：{{ appendYear(activeLocalShareRequest.title, activeLocalShareRequest.release_year) }} · {{ requestTargetText(activeLocalShareRequest) }}。候选会按求分享参数硬过滤，不符合画质/编码/HDR/帧率/音轨/字幕/体积的资源不会显示。
+        正在响应求分享：{{ appendYear(activeLocalShareRequest.title, activeLocalShareRequest.release_year) }} · {{ requestTargetText(activeLocalShareRequest) }}。系统会自动检索本地库并按求分享参数硬过滤，不符合画质/编码/HDR/帧率/音轨/字幕/体积的资源不会显示。没有候选就是本地没有符合条件的资源。
       </n-alert>
 
-      <n-space class="toolbar" :vertical="isMobile" :size="12">
+      <n-space v-if="!activeLocalShareRequest" class="toolbar" :vertical="isMobile" :size="12">
         <n-input v-model:value="mediaSearchKeyword" placeholder="输入片名 / TMDb ID 搜索本地媒体库" clearable @keyup.enter="searchShareableMedia">
           <template #prefix><n-icon :component="SearchIcon" /></template>
         </n-input>
@@ -902,10 +902,27 @@ const formatDelta = (value) => {
   return n > 0 ? `+${n}` : String(n);
 };
 
+const looksLikeShareRequestId = (value) => /^srq_[0-9a-f]/i.test(String(value || '').trim());
+const ledgerDisplayTitle = (row) => {
+  const raw = ledgerRawJson(row);
+  const media = raw.media && typeof raw.media === 'object' ? raw.media : {};
+  const request = raw.request && typeof raw.request === 'object' ? raw.request : {};
+  const candidates = [
+    row?.title, row?.file_name, media.title, media.name, request.title, request.name,
+    raw.title, raw.name, raw.file_name, row?.ref_id, row?.id,
+  ];
+  for (const item of candidates) {
+    const text = String(item || '').trim();
+    if (text && !looksLikeShareRequestId(text)) return text;
+  }
+  if (String(row?.event_type || '').includes('share_request')) return '求分享';
+  return row?.title || '-';
+};
+
 const ledgerReasonDisplay = (row) => {
   const event = String(row?.event_type || '');
   const deltaText = `贡献值 ${formatDelta(row?.delta || 0)}`;
-  const title = row?.title || row?.ref_id || row?.id || '-';
+  const title = ledgerDisplayTitle(row);
   const reasonMap = {
     share_request_escrow: `求分享冻结：${title}，${deltaText}`,
     center_share_request_escrow: `求分享冻结：${title}，${deltaText}`,
@@ -1003,7 +1020,7 @@ const buildAggregatedLedgerReason = (latest, rows, totalDelta) => {
     if (replaced !== reason) return replaced;
     return `${reason}，${creditText}`;
   }
-  return `${ledgerEventLabel(latest?.event_type)}：${latest?.title || '-'}，${creditText}`;
+  return `${ledgerEventLabel(latest?.event_type)}：${ledgerDisplayTitle(latest) || '-'}，${creditText}`;
 };
 const buildAggregatedLedgerRow = (rows, index) => {
   const sorted = [...rows].sort((a, b) => ledgerTimeValue(b) - ledgerTimeValue(a));
@@ -1524,7 +1541,7 @@ const ledgerColumns = [
     const node = h(NTag, { type: n > 0 ? 'success' : (n < 0 ? 'error' : 'default'), size: 'small' }, { default: () => formatDelta(n) });
     return withLedgerTooltip(row, node);
   } },
-  { title: '标题', key: 'title', minWidth: 220, ellipsis: { tooltip: true }, render: row => withLedgerTooltip(row, row.title || '-') },
+  { title: '标题', key: 'title', minWidth: 220, ellipsis: { tooltip: true }, render: row => withLedgerTooltip(row, ledgerDisplayTitle(row)) },
   { title: '原因', key: 'reason', minWidth: 360, ellipsis: { tooltip: true }, render: row => withLedgerTooltip(row, ledgerReasonDisplay(row)) },
 ];
 
@@ -1850,10 +1867,10 @@ const openLocalShareForRequest = async (row) => {
   resetManualShareForm();
   mediaCandidates.value = [];
   activeLocalShareRequest.value = row || null;
-  mediaSearchKeyword.value = row?.title || row?.tmdb_id || '';
+  mediaSearchKeyword.value = '';
   showManualShareModal.value = true;
-  message.info('已按求分享目标和参数过滤本地可分享资源。');
-  if (mediaSearchKeyword.value) await searchShareableMedia();
+  message.info('正在自动匹配本地符合条件的可分享资源。');
+  await searchShareableMedia();
 };
 
 const triggerSharedMaintenance = async () => {
@@ -1918,16 +1935,19 @@ const openManualShareModal = () => {
 };
 
 const searchShareableMedia = async () => {
-  const keyword = (mediaSearchKeyword.value || '').trim();
-  if (!keyword) return message.warning('请输入片名或 TMDb ID');
+  const requestRow = activeLocalShareRequest.value || null;
+  const keyword = requestRow
+    ? String(requestRow.title || requestRow.tmdb_id || '').trim()
+    : String(mediaSearchKeyword.value || '').trim();
+  if (!keyword) return message.warning(requestRow ? '求分享缺少片名或 TMDb ID，无法自动匹配本地资源' : '请输入片名或 TMDb ID');
   mediaSearchLoading.value = true;
   try {
-    const params = { keyword, limit: 30 };
-    if (activeLocalShareRequest.value) Object.assign(params, shareRequestSearchFilterParams(activeLocalShareRequest.value));
+    const params = { keyword, limit: requestRow ? 100 : 30 };
+    if (requestRow) Object.assign(params, shareRequestSearchFilterParams(requestRow));
     const res = await axios.get('/api/shared/resources/media/search', { params });
     mediaCandidates.value = res.data?.items || [];
     if (!mediaCandidates.value.length) {
-      message.info(activeLocalShareRequest.value ? '本地没有符合该求分享参数的可分享资源' : '没有搜索到本地媒体记录');
+      message.info(requestRow ? '本地没有符合该求分享参数的可分享资源' : '没有搜索到本地媒体记录');
     }
   } catch (e) {
     message.error(e.response?.data?.message || '搜索可分享媒体失败');
