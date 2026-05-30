@@ -2187,6 +2187,102 @@ class P115CacheManager:
             logger.debug(f"  ➜ 读取 raw_ffprobe 缓存失败: {sha1[:12]}... -> {e}")
             return None
 
+
+    @staticmethod
+    def patch_raw_ffprobe_etk_context(sha1, *, season_number=None, episode_number=None):
+        """在已经生成 ffprobe RAW 之后，回填整理链路最终确认的季集号。
+
+        生成 raw_ffprobe_json 的时机早于 _rename_file_node 最终解析季集号，
+        所以这里在季集号落定后反向补写 p115_mediainfo_cache，确保后续上传中心的 RAW
+        顶层 _etk 自带 season_number / episode_number。
+        """
+        if not sha1:
+            return False
+
+        sha1 = str(sha1).strip().upper()
+        if not sha1:
+            return False
+
+        def _ctx_int(value):
+            try:
+                if value in (None, ''):
+                    return None
+                return int(float(value))
+            except Exception:
+                return None
+
+        patch = {}
+        sn = _ctx_int(season_number)
+        en = _ctx_int(episode_number)
+        if sn is not None:
+            patch['season_number'] = sn
+        if en is not None:
+            patch['episode_number'] = en
+        if not patch:
+            return False
+
+        try:
+            from psycopg2.extras import Json
+
+            with get_db_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        "SELECT raw_ffprobe_json FROM p115_mediainfo_cache WHERE sha1 = %s",
+                        (sha1,)
+                    )
+                    row = cursor.fetchone()
+                    if not row or not row.get('raw_ffprobe_json'):
+                        return False
+
+                    raw_probe = row.get('raw_ffprobe_json')
+                    try:
+                        if isinstance(raw_probe, str):
+                            raw_probe = json.loads(raw_probe)
+                    except Exception:
+                        return False
+
+                    if not isinstance(raw_probe, dict):
+                        return False
+
+                    raw_probe = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_probe)
+                    ctx = raw_probe.get('_etk') if isinstance(raw_probe.get('_etk'), dict) else {}
+                    changed = False
+
+                    # sha1 也顺手固定为当前缓存键，避免老 RAW 里大小写/缺失不一致。
+                    if ctx.get('sha1') != sha1:
+                        ctx['sha1'] = sha1
+                        changed = True
+
+                    for key, value in patch.items():
+                        if ctx.get(key) != value:
+                            ctx[key] = value
+                            changed = True
+
+                    if not changed:
+                        return True
+
+                    raw_probe['_etk'] = {k: v for k, v in ctx.items() if v not in [None, '', [], {}]}
+                    raw_probe = P115CacheManager._sanitize_raw_ffprobe_for_cache(raw_probe)
+
+                    cursor.execute(
+                        """
+                        UPDATE p115_mediainfo_cache
+                        SET raw_ffprobe_json = %s
+                        WHERE sha1 = %s
+                        """,
+                        (Json(raw_probe, dumps=lambda obj: json.dumps(obj, ensure_ascii=False)), sha1)
+                    )
+                    conn.commit()
+
+            logger.debug(
+                f"  ➜ [raw_ffprobe缓存] 已回填整理季集号: sha1={sha1[:12]}..., "
+                f"season={patch.get('season_number')}, episode={patch.get('episode_number')}"
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"  ➜ 回填 raw_ffprobe 季集号失败: {sha1[:12]}... -> {e}")
+            return False
+
 # ======================================================================
 # ★★★ 115 整理记录 DB 管理器 ★★★
 # ======================================================================
@@ -3452,6 +3548,20 @@ class SmartOrganizer(P115MediaAnalyzerMixin):
                 safe_title=new_base_name
             )
             if not s_name: s_name = f"Season {season_num:02d}"
+
+        # raw_ffprobe_json 生成早于最终季集号识别；此时季集号已经落定，反向补写本地 RAW，
+        # 后续上传中心时 _etk 就能直接携带 season_number / episode_number。
+        if is_tv and not is_sub:
+            try:
+                raw_patch_sha1 = file_node.get('sha1') or file_node.get('sha')
+                if raw_patch_sha1 and (season_num is not None or episode_num is not None):
+                    P115CacheManager.patch_raw_ffprobe_etk_context(
+                        raw_patch_sha1,
+                        season_number=season_num,
+                        episode_number=episode_num,
+                    )
+            except Exception:
+                pass
 
         return new_name, season_num, episode_num, s_name, video_info, bool(real_info), part_num
 
