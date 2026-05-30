@@ -1862,7 +1862,7 @@ def _load_center_replenish_groups(client: SharedCenterClient, limit: int = 200, 
     """拉取中心“待补充”队列，并按资源粒度分组。
 
     普通缺口是 TMDb 级；待补充是 SHA1 / 季包完整 SHA1 集合级。
-    Movie/Episode 按单个 SHA1 补，Season/Pack 按原分享包的完整 SHA1 集合补。
+    待补充只处理 Movie 和 Season/Pack；单集在完结汇总后会被季包替代，不能再补源。
     """
     rows: List[Dict[str, Any]] = []
     for page in range(max(1, int(max_pages or 1))):
@@ -1892,6 +1892,9 @@ def _load_center_replenish_groups(client: SharedCenterClient, limit: int = 200, 
         if not sha1:
             continue
         item_type = str(item.get('item_type') or '').strip().lower()
+        # 单集不参与待补充。完结季汇总会删除单集分享，历史脏数据不能再被自动补回来。
+        if item_type in ('episode', 'episode_file', 'single'):
+            continue
         share_code = str(item.get('share_code') or '').strip()
         contributor_id = str(item.get('contributor_id') or '').strip()
         if item_type in ('season', 'season_pack', 'series', 'series_pack', 'tv', 'show') and share_code:
