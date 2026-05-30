@@ -2020,7 +2020,7 @@ onUnmounted(() => window.removeEventListener('resize', checkMobile));
 .share-request-card-body { display: flex; gap: 12px; min-height: 136px; }
 .share-request-poster { width: 74px; height: 108px; object-fit: cover; border-radius: 10px; background: rgba(128,128,128,.16); flex: 0 0 auto; }
 .share-request-info { min-width: 0; flex: 1; }
-.share-request-title { font-size: 15px; font-weight: 700; line-height: 1.35; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+.share-request-title { font-size: 15px; font-weight: 700; line-height: 1.35; margin-bottom: 6px; overflow: hidden; text-overflow: ellipsis; display: -webkit-box; -webkit-line-clamp: 2; line-clamp: 2; -webkit-box-orient: vertical; }
 .share-request-meta, .share-request-condition, .share-request-time { font-size: 12px; color: var(--n-text-color-3, rgba(128,128,128,.78)); line-height: 1.55; }
 .share-request-condition { margin-top: 6px; min-height: 18px; word-break: break-all; }
 .share-request-tags { margin-top: 8px; }
